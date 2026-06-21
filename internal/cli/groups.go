@@ -10,4 +10,6 @@ package cli
 // import internal/cli for shared helpers); internal/cli blank-imports the
 // groups here. The registry indirection in the factory package is what keeps
 // that from being an import cycle.
-// (group imports are added here as commands migrate into subpackages)
+import (
+	_ "github.com/reliant-labs/forge/internal/cli/component"
+)

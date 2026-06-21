@@ -1,4 +1,4 @@
-package cli
+package component
 
 import (
 	"fmt"
@@ -9,56 +9,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/components"
+	"github.com/reliant-labs/forge/internal/cli/factory"
 )
 
-func newComponentCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "component",
-		Short: "Manage UI components from the component library",
-		Long:  "List, search, and install UI components from Forge's built-in component library.",
-	}
-	cmd.AddCommand(newComponentListCmd())
-	cmd.AddCommand(newComponentSearchCmd())
-	cmd.AddCommand(newComponentInstallCmd())
-	return cmd
-}
-
-func newComponentListCmd() *cobra.Command {
-	var category string
-	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List all available components",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			lib := components.NewLibrary()
-			entries := lib.List("", category)
-			fmt.Println(components.FormatComponentList(entries))
-			return nil
-		},
-	}
-	cmd.Flags().StringVarP(&category, "category", "c", "", "filter by category (layouts, charts, diagrams, deck, ui)")
-	return cmd
-}
-
-func newComponentSearchCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "search <query>",
-		Short: "Search components by keyword",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			lib := components.NewLibrary()
-			query := strings.Join(args, " ")
-			entries := lib.Search(query)
-			if len(entries) == 0 {
-				fmt.Printf("No components found matching %q\n", query)
-				return nil
-			}
-			fmt.Println(components.FormatComponentList(entries))
-			return nil
-		},
-	}
-}
-
-func newComponentInstallCmd() *cobra.Command {
+func newInstallCmd(_ *factory.Factory) *cobra.Command {
 	var targetDir string
 	cmd := &cobra.Command{
 		Use:   "install <component-names...>",
@@ -117,31 +71,4 @@ auto-detects the nearest frontend directory.`,
 	}
 	cmd.Flags().StringVarP(&targetDir, "dir", "d", "", "target directory (default: auto-detect nearest frontend)")
 	return cmd
-}
-
-// detectComponentsDir looks for a frontends/*/src/components/ui/ directory
-// relative to the current working directory.
-func detectComponentsDir() string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-
-	// Check frontends directory
-	frontendsDir := filepath.Join(cwd, "frontends")
-	entries, err := os.ReadDir(frontendsDir)
-	if err != nil {
-		return ""
-	}
-
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		candidate := filepath.Join(frontendsDir, e.Name(), "src", "components", "ui")
-		if info, err := os.Stat(filepath.Join(frontendsDir, e.Name(), "src")); err == nil && info.IsDir() {
-			return candidate
-		}
-	}
-	return ""
 }

@@ -123,20 +123,20 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		return fmt.Errorf("failed to generate internal/app/inventory_gen.go: %w", err)
 	}
 
-	// REAL per-service subcommands (cmd/services_gen.go): one cobra
-	// subcommand per service whose RunE delegates to runServer with its
-	// own name pre-filled as the single mount-selection key. Driven by the
-	// SAME `services` rows the Inventory is, so each subcommand name lines
-	// up with an inventory row. Emitted only when cmd/server.go exists (it
-	// references runServer) — CLI/library kinds and codegen-less trees have
-	// no server pipeline to delegate to.
-	if _, statErr := os.Stat(filepath.Join(projectDir, "cmd", "server.go")); statErr == nil {
+	// REAL per-service subcommands: one internal/cli/svc_<name>.go file per
+	// service whose RunE calls serve() with the TYPED mount method
+	// expression (*app.Services).Mount<Svc> (no string selection), plus the
+	// internal/cli/svc_register_gen.go roster. Driven by the SAME `services`
+	// rows the Inventory is, so each subcommand name lines up with a typed
+	// mount. Emitted only when internal/cli/serve.go exists — CLI/library
+	// kinds and codegen-less trees have no serve pipeline to delegate to.
+	if _, statErr := os.Stat(filepath.Join(projectDir, "internal", "cli", "serve.go")); statErr == nil {
 		names := make([]string, 0, len(services))
 		for _, svc := range services {
 			names = append(names, svc.Name)
 		}
 		if err := codegen.GenerateCmdServices(names, projectDir, cs); err != nil {
-			return fmt.Errorf("failed to generate cmd/services_gen.go: %w", err)
+			return fmt.Errorf("failed to generate internal/cli per-service subcommands: %w", err)
 		}
 	}
 

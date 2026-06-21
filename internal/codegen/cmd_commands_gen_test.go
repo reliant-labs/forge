@@ -17,13 +17,13 @@ func TestGenerateCmdCommands(t *testing.T) {
 	if err := GenerateCmdCommands(dir); err != nil {
 		t.Fatalf("GenerateCmdCommands: %v", err)
 	}
-	dest := filepath.Join(dir, "cmd", "commands.go")
+	dest := filepath.Join(dir, "internal", "cli", "commands.go")
 	raw, err := os.ReadFile(dest)
 	if err != nil {
 		t.Fatalf("read commands.go: %v", err)
 	}
 	content := string(raw)
-	if !strings.Contains(content, "func userCommands() []*cobra.Command {") {
+	if !strings.Contains(content, "func userCommands(deps Deps) []*cobra.Command {") {
 		t.Errorf("commands.go missing the userCommands hook:\n%s", content)
 	}
 	if !strings.Contains(content, "yours: scaffolded once") {

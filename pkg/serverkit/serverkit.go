@@ -210,6 +210,27 @@ type Config struct {
 	// "development" Run emits a loud warning about permissive defaults.
 	Environment string
 
+	// OTLPEndpoint is the OTLP/gRPC collector endpoint (e.g.
+	// "http://localhost:4317"). serverkit OWNS OpenTelemetry setup: Run
+	// calls observe.Setup internally with this endpoint, installs the
+	// global trace/metric providers, mounts the Prometheus /metrics handler
+	// on its own edge, and flushes the providers during graceful shutdown.
+	// Empty means no OTLP exporter is wired — the always-on Prometheus
+	// /metrics path still works. The caller no longer builds a cmd/otel.go
+	// shim; it projects this (and ServiceName) from its typed config.
+	OTLPEndpoint string
+
+	// ServiceName is the logical service name reported on OTel traces and
+	// metrics (semconv service.name). It is APP IDENTITY (the project name),
+	// not a per-env knob — the caller passes a generated constant. Empty
+	// falls back to observe.Setup's "unknown".
+	ServiceName string
+
+	// ServiceVersion is reported as semconv service.version (the binary's
+	// build version). The "dev" sentinel / empty are treated as "no
+	// version" by observe.Setup.
+	ServiceVersion string
+
 	// AutoMigrate signals the caller-owned migration step should run.
 	// serverkit no longer runs migration itself — the cmd layer reads
 	// this flag (plus DatabaseURL/DBDriver/DBPoolTuning below) and runs

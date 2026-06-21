@@ -28,9 +28,8 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	}
 	out := string(data)
 
-	// Data-only descriptor rows: Name (display/selection) + ConnectPath +
-	// version-aware BaseService/Version metadata + Kind, and a typed Mount
-	// closure over *Services.
+	// Data-only descriptor rows: Name (display) + ConnectPath + version-aware
+	// BaseService/Version metadata + Kind. NO Mount closure on the row.
 	for _, want := range []string{
 		`var Inventory = []ComponentInfo{`,
 		`Name:        "billing",`,
@@ -39,24 +38,40 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 		`BaseService: "user",`,
 		`Version:     "v1",`,
 		`Kind:        "service",`,
-		`Mount: func(s *Services, mux *http.ServeMux`,
-		`s.Billing.Register(`,
-		`s.User.Register(`,
-		`s.Billing.RegisterHTTP(`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("inventory missing %q:\n%s", want, out)
 		}
 	}
 
-	// The authorizer-bearing service threads its authz interceptor; the
-	// authorizer-free one does not construct an authz var.
-	billingMount := out[strings.Index(out, `Name:        "billing"`):]
-	if i := strings.Index(billingMount, "Name:"); i > 0 {
-		// limit to billing's row by cutting at the next row start
-		if next := strings.Index(billingMount[5:], "Name:"); next > 0 {
-			billingMount = billingMount[:next+5]
+	// TYPED MOUNTS — the run path. One typed method per service + MountAll +
+	// the typed MountByName map of method expressions (no string lookup).
+	for _, want := range []string{
+		`func (s *Services) MountBilling(mux *http.ServeMux`,
+		`func (s *Services) MountUser(mux *http.ServeMux`,
+		`func (s *Services) MountAll(mux *http.ServeMux`,
+		`s.Billing.Register(`,
+		`s.User.Register(`,
+		`s.Billing.RegisterHTTP(`,
+		`var MountByName = map[string]MountFunc{`,
+		`"billing": (*Services).MountBilling,`,
+		`"user": (*Services).MountUser,`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("typed mounts missing %q:\n%s", want, out)
 		}
+	}
+
+	// The descriptor row must NOT carry a Mount closure anymore.
+	if strings.Contains(out, `Mount: func(`) {
+		t.Fatalf("ComponentInfo row must be data-only (no Mount closure):\n%s", out)
+	}
+
+	// The authorizer-bearing service threads its authz interceptor in its
+	// typed mount; the authorizer-free one does not construct an authz var.
+	billingMount := out[strings.Index(out, `func (s *Services) MountBilling`):]
+	if next := strings.Index(billingMount, "func (s *Services) MountUser"); next > 0 {
+		billingMount = billingMount[:next]
 	}
 	if !strings.Contains(billingMount, "AuthzInterceptor(authz)") {
 		t.Fatalf("billing mount should thread authz interceptor:\n%s", billingMount)

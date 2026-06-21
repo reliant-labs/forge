@@ -13,12 +13,12 @@ import (
 func validateGeneratedProject(projectDir string) []string {
 	var warnings []string
 
-	// Check: if cmd/server.go imports pkg/config, config.go must exist.
-	serverPath := filepath.Join(projectDir, "cmd", "server.go")
-	if fileImportsPackage(serverPath, "pkg/config") {
+	// Check: if internal/cli/serve.go imports pkg/config, config.go must exist.
+	servePath := filepath.Join(projectDir, "internal", "cli", "serve.go")
+	if fileImportsPackage(servePath, "pkg/config") {
 		if !fileExists(filepath.Join(projectDir, "pkg", "config", "config.go")) {
 			warnings = append(warnings,
-				"cmd/server.go imports pkg/config but pkg/config/config.go was not generated. "+
+				"internal/cli/serve.go imports pkg/config but pkg/config/config.go was not generated. "+
 					"Check your proto/config/ annotations.")
 		}
 	}

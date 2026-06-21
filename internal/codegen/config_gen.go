@@ -387,13 +387,13 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 	data.Module = modulePath
 	data.RESTEnabled = projectAPIRESTEnabled(targetDir)
 
-	content, err := templates.ProjectTemplates().Render("cmd-server.go.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("cli-serve.go.tmpl", data)
 	if err != nil {
-		return fmt.Errorf("render cmd-server.go.tmpl: %w", err)
+		return fmt.Errorf("render cli-serve.go.tmpl: %w", err)
 	}
 
-	if err := writeForgeOwned(targetDir, filepath.Join("cmd", "server.go"), content, cs); err != nil {
-		return fmt.Errorf("write cmd/server.go: %w", err)
+	if err := writeForgeOwned(targetDir, filepath.Join("internal", "cli", "serve.go"), content, cs); err != nil {
+		return fmt.Errorf("write internal/cli/serve.go: %w", err)
 	}
 	return nil
 }

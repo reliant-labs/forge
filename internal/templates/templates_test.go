@@ -280,13 +280,13 @@ func TestDockerfile_VersionVarLdflags(t *testing.T) {
 }
 
 // TestCmdServerTemplate_ComposesServer verifies the generated
-// cmd/server.go is the §2 hybrid-DI COMPOSITION SITE: open the owned infra
-// (app.OpenInfra), run the generated injector (app.Build), run the owned
-// two-phase wiring (app.PostBuild), mount the selected services over the
-// data-only app.Inventory, select workers/operators from the constructed
-// *Services, and pack the finished pieces into serverkit.Server before
-// serverkit.Run. If any of these wirings disappear, generated projects
-// regress.
+// internal/cli/serve.go is the §2 hybrid-DI SHARED SERVE PIPELINE: open the
+// owned infra (app.OpenInfra), run the generated injector (app.Build), run
+// the owned two-phase wiring (app.PostBuild), apply a TYPED mount FUNCTION
+// (no string selection, no inventory lookup on the run path), and pack the
+// finished pieces into serverkit.Server before serverkit.Run. serverkit now
+// OWNS OTel, so serve must project OTLPEndpoint + ServiceName onto skCfg and
+// must NOT build an otel-shutdown closure of its own.
 func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 	data := struct {
 		Module               string
@@ -299,12 +299,12 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 		RESTEnabled          bool
 	}{
 		Module:       "example.com/myproject",
-		ConfigFields: map[string]bool{},
+		ConfigFields: map[string]bool{"OtlpEndpoint": true},
 	}
 
-	content, err := ProjectTemplates().Render("cmd-server.go.tmpl", data)
+	content, err := ProjectTemplates().Render("cli-serve.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("render cmd-server.go.tmpl: %v", err)
+		t.Fatalf("render cli-serve.go.tmpl: %v", err)
 	}
 	rendered := string(content)
 
@@ -315,41 +315,47 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 		"app.PostBuild(services)",
 	} {
 		if !strings.Contains(rendered, want) {
-			t.Errorf("cmd-server.go.tmpl must call %q (§2 hybrid DI); rendered output:\n%s", want, rendered)
+			t.Errorf("cli-serve.go.tmpl must call %q (§2 hybrid DI); rendered output:\n%s", want, rendered)
 		}
 	}
-	// The old appkit Bootstrap path is gone.
-	for _, gone := range []string{"app.BootstrapOnly(", "app.Bootstrap(", "app.PostBootstrap(", "theApp.RESTHandler()", "serverkit.Hooks"} {
+	// The old appkit Bootstrap path AND the string-selection mount path are
+	// gone. serverkit owns OTel, so the cmd no longer composes an otel flush.
+	for _, gone := range []string{
+		"app.BootstrapOnly(", "app.Bootstrap(", "serverkit.Hooks",
+		"mountServices(", "app.Inventory", "setupOTel(", "otelShutdown",
+		`runServer(cmd, []string{`,
+	} {
 		if strings.Contains(rendered, gone) {
-			t.Errorf("cmd-server.go.tmpl must NOT reference the retired %q; rendered output:\n%s", gone, rendered)
+			t.Errorf("cli-serve.go.tmpl must NOT reference the retired %q; rendered output:\n%s", gone, rendered)
 		}
 	}
-	// Mount selection over the data-only inventory + worker/operator
-	// selection over the constructed *Services.
-	if !strings.Contains(rendered, "mountServices(services, mux, cfg, logger, args, opts...)") {
-		t.Errorf("cmd-server.go.tmpl must mount selected services over app.Inventory; rendered output:\n%s", rendered)
+	// TYPED mount: serve takes a typed mount FUNCTION (method expression),
+	// not a string. The function value is applied to the constructed graph.
+	if !strings.Contains(rendered, "mount(services, mux, cfg, logger, opts...)") {
+		t.Errorf("cli-serve.go.tmpl must apply the typed mount func to the constructed *Services; rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "selectWorkers(app.WorkerList(services), args)") {
-		t.Errorf("cmd-server.go.tmpl must select workers from the constructed *Services; rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "mount mountFunc") {
+		t.Errorf("cli-serve.go.tmpl serve() must take a typed mountFunc; rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "selectOperators(app.OperatorList(services), args)") {
-		t.Errorf("cmd-server.go.tmpl must select operators from the constructed *Services; rendered output:\n%s", rendered)
+	// serverkit owns OTel — serve projects OTLPEndpoint + ServiceName.
+	if !strings.Contains(rendered, "ServiceName: ServiceName") {
+		t.Errorf("cli-serve.go.tmpl must project the app-identity ServiceName onto skCfg; rendered output:\n%s", rendered)
 	}
-	// Composed Server + RunOperators (over services) + OnShutdown.
+	if !strings.Contains(rendered, "OTLPEndpoint: cfg.OtlpEndpoint") {
+		t.Errorf("cli-serve.go.tmpl must project cfg.OtlpEndpoint onto skCfg; rendered output:\n%s", rendered)
+	}
+	// Composed Server + RunOperators (over services).
 	if !strings.Contains(rendered, "serverkit.Run(ctx, skCfg, serverkit.Server{") {
-		t.Errorf("cmd-server.go.tmpl must call serverkit.Run with a composed serverkit.Server; rendered output:\n%s", rendered)
+		t.Errorf("cli-serve.go.tmpl must call serverkit.Run with a composed serverkit.Server; rendered output:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "app.RunOperators(services, ctx, logger, healthProbeAddr)") {
-		t.Errorf("cmd-server.go.tmpl must pass app.RunOperators(services, ...) into Server; rendered output:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "OnShutdown:") {
-		t.Errorf("cmd-server.go.tmpl must compose Server.OnShutdown (otel flush); rendered output:\n%s", rendered)
+		t.Errorf("cli-serve.go.tmpl must pass app.RunOperators(services, ...) into Server; rendered output:\n%s", rendered)
 	}
 
 	// Verify it still parses as valid Go.
 	fset := token.NewFileSet()
-	if _, perr := parser.ParseFile(fset, "server.go", rendered, parser.AllErrors); perr != nil {
-		t.Fatalf("rendered server.go does not parse:\n%v\n\nSource:\n%s", perr, rendered)
+	if _, perr := parser.ParseFile(fset, "serve.go", rendered, parser.AllErrors); perr != nil {
+		t.Fatalf("rendered serve.go does not parse:\n%v\n\nSource:\n%s", perr, rendered)
 	}
 }
 

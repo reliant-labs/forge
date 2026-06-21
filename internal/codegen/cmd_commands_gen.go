@@ -8,27 +8,27 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// GenerateCmdCommands scaffolds cmd/commands.go — the user-owned cobra
-// extension point the generated cmd/main.go consumes (userCommands()).
-// Written ONCE; never overwritten (Tier-2: the user owns the file the
-// moment it exists). Second binaries register here as code with opt-in
-// serverkit pieces instead of a parallel hand-rolled main().
+// GenerateCmdCommands scaffolds internal/cli/commands.go — the user-owned
+// cobra extension point newRootCmd consumes (userCommands(deps)). Written
+// ONCE; never overwritten (Tier-2: the user owns the file the moment it
+// exists). Second binaries register here as code with opt-in serverkit
+// pieces instead of a parallel hand-rolled main().
 func GenerateCmdCommands(targetDir string) error {
-	cmdDir := filepath.Join(targetDir, "cmd")
-	dest := filepath.Join(cmdDir, "commands.go")
+	cliDir := filepath.Join(targetDir, "internal", "cli")
+	dest := filepath.Join(cliDir, "commands.go")
 
 	// Never overwrite — this is user-owned code.
 	if _, err := os.Stat(dest); err == nil {
 		return nil
 	}
 
-	if err := os.MkdirAll(cmdDir, 0755); err != nil {
+	if err := os.MkdirAll(cliDir, 0755); err != nil {
 		return err
 	}
 
-	content, err := templates.ProjectTemplates().Render("cmd-commands.go.tmpl", struct{}{})
+	content, err := templates.ProjectTemplates().Render("cli-commands.go.tmpl", struct{}{})
 	if err != nil {
-		return fmt.Errorf("render cmd-commands.go.tmpl: %w", err)
+		return fmt.Errorf("render cli-commands.go.tmpl: %w", err)
 	}
 
 	return writeUserScaffold(dest, content)

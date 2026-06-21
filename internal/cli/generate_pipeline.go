@@ -1847,7 +1847,7 @@ func stepAppSubstrate(ctx *pipelineContext) error {
 // Skipped silently when cmd/server.go doesn't exist (CLI/library kinds and
 // codegen-less trees have no runServer that imports internal/app).
 func stepInternalAppComposition(ctx *pipelineContext) error {
-	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "cmd", "server.go")); err != nil {
+	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "internal", "cli", "serve.go")); err != nil {
 		return nil
 	}
 
@@ -1907,7 +1907,7 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 // Skipped silently when cmd/server.go doesn't exist: CLI/library kinds
 // and codegen-less trees have no runServer to delegate to.
 func stepCmdCommands(ctx *pipelineContext) error {
-	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "cmd", "server.go")); err != nil {
+	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "internal", "cli", "serve.go")); err != nil {
 		return nil
 	}
 	if err := codegen.GenerateCmdCommands(ctx.ProjectDir); err != nil {

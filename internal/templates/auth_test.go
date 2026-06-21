@@ -202,9 +202,9 @@ func TestCmdServerTemplate_CallsInstallGeneratedAuth(t *testing.T) {
 			AuthProvider:         provider,
 			AuthProviderExternal: external,
 		}
-		content, err := ProjectTemplates().Render("cmd-server.go.tmpl", data)
+		content, err := ProjectTemplates().Render("cli-serve.go.tmpl", data)
 		if err != nil {
-			t.Fatalf("render cmd-server.go.tmpl (provider=%q): %v", provider, err)
+			t.Fatalf("render cli-serve.go.tmpl (provider=%q): %v", provider, err)
 		}
 		return string(content)
 	}

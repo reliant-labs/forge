@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // writeTestModule lays out a temp Go module with:
@@ -418,6 +420,78 @@ func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
 		}
 		seen[name] = path
 	}
+}
+
+// TestGenerateBootstrapTesting_CrossPackageStubImportUsed is the regression
+// for the control-plane testing.go disown's residual compile bug: a cross-
+// package auto-stub whose interface's METHOD SIGNATURES reference a DIFFERENT
+// package than the interface's own (e.g. an external-component domain service
+// `internal/user` whose Service methods return `db.User`). The stub's method
+// bodies then never name the interface type, only its parameter/result types,
+// so the interface package (internal/user) would be imported SOLELY for the
+// stub yet referenced nowhere in code → "imported and not used" build failure.
+// The generated compile-time guard `var _ <iface> = <stub>{}` both proves the
+// stub satisfies the interface AND keeps that import used.
+func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
+	// Render the template directly with a hand-built CrossPackage AutoStub
+	// whose method signatures reference a THIRD package (dbpkg.User), never the
+	// interface's own package — the control-plane `internal/user` shape. The
+	// stub's interface type (userpkg.Service) then appears ONLY in comments, so
+	// without the compile-time guard its import is unused (build failure). This
+	// pins the TEMPLATE behavior independent of go/packages resolution.
+	svc := BootstrapTestServiceData{
+		Name: "billing", Package: "billing", ImportPath: "billing", FieldName: "Billing",
+		ProtoServiceName:       "BillingService",
+		ProtoConnectImportPath: "example.com/proj/gen/services/billing/v1/billingv1connect",
+		ProtoConnectPkg:        "billingv1connect",
+		HasAuthorizer:          true,
+		Alias:                  "billing", VarName: "billing",
+		AutoStubs: []DepsAutoStub{{
+			FieldName:          "Users",
+			StubType:           "stubBillingUsers",
+			InterfaceQualified: "userpkg.Service",
+			CrossPackage:       true,
+			Methods: []InterfaceMethod{{
+				Name: "GetUser", Params: "ctx context.Context, id string",
+				Results: "(*dbpkg.User, error)", ReturnStatement: "return nil, nil",
+			}},
+			ExtraImports: []ExtraImport{
+				{Alias: "userpkg", Path: "example.com/proj/internal/user"},
+				{Alias: "dbpkg", Path: "example.com/proj/internal/db"},
+			},
+		}},
+	}
+	data := struct {
+		Module             string
+		Services           []BootstrapTestServiceData
+		ConnectImports     []string
+		Packages           []BootstrapPackageData
+		MultiTenantEnabled bool
+		AnyServiceHasDB    bool
+		HasMigrationsFS    bool
+		ExtraImports       []ExtraImport
+	}{
+		Module:         "example.com/proj",
+		Services:       []BootstrapTestServiceData{svc},
+		ConnectImports: []string{svc.ProtoConnectImportPath},
+		ExtraImports: []ExtraImport{
+			{Alias: "userpkg", Path: "example.com/proj/internal/user"},
+			{Alias: "dbpkg", Path: "example.com/proj/internal/db"},
+		},
+	}
+
+	body, err := templates.ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)
+	if err != nil {
+		t.Fatalf("render bootstrap_testing.go.tmpl: %v", err)
+	}
+	content := string(body)
+
+	// The compile-time guard must reference the interface in CODE (not just a
+	// comment), so the import imported solely for the stub is genuinely used.
+	if !strings.Contains(content, "var _ userpkg.Service = stubBillingUsers{}") {
+		t.Errorf("testing.go must emit the cross-package stub interface assertion:\n%s", content)
+	}
+	mustParseGo(t, "testing.go", body)
 }
 
 // TestGenerateBootstrapTesting_UnresolvedSelectorTODO confirms that a

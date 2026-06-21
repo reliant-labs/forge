@@ -337,18 +337,18 @@ func generateSteps() []GenStep {
 		{Name: "ensure frontend components", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendComponents, Tag: "frontend"},
 		{Name: "frontend CRUD pages", Gate: gateFrontendHasServices, GateReason: "no services in forge.yaml or features.frontend=false", Run: stepFrontendPages, Tag: "frontend"},
 		{Name: "frontend nav + dashboard", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendNav, Tag: "frontend"},
-		{Name: "service stubs", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepServiceStubs, Tag: "codegen"},
-		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no proto/services/ directory or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
-		{Name: "CRUD handlers", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCRUDHandlers, Tag: "codegen"},
-		{Name: "authorizer", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepAuthorizer, Tag: "codegen"},
-		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
+		{Name: "service stubs", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceStubs, Tag: "codegen"},
+		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no Connect services defined or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
+		{Name: "CRUD handlers", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCRUDHandlers, Tag: "codegen"},
+		{Name: "authorizer", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepAuthorizer, Tag: "codegen"},
+		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
 		{Name: "internal package contracts", Gate: gateContractsEnabled, GateReason: "features.contracts=false", Run: stepInternalContracts, Tag: "codegen"},
 		{Name: "auth middleware", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML, func(c *pipelineContext) bool {
 			return c.Cfg.Auth.Provider != "" && c.Cfg.Auth.Provider != "none"
 		}), GateReason: "auth.provider unset or 'none'", Run: stepAuthMiddleware, Tag: "codegen"},
 		{Name: "tenant middleware (auto-enable + emit)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML, hasServices), GateReason: "no services or no forge.yaml or features.codegen=false", Run: stepTenantMiddleware, Tag: "codegen"},
 		{Name: "webhook routes", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
-		{Name: "MCP manifest", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepMCPManifest, Tag: "codegen"},
+		{Name: "MCP manifest", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepMCPManifest, Tag: "codegen"},
 		{Name: "internal/app composition (hybrid DI)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepInternalAppComposition, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools"},
 		{Name: "pkg/app substrate (app_gen/setup)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepAppSubstrate, Tag: "codegen"},
@@ -381,7 +381,7 @@ func generateSteps() []GenStep {
 		{Name: "agent skills (.claude/skills)", Gate: always, Run: stepAgentSkills, Tag: "tools"},
 		{Name: "go mod tidy (root)", Gate: always, Run: stepGoModTidyRoot, Tag: "tools"},
 		{Name: "goimports on generated Go", Gate: always, Run: stepGoimports, Tag: "tools"},
-		{Name: "cleanup stale codegen", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCleanupStale, Tag: "codegen"},
+		{Name: "cleanup stale codegen", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCleanupStale, Tag: "codegen"},
 		// Runs after every Tier-1 emitter so checksums.Tier1TargetSet is
 		// complete: drop disowns whose path forge no longer Tier-1-owns
 		// (now scaffold-once, or no longer emitted). Always — the
@@ -397,7 +397,7 @@ func generateSteps() []GenStep {
 		// `go build` (the validate step) skips _test.go files, so a stale
 		// pb reference there would otherwise surface only at the user's
 		// next `go test`. See generate_stale_scaffold.go.
-		{Name: "check stale scaffold tests", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCheckStaleScaffoldTests, Tag: "validate"},
+		{Name: "check stale scaffold tests", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCheckStaleScaffoldTests, Tag: "validate"},
 		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, GateReason: "--skip-validate was passed", Run: stepGoBuildValidate, Tag: "validate"},
 	}
 }
@@ -431,29 +431,29 @@ func generateSteps() []GenStep {
 // unrelated files per call.
 var stepPresetAllowlist = map[string]map[string]bool{
 	"bootstrap-only": {
-		"load project config":                  true,
-		"load checksums":                       true,
-		"check Tier-1 file-stomp guard":        true,
-		"snapshot Tier-1 exports":              true,
-		"sync forge/pkg dev replace":           true,
-		"announce project":                     true,
-		"detect proto directories":             true,
-		"ensure gen/go.mod":                    true,
-		"parse services + module path":         true,
-		"internal/app composition (hybrid DI)": true,
-		"go mod tidy (pre-wiring)":             true,
-		"pkg/app substrate (app_gen/setup)":    true,
+		"load project config":                    true,
+		"load checksums":                         true,
+		"check Tier-1 file-stomp guard":          true,
+		"snapshot Tier-1 exports":                true,
+		"sync forge/pkg dev replace":             true,
+		"announce project":                       true,
+		"detect proto directories":               true,
+		"ensure gen/go.mod":                      true,
+		"parse services + module path":           true,
+		"internal/app composition (hybrid DI)":   true,
+		"go mod tidy (pre-wiring)":               true,
+		"pkg/app substrate (app_gen/setup)":      true,
 		"cmd/commands.go (user extension point)": true,
-		"pkg/app/testing.go":                   true,
-		"pkg/app/migrate.go":                   true,
-		"go mod tidy (gen/)":                   true,
-		"go mod tidy (root)":                   true,
-		"goimports on generated Go":            true,
-		"rehash tracked files":                 true,
-		"post-gen validation":                  true,
-		"detect renamed Tier-1 exports":        true,
-		"check disowned-sibling dangling refs": true,
-		"go build (validate generated code)":   true,
+		"pkg/app/testing.go":                     true,
+		"pkg/app/migrate.go":                     true,
+		"go mod tidy (gen/)":                     true,
+		"go mod tidy (root)":                     true,
+		"goimports on generated Go":              true,
+		"rehash tracked files":                   true,
+		"post-gen validation":                    true,
+		"detect renamed Tier-1 exports":          true,
+		"check disowned-sibling dangling refs":   true,
+		"go build (validate generated code)":     true,
 	},
 	// The "mocks" step preset covers the fast-path "I just edited
 	// contract.go, regenerate mock_gen.go" workflow. Mocks live behind a
@@ -541,41 +541,41 @@ var stepPresetAllowlist = map[string]map[string]bool{
 // `--steps=bootstrap-only --templates-only` a well-defined narrower
 // run rather than a precedence riddle.
 var templatesOnlyStepAllow = map[string]bool{
-	"load project config":                           true,
-	"load checksums":                                true,
-	"migrate legacy checksums manifest":             true,
-	"sync forge/pkg dev replace":                    true,
-	"announce project":                              true,
-	"detect proto directories":                      true,
-	"ensure gen/go.mod":                             true,
-	"frontend workspaces scaffold":                  true,
-	"config loader (proto/config)":                  true,
-	"parse services + module path":                  true,
-	"frontend hooks":                                true,
-	"ensure frontend components":                    true,
-	"frontend CRUD pages":                           true,
-	"frontend nav + dashboard":                      true,
-	"service stubs":                                 true,
-	"internal/db/ ORM (entity-driven)":              true,
-	"CRUD handlers":                                 true,
-	"authorizer":                                    true,
-	"service mocks":                                 true,
-	"internal package contracts":                    true,
-	"auth middleware":                               true,
-	"tenant middleware (auto-enable + emit)":        true,
-	"webhook routes":                                true,
-	"MCP manifest":                                  true,
-	"pkg/app substrate (app_gen/setup)":             true,
-	"internal/app composition (hybrid DI)":          true,
-	"cmd/commands.go (user extension point)":        true,
-	"pkg/app/testing.go":                            true,
-	"pkg/app/migrate.go":                            true,
-	"CI workflows":                                  true,
-	"pack generate hooks":                           true,
-	"regenerate infra files":                        true,
-	"per-env deploy config":                         true,
-	"Grafana dashboards":                            true,
-	"frontend mocks + transport":                    true,
+	"load project config":                    true,
+	"load checksums":                         true,
+	"migrate legacy checksums manifest":      true,
+	"sync forge/pkg dev replace":             true,
+	"announce project":                       true,
+	"detect proto directories":               true,
+	"ensure gen/go.mod":                      true,
+	"frontend workspaces scaffold":           true,
+	"config loader (proto/config)":           true,
+	"parse services + module path":           true,
+	"frontend hooks":                         true,
+	"ensure frontend components":             true,
+	"frontend CRUD pages":                    true,
+	"frontend nav + dashboard":               true,
+	"service stubs":                          true,
+	"internal/db/ ORM (entity-driven)":       true,
+	"CRUD handlers":                          true,
+	"authorizer":                             true,
+	"service mocks":                          true,
+	"internal package contracts":             true,
+	"auth middleware":                        true,
+	"tenant middleware (auto-enable + emit)": true,
+	"webhook routes":                         true,
+	"MCP manifest":                           true,
+	"pkg/app substrate (app_gen/setup)":      true,
+	"internal/app composition (hybrid DI)":   true,
+	"cmd/commands.go (user extension point)": true,
+	"pkg/app/testing.go":                     true,
+	"pkg/app/migrate.go":                     true,
+	"CI workflows":                           true,
+	"pack generate hooks":                    true,
+	"regenerate infra files":                 true,
+	"per-env deploy config":                  true,
+	"Grafana dashboards":                     true,
+	"frontend mocks + transport":             true,
 }
 
 // knownStepPresetNames returns a comma-joined string of every
@@ -1135,7 +1135,15 @@ func stepAnnounceProject(ctx *pipelineContext) error {
 // flag, and the bootstrap step re-runs discovery and surfaces the
 // disk-first resolution error with full context.
 func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
-	ctx.HasServices = dirExists(filepath.Join(ctx.ProjectDir, "proto/services"))
+	// HasServices reflects "the project defines >=1 Connect service in ANY
+	// proto package" — sourced from the protoc-gen-forge descriptor (with a
+	// proto-source fallback for the pre-descriptor first run), NOT the mere
+	// existence of a proto/services/ directory. This unblocks flat /
+	// multi-service layouts (e.g. control-plane's proto/controlplane/v1/)
+	// whose services would otherwise be invisible to every HasServices-gated
+	// step. stepParseServicesAndModule later reconciles this to the exact
+	// descriptor count. See projectDefinesConnectServices.
+	ctx.HasServices = projectDefinesConnectServices(ctx.ProjectDir)
 	ctx.HasAPI = dirExists(filepath.Join(ctx.ProjectDir, "proto/api"))
 	ctx.HasDB = dirExists(filepath.Join(ctx.ProjectDir, "proto/db"))
 	ctx.HasConfig = dirExists(filepath.Join(ctx.ProjectDir, "proto/config"))
@@ -1202,7 +1210,7 @@ func stepDetectProtoDirs(ctx *pipelineContext) error {
 			fmt.Println("  ✓ proto/api/ (API messages)")
 		}
 		if ctx.HasServices {
-			fmt.Println("  ✓ proto/services/ (Service definitions)")
+			fmt.Println("  ✓ Connect service definitions")
 		}
 		if ctx.HasDB {
 			fmt.Println("  ✓ proto/db/ (Database models)")
@@ -1360,8 +1368,24 @@ func stepParseServicesAndModule(ctx *pipelineContext) error {
 	var modulePath string
 	var err error
 
+	// Services are read from the protoc-gen-forge descriptor, which
+	// enumerates every Connect service in ANY proto package — flat /
+	// multi-service (proto/controlplane/v1/) and per-service
+	// (proto/services/<svc>/v1/) layouts alike. The dir arg has been
+	// vestigial since ParseServicesFromProtos became descriptor-backed.
+	//
+	// We do NOT reconcile ctx.HasServices to len(services) here. HasServices
+	// is the project's declared shape (descriptor-or-proto-source presence,
+	// established at detect time); the descriptor *enumeration* can be empty
+	// for a window or a transient reason (descriptor generation is
+	// best-effort / warnOrFail, and a fresh tree may not have produced it
+	// yet). Flipping HasServices false off an empty enumeration would
+	// silently disable every service codegen step — the exact silent-stomp
+	// failure mode the loud-by-default architecture forbids. The downstream
+	// per-service emitters already iterate ctx.Services, so an empty slice
+	// is a self-correcting no-op without disabling the steps wholesale.
 	if ctx.HasServices {
-		services, err = codegen.ParseServicesFromProtos(filepath.Join(ctx.ProjectDir, "proto/services"), ctx.ProjectDir)
+		services, err = codegen.ParseServicesFromProtos("", ctx.ProjectDir)
 		if err != nil {
 			return fmt.Errorf("failed to parse service protos: %w", err)
 		}

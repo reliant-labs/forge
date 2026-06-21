@@ -151,7 +151,12 @@ func TestFilterTier1DriftInScope_UnknownPathStaysInScope(t *testing.T) {
 // requires the loud Tier-1 error.
 func TestStepCheckTier1Drift_PopulatesPresenceBeforeScoping(t *testing.T) {
 	dir := t.TempDir()
-	mustWriteScopeFile(t, filepath.Join(dir, "proto", "services", "api", "v1", "api.proto"), "syntax = \"proto3\";\n")
+	// HasServices is now derived from whether the project actually
+	// DEFINES a Connect service (descriptor / proto-source scan), not from
+	// the mere existence of a proto/services/ dir — so the fixture must
+	// declare a real service to count as "a project with services".
+	mustWriteScopeFile(t, filepath.Join(dir, "proto", "services", "api", "v1", "api.proto"),
+		"syntax = \"proto3\";\npackage api.v1;\nservice APIService {}\n")
 	const rel = "pkg/app/app_gen.go"
 	recorded := []byte("package app // as generated\n")
 	edited := []byte("package app // hand-edited\n")

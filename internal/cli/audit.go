@@ -392,8 +392,12 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	// backlog.
 	rpcByService := map[string][]rpcInfo{}
 	var protoParseErr string
-	if dirExists(filepath.Join(projectDir, "proto", "services")) {
-		if defs, err := codegen.ParseServicesFromProtos(filepath.Join(projectDir, "proto", "services"), projectDir); err == nil {
+	// Services are read from the protoc-gen-forge descriptor, which covers
+	// every Connect service in any proto package — so flat / multi-service
+	// layouts (proto/controlplane/v1/*.proto) are audited identically to the
+	// canonical proto/services/<svc>/v1/ layout. The dir arg is vestigial.
+	if projectDefinesConnectServices(projectDir) {
+		if defs, err := codegen.ParseServicesFromProtos("", projectDir); err == nil {
 			for _, d := range defs {
 				rpcs := make([]rpcInfo, 0, len(d.Methods))
 				for _, m := range d.Methods {

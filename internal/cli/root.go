@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 )
 
@@ -26,20 +26,10 @@ func Execute() error {
 // Name returns the command name users should type to invoke Forge.
 // When the binary is "forge" (standalone install), it returns "forge".
 // When embedded in another binary (e.g. "reliant"), it returns "reliant forge".
+// Forwards to cmdutil.Name so the dir-nested command groups share one
+// implementation without importing internal/cli.
 func Name() string {
-	return strings.Join(forgeCommand(), " ")
-}
-
-// forgeCommand returns the command tokens needed to invoke Forge.
-// Standalone: ["forge"]. Embedded: ["reliant", "forge"].
-// The first element is always the resolved executable path when called
-// via forgeExecCommand, or the base name for display purposes here.
-func forgeCommand() []string {
-	base := filepath.Base(os.Args[0])
-	if base == "forge" {
-		return []string{"forge"}
-	}
-	return []string{base, "forge"}
+	return cmdutil.Name()
 }
 
 // forgeExecCommand returns exec-ready command tokens using the resolved
@@ -142,7 +132,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newTestCmd())
 	rootCmd.AddCommand(newLintCmd())
 	rootCmd.AddCommand(newPackageCmd())
-	rootCmd.AddCommand(newPackCmd())
+	// `pack` migrated to the internal/cli/pack group (factory registry).
 	// `debug` migrated to the internal/cli/debug group (factory registry).
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())

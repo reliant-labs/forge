@@ -255,11 +255,22 @@ func (r *ServiceKeyResolver) Resolve(consumer BuildComponent, depsType string) s
 
 	// PRIMARY: resolve the alias to a full import path via the consumer's
 	// import block, then look up the import-path key. Unique by path.
+	//
+	// When the alias IS in the import block, the consumer was EXPLICIT about
+	// which package it means: either it resolves to a producer, or it
+	// doesn't (the package is external/hand-built on Infra, or simply not a
+	// component). In the latter case we must NOT fall back to the bare
+	// clause — falling back would mis-resolve to a DIFFERENT same-clause
+	// producer (e.g. a handler `package billing`) when the consumer
+	// explicitly imported the domain `internal/billing`. Return "" so the
+	// field falls to the Infra / loud-missing path, which is correct for an
+	// external collaborator.
 	if consumer.compImports != nil {
 		if path, ok := consumer.compImports[alias]; ok {
 			if f, ok := r.byPath[path+"."+typeName]; ok {
 				return f
 			}
+			return ""
 		}
 	}
 

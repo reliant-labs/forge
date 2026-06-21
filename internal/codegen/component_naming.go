@@ -28,7 +28,14 @@ func ComputeTestHelperName(servicePkg, projectDir string) string {
 	}
 	internalDir := filepath.Join(projectDir, "internal", servicePkg)
 	if info, err := os.Stat(internalDir); err == nil && info.IsDir() {
-		return "Svc" + pascal
+		// An `//forge:external-component` domain pkg is NOT a forge-wired
+		// component, so the test harness drops it from the factory namespace
+		// (see filterExternalComponentPackages). It must therefore NOT drive
+		// a Svc-prefix on the HANDLER service's factory name — the service
+		// keeps the plain NewTest<Pascal> the scaffold test references.
+		if !HasExternalComponentDirective(internalDir) {
+			return "Svc" + pascal
+		}
 	}
 	return pascal
 }

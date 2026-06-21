@@ -705,6 +705,73 @@ func TestGenerateBootstrapTesting_WithPackages(t *testing.T) {
 	}
 }
 
+// TestGenerateBootstrapTesting_ExternalComponentPackageExcluded is the
+// FIX #3 regression: an `//forge:external-component` domain package that
+// shares its package clause with a handler service (domain
+// internal/billing + handler internal/handlers/billing, both `package
+// billing`) must NOT get a NewTest<Pkg> factory, must NOT drive a
+// Svc-prefix rename on the HANDLER service's factory, and must NOT
+// duplicate-declare. testing.go must emit the plain NewTestBilling for the
+// handler service and import the domain billing only if a stub needs it.
+func TestGenerateBootstrapTesting_ExternalComponentPackageExcluded(t *testing.T) {
+	targetDir := t.TempDir()
+
+	// Handler service billing on disk (package billing).
+	handlerDir := filepath.Join(targetDir, "internal", "handlers", "billing")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatalf("mkdir handler: %v", err)
+	}
+	handlerSrc := "package billing\n\ntype Deps struct{}\n\ntype Service struct{}\n\nfunc New(d Deps) (*Service, error) { return &Service{}, nil }\n"
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(handlerSrc), 0o644); err != nil {
+		t.Fatalf("write handler: %v", err)
+	}
+
+	// External-component domain billing on disk (package billing) — has a
+	// contract.go so discoverPackages would pick it up, marked external.
+	domainDir := filepath.Join(targetDir, "internal", "billing")
+	if err := os.MkdirAll(domainDir, 0o755); err != nil {
+		t.Fatalf("mkdir domain: %v", err)
+	}
+	domainSrc := "//forge:external-component\npackage billing\n\ntype Service interface{ Charge() error }\n\ntype Deps struct{}\n\nfunc New(d Deps) Service { return nil }\n"
+	if err := os.WriteFile(filepath.Join(domainDir, "contract.go"), []byte(domainSrc), 0o644); err != nil {
+		t.Fatalf("write domain: %v", err)
+	}
+
+	// The domain billing is passed in Packages (as discoverPackages would
+	// supply it) so the generator must filter it out itself.
+	packages := []BootstrapPackageData{
+		{Name: "billing", Package: "billing", ImportPath: "billing", FieldName: "Billing", VarName: "billing"},
+	}
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext: GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:   []ServiceDef{{Name: "BillingService", ModulePath: "example.com/proj"}},
+		Packages:   packages,
+	}); err != nil {
+		t.Fatalf("GenerateBootstrapTesting() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "testing.go"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(data)
+
+	// Handler service gets the PLAIN factory (no Svc prefix — the external
+	// domain pkg doesn't count as a collision).
+	if !strings.Contains(content, "func NewTestBilling(t *testing.T") {
+		t.Errorf("testing.go should emit plain NewTestBilling for the handler service:\n%s", content)
+	}
+	// No factory for the external-component domain package.
+	if strings.Contains(content, "func NewTestPkgBilling(") || strings.Contains(content, "func NewTestSvcBilling(") {
+		t.Errorf("testing.go must not emit a factory keyed off the external-component domain pkg:\n%s", content)
+	}
+	// The external domain billing must not be imported as a package factory
+	// (no With/Deps option for it).
+	if strings.Contains(content, "WithPkgBillingDeps(") {
+		t.Errorf("testing.go must not emit a Deps option for the external-component domain pkg:\n%s", content)
+	}
+}
+
 // TestGenerateBootstrapTesting_MigratedDBOptIn pins the DB harness
 // contract for projects with embedded migrations: the DEFAULT test DB is
 // a bare (schema-less) real-postgres database, and a NewMigratedTestDB
@@ -1447,13 +1514,25 @@ func TestComputeTestHelperName(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
+	// An external-component domain dir must NOT trigger the Svc prefix: it
+	// is not a forge-wired component, so the handler service keeps its plain
+	// factory name (FIX #3). internal/user/ carries the directive.
+	if err := os.MkdirAll(filepath.Join(projectDir, "internal", "user"), 0755); err != nil {
+		t.Fatalf("setup user: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "internal", "user", "contract.go"),
+		[]byte("//forge:external-component\npackage user\n"), 0644); err != nil {
+		t.Fatalf("setup user contract: %v", err)
+	}
+
 	cases := []struct {
 		pkg, project, want string
 	}{
-		{"billing", projectDir, "SvcBilling"},
+		{"billing", projectDir, "SvcBilling"}, // plain internal/billing dir -> collision
 		{"users", projectDir, "Users"},
 		{"admin_server", projectDir, "AdminServer"},
-		{"billing", "", "Billing"}, // no project context -> no-collision form
+		{"billing", "", "Billing"},    // no project context -> no-collision form
+		{"user", projectDir, "User"},  // external-component domain dir -> NOT a collision
 	}
 	for _, c := range cases {
 		if got := ComputeTestHelperName(c.pkg, c.project); got != c.want {

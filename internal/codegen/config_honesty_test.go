@@ -18,7 +18,7 @@ func durationMessages() []ConfigMessage {
 		Name: "AppConfig",
 		Fields: []ConfigField{
 			{Name: "port", GoName: "Port", GoType: "int32", ProtoType: "int32", EnvVar: "PORT", Flag: "port", DefaultValue: "8080", Description: "HTTP server port"},
-			{Name: "environment", GoName: "Environment", GoType: "string", ProtoType: "string", EnvVar: "ENVIRONMENT", Flag: "environment", DefaultValue: "production", Description: "Runtime environment"},
+			{Name: "environment", GoName: "Environment", GoType: "string", ProtoType: "string", EnvVar: "ENVIRONMENT", Flag: "environment", DefaultValue: "production", Role: "CONFIG_FIELD_ROLE_MODE", Description: "Runtime environment"},
 			{Name: "pre_stop_delay", GoName: "PreStopDelay", GoType: "string", ProtoType: "string", EnvVar: "PRE_STOP_DELAY", Flag: "pre-stop-delay", DefaultValue: "5s", Description: "drain pause (Go duration)"},
 			{Name: "shutdown_timeout", GoName: "ShutdownTimeout", GoType: "string", ProtoType: "string", EnvVar: "SHUTDOWN_TIMEOUT", Flag: "shutdown-timeout", DefaultValue: "30s", Description: "drain budget (Go duration)"},
 			{Name: "db_conn_max_idle_time", GoName: "DbConnMaxIdleTime", GoType: "string", ProtoType: "string", EnvVar: "DB_CONN_MAX_IDLE_TIME", Flag: "db-conn-max-idle-time", DefaultValue: "5m", Description: "idle cap (Go duration)"},
@@ -107,6 +107,43 @@ func TestGenerateConfigLoader_EmitsTypedMode(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Errorf("generated config.go missing %q\n%s", want, content)
 		}
+	}
+
+	// Mode derivation is ANNOTATION-driven: it reads the field tagged
+	// role=MODE (here Environment), selected by config_gen at build time
+	// from ConfigField.Role — NOT by matching the name "Environment".
+	if !strings.Contains(content, "strings.ToLower(c.Environment)") {
+		t.Errorf("Mode() must derive from the role=MODE field's value\n%s", content)
+	}
+}
+
+// TestGenerateConfigLoader_ModeFollowsAnnotationNotName proves the deleted
+// name-magic: the dev-mode field is selected by the role annotation, so
+// renaming it keeps Mode working, and an UNannotated field named
+// "Environment" does NOT drive Mode.
+func TestGenerateConfigLoader_ModeFollowsAnnotationNotName(t *testing.T) {
+	// (1) Role field renamed to "Stage" — Mode must still read it.
+	renamed := []ConfigMessage{{Name: "AppConfig", Fields: []ConfigField{
+		{Name: "port", GoName: "Port", GoType: "int32", ProtoType: "int32", EnvVar: "PORT", Flag: "port", DefaultValue: "8080", Description: "port"},
+		{Name: "stage", GoName: "Stage", GoType: "string", ProtoType: "string", EnvVar: "STAGE", Flag: "stage", DefaultValue: "production", Role: "CONFIG_FIELD_ROLE_MODE", Description: "mode"},
+	}}}
+	content := renderConfigGo(t, renamed)
+	if !strings.Contains(content, "strings.ToLower(c.Stage)") {
+		t.Errorf("renamed role field: Mode() must read c.Stage\n%s", content)
+	}
+
+	// (2) A field literally named Environment but WITHOUT the role must NOT
+	// drive Mode — the project gets the always-production Mode() variant.
+	unannotated := []ConfigMessage{{Name: "AppConfig", Fields: []ConfigField{
+		{Name: "port", GoName: "Port", GoType: "int32", ProtoType: "int32", EnvVar: "PORT", Flag: "port", DefaultValue: "8080", Description: "port"},
+		{Name: "environment", GoName: "Environment", GoType: "string", ProtoType: "string", EnvVar: "ENVIRONMENT", Flag: "environment", DefaultValue: "production", Description: "NOT role-tagged"},
+	}}}
+	content = renderConfigGo(t, unannotated)
+	if strings.Contains(content, "strings.ToLower(c.Environment)") {
+		t.Errorf("unannotated Environment must NOT drive Mode (no name-magic)\n%s", content)
+	}
+	if !strings.Contains(content, "func (c *Config) Mode() Mode { return ModeProduction }") {
+		t.Errorf("unannotated config must emit the always-production Mode()\n%s", content)
 	}
 }
 

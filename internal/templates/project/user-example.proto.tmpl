@@ -20,45 +20,70 @@ option go_package = "{{.Module}}/gen/services/{{.ServicePackage}}/v1;{{.ServiceP
 // entity pages from the real columns. When you rename "Item" to your
 // real entity, keep the <Verb><Entity> shape.
 // Reference: forge skill load proto (CRUD RPC Naming Convention).
+// Role is this project's starter authorization role enum. The Role string
+// values (lowercased enum names, e.g. "admin", "member") are what the
+// RoleResolver in internal/handlers/{{.ServicePackage}}/role_resolver.go returns
+// and what the (forge.v1.method).required_roles annotations below name. Add or
+// rename roles here as your access model grows. Authorization is enforced by
+// forge/pkg/authz — see the forge `auth` skill.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_ADMIN = 1;
+  ROLE_MEMBER = 2;
+}
+
 service {{.ServiceName | pascalCase}}Service {
   option (forge.v1.service) = {
     name: "{{.ServiceName | pascalCase}}Service"
     version: "1.0.0"
     description: "{{.ServiceName | pascalCase}} management service"
+
+    // Service-wide default authorization: every method that declares no
+    // required_roles of its own requires "member". This makes the service
+    // fail-closed by default — a forgotten annotation inherits this floor
+    // rather than silently going open. The authz completeness lint still
+    // requires each method to be explicitly authorized OR covered here.
+    default_roles: ["member"]
   };
 
-  // Create a new item
+  // Create a new item — restricted to admins. The per-method required_roles
+  // overrides the service default_roles above. This is the canonical example:
+  // role policy is declared HERE, in the proto, and enforced by the single
+  // shared authz interceptor reading these annotations off the descriptor.
   rpc CreateItem(CreateItemRequest) returns (CreateItemResponse) {
     option (forge.v1.method) = {
       auth_required: true
       idempotency_key: true
+      required_roles: ["admin"]
     };
   }
 
-  // Get item by ID
+  // Get item by ID — any member (inherits the service default_roles).
   rpc GetItem(GetItemRequest) returns (GetItemResponse) {
     option (forge.v1.method) = {
       auth_required: true
     };
   }
 
-  // Update item
+  // Update item — admins only.
   rpc UpdateItem(UpdateItemRequest) returns (UpdateItemResponse) {
     option (forge.v1.method) = {
       auth_required: true
       idempotency_key: true
+      required_roles: ["admin"]
     };
   }
 
-  // Delete item
+  // Delete item — admins only.
   rpc DeleteItem(DeleteItemRequest) returns (DeleteItemResponse) {
     option (forge.v1.method) = {
       auth_required: true
       idempotency_key: true
+      required_roles: ["admin"]
     };
   }
 
-  // List items with pagination
+  // List items with pagination — any member (inherits the service default).
   rpc ListItems(ListItemsRequest) returns (ListItemsResponse) {
     option (forge.v1.method) = {
       auth_required: true

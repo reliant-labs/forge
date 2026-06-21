@@ -61,10 +61,6 @@ func (s *svc) GenerateConfigLoader(messages []ConfigMessage, targetDir string, c
 	return GenerateConfigLoader(messages, targetDir, cs)
 }
 
-func (s *svc) GenerateBootstrap(in BootstrapGenInput) error {
-	return GenerateBootstrap(in)
-}
-
 func (s *svc) GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 	return GenerateBootstrapTesting(in)
 }

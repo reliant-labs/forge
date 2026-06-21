@@ -32,7 +32,6 @@ type MockService struct {
 	GenerateCmdServerFunc           func([]ConfigMessage, string, *checksums.FileChecksums) error
 	GenerateCmdServerWithFieldsFunc func(map[string]bool, string, string, *checksums.FileChecksums) error
 	GenerateConfigLoaderFunc        func([]ConfigMessage, string, *checksums.FileChecksums) error
-	GenerateBootstrapFunc           func(BootstrapGenInput) error
 	GenerateBootstrapTestingFunc    func(BootstrapTestingGenInput) error
 	GenerateMigrateFunc             func(string, string, bool, *checksums.FileChecksums) error
 	GenerateSetupFunc               func(string, string, bool, string) error
@@ -132,14 +131,6 @@ func (m *MockService) GenerateConfigLoader(messages []ConfigMessage, targetDir s
 		return m.GenerateConfigLoaderFunc(messages, targetDir, cs)
 	}
 	return contractkit.MockNotSet("MockService", "GenerateConfigLoader")
-}
-
-func (m *MockService) GenerateBootstrap(in BootstrapGenInput) error {
-	m.Record("GenerateBootstrap", in)
-	if m.GenerateBootstrapFunc != nil {
-		return m.GenerateBootstrapFunc(in)
-	}
-	return contractkit.MockNotSet("MockService", "GenerateBootstrap")
 }
 
 func (m *MockService) GenerateBootstrapTesting(in BootstrapTestingGenInput) error {

@@ -351,7 +351,7 @@ func generateSteps() []GenStep {
 		{Name: "MCP manifest", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepMCPManifest, Tag: "codegen"},
 		{Name: "internal/app composition (hybrid DI)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepInternalAppComposition, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools"},
-		{Name: "pkg/app/bootstrap.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrap, Tag: "codegen"},
+		{Name: "pkg/app substrate (app_gen/setup)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepAppSubstrate, Tag: "codegen"},
 		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
 		{Name: "pkg/app/testing.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
 		{Name: "pkg/app/migrate.go", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
@@ -442,7 +442,8 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		"parse services + module path":         true,
 		"internal/app composition (hybrid DI)": true,
 		"go mod tidy (pre-wiring)":             true,
-		"pkg/app/bootstrap.go":                 true,
+		"pkg/app substrate (app_gen/setup)":    true,
+		"cmd/commands.go (user extension point)": true,
 		"pkg/app/testing.go":                   true,
 		"pkg/app/migrate.go":                   true,
 		"go mod tidy (gen/)":                   true,
@@ -564,9 +565,9 @@ var templatesOnlyStepAllow = map[string]bool{
 	"tenant middleware (auto-enable + emit)":        true,
 	"webhook routes":                                true,
 	"MCP manifest":                                  true,
-	"pkg/app/bootstrap.go":                          true,
+	"pkg/app substrate (app_gen/setup)":             true,
 	"internal/app composition (hybrid DI)":          true,
-	"per-service subcommands (cmd/services_gen.go)": true,
+	"cmd/commands.go (user extension point)":        true,
 	"pkg/app/testing.go":                            true,
 	"pkg/app/migrate.go":                            true,
 	"CI workflows":                                  true,
@@ -1768,12 +1769,16 @@ func deriveOrmEnabled(projectDir string) (bool, error) {
 	return false, nil
 }
 
-// stepBootstrap — was Step 6 (HIGHEST RISK in the polish-phase
-// extraction; see TestDeriveOrmEnabledMatrix for the golden test).
+// stepAppSubstrate scaffolds the user-owned pkg/app substrate
+// (app_gen.go / app_extras.go / setup.go / post_bootstrap.go).
 //
-// Emits pkg/app/bootstrap.go. ormEnabled is the contentious bit; see
-// deriveOrmEnabled for the probe rules and rationale.
-func stepBootstrap(ctx *pipelineContext) error {
+// The LIVE runtime DI composition is the internal/app layer
+// (stepInternalAppComposition); the old name-matched pkg/app DI unit
+// (bootstrap.go / wire_gen.go / services_gen.go / services.go /
+// diagnostics_gen.go) is retired (FORGE_SHAPE_REDESIGN §2). This step
+// keeps only the minimal substrate the user-owned setup.go compiles
+// against. ormEnabled is the contentious bit; see deriveOrmEnabled.
+func stepAppSubstrate(ctx *pipelineContext) error {
 	var dbDriver string
 	if ctx.Cfg != nil {
 		dbDriver = ctx.Cfg.Database.Driver
@@ -1782,32 +1787,12 @@ func stepBootstrap(ctx *pipelineContext) error {
 	if err != nil {
 		return err
 	}
-	// Diagnostics / strict-wiring feature toggles flow from forge.yaml
-	// straight into the bootstrap template so the diagnostics.Default.Boot
-	// call (and its StrictEmitter wrap) is only emitted when the project
-	// opted in. Default off — existing projects don't suddenly start
-	// logging warns on regen.
-	var bootstrapFeatures codegen.BootstrapFeatures
-	if ctx.Cfg != nil {
-		bootstrapFeatures.DiagnosticsEnabled = ctx.Cfg.Features.DiagnosticsEnabled()
-		bootstrapFeatures.StrictWiringEnabled = ctx.Cfg.Features.StrictWiringEnabled()
-	}
-	// The COMPLETE service inventory (including tombstoned types-only
-	// services) renders into BootstrapOnly's registration guard, which
-	// errors helpfully when an unregistered service name is passed to
-	// the `server [services...]` name filter.
-	bootstrapFeatures.AllServiceNames = allServiceRuntimeNames(ctx.Services)
-	// Row services only (registered + newly-added unlisted): the
-	// serviceRow constructors, wire_gen, and diagnostics rows exist per
-	// service whose handlers scaffold lives in this repo. Which of those
-	// rows the binary SERVES is pkg/app/services.go's call, consumed by
-	// the bootstrap template via RegisteredServices.
 	rows, err := ctx.rowServiceDefs()
 	if err != nil {
 		return err
 	}
-	if err := generateBootstrap(rows, ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.ConfigFields, bootstrapFeatures, ctx.Checksums); err != nil {
-		return fmt.Errorf("bootstrap generation failed: %w", err)
+	if err := generateAppSubstrate(rows, ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.Checksums); err != nil {
+		return fmt.Errorf("pkg/app substrate generation failed: %w", err)
 	}
 	return nil
 }

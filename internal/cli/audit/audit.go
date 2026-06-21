@@ -1,8 +1,6 @@
-// Package cli — `forge audit` command.
-//
-// Audit produces a comprehensive snapshot of project state designed to
-// orient an LLM (or human) without forcing them to grep ten different
-// directories. It rolls up:
+// Package audit holds the `forge audit` command group — a comprehensive
+// snapshot of project state designed to orient an LLM (or human) without
+// forcing them to grep ten different directories. It rolls up:
 //
 //   - Forge version pin (forge.yaml forge_version vs binary buildinfo).
 //   - Project shape (kind, services + RPC counts, workers, operators,
@@ -24,10 +22,19 @@
 //
 // JSON output groups checks by category with status: ok|warn|error so a
 // sub-agent can branch on `.codegen.status == "warn"` directly.
-package cli
+//
+// It is a dir-nested command group (the devspace idiom). The few categories
+// it cannot compute without package-cli internals — the KCL-entity-typed
+// ingress / external-builds categories, the friction roll-up, plus the
+// service-registry / env-discovery / drift helpers — are reached through
+// factory.AuditAPI (function values internal/cli registers via SetAuditAPI).
+// The group never imports internal/cli, so the registry indirection in the
+// factory package keeps the dependency one-directional (group → factory) and
+// the import cycle broken. init() self-registers the command with the
+// factory.
+package audit
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +54,9 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/audittype"
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
@@ -55,36 +65,38 @@ import (
 	"github.com/reliant-labs/forge/internal/packs"
 )
 
-// AuditStatus is the per-category roll-up. We keep the wire enum tiny so
-// the JSON shape is easy to grep / jq against.
-type AuditStatus string
+func init() { factory.Register(newCmd) }
 
-// AuditStatus enum values.
-const (
-	AuditStatusOK    AuditStatus = "ok"
-	AuditStatusWarn  AuditStatus = "warn"
-	AuditStatusError AuditStatus = "error"
-)
-
-// AuditCategory is one section of the audit report. The shape mirrors the
-// "category, status, summary, details" scheme called for in the spec —
-// kept deliberately simple so a sub-agent can pluck `.summary` for a
-// human-readable snippet or `.details` for structured fix-up data.
-type AuditCategory struct {
-	Status  AuditStatus    `json:"status"`
-	Summary string         `json:"summary"`
-	Details map[string]any `json:"details,omitempty"`
+// dirExists is the trivial os.Stat wrapper the audit categories use for
+// directory-presence gates. Per cmdutil's policy, this one-line stdlib
+// check is duplicated locally rather than shared.
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
 }
+
+// servedAllRegistry is the fail-open ServiceRegistry stub the shape /
+// orphan-stub categories fall back to when LoadServiceRegistry errors: it
+// reads Exists()=false so every service registers (the pre-registration
+// "declared ⇒ served" behavior — audit must not die on a broken tree).
+type servedAllRegistry struct{}
+
+func (servedAllRegistry) Exists() bool           { return false }
+func (servedAllRegistry) Registered(string) bool { return true }
+func (servedAllRegistry) Tombstoned(string) bool { return false }
 
 // AuditReport is the top-level JSON structure emitted by `forge audit --json`.
 // Field order is stable so diffing two audits is human-readable.
 type AuditReport struct {
-	ProjectName   string                   `json:"project_name"`
-	ProjectKind   string                   `json:"project_kind"`
-	BinaryVersion string                   `json:"binary_version"`
-	GeneratedAt   time.Time                `json:"generated_at"`
-	Categories    map[string]AuditCategory `json:"categories"`
-	OverallStatus AuditStatus              `json:"overall_status"`
+	ProjectName   string                        `json:"project_name"`
+	ProjectKind   string                        `json:"project_kind"`
+	BinaryVersion string                        `json:"binary_version"`
+	GeneratedAt   time.Time                     `json:"generated_at"`
+	Categories    map[string]audittype.Category `json:"categories"`
+	OverallStatus audittype.Status              `json:"overall_status"`
 }
 
 // auditCategoryOrder pins the print-order so human output stays stable
@@ -114,7 +126,7 @@ var auditCategoryOrder = []string{
 	"friction",
 }
 
-func newAuditCmd() *cobra.Command {
+func newCmd(f *factory.Factory) *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "audit",
@@ -129,15 +141,15 @@ Examples:
   forge audit            # human-readable
   forge audit --json     # machine-readable`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAudit(jsonOut)
+			return runAudit(f, jsonOut)
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 	return cmd
 }
 
-func runAudit(jsonOut bool) error {
-	report, err := buildAuditReport(".")
+func runAudit(f *factory.Factory, jsonOut bool) error {
+	report, err := buildAuditReport(f, ".")
 	if err != nil {
 		return err
 	}
@@ -154,14 +166,14 @@ func runAudit(jsonOut bool) error {
 // overall status. Errors in individual category collectors are folded
 // into a "warn" status for that category — we never bail the whole audit
 // because a single grep failed; partial information beats nothing.
-func buildAuditReport(projectDir string) (*AuditReport, error) {
+func buildAuditReport(f *factory.Factory, projectDir string) (*AuditReport, error) {
 	abs, err := filepath.Abs(projectDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project dir: %w", err)
 	}
 
-	store, cfgErr := loadProjectStoreFrom(filepath.Join(abs, defaultProjectConfigFile))
-	if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
+	store, cfgErr := f.Audit.LoadProjectStoreFrom(filepath.Join(abs, "forge.yaml"))
+	if cfgErr != nil && !errors.Is(cfgErr, cmdutil.ErrProjectConfigNotFound) {
 		return nil, fmt.Errorf("load project config: %w", cfgErr)
 	}
 	var cfg *config.ProjectConfig
@@ -172,7 +184,7 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 	report := &AuditReport{
 		BinaryVersion: buildinfo.Version(),
 		GeneratedAt:   time.Now().UTC(),
-		Categories:    make(map[string]AuditCategory),
+		Categories:    make(map[string]audittype.Category),
 	}
 	if cfg != nil {
 		report.ProjectName = cfg.Name
@@ -183,15 +195,15 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 	}
 
 	report.Categories["version"] = auditVersion(cfg, abs)
-	report.Categories["shape"] = auditShape(cfg, abs)
+	report.Categories["shape"] = auditShape(f, cfg, abs)
 	report.Categories["features"] = auditFeatures(cfg)
 	if cfg != nil && cfg.Features.IngressEnabled() {
-		report.Categories["ingress"] = auditIngress(cfg, abs)
+		report.Categories["ingress"] = f.Audit.Ingress(cfg, abs)
 	}
-	report.Categories["environments"] = auditEnvironments(abs)
-	report.Categories["external_builds"] = auditExternalBuilds(cfg, abs)
+	report.Categories["environments"] = auditEnvironments(f, abs)
+	report.Categories["external_builds"] = f.Audit.ExternalBuilds(cfg, abs)
 	report.Categories["conventions"] = auditConventions(cfg, abs)
-	report.Categories["codegen"] = auditCodegen(cfg, abs)
+	report.Categories["codegen"] = auditCodegen(f, cfg, abs)
 	report.Categories["packs"] = auditPacks(cfg)
 	report.Categories["pack_graph"] = auditPackGraph(cfg)
 	report.Categories["migration_safety"] = auditMigrationSafety(cfg, abs)
@@ -201,10 +213,10 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 	report.Categories["scaffold_markers"] = auditScaffoldMarkers(abs)
 	report.Categories["crud_stubs"] = auditCRUDStubs(abs)
 	report.Categories["file_sizes"] = auditFileSizes(abs)
-	report.Categories["orphan_stubs"] = auditOrphanStubs(cfg, abs)
+	report.Categories["orphan_stubs"] = auditOrphanStubs(f, cfg, abs)
 	report.Categories["diagnostics"] = auditDiagnostics(cfg, abs)
 	report.Categories["deps"] = auditDeps(abs)
-	report.Categories["friction"] = auditFriction(abs)
+	report.Categories["friction"] = f.Audit.Friction(abs)
 
 	report.OverallStatus = rollupStatus(report.Categories)
 	return report, nil
@@ -212,14 +224,14 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 
 // rollupStatus collapses per-category statuses into one overall verdict.
 // "error" beats "warn" beats "ok", same precedence forge doctor uses.
-func rollupStatus(cats map[string]AuditCategory) AuditStatus {
-	worst := AuditStatusOK
+func rollupStatus(cats map[string]audittype.Category) audittype.Status {
+	worst := audittype.StatusOK
 	for _, c := range cats {
 		switch c.Status {
-		case AuditStatusError:
-			return AuditStatusError
-		case AuditStatusWarn:
-			worst = AuditStatusWarn
+		case audittype.StatusError:
+			return audittype.StatusError
+		case audittype.StatusWarn:
+			worst = audittype.StatusWarn
 		}
 	}
 	return worst
@@ -256,11 +268,11 @@ func ciForgePin(projectDir string) string {
 // usually fine and `forge upgrade` realigns. The category also flags when
 // the three independent pins (forge.yaml / CI workflow / .forge state)
 // disagree with each other, since nothing else does.
-func auditVersion(cfg *config.ProjectConfig, projectDir string) AuditCategory {
+func auditVersion(cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	binv := buildinfo.Version()
 	if cfg == nil {
-		return AuditCategory{
-			Status:  AuditStatusError,
+		return audittype.Category{
+			Status:  audittype.StatusError,
 			Summary: "no forge.yaml found — not a forge project",
 			Details: map[string]any{"binary_version": binv},
 		}
@@ -285,23 +297,23 @@ func auditVersion(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	}
 
 	var summaries []string
-	status := AuditStatusOK
+	status := audittype.StatusOK
 
 	// 1. forge.yaml pin vs running binary — a REAL compare. We do not
 	//    silence on dev/pseudo binaries here.
 	switch {
 	case strings.TrimSpace(cfg.ForgeVersion) == "":
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 		summaries = append(summaries,
-			fmt.Sprintf("no forge_version declared in forge.yaml (binary is %s) — run `%s upgrade` to set a baseline", binv, Name()))
-		details["hint"] = fmt.Sprintf("run `%s upgrade` to set + align the pin", Name())
+			fmt.Sprintf("no forge_version declared in forge.yaml (binary is %s) — run `%s upgrade` to set a baseline", binv, cmdutil.Name()))
+		details["hint"] = fmt.Sprintf("run `%s upgrade` to set + align the pin", cmdutil.Name())
 	case pinned == binv:
 		summaries = append(summaries, fmt.Sprintf("forge_version %s matches binary", pinned))
 	default:
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 		summaries = append(summaries,
 			fmt.Sprintf("forge_version %s does NOT match binary %s", pinned, binv))
-		details["hint"] = fmt.Sprintf("run `%s upgrade` to align the pin with the binary", Name())
+		details["hint"] = fmt.Sprintf("run `%s upgrade` to align the pin with the binary", cmdutil.Name())
 	}
 
 	// 2. Divergent pins: if the known pins disagree with each other, the
@@ -316,8 +328,8 @@ func auditVersion(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	addPin(ciPin)
 	addPin(statePin)
 	if len(knownPins) > 1 {
-		if status == AuditStatusOK {
-			status = AuditStatusWarn
+		if status == audittype.StatusOK {
+			status = audittype.StatusWarn
 		}
 		pins := make([]string, 0, len(knownPins))
 		for p := range knownPins {
@@ -326,10 +338,10 @@ func auditVersion(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		sort.Strings(pins)
 		summaries = append(summaries,
 			fmt.Sprintf("divergent forge version pins across the project: %s — run `%s upgrade` to converge them",
-				strings.Join(pins, ", "), Name()))
+				strings.Join(pins, ", "), cmdutil.Name()))
 	}
 
-	return AuditCategory{
+	return audittype.Category{
 		Status:  status,
 		Summary: strings.Join(summaries, "; "),
 		Details: details,
@@ -338,9 +350,9 @@ func auditVersion(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 
 // auditShape inventories the project's structural elements: services
 // (and their RPC counts), workers, operators, frontends, packs.
-func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
+func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	if cfg == nil {
-		return AuditCategory{Status: AuditStatusError, Summary: "no forge.yaml"}
+		return audittype.Category{Status: audittype.StatusError, Summary: "no forge.yaml"}
 	}
 	// rpcInfo is the per-RPC entry under svcInfo.RPCs. Additive
 	// (introduced after rpc_count) — consumers that only read
@@ -397,7 +409,7 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	// every Connect service in any proto package — so flat / multi-service
 	// layouts (proto/controlplane/v1/*.proto) are audited identically to the
 	// canonical proto/services/<svc>/v1/ layout. The dir arg is vestigial.
-	if projectDefinesConnectServices(projectDir) {
+	if f.Audit.ProjectDefinesConnectServices(projectDir) {
 		if defs, err := codegen.ParseServicesFromProtos("", projectDir); err == nil {
 			for _, d := range defs {
 				rpcs := make([]rpcInfo, 0, len(d.Methods))
@@ -431,13 +443,14 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	// Registration view over the user-owned pkg/app/services.go. A parse
 	// failure falls open (everything served) — audit must not die on a
 	// broken tree; the generate pipeline is the fail-loud gate.
-	reg, regErr := loadServiceRegistry(projectDir)
+	var reg factory.ServiceRegistry
+	reg, regErr := f.Audit.LoadServiceRegistry(projectDir)
 	if regErr != nil {
-		reg = &serviceRegistry{Exists: false}
+		reg = servedAllRegistry{}
 	}
 
 	for _, s := range cfg.Components {
-		served := !isConnectServiceConfig(s) || reg.registered(s.Name)
+		served := !f.Audit.IsConnectServiceConfig(s) || reg.Registered(s.Name)
 		info := svcInfo{Name: s.Name, Type: s.EffectiveKind(), Served: served}
 		// match by ProtoService name suffix (Echo → EchoService)
 		for protoName, rpcs := range rpcByService {
@@ -498,7 +511,7 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	// "no methods" or "parse failed". Only emitted when there's an
 	// error to report — under the additive-extension contract, the
 	// field being absent IS the "all good" signal.
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	summary := fmt.Sprintf("kind=%s, %d server(s), %d worker(s), %d cron(s), %d operator(s), %d binary(ies), %d frontend(s), %d pack(s)",
 		cfg.EffectiveKind(), len(services), len(workers), len(crons), len(operators), len(binaries), len(frontends), len(cfg.Packs))
 	if protoParseErr != "" {
@@ -507,10 +520,10 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 			"reason": "ParseServicesFromProtos failed — RPC counts may be 0 even for services with methods",
 			"error":  protoParseErr,
 		}
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 		summary += " (warn: proto parse failed — see proto_integrity)"
 	}
-	return AuditCategory{Status: status, Summary: summary, Details: details}
+	return audittype.Category{Status: status, Summary: summary, Details: details}
 }
 
 // auditFeatures surfaces the resolved `features:` block from forge.yaml
@@ -526,10 +539,10 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 // that care about a specific gated subsystem check the boolean in
 // details; humans reading the human-formatted audit see a one-line
 // "N enabled, M disabled" summary plus the per-feature breakdown.
-func auditFeatures(cfg *config.ProjectConfig) AuditCategory {
+func auditFeatures(cfg *config.ProjectConfig) audittype.Category {
 	if cfg == nil {
-		return AuditCategory{
-			Status:  AuditStatusError,
+		return audittype.Category{
+			Status:  audittype.StatusError,
 			Summary: "no forge.yaml — features unknown",
 		}
 	}
@@ -572,130 +585,7 @@ func auditFeatures(cfg *config.ProjectConfig) AuditCategory {
 	}
 	summary := fmt.Sprintf("%d stable feature(s) enabled, %d disabled; %d experimental on",
 		len(enabled), len(disabled), len(experimentalEnabled))
-	return AuditCategory{Status: AuditStatusOK, Summary: summary, Details: details}
-}
-
-// auditIngress cross-checks forge.yaml backends against the dev-env
-// KCL-declared Gateway API ingress (Gateways + HTTPRoutes + GRPCRoutes).
-// Two failure modes:
-//
-//   - A route's `Service` doesn't match any known backend name —
-//     services, frontends, or webhook handlers (error — the route is
-//     dead at deploy time).
-//   - A forge.yaml service declares `port:` but nothing routes to it
-//     (info — internal-only services are valid; we just surface the
-//     gap so the operator notices when they meant to ingress it).
-//
-// Frontends and webhook services are valid route backends too — at the
-// k8s layer a route's `backendRefs[].name` resolves to any Service in
-// the env namespace regardless of which forge.yaml block scaffolded it.
-// We only emit the "port but no route" info for entries from
-// cfg.Services: frontends own their own scaffold and may legitimately
-// be cluster-internal-only (SSR-only) so flagging them would be noisy.
-//
-// We render the dev env because that's the only env every project is
-// guaranteed to have. If `kcl` isn't on PATH or the dev dir is missing
-// (CI environments without the toolchain), the category degrades to
-// warn rather than failing the whole audit.
-func auditIngress(cfg *config.ProjectConfig, projectDir string) AuditCategory {
-	if cfg == nil {
-		return AuditCategory{Status: AuditStatusError, Summary: "no forge.yaml"}
-	}
-	entities, err := RenderKCL(context.Background(), projectDir, "dev")
-	if err != nil {
-		return AuditCategory{
-			Status:  AuditStatusWarn,
-			Summary: fmt.Sprintf("could not evaluate dev KCL: %v", err),
-		}
-	}
-	backends := ingressBackendNames(cfg)
-	return crossCheckIngress(cfg.Components, backends, entities.Gateways, entities.HTTPRoutes, entities.GRPCRoutes)
-}
-
-// ingressBackendNames returns the union of every forge.yaml-declared
-// name that can legitimately appear as a route backend: services,
-// frontends, and per-service webhook handlers. K8s only sees a Service
-// in the env namespace by that name — the forge.yaml block that
-// scaffolded it is irrelevant at route-resolution time.
-func ingressBackendNames(cfg *config.ProjectConfig) []string {
-	names := make([]string, 0, len(cfg.Components)+len(cfg.Frontends))
-	for _, s := range cfg.Components {
-		names = append(names, s.Name)
-		for _, w := range s.Webhooks {
-			names = append(names, w.Name)
-		}
-	}
-	for _, f := range cfg.Frontends {
-		names = append(names, f.Name)
-	}
-	return names
-}
-
-// crossCheckIngress is the pure decision core of auditIngress: takes
-// the resolved services / known-backend set / gateways / routes and
-// returns the AuditCategory. Split out so unit tests can exercise the
-// cross-check without shelling kcl. `backends` is the union of names
-// (services + frontends + webhook handlers) any route may legally
-// point at; `services` is kept separate because only it drives the
-// "port declared but no route" info finding.
-func crossCheckIngress(services []config.ComponentConfig, backends []string, gateways []GatewayEntity, httpRoutes []HTTPRouteEntity, grpcRoutes []GRPCRouteEntity) AuditCategory {
-	knownBackend := make(map[string]struct{}, len(backends))
-	for _, b := range backends {
-		knownBackend[b] = struct{}{}
-	}
-
-	routedService := map[string]struct{}{}
-	var findings []string
-	hasError := false
-
-	check := func(routeKind, name, svcRef string) {
-		if svcRef == "" {
-			return
-		}
-		routedService[svcRef] = struct{}{}
-		if _, ok := knownBackend[svcRef]; !ok {
-			findings = append(findings, fmt.Sprintf("error: %s %s references unknown service %s", routeKind, name, svcRef))
-			hasError = true
-		}
-	}
-	for _, r := range httpRoutes {
-		check("route", r.Name, r.Service)
-	}
-	for _, r := range grpcRoutes {
-		check("route", r.Name, r.Service)
-	}
-
-	servicesWithoutRoute := 0
-	for _, s := range services {
-		p := s.PrimaryPort()
-		if p <= 0 {
-			continue
-		}
-		if _, ok := routedService[s.Name]; ok {
-			continue
-		}
-		findings = append(findings, fmt.Sprintf("info: service %s has port :%d declared but no ingress route — cluster-internal only", s.Name, p))
-		servicesWithoutRoute++
-	}
-
-	sort.Strings(findings)
-
-	status := AuditStatusOK
-	if hasError {
-		status = AuditStatusError
-	}
-	summary := fmt.Sprintf("%d gateway(s), %d route(s); %d service(s) without route",
-		len(gateways), len(httpRoutes)+len(grpcRoutes), servicesWithoutRoute)
-	details := map[string]any{
-		"gateways":               len(gateways),
-		"http_routes":            len(httpRoutes),
-		"grpc_routes":            len(grpcRoutes),
-		"services_without_route": servicesWithoutRoute,
-	}
-	if len(findings) > 0 {
-		details["findings"] = findings
-	}
-	return AuditCategory{Status: status, Summary: summary, Details: details}
+	return audittype.Category{Status: audittype.StatusOK, Summary: summary, Details: details}
 }
 
 // auditEnvironments inventories every environment declared via a
@@ -704,17 +594,17 @@ func crossCheckIngress(services []config.ComponentConfig, backends []string, gat
 // (cluster / namespace / registry / domain) lives in the rendered
 // KCL on `forge.K8sCluster` blocks; this audit just confirms the env
 // directories exist and lists them.
-func auditEnvironments(projectDir string) AuditCategory {
-	envs, err := ListEnvs(projectDir)
+func auditEnvironments(f *factory.Factory, projectDir string) audittype.Category {
+	envs, err := f.Audit.ListEnvs(projectDir)
 	if err != nil {
-		return AuditCategory{
-			Status:  AuditStatusWarn,
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
 			Summary: fmt.Sprintf("env discovery failed: %v", err),
 		}
 	}
 	if len(envs) == 0 {
-		return AuditCategory{
-			Status:  AuditStatusOK,
+		return audittype.Category{
+			Status:  audittype.StatusOK,
 			Summary: "no environments declared (no deploy/kcl/<env>/main.k)",
 		}
 	}
@@ -727,8 +617,8 @@ func auditEnvironments(projectDir string) AuditCategory {
 		entries = append(entries, envEntry{Name: env, Status: "ok"})
 	}
 	details := map[string]any{"environments": entries}
-	return AuditCategory{
-		Status:  AuditStatusOK,
+	return audittype.Category{
+		Status:  audittype.StatusOK,
 		Summary: fmt.Sprintf("%d environment(s) declared (deploy/kcl/<env>/main.k)", len(envs)),
 		Details: details,
 	}
@@ -747,7 +637,7 @@ func packageNames(pkgs []config.PackageConfig) []string {
 // shelling to a Go subprocess (golangci, contractlint) is expensive and
 // noisy in an audit context — we surface a hint to run `forge lint` for
 // the full picture instead.
-func auditConventions(cfg *config.ProjectConfig, projectDir string) AuditCategory {
+func auditConventions(cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	counts := map[string]int{}
 	hasErrors := false
 	hasWarnings := false
@@ -767,12 +657,12 @@ func auditConventions(cfg *config.ProjectConfig, projectDir string) AuditCategor
 		}
 	}
 
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	switch {
 	case hasErrors:
-		status = AuditStatusError
+		status = audittype.StatusError
 	case hasWarnings:
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 	}
 
 	summary := "no convention violations"
@@ -790,12 +680,12 @@ func auditConventions(cfg *config.ProjectConfig, projectDir string) AuditCategor
 	}
 
 	_ = cfg // reserved for future per-feature gating
-	return AuditCategory{
+	return audittype.Category{
 		Status:  status,
 		Summary: summary,
 		Details: map[string]any{
 			"counts": counts,
-			"hint":   fmt.Sprintf("run `%s lint` for full output (golangci, contractlint, etc.)", Name()),
+			"hint":   fmt.Sprintf("run `%s lint` for full output (golangci, contractlint, etc.)", cmdutil.Name()),
 		},
 	}
 }
@@ -822,11 +712,11 @@ type auditDisownedFile struct {
 // fail verification), disowned files, orphan _gen files, and a pending
 // legacy-manifest migration if one exists. Ownership is read from the
 // files themselves — there is no global manifest to consult.
-func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
+func auditCodegen(f *factory.Factory, cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	cs, err := generator.LoadChecksums(projectDir)
 	if err != nil {
-		return AuditCategory{
-			Status:  AuditStatusWarn,
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
 			Summary: fmt.Sprintf("could not load .forge ownership state: %v", err),
 		}
 	}
@@ -868,9 +758,7 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	// and are excluded by construction; Tier-2-managed starters are
 	// exempt (edits there are sanctioned).
 	var modified []string
-	for _, d := range scanProjectDrift(projectDir, cs) {
-		modified = append(modified, d.Path)
-	}
+	modified = append(modified, f.Audit.ScanProjectDriftPaths(projectDir, cs)...)
 	sort.Strings(modified)
 	if len(modified) > 0 {
 		details["user_edited_gen_files"] = modified
@@ -897,7 +785,7 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		// disowned.json record predates reason capture (legacy
 		// migrations). The log is loaded exactly once and only when
 		// disowned files exist at all.
-		reasons := disownFrictionReasons(projectDir)
+		reasons := f.Audit.DisownFrictionReasons(projectDir)
 		for i := range disowned {
 			if disowned[i].Reason == "" {
 				disowned[i].Reason = reasons[disowned[i].Path]
@@ -932,24 +820,24 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	//     stale-sweep candidates (deleted under `forge generate
 	//     --force-cleanup`); user-written Tier-2 files are never touched.
 	// Additive detail key under the codegen category.
-	unregistered := unregisteredServiceFindings(cfg, projectDir)
+	unregistered := unregisteredServiceFindings(f, cfg, projectDir)
 	if len(unregistered) > 0 {
 		details["unregistered_services"] = unregistered
 	}
 
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	summary := fmt.Sprintf("%d certified, %d modified, %d disowned, %d orphans, %d missing", certified, len(modified), len(disowned), len(orphans), len(missing))
 	// Disowned files are a legitimate end state (unlike the old fork
 	// limbo) — they appear in the summary for visibility but do NOT
 	// degrade the category status.
 	if len(modified) > 0 || len(orphans) > 0 || len(missing) > 0 {
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 	}
 	if len(unregistered) > 0 {
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 		summary += fmt.Sprintf(", %d unregistered service(s)", len(unregistered))
 	}
-	return AuditCategory{Status: status, Summary: summary, Details: details}
+	return audittype.Category{Status: status, Summary: summary, Details: details}
 }
 
 // auditUnregisteredService is one registration finding: a Connect
@@ -972,21 +860,21 @@ type auditUnregisteredService struct {
 // missing dir on a tombstoned service is the retired steady state and
 // produces no finding, while a missing services.go means everything is
 // registered (pre-migration trees report nothing).
-func unregisteredServiceFindings(cfg *config.ProjectConfig, projectDir string) []auditUnregisteredService {
+func unregisteredServiceFindings(f *factory.Factory, cfg *config.ProjectConfig, projectDir string) []auditUnregisteredService {
 	if cfg == nil {
 		return nil
 	}
-	reg, err := loadServiceRegistry(projectDir)
-	if err != nil || !reg.Exists {
+	reg, err := f.Audit.LoadServiceRegistry(projectDir)
+	if err != nil || !reg.Exists() {
 		return nil
 	}
+	registryRelPath := f.Audit.ServiceRegistryRelPath
 	var out []auditUnregisteredService
 	for _, s := range cfg.Components {
-		if !isConnectServiceConfig(s) {
+		if !f.Audit.IsConnectServiceConfig(s) {
 			continue
 		}
-		state := reg.state(s.Name)
-		if state == registrationRegistered {
+		if reg.Registered(s.Name) {
 			continue
 		}
 		res, resErr := codegen.ResolveServiceComponent(projectDir, s.Name)
@@ -994,18 +882,18 @@ func unregisteredServiceFindings(cfg *config.ProjectConfig, projectDir string) [
 			continue
 		}
 		dir := "internal/handlers/" + res.ImportLeaf
-		f := auditUnregisteredService{Service: s.Name, Dir: dir}
-		switch state {
-		case registrationTombstoned:
-			f.State = "tombstoned"
-			f.Message = fmt.Sprintf("%s exists but %s deliberately does not register %s (its row was deleted; the comment there says where it's served) — implement+register it by restoring `%s(app, cfg, logger, opts...),`, or delete the dir (run `%s generate --force-cleanup` to delete the generated files, then move or delete your hand-written ones)",
-				dir, serviceRegistryRelPath, s.Name, codegen.ServiceRowFuncName(s.Name), Name())
+		finding := auditUnregisteredService{Service: s.Name, Dir: dir}
+		switch {
+		case reg.Tombstoned(s.Name):
+			finding.State = "tombstoned"
+			finding.Message = fmt.Sprintf("%s exists but %s deliberately does not register %s (its row was deleted; the comment there says where it's served) — implement+register it by restoring `%s(app, cfg, logger, opts...),`, or delete the dir (run `%s generate --force-cleanup` to delete the generated files, then move or delete your hand-written ones)",
+				dir, registryRelPath, s.Name, codegen.ServiceRowFuncName(s.Name), cmdutil.Name())
 		default:
-			f.State = "unlisted"
-			f.Message = fmt.Sprintf("row constructor %s is generated but unreferenced — to serve %s from this binary add `%s(app, cfg, logger, opts...),` to RegisteredServices in %s; to make it types-only delete %s and leave a comment in %s naming the binary that serves it",
-				codegen.ServiceRowFuncName(s.Name), s.Name, codegen.ServiceRowFuncName(s.Name), serviceRegistryRelPath, dir, serviceRegistryRelPath)
+			finding.State = "unlisted"
+			finding.Message = fmt.Sprintf("row constructor %s is generated but unreferenced — to serve %s from this binary add `%s(app, cfg, logger, opts...),` to RegisteredServices in %s; to make it types-only delete %s and leave a comment in %s naming the binary that serves it",
+				codegen.ServiceRowFuncName(s.Name), s.Name, codegen.ServiceRowFuncName(s.Name), registryRelPath, dir, registryRelPath)
 		}
-		out = append(out, f)
+		out = append(out, finding)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
 	return out
@@ -1083,9 +971,9 @@ func isForgeGeneratedBanner(path string) bool {
 // auditPacks compares each installed pack's version against the version
 // embedded in the binary's pack registry. A mismatch (project pinned to
 // "v0.1.0" but the binary ships "v0.2.0") surfaces as a warn.
-func auditPacks(cfg *config.ProjectConfig) AuditCategory {
+func auditPacks(cfg *config.ProjectConfig) audittype.Category {
 	if cfg == nil || len(cfg.Packs) == 0 {
-		return AuditCategory{Status: AuditStatusOK, Summary: "no packs installed"}
+		return audittype.Category{Status: audittype.StatusOK, Summary: "no packs installed"}
 	}
 	type packEntry struct {
 		Name             string `json:"name"`
@@ -1111,49 +999,15 @@ func auditPacks(cfg *config.ProjectConfig) AuditCategory {
 		}
 		entries = append(entries, entry)
 	}
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	if hasWarn {
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 	}
-	return AuditCategory{
+	return audittype.Category{
 		Status:  status,
 		Summary: fmt.Sprintf("%d pack(s) installed", len(entries)),
 		Details: map[string]any{"packs": entries},
 	}
-}
-
-// tablesFromMigrations naïvely greps "CREATE TABLE [IF NOT EXISTS]
-// <name>" out of every .sql under migDir. It's a rough heuristic — the
-// authoritative answer would parse SQL — but it captures the 95% case and
-// the 5% it misses tend to be exotic forms (DDL inside CTE, etc.) that
-// would never appear in a forge-generated migration.
-var createTableRE = regexp.MustCompile(`(?i)CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+["` + "`" + `]?([a-zA-Z_][a-zA-Z0-9_]*)["` + "`" + `]?`)
-
-func tablesFromMigrations(dir string) map[string]struct{} {
-	out := map[string]struct{}{}
-	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(path, ".sql") {
-			return nil
-		}
-		// Skip "down" migrations — they DROP TABLE, not CREATE.
-		if strings.Contains(filepath.Base(path), ".down.") {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		for _, m := range createTableRE.FindAllStringSubmatch(string(data), -1) {
-			if len(m) > 1 {
-				out[strings.ToLower(m[1])] = struct{}{}
-			}
-		}
-		return nil
-	})
-	return out
 }
 
 // auditScaffoldMarkers counts unfilled FORGE_SCAFFOLD placeholders that
@@ -1168,7 +1022,7 @@ func tablesFromMigrations(dir string) map[string]struct{} {
 // includes the scaffold linter source itself, the analyzer fixtures, or
 // the generator templates that EMIT markers — i.e. it would be noisy on
 // forge's own tree (which is a forge-managed project).
-func auditScaffoldMarkers(projectDir string) AuditCategory {
+func auditScaffoldMarkers(projectDir string) audittype.Category {
 	skip := map[string]struct{}{
 		"vendor": {}, ".git": {}, "node_modules": {}, "gen": {}, ".forge": {},
 		// testdata: linter fixtures intentionally hold markers so the
@@ -1196,14 +1050,14 @@ func auditScaffoldMarkers(projectDir string) AuditCategory {
 		// reference the marker syntax verbatim for documentation; we
 		// don't want every README that mentions `FORGE_SCAFFOLD:` to
 		// turn audit yellow.
-		if !isMarkerScannable(d.Name()) {
+		if !cmdutil.IsMarkerScannable(d.Name()) {
 			return nil
 		}
 		data, rerr := os.ReadFile(path)
 		if rerr != nil {
 			return nil
 		}
-		count := countLineStartScaffoldMarkers(data)
+		count := cmdutil.CountLineStartScaffoldMarkers(data)
 		if count > 0 {
 			rel, _ := filepath.Rel(projectDir, path)
 			files = append(files, filepath.ToSlash(rel))
@@ -1212,11 +1066,11 @@ func auditScaffoldMarkers(projectDir string) AuditCategory {
 		return nil
 	})
 	sort.Strings(files)
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	if total > 0 {
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 	}
-	return AuditCategory{
+	return audittype.Category{
 		Status:  status,
 		Summary: fmt.Sprintf("%d FORGE_SCAFFOLD marker(s) across %d file(s)", total, len(files)),
 		Details: map[string]any{"files": files, "total_markers": total},
@@ -1250,7 +1104,7 @@ func auditScaffoldMarkers(projectDir string) AuditCategory {
 // (vendor/.git/etc) plus templates/ and testdata/ so forge's own tree
 // doesn't false-positive on its template body (which contains the
 // literal marker as emission text).
-func auditCRUDStubs(projectDir string) AuditCategory {
+func auditCRUDStubs(projectDir string) audittype.Category {
 	skip := map[string]struct{}{
 		"vendor": {}, ".git": {}, "node_modules": {}, "gen": {}, ".forge": {},
 		"testdata":  {},
@@ -1345,13 +1199,13 @@ func auditCRUDStubs(projectDir string) AuditCategory {
 		}
 		return stubs[i]["method"] < stubs[j]["method"]
 	})
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	summary := "0 custom-read-shape CRUD stubs"
 	if total > 0 {
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 		summary = fmt.Sprintf("%d custom-read-shape CRUD stub(s) across %d file(s) — bodies are yours to implement; the RPCs return CodeUnimplemented until then", total, len(fileNames))
 	}
-	return AuditCategory{
+	return audittype.Category{
 		Status:  status,
 		Summary: summary,
 		Details: map[string]any{
@@ -1393,7 +1247,7 @@ var diagnosticsRegisterNilDepRE = regexp.MustCompile(`diagnostics\.Default\.Regi
 // downstream consumers (CI, dashboards) can rely on the key being
 // present and additive-extension contract holds — see the
 // `audit-json` skill for the contract details.
-func auditDiagnostics(cfg *config.ProjectConfig, projectDir string) AuditCategory {
+func auditDiagnostics(cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	path := filepath.Join(projectDir, "pkg", "app", "diagnostics_gen.go")
 	enabled := cfg != nil && cfg.Features.DiagnosticsEnabled()
 	strict := cfg != nil && cfg.Features.StrictWiringEnabled()
@@ -1425,14 +1279,14 @@ func auditDiagnostics(cfg *config.ProjectConfig, projectDir string) AuditCategor
 		// with no pkg/app/). Report ok with the empty list — the
 		// additive contract requires the category to exist regardless.
 		if os.IsNotExist(err) {
-			return AuditCategory{
-				Status:  AuditStatusOK,
+			return audittype.Category{
+				Status:  audittype.StatusOK,
 				Summary: "no pkg/app/diagnostics_gen.go (n/a — pre-codegen or library project)",
 				Details: details,
 			}
 		}
-		return AuditCategory{
-			Status:  AuditStatusWarn,
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
 			Summary: fmt.Sprintf("could not read diagnostics_gen.go: %v", err),
 			Details: details,
 		}
@@ -1469,8 +1323,8 @@ func auditDiagnostics(cfg *config.ProjectConfig, projectDir string) AuditCategor
 	details["diagnostics"] = entries
 
 	if len(entries) == 0 {
-		return AuditCategory{
-			Status:  AuditStatusOK,
+		return audittype.Category{
+			Status:  audittype.StatusOK,
 			Summary: "0 unwired scaffolds registered",
 			Details: details,
 		}
@@ -1480,50 +1334,15 @@ func auditDiagnostics(cfg *config.ProjectConfig, projectDir string) AuditCategor
 	// is on AND entries exist (the project will fail to boot in this
 	// configuration). Matches the runtime emit policy — operators and
 	// CI both get the same verdict from one audit run.
-	status := AuditStatusWarn
+	status := audittype.StatusWarn
 	if strict {
-		status = AuditStatusError
+		status = audittype.StatusError
 	}
-	return AuditCategory{
+	return audittype.Category{
 		Status:  status,
 		Summary: fmt.Sprintf("%d unwired scaffold(s) registered", len(entries)),
 		Details: details,
 	}
-}
-
-// countLineStartScaffoldMarkers counts lines whose first non-whitespace
-// content is the comment-form scaffold marker. Mirrors
-// internal/linter/scaffolds.countScaffoldMarkers — kept separate to
-// avoid pulling the linter package into the cli audit dependency
-// graph.
-func countLineStartScaffoldMarkers(data []byte) int {
-	count := 0
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimLeft(line, " \t")
-		// Match both Go-style `// FORGE_SCAFFOLD:` and YAML/shell-style
-		// `# FORGE_SCAFFOLD:` (the lint analyzer is Go-only, but audit
-		// is allowed to span more file types).
-		if strings.HasPrefix(trimmed, "// FORGE_SCAFFOLD:") || strings.HasPrefix(trimmed, "# FORGE_SCAFFOLD:") {
-			count++
-		}
-	}
-	return count
-}
-
-// isMarkerScannable identifies file types whose
-// FORGE_SCAFFOLD markers are real unfilled placeholders rather than
-// documentation references. Markdown and JSON commonly cite the marker
-// syntax in prose / fixtures, so they're excluded — those occurrences
-// would otherwise generate noisy "scaffold present" warnings on every
-// project that documents how scaffolds work.
-func isMarkerScannable(name string) bool {
-	ext := strings.ToLower(filepath.Ext(name))
-	switch ext {
-	case ".go", ".proto", ".ts", ".tsx", ".js", ".jsx",
-		".yaml", ".yml", ".sql", ".k", ".sh", ".tmpl", ".toml":
-		return true
-	}
-	return false
 }
 
 // auditPackGraph checks that every installed pack's declared `depends_on`
@@ -1532,9 +1351,9 @@ func isMarkerScannable(name string) bool {
 // place, or installed an older project on a newer forge that introduced
 // a new dep edge. Returns ok when no installed pack declares a dep, or
 // when every dep is satisfied.
-func auditPackGraph(cfg *config.ProjectConfig) AuditCategory {
+func auditPackGraph(cfg *config.ProjectConfig) audittype.Category {
 	if cfg == nil || len(cfg.Packs) == 0 {
-		return AuditCategory{Status: AuditStatusOK, Summary: "no packs installed (n/a)"}
+		return audittype.Category{Status: audittype.StatusOK, Summary: "no packs installed (n/a)"}
 	}
 	missing := packs.MissingDependencies(cfg.Packs)
 	// Also build the full edge list for the details payload — useful for
@@ -1555,14 +1374,14 @@ func auditPackGraph(cfg *config.ProjectConfig) AuditCategory {
 	if len(missing) > 0 {
 		details["missing_dependencies"] = missing
 		details["hint"] = "run `forge pack add <name>` for each missing dep, or remove the consuming pack to drop the requirement"
-		return AuditCategory{
-			Status:  AuditStatusError,
+		return audittype.Category{
+			Status:  audittype.StatusError,
 			Summary: fmt.Sprintf("%d missing pack dependency(ies): %s", len(missing), strings.Join(missing, ", ")),
 			Details: details,
 		}
 	}
-	return AuditCategory{
-		Status:  AuditStatusOK,
+	return audittype.Category{
+		Status:  audittype.StatusOK,
 		Summary: fmt.Sprintf("%d pack(s) installed; %d declared edge(s) all satisfied", len(cfg.Packs), len(edges)),
 		Details: details,
 	}
@@ -1575,14 +1394,14 @@ func auditPackGraph(cfg *config.ProjectConfig) AuditCategory {
 // non-empty (informational — user has consciously opted out of the
 // destructive-change guard for some files), error when the directory
 // has migrations but none are parseable.
-func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) AuditCategory {
+func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	migDir := filepath.Join(projectDir, "db", "migrations")
 	if cfg != nil && cfg.Database.MigrationsDir != "" {
 		migDir = filepath.Join(projectDir, cfg.Database.MigrationsDir)
 	}
 	hasMigrations := dirExists(migDir)
 	if !hasMigrations {
-		return AuditCategory{Status: AuditStatusOK, Summary: "no migrations directory (n/a)"}
+		return audittype.Category{Status: audittype.StatusOK, Summary: "no migrations directory (n/a)"}
 	}
 
 	// Count migrations + find the latest mtime.
@@ -1625,16 +1444,16 @@ func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) AuditCat
 		details["destructive_change_severity"] = severity
 	}
 
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	summary := fmt.Sprintf("%d migration(s); %d allowed_destructive; destructive_change=%s",
 		migCount, allowedCount, severity)
 	if allowedCount > 0 {
 		// Informational warn — surface that the project has explicit
 		// destructive carve-outs the user should re-review periodically.
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 		details["hint"] = "review allowed_destructive entries periodically; once a destructive migration ships, remove its allowlist entry to re-enable the guard"
 	}
-	return AuditCategory{Status: status, Summary: summary, Details: details}
+	return audittype.Category{Status: status, Summary: summary, Details: details}
 }
 
 // scanCategory captures the shape every lint-backed audit collector
@@ -1644,17 +1463,17 @@ func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) AuditCat
 // collectors; the warn/ok category shells are byte-identical so they
 // live here once. onFindings owns the non-empty case — it never sees a
 // nil/empty slice.
-func scanCategory[F any](scan func() ([]F, error), scanErrPrefix, okMsg string, onFindings func([]F) AuditCategory) AuditCategory {
+func scanCategory[F any](scan func() ([]F, error), scanErrPrefix, okMsg string, onFindings func([]F) audittype.Category) audittype.Category {
 	findings, err := scan()
 	if err != nil {
-		return AuditCategory{
-			Status:  AuditStatusWarn,
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
 			Summary: fmt.Sprintf("%s: %v", scanErrPrefix, err),
 		}
 	}
 	if len(findings) == 0 {
-		return AuditCategory{
-			Status:  AuditStatusOK,
+		return audittype.Category{
+			Status:  audittype.StatusOK,
 			Summary: okMsg,
 		}
 	}
@@ -1671,7 +1490,7 @@ func scanCategory[F any](scan func() ([]F, error), scanErrPrefix, okMsg string, 
 // package counts. (auditWireCoverage keeps its own rollup — it keys by
 // component and uses distinct detail-key names, so sharing this would
 // change its output.)
-func rollupByPackage[F any](findings []F, keyFn func(F) string, lineFn func(F) string, summaryFn func(findingCount, pkgCount int) string, hint string) AuditCategory {
+func rollupByPackage[F any](findings []F, keyFn func(F) string, lineFn func(F) string, summaryFn func(findingCount, pkgCount int) string, hint string) audittype.Category {
 	byPackage := map[string][]string{}
 	for _, f := range findings {
 		key := keyFn(f)
@@ -1683,8 +1502,8 @@ func rollupByPackage[F any](findings []F, keyFn func(F) string, lineFn func(F) s
 	}
 	sort.Strings(pkgs)
 
-	return AuditCategory{
-		Status:  AuditStatusWarn,
+	return audittype.Category{
+		Status:  audittype.StatusWarn,
 		Summary: summaryFn(len(findings), len(pkgs)),
 		Details: map[string]any{
 			"finding_count":     len(findings),
@@ -1700,18 +1519,18 @@ func rollupByPackage[F any](findings []F, keyFn func(F) string, lineFn func(F) s
 // per-component breakdown rather than per-finding output. Useful for an
 // audit-level "is wire complete?" yes/no without making the user shell
 // to lint.
-func auditWireCoverage(projectDir string) AuditCategory {
+func auditWireCoverage(projectDir string) audittype.Category {
 	path := filepath.Join(projectDir, "pkg", "app", "wire_gen.go")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return AuditCategory{
-			Status:  AuditStatusOK,
+		return audittype.Category{
+			Status:  audittype.StatusOK,
 			Summary: "no pkg/app/wire_gen.go (n/a — library project or pre-generate)",
 		}
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return AuditCategory{
-			Status:  AuditStatusWarn,
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
 			Summary: fmt.Sprintf("could not open wire_gen.go: %v", err),
 		}
 	}
@@ -1725,7 +1544,7 @@ func auditWireCoverage(projectDir string) AuditCategory {
 		func() ([]lint.WireCoverageFinding, error) { return lint.ScanWireGen(f, path, projectDir) },
 		"scan failed",
 		"wire coverage clean — no unresolved Deps fields",
-		func(findings []lint.WireCoverageFinding) AuditCategory {
+		func(findings []lint.WireCoverageFinding) audittype.Category {
 			byComponent := map[string][]string{}
 			for _, f := range findings {
 				comp := f.Function
@@ -1744,10 +1563,10 @@ func auditWireCoverage(projectDir string) AuditCategory {
 				"unresolved_count":    len(findings),
 				"affected_components": components,
 				"by_component":        byComponent,
-				"hint":                fmt.Sprintf("run `%s lint --wire-coverage` for the full per-line report", Name()),
+				"hint":                fmt.Sprintf("run `%s lint --wire-coverage` for the full per-line report", cmdutil.Name()),
 			}
-			return AuditCategory{
-				Status:  AuditStatusWarn,
+			return audittype.Category{
+				Status:  audittype.StatusWarn,
 				Summary: fmt.Sprintf("%d unresolved Deps field(s) across %d component(s)", len(findings), len(components)),
 				Details: details,
 			}
@@ -1763,15 +1582,17 @@ func auditWireCoverage(projectDir string) AuditCategory {
 // dataflow — see lint_optional_deps_guard.go); the category is
 // additive per the audit-json contract (consumers iterate
 // `.categories | keys[]` and tolerate new entries).
-func auditOptionalDepsGuard(projectDir string) AuditCategory {
+func auditOptionalDepsGuard(projectDir string) audittype.Category {
 	// Aggregate by <role>/<pkg> so a sub-agent can jump straight to the
 	// offending component; per-finding detail lives in
 	// `forge lint --optional-deps-guard --json`.
 	return scanCategory(
-		func() ([]lint.OptionalDepsGuardFinding, error) { return lint.CollectOptionalDepsGuardFindings(projectDir) },
+		func() ([]lint.OptionalDepsGuardFinding, error) {
+			return lint.CollectOptionalDepsGuardFindings(projectDir)
+		},
 		"optional-deps-guard scan failed",
 		"optional-deps-guard clean — every optional-dep deref is nil-guarded (or suppressed)",
-		func(findings []lint.OptionalDepsGuardFinding) AuditCategory {
+		func(findings []lint.OptionalDepsGuardFinding) audittype.Category {
 			return rollupByPackage(findings,
 				func(f lint.OptionalDepsGuardFinding) string { return f.Role + "/" + f.Package },
 				func(f lint.OptionalDepsGuardFinding) string {
@@ -1780,7 +1601,7 @@ func auditOptionalDepsGuard(projectDir string) AuditCategory {
 				func(findingCount, pkgCount int) string {
 					return fmt.Sprintf("%d unguarded optional-dep deref(s) across %d package(s)", findingCount, pkgCount)
 				},
-				fmt.Sprintf("run `%s lint --optional-deps-guard` for the full per-line report; suppress confirmed-safe sites with `// forge:optional-checked` on the deref line", Name()),
+				fmt.Sprintf("run `%s lint --optional-deps-guard` for the full per-line report; suppress confirmed-safe sites with `// forge:optional-checked` on the deref line", cmdutil.Name()),
 			)
 		},
 	)
@@ -1795,7 +1616,7 @@ func auditOptionalDepsGuard(projectDir string) AuditCategory {
 // field. Findings are warn-level; the category is additive per the
 // audit-json contract (consumers iterate `.categories | keys[]` and
 // tolerate new entries).
-func auditConfigDeps(projectDir string) AuditCategory {
+func auditConfigDeps(projectDir string) audittype.Category {
 	// Aggregate by <role>/<pkg> so a sub-agent can jump straight to the
 	// offending component; per-finding detail lives in
 	// `forge lint --config-deps --json`.
@@ -1803,7 +1624,7 @@ func auditConfigDeps(projectDir string) AuditCategory {
 		func() ([]lint.ConfigDepsFinding, error) { return lint.CollectConfigDepsFindings(projectDir) },
 		"config-deps scan failed",
 		"config-deps clean — no scalar Deps fields (configuration flows through config blocks)",
-		func(findings []lint.ConfigDepsFinding) AuditCategory {
+		func(findings []lint.ConfigDepsFinding) audittype.Category {
 			return rollupByPackage(findings,
 				func(f lint.ConfigDepsFinding) string { return f.Role + "/" + f.Package },
 				func(f lint.ConfigDepsFinding) string {
@@ -1812,7 +1633,7 @@ func auditConfigDeps(projectDir string) AuditCategory {
 				func(findingCount, pkgCount int) string {
 					return fmt.Sprintf("%d scalar Deps field(s) across %d package(s) — scalars are configuration; declare component config blocks in proto/config", findingCount, pkgCount)
 				},
-				fmt.Sprintf("run `%s lint --config-deps` for per-field remediation snippets (declare a <Component>Config message in proto/config/v1/config.proto and take it as `Cfg config.<Component>Config`)", Name()),
+				fmt.Sprintf("run `%s lint --config-deps` for per-field remediation snippets (declare a <Component>Config message in proto/config/v1/config.proto and take it as `Cfg config.<Component>Config`)", cmdutil.Name()),
 			)
 		},
 	)
@@ -1822,7 +1643,7 @@ func auditConfigDeps(projectDir string) AuditCategory {
 // (would `go mod tidy` produce a diff?). We don't actually run `go mod
 // tidy` because that's expensive and would mutate state — we just check
 // for go.sum presence and report.
-func auditDeps(projectDir string) AuditCategory {
+func auditDeps(projectDir string) audittype.Category {
 	details := map[string]any{}
 	hasWarn := false
 
@@ -1842,13 +1663,13 @@ func auditDeps(projectDir string) AuditCategory {
 		details["gen_go_mod"] = "present"
 	}
 
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	summary := "deps look healthy"
 	if hasWarn {
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 		summary = "deps need attention"
 	}
-	return AuditCategory{Status: status, Summary: summary, Details: details}
+	return audittype.Category{Status: status, Summary: summary, Details: details}
 }
 
 // File / method-count thresholds. Chosen to flag the genuine monster
@@ -1880,7 +1701,7 @@ var auditFileSizeWalkSkip = map[string]struct{}{
 // cheap AST parse). _test.go and _gen.go files are scanned for line count
 // but excluded from the method-count god-object check (generated method
 // tables and table-driven tests legitimately carry many funcs).
-func auditFileSizes(projectDir string) AuditCategory {
+func auditFileSizes(projectDir string) audittype.Category {
 	type bigFile struct {
 		Path  string `json:"path"`
 		Lines int    `json:"lines"`
@@ -1933,14 +1754,14 @@ func auditFileSizes(projectDir string) AuditCategory {
 	sort.Slice(bigFiles, func(i, j int) bool { return bigFiles[i].Lines > bigFiles[j].Lines })
 	sort.Slice(bigTypes, func(i, j int) bool { return bigTypes[i].Methods > bigTypes[j].Methods })
 
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	summary := fmt.Sprintf("no files over %d lines or types over %d methods", auditFileLineWarn, auditTypeMethodWarn)
 	if len(bigFiles) > 0 || len(bigTypes) > 0 {
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 		summary = fmt.Sprintf("%d oversized file(s) (>%d lines), %d god-object type(s) (>%d methods) — splitting aids LLM navigation",
 			len(bigFiles), auditFileLineWarn, len(bigTypes), auditTypeMethodWarn)
 	}
-	return AuditCategory{
+	return audittype.Category{
 		Status:  status,
 		Summary: summary,
 		Details: map[string]any{
@@ -2011,12 +1832,12 @@ var unwiredStubMarkerRE = regexp.MustCompile(`//\s*forge:gen unwired-stub symbol
 // Retirement path: `forge delete service <name>` (which tombstones it
 // types-only), or implement the handler bodies. Warn-level — an orphan
 // stub is a smell, not a build break.
-func auditOrphanStubs(cfg *config.ProjectConfig, projectDir string) AuditCategory {
+func auditOrphanStubs(f *factory.Factory, cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	handlersDir := filepath.Join(projectDir, "internal", "handlers")
 	entries, err := os.ReadDir(handlersDir)
 	if err != nil {
 		// No handlers dir (library/CLI project or pre-scaffold) — n/a.
-		return AuditCategory{Status: AuditStatusOK, Summary: "no internal/handlers/ directory (n/a)"}
+		return audittype.Category{Status: audittype.StatusOK, Summary: "no internal/handlers/ directory (n/a)"}
 	}
 
 	type orphan struct {
@@ -2027,7 +1848,7 @@ func auditOrphanStubs(cfg *config.ProjectConfig, projectDir string) AuditCategor
 	}
 	var orphans []orphan
 
-	reg, _ := loadServiceRegistry(projectDir)
+	reg, _ := f.Audit.LoadServiceRegistry(projectDir)
 
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -2043,7 +1864,7 @@ func auditOrphanStubs(cfg *config.ProjectConfig, projectDir string) AuditCategor
 		}
 		served := true
 		if reg != nil {
-			served = reg.registered(e.Name())
+			served = reg.Registered(e.Name())
 		}
 		sort.Strings(stubMethods)
 		orphans = append(orphans, orphan{
@@ -2055,18 +1876,18 @@ func auditOrphanStubs(cfg *config.ProjectConfig, projectDir string) AuditCategor
 	}
 	sort.Slice(orphans, func(i, j int) bool { return orphans[i].Service < orphans[j].Service })
 
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	summary := "no zero-implementation orphan-stub services"
 	if len(orphans) > 0 {
-		status = AuditStatusWarn
-		summary = fmt.Sprintf("%d service(s) with ALL handlers un-implemented (CodeUnimplemented) — implement them or run `%s delete service <name>` to retire", len(orphans), Name())
+		status = audittype.StatusWarn
+		summary = fmt.Sprintf("%d service(s) with ALL handlers un-implemented (CodeUnimplemented) — implement them or run `%s delete service <name>` to retire", len(orphans), cmdutil.Name())
 	}
-	return AuditCategory{
+	return audittype.Category{
 		Status:  status,
 		Summary: summary,
 		Details: map[string]any{
 			"orphan_services": orphans,
-			"hint":            fmt.Sprintf("a zero-impl service serves 501s if registered; implement the handler bodies or `%s delete service <name>`", Name()),
+			"hint":            fmt.Sprintf("a zero-impl service serves 501s if registered; implement the handler bodies or `%s delete service <name>`", cmdutil.Name()),
 		},
 	}
 }
@@ -2209,12 +2030,12 @@ func printAuditReport(w *os.File, r *AuditReport) {
 	_, _ = fmt.Fprintf(w, "Overall: %s\n", strings.ToUpper(string(r.OverallStatus)))
 }
 
-func printAuditCategory(w *os.File, key string, cat AuditCategory) {
+func printAuditCategory(w *os.File, key string, cat audittype.Category) {
 	icon := "✓"
 	switch cat.Status {
-	case AuditStatusWarn:
+	case audittype.StatusWarn:
 		icon = "⚠"
-	case AuditStatusError:
+	case audittype.StatusError:
 		icon = "✗"
 	}
 	_, _ = fmt.Fprintf(w, "%s %s — %s\n", icon, key, cat.Summary)

@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/generator"
 )
@@ -329,15 +330,15 @@ func annotateFileNode(projectDir, rel string, node *MapNode, cs *generator.FileC
 func containsScaffoldMarker(path string) bool {
 	// Markdown / JSON intentionally cite the marker syntax for
 	// documentation; only treat source-shape files as scaffold
-	// candidates, mirroring isMarkerScannable in audit.go.
-	if !isMarkerScannable(filepath.Base(path)) {
+	// candidates (cmdutil.IsMarkerScannable, shared with audit).
+	if !cmdutil.IsMarkerScannable(filepath.Base(path)) {
 		return false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
-	return countLineStartScaffoldMarkers(data) > 0
+	return cmdutil.CountLineStartScaffoldMarkers(data) > 0
 }
 
 // protoEntityMissingFromMigrations returns the list of `table_name` values

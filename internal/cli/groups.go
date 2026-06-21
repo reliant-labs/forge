@@ -12,8 +12,10 @@ package cli
 // that from being an import cycle.
 import (
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/generator"
 
 	_ "github.com/reliant-labs/forge/internal/cli/add"
+	_ "github.com/reliant-labs/forge/internal/cli/audit"
 	_ "github.com/reliant-labs/forge/internal/cli/backlog"
 	_ "github.com/reliant-labs/forge/internal/cli/component"
 	_ "github.com/reliant-labs/forge/internal/cli/debug"
@@ -51,6 +53,39 @@ func init() {
 		IsConnectServiceConfig: isConnectServiceConfig,
 		WriteScenariosIndex:    writeScenariosIndex,
 		RunPackageNew:          runPackageNew,
+	})
+	factory.SetAuditAPI(factory.AuditAPI{
+		// KCL-entity-typed categories: computed cli-side (they need the KCL
+		// render + entity structs shared by build/deploy/dev/doctor) and
+		// returned to the audit group as neutral audittype.Category.
+		Ingress:        auditIngress,
+		ExternalBuilds: auditExternalBuilds,
+		Friction:       auditFriction,
+		// Registration view: adapt the internal *serviceRegistry onto the
+		// narrow exported factory.ServiceRegistry (reusing the same adapter
+		// the GenAPI uses).
+		LoadServiceRegistry: func(projectDir string) (factory.ServiceRegistry, error) {
+			reg, err := loadServiceRegistry(projectDir)
+			if err != nil {
+				return nil, err
+			}
+			return serviceRegistryAdapter{reg}, nil
+		},
+		IsConnectServiceConfig:        isConnectServiceConfig,
+		ServiceRegistryRelPath:        serviceRegistryRelPath,
+		ListEnvs:                      ListEnvs,
+		ProjectDefinesConnectServices: projectDefinesConnectServices,
+		// scanProjectDrift returns []checksums.Tier1DriftEntry; the audit
+		// group only needs the paths, so project them to []string here.
+		ScanProjectDriftPaths: func(projectDir string, cs *generator.FileChecksums) []string {
+			var out []string
+			for _, d := range scanProjectDrift(projectDir, cs) {
+				out = append(out, d.Path)
+			}
+			return out
+		},
+		DisownFrictionReasons: disownFrictionReasons,
+		LoadProjectStoreFrom:  loadProjectStoreFrom,
 	})
 }
 

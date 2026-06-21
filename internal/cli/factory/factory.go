@@ -26,7 +26,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/audittype"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
@@ -62,7 +64,72 @@ type Factory struct {
 	// internal/cli blank-imports the groups). internal/cli registers the
 	// concrete implementation via SetGenAPI from its init().
 	Gen GenAPI
+
+	// Audit is the narrow surface the dir-nested `audit` group calls for the
+	// categories it cannot compute without package-cli internals — the
+	// KCL-entity-typed ingress / external-builds categories (which depend on
+	// the KCL render + entity structs shared by ~12 cli files), the friction
+	// roll-up (auditFriction lives in friction.go), plus the
+	// service-registry / env-discovery / drift / connect-service helpers.
+	// Each field keeps the heavy impl in internal/cli; the group gets
+	// neutral results (audittype.Category, []string, …). internal/cli
+	// registers the concrete implementation via SetAuditAPI from its init().
+	Audit AuditAPI
 }
+
+// AuditAPI is the exported surface the `forge audit` command group depends
+// on. The KCL-entity-typed categories return a finished audittype.Category
+// computed cli-side, so the group never touches the KCL entity structs (kept
+// in internal/cli where build/deploy/dev/doctor also use them).
+type AuditAPI struct {
+	// Ingress computes the ingress category: renders the dev-env KCL and
+	// cross-checks routes against forge.yaml backends.
+	Ingress func(cfg *config.ProjectConfig, projectDir string) audittype.Category
+
+	// ExternalBuilds computes the external-builds category: renders dev-env
+	// KCL, enumerates build_cmd services, cross-checks cwd / env-key
+	// conflicts / recorded build state.
+	ExternalBuilds func(cfg *config.ProjectConfig, projectDir string) audittype.Category
+
+	// Friction computes the friction category (auditFriction lives in
+	// internal/cli/friction.go alongside the `forge friction` command).
+	Friction func(projectDir string) audittype.Category
+
+	// LoadServiceRegistry / IsConnectServiceConfig / ServiceRegistryRelPath
+	// mirror the GenAPI fields — the shape inventory + unregistered-service
+	// findings read the registration view.
+	LoadServiceRegistry    func(projectDir string) (ServiceRegistry, error)
+	IsConnectServiceConfig func(c config.ComponentConfig) bool
+	ServiceRegistryRelPath string
+
+	// ListEnvs lists the project's declared environments (deploy/kcl/<env>).
+	ListEnvs func(projectDir string) ([]string, error)
+
+	// ProjectDefinesConnectServices reports whether the project declares any
+	// Connect service (drives whether the shape category parses RPC counts).
+	ProjectDefinesConnectServices func(projectDir string) bool
+
+	// ScanProjectDriftPaths returns the project-relative paths of forge-
+	// certified files whose embedded hash no longer matches (user-edited gen
+	// files), for the codegen category.
+	ScanProjectDriftPaths func(projectDir string, cs *generator.FileChecksums) []string
+
+	// DisownFrictionReasons maps disowned-file path → recorded reason from
+	// the friction log, for the codegen category's rationale backfill.
+	DisownFrictionReasons func(projectDir string) map[string]string
+
+	// LoadProjectStoreFrom loads a ProjectStore from an explicit forge.yaml
+	// path (audit resolves the path itself rather than walking up).
+	LoadProjectStoreFrom func(path string) (projectstore.ProjectStore, error)
+}
+
+// auditAPI is the AuditAPI internal/cli registers. Injected (not imported)
+// to keep the factory a leaf.
+var auditAPI AuditAPI
+
+// SetAuditAPI registers the audit surface. internal/cli calls this from an
+// init() so it is set before any Factory is built.
+func SetAuditAPI(a AuditAPI) { auditAPI = a }
 
 // GenAPI is the exported codegen + service-registry surface the `add`
 // command group depends on. Each field is a narrow, well-named entry into
@@ -162,6 +229,7 @@ func New() *Factory {
 		In:               os.Stdin,
 		LoadProjectStore: projectStoreLoader,
 		Gen:              genAPI,
+		Audit:            auditAPI,
 	}
 }
 

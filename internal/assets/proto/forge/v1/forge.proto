@@ -204,6 +204,14 @@ message ServiceOptions {
 
   // Authentication configuration for the service.
   AuthConfig auth = 6;
+
+  // Service-wide default authorization roles. A method that declares no
+  // (forge.v1.method).required_roles inherits this list: the caller must
+  // hold at least one of these roles. An empty list here means "no service
+  // default" — every method must then declare its own required_roles (the
+  // authz completeness lint enforces exactly this, so a method can never
+  // silently default to open). See pkg/authz and the `auth` skill.
+  repeated string default_roles = 7;
 }
 
 // ServiceVisibility determines how a service is exposed.
@@ -264,6 +272,30 @@ message MethodOptions {
   // The list is informational at runtime today; future work may enforce
   // that handlers can only return declared codes.
   repeated string errors = 6;
+
+  // Per-method authorization role allow-list. The caller must hold AT LEAST
+  // ONE of these roles for the call to be authorized (any-of semantics).
+  // Role implication is applied by pkg/authz at decision time (e.g. "admin"
+  // implies "user" when an implication map is configured), so listing only
+  // the least-privileged sufficient role is the idiom.
+  //
+  // Presence is what the authz completeness lint checks: a method that sets
+  // required_roles (even to a single role) is "explicitly authorized". A
+  // method that wants any-authenticated access with NO role restriction must
+  // say so explicitly via the `authz_public` marker below — an empty
+  // required_roles is treated as "unannotated" and fails the lint, so a
+  // method can never silently default to open. When absent, the service's
+  // (forge.v1.service).default_roles applies; if neither is set the lint
+  // fails the build naming the method.
+  repeated string required_roles = 7;
+
+  // Marks a method as intentionally reachable by ANY caller the auth layer
+  // admits, with no role restriction (e.g. a health check or a public read).
+  // This is the explicit, greppable opt-out that satisfies the authz
+  // completeness lint without granting it by accident: a method is "open"
+  // only when an author typed `authz_public = true`, never by omission.
+  // Mutually exclusive with required_roles (setting both fails the lint).
+  bool authz_public = 8;
 }
 
 // =============================================================================

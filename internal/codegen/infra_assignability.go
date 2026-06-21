@@ -61,8 +61,17 @@ type InfraField struct {
 // the compile-time backstop / MissingProvider path, which is the correct
 // loud state.
 func parseInfraFields(appDir string) (map[string]InfraField, error) {
+	return parseStructFields(appDir, "Infra")
+}
+
+// parseStructFields walks every non-test .go file in dir and returns the
+// exported fields of the named struct (keyed by field name). Returns an empty
+// map when dir or the struct doesn't exist yet (first generate, before the
+// file is scaffolded) — callers degrade to their loud/backstop path. Shared by
+// parseInfraFields (Infra) and parseConfigFields (Config).
+func parseStructFields(dir, structName string) (map[string]InfraField, error) {
 	out := map[string]InfraField{}
-	entries, err := os.ReadDir(appDir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return out, nil
@@ -74,7 +83,7 @@ func parseInfraFields(appDir string) (map[string]InfraField, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
-		file, perr := parser.ParseFile(fset, filepath.Join(appDir, entry.Name()), nil, parser.SkipObjectResolution)
+		file, perr := parser.ParseFile(fset, filepath.Join(dir, entry.Name()), nil, parser.SkipObjectResolution)
 		if perr != nil {
 			continue
 		}
@@ -85,7 +94,7 @@ func parseInfraFields(appDir string) (map[string]InfraField, error) {
 			}
 			for _, spec := range gd.Specs {
 				ts, ok := spec.(*ast.TypeSpec)
-				if !ok || ts.Name.Name != "Infra" {
+				if !ok || ts.Name.Name != structName {
 					continue
 				}
 				st, ok := ts.Type.(*ast.StructType)

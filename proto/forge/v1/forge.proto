@@ -318,6 +318,17 @@ message ConfigFieldOptions {
   // behavior follows the annotation. Naming a field "environment" without
   // the annotation does NOT make it the mode field.
   ConfigFieldRole role = 8;
+
+  // AllowedValues constrains a STRING field to a closed set of valid
+  // values, validated at startup by config.Validate. It is the
+  // type/annotation-driven replacement for the old name-matched log-format
+  // check ("json"/"text"): a string field carrying allowed_values is a
+  // string ENUM, rejected when its resolved value is outside the set. The
+  // empty value is always permitted (an unset, non-required field). True
+  // proto enum fields don't need this — protoreflect already enforces their
+  // domain. Renaming the field changes nothing; the set follows the
+  // annotation.
+  repeated string allowed_values = 9;
 }
 
 // ConfigFieldRole enumerates the semantic roles a config field can carry.
@@ -334,4 +345,20 @@ enum ConfigFieldRole {
   // production. config.Mode(msg) and config.DevAuthBypass(msg) key off
   // THIS field, regardless of its name.
   CONFIG_FIELD_ROLE_MODE = 1;
+
+  // CONFIG_FIELD_ROLE_TLS_CERT and CONFIG_FIELD_ROLE_TLS_KEY mark the two
+  // halves of a TLS keypair. config.Validate enforces both-or-neither:
+  // setting exactly one is a configuration error (the server would silently
+  // fall back to plaintext). Selected by annotation, not by the names
+  // "tls_cert_path"/"tls_key_path".
+  CONFIG_FIELD_ROLE_TLS_CERT = 2;
+  CONFIG_FIELD_ROLE_TLS_KEY = 3;
+
+  // CONFIG_FIELD_ROLE_CORS_ORIGINS marks the comma-separated CORS allow-list
+  // and CONFIG_FIELD_ROLE_CORS_ALLOW_CREDENTIALS marks the credentials bool.
+  // config.Validate rejects the spec-invalid combination of a wildcard
+  // origin ("*") with credentials=true. Selected by annotation, not by the
+  // field names.
+  CONFIG_FIELD_ROLE_CORS_ORIGINS = 4;
+  CONFIG_FIELD_ROLE_CORS_ALLOW_CREDENTIALS = 5;
 }

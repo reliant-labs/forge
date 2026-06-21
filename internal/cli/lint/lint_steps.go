@@ -33,7 +33,7 @@
 // their runText errors print a ⚠️ line but never set hasFailed, and their
 // JSON collection errors degrade to a warning finding that never flips ok.
 
-package cli
+package lint
 
 import (
 	"context"
@@ -251,6 +251,34 @@ func lintPipeline() []linterStep {
 			errFormat: "❌ Forge convention lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectConventionsJSON(forgeconv.LintOptions{Strict: rc.strict})
+			},
+		},
+
+		// 8b. Authz completeness — the generate-time first line of defense
+		// for descriptor-driven authorization. Fails the build when any RPC
+		// lacks an explicit authz decision (required_roles / authz_public /
+		// service default_roles). Errors gate. Runs only when buf.yaml +
+		// proto/ are present and buf is on PATH (the descriptor build needs
+		// it); the runtime fail-closed deny in forge/pkg/authz is the
+		// backstop.
+		{
+			name:  "authz completeness lint",
+			gates: true,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if !authzCompletenessApplies(".") {
+					return false, ""
+				}
+				if _, err := exec.LookPath("buf"); err != nil {
+					return false, "buf not found on PATH — skipping authz completeness lint"
+				}
+				return true, ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runAuthzCompletenessLint(rc.ctx)
+			},
+			errFormat: "❌ authz completeness lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectAuthzCompletenessJSON(rc.ctx)
 			},
 		},
 

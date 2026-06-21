@@ -810,6 +810,17 @@ func goBuildValidateFixHint(errOutput string) string {
 // surface under `forge lint --conventions` instead. Keeping the
 // pre-codegen check tight to "what would break the next `go build`"
 // is the design discipline from the validation-vs-lint split.
+// contractExcludesFromConfig returns the contracts.exclude list from the
+// project config, or nil when no config is loaded. (A local copy of the
+// helper that moved to internal/cli/lint with `forge lint`; generate.go is
+// the only remaining internal/cli caller.)
+func contractExcludesFromConfig(cfg *config.ProjectConfig) []string {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Contracts.Exclude
+}
+
 func preCodegenContractCheck(projectDir string, cfg *config.ProjectConfig) error {
 	internalDir := filepath.Join(projectDir, "internal")
 	if _, err := os.Stat(internalDir); os.IsNotExist(err) {

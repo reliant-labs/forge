@@ -1,7 +1,7 @@
 // Tests for forge lint --suggest-buf-excepts. The interesting logic
 // is the buf-output parser + threshold filter, both pure functions
 // over strings; no external buf binary is required to exercise them.
-package cli
+package lint
 
 import (
 	"strings"

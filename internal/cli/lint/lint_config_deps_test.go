@@ -1,4 +1,4 @@
-package cli
+package lint
 
 import (
 	"bytes"
@@ -171,21 +171,6 @@ func TestCollectConfigDepsJSON_Shape(t *testing.T) {
 	}
 }
 
-func TestAuditConfigDeps_Category(t *testing.T) {
-	dir := writeConfigDepsFixture(t)
-	cat := auditConfigDeps(dir)
-	if cat.Status != AuditStatusWarn {
-		t.Errorf("status = %q, want warn", cat.Status)
-	}
-	if !strings.Contains(cat.Summary, "scalar Deps field(s)") {
-		t.Errorf("summary = %q", cat.Summary)
-	}
-	if cat.Details["finding_count"].(int) == 0 {
-		t.Error("expected non-zero finding_count")
-	}
-
-	clean := auditConfigDeps(t.TempDir())
-	if clean.Status != AuditStatusOK {
-		t.Errorf("clean project status = %q, want ok", clean.Status)
-	}
-}
+// TestAuditConfigDeps_Category moved to internal/cli/audit_deps_category_test.go
+// with the audit roll-up it exercises (auditConfigDeps consumes this
+// package's CollectConfigDepsFindings).

@@ -143,7 +143,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newSmokeCmd())
 	rootCmd.AddCommand(newSecretsCmd())
 	rootCmd.AddCommand(newTestCmd())
-	rootCmd.AddCommand(newLintCmd())
+	// `lint` migrated to the internal/cli/lint group (factory registry).
 	rootCmd.AddCommand(newPackageCmd())
 	// `pack` migrated to the internal/cli/pack group (factory registry).
 	// `debug` migrated to the internal/cli/debug group (factory registry).

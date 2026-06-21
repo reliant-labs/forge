@@ -40,7 +40,7 @@
 // missing) surface as severity "info" findings with rule "skipped" so
 // an agent can tell "clean" apart from "didn't run".
 
-package cli
+package lint
 
 import (
 	"context"

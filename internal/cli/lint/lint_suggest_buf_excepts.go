@@ -26,7 +26,7 @@
 // FRICTION 2026-06-02: cp-forge proto port — author hit
 // FIELD_LOWER_SNAKE_CASE on 40+ files and had to grep buf output
 // manually to count rule occurrences before deciding what to except.
-package cli
+package lint
 
 import (
 	"context"

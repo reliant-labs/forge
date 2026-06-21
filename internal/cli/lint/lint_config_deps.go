@@ -41,7 +41,7 @@
 // companion sharing the collect/format split so `forge lint --json`
 // and `forge audit --json` reuse one engine.
 
-package cli
+package lint
 
 import (
 	"fmt"
@@ -56,6 +56,20 @@ import (
 
 	"github.com/reliant-labs/forge/internal/naming"
 )
+
+// ConfigDepsFinding is the exported alias for the config-deps finding,
+// consumed by the internal/cli/audit group's auditConfigDeps roll-up. A
+// type alias (not a new type) so audit's field access
+// (.Role/.Package/.File/.Line/.Field/.Type) is unchanged from when both
+// commands lived in package cli.
+type ConfigDepsFinding = configDepsFinding
+
+// CollectConfigDepsFindings is the exported entry the audit group calls. It
+// forwards to the package-internal collector; the audit roll-up is the only
+// cross-package consumer.
+func CollectConfigDepsFindings(projectDir string) ([]ConfigDepsFinding, error) {
+	return collectConfigDepsFindings(projectDir)
+}
 
 // configDepsFinding is one scalar Deps field. File is
 // projectDir-relative; Line/Col are 1-based positions of the field name.

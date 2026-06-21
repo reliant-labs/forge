@@ -40,7 +40,7 @@
 // The output is deterministic — package paths sort alphabetically and
 // each entry carries the heuristic that flagged it as a comment.
 
-package cli
+package lint
 
 import (
 	"fmt"

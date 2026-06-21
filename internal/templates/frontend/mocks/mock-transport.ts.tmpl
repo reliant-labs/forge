@@ -19,25 +19,31 @@
 //
 // Streaming is not supported in v1 — see docs/adr/0002-frontend-scenarios.md.
 
-{{- if .Entities }}
+{{ if .Entities -}}
 import { create } from "@bufbuild/protobuf";
-{{- end }}
+{{ end -}}
 import { Code, ConnectError } from "@connectrpc/connect";
 {{- /*
   Import order matters: the emitted file must pass the scaffold's
-  import/order rule (external, then internal sorted, then parent, then
-  type-only imports last — one blank line between groups, none within).
-  Entities and schema groups arrive pre-sorted from Go. The leading `-`
-  on each range chomps its preceding newline so that when there are no
-  entities (scenario-only project) the block collapses to nothing and we
-  still emit exactly one blank line before the `../mocks/scenarios`
-  import — no double blank that would trip no-multiple-empty-lines.
-*/ -}}
-{{- range .SchemaImportGroups }}
+  import/order rule (external, then internal `@/`, then parent `../`, then
+  type-only imports last — exactly one blank line between groups, none
+  within). Entities and schema groups arrive pre-sorted from Go.
+
+  The internal (`@/gen` + `@/mocks`) group exists ONLY when the project has
+  entity fixtures. For a scenario-only project (no entities) it collapses
+  entirely — so the group-separating blank line below is itself gated on
+  `.Entities`, leaving the external group flowing straight into the single
+  blank before the `../mocks/scenarios` parent import. Without that gate a
+  no-entity render would emit a double blank line (empty internal group +
+  its trailing separator) and trip no-multiple-empty-lines.
+*/}}
+{{- if .Entities }}
+{{ range .SchemaImportGroups }}
 import { {{range $i, $sym := .Symbols}}{{if $i}}, {{end}}{{$sym}}{{end}} } from "@/gen/{{ .ImportPath }}";
 {{- end }}
 {{- range .Entities }}
 import * as {{ .EntityNamePlural | camelCase }}Mocks from "@/mocks/{{ .EntitySlug }}";
+{{- end }}
 {{- end }}
 
 import * as scenarios from "../mocks/scenarios";
@@ -174,6 +180,8 @@ export function createMockTransport(fallback?: Transport): Transport {
         return fallback!.unary(method, signal, timeoutMs, header, input, contextValues);
       }
 
+{{- if .Entities }}
+
       // 3) Base fixture dispatch — generated from entity definitions,
       //    backed by the mutable per-entity stores above so writes
       //    round-trip within the session. Misses are REAL errors
@@ -256,6 +264,7 @@ export function createMockTransport(fallback?: Transport): Transport {
 {{- end }}
 {{- end }}
       }
+{{- end }}
 
       // 4) Nothing matched. Surface a clear error instead of hanging.
       return Promise.reject(

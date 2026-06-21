@@ -258,7 +258,7 @@ func GenerateInject(in InjectGenInput) error {
 // PROVEN-missing provider (generate-time loud error).
 func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]string, resolver TypeResolver, infraFields map[string]InfraField, matcher *InfraAssignabilityMatcher, roleRoot string) (expr, comment string, miss *MissingProvider) {
 	// 1. PRODUCER — another component produces this type (by-type edge).
-	if prodField := resolver.Resolve(df.Type); prodField != "" && prodField != c.FieldName {
+	if prodField := resolver.Resolve(c, df.Type); prodField != "" && prodField != c.FieldName {
 		if v, ok := producerVar[prodField]; ok {
 			return v, "in-process " + df.Type, nil
 		}
@@ -520,6 +520,21 @@ type InjectGenInput struct {
 // encoded on the assembled BuildComponent (compRoleRoot).
 func (in InjectGenInput) RoleRoot(c BuildComponent) string { return c.compRoleRoot }
 
+// serviceTypeKey builds the FULL import-path-qualified Service key a
+// component PRODUCES (e.g. "example.com/proj/internal/billing.Service").
+// Keying by the full path (not the bare package clause) gives two
+// same-clause packages — a domain `internal/billing` and a handler
+// `internal/handlers/billing`, both `package billing` — distinct
+// identities, so a consumer's domain dep can never mis-resolve to the
+// handler instance. When the module path is unknown (synthetic inputs),
+// fall back to the module-relative import path, which is still unique.
+func serviceTypeKey(modulePath, importPath string) string {
+	if modulePath == "" {
+		return importPath + ".Service"
+	}
+	return modulePath + "/" + importPath + ".Service"
+}
+
 // assembleBuildComponents parses every component's Deps + disk-resolves
 // its package identity into the []BuildComponent build_topo orders. The
 // ServiceTypeKey each component PRODUCES is `<pkg>.Service` (the strict
@@ -565,15 +580,19 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 			fallible, _ = DetectFallibleConstructor(res.Dir)
 			ctorType, _ = DetectConstructorType(res.Dir)
 		}
+		imports, _ := collectImports(res.Dir)
+		importPath := "internal/handlers/" + res.ImportLeaf
 		comps = append(comps, BuildComponent{
 			Name:           runtimeName,
 			FieldName:      fieldName,
 			VarName:        lowerFirst(fieldName),
 			Alias:          alias,
-			ImportPath:     "internal/handlers/" + res.ImportLeaf,
-			ServiceTypeKey: pkg + ".Service",
+			ImportPath:     importPath,
+			ServiceTypeKey: serviceTypeKey(in.ModulePath, importPath),
 			Deps:           deps,
 			compPackage:    pkg,
+			compPackageKey: pkg + ".Service",
+			compImports:    imports,
 			compFallible:   fallible,
 			compRoleRoot:   "internal/handlers",
 			compImportLeaf: res.ImportLeaf,
@@ -588,15 +607,19 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 			compDir := filepath.Join(in.ProjectDir, role, filepath.FromSlash(c.ImportPath))
 			deps, _ := ParseServiceDeps(compDir)
 			ctorType, _ := DetectConstructorType(compDir)
+			imports, _ := collectImports(compDir)
+			importPath := role + "/" + c.ImportPath
 			comps = append(comps, BuildComponent{
 				Name:           c.Name,
 				FieldName:      fieldName,
 				VarName:        lowerFirst(fieldName),
 				Alias:          alias,
-				ImportPath:     role + "/" + c.ImportPath,
-				ServiceTypeKey: c.Package + ".Service",
+				ImportPath:     importPath,
+				ServiceTypeKey: serviceTypeKey(in.ModulePath, importPath),
 				Deps:           deps,
 				compPackage:    c.Package,
+				compPackageKey: c.Package + ".Service",
+				compImports:    imports,
 				compFallible:   c.Fallible,
 				compRoleRoot:   role,
 				compImportLeaf: c.ImportPath,

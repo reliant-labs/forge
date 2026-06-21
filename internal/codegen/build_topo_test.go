@@ -10,7 +10,7 @@ import (
 // the map) resolve to "" — no edge.
 type mapResolver map[string]string
 
-func (m mapResolver) Resolve(depsType string) string { return m[depsType] }
+func (m mapResolver) Resolve(_ BuildComponent, depsType string) string { return m[depsType] }
 
 func comp(name, field string, deps ...DepsField) BuildComponent {
 	return BuildComponent{Name: name, FieldName: field, VarName: name, Deps: deps}
@@ -174,22 +174,61 @@ func TestComputeBuildPlan_SelfReferenceIsNotAnEdge(t *testing.T) {
 }
 
 func TestServiceKeyResolver_MatchesPackageQualifiedAndPointer(t *testing.T) {
+	// Unambiguous clauses resolve via the clause fallback (the consumer
+	// here has no import block, exercising the fallback path).
 	comps := []BuildComponent{
-		{FieldName: "User", ServiceTypeKey: "user.Service"},
-		{FieldName: "Audit", ServiceTypeKey: "audit.Service"},
+		{FieldName: "User", ServiceTypeKey: "m/internal/user.Service", compPackageKey: "user.Service"},
+		{FieldName: "Audit", ServiceTypeKey: "m/internal/audit.Service", compPackageKey: "audit.Service"},
 		{FieldName: "Leaf"}, // no service key — produces nothing
 	}
 	r := NewServiceKeyResolver(comps)
-	if got := r.Resolve("user.Service"); got != "User" {
+	consumer := BuildComponent{FieldName: "Consumer"}
+	if got := r.Resolve(consumer, "user.Service"); got != "User" {
 		t.Fatalf("user.Service -> %q, want User", got)
 	}
-	if got := r.Resolve("*audit.Service"); got != "Audit" {
+	if got := r.Resolve(consumer, "*audit.Service"); got != "Audit" {
 		t.Fatalf("*audit.Service -> %q, want Audit", got)
 	}
-	if got := r.Resolve("Repository"); got != "" {
+	if got := r.Resolve(consumer, "Repository"); got != "" {
 		t.Fatalf("conventional dep should not resolve, got %q", got)
 	}
-	if got := r.Resolve("leaf.Service"); got != "" {
+	if got := r.Resolve(consumer, "leaf.Service"); got != "" {
 		t.Fatalf("leaf has no service key, got %q", got)
+	}
+}
+
+// TestServiceKeyResolver_ImportPathDisambiguatesSameClause is the FIX #1
+// regression: a domain pkg internal/billing and a handler pkg
+// internal/handlers/billing BOTH `package billing` must resolve to the
+// correct DISTINCT producer based on the consumer's import block, not
+// collide on the bare clause "billing.Service".
+func TestServiceKeyResolver_ImportPathDisambiguatesSameClause(t *testing.T) {
+	const mod = "example.com/proj"
+	domainPath := mod + "/internal/billing"
+	handlerPath := mod + "/internal/handlers/billing"
+	comps := []BuildComponent{
+		{FieldName: "BillingDomain", ServiceTypeKey: domainPath + ".Service", compPackageKey: "billing.Service"},
+		{FieldName: "Billing", ServiceTypeKey: handlerPath + ".Service", compPackageKey: "billing.Service"},
+	}
+	r := NewServiceKeyResolver(comps)
+
+	// A consumer that imports the DOMAIN billing under clause "billing"
+	// resolves billing.Service to the domain producer.
+	domainConsumer := BuildComponent{FieldName: "Reports", compImports: map[string]string{"billing": domainPath}}
+	if got := r.Resolve(domainConsumer, "billing.Service"); got != "BillingDomain" {
+		t.Fatalf("domain consumer billing.Service -> %q, want BillingDomain", got)
+	}
+
+	// A consumer that imports the HANDLER billing resolves to the handler.
+	handlerConsumer := BuildComponent{FieldName: "Gateway", compImports: map[string]string{"billing": handlerPath}}
+	if got := r.Resolve(handlerConsumer, "billing.Service"); got != "Billing" {
+		t.Fatalf("handler consumer billing.Service -> %q, want Billing", got)
+	}
+
+	// Without an import block, the shared clause is AMBIGUOUS and must not
+	// be guessed — resolves to "" (falls to Infra / loud-missing).
+	blind := BuildComponent{FieldName: "Blind"}
+	if got := r.Resolve(blind, "billing.Service"); got != "" {
+		t.Fatalf("ambiguous clause without imports -> %q, want \"\"", got)
 	}
 }

@@ -14,10 +14,10 @@ import (
 // later calls never overwrite.
 func TestGenerateCmdCommands(t *testing.T) {
 	dir := t.TempDir()
-	if err := GenerateCmdCommands(dir); err != nil {
+	if err := GenerateCmdCommands(dir, "proj"); err != nil {
 		t.Fatalf("GenerateCmdCommands: %v", err)
 	}
-	dest := filepath.Join(dir, "internal", "cli", "commands.go")
+	dest := filepath.Join(dir, "cmd", "proj", "cmd", "commands.go")
 	raw, err := os.ReadFile(dest)
 	if err != nil {
 		t.Fatalf("read commands.go: %v", err)
@@ -39,7 +39,7 @@ func TestGenerateCmdCommands(t *testing.T) {
 	if err := os.WriteFile(dest, sentinel, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := GenerateCmdCommands(dir); err != nil {
+	if err := GenerateCmdCommands(dir, "proj"); err != nil {
 		t.Fatalf("GenerateCmdCommands (second call): %v", err)
 	}
 	after, err := os.ReadFile(dest)
@@ -47,6 +47,6 @@ func TestGenerateCmdCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(after) != string(sentinel) {
-		t.Error("GenerateCmdCommands overwrote a user-owned cmd/commands.go")
+		t.Error("GenerateCmdCommands overwrote a user-owned cmd/<bin>/cmd/commands.go")
 	}
 }

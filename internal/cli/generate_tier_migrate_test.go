@@ -130,11 +130,12 @@ func TestTier2ManagedPathsContents(t *testing.T) {
 
 	for _, reject := range []string{
 		// Regenerated every run by stepRegenerateInfra — honest Tier-1.
-		"cmd/server.go",
+		"internal/cli/serve.go",
+		"internal/cli/server.go",
+		"internal/cli/root.go",
 		"cmd/main.go",
-		"cmd/db.go",
-		"cmd/version.go",
-		"cmd/otel.go",
+		"internal/cli/db.go",
+		"internal/cli/version.go",
 		"buf.yaml",
 		"deploy/alloy-config.alloy",
 		// Re-rendered by the generate-time CI step when enabled.

@@ -1,4 +1,17 @@
-package cli
+// Package add holds the `forge add` command group — the verbs that scaffold
+// a new component (service / worker / operator / binary / frontend / webhook
+// / package / adapter / library / handler-file / rpc / entity / crd / scenario)
+// into an existing forge project.
+//
+// It is a dir-nested command group (the devspace idiom forge ships in
+// generated apps). The subcommands that trigger codegen — `add service`,
+// `add worker`, `add operator` — reach the generate pipeline and the
+// pkg/app/services.go registration view through factory.GenAPI (function
+// values internal/cli registers via SetGenAPI). The group never imports
+// internal/cli, so the registry indirection in the factory package is what
+// keeps the dependency one-directional (group → factory) and the import
+// cycle broken. init() self-registers the parent command with the factory.
+package add
 
 import (
 	"context"
@@ -13,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
@@ -21,10 +35,21 @@ import (
 	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
-// The name validators now live in internal/cli/cmdutil (shared with the
-// dir-nested `forge add` group). These unexported forwarders keep the many
-// internal/cli call sites (new.go, this file's pre-move state) working.
-func validateServiceName(name string) error { return cmdutil.ValidateServiceName(name) }
+func init() { factory.Register(newCmd) }
+
+// validateServiceName / validateIdentifier / validateProjectName /
+// validateFrontendName forward to the shared validators in cmdutil (the
+// leaf home shared with `forge new`). Unexported aliases keep the group's
+// call sites terse and behavior identical.
+func validateServiceName(name string) error  { return cmdutil.ValidateServiceName(name) }
+func validateIdentifier(name string) error   { return cmdutil.ValidateIdentifier(name) }
+func validateProjectName(name string) error  { return cmdutil.ValidateProjectName(name) }
+func validateFrontendName(name string) error { return cmdutil.ValidateFrontendName(name) }
+
+// projectRoot forwards to cmdutil.ProjectRoot — the shared project-root
+// resolver. The unexported alias keeps the many call sites in this package
+// unchanged from their pre-move form.
+func projectRoot() (string, error) { return cmdutil.ProjectRoot() }
 
 // requireNoComponentNamed enforces that no component in the project already
 // claims `name`, returning a user-facing UserErr (with a Fix clause) when one
@@ -45,10 +70,8 @@ func requireNoComponentNamed(cfg *config.ProjectConfig, name, ctxLabel string) e
 	return nil
 }
 
-func validateIdentifier(name string) error  { return cmdutil.ValidateIdentifier(name) }
-func validateProjectName(name string) error { return cmdutil.ValidateProjectName(name) }
 
-func newAddCmd() *cobra.Command {
+func newCmd(f *factory.Factory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Add a service, worker, operator, frontend, or binary to an existing project",
@@ -70,30 +93,23 @@ Subcommands:
   forge add entity <name> [field:type ...]        Add a DB entity: SQL migration + CRUD wire contract`,
 	}
 
-	cmd.AddCommand(newAddServiceCmd())
-	cmd.AddCommand(newAddWorkerCmd())
-	cmd.AddCommand(newAddOperatorCmd())
-	cmd.AddCommand(newAddCRDCmd())
-	cmd.AddCommand(newAddFrontendCmd())
-	cmd.AddCommand(newAddScenarioCmd())
-	cmd.AddCommand(newAddWebhookCmd())
-	cmd.AddCommand(newAddPackageCmd())
-	cmd.AddCommand(newAddAdapterCmd())
-	cmd.AddCommand(newAddBinaryCmd())
-	cmd.AddCommand(newAddLibraryCmd())
-	cmd.AddCommand(newAddHandlerFileCmd())
-	cmd.AddCommand(newAddRPCCmd())
-	cmd.AddCommand(newAddEntityCmd())
+	cmd.AddCommand(newAddServiceCmd(f))
+	cmd.AddCommand(newAddWorkerCmd(f))
+	cmd.AddCommand(newAddOperatorCmd(f))
+	cmd.AddCommand(newAddCRDCmd(f))
+	cmd.AddCommand(newAddFrontendCmd(f))
+	cmd.AddCommand(newAddScenarioCmd(f))
+	cmd.AddCommand(newAddWebhookCmd(f))
+	cmd.AddCommand(newAddPackageCmd(f))
+	cmd.AddCommand(newAddAdapterCmd(f))
+	cmd.AddCommand(newAddBinaryCmd(f))
+	cmd.AddCommand(newAddLibraryCmd(f))
+	cmd.AddCommand(newAddHandlerFileCmd(f))
+	cmd.AddCommand(newAddRPCCmd(f))
+	cmd.AddCommand(newAddEntityCmd(f))
 
 	return cmd
 }
-
-// projectRoot forwards to cmdutil.ProjectRoot — the shared home so the
-// dir-nested command groups (pack, ...) reach it without importing
-// internal/cli. The forwarder keeps the unexported name working for the many
-// flat command files in this package that call it, without rewriting their
-// call sites.
-func projectRoot() (string, error) { return cmdutil.ProjectRoot() }
 
 // snapshotComponentsFile reads the components.json at path for rollback.
 // It returns the bytes, whether the file existed (a fresh service shell may
@@ -303,7 +319,7 @@ func addComponent(spec componentAddSpec) error {
 // expose a --no-generate flag (currently worker). The exact stdout/stderr
 // wording matches the inline runAddWorker code it was lifted from — friction
 // fixes (the "files written, generate failed" partial-success line) live here.
-func runPostScaffoldGenerate(root, name string, noGenerate bool) error {
+func runPostScaffoldGenerate(f *factory.Factory, root, name string, noGenerate bool) error {
 	// --no-generate: scaffold-only mode. Skip the post-scaffold generate
 	// pipeline so parallel-agent rounds can stage worker scaffolding
 	// without triggering project-wide codegen churn (which races sibling
@@ -333,9 +349,7 @@ func runPostScaffoldGenerate(root, name string, noGenerate bool) error {
 	// step set lives in stepPresetAllowlist["bootstrap-only"]
 	// (generate_pipeline.go).
 	fmt.Println("\n🔧 Running generation pipeline (bootstrap-only step preset)...")
-	generateMu.Lock()
-	err := runGeneratePipelineFlags(root, pipelineFlags{Steps: "bootstrap-only"})
-	generateMu.Unlock()
+	err := f.Gen.RunPipelineBootstrapOnly(root)
 	if err != nil {
 		// Non-fatal: the worker files were created successfully, but the
 		// pipeline failure usually means the project doesn't compile (a
@@ -358,7 +372,7 @@ func runPostScaffoldGenerate(root, name string, noGenerate bool) error {
 
 // --- add service ---
 
-func newAddServiceCmd() *cobra.Command {
+func newAddServiceCmd(f *factory.Factory) *cobra.Command {
 	var (
 		port   int
 		resume bool
@@ -390,7 +404,7 @@ Example:
   forge add service users --force    # re-stamp every output file`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddService(args[0], port, resume, force)
+			return runAddService(f, args[0], port, resume, force)
 		},
 	}
 
@@ -401,7 +415,7 @@ Example:
 	return cmd
 }
 
-func runAddService(name string, port int, resume, force bool) error {
+func runAddService(f *factory.Factory, name string, port int, resume, force bool) error {
 	ctxLabel := fmt.Sprintf("forge add service %s", name)
 
 	// --resume and --force are mutually exclusive: one is "preserve user
@@ -519,9 +533,7 @@ func runAddService(name string, port int, resume, force bool) error {
 			// Run the full generation pipeline: buf generate, service stubs,
 			// mocks, bootstrap.go, testing.go, go mod tidy, etc.
 			fmt.Println("\n🔧 Running generation pipeline...")
-			generateMu.Lock()
-			err := runGeneratePipeline(p.root, false, false)
-			generateMu.Unlock()
+			err := f.Gen.RunPipeline(p.root)
 			if err != nil {
 				// Only restore the source when we actually appended to it this
 				// invocation; otherwise --resume would clobber a valid config
@@ -560,9 +572,9 @@ func runAddService(name string, port int, resume, force bool) error {
 			// resolved. This is deliberate: the registration line is the one
 			// decision the user (or their agent) writes — forge generates the
 			// guardrails around it.
-			if reg, regErr := loadServiceRegistry(p.root); regErr == nil && reg.Exists && !reg.registered(name) {
+			if reg, regErr := f.Gen.LoadServiceRegistry(p.root); regErr == nil && reg.Exists() && !reg.Registered(name) {
 				fmt.Println()
-				fmt.Printf("⚠️  %s is user-owned — forge does not edit it.\n", serviceRegistryRelPath)
+				fmt.Printf("⚠️  %s is user-owned — forge does not edit it.\n", f.Gen.ServiceRegistryRelPath)
 				fmt.Printf("   To serve %q from this binary, add this row to RegisteredServices:\n\n", name)
 				fmt.Printf("       %s(app, cfg, logger, opts...),\n\n", codegen.ServiceRowFuncName(name))
 				fmt.Println("   Until then the service is generated but not served (forge audit: codegen.unregistered_services).")
@@ -576,7 +588,7 @@ func runAddService(name string, port int, resume, force bool) error {
 
 // --- add package (alias for package new) ---
 
-func newAddPackageCmd() *cobra.Command {
+func newAddPackageCmd(f *factory.Factory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "package <name>",
 		Short: "Add a new internal package (alias for 'forge package new')",
@@ -601,7 +613,7 @@ Example:
   forge add package stripe-adapter --type adapter
   forge add package billing-flow --type interactor`,
 		Args: cobra.ExactArgs(1),
-		RunE: runPackageNew,
+		RunE: f.Gen.RunPackageNew,
 	}
 
 	cmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
@@ -612,7 +624,7 @@ Example:
 
 // --- add worker ---
 
-func newAddWorkerCmd() *cobra.Command {
+func newAddWorkerCmd(f *factory.Factory) *cobra.Command {
 	var kind string
 	var schedule string
 	var noGenerate bool
@@ -641,7 +653,7 @@ Example:
   forge add worker engine_shadow --kind cron --schedule "0 3 * * *" --no-generate`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddWorker(args[0], kind, schedule, noGenerate)
+			return runAddWorker(f, args[0], kind, schedule, noGenerate)
 		},
 	}
 
@@ -652,7 +664,7 @@ Example:
 	return cmd
 }
 
-func runAddWorker(name, kind, schedule string, noGenerate bool) error {
+func runAddWorker(f *factory.Factory, name, kind, schedule string, noGenerate bool) error {
 	ctxLabel := fmt.Sprintf("forge add worker %s", name)
 	if err := validateIdentifier(name); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "invalid worker name", "",
@@ -721,14 +733,14 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 			}, true
 		},
 		postScaffold: func(p postScaffoldParams) error {
-			return runPostScaffoldGenerate(p.root, p.name, noGenerate)
+			return runPostScaffoldGenerate(f, p.root, p.name, noGenerate)
 		},
 	})
 }
 
 // --- add operator ---
 
-func newAddOperatorCmd() *cobra.Command {
+func newAddOperatorCmd(f *factory.Factory) *cobra.Command {
 	var (
 		group              string
 		version            string
@@ -759,7 +771,7 @@ Example:
   forge add operator workspace-controller --with-placeholder-crd --api-package workspace --crd-type Workspace --group reliant.dev --version v1alpha1`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddOperator(args[0], group, version, apiPackage, crdType, withPlaceholderCRD)
+			return runAddOperator(f, args[0], group, version, apiPackage, crdType, withPlaceholderCRD)
 		},
 	}
 
@@ -772,7 +784,7 @@ Example:
 	return cmd
 }
 
-func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceholderCRD bool) error {
+func runAddOperator(f *factory.Factory, name, group, version, apiPackage, crdType string, withPlaceholderCRD bool) error {
 	ctxLabel := fmt.Sprintf("forge add operator %s", name)
 
 	// Pure flag-combination guard, independent of cfg: --api-package /
@@ -835,9 +847,7 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 		postScaffold: func(p postScaffoldParams) error {
 			// Run the generation pipeline to update bootstrap.go and cmd-server.go
 			fmt.Println("\n🔧 Running generation pipeline...")
-			generateMu.Lock()
-			err := runGeneratePipeline(p.root, false, false)
-			generateMu.Unlock()
+			err := f.Gen.RunPipeline(p.root)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: generation pipeline failed: %v\n", err)
 				// Non-fatal: the operator files were created successfully
@@ -855,7 +865,7 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 
 // --- add crd ---
 
-func newAddCRDCmd() *cobra.Command {
+func newAddCRDCmd(_ *factory.Factory) *cobra.Command {
 	var (
 		group    string
 		version  string
@@ -1018,7 +1028,7 @@ func runAddCRD(name, group, version, shape, operator string) error {
 
 // --- add frontend ---
 
-func newAddFrontendCmd() *cobra.Command {
+func newAddFrontendCmd(_ *factory.Factory) *cobra.Command {
 	var port int
 	var kind string
 	var output string
@@ -1067,8 +1077,6 @@ Example:
 
 	return cmd
 }
-
-func validateFrontendName(name string) error { return cmdutil.ValidateFrontendName(name) }
 
 func runAddFrontend(ctx context.Context, name string, port int, kind, output, basePath string) error {
 	ctxLabel := fmt.Sprintf("forge add frontend %s", name)
@@ -1300,7 +1308,7 @@ func runFrontendNpmInstall(ctx context.Context, frontendDir string) error {
 
 // --- add webhook ---
 
-func newAddWebhookCmd() *cobra.Command {
+func newAddWebhookCmd(f *factory.Factory) *cobra.Command {
 	var serviceName string
 
 	cmd := &cobra.Command{
@@ -1316,7 +1324,7 @@ Example:
   forge add webhook github --service notifications`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddWebhook(args[0], serviceName)
+			return runAddWebhook(f, args[0], serviceName)
 		},
 	}
 
@@ -1326,7 +1334,7 @@ Example:
 	return cmd
 }
 
-func runAddWebhook(name, serviceName string) error {
+func runAddWebhook(f *factory.Factory, name, serviceName string) error {
 	ctxLabel := fmt.Sprintf("forge add webhook %s", name)
 	if err := validateProjectName(name); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "invalid webhook name", "",
@@ -1366,10 +1374,10 @@ func runAddWebhook(name, serviceName string) error {
 	// would fail the next `forge generate`. Reject at add time with the
 	// full story. Best-effort parse: a broken registry falls open here —
 	// the generate-time check is the hard gate.
-	if reg, regErr := loadServiceRegistry(root); regErr == nil &&
-		isConnectServiceConfig(cfg.Components[svcIdx]) && !reg.registered(serviceName) {
+	if reg, regErr := f.Gen.LoadServiceRegistry(root); regErr == nil &&
+		f.Gen.IsConnectServiceConfig(cfg.Components[svcIdx]) && !reg.Registered(serviceName) {
 		return cliutil.UserErr(ctxLabel,
-			fmt.Sprintf("service %q is not registered in %s — webhooks require a serving binary", serviceName, serviceRegistryRelPath),
+			fmt.Sprintf("service %q is not registered in %s — webhooks require a serving binary", serviceName, f.Gen.ServiceRegistryRelPath),
 			"",
 			fmt.Sprintf("add `%s(app, cfg, logger, opts...),` to RegisteredServices there first, or add the webhook to the binary that serves it", codegen.ServiceRowFuncName(serviceName)))
 	}
@@ -1419,7 +1427,7 @@ func runAddWebhook(name, serviceName string) error {
 // times across rebuilds). The scaffold here lifts that boilerplate
 // into the generator so the next equivalent is the user's business
 // logic plus a thin glue layer.
-func newAddBinaryCmd() *cobra.Command {
+func newAddBinaryCmd(_ *factory.Factory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "binary <name>",
 		Short: "Add a non-server long-running binary to the project",

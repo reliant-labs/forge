@@ -11,7 +11,7 @@
 //   - parseStreamMode accepts the documented aliases and rejects others.
 //   - subcommand is registered on `forge add`.
 
-package cli
+package add
 
 import (
 	"os"
@@ -144,7 +144,7 @@ func TestRunAddRPC_HappyPath(t *testing.T) {
 		t.Fatalf("mkdir handlers/tasks: %v", err)
 	}
 
-	if err := runAddRPC("tasks", "TailEvents", rpcServerStream); err != nil {
+	if err := runAddRPC(testFactory(), "tasks", "TailEvents", rpcServerStream); err != nil {
 		t.Fatalf("runAddRPC: %v", err)
 	}
 
@@ -174,7 +174,7 @@ func TestRunAddRPC_RejectsLowercaseStart(t *testing.T) {
 	// Connect RPC method names must be exported — start uppercase.
 	// validateIdentifier accepts lowercase starts (it's also used for
 	// filenames), so we have a tighter check just for RPC names.
-	err := runAddRPC("tasks", "tailEvents", rpcUnary)
+	err := runAddRPC(testFactory(), "tasks", "tailEvents", rpcUnary)
 	if err == nil {
 		t.Fatal("expected error for lowercase RPC name, got nil")
 	}
@@ -188,7 +188,7 @@ func TestRunAddRPC_MissingHandlerDir(t *testing.T) {
 	writeComponentsJSON(t, dir)
 	// No handlers/tasks dir on disk.
 
-	err := runAddRPC("tasks", "ListByOwner", rpcUnary)
+	err := runAddRPC(testFactory(), "tasks", "ListByOwner", rpcUnary)
 	if err == nil {
 		t.Fatal("expected error when handler directory missing, got nil")
 	}
@@ -209,7 +209,7 @@ func TestRunAddRPC_FileAlreadyExists(t *testing.T) {
 		t.Fatalf("seed existing file: %v", err)
 	}
 
-	err := runAddRPC("tasks", "ListByOwner", rpcUnary)
+	err := runAddRPC(testFactory(), "tasks", "ListByOwner", rpcUnary)
 	if err == nil {
 		t.Fatal("expected error when target file exists, got nil")
 	}
@@ -224,7 +224,7 @@ func TestRunAddRPC_FileAlreadyExists(t *testing.T) {
 }
 
 func TestAddRPCSubcommandRegistered(t *testing.T) {
-	root := newAddCmd()
+	root := newCmd(testFactory())
 	var found bool
 	for _, sub := range root.Commands() {
 		if sub.Name() == "rpc" {

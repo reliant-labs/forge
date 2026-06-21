@@ -19,7 +19,7 @@
 //     unary-shaped by contract; streaming is intentionally hand-written
 //     below the proto line.
 
-package cli
+package add
 
 import (
 	"fmt"
@@ -29,6 +29,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -63,7 +64,7 @@ func parseStreamMode(s string) (rpcStreamMode, error) {
 }
 
 // newAddRPCCmd is the cobra surface for `forge add rpc`.
-func newAddRPCCmd() *cobra.Command {
+func newAddRPCCmd(f *factory.Factory) *cobra.Command {
 	var streamFlag string
 	cmd := &cobra.Command{
 		Use:   "rpc <svc> <Name>",
@@ -94,7 +95,7 @@ Examples:
 				return cliutil.UserErr("forge add rpc", err.Error(), "",
 					"pass --stream server, --stream client, --stream bidi, or omit for unary")
 			}
-			return runAddRPC(args[0], args[1], mode)
+			return runAddRPC(f, args[0], args[1], mode)
 		},
 	}
 	cmd.Flags().StringVar(&streamFlag, "stream", "", "stream mode (server, client, bidi); omit for unary")
@@ -104,7 +105,7 @@ Examples:
 // runAddRPC validates inputs, writes the handler stub, and prints the
 // proto snippet. Mirrors `forge add handler-file` for filesystem
 // preconditions: service must exist, target file must not.
-func runAddRPC(svc, rpcName string, mode rpcStreamMode) error {
+func runAddRPC(f *factory.Factory, svc, rpcName string, mode rpcStreamMode) error {
 	ctxLabel := fmt.Sprintf("forge add rpc %s %s", svc, rpcName)
 
 	if err := validateIdentifier(svc); err != nil {
@@ -140,11 +141,11 @@ func runAddRPC(svc, rpcName string, mode rpcStreamMode) error {
 	// scaffold and falls through — implementing before registering is a
 	// supported flow. Best-effort parse: a broken registry falls
 	// through to the handler-dir check below.
-	if reg, regErr := loadServiceRegistry(root); regErr == nil && reg.state(svc) == registrationTombstoned {
+	if reg, regErr := f.Gen.LoadServiceRegistry(root); regErr == nil && reg.Tombstoned(svc) {
 		return cliutil.UserErr(ctxLabel,
-			fmt.Sprintf("service %q is types-only — %s deliberately does not register it (its row was deleted; see the comment there), so this binary has no handler scaffold to add an RPC to", svc, serviceRegistryRelPath),
-			serviceRegistryRelPath,
-			fmt.Sprintf("add the RPC to the proto only (the types/client still generate), implement it in the binary the %s comment names, or restore the `%s(app, cfg, logger, opts...),` row to serve it here", serviceRegistryRelPath, codegen.ServiceRowFuncName(svc)))
+			fmt.Sprintf("service %q is types-only — %s deliberately does not register it (its row was deleted; see the comment there), so this binary has no handler scaffold to add an RPC to", svc, f.Gen.ServiceRegistryRelPath),
+			f.Gen.ServiceRegistryRelPath,
+			fmt.Sprintf("add the RPC to the proto only (the types/client still generate), implement it in the binary the %s comment names, or restore the `%s(app, cfg, logger, opts...),` row to serve it here", f.Gen.ServiceRegistryRelPath, codegen.ServiceRowFuncName(svc)))
 	}
 
 	pkg := naming.ServicePackage(svc)

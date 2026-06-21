@@ -1,4 +1,4 @@
-package cli
+package add
 
 import (
 	"fmt"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/schemadef"
@@ -58,7 +59,7 @@ type entityField struct {
 	Decl string // the type keyword as written ("[]string")
 }
 
-func newAddEntityCmd() *cobra.Command {
+func newAddEntityCmd(_ *factory.Factory) *cobra.Command {
 	var (
 		serviceFlag  string
 		tableFlag    string

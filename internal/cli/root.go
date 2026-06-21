@@ -23,6 +23,19 @@ func Execute() error {
 	return NewRootCmd().Execute()
 }
 
+// projectRoot forwards to cmdutil.ProjectRoot — the shared project-root
+// resolver. The `add` group moved to internal/cli/add and now calls cmdutil
+// directly; this unexported forwarder keeps the remaining internal/cli call
+// sites (ci.go, delete.go, disown.go, package.go) unchanged.
+func projectRoot() (string, error) { return cmdutil.ProjectRoot() }
+
+// validateProjectName / validateServiceName / validateFrontendName forward
+// to the shared validators in cmdutil (now the canonical home, shared with
+// the internal/cli/add group). new.go calls these.
+func validateProjectName(name string) error  { return cmdutil.ValidateProjectName(name) }
+func validateServiceName(name string) error  { return cmdutil.ValidateServiceName(name) }
+func validateFrontendName(name string) error { return cmdutil.ValidateFrontendName(name) }
+
 // Name returns the command name users should type to invoke Forge.
 // When the binary is "forge" (standalone install), it returns "forge".
 // When embedded in another binary (e.g. "reliant"), it returns "reliant forge".
@@ -123,7 +136,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newDBCmd())
 	rootCmd.AddCommand(newMigrateCmd())
 	rootCmd.AddCommand(newNewCmd())
-	rootCmd.AddCommand(newAddCmd())
+	// `add` migrated to the internal/cli/add group (factory registry).
 	rootCmd.AddCommand(newDeleteCmd())
 	rootCmd.AddCommand(newBuildCmd())
 	rootCmd.AddCommand(newDeployCmd())

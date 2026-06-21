@@ -1,4 +1,12 @@
-package cli
+// Package backlog holds the `forge backlog` command group — list / add /
+// close / open / migrate over the structured FORGE_BACKLOG.md.
+//
+// Dir-nested command group (the devspace idiom): the parent newCmd assembles
+// the subcommands defined in the sibling files (list.go, add.go, close.go,
+// open.go, migrate.go); the shared parse/rewrite core stays in this file.
+// init() self-registers the group with internal/cli/factory so a blank import
+// from internal/cli/groups.go attaches it to the root without a cycle.
+package backlog
 
 import (
 	"encoding/json"
@@ -11,12 +19,26 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cli/factory"
 )
+
+func init() { factory.Register(newCmd) }
+
+// fileExists reports whether path names an existing non-directory file. A
+// trivial os.Stat wrapper kept local to this package.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
 
 // backlogFileName is the canonical backlog file at the forge repo root.
 const backlogFileName = "FORGE_BACKLOG.md"
@@ -72,129 +94,18 @@ var categoryHeadings = map[string]bool{
 	"fixed":            true,
 }
 
-// newBacklogCmd is the top-level `forge backlog` group.
-func newBacklogCmd() *cobra.Command {
+// newCmd is the top-level `forge backlog` group.
+func newCmd(f *factory.Factory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "backlog",
 		Short: "Manage the structured FORGE_BACKLOG.md (list / add / close / open)",
 	}
-	cmd.AddCommand(newBacklogListCmd())
-	cmd.AddCommand(newBacklogAddCmd())
-	cmd.AddCommand(newBacklogCloseCmd())
-	cmd.AddCommand(newBacklogOpenCmd())
-	cmd.AddCommand(newBacklogMigrateCmd())
+	cmd.AddCommand(newListCmd(f))
+	cmd.AddCommand(newAddCmd(f))
+	cmd.AddCommand(newCloseCmd(f))
+	cmd.AddCommand(newOpenCmd(f))
+	cmd.AddCommand(newMigrateCmd(f))
 	return cmd
-}
-
-func newBacklogListCmd() *cobra.Command {
-	var (
-		areaFilter   string
-		statusFilter string
-		jsonOut      bool
-	)
-	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List backlog items (filterable by area and status)",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			items, err := loadBacklog()
-			if err != nil {
-				return err
-			}
-			items = filterBacklog(items, areaFilter, statusFilter)
-			if jsonOut {
-				return writeBacklogJSON(cmd.OutOrStdout(), items)
-			}
-			return writeBacklogTable(cmd.OutOrStdout(), items)
-		},
-	}
-	cmd.Flags().StringVar(&areaFilter, "area", "", "Filter by area (e.g. codegen, testing)")
-	cmd.Flags().StringVar(&statusFilter, "status", "", "Filter by status (open, fixed)")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output JSON instead of a tab-separated table")
-	return cmd
-}
-
-func newBacklogAddCmd() *cobra.Command {
-	var (
-		severity string
-		area     string
-	)
-	cmd := &cobra.Command{
-		Use:   "add <title>",
-		Short: "Append a new backlog item with structured frontmatter",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			title := args[0]
-			if severity == "" {
-				return fmt.Errorf("--severity is required")
-			}
-			if area == "" {
-				return fmt.Errorf("--area is required")
-			}
-
-			file, err := backlogFilePath()
-			if err != nil {
-				return err
-			}
-
-			items, err := loadBacklog()
-			if err != nil {
-				return err
-			}
-
-			id := nextBacklogID(items)
-			today := time.Now().UTC().Format("2006-01-02")
-			section := renderNewItem(id, severity, area, today, title)
-
-			if err := appendToFile(file, section); err != nil {
-				return err
-			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "added %s\n", id)
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&severity, "severity", "", "Severity: low | moderate | high | critical")
-	cmd.Flags().StringVar(&area, "area", "", "Area / subsystem (e.g. codegen, testing, scaffold)")
-	_ = cmd.MarkFlagRequired("severity")
-	_ = cmd.MarkFlagRequired("area")
-	return cmd
-}
-
-func newBacklogCloseCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "close <id>",
-		Short: "Mark a backlog item fixed (sets status: fixed + fixed_at: today)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			today := time.Now().UTC().Format("2006-01-02")
-			return setBacklogStatus(args[0], "fixed", today, cmd.OutOrStdout())
-		},
-	}
-}
-
-func newBacklogOpenCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "open <id>",
-		Short: "Reopen a backlog item (sets status: open, clears fixed_at)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return setBacklogStatus(args[0], "open", "", cmd.OutOrStdout())
-		},
-	}
-}
-
-func newBacklogMigrateCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "migrate",
-		Short: "Backfill structured frontmatter for legacy items (best-effort)",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			n, err := migrateBacklog()
-			if err != nil {
-				return err
-			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "migrated %d items\n", n)
-			return nil
-		},
-	}
 }
 
 // backlogFilePath returns the path to FORGE_BACKLOG.md. We look for it in:
@@ -214,7 +125,7 @@ func backlogFilePath() (string, error) {
 		return p, nil
 	}
 	// 2. project root
-	if root, err := findProjectRoot(); err == nil && root != "" {
+	if root, err := cmdutil.FindProjectRoot(); err == nil && root != "" {
 		if p := filepath.Join(root, backlogFileName); fileExists(p) {
 			return p, nil
 		}
@@ -429,24 +340,8 @@ func nextBacklogID(items []BacklogItem) string {
 	return fmt.Sprintf("forge-%d", highest+1)
 }
 
-// renderNewItem produces the markdown section for a new backlog entry.
-//
-// Format intentionally matches the spec:
-//
-//	## [Severity] Title
-//
-//	```yaml
-//	id: forge-N
-//	severity: ...
-//	area: ...
-//	status: open
-//	created_at: YYYY-MM-DD
-//	```
-//
-//	(empty body — user fills in)
-//
-// `area` is a short ASCII label (auth, codegen, frontend); we capitalize
-// the first byte rather than pull in golang.org/x/text/cases.
+// capitalizeFirst capitalizes the first byte of a short ASCII label (auth,
+// codegen, frontend) without pulling in golang.org/x/text/cases.
 func capitalizeFirst(s string) string {
 	if s == "" {
 		return s
@@ -454,6 +349,7 @@ func capitalizeFirst(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
+// renderNewItem produces the markdown section for a new backlog entry.
 func renderNewItem(id, severity, area, today, title string) string {
 	header := fmt.Sprintf("## [%s] %s", capitalizeFirst(area), title)
 	yamlBlock := fmt.Sprintf(

@@ -4,7 +4,7 @@
 // 	protoc        (unknown)
 // source: forge/v1/forge.proto
 
-package forgev1
+package forgepb
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -25,6 +25,9 @@ const (
 
 // StoreAs controls how complex or non-scalar protobuf types are persisted
 // in the database.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Column storage types live in migration SQL.
 type StoreAs int32
 
 const (
@@ -139,8 +142,10 @@ func (ServiceVisibility) EnumDescriptor() ([]byte, []int) {
 }
 
 // EntityOptions defines how a protobuf message maps to a database table.
-// Apply via [(forge.v1.entity) = { ... }] on any message that represents
-// a persistent entity.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Kept for one release so legacy projects' protos
+// keep compiling; remove the annotations from your protos.
 type EntityOptions struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Database table name. Inferred from the message name (snake_case, pluralized)
@@ -225,6 +230,9 @@ func (x *EntityOptions) GetMiddleware() []string {
 }
 
 // IndexDef defines a database index on one or more columns.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Declare indexes in migration SQL instead.
 type IndexDef struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Index name. Auto-generated from field names when left empty.
@@ -289,7 +297,10 @@ func (x *IndexDef) GetUnique() bool {
 }
 
 // FieldOptions defines how a protobuf field maps to a database column.
-// Apply via [(forge.v1.field) = { ... }] on any field inside an entity message.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Kept for one release so legacy projects' protos
+// keep compiling; remove the annotations from your protos.
 type FieldOptions struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Mark this field as the primary key.
@@ -954,6 +965,9 @@ var (
 var (
 	// Database column mapping and constraints.
 	//
+	// Retired: ignored by forge. SQL is the schema — db/migrations drive entity
+	// projections. Kept only so legacy protos keep compiling.
+	//
 	// optional forge.v1.FieldOptions field = 50300;
 	E_Field = &file_forge_v1_forge_proto_extTypes[1]
 	// Configuration binding to environment variables and CLI flags.
@@ -1062,7 +1076,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x05field\x12\x1d.google.protobuf.FieldOptions\x18\xfc\x88\x03 \x01(\v2\x16.forge.v1.FieldOptionsR\x05field:U\n" +
 	"\x06config\x12\x1d.google.protobuf.FieldOptions\x18\xe0\x89\x03 \x01(\v2\x1c.forge.v1.ConfigFieldOptionsR\x06config:U\n" +
 	"\aservice\x12\x1f.google.protobuf.ServiceOptions\x18І\x03 \x01(\v2\x18.forge.v1.ServiceOptionsR\aservice:Q\n" +
-	"\x06method\x12\x1e.google.protobuf.MethodOptions\x18\xb4\x87\x03 \x01(\v2\x17.forge.v1.MethodOptionsR\x06methodB=Z;github.com/reliant-labs/forge/internal/gen/forge/v1;forgev1b\x06proto3"
+	"\x06method\x12\x1e.google.protobuf.MethodOptions\x18\xb4\x87\x03 \x01(\v2\x17.forge.v1.MethodOptionsR\x06methodB3Z1github.com/reliant-labs/forge/pkg/forgepb;forgepbb\x06proto3"
 
 var (
 	file_forge_v1_forge_proto_rawDescOnce sync.Once

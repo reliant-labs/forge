@@ -1002,7 +1002,7 @@ func assertZeroServiceShape(t *testing.T, projectDir, name string) {
 //     PUBLISHED go_package (github.com/reliant-labs/forge/gen/forge/v1)
 //     so generated config code imports that module — which does not
 //     exist on the proxy yet. The shim is a one-package module wrapping
-//     the in-repo internal/gen/forge/v1/forge.pb.go.
+//     the in-repo pkg/forgepb/forge.pb.go.
 func addCorpusForgePkgReplace(t *testing.T, projectDir string) {
 	t.Helper()
 	repoRoot := findRepoRoot(t)
@@ -1087,23 +1087,31 @@ func vendorCorpusForgePkg(t *testing.T, repoRoot, projectDir string) {
 
 // buildForgeGenShim materializes a local stand-in for the unpublished
 // github.com/reliant-labs/forge/gen module: go.mod + forge/v1/forge.pb.go
-// (copied from the repo's internal/gen — the source of truth the
-// embedded forge.proto was generated from). Returns the module dir.
+// (copied from the repo's pkg/forgepb — the source of truth the embedded
+// forge.proto was generated from). Returns the module dir.
+//
+// forge's own copy now lives at pkg/forgepb with `package forgepb`, but a
+// scaffolded user project rewrites go_package to `<module>/gen/forge/v1;
+// forgev1` (see internal/assets/embedded.go), so its generated config code
+// imports the package under the identifier `forgev1`. The shim emulates
+// that user-side package: copy the bytes, but rewrite the `package` clause
+// back to `forgev1` so the corpus project's generated imports resolve.
 func buildForgeGenShim(t *testing.T, repoRoot string) string {
 	t.Helper()
 	shim := filepath.Join(t.TempDir(), "forge-gen-shim")
-	pbSrc := filepath.Join(repoRoot, "internal", "gen", "forge", "v1", "forge.pb.go")
+	pbSrc := filepath.Join(repoRoot, "pkg", "forgepb", "forge.pb.go")
 	pb, err := os.ReadFile(pbSrc)
 	if err != nil {
 		t.Fatalf("read %s (needed for the forge/gen shim): %v", pbSrc, err)
 	}
+	src := strings.Replace(string(pb), "\npackage forgepb\n", "\npackage forgev1\n", 1)
 	writeCorpusFile(t, filepath.Join(shim, "go.mod"), `module github.com/reliant-labs/forge/gen
 
 go 1.23
 
 require google.golang.org/protobuf v1.36.9
 `)
-	writeCorpusFile(t, filepath.Join(shim, "forge", "v1", "forge.pb.go"), string(pb))
+	writeCorpusFile(t, filepath.Join(shim, "forge", "v1", "forge.pb.go"), src)
 	return shim
 }
 

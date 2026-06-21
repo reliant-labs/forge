@@ -144,7 +144,24 @@ type ProjectConfig struct {
 	// Connect mux. Default zero-value leaves both REST and OpenAPI off so
 	// existing projects regenerate identically. See [APIConfig] for the
 	// per-field semantics.
-	API           APIConfig               `yaml:"api,omitempty"`
+	API APIConfig `yaml:"api,omitempty"`
+	// Packs lists the installed forge packs by name. Two KINDS of pack are
+	// recorded here, distinguished NOT by a forge.yaml flag but by the
+	// pack's own manifest (see internal/packs Pack.Generate):
+	//
+	//   - ONGOING packs declare a `generate:` block (generate hooks). They
+	//     are re-run on every `forge generate` and stay coupled to the
+	//     project's codegen — listing them here is load-bearing: the
+	//     pipeline replays their hooks. Removing the entry stops the hooks.
+	//   - INSTALL-ONCE starters declare only `files:` (no `generate:`). They
+	//     copy their scaffold in once and the project OWNS the result after;
+	//     the forge.yaml entry is a provenance record, not a re-run trigger.
+	//
+	// The distinction is derivable from the manifest at install/generate
+	// time (a pack with a non-empty Generate is ongoing); it is documented
+	// here rather than encoded as a per-entry field so existing forge.yaml
+	// files keep their plain string list. See the `packs` vs `starters`
+	// skills for the user-facing split.
 	Packs         []string                `yaml:"packs,omitempty"`
 	PackOverrides map[string]PackOverride `yaml:"pack_overrides,omitempty"`
 }
@@ -661,10 +678,26 @@ func (j *CIExtraJob) EffectiveRunsOn() string {
 	return "ubuntu-latest"
 }
 
-// DeployConfig holds deployment pipeline settings.
+// DeployConfig holds deployment PIPELINE-CONTROL settings (target_arch,
+// migration_test, concurrency, frontend_deploy). It deliberately does NOT
+// own *where* images go or *which* clusters exist:
+//
+//   - the CI provider (github/gitlab/…) lives in `ci.provider` — the
+//     dead `deploy.provider` field was removed (see removedSchemaKeys);
+//     nothing ever read it (generate_ci.go reads cfg.CI.Provider).
+//   - the image registry lives in `docker.registry` (build-time) and is
+//     pinned per-env in KCL — `deploy.registry` is being retired in favour
+//     of those two sources (FORGE_SHAPE_REDESIGN §4). It is still read by
+//     the CI generator today, so it is TOLERATED (kept, with this note)
+//     rather than removed in this pass; the CI-data-flow rewire that lets
+//     it go is the deferred half of §4(b).
+//   - the deployable environment set is derived from the on-disk
+//     deploy/kcl/<env>/ directories (see buildDeployWorkflowData's
+//     ListEnvs fallback); `deploy.environments` is the optional override
+//     for auto/protection/url metadata and is likewise tolerated pending
+//     the same rewire.
 type DeployConfig struct {
-	Provider       string            `yaml:"provider"`           // "github"
-	Registry       string            `yaml:"registry,omitempty"` // "ghcr" (default), "gar", "ecr"
+	Registry       string            `yaml:"registry,omitempty"` // DEPRECATED: prefer docker.registry + per-env KCL; tolerated pending the §4 CI rewire
 	Environments   []DeployEnvConfig `yaml:"environments,omitempty"`
 	Concurrency    DeployConcurrency `yaml:"concurrency,omitempty"`
 	FrontendDeploy string            `yaml:"frontend_deploy,omitempty"` // "firebase", "vercel", "none"

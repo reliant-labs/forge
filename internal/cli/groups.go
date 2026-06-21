@@ -11,5 +11,6 @@ package cli
 // groups here. The registry indirection in the factory package is what keeps
 // that from being an import cycle.
 import (
+	_ "github.com/reliant-labs/forge/internal/cli/backlog"
 	_ "github.com/reliant-labs/forge/internal/cli/component"
 )

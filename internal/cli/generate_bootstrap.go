@@ -11,10 +11,21 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-// generateBootstrap regenerates pkg/app/bootstrap.go with explicit service construction.
-func generateBootstrap(services []codegen.ServiceDef, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, configFields map[string]bool, bootstrapFeatures codegen.BootstrapFeatures, cs *checksums.FileChecksums) error {
-	fmt.Println("🔧 Generating pkg/app/bootstrap.go...")
-
+// generateAppSubstrate scaffolds the user-owned pkg/app substrate
+// (app_gen.go / app_extras.go / setup.go / post_bootstrap.go).
+//
+// FORGE_SHAPE_REDESIGN §2: the LIVE runtime DI composition is the
+// internal/app layer (OpenInfra → Build → PostBuild → Inventory),
+// emitted by stepInternalAppComposition. The old name-matched pkg/app
+// DI unit (bootstrap.go, wire_gen.go, services_gen.go, services.go,
+// diagnostics_gen.go, the appkit.Def/ServiceDef/Run table) is retired.
+//
+// What remains under pkg/app is the user-owned scaffold setup.go +
+// post_bootstrap.go reference (a minimal *App carrier in app_gen.go +
+// the AppExtras extension surface). These are kept so the user-owned
+// setup.go — which forge never overwrites — still compiles. See the
+// setup.go↔providers.go reconciliation note in the redesign doc.
+func generateAppSubstrate(services []codegen.ServiceDef, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, cs *checksums.FileChecksums) error {
 	workers, err := discoverWorkers(projectDir)
 	if err != nil {
 		return err
@@ -28,154 +39,30 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 		return nil
 	}
 
-	packages, err := discoverPackages(projectDir)
-	if err != nil {
-		return fmt.Errorf("discover internal packages: %w", err)
-	}
-
-	// Build the webhook-services map keyed by snake-case service package
-	// name. The bootstrap template uses this to emit
-	// `RegisterWebhookRoutes(mux, stack)` after `RegisterHTTP(...)` for
-	// services that have webhooks declared in forge.yaml — auto-wiring
-	// the generated webhook routes onto the mux instead of forcing the
-	// user to hand-edit the user-owned `RegisterHTTP` body.
-	// (2026-04-30 LLM-port webhook auto-wire fix.)
-	webhookServices := discoverWebhookServices(projectDir)
-
 	hasDatabase := databaseDriver != ""
 
-	// Generate app_gen.go FIRST — this owns the canonical *App struct
-	// shape with `*AppExtras` embedded. wire_gen later parses pkg/app/
-	// looking for the App struct + AppExtras fields, so app_gen.go must
-	// be on disk before wire_gen runs.
-	if err := codegen.GenerateAppGen(hasDatabase, ormEnabled, len(services) > 0, len(workers) > 0, len(operators) > 0, len(packages) > 0, projectDir, cs); err != nil {
+	// app_gen.go owns the minimal *App carrier (DB / ORM + the embedded
+	// *AppExtras) that the user-owned setup.go compiles against.
+	if err := codegen.GenerateAppGen(hasDatabase, ormEnabled, len(services) > 0, len(workers) > 0, len(operators) > 0, false, projectDir, cs); err != nil {
 		return fmt.Errorf("failed to generate app_gen.go: %w", err)
 	}
 	fmt.Println("  ✅ Generated pkg/app/app_gen.go")
 
-	// Generate app_extras.go (Tier-2 user-owned scaffold). Written
-	// ONCE — never overwritten on subsequent generates. Holds the
-	// empty AppExtras struct that wire_gen consults for user-extension
-	// fields.
+	// app_extras.go (Tier-2 user-owned). Written ONCE — never overwritten.
 	if err := codegen.GenerateAppExtras(projectDir); err != nil {
 		return fmt.Errorf("failed to generate app_extras.go: %w", err)
 	}
 
-	if err := codegen.GenerateBootstrap(codegen.BootstrapGenInput{
-		GenContext: codegen.GenContext{
-			ProjectDir: projectDir,
-			ModulePath: modulePath,
-			Checksums:  cs,
-		},
-		Services:        services,
-		Packages:        packages,
-		Workers:         workers,
-		Operators:       operators,
-		DatabaseDriver:  databaseDriver,
-		OrmEnabled:      ormEnabled,
-		ConfigFields:    configFields,
-		WebhookServices: webhookServices,
-		Features:        bootstrapFeatures,
-	}); err != nil {
-		return fmt.Errorf("failed to generate bootstrap: %w", err)
-	}
-
-	fmt.Println("  ✅ Generated pkg/app/bootstrap.go")
-
-	// Generate setup.go (user-owned, never overwritten). Must happen
-	// before wire_gen so the App struct in pkg/app is parseable when
-	// wire_gen scans it for unconventional Deps-field producers.
+	// setup.go (user-owned, never overwritten).
 	if err := codegen.GenerateSetup(modulePath, databaseDriver, ormEnabled, projectDir); err != nil {
 		return fmt.Errorf("failed to generate setup.go: %w", err)
 	}
 
-	// Generate post_bootstrap.go (user-owned, never overwritten). The
-	// generated cmd/server.go calls `app.PostBootstrap(application)`
-	// after Bootstrap, so the file must exist before downstream
-	// compilation. Default body is a no-op; users own it after first
-	// emit.
+	// post_bootstrap.go (user-owned, never overwritten).
 	if err := codegen.GeneratePostBootstrap(projectDir); err != nil {
 		return fmt.Errorf("failed to generate post_bootstrap.go: %w", err)
 	}
 
-	// Generate wire_gen.go after bootstrap + app_gen + app_extras.
-	// wire_gen parses each service/worker/operator Deps struct + the
-	// live *App struct (from pkg/app/app_gen.go) + the user's AppExtras
-	// (from pkg/app/app_extras.go) to emit one wireXxxDeps function per
-	// component. Bootstrap.go calls those functions to assemble the full
-	// Deps before component.New(deps), eliminating the pre-2026-05-07
-	// ApplyDeps two-phase init.
-	//
-	// packages/workers/operators are passed alongside services so wire_gen
-	// uses the SAME collision-aware FieldName as bootstrap when a service
-	// package collides with an internal-package import (svc Billing +
-	// internal/billing → wireSvcBillingDeps on both sides). Bug-1 of the
-	// 2026-05-07 wire_gen rollout.
-	wireData, err := codegen.GenerateWireGenData(services, packages, workers, operators, modulePath, projectDir, ormEnabled, cs)
-	if err != nil {
-		return fmt.Errorf("failed to generate wire_gen.go: %w", err)
-	}
-	if len(services) > 0 || len(workers) > 0 || len(operators) > 0 {
-		fmt.Println("  ✅ Generated pkg/app/wire_gen.go")
-	}
-
-	// Diagnostics codegen runs AFTER wire_gen so it can name the
-	// component / dep that landed at nil. Each kind of wire function gets
-	// its own prefix ("wire" for services, "wireWorker" for workers,
-	// "wireOperator" for operators) so the registered Component matches
-	// the symbol the wire function actually emits at runtime — operators
-	// can grep boot logs by component name and find the function in
-	// wire_gen.go directly. Stubs are scanned separately by the
-	// diagnostics codegen itself from handlers/<svc>/*.go for the
-	// `// forge:gen unwired-stub` marker the handler templates emit.
-	nilDeps := codegen.NilDepEntriesFromWireData(wireData.Services, "wire")
-	nilDeps = append(nilDeps, codegen.NilDepEntriesFromWireData(wireData.Workers, "wireWorker")...)
-	nilDeps = append(nilDeps, codegen.NilDepEntriesFromWireData(wireData.Operators, "wireOperator")...)
-	if err := codegen.GenerateDiagnostics(services, workers, operators, modulePath, projectDir, nilDeps, cs); err != nil {
-		return fmt.Errorf("failed to generate diagnostics_gen.go: %w", err)
-	}
-	if len(services) > 0 || len(workers) > 0 || len(operators) > 0 {
-		fmt.Println("  ✅ Generated pkg/app/diagnostics_gen.go")
-	}
-
-	// Interface-satisfaction assertions (FORGE_SHAPE_REDESIGN §6c): emit
-	// pkg/app/interface_assertions_gen.go so every concrete→narrow-interface
-	// pair the wire graph proves is greppable as a `var _ Iface = (*T)(nil)`
-	// line. Best-effort — a fresh matcher (the wire_gen one is local to that
-	// call) re-loads each component's universe once; failures yield no
-	// assertions, never a generate abort.
-	assertComponents := make([]codegen.InterfaceAssertionComponent, 0, len(services)+len(workers)+len(operators))
-	for _, svc := range services {
-		res, rerr := codegen.ResolveServiceComponent(projectDir, svc.Name)
-		if rerr != nil || !res.FromDisk {
-			continue
-		}
-		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "internal/handlers", PkgDir: res.ImportLeaf})
-	}
-	for _, w := range workers {
-		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "internal/workers", PkgDir: w.ImportPath})
-	}
-	for _, op := range operators {
-		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "internal/operators", PkgDir: op.ImportPath})
-	}
-	assertMatcher := codegen.NewDepsAssignabilityMatcher(projectDir)
-	if err := codegen.GenerateInterfaceAssertions(assertComponents, modulePath, projectDir, assertMatcher, cs); err != nil {
-		return fmt.Errorf("failed to generate interface_assertions_gen.go: %w", err)
-	}
-	if len(services) > 0 || len(workers) > 0 || len(operators) > 0 {
-		fmt.Println("  ✅ Generated pkg/app/interface_assertions_gen.go")
-	}
-
-	// HYBRID DI (FORGE_SHAPE_REDESIGN §2): the internal/app composition
-	// layer (providers.go / post_build.go / app_services_gen.go /
-	// inject_gen.go / inventory_gen.go / lifecycle_gen.go) is emitted by its
-	// OWN pipeline step (stepInternalAppComposition). That step is gated on
-	// cmd/server.go EXISTING rather than on len(services|workers|operators)
-	// so internal/app is always populated whenever the generated cmd/server.go
-	// imports it — including degenerate trees where no proto service parses
-	// (e.g. no forge_descriptor.json). If internal/app were only emitted on
-	// the entrypoint-bearing path, `go mod tidy` would 404 trying to fetch the
-	// empty local package the cmd imports.
 	return nil
 }
 

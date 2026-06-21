@@ -103,17 +103,15 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// on the same predicate.
 	{exact: "db/embed.go", gate: gateMigrateHasDriver},
 
-	// pkg/app/bootstrap.go + pkg/app/testing.go are emitted by
-	// stepBootstrap / stepBootstrapTesting. Both are gated on the
-	// project having at least one entrypoint (services, workers,
-	// operators). A pure-CLI project shouldn't see these blocking
-	// the guard.
-	{exact: "pkg/app/bootstrap.go", gate: gateCodegenHasAnyEntrypoint},
+	// pkg/app/app_gen.go (the minimal *App carrier) + pkg/app/testing.go
+	// are emitted by stepAppSubstrate / stepBootstrapTesting. Both are
+	// gated on the project having at least one entrypoint (services,
+	// workers, operators). A pure-CLI project shouldn't see these
+	// blocking the guard. (The old name-matched DI files — bootstrap.go,
+	// wire_gen.go, services_gen.go — are retired, FORGE_SHAPE_REDESIGN §2;
+	// the live DI lives under internal/app.)
+	{exact: "pkg/app/app_gen.go", gate: gateCodegenHasAnyEntrypoint},
 	{exact: "pkg/app/testing.go", gate: gateCodegenHasAnyEntrypoint},
-
-	// pkg/app/wire_gen.go is emitted alongside bootstrap.go by
-	// stepBootstrap. Same gate — no entrypoints means no wire shape.
-	{exact: "pkg/app/wire_gen.go", gate: gateCodegenHasAnyEntrypoint},
 
 	// internal/handlers/<svc>/handlers_crud_ops_gen.go is emitted by
 	// stepCRUDHandlers (the Tier-1 projection half of the CRUD split; the

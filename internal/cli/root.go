@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cli/factory"
 )
 
 var (
@@ -161,6 +163,18 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newAPICmd())
 	rootCmd.AddCommand(newUpCmd())
 	rootCmd.AddCommand(newFeaturesCmd())
+
+	// Dir-nested command groups (internal/cli/<group>) self-register a
+	// command factory via init() — they are blank-imported in groups.go so
+	// the registration runs. Range the registry and attach each one. As
+	// groups migrate out of the flat files above, their flat AddCommand line
+	// moves here automatically (it disappears from above, appears via the
+	// registry). The factory carries the shared I/O surface; group commands
+	// still call package-level helpers in internal/cli directly.
+	f := factory.New()
+	for _, makeCmd := range factory.Registered() {
+		rootCmd.AddCommand(makeCmd(f))
+	}
 
 	return rootCmd
 }

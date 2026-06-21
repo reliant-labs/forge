@@ -143,7 +143,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newLintCmd())
 	rootCmd.AddCommand(newPackageCmd())
 	rootCmd.AddCommand(newPackCmd())
-	rootCmd.AddCommand(newDebugCmd())
+	// `debug` migrated to the internal/cli/debug group (factory registry).
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newUpgradeCmd())

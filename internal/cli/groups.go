@@ -11,6 +11,17 @@ package cli
 // groups here. The registry indirection in the factory package is what keeps
 // that from being an import cycle.
 import (
+	"github.com/reliant-labs/forge/internal/cli/factory"
+
 	_ "github.com/reliant-labs/forge/internal/cli/backlog"
 	_ "github.com/reliant-labs/forge/internal/cli/component"
+	_ "github.com/reliant-labs/forge/internal/cli/debug"
 )
+
+// init wires internal/cli's heavy shared loaders into the factory so the
+// dir-nested command groups can reach them as function values without
+// importing internal/cli (which would create an import cycle — internal/cli
+// blank-imports the groups above).
+func init() {
+	factory.SetProjectStoreLoader(loadProjectStore)
+}

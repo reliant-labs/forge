@@ -2,9 +2,14 @@ package contract
 
 import (
 	"flag"
+	"go/token"
+	"path/filepath"
 	"strings"
 	"sync"
 
+	"golang.org/x/tools/go/analysis"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -47,6 +52,49 @@ func IsExcluded(pkgPath string) bool {
 	excludeMu.RLock()
 	defer excludeMu.RUnlock()
 	return config.MatchExclude(excludePatterns, pkgPath)
+}
+
+// IsExcludedPass reports whether the package under analysis is opted out of
+// the contract rules — by EITHER the configured forge.yaml contracts.exclude
+// list (matched on the import path) OR the per-package
+// //forge:exclude-contract header (matched on the package's source dir). The
+// two are a union: a header is the local-source equivalent of a central
+// exclude entry, so every contract analyzer must honor both or the header is
+// only "half" an exclude (e.g. it would skip mock/shape codegen yet still
+// fire the exported-vars rule). Mirrors the generate-time walks
+// (discoverPackages, the mock walk, the contractcheck shape walk), which all
+// union the central list with the directive.
+//
+// The directive lives in source, so we resolve the package directory from the
+// first file's position. A pass with no files (synthetic) falls back to the
+// path-only check.
+func IsExcludedPass(pass *analysis.Pass) bool {
+	if IsExcluded(pass.Pkg.Path()) {
+		return true
+	}
+	dir := passPkgDir(pass)
+	if dir == "" {
+		return false
+	}
+	return codegen.HasExcludeContractDirective(dir)
+}
+
+// passPkgDir returns the on-disk directory of the package under analysis,
+// derived from the first non-synthetic file's token position. Returns "" when
+// the directory cannot be determined.
+func passPkgDir(pass *analysis.Pass) string {
+	for _, f := range pass.Files {
+		pos := pass.Fset.Position(f.Pos())
+		if pos.Filename != "" {
+			return filepath.Dir(pos.Filename)
+		}
+	}
+	// Defensive: if Files is empty but the fset has entries, no reliable
+	// mapping exists. Use a zero Pos lookup as a last resort.
+	if p := pass.Fset.Position(token.NoPos); p.Filename != "" {
+		return filepath.Dir(p.Filename)
+	}
+	return ""
 }
 
 // excludeFlag is a flag.Value that accepts comma-separated package paths and

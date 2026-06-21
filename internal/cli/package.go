@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
@@ -149,7 +150,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	if !validGoPackageName.MatchString(name) {
 		return fmt.Errorf("invalid package name %q: must be lowercase, start with a letter, and contain only letters, digits, and underscores", name)
 	}
-	if goKeywords[name] {
+	if cmdutil.GoKeywords[name] {
 		return fmt.Errorf("%q is a Go keyword", name)
 	}
 

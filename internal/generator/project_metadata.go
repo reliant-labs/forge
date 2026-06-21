@@ -171,6 +171,10 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 	}{
 		{"middleware.go", "middleware.go"},
 		{"middleware_test.go", "middleware_test.go"},
+		// role_resolver.go is the project's identity→roles seam for forge's
+		// descriptor-driven authorization (forge/pkg/authz). Scaffold-once,
+		// user-owned from line one — same never-clobber guard as middleware.go.
+		{"role_resolver.go", "role_resolver.go"},
 	}
 
 	for _, f := range middlewareFiles {

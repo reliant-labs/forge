@@ -240,6 +240,10 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// migrations/v0.x-to-middleware-lib skill for hand-adoption).
 		{templateName: "middleware.go", destPath: "pkg/middleware/middleware.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2, enabledFor: enabledForService},
+		// role_resolver.go — the identity→roles seam for descriptor-driven
+		// authz (forge/pkg/authz). User-owned scaffold-once, same Tier-2
+		// never-clobber treatment as middleware.go.
+		{templateName: "role_resolver.go", destPath: "pkg/middleware/role_resolver.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 
 		// cmd/<bin>/cmd/commands.go — the user-owned cobra extension point the
 		// Tier-1 cmd/<bin>/cmd/root.go consumes (userCommands(deps)).

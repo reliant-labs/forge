@@ -890,9 +890,11 @@ func TestSkillsValidatorsCatchKnownBadClaims(t *testing.T) {
 		}
 	}
 
-	// Dotted references to nonexistent fields must be flagged.
-	if vs := scanAnnotationRegion("(forge.v1.method).required_roles", descs); len(vs) == 0 {
-		t.Error("annotation validator accepted dotted reference to nonexistent field (forge.v1.method).required_roles")
+	// Dotted references to nonexistent fields must be flagged. (required_roles
+	// is now a REAL method option — the descriptor-driven authz field — so this
+	// negative case uses a field that genuinely does not exist on MethodOptions.)
+	if vs := scanAnnotationRegion("(forge.v1.method).nonexistent_field", descs); len(vs) == 0 {
+		t.Error("annotation validator accepted dotted reference to nonexistent field (forge.v1.method).nonexistent_field")
 	}
 }
 

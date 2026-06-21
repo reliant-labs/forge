@@ -5,40 +5,36 @@
 // The LIFECYCLE inventory (FORGE_SHAPE_REDESIGN §2). Where inventory_gen.go
 // is the HTTP-mount surface (which Connect services to mount), this file is
 // the SUPERVISED-component surface: the workers and operators serverkit
-// runs over the constructed *Services. Like the Mount inventory it is
-// data + typed closures over *Services — construction lives entirely in
-// Build (inject_gen.go); these helpers only ADAPT the constructed instances
-// to the serverkit.Worker / serverkit.Operator contracts.
+// runs over the constructed *Services.
+//
+// THIN DATA + DISPATCH: all the uniform machinery (the WrapWorker runtime
+// type-switch, the operator/controller-manager bridge) lives in
+// forge/pkg/lifecyclekit. This file is per-app DATA only — explicit
+// lifecyclekit.WrapWorker rows and one Controller row per operator —
+// dispatching into the lib.
 package app
 
 import (
 	"context"
 	"log/slog"
 
-{{- if .Workers}}
-
-	"github.com/reliant-labs/forge/pkg/appkit"
-{{- end}}
-{{- if .Operators}}
-	"github.com/reliant-labs/forge/pkg/appkit/operatorkit"
-{{- end}}
-	"github.com/reliant-labs/forge/pkg/serverkit"
+	"github.com/reliant-labs/forge/pkg/lifecyclekit"
 {{- range .Operators}}
 	{{.Alias}} "{{$.Module}}/{{.ImportPath}}"
 {{- end}}
 )
 
-// WorkerList adapts every constructed worker on s to a serverkit.Worker.
-// Each row goes through appkit.WrapWorker — a runtime type-switch that
+// WorkerList adapts every constructed worker on s to a lifecyclekit.Worker.
+// Each row goes through lifecyclekit.WrapWorker — a runtime type-switch that
 // gives ctx-aware workers (those implementing RunContext) per-worker
 // cancel-on-shutdown and leaves legacy Start/Stop workers on the legacy
 // path. The cmd layer selects which of these to run per subcommand and
 // packs them into serverkit.Server.Workers.
-func WorkerList(s *Services) []serverkit.Worker {
+func WorkerList(s *Services) []lifecyclekit.Worker {
 {{- if .Workers}}
-	return []serverkit.Worker{
+	return []lifecyclekit.Worker{
 {{- range .Workers}}
-		appkit.WrapWorker("{{.Name}}", s.{{.FieldName}}),
+		lifecyclekit.WrapWorker("{{.Name}}", s.{{.FieldName}}),
 {{- end}}
 	}
 {{- else}}
@@ -48,12 +44,12 @@ func WorkerList(s *Services) []serverkit.Worker {
 }
 
 // OperatorList adapts every constructed operator on s to a
-// serverkit.Operator (Name only — the controller-manager hookup is in
+// lifecyclekit.Operator (Name only — the controller-manager hookup is in
 // RunOperators). Emitted unconditionally so the cmd layer compiles even
 // with no operators.
-func OperatorList(s *Services) []serverkit.Operator {
+func OperatorList(s *Services) []lifecyclekit.Operator {
 {{- if .Operators}}
-	return []serverkit.Operator{
+	return []lifecyclekit.Operator{
 {{- range .Operators}}
 		operatorRow{{.FieldName}}{name: "{{.Name}}", inst: s.{{.FieldName}}},
 {{- end}}
@@ -65,11 +61,11 @@ func OperatorList(s *Services) []serverkit.Operator {
 }
 
 // HasOperators reports whether the project has any operators configured.
-func HasOperators(s *Services) bool { return len(OperatorList(s)) > 0 }
+func HasOperators(s *Services) bool { return lifecyclekit.HasOperators(OperatorList(s)) }
 
 {{- if .Operators}}
 {{range .Operators}}
-// operatorRow{{.FieldName}} satisfies serverkit.Operator over the
+// operatorRow{{.FieldName}} satisfies lifecyclekit.Operator over the
 // constructed {{.Name}} controller.
 type operatorRow{{.FieldName}} struct {
 	name string
@@ -81,14 +77,14 @@ func (o operatorRow{{.FieldName}}) Name() string { return o.name }
 // RunOperators starts the controller manager with one row per operator,
 // reading each constructed controller off s. Manager behavior (kubeconfig
 // resolution with graceful no-cluster degrade, leader election, scheme /
-// controller registration) lives in operatorkit.Run. Blocks until ctx
-// cancels — the caller (serverkit) runs it in a goroutine. healthProbeAddr
-// is forwarded from serverkit.Config.OperatorHealthProbeAddr.
+// controller registration) lives in lifecyclekit.Run (over operatorkit).
+// Blocks until ctx cancels — the caller (serverkit) runs it in a goroutine.
+// healthProbeAddr is forwarded from serverkit.Config.OperatorHealthProbeAddr.
 func RunOperators(s *Services, ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
-	return operatorkit.Run(ctx, logger, operatorkit.Options{
+	return lifecyclekit.Run(ctx, logger, lifecyclekit.Options{
 		LeaderElectionID:       "{{.LeaderElectionID}}",
 		HealthProbeBindAddress: healthProbeAddr,
-	}, []operatorkit.Controller{
+	}, []lifecyclekit.Controller{
 {{- range .Operators}}
 		{Name: "{{.Name}}", AddToScheme: {{.Alias}}.AddToScheme, SetupWithManager: s.{{.FieldName}}.SetupWithManager},
 {{- end}}

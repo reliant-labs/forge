@@ -11,19 +11,23 @@
 // Inventory → serverkit.Run); construction is typed and owned, not
 // string-keyed and reflected.
 //
-// What remains here is the small, stable supervised-component surface
-// the new path still consults:
+// # Moved to lifecyclekit (lib-boundary extraction)
 //
-//   - [WorkerInstance] / [ContextWorkerInstance] — lifecycle wrappers
-//     (Name / Start / Stop, plus the ctx-aware RunContext sibling) that
-//     satisfy serverkit.Worker / serverkit.ContextWorker.
-//   - [WrapWorker] — the runtime type-switch the generated
-//     internal/app/lifecycle_gen.go calls per worker row: a worker that
-//     implements RunContext gets the ctx-aware wrapper (per-worker
-//     cancel-on-shutdown), everything else gets the legacy Start wrapper.
-//   - [WorkerLifecycle] — the Start/Stop shape every generated worker
-//     type exposes.
+// The worker lifecycle machinery — WrapWorker, WorkerInstance /
+// ContextWorkerInstance, WorkerLifecycle — moved to
+// [github.com/reliant-labs/forge/pkg/lifecyclekit], which also owns the
+// operator/controller-manager bridge the generated RunOperators delegates to.
+// The generated internal/app/lifecycle_gen.go now imports lifecyclekit
+// directly. appkit keeps DEPRECATED aliases that delegate to lifecyclekit so
+// any remaining consumer of the appkit names still compiles against a single
+// implementation. New code should import lifecyclekit.
 //
-// Adding a worker needs no `forge generate` change to this package — the
-// type-switch detects RunContext at runtime.
+//   - [WorkerInstance] / [ContextWorkerInstance] — aliases of the
+//     lifecyclekit lifecycle wrappers.
+//   - [WrapWorker] — delegates to lifecyclekit.WrapWorker, the runtime
+//     type-switch that gives RunContext-implementing workers the ctx-aware
+//     wrapper and everything else the legacy Start wrapper.
+//   - [WorkerLifecycle] — alias of lifecyclekit.WorkerLifecycle.
+//
+// operatorkit (the controller-manager runtime) remains a subpackage here.
 package appkit

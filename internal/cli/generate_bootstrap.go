@@ -300,6 +300,22 @@ func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error)
 		} else if statErr != nil {
 			return statErr
 		}
+		// Per-package opt-out: `//forge:exclude-contract` in this package's
+		// source is the local-header equivalent of listing it in forge.yaml
+		// contracts.exclude — same effect (the package is NOT a Build
+		// component, so the injector emits no New(Deps) node for it).
+		// Union with the central list above: either source excludes. This
+		// MUST match generate_middleware.go's contract walk so the mock /
+		// middleware walk and the bootstrap/injector walk agree on the
+		// excluded set — otherwise a header-only exclude would drop the
+		// mock yet still feed a non-Service-shaped package into the
+		// type-topological injector (which would emit an uncompilable
+		// pkg.New(pkg.Deps{}) node). Do NOT SkipDir: descendants may still
+		// be Build components and carry their own directive; only THIS
+		// package opts out.
+		if codegen.HasExcludeContractDirective(path) {
+			return nil
+		}
 		// Name is the path under internal/, e.g. "cache" or "mcp/database".
 		name := strings.TrimPrefix(rel, "internal/")
 		names = append(names, name)

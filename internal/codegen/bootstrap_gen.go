@@ -647,6 +647,18 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 		})
 	}
 
+	// Drop external-component packages from the test-factory namespace. An
+	// `//forge:external-component` domain pkg is HAND-CONSTRUCTED in
+	// providers.go / OpenInfra — it is not a forge-wired component, so it
+	// gets no NewTest<Pkg> factory (mirroring filterExternalComponents on the
+	// Build side). This also removes it from the cross-role collision count:
+	// a domain `internal/billing` and a handler `internal/handlers/billing`
+	// both `package billing` would otherwise drive a spurious Svc-prefix
+	// rename on the HANDLER service's factory (NewTestSvcBilling) that no
+	// scaffold test references (ComputeTestHelperName is now external-aware
+	// too), and could duplicate-declare the same factory identifier.
+	packages = filterExternalComponentPackages(projectDir, packages)
+
 	// Resolve cross-role import-alias collisions. Build a count over the
 	// services + packages namespace (workers/operators don't appear in
 	// testing.go imports, but we still pass them so the alias derivation
@@ -718,6 +730,20 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 	// testing.go (the v2 migration of control-plane reproduced this).
 	inspectComponentDepsShape(pkgsCopy, projectDir, "internal")
 	packages = pkgsCopy
+
+	// Reconcile cross-package auto-stub import aliases against the service /
+	// package imports the file ALREADY carries. A cross-package stub imports
+	// its interface's package under that package's DECLARED name (e.g. a
+	// gateway Deps field `Billing billing.Service` whose interface lives in
+	// the external-component domain `internal/billing`, declared `package
+	// billing`). When that bare alias collides with a DIFFERENT path the file
+	// already imports — the handler service `internal/handlers/billing`, also
+	// `package billing` — Go rejects the duplicate declaration. Re-alias the
+	// stub's import to a path-unique form and rewrite every reference in the
+	// stub (InterfaceQualified + method signatures) so the rendered stub still
+	// compiles. This is the same same-clause collision FIX #1 closes, applied
+	// to the test harness's stub imports.
+	reconcileAutoStubAliases(testSvcs, packages)
 
 	// Dedupe Connect package imports: when multiple proto services share one
 	// proto file (and thus one go_package), they share one connect import.
@@ -799,6 +825,25 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 	return nil
 }
 
+// filterExternalComponentPackages drops every internal package that
+// declares `//forge:external-component` from the slice. Such a package is
+// hand-built in providers.go / OpenInfra and is NOT a forge-wired component,
+// so the test harness emits no NewTest<Pkg> factory for it and it does not
+// participate in the cross-role test-factory collision count. The on-disk
+// dir is internal/<ImportPath> (PackageDataFromNames preserves the nested
+// import path). Mirrors filterExternalComponents on the Build side.
+func filterExternalComponentPackages(projectDir string, pkgs []BootstrapPackageData) []BootstrapPackageData {
+	out := make([]BootstrapPackageData, 0, len(pkgs))
+	for _, p := range pkgs {
+		dir := filepath.Join(projectDir, "internal", filepath.FromSlash(p.ImportPath))
+		if HasExternalComponentDirective(dir) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // projectHasSQLMigrations reports whether db/migrations/ contains at
 // least one .sql file — the same predicate the CLI uses to decide whether
 // GenerateMigrate embeds db/embed.go's MigrationsFS. Keeping the two in
@@ -816,6 +861,109 @@ func projectHasSQLMigrations(projectDir string) bool {
 		}
 	}
 	return false
+}
+
+// reconcileAutoStubAliases rewrites cross-package auto-stub import aliases
+// that collide with a DIFFERENT path the testing.go file already imports
+// (a service handler import or an internal package import). For each
+// colliding stub it picks a path-unique alias and rewrites the stub's
+// InterfaceQualified, every method's Params/Results, and its ExtraImports
+// entries so the rendered stub references the renamed import. Same-clause
+// collisions (a domain pkg + a handler pkg both `package billing`) are the
+// case this closes; without it the file fails to compile with
+// "<clause> redeclared in this block".
+//
+// The used-alias set is keyed by alias -> path. A stub import whose alias
+// is absent, or maps to the SAME path, is left untouched (no collision).
+func reconcileAutoStubAliases(services []BootstrapTestServiceData, packages []BootstrapPackageData) {
+	// used maps an in-use import alias to its path. Service handler imports
+	// and internal package imports are the two alias sources already in the
+	// file's static import block.
+	used := map[string]string{}
+	for _, s := range services {
+		used[s.Alias] = "internal/handlers/" + s.ImportPath
+	}
+	for _, p := range packages {
+		used[p.Alias] = "internal/" + p.ImportPath
+	}
+
+	for i := range services {
+		for j := range services[i].AutoStubs {
+			stub := &services[i].AutoStubs[j]
+			if !stub.CrossPackage {
+				continue
+			}
+			for k := range stub.ExtraImports {
+				imp := &stub.ExtraImports[k]
+				existing, taken := used[imp.Alias]
+				if !taken || pathHasSuffix(existing, imp.Path) {
+					// Free alias, or already-ours (same package) — keep it,
+					// and reserve it so a later stub doesn't reuse it for a
+					// different path.
+					used[imp.Alias] = imp.Path
+					continue
+				}
+				// Collision with a different path. Pick a path-unique alias
+				// and rewrite every reference to the old one in this stub.
+				newAlias := uniqueStubAlias(imp.Alias, imp.Path, used)
+				rewriteStubAlias(stub, imp.Alias, newAlias)
+				imp.Alias = newAlias
+				used[newAlias] = imp.Path
+			}
+		}
+	}
+}
+
+// pathHasSuffix reports whether a and b denote the same import (exact
+// match). The used map stores module-relative paths for the static imports
+// and full paths for stub ExtraImports, so a same-package check compares on
+// the trailing module-relative segment.
+func pathHasSuffix(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return strings.HasSuffix(b, "/"+a) || strings.HasSuffix(a, "/"+b)
+}
+
+// uniqueStubAlias derives a deterministic, collision-free alias for a stub
+// import. It prefixes "stub" to the upper-cased base alias (stubBilling);
+// if that is also taken for a different path, it appends the path's parent
+// segment and finally a numeric suffix. Determinism keeps codegen stable.
+func uniqueStubAlias(base, path string, used map[string]string) string {
+	cand := "stub" + upperFirst(base)
+	if p, taken := used[cand]; !taken || p == path {
+		return cand
+	}
+	// Disambiguate with the path's parent segment (e.g. handlers/billing ->
+	// stubHandlersBilling), then a numeric suffix as the last resort.
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segs) >= 2 {
+		alt := "stub" + upperFirst(segs[len(segs)-2]) + upperFirst(base)
+		if p, taken := used[alt]; !taken || p == path {
+			return alt
+		}
+	}
+	for n := 2; ; n++ {
+		alt := fmt.Sprintf("%s%d", cand, n)
+		if p, taken := used[alt]; !taken || p == path {
+			return alt
+		}
+	}
+}
+
+// rewriteStubAlias replaces every `<oldAlias>.` selector prefix in a stub's
+// InterfaceQualified and method signatures with `<newAlias>.`. The cross-
+// package qualifier renders all of the stub's type references through the
+// package's declared name, so a single prefix rewrite covers them all.
+func rewriteStubAlias(stub *DepsAutoStub, oldAlias, newAlias string) {
+	old := oldAlias + "."
+	repl := newAlias + "."
+	stub.InterfaceQualified = strings.ReplaceAll(stub.InterfaceQualified, old, repl)
+	for m := range stub.Methods {
+		stub.Methods[m].Params = strings.ReplaceAll(stub.Methods[m].Params, old, repl)
+		stub.Methods[m].Results = strings.ReplaceAll(stub.Methods[m].Results, old, repl)
+		stub.Methods[m].ReturnStatement = strings.ReplaceAll(stub.Methods[m].ReturnStatement, old, repl)
+	}
 }
 
 // mergeExtraImports folds every cross-package stub's ExtraImports

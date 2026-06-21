@@ -232,3 +232,28 @@ func TestServiceKeyResolver_ImportPathDisambiguatesSameClause(t *testing.T) {
 		t.Fatalf("ambiguous clause without imports -> %q, want \"\"", got)
 	}
 }
+
+// TestServiceKeyResolver_ExplicitImportToExternalDoesNotFallBack: when a
+// consumer imports a package that is NOT a registered producer (it is
+// external/hand-built on Infra), the resolver must NOT fall back to a
+// same-clause producer — the consumer was explicit. This is the
+// external-component case (handler `Domain user.Service` must resolve to
+// infra.<Field>, never to a different same-clause handler producer).
+func TestServiceKeyResolver_ExplicitImportToExternalDoesNotFallBack(t *testing.T) {
+	const mod = "example.com/proj"
+	handlerPath := mod + "/internal/handlers/user"
+	externalPath := mod + "/internal/user" // filtered out — not a producer
+	comps := []BuildComponent{
+		// Only the HANDLER user is a producer (external domain user was
+		// filtered from the Build graph before the resolver was built).
+		{FieldName: "User", ServiceTypeKey: handlerPath + ".Service", compPackageKey: "user.Service"},
+	}
+	r := NewServiceKeyResolver(comps)
+
+	// The handler consumer imports the EXTERNAL domain user under clause
+	// "user". It must NOT resolve to itself / the handler producer.
+	consumer := BuildComponent{FieldName: "User", compImports: map[string]string{"user": externalPath}}
+	if got := r.Resolve(consumer, "user.Service"); got != "" {
+		t.Fatalf("explicit import to external pkg -> %q, want \"\" (falls to Infra)", got)
+	}
+}

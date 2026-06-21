@@ -188,6 +188,12 @@ func GenerateInject(in InjectGenInput) error {
 
 	matcher := NewInfraAssignabilityMatcher(in.ProjectDir)
 
+	// Config fields (pkg/config/config.go) — used to resolve a scalar Deps
+	// field that names a typed config value from infra.Cfg.<field> instead
+	// of a bare typed-zero (FIX: kalshi's WTI EIAKey/FREDKey were being
+	// reset to ""+TODO). Empty when config.go hasn't been generated yet.
+	configFields := parseConfigFields(in.ProjectDir)
+
 	var (
 		rendered        []InjectComponentData
 		missing         []MissingProvider
@@ -215,7 +221,7 @@ func GenerateInject(in InjectGenInput) error {
 				rc.NeedsAuthzVar = true
 				needsAuthorizer = true
 			}
-			expr, comment, miss := resolveInjectField(df, c, producerVar, resolver, infraFields, matcher, in.RoleRoot(c))
+			expr, comment, miss := resolveInjectField(df, c, producerVar, resolver, infraFields, configFields, matcher, in.RoleRoot(c))
 			if miss != nil {
 				missing = append(missing, *miss)
 			}
@@ -256,7 +262,7 @@ func GenerateInject(in InjectGenInput) error {
 // should emit, following the priority order in the file header. The third
 // return is non-nil when the field is a required collaborator with a
 // PROVEN-missing provider (generate-time loud error).
-func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]string, resolver TypeResolver, infraFields map[string]InfraField, matcher *InfraAssignabilityMatcher, roleRoot string) (expr, comment string, miss *MissingProvider) {
+func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]string, resolver TypeResolver, infraFields map[string]InfraField, configFields map[string]InfraField, matcher *InfraAssignabilityMatcher, roleRoot string) (expr, comment string, miss *MissingProvider) {
 	// 1. PRODUCER — another component produces this type (by-type edge).
 	if prodField := resolver.Resolve(c, df.Type); prodField != "" && prodField != c.FieldName {
 		if v, ok := producerVar[prodField]; ok {
@@ -293,9 +299,17 @@ func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]s
 		}
 	}
 
-	// Scalar fields are configuration, not collaborators — typed-zero with
-	// the config-block hint; never a MissingProvider.
+	// Scalar fields are configuration, not collaborators. When a scalar
+	// Deps field corresponds to a typed field on infra.Cfg (matching name +
+	// compatible scalar type), resolve it from infra.Cfg.<field> — config
+	// IS the producer for configuration. Only when no config field maps does
+	// it fall back to the typed-zero with the config-block hint. This is what
+	// keeps a service's `EIAKey string` / `FREDKey string` wired to the
+	// config value instead of being silently reset to "" + TODO.
 	if zeroValueLiteral(df.Type) != "nil" {
+		if field, ok := matchScalarConfigField(df, configFields); ok {
+			return "infra.Cfg." + field, "from config", nil
+		}
 		return zeroValueLiteral(df.Type), scalarConfigHint(df, c), nil
 	}
 
@@ -306,6 +320,53 @@ func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]s
 	}
 	return "nil", "TODO: no provider for " + df.Type,
 		&MissingProvider{Component: c.FieldName, Field: df.Name, Type: df.Type}
+}
+
+// parseConfigFields returns the exported fields of the generated Config
+// struct (pkg/config/config.go), keyed by field name. Reuses parseInfraFields'
+// AST walk by reading the config dir and matching the `Config` struct. Returns
+// an empty map when config.go hasn't been generated yet — every scalar then
+// falls to the typed-zero, the prior behavior.
+func parseConfigFields(projectDir string) map[string]InfraField {
+	out, err := parseStructFields(filepath.Join(projectDir, "pkg", "config"), "Config")
+	if err != nil {
+		return map[string]InfraField{}
+	}
+	return out
+}
+
+// matchScalarConfigField reports the Config field name that fills a scalar
+// Deps field, if any. The match is by EXACT field name plus scalar-type
+// compatibility (so a `MaxRetries int` Deps field maps to a `MaxRetries int32`
+// config field, and a `Timeout time.Duration` maps to a duration config
+// field). Returning the config field name lets the caller emit
+// `infra.Cfg.<field>`. Conventional bare-Deps names (Logger/Config/Authorizer)
+// never reach here — they're resolved earlier.
+func matchScalarConfigField(df DepsField, configFields map[string]InfraField) (string, bool) {
+	cf, ok := configFields[df.Name]
+	if !ok {
+		return "", false
+	}
+	if !scalarTypesCompatible(df.Type, cf.Type) {
+		return "", false
+	}
+	return cf.Name, true
+}
+
+// scalarTypesCompatible reports whether a scalar Deps field of type want can
+// be filled from a config field of type have. Exact-string equality is the
+// common case; the integer family (int / int32 / int64) is treated as
+// compatible because proto-derived config ints land as int32 while a service
+// Deps field idiomatically declares int. time.Duration only matches itself.
+func scalarTypesCompatible(want, have string) bool {
+	if want == have {
+		return true
+	}
+	intFamily := map[string]bool{"int": true, "int32": true, "int64": true}
+	if intFamily[want] && intFamily[have] {
+		return true
+	}
+	return false
 }
 
 // scalarConfigHint mirrors wire_gen's unresolvedDepHint for the scalar

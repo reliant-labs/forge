@@ -39,6 +39,21 @@ import (
 // Plus a runtime probe: BootstrapOnly's registration guard fails
 // pointedly when the unregistered name is passed to `server <name>`.
 func TestE2ERegistrationTypesOnlyService(t *testing.T) {
+	// RETIRED (FORGE_SHAPE_REDESIGN §2): this test drove the old
+	// registration-in-code lifecycle — the user-owned pkg/app/services.go
+	// row list, serviceRow<X> constructors, and BootstrapOnly's
+	// string-keyed registration guard. That whole generation mechanism is
+	// gone: fresh §2 projects no longer scaffold pkg/app/services.go;
+	// every service with a handler dir is constructed by the by-type
+	// injector (internal/app/inject_gen.go) and listed in the data-only
+	// internal/app/inventory_gen.go, with mount selection done at runtime
+	// via `server [services...]`. The residual services.go PARSER (kept
+	// for migrated projects that still carry the file) is covered by the
+	// TestServiceRegistry_* unit tests in generate_serve_test.go. A §2
+	// types-only e2e (proto generates but the binary doesn't mount it)
+	// should be written against the inventory/inject model.
+	t.Skip("registration-in-code mechanism retired in FORGE_SHAPE_REDESIGN §2; see comment")
+
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()

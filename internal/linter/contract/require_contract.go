@@ -41,9 +41,11 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
-	// Honor forge.yaml's contracts.exclude — these packages are intentionally
-	// kept contract-free (utility packages with no behavioral interface).
-	if IsExcluded(pkgPath) {
+	// Honor forge.yaml's contracts.exclude AND the per-package
+	// //forge:exclude-contract header — these packages are intentionally kept
+	// contract-free (utility packages with no behavioral interface), opted out
+	// via either source.
+	if IsExcludedPass(pass) {
 		return nil, nil
 	}
 

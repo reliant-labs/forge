@@ -1,11 +1,8 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
 //
-// It drives the REAL generated stack (handlers → pkg/crud
-// → internal/db → database) against the project's OWN migration SQL, and
-// asserts real semantics: distinct generated IDs, managed timestamps,
-// updates that actually mutate, and clean NotFound mapping. A failure
-// here is a real regression, not scaffolding noise — extend it as your
-// entities grow.
+// Drives the real generated stack (handlers → pkg/crud → internal/db →
+// database) against the project's own migrations, asserting real CRUD
+// semantics. Extend it as your entities grow. See the forge `testing` skill.
 package {{.Package}}_test
 
 import (

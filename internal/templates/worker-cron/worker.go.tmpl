@@ -25,9 +25,8 @@ import (
 	"{{.Module}}/pkg/config"
 )
 
-// tracer is the OTel tracer for this worker. Named after the package so
-// spans group cleanly in the trace UI (matches the per-package tracer
-// convention forge uses elsewhere).
+// tracer is the OTel tracer for this worker, named after the package so
+// spans group cleanly in the trace UI.
 var tracer = otel.Tracer("internal/workers/{{.Name}}")
 
 // Schedule is the cron expression that controls how often Run executes.
@@ -44,9 +43,8 @@ type Worker struct {
 	deps Deps
 	cron *cron.Cron
 
-	// baseCtx is set in Start and cancelled in Stop. Each cron tick derives
-	// a per-tick context from it so Run can observe graceful shutdown via
-	// ctx.Done() instead of running to completion after Stop fires.
+	// baseCtx is set in Start, cancelled in Stop; each tick derives its ctx
+	// from it so Run observes graceful shutdown.
 	baseCtx    context.Context
 	baseCancel context.CancelFunc
 }
@@ -63,18 +61,13 @@ func (w *Worker) Name() string { return "{{.Name | kebabCase}}" }
 func (w *Worker) Start(ctx context.Context) error {
 	w.deps.Logger.Info("cron worker started", "worker", w.Name(), "schedule", Schedule)
 
-	// baseCtx propagates the caller's lifecycle into every per-tick ctx
-	// Run receives. baseCancel is a safety net for Stop() — once we
-	// cancel it, every in-flight Run sees ctx.Done() immediately, even if
-	// the caller's parent ctx is still live.
+	// baseCancel lets Stop() signal in-flight Run invocations even if the
+	// caller's parent ctx is still live.
 	w.baseCtx, w.baseCancel = context.WithCancel(ctx)
 
 	w.cron = cron.New()
 	if _, err := w.cron.AddFunc(Schedule, func() {
-		// Each tick gets its own context derived from baseCtx so cancel
-		// propagates without leaking state between ticks. Wrap with
-		// context.WithTimeout(w.baseCtx, ...) here if your job has a
-		// natural per-tick deadline (e.g. shorter than the cron period).
+		// Wrap with context.WithTimeout(w.baseCtx, ...) for a per-tick deadline.
 		w.Run(w.baseCtx)
 	}); err != nil {
 		w.baseCancel()
@@ -90,9 +83,7 @@ func (w *Worker) Start(ctx context.Context) error {
 func (w *Worker) Stop(ctx context.Context) error {
 	w.deps.Logger.Info("cron worker stopping", "worker", w.Name())
 	if w.baseCancel != nil {
-		// Signal in-flight Run invocations before waiting on the cron
-		// scheduler — they observe ctx.Done() and can bail out cleanly
-		// instead of holding cron.Stop()'s wait group open.
+		// Signal in-flight Run before waiting on cron.Stop()'s wait group.
 		w.baseCancel()
 	}
 	if w.cron != nil {
@@ -105,28 +96,16 @@ func (w *Worker) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Run is invoked on the cron schedule. Implement your logic here.
-//
-// ctx is derived from the Start() caller's context — when Stop fires (or
-// the caller cancels), ctx.Done() closes. Plumb ctx through every
-// context-aware call (DB queries, HTTP requests, downstream adapters) so
-// shutdown is observed rather than fought.
-//
-// The default body logs both the worker name and the cron expression so
-// fresh scaffolds are useful in `kubectl logs` / OTel traces without
-// hand-editing — every run line correlates back to the schedule it was
-// triggered by. Drop the `"schedule", Schedule` field if your job runs
-// at >1Hz and the log volume becomes noisy.
+// Run is invoked on the cron schedule. Implement your logic here. Plumb
+// ctx through every context-aware call so shutdown is observed. See the
+// forge `workers` skill.
 func (w *Worker) Run(ctx context.Context) {
-	// LIFO defer order: span.End() runs AFTER the recover, so the span
-	// records the panicked state before being closed. Wrap a single defer
-	// rather than two separate ones to make the ordering self-evident.
+	// LIFO defer: span.End() runs after recover, so the span records the
+	// panicked state. robfig/cron doesn't restart on panic, so recovering
+	// here keeps the schedule alive across bad ticks.
 	ctx, span := tracer.Start(ctx, "cron.{{.Name}}.tick")
 	defer func() {
 		if r := recover(); r != nil {
-			// robfig/cron's tick goroutine doesn't restart on panic — a
-			// wedged Run would silently stop the schedule. Recover here
-			// so the cron loop survives bad ticks.
 			w.deps.Logger.ErrorContext(ctx, "cron job panicked", "worker", w.Name(), "panic", r)
 		}
 		span.End()

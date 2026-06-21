@@ -186,6 +186,40 @@ func TestGenerateInject_ScalarIsConfigNotMissing(t *testing.T) {
 	}
 }
 
+// TestGenerateInject_ScalarResolvesFromConfig: a scalar Deps field that
+// matches a typed Config field resolves from infra.Cfg.<field>, not a
+// typed-zero. An unmatched scalar still takes the typed-zero. (Regression
+// for kalshi's WTI EIAKey/FREDKey being reset to "" + TODO.)
+func TestGenerateInject_ScalarResolvesFromConfig(t *testing.T) {
+	dir := newInjectProject(t)
+	writeComponentDeps(t, dir, "internal/handlers", "wti", "wti",
+		"\tEIAKey string\n\tUnmapped string")
+	// Config struct carries EIAKey (matches) but not Unmapped.
+	cfgDir := filepath.Join(dir, "pkg", "config")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	cfgSrc := "package config\n\ntype Config struct {\n\tEIAKey string\n\tPort int32\n}\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.go"), []byte(cfgSrc), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := GenerateInject(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "WtiService", ModulePath: "example.com/proj"}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateInject: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, "EIAKey: infra.Cfg.EIAKey,") {
+		t.Fatalf("EIAKey should resolve from infra.Cfg:\n%s", out)
+	}
+	if !strings.Contains(out, "Unmapped: \"\",") {
+		t.Fatalf("Unmapped scalar should take typed-zero:\n%s", out)
+	}
+}
+
 // TestParseInfraFields reads the Infra struct fields from internal/app.
 func TestParseInfraFields(t *testing.T) {
 	dir := t.TempDir()

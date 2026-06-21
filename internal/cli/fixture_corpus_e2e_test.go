@@ -991,22 +991,21 @@ func assertZeroServiceShape(t *testing.T, projectDir, name string) {
 
 // ───────────────────────────── corpus helpers ─────────────────────────────
 
-// addCorpusForgePkgReplace wires the two unpublished forge modules a
-// scaffolded project imports to local sources, in BOTH module roots
-// (project + gen/) so `go mod tidy` resolves on either side:
+// addCorpusForgePkgReplace wires the unpublished forge/pkg module a
+// scaffolded project imports to local source, in BOTH module roots
+// (project + gen/) so `go mod tidy` resolves on either side.
 //
-//   - github.com/reliant-labs/forge/pkg → <repo>/pkg (appkit,
-//     serverkit, orm — revisions newer than any published snapshot).
-//   - github.com/reliant-labs/forge/gen → a local shim module built by
-//     the harness. The scaffolded proto/forge/v1/forge.proto keeps the
-//     PUBLISHED go_package (github.com/reliant-labs/forge/gen/forge/v1)
-//     so generated config code imports that module — which does not
-//     exist on the proxy yet. The shim is a one-package module wrapping
-//     the in-repo pkg/forgepb/forge.pb.go.
+// Under "Path A" proto unification the scaffolded proto/forge/v1/forge.proto
+// declares `option go_package = ".../forge/pkg/forgepb;forgepb"`, and
+// buf.gen.yaml excludes forge/v1 from output — so the project generates NO
+// local gen/forge/v1 copy and every generated *.pb.go (root AND gen module)
+// blank-imports forge/pkg/forgepb. forgepb already lives inside forge/pkg,
+// which is vendored to <project>/.forge-pkg, so a single forge/pkg replace in
+// each module satisfies everything. (The old forge/gen shim module is gone:
+// nothing imports github.com/reliant-labs/forge/gen anymore.)
 func addCorpusForgePkgReplace(t *testing.T, projectDir string) {
 	t.Helper()
 	repoRoot := findRepoRoot(t)
-	genShim := buildForgeGenShim(t, repoRoot)
 
 	// Pre-vendor forge/pkg into <project>/.forge-pkg — the canonical
 	// state `forge generate`'s vendor-sync would converge to anyway.
@@ -1016,16 +1015,16 @@ func addCorpusForgePkgReplace(t *testing.T, projectDir string) {
 	// hash idempotency assertion (no mid-run go.mod rewrite).
 	vendorCorpusForgePkg(t, repoRoot, projectDir)
 
-	// Root module: vendored pkg replace + gen-shim replace.
+	// Root module: vendored pkg replace (relative to project root).
 	addReplaceLines(t, filepath.Join(projectDir, "go.mod"),
 		"replace github.com/reliant-labs/forge/pkg => ./.forge-pkg",
-		fmt.Sprintf("replace github.com/reliant-labs/forge/gen => %s", genShim),
 	)
-	// gen module: only the gen-shim replace (generated proto/config Go
-	// imports github.com/reliant-labs/forge/gen/forge/v1).
+	// gen module: the generated proto/config Go blank-imports
+	// forge/pkg/forgepb, so it needs the same pkg replace — relative to
+	// gen/, the vendored dir is one level up.
 	if _, err := os.Stat(filepath.Join(projectDir, "gen", "go.mod")); err == nil {
 		addReplaceLines(t, filepath.Join(projectDir, "gen", "go.mod"),
-			fmt.Sprintf("replace github.com/reliant-labs/forge/gen => %s", genShim),
+			"replace github.com/reliant-labs/forge/pkg => ../.forge-pkg",
 		)
 	}
 }
@@ -1083,36 +1082,6 @@ func vendorCorpusForgePkg(t *testing.T, repoRoot, projectDir string) {
 	if err != nil {
 		t.Fatalf("vendor forge/pkg into %s: %v", dst, err)
 	}
-}
-
-// buildForgeGenShim materializes a local stand-in for the unpublished
-// github.com/reliant-labs/forge/gen module: go.mod + forge/v1/forge.pb.go
-// (copied from the repo's pkg/forgepb — the source of truth the embedded
-// forge.proto was generated from). Returns the module dir.
-//
-// forge's own copy now lives at pkg/forgepb with `package forgepb`, but a
-// scaffolded user project rewrites go_package to `<module>/gen/forge/v1;
-// forgev1` (see internal/assets/embedded.go), so its generated config code
-// imports the package under the identifier `forgev1`. The shim emulates
-// that user-side package: copy the bytes, but rewrite the `package` clause
-// back to `forgev1` so the corpus project's generated imports resolve.
-func buildForgeGenShim(t *testing.T, repoRoot string) string {
-	t.Helper()
-	shim := filepath.Join(t.TempDir(), "forge-gen-shim")
-	pbSrc := filepath.Join(repoRoot, "pkg", "forgepb", "forge.pb.go")
-	pb, err := os.ReadFile(pbSrc)
-	if err != nil {
-		t.Fatalf("read %s (needed for the forge/gen shim): %v", pbSrc, err)
-	}
-	src := strings.Replace(string(pb), "\npackage forgepb\n", "\npackage forgev1\n", 1)
-	writeCorpusFile(t, filepath.Join(shim, "go.mod"), `module github.com/reliant-labs/forge/gen
-
-go 1.23
-
-require google.golang.org/protobuf v1.36.9
-`)
-	writeCorpusFile(t, filepath.Join(shim, "forge", "v1", "forge.pb.go"), src)
-	return shim
 }
 
 // generateTwiceIdempotent runs `forge generate` twice and asserts the

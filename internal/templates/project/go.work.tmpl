@@ -4,3 +4,13 @@ use (
 	.
 	gen
 )
+{{- if and .ForgePkgDevReplace (not .ForgePkgVersion)}}
+
+// Dev-mode forge/pkg wiring, workspace-wide. Both the root module and the
+// gen submodule blank-import / import github.com/reliant-labs/forge/pkg, so the
+// dev replace must resolve for BOTH. A go.work replace is workspace-wide and
+// overrides per-module replaces, so it is the single place that satisfies them
+// together. `forge generate` vendors the target into ./.forge-pkg/ and rewrites
+// this directive to point there, matching the root go.mod's dev replace.
+replace github.com/reliant-labs/forge/pkg => {{.ForgePkgDevReplace}}
+{{- end}}

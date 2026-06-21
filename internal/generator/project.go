@@ -714,7 +714,7 @@ func (g *ProjectGenerator) applyKindFeatureDefaults() {
 
 func (g *ProjectGenerator) copyForgeV1Proto() error {
 	v1Dir := filepath.Join(g.Path, "proto", "forge", "v1")
-	return assets.WriteForgeV1Proto(v1Dir, g.ModulePath)
+	return assets.WriteForgeV1Proto(v1Dir)
 }
 
 func (g *ProjectGenerator) createConfigProto(data interface{}) error {

@@ -47,6 +47,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/cli/audittype"
 )
 
 // frictionFileRelPath is where the log lives, relative to the project
@@ -518,18 +519,18 @@ func pluralIES(n int) string {
 // by design: entries describe forge (the generator), not the project,
 // so they must not trip CI gates. Malformed lines (torn writes) are the
 // one warn condition — that is local data damage worth surfacing.
-func auditFriction(projectDir string) AuditCategory {
+func auditFriction(projectDir string) audittype.Category {
 	path := filepath.Join(projectDir, filepath.FromSlash(frictionFileRelPath))
 	entries, malformed, err := loadFrictionEntries(path)
 	if err != nil {
-		return AuditCategory{
-			Status:  AuditStatusWarn,
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
 			Summary: fmt.Sprintf("friction log unreadable: %v", err),
 		}
 	}
 	if len(entries) == 0 && malformed == 0 {
-		return AuditCategory{
-			Status:  AuditStatusOK,
+		return audittype.Category{
+			Status:  audittype.StatusOK,
 			Summary: "no friction recorded",
 			Details: map[string]any{
 				"count": 0,
@@ -566,11 +567,11 @@ func auditFriction(projectDir string) AuditCategory {
 		summary += " (" + strings.Join(sevBits, ", ") + ")"
 	}
 
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	if malformed > 0 {
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 		details["malformed_lines"] = malformed
 		summary += fmt.Sprintf(" — %d malformed line(s) skipped", malformed)
 	}
-	return AuditCategory{Status: status, Summary: summary, Details: details}
+	return audittype.Category{Status: status, Summary: summary, Details: details}
 }

@@ -159,7 +159,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newToolsCmd())
 	// `backlog` migrated to the internal/cli/backlog group (factory registry).
 	rootCmd.AddCommand(newFrictionCmd())
-	rootCmd.AddCommand(newAuditCmd())
+	// `audit` migrated to the internal/cli/audit group (factory registry).
 	rootCmd.AddCommand(newGraphCmd())
 	rootCmd.AddCommand(newMapCmd())
 	rootCmd.AddCommand(newIntrospectCmd())

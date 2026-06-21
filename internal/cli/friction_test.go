@@ -23,6 +23,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/cli/audittype"
 )
 
 const minimalFrictionForgeYAML = `name: testproj
@@ -269,7 +271,7 @@ func TestFrictionList_ToleratesMalformedLines(t *testing.T) {
 func TestAuditFriction(t *testing.T) {
 	t.Run("no log file", func(t *testing.T) {
 		cat := auditFriction(t.TempDir())
-		if cat.Status != AuditStatusOK {
+		if cat.Status != audittype.StatusOK {
 			t.Errorf("missing log should be ok, got %s", cat.Status)
 		}
 		if !strings.Contains(cat.Summary, "no friction recorded") {
@@ -291,7 +293,7 @@ func TestAuditFriction(t *testing.T) {
 		}
 
 		cat := auditFriction(dir)
-		if cat.Status != AuditStatusOK {
+		if cat.Status != audittype.StatusOK {
 			t.Errorf("healthy log must stay ok (friction never gates CI), got %s", cat.Status)
 		}
 		if !strings.Contains(cat.Summary, "4 friction entries") ||
@@ -330,7 +332,7 @@ func TestAuditFriction(t *testing.T) {
 			t.Fatalf("append: %v", err)
 		}
 		cat := auditFriction(dir)
-		if cat.Status != AuditStatusWarn {
+		if cat.Status != audittype.StatusWarn {
 			t.Errorf("torn writes should warn, got %s", cat.Status)
 		}
 		if cat.Details["malformed_lines"] != 1 {
@@ -338,37 +340,10 @@ func TestAuditFriction(t *testing.T) {
 		}
 	})
 
-	t.Run("additive: full report carries the category and round-trips", func(t *testing.T) {
-		dir := withTempProject(t, minimalFrictionForgeYAML)
-		writeComponentsJSON(t, dir) // empty → service kind; lets buildAuditReport load config
-		if _, _, err := runFriction(t, "", "add", "report-level entry", "--severity", "p2"); err != nil {
-			t.Fatalf("add: %v", err)
-		}
-		report, err := buildAuditReport(dir)
-		if err != nil {
-			t.Fatalf("buildAuditReport: %v", err)
-		}
-		cat, ok := report.Categories["friction"]
-		if !ok {
-			t.Fatal("audit report missing friction category")
-		}
-		if cat.Status != AuditStatusOK {
-			t.Errorf("friction category status = %s, want ok", cat.Status)
-		}
-		// Additivity: the JSON shape must survive marshal/unmarshal so
-		// existing consumers (which iterate categories) keep working.
-		data, err := json.Marshal(report)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		var decoded AuditReport
-		if err := json.Unmarshal(data, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if _, ok := decoded.Categories["friction"]; !ok {
-			t.Error("friction category lost in JSON round-trip")
-		}
-	})
+	// The buildAuditReport-level additivity check (friction category present
+	// and the whole report round-trips through JSON) moved to package audit
+	// alongside the report assembly; auditFriction itself stays in package
+	// cli and is exercised by the sub-tests above.
 }
 
 // TestFrictionAdd_NeverRewritesExistingLines pins the append-only

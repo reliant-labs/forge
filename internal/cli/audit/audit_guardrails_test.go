@@ -1,4 +1,4 @@
-package cli
+package audit
 
 import (
 	"fmt"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/cli/audittype"
 )
 
 // TestAuditFileSizes_FlagsOversizedFile fixtures a .go file past the line
@@ -26,7 +28,7 @@ func TestAuditFileSizes_FlagsOversizedFile(t *testing.T) {
 	}
 
 	cat := auditFileSizes(dir)
-	if cat.Status != AuditStatusWarn {
+	if cat.Status != audittype.StatusWarn {
 		t.Fatalf("status = %q, want warn (summary=%q)", cat.Status, cat.Summary)
 	}
 	if !strings.Contains(cat.Summary, "oversized") {
@@ -52,7 +54,7 @@ func TestAuditFileSizes_FlagsGodObjectType(t *testing.T) {
 	}
 
 	cat := auditFileSizes(dir)
-	if cat.Status != AuditStatusWarn {
+	if cat.Status != audittype.StatusWarn {
 		t.Fatalf("status = %q, want warn (summary=%q)", cat.Status, cat.Summary)
 	}
 	if !strings.Contains(cat.Summary, "god-object") {
@@ -71,12 +73,12 @@ func TestAuditFileSizes_CleanProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	cat := auditFileSizes(dir)
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status = %q, want ok (summary=%q)", cat.Status, cat.Summary)
 	}
 }
 
-// stubHandler builds a handlers.go body where named methods are stubs
+// writeHandlerFile builds a handlers.go body where named methods are stubs
 // (carry the unwired-stub marker) and the rest are implemented.
 func writeHandlerFile(t *testing.T, dir, pkg string, stubs, real []string) {
 	t.Helper()
@@ -103,8 +105,8 @@ func TestAuditOrphanStubs_FlagsAllStubService(t *testing.T) {
 	writeHandlerFile(t, filepath.Join(dir, "internal", "handlers", "reporting"), "reporting",
 		[]string{"GetReport", "ListReports"}, nil)
 
-	cat := auditOrphanStubs(nil, dir)
-	if cat.Status != AuditStatusWarn {
+	cat := auditOrphanStubs(testFactory(auditAPIConfig{}), nil, dir)
+	if cat.Status != audittype.StatusWarn {
 		t.Fatalf("status = %q, want warn (summary=%q)", cat.Status, cat.Summary)
 	}
 	if !strings.Contains(cat.Summary, "un-implemented") {
@@ -119,8 +121,8 @@ func TestAuditOrphanStubs_PartialImplNotFlagged(t *testing.T) {
 	writeHandlerFile(t, filepath.Join(dir, "internal", "handlers", "billing"), "billing",
 		[]string{"Refund"}, []string{"Charge"})
 
-	cat := auditOrphanStubs(nil, dir)
-	if cat.Status != AuditStatusOK {
+	cat := auditOrphanStubs(testFactory(auditAPIConfig{}), nil, dir)
+	if cat.Status != audittype.StatusOK {
 		t.Fatalf("status = %q, want ok — partial impl is not an orphan (summary=%q)", cat.Status, cat.Summary)
 	}
 }
@@ -128,8 +130,8 @@ func TestAuditOrphanStubs_PartialImplNotFlagged(t *testing.T) {
 // TestAuditOrphanStubs_NoHandlersDir confirms a project without handlers/
 // reports n/a rather than warning.
 func TestAuditOrphanStubs_NoHandlersDir(t *testing.T) {
-	cat := auditOrphanStubs(nil, t.TempDir())
-	if cat.Status != AuditStatusOK {
+	cat := auditOrphanStubs(testFactory(auditAPIConfig{}), nil, t.TempDir())
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status = %q, want ok for no handlers dir", cat.Status)
 	}
 }

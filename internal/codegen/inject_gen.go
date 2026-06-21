@@ -145,6 +145,7 @@ func GenerateInject(in InjectGenInput) error {
 	if err != nil {
 		return err
 	}
+	comps = filterExternalComponents(in.ProjectDir, comps)
 	// No len(comps)==0 early-return: cmd/server.go imports internal/app
 	// unconditionally, so the package must exist and compile even with zero
 	// components. The template renders a valid empty Build over an empty
@@ -453,6 +454,7 @@ func GenerateLifecycle(in InjectGenInput) error {
 	if err != nil {
 		return err
 	}
+	comps = filterExternalComponents(in.ProjectDir, comps)
 	// No len(comps)==0 early-return: cmd/server.go reads app.WorkerList /
 	// app.OperatorList / app.RunOperators over *Services, so lifecycle_gen.go
 	// must exist even with zero supervised components (the template emits
@@ -614,4 +616,31 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 	}
 
 	return comps, nil
+}
+
+// filterExternalComponents drops every component whose package declares
+// the `//forge:external-component` (or `//forge:provided`) directive from
+// the Build graph. Such a component is HAND-CONSTRUCTED in providers.go /
+// OpenInfra — the type-topological injector must NOT emit a New(Deps) node
+// for it, and other components that depend on its Service interface resolve
+// to an Infra field instead (the hand-built instance the owner placed on
+// Infra). See package_directives.go for why this is SEPARATE from
+// contract-exclusion: an external component still gets its mock/contract
+// codegen (a different walk entirely) — it is only absent from the Build
+// node set, not from the type-shaped surface.
+//
+// This is a SELECTION predicate over the already-assembled component slice,
+// applied post-enumeration — it deliberately does not touch how components
+// are discovered. The component's on-disk package dir is reconstructed from
+// the role root + import leaf the assembler already resolved.
+func filterExternalComponents(projectDir string, comps []BuildComponent) []BuildComponent {
+	out := comps[:0:0]
+	for _, c := range comps {
+		dir := filepath.Join(projectDir, filepath.FromSlash(c.compRoleRoot), filepath.FromSlash(c.compImportLeaf))
+		if HasExternalComponentDirective(dir) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }

@@ -26,7 +26,7 @@
 // appendToContractsExclude in this file) so user comments and any
 // non-canonical fields are preserved.
 
-package cli
+package add
 
 import (
 	"fmt"
@@ -37,12 +37,13 @@ import (
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // newAddLibraryCmd is the cobra surface for `forge add library <name>`.
-func newAddLibraryCmd() *cobra.Command {
+func newAddLibraryCmd(_ *factory.Factory) *cobra.Command {
 	var (
 		path      string
 		force     bool

@@ -14,7 +14,7 @@
 //   - comment preservation in forge.yaml (yaml.Node round-trip)
 //   - idempotency: re-adding the same path is a no-op
 
-package cli
+package add
 
 import (
 	"os"

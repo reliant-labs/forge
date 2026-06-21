@@ -11,7 +11,7 @@
 //
 // All three steps fit a one-line cobra command, so they are.
 
-package cli
+package add
 
 import (
 	"fmt"
@@ -21,12 +21,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // newAddHandlerFileCmd is the cobra surface for `forge add handler-file <svc> <name>`.
-func newAddHandlerFileCmd() *cobra.Command {
+func newAddHandlerFileCmd(_ *factory.Factory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "handler-file <svc> <name>",
 		Short: "Scaffold an additional RPC-group file in an existing handler directory",

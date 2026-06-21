@@ -20,10 +20,12 @@
 // it) so existing scripts and skill docs keep working. This file just
 // adds the shorter path.
 
-package cli
+package add
 
 import (
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cli/factory"
 )
 
 // newAddAdapterCmd is the cobra surface for `forge add adapter <name>`.
@@ -35,7 +37,7 @@ import (
 // agree, since both shipping under different names with subtly
 // different behavior would be a worse failure mode than the original
 // discoverability gap.
-func newAddAdapterCmd() *cobra.Command {
+func newAddAdapterCmd(f *factory.Factory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "adapter <name>",
 		Short: "Add an outbound adapter (HTTP client, queue producer, storage gateway) to the project",
@@ -64,7 +66,7 @@ Example:
   forge add adapter stripe
   forge add adapter pricing_feed`,
 		Args: cobra.ExactArgs(1),
-		RunE: runPackageNew,
+		RunE: f.Gen.RunPackageNew,
 	}
 
 	// runPackageNew reads --type and --kind off the command. The adapter

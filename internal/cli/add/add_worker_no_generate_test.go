@@ -17,7 +17,7 @@
 // but the flag-presence test catches the highest-leverage regression:
 // someone refactoring `newAddWorkerCmd` and accidentally dropping the
 // flag.
-package cli
+package add
 
 import (
 	"strings"
@@ -25,7 +25,7 @@ import (
 )
 
 func TestAddWorkerCmd_HasNoGenerateFlag(t *testing.T) {
-	cmd := newAddWorkerCmd()
+	cmd := newAddWorkerCmd(testFactory())
 	if cmd == nil {
 		t.Fatal("newAddWorkerCmd returned nil")
 	}
@@ -50,9 +50,9 @@ func TestAddWorkerCmd_HasNoGenerateFlag(t *testing.T) {
 }
 
 func TestAddWorkerCmd_LongHelpDocumentsNoGenerate(t *testing.T) {
-	cmd := newAddWorkerCmd()
+	cmd := newAddWorkerCmd(testFactory())
 	if !strings.Contains(cmd.Long, "--no-generate") {
-		t.Errorf("`forge add worker --help` long text must document --no-generate so the parallel-agent escape hatch is discoverable. " +
+		t.Errorf("`forge add worker --help` long text must document --no-generate so the parallel-agent escape hatch is discoverable. "+
 			"Long text:\n%s", cmd.Long)
 	}
 	// And the explanation should point at the parallel-agent rationale

@@ -1,4 +1,4 @@
-package cli
+package add
 
 import (
 	"fmt"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -51,7 +52,7 @@ func validateScenarioName(name string) error {
 //   - writes src/mocks/scenarios/<name>.ts (either from the scenario
 //     template or, with --from, by copying an existing scenario),
 //   - regenerates the registry barrel so the new scenario is picked up.
-func newAddScenarioCmd() *cobra.Command {
+func newAddScenarioCmd(f *factory.Factory) *cobra.Command {
 	var (
 		frontend    string
 		from        string
@@ -78,7 +79,7 @@ Examples:
   forge add scenario admin-dashboard --frontend admin-web`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddScenario(args[0], frontend, from, description)
+			return runAddScenario(f, args[0], frontend, from, description)
 		},
 	}
 
@@ -89,7 +90,7 @@ Examples:
 	return cmd
 }
 
-func runAddScenario(name, frontend, from, description string) error {
+func runAddScenario(f *factory.Factory, name, frontend, from, description string) error {
 	ctxLabel := fmt.Sprintf("forge add scenario %s", name)
 
 	if err := validateScenarioName(name); err != nil {
@@ -158,7 +159,7 @@ func runAddScenario(name, frontend, from, description string) error {
 	}
 
 	// Regenerate the registry barrel so the new scenario is discoverable.
-	if err := writeScenariosIndex(scenariosDir); err != nil {
+	if err := f.Gen.WriteScenariosIndex(scenariosDir); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "regenerate scenarios index", scenariosDir,
 			"run 'forge generate' to rebuild the registry manually", err)
 	}

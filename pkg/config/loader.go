@@ -80,6 +80,33 @@ func isDurationField(fd protoreflect.FieldDescriptor) bool {
 		fd.Message().FullName() == durationFullName
 }
 
+// isConfigBlock reports whether a field is a NESTED CONFIG BLOCK: a
+// singular message field that is not a google.protobuf.Duration and whose
+// message type carries at least one config-bound (or role/allowed_values
+// annotated) leaf. These are the component config "blocks" that compose
+// onto the root config (e.g. AppConfig.trader → TraderConfig); the loader
+// descends into them and populates the sub-message. A repeated/map message
+// field is never a block — config blocks are singular composition.
+func isConfigBlock(fd protoreflect.FieldDescriptor) bool {
+	if fd.Kind() != protoreflect.MessageKind || fd.IsList() || fd.IsMap() {
+		return false
+	}
+	if isDurationField(fd) {
+		return false
+	}
+	md := fd.Message()
+	if md == nil {
+		return false
+	}
+	sub := md.Fields()
+	for i := 0; i < sub.Len(); i++ {
+		if fieldOptions(sub.Get(i)) != nil || roleOptions(sub.Get(i)) != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // allowEmptyEnv mirrors the generated AllowEmptyEnv: an explicitly-empty
 // env var counts as "set" only for plain string scalars. Every other kind
 // (numeric, bool, duration message) treats "" as unset because parsing ""
@@ -103,9 +130,28 @@ func allowEmptyEnv(fd protoreflect.FieldDescriptor) bool {
 // mounts) are intentionally skipped — the same defense-in-depth the
 // generated RegisterFlags applies.
 func RegisterFlagsFor(flags *pflag.FlagSet, msg proto.Message) error {
-	fields := msg.ProtoReflect().Descriptor().Fields()
+	return registerFlagsForDesc(flags, msg.ProtoReflect().Descriptor())
+}
+
+// registerFlagsForDesc registers flags for a descriptor, recursing into
+// nested config-block messages. It walks the DESCRIPTOR (not a live
+// message) because flag registration needs no instance — only the field
+// shapes and annotations. A nested message field that is itself a config
+// block (carries config-bound leaves and is not a google.protobuf.Duration)
+// is descended into: its leaves keep their OWN env/flag annotations, so a
+// block's flags share the flat namespace exactly as the generated loader
+// emitted them. Recursion is unbounded in depth but cycle-free in practice
+// (a config proto is a finite tree).
+func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescriptor) error {
+	fields := desc.Fields()
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
+		if isConfigBlock(fd) {
+			if err := registerFlagsForDesc(flags, fd.Message()); err != nil {
+				return err
+			}
+			continue
+		}
 		opt := fieldOptions(fd)
 		if opt == nil || opt.GetFlag() == "" {
 			continue
@@ -197,10 +243,24 @@ func RegisterFlagsFor(flags *pflag.FlagSet, msg proto.Message) error {
 // and the Mode()/DevAuthBypass() helpers are NOT part of this library —
 // they remain the consumer's responsibility.
 func LoadInto(cmd *cobra.Command, msg proto.Message) error {
-	m := msg.ProtoReflect()
+	return loadIntoMessage(cmd, msg.ProtoReflect())
+}
+
+// loadIntoMessage resolves every config-bound leaf of m, recursing into
+// nested config blocks. A block field is allocated with m.Mutable (so the
+// sub-message exists even when no leaf is set) and then loaded the same way
+// — its leaves carry their own annotations, so block leaves get the exact
+// flag>env>default treatment root leaves do.
+func loadIntoMessage(cmd *cobra.Command, m protoreflect.Message) error {
 	fields := m.Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
+		if isConfigBlock(fd) {
+			if err := loadIntoMessage(cmd, m.Mutable(fd).Message()); err != nil {
+				return err
+			}
+			continue
+		}
 		opt := fieldOptions(fd)
 		if opt == nil {
 			continue

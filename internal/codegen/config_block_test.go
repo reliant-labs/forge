@@ -136,8 +136,15 @@ func TestBuildConfigTemplateData_FlatStaysFlat(t *testing.T) {
 	}
 }
 
+// TestGenerateConfigLoader_ComponentBlock: with a config block in the proto,
+// the generated config.go stays the THIN ALIAS shim (the block struct lives
+// in the gen proto package as a nested message — NOT re-declared here), and
+// the block's leaf still flows into .env.example like any root field.
 func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/proj\n\ngo 1.24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := GenerateConfigLoader(traderConfigMessages(), dir, nil); err != nil {
 		t.Fatalf("GenerateConfigLoader: %v", err)
 	}
@@ -148,16 +155,14 @@ func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 	}
 	content := string(data)
 
-	for _, want := range []string{
-		"type TraderConfig struct {",
-		"MaxPerTick int32",
-		"Trader TraderConfig",
-		`loadField(cmd, "trader-max-per-tick", "TRADER_MAX_PER_TICK", "10", true, false, false, "Trader.MaxPerTick", parseInt32)`,
-		"cfg.Trader.MaxPerTick, err = loadField",
-		`cmd.Flags().Int32("trader-max-per-tick", 10,`,
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("config.go missing %q\n--- content ---\n%s", want, content)
+	// The thin shim is emitted; the block's leaf struct is NOT re-declared
+	// here (it is a nested message on the gen proto type).
+	if !strings.Contains(content, "type Config = configv1.AppConfig") {
+		t.Errorf("config.go should be the thin alias shim\n%s", content)
+	}
+	for _, banned := range []string{"type TraderConfig struct", "Trader TraderConfig", "loadField("} {
+		if strings.Contains(content, banned) {
+			t.Errorf("config.go must NOT re-declare the block struct or per-field loader (%q)\n%s", banned, content)
 		}
 	}
 

@@ -767,9 +767,26 @@ func dispatchServiceBuild(svcName string, raw json.RawMessage) (BuildConfigEntit
 // lives — so a hand-authored forge.Service that omits `build`, a project
 // on an older KCL render, and the deploy-as-data bridge all converge on
 // the same answer without build.go re-deriving it.
+//
+// An EXPLICIT `build` block always wins. When the block is absent the
+// default is deploy-type-aware: only forge-built deploy targets (host,
+// cluster, build-only) synthesize the ./cmd/<name> GoBuild. A `compose`
+// service has NO Go artifact (it's a docker-compose unit), and an
+// `external` service / one carrying a top-level `build_cmd` owns its own
+// build via the shell dispatcher — synthesizing a GoBuild for either
+// would make forge `go build ./cmd/<name>` a package that doesn't exist
+// (e.g. a sibling-repo binary or a compose aggregator). Those return the
+// zero BuildConfigEntity (Type=="") so goBuildTargetsFromKCL skips them.
 func (s ServiceEntity) EffectiveBuild() BuildConfigEntity {
 	if s.Build.Type != "" {
 		return s.Build
+	}
+	switch s.Deploy.Type {
+	case "compose", "external":
+		return BuildConfigEntity{}
+	}
+	if s.BuildCmd != "" {
+		return BuildConfigEntity{}
 	}
 	return BuildConfigEntity{
 		Type: "go",

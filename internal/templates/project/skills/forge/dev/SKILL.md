@@ -106,7 +106,7 @@ What flipping a service to host mode buys:
 - `forge build --env=dev` lists it under "host-mode services" so users know
   they need to run it with `forge up --target <name> --host-only` (or just
   `forge up --env=dev`).
-- The scaffolded `cmd/server.go` operator-gating helper won't start the
+- The scaffolded `cmd/<bin>/cmd/serve.go` operator-gating helper won't start the
   controller manager when the user filters to host-mode-only services
   (no more spurious "not running in-cluster" errors during a host run).
 

@@ -1,6 +1,6 @@
 ---
 name: v0.x-to-serverkit-composed
-description: Migrate serverkit from Run(ctx, cfg, hooks, args) — where args were service NAMES matched through a string registry — to Run(ctx, cfg, serverkit.Server{...}) with FULLY TYPED service selection. The Application interface, Hooks, string-keyed BootstrapOnly selection, the string→inventory mount lookup, AND the generated cmd/otel.go shim are all gone. The cmd layer becomes a real cobra command tree under cmd/<bin>/cmd (devspace idiom), dir-nested by category; each service gets a typed (*app.Services).Mount<Svc> method and its own cmd/<bin>/cmd/services/<name>.go subcommand that passes that method EXPRESSION to a shared cmd.Serve() helper. serverkit OWNS OTel. Use when bumping across the typed-composed-server release.
+description: Migrate serverkit from Run(ctx, cfg, hooks, args) — where args were service NAMES matched through a string registry — to Run(ctx, cfg, serverkit.Server{...}) with FULLY TYPED service selection. The Application interface, Hooks, string-keyed BootstrapOnly selection, the string→inventory mount lookup, AND the generated cmd/otel.go shim are all gone. The cmd layer becomes a real cobra command tree under cmd/<bin>/cmd (devspace idiom), dir-nested by category; each service gets a typed (*app.Components).Mount<Svc> method and its own cmd/<bin>/cmd/services/<name>.go subcommand that passes that method EXPRESSION to a shared cmd.Serve() helper. serverkit OWNS OTel. Use when bumping across the typed-composed-server release.
 relevance: migration
 ---
 
@@ -77,12 +77,12 @@ Gone entirely:
   self-registers via `init()`. (An earlier vintage put this tree in a flat
   `internal/cli` package — if you're on that, the regen moves it for you.)
 
-**TYPED selection.** `internal/app/inventory_gen.go` now emits a typed method
+**TYPED selection.** `internal/app/mounts_services.go` now emits a typed method
 per service plus an explicit `MountAll`:
 
 ```go
-func (s *Services) MountBilling(mux, cfg, logger, opts...) []string { ... return path }
-func (s *Services) MountAll(mux, cfg, logger, opts...) []string { /* explicit typed calls */ }
+func (c *Components) MountBilling(mux, cfg, logger, opts...) []string { ... return path }
+func (c *Components) MountAll(mux, cfg, logger, opts...) []string { /* explicit typed calls */ }
 ```
 
 `app.Inventory` STAYS but is **data-only** (no `Mount` closure) — introspection
@@ -98,7 +98,7 @@ cmd/<bin>/
     root.go          # newRootCmd(deps); ServiceName const; Deps struct; the
                      # Register{Service,Worker,Operator}Cmd registry
     serve.go         # the shared Serve(ctx, deps, mount MountFunc, ...) helper
-    server.go        # all-services → Serve(deps, (*app.Services).MountAll)
+    server.go        # all-services → Serve(deps, (*app.Components).MountAll)
     version.go, db.go, commands.go
     services/<svc>.go    # ONE FILE PER SERVICE (package services)
     workers/<w>.go       # one file per worker (package workers)
@@ -110,17 +110,17 @@ cmd/<bin>/
   identity) + a `Deps` struct (config/io, threaded for testability) + the
   `Register{Service,Worker,Operator}Cmd` registry.
 - `cmd/<bin>/cmd/serve.go` — the shared, EXPORTED `Serve(ctx, deps, mount
-  MountFunc, ...)` helper: OpenInfra → Build → PostBuild → interceptor chain →
+  MountFunc, ...)` helper: OpenInfra → NewComponents → interceptor chain →
   apply the TYPED mount FUNCTION → `serverkit.Run`. Takes a typed mount
   **function value**, never a string. Also exports `ServeOptions`,
   `SelectWorkers`, `SelectOperators`, and `MountNone`.
 - `cmd/<bin>/cmd/server.go` — the all-services command → `Serve(ctx, deps,
-  (*app.Services).MountAll, ...)`. The optional `server [names...]` subset uses
+  (*app.Components).MountAll, ...)`. The optional `server [names...]` subset uses
   a generated `app.MountByName` map of **typed method expressions** (not a
   string→data lookup).
 - `cmd/<bin>/cmd/services/<name>.go` — **ONE FILE PER SERVICE** (package
   `services`): `New<Svc>Cmd(cmd.Deps)` whose `RunE` calls `cmd.Serve(ctx, deps,
-  (*app.Services).Mount<Svc>)` — a method EXPRESSION, fully typed, no string.
+  (*app.Components).Mount<Svc>)` — a method EXPRESSION, fully typed, no string.
   It self-registers via `init()` (`cmd.RegisterServiceCmd`). `<bin> <service>`
   is a first-class command with its own `-h`. A service whose kebab name
   collides with a built-in (`server`/`version`/`db`/`help`/`completion`) is
@@ -139,7 +139,7 @@ func NewBillingCmd(deps cmd.Deps) *cobra.Command {
 		Use: "billing",
 		RunE: func(c *cobra.Command, args []string) error {
 			deps.Cmd = c
-			return cmd.Serve(c.Context(), deps, (*app.Services).MountBilling, cmd.ServeOptions{})
+			return cmd.Serve(c.Context(), deps, (*app.Components).MountBilling, cmd.ServeOptions{})
 		},
 	}
 	config.RegisterFlags(c)
@@ -164,8 +164,8 @@ test -f cmd/otel.go && echo "OLD SHAPE — generated cmd/otel.go shim"
 
 # New shape — typed mounts + cmd/<bin>/cmd command tree + serverkit-owned OTel.
 ls -d cmd/*/cmd && echo "cmd/<bin>/cmd command tree present"
-grep -rq "(\*app.Services).Mount" cmd/*/cmd/ && echo "typed mount method expressions in use"
-grep -rq "func (s \*Services) MountAll" internal/app/inventory_gen.go && echo "typed MountAll present"
+grep -rq "(\*app.Components).Mount" cmd/*/cmd/ && echo "typed mount method expressions in use"
+grep -rq "func (c \*Components) MountAll" internal/app/mounts_services.go && echo "typed MountAll present"
 ls cmd/*/cmd/services/*.go && echo "one file per service (services/ group)"
 ```
 
@@ -176,7 +176,7 @@ ls cmd/*/cmd/services/*.go && echo "one file per service (services/ group)"
 # 2. Regenerate. The generator: emits the cmd/<bin>/cmd command tree (root.go,
 #    serve.go, server.go, version.go, db.go, commands.go) + the services/,
 #    workers/, operators/ group subpackages (one file per item); emits typed
-#    (*app.Services).Mount<Svc> + MountAll in inventory_gen.go; rewrites
+#    (*app.Components).Mount<Svc> + MountAll in mounts_services.go; rewrites
 #    app.Inventory as data-only; thins cmd/<bin>/main.go to a cmd.Execute()
 #    that blank-imports the groups; and DELETES the old flat internal/cli
 #    tree + cmd/server.go + cmd/otel.go + cmd/services_gen.go.
@@ -208,24 +208,25 @@ apply the shape change by hand, mirroring the generated `cmd/<bin>/cmd/serve.go`
 
    // after — build mux + interceptors, run DI, apply the typed mount func.
    mux := http.NewServeMux()
-   // ... interceptor chain (serverkit owns /metrics + OTel now) ...
-   infra, _   := app.OpenInfra(ctx, cfg, logger)
-   services, _ := app.Build(infra)
-   _ = app.PostBuild(services)
-   mounted := mount(services, mux, cfg, logger, opts...) // mount = (*app.Services).MountAll
+   // ... interceptor chain via observe.Chain (serverkit owns /metrics + OTel now) ...
+   infra, _      := app.OpenInfra(ctx, cfg, logger)
+   components, _ := app.NewComponents(infra)
+   // two-phase setters (if any): forge disown internal/app/compose.go and
+   // wire them inline in NewComponents — there is no PostBuild hook.
+   mounted := mount(components, mux, cfg, logger, opts...) // mount = (*app.Components).MountAll
    serverkit.Run(ctx, skCfg, serverkit.Server{
        Handler:   mux,        // or a REST transcoder wrapping it
        Logger:    logger,
-       Workers:   app.WorkerList(services),
-       Operators: app.OperatorList(services),
+       Workers:   app.WorkerList(components),
+       Operators: app.OperatorList(components),
    })
    ```
 
 2. **Replace string selection with typed mounts.** Anywhere you relied on
    `BootstrapOnly(names)` / `Options.Only` / a `for row := range app.Inventory`
-   name-match loop, call the typed `(*app.Services).Mount<Svc>` method for the
+   name-match loop, call the typed `(*app.Components).Mount<Svc>` method for the
    single-service case or `MountAll` for all. Construction already happened in
-   `app.Build`; the typed mount only decides which routes get registered.
+   `app.NewComponents`; the typed mount only decides which routes get registered.
    Delete the name-matching mount path. For OTel, drop your `setupOTel` call —
    project `cfg.OtlpEndpoint` + a `ServiceName` constant onto
    `serverkit.Config` and let serverkit own it.
@@ -236,18 +237,20 @@ apply the shape change by hand, mirroring the generated `cmd/<bin>/cmd/serve.go`
    | ----------------------------------- | ----------------------------------------------------- |
    | `Hooks.Bootstrap` / `BootstrapOnly` | cmd builds `Server.Handler`; applies a TYPED mount func |
    | `Hooks.PostBootstrap`               | call it inline after building the handler             |
-   | string→inventory mount loop         | `(*app.Services).Mount<Svc>` / `MountAll` (typed)    |
+   | string→inventory mount loop         | `(*app.Components).Mount<Svc>` / `MountAll` (typed)    |
    | worker / operator selection         | `app.WorkerList` / `app.OperatorList` → `Server.Workers` / `.Operators` |
-   | operator manager entry point        | `Server.RunOperators` (→ `app.RunOperators(services, …)`) |
+   | operator manager entry point        | `Server.RunOperators` (→ `app.RunOperators(components, …)`) |
    | graceful-shutdown hook              | `Server.OnShutdown`                                   |
    | `setupOTel` / `cmd/otel.go`         | **serverkit owns OTel** — set `Config.OTLPEndpoint` + `Config.ServiceName` |
    | `AutoMigrate`                       | cmd owns migrate; `Config` knobs unchanged           |
 
-4. **Preserve interceptor ordering explicitly.** The old path prepended the
-   canonical `observe.DefaultMiddlewares` chain and ran the project
-   interceptors after it (otelconnect → rate-limit → auth → audit). With the
-   handler built in cmd, *you* now own that ordering when constructing the
-   interceptor chain and threading it as `HandlerOption`s into the mount — keep
+4. **Preserve interceptor ordering explicitly.** Build the chain with
+   `observe.Chain(observe.Deps{Logger, Auth, Audit, RateLimit, Extras})` — the
+   application interceptors handed in BY NAMED FIELD (no `Set*` globals). The
+   canonical forge order is recovery → request-id → logging → tracing → metrics,
+   then auth → audit → rate-limit (otelconnect rides `Extras`). With the
+   handler built in cmd, *you* own that chain and thread it as `HandlerOption`s
+   into the mount — keep
    it identical. This is the easiest thing to silently regress.
 
 5. **Thin `cmd/workspace-proxy/main.go`.** Each binary gets its own
@@ -272,7 +275,7 @@ grep -rq "serverkit.Server{" cmd/*/cmd/ && echo "composed Server in use"
 ! test -d internal/cli && echo "old flat internal/cli tree gone"
 ! test -f cmd/otel.go && echo "otel shim gone (serverkit owns OTel)"
 ! grep -rq "for _, row := range app.Inventory" cmd/*/cmd/ && echo "no string→inventory mount lookup on run path"
-grep -rq "(\*app.Services).Mount" cmd/*/cmd/ && echo "typed mount method expressions in use"
+grep -rq "(\*app.Components).Mount" cmd/*/cmd/ && echo "typed mount method expressions in use"
 ls cmd/*/cmd/services/*.go && echo "one file per service"
 
 # Typed per-service subcommands + the all-services command.

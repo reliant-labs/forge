@@ -508,6 +508,28 @@ func KubectlApply(ctx context.Context, kctx, manifests string) error {
 	return cmd.Run()
 }
 
+// EnsureNamespace idempotently creates the target namespace so resources
+// scoped to it (e.g. dotenv-projected Secrets) can be applied BEFORE the
+// main manifest stream — which is where the Namespace object itself is
+// rendered. Without this, the first thing the deploy applies (the
+// secret_provider Secrets) lands before the Namespace exists and fails
+// "namespaces \"…\" not found". The full manifest apply later re-applies
+// the Namespace with its labels (server-side apply is idempotent), so this
+// early create is a pure ordering fix, not a competing owner.
+//
+// Uses `kubectl create --dry-run=client -o yaml | kubectl apply` so a
+// pre-existing namespace is a no-op rather than an AlreadyExists error.
+func EnsureNamespace(ctx context.Context, kctx, namespace string) error {
+	if strings.TrimSpace(kctx) == "" {
+		return fmt.Errorf("refusing to create a namespace without an explicit kubectl context")
+	}
+	if strings.TrimSpace(namespace) == "" {
+		return nil
+	}
+	manifest := "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: " + namespace + "\n"
+	return KubectlApply(ctx, kctx, manifest)
+}
+
 // WaitRollout blocks until the named Deployment reaches a healthy
 // rollout state, with a 60s timeout (down from 120s — dev iteration
 // is the dominant path, and a failing rollout almost always means

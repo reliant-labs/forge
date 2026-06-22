@@ -179,9 +179,9 @@ type DeployConfigEntity struct {
 // `sh -c` after substituting ${IMAGE}/${TAG}/${SERVICE}/etc. and runs
 // HealthCmd / RollbackCmd through the same path.
 type ExternalDeploy struct {
-	DeployCmd   string            `json:"deploy_cmd,omitempty"`
-	RollbackCmd string            `json:"rollback_cmd,omitempty"`
-	HealthCmd   string            `json:"health_cmd,omitempty"`
+	DeployCmd   string `json:"deploy_cmd,omitempty"`
+	RollbackCmd string `json:"rollback_cmd,omitempty"`
+	HealthCmd   string `json:"health_cmd,omitempty"`
 	// BuildCmd is the build-side mirror of DeployCmd: the shell command
 	// `forge build -t external` exec's to construct the deployable
 	// image. Optional — External targets without it build their image

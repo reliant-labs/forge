@@ -247,7 +247,6 @@ func runGoModTidyRoot(projectDir string) error {
 		return nil
 	}
 
-
 	fmt.Println("🔨 Running go mod tidy in project root...")
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = projectDir

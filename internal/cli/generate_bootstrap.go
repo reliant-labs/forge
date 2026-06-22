@@ -167,9 +167,19 @@ func generateCmdGroups(services []codegen.ServiceDef, workers []codegen.Bootstra
 	for _, svc := range services {
 		names = append(names, svc.Name)
 	}
+	// Pass internal packages so the cmd-group generator can derive the SAME
+	// collision-aware mount FieldName inventory_gen does (a handler service
+	// whose package collides cross-role with an internal package mounts as
+	// Mount<SvcPkg>, not Mount<Pkg>). Discovery failure is non-fatal: an empty
+	// package set just means no cross-role collisions, which is the common case.
+	packages, pkgErr := discoverPackages(projectDir)
+	if pkgErr != nil {
+		packages = nil
+	}
 	if err := codegen.GenerateCmdGroups(codegen.CmdServiceGroupInput{
 		Bin:       bin,
 		Services:  names,
+		Packages:  packages,
 		Workers:   workers,
 		Operators: operators,
 	}, projectDir, cs); err != nil {

@@ -86,7 +86,7 @@ func TestStepDetectRenamedExports_FlagsStaleCaller(t *testing.T) {
 	dir := t.TempDir()
 
 	// 1. Hand-written caller — references the old name.
-	writeUnderDir(t, dir,"internal/db/migrations.go", `package db
+	writeUnderDir(t, dir, "internal/db/migrations.go", `package db
 
 import "example.com/m/db"
 
@@ -111,7 +111,7 @@ func Migrations() string { return "old" }
 	}
 
 	// 3. Simulate codegen rewriting db/embed.go with the new symbol.
-	writeUnderDir(t, dir,"db/embed.go", `package db
+	writeUnderDir(t, dir, "db/embed.go", `package db
 
 var MigrationsFS = "new"
 `)
@@ -146,7 +146,7 @@ func TestStepDetectRenamedExports_NoFalsePositive(t *testing.T) {
 	dir := t.TempDir()
 
 	// Caller only references the NEW name, not the dropped one.
-	writeUnderDir(t, dir,"callers/x.go", `package callers
+	writeUnderDir(t, dir, "callers/x.go", `package callers
 
 import "example.com/m/db"
 
@@ -165,7 +165,7 @@ var MigrationsFS = "x"
 	}
 	// Drop Migrations from the new render — but the only call site
 	// references the still-present MigrationsFS, NOT Migrations.
-	writeUnderDir(t, dir,"db/embed.go", `package db
+	writeUnderDir(t, dir, "db/embed.go", `package db
 
 var MigrationsFS = "x"
 `)
@@ -187,7 +187,7 @@ var MigrationsFS = "x"
 func TestStepDetectRenamedExports_SkipsGenFiles(t *testing.T) {
 	dir := t.TempDir()
 	// The stale reference is in a generated file — should be ignored.
-	writeUnderDir(t, dir,"handlers/billing/handlers_crud_gen.go", `package billing
+	writeUnderDir(t, dir, "handlers/billing/handlers_crud_gen.go", `package billing
 
 import "example.com/m/db"
 
@@ -202,7 +202,7 @@ func Migrations() string { return "old" }
 	if err := stepSnapshotTier1Exports(ctx); err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	writeUnderDir(t, dir,"db/embed.go", `package db
+	writeUnderDir(t, dir, "db/embed.go", `package db
 
 var MigrationsFS = "new"
 `)

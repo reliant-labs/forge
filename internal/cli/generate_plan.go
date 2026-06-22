@@ -225,4 +225,3 @@ func (ctx *pipelineContext) warnOrFail(stepName string, err error) error {
 	fmt.Fprintf(os.Stderr, "⚠️  Warning: %s failed: %v — pass --strict to fail the pipeline on this\n", stepName, err)
 	return nil
 }
-

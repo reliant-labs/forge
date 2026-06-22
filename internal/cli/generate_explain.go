@@ -26,8 +26,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 

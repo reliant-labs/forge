@@ -235,9 +235,9 @@ func collectTraefikEntrypoints(ctx context.Context, projectDir string) ([]traefi
 	}
 
 	type candidate struct {
-		gw   string
-		name string
-		port int
+		gw    string
+		name  string
+		port  int
 		proto string
 	}
 	var raw []candidate
@@ -390,8 +390,8 @@ func installIngressBundle(ctx context.Context, projectDir string) error {
 // pass the raw configPath; the merge path writes a tempfile and
 // returns its path.
 type k3dConfigPath struct {
-	path       string
-	temporary  bool // true when we own cleanup
+	path      string
+	temporary bool // true when we own cleanup
 }
 
 // mergeK3dConfig reads deploy/k3d.yaml + deploy/k3d-ports.yaml from

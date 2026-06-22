@@ -46,7 +46,7 @@ Combine findings from all tracks before proposing a fix:
 On top of the generic triage above, common forge-shaped bug classes:
 
 - **Stale generated code** → run `forge generate` first, then retest. Forge generates from proto + forge.yaml; stale gen masquerades as a bug in hand-written code.
-- **Broken DI wiring** → check the owned composition root `internal/app/build.go`. Deps are interface-typed fields resolved by type, so a missing fill is a compile error or a loud `validateDeps()` failure at construction, not a silent nil — but a wrong fill (an unintended optional dep left nil) can still surface as a nil-pointer panic deep in handler code. There is no generated `wire_gen.go` to inspect; the wiring is the hand-written `Build`.
+- **Broken DI wiring** → check the explicit composition (`internal/app/compose.go` `NewComponents`, off the owned `internal/app/providers.go` `OpenInfra`). Deps are interface-typed fields resolved by type off `Infra`, so a missing required provider is a compile error (`NewComponents` won't build) or a `forge generate` "no provider" report, not a silent nil — but a wrong fill (an unintended optional dep left nil) can still surface as a nil-pointer panic deep in handler code. There is no generated `wire_gen.go`/`bootstrap.go` to inspect; the wiring is `NewComponents` filling typed `Deps` off `Infra`.
 - **Mock vs real divergence** → tests pass with generated mocks but the real adapter fails. Re-run the integration suite (`forge test integration`) before chasing a unit-test ghost.
 - **Proto-DB drift** → entity types and DB schema evolve independently; `forge audit` flags the mismatch. If the symptom is "column X not found" in a handler that names the right struct field, audit first.
 

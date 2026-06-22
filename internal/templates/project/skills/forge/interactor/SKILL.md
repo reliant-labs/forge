@@ -81,26 +81,28 @@ func (s *service) ChargeAndAudit(ctx context.Context, in ChargeAndAuditInput) er
 
 The interactor is unaware that `Charger` is Stripe (or Adyen, or a test fake) — that's the point.
 
-## Late-bound dependencies: construct-then-inject in `Build`
+## Late-bound dependencies: construct-then-inject in `NewComponents`
 
 Sometimes collaborator B needs a value that only exists *after* collaborator A is constructed (worker A produces a snapshot saver that worker B consumes; service X exposes a registry that interactor Y registers handlers into). Putting that value in B's `Deps` creates a construction-order cycle — `New(Deps)` resolves its dep closure once and has no slot for "set this later".
 
-Construct-then-inject is a first-class plain method call in the composition root, not a framework hook. In `Build`, construct A and B, then call B's setter with A's product:
+Construct-then-inject is a first-class plain method call in the composition, not a framework hook. `forge disown internal/app/compose.go` to hand-own the construction site, then in `NewComponents` construct A and B, and call B's setter with A's product:
 
 ```go
-func BuildServer(infra Infra) (*serverkit.Server, error) {
-    snapshotter := snapshot.New(snapshot.Deps{...})
-    trader := trader.New(trader.Deps{...})
+func NewComponents(infra *Infra) (*Components, error) {
+    c := &Components{}
+    c.Snapshotter = snapshot.New(snapshot.Deps{...})
+    c.Trader = trader.New(trader.Deps{...})
 
     // two-phase wiring: B's setter, after both ends exist
-    trader.SetSnapshotSaver(snapshotter.SnapshotSaver())
-    ...
+    c.Trader.SetSnapshotSaver(c.Snapshotter.SnapshotSaver())
+
+    return c, nil
 }
 ```
 
-This is just ordinary Go in the root you own — no `PostBootstrap`, no `*App` field read by name, no parallel hook system. Near-diamonds and post-construction setters (`bill.WithReliantAPIKeyIssuer(llm)`) are the same pattern: construct, then inject. Any model based on pure constructor topo-ordering deadlocks on the real graph; the composition root supports construct-then-inject explicitly.
+This is just ordinary Go in the disowned `compose.go` you own — no `PostBootstrap`, no `*App` field read by name, no parallel hook system. Near-diamonds and post-construction setters (`bill.WithReliantAPIKeyIssuer(llm)`) are the same pattern: construct, then inject. Any model based on pure constructor topo-ordering deadlocks on the real graph; `NewComponents` supports construct-then-inject explicitly.
 
-For the related case where a typed Deps field can't reference its target yet because the owning lane hasn't merged, the interface seam handles it — the consumer depends only on the collaborator's *interface*, so the fill in `Build` is a one-line swap once the concrete type lands (real in-process instance, a Connect client, or a mock). There is no placeholder marker; see the "Deferred / cross-lane typing is handled by the seam" section of the `api` skill. That is distinct from the runtime construct-then-inject case above.
+For the related case where a typed Deps field can't reference its target yet because the owning lane hasn't merged, the interface seam handles it — the consumer depends only on the collaborator's *interface*, so the fill in `NewComponents` is a one-line swap once the concrete type lands (real in-process instance, a Connect client, or a mock). There is no placeholder marker; see the "Deferred / cross-lane typing is handled by the seam" section of the `api` skill. That is distinct from the runtime construct-then-inject case above.
 
 ## How to test
 
@@ -172,17 +174,17 @@ Every interactor package's `contract.go` carries a `// forge:interactor` marker 
 
 - `forgeconv-interactor-deps-are-interfaces` — every field on `Deps` in a `// forge:interactor`-marked package must be an interface type, not a concrete struct pointer. Concrete pointers defeat the all-mock test surface.
 
-## Wiring in the typed composition root (`Build`)
+## Wiring in the explicit composition (`NewComponents`)
 
-The interactor is wired in the binary's owned composition root (`internal/app/build.go`), as typed interface fills in one place: adapters first, then the interactor on top, then the handler depending on the interactor. Each fill is a local variable resolved by type — no `*App` fields, no name-matching, no string-keyed registry.
+The interactor is wired in `internal/app/compose.go` `NewComponents` (generated; constructs every component INLINE off the owned `internal/app/providers.go` `Infra`), as typed interface fills in one place: adapters first, then the interactor on top, then the handler depending on the interactor. Each fill is resolved by type off `infra.<Field>` — no `*App` fields, no name-matching, no string-keyed registry.
 
 ```go
-func BuildServer(infra Infra) (*serverkit.Server, error) {
+func NewComponents(infra *Infra) (*Components, error) {
     charger := stripeadapter.New(stripeadapter.Deps{...})
     auditor := audit.New(audit.Deps{...})
 
     flow, err := billingflow.New(billingflow.Deps{
-        Logger:  infra.Logger,
+        Logger:  infra.Log,
         Charger: charger, // adapter satisfies the dep interface
         Auditor: auditor,
     })
@@ -190,12 +192,13 @@ func BuildServer(infra Infra) (*serverkit.Server, error) {
         return nil, err
     }
 
-    billingHandler := billinghandler.New(billinghandler.Deps{Flow: flow})
-    // ... mount billingHandler, assemble the Server
+    c := &Components{}
+    c.Billing = billinghandler.New(billinghandler.Deps{Flow: flow})
+    return c, nil
 }
 ```
 
-Each collaborator is filled by its interface, so swapping the real in-process adapter for a Connect client or a mock is a one-line change here with the interactor untouched. That is also what makes "spin up this interactor with all collaborators mocked" a few-line call against `Build`.
+Each collaborator is filled by its interface, so swapping the real in-process adapter for a Connect client or a mock is a one-line change here with the interactor untouched. That is also what makes "spin up this interactor with all collaborators mocked" a few-line call against `NewComponents`.
 
 ## When this skill is not enough (forge sub-skills)
 

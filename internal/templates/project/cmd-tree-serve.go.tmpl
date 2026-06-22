@@ -438,6 +438,13 @@ func projectServerkitConfig(cfg *config.Config) (serverkit.Config, error) {
 {{- end}}
 {{- if index .ConfigFields "DatabaseUrl"}}
 		DatabaseURL: cfg.DatabaseUrl,
+		// sql.Open driver name for the auto-migrate connection. The
+		// AutoMigrate block below opens the DB BEFORE serverkit.Run
+		// normalizes the Config, so serverkit's own DBDriver="pgx" default
+		// (Config.defaults(), applied at Run entry) hasn't fired — an unset
+		// DBDriver reaches sql.Open as "" and fails `unknown driver ""`.
+		// Pin it here to the pgx stdlib driver the project imports.
+		DBDriver: "pgx",
 {{- end}}
 {{- if index .ConfigFields "SecurityHeadersEnabled"}}
 		SecurityHeaders: cfg.SecurityHeadersEnabled,

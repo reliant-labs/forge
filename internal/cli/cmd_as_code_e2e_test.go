@@ -200,8 +200,8 @@ func userCommands() []*cobra.Command {
 		t.Fatalf("cmd/server.go must call middleware.InstallGeneratedAuth() with auth.provider: jwt:\n%s", serverGo)
 	}
 	authGen := readFileE2E(t, filepath.Join(projectDir, "pkg", "middleware", "auth_gen.go"))
-	if !strings.Contains(authGen, "SetTokenValidator(v.Validate)") {
-		t.Fatalf("auth_gen.go (jwt) must install the validator into the policy surface:\n%s", authGen)
+	if !strings.Contains(authGen, "return v.Validate, nil") {
+		t.Fatalf("auth_gen.go (jwt) must RETURN the validator for explicit AuthDeps threading:\n%s", authGen)
 	}
 	runCmd(t, projectDir, "go", "build", "./...")
 

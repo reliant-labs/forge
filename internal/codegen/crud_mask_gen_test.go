@@ -80,7 +80,7 @@ type Service struct {
 
 func TestGenerateCRUDHandlers_UpdateMaskWired(t *testing.T) {
 	projectDir := t.TempDir()
-	handlerDir := filepath.Join(projectDir, "handlers", "patients")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "patients")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestGenerateCRUDHandlers_UpdateMaskWired(t *testing.T) {
 
 func TestGenerateCRUDHandlers_NoMaskField_LegacyFullReplace(t *testing.T) {
 	projectDir := t.TempDir()
-	handlerDir := filepath.Join(projectDir, "handlers", "patients")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "patients")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestGenerateCRUDHandlers_NoMaskField_LegacyFullReplace(t *testing.T) {
 
 func TestGenerateCRUDTests_MaskedAndUnmaskedExercised(t *testing.T) {
 	projectDir := t.TempDir()
-	handlerDir := filepath.Join(projectDir, "handlers", "patients")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "patients")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestGenerateCRUDTests_MaskedAndUnmaskedExercised(t *testing.T) {
 
 func TestGenerateCRUDTests_NoMask_NoFieldMaskImport(t *testing.T) {
 	projectDir := t.TempDir()
-	handlerDir := filepath.Join(projectDir, "handlers", "patients")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "patients")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -245,6 +245,14 @@ type ConfigField struct {
 	Sensitive    bool   // From config_field.sensitive — projects to a Secret in deploy
 	Category     string // From config_field.category — groups fields in deploy gen
 
+	// Role is the (forge.v1.config).role annotation as the bare enum spelling
+	// (e.g. "CONFIG_FIELD_ROLE_MODE"; "" for UNSPECIFIED). Config codegen
+	// keys semantic behavior (Mode()/DevAuthBypass()) on THIS, never on the
+	// field NAME — so renaming a field never changes behavior, and naming a
+	// field "environment" without the annotation never auto-enables dev mode.
+	// `json:",omitempty"` keeps old descriptors readable (additive contract).
+	Role string `json:",omitempty"`
+
 	// MessageType names the referenced config message when this field is
 	// a component config-block reference (ProtoType == "message"), e.g. a
 	// root `AppConfig` field `TraderConfig trader = 21;` records

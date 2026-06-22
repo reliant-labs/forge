@@ -10,12 +10,12 @@ import (
 )
 
 // GenerateWebhookFiles generates all files for a webhook endpoint within a service:
-//   - handlers/<service>/webhook_<name>.go       (handler + signature verification)
-//   - handlers/<service>/webhook_<name>_test.go   (tests)
-//   - handlers/<service>/webhook_store.go         (idempotency store, only if not present)
+//   - internal/handlers/<service>/webhook_<name>.go       (handler + signature verification)
+//   - internal/handlers/<service>/webhook_<name>_test.go   (tests)
+//   - internal/handlers/<service>/webhook_store.go         (idempotency store, only if not present)
 func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) error {
 	svcPkg := naming.ServicePackage(serviceName)
-	svcDir := filepath.Join(root, "handlers", svcPkg)
+	svcDir := filepath.Join(root, "internal", "handlers", svcPkg)
 
 	// Ensure the service directory exists.
 	if _, err := os.Stat(svcDir); os.IsNotExist(err) {

@@ -26,19 +26,19 @@
 // Status semantics:
 //
 //   - ok    — no services declare build_cmd, OR every service has a
-//             present build_cwd, no env-key conflicts, and at least
-//             one env has recorded state (or no envs at all).
+//     present build_cwd, no env-key conflicts, and at least
+//     one env has recorded state (or no envs at all).
 //   - warn  — at least one service has a missing build_cwd on disk, OR
-//             at least one service declares a build_env key that
-//             collides with a built-in token. Neither blocks a build —
-//             skip-with-warn for cwd is the documented contract, and
-//             the built-in wins on conflict — but both are surface-up
-//             worthy.
+//     at least one service declares a build_env key that
+//     collides with a built-in token. Neither blocks a build —
+//     skip-with-warn for cwd is the documented contract, and
+//     the built-in wins on conflict — but both are surface-up
+//     worthy.
 //   - error — KCL render itself failed AND we know features.build is
-//             on (project intends to build something; we can't see
-//             whether external builds are configured). Degrades to
-//             warn when the failure is environmental (kcl not on
-//             PATH, no deploy/kcl/dev dir).
+//     on (project intends to build something; we can't see
+//     whether external builds are configured). Degrades to
+//     warn when the failure is environmental (kcl not on
+//     PATH, no deploy/kcl/dev dir).
 package cli
 
 import (
@@ -49,6 +49,7 @@ import (
 	"sort"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/cli/audittype"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -66,10 +67,12 @@ import (
 var externalBuildBuiltinTokens = []string{
 	"IMAGE",
 	"TAG",
+	"CODE_VERSION",
 	"SERVICE",
 	"TARGETARCH",
 	"REGISTRY",
 	"PROJECT_DIR",
+	"ENV",
 	"BUILD_CWD",
 }
 
@@ -77,14 +80,14 @@ var externalBuildBuiltinTokens = []string{
 // `.external_builds.details.services`. JSON field names follow the
 // snake_case convention the rest of audit uses.
 type externalBuildEntry struct {
-	Service        string                 `json:"service"`
-	Image          string                 `json:"image,omitempty"`
-	BuildCwd       string                 `json:"build_cwd,omitempty"`
-	ResolvedCwd    string                 `json:"resolved_cwd,omitempty"`
-	CwdExists      bool                   `json:"cwd_exists"`
-	BuildEnvKeys   []string               `json:"build_env_keys,omitempty"`
-	ConflictTokens []string               `json:"conflict_tokens,omitempty"`
-	LastBuilds     []externalBuildStateE  `json:"last_builds,omitempty"`
+	Service        string                `json:"service"`
+	Image          string                `json:"image,omitempty"`
+	BuildCwd       string                `json:"build_cwd,omitempty"`
+	ResolvedCwd    string                `json:"resolved_cwd,omitempty"`
+	CwdExists      bool                  `json:"cwd_exists"`
+	BuildEnvKeys   []string              `json:"build_env_keys,omitempty"`
+	ConflictTokens []string              `json:"conflict_tokens,omitempty"`
+	LastBuilds     []externalBuildStateE `json:"last_builds,omitempty"`
 }
 
 // externalBuildStateE is the per-(env, service) state snapshot. We
@@ -109,10 +112,10 @@ type externalBuildStateE struct {
 // whether any service declares build_cmd — when none do, it surfaces
 // as an ok with a "0 services" summary so CI consumers always have
 // the key to read (additive-extension contract).
-func auditExternalBuilds(cfg *config.ProjectConfig, projectDir string) AuditCategory {
+func auditExternalBuilds(cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	if cfg == nil {
-		return AuditCategory{
-			Status:  AuditStatusError,
+		return audittype.Category{
+			Status:  audittype.StatusError,
 			Summary: "no forge.yaml",
 		}
 	}
@@ -123,8 +126,8 @@ func auditExternalBuilds(cfg *config.ProjectConfig, projectDir string) AuditCate
 	// shape stays additive — `jq '.categories.external_builds.status'`
 	// keeps returning a stable scalar.
 	if !cfg.Features.ExternalBuildsEnabled() {
-		return AuditCategory{
-			Status:  AuditStatusOK,
+		return audittype.Category{
+			Status:  audittype.StatusOK,
 			Summary: "feature 'external_builds' is experimental and not opted in (set features.experimental.external_builds: true to enable)",
 			Details: map[string]any{
 				"services": []externalBuildEntry{},
@@ -139,8 +142,8 @@ func auditExternalBuilds(cfg *config.ProjectConfig, projectDir string) AuditCate
 		// Same disposition as auditIngress — degrade to warn rather
 		// than failing the whole audit. CI without the kcl toolchain
 		// still gets every other category.
-		return AuditCategory{
-			Status:  AuditStatusWarn,
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
 			Summary: fmt.Sprintf("could not evaluate dev KCL: %v", err),
 		}
 	}
@@ -151,17 +154,17 @@ func auditExternalBuilds(cfg *config.ProjectConfig, projectDir string) AuditCate
 
 // collectExternalBuildEntries is the pure decision core. Given the
 // dev-rendered KCL entity set and the list of envs to read state for,
-// it returns the AuditCategory. Split out from auditExternalBuilds so
+// it returns the audittype.Category. Split out from auditExternalBuilds so
 // unit tests can exercise the cross-check (cwd-stat, env-conflict,
 // state-aggregation) without shelling kcl or ListEnvs.
 //
 // envs may be nil/empty when ListEnvs fails — the per-service state
 // lookup degrades gracefully (zero LastBuilds entries).
-func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDir string) AuditCategory {
+func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDir string) audittype.Category {
 	services := externalBuildServices(entities)
 	if len(services) == 0 {
-		return AuditCategory{
-			Status:  AuditStatusOK,
+		return audittype.Category{
+			Status:  audittype.StatusOK,
 			Summary: "0 service(s) declare build_cmd",
 			Details: map[string]any{
 				"services": []externalBuildEntry{},
@@ -190,9 +193,9 @@ func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDi
 		return entries[i].Service < entries[j].Service
 	})
 
-	status := AuditStatusOK
+	status := audittype.StatusOK
 	if missingCwdCount > 0 || conflictCount > 0 {
-		status = AuditStatusWarn
+		status = audittype.StatusWarn
 	}
 
 	details := map[string]any{
@@ -215,7 +218,7 @@ func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDi
 
 	summary := fmt.Sprintf("%d service(s) declare build_cmd; %d missing cwd, %d env-key conflict(s), %d recorded build state(s)",
 		len(services), missingCwdCount, conflictCount, stateCount)
-	return AuditCategory{
+	return audittype.Category{
 		Status:  status,
 		Summary: summary,
 		Details: details,

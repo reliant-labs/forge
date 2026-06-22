@@ -51,7 +51,7 @@ func requireNoFrictionFile(t *testing.T, root string) {
 func TestGenerateAccept_RecordsDisownFriction(t *testing.T) {
 	const (
 		relWire = "pkg/app/wire_gen.go"
-		relCmd  = "cmd/server.go"
+		relCmd  = "internal/cli/serve.go"
 	)
 	tests := []struct {
 		name   string
@@ -252,29 +252,17 @@ func TestRecordDisownFriction_Nudge(t *testing.T) {
 	})
 }
 
-// TestAuditCodegen_DisownedFilesCarriesReason pins the audit surface:
-// disowned_files rows carry the NEWEST area=disown friction text whose
-// context names the path; LEGACY area=fork entries still join (reasons
-// recorded by pre-disown forge versions survive the migration); rows
-// without any entry stay reason-less; non-disown areas are ignored.
-func TestAuditCodegen_DisownedFilesCarriesReason(t *testing.T) {
+// TestDisownFrictionReasons_Join pins the friction-log join feeding the
+// audit codegen category's disowned_files reason backfill: per disowned
+// path it returns the NEWEST area=disown text whose context names the path;
+// LEGACY area=fork entries still join (reasons recorded by pre-disown forge
+// versions survive the migration); non-disown areas are ignored even when
+// their context matches; paths with no entry are absent from the map.
+// (auditCodegen's consumption of this map is tested in the internal/cli/audit
+// package, where the category now lives.)
+func TestDisownFrictionReasons_Join(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".forge"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	content := []byte("package app // user-owned\n")
-	for _, rel := range []string{"pkg/app/wire_gen.go", "pkg/app/bootstrap.go", "pkg/app/migrate.go"} {
-		mustWriteScopeFile(t, filepath.Join(dir, rel), string(content))
-	}
-	// Disowned state lives in .forge/disowned.json now. Entries carry NO
-	// reason of their own here so the audit falls back to the friction-
-	// log join (records that predate reason capture in disowned.json).
-	csState := &checksums.FileChecksums{Disowned: map[string]checksums.DisownedEntry{
-		"pkg/app/wire_gen.go":  {DisownedAt: "2026-06-01T00:00:00Z"},
-		"pkg/app/bootstrap.go": {DisownedAt: "2026-06-01T00:00:00Z"},
-		"pkg/app/migrate.go":   {DisownedAt: "2026-06-01T00:00:00Z"},
-	}}
-	if err := checksums.Save(dir, csState); err != nil {
 		t.Fatal(err)
 	}
 	// Friction log: an older disown entry, a NEWER one for the same path
@@ -290,25 +278,14 @@ func TestAuditCodegen_DisownedFilesCarriesReason(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cat := auditCodegen(nil, dir)
-	disowned, ok := cat.Details["disowned_files"].([]auditDisownedFile)
-	if !ok {
-		t.Fatalf("disowned_files detail missing or wrong shape: %#v", cat.Details["disowned_files"])
-	}
-	if len(disowned) != 3 {
-		t.Fatalf("disowned_files = %+v, want all three disowned entries", disowned)
-	}
-	byPath := map[string]auditDisownedFile{}
-	for _, f := range disowned {
-		byPath[f.Path] = f
-	}
-	if got := byPath["pkg/app/wire_gen.go"].Reason; got != "newest reason wins" {
+	reasons := disownFrictionReasons(dir)
+	if got := reasons["pkg/app/wire_gen.go"]; got != "newest reason wins" {
 		t.Errorf("wire_gen.go reason = %q, want the newest area=disown entry text", got)
 	}
-	if got := byPath["pkg/app/bootstrap.go"].Reason; got != "legacy fork-era reason" {
+	if got := reasons["pkg/app/bootstrap.go"]; got != "legacy fork-era reason" {
 		t.Errorf("bootstrap.go reason = %q, want the legacy area=fork text to survive the migration", got)
 	}
-	if got := byPath["pkg/app/migrate.go"].Reason; got != "" {
-		t.Errorf("migrate.go reason = %q, want empty (no friction entry for it)", got)
+	if _, ok := reasons["pkg/app/migrate.go"]; ok {
+		t.Errorf("migrate.go must be absent (no disown/fork friction entry); got %q", reasons["pkg/app/migrate.go"])
 	}
 }

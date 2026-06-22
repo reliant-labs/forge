@@ -149,7 +149,7 @@ export default function {{.EntityNamePlural}}Page() {
   if (isLoading) return <div className="px-4 py-8"><SkeletonLoader variant="table-row" count={5} /></div>;
   if (error) return <div className="px-4 py-8"><AlertBanner variant="error" message={userMessage(error)} /></div>;
 
-  const items = data?.{{.EntityNamePlural | camelCase}} ?? [];
+  const items = data?.{{.ItemsField}} ?? [];
 {{- if .SearchFields}}
 
   const filtered = q

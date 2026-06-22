@@ -257,7 +257,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		filteredMethods = append(filteredMethods, cm)
 	}
 
-	relDir := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf))
+	relDir := filepath.Join("internal", "handlers", filepath.FromSlash(res.ImportLeaf))
 	opsRel := filepath.Join(relDir, "handlers_crud_ops_gen.go")
 
 	// The pre-split Tier-1 implementation file is dead: forge no longer
@@ -302,7 +302,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		if rerr != nil {
 			return fmt.Errorf("render handlers_crud_ops_gen.go.tmpl: %w", rerr)
 		}
-		if _, werr := checksums.WriteGeneratedFile(projectDir, opsRel, content, cs, true); werr != nil {
+		if werr := writeForgeOwned(projectDir, opsRel, content, cs); werr != nil {
 			return fmt.Errorf("write handlers_crud_ops_gen.go: %w", werr)
 		}
 	} else {
@@ -370,6 +370,7 @@ func crudShimImports(data CRUDTemplateData) []string {
 		// rows via the generated <entity>ToProto helper.
 		imports = append(imports,
 			"github.com/reliant-labs/forge/pkg/orm",
+			"github.com/reliant-labs/forge/pkg/svcerr",
 			data.Module+"/internal/db")
 		if hasTenantMismatch {
 			imports = append(imports, data.Module+"/pkg/middleware")
@@ -449,7 +450,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *ch
 			return err
 		}
 		content := []byte(b.String())
-		if err := os.WriteFile(fullPath, content, 0o644); err != nil {
+		if err := writeUserScaffold(fullPath, content); err != nil {
 			return fmt.Errorf("write %s: %w", shimRel, err)
 		}
 		recordTier2(cs, shimRel, content)
@@ -480,7 +481,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *ch
 		content = ensureImportLine(content, imp)
 	}
 	content = strings.TrimRight(content, "\n") + "\n" + blocks
-	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+	if err := writeUserScaffold(fullPath, []byte(content)); err != nil {
 		return fmt.Errorf("append CRUD shims to %s: %w", shimRel, err)
 	}
 	recordTier2(cs, shimRel, []byte(content))
@@ -748,6 +749,151 @@ func detectListPagination(svc ServiceDef, cm CRUDMethod, shapeOK bool) (bool, st
 	return false, ""
 }
 
+// crudMethodFacts derives the per-method CRUDMethodTemplateData facts shared
+// by BOTH the handler builder (buildCRUDTemplateData) and the test builder
+// (buildCRUDTestTemplateData). Both previously re-derived this same set
+// independently with explicit keep-in-sync comments; computing it once here is
+// the single source of truth. The handler builder consumes the result
+// directly; the test builder calls this then layers entity-grouping on top.
+//
+// strictFilters is the ONE axis on which the two callers differ. The handler
+// path (strictFilters=true) classifies list filters via
+// classifyEntityFilterField, which fails the generate LOUDLY when a filter
+// field names no declared column — shipping a phantom-column query is the
+// review-confirmed silence bug. The test path (strictFilters=false) classifies
+// via classifyFilterField, which is advisory (no SearchColumns, never fatal):
+// the test template never dereferences filter facts, so it must not abort the
+// generate on a bespoke field. Errors are only ever returned when
+// strictFilters is true.
+func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMethodTemplateData, error) {
+	authAction := operationToAuthAction(cm.Operation)
+
+	// Validate the request/response shape up front. When the observed proto
+	// messages don't match the AIP-158-style body the template emits, we
+	// still emit a method (so the proto's RPC interface is satisfied) but
+	// route it to a tagged CodeUnimplemented stub instead of the body. This
+	// keeps handlers_crud_gen.go compiling against bespoke shapes
+	// (Limit/enum filters, string Ticker keys, repeated-message responses).
+	// The test scaffold mirrors the same gate so it doesn't emit per-RPC
+	// rows that dereference fields the request type doesn't have.
+	shapeOK, shapeReason := validateCRUDShape(svc, cm)
+
+	// Cursor pagination is opt-in (both page_size + page_token present); a
+	// List*Request without them is a plain non-paginated AIP-132
+	// filtered/ordered list, still Tier-1.
+	hasPagination, paginationStyle := detectListPagination(svc, cm, shapeOK)
+
+	// Detect filters and ordering from request message fields. Skip when the
+	// shape didn't match: classifyFilterField would otherwise happily turn a
+	// bespoke field like `ticker` (a string PK) or a `kalshi_status` enum
+	// into a synthetic `WhereEq("ticker", req.Ticker)` clause that fails to
+	// compile against the real request type.
+	var filterFields []FilterFieldData
+	hasOrderBy := false
+	if shapeOK && cm.Operation == "list" && svc.Messages != nil {
+		if msgFields, ok := svc.Messages[cm.Method.InputType]; ok {
+			for _, mf := range msgFields {
+				if classifySkipField(mf.Name) {
+					continue
+				}
+				if mf.Name == "order_by" {
+					hasOrderBy = true
+					continue
+				}
+				if strictFilters {
+					ff, ferr := classifyEntityFilterField(mf, cm.Entity)
+					if ferr != nil {
+						// LOUD by design: a filter the generator cannot map
+						// to a declared column must fail the generate, not
+						// ship a phantom-column query that silently returns
+						// nothing (or leaks SQL errors) at runtime.
+						return CRUDMethodTemplateData{}, fmt.Errorf("%s.%s: %w", svc.Name, cm.Method.Name, ferr)
+					}
+					filterFields = append(filterFields, ff)
+				} else {
+					filterFields = append(filterFields, classifyFilterField(mf))
+				}
+			}
+		}
+	}
+
+	// Determine the entity field name in the update request message.
+	// Proto generates a field named after the entity (e.g., "Project project = 1;"
+	// becomes Go field "Project"). We look it up in the parsed message fields;
+	// if not found, we fall back to the entity name.
+	updateEntityField := cm.Entity.Name
+	if cm.Operation == "update" && svc.Messages != nil {
+		if fields, ok := svc.Messages[cm.Method.InputType]; ok {
+			for _, f := range fields {
+				if fieldMatchesEntity(f, cm.Entity.Name) {
+					updateEntityField = naming.ToProtoPascalCase(f.Name)
+					break
+				}
+			}
+		}
+	}
+
+	// AIP-134: a FieldMask field on the update request wires the
+	// masked-persistence hooks. Skip on shape mismatch — the stub
+	// branch never dereferences it.
+	updateMaskField := ""
+	if shapeOK && cm.Operation == "update" {
+		updateMaskField = updateMaskGoField(svc, cm.Method.InputType)
+	}
+
+	// Best-effort filter mapping for the WIRED custom-read-shape body.
+	// Only when the shape didn't match (the stub branch): seed the
+	// scaffold's []orm.QueryOption skeleton from request fields that
+	// happen to name a declared column. Advisory, never fatal.
+	var customFilters []FilterFieldData
+	if !shapeOK {
+		customFilters = buildCustomFilters(svc, cm)
+	}
+
+	// Precompute the create-request -> entity-struct assignments.
+	// Skip on shape mismatch — the stub doesn't reference these.
+	var createAssigns []string
+	if shapeOK && cm.Operation == "create" {
+		m := Method{
+			Name:        cm.Method.Name,
+			InputType:   cm.Method.InputType,
+			OutputType:  cm.Method.OutputType,
+			InputTypeFQ: svc.Package + "." + cm.Method.InputType,
+		}
+		createAssigns = buildCreateAssigns(svc, m, cm.Entity)
+	}
+
+	return CRUDMethodTemplateData{
+		MethodName:        cm.Method.Name,
+		InputType:         cm.Method.InputType,
+		OutputType:        cm.Method.OutputType,
+		EntityName:        cm.Entity.Name,
+		EntityLower:       strings.ToLower(cm.Entity.Name),
+		Operation:         cm.Operation,
+		AuthRequired:      cm.Method.AuthRequired,
+		AuthAction:        authAction,
+		PkField:           naming.ToProtoPascalCase(cm.Entity.PkField),
+		PkColumnName:      cm.Entity.PkField,
+		PkGoType:          cm.Entity.PkGoType,
+		HasPkInInput:      cm.Operation == "get" || cm.Operation == "update" || cm.Operation == "delete",
+		ResponseField:     cm.Entity.Name,
+		HasPagination:     hasPagination,
+		PaginationStyle:   paginationStyle,
+		HasFilters:        len(filterFields) > 0,
+		FilterFields:      filterFields,
+		HasOrderBy:        hasOrderBy,
+		HasTenant:         cm.Entity.HasTenant,
+		TenantGoName:      cm.Entity.TenantGoName,
+		TenantColumnName:  cm.Entity.TenantColumnName,
+		UpdateEntityField: updateEntityField,
+		UpdateMaskField:   updateMaskField,
+		CreateAssigns:     createAssigns,
+		ShapeMismatch:     !shapeOK,
+		MismatchReason:    shapeReason,
+		CustomFilters:     customFilters,
+	}, nil
+}
+
 func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) (CRUDTemplateData, error) {
 	// Synthesized Package is a placeholder only: GenerateCRUDHandlers
 	// overrides it with the disk-resolved package clause before rendering
@@ -755,142 +901,17 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 	pkg := naming.ServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as mapServiceDefToTemplateData)
-	protoPackage := ""
-	if svc.ModulePath != "" && svc.GoPackage != "" {
-		prefix := svc.ModulePath + "/gen/"
-		if strings.HasPrefix(svc.GoPackage, prefix) {
-			protoPackage = strings.TrimPrefix(svc.GoPackage, prefix)
-			if idx := strings.LastIndex(protoPackage, "/v"); idx >= 0 {
-				protoPackage = protoPackage[:idx]
-			}
-		}
-	}
+	protoPackage := protoImportPath(svc)
 
 	var methods []CRUDMethodTemplateData
 	for _, cm := range crudMethods {
-		authAction := operationToAuthAction(cm.Operation)
-
-		// Validate the request/response shape up front. When the
-		// observed proto messages don't match the AIP-158-style body
-		// the template emits, we still emit a method (so the proto's
-		// RPC interface is satisfied) but route it to a tagged
-		// CodeUnimplemented stub instead of the body. This keeps
-		// handlers_crud_gen.go compiling against bespoke shapes
-		// (Limit/enum filters, string Ticker keys, repeated-message
-		// responses).
-		shapeOK, shapeReason := validateCRUDShape(svc, cm)
-
-		// Cursor pagination is opt-in (both page_size + page_token
-		// present); a List*Request without them is a plain non-paginated
-		// AIP-132 filtered/ordered list, still Tier-1.
-		hasPagination, paginationStyle := detectListPagination(svc, cm, shapeOK)
-
-		// Detect filters and ordering from request message fields.
-		// Skip when the shape didn't match: classifyFilterField would
-		// otherwise happily turn a bespoke field like `ticker` (a
-		// string PK) or a `kalshi_status` enum into a synthetic
-		// `WhereEq("ticker", req.Ticker)` clause that fails to compile
-		// against the real request type.
-		var filterFields []FilterFieldData
-		hasOrderBy := false
-		if shapeOK && cm.Operation == "list" && svc.Messages != nil {
-			if msgFields, ok := svc.Messages[cm.Method.InputType]; ok {
-				for _, mf := range msgFields {
-					if classifySkipField(mf.Name) {
-						continue
-					}
-					if mf.Name == "order_by" {
-						hasOrderBy = true
-						continue
-					}
-					ff, ferr := classifyEntityFilterField(mf, cm.Entity)
-					if ferr != nil {
-						// LOUD by design: a filter the generator cannot map
-						// to a declared column must fail the generate, not
-						// ship a phantom-column query that silently returns
-						// nothing (or leaks SQL errors) at runtime.
-						return CRUDTemplateData{}, fmt.Errorf("%s.%s: %w", svc.Name, cm.Method.Name, ferr)
-					}
-					filterFields = append(filterFields, ff)
-				}
-			}
+		// Strict filter classification: an unmappable list filter fails the
+		// generate LOUDLY (phantom-column queries silently match nothing).
+		mtd, err := crudMethodFacts(svc, cm, true)
+		if err != nil {
+			return CRUDTemplateData{}, err
 		}
-
-		// Determine the entity field name in the update request message.
-		// Proto generates a field named after the entity (e.g., "Project project = 1;"
-		// becomes Go field "Project"). We look it up in the parsed message fields;
-		// if not found, we fall back to the entity name.
-		updateEntityField := cm.Entity.Name
-		if cm.Operation == "update" && svc.Messages != nil {
-			if fields, ok := svc.Messages[cm.Method.InputType]; ok {
-				for _, f := range fields {
-					if fieldMatchesEntity(f, cm.Entity.Name) {
-						updateEntityField = naming.ToProtoPascalCase(f.Name)
-						break
-					}
-				}
-			}
-		}
-
-		// AIP-134: a FieldMask field on the update request wires the
-		// masked-persistence hooks. Skip on shape mismatch — the stub
-		// branch never dereferences it.
-		updateMaskField := ""
-		if shapeOK && cm.Operation == "update" {
-			updateMaskField = updateMaskGoField(svc, cm.Method.InputType)
-		}
-
-		// Best-effort filter mapping for the WIRED custom-read-shape body.
-		// Only when the shape didn't match (the stub branch): seed the
-		// scaffold's []orm.QueryOption skeleton from request fields that
-		// happen to name a declared column. Advisory, never fatal.
-		var customFilters []FilterFieldData
-		if !shapeOK {
-			customFilters = buildCustomFilters(svc, cm)
-		}
-
-		// Precompute the create-request -> entity-struct assignments.
-		// Skip on shape mismatch — the stub doesn't reference these.
-		var createAssigns []string
-		if shapeOK && cm.Operation == "create" {
-			m := Method{
-				Name:        cm.Method.Name,
-				InputType:   cm.Method.InputType,
-				OutputType:  cm.Method.OutputType,
-				InputTypeFQ: svc.Package + "." + cm.Method.InputType,
-			}
-			createAssigns = buildCreateAssigns(svc, m, cm.Entity)
-		}
-
-		methods = append(methods, CRUDMethodTemplateData{
-			MethodName:        cm.Method.Name,
-			InputType:         cm.Method.InputType,
-			OutputType:        cm.Method.OutputType,
-			EntityName:        cm.Entity.Name,
-			EntityLower:       strings.ToLower(cm.Entity.Name),
-			Operation:         cm.Operation,
-			AuthRequired:      cm.Method.AuthRequired,
-			AuthAction:        authAction,
-			PkField:           naming.ToProtoPascalCase(cm.Entity.PkField),
-			PkColumnName:      cm.Entity.PkField,
-			PkGoType:          cm.Entity.PkGoType,
-			HasPkInInput:      cm.Operation == "get" || cm.Operation == "update" || cm.Operation == "delete",
-			ResponseField:     cm.Entity.Name,
-			HasPagination:     hasPagination,
-			PaginationStyle:   paginationStyle,
-			HasFilters:        len(filterFields) > 0,
-			FilterFields:      filterFields,
-			HasOrderBy:        hasOrderBy,
-			HasTenant:         cm.Entity.HasTenant,
-			TenantGoName:      cm.Entity.TenantGoName,
-			TenantColumnName:  cm.Entity.TenantColumnName,
-			UpdateEntityField: updateEntityField,
-			UpdateMaskField:   updateMaskField,
-			CreateAssigns:     createAssigns,
-			ShapeMismatch:     !shapeOK,
-			MismatchReason:    shapeReason,
-			CustomFilters:     customFilters,
-		})
+		methods = append(methods, mtd)
 	}
 
 	// Check if any method has pagination, filters, ordering, or a real
@@ -1049,7 +1070,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	}
 	pkg := res.PackageName
 	targetDir := res.Dir
-	relDir := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf))
+	relDir := filepath.Join("internal", "handlers", filepath.FromSlash(res.ImportLeaf))
 
 	// Retire the marker-scaffold test pair this generator used to emit
 	// (per-RPC AnyOutcome frames + a build-tag-gated integration suite).
@@ -1111,7 +1132,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(lifecyclePath, content, 0o644); err != nil {
+	if err := writeUserScaffold(lifecyclePath, content); err != nil {
 		return fmt.Errorf("write handlers_crud_test.go: %w", err)
 	}
 	recordTier2(cs, lifecycleRel, content)
@@ -1142,16 +1163,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 	pkg := naming.ServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as buildCRUDTemplateData)
-	protoPackage := ""
-	if svc.ModulePath != "" && svc.GoPackage != "" {
-		prefix := svc.ModulePath + "/gen/"
-		if strings.HasPrefix(svc.GoPackage, prefix) {
-			protoPackage = strings.TrimPrefix(svc.GoPackage, prefix)
-			if idx := strings.LastIndex(protoPackage, "/v"); idx >= 0 {
-				protoPackage = protoPackage[:idx]
-			}
-		}
-	}
+	protoPackage := protoImportPath(svc)
 
 	// Group by entity
 	entityMap := make(map[string]*CRUDTestEntityData)
@@ -1161,86 +1173,15 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 	var allMethods []CRUDMethodTemplateData
 
 	for _, cm := range crudMethods {
-		authAction := operationToAuthAction(cm.Operation)
-
-		// Validate the request/response shape up front. The CRUD-body
-		// generator uses the same gate to decide whether to emit a real
-		// handler or a tagged CodeUnimplemented stub; the test scaffold
-		// has to mirror that decision or it emits per-RPC test rows that
-		// dereference fields the request type doesn't have (e.g.
-		// `Id: 1` on a GetMarketRequest keyed on `string ticker`).
-		shapeOK, shapeReason := validateCRUDShape(svc, cm)
-
-		hasPagination, paginationStyle := detectListPagination(svc, cm, shapeOK)
-
-		// Detect filters and ordering from request message fields.
-		// Skip when the shape didn't match — the stub branch doesn't
-		// dereference filter fields and classifyFilterField on a
-		// bespoke request shape would otherwise leak filter rows into
-		// per-RPC test setup that fails to compile.
-		var filterFields []FilterFieldData
-		hasOrderBy := false
-		if shapeOK && cm.Operation == "list" && svc.Messages != nil {
-			if msgFields, ok := svc.Messages[cm.Method.InputType]; ok {
-				for _, mf := range msgFields {
-					if classifySkipField(mf.Name) {
-						continue
-					}
-					if mf.Name == "order_by" {
-						hasOrderBy = true
-						continue
-					}
-					ff := classifyFilterField(mf)
-					filterFields = append(filterFields, ff)
-				}
-			}
-		}
-
-		// Determine update entity field for this method's test data.
-		updateEntityField := cm.Entity.Name
-		if cm.Operation == "update" && svc.Messages != nil {
-			if fields, ok := svc.Messages[cm.Method.InputType]; ok {
-				for _, f := range fields {
-					if fieldMatchesEntity(f, cm.Entity.Name) {
-						updateEntityField = naming.ToProtoPascalCase(f.Name)
-						break
-					}
-				}
-			}
-		}
-
-		// Mirror the handler generator: a FieldMask on the update request
-		// means the generated op honors AIP-134, so the test scaffold can
-		// exercise masked AND unmasked updates.
-		updateMaskField := ""
-		if shapeOK && cm.Operation == "update" {
-			updateMaskField = updateMaskGoField(svc, cm.Method.InputType)
-		}
-
-		mtd := CRUDMethodTemplateData{
-			MethodName:        cm.Method.Name,
-			InputType:         cm.Method.InputType,
-			OutputType:        cm.Method.OutputType,
-			EntityName:        cm.Entity.Name,
-			EntityLower:       strings.ToLower(cm.Entity.Name),
-			Operation:         cm.Operation,
-			AuthRequired:      cm.Method.AuthRequired,
-			AuthAction:        authAction,
-			PkField:           naming.ToProtoPascalCase(cm.Entity.PkField),
-			PkColumnName:      cm.Entity.PkField,
-			PkGoType:          cm.Entity.PkGoType,
-			HasPkInInput:      cm.Operation == "get" || cm.Operation == "update" || cm.Operation == "delete",
-			ResponseField:     cm.Entity.Name,
-			HasPagination:     hasPagination,
-			PaginationStyle:   paginationStyle,
-			HasFilters:        len(filterFields) > 0,
-			FilterFields:      filterFields,
-			HasOrderBy:        hasOrderBy,
-			UpdateEntityField: updateEntityField,
-			UpdateMaskField:   updateMaskField,
-			ShapeMismatch:     !shapeOK,
-			MismatchReason:    shapeReason,
-		}
+		// Same per-method facts the handler builder derives, with the ONE
+		// difference: advisory (non-strict) filter classification. The test
+		// scaffold never dereferences filter facts and must not abort the
+		// generate on a bespoke list field, so classifyEntityFilterField's
+		// fatal phantom-column check is off here — crudMethodFacts therefore
+		// never returns an error in this path. The shape gate, pagination,
+		// update-entity-field, and AIP-134 mask facts all stay in lockstep
+		// with the handler because they come from the same function.
+		mtd, _ := crudMethodFacts(svc, cm, false)
 		allMethods = append(allMethods, mtd)
 
 		ent, ok := entityMap[cm.Entity.Name]
@@ -1679,7 +1620,7 @@ func ensureDepsDBField(serviceDir string) error {
 	if content == original {
 		return nil
 	}
-	return os.WriteFile(servicePath, []byte(content), 0644)
+	return writeUserScaffold(servicePath, []byte(content))
 }
 
 // injectValidateDepsDBCheck inserts `if d.DB == nil { ... }` into the

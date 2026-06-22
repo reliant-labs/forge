@@ -5,18 +5,16 @@ description: Background workers — adding, implementing, and testing workers (i
 
 # Background Workers
 
-Workers are long-running background processes that don't serve HTTP but participate in the single-binary lifecycle with the same dependency injection and graceful shutdown as services.
+Workers are long-running background processes that don't serve HTTP but participate in the single-binary lifecycle with the same typed dependency injection and graceful shutdown as services. They live under `internal/workers/<name>/` — the `workers/` role subtree is nested under `internal/`, never a top-level `workers/` directory.
 
 ## Naming
 
-Worker names canonicalize to lowercase **snake_case**: hyphens become underscores and PascalCase/camelCase boundaries split (`email-sender` → `email_sender`, `EmailSender` → `email_sender`, `calibrator_refit` stays `calibrator_refit`). The canonical form is what appears on disk, in the Go package decl, in `wire_gen.go` imports, and in the `forge.yaml` `path:` field. The display name in `forge.yaml` `name:` keeps its original spelling.
+Worker names canonicalize to lowercase **snake_case**: hyphens become underscores and PascalCase/camelCase boundaries split (`email-sender` → `email_sender`, `EmailSender` → `email_sender`, `calibrator_refit` stays `calibrator_refit`). The canonical form is what appears on disk, in the Go package decl, and in the `forge.yaml` `path:` field. The display name in `forge.yaml` `name:` keeps its original spelling.
 
-- `forge add worker calibrator_refit` → directory `workers/calibrator_refit/`, `package calibrator_refit`, `path: workers/calibrator_refit` in `forge.yaml`.
-- `forge add worker email-sender` → directory `workers/email_sender/`, `package email_sender`, `path: workers/email_sender`.
+- `forge add worker calibrator_refit` → directory `internal/workers/calibrator_refit/`, `package calibrator_refit`, `path: internal/workers/calibrator_refit` in `forge.yaml`.
+- `forge add worker email-sender` → directory `internal/workers/email_sender/`, `package email_sender`, `path: internal/workers/email_sender`.
 
-(Compact form with separators stripped — `workers/calibratorrefit/` — is a dead pre-2026-06-08 convention; do not create new directories in that shape.)
-
-**Migrating from a non-forge codebase:** if you have existing worker directories named `kebab-case` or compact, rename them to the canonical snake_case form *before* running `forge generate`. Otherwise `forge generate` will write `bootstrap.go` / `wire_gen.go` imports pointing at the canonical name (e.g. `workers/calibrator_refit`) while the code lives under the original (`workers/calibrator-refit/`), and the build will fail with missing-package errors. The canonical form in `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
+**Migrating from a non-forge codebase:** rename existing worker directories to the canonical snake_case leaf under `internal/workers/` *before* running `forge generate`. The `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
 
 ## Adding a Worker
 
@@ -26,18 +24,18 @@ forge add worker <name> --kind cron --schedule "*/5 * * * *"
 ```
 
 This creates:
-- `workers/<name>/worker.go` — Worker implementation with `Start(ctx)` / `Stop(ctx)`
-- `workers/<name>/worker_test.go` — Basic lifecycle test
+- `internal/workers/<name>/worker.go` — Worker implementation with `Start(ctx)` / `Stop(ctx)`
+- `internal/workers/<name>/worker_test.go` — Basic lifecycle test
 - An entry in `forge.yaml` under `services:` with type `worker`
 
-Run `forge generate` after adding a worker to wire it into `pkg/app/bootstrap.go`.
+After adding a worker, construct it in the explicit composition (`internal/app/compose.go` `NewComponents`, off the owned `internal/app/providers.go` `Infra`/`OpenInfra`) onto its `Components` field — see [Wiring](#wiring) below.
 
 ## Worker Lifecycle
 
 Every worker implements the same contract:
 
 ```go
-func (w *Worker) Name() string { return "email-sender" }
+func (w *Worker) Name() string { return "email_sender" }
 
 // Start runs the cycle loop until ctx is cancelled. The supervisor
 // cancels ctx the moment graceful shutdown begins.
@@ -69,7 +67,7 @@ func (w *Worker) Stop(ctx context.Context) error {
 
 Key contract: `Start` must block until `ctx` is cancelled, then return promptly — the supervisor waits for it before continuing shutdown. `Stop` is called after cancellation with a deadline context for cleanup. Always thread `ctx` into per-cycle work (DB queries, HTTP calls, adapters) so in-flight cycles honor shutdown instead of running to completion.
 
-A worker may also implement serverkit's optional `ContextWorker` extension — `RunContext(ctx context.Context) error` — which the supervisor prefers over `Start` when present (legacy `Start` workers are unaffected). Note: workers wired through the generated `pkg/app/bootstrap.go` are wrapped in `WorkerInstance`, which currently forwards only `Start`/`Stop`; for those, the ctx-aware `Start` loop above is the shutdown seam.
+A worker may also implement serverkit's optional `ContextWorker` extension — `RunContext(ctx context.Context) error` — which the supervisor prefers over `Start` when present (legacy `Start` workers are unaffected).
 
 ## Common Patterns
 
@@ -111,8 +109,6 @@ func (w *Worker) Run(ctx context.Context) {
 }
 ```
 
-> **MIGRATION (v0.x → v0.x+1):** `Run()` now takes a `context.Context`. If you've polished an existing `Run()` body, add a `ctx context.Context` parameter and thread it through any DB/HTTP/adapter call that already accepts a context. The scaffold's `Start` derives a per-tick ctx from `baseCtx`; `Stop` cancels `baseCtx` so in-flight ticks see `ctx.Done()` immediately rather than racing the cron `Stop()` wait group.
-
 Cron workers are tracked with `kind: cron` and `schedule` in `forge.yaml`:
 ```yaml
 services:
@@ -120,7 +116,7 @@ services:
     type: worker
     kind: cron
     schedule: "0 */6 * * *"
-    path: workers/cleanup
+    path: internal/workers/cleanup
 ```
 
 ### Simple Periodic (no cron)
@@ -142,44 +138,50 @@ func (w *Worker) Start(ctx context.Context) error {
 }
 ```
 
-## Adding Dependencies
+## Wiring
 
-Extend the `Deps` struct in the worker file, then rerun `forge generate` —
-the generated `pkg/app/wire_gen.go` resolves each Deps field automatically.
-You do **not** hand-wire Deps anywhere:
+A worker's `Deps` are interface-typed fields filled **by type in `internal/app/compose.go` `NewComponents`**, not by string-matched field names and not by a generated `wire_gen.go`. You construct the worker in type-topological order, pass it its collaborators' interfaces (read off the owned `infra.<Field>`), and assign it onto its `Components` field. The generated `internal/app/lifecycle.go` `WorkerList(c)` adapts every constructed worker, and the cmd serve path supervises them — you don't append to a slice here:
 
 ```go
 type Deps struct {
-    Logger *slog.Logger    // auto: logger.With("service", ...)
-    Config *config.Config  // auto: the loaded config
-    DB     orm.Context     // auto: app.ORMContext() when the ORM is enabled
-    Queue  *queue.Client   // auto: matched to an exported App field named Queue
+    Logger *slog.Logger
+    Cfg    config.CleanupConfig // scalars travel as one typed config block, not naked fields
+    Queue  queue.Client         // an interface — the default fill is the real in-process impl
+}
+
+// in internal/app/compose.go
+func NewComponents(infra *Infra) (*Components, error) {
+    c := &Components{}
+    q := queue.New(infra.QueueConn)          // construct collaborators once, off infra
+    c.Cleanup = cleanup.New(cleanup.Deps{
+        Logger: infra.Log,
+        Cfg:    infra.Cfg.Cleanup,
+        Queue:  q,                            // resolved by type/interface
+    })
+    return c, nil
 }
 ```
 
-For a custom collaborator like `Queue`, construct the infrastructure in
-user-owned `pkg/app/setup.go` and assign it to an exported `*App` field
-with the **same name** as the Deps field (`app.Queue = ...`); wire_gen
-matches by exact field name on the next `forge generate`. A Deps field
-with no matching App field gets a typed zero value plus a TODO warning
-at generate time. See `pkg/app/CONVENTIONS.md` for the full resolution
-rules. Never edit `wire_gen.go` itself — it is regenerated every run.
+Because `Queue` is an interface, swapping a mock (in a test) or a Connect client (when the producer moves to its own binary) is a one-line change in `NewComponents` with the worker untouched. There is no name-matched `*App` field, no typed-zero-with-TODO fallback, and no `wire_gen.go` — a collaborator that doesn't satisfy the interface fails to compile rather than being silently dropped.
 
 ## Late-bound dependencies between workers
 
-When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't put it in B's `Deps` — wire_gen resolves Deps once at construction and both workers are constructed in the same pass, so there's a construction-order cycle.
-
-The seam is `PostBootstrap` in `pkg/app/post_bootstrap.go`, called after `Bootstrap` returns with the fully-constructed `*App`:
+When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't pass it through B's constructor — both workers are constructed in the same pass, so a constructor-only graph would deadlock. **Two-phase wiring is the answer, and it's just plain Go:** `forge disown internal/app/compose.go`, then construct both ends and inject with a setter, by hand inside `NewComponents`.
 
 ```go
-func PostBootstrap(app *App) error {
-    saver := app.Workers.Snapshotter.SnapshotSaver()
-    app.Workers.Trader.SetSnapshotSaver(saver)
-    return nil
+func NewComponents(infra *Infra) (*Components, error) {
+    c := &Components{}
+    c.Snapshotter = snapshotter.New(...)
+    c.Trader = trader.New(...)
+
+    // construct-then-inject: both ends now exist
+    c.Trader.SetSnapshotSaver(c.Snapshotter.SnapshotSaver())
+
+    return c, nil
 }
 ```
 
-`PostBootstrap` is user-owned; forge generate never overwrites it. An error returned here aborts boot loudly. **Don't invent a parallel hook system (`wire_*_hooks.go`, post-Setup passes) for this — PostBootstrap IS that system.** See the `interactor` skill for the full pattern.
+This is the canonical seam for near-diamonds and producer/consumer pairs. Don't invent a parallel hook system (`PostBootstrap`, `wire_*_hooks.go`, post-Setup passes) — disowning `compose.go` lets `NewComponents` support construct-then-inject directly. See the `interactor` skill for the full pattern.
 
 ## Testing
 
@@ -188,7 +190,7 @@ The generated test verifies basic start/stop lifecycle. For workers that process
 ```go
 func TestWorkerProcessesMessage(t *testing.T) {
     mockQueue := &MockQueue{messages: []Message{{ID: "1", Body: "test"}}}
-    w := New(Deps{Logger: slog.Default(), Config: &config.Config{}, Queue: mockQueue})
+    w := New(Deps{Logger: slog.Default(), Queue: mockQueue})
 
     ctx, cancel := context.WithCancel(context.Background())
     go w.Start(ctx)
@@ -201,11 +203,14 @@ func TestWorkerProcessesMessage(t *testing.T) {
 }
 ```
 
+Because `Deps` fields are interfaces filled in one place, instantiating a worker with mocked collaborators is a direct `New(Deps{...})` call — no framework, no string lookups, no globals.
+
 ## Rules
 
 - `Start()` must respect context cancellation — always select on `ctx.Done()`.
 - `Stop()` receives a context with a deadline — finish cleanup before it expires.
-- Worker names canonicalize to lowercase snake_case (`email-sender` → `email_sender`) — see the Naming section. On-disk directories must match the canonical form.
+- Workers live under `internal/workers/<name>/`, never a top-level `workers/` dir. On-disk directory leaves must match the canonical snake_case form.
+- Worker `Deps` are interface-typed and filled by type in `internal/app/compose.go` `NewComponents`; scalars travel in a typed `<Component>Config` block, never as naked Deps fields.
+- Wire workers explicitly: construct in `NewComponents` onto the worker's `Components` field; the generated `lifecycle.go` `WorkerList` and the cmd serve path supervise them. For late-bound, cross-worker deps, `forge disown internal/app/compose.go` and use setters. There is no `wire_gen.go` and no name-matched `*App` resolution.
 - Use `forge add worker`, not manual directory creation.
-- `bootstrap.go` and `wire_gen.go` are regenerated — never edit them. Custom Deps fields are auto-resolved by wire_gen against exported `*App` fields; `setup.go` (user-owned) is where you construct the infrastructure and assign those App fields.
 - Cron workers require `--schedule` with a valid cron expression (5-field standard format).

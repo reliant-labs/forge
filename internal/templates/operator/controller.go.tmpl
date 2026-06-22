@@ -53,21 +53,8 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("fetching {{.TypeName}}: %w", err)
 	}
 
-	// TODO: Implement your reconciliation logic here.
-	//
-	// Common patterns:
-	// 1. Check if resource is being deleted (finalizers)
-	// 2. Create/update owned resources
-	// 3. Update status with observed state
-	//
-	// Example:
-	//   if err := c.reconcileOwnedResources(ctx, &obj); err != nil {
-	//       return reconcile.Result{}, err
-	//   }
-	//   obj.Status.Ready = true
-	//   if err := c.client.Status().Update(ctx, &obj); err != nil {
-	//       return reconcile.Result{}, fmt.Errorf("updating status: %w", err)
-	//   }
+	// TODO: implement reconciliation here (finalizers, owned resources,
+	// status update). See the forge `binaries` skill.
 
 	return reconcile.Result{}, nil
 }

@@ -94,13 +94,22 @@ func TestAddWorkerPipelineSkipsFrontendSteps(t *testing.T) {
 // refactor introduces a third write site, which would risk
 // reintroducing the same regression.
 func TestAddWorkerNoNewFeaturesFrontendWriteSite(t *testing.T) {
+	// The `add` command group moved to internal/cli/add; new.go stays in
+	// internal/cli. Scan both trees so the structural guard keeps covering
+	// every cli-package write site for cfg.Features.Frontend.
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatalf("glob cli sources: %v", err)
 	}
+	addFiles, err := filepath.Glob(filepath.Join("add", "*.go"))
+	if err != nil {
+		t.Fatalf("glob add sources: %v", err)
+	}
+	files = append(files, addFiles...)
 	allowed := map[string][]string{
-		"add.go": {"cfg.Features.Frontend = &frontendOn"},
-		"new.go": {"gen.Features.Frontend = f"},
+		"add.go":     {"cfg.Features.Frontend = &frontendOn"},
+		"add/add.go": {"cfg.Features.Frontend = &frontendOn"},
+		"new.go":     {"gen.Features.Frontend = f"},
 	}
 	var offenders []string
 	for _, f := range files {
@@ -153,38 +162,53 @@ func TestAddWorkerNoNewFeaturesFrontendWriteSite(t *testing.T) {
 // future refactor that accidentally drops the Steps field (or switches
 // it back to the unpreset runGeneratePipeline) trips the test before
 // the regression ships.
+//
+// The worker post-scaffold generate step was extracted into the shared
+// helper runPostScaffoldGenerate (the worker is the only component kind
+// with a --no-generate flag, so the no-generate / bootstrap-only /
+// partial-failure tail lives there); this test now scans that helper, and
+// separately asserts runAddWorker actually routes through it.
 func TestAddWorkerUsesBootstrapOnlyStepPreset(t *testing.T) {
-	data, err := os.ReadFile("add.go")
+	// add.go moved to the internal/cli/add group; the bootstrap-only preset
+	// is now applied by the factory.GenAPI closure (groups.go) that
+	// runPostScaffoldGenerate calls through f.Gen.RunPipelineBootstrapOnly.
+	// This guard pins (a) the worker path delegates to the shared helper,
+	// and (b) that helper takes the bootstrap-only pipeline, not the full
+	// one — running the full pipeline rewrites unrelated Tier-1 files
+	// (.github/workflows/ci.yml, cmd/server.go, frontend mocks,
+	// pkg/config/config.go) the worker scaffold has no business touching.
+	// See FRICTION cp-forge-2026-06-03 port-workers.
+	data, err := os.ReadFile(filepath.Join("add", "add.go"))
 	if err != nil {
-		t.Fatalf("read add.go: %v", err)
+		t.Fatalf("read add/add.go: %v", err)
 	}
 	src := string(data)
-	// Find the runAddWorker body. The function name is unique; the
-	// generate-pipeline invocation we care about sits between the
-	// definition and the closing brace at indent 0.
-	idx := strings.Index(src, "func runAddWorker(")
-	if idx < 0 {
-		t.Fatal("runAddWorker not found in add.go")
+	if !strings.Contains(src, "runPostScaffoldGenerate(f, p.root, p.name, noGenerate)") {
+		t.Errorf("runAddWorker must delegate its post-scaffold generate to " +
+			"runPostScaffoldGenerate(f, p.root, p.name, noGenerate) via spec.postScaffold.")
 	}
-	// Look for the closing of runAddWorker — scan to the next "\nfunc "
-	// at top level. This is a coarse boundary but the function isn't long
-	// enough to need an AST-grade approach.
+	// Find the runPostScaffoldGenerate body (unique name); the generate
+	// invocation sits between the definition and the next top-level "\nfunc ".
+	idx := strings.Index(src, "func runPostScaffoldGenerate(")
+	if idx < 0 {
+		t.Fatal("runPostScaffoldGenerate not found in add/add.go (the worker post-scaffold generate helper)")
+	}
 	tail := src[idx:]
 	end := strings.Index(tail, "\nfunc ")
 	if end < 0 {
 		end = len(tail)
 	}
 	body := tail[:end]
-	if !strings.Contains(body, `Steps: "bootstrap-only"`) {
-		t.Errorf("runAddWorker must invoke the generate pipeline with Steps: \"bootstrap-only\". " +
-			"Running the unpreset pipeline rewrites unrelated Tier-1 files " +
-			"(.github/workflows/ci.yml, cmd/server.go, frontend mocks, pkg/config/config.go) " +
-			"that the worker scaffold has no business touching. " +
-			"See FRICTION cp-forge-2026-06-03 port-workers.")
+	if !strings.Contains(body, "f.Gen.RunPipelineBootstrapOnly(") {
+		t.Errorf("runPostScaffoldGenerate must invoke the bootstrap-only pipeline " +
+			"(f.Gen.RunPipelineBootstrapOnly). Running the full pipeline rewrites " +
+			"unrelated Tier-1 files (.github/workflows/ci.yml, cmd/server.go, frontend " +
+			"mocks, pkg/config/config.go) that the worker scaffold has no business " +
+			"touching. See FRICTION cp-forge-2026-06-03 port-workers.")
 	}
-	if strings.Contains(body, "runGeneratePipeline(root, false, false)") {
-		t.Errorf("runAddWorker is still calling the unpreset runGeneratePipeline. " +
-			"Switch to runGeneratePipelineFlags(root, pipelineFlags{Steps: \"bootstrap-only\"}).")
+	if strings.Contains(body, "f.Gen.RunPipeline(") {
+		t.Errorf("runPostScaffoldGenerate is calling the FULL pipeline (f.Gen.RunPipeline). " +
+			"The worker post-scaffold generate must use f.Gen.RunPipelineBootstrapOnly.")
 	}
 }
 
@@ -301,7 +325,7 @@ func TestMocksStepPresetExcludesUnrelatedHeavyEmitters(t *testing.T) {
 		"frontend CRUD pages",                // frontends/<name>/src/app/<svc>/page.tsx
 		"frontend nav + dashboard",           // frontends/<name>/src/components/nav.tsx
 		"frontend mocks + transport",         // frontends/<name>/src/lib/mock-transport.ts
-		"pkg/app/bootstrap.go",               // bootstrap-only preset's territory
+		"pkg/app substrate (app_gen/setup)",  // bootstrap-only preset's territory
 		"pkg/app/testing.go",                 // bootstrap-only preset's territory
 		"pkg/app/migrate.go",                 // bootstrap-only preset's territory
 		"service stubs",                      // hand-editable service.go scaffolds

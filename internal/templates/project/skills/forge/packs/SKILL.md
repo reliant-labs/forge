@@ -67,7 +67,7 @@ Edit these values to match your auth provider (Auth0, Supabase, Firebase, etc.) 
 
 ## What install does
 
-1. Renders template files into your project (e.g., `pkg/middleware/auth/jwtauth/validator.go`)
+1. Renders template files into your project (e.g., `internal/middleware/auth/jwtauth/validator.go`)
 2. Applies the pack's config section to `forge.yaml` (e.g. `jwt-auth` sets `auth.provider: jwt` unless you already set one)
 3. Adds Go dependencies (`go get`)
 4. Records the pack in `forge.yaml` under `packs:`
@@ -76,7 +76,7 @@ Edit these values to match your auth provider (Auth0, Supabase, Firebase, etc.) 
 
 ## Auth packs are for REAL auth — dev mode needs no pack
 
-`forge up --env=dev` defaults to dev mode, where the scaffold's auth passthrough attaches the synthetic principal from `devClaims()` (`pkg/middleware/middleware.go`) and generated CRUD works with zero auth config. Install `jwt-auth`/`clerk`/`firebase-auth` when you need real token validation (JWKS, issuer/audience checks) — not to make local development work. See `forge skill load auth` for the full split.
+`forge up --env=dev` defaults to dev mode, where the scaffold's auth passthrough attaches the synthetic principal from `devClaims()` (`internal/middleware/middleware.go`) and generated CRUD works with zero auth config. Install `jwt-auth`/`clerk`/`firebase-auth` when you need real token validation (JWKS, issuer/audience checks) — not to make local development work. See `forge skill load auth` for the full split.
 
 ## File ownership
 

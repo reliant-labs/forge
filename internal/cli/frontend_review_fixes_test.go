@@ -303,6 +303,81 @@ func TestBuildNavPages_FiltersOnEntitySet(t *testing.T) {
 	}
 }
 
+// TestBuildNavPages_ControlPlaneEntitySet is the regression test for the
+// nav-empties bug: the applied-schema entity projection (BuildSchemaEntities)
+// names entities by the singular CRUD-RPC form (EntityDef.Name = "LLMKey"),
+// while ExtractCRUDEntities re-derives the plural + kebab slug from the same
+// RPC. The nav gate matches the two halves; if it matches on the raw
+// lowercase NAME instead of the deterministic kebab SLUG, an acronym entity
+// whose two name projections disagree on casing (proto-Go "LlmKey" vs CRUD
+// "LLMKey") falls through the gate, its route is dropped, and on a project
+// where EVERY admin entity is an acronym/aggregated List the ENTIRE nav
+// regenerates empty — ALL_ROUTES = [] and every dashboard tile vanishes,
+// with no error.
+//
+// This reproduces the real control-plane shape that triggered it: five
+// admin entities sourced from five different services (LLMKey, Daemon,
+// Plan, UsageEvent, User), several List-only (admin read views), and the
+// entity set keyed by the singular projection — including the casing-
+// divergent "LlmKey" form to prove the slug match is casing-proof. The
+// assertion is the full route set is populated, not empty.
+func TestBuildNavPages_ControlPlaneEntitySet(t *testing.T) {
+	services := []codegen.ServiceDef{
+		{Name: "LLMGatewayService", ProtoFile: "proto/controlplane/v1/llm_gateway_service.proto",
+			Methods: []codegen.Method{
+				{Name: "ListLLMKeys", InputType: "ListLLMKeysRequest", OutputType: "ListLLMKeysResponse"},
+				{Name: "CreateLLMKey", InputType: "CreateLLMKeyRequest", OutputType: "CreateLLMKeyResponse"},
+				{Name: "GetLLMKey", InputType: "GetLLMKeyRequest", OutputType: "GetLLMKeyResponse"},
+			}},
+		{Name: "DaemonService", ProtoFile: "proto/controlplane/v1/daemon_service.proto",
+			Methods: []codegen.Method{
+				{Name: "ListDaemons", InputType: "ListDaemonsRequest", OutputType: "ListDaemonsResponse"},
+				{Name: "CreateDaemon", InputType: "CreateDaemonRequest", OutputType: "CreateDaemonResponse"},
+			}},
+		{Name: "BillingService", ProtoFile: "proto/controlplane/v1/billing_service.proto",
+			Methods: []codegen.Method{
+				{Name: "ListPlans", InputType: "ListPlansRequest", OutputType: "ListPlansResponse"},
+			}},
+		{Name: "BillingAdminService", ProtoFile: "proto/controlplane/v1/billing_admin.proto",
+			Methods: []codegen.Method{
+				{Name: "ListUsageEvents", InputType: "ListUsageEventsRequest", OutputType: "ListUsageEventsResponse"},
+			}},
+		{Name: "UserAdminService", ProtoFile: "proto/controlplane/v1/user_admin.proto",
+			Methods: []codegen.Method{
+				{Name: "ListUsers", InputType: "ListUsersRequest", OutputType: "ListUsersResponse"},
+			}},
+	}
+	// The entity set as BuildSchemaEntities projects it: singular names from
+	// the applied-schema join. "LlmKey" is the proto-Go-cased projection of
+	// the same entity ExtractCRUDEntities derives as "LLMKey" from
+	// ListLLMKeys — the casing divergence the slug-keyed gate must absorb.
+	// (BuildSchemaEntities sorts by Name; order is irrelevant to the gate.)
+	entities := []codegen.EntityDef{
+		{Name: "Daemon", TableName: "daemons"},
+		{Name: "LlmKey", TableName: "llm_keys"},
+		{Name: "Plan", TableName: "plans"},
+		{Name: "UsageEvent", TableName: "usage_events"},
+		{Name: "User", TableName: "users"},
+	}
+
+	pages := buildNavPages(services, entities)
+
+	gotSlugs := make(map[string]bool, len(pages))
+	for _, p := range pages {
+		gotSlugs[p.Slug] = true
+	}
+	wantSlugs := []string{"llm-keys", "daemons", "plans", "usage-events", "users"}
+	if len(pages) != len(wantSlugs) {
+		t.Fatalf("nav regenerated %d route(s), want %d (empty/partial nav = the regression): %+v",
+			len(pages), len(wantSlugs), pages)
+	}
+	for _, s := range wantSlugs {
+		if !gotSlugs[s] {
+			t.Errorf("missing nav route %q — gate dropped a valid entity: got %+v", s, pages)
+		}
+	}
+}
+
 // TestDashboardGenTemplate_RealCountsAndCreateGating pins the dashboard
 // half of F2: tiles wire the real list hook count (no static &mdash; stat
 // card) and QuickActions only renders "Create X" for entities whose
@@ -413,6 +488,7 @@ func TestMockTransport_MutableStoreAndNotFound(t *testing.T) {
 		HasCreate:          true,
 		HasUpdate:          true,
 		HasDelete:          true,
+		ItemsField:         "tasks",
 		ImportPath:         "services/tasks/v1/tasks_pb",
 		EntityImportPath:   "db/v1/tasks_pb",
 		SchemaImport:       "TaskSchema",

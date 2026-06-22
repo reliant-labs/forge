@@ -84,7 +84,7 @@ func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 // (current/default context — unchanged single-cluster behaviour).
 func TestKubectlArgs_ThreadsContext(t *testing.T) {
 	// With a context: --context <ctx> is prepended before the subcommand.
-	got := kubectlArgs("prod-cluster", "apply", "--server-side", "-f", "-")
+	got := KubectlArgs("prod-cluster", "apply", "--server-side", "-f", "-")
 	want := []string{"--context", "prod-cluster", "apply", "--server-side", "-f", "-"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -101,7 +101,7 @@ func TestKubectlArgs_ThreadsContext(t *testing.T) {
 	}
 
 	// Empty context: args pass through verbatim (no --context injected).
-	got = kubectlArgs("", "rollout", "status", "deployment/x")
+	got = KubectlArgs("", "rollout", "status", "deployment/x")
 	if contains(got, "--context") {
 		t.Errorf("expected no --context for empty context, got %v", got)
 	}
@@ -131,6 +131,31 @@ func TestKubectlCmd_IncludesContext(t *testing.T) {
 	cmd = kubectlCmd(context.Background(), "", "get", "deployments")
 	if contains(cmd.Args, "--context") {
 		t.Errorf("expected no --context for empty context, got %v", cmd.Args)
+	}
+}
+
+// TestKubectlApply_ForcesConflicts pins the deploy apply to Server-Side
+// Apply with --force-conflicts. forge is the declarative source of
+// truth, so its SSA field manager must win unconditionally: without
+// --force-conflicts, a resource previously touched by a plain
+// `kubectl apply` (manager kubectl-client-side-apply) makes SSA abort
+// the whole deploy with a field-manager conflict ("exit status 1").
+// Both flags are required together — --force-conflicts is an SSA-only
+// flag and is a no-op without --server-side.
+func TestKubectlApply_ForcesConflicts(t *testing.T) {
+	// Mirror exactly the argv KubectlApply constructs.
+	cmd := kubectlCmd(context.Background(), "prod-cluster", "apply", "--server-side", "--force-conflicts", "-f", "-")
+	if !contains(cmd.Args, "--server-side") {
+		t.Errorf("expected --server-side in apply argv, got %v", cmd.Args)
+	}
+	if !contains(cmd.Args, "--force-conflicts") {
+		t.Errorf("expected --force-conflicts in apply argv, got %v", cmd.Args)
+	}
+	// --force-conflicts is meaningless without --server-side; assert the
+	// SSA flag precedes it so the apply stays a valid SSA invocation.
+	iss, ifc := indexOf(cmd.Args, "--server-side"), indexOf(cmd.Args, "--force-conflicts")
+	if iss == -1 || ifc == -1 || iss > ifc {
+		t.Errorf("expected --server-side ahead of --force-conflicts, got %v", cmd.Args)
 	}
 }
 
@@ -365,6 +390,88 @@ func TestFilterManifestsByApp_UnknownTargetErrors(t *testing.T) {
 	}
 }
 
+// operatorFilterManifests mirrors what forge renders for an Operator:
+// a Deployment plus its cluster RBAC trio (ServiceAccount, ClusterRole,
+// ClusterRoleBinding), every doc carrying app.kubernetes.io/name =
+// <operator>. A peer service Deployment (different app label) and a
+// shared Namespace (no app label) round it out — the exact shape the
+// control-plane `workspace-controller` operator produces alongside its
+// app services.
+const operatorFilterManifests = `apiVersion: v1
+kind: Namespace
+metadata:
+  name: example-prod
+  labels:
+    app.kubernetes.io/managed-by: forge
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-controller
+  namespace: example-prod
+  labels:
+    app.kubernetes.io/name: workspace-controller
+    app.kubernetes.io/managed-by: forge
+spec: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workspace-controller
+  namespace: example-prod
+  labels:
+    app.kubernetes.io/name: workspace-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: workspace-controller-clusterrole
+  labels:
+    app.kubernetes.io/name: workspace-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: workspace-controller-clusterrolebinding
+  labels:
+    app.kubernetes.io/name: workspace-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-server
+  namespace: example-prod
+  labels:
+    app.kubernetes.io/name: admin-server
+    app.kubernetes.io/managed-by: forge
+spec: {}`
+
+// TestFilterManifestsByApp_Operator is the GAP-1 assertion: targeting an
+// operator name keeps that operator's Deployment AND its cluster RBAC
+// (ServiceAccount / ClusterRole / ClusterRoleBinding all carry the
+// operator's app label), keeps shared infra (the Namespace), and drops
+// the unrelated service Deployment. This is what `forge deploy prod
+// --target workspace-controller` renders.
+func TestFilterManifestsByApp_Operator(t *testing.T) {
+	got, err := FilterManifestsByApp(operatorFilterManifests, []string{"workspace-controller"})
+	if err != nil {
+		t.Fatalf("FilterManifestsByApp: %v", err)
+	}
+	for _, want := range []string{
+		"name: workspace-controller\n",                  // Deployment + ServiceAccount
+		"name: workspace-controller-clusterrole\n",      // ClusterRole
+		"name: workspace-controller-clusterrolebinding", // ClusterRoleBinding
+		"kind: Namespace",                               // shared infra kept
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in scoped output, got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "name: admin-server") {
+		t.Errorf("expected unrelated service admin-server to be dropped, got:\n%s", got)
+	}
+}
+
 // jobStreamManifests is a multi-doc stream mirroring a real forge
 // render: RuntimeClass + Namespace first, then a ConfigMap and a
 // Secret, then a workload Deployment, a schedule=="" one-shot Job
@@ -512,5 +619,22 @@ func TestUnionJobNames_DedupesCallerFirst(t *testing.T) {
 	// Empty names are dropped from both sides.
 	if g := unionJobNames([]string{""}, []string{"", "real"}); len(g) != 1 || g[0] != "real" {
 		t.Errorf("expected empty names dropped, got %v", g)
+	}
+}
+
+// TestPodSelectorForDeploy pins the rollout-diagnostic pod selector to
+// the appNameLabel constant. A literal "app=<deploy>" selector matched
+// zero pods (forge stamps app.kubernetes.io/name, not app), silently
+// producing empty diagnostics on a failed rollout. Building the selector
+// from the constant makes that drift impossible.
+func TestPodSelectorForDeploy(t *testing.T) {
+	got := podSelectorForDeploy("daemon-gateway")
+	want := appNameLabel + "=daemon-gateway"
+	if got != want {
+		t.Errorf("podSelectorForDeploy: got %q, want %q", got, want)
+	}
+	// Guard against a regression to the bare `app=` selector.
+	if strings.HasPrefix(got, "app=") {
+		t.Errorf("selector must use %q, not a bare app= label; got %q", appNameLabel, got)
 	}
 }

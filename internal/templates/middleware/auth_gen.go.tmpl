@@ -2,12 +2,12 @@
 // forge-owned: regenerated every run — do not edit (forge disown to take ownership)
 // Source: forge.yaml auth configuration
 //
-// WIRED, NOT DECORATIVE: the generated cmd/server.go CALLS
-// InstallGeneratedAuth() in runServer — before the interceptor chain is
-// constructed, because authn mode resolution happens at construction —
-// except in dev mode (cfg.Mode().IsDev()), where the dev-claims
-// passthrough applies instead (set ENVIRONMENT to anything other than
-// "development" to exercise real auth). This file plugs forge.yaml's
+// WIRED, NOT DECORATIVE: the generated cmd serve.go CALLS
+// InstallGeneratedAuth() before the interceptor chain is constructed
+// (authn mode resolution happens at construction) and threads its
+// returned validator into middleware.NewAuthInterceptor via AuthDeps —
+// except under an auth bypass (config.DevAuthBypass(cfg)), where the
+// dev-claims passthrough applies instead. This file plugs forge.yaml's
 // declared provider into the same policy hooks the user-owned
 // pkg/middleware/middleware.go exposes; it never bypasses them.
 //
@@ -52,9 +52,10 @@ var generatedAuthConfig = auth.Config{
 // project's auth policy surface:
 //
 //   - constructs the pkg/auth validator from generatedAuthConfig and
-//     installs its Validate func via SetTokenValidator, so
-//     NewAuthInterceptor (the user-owned policy file) runs in Validate
-//     mode with REAL JWT validation;
+//     RETURNS its Validate func, which the generated cmd serve.go threads
+//     into middleware.NewAuthInterceptor via AuthDeps.Validate — so the
+//     interceptor runs in Validate mode with REAL JWT validation, with no
+//     package-global validator slot;
 //   - merges the proto-annotated `auth_required = false` procedures
 //     into the unauthenticated allow-list, so the proto annotations and
 //     the runtime skip-list cannot disagree.
@@ -62,16 +63,15 @@ var generatedAuthConfig = auth.Config{
 // Token validation fails closed until signing material is available
 // (jwt.secret / JWT_SECRET / JWKS KeyFunc): requests get
 // CodeUnauthenticated; the server still boots.
-func InstallGeneratedAuth() error {
+func InstallGeneratedAuth() (func(token string) (*Claims, error), error) {
 	v, err := auth.NewValidator(generatedAuthConfig)
 	if err != nil {
-		return fmt.Errorf("auth provider %q: %w", generatedAuthConfig.Provider, err)
+		return nil, fmt.Errorf("auth provider %q: %w", generatedAuthConfig.Provider, err)
 	}
 	for _, p := range generatedAuthConfig.SkipMethods {
 		unauthenticatedProcedures[p] = struct{}{}
 	}
-	SetTokenValidator(v.Validate)
-	return nil
+	return v.Validate, nil
 }
 {{- else}}
 
@@ -85,29 +85,36 @@ var (
 // {{.APIKey.EffectiveAPIKeyHeader}} header — not as bearer tokens — so
 // the token-validator hook can't carry them: authentication is owned by
 // the header-aware GeneratedAuthInterceptor() (which the generated
-// cmd/server.go appends to the project chain), and the authn layer
-// above it runs in passthrough (MarkExternalAuth).
+// cmd serve.go appends to the project chain), and the authn layer above
+// it runs in passthrough — the generated cmd serve.go reports this by
+// passing middleware.AuthDeps{ExternalAuth: true} to NewAuthInterceptor.
+//
+// It returns a nil token-validator (this provider owns its own
+// interceptor; there is no bearer-token Validate to thread in). The
+// (func, error) signature matches the jwt provider so the generated cmd
+// serve.go calls it uniformly.
 //
 // API-key requests FAIL CLOSED ("API key validator not configured")
 // until the project installs its KeyValidator via
 // SetGeneratedKeyValidator — implement the interface in
-// pkg/middleware/auth_validator.go and install it from pkg/app/setup.go
-// or PostBootstrap (both run before the listener binds).
-func InstallGeneratedAuth() error {
+// pkg/middleware/auth_validator.go and install it from
+// internal/app/providers.go (OpenInfra), which runs before the
+// interceptor chain is built and the listener binds.
+func InstallGeneratedAuth() (func(token string) (*Claims, error), error) {
 	v, err := auth.NewValidator(generatedAuthConfig)
 	if err != nil {
-		return fmt.Errorf("auth provider %q: %w", generatedAuthConfig.Provider, err)
+		return nil, fmt.Errorf("auth provider %q: %w", generatedAuthConfig.Provider, err)
 	}
 	generatedAuthMu.Lock()
 	generatedValidator = v
 	generatedAuthMu.Unlock()
-	MarkExternalAuth()
-	return nil
+	return nil, nil
 }
 
 // SetGeneratedKeyValidator installs the project's API-key validator on
-// the generated validator. Call it before the listener binds (setup.go
-// or PostBootstrap); until then API-key requests are rejected.
+// the generated validator. Call it before the listener binds (from
+// internal/app/providers.go OpenInfra); until then API-key requests are
+// rejected.
 func SetGeneratedKeyValidator(kv KeyValidator) {
 	generatedAuthMu.Lock()
 	defer generatedAuthMu.Unlock()
@@ -118,7 +125,7 @@ func SetGeneratedKeyValidator(kv KeyValidator) {
 
 // GeneratedAuthInterceptor returns the header-aware Connect interceptor
 // (unary + streaming) for the configured provider. The generated
-// cmd/server.go appends it to the project interceptor chain after
+// cmd serve.go appends it to the project interceptor chain after
 // InstallGeneratedAuth has run; calling it before the install is a
 // programmer error and panics.
 func GeneratedAuthInterceptor() connect.Interceptor {

@@ -41,58 +41,60 @@ const (
 )
 
 // managedFile describes a frozen file that upgrade tracks.
+//
+// enabledFor is the file's own gate: it reports whether this file applies
+// to a given project config. A nil predicate means "always included" (the
+// backwards-compatible default for files no gate touched). Co-locating the
+// gate with the manifest entry replaces the old fileEnabledByFeatures
+// path-prefix string-matching switch — the gating model is now declared
+// once, on the entry, instead of being doubly modeled (method calls in the
+// scaffold lane, path-prefix matching here).
 type managedFile struct {
 	templateName string // template name in project/ dir (e.g. "cmd-server.go.tmpl")
 	destPath     string // relative destination path (e.g. "cmd/server.go")
 	templated    bool   // true if template needs data rendering
 	tier         int    // 1 = always overwrite (gitignored), 2 = checksum-protected
+	// enabledFor gates inclusion of this file for a given project config.
+	// nil ⇒ always included.
+	enabledFor func(cfg *config.ProjectConfig) bool
 }
 
-// fileEnabledByFeatures reports whether a managed file should be included
-// given the current feature flags AND project kind. Files that don't match
-// any gated path are always included (backwards-compatible default).
+// cfgIsService reports whether the project config is a service-kind project
+// (the canonical default when cfg is nil). CLI and library projects don't
+// ship the Connect-server stack (cmd/*, pkg/middleware/*, Dockerfile,
+// docker-compose, alloy-config), so the service-shape files gate on this.
 //
-// Kind gating: CLI and library projects don't ship the Connect-server stack
-// (cmd/{server,otel,db,main}.go, pkg/middleware/*, Dockerfile,
-// docker-compose, alloy-config). Listing them in the upgrade plan for those
-// kinds produced 100+ line "would update" diffs against files that should
-// not exist — noisy, and the fix recipe was always "ignore." Now they are
-// excluded from the plan up-front for non-service kinds.
-func fileEnabledByFeatures(f managedFile, cfg *config.ProjectConfig) bool {
-	p := f.destPath
+// The SCAFFOLD always emits these files for service-kind (deploy derives on
+// for service projects, and even a `features.deploy: false` project keeps
+// the tree on disk). upgrade therefore also manages them for every
+// service-kind project — gating on the flag would strand opted-out
+// scaffolds with un-upgradable Dockerfiles.
+func cfgIsService(cfg *config.ProjectConfig) bool {
 	kind := config.ProjectKindService
 	if cfg != nil {
 		kind = cfg.EffectiveKind()
 	}
-	isService := kind == config.ProjectKindService
+	return kind == config.ProjectKindService
+}
 
-	// Kind gates first — service-shape files don't apply to CLI/library.
-	// The SCAFFOLD always emits these files for service-kind (deploy
-	// derives on for service projects, and even a `features.deploy:
-	// false` project keeps the tree on disk). upgrade therefore also
-	// manages them for every service-kind project — gating on the flag
-	// would strand opted-out scaffolds with un-upgradable Dockerfiles.
-	switch {
-	case strings.HasPrefix(p, "cmd/"):
-		return isService
-	case strings.HasPrefix(p, "pkg/middleware/"):
-		return isService
-	case p == "Dockerfile" || p == "docker-compose.yml":
-		return isService
-	case p == "deploy/alloy-config.alloy":
-		return isService && cfg.Features.ObservabilityEnabled()
-	}
+// enabledForService gates a file on the project being service-kind.
+func enabledForService(cfg *config.ProjectConfig) bool { return cfgIsService(cfg) }
 
-	// Feature gates for files that aren't kind-restricted.
-	switch {
-	case strings.HasPrefix(p, "deploy/") && strings.HasSuffix(p, ".k"):
-		return isService
-	case p == ".air.toml" || p == ".air-debug.toml":
-		return cfg.Features.HotReloadEnabled()
-	case strings.HasPrefix(p, ".github/workflows/"):
-		return cfg.Features.CIEnabled()
+// enabledForObservability gates a file on the project being service-kind
+// AND having observability enabled (e.g. deploy/alloy-config.alloy).
+func enabledForObservability(cfg *config.ProjectConfig) bool {
+	return cfgIsService(cfg) && cfg != nil && cfg.Features.ObservabilityEnabled()
+}
+
+// fileEnabledByFeatures reports whether a managed file should be included
+// given the current feature flags AND project kind. The decision now lives
+// on the manifest entry's enabledFor predicate; a nil predicate means the
+// file is always included (backwards-compatible default).
+func fileEnabledByFeatures(f managedFile, cfg *config.ProjectConfig) bool {
+	if f.enabledFor == nil {
+		return true
 	}
-	return true
+	return f.enabledFor(cfg)
 }
 
 // filterManagedFiles returns only the managed files whose features are enabled.
@@ -108,14 +110,37 @@ func filterManagedFiles(files []managedFile, cfg *config.ProjectConfig) []manage
 
 // managedFiles returns the list of frozen files that upgrade manages.
 //
-// `binary: shared` projects swap cmd/main.go's source template from
-// cmd-root.go.tmpl to cmd-shared-main.go.tmpl. The per-service cobra
-// subcommand file (cmd/services_gen.go) is intentionally NOT in this
-// list: it is a projection of the pkg/app/services.go registration
-// rows, owned by the generate pipeline (stepCmdSubcommands), which has
-// the registry parse that upgrade lacks.
+// The thin cmd/<bin>/main.go is the same for per-service and binary=shared
+// modes (the mode only changes the deploy story). The per-component cobra
+// subcommand files (cmd/<bin>/cmd/{services,workers,operators}/<name>.go) are
+// intentionally NOT in this list: they are projections of the discovered
+// component rows, owned by the generate pipeline (GenerateCmdGroups), which
+// has the registry parse that upgrade lacks.
 func managedFiles() []managedFile {
 	return managedFilesFor(config.ProjectBinaryPerService)
+}
+
+// cmdTreePath joins the binary-scoped command-tree segments under
+// cmd/<bin>/. The command tree moved out of the flat internal/cli package
+// into cmd/<bin>/cmd (devspace idiom), so these destPaths are binary-name
+// dependent. binName is the forge.yaml project name; when empty (legacy
+// name-less callers) the path falls back to a bare cmd/<seg> form which is
+// only used by the path-union backstop, never to write files.
+func cmdTreePath(binName string, segs ...string) string {
+	parts := []string{"cmd"}
+	if binName != "" {
+		parts = append(parts, binName)
+	}
+	parts = append(parts, "cmd")
+	parts = append(parts, segs...)
+	return filepath.Join(parts...)
+}
+
+func cmdMainPath(binName string) string {
+	if binName == "" {
+		return filepath.Join("cmd", "main.go")
+	}
+	return filepath.Join("cmd", binName, "main.go")
 }
 
 // managedFilesForCfg is like managedFiles but consults the project
@@ -132,16 +157,18 @@ func managedFiles() []managedFile {
 // "user-modified" from upgrade's perspective) but the dry-run output
 // was unparseable.
 //
-// Binary sensitivity: `binary: shared` projects swap cmd/main.go's
-// source from cmd-root.go.tmpl to cmd-shared-main.go.tmpl.
+// Binary-name sensitivity: the command tree lives under cmd/<bin>/, so the
+// project name selects the cmd-tree destPaths (cmdMainPath / cmdTreePath).
 func managedFilesForCfg(cfg *config.ProjectConfig) []managedFile {
 	binary := config.ProjectBinaryPerService
 	kind := config.ProjectKindService
+	binName := ""
 	if cfg != nil {
 		binary = cfg.EffectiveBinary()
 		kind = cfg.EffectiveKind()
+		binName = cfg.Name
 	}
-	return managedFilesForKindBinary(kind, binary)
+	return managedFilesForKindBinary(kind, binary, binName)
 }
 
 // managedFilesFor returns the file plan for an explicit binary mode at
@@ -150,17 +177,18 @@ func managedFilesForCfg(cfg *config.ProjectConfig) []managedFile {
 // list. New callers should prefer managedFilesForKindBinary so kind
 // branches (Taskfile.{cli,library}.yml.tmpl, etc.) are honored.
 func managedFilesFor(binary string) []managedFile {
-	return managedFilesForKindBinary(config.ProjectKindService, binary)
+	return managedFilesForKindBinary(config.ProjectKindService, binary, "")
 }
 
 // managedFilesForKindBinary returns the file plan for an explicit kind
 // + binary mode. The kind selects the correct Taskfile template
 // (service / CLI / library); the binary selects cmd/main.go's source.
-func managedFilesForKindBinary(kind, binary string) []managedFile {
-	mainTmpl := "cmd-root.go.tmpl"
-	if binary == config.ProjectBinaryShared {
-		mainTmpl = "cmd-shared-main.go.tmpl"
-	}
+func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
+	// The command tree lives under cmd/<bin>/cmd as a real cobra package
+	// (devspace idiom); cmd/<bin>/main.go is a thin cmd.Execute() that
+	// blank-imports the group subpackages. binary=shared and per-service use
+	// the same thin main — the mode only changes the deploy story.
+	mainTmpl := "cmd-main.go.tmpl"
 	taskfileTmpl := "Taskfile.yml.tmpl"
 	switch kind {
 	case config.ProjectKindCLI:
@@ -171,14 +199,17 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 	return []managedFile{
 		// ── Tier 1: Always overwritten by forge generate, gitignored ──
 
-		// Templated cmd files
-		{templateName: "cmd-server.go.tmpl", destPath: "cmd/server.go", templated: true, tier: Tier1},
-		{templateName: mainTmpl, destPath: "cmd/main.go", templated: true, tier: Tier1},
-		{templateName: "cmd-db.go.tmpl", destPath: "cmd/db.go", templated: true, tier: Tier1},
-		{templateName: "cmd-version.go.tmpl", destPath: "cmd/version.go", templated: true, tier: Tier1},
-
-		// Static cmd files
-		{templateName: "otel.go", destPath: "cmd/otel.go", templated: false, tier: Tier1},
+		// Thin cmd/<bin>/main.go + the cmd/<bin>/cmd command tree (devspace
+		// idiom: dir-nested by category, one file per command). Service-shape
+		// (CLI/library don't ship the Connect-server stack), gated via
+		// enabledForService. OTel is owned by serverkit now — there is no
+		// generated cmd/otel.go shim.
+		{templateName: mainTmpl, destPath: cmdMainPath(binName), templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cmd-tree-serve.go.tmpl", destPath: cmdTreePath(binName, "serve.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cmd-tree-server.go.tmpl", destPath: cmdTreePath(binName, "server.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cmd-tree-root.go.tmpl", destPath: cmdTreePath(binName, "root.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cmd-tree-db.go.tmpl", destPath: cmdTreePath(binName, "db.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cmd-tree-version.go.tmpl", destPath: cmdTreePath(binName, "version.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
 
 		// buf.yaml is templated against `api.rest` so the googleapis BSR
 		// dep is added/removed in lockstep with the runtime vanguard wrap.
@@ -190,8 +221,8 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 
 		// Templated config files
 		{templateName: taskfileTmpl, destPath: "Taskfile.yml", templated: true, tier: Tier2},
-		{templateName: "Dockerfile.tmpl", destPath: "Dockerfile", templated: true, tier: Tier2},
-		{templateName: "docker-compose.yml.tmpl", destPath: "docker-compose.yml", templated: true, tier: Tier2},
+		{templateName: "Dockerfile.tmpl", destPath: "Dockerfile", templated: true, tier: Tier2, enabledFor: enabledForService},
+		{templateName: "docker-compose.yml.tmpl", destPath: "docker-compose.yml", templated: true, tier: Tier2, enabledFor: enabledForService},
 
 		// Static config files
 		{templateName: "golangci.yml.tmpl", destPath: ".golangci.yml", templated: true, tier: Tier2},
@@ -207,18 +238,22 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 		// pkg/middleware/*.go copies; those files are user-owned and
 		// simply stop being managed here (see the
 		// migrations/v0.x-to-middleware-lib skill for hand-adoption).
-		{templateName: "middleware.go", destPath: "pkg/middleware/middleware.go", templated: false, tier: Tier2},
-		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2},
+		{templateName: "middleware.go", destPath: "pkg/middleware/middleware.go", templated: false, tier: Tier2, enabledFor: enabledForService},
+		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2, enabledFor: enabledForService},
+		// role_resolver.go — the identity→roles seam for descriptor-driven
+		// authz (forge/pkg/authz). User-owned scaffold-once, same Tier-2
+		// never-clobber treatment as middleware.go.
+		{templateName: "role_resolver.go", destPath: "pkg/middleware/role_resolver.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 
-		// cmd/commands.go — the user-owned cobra extension point the
-		// Tier-1 cmd/main.go consumes (userCommands()). Scaffolded once,
-		// then owned by the user; listed here so `forge upgrade` CREATES
-		// it on pre-M6 trees (whose regenerated cmd/main.go now
-		// references userCommands) and never stomps an edited copy.
-		{templateName: "cmd-commands.go.tmpl", destPath: "cmd/commands.go", templated: true, tier: Tier2},
+		// cmd/<bin>/cmd/commands.go — the user-owned cobra extension point the
+		// Tier-1 cmd/<bin>/cmd/root.go consumes (userCommands(deps)).
+		// Scaffolded once, then owned by the user; listed here so `forge
+		// upgrade` CREATES it and never stomps an edited copy.
+		{templateName: "cmd-tree-commands.go.tmpl", destPath: cmdTreePath(binName, "commands.go"), templated: true, tier: Tier2, enabledFor: enabledForService},
 
-		// Alloy config — Tier 1 since it's fully derived from forge.yaml services.
-		{templateName: "alloy-config.alloy.tmpl", destPath: "deploy/alloy-config.alloy", templated: true, tier: Tier1},
+		// Alloy config — Tier 1 since it's fully derived from forge.yaml
+		// services. Gated on service-kind AND observability being enabled.
+		{templateName: "alloy-config.alloy.tmpl", destPath: "deploy/alloy-config.alloy", templated: true, tier: Tier1, enabledFor: enabledForObservability},
 	}
 }
 
@@ -256,7 +291,7 @@ func UpgradeManagedPaths() map[string]bool {
 			config.ProjectBinaryPerService,
 			config.ProjectBinaryShared,
 		} {
-			for _, f := range managedFilesForKindBinary(kind, binary) {
+			for _, f := range managedFilesForKindBinary(kind, binary, "") {
 				out[f.destPath] = true
 			}
 		}
@@ -319,7 +354,7 @@ func Tier2ManagedPaths() map[string]bool {
 			config.ProjectBinaryPerService,
 			config.ProjectBinaryShared,
 		} {
-			for _, f := range managedFilesForKindBinary(kind, binary) {
+			for _, f := range managedFilesForKindBinary(kind, binary, "") {
 				if f.tier == Tier2 {
 					out[f.destPath] = true
 				}
@@ -341,144 +376,20 @@ type ServiceInfo struct {
 	Port int
 }
 
-// upgradeTemplateData is the data struct used to render frozen templates.
-// Mirrors the anonymous struct in ProjectGenerator.Generate().
-type upgradeTemplateData struct {
-	Name                   string
-	ProtoName              string
-	Module                 string
-	ServiceName            string
-	ServicePort            int
-	ProjectName            string
-	FrontendName           string
-	FrontendPort           int
-	GoVersion              string
-	GoVersionMinor         string
-	DockerBuilderGoVersion string
-	Services               []ServiceInfo
-	ConfigFields           map[string]bool
-	// LocalForgePkgVendored — true when <projectDir>/.forge-pkg/go.mod
-	// exists, signalling that the project is using the dev-mode local
-	// vendoring of forge/pkg. The Dockerfile template uses this to emit
-	// a corresponding `COPY .forge-pkg/ ./.forge-pkg/` line so docker
-	// builds resolve the same replace target as host builds.
-	LocalForgePkgVendored bool
-	// RESTEnabled mirrors forge.yaml's `api.rest` toggle. Used by the
-	// buf.yaml template to add the googleapis BSR dep when REST is on
-	// (so vanguard's `google/api/annotations.proto` imports resolve).
-	RESTEnabled bool
-	// AuthProvider / AuthProviderExternal mirror forge.yaml's
-	// auth.provider (normalized: unset/none collapse to ""). cmd-server
-	// gates the generated middleware.InstallGeneratedAuth call site on
-	// them so the Tier-1 regen keeps the auth wiring in sync with the
-	// generate pipeline's render.
-	AuthProvider         string
-	AuthProviderExternal bool
-	// VersionVar mirrors forge.yaml build.version_var: an additional
-	// `-ldflags -X` target the Dockerfile stamps with the build version.
-	// Empty (the default) renders nothing, preserving main.version-only
-	// stamping for projects that don't set it.
-	VersionVar string
-}
-
-// buildTemplateData constructs the template data from a project config,
-// matching what ProjectGenerator.Generate() would produce.
+// buildTemplateData constructs the upgrade-lane render payload from a
+// project config. It is a thin alias for ForUpgrade (project_template_data.go),
+// kept so existing call sites and tests read naturally in the upgrade lane.
 //
 // projectDir (when non-empty) is used to read the project's go.mod `go`
 // directive so upgrade doesn't silently retarget the project to the host's
 // Go version. When projectDir is empty or go.mod can't be parsed, we fall
 // back to the host's detected version.
-func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemplateData {
-	goVersion := goVersionFromGoMod(projectDir)
-	if goVersion == "" {
-		goVersion = detectGoVersion()
-	}
-	protoName := strings.ReplaceAll(cfg.Name, "-", "_")
-
-	servers := cfg.Servers()
-	serviceName := "api"
-	servicePort := 8080
-	if len(servers) > 0 {
-		serviceName = servers[0].Name
-		if p := servers[0].PrimaryPort(); p != 0 {
-			servicePort = p
-		}
-	}
-
-	frontendName := ""
-	frontendPort := 3000
-	if len(cfg.Frontends) > 0 {
-		frontendName = cfg.Frontends[0].Name
-		if cfg.Frontends[0].Port != 0 {
-			frontendPort = cfg.Frontends[0].Port
-		}
-	}
-
-	// Build the services list for templates like alloy-config.
-	// The first server maps to docker-compose name "app".
-	var services []ServiceInfo
-	for i, svc := range servers {
-		name := svc.Name
-		if i == 0 {
-			name = "app" // docker-compose service name for the primary service
-		}
-		port := svc.PrimaryPort()
-		if port == 0 {
-			port = 8080
-		}
-		services = append(services, ServiceInfo{Name: name, Port: port})
-	}
-	if len(services) == 0 {
-		services = []ServiceInfo{{Name: "app", Port: 8080}}
-	}
-
-	// Parse config fields from proto/config/ so templates can conditionally
-	// include code blocks that reference specific config fields.
-	configFields := codegen.DefaultConfigFieldNames()
-	if projectDir != "" {
-		if msgs, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config")); err == nil && len(msgs) > 0 {
-			configFields = codegen.ConfigFieldNamesFromMessages(msgs)
-		}
-	}
-
-	// Detect whether the project is in the dev-mode local-vendor state for
-	// forge/pkg. The Dockerfile template gates its COPY .forge-pkg/ line on
-	// this so production-published projects (no .forge-pkg/ on disk) keep
-	// their canonical Dockerfile and dev-mode projects get the COPY line
-	// without the user editing the file by hand.
-	localForgePkgVendored := false
-	if projectDir != "" {
-		if _, err := os.Stat(filepath.Join(projectDir, ".forge-pkg", "go.mod")); err == nil {
-			localForgePkgVendored = true
-		}
-	}
-
-	authProvider, authExternal := codegen.NormalizeAuthProvider(cfg.Auth.Provider)
-
-	return upgradeTemplateData{
-		Name:                   cfg.Name,
-		ProtoName:              protoName,
-		Module:                 cfg.ModulePath,
-		ServiceName:            serviceName,
-		ServicePort:            servicePort,
-		ProjectName:            cfg.Name,
-		FrontendName:           frontendName,
-		FrontendPort:           frontendPort,
-		GoVersion:              goVersion,
-		GoVersionMinor:         goVersionMinor(goVersion),
-		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
-		Services:               services,
-		ConfigFields:           configFields,
-		LocalForgePkgVendored:  localForgePkgVendored,
-		RESTEnabled:            cfg.API.REST,
-		AuthProvider:           authProvider,
-		AuthProviderExternal:   authExternal,
-		VersionVar:             cfg.Build.VersionVar,
-	}
+func buildTemplateData(cfg *config.ProjectConfig, projectDir string) projectTemplateData {
+	return ForUpgrade(cfg, projectDir)
 }
 
 // renderManagedFile renders a managed file's template content.
-func renderManagedFile(f managedFile, data upgradeTemplateData) ([]byte, error) {
+func renderManagedFile(f managedFile, data projectTemplateData) ([]byte, error) {
 	var content []byte
 	var err error
 	if f.templated {
@@ -657,9 +568,9 @@ func simpleDiff(path string, old, new []byte) string {
 // RegenerateInfraFiles regenerates all Tier 1 (always-overwrite) infrastructure
 // files. Called by forge generate to keep infrastructure in sync with templates.
 //
-// In `binary: shared` projects this picks cmd-shared-main.go.tmpl as the
-// source for cmd/main.go (instead of the canonical cmd-root.go.tmpl) so the
-// shared-binary scaffold survives generate cycles.
+// The thin cmd/<bin>/main.go and the cmd/<bin>/cmd command tree are part of
+// this Tier-1 set, keyed off the project name so the per-binary destPaths
+// resolve; both binary modes use the same thin main.
 func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
 	return RegenerateInfraFilesTracked(projectDir, cfg, nil)
 }
@@ -695,16 +606,21 @@ func RegenerateInfraFilesTracked(projectDir string, cfg *config.ProjectConfig, c
 			return fmt.Errorf("write %s: %w", f.destPath, err)
 		}
 	}
-	// The Tier-1 cmd/main.go just (re)rendered above references the
-	// user-owned userCommands() extension point. Ensure cmd/commands.go
-	// exists (write-once; never overwrites) so a pre-M6 tree whose
-	// main.go gained the reference this run still compiles — the
-	// codegen pipeline's stepCmdSubcommands does the same, but this
-	// path also runs for service projects with features.codegen=false.
+	// The Tier-1 cmd/<bin>/main.go just (re)rendered above references the
+	// user-owned userCommands() extension point. Ensure cmd/<bin>/cmd/commands.go
+	// exists (write-once; never overwrites) so a tree whose main.go gained
+	// the reference this run still compiles — the codegen pipeline's
+	// stepCmdSubcommands does the same, but this path also runs for service
+	// projects with features.codegen=false.
+	binName := ""
+	if cfg != nil {
+		binName = cfg.Name
+	}
+	wantMain := cmdMainPath(binName)
 	for _, f := range filtered {
-		if f.destPath == "cmd/main.go" {
-			if err := codegen.GenerateCmdCommands(projectDir); err != nil {
-				return fmt.Errorf("scaffold cmd/commands.go: %w", err)
+		if f.destPath == wantMain {
+			if err := codegen.GenerateCmdCommands(projectDir, binName); err != nil {
+				return fmt.Errorf("scaffold cmd/%s/cmd/commands.go: %w", binName, err)
 			}
 			break
 		}

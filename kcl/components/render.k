@@ -60,6 +60,10 @@ _load_one = lambda raw: any -> any {
         group = raw.group if "group" in raw else ""
         version = raw.version if "version" in raw else ""
         crds = raw.crds if "crds" in raw else []
+        # Polymorphic build block — passed through verbatim (a dict with a
+        # `type` discriminator). Empty {} when the JSON omits it; the env
+        # bridge then lets the Go side synthesize the ./cmd/<name> default.
+        build = raw.build if "build" in raw else {}
         # Overlay defaults — the per-env main.k merges its env knobs on
         # top of these via the `|` operator.
         image = ""

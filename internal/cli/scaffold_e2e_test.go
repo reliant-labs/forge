@@ -33,7 +33,7 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 	projectDir := filepath.Join(dir, "basicapp")
 	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.yaml"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "go.mod"))
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "api"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "proto", "services", "api", "v1", "api.proto"))
 
 	// Generate code
@@ -41,7 +41,10 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 
 	// Verify generated code exists
 	assertPathExistsE2E(t, filepath.Join(projectDir, "gen", "services", "api", "v1"))
-	assertPathExistsE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
+	// §2 hybrid DI: the live composition layer is internal/app; the old
+	// name-matched pkg/app DI unit (bootstrap.go) is retired.
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "app", "inject_gen.go"))
+	assertPathNotExistsE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
 
 	// go mod tidy (may be needed after generate)
 	runCmd(t, projectDir, "go", "mod", "tidy")
@@ -91,7 +94,7 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 
 	// Verify all services exist
 	for _, svc := range []string{"api", "users", "orders"} {
-		assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", svc, "service.go"))
+		assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", svc, "service.go"))
 		assertPathExistsE2E(t, filepath.Join(projectDir, "proto", "services", svc, "v1", svc+".proto"))
 	}
 
@@ -149,8 +152,8 @@ func TestE2EScaffoldAddService(t *testing.T) {
 	runCmd(t, projectDir, forgeBin, "add", "service", "billing")
 
 	// Verify both services exist
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "api", "service.go"))
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "billing", "service.go"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api", "service.go"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "billing", "service.go"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "proto", "services", "billing", "v1", "billing.proto"))
 
 	// Regenerate
@@ -163,16 +166,15 @@ func TestE2EScaffoldAddService(t *testing.T) {
 	// Build
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// Verify both services are constructible from the generated rows.
-	// Registration-in-code: construction lives in the serviceRow<X>
-	// constructors in pkg/app/services_gen.go (what the binary actually
-	// SERVES is the user-owned pkg/app/services.go list).
-	rowsContent := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
-	if !strings.Contains(rowsContent, "api.New(") {
-		t.Fatal("expected services_gen.go to construct the api service")
+	// Verify both services are constructed by the generated §2 injector
+	// (internal/app/inject_gen.go — by-type DI replacing the retired
+	// name-matched wire_gen/services_gen path).
+	injectContent := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "inject_gen.go"))
+	if !strings.Contains(injectContent, "api.New(") {
+		t.Fatal("expected inject_gen.go to construct the api service")
 	}
-	if !strings.Contains(rowsContent, "billing.New(") {
-		t.Fatal("expected services_gen.go to construct the billing service")
+	if !strings.Contains(injectContent, "billing.New(") {
+		t.Fatal("expected inject_gen.go to construct the billing service")
 	}
 }
 
@@ -549,6 +551,14 @@ func assertPathExistsE2E(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected path %s to exist: %v", path, err)
+	}
+}
+
+// assertPathNotExistsE2E fails the test if the path exists.
+func assertPathNotExistsE2E(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("expected path %s to NOT exist", path)
 	}
 }
 

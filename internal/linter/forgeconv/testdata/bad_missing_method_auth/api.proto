@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package badmethodauth.v1;
+
+import "forge/v1/forge.proto";
+
+option go_package = "example.com/badmethodauth/gen/badmethodauth/v1;badmethodauthv1";
+
+service ThingService {
+  option (forge.v1.service) = {
+    name: "ThingService"
+    version: "1.0.0"
+  };
+
+  // Annotated — declares its auth posture explicitly. No finding.
+  rpc Create(CreateRequest) returns (CreateResponse) {
+    option (forge.v1.method) = { auth_required: true };
+  }
+
+  // Unannotated single-line RPC — auth-by-omission. One finding.
+  rpc Get(GetRequest) returns (GetResponse);
+
+  // Unannotated multi-line RPC body (empty) — auth-by-omission. One finding.
+  rpc Delete(DeleteRequest) returns (DeleteResponse) {}
+}
+
+message CreateRequest { string name = 1; }
+message CreateResponse { string id = 1; }
+message GetRequest { string id = 1; }
+message GetResponse { string name = 1; }
+message DeleteRequest { string id = 1; }
+message DeleteResponse {}

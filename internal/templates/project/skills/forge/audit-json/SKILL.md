@@ -49,6 +49,8 @@ JSON for everything else.
     "shape":   { "status": "ok",   "summary": "...", "details": { ... } },
     "conventions": { "status": "warn", "summary": "...", "details": { ... } },
     "codegen": { "status": "warn", "summary": "...", "details": { ... } },
+    "composition": { "status": "ok", "summary": "...", "details": { ... } },
+    "size_limits": { "status": "ok", "summary": "...", "details": { ... } },
     "packs":   { "status": "ok",   "summary": "...", "details": { ... } },
     "proto_migration_alignment": { "status": "ok", "summary": "..." },
     "scaffold_markers":  { "status": "ok", "summary": "...", "details": { ... } },
@@ -85,13 +87,15 @@ Each category is the same shape:
 |----------|-------------------------------------|
 | `version` | `pinned_version`, `binary_version`, `hint` (when mismatch) |
 | `shape` | `services[]`, `workers[]`, `operators[]`, `frontends[]`, `packs[]`, `packages[]` |
-| `shape.services[]` | `name`, `type`, `rpc_count`, `served`, `rpcs[]` — each rpc is `{name, streaming?, mcp_callable, served?}`. `served: false` (service-level always present; rpc-level additive, present only when false) marks a service with no `serviceRow` in the user-owned `pkg/app/services.go` (registration-in-code): the types/client generate here but this binary does not serve the API, so its RPCs are excluded from the MCP manifest (`mcp_callable: false`). `streaming` is omitted for unary RPCs, else `"client"`/`"server"`/`"bidi"`. `mcp_callable: true` means the RPC is exposed as an MCP tool by the `forge-mcp` bridge; streaming RPCs are `mcp_callable: false` (they stay in `gen/mcp/manifest.json` with a `streaming` marker but are excluded from MCP `tools/list` because MCP tool calls are unary). Check this BEFORE planning to call an RPC via MCP. |
+| `shape.services[]` | `name`, `type`, `rpc_count`, `served`, `rpcs[]` — each rpc is `{name, streaming?, mcp_callable, served?}`. `served: false` (service-level always present; rpc-level additive, present only when false) marks a service that **no `NewComponents` construction + `Mount<Svc>` wires** — the types/client generate from proto, but no handler is constructed in `internal/app/compose.go` (`NewComponents`) and no `Mount<Svc>` mounts it into a served handler, so its RPCs are excluded from the MCP manifest (`mcp_callable: false`). Resolve by implementing + mounting it via the generated mount surface (constructing it in `internal/app/compose.go`). This is determined structurally from the composition graph, NOT by matching a service-name string against a registry row. `streaming` is omitted for unary RPCs, else `"client"`/`"server"`/`"bidi"`. `mcp_callable: true` means the RPC is exposed as an MCP tool by the `forge-mcp` bridge; streaming RPCs are `mcp_callable: false` (they stay in `gen/mcp/manifest.json` with a `streaming` marker but are excluded from MCP `tools/list` because MCP tool calls are unary). Check this BEFORE planning to call an RPC via MCP. |
 | `conventions` | `counts{}` (per-rule violation counts), `hint` |
-| `codegen` | `tracked_files`, `forge_version`, `last_generate`, `user_edited_gen_files[]`, `orphan_gen_files[]`, `unregistered_services[]` (each `{service, dir, state, message}` — `handlers/<svc>` exists but `pkg/app/services.go` has no `serviceRow` for it; `state: "unlisted"` = row constructor generated but unreferenced (add the printed line to RegisteredServices), `state: "tombstoned"` = deliberately retired via comment (delete the dir or restore the row)) |
+| `codegen` | `tracked_files`, `forge_version`, `last_generate`, `user_edited_gen_files[]`, `orphan_gen_files[]`, `orphan_stubs[]` (each `{service, dir, message}` — a service whose `internal/handlers/<svc>/` is a zero-impl `Unimplemented` stub that no `NewComponents` construction + `Mount<Svc>` wires; resolve with `forge delete service <name>` or by implementing + mounting it in `internal/app/compose.go` (`NewComponents`)) |
 | `packs` | per-pack `{name, installed_version, latest_version, status}` |
 | `proto_migration_alignment` | `divergence[]` (entities whose proto definition disagrees with migrations) |
 | `optional_deps_guard` | `finding_count`, `affected_packages[]`, `by_package{}` (unguarded derefs of `// forge:optional-dep` Deps fields — warn-level; run `forge lint --optional-deps-guard` for per-line detail) |
-| `crud_stubs` | `files[]`, `total_stubs`, `stubs[]` (each `{file, method, reason}`), `marker`, `legacy_marker` — custom-read-shape stubs (`forge:custom-read-shape` markers; the pre-rename `FORGE_CRUD_SHAPE_MISMATCH` spelling is still recognized for one release, and `legacy_marker` carries it for grep migration) scanned from the user-owned `handlers_crud.go` (the legacy `handlers_crud_gen.go` is also scanned). A stub marks a deliberate non-AIP-158 read shape whose body is the user's to implement — but each stubbed RPC returns `CodeUnimplemented` in production, so the category is `warn` whenever `total_stubs > 0`. |
+| `composition` | `cycles[]` (each `{path[], message}` — a dependency cycle in a binary's `NewComponents` graph), `narrow_interface_drops[]` (each `{consumer, dep, field, concrete, message}` — the constraint-3 hazard: a consumer's narrow Deps interface that no constructed concrete in the graph satisfies, i.e. would have been *silently dropped* under the old name-matched wiring; now surfaced loud). `error` on any cycle; `warn` on a silent-drop candidate. This is the guardrail that replaces the removed string-keyed registry magic — see the `forge map` graph below. |
+| `crud_stubs` | `files[]`, `total_stubs`, `stubs[]` (each `{file, method, reason}`), `marker`, `legacy_marker` — custom-read-shape stubs (`forge:custom-read-shape` markers; the pre-rename `FORGE_CRUD_SHAPE_MISMATCH` spelling is still recognized for one release, and `legacy_marker` carries it for grep migration) scanned from the user-owned `internal/handlers/<svc>/handlers_crud.go`. A stub marks a deliberate non-AIP-158 read shape whose body is the user's to implement — but each stubbed RPC returns `CodeUnimplemented` in production, so the category is `warn` whenever `total_stubs > 0`. |
+| `size_limits` | `findings[]` (each `{path, kind, count, threshold, message}` where `kind` is `file` or `method` — monster-file / monster-method warnings against the file/method-size thresholds). `warn`-level; the leverage that replaces hand-policing once the framework stops owning construction. |
 | `scaffold_markers` | `total_markers`, `files[]` (paths still carrying `FORGE_SCAFFOLD:` lines) |
 | `deps` | `go_mod`, `go_sum` presence flags |
 | `friction` | `count`, `by_severity{}`, `newest_recorded_at`, `hint`, `malformed_lines` (when torn writes were skipped) — standing generator-friction reports from `.forge/friction.jsonl`. Entries describe forge, not the project, so the category stays `ok` (it never gates CI); `warn` only on malformed lines. Run `forge friction list` for the entries. |
@@ -105,8 +109,8 @@ and tolerate unknown extras.
 | Status | When |
 |--------|------|
 | `ok` | Category looks healthy. |
-| `warn` | Soft drift — fixable without blocking work. Codegen orphans, version-mismatch with newer-binary, deprecated-pack pinning. |
-| `error` | Hard problem — build will fail or behaviour is broken. Missing forge.yaml, error-severity convention violations, missing required packs. |
+| `warn` | Soft drift — fixable without blocking work. Codegen orphans, narrow-interface silent-drop candidates, monster-file/method warnings, orphan stubs, version-mismatch with newer-binary, deprecated-pack pinning. |
+| `error` | Hard problem — build will fail or behaviour is broken. Missing forge.yaml, error-severity convention violations, composition-graph cycles, missing required packs. |
 
 `overall_status` is the worst category status. CI gates that block on
 `error` (and only `error`) hit the right balance for most projects.
@@ -139,8 +143,8 @@ and tolerate unknown extras.
       ]
     },
     {
-      "path": "handlers/users/handlers_crud_ops_gen.go",
-      "name": "handlers_crud_ops_gen.go",
+      "path": "internal/handlers/users/handlers_crud_gen.go",
+      "name": "handlers_crud_gen.go",
       "is_dir": false,
       "ownership": "forge-space, hand-edited (drift from regen)",
       "flags": ["drift"]
@@ -157,8 +161,17 @@ Each `MapNode` carries:
 | `name` | string | Display name (trailing `/` for directories) |
 | `is_dir` | bool | Directory vs file |
 | `ownership` | string (optional) | One of the ownership classes below |
-| `flags` | string[] (optional) | Health flags — `drift`, `FORGE_SCAFFOLD`, `diverged-from-migrations` |
+| `flags` | string[] (optional) | Health flags — `drift`, `FORGE_SCAFFOLD`, `diverged-from-migrations`, `orphan-stub` |
 | `children` | []MapNode (optional) | Subdirectory contents |
+
+`forge map --json` also carries the **composition graph** the audit's
+`composition` category is computed from — `forge map` is the source of
+cycle-detection and narrow-interface silent-drop findings. Each
+binary's `NewComponents` closure is reported as nodes (components) and
+edges (typed Deps fields, resolved by type off `Infra`, never by name). A cycle in those
+edges is a graph error; a consumer Deps interface that no constructed
+concrete in the graph satisfies is a silent-drop candidate (loud here
+instead of silently skipped, as the old name-matched wiring would do).
 
 ### Ownership classes
 
@@ -176,6 +189,9 @@ Each `MapNode` carries:
 - `FORGE_SCAFFOLD` — file still carries placeholder markers.
 - `diverged-from-migrations` — proto entity whose shape disagrees with
   the migrations that own the schema.
+- `orphan-stub` — an `internal/handlers/<svc>/` dir that is a zero-impl
+  `Unimplemented` stub no binary's `NewComponents` construction +
+  `Mount<Svc>` wires.
 
 ## Common queries
 
@@ -217,6 +233,18 @@ forge audit --json | jq '.categories.conventions.details.counts'
 
 # Orphan _gen files (sources removed, file forgotten).
 forge audit --json | jq -r '.categories.codegen.details.orphan_gen_files[]?'
+
+# Orphan stubs (zero-impl Unimplemented services no NewComponents + Mount wires).
+forge audit --json | jq -r '.categories.codegen.details.orphan_stubs[]? | .service'
+
+# Composition-graph problems: cycles (hard) + narrow-interface silent-drops.
+forge audit --json | jq -r '.categories.composition.details |
+  (.cycles[]?            | "cycle: " + (.path | join(" -> "))),
+  (.narrow_interface_drops[]? | "silent-drop: \(.consumer).\(.field) wants \(.dep)")'
+
+# Monster files / methods over threshold.
+forge audit --json | jq -r '.categories.size_limits.details.findings[]?
+  | "\(.kind) \(.path): \(.count) > \(.threshold)"'
 ```
 
 ## CI integration
@@ -312,7 +340,7 @@ if [ -n "$drift" ]; then
 fi
 
 # Before deleting a directory: check ownership.
-ownership=$(forge map --json | jq -r --arg p "internal/things" \
+ownership=$(forge map --json | jq -r --arg p "internal/handlers/things" \
   '.. | select(.path? == $p) | .ownership')
 ```
 

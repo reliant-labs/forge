@@ -1,29 +1,35 @@
-// Tests for the LOUD auto-heal contract.
+// Tests for the heal contract.
 //
 // FRICTION cp-forge fr-2c1c2328c7: a hand-edit to pkg/app/bootstrap.go
-// happened to hash equal to a PRIOR render in the legacy checksum
-// history, so generate classified it as stale codegen and silently
-// reverted it — the round's only silent destruction of user work. The
-// auto-heal behavior itself is correct and load-bearing (it is what
-// lets `forge upgrade` regenerate stale codegen without --force), but
-// it must never be silent, and the user needs a strict opt-out.
+// happened to hash equal to a PRIOR render in the checksum history, so
+// generate classified it as stale codegen and silently reverted it —
+// the round's only silent destruction of user work. The CORRECTNESS FIX
+// is that healing (overwriting a pristine-but-older-vintage file with
+// the current template) is now OPT-IN, not the default: a
+// pristine-but-stale file is byte-indistinguishable from a deliberate
+// edit, so the default is to SKIP it (NoHealSkipFn), never to silently
+// overwrite. Healing is what lets `forge generate --heal` (or `forge
+// upgrade --force`) advance stale codegen forward — but only when the
+// user explicitly asks, and even then it is LOUD.
 //
 // Self-certifying-era contract pinned here:
 //
 //   - The manifest's current-hash-vs-history distinction is GONE: a
 //     verifying marker proves a pristine render of SOME vintage. ANY
-//     pristine on-disk body that regeneration actually changes is a
-//     heal, and healing is LOUD: HealNoticeFn fires once per file per
-//     run.
+//     pristine on-disk body that regeneration would change is a
+//     heal candidate.
+//   - DEFAULT (AutoHeal off): the write SKIPS the pristine-but-stale file
+//     and NoHealSkipFn fires once per file per run — forge never
+//     silently reverts the user's bytes.
+//   - OPT-IN (AutoHeal=true, set by `--heal`; or a scoped --force):
+//     the write proceeds and healing is LOUD — HealNoticeFn fires once
+//     per file per run.
 //   - Notices are DEFERRED: the writer records a pending heal and
 //     FlushHealNotices(root) fires the notice only when the FINAL
 //     on-disk body differs from the replaced pristine body — so
 //     formatting-only churn (goimports converging back) stays silent.
 //   - No notice when nothing is destroyed: the new render is
 //     body-identical, or a true hand-edit (write skipped entirely).
-//   - DisableAutoHeal (the `forge generate --no-heal` escape hatch)
-//     treats pristine-but-stale as a hand-edit: the write SKIPS and
-//     NoHealSkipFn fires once per file per run instead.
 package checksums
 
 import (
@@ -94,6 +100,10 @@ func TestWriteGeneratedFile_HealIsLoud(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := captureHealNotices(t)
+			// Healing only happens when the user opts in. captureHealNotices
+			// resets per-run state (clearing AutoHeal), so opt in AFTER it.
+			AutoHeal = true
+			t.Cleanup(func() { AutoHeal = false })
 			ResetSkipWrite()
 			root := t.TempDir()
 			cs := &FileChecksums{}
@@ -134,6 +144,8 @@ func TestWriteGeneratedFile_HealIsLoud(t *testing.T) {
 // output), no notice fires — nothing was destroyed.
 func TestFlushHealNotices_FormattingOnlyChurnIsSilent(t *testing.T) {
 	got := captureHealNotices(t)
+	AutoHeal = true // opt in AFTER captureHealNotices (it clears AutoHeal)
+	t.Cleanup(func() { AutoHeal = false })
 	ResetSkipWrite()
 	root := t.TempDir()
 	cs := &FileChecksums{}
@@ -162,6 +174,8 @@ func TestFlushHealNotices_FormattingOnlyChurnIsSilent(t *testing.T) {
 
 func TestWriteGeneratedFile_HealNoticeDedupedPerRun(t *testing.T) {
 	got := captureHealNotices(t)
+	AutoHeal = true // opt in AFTER captureHealNotices (it clears AutoHeal)
+	t.Cleanup(func() { AutoHeal = false })
 	ResetSkipWrite()
 	root := t.TempDir()
 	cs := &FileChecksums{}
@@ -186,8 +200,10 @@ func TestWriteGeneratedFile_HealNoticeDedupedPerRun(t *testing.T) {
 		t.Errorf("heal notices = %v, want exactly 1 (per-run dedupe)", *got)
 	}
 
-	// A new run (ResetPerRunState) notices again.
+	// A new run (ResetPerRunState) notices again. ResetPerRunState also
+	// clears AutoHeal, so re-opt-in to keep exercising the heal path.
 	ResetPerRunState()
+	AutoHeal = true
 	if err := os.WriteFile(filepath.Join(root, rel), stampedV1, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -257,23 +273,25 @@ func TestWriteGeneratedFileTier2_HealIsLoud(t *testing.T) {
 	}
 }
 
-// TestDisableAutoHeal_TreatsStaleAsHandEdit pins the --no-heal strict
-// mode: a pristine-but-stale file is treated as a hand-edit — the write
-// skips it, content is preserved, and NoHealSkipFn (not HealNoticeFn)
-// fires once per file per run.
+// TestDefault_TreatsStaleAsHandEdit pins the DEFAULT (AutoHeal off) —
+// the correctness fix for fr-2c1c2328c7. A pristine-but-stale file is
+// treated as a possible hand-edit: the write skips it, content is
+// preserved, and NoHealSkipFn (not HealNoticeFn) fires once per file per
+// run. No flag is needed — this is what plain `forge generate` does.
 //
 // The legacy assertion that CheckTier1Drift reported the file flagged
 // HistoricalMatch has no equivalent: ScanTier1Drift never sees the
 // fresh render, so a pristine vintage cannot be distinguished from the
 // current one there — the per-write NoHealSkipFn notice is the
 // replacement signal.
-func TestDisableAutoHeal_TreatsStaleAsHandEdit(t *testing.T) {
+func TestDefault_TreatsStaleAsHandEdit(t *testing.T) {
 	got := captureHealNotices(t)
 	var skips []string
 	NoHealSkipFn = func(relPath string) { skips = append(skips, relPath) }
 	ResetSkipWrite()
-	DisableAutoHeal = true
-	t.Cleanup(func() { DisableAutoHeal = false })
+	// AutoHeal defaults off; assert that explicitly — the whole point is
+	// that no flag is required for the safe behavior.
+	AutoHeal = false
 
 	root := t.TempDir()
 	cs := &FileChecksums{}
@@ -296,22 +314,120 @@ func TestDisableAutoHeal_TreatsStaleAsHandEdit(t *testing.T) {
 			t.Fatal(err)
 		}
 		if wrote {
-			t.Error("write proceeded under DisableAutoHeal on a pristine-but-stale file")
+			t.Error("write proceeded by default on a pristine-but-stale file — silent revert hazard")
 		}
 	}
 	if content, _ := os.ReadFile(full); string(content) != string(stampedV1) {
-		t.Errorf("on-disk content not preserved under --no-heal; got %q", content)
+		t.Errorf("on-disk content not preserved by default; got %q", content)
 	}
 	if len(skips) != 1 || skips[0] != rel {
 		t.Errorf("NoHealSkipFn calls = %v, want exactly one naming %s", skips, rel)
 	}
 	FlushHealNotices(root)
 	if len(*got) != 0 {
-		t.Errorf("no heal notice expected under DisableAutoHeal; got %v", *got)
+		t.Errorf("no heal notice expected by default (nothing was healed); got %v", *got)
 	}
 
 	// The file stays pristine, so the stomp guard does NOT flag it.
 	if drift := ScanTier1Drift(root, cs); len(drift) != 0 {
 		t.Errorf("pristine-but-stale file must not appear as drift; got %+v", drift)
+	}
+}
+
+// TestWriteGeneratedFile_HandEditCollidingWithPriorRender_NotReverted is
+// the direct regression test for FRICTION cp-forge fr-2c1c2328c7.
+//
+// The real incident: pkg/app/bootstrap.go carried an uncommitted
+// hand-edit whose content hash equaled a PRIOR render that forge had
+// once written. The stale-detection logic saw a pristine-looking older
+// vintage and silently reverted the user's edit to the current template
+// — destroying real work with no warning.
+//
+// We reproduce it concretely. Forge's history for this path is
+// v1 (oldest) → v2 → current=v3. The user reverts/edits the file so its
+// on-disk bytes are EXACTLY the v1 render — content that collides with
+// an OLDER entry in forge's render history but is NOT what forge last
+// wrote and is NOT the current template. The hazard is that forge treats
+// this as "stale codegen, safe to regenerate" and overwrites it.
+//
+// Assert the fix: a plain `forge generate` (AutoHeal off, force off)
+// must NOT overwrite the file — it skips, preserves the user's bytes,
+// and names the file via NoHealSkipFn. Only an explicit --heal/--force
+// may overwrite.
+func TestWriteGeneratedFile_HandEditCollidingWithPriorRender_NotReverted(t *testing.T) {
+	const rel = "pkg/app/bootstrap.go"
+	// The three vintages forge has rendered for this path over time.
+	renderV1 := []byte("package app\n\n// bootstrap v1 (oldest prior render)\n")
+	renderV3 := []byte("package app\n\n// bootstrap v3 (current template)\n")
+
+	// The user's working tree has the file reverted to the v1 render —
+	// a COMPLETE pristine prior render (marker + body self-consistent),
+	// which is exactly the "hash collides with a prior render in history"
+	// shape that the old logic mistook for stale codegen.
+	onDiskV1, ok := Stamp(rel, renderV1)
+	if !ok {
+		t.Fatal("Stamp failed for a .go path")
+	}
+	if Verify(onDiskV1) != Pristine {
+		t.Fatalf("setup: v1 render must self-verify, got %v", Verify(onDiskV1))
+	}
+
+	var skips []string
+	origSkip, origHeal := NoHealSkipFn, HealNoticeFn
+	NoHealSkipFn = func(p string) { skips = append(skips, p) }
+	var heals []string
+	HealNoticeFn = func(p string) { heals = append(heals, p) }
+	t.Cleanup(func() { NoHealSkipFn, HealNoticeFn = origSkip, origHeal })
+
+	ResetSkipWrite()
+	ResetPerRunState() // AutoHeal off, force off — a plain `forge generate`
+	t.Cleanup(ResetPerRunState)
+
+	root := t.TempDir()
+	cs := &FileChecksums{}
+	full := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, onDiskV1, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Forge regenerates the path with the CURRENT template (v3).
+	wrote, err := WriteGeneratedFile(root, rel, renderV3, cs, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The core assertion: the user's bytes survive untouched.
+	if wrote {
+		t.Error("forge silently overwrote a forge-owned file whose content collided with a PRIOR render — the fr-2c1c2328c7 silent revert regressed")
+	}
+	after, _ := os.ReadFile(full)
+	if string(after) != string(onDiskV1) {
+		t.Errorf("user's on-disk content was reverted; got %q, want the v1 bytes preserved", after)
+	}
+	FlushHealNotices(root)
+	if len(heals) != 0 {
+		t.Errorf("no heal must happen by default; HealNoticeFn fired for %v", heals)
+	}
+	if len(skips) != 1 || skips[0] != rel {
+		t.Errorf("forge must loudly name the skipped file; NoHealSkipFn calls = %v, want one naming %s", skips, rel)
+	}
+
+	// And the escape hatch still works: an explicit --force on this path
+	// overwrites it (the user opting to throw the bytes away).
+	SetForceScope([]string{rel})
+	wrote, err = WriteGeneratedFile(root, rel, renderV3, cs, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wrote {
+		t.Error("--force on the drifted path must overwrite (the opt-in escape hatch)")
+	}
+	after, _ = os.ReadFile(full)
+	wantV3, _ := Stamp(rel, renderV3)
+	if string(after) != string(wantV3) {
+		t.Errorf("--force did not regenerate to current template; got %q", after)
 	}
 }

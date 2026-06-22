@@ -200,7 +200,7 @@ message NotAnEntity {
   string name = 2;
 }
 `
-	findings := lintProtoFile("x.proto", content)
+	findings := lintProtoFile("x.proto", content, LintOptions{})
 	for _, f := range findings {
 		if f.Rule == "forgeconv-pk-annotation" {
 			t.Errorf("plain message without (forge.v1.entity) must not trigger pk-annotation; got: %s", f.Message)
@@ -213,6 +213,68 @@ message NotAnEntity {
 // those four rule files were consolidated under a unified Inspect engine.
 // See internal/contractcheck/*_test.go.
 
+
+// TestMethodAuthAnnotation_FiresOnUnannotatedRPC verifies the analyzer
+// flags every RPC that declares no `(forge.v1.method)` annotation
+// (auth-by-omission) and leaves annotated RPCs alone. The fixture has
+// one annotated RPC (Create) and two unannotated (Get single-line,
+// Delete empty-body), so exactly two findings are expected. Default
+// severity is warning.
+func TestMethodAuthAnnotation_FiresOnUnannotatedRPC(t *testing.T) {
+	res, err := LintProtoTree(filepath.Join("testdata", "bad_missing_method_auth"))
+	if err != nil {
+		t.Fatalf("LintProtoTree: %v", err)
+	}
+	got := findingsForRule(res.Findings, "forgeconv-method-auth-annotation")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 method-auth findings, got %d:\n%s", len(got), res.FormatText())
+	}
+	names := map[string]bool{}
+	for _, f := range got {
+		if f.Severity != SeverityWarning {
+			t.Errorf("default severity should be warning, got %s", f.Severity)
+		}
+		if !strings.Contains(f.Remediation, "auth_required") {
+			t.Errorf("remediation should mention auth_required; got: %s", f.Remediation)
+		}
+		for _, m := range []string{"Get", "Delete"} {
+			if strings.Contains(f.Message, "\""+m+"\"") {
+				names[m] = true
+			}
+		}
+	}
+	if !names["Get"] || !names["Delete"] {
+		t.Errorf("expected findings for Get and Delete; got messages: %v", got)
+	}
+	// The annotated Create RPC must NOT be flagged.
+	for _, f := range got {
+		if strings.Contains(f.Message, "\"Create\"") {
+			t.Errorf("annotated RPC Create should not be flagged: %s", f.Message)
+		}
+	}
+}
+
+// TestMethodAuthAnnotation_StrictEscalatesToError verifies that strict
+// mode escalates the auth-by-omission finding from warning to error so
+// `forge lint --strict` (and CI) fail on it.
+func TestMethodAuthAnnotation_StrictEscalatesToError(t *testing.T) {
+	res, err := LintProtoTreeOpts(filepath.Join("testdata", "bad_missing_method_auth"), LintOptions{Strict: true})
+	if err != nil {
+		t.Fatalf("LintProtoTreeOpts: %v", err)
+	}
+	got := findingsForRule(res.Findings, "forgeconv-method-auth-annotation")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 method-auth findings in strict mode, got %d", len(got))
+	}
+	for _, f := range got {
+		if f.Severity != SeverityError {
+			t.Errorf("strict mode should escalate to error, got %s", f.Severity)
+		}
+	}
+	if !res.HasErrors() {
+		t.Errorf("strict mode should make the result report errors")
+	}
+}
 
 // findingsForRule filters a finding slice to a single rule. Keeps tests
 // focused — the analyzer pipeline runs every rule in one pass, so a fixture

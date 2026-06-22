@@ -65,6 +65,22 @@
 //	        ContextWithClaims:   ContextWithClaims,
 //	    })
 //	}
+//
+// # Layering ADDITIONAL context (the Decorate seam)
+//
+// Some projects need to install MORE than the library's single claims
+// stash once a request is authenticated — a second, parallel identity
+// context (e.g. a ported internal/auth user-id context), the raw
+// Authorization header for outbound propagation, tenant stamping, or
+// any enrichment that writes context values rather than rewriting
+// Claims. The library owns the hard mechanism (header extraction,
+// validation, error mapping, the claims stash, the allow-list); the
+// project layers its extra context through [Policy.Decorate], which runs
+// at the SINGLE post-authentication chokepoint for BOTH the Validate
+// path and the dev-claims path. Without it a project that needs a
+// dual-context bridge had to fork the whole interceptor for one missing
+// callback — Decorate is that callback, so the fork collapses to a
+// Policy value.
 package authn
 
 import (
@@ -143,6 +159,47 @@ type Policy struct {
 	// library never defines a key of its own. Required in Validate
 	// mode and whenever DevClaims is set.
 	ContextWithClaims func(ctx context.Context, claims *auth.Claims) context.Context
+
+	// Decorate, when non-nil, runs at the SINGLE post-authentication
+	// chokepoint — AFTER the library has installed claims via
+	// ContextWithClaims — in BOTH the Validate path (a real Bearer token
+	// was validated and, if set, Enrich'd) and the dev-claims path
+	// (DevClaims supplied the synthetic principal). It lets the project
+	// layer ADDITIONAL context the library does not own:
+	//
+	//   - a second, parallel identity context (e.g. a ported
+	//     internal/auth user-id context that other packages read);
+	//   - the raw Authorization header, for forwarding the caller's
+	//     identity on outbound calls — passed as authorization so the
+	//     project never has to re-derive it (it is "" in the dev-claims
+	//     path when no header was sent);
+	//   - tenant stamping, feature flags, or any context-valued
+	//     enrichment that writes onto ctx rather than rewriting Claims.
+	//
+	// Decorate only ADDS context; it cannot reject the request. Reject
+	// at validation (Validate) or claims rewriting (Enrich), both of
+	// which run before Decorate. nil (the default) leaves the context
+	// exactly as the library produced it — behaviour is unchanged.
+	//
+	// Decorate does NOT run in the pure-passthrough modes (ExternalAuth,
+	// or dev/AUTH_MODE=none with no DevClaims): there are no claims to
+	// decorate around, and ExternalAuth means another interceptor owns
+	// identity entirely.
+	Decorate func(ctx context.Context, claims *auth.Claims, authorization string) context.Context
+
+	// MapError, when non-nil, maps a token-validation failure into the
+	// connect error returned to the caller. It receives the raw error
+	// from Validate and the connect.Error the library would return by
+	// default (always CodeUnauthenticated, wrapping the validation
+	// error). Projects use it to distinguish, say, an expired token
+	// (CodeUnauthenticated) from a revoked tenant (CodePermissionDenied)
+	// without forking the interceptor. Returning nil falls back to the
+	// library default. nil (the default) keeps the standard
+	// CodeUnauthenticated envelope. Applies only to validator failures;
+	// a missing or malformed Authorization header is always the
+	// library's CodeUnauthenticated (those are protocol errors, not
+	// policy decisions).
+	MapError func(err error, fallback *connect.Error) *connect.Error
 }
 
 // mode is the construction-time resolution of a Policy.
@@ -222,16 +279,32 @@ type devClaimsInterceptor struct {
 	policy Policy
 }
 
-func (d *devClaimsInterceptor) attach(ctx context.Context) context.Context {
-	if claims := d.policy.DevClaims(); claims != nil {
-		return d.policy.ContextWithClaims(ctx, claims)
+// attach installs the synthetic dev principal and then runs the
+// project's Decorate hook (if any) at the same chokepoint the Validate
+// path uses. The raw Authorization header is passed through to Decorate
+// — the dev-claims path accepts any header without validating it (the
+// admin-web stub provider sends a placeholder token), so a project that
+// forwards the caller's Authorization on outbound calls still sees it
+// here.
+func (d *devClaimsInterceptor) attach(ctx context.Context, authorization string) context.Context {
+	claims := d.policy.DevClaims()
+	if claims == nil {
+		return ctx
+	}
+	ctx = d.policy.ContextWithClaims(ctx, claims)
+	if d.policy.Decorate != nil {
+		ctx = d.policy.Decorate(ctx, claims, authorization)
 	}
 	return ctx
 }
 
 func (d *devClaimsInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		return next(d.attach(ctx), req)
+		var authorization string
+		if req != nil {
+			authorization = req.Header().Get("Authorization")
+		}
+		return next(d.attach(ctx, authorization), req)
 	}
 }
 
@@ -241,7 +314,7 @@ func (d *devClaimsInterceptor) WrapStreamingClient(next connect.StreamingClientF
 
 func (d *devClaimsInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		return next(d.attach(ctx), conn)
+		return next(d.attach(ctx, conn.RequestHeader().Get("Authorization")), conn)
 	}
 }
 
@@ -312,7 +385,13 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string) (c
 
 	claims, err := a.policy.Validate(token)
 	if err != nil {
-		return ctx, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid token: %w", err))
+		fallback := connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid token: %w", err))
+		if a.policy.MapError != nil {
+			if mapped := a.policy.MapError(err, fallback); mapped != nil {
+				return ctx, mapped
+			}
+		}
+		return ctx, fallback
 	}
 
 	if a.policy.Enrich != nil {
@@ -326,5 +405,14 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string) (c
 		}
 	}
 
-	return a.policy.ContextWithClaims(ctx, claims), nil
+	ctx = a.policy.ContextWithClaims(ctx, claims)
+	if a.policy.Decorate != nil {
+		// The single post-authentication chokepoint: layer any
+		// project-owned context (dual identity bridge, raw Authorization
+		// for outbound propagation, tenant stamping) around the
+		// library's claims stash. Decorate only adds context — it cannot
+		// reject — so the raw authorization header is handed through too.
+		ctx = a.policy.Decorate(ctx, claims, authorization)
+	}
+	return ctx, nil
 }

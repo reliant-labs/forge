@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // sortedKeys returns map keys in deterministic order. Used so docker
@@ -137,13 +138,18 @@ func newBuildCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "build",
 		Short: "Build the project binary and frontends",
-		Long: `Build the project binary and frontends.
+		Long: `Build the project's services and frontends.
 
-This command will:
-- Build the single Go binary from ./cmd (CGO_ENABLED=0, stripped)
-- Build Next.js frontends (npm run build)
-- Optionally build Docker images (--docker)
-- Output binaries to the specified output directory
+This command is a PURE EXECUTOR of the per-service, per-env build
+declaration in KCL. With --env set it iterates the services the
+rendered env declares and dispatches on each service's build.type:
+- go     → go build the declared cmd (CGO_ENABLED=0, stripped) — no
+           hardcoded ./cmd; the target package comes from KCL
+- docker → docker build the service's image (dockerfile/platform/...)
+- shell  → run the verbatim build command
+
+It also builds Next.js frontends (npm run build) and, with --docker,
+the shared project image. Output binaries land in the output dir.
 
 Examples:
   forge build                                # Build everything
@@ -259,18 +265,15 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		resolvedTag = t
 	}
 
-	// Resolve the EMBEDDED build version once, up front, so the host
-	// binary and the docker image stamp the identical version for this
-	// build. Override priority: --tag > forge.yaml build.version > "".
-	// This is distinct from resolvedTag (the IMAGE tag) — the embedded
-	// version follows build.version, the image tag follows resolveImageTag.
-	// They coincide when --tag is set (--tag pins both) but diverge when
-	// the tag is git-derived and build.version is unset.
-	versionOverride := opts.tag
-	if versionOverride == "" {
-		versionOverride = cfg.Build.Version
-	}
-	resolvedVersion := resolveBuildVersion(ctx, versionOverride)
+	// Resolve the EMBEDDED build version once, up front, so every binary
+	// and the docker image stamp the identical version for this build.
+	// Override priority: --tag > git-derived. The forge.yaml `build:`
+	// block is GONE — a project that wants to pin the version or stamp an
+	// extra -X target adds a `-X main.version=<v>` / `-X pkg.Var=<v>`
+	// entry to its KCL GoBuild.ldflags (per-service, per-env), which the
+	// go-build dispatch appends AFTER forge's default version stamp so the
+	// project's -X wins on the same key.
+	resolvedVersion := resolveBuildVersion(ctx, opts.tag)
 
 	fmt.Printf("[build] Building project: %s\n", cfg.Name)
 	fmt.Printf("[build]   Output:   %s\n", opts.outputDir)
@@ -307,10 +310,31 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	// Filter targets — the Go binary is always built (single binary).
-	// The target flag only filters frontends now.
+	// Filter targets. The Go-build set is KCL-driven: every service the
+	// rendered env declares contributes its EffectiveBuild() GoBuild
+	// (the synthesized ./cmd/<name> default when it omits `build`),
+	// deduped to the unique (cmd, output) set so the shared project
+	// binary builds once. Without --env (no KCL service set) we fall back
+	// to the single project binary at ./cmd/<project> — NOT the legacy
+	// ./cmd hardcode. The --target flag still filters frontends and can
+	// drop the binary build entirely (frontend-only / external targets).
 	frontends := cfg.Frontends
 	buildBinary := true
+
+	// `stack.frontend.framework: none` means the project has no frontend
+	// build toolchain forge should drive — drop every declared frontend
+	// from the build set BEFORE anything runs `npm run build`. Without
+	// this, a project that set framework:none (often because deps aren't
+	// installed / the frontend builds out-of-band) still had forge run
+	// `npm run build`, and a failure there (e.g. `next: command not
+	// found`) failed the WHOLE build, blocking an unrelated deployable Go
+	// service that compiled fine (fr-cc10bfab0c). Logged, not silent, so
+	// the user can see why their frontend wasn't built. The frontends stay
+	// in cfg.Frontends for non-build commands (generate, up's dev serve).
+	if frontendsSkippedByFramework(cfg) {
+		fmt.Printf("[build]   Skipping %d frontend(s): stack.frontend.framework is \"none\"\n", len(frontends))
+		frontends = nil
+	}
 
 	// `--target external` is the explicit "build ONLY the KCL services
 	// with build_cmd" filter. Useful for the cp-forge pattern where the
@@ -319,14 +343,27 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// the whole project image / frontends. Requires --env so we have a
 	// rendered KCL set to filter against.
 	if opts.buildTarget == "external" {
-		if !cfg.Features.ExternalBuildsEnabled() {
-			return config.DisabledFeatureError(config.FeatureExternalBuilds)
-		}
+		// No experimental gate here: `build_cmd` is the build-side mirror
+		// of External's `deploy_cmd`, and `forge deploy` of an External
+		// target needs no opt-in. Gating build behind
+		// features.experimental.external_builds while deploy ran free left
+		// the build/deploy pair of the SAME target with mismatched maturity
+		// gates (fr-da9a6614fb) — you could deploy an external target but
+		// not build it. The gates are unified by retiring the build-side
+		// one. The config key is still accepted (back-compat) but no longer
+		// governs whether build_cmd runs.
 		if opts.env == "" {
 			return fmt.Errorf("--target external requires --env to know which KCL services to build")
 		}
 		if !kclHasExternalBuildService(entities) {
-			return fmt.Errorf("--target external: no KCL services declare build_cmd in env %q", opts.env)
+			return fmt.Errorf("--target external: no service declares build_cmd in env %q.\n"+
+				"  Declare a `build_cmd` on your forge.External target (the build-side mirror of deploy_cmd) so\n"+
+				"  `forge build -t external` constructs the image, e.g.:\n"+
+				"      deploy = forge.External {\n"+
+				"          deploy_cmd = r\"...\"\n"+
+				"          build_cmd  = r\"docker build --platform linux/${TARGETARCH} -t ${IMAGE}:${TAG} ${PROJECT_DIR}\"\n"+
+				"      }\n"+
+				"  (a top-level Service.build_cmd also works for non-External deploy types).", opts.env)
 		}
 		// Skip everything else — only the external dispatcher runs.
 		frontends = nil
@@ -398,13 +435,24 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 	}
 
+	goTargets := resolveGoTargets(buildBinary, entities, cfg)
+
 	start := time.Now()
 	var results []buildResult
 
 	if opts.parallel {
-		results = buildParallel(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, resolvedTag, resolvedVersion, opts)
+		results = buildParallel(ctx, cfg, frontends, dockerFrontends, goTargets, skipProjectDocker, cfgArchForDocker, resolvedTag, resolvedVersion, opts)
 	} else {
-		results = buildSequential(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, resolvedTag, resolvedVersion, opts)
+		results = buildSequential(ctx, cfg, frontends, dockerFrontends, goTargets, skipProjectDocker, cfgArchForDocker, resolvedTag, resolvedVersion, opts)
+	}
+
+	// KCL DockerBuild / ShellBuild dispatch: services whose build.type is
+	// docker or shell are built by their declared mechanism rather than
+	// the go-build path. These run after the go-builds (a failing go-build
+	// shouldn't waste time on an orthogonal docker/shell build) and are
+	// the new home for per-service image builds. See buildKCLDockerShell.
+	if entities != nil {
+		results = append(results, buildKCLDockerShell(ctx, cfg, entities, opts, cfgArchForDocker, resolvedTag)...)
 	}
 
 	// Build-only variants from KCL: each declared variant produces one
@@ -429,14 +477,10 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// the summary surfaces but doesn't count as a failure.
 	if entities != nil {
 		externalSvcs := externalBuildServices(entities)
-		// Gate: services declaring build_cmd require explicit opt-in via
-		// `features.experimental.external_builds: true`. Fail loud — a
-		// silent skip would leave behind a "image not built" error from
-		// the deploy step, which is harder to diagnose than the gate
-		// error.
-		if len(externalSvcs) > 0 && !cfg.Features.ExternalBuildsEnabled() {
-			return config.DisabledFeatureError(config.FeatureExternalBuilds)
-		}
+		// No experimental gate: build_cmd is the build-side mirror of
+		// External's deploy_cmd (which needs no opt-in), so a service that
+		// declares build_cmd just builds. See the --target external branch
+		// above for the rationale (fr-da9a6614fb).
 		if len(externalSvcs) > 0 {
 			externalRegistry := opts.pushRegistry
 			if externalRegistry == "" {
@@ -532,23 +576,24 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	return nil
 }
 
-func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, resolvedVersion versionInfo, opts buildOptions) []buildResult {
+func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, goTargets []goBuildTarget, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, resolvedVersion versionInfo, opts buildOptions) []buildResult {
 	var (
 		mu      sync.Mutex
 		wg      sync.WaitGroup
 		results []buildResult
 	)
 
-	// Build single Go binary and frontends in parallel
-	if buildBinary {
+	// Build the KCL-driven go targets + frontends in parallel.
+	goArch := resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false)
+	for _, t := range goTargets {
 		wg.Add(1)
-		go func() {
+		go func(t goBuildTarget) {
 			defer wg.Done()
-			r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug, resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false), resolvedVersion)
+			r := buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion)
 			mu.Lock()
 			results = append(results, r)
 			mu.Unlock()
-		}()
+		}(t)
 	}
 
 	for _, fe := range frontends {
@@ -579,7 +624,7 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 	// preceding go build above happened to use the host arch.
 	if opts.buildDocker && !hasBuildFailure {
 		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
-		if buildBinary && !skipProjectDocker {
+		if len(goTargets) > 0 && !skipProjectDocker {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -605,11 +650,12 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 	return results
 }
 
-func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, resolvedVersion versionInfo, opts buildOptions) []buildResult {
+func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, goTargets []goBuildTarget, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, resolvedVersion versionInfo, opts buildOptions) []buildResult {
 	var results []buildResult
 
-	if buildBinary {
-		r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug, resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false), resolvedVersion)
+	goArch := resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false)
+	for _, t := range goTargets {
+		r := buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion)
 		results = append(results, r)
 		if r.err != nil {
 			return results // Stop on first failure in sequential mode
@@ -626,7 +672,7 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, 
 	// Docker builds only if --docker flag is set
 	if opts.buildDocker {
 		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
-		if buildBinary && !skipProjectDocker {
+		if len(goTargets) > 0 && !skipProjectDocker {
 			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch, resolvedTag, resolvedVersion)
 			results = append(results, r)
 			if r.err != nil {
@@ -645,53 +691,177 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, 
 	return results
 }
 
-func buildGoBinary(ctx context.Context, cfg *config.ProjectConfig, outputDir string, debug bool, crossArch string, versionInfo versionInfo) buildResult {
+// goBuildTarget is one resolved `go build` invocation: a unique
+// (cmd, output) pair plus the cross-compile/flag knobs from the
+// service's KCL GoBuild. Multiple services that map to the same shared
+// binary (server/worker/cron all → ./cmd/<project>) collapse to ONE
+// target so the shared binary compiles once; build.go dedups by
+// (Cmd, OutputName).
+type goBuildTarget struct {
+	cmd        string // go build target package, e.g. "./cmd/trader"
+	outputName string // produced binary basename
+	goos       string
+	goarch     string
+	ldflags    []string
+	tags       []string
+	flags      []string
+	env        map[string]string
+}
+
+// resolveGoTargets returns the KCL-driven go-build target set for this
+// run. With --env (entities present) it iterates the declared services;
+// otherwise it builds only the shared project binary at ./cmd/<project>.
+// buildBinary==false (a frontend-only / external --target) drops the
+// go-builds entirely.
+func resolveGoTargets(buildBinary bool, entities *KCLEntities, cfg *config.ProjectConfig) []goBuildTarget {
+	if !buildBinary {
+		return nil
+	}
+	if entities != nil {
+		return goBuildTargetsFromKCL(entities)
+	}
+	return []goBuildTarget{projectGoBuildTarget(cfg)}
+}
+
+// goBuildTargetsFromKCL resolves the unique set of go-build targets from
+// the KCL service set. Each service's EffectiveBuild() supplies its
+// GoBuild (synthesizing the ./cmd/<name> default when the service omits
+// `build`); only build.type=="go" services contribute here (docker /
+// shell dispatch elsewhere). Dedup is by (cmd, outputName) so the shared
+// project binary — which many server/worker/cron services map onto —
+// builds exactly once. The first service to claim a (cmd, output) wins
+// its flags; a divergent second declaration for the same target is a
+// project misconfiguration, not forge's to reconcile.
+func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
+	if entities == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []goBuildTarget
+	for _, svc := range entities.Services {
+		b := svc.EffectiveBuild()
+		if b.Type != "go" || b.Go == nil {
+			continue
+		}
+		outName := b.Go.OutputName
+		if outName == "" {
+			outName = svc.Name
+		}
+		key := b.Go.Cmd + "\x00" + outName
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, goBuildTarget{
+			cmd:        b.Go.Cmd,
+			outputName: outName,
+			goos:       b.Go.GOOS,
+			goarch:     b.Go.GOARCH,
+			ldflags:    b.Go.Ldflags,
+			tags:       b.Go.Tags,
+			flags:      b.Go.Flags,
+			env:        b.Go.Env,
+		})
+	}
+	return out
+}
+
+// buildGoTarget runs ONE `go build` for a KCL-resolved goBuildTarget. It
+// is a PURE EXECUTOR of the declaration: the target package (cmd), the
+// cross-compile arch, ldflags/tags/extra-flags, and build-time env all
+// come from KCL — there is no hardcoded ./cmd and no single-binary
+// assumption. The version-stamping ldflags forge always injected are
+// PREpended (KCL ldflags win on the same -X key since they come later),
+// preserving the main.version/commit/date stamp without a forge.yaml
+// build block.
+//
+// crossArch is the build-context arch resolution (host vs deploy-target);
+// an explicit GoBuild.goarch overrides it. debug swaps the stripped
+// ldflags for delve gcflags.
+func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug bool, crossArch string, versionInfo versionInfo) buildResult {
 	start := time.Now()
-	binaryPath := filepath.Join(outputDir, cfg.Name)
+	binaryPath := filepath.Join(outputDir, t.outputName)
+
+	// An explicit GoBuild.goarch wins over the build-context arch.
+	arch := crossArch
+	if t.goarch != "" {
+		arch = t.goarch
+	}
+	// When cross-compiling (arch set) GOOS defaults to linux — the deploy
+	// target — unless the GoBuild pins an explicit goos.
+	targetOS := t.goos
+	if arch != "" && targetOS == "" {
+		targetOS = "linux"
+	}
 
 	if debug {
-		fmt.Printf("[build] %s: go build (debug) -> %s\n", cfg.Name, binaryPath)
+		fmt.Printf("[build] %s: go build (debug) %s -> %s\n", t.outputName, t.cmd, binaryPath)
 	} else {
-		fmt.Printf("[build] %s: go build -> %s\n", cfg.Name, binaryPath)
+		fmt.Printf("[build] %s: go build %s -> %s\n", t.outputName, t.cmd, binaryPath)
 	}
-	if crossArch != "" {
-		fmt.Printf("[build] cross-compiling for linux/%s (host: %s/%s)\n",
-			crossArch, runtime.GOOS, runtime.GOARCH)
+	if arch != "" {
+		fmt.Printf("[build] cross-compiling for %s/%s (host: %s/%s)\n",
+			targetOS, arch, runtime.GOOS, runtime.GOARCH)
 	}
 
 	args := []string{"build", "-o", binaryPath}
 	if debug {
 		args = append(args, "-gcflags=all=-N -l")
 	} else {
+		// Version stamp first; the KCL ldflags follow so a project that
+		// wants to override main.version (e.g. -X main.version=<tag>) wins
+		// on the same -X key. This is the replacement for the deleted
+		// forge.yaml build.version_var: a project stamps an extra target by
+		// adding a `-X pkg.Var=...` entry to GoBuild.ldflags in KCL.
 		ldflags := fmt.Sprintf("-s -w -X main.version=%s -X main.commit=%s -X main.date=%s",
 			versionInfo.version, versionInfo.commit, versionInfo.date)
-		// Stamp an additional project-chosen version target (forge.yaml
-		// build.version_var) with the SAME resolved version, for runtime
-		// code that can't import package main.
-		if cfg.Build.VersionVar != "" {
-			ldflags += fmt.Sprintf(" -X %s=%s", cfg.Build.VersionVar, versionInfo.version)
+		if len(t.ldflags) > 0 {
+			ldflags += " " + strings.Join(t.ldflags, " ")
 		}
 		args = append(args, "-ldflags", ldflags)
 	}
-	args = append(args, "./cmd")
+	if len(t.tags) > 0 {
+		args = append(args, "-tags", strings.Join(t.tags, ","))
+	}
+	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
+	args = append(args, t.flags...)
+	args = append(args, t.cmd)
+
 	cmd := exec.CommandContext(ctx, "go", args...)
+	// CGO_ENABLED=0 is forge's pure-Go contract; a GoBuild.env entry can
+	// override it (and any other build-time var) since it's appended last.
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-	if crossArch != "" {
-		// Force linux/<crossArch>. We do not let CGO leak through here:
-		// linux containers built on a mac-arm64 host with CGO enabled
-		// would need a cross-cc toolchain (clang+aarch64-linux-gnu).
-		// Forge's contract is pure-Go binaries, so CGO=0 stays.
-		cmd.Env = append(cmd.Env, "GOOS=linux", "GOARCH="+crossArch)
+	if arch != "" {
+		cmd.Env = append(cmd.Env, "GOOS="+targetOS, "GOARCH="+arch)
+	} else if targetOS != "" {
+		cmd.Env = append(cmd.Env, "GOOS="+targetOS)
+	}
+	for k, v := range t.env {
+		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	err := cmd.Run()
 	return buildResult{
-		name:     cfg.Name,
+		name:     t.outputName,
 		kind:     "service",
 		duration: time.Since(start),
 		err:      err,
+	}
+}
+
+// projectGoBuildTarget is the fallback go-build target for a plain
+// `forge build` with NO --env (no KCL service set to iterate). It builds
+// the shared project binary at ./cmd/<project>. This is NOT the legacy
+// `./cmd` hardcode — it points at the real cmd/<project> package the
+// scaffold writes. With --env set the KCL service set drives the builds
+// and this is unused.
+func projectGoBuildTarget(cfg *config.ProjectConfig) goBuildTarget {
+	pkg := naming.ServicePackage(cfg.Name)
+	return goBuildTarget{
+		cmd:        "./cmd/" + pkg,
+		outputName: pkg,
 	}
 }
 
@@ -1068,6 +1238,19 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 	}
 }
 
+// frontendsSkippedByFramework reports whether `forge build` should drop
+// ALL declared frontends from the build set because the project declares
+// `stack.frontend.framework: none`. That setting means "forge does not own
+// a frontend build toolchain here" — so forge must not run `npm run build`,
+// even when the `frontends:` list is populated (a frontend that builds
+// out-of-band, or one whose deps aren't installed). Honoring it keeps an
+// unrelated frontend build failure from sinking a deployable Go service
+// (fr-cc10bfab0c). Returns false when there are no frontends (nothing to
+// skip — the log line would be noise).
+func frontendsSkippedByFramework(cfg *config.ProjectConfig) bool {
+	return cfg.Stack.EffectiveFrontendFramework() == "none" && len(cfg.Frontends) > 0
+}
+
 func filterFrontends(frontends []config.FrontendConfig, target string) []config.FrontendConfig {
 	for _, f := range frontends {
 		if f.Name == target {
@@ -1198,25 +1381,35 @@ func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir st
 		if svc.Deploy.Type != "build-only" || svc.Deploy.BuildOnly == nil {
 			continue
 		}
+		// The variant's go-build TARGET is the service's effective build
+		// cmd (no ./cmd hardcode): a build-only service still declares its
+		// build via the Build union, and each variant layers its own
+		// ldflags/tags/arch on top of that single target package.
+		buildCmd := "./cmd/" + svc.Name
+		if b := svc.EffectiveBuild(); b.Type == "go" && b.Go != nil && b.Go.Cmd != "" {
+			buildCmd = b.Go.Cmd
+		}
 		for _, v := range svc.Deploy.BuildOnly.BuildVariants {
-			out = append(out, buildVariant(ctx, svc.Name, v, outputDir))
+			out = append(out, buildVariant(ctx, svc.Name, buildCmd, v, outputDir))
 		}
 	}
 	return out
 }
 
 // buildVariant builds one binary for a build-only service variant.
-// The output name is <service>-<variant> unless v.OutputName overrides
-// it. ldflags and -tags are appended to the go-build args; env_at_build
-// pairs join CGO_ENABLED=0 on the subprocess env.
-func buildVariant(ctx context.Context, svcName string, v BuildVariant, outputDir string) buildResult {
+// buildCmd is the service's resolved go-build target package (from the
+// Build union — NOT a ./cmd hardcode). The output name is
+// <service>-<variant> unless v.OutputName overrides it. ldflags and -tags
+// are appended to the go-build args; env_at_build pairs join CGO_ENABLED=0
+// on the subprocess env.
+func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant, outputDir string) buildResult {
 	start := time.Now()
 	outName := v.OutputName
 	if outName == "" {
 		outName = svcName + "-" + v.Name
 	}
 	binPath := filepath.Join(outputDir, outName)
-	fmt.Printf("[build] %s (variant %s): go build -> %s\n", svcName, v.Name, binPath)
+	fmt.Printf("[build] %s (variant %s): go build %s -> %s\n", svcName, v.Name, buildCmd, binPath)
 
 	args := []string{"build", "-o", binPath}
 	if len(v.Ldflags) > 0 {
@@ -1225,10 +1418,16 @@ func buildVariant(ctx context.Context, svcName string, v BuildVariant, outputDir
 	if len(v.BuildTags) > 0 {
 		args = append(args, "-tags", strings.Join(v.BuildTags, ","))
 	}
-	args = append(args, "./cmd")
+	args = append(args, buildCmd)
 
 	cmd := exec.CommandContext(ctx, "go", args...)
 	env := append(os.Environ(), "CGO_ENABLED=0")
+	if v.GOOS != "" {
+		env = append(env, "GOOS="+v.GOOS)
+	}
+	if v.GOARCH != "" {
+		env = append(env, "GOARCH="+v.GOARCH)
+	}
 	for k, val := range v.EnvAtBuild {
 		env = append(env, k+"="+val)
 	}
@@ -1243,4 +1442,142 @@ func buildVariant(ctx context.Context, svcName string, v BuildVariant, outputDir
 		duration: time.Since(start),
 		err:      err,
 	}
+}
+
+// buildKCLDockerShell dispatches the per-service build types that are NOT
+// go-builds: DockerBuild and ShellBuild. This is where a service's
+// declared image build (docker) or verbatim build command (shell) runs.
+//
+//   - docker → `docker build` reusing forge's existing image-build
+//     primitives (tags via cfg.Docker.Registry + resolvedTag, push when
+//     --push, build-contexts) with the service's dockerfile / platform /
+//     target / build_args. A DockerBuild is the ONLY per-service image
+//     build — there is no unconditional auto-docker step for these.
+//   - shell → run the verbatim command via `sh -c` (generalizes the old
+//     build_cmd escape hatch).
+//
+// A service whose EffectiveBuild() is a GoBuild is skipped here (handled
+// by the go-build path). Failures are captured, not short-circuited, so
+// the summary shows the full set.
+func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, opts buildOptions, cfgArchForDocker, resolvedTag string) []buildResult {
+	var out []buildResult
+	for _, svc := range e.Services {
+		b := svc.EffectiveBuild()
+		switch b.Type {
+		case "docker":
+			out = append(out, buildServiceDocker(ctx, cfg, svc.Name, b.Docker, opts, cfgArchForDocker, resolvedTag))
+		case "shell":
+			out = append(out, buildServiceShell(ctx, svc.Name, b.Shell, opts))
+		}
+	}
+	return out
+}
+
+// buildServiceDocker runs `docker build` for a DockerBuild service. It
+// reuses the same tag/registry/push/build-context primitives the project
+// image build uses (resolveBuildContext / appendBuildContexts /
+// expandPushRegistries) so a per-service image is tagged and pushed the
+// same way. The image basename is the service name (or DockerBuild
+// output_name override). platform overrides the env-wide arch.
+func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) buildResult {
+	start := time.Now()
+	imageName := svcName
+	dockerfile := "Dockerfile"
+	if d != nil {
+		if d.OutputName != "" {
+			imageName = d.OutputName
+		}
+		if d.Dockerfile != "" {
+			dockerfile = d.Dockerfile
+		}
+	}
+
+	if _, err := os.Stat(dockerfile); os.IsNotExist(err) {
+		fmt.Printf("[build] %s: skipping docker (no %s)\n", svcName, dockerfile)
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start)}
+	}
+
+	registry := cfg.Docker.Registry
+	if registry == "" {
+		registry = cfg.Name
+	}
+
+	dockerArgs := []string{"build"}
+	// platform: the DockerBuild's explicit platform wins; otherwise the
+	// env-wide cluster arch (cfgArchForDocker), cross-compiled to linux.
+	platform := ""
+	if d != nil && d.Platform != "" {
+		platform = d.Platform
+	} else if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
+		platform = "linux/" + a
+	}
+	if platform != "" {
+		dockerArgs = append(dockerArgs, "--platform="+platform)
+	}
+	if d != nil && d.Target != "" {
+		dockerArgs = append(dockerArgs, "--target", d.Target)
+	}
+	if d != nil {
+		for _, k := range sortedKeys(d.BuildArgs) {
+			dockerArgs = append(dockerArgs, "--build-arg", k+"="+d.BuildArgs[k])
+		}
+	}
+	dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:latest", registry, imageName))
+	if resolvedTag != "" {
+		dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:%s", registry, imageName, resolvedTag))
+	}
+	var pushTags []string
+	for i, reg := range expandPushRegistries(opts.pushRegistry) {
+		pl := fmt.Sprintf("%s/%s:latest", reg, imageName)
+		dockerArgs = append(dockerArgs, "-t", pl)
+		if i == 0 {
+			pushTags = append(pushTags, pl)
+		}
+		if resolvedTag != "" {
+			pv := fmt.Sprintf("%s/%s:%s", reg, imageName, resolvedTag)
+			dockerArgs = append(dockerArgs, "-t", pv)
+			if i == 0 {
+				pushTags = append(pushTags, pv)
+			}
+		}
+	}
+	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
+	fmt.Printf("[build] %s: docker build -f %s (%d tags)\n", svcName, dockerfile, countTags(dockerArgs))
+	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
+
+	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
+	}
+	for _, t := range pushTags {
+		fmt.Printf("[build] %s: docker push %s\n", svcName, t)
+		pc := exec.CommandContext(ctx, "docker", "push", t)
+		pc.Stdout = os.Stdout
+		pc.Stderr = os.Stderr
+		if err := pc.Run(); err != nil {
+			return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: fmt.Errorf("docker push %s: %w", t, err)}
+		}
+	}
+	return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start)}
+}
+
+// buildServiceShell runs a ShellBuild's verbatim command via `sh -c`. The
+// command owns the whole build (and any push) — forge does not wrap it.
+// Output is streamed; the produced artifact is whatever the command
+// writes (forge doesn't assume an output path for shell builds).
+func buildServiceShell(ctx context.Context, svcName string, sh *ShellBuild, opts buildOptions) buildResult {
+	start := time.Now()
+	if sh == nil || sh.Cmd == "" {
+		return buildResult{name: svcName + " (shell)", kind: "shell", duration: time.Since(start), err: fmt.Errorf("shell build: empty cmd")}
+	}
+	fmt.Printf("[build] %s: sh -c %q\n", svcName, sh.Cmd)
+	cmd := exec.CommandContext(ctx, "sh", "-c", sh.Cmd)
+	cmd.Dir = opts.outputDir
+	cmd.Env = os.Environ()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	return buildResult{name: svcName + " (shell)", kind: "shell", duration: time.Since(start), err: err}
 }

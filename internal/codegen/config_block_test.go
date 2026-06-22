@@ -106,14 +106,10 @@ func TestBuildConfigTemplateData_PartitionsBlocks(t *testing.T) {
 	if len(data.BlockFields) != 1 || data.BlockFields[0].GoName != "Trader" || data.BlockFields[0].TypeName != "TraderConfig" {
 		t.Fatalf("BlockFields = %+v, want [Trader TraderConfig]", data.BlockFields)
 	}
-	// FieldNames gates root-level Validate clauses — block leaves must
-	// not leak in (a block leaf named LogFormat would otherwise emit a
-	// Validate referencing c.LogFormat that doesn't exist at root).
-	if data.FieldNames["MaxPerTick"] {
-		t.Error("FieldNames must index ROOT fields only; found block leaf MaxPerTick")
-	}
-	if !data.FieldNames["Port"] {
-		t.Error("FieldNames missing root field Port")
+	// No field carries role=MODE here, so no dev-mode field is selected.
+	// (Semantic role selection replaced the old name-keyed FieldNames map.)
+	if data.RoleModeField != "" {
+		t.Errorf("RoleModeField = %q, want empty (no role=MODE field declared)", data.RoleModeField)
 	}
 
 	refs := ConfigBlocksFromMessages(traderConfigMessages())
@@ -140,8 +136,15 @@ func TestBuildConfigTemplateData_FlatStaysFlat(t *testing.T) {
 	}
 }
 
+// TestGenerateConfigLoader_ComponentBlock: with a config block in the proto,
+// the generated config.go stays the THIN ALIAS shim (the block struct lives
+// in the gen proto package as a nested message — NOT re-declared here), and
+// the block's leaf still flows into .env.example like any root field.
 func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/proj\n\ngo 1.24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := GenerateConfigLoader(traderConfigMessages(), dir, nil); err != nil {
 		t.Fatalf("GenerateConfigLoader: %v", err)
 	}
@@ -152,16 +155,14 @@ func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 	}
 	content := string(data)
 
-	for _, want := range []string{
-		"type TraderConfig struct {",
-		"MaxPerTick int32",
-		"Trader TraderConfig",
-		`loadField(cmd, "trader-max-per-tick", "TRADER_MAX_PER_TICK", "10", true, false, false, "Trader.MaxPerTick", parseInt32)`,
-		"cfg.Trader.MaxPerTick, err = loadField",
-		`cmd.Flags().Int32("trader-max-per-tick", 10,`,
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("config.go missing %q\n--- content ---\n%s", want, content)
+	// The thin shim is emitted; the block's leaf struct is NOT re-declared
+	// here (it is a nested message on the gen proto type).
+	if !strings.Contains(content, "type Config = configv1.AppConfig") {
+		t.Errorf("config.go should be the thin alias shim\n%s", content)
+	}
+	for _, banned := range []string{"type TraderConfig struct", "Trader TraderConfig", "loadField("} {
+		if strings.Contains(content, banned) {
+			t.Errorf("config.go must NOT re-declare the block struct or per-field loader (%q)\n%s", banned, content)
 		}
 	}
 
@@ -181,217 +182,34 @@ func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 	}
 }
 
-// TestGenerateWireGen_ConfigBlockByType is the worker acceptance case:
-// a Deps field typed `config.TraderConfig` resolves to `cfg.Trader` by
-// TYPE (no TODO, no nil-dep entry), while a naked scalar in the same
-// Deps still falls through — and its hint now points at the
-// config-block convention instead of the AppExtras two-step.
-func TestGenerateWireGen_ConfigBlockByType(t *testing.T) {
-	projectDir := t.TempDir()
-	writeConfigDescriptor(t, projectDir, traderConfigMessages())
-
-	workerDir := filepath.Join(projectDir, "workers", "trader")
-	if err := os.MkdirAll(workerDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	source := `package trader
-
-import (
-	"log/slog"
-
-	"example.com/proj/pkg/config"
-)
-
-type Deps struct {
-	Logger *slog.Logger
-	Cfg    config.TraderConfig
-	MaxPerTick int
-}
-`
-	if err := os.WriteFile(filepath.Join(workerDir, "worker.go"), []byte(source), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	workers := []BootstrapWorkerData{{
-		Name: "trader", Package: "trader", ImportPath: "trader",
-		FieldName: "Trader", VarName: "trader",
-	}}
-	if err := GenerateWireGen(nil, nil, workers, nil, "example.com/proj", projectDir, false, nil); err != nil {
-		t.Fatalf("GenerateWireGen: %v", err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "wire_gen.go"))
-	if err != nil {
-		t.Fatalf("read wire_gen.go: %v", err)
-	}
-	content := string(data)
-
-	// The block-typed field wires from cfg by type.
-	if !strings.Contains(content, "Cfg: cfg.Trader,") {
-		t.Errorf("expected `Cfg: cfg.Trader,` in wire_gen.go:\n%s", content)
-	}
-	if strings.Contains(content, "TODO: wire Cfg") {
-		t.Errorf("config-block field must not carry a TODO:\n%s", content)
-	}
-
-	// The naked scalar still falls through — with the config-block hint.
-	if !strings.Contains(content, "TODO: wire MaxPerTick") {
-		t.Errorf("expected TODO for naked scalar MaxPerTick:\n%s", content)
-	}
-	if !strings.Contains(content, "scalar Deps fields are configuration") {
-		t.Errorf("expected scalar config-block hint in UNRESOLVED header:\n%s", content)
-	}
-	if !strings.Contains(content, "message TraderConfig") {
-		t.Errorf("scalar hint should carry the exact block-message snippet:\n%s", content)
-	}
-}
-
-// TestGenerateWireGen_ConfigBlockPointer covers the `*config.<Block>`
-// Deps spelling: wire_gen emits `&cfg.<Field>` (Config block fields are
-// value-typed on Config, and cfg is *config.Config so the field is
-// addressable).
-func TestGenerateWireGen_ConfigBlockPointer(t *testing.T) {
-	projectDir := t.TempDir()
-	writeConfigDescriptor(t, projectDir, traderConfigMessages())
-
-	handlerDir := filepath.Join(projectDir, "handlers", "api")
-	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	source := `package api
-
-import (
-	"log/slog"
-
-	"example.com/proj/pkg/config"
-)
-
-type Deps struct {
-	Logger *slog.Logger
-	Cfg    *config.TraderConfig
-}
-`
-	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(source), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	services := []ServiceDef{{Name: "APIService", ModulePath: "example.com/proj"}}
-	if err := GenerateWireGen(services, nil, nil, nil, "example.com/proj", projectDir, false, nil); err != nil {
-		t.Fatalf("GenerateWireGen: %v", err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "wire_gen.go"))
-	if err != nil {
-		t.Fatalf("read wire_gen.go: %v", err)
-	}
-	if !strings.Contains(string(data), "Cfg: &cfg.Trader,") {
-		t.Errorf("expected `Cfg: &cfg.Trader,` for pointer block field:\n%s", data)
-	}
-}
-
-// TestGenerateWireGen_ConfigBlockAmbiguous: two Config fields of the
-// same block type make type-based resolution ambiguous — hard error
-// listing the candidates, not a silent pick.
-func TestGenerateWireGen_ConfigBlockAmbiguous(t *testing.T) {
-	projectDir := t.TempDir()
-	messages := traderConfigMessages()
-	messages[0].Fields = append(messages[0].Fields, ConfigField{
-		Name: "shadow_trader", GoName: "ShadowTrader", ProtoType: "message",
-		MessageType: "TraderConfig",
-	})
-	writeConfigDescriptor(t, projectDir, messages)
-
-	workerDir := filepath.Join(projectDir, "workers", "trader")
-	if err := os.MkdirAll(workerDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	source := `package trader
-
-import "example.com/proj/pkg/config"
-
-type Deps struct {
-	Cfg config.TraderConfig
-}
-`
-	if err := os.WriteFile(filepath.Join(workerDir, "worker.go"), []byte(source), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	workers := []BootstrapWorkerData{{
-		Name: "trader", Package: "trader", ImportPath: "trader",
-		FieldName: "Trader", VarName: "trader",
-	}}
-	err := GenerateWireGen(nil, nil, workers, nil, "example.com/proj", projectDir, false, nil)
-	if err == nil {
-		t.Fatal("expected ambiguity error for two Config fields of type TraderConfig, got nil")
-	}
-	for _, want := range []string{"TraderConfig", "Trader", "ShadowTrader", "exactly one"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("ambiguity error missing %q: %v", want, err)
-		}
-	}
-}
+// NOTE: the config-block-by-TYPE wiring tests
+// (TestGenerateWireGen_ConfigBlock{ByType,Pointer,Ambiguous} and the
+// wire half of TestConfigBlock_RegenerateIdempotent) were removed with
+// the old name-matched wire_gen unit (FORGE_SHAPE_REDESIGN §2). The
+// config.go projection idempotency below is preserved.
 
 // TestConfigBlock_RegenerateIdempotent: generating twice produces
-// byte-identical pkg/config/config.go AND pkg/app/wire_gen.go — the
-// "forever TODO / forever diff" regression class this feature kills.
+// byte-identical pkg/config/config.go (the "forever diff" regression
+// class this feature kills).
 func TestConfigBlock_RegenerateIdempotent(t *testing.T) {
 	projectDir := t.TempDir()
 	writeConfigDescriptor(t, projectDir, traderConfigMessages())
 
-	workerDir := filepath.Join(projectDir, "workers", "trader")
-	if err := os.MkdirAll(workerDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	source := `package trader
-
-import (
-	"log/slog"
-
-	"example.com/proj/pkg/config"
-)
-
-type Deps struct {
-	Logger *slog.Logger
-	Cfg    config.TraderConfig
-}
-`
-	if err := os.WriteFile(filepath.Join(workerDir, "worker.go"), []byte(source), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	workers := []BootstrapWorkerData{{
-		Name: "trader", Package: "trader", ImportPath: "trader",
-		FieldName: "Trader", VarName: "trader",
-	}}
-
-	gen := func() (string, string) {
+	gen := func() string {
 		if err := GenerateConfigLoader(traderConfigMessages(), projectDir, nil); err != nil {
 			t.Fatalf("GenerateConfigLoader: %v", err)
-		}
-		if err := GenerateWireGen(nil, nil, workers, nil, "example.com/proj", projectDir, false, nil); err != nil {
-			t.Fatalf("GenerateWireGen: %v", err)
 		}
 		cfgGo, err := os.ReadFile(filepath.Join(projectDir, "pkg", "config", "config.go"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		wireGo, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "wire_gen.go"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(cfgGo), string(wireGo)
+		return string(cfgGo)
 	}
 
-	cfg1, wire1 := gen()
-	cfg2, wire2 := gen()
+	cfg1 := gen()
+	cfg2 := gen()
 	if cfg1 != cfg2 {
 		t.Error("pkg/config/config.go is not idempotent across regenerates")
-	}
-	if wire1 != wire2 {
-		t.Error("pkg/app/wire_gen.go is not idempotent across regenerates")
-	}
-	if !strings.Contains(wire1, "Cfg: cfg.Trader,") {
-		t.Errorf("expected stable `Cfg: cfg.Trader,` wiring:\n%s", wire1)
 	}
 }
 

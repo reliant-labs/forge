@@ -10,13 +10,10 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
-
-	"connectrpc.com/connect"
 
 	_ "github.com/mattn/go-sqlite3" // for TestApplyDBPoolTuning_AppliesNonZero
 
@@ -37,27 +34,20 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-// stubApp is a minimal Application used by every test below. It tracks
-// shutdown invocations so tests can assert lifecycle ordering.
-type stubApp struct {
-	rest        http.Handler
-	workers     []serverkit.Worker
-	operators   []serverkit.Operator
-	shutdownErr error
-	shutdownCnt atomic.Int32
+// emptyHandler is the minimal composed handler: a mux with nothing
+// mounted. Tests that don't care about service responses use it.
+func emptyHandler() http.Handler { return http.NewServeMux() }
+
+// shutdownRecorder tracks OnShutdown invocations so tests can assert the
+// caller-composed teardown ran during graceful shutdown.
+type shutdownRecorder struct {
+	count atomic.Int32
+	err   error
 }
 
-func (s *stubApp) WorkerList() []serverkit.Worker     { return s.workers }
-func (s *stubApp) OperatorList() []serverkit.Operator { return s.operators }
-func (s *stubApp) HasOperators() bool                 { return len(s.operators) > 0 }
-func (s *stubApp) RunOperators(ctx context.Context, _ *slog.Logger, _ string) error {
-	<-ctx.Done()
-	return nil
-}
-func (s *stubApp) RESTHandler() http.Handler { return s.rest }
-func (s *stubApp) Shutdown(context.Context) error {
-	s.shutdownCnt.Add(1)
-	return s.shutdownErr
+func (s *shutdownRecorder) OnShutdown(context.Context) error {
+	s.count.Add(1)
+	return s.err
 }
 
 // stubWorker records Start/Stop hits so tests can assert ordering.
@@ -156,15 +146,14 @@ func (w *cronishWorker) RunContext(ctx context.Context) error {
 	}
 }
 
-// runInBackground starts serverkit.Run on a goroutine and returns a
-// helper that polls /readyz then triggers SIGTERM to drive shutdown.
-// Tests block on the returned error channel.
-func runInBackground(t *testing.T, cfg serverkit.Config, hooks serverkit.Hooks, args []string) (errCh chan error, addr string) {
+// runInBackground starts serverkit.Run on a goroutine and returns the
+// error channel. Tests block on it after driving shutdown.
+func runInBackground(t *testing.T, cfg serverkit.Config, srv serverkit.Server) (errCh chan error, addr string) {
 	t.Helper()
 	addr = cfg.Addr
 	errCh = make(chan error, 1)
 	go func() {
-		errCh <- serverkit.Run(context.Background(), cfg, hooks, args)
+		errCh <- serverkit.Run(context.Background(), cfg, srv)
 	}()
 	return errCh, addr
 }
@@ -217,66 +206,58 @@ func baseConfig(addr string) serverkit.Config {
 	}
 }
 
-func TestRun_RequiresBootstrap(t *testing.T) {
+func TestRun_RequiresHandler(t *testing.T) {
 	t.Parallel()
-	err := serverkit.Run(context.Background(), serverkit.Config{Addr: ":0"}, serverkit.Hooks{}, nil)
-	if err == nil || !contains(err.Error(), "Bootstrap is required") {
-		t.Fatalf("expected Bootstrap-required error, got %v", err)
+	err := serverkit.Run(context.Background(), serverkit.Config{Addr: ":0"}, serverkit.Server{})
+	if err == nil || !contains(err.Error(), "Server.Handler is required") {
+		t.Fatalf("expected Handler-required error, got %v", err)
 	}
 }
 
 func TestRun_RequiresAddr(t *testing.T) {
 	t.Parallel()
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return &stubApp{}, nil
-		},
-	}
-	err := serverkit.Run(context.Background(), serverkit.Config{}, hooks, nil)
+	err := serverkit.Run(context.Background(), serverkit.Config{}, serverkit.Server{Handler: emptyHandler()})
 	if err == nil || !contains(err.Error(), "Addr is required") {
 		t.Fatalf("expected Addr-required error, got %v", err)
+	}
+}
+
+func TestRun_RequiresRunOperatorsWhenOperatorsPresent(t *testing.T) {
+	t.Parallel()
+	srv := serverkit.Server{
+		Handler:   emptyHandler(),
+		Operators: []serverkit.Operator{&stubOperator{name: "op"}},
+		// RunOperators left nil — config error.
+	}
+	err := serverkit.Run(context.Background(), baseConfig(":0"), srv)
+	if err == nil || !contains(err.Error(), "RunOperators is nil") {
+		t.Fatalf("expected RunOperators-required error, got %v", err)
 	}
 }
 
 func TestRun_StartsAndShutsDownCleanly(t *testing.T) {
 	// Not parallel — sends SIGTERM to the test process.
 	addr := freeAddr(t)
-	app := &stubApp{}
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return app, nil
-		},
-	}
-	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
+	rec := &shutdownRecorder{}
+	srv := serverkit.Server{Handler: emptyHandler(), OnShutdown: rec.OnShutdown}
+	errCh, _ := runInBackground(t, baseConfig(addr), srv)
 	waitReady(t, addr, 2*time.Second)
 	if err := shutdownAndWait(t, errCh, 5*time.Second); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if app.shutdownCnt.Load() == 0 {
-		t.Fatal("Application.Shutdown was never called")
+	if rec.count.Load() == 0 {
+		t.Fatal("Server.OnShutdown was never called")
 	}
 }
 
+// TestRun_HealthzReadyzLifecycle proves the probes are served by
+// serverkit's own top mux (the caller's Handler need not mount them) and
+// that /readyz reflects the lifecycle.
 func TestRun_HealthzReadyzLifecycle(t *testing.T) {
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
-	bootstrapGate := make(chan struct{})
-	hooks := serverkit.Hooks{
-		Bootstrap: func(ctx context.Context, mux *http.ServeMux, _ *slog.Logger, _ []string, _ ...connect.HandlerOption) (serverkit.Application, error) {
-			<-bootstrapGate
-			return &stubApp{}, nil
-		},
-	}
-	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
-
-	// Before bootstrap returns, the listener isn't bound at all — both
-	// probes should fail to connect. (We can't distinguish "before
-	// bootstrap, after listener bind" from "after readiness flip" in a
-	// black-box way; the listener bind and readiness flip happen back-
-	// to-back inside Run. The meaningful invariants we CAN assert are:
-	// (a) /readyz fails after we flip ready=false during shutdown, and
-	// (b) /healthz always 200s once the listener is up.)
-	close(bootstrapGate)
+	srv := serverkit.Server{Handler: emptyHandler()}
+	errCh, _ := runInBackground(t, baseConfig(addr), srv)
 	waitReady(t, addr, 2*time.Second)
 
 	// /healthz returns 200 now.
@@ -294,17 +275,67 @@ func TestRun_HealthzReadyzLifecycle(t *testing.T) {
 	}
 }
 
+// TestRun_ProbesBypassEdgeMiddleware proves /healthz + /readyz are
+// routed by serverkit's top mux IN FRONT of the edge wrap: a CORS
+// middleware that would tag every response it sees must NOT touch the
+// probe responses, while it DOES wrap the caller's handler.
+func TestRun_ProbesBypassEdgeMiddleware(t *testing.T) {
+	// Not parallel — sends SIGTERM.
+	addr := freeAddr(t)
+
+	inner := http.NewServeMux()
+	inner.HandleFunc("/app", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	const marker = "X-Edge-Touched"
+	corsFactory := func(_ []string, _ bool) func(http.Handler) http.Handler {
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set(marker, "1")
+				next.ServeHTTP(w, r)
+			})
+		}
+	}
+
+	cfg := baseConfig(addr)
+	cfg.CORSOrigins = []string{"https://example.com"}
+	srv := serverkit.Server{Handler: inner, CORSMiddleware: corsFactory}
+	errCh, _ := runInBackground(t, cfg, srv)
+	waitReady(t, addr, 2*time.Second)
+
+	// Probe: must NOT carry the edge marker.
+	probeResp, err := http.Get("http://" + addr + "/healthz")
+	if err != nil {
+		t.Fatalf("healthz: %v", err)
+	}
+	_ = probeResp.Body.Close()
+	if probeResp.Header.Get(marker) != "" {
+		t.Fatal("/healthz was wrapped by the edge middleware — probes must bypass the edge")
+	}
+
+	// App route: MUST carry the edge marker (the edge does wrap the
+	// caller's handler).
+	appResp, err := http.Get("http://" + addr + "/app")
+	if err != nil {
+		t.Fatalf("app: %v", err)
+	}
+	_ = appResp.Body.Close()
+	if appResp.Header.Get(marker) == "" {
+		t.Fatal("/app was not wrapped by the edge middleware — the caller's handler must sit behind the edge")
+	}
+
+	if err := shutdownAndWait(t, errCh, 5*time.Second); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
 func TestRun_WorkerLifecycle(t *testing.T) {
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	w := &stubWorker{name: "alpha"}
-	app := &stubApp{workers: []serverkit.Worker{w}}
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return app, nil
-		},
-	}
-	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
+	srv := serverkit.Server{Handler: emptyHandler(), Workers: []serverkit.Worker{w}}
+	errCh, _ := runInBackground(t, baseConfig(addr), srv)
 	waitReady(t, addr, 2*time.Second)
 
 	// Worker should have started by now.
@@ -327,24 +358,17 @@ func TestRun_WorkerLifecycle(t *testing.T) {
 // TestRun_ContextWorkerPreferred proves the supervisor picks RunContext
 // over the legacy Start when a worker implements ContextWorker, cancels
 // the per-worker ctx on shutdown so the worker exits promptly, and still
-// calls Stop afterwards. A legacy worker rides along in the same app to
-// prove the fallback path is untouched by the new lifecycle.
+// calls Stop afterwards. A legacy worker rides along to prove the
+// fallback path is untouched by the new lifecycle.
 func TestRun_ContextWorkerPreferred(t *testing.T) {
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	cw := &ctxWorker{name: "ctx-aware", runReturnErr: context.Canceled}
 	legacy := &stubWorker{name: "legacy"}
-	app := &stubApp{workers: []serverkit.Worker{cw, legacy}}
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return app, nil
-		},
-	}
-	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
+	srv := serverkit.Server{Handler: emptyHandler(), Workers: []serverkit.Worker{cw, legacy}}
+	errCh, _ := runInBackground(t, baseConfig(addr), srv)
 	waitReady(t, addr, 2*time.Second)
 
-	// Give the worker goroutines a beat to spin up, then assert the
-	// supervisor chose the ctx-aware method.
 	deadline := time.Now().Add(2 * time.Second)
 	for !cw.runCalled.Load() && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -367,13 +391,10 @@ func TestRun_ContextWorkerPreferred(t *testing.T) {
 	if !cw.stopCalled.Load() {
 		t.Fatal("Stop was not called on the ctx-aware worker after RunContext returned")
 	}
-	// RunContext returned context.Canceled — that must be treated as a
-	// clean exit, not a run failure.
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("shutdown took %s — ctx-aware worker did not exit promptly", elapsed)
 	}
 
-	// Legacy worker: unchanged Start/Stop lifecycle.
 	if legacy.startedAt.Load() == 0 {
 		t.Fatal("legacy worker Start was never called")
 	}
@@ -384,24 +405,15 @@ func TestRun_ContextWorkerPreferred(t *testing.T) {
 
 // TestRun_CronShapedContextWorker proves a cron-style RunContext — per-
 // tick contexts derived from the worker lifecycle ctx — observes
-// shutdown mid-tick: the in-flight "job" blocks until its tick ctx is
-// cancelled, which only happens because the supervisor cancelled the
-// worker ctx.
+// shutdown mid-tick.
 func TestRun_CronShapedContextWorker(t *testing.T) {
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	cw := &cronishWorker{name: "cronish"}
-	app := &stubApp{workers: []serverkit.Worker{cw}}
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return app, nil
-		},
-	}
-	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
+	srv := serverkit.Server{Handler: emptyHandler(), Workers: []serverkit.Worker{cw}}
+	errCh, _ := runInBackground(t, baseConfig(addr), srv)
 	waitReady(t, addr, 2*time.Second)
 
-	// Wait for a tick to be in flight before triggering shutdown so the
-	// cancellation genuinely interrupts a running job.
 	deadline := time.Now().Add(2 * time.Second)
 	for !cw.tickStarted.Load() && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -421,140 +433,37 @@ func TestRun_CronShapedContextWorker(t *testing.T) {
 	}
 }
 
-func TestRun_PostBootstrapErrorAborts(t *testing.T) {
-	t.Parallel()
-	addr := freeAddr(t)
-	sentinel := errors.New("post-bootstrap boom")
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return &stubApp{}, nil
-		},
-		PostBootstrap: func(serverkit.Application) error { return sentinel },
-	}
-	err := serverkit.Run(context.Background(), baseConfig(addr), hooks, nil)
-	if err == nil || !errors.Is(err, sentinel) {
-		t.Fatalf("expected wrapped post-bootstrap error, got %v", err)
-	}
-}
-
-func TestRun_PostBootstrapNilOK(t *testing.T) {
+// TestRun_OnShutdownCalledDuringShutdown pins the OnShutdown contract:
+// the caller-composed teardown (old Application.Shutdown + OTel flush)
+// runs exactly once during graceful shutdown.
+func TestRun_OnShutdownCalledDuringShutdown(t *testing.T) {
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return &stubApp{}, nil
-		},
-	}
-	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
-	waitReady(t, addr, 2*time.Second)
-	if err := shutdownAndWait(t, errCh, 5*time.Second); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-}
-
-func TestRun_HookOrdering(t *testing.T) {
-	// Not parallel — sends SIGTERM.
-	addr := freeAddr(t)
-	var (
-		mu     sync.Mutex
-		events []string
-	)
-	record := func(s string) {
-		mu.Lock()
-		defer mu.Unlock()
-		events = append(events, s)
-	}
-
-	hooks := serverkit.Hooks{
-		SetupOTel: func(context.Context) (func(context.Context) error, http.Handler, error) {
-			record("setup-otel")
-			return func(context.Context) error { record("shutdown-otel"); return nil }, nil, nil
-		},
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			record("bootstrap")
-			return &stubApp{}, nil
-		},
-		PostBootstrap: func(serverkit.Application) error {
-			record("post-bootstrap")
+	var shutdownObserved atomic.Bool
+	srv := serverkit.Server{
+		Handler: emptyHandler(),
+		OnShutdown: func(context.Context) error {
+			shutdownObserved.Store(true)
 			return nil
 		},
 	}
-	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
+	errCh, _ := runInBackground(t, baseConfig(addr), srv)
 	waitReady(t, addr, 2*time.Second)
 	if err := shutdownAndWait(t, errCh, 5*time.Second); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	want := []string{"setup-otel", "bootstrap", "post-bootstrap", "shutdown-otel"}
-	if len(events) != len(want) {
-		t.Fatalf("event count: got %v want %v", events, want)
-	}
-	for i := range want {
-		if events[i] != want[i] {
-			t.Fatalf("event[%d] = %q want %q (full: %v)", i, events[i], want[i], events)
-		}
-	}
-}
-
-func TestRun_AutoMigrateRequiresHook(t *testing.T) {
-	t.Parallel()
-	cfg := baseConfig(":0")
-	cfg.AutoMigrate = true
-	cfg.DatabaseURL = "postgres://nope"
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return &stubApp{}, nil
-		},
-	}
-	err := serverkit.Run(context.Background(), cfg, hooks, nil)
-	if err == nil || !contains(err.Error(), "Hooks.AutoMigrate is nil") {
-		t.Fatalf("expected AutoMigrate hook required error, got %v", err)
-	}
-}
-
-func TestRun_BootstrapErrorPropagates(t *testing.T) {
-	t.Parallel()
-	addr := freeAddr(t)
-	sentinel := errors.New("bootstrap boom")
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return nil, sentinel
-		},
-	}
-	err := serverkit.Run(context.Background(), baseConfig(addr), hooks, nil)
-	if err == nil || !errors.Is(err, sentinel) {
-		t.Fatalf("expected wrapped bootstrap error, got %v", err)
-	}
-}
-
-func TestRun_BootstrapNilAppIsError(t *testing.T) {
-	t.Parallel()
-	addr := freeAddr(t)
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return nil, nil
-		},
-	}
-	err := serverkit.Run(context.Background(), baseConfig(addr), hooks, nil)
-	if err == nil || !contains(err.Error(), "nil Application") {
-		t.Fatalf("expected nil-Application error, got %v", err)
+	if !shutdownObserved.Load() {
+		t.Fatal("OnShutdown was not called during graceful shutdown")
 	}
 }
 
 func TestRun_ShutdownWithinBudget(t *testing.T) {
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
-	app := &stubApp{}
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return app, nil
-		},
-	}
+	srv := serverkit.Server{Handler: emptyHandler()}
 	cfg := baseConfig(addr)
 	cfg.ShutdownTimeout = 500 * time.Millisecond
-	errCh, _ := runInBackground(t, cfg, hooks, nil)
+	errCh, _ := runInBackground(t, cfg, srv)
 	waitReady(t, addr, 2*time.Second)
 
 	start := time.Now()
@@ -601,7 +510,7 @@ func TestApplyDBPoolTuning_AppliesNonZero(t *testing.T) {
 }
 
 // contains is a tiny strings.Contains shim — kept inline so the test
-// file has no non-stdlib runtime deps beyond serverkit/connect.
+// file has no non-stdlib runtime deps beyond serverkit.
 func contains(s, sub string) bool {
 	return len(sub) == 0 || (len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0))
 }
@@ -614,9 +523,6 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
-
-// Compile-time check: stubApp satisfies the Application interface.
-var _ serverkit.Application = (*stubApp)(nil)
 
 // Compile-time check: stubWorker satisfies Worker.
 var _ serverkit.Worker = (*stubWorker)(nil)

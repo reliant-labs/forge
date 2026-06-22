@@ -55,6 +55,16 @@ type ConfigTemplateField struct {
 	// fields treat an empty env var as unset (parsing "" would always
 	// error).
 	AllowEmptyEnv bool
+
+	// Role is the (forge.v1.config).role annotation (bare enum spelling, ""
+	// for none). Codegen selects semantic fields (e.g. the MODE field) by
+	// THIS, never by the field's name.
+	Role string
+
+	// Sensitive mirrors (forge.v1.config).sensitive. Sensitive fields get NO
+	// CLI flag (defense against shell-history / `ps` leaks) and are resolved
+	// from env / Secret mount only — never a flag or an inline default.
+	Sensitive bool
 }
 
 // ConfigTemplateBlockType is one component config-block struct type the
@@ -86,11 +96,20 @@ type ConfigTemplateData struct {
 	// the struct type declarations and the Config fields holding them.
 	BlockTypes  []ConfigTemplateBlockType
 	BlockFields []ConfigTemplateBlockField
-	// FieldNames indexes ROOT GoNames only — used by templates to gate
-	// cross-field validation (CorsOrigins/TlsCertPath/...) that references
-	// c.<Name> at the root level.
-	FieldNames   map[string]bool
-	NeedsStrconv bool
+	// RoleModeField is the Go field name of the field tagged
+	// role=CONFIG_FIELD_ROLE_MODE, or "" when no field carries it. The
+	// generated Mode()/DevAuthBypass() read THIS field — selected by
+	// annotation, never by the name "Environment". Renaming the role field
+	// is a behavior no-op; naming an unannotated field "environment" never
+	// enables dev mode.
+	RoleModeField string
+	NeedsStrconv  bool
+
+	// Module is the project's Go module path, used by config.go.tmpl to
+	// import the generated proto config package (gen/config/v1). Set by
+	// GenerateConfigLoader; left empty by callers that only need the
+	// field partition (e.g. ConfigBlocksFromMessages, .env.example).
+	Module string
 }
 
 // ConfigBlockRef names one component config block as composed on the
@@ -153,7 +172,7 @@ func BuildConfigTemplateData(messages []ConfigMessage) ConfigTemplateData {
 		}
 	}
 
-	data := ConfigTemplateData{FieldNames: map[string]bool{}}
+	data := ConfigTemplateData{}
 	seenBlockType := map[string]bool{}
 	for _, m := range messages {
 		if isBlock[m.Name] {
@@ -162,7 +181,22 @@ func BuildConfigTemplateData(messages []ConfigMessage) ConfigTemplateData {
 		for _, f := range m.Fields {
 			if f.ProtoType == "message" {
 				if f.MessageType == "" || !isBlock[f.MessageType] {
-					continue // not a config-block reference — nothing to generate
+					// A message-typed config field that is NOT a component
+					// config block is a well-known wrapper carrying its own
+					// (forge.v1.config) annotation — in practice a
+					// google.protobuf.Duration leaf (pre_stop_delay,
+					// shutdown_timeout, db_conn_max_*). It binds to a single
+					// env var / flag like any scalar, so it MUST flow into
+					// .env.example and the per-env KCL projection. Emit it as
+					// a leaf (NOT a struct field — the config object is the
+					// proto type now, so there is no generated struct). Skip
+					// only un-annotated message fields (genuinely nothing to
+					// bind).
+					if f.EnvVar != "" || f.Flag != "" {
+						tf := configTemplateField(f, f.GoName)
+						data.Fields = append(data.Fields, tf)
+					}
+					continue
 				}
 				bm := byName[f.MessageType]
 				data.BlockFields = append(data.BlockFields, ConfigTemplateBlockField{
@@ -192,7 +226,14 @@ func BuildConfigTemplateData(messages []ConfigMessage) ConfigTemplateData {
 			tf := configTemplateField(f, f.GoName)
 			data.RootFields = append(data.RootFields, tf)
 			data.Fields = append(data.Fields, tf)
-			data.FieldNames[f.GoName] = true
+
+			// Select the MODE field by ANNOTATION, never by name. The first
+			// root field tagged role=MODE wins; a project should declare at
+			// most one. This is the substitute for the deleted
+			// `index .FieldNames "Environment"` name-magic.
+			if data.RoleModeField == "" && f.Role == "CONFIG_FIELD_ROLE_MODE" {
+				data.RoleModeField = tf.GoName
+			}
 		}
 	}
 
@@ -278,6 +319,8 @@ func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
 		StructGoType:  structType,
 		ParseFn:       parseFnFor(f, isDur),
 		AllowEmptyEnv: f.GoType == "string" && !isDur,
+		Role:          f.Role,
+		Sensitive:     f.Sensitive,
 	}
 
 	if f.DefaultValue != "" {
@@ -326,6 +369,12 @@ type CmdServerTemplateData struct {
 	// (api_key/both): the generated header-aware interceptor joins the
 	// project chain and the authn layer runs in passthrough.
 	AuthProviderExternal bool
+
+	// RESTEnabled mirrors forge.yaml `api.rest: true`. When set the cmd
+	// composition site builds a vanguard transcoder over the mounted
+	// services' Connect paths and serves it in place of the bare mux.
+	// Filled by generateCmdServerData from projectAPIRESTEnabled.
+	RESTEnabled bool
 }
 
 // NormalizeAuthProvider canonicalizes a forge.yaml auth.provider value
@@ -379,16 +428,43 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 		return fmt.Errorf("read module path: %w", err)
 	}
 	data.Module = modulePath
+	data.RESTEnabled = projectAPIRESTEnabled(targetDir)
 
-	content, err := templates.ProjectTemplates().Render("cmd-server.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render cmd-server.go.tmpl: %w", err)
+	// The shared serve pipeline lives under cmd/<bin>/cmd/serve.go (package
+	// cmd, devspace idiom). This config-driven re-render only fires once the
+	// tree already exists, so locate the primary binary's cmd tree by globbing
+	// for the existing serve.go; skip when there isn't one (CLI/library kinds,
+	// or a tree that predates the cmd-layer move and has nothing to re-render).
+	serveDest := primaryCmdServePath(targetDir)
+	if serveDest == "" {
+		return nil
 	}
 
-	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("cmd", "server.go"), content, cs, true); err != nil {
-		return fmt.Errorf("write cmd/server.go: %w", err)
+	content, err := templates.ProjectTemplates().Render("cmd-tree-serve.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render cmd-tree-serve.go.tmpl: %w", err)
+	}
+
+	if err := writeForgeOwned(targetDir, serveDest, content, cs); err != nil {
+		return fmt.Errorf("write %s: %w", serveDest, err)
 	}
 	return nil
+}
+
+// primaryCmdServePath returns the project-relative path of the primary
+// binary's shared serve pipeline (cmd/<bin>/cmd/serve.go), discovered by
+// glob so the config-regen path doesn't need to re-read forge.yaml for the
+// binary name. Returns "" when no such file exists yet.
+func primaryCmdServePath(targetDir string) string {
+	matches, _ := filepath.Glob(filepath.Join(targetDir, "cmd", "*", "cmd", "serve.go"))
+	if len(matches) == 0 {
+		return ""
+	}
+	rel, err := filepath.Rel(targetDir, matches[0])
+	if err != nil {
+		return ""
+	}
+	return rel
 }
 
 // GenerateConfigLoader generates pkg/config/config.go from parsed config messages.
@@ -407,12 +483,21 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 		return nil
 	}
 
+	// config.go.tmpl is a thin shim that aliases Config to the generated
+	// proto type (gen/config/v1.AppConfig) and wraps the descriptor-driven
+	// loader — it needs the module path for that import.
+	modulePath, err := GetModulePath(targetDir)
+	if err != nil {
+		return fmt.Errorf("read module path: %w", err)
+	}
+	data.Module = modulePath
+
 	content, err := templates.ProjectTemplates().Render("config.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render config.go.tmpl: %w", err)
 	}
 
-	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("pkg", "config", "config.go"), content, cs, true); err != nil {
+	if err := writeForgeOwned(targetDir, filepath.Join("pkg", "config", "config.go"), content, cs); err != nil {
 		return fmt.Errorf("write pkg/config/config.go: %w", err)
 	}
 
@@ -421,7 +506,7 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 	if err != nil {
 		return fmt.Errorf("render env.example.tmpl: %w", err)
 	}
-	if _, err := checksums.WriteGeneratedFile(targetDir, ".env.example", envContent, cs, true); err != nil {
+	if err := writeForgeOwned(targetDir, ".env.example", envContent, cs); err != nil {
 		return fmt.Errorf("write .env.example: %w", err)
 	}
 	return nil
@@ -568,6 +653,7 @@ func DefaultConfigMessages() []ConfigMessage {
 					EnvVar:       "ENVIRONMENT",
 					Flag:         "environment",
 					DefaultValue: "production",
+					Role:         "CONFIG_FIELD_ROLE_MODE",
 					Description:  "Runtime environment (production, development). In development, some defaults are permissive (e.g. authz allow-all) for local ergonomics — never use development in production.",
 				},
 				{

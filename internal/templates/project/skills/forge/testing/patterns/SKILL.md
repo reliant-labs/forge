@@ -11,7 +11,7 @@ All patterns are table-driven by default: one slice of cases, one iteration help
 
 ## Pattern 1: RPC handler test (use `tdd.TableRPC`)
 
-One-line: in-process handler call via the generated `NewTest<Service>` helper from `pkg/app/testing.go`. Hermetic; no server, no network. The library carries the iteration + error-code assertion so the test file is just the case table.
+One-line: in-process handler call via the generated `NewTest<Service>` helper from `internal/app/testing.go`. Hermetic; no server, no network. The library carries the iteration + error-code assertion so the test file is just the case table.
 
 ```go
 package myservice_test
@@ -24,7 +24,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/tdd"
 
 	apiv1 "github.com/example/proj/gen/api/v1"
-	"github.com/example/proj/pkg/app"
+	"github.com/example/proj/internal/app"
 )
 
 func TestCreateUser(t *testing.T) {
@@ -54,7 +54,7 @@ func TestCreateUser(t *testing.T) {
 
 Scaffold contract: forge-generated rows assert `WantErr: connect.CodeUnimplemented` and are SELF-DESTRUCTING — they fail the moment the handler is implemented, forcing real `Check`/`WantErr` assertions to replace them. There is deliberately no "any outcome" mode in `pkg/tdd`: every row must be able to fail.
 
-When to use: validating a single handler's request/response/error contract. This is the default unit-test shape for any RPC. The CRUD integration scaffold (`handlers_crud_integration_test.go`, `//go:build integration`) uses the same shape with `app.NewTest<Service>Server` and `client.<Method>` — the test server mounts the production `middleware.AuthzInterceptor` chain with the permissive test authorizer, so swapping in a real authorizer via `app.WithAuthorizer` exercises genuine denials.
+When to use: validating a single handler's request/response/error contract. This is the default unit-test shape for any RPC. The scaffold-once, user-owned CRUD test (`handlers_crud_test.go`) uses the same shape with `app.NewTest<Service>Server` and `client.<Method>` — the test server mounts the production `middleware.AuthzInterceptor` chain with the permissive test authorizer, so swapping in a real authorizer via `app.WithAuthorizer` exercises genuine denials.
 
 ## Pattern 2: Contract test (use `tdd.TableContract`)
 

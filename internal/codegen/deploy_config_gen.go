@@ -47,19 +47,21 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 // DeployConfigGenInput is the per-env input for [GenerateDeployConfig].
+// Embeds GenContext for ProjectDir + Checksums (ModulePath is unused —
+// KCL output carries no Go imports). ProjectDir may be empty here for
+// callers that pass an absolute KCLDir outside the project tree; the
+// checksum path then falls back to the raw path (see GenerateDeployConfig).
 type DeployConfigGenInput struct {
-	ProjectName string                   // forge.yaml `name`
-	EnvName     string                   // dev / staging / prod / ...
-	KCLDir      string                   // deploy/kcl (absolute or relative)
-	ProjectDir  string                   // project root, used to compute relative paths for checksumming. May be empty for callers that pass an absolute KCLDir outside the project tree.
-	Fields      []ConfigField            // proto-derived config fields (with annotations)
-	EnvConfig   map[string]any           // per-env config values loaded from the sibling config.<env>.yaml file
-	Checksums   *checksums.FileChecksums // when set, the rendered config_gen.k is recorded so it doesn't show up as an orphan in `forge audit`
+	GenContext
+
+	ProjectName string         // forge.yaml `name`
+	EnvName     string         // dev / staging / prod / ...
+	KCLDir      string         // deploy/kcl (absolute or relative)
+	Fields      []ConfigField  // proto-derived config fields (with annotations)
+	EnvConfig   map[string]any // per-env config values loaded from the sibling config.<env>.yaml file
 }
 
 // GenerateDeployConfig writes deploy/kcl/<env>/config_gen.k for one
@@ -92,13 +94,13 @@ func GenerateDeployConfig(in DeployConfigGenInput) error {
 	if in.Checksums != nil && in.ProjectDir != "" {
 		rel, relErr := filepath.Rel(in.ProjectDir, outPath)
 		if relErr == nil {
-			if _, err := checksums.WriteGeneratedFile(in.ProjectDir, rel, []byte(body), in.Checksums, true); err != nil {
+			if err := writeForgeOwned(in.ProjectDir, rel, []byte(body), in.Checksums); err != nil {
 				return fmt.Errorf("write %s: %w", outPath, err)
 			}
 			return nil
 		}
 	}
-	return os.WriteFile(outPath, []byte(body), 0o644)
+	return writeUserScaffold(outPath, []byte(body))
 }
 
 // renderDeployConfigKCL builds the KCL body for a single env.

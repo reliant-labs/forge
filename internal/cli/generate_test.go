@@ -113,7 +113,7 @@ func TestServiceDirResolution(t *testing.T) {
 
 	// Disk-first: an existing snake_case dir wins over synthesis.
 	projectDir := t.TempDir()
-	dir := filepath.Join(projectDir, "handlers", "admin_server")
+	dir := filepath.Join(projectDir, "internal", "handlers", "admin_server")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestShouldRunRootGoModTidySkipsWhenGeneratedImportsAreMissing(t *testing.T)
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/sample\n\ngo 1.23\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	serviceDir := filepath.Join(dir, "handlers", "api")
+	serviceDir := filepath.Join(dir, "internal", "handlers", "api")
 	if err := os.MkdirAll(serviceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestShouldRunRootGoModTidyAllowsWhenGeneratedImportsExist(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/sample\n\ngo 1.23\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	serviceDir := filepath.Join(dir, "handlers", "api")
+	serviceDir := filepath.Join(dir, "internal", "handlers", "api")
 	generatedDir := filepath.Join(dir, "gen", "services", "api", "v1")
 	if err := os.MkdirAll(serviceDir, 0o755); err != nil {
 		t.Fatal(err)

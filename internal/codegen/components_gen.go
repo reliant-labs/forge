@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // ComponentsJSONRelPath is the project-relative path of the generated
@@ -49,6 +50,33 @@ type componentJSON struct {
 	Group    string              `json:"group"`
 	Version  string              `json:"version"`
 	CRDs     []string            `json:"crds"`
+	// Build is the polymorphic build declaration for this component — the
+	// per-component answer to "how is this artifact produced". forge emits
+	// a GoBuild here by default; the forge.components KCL Component schema
+	// carries it through to the per-env main.k bridge, which passes it to
+	// forge.Service.build so build.go dispatches on build.type. A project
+	// (or an env overlay) may replace it with a DockerBuild / ShellBuild.
+	Build componentBuildJSON `json:"build"`
+}
+
+// componentBuildJSON is the denormalized GoBuild forge emits per
+// component. It carries the `type` discriminator + the go-build target
+// (cmd) + the produced artifact's basename (output_name). The discriminator
+// is what the KCL Build union and build.go dispatch on.
+//
+// The cmd contract:
+//
+//   - binary components are their OWN entrypoint (cmd/<binpkg>/main.go,
+//     devspace idiom) → cmd = "./cmd/<binpkg>", output_name = "<binpkg>".
+//   - server/worker/cron/operator components run as cobra subcommands of
+//     the SHARED project binary (cmd/<project>/main.go) → cmd =
+//     "./cmd/<project>", output_name = "<project>". They share one go
+//     build; build.go dedups identical (cmd, output_name) targets so the
+//     shared binary compiles once.
+type componentBuildJSON struct {
+	Type       string `json:"type"`
+	Cmd        string `json:"cmd"`
+	OutputName string `json:"output_name"`
 }
 
 // componentsDoc is the top-level shape of components_gen.json.
@@ -100,14 +128,40 @@ func ComponentsToJSON(projectName string, components []config.ComponentConfig) (
 			})
 		}
 
-		// Binary components run a cobra subcommand off the shared image:
-		// `["/app/<project>", "<name>"]`. This is the one denormalized
-		// command forge knows at config time; everything else is the
-		// image's default entrypoint and KCL fills it per kind.
+		// Binary components are their OWN entrypoint in the shared image —
+		// each lives at cmd/<binpkg>/main.go (devspace idiom) and the
+		// Dockerfile builds it to /app/<binpkg>. So the deploy command is
+		// `["/app/<binpkg>"]`, NOT a `<project> <name>` cobra subcommand of
+		// the server binary (that subcommand does not exist; the binary is a
+		// standalone main). <binpkg> is the Go-package-safe form of the
+		// component name (hyphens → underscores), matching the cmd/<binpkg>/
+		// dir the binary scaffold writes and the /app/<binpkg> the Dockerfile
+		// `go build -o /app/<binpkg> ./cmd/<binpkg>` emits.
 		if cj.Kind == config.ComponentKindBinary {
 			cj.Command = []string{
-				fmt.Sprintf("/app/%s", projectName),
-				c.Name,
+				fmt.Sprintf("/app/%s", naming.ServicePackage(c.Name)),
+			}
+		}
+
+		// Build declaration. Binary components build their own
+		// cmd/<binpkg> package; everything else (server/worker/cron/
+		// operator) builds the shared cmd/<project> binary and selects
+		// its behavior via a cobra subcommand at runtime. forge always
+		// emits a GoBuild default here; a project or env overlay can
+		// replace it with a DockerBuild / ShellBuild in KCL.
+		if cj.Kind == config.ComponentKindBinary {
+			binPkg := naming.ServicePackage(c.Name)
+			cj.Build = componentBuildJSON{
+				Type:       "go",
+				Cmd:        "./cmd/" + binPkg,
+				OutputName: binPkg,
+			}
+		} else {
+			projPkg := naming.ServicePackage(projectName)
+			cj.Build = componentBuildJSON{
+				Type:       "go",
+				Cmd:        "./cmd/" + projPkg,
+				OutputName: projPkg,
 			}
 		}
 
@@ -157,5 +211,5 @@ func GenerateComponentsJSON(projectDir, projectName string, components []config.
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dest, content, 0o644)
+	return writeUserScaffold(dest, content)
 }

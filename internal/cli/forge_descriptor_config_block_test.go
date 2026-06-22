@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/types/pluginpb"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
+	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 )
 
 // buildConfigPlugin compiles a synthetic config.proto (with the real

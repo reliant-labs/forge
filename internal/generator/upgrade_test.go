@@ -88,14 +88,15 @@ func TestManagedFiles(t *testing.T) {
 
 	// Check that expected files are in the list
 	expected := map[string]bool{
-		"cmd/server.go":            true,
-		"cmd/main.go":              true,
-		"cmd/version.go":           true,
-		"cmd/otel.go":              true,
-		"Taskfile.yml":             true,
-		"Dockerfile":               true,
-		"docker-compose.yml":       true,
-		".golangci.yml":            true,
+		"cmd/cmd/serve.go":   true,
+		"cmd/cmd/server.go":  true,
+		"cmd/cmd/root.go":    true,
+		"cmd/main.go":        true,
+		"cmd/cmd/version.go": true,
+		"Taskfile.yml":       true,
+		"Dockerfile":              true,
+		"docker-compose.yml":      true,
+		".golangci.yml":           true,
 		// The thin auth-policy pair is the ONLY middleware the project
 		// keeps; the mechanism files (cors/auth/claims/…) moved to
 		// forge/pkg/{authn,authz,middleware} and must NOT be managed.
@@ -127,6 +128,118 @@ func TestRenderManagedFile(t *testing.T) {
 		}
 		if len(content) == 0 {
 			t.Errorf("renderManagedFile(%q) returned empty content", f.templateName)
+		}
+	}
+}
+
+// golangciManagedFile returns the .golangci.yml managed-file descriptor so
+// the guardrail tests render exactly what `forge upgrade` would emit.
+func golangciManagedFile(t *testing.T) managedFile {
+	t.Helper()
+	for _, f := range managedFiles() {
+		if f.destPath == ".golangci.yml" {
+			return f
+		}
+	}
+	t.Fatal(".golangci.yml not found in managedFiles()")
+	return managedFile{}
+}
+
+func TestGolangciTypedAccessGuard_Variants(t *testing.T) {
+	f := golangciManagedFile(t)
+
+	render := func(mode string) string {
+		cfg := testProjectConfig()
+		cfg.Config.EnforceTypedAccess = mode
+		out, err := renderManagedFile(f, buildTemplateData(cfg, ""))
+		if err != nil {
+			t.Fatalf("render %q: %v", mode, err)
+		}
+		return string(out)
+	}
+
+	// off → no forbidigo anywhere.
+	off := render(config.EnforceTypedAccessOff)
+	if strings.Contains(off, "forbidigo") {
+		t.Errorf("off mode must not emit forbidigo, got:\n%s", off)
+	}
+
+	// warn → forbidigo SETTINGS + loader allowlist present, but NOT in the
+	// gating linters.enable list (advisory pipeline step runs it instead).
+	warn := render(config.EnforceTypedAccessWarn)
+	enableBlock := warn[strings.Index(warn, "enable:"):strings.Index(warn, "settings:")]
+	if strings.Contains(enableBlock, "forbidigo") {
+		t.Errorf("warn mode must keep forbidigo OUT of linters.enable, got enable block:\n%s", enableBlock)
+	}
+	for _, want := range []string{"forbidigo:", `os\.Getenv`, `os\.LookupEnv`, `os\.Environ`,
+		"(forge.v1.config) annotation", "//nolint:forbidigo", "path: ^pkg/config/"} {
+		if !strings.Contains(warn, want) {
+			t.Errorf("warn mode missing %q in:\n%s", want, warn)
+		}
+	}
+
+	// error → forbidigo ALSO in the gating linters.enable list.
+	errMode := render(config.EnforceTypedAccessError)
+	errEnable := errMode[strings.Index(errMode, "enable:"):strings.Index(errMode, "settings:")]
+	if !strings.Contains(errEnable, "forbidigo") {
+		t.Errorf("error mode must enable forbidigo (gating), got enable block:\n%s", errEnable)
+	}
+	if !strings.Contains(errMode, "path: ^pkg/config/") {
+		t.Errorf("error mode must allowlist the loader package, got:\n%s", errMode)
+	}
+
+	// absent config: block → resolves to warn (advisory), same shape as warn.
+	cfgAbsent := testProjectConfig()
+	absent, err := renderManagedFile(f, buildTemplateData(cfgAbsent, ""))
+	if err != nil {
+		t.Fatalf("render absent: %v", err)
+	}
+	absentEnable := string(absent)[strings.Index(string(absent), "enable:"):strings.Index(string(absent), "settings:")]
+	if strings.Contains(absentEnable, "forbidigo") {
+		t.Errorf("absent config (→warn) must keep forbidigo out of enable, got:\n%s", absentEnable)
+	}
+	if !strings.Contains(string(absent), "forbidigo:") {
+		t.Errorf("absent config (→warn) must emit forbidigo settings, got:\n%s", string(absent))
+	}
+}
+
+func TestGolangciTypedAccessGuard_CustomLoaderPackage(t *testing.T) {
+	f := golangciManagedFile(t)
+	cfg := testProjectConfig()
+	cfg.Config.EnforceTypedAccess = config.EnforceTypedAccessError
+	cfg.Config.LoaderPackage = "internal/appconfig"
+	out, err := renderManagedFile(f, buildTemplateData(cfg, ""))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(string(out), "path: ^internal/appconfig/") {
+		t.Errorf("custom loader_package not honored in exclusion, got:\n%s", string(out))
+	}
+}
+
+// TestGolangciTypedAccessGuard_TeachingMessage pins the forbidigo `msg`
+// content so the actionable teaching path can't silently regress. The
+// message is the primary DX surface for both humans and LLMs hitting the
+// guardrail, so it must name the concrete proto path, the regenerate step,
+// and both opt-out levers (per-line nolint and the forge.yaml dial).
+func TestGolangciTypedAccessGuard_TeachingMessage(t *testing.T) {
+	f := golangciManagedFile(t)
+	cfg := testProjectConfig()
+	cfg.Config.EnforceTypedAccess = config.EnforceTypedAccessError
+	out, err := renderManagedFile(f, buildTemplateData(cfg, ""))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	got := string(out)
+	for _, want := range []string{
+		"proto/config/v1/*.proto",                               // the concrete path to declare settings
+		"forge generate",                                        // the regenerate step that produces the loader
+		"(forge.v1.config) annotation",                          // the annotation that drives codegen
+		"//nolint:forbidigo on this line",                       // per-line opt-out
+		"config.enforce_typed_access to warn/off in forge.yaml", // project-wide dial
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("forbidigo teaching msg missing %q in:\n%s", want, got)
 		}
 	}
 }
@@ -168,8 +281,10 @@ func TestUpgradeUpToDate(t *testing.T) {
 	// Create temp project with files matching templates
 	dir := t.TempDir()
 
-	// Write all managed files from templates
-	for _, f := range managedFiles() {
+	// Write all managed files from templates. Use managedFilesForCfg so the
+	// destPaths match the binary-scoped cmd/<bin>/ layout that Upgrade
+	// (which also consults the cfg) expects.
+	for _, f := range managedFilesForCfg(cfg) {
 		content, err := renderManagedFile(f, data)
 		if err != nil {
 			t.Fatalf("render %s: %v", f.templateName, err)
@@ -202,7 +317,7 @@ func TestUpgradeDetectsModified(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write files from templates, stamped (forge-certified renders).
-	for _, f := range managedFiles() {
+	for _, f := range managedFilesForCfg(cfg) {
 		content, err := renderManagedFile(f, data)
 		if err != nil {
 			t.Fatalf("render %s: %v", f.templateName, err)
@@ -239,10 +354,10 @@ func TestUpgradeDetectsModified(t *testing.T) {
 
 	// Verify a Tier 1 file would still be overwritten even if modified
 	for _, r := range results {
-		if r.Path == "cmd/otel.go" {
+		if r.Path == "cmd/test-project/cmd/version.go" {
 			// Tier 1 files report as up-to-date (since we didn't modify it) or updated
 			if r.Status == UpgradeUserModified {
-				t.Errorf("cmd/otel.go: Tier 1 file should never be user-modified, got %q", r.Status)
+				t.Errorf("cmd/test-project/cmd/version.go: Tier 1 file should never be user-modified, got %q", r.Status)
 			}
 		}
 	}
@@ -255,7 +370,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write files stamped (forge-certified renders).
-	for _, f := range managedFiles() {
+	for _, f := range managedFilesForCfg(cfg) {
 		content, err := renderManagedFile(f, data)
 		if err != nil {
 			t.Fatalf("render %s: %v", f.templateName, err)
@@ -264,7 +379,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	// Modify a Tier-1 file and a Tier-2 file (user edits: markers gone).
-	modifiedPath := filepath.Join(dir, "cmd/otel.go")
+	modifiedPath := filepath.Join(dir, "cmd/test-project/cmd/version.go")
 	if err := os.WriteFile(modifiedPath, []byte("// user modified\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +395,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Path == "cmd/otel.go" || r.Path == "Dockerfile" {
+		if r.Path == "cmd/test-project/cmd/version.go" || r.Path == "Dockerfile" {
 			if r.Status != UpgradeUpdated {
 				t.Errorf("%s: status = %q, want %q with --force", r.Path, r.Status, UpgradeUpdated)
 			}
@@ -293,7 +408,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(content) == "// user modified\n" {
-		t.Error("cmd/otel.go was not overwritten by --force")
+		t.Error("cmd/test-project/cmd/version.go was not overwritten by --force")
 	}
 	content, err = os.ReadFile(modifiedTier2)
 	if err != nil {
@@ -314,12 +429,12 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 	// forge render of an older vintage (the marker is the "checksum
 	// matches disk" state).
 	oldContent := []byte("// old template content\npackage main\n")
-	writeManagedRender(t, dir, "cmd/otel.go", oldContent, true)
-	otelPath := filepath.Join(dir, "cmd", "otel.go")
+	writeManagedRender(t, dir, "cmd/test-project/cmd/version.go", oldContent, true)
+	otelPath := filepath.Join(dir, "cmd", "test-project", "cmd", "version.go")
 
 	// Write other files from current templates so they're up-to-date
-	for _, f := range managedFiles() {
-		if f.destPath == "cmd/otel.go" {
+	for _, f := range managedFilesForCfg(cfg) {
+		if f.destPath == "cmd/test-project/cmd/version.go" {
 			continue
 		}
 		content, err := renderManagedFile(f, data)
@@ -336,9 +451,9 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Path == "cmd/otel.go" {
+		if r.Path == "cmd/test-project/cmd/version.go" {
 			if r.Status != UpgradeUpdated {
-				t.Errorf("cmd/otel.go: status = %q, want %q (unmodified file should auto-update)", r.Status, UpgradeUpdated)
+				t.Errorf("cmd/test-project/cmd/version.go: status = %q, want %q (unmodified file should auto-update)", r.Status, UpgradeUpdated)
 			}
 		}
 	}
@@ -349,7 +464,7 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(content) == string(oldContent) {
-		t.Error("cmd/otel.go was not updated")
+		t.Error("cmd/test-project/cmd/version.go was not updated")
 	}
 }
 
@@ -371,7 +486,7 @@ func TestUpgradeAutoUpdatesStaleCodegen(t *testing.T) {
 	// the Dockerfile, which we materialize as a STAMPED stale prior
 	// render — the "template updated, upgrade never ran" state.
 	staleDockerfile := []byte("# stale prior-render Dockerfile\nFROM golang:1.18\n")
-	for _, f := range managedFiles() {
+	for _, f := range managedFilesForCfg(cfg) {
 		if f.destPath == "Dockerfile" {
 			writeManagedRender(t, dir, f.destPath, staleDockerfile, true)
 			continue
@@ -416,6 +531,7 @@ func TestUpgradeAutoUpdatesStaleCodegen(t *testing.T) {
 		t.Errorf("Dockerfile status = %q, want %q (auto-update)", dockerfileResult.Status, UpgradeUpdated)
 	}
 }
+
 // TestUpgradeSkipsDisownedFiles: a disowned (or legacy forked) entry is
 // user-owned — `forge upgrade` must leave the on-disk file untouched
 // while it exists, reporting it as skipped instead.
@@ -428,7 +544,7 @@ func TestUpgradeSkipsDisownedFiles(t *testing.T) {
 
 	// Materialize every managed file pristine, then disown the first one
 	// with hand-edited content.
-	files := managedFiles()
+	files := managedFilesForCfg(cfg)
 	for _, f := range files {
 		content, err := renderManagedFile(f, data)
 		if err != nil {

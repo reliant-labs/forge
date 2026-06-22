@@ -44,7 +44,7 @@ func newGenerateCmd() *cobra.Command {
 		strict          bool
 		verbose         bool
 		planOnly        bool
-		noHeal          bool
+		heal            bool
 		steps           string
 		deprecatedScope string // hidden alias for --steps, kept for one release
 	)
@@ -176,7 +176,7 @@ forensics, parallel-lane and migration escape hatches); run
 				TemplatesOnly:   templatesOnly,
 				Strict:          strict,
 				Verbose:         verbose,
-				NoHeal:          noHeal,
+				Heal:            heal,
 				Steps:           steps,
 			})
 			generateMu.Unlock()
@@ -235,7 +235,7 @@ forensics, parallel-lane and migration escape hatches); run
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Print one line per gate-off skipped step ('⏩ skipped: <step name> (<reason>)'). Default is silent skip.")
 	cmd.Flags().BoolVar(&planOnly, "plan", false, "Print the pipeline plan ([RUN]/[SKIP] annotation per step + gate reason) and exit 0 without running any step. Honors --steps and --templates-only.")
 	cmd.Flags().BoolVar(&skipConfigCheck, "skip-config-check", false, "Bypass the forge.yaml ↔ filesystem cross-check (declared services/frontends/packages must have on-disk backing). Use for parallel-lane / mid-migration scenarios.")
-	cmd.Flags().BoolVar(&noHeal, "no-heal", false, "Treat on-disk content matching a PRIOR forge render as a hand-edit (trips the Tier-1 stomp guard) instead of auto-healing it to the current template. Use when a deliberate revert hash-collides with checksum history.")
+	cmd.Flags().BoolVar(&heal, "heal", false, "Overwrite on-disk content that matches a PRIOR forge render (an older vintage) with the current template. OFF by default: such content is byte-indistinguishable from a deliberate edit, so forge leaves it untouched and tells you how to proceed rather than silently reverting your work. Pass --heal to advance every such file to the current templates.")
 	// Deprecated alias for --steps. The flag previously called --scope
 	// was renamed in this release to free up the word "scope" for the
 	// file-ownership concept (see internal/checksums/inspector.go).
@@ -268,7 +268,6 @@ forensics, parallel-lane and migration escape hatches); run
 		"strict",            // pipeline-hardening mode for forge CI/dev
 		"plan",              // pipeline introspection (debugging gates)
 		"skip-config-check", // parallel-lane / mid-migration escape hatch
-		"no-heal",           // strict heal opt-out; the heal notice itself teaches it
 	)
 
 	// (`forge generate unfork`, the legacy-fork migration tool, was
@@ -421,18 +420,18 @@ type pipelineFlags struct {
 	// --plan.
 	Verbose bool
 
-	// NoHeal (--no-heal) disables the checksum-history auto-heal for
-	// this run: on-disk content that matches a PRIOR forge render (but
-	// not the latest) is treated as a hand-edit — the Tier-1 stomp
-	// guard reports it (flagged as a historical match) and writers skip
-	// it — instead of being silently classified as stale codegen and
-	// regenerated. Escape hatch for the hash-collision-with-history
-	// case (FRICTION cp-forge fr-2c1c2328c7: a deliberate revert of
-	// pkg/app/bootstrap.go equaled a prior render and was reverted).
-	// Default off: auto-heal is what lets `forge upgrade` move stale
-	// codegen forward without --force — but it is always LOUD
-	// (checksums.HealNoticeFn), and the notice teaches this flag.
-	NoHeal bool
+	// Heal (--heal) opts IN to overwriting on-disk content that matches a
+	// PRIOR forge render (an older vintage, but not the latest) with the
+	// current template. It is OFF by default, and that default is the
+	// correctness fix for FRICTION cp-forge fr-2c1c2328c7: such content is
+	// byte-indistinguishable from a deliberate user revert/edit (a
+	// hand-edit to pkg/app/bootstrap.go hash-equaled a prior render and was
+	// silently reverted). With Heal off, writers SKIP these files and
+	// NoHealSkipFn names them plus the remedies; forge never silently
+	// destroys the bytes. With Heal on, the whole tree advances to the
+	// current templates (loudly — checksums.HealNoticeFn still fires per
+	// file). `forge generate --force` is the per-file equivalent.
+	Heal bool
 }
 
 // runGeneratePipelineFlags is the canonical entrypoint. Both the legacy
@@ -478,23 +477,40 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// the hook auto-approves; without --yes it prompts per file.
 	checksums.ResetTier2State()
 	// Per-run side-render redirect tracking (--explain-drift), the
-	// heal-notice dedupe set, and the --no-heal strict mode start
-	// empty/off on every invocation.
+	// heal-notice dedupe set, and the heal opt-in start empty/off on
+	// every invocation (AutoHeal defaults OFF — the non-destructive
+	// behavior).
 	checksums.ResetPerRunState()
-	if flags.NoHeal {
-		fmt.Println("⚠️  --no-heal: on-disk content matching a PRIOR forge render is treated as a hand-edit (auto-heal off)")
-		checksums.DisableAutoHeal = true
+	if flags.Heal {
+		fmt.Println("♻️  --heal: on-disk content matching a PRIOR forge render will be overwritten with the current template")
+		checksums.AutoHeal = true
 	}
 	if flags.ResetTier2 {
 		fmt.Println("⚠️  --reset-tier2: hand-edited Tier-2 scaffolds will be overwritten (prompts per file unless --yes is set)")
 		checksums.Tier2OverwriteFn = makeTier2OverwriteHook(ctx.AbsPath, ctx.Checksums, flags.AssumeYes)
 	}
 
+	// Arm the stage-then-validate rollback journal (fr-40f7ec9bd9). From
+	// here on, every forge write captures its target's pre-run bytes so a
+	// post-write failure — most importantly the final `go build` validate
+	// step — can rewind the tree to its clean pre-regen state instead of
+	// leaving it mid-regen for the user to `git checkout`. rolledBack is
+	// set by the deferred outcome handler below; it gates SaveChecksums so
+	// we never persist manifest state describing writes we just undid.
+	checksums.BeginRollbackJournal()
+	rolledBack := false
+
 	// Save checksums on exit, even on partial failures: a step that
 	// successfully wrote files should have those tracked so the user's
-	// next `forge audit` doesn't false-flag user-edited drift.
+	// next `forge audit` doesn't false-flag user-edited drift. EXCEPTION:
+	// a rolled-back run restored the tree to its pre-run state, so saving
+	// the post-write manifest would describe files that no longer exist on
+	// disk — skip it and let the pre-run state files stand.
 	defer func() {
 		if ctx.Checksums == nil {
+			return
+		}
+		if rolledBack {
 			return
 		}
 		if saveErr := generator.SaveChecksums(ctx.AbsPath, ctx.Checksums); saveErr != nil {
@@ -572,10 +588,18 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 			}
 			// Same for the legacy-migration quarantine: stamp the
 			// unverified sentinels now so the next run's guard still
-			// names the unresolved files.
+			// names the unresolved files. Done BEFORE the rollback so the
+			// sentinel stamps survive — they describe the user's pre-run
+			// drifted files, not this run's reverted output.
 			if migErr := finishLegacyMigration(ctx); migErr != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", migErr)
 			}
+			// Stage-then-validate rollback: a step failed AFTER writes
+			// landed (the classic case: the final `go build` validate),
+			// so the tree is mid-regen. Rewind every forge-written file to
+			// its pre-run state and tell the user the tree is clean rather
+			// than leaving them a `git checkout` to find (fr-40f7ec9bd9).
+			rolledBack = rollbackGeneratedTree(ctx.AbsPath)
 			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
 	}
@@ -584,19 +608,53 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// report — the flag explains the drift, it never approves it. No-op
 	// nil when the guard found no drift (or the flag wasn't set).
 	if err := finishExplainDrift(ctx); err != nil {
+		// Deliberate end-state, not a mid-regen tree: --explain-drift
+		// redirected its writes to side renders and never touched the
+		// drifted files, so the journal's real-file captures stand.
+		checksums.CommitRollback()
 		return err
 	}
 
 	// Legacy-manifest quarantine adjudication: rescue fresh-render
 	// matches, stamp unverified sentinels on the rest, and fail with the
-	// standard drift report when any file stays unresolved.
+	// standard drift report when any file stays unresolved. The emit pass
+	// SUCCEEDED here; the failure is an adjudication the next run needs,
+	// so the writes (and the sentinel stamps) stand — do not roll back.
 	if err := finishLegacyMigration(ctx); err != nil {
+		checksums.CommitRollback()
 		return err
 	}
 
+	// Success: the writes stand. Drop the journal.
+	checksums.CommitRollback()
 	fmt.Println()
 	fmt.Println("✅ Code generation complete!")
 	return nil
+}
+
+// rollbackGeneratedTree rewinds every file forge wrote this run to its
+// captured pre-run state and reports what it recovered. Returns true when
+// a rollback actually ran (journaling was armed) so the caller can skip
+// the post-write checksums save — a restored tree must not be described
+// by a manifest of the writes it just undid. The user-facing message is
+// the antidote to fr-40f7ec9bd9: instead of an opaque mid-regen failure
+// the user learns the tree is back to its pre-run state and that the
+// codegen problem itself is what needs fixing.
+func rollbackGeneratedTree(absPath string) bool {
+	if !checksums.RollbackEnabled() {
+		return false
+	}
+	restored := checksums.RestoreRollback(absPath)
+	if len(restored) == 0 {
+		fmt.Fprintln(os.Stderr, "↩️  generate failed after validation; no forge-written files needed reverting (tree is unchanged).")
+		return true
+	}
+	fmt.Fprintf(os.Stderr, "\n↩️  generate failed its own validation — reverted %d file(s) forge wrote this run; your tree is back to its pre-run state (no `git checkout` needed):\n", len(restored))
+	for _, p := range restored {
+		fmt.Fprintf(os.Stderr, "   - %s\n", p)
+	}
+	fmt.Fprintln(os.Stderr, "   Fix the codegen error above (the generated code did not build), then re-run `forge generate`.")
+	return true
 }
 
 // guardResetTier2NeedsTTY refuses to start a `--reset-tier2` run that
@@ -752,6 +810,17 @@ func goBuildValidateFixHint(errOutput string) string {
 // surface under `forge lint --conventions` instead. Keeping the
 // pre-codegen check tight to "what would break the next `go build`"
 // is the design discipline from the validation-vs-lint split.
+// contractExcludesFromConfig returns the contracts.exclude list from the
+// project config, or nil when no config is loaded. (A local copy of the
+// helper that moved to internal/cli/lint with `forge lint`; generate.go is
+// the only remaining internal/cli caller.)
+func contractExcludesFromConfig(cfg *config.ProjectConfig) []string {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Contracts.Exclude
+}
+
 func preCodegenContractCheck(projectDir string, cfg *config.ProjectConfig) error {
 	internalDir := filepath.Join(projectDir, "internal")
 	if _, err := os.Stat(internalDir); os.IsNotExist(err) {

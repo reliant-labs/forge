@@ -13,7 +13,9 @@ service GoodService {
     version: "1.0.0"
   };
 
-  rpc Get(GetRequest) returns (GetResponse) {}
+  rpc Get(GetRequest) returns (GetResponse) {
+    option (forge.v1.method) = { auth_required: true };
+  }
 }
 
 // User is a well-formed entity: explicit pk annotation, explicit

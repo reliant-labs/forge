@@ -14,41 +14,12 @@ import (
 // (mode resolution, allow-list gate, Bearer parsing, enrichment
 // plumbing) is tested in forge/pkg/authn; don't re-test it here.
 
-// setValidateToken swaps the validator for one subtest and restores it
-// via t.Cleanup, going through the public SetTokenValidator API.
-func setValidateToken(t *testing.T, fn func(string) (*Claims, error)) {
-	t.Helper()
-	authMu.Lock()
-	orig := validateTokenFn
-	authMu.Unlock()
-	SetTokenValidator(fn)
-	t.Cleanup(func() {
-		authMu.Lock()
-		validateTokenFn = orig
-		authMu.Unlock()
-	})
-}
-
-// withExternalAuth marks external auth registered for one subtest.
-func withExternalAuth(t *testing.T) {
-	t.Helper()
-	authMu.Lock()
-	orig := externalAuthRegistered
-	externalAuthRegistered = true
-	authMu.Unlock()
-	t.Cleanup(func() {
-		authMu.Lock()
-		externalAuthRegistered = orig
-		authMu.Unlock()
-	})
-}
-
 // A server with no validator, no external auth, no AUTH_MODE=none, and
-// devMode false must refuse to start.
+// DevMode false must refuse to start.
 func TestNewAuthInterceptor_UnconfiguredErrors(t *testing.T) {
-	// NOT parallel: reads package-level state other subtests mutate.
+	// NOT parallel: reads AUTH_MODE env other subtests mutate.
 	t.Setenv("AUTH_MODE", "")
-	ic, err := NewAuthInterceptor(false)
+	ic, err := NewAuthInterceptor(AuthDeps{})
 	if err == nil {
 		t.Fatal("NewAuthInterceptor must error when unconfigured outside dev mode")
 	}
@@ -57,33 +28,30 @@ func TestNewAuthInterceptor_UnconfiguredErrors(t *testing.T) {
 	}
 }
 
-// SetTokenValidator flips the interceptor into validate mode; the
-// installed validator is reachable through ValidateToken.
+// An explicit AuthDeps.Validate flips the interceptor into validate mode.
 func TestNewAuthInterceptor_ValidatorConfigured(t *testing.T) {
 	t.Setenv("AUTH_MODE", "")
-	setValidateToken(t, func(string) (*Claims, error) {
+	validate := func(string) (*Claims, error) {
 		return &Claims{UserID: "u1"}, nil
-	})
-	ic, err := NewAuthInterceptor(false)
+	}
+	ic, err := NewAuthInterceptor(AuthDeps{Validate: validate})
 	if err != nil {
 		t.Fatalf("NewAuthInterceptor with validator must not error: %v", err)
 	}
 	if ic == nil {
 		t.Fatal("NewAuthInterceptor must not return nil when configured")
 	}
-	claims, err := ValidateToken("anything")
+	claims, err := validate("anything")
 	if err != nil || claims == nil || claims.UserID != "u1" {
-		t.Fatalf("ValidateToken must dispatch to the installed validator, got %+v, %v", claims, err)
+		t.Fatalf("the threaded validator must dispatch, got %+v, %v", claims, err)
 	}
 }
 
-// MarkExternalAuth puts the interceptor in passthrough mode — the
+// AuthDeps.ExternalAuth puts the interceptor in passthrough mode — the
 // pack's own interceptor in the chain is the source of truth.
 func TestNewAuthInterceptor_ExternalAuthIsPassthrough(t *testing.T) {
 	t.Setenv("AUTH_MODE", "")
-	withExternalAuth(t)
-
-	ic, err := NewAuthInterceptor(false)
+	ic, err := NewAuthInterceptor(AuthDeps{ExternalAuth: true})
 	if err != nil {
 		t.Fatalf("NewAuthInterceptor with external auth must not error: %v", err)
 	}
@@ -102,7 +70,7 @@ func TestNewAuthInterceptor_ExternalAuthIsPassthrough(t *testing.T) {
 // opt-in to running without an auth provider.
 func TestNewAuthInterceptor_DevModeIsPassthrough(t *testing.T) {
 	t.Setenv("AUTH_MODE", "")
-	ic, err := NewAuthInterceptor(true)
+	ic, err := NewAuthInterceptor(AuthDeps{DevMode: true})
 	if err != nil {
 		t.Fatalf("NewAuthInterceptor in dev mode must not error: %v", err)
 	}
@@ -131,7 +99,7 @@ func TestDevClaims_DefaultSyntheticPrincipal(t *testing.T) {
 func TestNewAuthInterceptor_DevModeAttachesDevClaims(t *testing.T) {
 	// NOT parallel: reads package-level state other subtests mutate.
 	t.Setenv("AUTH_MODE", "")
-	ic, err := NewAuthInterceptor(true)
+	ic, err := NewAuthInterceptor(AuthDeps{DevMode: true})
 	if err != nil {
 		t.Fatalf("NewAuthInterceptor in dev mode must not error: %v", err)
 	}
@@ -152,7 +120,7 @@ func TestNewAuthInterceptor_DevModeAttachesDevClaims(t *testing.T) {
 // AUTH_MODE=none is the explicit production opt-out.
 func TestNewAuthInterceptor_AuthModeNoneIsPassthrough(t *testing.T) {
 	t.Setenv("AUTH_MODE", "none")
-	ic, err := NewAuthInterceptor(false)
+	ic, err := NewAuthInterceptor(AuthDeps{})
 	if err != nil {
 		t.Fatalf("NewAuthInterceptor with AUTH_MODE=none must not error: %v", err)
 	}
@@ -232,7 +200,7 @@ func TestVerifyAuth(t *testing.T) {
 }
 
 // DevAuthorizer is allow-all; it must satisfy the Authorizer interface
-// the generated wire_gen.go swaps in under dev mode.
+// the composition root swaps in under dev mode.
 func TestDevAuthorizer(t *testing.T) {
 	t.Parallel()
 	var a Authorizer = DevAuthorizer{}

@@ -41,12 +41,14 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"check Tier-1 file-stomp guard",
 		"snapshot Tier-1 exports",
 		"sync forge/pkg dev replace",
+		"forge/pkg compatibility handshake",
 		"announce project",
 		"pre-codegen contract check",
 		"detect proto directories",
 		"ensure gen/go.mod",
 		"buf generate (Go stubs)",
 		"descriptor extraction",
+		"authz completeness gate",
 		"OpenAPI specs (protoc-gen-connect-openapi)",
 		"frontend workspaces scaffold",
 		"TypeScript stubs (frontends)",
@@ -66,9 +68,9 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"tenant middleware (auto-enable + emit)",
 		"webhook routes",
 		"MCP manifest",
+		"internal/app composition (hybrid DI)",
 		"go mod tidy (pre-wiring)",
-		"pkg/app/bootstrap.go",
-		"per-service subcommands (cmd/services_gen.go)",
+		"cmd/commands.go (user extension point)",
 		"pkg/app/testing.go",
 		"pkg/app/migrate.go",
 		"sqlc generate",
@@ -76,6 +78,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"CI workflows",
 		"pack generate hooks",
 		"regenerate infra files",
+		"cmd command groups (services/workers/operators)",
 		"components_gen.json",
 		"per-env deploy config",
 		"ingress k3d ports fragment",
@@ -289,7 +292,6 @@ func TestTemplatesOnlyExcludesCleanupAndValidate(t *testing.T) {
 func TestTemplatesOnlyIncludesTemplateRenderSteps(t *testing.T) {
 	mustInclude := []string{
 		"service stubs",
-		"pkg/app/bootstrap.go",
 		"pkg/app/testing.go",
 		"pkg/app/migrate.go",
 		"CI workflows",
@@ -344,8 +346,8 @@ func TestTemplatesOnlyFilterShape(t *testing.T) {
 		if !names["service stubs"] {
 			t.Error("--templates-only must keep \"service stubs\" — it's a template-driven render step")
 		}
-		if !names["pkg/app/bootstrap.go"] {
-			t.Error("--templates-only must keep \"pkg/app/bootstrap.go\" — the canonical template the flag exists to re-render")
+		if !names["pkg/app/testing.go"] {
+			t.Error("--templates-only must keep \"pkg/app/testing.go\" — the per-component test harness is template-driven")
 		}
 		if !names["regenerate infra files"] {
 			t.Error("--templates-only must keep \"regenerate infra files\" — Tier-1 infra is template-driven")

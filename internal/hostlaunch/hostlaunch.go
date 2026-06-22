@@ -35,6 +35,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/envutil"
 )
 
 // Defaults pinned by the runner dispatch. Exported so tests and CLI
@@ -49,12 +51,21 @@ const (
 	// pin one explicitly. Mirrors the `air` tool's own default —
 	// `.air.toml` at the project root.
 	DefaultAirConfig = ".air.toml"
+
+	// DefaultGoRunTarget is the `go run <target> server <name>` package
+	// used when a RunnerSpec doesn't carry an explicit GoRunCmd (the
+	// service's KCL GoBuild.cmd). It is NOT "./cmd" — the scaffold lays
+	// the project binary down at cmd/<project>, and a project that has
+	// not yet wired build resolution still needs a sane default. Callers
+	// that know the service's build cmd should set GoRunCmd so the
+	// host-run target matches the build target exactly.
+	DefaultGoRunTarget = "./cmd"
 )
 
 // RunnerSpec is the dispatch input. The Runner/AirConfig/DelvePort
 // fields mirror the KCL HostDeploy block; env composition (env_vars
 // from KCL + an optional gitignored secrets dotenv) is layered by the
-// caller via [LoadSecretsFile] and [MergeEnv] so this package stays
+// caller via [LoadSecretsFile] and [LayerHostEnv] so this package stays
 // vendor-neutral about how config gets sourced.
 //
 // An empty Runner falls through to the legacy go-run shape so projects
@@ -77,6 +88,14 @@ type RunnerSpec struct {
 	Runner    string // "" | "go-run" | "air" | "binary" | "delve"
 	AirConfig string // path relative to project root; default DefaultAirConfig
 	DelvePort int    // dlv --listen=:<port>; default DefaultDelvePort
+
+	// GoRunCmd is the go-run target package — the service's KCL
+	// GoBuild.cmd (e.g. "./cmd/myapp"). The go-run dispatch runs
+	// `go run <GoRunCmd> server <name>` so it points at the project's
+	// real cmd/<bin> package rather than a hardcoded "./cmd". Empty
+	// falls back to DefaultGoRunTarget so a caller that hasn't wired the
+	// build resolution yet still launches.
+	GoRunCmd string
 
 	// Command, when non-empty, is run verbatim (Command[0] + args) instead
 	// of any runner convention — the escape hatch for host services whose
@@ -105,7 +124,9 @@ type RunnerSpec struct {
 //   - air:    `air -c <spec.AirConfig|.air.toml>`
 //   - binary: `./bin/<name>`
 //   - delve:  `dlv exec --headless --listen=:<port> ... ./bin/<name>`
-//   - default ("" / "go-run" / unknown): `go run ./cmd server <name>`
+//   - default ("" / "go-run" / unknown): `go run <spec.GoRunCmd|./cmd>
+//     server <name>` — the go-run target is the service's KCL
+//     GoBuild.cmd, NOT a hardcoded ./cmd.
 //
 // Unknown runners fall through to go-run rather than erroring — this
 // preserves the `forge run` behaviour and prevents a typo in KCL from
@@ -144,7 +165,11 @@ func BuildCmd(ctx context.Context, name string, spec RunnerSpec) *exec.Cmd {
 		if len(spec.Command) > 0 {
 			cmd = exec.CommandContext(ctx, spec.Command[0], spec.Command[1:]...)
 		} else {
-			cmd = exec.CommandContext(ctx, "go", "run", "./cmd", "server", name)
+			target := strings.TrimSpace(spec.GoRunCmd)
+			if target == "" {
+				target = DefaultGoRunTarget
+			}
+			cmd = exec.CommandContext(ctx, "go", "run", target, "server", name)
 		}
 	}
 	if dir := resolveWorkingDir(spec.WorkingDir, spec.ProjectDir); dir != "" {
@@ -195,7 +220,7 @@ func LoadSecretsFile(path string) (map[string]string, error) {
 	if path == "" {
 		return nil, nil
 	}
-	out, err := ReadDotEnvFile(path)
+	out, err := envutil.ParseDotEnv(path)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +266,7 @@ func LayerHostEnv(base []string, projectConfig, secrets, envVars map[string]stri
 	for k, v := range envVars {
 		extra[k] = v
 	}
-	return MergeEnv(extra, base)
+	return envutil.MergeBaseWins(base, extra)
 }
 
 // PIDPath returns the canonical per-service PID file path:
@@ -260,64 +285,4 @@ func PIDPath(name string) (string, error) {
 		return "", fmt.Errorf("resolve home dir: %w", err)
 	}
 	return filepath.Join(home, ".cache", "forge", "run", name+".pid"), nil
-}
-
-// ReadDotEnvFile parses a .env file (KEY=VALUE per line, # comments,
-// trailing whitespace trimmed) into a map. Quoted values
-// ("VALUE", 'VALUE') have their outer quotes stripped. Missing file
-// returns os.ErrNotExist so callers can treat absence as non-fatal.
-//
-// Intentionally minimal — we don't expand $VARS or `${VAR:-default}`
-// shell features. Projects needing those should use direnv or a wrapper
-// script; this helper is just enough for the common
-// "DATABASE_URL=postgres://..." case the host-mode loop needs.
-func ReadDotEnvFile(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// strip an optional leading "export ".
-		line = strings.TrimPrefix(line, "export ")
-		i := strings.IndexByte(line, '=')
-		if i <= 0 {
-			continue
-		}
-		k := strings.TrimSpace(line[:i])
-		v := strings.TrimSpace(line[i+1:])
-		// Strip a single layer of matching quotes, if present.
-		if len(v) >= 2 {
-			if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
-				v = v[1 : len(v)-1]
-			}
-		}
-		out[k] = v
-	}
-	return out, nil
-}
-
-// MergeEnv layers per-env config onto a base os.Environ() slice. Keys
-// already present in base are kept (so a developer's shell override
-// always wins). Returns a fresh slice safe to assign to cmd.Env.
-func MergeEnv(extra map[string]string, base []string) []string {
-	have := map[string]struct{}{}
-	for _, kv := range base {
-		if i := strings.IndexByte(kv, '='); i > 0 {
-			have[kv[:i]] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(base)+len(extra))
-	out = append(out, base...)
-	for k, v := range extra {
-		if _, exists := have[k]; exists {
-			continue
-		}
-		out = append(out, k+"="+v)
-	}
-	return out
 }

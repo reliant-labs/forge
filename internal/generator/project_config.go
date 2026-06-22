@@ -42,6 +42,15 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		Binary:       binaryYAML,
 		ForgeVersion: buildinfo.Version(),
 		Features:     g.Features,
+		// Greenfield projects have no legacy env-reading debt, so scaffold
+		// the typed-access guardrail in its strict, gating form. NOTE: this
+		// is DIFFERENT from the schema default for an ABSENT key, which is
+		// "warn" (so existing projects upgrade without a flag-day). The
+		// explicit "error" survives NormalizeForWrite (it is not a section
+		// default) and renders the `config:` block into forge.yaml.
+		Config: config.ConfigGuardConfig{
+			EnforceTypedAccess: config.EnforceTypedAccessError,
+		},
 	}
 
 	// Build the components, then write them to components.json. Kind sync:
@@ -53,7 +62,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		components = append(components, config.ComponentConfig{
 			Name:  g.ServiceName,
 			Kind:  config.ComponentKindServer,
-			Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(g.ServiceName)),
+			Path:  fmt.Sprintf("internal/handlers/%s", naming.ServicePackage(g.ServiceName)),
 			Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort}},
 		})
 		// In binary=shared, write ALL server components at scaffold time so
@@ -65,7 +74,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 				components = append(components, config.ComponentConfig{
 					Name:  svcName,
 					Kind:  config.ComponentKindServer,
-					Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(svcName)),
+					Path:  fmt.Sprintf("internal/handlers/%s", naming.ServicePackage(svcName)),
 					Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort + i + 1}},
 				})
 			}
@@ -144,6 +153,18 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		}
 	}
 	return nil
+}
+
+// resolveBinaryName returns the primary binary name (the cmd/<bin>/ leaf the
+// command tree lives under) for the project at projectDir. It is the
+// forge.yaml project name; falls back to the project directory's base name
+// when the config is unreadable, mirroring ProjectGenerator.binaryName().
+func resolveBinaryName(projectDir string) string {
+	cfg, err := ReadProjectConfig(filepath.Join(projectDir, "forge.yaml"))
+	if err == nil && cfg != nil && cfg.Name != "" {
+		return cfg.Name
+	}
+	return filepath.Base(projectDir)
 }
 
 // ReadProjectConfig reads a forge.yaml from the given path with strict
@@ -228,7 +249,7 @@ func AppendServiceToConfig(projectRoot, serviceName string, port int) error {
 	return AppendComponentToFile(projectRoot, config.ComponentConfig{
 		Name:  serviceName,
 		Kind:  config.ComponentKindServer,
-		Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(serviceName)),
+		Path:  fmt.Sprintf("internal/handlers/%s", naming.ServicePackage(serviceName)),
 		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
 	})
 }

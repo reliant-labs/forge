@@ -136,7 +136,7 @@ compose standing up. On pull requests the e2e job is gated behind the
 ├── e2e/         # End-to-end tests (gated by the `e2e` build tag)
 ├── frontends/   # Frontend applications
 ├── gen/         # Generated protobuf code (not committed; run `forge generate`)
-├── handlers/    # Service implementations
+├── internal/    # App-internal Go packages: handlers/ (service impls), workers/, operators/, domain packages
 ├── pkg/         # Shared Go packages (app wiring, middleware, config)
 └── proto/       # Protocol buffer definitions (source of truth)
 ```

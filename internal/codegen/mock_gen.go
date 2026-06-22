@@ -34,7 +34,6 @@ type MockService struct {
 	GenerateConfigLoaderFunc        func([]ConfigMessage, string, *checksums.FileChecksums) error
 	GenerateBootstrapTestingFunc    func(BootstrapTestingGenInput) error
 	GenerateMigrateFunc             func(string, string, bool, *checksums.FileChecksums) error
-	GenerateSetupFunc               func(string, string, bool, string) error
 }
 
 func (m *MockService) GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...map[string]bool) error {
@@ -147,14 +146,6 @@ func (m *MockService) GenerateMigrate(targetDir string, modulePath string, hasMi
 		return m.GenerateMigrateFunc(targetDir, modulePath, hasMigrations, cs)
 	}
 	return contractkit.MockNotSet("MockService", "GenerateMigrate")
-}
-
-func (m *MockService) GenerateSetup(modulePath string, databaseDriver string, ormEnabled bool, targetDir string) error {
-	m.Record("GenerateSetup", modulePath, databaseDriver, ormEnabled, targetDir)
-	if m.GenerateSetupFunc != nil {
-		return m.GenerateSetupFunc(modulePath, databaseDriver, ormEnabled, targetDir)
-	}
-	return contractkit.MockNotSet("MockService", "GenerateSetup")
 }
 
 // Compile-time check.

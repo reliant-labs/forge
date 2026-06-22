@@ -91,8 +91,9 @@ var (
 // API-key requests FAIL CLOSED ("API key validator not configured")
 // until the project installs its KeyValidator via
 // SetGeneratedKeyValidator — implement the interface in
-// pkg/middleware/auth_validator.go and install it from pkg/app/setup.go
-// or PostBootstrap (both run before the listener binds).
+// pkg/middleware/auth_validator.go and install it from
+// internal/app/providers.go (OpenInfra), which runs before the
+// interceptor chain is built and the listener binds.
 func InstallGeneratedAuth() error {
 	v, err := auth.NewValidator(generatedAuthConfig)
 	if err != nil {
@@ -106,8 +107,9 @@ func InstallGeneratedAuth() error {
 }
 
 // SetGeneratedKeyValidator installs the project's API-key validator on
-// the generated validator. Call it before the listener binds (setup.go
-// or PostBootstrap); until then API-key requests are rejected.
+// the generated validator. Call it before the listener binds (from
+// internal/app/providers.go OpenInfra); until then API-key requests are
+// rejected.
 func SetGeneratedKeyValidator(kv KeyValidator) {
 	generatedAuthMu.Lock()
 	defer generatedAuthMu.Unlock()

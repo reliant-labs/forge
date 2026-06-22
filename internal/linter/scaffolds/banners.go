@@ -21,7 +21,7 @@ import (
 //     forge will not overwrite this file" line. Examples:
 //     `internal-package/contract.go.tmpl`, `frontend/pages/*.tsx.tmpl`,
 //     pack scaffolds shipped once.
-//   - Tier 3 (user-owned skeletons like `setup.go.tmpl`, `forge.yaml`,
+//   - Tier 3 (user-owned skeletons like `providers.go.tmpl`, `forge.yaml`,
 //     starter `cmd/*.go` files) is intentionally banner-less — `//forge:allow`
 //     is the existing user-owned marker and is enforced by other linters.
 //
@@ -111,7 +111,7 @@ func lintTemplateBanner(path, root string) ([]Finding, error) {
 	}
 	// Window is generous enough (60 lines) to cover scaffolds whose
 	// canonical banner sits below a long doc-comment preamble — e.g.
-	// `app_extras.go.tmpl` documents the user-extension pattern in 40+
+	// `providers.go.tmpl` documents the owned-Infra pattern in 40+
 	// lines of //-comments before declaring the canonical "yours:" banner.
 	head := firstLines(data, 60)
 
@@ -396,7 +396,7 @@ func isKnownTier2(rel, noTmpl string) bool {
 func isKnownTier3(rel, noTmpl string) bool {
 	// Project-level user-owned skeletons.
 	switch noTmpl {
-	case "setup.go", "post_bootstrap.go", "tools.go", "app_extras.go", "config.proto",
+	case "providers.go", "tools.go", "config.proto",
 		"example.proto", "user-example.proto",
 		"config-dev.yaml", "config-prod.yaml", "config-test.yaml",
 		"docker-compose.yml":

@@ -26,12 +26,14 @@ func tier1ExtensionPointHint(relPath string) string {
 	base := path.Base(rel)
 	dir := path.Dir(rel)
 
-	// pkg/app wiring set: custom wiring has three designated homes the
-	// bootstrap codegen already cooperates with.
+	// Retired pkg/app DI unit: the live composition moved to internal/app
+	// (OpenInfra → NewComponents). A project carrying these legacy files
+	// belongs at the new homes — owned infra in providers.go, explicit
+	// component wiring in compose.go.
 	if dir == "pkg/app" {
 		switch base {
 		case "bootstrap.go", "app_gen.go", "wire_gen.go":
-			return "custom wiring belongs in pkg/app/setup.go / post_bootstrap.go / app_extras.go (user-owned)"
+			return "custom wiring belongs in internal/app/providers.go (OpenInfra) + internal/app/compose.go (NewComponents) — the retired pkg/app DI unit no longer runs"
 		}
 	}
 

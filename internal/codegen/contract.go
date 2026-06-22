@@ -49,7 +49,6 @@ type Service interface {
 	// pkg/app bootstrap files.
 	GenerateBootstrapTesting(in BootstrapTestingGenInput) error
 	GenerateMigrate(targetDir string, modulePath string, hasMigrations bool, cs *checksums.FileChecksums) error
-	GenerateSetup(modulePath string, databaseDriver string, ormEnabled bool, targetDir string) error
 }
 
 // Parser reads forge_descriptor.json + go.mod to produce ServiceDefs,

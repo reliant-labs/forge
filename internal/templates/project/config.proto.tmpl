@@ -26,8 +26,8 @@ import "google/protobuf/duration.proto";
 //   //   TraderConfig trader = <next tag>;
 //
 // The component then takes `Cfg config.TraderConfig` in its Deps and
-// wire_gen resolves it from the loaded Config by type. Per-env values
-// go in config.<env>.yaml under the leaf name (max_per_tick: 50).
+// internal/app/compose.go (NewComponents) wires it from the loaded Config.
+// Per-env values go in config.<env>.yaml under the leaf name (max_per_tick: 50).
 // Never put scalars (string/int/bool/duration) directly in Deps.
 message AppConfig {
   int32 port = 1 [(forge.v1.config) = {

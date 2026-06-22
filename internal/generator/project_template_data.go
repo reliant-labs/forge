@@ -390,7 +390,12 @@ func ForUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 		RESTEnabled:            cfg.API.REST,
 		AuthProvider:           authProvider,
 		AuthProviderExternal:   authExternal,
-		VersionVar:             cfg.Build.VersionVar,
+		// The forge.yaml `build:` block is gone; the Dockerfile's
+		// extra-version-stamp escape hatch is now user-owned (edit the
+		// generated Dockerfile's -ldflags directly, or stamp the extra -X
+		// via a KCL GoBuild.ldflags entry that `forge build` honors). No
+		// VersionVar flows from forge.yaml anymore.
+		VersionVar: "",
 		// Resolve the typed-access guardrail from the live forge.yaml. An
 		// absent config: block resolves to "warn" (advisory) so existing
 		// projects gain the guardrail without a flag-day; an explicit

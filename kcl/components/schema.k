@@ -84,6 +84,17 @@ schema Component:
     group: str = ""
     version: str = ""
     crds: [str] = []
+    # Polymorphic build declaration (from components_gen.json). A plain
+    # dict carrying a `type` discriminator ("go" | "docker" | "shell")
+    # plus the type's fields — typed loosely as `{str:any}` so the env
+    # main.k can overlay either a forge.GoBuild literal or a plain dict
+    # per env without cross-package type-identity friction, exactly the
+    # way `resources` / `env_vars` / `health_check` are handled. forge
+    # codegen emits a GoBuild { cmd = "./cmd/<binpkg>" } default per
+    # component; the bridge passes it straight to forge.Service.build.
+    # Empty {} means "no build declared" — the bridge omits it and the
+    # Go side synthesizes the ./cmd/<name> default.
+    build: {str:any} = {}
 
     # --- Per-env overlay (set in deploy/kcl/<env>/main.k) ---
     # The container image. Defaults to the component name; env files

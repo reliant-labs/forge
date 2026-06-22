@@ -51,6 +51,11 @@ func TestComponentsToJSON_Shape(t *testing.T) {
 			Group    string   `json:"group"`
 			Version  string   `json:"version"`
 			CRDs     []string `json:"crds"`
+			Build    struct {
+				Type       string `json:"type"`
+				Cmd        string `json:"cmd"`
+				OutputName string `json:"output_name"`
+			} `json:"build"`
 		} `json:"components"`
 	}
 	if err := json.Unmarshal(out, &doc); err != nil {
@@ -87,6 +92,15 @@ func TestComponentsToJSON_Shape(t *testing.T) {
 	}
 	if len(proxy.Command) != 1 || proxy.Command[0] != "/app/proxy" {
 		t.Errorf("binary command = %v, want [/app/proxy]", proxy.Command)
+	}
+	// A binary builds its OWN cmd/<binpkg> package via a GoBuild.
+	if proxy.Build.Type != "go" || proxy.Build.Cmd != "./cmd/proxy" || proxy.Build.OutputName != "proxy" {
+		t.Errorf("binary build = %+v, want {go ./cmd/proxy proxy}", proxy.Build)
+	}
+	// A server builds the SHARED project binary (./cmd/<project>) and
+	// selects its behavior via a cobra subcommand at runtime.
+	if api.Build.Type != "go" || api.Build.Cmd != "./cmd/demo" || api.Build.OutputName != "demo" {
+		t.Errorf("server build = %+v, want {go ./cmd/demo demo}", api.Build)
 	}
 
 	// Non-binary components carry no command (KCL fills the entrypoint).

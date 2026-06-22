@@ -91,12 +91,16 @@ _bundle = forge.Bundle {
         command = c.command
         env_vars = c.env_vars
         deploy = _cluster | {ports = [p.port for p in c.ports]}
+        if c.build:
+            build = c.build
     } for c in _svc_components] + [forge.Service {
         name = c.name
         image = "{{.ProjectName}}"
         command = c.command
         env_vars = c.env_vars
         deploy = forge.BuildOnly {}
+        if c.build:
+            build = c.build
     } for c in _bin_components]
     cronjobs = [forge.CronJob {
         name = c.name

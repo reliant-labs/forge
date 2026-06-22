@@ -167,9 +167,12 @@ Pre-1.7 forge also emitted `middleware_gen.go`, `tracing_gen.go` and
 - **Connect interceptors at the handler boundary** — `forge/pkg/observe`
   exposes `LoggingInterceptor`, `TracingInterceptor`,
   `MetricsInterceptor`, `RecoveryInterceptor`, `RequestIDInterceptor`
-  plus a one-call canonical chain `observe.DefaultMiddlewares(deps)`.
-  The composition root in `internal/app/build.go` wires that chain into
-  the handler assembly.
+  plus a one-call canonical chain `observe.Chain(observe.Deps{…})`.
+  The generated `cmd serve.go` builds that chain (handing in the
+  already-built `Auth`/`Audit`/`RateLimit` interceptors by name) and
+  applies it as handler options; the explicit composition root
+  (`internal/app/compose.go`, `NewComponents`) constructs the components
+  it mounts.
 
 - **Opt-in per-method helpers** — for the rare case where one Service
   calls another and you want a child span / log line / metric, use
@@ -186,8 +189,10 @@ Pre-1.7 forge also emitted `middleware_gen.go`, `tracing_gen.go` and
 
 For projects upgrading from the old shape, see the
 `v0.x-to-observe-libs` migration skill — `forge generate` removes the
-stale wrappers. The composition root (`internal/app/build.go`) is owned,
-not regenerated; you wire the interceptor chain there yourself.
+stale wrappers. The interceptor chain is assembled in the generated
+`cmd serve.go` via `observe.Chain`; the owned composition seam is
+`internal/app/providers.go` (`OpenInfra`) for infra and the regenerated
+`internal/app/compose.go` (`NewComponents`) for component construction.
 
 ## Using mocks in tests
 

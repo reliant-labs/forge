@@ -114,38 +114,45 @@ The library reads `JWT_SECRET` from the environment when `JWTConfig.Secret` is e
 
 ## Where the auth interceptor sits in the chain
 
-The interceptor chain is assembled **explicitly in the handler assembly
-of the composition root** (`Build`), with ordering composed by hand and
-documented hard: **otel-outermost → rate-limit → auth → audit**. The
-order is the code's, not a side effect of registration order.
+The interceptor chain is assembled **explicitly in the generated
+`cmd serve.go`** via `observe.Chain(observe.Deps{…})`, with the
+application interceptors handed in BY NAMED FIELD (no `Set*` package
+globals). The canonical forge order is the code's, not a side effect of
+registration order: **recovery → request-id → logging → tracing →
+metrics** (the observability layer), then **auth → audit → rate-limit**
+(the application layer); `otelconnect` rides `Extras` (outermost of the
+application layer).
 
-The chain builds the canonical observability stack via
-`observe.DefaultMiddlewares(...)` (recovery → request-id → logging →
-tracing → metrics) and appends project-specific interceptors via
-`Extras`. Auth is one of those Extras, so failures from the auth
-interceptor are still observable (counted, traced, logged):
+Auth is one of those named fields, so failures from the auth interceptor
+are still observable (counted, traced, logged). The auth interceptor is
+built UP FRONT from an explicit `AuthDeps` — an unconfigured auth
+provider is a startup error, not a per-request surprise — then passed
+into `observe.Chain`:
 
 ```go
-// In Build, while assembling the handler. An unconfigured auth provider
-// is a startup error, not a per-request surprise.
-authInterceptor, err := middleware.NewAuthInterceptor(cfg.Mode().IsDev())
+// In cmd serve.go. AuthDeps carries the explicit policy (DevMode +
+// the validator/external signal); NewAuthInterceptor REFUSES TO START
+// a production server that has no auth provider.
+authDeps := middleware.AuthDeps{DevMode: config.DevAuthBypass(cfg)}
+// (auth_gen.go threads the forge.yaml provider's validator into authDeps here)
+authInterceptor, err := middleware.NewAuthInterceptor(authDeps)
 if err != nil {
-    return nil, fmt.Errorf("auth configuration: %w", err)
+    return fmt.Errorf("auth configuration: %w", err)
 }
-projectInterceptors := []connect.Interceptor{
-    authInterceptor,                    // ← auth, before audit
-    fmw.AuditInterceptor(logger, middleware.ClaimsFromContext),
-}
-interceptors := observe.DefaultMiddlewares(observe.DefaultMiddlewareDeps{
+
+chainDeps := observe.Deps{
     Logger: logger,
-    Extras: projectInterceptors,
-})
+    Auth:   authInterceptor,                                          // ← auth, named field
+    Audit:  fmw.AuditInterceptor(logger, middleware.ClaimsFromContext),
+    // RateLimit: fmw.RateLimitInterceptor(...),  // when configured
+}
+opts := []connect.HandlerOption{
+    connect.WithInterceptors(observe.Chain(chainDeps)...),
+}
 ```
 
-The default ordering puts auth-after-observability deliberately —
-operators want auth failures in the same dashboards as successful
-traffic. To put auth first, drop it from `Extras` and prepend it onto
-the result of `DefaultMiddlewares` directly. See
+The ordering puts auth-after-observability deliberately — operators want
+auth failures in the same dashboards as successful traffic. See
 `forge/pkg/observe/middleware.go` for the full ordering rationale.
 
 ## Unauthenticated Endpoints

@@ -260,19 +260,18 @@ forge test --service users
 
 ## Where a handler's collaborators come from (the composition root)
 
-A handler never resolves its own dependencies. Each binary owns a typed composition root — `Build(infra) (*Server, error)` in `internal/app/` — that constructs every service in topological order and hands each one its `Deps` as **interface-typed fields, resolved by type**. A handler's `Deps.Things` is a `things.Service` interface; the handler cannot tell whether `Build` filled it with the real in-process service, a Connect client to another binary, or a mock.
+A handler never resolves its own dependencies. The explicit composition — `NewComponents(infra *Infra) (*Components, error)` in the generated `internal/app/compose.go`, off the owned `internal/app/providers.go` `Infra`/`OpenInfra` seam — constructs every service in type-topological order and hands each one its `Deps` as **interface-typed fields, resolved by type**. A handler's `Deps.Things` is a `things.Service` interface; the handler cannot tell whether `NewComponents` filled it with the real in-process service, a Connect client to another binary, or a mock.
 
-There is no `AppExtras` struct, no string-keyed registry, and no name-matched `wire_gen.go`. The Deps fields are filled in exactly one place — `Build` — so the wiring is plain, compile-checked Go:
+There is no `*App`/`AppExtras` struct, no string-keyed registry, and no name-matched `wire_gen.go`. The Deps fields are filled in exactly one place — `NewComponents` — so the wiring is plain, compile-checked Go:
 
 ```go
-// internal/app/build.go
-things := things.New(things.Deps{Repo: repo, Logger: log})
-srv.MountThings(thingsHandler.New(thingsHandler.Deps{Things: things}))
+// internal/app/compose.go
+c.Things = things.New(things.Deps{Repo: infra.Repo, Logger: infra.Log})
 ```
 
-If `repo` does not satisfy `things.Repository`, it does not compile — there is no name-match layer to silently drop a narrow-interface mismatch.
+If `infra.Repo` does not satisfy `things.Repository`, it does not compile — there is no name-match layer to silently drop a narrow-interface mismatch.
 
-**Deferred / cross-lane typing is handled by the seam, not by a placeholder marker.** When a collaborator's concrete type lands in a sibling lane that hasn't merged, the handler still depends only on the *interface* (`Things things.Service`). The collaborator interface is the seam: the default fill is the real in-process instance, and splitting the service out later — or swapping in a client or a mock — is a one-line change in `Build`, with the handler untouched:
+**Deferred / cross-lane typing is handled by the seam, not by a placeholder marker.** When a collaborator's concrete type lands in a sibling lane that hasn't merged, the handler still depends only on the *interface* (`Things things.Service`). The collaborator interface is the seam: the default fill is the real in-process instance, and splitting the service out later — or swapping in a client or a mock — is a one-line change in `NewComponents`, with the handler untouched:
 
 ```go
 // in-process default:
@@ -283,7 +282,7 @@ Things: thingsclient.New(conn),
 Things: mockThings,
 ```
 
-Because every dep is an interface filled in one place, "run the app with Things mocked" is a few-line call against `Build` — no framework, no `any`-typed placeholder, no runtime nil hazard. A missing collaborator is a compile error or a loud `validateDeps()` failure at construction, never a typed-zero that quietly no-ops in production.
+Because every dep is an interface filled in one place, "run the app with Things mocked" is a few-line call against `NewComponents` (off a test `Infra`) — no framework, no `any`-typed placeholder, no runtime nil hazard. A missing collaborator is a compile error or a loud `validateDeps()` failure at construction, never a typed-zero that quietly no-ops in production.
 
 ## Marking optional Deps fields
 

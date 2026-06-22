@@ -74,7 +74,7 @@ my-app/
 │   ├── handlers/<svc>/        #   a service: contract.go + impl + handlers_gen.go in ONE dir
 │   ├── workers/<name>/        #   background workers (one dir per worker)
 │   ├── operators/<name>/      #   k8s operators (one dir per operator)
-│   ├── app/                   #   composition roots (build.go) — the wiring you own
+│   ├── app/                   #   composition: owned providers.go (Infra/OpenInfra) + generated compose.go (NewComponents) — the wiring you own
 │   ├── config/                #   typed config (proto-driven)
 │   ├── middleware/            #   thin auth/logging/tenant policy
 │   └── db/                    #   entity ORM (appears once you have entities)
@@ -118,7 +118,7 @@ For non-CRUD RPCs, edit the proto directly and re-run `forge generate`. It rebui
 
 Write your business logic in `internal/handlers/<svc>/` — `contract.go` declares the `Service` interface + `Deps`, and the implementation lives behind it. The handler (`handlers_gen.go`, co-located in the same dir) is thin translation that calls into the service. Use the generated types and the `internal/db/` ORM functions.
 
-Each binary's dependency graph is wired in `internal/app/build.go` — a typed `Build(...)` composition root you own. Collaborators are interface-typed fields resolved by type, so swapping a real in-process service for a Connect client (when you split it into its own Deployment) is a one-line change there, with consumers untouched.
+The server's dependency graph is wired in the explicit composition: the owned `internal/app/providers.go` (`Infra`/`OpenInfra` — the DB pool, NATS, k8s, adapters, bindings) and the generated `internal/app/compose.go` (`NewComponents(infra *Infra) (*Components, error)` — constructs every handler/worker/operator inline). Collaborators are interface-typed fields resolved by type off `infra.<Field>`, so swapping a real in-process service for a Connect client (when you split it into its own Deployment) is a one-line change there, with consumers untouched.
 
 ### Phase 4: Evolve the DB schema (migrations lead, projections follow)
 
@@ -209,7 +209,7 @@ the exact `POSTGRES_PORT=<free> forge up --env=dev` rerun command.
 ## Rules
 
 - Always run `forge generate` after any proto or migration change.
-- Never hand-edit `gen/` or any `*_gen.go` file — they are regenerated. The per-binary composition root in `internal/app/build.go` is **owned code you wire** (not generated, not off-limits).
+- Never hand-edit `gen/` or any `*_gen.go` file — they are regenerated. The owned seam `internal/app/providers.go` (`Infra`/`OpenInfra`) is **owned code you wire** (not generated, not off-limits); `internal/app/compose.go` (`NewComponents`) is forge-owned and regenerated every run — `forge disown internal/app/compose.go` to hand-own it when you need construct-then-inject.
 - Use `forge add` to scaffold — never copy-paste existing directories.
 - Use `forge test`, not raw `go test` — the CLI sets the right build tags.
 - One service per proto package. A service's owned and generated files co-locate in one `internal/handlers/<svc>/` directory.

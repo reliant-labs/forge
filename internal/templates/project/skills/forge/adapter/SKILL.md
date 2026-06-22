@@ -101,7 +101,7 @@ Your adapter wraps whatever client you choose — raw HTTP, the vendor SDK, an R
 
 Adapters are leaf nodes at construction, but occasionally a downstream consumer registers a callback / sink / subscriber onto the adapter after both exist (e.g. an event-bus adapter receiving subscribers from services built later). Don't add the consumer to the adapter's `Deps` — that inverts the leaf rule, and constructor topo-ordering alone deadlocks on this shape.
 
-Use **construct-then-register** inside `Build`: build the adapter, build the consumer, then call the register/subscribe setter. It's an ordinary method call after both ends exist — not a framework seam.
+Use **construct-then-register** inside `NewComponents` (`forge disown internal/app/compose.go` first to hand-own the construction site): build the adapter, build the consumer, then call the register/subscribe setter. It's an ordinary method call after both ends exist — not a framework seam.
 
 ```go
 bus := eventbus.New(eventbus.Deps{Logger: log})
@@ -109,7 +109,7 @@ svc := orders.New(orders.Deps{Bus: bus})  // consumer holds the adapter interfac
 bus.Subscribe("order.created", svc.OnOrderCreated)  // phase two
 ```
 
-There is no `PostBootstrap` / `post_bootstrap.go` seam — late registration is plain Go in the composition root. See the `interactor` skill for the canonical two-phase shape.
+There is no `PostBootstrap` / `post_bootstrap.go` seam — late registration is plain Go in the disowned `compose.go`. See the `interactor` skill for the canonical two-phase shape.
 
 <!-- @forge-only:start -->
 ## Forge scaffolding
@@ -137,15 +137,15 @@ Every adapter package's `contract.go` carries a `// forge:adapter` marker commen
 
 - `forgeconv-adapter-no-rpc` — adapter packages must not register Connect RPC handlers. Adapters are outbound-only; an RPC means it's actually a service.
 
-## Wiring: construct in the composition root
+## Wiring: construct in the explicit composition
 
-An adapter is a leaf built in your binary's typed composition root (`Build`) and passed to consumers as an **interface**. No `Setup(app *App)`, no name-matched `App` fields — just construct it and hand it down.
+An adapter is a leaf built in `internal/app/compose.go` `NewComponents` (off the owned `internal/app/providers.go` `Infra`) and passed to consumers as an **interface**. No `Setup(app *App)`, no name-matched `App` fields — just construct it and hand it down.
 
 ```go
-// internal/app/build.go
+// internal/app/compose.go
 stripe := stripeadapter.New(stripeadapter.Deps{
     HTTPClient: &http.Client{Timeout: 30 * time.Second},
-    Cfg:        infra.Config.Stripe,  // scalars travel as one typed Config block
+    Cfg:        infra.Cfg.Stripe,  // scalars travel as one typed Config block
 })
 bill := billing.New(billing.Deps{Charges: stripe})  // consumer sees stripeadapter.Service, not the concrete type
 ```

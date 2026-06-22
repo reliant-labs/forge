@@ -51,6 +51,15 @@ const (
 	// pin one explicitly. Mirrors the `air` tool's own default —
 	// `.air.toml` at the project root.
 	DefaultAirConfig = ".air.toml"
+
+	// DefaultGoRunTarget is the `go run <target> server <name>` package
+	// used when a RunnerSpec doesn't carry an explicit GoRunCmd (the
+	// service's KCL GoBuild.cmd). It is NOT "./cmd" — the scaffold lays
+	// the project binary down at cmd/<project>, and a project that has
+	// not yet wired build resolution still needs a sane default. Callers
+	// that know the service's build cmd should set GoRunCmd so the
+	// host-run target matches the build target exactly.
+	DefaultGoRunTarget = "./cmd"
 )
 
 // RunnerSpec is the dispatch input. The Runner/AirConfig/DelvePort
@@ -80,6 +89,14 @@ type RunnerSpec struct {
 	AirConfig string // path relative to project root; default DefaultAirConfig
 	DelvePort int    // dlv --listen=:<port>; default DefaultDelvePort
 
+	// GoRunCmd is the go-run target package — the service's KCL
+	// GoBuild.cmd (e.g. "./cmd/myapp"). The go-run dispatch runs
+	// `go run <GoRunCmd> server <name>` so it points at the project's
+	// real cmd/<bin> package rather than a hardcoded "./cmd". Empty
+	// falls back to DefaultGoRunTarget so a caller that hasn't wired the
+	// build resolution yet still launches.
+	GoRunCmd string
+
 	// Command, when non-empty, is run verbatim (Command[0] + args) instead
 	// of any runner convention — the escape hatch for host services whose
 	// entrypoint doesn't fit `go run ./cmd server <name>`. The canonical
@@ -107,7 +124,9 @@ type RunnerSpec struct {
 //   - air:    `air -c <spec.AirConfig|.air.toml>`
 //   - binary: `./bin/<name>`
 //   - delve:  `dlv exec --headless --listen=:<port> ... ./bin/<name>`
-//   - default ("" / "go-run" / unknown): `go run ./cmd server <name>`
+//   - default ("" / "go-run" / unknown): `go run <spec.GoRunCmd|./cmd>
+//     server <name>` — the go-run target is the service's KCL
+//     GoBuild.cmd, NOT a hardcoded ./cmd.
 //
 // Unknown runners fall through to go-run rather than erroring — this
 // preserves the `forge run` behaviour and prevents a typo in KCL from
@@ -146,7 +165,11 @@ func BuildCmd(ctx context.Context, name string, spec RunnerSpec) *exec.Cmd {
 		if len(spec.Command) > 0 {
 			cmd = exec.CommandContext(ctx, spec.Command[0], spec.Command[1:]...)
 		} else {
-			cmd = exec.CommandContext(ctx, "go", "run", "./cmd", "server", name)
+			target := strings.TrimSpace(spec.GoRunCmd)
+			if target == "" {
+				target = DefaultGoRunTarget
+			}
+			cmd = exec.CommandContext(ctx, "go", "run", target, "server", name)
 		}
 	}
 	if dir := resolveWorkingDir(spec.WorkingDir, spec.ProjectDir); dir != "" {

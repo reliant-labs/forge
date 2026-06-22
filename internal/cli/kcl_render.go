@@ -150,14 +150,66 @@ type GRPCRouteEntity struct {
 //     environment AND added to the substitution map (built-ins win
 //     on conflict).
 type ServiceEntity struct {
-	Name     string             `json:"name"`
-	Image    string             `json:"image,omitempty"`
-	Deploy   DeployConfigEntity `json:"deploy"`
-	EnvVars  []KCLEnvVar        `json:"env_vars,omitempty"`
-	Command  []string           `json:"command,omitempty"`
-	BuildCmd string             `json:"build_cmd,omitempty"`
-	BuildCwd string             `json:"build_cwd,omitempty"`
-	BuildEnv map[string]string  `json:"build_env,omitempty"`
+	Name   string             `json:"name"`
+	Image  string             `json:"image,omitempty"`
+	Deploy DeployConfigEntity `json:"deploy"`
+	// Build is the polymorphic build declaration — exactly one of
+	// Go / Docker / Shell is populated according to Build.Type. Mirrors
+	// Deploy. When the KCL `build` block is absent (a hand-authored
+	// forge.Service that omits it) Build.Type is "" and callers
+	// synthesize the GoBuild default via [ServiceEntity.EffectiveBuild].
+	Build    BuildConfigEntity `json:"-"`
+	EnvVars  []KCLEnvVar       `json:"env_vars,omitempty"`
+	Command  []string          `json:"command,omitempty"`
+	BuildCmd string            `json:"build_cmd,omitempty"`
+	BuildCwd string            `json:"build_cwd,omitempty"`
+	BuildEnv map[string]string `json:"build_env,omitempty"`
+}
+
+// BuildConfigEntity is the dispatched-by-type view of a service's build
+// block — the build-side analogue of [DeployConfigEntity]. The raw JSON
+// is a tagged union; Type carries the tag; exactly one of Go/Docker/Shell
+// is non-nil after [dispatchServiceBuild] runs. Type=="" means the KCL
+// `build` block was absent (null) — callers fall back to the synthesized
+// GoBuild default.
+type BuildConfigEntity struct {
+	Type   string       // "go" | "docker" | "shell" | "" (absent)
+	Go     *GoBuild     // populated when Type=="go"
+	Docker *DockerBuild // populated when Type=="docker"
+	Shell  *ShellBuild  // populated when Type=="shell"
+}
+
+// GoBuild mirrors the kcl/schema.k GoBuild. Cmd is the go-build target
+// package (e.g. "./cmd/trader"); the rest are the cross-compile + flag
+// knobs build.go passes straight to `go build`.
+type GoBuild struct {
+	OutputName string            `json:"output_name,omitempty"`
+	Cmd        string            `json:"cmd"`
+	GOOS       string            `json:"goos,omitempty"`
+	GOARCH     string            `json:"goarch,omitempty"`
+	Ldflags    []string          `json:"ldflags,omitempty"`
+	Tags       []string          `json:"tags,omitempty"`
+	Flags      []string          `json:"flags,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+}
+
+// DockerBuild mirrors the kcl/schema.k DockerBuild — the per-service
+// container image build. Reuses forge's existing docker primitives
+// (tag/registry/push/build-contexts) as behavior; these fields select
+// the dockerfile/platform/target/build_args.
+type DockerBuild struct {
+	OutputName string            `json:"output_name,omitempty"`
+	Dockerfile string            `json:"dockerfile,omitempty"`
+	Platform   string            `json:"platform,omitempty"`
+	Target     string            `json:"target,omitempty"`
+	BuildArgs  map[string]string `json:"build_args,omitempty"`
+}
+
+// ShellBuild mirrors the kcl/schema.k ShellBuild — a verbatim `sh -c`
+// build command (generalizes the old build_cmd escape hatch).
+type ShellBuild struct {
+	OutputName string `json:"output_name,omitempty"`
+	Cmd        string `json:"cmd"`
 }
 
 // DeployConfigEntity is the dispatched-by-type view of a service's
@@ -267,6 +319,8 @@ type BuildVariant struct {
 	Name       string            `json:"name"`
 	Ldflags    []string          `json:"ldflags,omitempty"`
 	BuildTags  []string          `json:"build_tags,omitempty"`
+	GOOS       string            `json:"goos,omitempty"`
+	GOARCH     string            `json:"goarch,omitempty"`
 	EnvAtBuild map[string]string `json:"env_at_build,omitempty"`
 	OutputName string            `json:"output_name,omitempty"` // default: <service>-<variant>
 }
@@ -447,6 +501,7 @@ type kclServiceRaw struct {
 	Name     string            `json:"name"`
 	Image    string            `json:"image,omitempty"`
 	Deploy   json.RawMessage   `json:"deploy"`
+	Build    json.RawMessage   `json:"build"`
 	EnvVars  []KCLEnvVar       `json:"env_vars,omitempty"`
 	Command  []string          `json:"command,omitempty"`
 	BuildCmd string            `json:"build_cmd,omitempty"`
@@ -551,10 +606,15 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		if err != nil {
 			return nil, err
 		}
+		build, err := dispatchServiceBuild(s.Name, s.Build)
+		if err != nil {
+			return nil, err
+		}
 		out.Services = append(out.Services, ServiceEntity{
 			Name:     s.Name,
 			Image:    s.Image,
 			Deploy:   deploy,
+			Build:    build,
 			EnvVars:  s.EnvVars,
 			Command:  s.Command,
 			BuildCmd: s.BuildCmd,
@@ -655,6 +715,82 @@ func dispatchServiceDeploy(svcName string, raw json.RawMessage) (DeployConfigEnt
 	default:
 		return DeployConfigEntity{}, fmt.Errorf("service %q: unrecognised deploy.type %q (expected host/cluster/external/compose/build-only)", svcName, probe.Type)
 	}
+}
+
+// dispatchServiceBuild unmarshals the raw build block, reads the type
+// discriminator, and populates exactly one of the three pointers in the
+// returned BuildConfigEntity — the build-side mirror of
+// [dispatchServiceDeploy]. An absent / null build block (a hand-authored
+// forge.Service that omits `build`) yields the zero value (Type=="");
+// callers synthesize the GoBuild default. Unrecognised non-empty types
+// fail loud — a bad KCL render should not silently fall back.
+func dispatchServiceBuild(svcName string, raw json.RawMessage) (BuildConfigEntity, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return BuildConfigEntity{}, nil
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return BuildConfigEntity{}, fmt.Errorf("service %q: parse build.type: %w", svcName, err)
+	}
+	switch strings.ToLower(strings.TrimSpace(probe.Type)) {
+	case "go":
+		var g GoBuild
+		if err := json.Unmarshal(raw, &g); err != nil {
+			return BuildConfigEntity{}, fmt.Errorf("service %q: parse go build: %w", svcName, err)
+		}
+		return BuildConfigEntity{Type: "go", Go: &g}, nil
+	case "docker":
+		var d DockerBuild
+		if err := json.Unmarshal(raw, &d); err != nil {
+			return BuildConfigEntity{}, fmt.Errorf("service %q: parse docker build: %w", svcName, err)
+		}
+		return BuildConfigEntity{Type: "docker", Docker: &d}, nil
+	case "shell":
+		var sh ShellBuild
+		if err := json.Unmarshal(raw, &sh); err != nil {
+			return BuildConfigEntity{}, fmt.Errorf("service %q: parse shell build: %w", svcName, err)
+		}
+		return BuildConfigEntity{Type: "shell", Shell: &sh}, nil
+	case "":
+		return BuildConfigEntity{}, fmt.Errorf("service %q: build.type missing (expected go/docker/shell)", svcName)
+	default:
+		return BuildConfigEntity{}, fmt.Errorf("service %q: unrecognised build.type %q (expected go/docker/shell)", svcName, probe.Type)
+	}
+}
+
+// EffectiveBuild returns the build declaration build.go should execute
+// for this service, resolving the absent-block case to the synthesized
+// GoBuild default ("./cmd/<name>"). This is the ONE place the default
+// lives — so a hand-authored forge.Service that omits `build`, a project
+// on an older KCL render, and the deploy-as-data bridge all converge on
+// the same answer without build.go re-deriving it.
+func (s ServiceEntity) EffectiveBuild() BuildConfigEntity {
+	if s.Build.Type != "" {
+		return s.Build
+	}
+	return BuildConfigEntity{
+		Type: "go",
+		Go: &GoBuild{
+			Cmd:        "./cmd/" + s.Name,
+			OutputName: s.Name,
+		},
+	}
+}
+
+// goRunCmdForService returns the `go run` target package for a host-mode
+// service — its effective GoBuild.cmd (the same package `forge build`
+// compiles), so the host-run target tracks the build target exactly
+// instead of a hardcoded ./cmd. Falls back to ./cmd/<name> for a service
+// whose effective build isn't a GoBuild (docker/shell), which has no
+// meaningful go-run target but still needs a sane string.
+func goRunCmdForService(s ServiceEntity) string {
+	if b := s.EffectiveBuild(); b.Type == "go" && b.Go != nil && b.Go.Cmd != "" {
+		return b.Go.Cmd
+	}
+	return "./cmd/" + s.Name
 }
 
 // EffectiveBuildCmd returns the shell command the external-build

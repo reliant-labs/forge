@@ -785,6 +785,9 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 		WorkingDir: host.WorkingDir,
 		ProjectDir: projectDirForKCL(),
 		Command:    svc.Command,
+		// go-run target = the service's KCL GoBuild.cmd (the same package
+		// `forge build` compiles), not a hardcoded ./cmd.
+		GoRunCmd: goRunCmdForService(svc),
 	}
 	cmd := hostlaunch.BuildCmd(ctx, svc.Name, spec)
 

@@ -463,9 +463,10 @@ func qualifyConstructorType(ctorType, alias string) string {
 }
 
 // GenerateProviders writes internal/app/providers.go ONCE — the owned
-// Infra + OpenInfra (scaffold-once, never overwritten; same os.Stat guard
-// as GenerateSetup). The injector fills component Deps from Infra fields by
-// type; the user grows this file as the injector reports missing providers.
+// Infra + OpenInfra (scaffold-once, never overwritten; os.Stat guard below).
+// compose.go (NewComponents) wires each component's Deps INLINE off these
+// Infra fields; the user grows this file as NewComponents reports missing
+// providers.
 func GenerateProviders(modulePath, databaseDriver string, ormEnabled bool, projectDir string) error {
 	appDir := filepath.Join(projectDir, "internal", "app")
 	path := filepath.Join(appDir, "providers.go")

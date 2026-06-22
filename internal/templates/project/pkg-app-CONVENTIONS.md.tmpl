@@ -1,35 +1,35 @@
 # pkg/app conventions
 
-`pkg/app` is now a thin user-owned substrate. The LIVE runtime
-dependency-injection composition lives in **`internal/app`**
-(FORGE_SHAPE_REDESIGN §2): the generated `cmd/server.go` runs
+`pkg/app` is now a thin substrate (test harness + migrations). The LIVE
+runtime dependency-injection composition lives in **`internal/app`**: the
+generated `cmd/<bin>/cmd/serve.go` runs
 
 ```
-OpenInfra (internal/app/providers.go — yours)
-  → Build      (internal/app/inject_gen.go — generated, by-type DI)
-  → PostBuild  (internal/app/post_build.go — yours, two-phase setters)
-  → mount via  internal/app/inventory_gen.go (data-only mount table)
+OpenInfra    (internal/app/providers.go — yours, opens DB/NATS/clients)
+  → NewComponents (internal/app/compose.go — generated, EXPLICIT inline wiring)
+  → mount/supervise via internal/app/mounts_services.go + lifecycle.go
   → serverkit.Run
 ```
 
 The old name-matched `pkg/app` DI unit (`bootstrap.go`, `wire_gen.go`,
 `services_gen.go`, `services.go`, and the `appkit.Def`/`ServiceDef`/`Run`
-table) has been **retired**. Construction is typed and owned, resolved by
-interface, not by string-keyed name match.
+table) has been **retired**, along with the by-type injector. Construction is
+EXPLICIT: `compose.go` constructs every handler/worker/operator as a local
+value with its `Deps` wired inline off the owned `*Infra` — no string-keyed
+name match, no hidden construction order.
 
 ## What's left under pkg/app
 
-- `app_gen.go` (generated) — a minimal `*App` carrier (`DB` / `ORM` +
-  the embedded `*AppExtras`). It exists so the user-owned `setup.go`
-  compiles.
-- `app_extras.go` (yours) — the `AppExtras` extension surface.
-- `setup.go` (yours) — infrastructure construction. NOTE: in the §2
-  model, infra construction belongs in `internal/app/providers.go`
-  (`OpenInfra`); the `setup.go` ↔ `providers.go` reconciliation is a
-  known follow-up.
-- `post_bootstrap.go` (yours) — post-construction hook reference.
 - `testing.go` (generated) — the per-component test harness (below).
-- `migrate.go` (generated) — embedded-migration support.
+- `migrate.go` (generated) — embedded-migration support (`AutoMigrate`).
+- `CONVENTIONS.md` (this file).
+
+To change WHAT fills a component's `Deps` field, edit
+`internal/app/providers.go` (the owned `Infra` + `OpenInfra`). A
+collaborator `NewComponents` reports as "no provider" becomes a new field on
+`Infra`, constructed in `OpenInfra`. To customize the composition by hand
+(carved authz, a cross-edge, a late-bound setter), `forge disown
+internal/app/compose.go` and own the bytes.
 
 ## Where do per-RPC nil checks belong? (Spoiler: nowhere.)
 

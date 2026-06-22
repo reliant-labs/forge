@@ -48,9 +48,9 @@ func writeInfra(t *testing.T, projectDir, fieldsBody string) {
 
 func readInject(t *testing.T, projectDir string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(projectDir, "internal", "app", "inject_gen.go"))
+	data, err := os.ReadFile(filepath.Join(projectDir, "internal", "app", "compose.go"))
 	if err != nil {
-		t.Fatalf("read inject_gen.go: %v", err)
+		t.Fatalf("read compose.go: %v", err)
 	}
 	return string(data)
 }
@@ -74,7 +74,7 @@ func TestGenerateInject_TypeTopoOrder(t *testing.T) {
 		{Name: "UserService", ModulePath: "example.com/proj"},
 		{Name: "BillingService", ModulePath: "example.com/proj"},
 	}
-	err := GenerateInject(InjectGenInput{
+	err := GenerateCompose(InjectGenInput{
 		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
 		Services:   services,
 	})
@@ -82,8 +82,8 @@ func TestGenerateInject_TypeTopoOrder(t *testing.T) {
 		t.Fatalf("GenerateInject: %v", err)
 	}
 	out := readInject(t, dir)
-	ui := strings.Index(out, "s.User =")
-	bi := strings.Index(out, "s.Billing =")
+	ui := strings.Index(out, "c.User =")
+	bi := strings.Index(out, "c.Billing =")
 	if ui < 0 || bi < 0 {
 		t.Fatalf("missing assignments in:\n%s", out)
 	}
@@ -107,7 +107,7 @@ func TestGenerateInject_MissingProviderIsLoud(t *testing.T) {
 	writeComponentDeps(t, dir, "internal/handlers", "billing", "billing", "\tStripe StripeClient")
 	appendType(t, dir, "internal/handlers/billing", "type StripeClient interface{ Charge() }")
 
-	err := GenerateInject(InjectGenInput{
+	err := GenerateCompose(InjectGenInput{
 		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
 		Services:   []ServiceDef{{Name: "BillingService", ModulePath: "example.com/proj"}},
 	})
@@ -130,7 +130,7 @@ func TestGenerateInject_OptionalMissingIsSilent(t *testing.T) {
 		"\t// forge:optional-dep\n\tStripe StripeClient")
 	appendType(t, dir, "internal/handlers/billing", "type StripeClient interface{ Charge() }")
 
-	err := GenerateInject(InjectGenInput{
+	err := GenerateCompose(InjectGenInput{
 		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
 		Services:   []ServiceDef{{Name: "BillingService", ModulePath: "example.com/proj"}},
 	})
@@ -150,7 +150,7 @@ func TestGenerateInject_ConventionalDeps(t *testing.T) {
 	writeComponentDeps(t, dir, "internal/handlers", "user", "user",
 		"\tLogger *slog.Logger\n\tConfig *config.Config")
 
-	err := GenerateInject(InjectGenInput{
+	err := GenerateCompose(InjectGenInput{
 		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
 		Services:   []ServiceDef{{Name: "UserService", ModulePath: "example.com/proj"}},
 	})
@@ -173,7 +173,7 @@ func TestGenerateInject_ScalarIsConfigNotMissing(t *testing.T) {
 	dir := newInjectProject(t)
 	writeComponentDeps(t, dir, "internal/handlers", "user", "user", "\tMaxRetries int")
 
-	err := GenerateInject(InjectGenInput{
+	err := GenerateCompose(InjectGenInput{
 		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
 		Services:   []ServiceDef{{Name: "UserService", ModulePath: "example.com/proj"}},
 	})
@@ -204,7 +204,7 @@ func TestGenerateInject_ScalarResolvesFromConfig(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	err := GenerateInject(InjectGenInput{
+	err := GenerateCompose(InjectGenInput{
 		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
 		Services:   []ServiceDef{{Name: "WtiService", ModulePath: "example.com/proj"}},
 	})

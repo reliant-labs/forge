@@ -57,13 +57,20 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// InjectComponentData is one component's rendered inputs for the Build
-// injector body: the import line, the constructor selector, and the
+// composeField is one field on the Components struct (one row of the typed
+// bag): the exported field name + its concrete component type.
+type composeField struct {
+	FieldName string
+	Alias     string
+	FieldType string
+}
+
+// InjectComponentData is one component's rendered inputs for the NewComponents
+// construction body: the import line, the constructor selector, and the
 // ordered Deps-literal assignments resolved by type.
 type InjectComponentData struct {
 	// FieldName is the exported field on *Services (e.g. "Billing",
@@ -113,7 +120,7 @@ type MissingProvider struct {
 	Type string
 }
 
-// InjectGenData is the rendered template input for inject_gen.go.tmpl.
+// InjectGenData is the rendered template input for compose.go.tmpl.
 type InjectGenData struct {
 	Module            string
 	NeedsAuthorizer   bool
@@ -123,6 +130,9 @@ type InjectGenData struct {
 	// component (incl. the zero-component case) must not import it or the
 	// generated file fails to compile on an unused import.
 	NeedsFmt bool
+	// Fields is the Components struct field set (one per component, typed as
+	// its concrete handler/worker/operator type), in stable FieldName order.
+	Fields []composeField
 	// Order is the topo-sorted construction sequence (producers first).
 	Order []InjectComponentData
 	// HasCycle / CycleEdges drive the two-phase setter stub block.
@@ -130,17 +140,22 @@ type InjectGenData struct {
 	CycleEdges []BuildEdge
 }
 
-// GenerateInject emits internal/app/inject_gen.go. Returns nil with no
-// file written when there are no components. Returns an error listing
-// every MissingProvider when a required collaborator field resolves to no
-// producer and the matcher PROVES the Infra struct has no assignable
-// field.
+// GenerateCompose emits internal/app/compose.go: the EXPLICIT per-binary
+// component construction site (the Components typed bag + NewComponents) that
+// REPLACES the retired generated injector (inject_gen.go + app_services_gen.go).
+// It constructs every registered component in TYPE-topological order and fills
+// each Deps field BY TYPE — from another constructed component, from a field on
+// the owned *Infra struct (providers.go), or from the conventional
+// Logger/Config sources.
 //
-// This is the live DI path: cmd-server composes OpenInfra → Build →
-// PostBuild → Inventory. The old name-matched wire_gen + appkit.Run have
-// been retired; the generated injector emitted here is the sole wiring
-// mechanism.
-func GenerateInject(in InjectGenInput) error {
+// Returns an error listing every MissingProvider when a required collaborator
+// field resolves to no producer and the matcher PROVES the Infra struct has no
+// assignable field.
+//
+// This is the live composition path: cmd-server composes OpenInfra →
+// NewComponents → mount via the typed Mount<Svc> methods + WorkerList /
+// OperatorList. There is no by-type injector and no *Services god-struct.
+func GenerateCompose(in InjectGenInput) error {
 	comps, err := assembleBuildComponents(in)
 	if err != nil {
 		return err
@@ -148,18 +163,11 @@ func GenerateInject(in InjectGenInput) error {
 	comps = filterExternalComponents(in.ProjectDir, comps)
 	// No len(comps)==0 early-return: cmd/server.go imports internal/app
 	// unconditionally, so the package must exist and compile even with zero
-	// components. The template renders a valid empty Build over an empty
-	// Services in that case.
+	// components. The template renders a valid empty NewComponents over an
+	// empty Components bag in that case.
 
 	appDir := filepath.Join(in.ProjectDir, "internal", "app")
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
-		return err
-	}
-
-	// Emit the typed Services registry struct (one field per component,
-	// typed as its Service interface) so inject_gen + inventory_gen + the
-	// owned providers/post_build all compile against the same registry.
-	if err := generateInjectServices(comps, in.ModulePath, in.ProjectDir, in.Checksums); err != nil {
 		return err
 	}
 
@@ -238,22 +246,38 @@ func GenerateInject(in InjectGenInput) error {
 		return missingProviderError(missing)
 	}
 
+	// Fields: the Components struct rows, one per component typed as its
+	// concrete handler/worker/operator type, in stable FieldName order so the
+	// file is byte-stable.
+	fieldComps := make([]BuildComponent, len(comps))
+	copy(fieldComps, comps)
+	sort.Slice(fieldComps, func(i, j int) bool { return fieldComps[i].FieldName < fieldComps[j].FieldName })
+	fields := make([]composeField, 0, len(fieldComps))
+	for _, c := range fieldComps {
+		ft := c.compFieldType
+		if ft == "" {
+			ft = "*" + c.Alias + ".Service"
+		}
+		fields = append(fields, composeField{FieldName: c.FieldName, Alias: c.Alias, FieldType: ft})
+	}
+
 	data := InjectGenData{
 		Module:            in.ModulePath,
 		NeedsAuthorizer:   needsAuthorizer,
 		NeedsConfigImport: needsConfig,
 		NeedsFmt:          needsFmt,
+		Fields:            fields,
 		Order:             rendered,
 		HasCycle:          plan.HasCycle(),
 		CycleEdges:        plan.CycleEdges,
 	}
 
-	content, err := templates.ProjectTemplates().Render("inject_gen.go.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("compose.go.tmpl", data)
 	if err != nil {
-		return fmt.Errorf("render inject_gen.go.tmpl: %w", err)
+		return fmt.Errorf("render compose.go.tmpl: %w", err)
 	}
-	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "inject_gen.go"), content, in.Checksums); err != nil {
-		return fmt.Errorf("write internal/app/inject_gen.go: %w", err)
+	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "compose.go"), content, in.Checksums); err != nil {
+		return fmt.Errorf("write internal/app/compose.go: %w", err)
 	}
 	return nil
 }
@@ -399,7 +423,7 @@ func missingProviderError(missing []MissingProvider) error {
 		return missing[i].Field < missing[j].Field
 	})
 	var b strings.Builder
-	b.WriteString("the generated injector (internal/app/inject_gen.go) has Deps fields with no provider.\n\n")
+	b.WriteString("the explicit component construction site (internal/app/compose.go) has Deps fields with no provider.\n\n")
 	b.WriteString("Each required collaborator must resolve to either another registered component (by its Service interface type) or a field on the owned *Infra struct (internal/app/providers.go). The following could not be resolved:\n\n")
 	for _, m := range missing {
 		fmt.Fprintf(&b, "  - %s.Deps.%s (%s) has no provider: add a field of an assignable type to Infra in internal/app/providers.go (or its construction to OpenInfra), then re-run `forge generate`.\n", m.Component, m.Field, m.Type)
@@ -438,41 +462,6 @@ func qualifyConstructorType(ctorType, alias string) string {
 	return stars + alias + "." + t
 }
 
-// generateInjectServices emits internal/app/app_services_gen.go: the typed
-// Services struct, one field per component typed as its Service interface.
-// Stable component order (FieldName) so the file is byte-stable.
-func generateInjectServices(comps []BuildComponent, modulePath, projectDir string, cs *checksums.FileChecksums) error {
-	type svcField struct {
-		FieldName  string
-		Alias      string
-		ImportPath string
-		FieldType  string
-	}
-	sorted := make([]BuildComponent, len(comps))
-	copy(sorted, comps)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].FieldName < sorted[j].FieldName })
-	fields := make([]svcField, 0, len(sorted))
-	for _, c := range sorted {
-		ft := c.compFieldType
-		if ft == "" {
-			ft = "*" + c.Alias + ".Service"
-		}
-		fields = append(fields, svcField{FieldName: c.FieldName, Alias: c.Alias, ImportPath: c.ImportPath, FieldType: ft})
-	}
-	data := struct {
-		Module     string
-		Components []svcField
-	}{Module: modulePath, Components: fields}
-	content, err := templates.ProjectTemplates().Render("app_services_gen.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render app_services_gen.go.tmpl: %w", err)
-	}
-	if err := writeForgeOwned(projectDir, filepath.Join("internal", "app", "app_services_gen.go"), content, cs); err != nil {
-		return fmt.Errorf("write internal/app/app_services_gen.go: %w", err)
-	}
-	return nil
-}
-
 // GenerateProviders writes internal/app/providers.go ONCE — the owned
 // Infra + OpenInfra (scaffold-once, never overwritten; same os.Stat guard
 // as GenerateSetup). The injector fills component Deps from Infra fields by
@@ -498,30 +487,12 @@ func GenerateProviders(modulePath, databaseDriver string, ormEnabled bool, proje
 	return writeUserScaffold(path, content)
 }
 
-// GeneratePostBuild writes internal/app/post_build.go ONCE — the owned
-// two-phase wiring hook (scaffold-once, no-op default). Runs after Build.
-func GeneratePostBuild(projectDir string) error {
-	appDir := filepath.Join(projectDir, "internal", "app")
-	path := filepath.Join(appDir, "post_build.go")
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	}
-	if err := os.MkdirAll(appDir, 0o755); err != nil {
-		return err
-	}
-	content, err := templates.ProjectTemplates().Render("post_build.go.tmpl", struct{}{})
-	if err != nil {
-		return fmt.Errorf("render post_build.go.tmpl: %w", err)
-	}
-	return writeUserScaffold(path, content)
-}
-
-// GenerateLifecycle emits internal/app/lifecycle_gen.go: the supervised-
+// GenerateLifecycle emits internal/app/lifecycle.go: the supervised-
 // component surface (WorkerList / OperatorList / HasOperators / RunOperators)
-// over the constructed *Services. Where the Mount inventory is the HTTP
-// surface, this is the worker/operator surface the cmd layer packs into
-// serverkit.Server. Returns nil with no file written when there are no
-// components.
+// over the constructed *Components. Where mounts_services.go is the HTTP
+// surface, this is the worker/operator surface the cmd layer registers onto
+// serverkit.Server. Always written (no len==0 early-return) so cmd/server.go's
+// references resolve even with zero supervised components.
 func GenerateLifecycle(in InjectGenInput) error {
 	comps, err := assembleBuildComponents(in)
 	if err != nil {
@@ -529,7 +500,7 @@ func GenerateLifecycle(in InjectGenInput) error {
 	}
 	comps = filterExternalComponents(in.ProjectDir, comps)
 	// No len(comps)==0 early-return: cmd/server.go reads app.WorkerList /
-	// app.OperatorList / app.RunOperators over *Services, so lifecycle_gen.go
+	// app.OperatorList / app.RunOperators over *Components, so lifecycle.go
 	// must exist even with zero supervised components (the template emits
 	// valid no-op WorkerList/OperatorList/RunOperators in that case).
 
@@ -565,12 +536,12 @@ func GenerateLifecycle(in InjectGenInput) error {
 		Operators:        operators,
 	}
 
-	content, err := templates.ProjectTemplates().Render("lifecycle_gen.go.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("lifecycle.go.tmpl", data)
 	if err != nil {
-		return fmt.Errorf("render lifecycle_gen.go.tmpl: %w", err)
+		return fmt.Errorf("render lifecycle.go.tmpl: %w", err)
 	}
-	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "lifecycle_gen.go"), content, in.Checksums); err != nil {
-		return fmt.Errorf("write internal/app/lifecycle_gen.go: %w", err)
+	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "lifecycle.go"), content, in.Checksums); err != nil {
+		return fmt.Errorf("write internal/app/lifecycle.go: %w", err)
 	}
 	return nil
 }

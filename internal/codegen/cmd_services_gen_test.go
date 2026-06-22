@@ -72,8 +72,8 @@ func TestGenerateCmdGroups(t *testing.T) {
 		mountExpr string
 		use       string
 	}{
-		{filepath.Join("services", "admin-server.go"), "func NewAdminServerCmd(deps cmd.Deps)", "(*app.Services).MountAdminServer", `Use:   "admin-server",`},
-		{filepath.Join("services", "billing.go"), "func NewBillingCmd(deps cmd.Deps)", "(*app.Services).MountBilling", `Use:   "billing",`},
+		{filepath.Join("services", "admin-server.go"), "func NewAdminServerCmd(deps cmd.Deps)", "(*app.Components).MountAdminServer", `Use:   "admin-server",`},
+		{filepath.Join("services", "billing.go"), "func NewBillingCmd(deps cmd.Deps)", "(*app.Components).MountBilling", `Use:   "billing",`},
 	} {
 		raw, err := os.ReadFile(filepath.Join(base, tc.file))
 		if err != nil {
@@ -86,7 +86,7 @@ func TestGenerateCmdGroups(t *testing.T) {
 			}
 		}
 		// Selection must be typed — no string positional selection.
-		if strings.Contains(content, `(*app.Services).MountByName`) {
+		if strings.Contains(content, `(*app.Components).MountByName`) {
 			t.Errorf("%s uses string selection — must be typed mount method expression\n%s", tc.file, content)
 		}
 		assertParses(t, tc.file, content)
@@ -232,10 +232,10 @@ func TestGenerateCmdGroups_MountNameCollision(t *testing.T) {
 	// Colliding service: cmd-group must call the collision-aware mount METHOD,
 	// matching the Svc-prefixed name inventory_gen emits.
 	billing := mustReadFile(t, filepath.Join(base, "billing.go"))
-	if !strings.Contains(billing, "(*app.Services).MountSvcBilling") {
-		t.Errorf("billing.go must call collision-aware (*app.Services).MountSvcBilling:\n%s", billing)
+	if !strings.Contains(billing, "(*app.Components).MountSvcBilling") {
+		t.Errorf("billing.go must call collision-aware (*app.Components).MountSvcBilling:\n%s", billing)
 	}
-	if strings.Contains(billing, "(*app.Services).MountBilling,") {
+	if strings.Contains(billing, "(*app.Components).MountBilling,") {
 		t.Errorf("billing.go must NOT call the plain MountBilling (mismatch with inventory_gen):\n%s", billing)
 	}
 	// The constructor name stays PLAIN (NewBillingCmd) + Use "billing" — it is a
@@ -252,8 +252,8 @@ func TestGenerateCmdGroups_MountNameCollision(t *testing.T) {
 
 	// Non-colliding service is unchanged — plain MountUser.
 	user := mustReadFile(t, filepath.Join(base, "user.go"))
-	if !strings.Contains(user, "(*app.Services).MountUser") {
-		t.Errorf("user.go must call plain (*app.Services).MountUser:\n%s", user)
+	if !strings.Contains(user, "(*app.Components).MountUser") {
+		t.Errorf("user.go must call plain (*app.Components).MountUser:\n%s", user)
 	}
 	assertParses(t, "user.go", user)
 }

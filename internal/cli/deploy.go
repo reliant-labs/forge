@@ -1512,6 +1512,15 @@ func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, gro
 		return nil
 	}
 
+	// The secret manifests are namespace-scoped, but the Namespace object
+	// itself lives in the MAIN manifest stream applied AFTER this — so on a
+	// fresh cluster the namespace doesn't exist yet and the secret apply
+	// fails "namespaces \"…\" not found". Ensure it first (idempotent; the
+	// later full apply re-applies it with labels). See cluster.EnsureNamespace.
+	if err := cluster.EnsureNamespace(ctx, kubeContext, namespace); err != nil {
+		return fmt.Errorf("ensure namespace %q before secrets: %w", namespace, err)
+	}
+
 	fmt.Printf("Applying %d secret manifest(s) into namespace %s...\n", len(mans), namespace)
 	if err := cluster.KubectlApply(ctx, kubeContext, stream); err != nil {
 		return fmt.Errorf("apply k8s secrets: %w", err)

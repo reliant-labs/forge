@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 
 	"go.yaml.in/yaml/v3"
@@ -237,32 +238,23 @@ database:
 	}
 }
 
-// TestNormalizeForWrite_BuildVersionVarSurvives confirms a config with
-// build.version_var set survives Load → NormalizeForWrite → Marshal →
-// reload. BuildConfig has no derived default, so NormalizeForWrite must
-// leave it verbatim rather than dropping it.
-func TestNormalizeForWrite_BuildVersionVarSurvives(t *testing.T) {
+// TestLoadStrict_RejectsBuildSection confirms forge.yaml carries NO build
+// config: the `build:` block was removed (build is a per-service, per-env
+// polymorphic declaration in KCL), so a `build:` key must be REJECTED as
+// an unknown key rather than silently ignored. This is the back-compat
+// guardrail — a project upgrading from the old build.version/version_var
+// shape gets a loud error pointing it at the KCL GoBuild ldflags path.
+func TestLoadStrict_RejectsBuildSection(t *testing.T) {
 	src := minimalForgeYAML + `
 build:
     version_var: github.com/acme/app/internal/buildinfo.Version
 `
-	cfg, err := LoadStrict([]byte(src), "build.yaml", usersComponent()...)
-	if err != nil {
-		t.Fatalf("load: %v", err)
+	_, err := LoadStrict([]byte(src), "build.yaml", usersComponent()...)
+	if err == nil {
+		t.Fatal("expected LoadStrict to reject a `build:` section, got nil error")
 	}
-	if cfg.Build.VersionVar != "github.com/acme/app/internal/buildinfo.Version" {
-		t.Fatalf("load dropped build.version_var, got %q", cfg.Build.VersionVar)
-	}
-	out, err := yaml.Marshal(NormalizeForWrite(cfg))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	re, err := LoadStrict(out, "roundtrip.yaml", usersComponent()...)
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if re.Build.VersionVar != "github.com/acme/app/internal/buildinfo.Version" {
-		t.Errorf("build.version_var lost in round-trip (got %q):\n%s", re.Build.VersionVar, out)
+	if !strings.Contains(err.Error(), "build") {
+		t.Errorf("error should mention the rejected `build` key, got: %v", err)
 	}
 }
 

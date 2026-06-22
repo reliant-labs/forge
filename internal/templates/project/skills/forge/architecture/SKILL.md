@@ -21,59 +21,81 @@ Two lifecycles drive everything:
 
 ## Project Structure
 
+> **This is the canonical shape forge generates today.** Older docs and existing trees may still show top-level `handlers/`, `workers/`, `operators/`, `pkg/app/{bootstrap,setup,wire_gen}.go`, a string-keyed service registry, and `serverkit.Run(..., names)`. That is the deprecated layout — the shape below is what `forge new` / `forge add` actually scaffold.
+
+The principle: **express the application as explicit, owned, typed Go — not as a string-keyed registry projected through a clever framework.** App code lives under `internal/`. Top-level is reserved for `cmd/` (entrypoints) and `api/` (genuinely-external CRD types). `pkg/` is ONLY for code with real external importers you support as public API; today there are none, so nothing app-internal lives there.
+
+Components nest under a role-named subtree of `internal/`: services go in `internal/handlers/<svc>/`, workers in `internal/workers/<name>/`, operators in `internal/operators/<name>/`. The role subtree (`handlers`/`workers`/`operators`) lives under `internal/` — not top-level — so nothing app-internal advertises a public API. Within each component's directory the owned and generated files are co-located (one service = one `internal/handlers/<svc>/` dir holding contract.go + impl + handlers_gen.go); generated service mocks land in the shared `internal/handlers/mocks/` directory (package `mocks`, one `<svc>_mock.go` per service).
+
 ```
-cmd/                          # Application entrypoints (one cobra root)
-  main.go                     #   Root command (regenerated)
-  server.go                   #   `server [services...]` — serverkit shim (regenerated)
-  services_gen.go             #   One subcommand per RegisteredServices row (regenerated)
-  commands.go                 #   userCommands() — YOUR extra subcommands (scaffolded once)
-proto/services/<svc>/v1/      # Protobuf service definitions (API contracts)
-handlers/<svc>/               # Go handler implementations (YOUR business logic)
-  service.go                  #   Handler methods
-  authorizer.go               #   Custom authorization (yours to edit)
-  authorizer_gen.go           #   Generated RBAC (regenerated — do not edit)
-  handlers_crud_ops_gen.go    #   Generated per-RPC CRUD op constructors (regenerated — do not edit)
-  handlers_crud.go            #   Thin CRUD RPC delegations (YOURS — scaffolded once, new RPCs appended)
-  handlers_crud_test.go       #   CRUD lifecycle test (YOURS — scaffolded once)
-frontends/<name>/             # Next.js frontends
-  src/app/                    #   App Router pages and layouts
-  src/hooks/                  #   Generated + custom hooks
-  src/lib/                    #   Utilities and Connect client setup
-gen/                          # ALL generated code — NEVER hand-edit
-  go/                         #   Go stubs (protoc-gen-go, protoc-gen-connect-go)
-  ts/                         #   TypeScript clients
-internal/db/                  # Database layer
-  <entity>_orm.go             #   Generated entity struct + ORM CRUD functions, projected from the applied schema (regenerated)
-  <entity>_queries.go         #   Custom queries (YOURS — sibling files are never touched)
-internal/<name>/              # Internal Go packages with interface contracts
-  contract.go                 #   Interface definition
-  <name>.go                   #   Implementation
-pkg/app/                      # Application wiring
-  bootstrap.go                #   Generated service registration — DO NOT EDIT
-  setup.go                    #   Custom wiring — YOUR hook (//forge:allow)
-  testing.go                  #   Test harness for integration tests
-pkg/middleware/               # Thin auth-policy file (user-owned) + auth_gen.go/tenant_gen.go (generated)
-pkg/config/                   # Config struct + loader
+cmd/                      # entrypoints ONLY: one cobra root + real per-command subcommands
+  main.go                 #   root
+  <svc>.go / <binary>.go  #   one real subcommand per server/binary (owned, ~5 lines via serverCmd helper)
+api/v1alpha1/             # CRD types — genuinely external (kubebuilder convention, imported by clients)
+internal/                 # DEFAULT HOME for everything not imported outside the module
+  handlers/<svc>/         #   a service: contract.go + impl + handlers_gen.go co-located in ONE dir
+  workers/<name>/         #   workers live under internal/workers/, NOT top-level workers/
+  operators/<name>/       #   operators live under internal/operators/, NOT top-level operators/
+  app/                    #   composition: owned providers.go + generated compose.go — was pkg/app
+  config/                 #   typed config — was pkg/config
+  middleware/             #   thin policy file — was pkg/middleware
+  db/                     #   db layer (unchanged)
+gen/                      # all generated stubs/clients/mocks
+proto/ db/ deploy/ e2e/   # unchanged
+```
+
+Per-directory detail:
+
+```
+cmd/                          # one cobra root + one real owned subcommand per binary
+internal/handlers/<svc>/      # service: contract + impl + generated handlers, co-located
+  contract.go                 #   Service interface, Deps struct, New(Deps) (yours)
+  <svc>.go                    #   business-logic implementation (yours)
+  handlers_gen.go             #   generated Connect handlers — do not edit
+  authorizer_gen.go           #   generated RBAC — do not edit
+  authorizer.go               #   custom authorization (yours)
+  handlers_crud.go            #   thin CRUD RPC delegations (yours — scaffolded once, RPCs appended)
+  handlers_crud_test.go       #   CRUD lifecycle test (yours — scaffolded once)
+internal/handlers/mocks/      # generated cross-service mocks
+internal/workers/<name>/      # workers: worker.go + worker_test.go (one dir per worker)
+internal/operators/<name>/    # operators: controller + types (one dir per operator)
+internal/app/                 # explicit composition — owned providers seam + generated construction site
+  providers.go                #   Infra + OpenInfra(ctx, cfg, logger) — yours (the owned provider set)
+  compose.go                  #   Components + NewComponents(infra) — forge-owned, regenerated (disown to hand-own)
+  testing.go                  #   integration-test harness
+internal/config/              # generated typed config (proto-driven) — one config for ALL binary kinds
+internal/middleware/          # thin auth-policy file (yours) + auth_gen.go/tenant_gen.go (generated)
+internal/db/                  # database layer
+  <entity>_orm.go             #   generated entity struct + ORM, projected from the applied schema
+  <entity>_queries.go         #   custom queries (yours — sibling files never touched)
+api/v1alpha1/                 # CRD types (genuinely external)
+proto/services/<svc>/v1/      # protobuf service definitions (API contracts)
+gen/                          # ALL generated code — never hand-edit
+  go/ ts/                     #   Go stubs, TypeScript clients
+frontends/<name>/             # Next.js frontends (src/app, src/hooks, src/lib)
 db/migrations/                # SQL migrations — THE schema source of truth
 db/queries/                   # SQL query definitions
-deploy/kcl/<env>/             # KCL deployment manifests per environment
-e2e/                          # End-to-end tests
-forge.yaml                    # Project config: services, ports, frontends, packs
-forge_descriptor.json         # Proto descriptor data (generated)
+deploy/kcl/<env>/             # KCL deployment manifests per environment (+ per-env config)
+e2e/                          # end-to-end tests
+forge.yaml                    # top-level project config: identity, features, deploy provider
+forge_descriptor.json         # proto descriptor data (generated)
 ```
+
+Why not top-level `handlers/`, `workers/`, `operators/`, or `pkg/app`: a top-level directory falsely advertises public API in an about-to-be-open-sourced repo. These are imported by nobody external, so the role subtree is nested under `internal/` (`internal/handlers/<svc>/`, `internal/workers/<name>/`, `internal/operators/<name>/`). The old `handlers/<svc>/ → internal/<svc>/` two-tier split (6–7 files across 2 dirs, ~25% pure shim forwarders) is gone — generated and owned files are co-located in one component directory. (Forge's own shipped libraries under `forge/pkg/*` are a different module — genuine library code, and they stay.)
 
 ## Generated vs Hand-Written
 
 | Forge generates (safe to regenerate) | You own (Forge never touches) |
 |--------------------------------------|-------------------------------|
-| `gen/` — Go stubs, TS clients, mocks | `handlers/<svc>/service.go` — business logic |
-| `pkg/app/bootstrap.go` — service wiring | `pkg/app/setup.go` — custom wiring |
-| `pkg/middleware/auth_gen.go`, `tenant_gen.go` — auth/tenant codegen | `internal/db/` — mappers, custom queries, schema |
-| `handlers/<svc>/*_gen.go` — CRUD ops, authorizer | `handlers/<svc>/authorizer.go` — custom auth |
-| `internal/db/<entity>_orm.go` — entity struct + ORM (projected from the applied schema) | `handlers/<svc>/handlers_crud.go` — thin CRUD delegations (scaffolded once, appended-to for new RPCs) |
-| Frontend hooks (`*-hooks.ts`) | `db/migrations/` — schema source of truth |
-| `forge_descriptor.json` | `db/queries/` — SQL queries |
-| `frontends/<name>/src/lib/connect.ts` | `internal/<pkg>/` — internal packages |
+| `gen/` — Go stubs, TS clients, mocks | `internal/handlers/<svc>/<svc>.go` + `contract.go` — business logic |
+| `internal/handlers/<svc>/handlers_gen.go` — Connect handlers | `internal/app/providers.go` — the owned `Infra`/`OpenInfra` seam (generated `compose.go` builds off it; `forge disown internal/app/compose.go` to hand-own the construction site) |
+| `internal/app/compose.go` — generated `Components`/`NewComponents(infra)` (forge-owned, regenerated every run) | `internal/db/` — mappers, custom queries, schema |
+| `internal/middleware/auth_gen.go`, `tenant_gen.go` — auth/tenant codegen | `internal/handlers/<svc>/authorizer.go` — custom auth |
+| `internal/handlers/<svc>/authorizer_gen.go` — generated RBAC | `internal/handlers/<svc>/handlers_crud.go` — thin CRUD delegations (scaffolded once, appended-to for new RPCs) |
+| `internal/db/<entity>_orm.go` — entity struct + ORM (projected from the applied schema) | `db/migrations/` — schema source of truth |
+| Frontend hooks (`*-hooks.ts`) | `db/queries/` — SQL queries |
+| `forge_descriptor.json` | `cmd/<binary>.go` — owned per-command subcommands |
+| `frontends/<name>/src/lib/connect.ts` | — |
 
 **Rule of thumb**: If it has `_gen` in the name or lives in `gen/`, it's regenerated. Everything else is yours.
 
@@ -83,7 +105,7 @@ forge_descriptor.json         # Proto descriptor data (generated)
 |-------|--------|-----------|
 | **Pure forge-space** | `// Code generated by forge. DO NOT EDIT.` + `// forge-owned: regenerated every run — do not edit (forge disown to take ownership)` header pair, plus an embedded `// forge:hash=<sha256>` self-certification marker (usually a `_gen` filename, but also `internal/db/*_orm.go` and `internal/db/types.go`) + `// Source: …` pointer | Regenerated on every `forge generate`. The embedded hash is the pristine-check: it travels WITH the file through clones, branches, and worktrees, so the drift guard catches hand-edits anywhere — edits abort regeneration until you move them to an extension point, pass `--force`, or take the one-way door (`forge disown <path> --reason ...`). |
 | **Scaffold-with-placeholders** | `_gen` filename + body contains `// FORGE_SCAFFOLD: <what to do>` | Regenerated as long as any marker remains. The moment every `FORGE_SCAFFOLD:` line is removed the file becomes user-owned and forge stops overwriting it. The retired CRUD marker-test pair (`handlers_crud_gen_test.go` / `handlers_crud_integration_test.go`) used this tier; its replacement, `handlers_crud_test.go`, is pure user-space (scaffolded once). No current generator output uses this tier, but the semantics still apply to any marker file left on disk. |
-| **Pure user-space** | `// yours: scaffolded once, never touched again — forge will not overwrite this file` header | Scaffolded once, never overwritten. The body may contain `// FORGE_SCAFFOLD: …` placeholder TODO markers (e.g. `setup.go`'s "wire your custom dependencies here") flagging the user's job — markers are in-body TODOs, never ownership banners. |
+| **Pure user-space** | `// yours: scaffolded once, never touched again — forge will not overwrite this file` header | Scaffolded once, never overwritten. The body may contain `// FORGE_SCAFFOLD: …` placeholder TODO markers (e.g. a `handlers_crud.go` "fill in your CRUD delegation" stub) flagging the user's job — markers are in-body TODOs, never ownership banners. |
 
 `forge lint --scaffolds` enforces this:
 
@@ -108,20 +130,20 @@ proto/services/<svc>/v1/<svc>.proto
 db/migrations/*.up.sql (applied to a real ephemeral postgres shadow DB, introspected)
   + service-proto CRUD RPC shapes
   → forge generate → internal/db/<entity>_orm.go (entity struct + ORM)
-                     handlers_crud_ops_gen.go (per-RPC ops + ToProto/FromProto conversions)
+                     internal/handlers/<svc>/handlers_crud_ops_gen.go (per-RPC ops + ToProto/FromProto conversions)
                      frontend pages, nav, mocks
 
-internal/*/contract.go (Go interfaces)
-  → forge generate → mock_gen.go
+internal/handlers/<svc>/contract.go (Go interfaces)
+  → forge generate → internal/handlers/mocks/<svc>_mock.go
 
-forge_descriptor.json + handlers/<svc>/
-  → forge generate → handlers_crud_ops_gen.go, authorizer_gen.go
+forge_descriptor.json + internal/handlers/<svc>/
+  → forge generate → internal/handlers/<svc>/handlers_gen.go, authorizer_gen.go
                      (+ scaffold-once handlers_crud.go / handlers_crud_test.go)
 
 # Observability (logging, tracing, metrics, recovery, request-id) lives in
-# forge/pkg/observe as Connect interceptors wired in cmd/server.go — not
-# as per-package _gen.go wrappers. Pre-1.7 middleware_gen.go/tracing_gen.go/
-# metrics_gen.go files have been removed.
+# forge/pkg/observe as Connect interceptors composed via observe.Chain(observe.Deps{…})
+# on the cmd serve path (cmd/<bin>/cmd/serve.go) — not as per-package _gen.go
+# wrappers. Pre-1.7 middleware_gen.go/tracing_gen.go/metrics_gen.go files have been removed.
 
 gen/ts/ (TypeScript clients)
   → forge generate → frontends/<name>/src/hooks/*-hooks.ts
@@ -148,10 +170,13 @@ See `proto` for the annotation reference and CRUD naming conventions.
 Components (services, workers, operators) declare their own typed
 configuration as a **config block**: a message in
 `proto/config/v1/config.proto`, conventionally named `<Component>Config`,
-composed as a field on `AppConfig`. Scalar Deps fields
+composed as a field on `AppConfig`. One typed config — generated into
+`internal/config` — serves **server, CLI, and standalone-binary** kinds
+alike (via the cmdkit paved path); non-server shapes do NOT hand-roll
+`os.Getenv`, ad-hoc loggers, or hardcoded timeouts. Scalar Deps fields
 (string/int/bool/duration) are the antipattern this replaces — scalars
-are configuration, not collaborators, so wire_gen can never resolve them
-from App/AppExtras (they regenerate as typed zeros + TODOs forever).
+are configuration, not collaborators, so they belong in a `<Component>Config`
+block consumed as one typed `Cfg` field, never as naked scalar Deps fields.
 
 ```proto
 message TraderConfig {
@@ -179,20 +204,16 @@ type Deps struct {
 `forge generate` then:
 
 - emits `type TraderConfig struct {...}` + `Trader TraderConfig` on
-  `Config` in `pkg/config/config.go`, with env/flag/default loading for
-  every leaf and the `.env.example` entries;
-- wires `Cfg: cfg.Trader` in `pkg/app/wire_gen.go` **by type** — exactly
-  one `Config` field of the block type matches; two fields of the same
-  block type are a hard generate error listing the candidates;
-- projects per-env values: `max_per_tick: 50` in `config.<env>.yaml`
-  (flat snake_case leaf keys, same namespace as root fields) lands in
-  the env's generated ConfigMap + env var like any root field, and
-  `forge up --env=dev` injects it locally.
-
-Resolution precedence: an AppExtras field whose NAME matches the Deps
-field still wins (explicit user wiring); the type-based config-block
-match applies only when nothing else resolved. Keep leaf field names
-unique across blocks — the per-env yaml namespace is flat.
+  `Config` in `internal/config/config.go`, with env/flag/default loading
+  for every leaf and the `.env.example` entries;
+- `NewComponents` (in the generated `internal/app/compose.go`) passes the
+  block to the component **by type** — `trader.New(trader.Deps{Cfg: cfg.Trader})`.
+  Resolution is structural/compile-time: the typed field either matches
+  or it does not compile. There is no name-matched wiring layer.
+- projects per-env values into `deploy/kcl/<env>/` — KCL is the per-env
+  config surface, so `max_per_tick: 50` lives directly where the rest of
+  the env lives (logging, env vars), and `forge up --env=dev` injects it
+  locally. The old generate-time-only `config.<env>.yaml` files are gutted.
 
 `forge lint --config-deps` (also in `forge audit` as the `config_deps`
 category) flags naked-scalar Deps fields with a paste-ready block
@@ -205,7 +226,8 @@ field to `Cfg config.<Component>Config`, and run `forge generate`.
 | Boundary | Defined by | Enforced by |
 |----------|-----------|-------------|
 | **External API** | Proto (`.proto` files) with `forge.v1` annotations | Generated Connect stubs |
-| **Internal packages** | Go interfaces (`internal/<pkg>/contract.go`) | Compile-time + contract linter |
+| **Internal packages** | Go interfaces (`internal/handlers/<svc>/contract.go`) | Compile-time + contract linter |
+| **DI / wiring** | Interface-typed `Deps`, resolved by type in `internal/app/compose.go` (`NewComponents`, off the owned `providers.go` `Infra`/`OpenInfra`) | Compile-time (no name-matched lookup) |
 | **Database schema** | SQL migrations (`db/migrations/`) | Postgres at runtime |
 
 Contract enforcement is strict by default — every `internal/` package with exported methods must have a `contract.go` file. Configure exceptions in `forge.yaml`:
@@ -221,41 +243,63 @@ contracts:
 
 Behavior is read off real columns, no annotations: `deleted_at` ⇒ soft delete, `created_at`+`updated_at` ⇒ managed timestamps, `tenant_id` ⇒ tenant scoping, text columns ⇒ the generated list `search` filter. The wire messages in the service proto evolve independently; generated conversions map the intersection of wire fields and columns by name. See the `db` skill for the full model (type vocabulary, postgres DDL, evolution recipes).
 
-## Custom Wiring in setup.go
+## The composition root (`internal/app/providers.go` + `internal/app/compose.go`)
 
-`pkg/app/bootstrap.go` is generated and auto-registers services, workers, and internal packages. **Never edit it.**
-
-`pkg/app/setup.go` is yours. Use it to wire custom dependencies — database handles, external clients, feature flags, anything `bootstrap.go` can't know about:
+Wiring is **explicit, typed Go split across an owned provider seam and a generated construction site** — not a generated registration file plus a god-hook. The owned `internal/app/providers.go` declares an `Infra` provider set and `OpenInfra` (DB pool, NATS, k8s client, third-party clients, adapters, explicit interface bindings). The generated `internal/app/compose.go` declares a plain typed `Components` bag and `NewComponents`, which constructs the dependency closure in type-topological order and hands each component its `Deps` as **interface-typed fields, resolved by type — never by string name**:
 
 ```go
-// pkg/app/setup.go
-func Setup(app *App) error {
-    // Wire custom dependencies here
-    app.UserService.DB = app.Pool
-    app.UserService.EmailClient = ses.NewClient(app.Config.AWS)
-    return nil
+// internal/app/providers.go (yours — scaffolded once, never regenerated)
+type Infra struct {
+    Log  *slog.Logger
+    Cfg  *config.Config
+    DB   *sql.DB
+    Repo db.Repository   // explicit interface binding picked here
+    LLM  llm.Service
+    // ... one field per collaborator a component needs
+}
+
+func OpenInfra(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Infra, error) {
+    // open infrastructure, wrap adapters, pick bindings
+}
+
+// internal/app/compose.go (forge-owned, regenerated every run —
+// `forge disown internal/app/compose.go` to hand-own for two-phase setters)
+type Components struct {
+    Users user.Service
+    Bill  billing.Service
+    // ... one field per constructed handler/worker/operator
+}
+
+func NewComponents(infra *Infra) (*Components, error) {
+    c := &Components{}
+    c.Users = user.New(user.Deps{DB: infra.DB})
+    c.Bill = billing.New(billing.Deps{
+        Users: c.Users,        // interface seam: real in-process instance, resolved BY TYPE off infra/c
+        Cfg:   infra.Cfg.Billing,
+    })
+    // two-phase / late-bound cross-edges (e.g. bill.WithReliantAPIKeyIssuer(c.LLM))
+    // are handled by disowning compose.go and editing this construction site by hand.
+    return c, nil
 }
 ```
 
-### Decomposing setup.go in worker-heavy projects
+The cmd serve path (`cmd/<bin>/cmd/serve.go`) calls `app.OpenInfra(...)` then `app.NewComponents(infra)`, builds the interceptor chain via `observe.Chain(observe.Deps{Logger, Auth, Audit, RateLimit, Extras})`, applies a typed `Mount<Svc>` method value onto a `serverkit.Server`, and calls `srv.RequireMounted(...)` before `serverkit.Run`.
 
-`Setup()` in one file is fine up to ~150 LOC. Past that — especially for projects with many workers, each needing its own infrastructure construction — split into sibling files in the same `package app`. Go has no problem with multiple files exporting helpers used by `Setup`:
+Key properties:
 
-```
-pkg/app/
-  setup.go              # Setup() — calls helpers below
-  setup_workers.go      # buildWorkerInfra(app) — NATS subscribers, ticker queues
-  setup_handlers.go     # buildHandlerInfra(app) — DB pool, ORM, audit sink
-  setup_external.go     # buildExternalClients(app) — Stripe, SES, third-party SDKs
-```
+- **The collaborator interface is the seam.** A component depends on its collaborators' *interfaces* (`Users user.Service`), so it can't tell whether it got the real in-process service, a Connect client, or a mock. In-process is the default fill.
+- **Splitting a service out later is a one-line swap in `NewComponents`** — `billing.New(billing.Deps{Users: userclient.New(conn)})` — with the consumer untouched. Cross-binary collaborators get a Connect client; the interface makes the in-process-vs-network boundary explicit.
+- **Two-phase wiring is first-class.** Post-construction setters (`bill.WithReliantAPIKeyIssuer(llm)`) and near-diamonds are plain method calls *after* both ends exist — `forge disown internal/app/compose.go` and edit the construction site by hand. Pure constructor topo-ordering deadlocks on the real graph. There is no `PostBuild` hook.
+- **Per-binary singletons are plain `Infra` fields.** A collaborator that must be one instance within each of two processes (e.g. `enforcement` in both the server and the workspace-proxy binary) is one field on the owned `Infra`, opened once in `OpenInfra` and shared across the components `NewComponents` builds.
+- **NO string-keyed runtime constructor table, NO name-matched wiring.** The old `bootstrap.go` registration, `setup.go` god-hook, and `wire_gen.go` "match Deps by field name/type" layer are removed. Name-matching silently drops narrow-interface mismatches in production (a consumer's narrow `Repository` vs the concrete `*PostgresRepository` field → skipped, nil hazard). The replacement is compile-time: `*db.PostgresRepository` either satisfies `audit.Repository` or it doesn't compile.
+- **The registry survives ONLY as a data-only inventory** (`Inventory []inventory.ComponentInfo` in `internal/app/mounts_services.go`) for introspection — `forge map`/`audit`, CLI listing, the cobra mount surface. Names are for *display* only, never a construction lookup key.
+- **The payoff: instant real-or-mock instances.** Because every dep is an interface filled in exactly one place, "spin up the app with billing mocked" is a few-line call against `NewComponents` (off a test `Infra`) — no framework, no string lookups, no hidden globals.
 
-Each helper builds and assigns to `app.*Extras` fields; `Setup` orchestrates the call order. The convention is owner-driven — forge generates nothing here — but a flat 600-LOC `setup.go` is a code-review hazard. Split early.
+DI model choice: the explicit typed composition (`NewComponents` off the owned `Infra`/`OpenInfra` seam) is the default. Runtime typed containers (reflection/generics) are rejected — runtime errors instead of compile errors, can't fill narrow interfaces, awkward two-phase. The `compose.go` codegen is regenerated every run; the moment the graph needs two-phase setters you `forge disown internal/app/compose.go` and the construction site becomes owned Go, which is where the logic ends up anyway.
 
-`setup.go` is marked with `//forge:allow` and will never be overwritten.
+## Test harness (`internal/app/testing.go`)
 
-## Test Harness in testing.go
-
-`pkg/app/testing.go` provides helpers for integration tests — bootstrapping a real app with a test database, authenticated clients, and cleanup:
+`internal/app/testing.go` provides helpers for integration tests — bootstrapping a real app (via `NewComponents` off a test `Infra`) against a test database, with authenticated clients and cleanup:
 
 ```go
 func TestCreateUser(t *testing.T) {
@@ -265,29 +309,30 @@ func TestCreateUser(t *testing.T) {
 }
 ```
 
-The harness runs migrations, seeds data, and tears down after each test.
+The harness runs migrations, seeds data, and tears down after each test. Because deps are interfaces filled in one place, swapping a collaborator for a mock fixture is a one-call variation on `NewComponents` (off a test `Infra`).
 
 ## Files NOT to Edit
 
 These are regenerated by `forge generate` — your changes will be overwritten:
 
 - `gen/` — All generated Go and TypeScript code
-- `pkg/app/bootstrap.go` — Service registration and wiring
-- `pkg/middleware/auth_gen.go` / `tenant_gen.go` — auth/tenant shims (the mechanisms live in forge/pkg/{authn,authz,middleware,observe}; `middleware.go` is yours)
-- `handlers/<svc>/*_gen.go` — Generated CRUD op constructors and authorizers (your CRUD method bodies live in the user-owned `handlers_crud.go`)
+- `internal/middleware/auth_gen.go` / `tenant_gen.go` — auth/tenant shims (the mechanisms live in forge/pkg/{authn,authz,middleware,observe}; `middleware.go` is yours)
+- `internal/handlers/<svc>/*_gen.go` — Generated handlers, CRUD op constructors, and authorizers (your CRUD method bodies live in the user-owned `handlers_crud.go`)
 - `internal/db/<entity>_orm.go` — Generated entity struct + ORM (projected from the applied `db/migrations/` schema)
 - `frontends/<name>/src/hooks/*-hooks.ts` — Generated React Query hooks
 - `frontends/<name>/src/lib/connect.ts` — Connect transport setup
 - `forge_descriptor.json` — Proto descriptor data
 
+`internal/app/providers.go` and `cmd/<binary>.go` are **yours**; `internal/app/compose.go` is forge-owned and regenerated every run — `forge disown internal/app/compose.go` to take ownership of the construction site (e.g. for two-phase setters). There is no generated string-keyed registration file to avoid editing.
+
 ## How pieces connect
 
 1. **Define** API contracts in `proto/` — messages, RPCs, field numbers are forever
 2. **Generate** with `forge generate` — fills `gen/` with typed infrastructure and produces `forge_descriptor.json`
-3. **Implement** handlers in `handlers/<svc>/service.go` — your business logic
+3. **Implement** business logic in `internal/handlers/<svc>/<svc>.go` behind the `contract.go` interface
 4. **Evolve** DB schema via migrations — `forge generate` re-projects the entity structs/ORM from the applied schema
 5. **Consume** from frontends via generated TypeScript Connect clients
-6. **Wire** custom dependencies in `pkg/app/setup.go` (`bootstrap.go` is generated — do not edit)
+6. **Wire** the dependency closure in `internal/app/compose.go` (`NewComponents`, off the owned `providers.go` `Infra`/`OpenInfra`) — typed `Deps`, resolved by type; each `cmd/<binary>.go` is a real owned subcommand
 7. **Test** at every level: unit (mocked), integration (real DB), e2e (full stack)
 
 ## Key Commands
@@ -311,7 +356,7 @@ These are regenerated by `forge generate` — your changes will be overwritten:
 | `forge audit` | Comprehensive project state snapshot (version pin, shape, codegen, packs, scaffolds) |
 | `forge audit --json` | Machine-readable audit (sub-agent-friendly) |
 | `forge map` | Annotated project tree — every file labelled user-owned vs forge-space |
-| `forge map --filter handlers/` | Subtree-filtered map |
+| `forge map --filter internal/` | Subtree-filtered map |
 
 ## Introspection Workflow
 
@@ -333,14 +378,14 @@ Forge spans four ecosystems (Go, proto, TS, KCL) with different idiomatic casing
 | Where | Form | Example |
 |---|---|---|
 | `forge.yaml` service / worker / operator display name | kebab-case | `admin-server`, `git-credential` |
-| `forge.yaml` `path:` field (and on-disk directory) | lowercase snake_case (`-` → `_`, case boundaries split) | `handlers/admin_server`, `handlers/git_credential` |
-| Go package directory under `handlers/` / `internal/` | lowercase snake_case | `handlers/admin_server/`, `internal/billing_flow/` |
+| `forge.yaml` `path:` field (and on-disk directory) | role subtree + lowercase snake_case leaf (`-` → `_`, case boundaries split) | `internal/handlers/admin_server`, `internal/handlers/git_credential` |
+| Go package directory under the role subtree | lowercase snake_case leaf | `internal/handlers/admin_server/`, `internal/workers/billing_flow/` |
 | Go package declaration | matches the directory — lowercase snake_case identifier | `package admin_server` |
 | Go exported type / interface / method | PascalCase | `type Service interface`, `func (s *svc) DoThing(...)` |
-| Go exported field on `*App` | PascalCase | `app.AdminServer`, `app.BillingFlow` |
+| Go local var in the composition root | camelCase | `adminServer`, `billingFlow` |
 | Go variable / parameter | camelCase (initialisms stay capitalized) | `orgID`, `createdAt`, `userID` |
 | Pack name | kebab-case | `jwt-auth`, `audit-log`, `data-table` |
-| Pack subpath under `pkg/` | snake / lowercase, valid Go ident | `middleware/auth/jwtauth`, `middleware/audit/auditlog` |
+| Pack subpath under `internal/` | snake / lowercase, valid Go ident | `middleware/auth/jwtauth`, `middleware/audit/auditlog` |
 | Proto package | dot-separated lowercase | `myproject.services.users.v1` |
 | Proto message / RPC / service | PascalCase | `User`, `CreateUserRequest`, `UserService` |
 | Proto field | snake_case | `created_at`, `org_id`, `page_size` |
@@ -351,7 +396,7 @@ Forge spans four ecosystems (Go, proto, TS, KCL) with different idiomatic casing
 | TS hook / variable export | camelCase | `useListUsers`, `pageSize` |
 | URL route param / query key | kebab-case | `/audit-events`, `?page-token=...` |
 
-**Same identifier, three forms in one sentence.** When discussing `admin-server`'s `AdminServer.GetUser` RPC handler in `handlers/adminserver/handlers.go` — that's the kebab-case service display name, the PascalCase `*App` field plus the PascalCase RPC method, and the canonicalized directory path. All three are intentional and all three are correct. The service / worker / operator canonicalization rule (`strings.ToLower` then strip `-` and `_`) lives in `generator.ServicePackageName`; the `workers` skill Naming section is the source of truth for the on-disk consequences and the migration gotcha.
+**Same identifier, three forms in one sentence.** When discussing `admin-server`'s `AdminServer.GetUser` RPC handler in `internal/handlers/admin_server/handlers_gen.go` — that's the kebab-case service display name, the PascalCase RPC method, and the canonicalized directory path. All three are intentional and all three are correct. The service / worker / operator canonicalization rule (`strings.ToLower` then strip `-` and `_`) lives in `generator.ServicePackageName`; the `workers` skill Naming section is the source of truth for the on-disk consequences and the migration gotcha.
 
 **Lint enforces the structural ones.** `forgeconv-pk-annotation`, `forgeconv-tenant-annotation`, `forgeconv-one-service-per-file`, `forgeconv-internal-package-contract-names`, and the `--scaffolds` analyzer enforce the proto / contract / scaffold halves of this table mechanically. The Go-style rules (`PascalCase` exports, `camelCase` locals) are enforced by `gofmt` / `goimports` / `staticcheck` already.
 
@@ -360,9 +405,10 @@ This table is the canonical reference. Skills that touch naming heavily — `ser
 ## Rules
 
 - Never hand-edit anything under `gen/` or any `*_gen.go` file. Fix the proto or contract, then regenerate.
-- `bootstrap.go` is regenerated — all custom wiring goes in `setup.go`.
-- `forge generate` is always safe — it only touches infrastructure.
-- One service per proto package. One handler directory per service.
+- App code lives under `internal/`. Top-level is reserved for `cmd/` + `api/`; `pkg/` only for genuinely external public API.
+- Wiring is the explicit composition `internal/app/compose.go` (`NewComponents`) off the owned `internal/app/providers.go` `Infra`/`OpenInfra` — `Deps` are interfaces resolved by type. No string-keyed registry, no name-matched wiring; the registry survives only as a data-only inventory for introspection.
+- `forge generate` is always safe — it only touches infrastructure, never `providers.go` or `cmd/<binary>.go` (and `compose.go` only while it stays forge-owned; `forge disown` it to hand-own the construction site).
+- One service per proto package. One `internal/handlers/<svc>/` directory per service, co-locating contract + impl + generated handlers.
 - Field numbers are forever — mark removed fields as `reserved`, never reuse numbers.
 - `forge.yaml` tracks ports and services — use `forge add` to scaffold, not copy-paste.
 - `forge generate` regenerates the entity ORM (`internal/db/<entity>_orm.go`) from the applied `db/migrations/` schema — the migrations and your query files are yours, and schema truth stays in `db/migrations/`.

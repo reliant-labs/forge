@@ -27,6 +27,17 @@ type PageTemplateData struct {
 	HasCreate        bool
 	HasUpdate        bool
 	HasDelete        bool
+	// ItemsField is the camelCase (protojson) accessor for the list
+	// response's repeated field — the array the list hook's `data` holds.
+	// It is the ACTUAL repeated proto field name on the ListXxxResponse
+	// message (e.g. `keys` for `ListLLMKeysResponse { repeated LLMKey keys
+	// = 1; }`), NOT the camelCased entity plural. They usually coincide
+	// ("tasks" for ListTasksResponse.tasks) but diverge whenever the proto
+	// names the field differently — and a wrong accessor silently yields
+	// `undefined`, breaking the list page, the dashboard count tile, and
+	// the mock transport's response shape all at once. Falls back to the
+	// camelCased plural for older descriptors that don't carry the field.
+	ItemsField string
 	CreateFields     []PageField // Fields for the create form
 	UpdateFields     []PageField // Fields for the edit form
 	// UpdateEntityFieldCamel is the camelCase request field wrapping the
@@ -315,6 +326,8 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 		plural := inflection.Plural(entityName)
 		slug := PascalToKebab(plural)
 
+		itemsField := listItemsField(svc, em.listResp, plural)
+
 		data := PageTemplateData{
 			EntityName:         entityName,
 			EntityNamePlural:   plural,
@@ -333,6 +346,7 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 			HasCreate:          em.createRPC != "",
 			HasUpdate:          em.updateRPC != "",
 			HasDelete:          em.deleteRPC != "",
+			ItemsField:         itemsField,
 			ListResponseType:   em.listResp,
 			GetResponseType:    em.getResp,
 			CreateRequestType:  em.createReq,
@@ -417,6 +431,29 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 	}
 
 	return pages
+}
+
+// listItemsField returns the camelCase (protojson) accessor for the
+// repeated field on a ListXxxResponse message — i.e. the array the list
+// hook's `data` actually holds. It reads the response descriptor's first
+// repeated field (descriptors encode repeated fields with a "[]" ProtoType
+// prefix) rather than deriving the camelCased entity plural, because the
+// proto is free to name the field differently (e.g.
+// `ListLLMKeysResponse { repeated LLMKey keys = 1; }` → `keys`, not
+// `llmKeys`). When the descriptor carries no repeated field (older
+// descriptors, or a non-standard list response) it falls back to the
+// camelCased plural, preserving prior behavior.
+func listItemsField(svc ServiceDef, listResp, plural string) string {
+	if listResp != "" && svc.Messages != nil {
+		if fields, ok := svc.Messages[listResp]; ok {
+			for _, f := range fields {
+				if strings.HasPrefix(f.ProtoType, "[]") {
+					return fieldNameToCamel(f.Name)
+				}
+			}
+		}
+	}
+	return ToCamelCaseFromPascalExport(plural)
 }
 
 // pageFieldFromMessageField builds the form-field projection of one proto

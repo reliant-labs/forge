@@ -219,8 +219,7 @@ func TestDeriveFeatureDefaults_FrontendGatedOnCodegen(t *testing.T) {
 		Frontends:  []FrontendConfig{{Name: "web"}},
 	}
 	ApplyDerivedDefaults(c)
-	d := c.Features.derived
-	if d.frontend {
+	if c.Features.FrontendEnabled() {
 		t.Error("frontend should not derive on for a non-service (codegen-off) kind")
 	}
 	if issues := validateFeatureGraph(c); len(issues) > 0 {

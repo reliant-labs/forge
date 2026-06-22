@@ -49,7 +49,7 @@ Available packs: `jwt-auth`, `clerk`, `firebase-auth`, `api-key`, `audit-log`, `
 
 These have all surfaced in real migrations. Spot the symptom, apply the fix immediately:
 
-- **audit-log pack: nested subpackage layout.** The DB-backed interceptor is `auditlog.Interceptor` in `pkg/middleware/audit/auditlog/` (lives in its own Go subpackage so it cannot collide with the scaffold's slog-only `middleware.AuditInterceptor`). Wire one or the other in `pkg/app/setup.go`, not both — they record the same events.
+- **audit-log pack: nested subpackage layout.** The DB-backed interceptor is `auditlog.Interceptor` in `internal/middleware/audit/auditlog/` (lives in its own Go subpackage so it cannot collide with the scaffold's slog-only `middleware.AuditInterceptor`). Wire one or the other in the explicit composition in `internal/app/compose.go` (`NewComponents`), not both — they record the same events.
 - **jwt-auth pack on newer keyfunc.** Older revisions called the now-removed `keyfunc.Keyfunc.Cancel()` API. Fixed; if you see it again on a fresh fork, file the bug.
 - **stripe pack proto package.** Generates as `db.v1`, NOT `<project>.db.v1`. Proto package names align with the buf module root, not the project name. Templates that try to prefix the project name will lint-fail.
 - **Multiple webhooks on the same service** used to redeclare shared symbols (`webhookMaxBodySize`, `webhookEvent`, `extractEventID`, `verifyHMACSHA256`). Fixed; webhook templates now use unique names per webhook.
@@ -83,9 +83,9 @@ Then `forge lint --contract` is part of the per-phase gate. See the `contracts` 
 
 1. **Internal utility packages first** (domain types, naming, validation helpers). These have the fewest deps on the rest of the codebase.
 2. **Database layer** (`db/migrations/` plus any hand-written query files). Migrations are the schema source of truth — copy them as-is. `forge generate` shadow-applies them and projects the entity structs/ORM into `internal/db/<entity>_orm.go` for every table that also has CRUD RPCs in a service proto; don't port the source repo's generated ORM or entity types. Write plain postgres DDL (see the `db` skill) — the shadow applies migrations verbatim to a real ephemeral postgres; auxiliary DDL the bare DB can't satisfy is skipped.
-3. **Service handlers** (`handlers/<svc>/service.go`). The generated `*_gen.go` files (CRUD, authorizer) get rewritten on every `forge generate`; only your hand-written code moves over.
-4. **Custom wiring** (`pkg/app/setup.go`). `bootstrap.go` is generated and re-emitted on every `forge generate` — do not port the source repo's bootstrap.
-5. **Workers, operators, webhooks** — implement the lifecycle methods (`Start`, `Stop`, `Reconcile`, webhook event handlers).
+3. **Services** (`internal/handlers/<svc>/`). A service is one co-located directory under the `internal/handlers/` role subtree: hand-written `contract.go` + impl alongside the generated `handlers_gen.go` / CRUD / authorizer stubs. The `*_gen.go` files get rewritten on every `forge generate`; only your hand-written code (the `contract.go` interface, its implementation, domain types) moves over. There is no separate top-level `handlers/<svc>/` tier to port into — collapse any source split into the one `internal/handlers/<svc>/`.
+4. **Composition** (`internal/app/compose.go` `NewComponents`, off the owned `internal/app/providers.go` `Infra`/`OpenInfra`). `NewComponents(infra *Infra) (*Components, error)` constructs every component inline in type-topological order and fills each component's interface-typed `Deps` off `infra.<Field>`, resolved BY TYPE. `providers.go` (the owned `Infra` provider set + `OpenInfra`) is yours, scaffolded once; `compose.go` is forge-owned and regenerated (`forge disown internal/app/compose.go` to hand-own — e.g. for late-bound/two-phase construct-then-inject setters). Port the source repo's wiring intent by declaring each collaborator on `Infra` and filling the `Deps` fields in `NewComponents`; do NOT expect a regenerated `bootstrap.go` / `wire_gen.go` to wire things for you — that name-matched layer no longer exists.
+5. **Workers, operators, webhooks** — under `internal/workers/<name>/` and `internal/operators/<name>/` (webhooks attach to their service under `internal/handlers/<svc>/`); implement the lifecycle methods (`Start`, `Stop`, `Reconcile`, webhook event handlers). They are constructed in `NewComponents` and surfaced through the generated `WorkerList`/`OperatorList` over `*Components` in `internal/app/lifecycle.go`.
 
 ## Port-time design decisions you should NOT defer
 
@@ -100,37 +100,11 @@ If the source has a single wide `Repository` interface with many methods (a "god
 
 **Exception: sqlc-generated code.** sqlc emits one method per query into a single `Queries` struct, and you can't split that output across packages. If your source uses sqlc (check `forge.yaml: sqlc_enabled: true` or look for `sqlc.yaml`), the wide interface is a generated artifact — `interfacebloat` is a false positive against it. In that one case, add a path-based exclusion for the generated dir AND document it ("generated by sqlc; cannot split"). For hand-written DAOs, split.
 
-**Keep a `Service` alias when you split.** Forge's `pkg/app/testing.go` and `pkg/app/bootstrap.go` generators assume every internal package exposes a `Service` interface. If you split the wide DAO into narrow per-aggregate interfaces (`UserRepository`, `OrgRepository`, etc.), declare a `type Service = Repository` alias (or `type Service interface { UserRepository; OrgRepository; ... }` umbrella) in your `contract.go` so generator-emitted call sites still compile:
+**No `Service` alias needed when you split.** Splitting a wide DAO into narrow per-aggregate interfaces (`UserRepository`, `OrgRepository`, …) is done — there is no name-matched generator that assumes every package exposes a `Service`. The composition resolves deps by type, not by name: a consumer that needs `audit.Repository` is filled from whatever concrete value on the `Infra` provider set structurally satisfies it (`*db.PostgresRepository` either satisfies `audit.Repository` or the code does not compile). Each caller depends on the narrow interface it actually needs; `interfacebloat` passes because no individual interface is over the limit. Drop the umbrella `type Service interface { ... }` — it only ever existed to feed the deleted generators.
 
-```go
-// internal/db/contract.go
-type UserRepository interface { GetUser(...); UpsertUser(...); ... }
-type OrgRepository  interface { GetOrg(...); ListOrgsByUser(...); ... }
+### Adding a dep is a compile-time edit to the composition
 
-// Umbrella so forge-generated wiring (testing.go's db.Service references,
-// bootstrap's Deps field for db) compiles without you touching the
-// generator. Implementers satisfy this by satisfying each narrow
-// interface — Go does that for free.
-type Service interface {
-    UserRepository
-    OrgRepository
-    // ...
-}
-
-type Deps struct {
-    DB *sql.DB
-}
-
-func New(d Deps) Service { return &postgresRepo{db: d.DB} }
-```
-
-Without the umbrella, every `pkg/app/testing.go` regen breaks with `undefined: db.Service` and you spend the rest of the port chasing the same generator complaint. Don't.
-
-### Regenerate after every `Deps` edit
-
-`forge generate` is incremental and cheap, but it ONLY refreshes `pkg/app/bootstrap.go` / `pkg/app/testing.go` / `pkg/app/wire_gen.go` when invoked. If a port phase drops a field from `<pkg>.Deps` (e.g. removes a vestigial `Logger`) and the next phase runs `go build` / `forge lint` without an intervening `forge generate`, the build fails because `bootstrap.go` is still emitting `pkg.New(pkg.Deps{Logger: ...})` against the new `Deps` struct that no longer has `Logger`. This was the dominant cause of stale-state errors in the v3 control-plane migration.
-
-**Rule for the merge agent**: after ANY edit to any `internal/<pkg>/contract.go` `Deps` struct (or to `pkg/app/app_extras.go`), run `forge generate` BEFORE running `go build` / `go test` / `forge lint`. If the gate fails for what looks like a "stale codegen" reason — `unknown field X in struct literal of type pkg.Deps`, `undefined: pkg.Service`, `cannot use Y as Z value` — the fix is `forge generate`, NOT editing the generated file. The generated file is the symptom; the source-of-truth file is the contract.go you just touched.
+The composition (`internal/app/compose.go` `NewComponents`, off the owned `internal/app/providers.go` `Infra`/`OpenInfra`) resolves deps by type. Adding or removing a collaborator means editing the component's `Deps` struct in `internal/handlers/<svc>/contract.go` and ensuring the matching field exists on the owned `Infra` provider set so `NewComponents` can fill it by type. Both are caught by the Go compiler (or surface as a `forge generate` "no provider" report if `Infra` lacks the type). If a port phase drops a vestigial `Logger` field from `<pkg>.Deps`, regen stops filling it; `go build` points you straight at any stale reference. Do not look for a `bootstrap.go` / `wire_gen.go` to chase — there is no name-matched layer; the wiring is `NewComponents` filling typed `Deps` off `Infra`.
 
 ### Goose → golang-migrate
 
@@ -170,11 +144,11 @@ Forge's defaults are opinionated by design. A clean port should land with at mos
 
 ## Multi-binary `cmd/` layouts
 
-`forge add service` emits one `cmd/<service>/main.go` per service. If the source repo has additional binaries (CLI tools, background daemons, ops scripts) that aren't first-class forge components:
+`cmd/` is entrypoints only: one cobra root (`cmd/main.go`) plus one real per-command subcommand file (`cmd/<svc>.go`, `cmd/<binary>.go`), each driving the serve path (`app.OpenInfra` → `app.NewComponents` → the generated `(*Components).Mount<Svc>` onto `serverkit.Server` → `serverkit.Run`). `forge add service` adds the subcommand + its `internal/handlers/<svc>/`. If the source repo has additional binaries (CLI tools, background daemons, ops scripts) that aren't first-class forge components:
 
 - For binaries that wrap forge-managed services or workers, prefer `forge add` and let forge own the wiring.
-- For genuinely standalone binaries (proxies, sidecars, off-service consumers) that need their own Deployment, use `forge add binary <name>` — see the `binaries` skill for the decision tree.
-- For tiny one-off scripts that don't deserve a contract.go (a dev seed script, a one-shot migration helper), drop them under `cmd/<name>/main.go` directly without an `internal/<name>/` package.
+- For genuinely standalone binaries (proxies, sidecars, off-service consumers) that need their own Deployment, use `forge add binary <name>` — it becomes a peer subcommand with its own composition (`OpenInfra` → `NewComponents`). See the `binaries` skill for the decision tree.
+- For tiny one-off scripts that don't deserve a contract.go (a dev seed script, a one-shot migration helper), add a thin `cmd/<name>.go` subcommand on the root without an `internal/<name>/` package.
 
 ## k8s manifests
 
@@ -183,7 +157,7 @@ Forge emits `deploy/kcl/<env>/` (KCL-based manifests, one dir per environment: `
 - **Adopt KCL.** Translate hand-written manifest customizations into KCL overrides. Use `additional_manifests = [...]` on the Bundle for raw manifest dicts that don't fit a typed entity (ClusterIssuers, SealedSecrets, hand-typed CRDs). Recommended.
 - **Disable the deploy feature.** Set `features.deploy: false` in `forge.yaml` and bring your own manifests under any tree you like. `forge deploy <env>` and the deploy half of `forge generate` then short-circuit with a clear "feature 'deploy' is disabled" message.
 
-Per-env config that used to live in `forge.yaml -> environments[].config` now lives in sibling `config.<env>.yaml` files next to forge.yaml; per-env deploy knobs (cluster/namespace/registry/domain) live on `forge.K8sCluster` blocks in KCL. See the `environments-to-kcl` migration skill if you're porting a project that pre-dates this split.
+`forge.yaml` stays strictly top-level (project identity, features, deploy provider). Per-env config (logging, env vars) lives directly in `deploy/kcl/<env>/` alongside the per-env deploy knobs (cluster/namespace/registry/domain) on `forge.K8sCluster` blocks — there is no redundant second `config.<env>.yaml` YAML format. The single typed config struct (`internal/config`, generated from proto config blocks) serves server, CLI, and standalone binaries alike via cmdkit; non-server binaries do NOT hand-roll `os.Getenv`/ad-hoc loggers/hardcoded timeouts.
 
 ## Final checks before declaring done
 
@@ -200,7 +174,7 @@ forge deploy dev        # local k3d
 
 - One service per proto package. Hyphens in names are fine; forge handles the snake-case translation everywhere it needs to.
 - Pack-after-component, then `forge generate`. Never the reverse.
-- `bootstrap.go` is generated — all custom wiring goes in `setup.go`.
+- Wiring is the explicit composition: generated `internal/app/compose.go` (`NewComponents`) filling typed `Deps` by type off the owned `internal/app/providers.go` `Infra`/`OpenInfra` — there is no generated `bootstrap.go`/`wire_gen.go`.
 - KCL or hand-rolled manifests, not both.
 - `forge generate` after every `forge add` and every `forge pack install`. It's idempotent and catches misconfigurations early.
 

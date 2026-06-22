@@ -1,0 +1,2080 @@
+// Package audit holds the `forge audit` command group — a comprehensive
+// snapshot of project state designed to orient an LLM (or human) without
+// forcing them to grep ten different directories. It rolls up:
+//
+//   - Forge version pin (forge.yaml forge_version vs binary buildinfo).
+//   - Project shape (kind, services + RPC counts, workers, operators,
+//     frontends, installed packs).
+//   - Convention compliance (rolled up forge lint counts per category).
+//   - Codegen state (certified-file census via the embedded forge:hash markers,
+//     orphan _gen files, uncommitted user edits to forge-space files).
+//   - Pack health (each installed pack's version against the embedded
+//     pack registry).
+//   - Pack graph health (every installed pack's `depends_on` is also
+//     installed; missing producers surface as errors).
+//   - Proto-vs-migration alignment (entity tables vs db/migrations/).
+//   - Migration safety summary (allowed_destructive count, latest
+//     migration timestamp, destructive_change severity).
+//   - Wire-coverage (unresolved Deps fields in pkg/app/wire_gen.go,
+//     rolled up from `forge lint --wire-coverage`).
+//   - FORGE_SCAFFOLD marker counts (P0 sharpening surface).
+//   - Deps health (go.sum freshness vs go.mod, gen/ presence).
+//
+// JSON output groups checks by category with status: ok|warn|error so a
+// sub-agent can branch on `.codegen.status == "warn"` directly.
+//
+// It is a dir-nested command group (the devspace idiom). The few categories
+// it cannot compute without package-cli internals — the KCL-entity-typed
+// ingress / external-builds categories, the friction roll-up, plus the
+// service-registry / env-discovery / drift helpers — are reached through
+// factory.AuditAPI (function values internal/cli registers via SetAuditAPI).
+// The group never imports internal/cli, so the registry indirection in the
+// factory package keeps the dependency one-directional (group → factory) and
+// the import cycle broken. init() self-registers the command with the
+// factory.
+package audit
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/audittype"
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/cli/lint"
+	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/linter/forgeconv"
+	"github.com/reliant-labs/forge/internal/packs"
+)
+
+func init() { factory.Register(newCmd) }
+
+// dirExists is the trivial os.Stat wrapper the audit categories use for
+// directory-presence gates. Per cmdutil's policy, this one-line stdlib
+// check is duplicated locally rather than shared.
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+// servedAllRegistry is the fail-open ServiceRegistry stub the shape /
+// orphan-stub categories fall back to when LoadServiceRegistry errors: it
+// reads Exists()=false so every service registers (the pre-registration
+// "declared ⇒ served" behavior — audit must not die on a broken tree).
+type servedAllRegistry struct{}
+
+func (servedAllRegistry) Exists() bool           { return false }
+func (servedAllRegistry) Registered(string) bool { return true }
+func (servedAllRegistry) Tombstoned(string) bool { return false }
+
+// AuditReport is the top-level JSON structure emitted by `forge audit --json`.
+// Field order is stable so diffing two audits is human-readable.
+type AuditReport struct {
+	ProjectName   string                        `json:"project_name"`
+	ProjectKind   string                        `json:"project_kind"`
+	BinaryVersion string                        `json:"binary_version"`
+	GeneratedAt   time.Time                     `json:"generated_at"`
+	Categories    map[string]audittype.Category `json:"categories"`
+	OverallStatus audittype.Status              `json:"overall_status"`
+}
+
+// auditCategoryOrder pins the print-order so human output stays stable
+// regardless of map iteration. Categories not in this list fall back to
+// alphabetical at the end.
+var auditCategoryOrder = []string{
+	"version",
+	"shape",
+	"features",
+	"ingress",
+	"environments",
+	"external_builds",
+	"conventions",
+	"codegen",
+	"packs",
+	"pack_graph",
+	"migration_safety",
+	"wire_coverage",
+	"optional_deps_guard",
+	"config_deps",
+	"scaffold_markers",
+	"crud_stubs",
+	"file_sizes",
+	"orphan_stubs",
+	"diagnostics",
+	"deps",
+	"friction",
+}
+
+func newCmd(f *factory.Factory) *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "audit",
+		Short: "Print a comprehensive project state snapshot",
+		Long: `Print a comprehensive snapshot of forge project state.
+
+Audit reports forge version pin, project shape, lint roll-ups, codegen
+state, pack health, proto vs migration alignment, scaffold markers, and
+dep health. Use --json for machine-readable output (sub-agents).
+
+Examples:
+  forge audit            # human-readable
+  forge audit --json     # machine-readable`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAudit(f, jsonOut)
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
+	return cmd
+}
+
+func runAudit(f *factory.Factory, jsonOut bool) error {
+	report, err := buildAuditReport(f, ".")
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+	printAuditReport(os.Stdout, report)
+	return nil
+}
+
+// buildAuditReport collects every category's data and rolls up the
+// overall status. Errors in individual category collectors are folded
+// into a "warn" status for that category — we never bail the whole audit
+// because a single grep failed; partial information beats nothing.
+func buildAuditReport(f *factory.Factory, projectDir string) (*AuditReport, error) {
+	abs, err := filepath.Abs(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project dir: %w", err)
+	}
+
+	store, cfgErr := f.Audit.LoadProjectStoreFrom(filepath.Join(abs, "forge.yaml"))
+	if cfgErr != nil && !errors.Is(cfgErr, cmdutil.ErrProjectConfigNotFound) {
+		return nil, fmt.Errorf("load project config: %w", cfgErr)
+	}
+	var cfg *config.ProjectConfig
+	if store != nil {
+		cfg = store.Config()
+	}
+
+	report := &AuditReport{
+		BinaryVersion: buildinfo.Version(),
+		GeneratedAt:   time.Now().UTC(),
+		Categories:    make(map[string]audittype.Category),
+	}
+	if cfg != nil {
+		report.ProjectName = cfg.Name
+		report.ProjectKind = cfg.EffectiveKind()
+	} else {
+		report.ProjectName = filepath.Base(abs)
+		report.ProjectKind = "unknown"
+	}
+
+	report.Categories["version"] = auditVersion(cfg, abs)
+	report.Categories["shape"] = auditShape(f, cfg, abs)
+	report.Categories["features"] = auditFeatures(cfg)
+	if cfg != nil && cfg.Features.IngressEnabled() {
+		report.Categories["ingress"] = f.Audit.Ingress(cfg, abs)
+	}
+	report.Categories["environments"] = auditEnvironments(f, abs)
+	report.Categories["external_builds"] = f.Audit.ExternalBuilds(cfg, abs)
+	report.Categories["conventions"] = auditConventions(cfg, abs)
+	report.Categories["codegen"] = auditCodegen(f, cfg, abs)
+	report.Categories["packs"] = auditPacks(cfg)
+	report.Categories["pack_graph"] = auditPackGraph(cfg)
+	report.Categories["migration_safety"] = auditMigrationSafety(cfg, abs)
+	report.Categories["wire_coverage"] = auditWireCoverage(abs)
+	report.Categories["optional_deps_guard"] = auditOptionalDepsGuard(abs)
+	report.Categories["config_deps"] = auditConfigDeps(abs)
+	report.Categories["scaffold_markers"] = auditScaffoldMarkers(abs)
+	report.Categories["crud_stubs"] = auditCRUDStubs(abs)
+	report.Categories["file_sizes"] = auditFileSizes(abs)
+	report.Categories["orphan_stubs"] = auditOrphanStubs(f, cfg, abs)
+	report.Categories["diagnostics"] = auditDiagnostics(cfg, abs)
+	report.Categories["deps"] = auditDeps(abs)
+	report.Categories["friction"] = f.Audit.Friction(abs)
+
+	report.OverallStatus = rollupStatus(report.Categories)
+	return report, nil
+}
+
+// rollupStatus collapses per-category statuses into one overall verdict.
+// "error" beats "warn" beats "ok", same precedence forge doctor uses.
+func rollupStatus(cats map[string]audittype.Category) audittype.Status {
+	worst := audittype.StatusOK
+	for _, c := range cats {
+		switch c.Status {
+		case audittype.StatusError:
+			return audittype.StatusError
+		case audittype.StatusWarn:
+			worst = audittype.StatusWarn
+		}
+	}
+	return worst
+}
+
+// ciInstallRefRE extracts the ref a generated CI workflow pins forge to,
+// from a `go install github.com/reliant-labs/forge/cmd/forge@<ref>` line.
+var ciInstallRefRE = regexp.MustCompile(
+	`go install github\.com/reliant-labs/forge/cmd/forge@(\S+)`)
+
+// ciForgePin reads the forge install ref pinned by the generated CI
+// workflow (.github/workflows/ci.yml). Returns "" when there is no
+// workflow or no pin line — a project may legitimately have neither.
+func ciForgePin(projectDir string) string {
+	data, err := os.ReadFile(filepath.Join(projectDir, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		return ""
+	}
+	if m := ciInstallRefRE.FindSubmatch(data); m != nil {
+		return strings.TrimSpace(string(m[1]))
+	}
+	return ""
+}
+
+// auditVersion compares the project's forge_version pins against the
+// running binary AND against each other. It performs a REAL string
+// comparison: it does not borrow the once-per-session nudge silencing of
+// forgeVersionMismatchWarning (which intentionally goes quiet on dev /
+// pseudo-version binaries) — `forge audit` is an explicit diagnostic, so
+// a stale or divergent pin must be reported, never papered over with a
+// false "matches binary" (fr-82b717f521).
+//
+// Mismatches surface as warnings (not errors): running a newer binary is
+// usually fine and `forge upgrade` realigns. The category also flags when
+// the three independent pins (forge.yaml / CI workflow / .forge state)
+// disagree with each other, since nothing else does.
+func auditVersion(cfg *config.ProjectConfig, projectDir string) audittype.Category {
+	binv := buildinfo.Version()
+	if cfg == nil {
+		return audittype.Category{
+			Status:  audittype.StatusError,
+			Summary: "no forge.yaml found — not a forge project",
+			Details: map[string]any{"binary_version": binv},
+		}
+	}
+	pinned := cfg.EffectiveForgeVersion()
+	details := map[string]any{
+		"pinned_version": pinned,
+		"binary_version": binv,
+	}
+
+	// Collect the other independent pins so divergence can be surfaced.
+	ciPin := ciForgePin(projectDir)
+	if ciPin != "" {
+		details["ci_pin"] = ciPin
+	}
+	var statePin string
+	if cs, err := generator.LoadChecksums(projectDir); err == nil && cs != nil {
+		statePin = strings.TrimSpace(cs.ForgeVersion)
+		if statePin != "" {
+			details["state_pin"] = statePin
+		}
+	}
+
+	var summaries []string
+	status := audittype.StatusOK
+
+	// 1. forge.yaml pin vs running binary — a REAL compare. We do not
+	//    silence on dev/pseudo binaries here.
+	switch {
+	case strings.TrimSpace(cfg.ForgeVersion) == "":
+		status = audittype.StatusWarn
+		summaries = append(summaries,
+			fmt.Sprintf("no forge_version declared in forge.yaml (binary is %s) — run `%s upgrade` to set a baseline", binv, cmdutil.Name()))
+		details["hint"] = fmt.Sprintf("run `%s upgrade` to set + align the pin", cmdutil.Name())
+	case pinned == binv:
+		summaries = append(summaries, fmt.Sprintf("forge_version %s matches binary", pinned))
+	default:
+		status = audittype.StatusWarn
+		summaries = append(summaries,
+			fmt.Sprintf("forge_version %s does NOT match binary %s", pinned, binv))
+		details["hint"] = fmt.Sprintf("run `%s upgrade` to align the pin with the binary", cmdutil.Name())
+	}
+
+	// 2. Divergent pins: if the known pins disagree with each other, the
+	//    project's "what forge built this?" answer is ambiguous. Flag it.
+	knownPins := map[string]bool{}
+	addPin := func(v string) {
+		if v = strings.TrimSpace(v); v != "" && v != "0.0.0" {
+			knownPins[v] = true
+		}
+	}
+	addPin(cfg.ForgeVersion)
+	addPin(ciPin)
+	addPin(statePin)
+	if len(knownPins) > 1 {
+		if status == audittype.StatusOK {
+			status = audittype.StatusWarn
+		}
+		pins := make([]string, 0, len(knownPins))
+		for p := range knownPins {
+			pins = append(pins, p)
+		}
+		sort.Strings(pins)
+		summaries = append(summaries,
+			fmt.Sprintf("divergent forge version pins across the project: %s — run `%s upgrade` to converge them",
+				strings.Join(pins, ", "), cmdutil.Name()))
+	}
+
+	return audittype.Category{
+		Status:  status,
+		Summary: strings.Join(summaries, "; "),
+		Details: details,
+	}
+}
+
+// auditShape inventories the project's structural elements: services
+// (and their RPC counts), workers, operators, frontends, packs.
+func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string) audittype.Category {
+	if cfg == nil {
+		return audittype.Category{Status: audittype.StatusError, Summary: "no forge.yaml"}
+	}
+	// rpcInfo is the per-RPC entry under svcInfo.RPCs. Additive
+	// (introduced after rpc_count) — consumers that only read
+	// rpc_count keep working. mcp_callable tells an agent up front
+	// whether the RPC is reachable through the forge-mcp bridge:
+	// streaming RPCs are in the MCP manifest (marked) but excluded
+	// from MCP tools/list because MCP tool calls are unary.
+	type rpcInfo struct {
+		Name string `json:"name"`
+		// Streaming is "", "client", "server", or "bidi" — same
+		// vocabulary as the MCP manifest; omitted for unary RPCs.
+		Streaming   string `json:"streaming,omitempty"`
+		MCPCallable bool   `json:"mcp_callable"`
+		// Served is the additive types-only marker: present (and false)
+		// ONLY when the owning service has no serviceRow in the
+		// user-owned pkg/app/services.go — the RPC's types/client still
+		// generate but this binary does not serve it (and it is excluded
+		// from the MCP manifest, hence MCPCallable=false too). Absent
+		// means served — the additive-extension contract keeps rpc-count
+		// consumers and older readers untouched.
+		Served *bool `json:"served,omitempty"`
+	}
+	type svcInfo struct {
+		Name     string `json:"name"`
+		Type     string `json:"type"`
+		RPCCount int    `json:"rpc_count"`
+		// Served reports whether THIS binary registers the service —
+		// derived from the user-owned pkg/app/services.go row list (a
+		// missing registration file means everything is served, the
+		// pre-registration behavior). Always present so consumers can
+		// filter the inventory without re-deriving the default. Workers
+		// and operators are always served:true (the registration file
+		// governs Connect services only).
+		Served bool `json:"served"`
+		// RPCs lists each RPC by name with streaming/MCP-callability
+		// info. Empty when proto parsing was unavailable (see
+		// proto_integrity) — additive field, may be absent.
+		RPCs []rpcInfo `json:"rpcs,omitempty"`
+	}
+	var services, workers, crons, operators, binaries []svcInfo
+	var frontends []map[string]string
+
+	// Parse RPC counts when proto/services exists. We still emit the
+	// structural shape from forge.yaml so the user gets the inventory
+	// even when codegen is broken — but unlike the historic silent-drop
+	// behavior, we surface the parse failure as proto_integrity on the
+	// details map so JSON consumers can `jq '.details.proto_integrity'`
+	// and detect the "RPC count = 0 because parse failed, not because
+	// the service has no methods" case. See B5 in the audit quick-win
+	// backlog.
+	rpcByService := map[string][]rpcInfo{}
+	var protoParseErr string
+	// Services are read from the protoc-gen-forge descriptor, which covers
+	// every Connect service in any proto package — so flat / multi-service
+	// layouts (proto/controlplane/v1/*.proto) are audited identically to the
+	// canonical proto/services/<svc>/v1/ layout. The dir arg is vestigial.
+	if f.Audit.ProjectDefinesConnectServices(projectDir) {
+		if defs, err := codegen.ParseServicesFromProtos("", projectDir); err == nil {
+			for _, d := range defs {
+				rpcs := make([]rpcInfo, 0, len(d.Methods))
+				for _, m := range d.Methods {
+					// Same vocabulary as the MCP manifest's "streaming"
+					// field; "" means unary. Unary RPCs are the only
+					// ones the forge-mcp bridge can dispatch (MCP tool
+					// calls are unary), hence mcp_callable.
+					mode := ""
+					switch {
+					case m.ClientStreaming && m.ServerStreaming:
+						mode = "bidi"
+					case m.ServerStreaming:
+						mode = "server"
+					case m.ClientStreaming:
+						mode = "client"
+					}
+					rpcs = append(rpcs, rpcInfo{
+						Name:        m.Name,
+						Streaming:   mode,
+						MCPCallable: mode == "",
+					})
+				}
+				rpcByService[d.Name] = rpcs
+			}
+		} else {
+			protoParseErr = err.Error()
+		}
+	}
+
+	// Registration view over the user-owned pkg/app/services.go. A parse
+	// failure falls open (everything served) — audit must not die on a
+	// broken tree; the generate pipeline is the fail-loud gate.
+	var reg factory.ServiceRegistry
+	reg, regErr := f.Audit.LoadServiceRegistry(projectDir)
+	if regErr != nil {
+		reg = servedAllRegistry{}
+	}
+
+	for _, s := range cfg.Components {
+		served := !f.Audit.IsConnectServiceConfig(s) || reg.Registered(s.Name)
+		info := svcInfo{Name: s.Name, Type: s.EffectiveKind(), Served: served}
+		// match by ProtoService name suffix (Echo → EchoService)
+		for protoName, rpcs := range rpcByService {
+			short := strings.TrimSuffix(protoName, "Service")
+			if strings.EqualFold(short, s.Name) || strings.EqualFold(protoName, s.Name) {
+				info.RPCCount = len(rpcs)
+				info.RPCs = rpcs
+				break
+			}
+		}
+		// Unregistered services keep their RPC inventory discoverable
+		// but carry the additive served:false marker on every entry —
+		// the surface stays visible without claiming this binary serves
+		// it. MCPCallable flips false because the RPCs are deliberately
+		// excluded from gen/mcp/manifest.json.
+		if !info.Served && len(info.RPCs) > 0 {
+			notServed := false
+			// Copy before mutating — info.RPCs aliases the shared
+			// rpcByService slice and another cfg entry could match the
+			// same proto service.
+			rpcs := make([]rpcInfo, len(info.RPCs))
+			copy(rpcs, info.RPCs)
+			for i := range rpcs {
+				rpcs[i].Served = &notServed
+				rpcs[i].MCPCallable = false
+			}
+			info.RPCs = rpcs
+		}
+		switch s.EffectiveKind() {
+		case config.ComponentKindWorker:
+			workers = append(workers, info)
+		case config.ComponentKindCron:
+			crons = append(crons, info)
+		case config.ComponentKindOperator:
+			operators = append(operators, info)
+		case config.ComponentKindBinary:
+			binaries = append(binaries, info)
+		default:
+			services = append(services, info)
+		}
+	}
+	for _, fe := range cfg.Frontends {
+		frontends = append(frontends, map[string]string{"name": fe.Name, "type": fe.Type})
+	}
+
+	details := map[string]any{
+		"services":  services,
+		"workers":   workers,
+		"crons":     crons,
+		"operators": operators,
+		"binaries":  binaries,
+		"frontends": frontends,
+		"packs":     cfg.Packs,
+		"packages":  packageNames(cfg.Packages),
+	}
+	// proto_integrity surfaces the RPC-count parse failure (if any) so
+	// JSON consumers don't have to guess whether RPCCount: 0 means
+	// "no methods" or "parse failed". Only emitted when there's an
+	// error to report — under the additive-extension contract, the
+	// field being absent IS the "all good" signal.
+	status := audittype.StatusOK
+	summary := fmt.Sprintf("kind=%s, %d server(s), %d worker(s), %d cron(s), %d operator(s), %d binary(ies), %d frontend(s), %d pack(s)",
+		cfg.EffectiveKind(), len(services), len(workers), len(crons), len(operators), len(binaries), len(frontends), len(cfg.Packs))
+	if protoParseErr != "" {
+		details["proto_integrity"] = map[string]any{
+			"status": "warn",
+			"reason": "ParseServicesFromProtos failed — RPC counts may be 0 even for services with methods",
+			"error":  protoParseErr,
+		}
+		status = audittype.StatusWarn
+		summary += " (warn: proto parse failed — see proto_integrity)"
+	}
+	return audittype.Category{Status: status, Summary: summary, Details: details}
+}
+
+// auditFeatures surfaces the resolved `features:` block from forge.yaml
+// at audit time. The category lists every feature gated by config —
+// deploy/build/frontend/packs/ci/docs/observability/... — and
+// whether it resolves to enabled (default for nil) or disabled
+// (explicit false). The additive-extension contract holds: new
+// features added to config.FeaturesConfig.EffectiveFeatures() show up
+// here automatically, sub-agents can branch on
+// `.features.details.<name>` directly.
+//
+// Status is always ok — this category is informational. Sub-agents
+// that care about a specific gated subsystem check the boolean in
+// details; humans reading the human-formatted audit see a one-line
+// "N enabled, M disabled" summary plus the per-feature breakdown.
+func auditFeatures(cfg *config.ProjectConfig) audittype.Category {
+	if cfg == nil {
+		return audittype.Category{
+			Status:  audittype.StatusError,
+			Summary: "no forge.yaml — features unknown",
+		}
+	}
+	effective := cfg.Features.EffectiveFeatures()
+	// Pre-allocate to non-nil empty slices so the JSON encoder
+	// emits `[]` rather than `null` when nothing falls into a
+	// bucket — sub-agents that `jq '.disabled | length'` need a
+	// numeric length regardless of state.
+	//
+	// Stable vs experimental are surfaced as separate buckets so
+	// consumers don't have to know the menu to interpret
+	// "disabled": a default-off experimental feature is structurally
+	// different from a user-opted-out stable feature.
+	enabled := []string{}
+	disabled := []string{}
+	experimentalEnabled := []string{}
+	for name, on := range effective {
+		if config.IsExperimentalFeature(name) {
+			if on {
+				experimentalEnabled = append(experimentalEnabled, name)
+			}
+			continue
+		}
+		if on {
+			enabled = append(enabled, name)
+		} else {
+			disabled = append(disabled, name)
+		}
+	}
+	sort.Strings(enabled)
+	sort.Strings(disabled)
+	sort.Strings(experimentalEnabled)
+
+	details := map[string]any{
+		"resolved":               effective,
+		"enabled":                enabled,
+		"disabled":               disabled,
+		"experimental_enabled":   experimentalEnabled,
+		"experimental_available": append([]string{}, config.ExperimentalFeatureNames...),
+	}
+	summary := fmt.Sprintf("%d stable feature(s) enabled, %d disabled; %d experimental on",
+		len(enabled), len(disabled), len(experimentalEnabled))
+	return audittype.Category{Status: audittype.StatusOK, Summary: summary, Details: details}
+}
+
+// auditEnvironments inventories every environment declared via a
+// `deploy/kcl/<env>/main.k` file. Source of truth is the filesystem —
+// forge.yaml no longer declares environments. Per-env deploy info
+// (cluster / namespace / registry / domain) lives in the rendered
+// KCL on `forge.K8sCluster` blocks; this audit just confirms the env
+// directories exist and lists them.
+func auditEnvironments(f *factory.Factory, projectDir string) audittype.Category {
+	envs, err := f.Audit.ListEnvs(projectDir)
+	if err != nil {
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
+			Summary: fmt.Sprintf("env discovery failed: %v", err),
+		}
+	}
+	if len(envs) == 0 {
+		return audittype.Category{
+			Status:  audittype.StatusOK,
+			Summary: "no environments declared (no deploy/kcl/<env>/main.k)",
+		}
+	}
+	type envEntry struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	}
+	entries := make([]envEntry, 0, len(envs))
+	for _, env := range envs {
+		entries = append(entries, envEntry{Name: env, Status: "ok"})
+	}
+	details := map[string]any{"environments": entries}
+	return audittype.Category{
+		Status:  audittype.StatusOK,
+		Summary: fmt.Sprintf("%d environment(s) declared (deploy/kcl/<env>/main.k)", len(envs)),
+		Details: details,
+	}
+}
+
+func packageNames(pkgs []config.PackageConfig) []string {
+	out := make([]string, 0, len(pkgs))
+	for _, p := range pkgs {
+		out = append(out, p.Name)
+	}
+	return out
+}
+
+// auditConventions runs the lint linters whose results are amenable to
+// programmatic roll-up: forgeconv. Anything that requires
+// shelling to a Go subprocess (golangci, contractlint) is expensive and
+// noisy in an audit context — we surface a hint to run `forge lint` for
+// the full picture instead.
+func auditConventions(cfg *config.ProjectConfig, projectDir string) audittype.Category {
+	counts := map[string]int{}
+	hasErrors := false
+	hasWarnings := false
+
+	protoDir := filepath.Join(projectDir, "proto")
+	if dirExists(protoDir) {
+		if res, err := forgeconv.LintProtoTree(protoDir); err == nil {
+			for _, f := range res.Findings {
+				key := "conventions/" + string(f.Severity)
+				counts[key]++
+				if f.Severity == forgeconv.SeverityError {
+					hasErrors = true
+				} else {
+					hasWarnings = true
+				}
+			}
+		}
+	}
+
+	status := audittype.StatusOK
+	switch {
+	case hasErrors:
+		status = audittype.StatusError
+	case hasWarnings:
+		status = audittype.StatusWarn
+	}
+
+	summary := "no convention violations"
+	if hasErrors || hasWarnings {
+		var bits []string
+		keys := make([]string, 0, len(counts))
+		for k := range counts {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			bits = append(bits, fmt.Sprintf("%s=%d", k, counts[k]))
+		}
+		summary = strings.Join(bits, ", ")
+	}
+
+	_ = cfg // reserved for future per-feature gating
+	return audittype.Category{
+		Status:  status,
+		Summary: summary,
+		Details: map[string]any{
+			"counts": counts,
+			"hint":   fmt.Sprintf("run `%s lint` for full output (golangci, contractlint, etc.)", cmdutil.Name()),
+		},
+	}
+}
+
+// auditDisownedFile is one entry of the codegen category's
+// `disowned_files` detail list: a generated file the user has taken
+// permanent ownership of via `forge disown` (or a legacy fork the
+// pipeline migration converted). Package-level (rather than
+// function-local) so tests can assert the JSON shape directly.
+type auditDisownedFile struct {
+	Path string `json:"path"`
+	// Since is when the file was disowned (RFC3339 UTC). Empty for
+	// legacy forks whose original timestamp predates recording.
+	Since string `json:"since,omitempty"`
+	// Reason is the recorded WHY behind the disown — the newest
+	// .forge/friction.jsonl entry with area=disown (or the legacy
+	// area=fork) whose context names this path. Additive field per the
+	// audit-json contract; empty when no entry exists.
+	Reason string `json:"reason,omitempty"`
+}
+
+// auditCodegen reports on the project's self-certification state:
+// hand-edits to forge-certified files (embedded forge:hash markers that
+// fail verification), disowned files, orphan _gen files, and a pending
+// legacy-manifest migration if one exists. Ownership is read from the
+// files themselves — there is no global manifest to consult.
+func auditCodegen(f *factory.Factory, cfg *config.ProjectConfig, projectDir string) audittype.Category {
+	cs, err := generator.LoadChecksums(projectDir)
+	if err != nil {
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
+			Summary: fmt.Sprintf("could not load .forge ownership state: %v", err),
+		}
+	}
+
+	markers := checksums.ScanMarkers(projectDir)
+	certified := len(markers) + len(cs.Unstampable)
+	details := map[string]any{
+		// `tracked_files` survives for audit-json consumers; its meaning
+		// is now "files carrying forge's certification" (embedded marker
+		// or scoped .forge/hashes.json record).
+		"tracked_files":   certified,
+		"certified_files": certified,
+	}
+
+	// Rough "last generate" timestamp: the newest mtime among certified
+	// files (the old proxy — checksums.json's mtime — is gone with the
+	// manifest).
+	lastGen := time.Time{}
+	for rel := range markers {
+		if stat, statErr := os.Stat(filepath.Join(projectDir, rel)); statErr == nil && stat.ModTime().After(lastGen) {
+			lastGen = stat.ModTime()
+		}
+	}
+	if lastGen.IsZero() {
+		details["last_generate"] = "never"
+	} else {
+		details["last_generate"] = lastGen.UTC().Format(time.RFC3339)
+	}
+
+	// Pending one-time migration: a legacy .forge/checksums.json still
+	// present means the next `forge generate` (or `forge upgrade`) will
+	// convert it to embedded markers and delete it.
+	if _, statErr := os.Stat(filepath.Join(projectDir, checksums.LegacyChecksumFile)); statErr == nil {
+		details["legacy_manifest"] = "present — the next `forge generate` migrates it to embedded forge:hash markers and deletes it"
+	}
+
+	// User-edited gen files: certification fails (embedded hash doesn't
+	// match the recomputed body hash). Disowned files carry no marker
+	// and are excluded by construction; Tier-2-managed starters are
+	// exempt (edits there are sanctioned).
+	var modified []string
+	modified = append(modified, f.Audit.ScanProjectDriftPaths(projectDir, cs)...)
+	sort.Strings(modified)
+	if len(modified) > 0 {
+		details["user_edited_gen_files"] = modified
+	}
+
+	// Disowned files: one-way ownership transfers recorded in
+	// .forge/disowned.json. A legitimate end state — reported for
+	// visibility, never as a warning.
+	var disowned []auditDisownedFile
+	for rel, entry := range cs.Disowned {
+		disowned = append(disowned, auditDisownedFile{Path: rel, Since: entry.DisownedAt, Reason: entry.Reason})
+	}
+	sort.Slice(disowned, func(i, j int) bool { return disowned[i].Path < disowned[j].Path })
+
+	// Additive-extension contract: the legacy `forked_files` key is never
+	// repurposed. It now always emits an empty array, with a note field
+	// pointing consumers at its replacement; both will be dropped in a
+	// future release.
+	details["forked_files"] = []auditDisownedFile{}
+	details["forked_files_note"] = "deprecated: the fork state was removed; see disowned_files"
+
+	if len(disowned) > 0 {
+		// Backfill rationales from the friction log for entries whose
+		// disowned.json record predates reason capture (legacy
+		// migrations). The log is loaded exactly once and only when
+		// disowned files exist at all.
+		reasons := f.Audit.DisownFrictionReasons(projectDir)
+		for i := range disowned {
+			if disowned[i].Reason == "" {
+				disowned[i].Reason = reasons[disowned[i].Path]
+			}
+		}
+		details["disowned_files"] = disowned
+		details["disowned_hint"] = "disowned files are user-owned; forge never regenerates them. Re-adopt one by deleting it and running `forge generate`."
+	}
+
+	// Orphan _gen detection: walk the project for files ending in _gen.go
+	// that carry NO certification at all. These are usually safe to
+	// delete, but flagging them at audit time tells the user without
+	// forcing a regenerate.
+	orphans := findOrphanGenFiles(projectDir, markers, cs)
+	if len(orphans) > 0 {
+		details["orphan_gen_files"] = orphans
+	}
+
+	// Manifest-era `tracked_missing_files` is gone with the manifest:
+	// there is no record of paths that don't exist — a deleted generated
+	// file is simply re-emitted on the next generate (and deletion IS
+	// the documented re-adoption signal for disowned files).
+	var missing []string
+
+	// Registration findings: services whose on-disk presence disagrees
+	// with the user-owned pkg/app/services.go row list. Two states:
+	//   - unlisted: the row constructor is generated but unreferenced
+	//     (typically right after `forge add service`) — register or
+	//     tombstone it.
+	//   - tombstoned: deliberately retired (comment in services.go) but
+	//     handlers/<svc>/ still exists — the gated Tier-1 files are
+	//     stale-sweep candidates (deleted under `forge generate
+	//     --force-cleanup`); user-written Tier-2 files are never touched.
+	// Additive detail key under the codegen category.
+	unregistered := unregisteredServiceFindings(f, cfg, projectDir)
+	if len(unregistered) > 0 {
+		details["unregistered_services"] = unregistered
+	}
+
+	status := audittype.StatusOK
+	summary := fmt.Sprintf("%d certified, %d modified, %d disowned, %d orphans, %d missing", certified, len(modified), len(disowned), len(orphans), len(missing))
+	// Disowned files are a legitimate end state (unlike the old fork
+	// limbo) — they appear in the summary for visibility but do NOT
+	// degrade the category status.
+	if len(modified) > 0 || len(orphans) > 0 || len(missing) > 0 {
+		status = audittype.StatusWarn
+	}
+	if len(unregistered) > 0 {
+		status = audittype.StatusWarn
+		summary += fmt.Sprintf(", %d unregistered service(s)", len(unregistered))
+	}
+	return audittype.Category{Status: status, Summary: summary, Details: details}
+}
+
+// auditUnregisteredService is one registration finding: a Connect
+// service with no serviceRow in pkg/app/services.go whose handlers
+// directory still exists on disk.
+type auditUnregisteredService struct {
+	Service string `json:"service"` // forge.yaml services[].name
+	Dir     string `json:"dir"`     // project-relative handlers dir
+	// State is "unlisted" (name appears nowhere in services.go — newly
+	// added, row constructor generated but unreferenced) or
+	// "tombstoned" (mentioned only in a comment — deliberately retired).
+	State   string `json:"state"`
+	Message string `json:"message"`
+}
+
+// unregisteredServiceFindings resolves each unregistered Connect
+// service's handler directory disk-first and reports the ones still
+// present. Resolution and registry-parse errors are skipped
+// (best-effort — audit must not fail on a half-migrated tree); a
+// missing dir on a tombstoned service is the retired steady state and
+// produces no finding, while a missing services.go means everything is
+// registered (pre-migration trees report nothing).
+func unregisteredServiceFindings(f *factory.Factory, cfg *config.ProjectConfig, projectDir string) []auditUnregisteredService {
+	if cfg == nil {
+		return nil
+	}
+	reg, err := f.Audit.LoadServiceRegistry(projectDir)
+	if err != nil || !reg.Exists() {
+		return nil
+	}
+	registryRelPath := f.Audit.ServiceRegistryRelPath
+	var out []auditUnregisteredService
+	for _, s := range cfg.Components {
+		if !f.Audit.IsConnectServiceConfig(s) {
+			continue
+		}
+		if reg.Registered(s.Name) {
+			continue
+		}
+		res, resErr := codegen.ResolveServiceComponent(projectDir, s.Name)
+		if resErr != nil || !res.FromDisk {
+			continue
+		}
+		dir := "internal/handlers/" + res.ImportLeaf
+		finding := auditUnregisteredService{Service: s.Name, Dir: dir}
+		switch {
+		case reg.Tombstoned(s.Name):
+			finding.State = "tombstoned"
+			finding.Message = fmt.Sprintf("%s exists but %s deliberately does not register %s (its row was deleted; the comment there says where it's served) — implement+register it by restoring `%s(app, cfg, logger, opts...),`, or delete the dir (run `%s generate --force-cleanup` to delete the generated files, then move or delete your hand-written ones)",
+				dir, registryRelPath, s.Name, codegen.ServiceRowFuncName(s.Name), cmdutil.Name())
+		default:
+			finding.State = "unlisted"
+			finding.Message = fmt.Sprintf("row constructor %s is generated but unreferenced — to serve %s from this binary add `%s(app, cfg, logger, opts...),` to RegisteredServices in %s; to make it types-only delete %s and leave a comment in %s naming the binary that serves it",
+				codegen.ServiceRowFuncName(s.Name), s.Name, codegen.ServiceRowFuncName(s.Name), registryRelPath, dir, registryRelPath)
+		}
+		out = append(out, finding)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
+	return out
+}
+
+// findOrphanGenFiles walks projectDir for *_gen.go files that carry no
+// forge certification (no embedded marker, no scoped-fallback entry,
+// not disowned) yet self-identify as forge output via the legacy
+// banner. The walk skips noisy roots (vendor/, gen/, node_modules/,
+// .git/) so audit stays cheap on large projects.
+func findOrphanGenFiles(projectDir string, markers map[string]checksums.MarkerInfo, cs *generator.FileChecksums) []string {
+	var orphans []string
+	skip := map[string]struct{}{
+		"vendor": {}, ".git": {}, "node_modules": {}, "gen": {}, ".forge": {},
+	}
+	_ = filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if _, ok := skip[d.Name()]; ok {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasSuffix(name, "_gen.go") && !strings.HasSuffix(name, "_gen_test.go") {
+			return nil
+		}
+		rel, err := filepath.Rel(projectDir, path)
+		if err != nil {
+			return nil
+		}
+		relSlash := filepath.ToSlash(rel)
+		if _, ok := markers[relSlash]; ok {
+			return nil // certified — owned and accounted for
+		}
+		if cs != nil {
+			if cs.IsDisowned(relSlash) {
+				return nil
+			}
+			if _, ok := cs.Unstampable[relSlash]; ok {
+				return nil
+			}
+		}
+		// Banner check: forge-banner files generated by pre-marker forge
+		// versions that never got certified.
+		if isForgeGeneratedBanner(path) {
+			orphans = append(orphans, relSlash)
+		}
+		return nil
+	})
+	sort.Strings(orphans)
+	return orphans
+}
+
+// isForgeGeneratedBanner returns true when the file's first line
+// declares it as "Code generated by forge" — the legacy authorship
+// marker from before embedded forge:hash certification.
+func isForgeGeneratedBanner(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 256)
+	n, _ := f.Read(buf)
+	head := string(buf[:n])
+	if i := strings.IndexByte(head, '\n'); i >= 0 {
+		head = head[:i]
+	}
+	return strings.Contains(head, "Code generated by forge")
+}
+
+// auditPacks compares each installed pack's version against the version
+// embedded in the binary's pack registry. A mismatch (project pinned to
+// "v0.1.0" but the binary ships "v0.2.0") surfaces as a warn.
+func auditPacks(cfg *config.ProjectConfig) audittype.Category {
+	if cfg == nil || len(cfg.Packs) == 0 {
+		return audittype.Category{Status: audittype.StatusOK, Summary: "no packs installed"}
+	}
+	type packEntry struct {
+		Name             string `json:"name"`
+		InstalledVersion string `json:"installed_version,omitempty"`
+		LatestVersion    string `json:"latest_version,omitempty"`
+		Status           string `json:"status"`
+	}
+	var entries []packEntry
+	hasWarn := false
+	for _, name := range cfg.Packs {
+		// cfg.Packs is just a name list; we don't track per-project version
+		// pins yet, so "installed" == whatever the binary ships.
+		p, err := packs.GetPack(name)
+		entry := packEntry{Name: name}
+		if err != nil {
+			entry.Status = "missing"
+			entry.LatestVersion = "?"
+			hasWarn = true
+		} else {
+			entry.LatestVersion = p.Version
+			entry.InstalledVersion = p.Version
+			entry.Status = "ok"
+		}
+		entries = append(entries, entry)
+	}
+	status := audittype.StatusOK
+	if hasWarn {
+		status = audittype.StatusWarn
+	}
+	return audittype.Category{
+		Status:  status,
+		Summary: fmt.Sprintf("%d pack(s) installed", len(entries)),
+		Details: map[string]any{"packs": entries},
+	}
+}
+
+// auditScaffoldMarkers counts unfilled FORGE_SCAFFOLD placeholders that
+// have survived a commit. The semantic check matches `forge lint
+// --scaffolds`: only line-start `// FORGE_SCAFFOLD:` comments count as
+// real markers; mere references to the literal string in source, docs,
+// or template bodies do not. Directories that are intentional homes for
+// markers (linter testdata, project templates) are skipped, matching
+// the lint walker's skipDir + scaffold-template carve-outs.
+//
+// Without this filter, the audit would warn on every project that
+// includes the scaffold linter source itself, the analyzer fixtures, or
+// the generator templates that EMIT markers — i.e. it would be noisy on
+// forge's own tree (which is a forge-managed project).
+func auditScaffoldMarkers(projectDir string) audittype.Category {
+	skip := map[string]struct{}{
+		"vendor": {}, ".git": {}, "node_modules": {}, "gen": {}, ".forge": {},
+		// testdata: linter fixtures intentionally hold markers so the
+		// analyzer suite can assert it fires on them.
+		"testdata": {},
+		// templates/: forge's own scaffold templates contain the
+		// markers as their literal output — they're not unfilled
+		// placeholders in *this* tree.
+		"templates": {},
+	}
+	var files []string
+	total := 0
+	_ = filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if _, ok := skip[d.Name()]; ok {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Only scan files whose markers would be unfilled placeholders
+		// (Go/proto/TS/YAML/SQL/templates). Markdown and JSON often
+		// reference the marker syntax verbatim for documentation; we
+		// don't want every README that mentions `FORGE_SCAFFOLD:` to
+		// turn audit yellow.
+		if !cmdutil.IsMarkerScannable(d.Name()) {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		count := cmdutil.CountLineStartScaffoldMarkers(data)
+		if count > 0 {
+			rel, _ := filepath.Rel(projectDir, path)
+			files = append(files, filepath.ToSlash(rel))
+			total += count
+		}
+		return nil
+	})
+	sort.Strings(files)
+	status := audittype.StatusOK
+	if total > 0 {
+		status = audittype.StatusWarn
+	}
+	return audittype.Category{
+		Status:  status,
+		Summary: fmt.Sprintf("%d FORGE_SCAFFOLD marker(s) across %d file(s)", total, len(files)),
+		Details: map[string]any{"files": files, "total_markers": total},
+	}
+}
+
+// auditCRUDStubs counts custom-read-shape CodeUnimplemented stubs in
+// the project's CRUD shim files (user-owned handlers_crud.go, plus
+// legacy handlers_crud_gen.go from pre-split projects). These stubs are
+// scaffolded when a request/response message shape deliberately
+// diverges from the AIP-158 CRUD conventions — a legitimate domain
+// decision, not an error; the body is the user's to implement in the
+// owned shim. The stub keeps the file compiling but returns
+// CodeUnimplemented at runtime — production traffic to that RPC will
+// 501 until the body lands, which is why the category warns.
+//
+// Markers recognized: `// forge:custom-read-shape: <reason>` (current)
+// and `// FORGE_CRUD_SHAPE_MISMATCH: <reason>` (the pre-rename
+// spelling, kept for one release so existing files and greps keep
+// matching — see the legacy_marker detail).
+//
+// Without this audit, the stub is silent: nothing in `forge doctor`
+// or CI tells the operator that an RPC is shipping as Unimplemented
+// (forge generate prints one warning line per stub at scaffold time).
+// This category surfaces the count + per-method list as a structured
+// audit finding so CI can branch on `.crud_stubs.status == "warn"`.
+//
+// We scan files matching the CRUD shim names rather than every Go file —
+// both to keep the walk cheap and because the marker is forge-emitted
+// and lives only in those files. Skip set mirrors auditScaffoldMarkers
+// (vendor/.git/etc) plus templates/ and testdata/ so forge's own tree
+// doesn't false-positive on its template body (which contains the
+// literal marker as emission text).
+func auditCRUDStubs(projectDir string) audittype.Category {
+	skip := map[string]struct{}{
+		"vendor": {}, ".git": {}, "node_modules": {}, "gen": {}, ".forge": {},
+		"testdata":  {},
+		"templates": {},
+	}
+	var stubs []map[string]string
+	files := map[string]int{}
+	total := 0
+	_ = filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if _, ok := skip[d.Name()]; ok {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "handlers_crud.go" && d.Name() != "handlers_crud_gen.go" {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(projectDir, path)
+		rel = filepath.ToSlash(rel)
+		// Walk lines so each marker carries the nearest preceding
+		// `func (s *Service) <Method>(` name — callers want the RPC
+		// identifier, not just a file path. The CRUD template emits
+		// the forge:custom-read-shape comment between the doc
+		// comment and the function declaration, so we record the
+		// method name when we *next* see the func line. Simpler:
+		// stash the previous func name and apply it to the next
+		// marker we see (the marker sits above the matching func).
+		lines := strings.Split(string(data), "\n")
+		type pendingMarker struct {
+			reason string
+			idx    int
+		}
+		var pending []pendingMarker
+		for i, line := range lines {
+			trimmed := strings.TrimLeft(line, " \t")
+			if marker, ok := strings.CutPrefix(trimmed, "// forge:custom-read-shape:"); ok {
+				pending = append(pending, pendingMarker{reason: strings.TrimSpace(marker), idx: i})
+				continue
+			}
+			// Pre-rename spelling — recognized for one release.
+			if marker, ok := strings.CutPrefix(trimmed, "// FORGE_CRUD_SHAPE_MISMATCH:"); ok {
+				pending = append(pending, pendingMarker{reason: strings.TrimSpace(marker), idx: i})
+				continue
+			}
+			if !strings.HasPrefix(trimmed, "func (s *Service) ") {
+				continue
+			}
+			if len(pending) == 0 {
+				continue
+			}
+			rest := strings.TrimPrefix(trimmed, "func (s *Service) ")
+			methodEnd := strings.IndexAny(rest, "(")
+			if methodEnd <= 0 {
+				pending = pending[:0]
+				continue
+			}
+			methodName := rest[:methodEnd]
+			// Attach every pending marker to this func (in practice
+			// the template emits exactly one per func, but the loop
+			// stays correct if that changes).
+			for _, p := range pending {
+				stubs = append(stubs, map[string]string{
+					"file":   rel,
+					"method": methodName,
+					"reason": p.reason,
+				})
+				files[rel]++
+				total++
+			}
+			pending = pending[:0]
+		}
+		return nil
+	})
+	// Stable file list for the summary.
+	fileNames := make([]string, 0, len(files))
+	for f := range files {
+		fileNames = append(fileNames, f)
+	}
+	sort.Strings(fileNames)
+	// Deterministic stubs order (by file, then method) so JSON diffs are clean.
+	sort.SliceStable(stubs, func(i, j int) bool {
+		if stubs[i]["file"] != stubs[j]["file"] {
+			return stubs[i]["file"] < stubs[j]["file"]
+		}
+		return stubs[i]["method"] < stubs[j]["method"]
+	})
+	status := audittype.StatusOK
+	summary := "0 custom-read-shape CRUD stubs"
+	if total > 0 {
+		status = audittype.StatusWarn
+		summary = fmt.Sprintf("%d custom-read-shape CRUD stub(s) across %d file(s) — bodies are yours to implement; the RPCs return CodeUnimplemented until then", total, len(fileNames))
+	}
+	return audittype.Category{
+		Status:  status,
+		Summary: summary,
+		Details: map[string]any{
+			"files":       fileNames,
+			"total_stubs": total,
+			"stubs":       stubs,
+			// Grep compatibility: the marker was renamed from
+			// FORGE_CRUD_SHAPE_MISMATCH to forge:custom-read-shape;
+			// both spellings are scanned this release. Consumers
+			// grepping source for the old string should switch.
+			"marker":        "forge:custom-read-shape",
+			"legacy_marker": "FORGE_CRUD_SHAPE_MISMATCH",
+		},
+	}
+}
+
+// diagnosticsRegisterStubRE matches the codegen-emitted line shape
+// `diagnostics.Default.RegisterStub("symbol", "file", 123)`. The
+// quoted strings allow any non-quote char (codegen never embeds
+// escaped quotes); the line number is the bare-int third arg. The
+// regex deliberately tolerates extra whitespace so a future gofmt
+// shift on the emitted file doesn't invalidate the parse.
+var diagnosticsRegisterStubRE = regexp.MustCompile(`diagnostics\.Default\.RegisterStub\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*(\d+)\s*\)`)
+
+// diagnosticsRegisterNilDepRE matches the codegen-emitted line shape
+// `diagnostics.Default.RegisterNilDep("component", "dep", "file", 123)`.
+// Four args; component and dep are the runtime registration shape's
+// distinguishing fields.
+var diagnosticsRegisterNilDepRE = regexp.MustCompile(`diagnostics\.Default\.RegisterNilDep\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*(\d+)\s*\)`)
+
+// auditDiagnostics surfaces the runtime diagnostics registry shape at
+// audit time. Sources the data by parsing pkg/app/diagnostics_gen.go
+// for the Register* calls the codegen emitted at last generate (parse
+// approach — cheap; the alternative is running the binary briefly
+// and snapshotting Registry.Default, which is heavy and brittle).
+//
+// Even when the project hasn't enabled `features.diagnostics`, the
+// category still appears with status=ok and an empty list, so
+// downstream consumers (CI, dashboards) can rely on the key being
+// present and additive-extension contract holds — see the
+// `audit-json` skill for the contract details.
+func auditDiagnostics(cfg *config.ProjectConfig, projectDir string) audittype.Category {
+	path := filepath.Join(projectDir, "pkg", "app", "diagnostics_gen.go")
+	enabled := cfg != nil && cfg.Features.DiagnosticsEnabled()
+	strict := cfg != nil && cfg.Features.StrictWiringEnabled()
+
+	type diagEntry struct {
+		Kind      string `json:"kind"`
+		Symbol    string `json:"symbol"`
+		File      string `json:"file"`
+		Line      int    `json:"line"`
+		Component string `json:"component,omitempty"`
+		DepName   string `json:"dep_name,omitempty"`
+	}
+
+	// Default details payload — always present so the additive
+	// contract holds. `enabled` is the runtime feature gate; the
+	// presence of entries is the codegen-time signal. We surface both
+	// independently so a consumer can tell `unwired scaffolds exist
+	// but bootstrap isn't emitting them` apart from `clean project`.
+	details := map[string]any{
+		"diagnostics":           []diagEntry{},
+		"runtime_enabled":       enabled,
+		"strict_wiring_enabled": strict,
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// File missing is the common case for projects that haven't
+		// regenerated since hooks 1+2 landed (or library/cli projects
+		// with no pkg/app/). Report ok with the empty list — the
+		// additive contract requires the category to exist regardless.
+		if os.IsNotExist(err) {
+			return audittype.Category{
+				Status:  audittype.StatusOK,
+				Summary: "no pkg/app/diagnostics_gen.go (n/a — pre-codegen or library project)",
+				Details: details,
+			}
+		}
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
+			Summary: fmt.Sprintf("could not read diagnostics_gen.go: %v", err),
+			Details: details,
+		}
+	}
+
+	var entries []diagEntry
+	for _, m := range diagnosticsRegisterStubRE.FindAllStringSubmatch(string(data), -1) {
+		line, _ := strconv.Atoi(m[3])
+		entries = append(entries, diagEntry{
+			Kind:   "stub-impl",
+			Symbol: m[1],
+			File:   m[2],
+			Line:   line,
+		})
+	}
+	for _, m := range diagnosticsRegisterNilDepRE.FindAllStringSubmatch(string(data), -1) {
+		line, _ := strconv.Atoi(m[4])
+		entries = append(entries, diagEntry{
+			Kind:      "nil-dep",
+			Symbol:    m[1] + "." + m[2],
+			Component: m[1],
+			DepName:   m[2],
+			File:      m[3],
+			Line:      line,
+		})
+	}
+	// Stable sort (kind, symbol) for deterministic JSON.
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Kind != entries[j].Kind {
+			return entries[i].Kind < entries[j].Kind
+		}
+		return entries[i].Symbol < entries[j].Symbol
+	})
+	details["diagnostics"] = entries
+
+	if len(entries) == 0 {
+		return audittype.Category{
+			Status:  audittype.StatusOK,
+			Summary: "0 unwired scaffolds registered",
+			Details: details,
+		}
+	}
+
+	// Status semantics: warn when entries exist, error when strict_wiring
+	// is on AND entries exist (the project will fail to boot in this
+	// configuration). Matches the runtime emit policy — operators and
+	// CI both get the same verdict from one audit run.
+	status := audittype.StatusWarn
+	if strict {
+		status = audittype.StatusError
+	}
+	return audittype.Category{
+		Status:  status,
+		Summary: fmt.Sprintf("%d unwired scaffold(s) registered", len(entries)),
+		Details: details,
+	}
+}
+
+// auditPackGraph checks that every installed pack's declared `depends_on`
+// is also installed. Surfaces "missing producer" cases — e.g. someone
+// hand-edited cfg.Packs to remove audit-log while leaving api-key in
+// place, or installed an older project on a newer forge that introduced
+// a new dep edge. Returns ok when no installed pack declares a dep, or
+// when every dep is satisfied.
+func auditPackGraph(cfg *config.ProjectConfig) audittype.Category {
+	if cfg == nil || len(cfg.Packs) == 0 {
+		return audittype.Category{Status: audittype.StatusOK, Summary: "no packs installed (n/a)"}
+	}
+	missing := packs.MissingDependencies(cfg.Packs)
+	// Also build the full edge list for the details payload — useful for
+	// LLM consumers that want to render the graph without a second
+	// round-trip to `forge pack list --deps`.
+	edges := map[string][]string{}
+	for _, name := range cfg.Packs {
+		p, err := packs.GetPack(name)
+		if err != nil || len(p.DependsOn) == 0 {
+			continue
+		}
+		edges[name] = append([]string(nil), p.DependsOn...)
+	}
+	details := map[string]any{
+		"installed_packs": cfg.Packs,
+		"declared_edges":  edges,
+	}
+	if len(missing) > 0 {
+		details["missing_dependencies"] = missing
+		details["hint"] = "run `forge pack add <name>` for each missing dep, or remove the consuming pack to drop the requirement"
+		return audittype.Category{
+			Status:  audittype.StatusError,
+			Summary: fmt.Sprintf("%d missing pack dependency(ies): %s", len(missing), strings.Join(missing, ", ")),
+			Details: details,
+		}
+	}
+	return audittype.Category{
+		Status:  audittype.StatusOK,
+		Summary: fmt.Sprintf("%d pack(s) installed; %d declared edge(s) all satisfied", len(cfg.Packs), len(edges)),
+		Details: details,
+	}
+}
+
+// auditMigrationSafety summarises the project's migration_safety
+// configuration: number of allowlisted destructive globs, the
+// destructive_change severity setting, and the timestamp of the most
+// recent migration. Surfaces as warn when allowed_destructive is
+// non-empty (informational — user has consciously opted out of the
+// destructive-change guard for some files), error when the directory
+// has migrations but none are parseable.
+func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) audittype.Category {
+	migDir := filepath.Join(projectDir, "db", "migrations")
+	if cfg != nil && cfg.Database.MigrationsDir != "" {
+		migDir = filepath.Join(projectDir, cfg.Database.MigrationsDir)
+	}
+	hasMigrations := dirExists(migDir)
+	if !hasMigrations {
+		return audittype.Category{Status: audittype.StatusOK, Summary: "no migrations directory (n/a)"}
+	}
+
+	// Count migrations + find the latest mtime.
+	var latestMtime time.Time
+	latestName := ""
+	migCount := 0
+	entries, _ := os.ReadDir(migDir)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".up.sql") {
+			continue
+		}
+		migCount++
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(latestMtime) {
+			latestMtime = info.ModTime()
+			latestName = e.Name()
+		}
+	}
+
+	details := map[string]any{
+		"migration_count": migCount,
+		"migrations_dir":  migDir,
+	}
+	if latestName != "" {
+		details["latest_migration"] = latestName
+		details["latest_migration_mtime"] = latestMtime.UTC().Format(time.RFC3339)
+	}
+
+	allowedCount := 0
+	severity := "error"
+	if cfg != nil {
+		allowedCount = len(cfg.Database.MigrationSafety.AllowedDestructive)
+		severity = cfg.Database.MigrationSafety.EffectiveDestructiveChange()
+		if allowedCount > 0 {
+			details["allowed_destructive"] = cfg.Database.MigrationSafety.AllowedDestructive
+		}
+		details["destructive_change_severity"] = severity
+	}
+
+	status := audittype.StatusOK
+	summary := fmt.Sprintf("%d migration(s); %d allowed_destructive; destructive_change=%s",
+		migCount, allowedCount, severity)
+	if allowedCount > 0 {
+		// Informational warn — surface that the project has explicit
+		// destructive carve-outs the user should re-review periodically.
+		status = audittype.StatusWarn
+		details["hint"] = "review allowed_destructive entries periodically; once a destructive migration ships, remove its allowlist entry to re-enable the guard"
+	}
+	return audittype.Category{Status: status, Summary: summary, Details: details}
+}
+
+// scanCategory captures the shape every lint-backed audit collector
+// shares: run a scan, fold a scan error into a warn, report an empty
+// result as ok, and otherwise hand the findings to a rollup. Only the
+// scanErrPrefix (the text before ": <err>") and okMsg vary across
+// collectors; the warn/ok category shells are byte-identical so they
+// live here once. onFindings owns the non-empty case — it never sees a
+// nil/empty slice.
+func scanCategory[F any](scan func() ([]F, error), scanErrPrefix, okMsg string, onFindings func([]F) audittype.Category) audittype.Category {
+	findings, err := scan()
+	if err != nil {
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
+			Summary: fmt.Sprintf("%s: %v", scanErrPrefix, err),
+		}
+	}
+	if len(findings) == 0 {
+		return audittype.Category{
+			Status:  audittype.StatusOK,
+			Summary: okMsg,
+		}
+	}
+	return onFindings(findings)
+}
+
+// rollupByPackage aggregates findings into the <role>/<pkg>-keyed
+// breakdown shared (byte-for-byte) by the optional-deps-guard and
+// config-deps collectors: bucket each finding under keyFn(f), render its
+// per-line detail via lineFn(f), sort the package keys, and emit the
+// warn category with the canonical {finding_count, affected_packages,
+// by_package, hint} details. keyFn typically returns `f.Role + "/" +
+// f.Package`; summaryFn renders the one-line summary from the finding /
+// package counts. (auditWireCoverage keeps its own rollup — it keys by
+// component and uses distinct detail-key names, so sharing this would
+// change its output.)
+func rollupByPackage[F any](findings []F, keyFn func(F) string, lineFn func(F) string, summaryFn func(findingCount, pkgCount int) string, hint string) audittype.Category {
+	byPackage := map[string][]string{}
+	for _, f := range findings {
+		key := keyFn(f)
+		byPackage[key] = append(byPackage[key], lineFn(f))
+	}
+	pkgs := make([]string, 0, len(byPackage))
+	for k := range byPackage {
+		pkgs = append(pkgs, k)
+	}
+	sort.Strings(pkgs)
+
+	return audittype.Category{
+		Status:  audittype.StatusWarn,
+		Summary: summaryFn(len(findings), len(pkgs)),
+		Details: map[string]any{
+			"finding_count":     len(findings),
+			"affected_packages": pkgs,
+			"by_package":        byPackage,
+			"hint":              hint,
+		},
+	}
+}
+
+// auditWireCoverage rolls up unresolved Deps fields in pkg/app/wire_gen.go
+// — the same surface as `forge lint --wire-coverage`, but as a count and
+// per-component breakdown rather than per-finding output. Useful for an
+// audit-level "is wire complete?" yes/no without making the user shell
+// to lint.
+func auditWireCoverage(projectDir string) audittype.Category {
+	path := filepath.Join(projectDir, "pkg", "app", "wire_gen.go")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return audittype.Category{
+			Status:  audittype.StatusOK,
+			Summary: "no pkg/app/wire_gen.go (n/a — library project or pre-generate)",
+		}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
+			Summary: fmt.Sprintf("could not open wire_gen.go: %v", err),
+		}
+	}
+	defer func() { _ = f.Close() }()
+
+	// Distinct rollup: wire coverage keys by component (the wire*Deps
+	// function) and uses component-specific detail keys, so it builds its
+	// own category rather than going through rollupByPackage — only the
+	// scan→error-warn→empty-ok shell is shared (scanCategory).
+	return scanCategory(
+		func() ([]lint.WireCoverageFinding, error) { return lint.ScanWireGen(f, path, projectDir) },
+		"scan failed",
+		"wire coverage clean — no unresolved Deps fields",
+		func(findings []lint.WireCoverageFinding) audittype.Category {
+			byComponent := map[string][]string{}
+			for _, f := range findings {
+				comp := f.Function
+				if comp == "" {
+					comp = "(unattributed)"
+				}
+				byComponent[comp] = append(byComponent[comp], f.Field)
+			}
+			components := make([]string, 0, len(byComponent))
+			for k := range byComponent {
+				components = append(components, k)
+			}
+			sort.Strings(components)
+
+			details := map[string]any{
+				"unresolved_count":    len(findings),
+				"affected_components": components,
+				"by_component":        byComponent,
+				"hint":                fmt.Sprintf("run `%s lint --wire-coverage` for the full per-line report", cmdutil.Name()),
+			}
+			return audittype.Category{
+				Status:  audittype.StatusWarn,
+				Summary: fmt.Sprintf("%d unresolved Deps field(s) across %d component(s)", len(findings), len(components)),
+				Details: details,
+			}
+		},
+	)
+}
+
+// auditOptionalDepsGuard rolls up unguarded derefs of
+// `// forge:optional-dep` Deps fields (the optional-deps-guard lint).
+// Optional fields skip validateDeps by design, so an unguarded
+// `s.deps.X.Method(...)` is a latent nil-panic no startup gate catches.
+// Findings are warn-level (the walker is conservative, not full
+// dataflow — see lint_optional_deps_guard.go); the category is
+// additive per the audit-json contract (consumers iterate
+// `.categories | keys[]` and tolerate new entries).
+func auditOptionalDepsGuard(projectDir string) audittype.Category {
+	// Aggregate by <role>/<pkg> so a sub-agent can jump straight to the
+	// offending component; per-finding detail lives in
+	// `forge lint --optional-deps-guard --json`.
+	return scanCategory(
+		func() ([]lint.OptionalDepsGuardFinding, error) {
+			return lint.CollectOptionalDepsGuardFindings(projectDir)
+		},
+		"optional-deps-guard scan failed",
+		"optional-deps-guard clean — every optional-dep deref is nil-guarded (or suppressed)",
+		func(findings []lint.OptionalDepsGuardFinding) audittype.Category {
+			return rollupByPackage(findings,
+				func(f lint.OptionalDepsGuardFinding) string { return f.Role + "/" + f.Package },
+				func(f lint.OptionalDepsGuardFinding) string {
+					return fmt.Sprintf("%s:%d %s in %s", f.File, f.Line, f.Expr, f.Method)
+				},
+				func(findingCount, pkgCount int) string {
+					return fmt.Sprintf("%d unguarded optional-dep deref(s) across %d package(s)", findingCount, pkgCount)
+				},
+				fmt.Sprintf("run `%s lint --optional-deps-guard` for the full per-line report; suppress confirmed-safe sites with `// forge:optional-checked` on the deref line", cmdutil.Name()),
+			)
+		},
+	)
+}
+
+// auditConfigDeps rolls up scalar Deps fields (the config-deps lint).
+// Scalar Deps fields are configuration, not collaborators — wire_gen
+// can never resolve them from App/AppExtras, so they regenerate as
+// typed zeros + TODOs forever (kalshi-trader fr-ad24278452) unless the
+// user hand-projects them via AppExtras + setup.go. The supported
+// shape is a component config block in proto/config taken as one typed
+// field. Findings are warn-level; the category is additive per the
+// audit-json contract (consumers iterate `.categories | keys[]` and
+// tolerate new entries).
+func auditConfigDeps(projectDir string) audittype.Category {
+	// Aggregate by <role>/<pkg> so a sub-agent can jump straight to the
+	// offending component; per-finding detail lives in
+	// `forge lint --config-deps --json`.
+	return scanCategory(
+		func() ([]lint.ConfigDepsFinding, error) { return lint.CollectConfigDepsFindings(projectDir) },
+		"config-deps scan failed",
+		"config-deps clean — no scalar Deps fields (configuration flows through config blocks)",
+		func(findings []lint.ConfigDepsFinding) audittype.Category {
+			return rollupByPackage(findings,
+				func(f lint.ConfigDepsFinding) string { return f.Role + "/" + f.Package },
+				func(f lint.ConfigDepsFinding) string {
+					return fmt.Sprintf("%s:%d Deps.%s %s", f.File, f.Line, f.Field, f.Type)
+				},
+				func(findingCount, pkgCount int) string {
+					return fmt.Sprintf("%d scalar Deps field(s) across %d package(s) — scalars are configuration; declare component config blocks in proto/config", findingCount, pkgCount)
+				},
+				fmt.Sprintf("run `%s lint --config-deps` for per-field remediation snippets (declare a <Component>Config message in proto/config/v1/config.proto and take it as `Cfg config.<Component>Config`)", cmdutil.Name()),
+			)
+		},
+	)
+}
+
+// auditDeps surfaces dep-shaped risks: missing go.sum, gen/ unstable
+// (would `go mod tidy` produce a diff?). We don't actually run `go mod
+// tidy` because that's expensive and would mutate state — we just check
+// for go.sum presence and report.
+func auditDeps(projectDir string) audittype.Category {
+	details := map[string]any{}
+	hasWarn := false
+
+	if _, err := os.Stat(filepath.Join(projectDir, "go.mod")); err == nil {
+		details["go_mod"] = "present"
+		if _, err := os.Stat(filepath.Join(projectDir, "go.sum")); os.IsNotExist(err) {
+			details["go_sum"] = "missing — run `go mod tidy`"
+			hasWarn = true
+		} else {
+			details["go_sum"] = "present"
+		}
+	} else {
+		details["go_mod"] = "missing"
+	}
+
+	if _, err := os.Stat(filepath.Join(projectDir, "gen", "go.mod")); err == nil {
+		details["gen_go_mod"] = "present"
+	}
+
+	status := audittype.StatusOK
+	summary := "deps look healthy"
+	if hasWarn {
+		status = audittype.StatusWarn
+		summary = "deps need attention"
+	}
+	return audittype.Category{Status: status, Summary: summary, Details: details}
+}
+
+// File / method-count thresholds. Chosen to flag the genuine monster
+// files (FORGE_SHAPE_REDESIGN §6d: internal/db/postgres.go ~5,354 LOC /
+// 166 methods) without nagging on normal large files. Warn-level only —
+// splitting is app work, the audit's job is to make the navigation
+// hazard visible to an LLM/operator, not to gate the build.
+const (
+	auditFileLineWarn   = 1500 // a .go file past this is hard to navigate
+	auditTypeMethodWarn = 40   // a receiver type with this many methods is a god-object
+)
+
+// auditFileSizeWalkSkip are directory names the size walk skips — generated
+// output, vendored deps, VCS, node_modules. Generated files (gen/) are
+// excluded because their size is forge's concern, not the user's, and they
+// are not hand-navigated.
+var auditFileSizeWalkSkip = map[string]struct{}{
+	"vendor": {}, ".git": {}, "node_modules": {}, "gen": {}, ".forge": {}, "testdata": {},
+}
+
+// auditFileSizes flags oversized Go files and god-object types (receiver
+// types with a high method count) — the LLM-navigation hazard from
+// FORGE_SHAPE_REDESIGN §6d. App-specific to fix (splitting is the user's
+// call), so warn-level and informational; the value is surfacing the
+// hazard in one place an agent can branch on
+// (`.file_sizes.status == "warn"`).
+//
+// Counts physical lines per file and methods per receiver type (via a
+// cheap AST parse). _test.go and _gen.go files are scanned for line count
+// but excluded from the method-count god-object check (generated method
+// tables and table-driven tests legitimately carry many funcs).
+func auditFileSizes(projectDir string) audittype.Category {
+	type bigFile struct {
+		Path  string `json:"path"`
+		Lines int    `json:"lines"`
+	}
+	type bigType struct {
+		Path    string `json:"path"`
+		Type    string `json:"type"`
+		Methods int    `json:"methods"`
+	}
+	var bigFiles []bigFile
+	var bigTypes []bigType
+
+	_ = filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if _, ok := auditFileSizeWalkSkip[d.Name()]; ok {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".go") {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(projectDir, path)
+		rel = filepath.ToSlash(rel)
+
+		lines := 1 + strings.Count(string(data), "\n")
+		if lines >= auditFileLineWarn {
+			bigFiles = append(bigFiles, bigFile{Path: rel, Lines: lines})
+		}
+
+		// Method-count god-object check skips generated + test files.
+		if strings.HasSuffix(d.Name(), "_gen.go") || strings.HasSuffix(d.Name(), "_test.go") {
+			return nil
+		}
+		for typeName, count := range methodCountsByReceiver(data) {
+			if count >= auditTypeMethodWarn {
+				bigTypes = append(bigTypes, bigType{Path: rel, Type: typeName, Methods: count})
+			}
+		}
+		return nil
+	})
+
+	sort.Slice(bigFiles, func(i, j int) bool { return bigFiles[i].Lines > bigFiles[j].Lines })
+	sort.Slice(bigTypes, func(i, j int) bool { return bigTypes[i].Methods > bigTypes[j].Methods })
+
+	status := audittype.StatusOK
+	summary := fmt.Sprintf("no files over %d lines or types over %d methods", auditFileLineWarn, auditTypeMethodWarn)
+	if len(bigFiles) > 0 || len(bigTypes) > 0 {
+		status = audittype.StatusWarn
+		summary = fmt.Sprintf("%d oversized file(s) (>%d lines), %d god-object type(s) (>%d methods) — splitting aids LLM navigation",
+			len(bigFiles), auditFileLineWarn, len(bigTypes), auditTypeMethodWarn)
+	}
+	return audittype.Category{
+		Status:  status,
+		Summary: summary,
+		Details: map[string]any{
+			"line_threshold":   auditFileLineWarn,
+			"method_threshold": auditTypeMethodWarn,
+			"oversized_files":  bigFiles,
+			"god_object_types": bigTypes,
+		},
+	}
+}
+
+// methodCountsByReceiver parses Go source and returns receiver-type name →
+// method count (methods declared with a receiver `(r *T)` / `(r T)`).
+// Parse failures yield an empty map — the size audit is best-effort and
+// never fails the run on a mid-edit file.
+func methodCountsByReceiver(src []byte) map[string]int {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", src, 0)
+	if err != nil {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
+			continue
+		}
+		name := receiverTypeName(fn.Recv.List[0].Type)
+		if name != "" {
+			counts[name]++
+		}
+	}
+	return counts
+}
+
+// receiverTypeName extracts the base type name from a receiver expr,
+// unwrapping a leading pointer (`*T` → "T") and ignoring generic type
+// parameters (`T[K]` → "T").
+func receiverTypeName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.StarExpr:
+		return receiverTypeName(t.X)
+	case *ast.Ident:
+		return t.Name
+	case *ast.IndexExpr: // generic receiver T[K]
+		return receiverTypeName(t.X)
+	case *ast.IndexListExpr: // generic receiver T[K, V]
+		return receiverTypeName(t.X)
+	}
+	return ""
+}
+
+// unwiredStubMarkerRE matches the handler-template line
+// `// forge:gen unwired-stub symbol=<pkg>.<Method>` — the per-RPC marker
+// emitted for an un-implemented Connect handler that returns
+// CodeUnimplemented. The symbol capture lets us attribute the stub to its
+// method.
+var unwiredStubMarkerRE = regexp.MustCompile(`//\s*forge:gen unwired-stub symbol=(\S+)`)
+
+// auditOrphanStubs flags services whose handler methods are ALL still
+// un-implemented stubs (every RPC returns CodeUnimplemented, carrying the
+// `// forge:gen unwired-stub` marker the handler template emits). These are
+// the zero-implementation orphans from FORGE_SHAPE_REDESIGN §7f: a
+// `forge add service` scaffold nobody ever filled in, shipping 501s if
+// served. A service with at least one real (marker-free) handler method is
+// NOT flagged — partial implementation is normal mid-development.
+//
+// Retirement path: `forge delete service <name>` (which tombstones it
+// types-only), or implement the handler bodies. Warn-level — an orphan
+// stub is a smell, not a build break.
+func auditOrphanStubs(f *factory.Factory, cfg *config.ProjectConfig, projectDir string) audittype.Category {
+	handlersDir := filepath.Join(projectDir, "internal", "handlers")
+	entries, err := os.ReadDir(handlersDir)
+	if err != nil {
+		// No handlers dir (library/CLI project or pre-scaffold) — n/a.
+		return audittype.Category{Status: audittype.StatusOK, Summary: "no internal/handlers/ directory (n/a)"}
+	}
+
+	type orphan struct {
+		Service     string   `json:"service"`
+		Dir         string   `json:"dir"`
+		StubMethods []string `json:"stub_methods"`
+		Served      bool     `json:"served"`
+	}
+	var orphans []orphan
+
+	reg, _ := f.Audit.LoadServiceRegistry(projectDir)
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(handlersDir, e.Name())
+		stubMethods, realMethods := scanHandlerStubs(dir)
+		// Orphan = at least one stub method AND zero real (implemented)
+		// handler methods. A service with no handler methods at all (no
+		// RPCs yet) is not an orphan stub — there's nothing un-implemented.
+		if len(stubMethods) == 0 || realMethods > 0 {
+			continue
+		}
+		served := true
+		if reg != nil {
+			served = reg.Registered(e.Name())
+		}
+		sort.Strings(stubMethods)
+		orphans = append(orphans, orphan{
+			Service:     e.Name(),
+			Dir:         "internal/handlers/" + e.Name(),
+			StubMethods: stubMethods,
+			Served:      served,
+		})
+	}
+	sort.Slice(orphans, func(i, j int) bool { return orphans[i].Service < orphans[j].Service })
+
+	status := audittype.StatusOK
+	summary := "no zero-implementation orphan-stub services"
+	if len(orphans) > 0 {
+		status = audittype.StatusWarn
+		summary = fmt.Sprintf("%d service(s) with ALL handlers un-implemented (CodeUnimplemented) — implement them or run `%s delete service <name>` to retire", len(orphans), cmdutil.Name())
+	}
+	return audittype.Category{
+		Status:  status,
+		Summary: summary,
+		Details: map[string]any{
+			"orphan_services": orphans,
+			"hint":            fmt.Sprintf("a zero-impl service serves 501s if registered; implement the handler bodies or `%s delete service <name>`", cmdutil.Name()),
+		},
+	}
+}
+
+// scanHandlerStubs walks a handler directory's non-test .go files and
+// returns (stub method names, count of real handler methods). A stub is a
+// method preceded by the `// forge:gen unwired-stub` marker; a "real"
+// handler method is a func with a receiver whose body is NOT a forge stub.
+// We approximate "real handler method" as: a method declared in
+// handlers.go / handlers_crud.go (the user-owned handler files) whose
+// immediately-preceding line is NOT the unwired-stub marker. This keeps the
+// scan a cheap line+AST pass without resolving the Connect interface.
+func scanHandlerStubs(dir string) (stubMethods []string, realMethods int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, 0
+	}
+	stubSet := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		// Only the hand-written handler files carry real-vs-stub method
+		// bodies; _gen.go files are forge-owned wiring, not impl.
+		if strings.HasSuffix(e.Name(), "_gen.go") {
+			// Still mine _gen files for stub markers? No: the marker lives
+			// in the Tier-2 handlers.go scaffold. Skip generated files.
+			continue
+		}
+		data, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if rerr != nil {
+			continue
+		}
+		// Collect stub symbols from markers (symbol=<pkg>.<Method>).
+		for _, m := range unwiredStubMarkerRE.FindAllStringSubmatch(string(data), -1) {
+			sym := m[1]
+			method := sym
+			if i := strings.LastIndex(sym, "."); i >= 0 {
+				method = sym[i+1:]
+			}
+			stubSet[method] = true
+		}
+		// Count receiver methods that are NOT preceded by a stub marker —
+		// those are implemented handler bodies (or helpers). We use the
+		// AST for method decls and the marker set for stub classification.
+		for typeName, names := range handlerMethodNames(data) {
+			_ = typeName
+			for _, n := range names {
+				if !markerPrecedesMethod(data, n) {
+					realMethods++
+				}
+			}
+		}
+	}
+	for m := range stubSet {
+		stubMethods = append(stubMethods, m)
+	}
+	// A method counted as "real" only because its marker lives in a
+	// different file would be a false negative; in practice the marker and
+	// the method body are co-located in handlers.go, so this is sound for
+	// the orphan (ALL-stub) determination.
+	return stubMethods, realMethods
+}
+
+// handlerMethodNames returns receiver-type → method names for exported
+// methods (handler RPC methods are exported). Parse failure → empty.
+func handlerMethodNames(src []byte) map[string][]string {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", src, 0)
+	if err != nil {
+		return nil
+	}
+	out := map[string][]string{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || !fn.Name.IsExported() {
+			continue
+		}
+		recv := receiverTypeName(fn.Recv.List[0].Type)
+		out[recv] = append(out[recv], fn.Name.Name)
+	}
+	return out
+}
+
+// markerPrecedesMethod reports whether method `name`'s declaration is
+// immediately preceded (within its doc-comment block) by the
+// unwired-stub marker — i.e. this method is a forge stub. Approximated by
+// finding the `func (... ) <name>(` line and checking the few lines above
+// it for the marker. Cheap and robust enough for the ALL-stub orphan
+// determination.
+func markerPrecedesMethod(src []byte, name string) bool {
+	lines := strings.Split(string(src), "\n")
+	funcRE := regexp.MustCompile(`^func\s*\([^)]*\)\s*` + regexp.QuoteMeta(name) + `\s*\(`)
+	for i, line := range lines {
+		if !funcRE.MatchString(strings.TrimLeft(line, " \t")) {
+			continue
+		}
+		// Look back up to 4 lines (doc comment) for the marker.
+		for j := i - 1; j >= 0 && j >= i-4; j-- {
+			if unwiredStubMarkerRE.MatchString(lines[j]) {
+				return true
+			}
+			// Stop at a blank line or non-comment (end of doc block).
+			t := strings.TrimSpace(lines[j])
+			if t == "" || !strings.HasPrefix(t, "//") {
+				break
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// printAuditReport renders the human-readable audit. Layout: one line
+// header, then one block per category in auditCategoryOrder, then a
+// trailing overall verdict.
+func printAuditReport(w *os.File, r *AuditReport) {
+	_, _ = fmt.Fprintf(w, "Forge audit — %s (kind=%s, binary=%s)\n", r.ProjectName, r.ProjectKind, r.BinaryVersion)
+	_, _ = fmt.Fprintf(w, "Generated at %s\n\n", r.GeneratedAt.Format(time.RFC3339))
+
+	printed := map[string]struct{}{}
+	for _, key := range auditCategoryOrder {
+		if cat, ok := r.Categories[key]; ok {
+			printAuditCategory(w, key, cat)
+			printed[key] = struct{}{}
+		}
+	}
+	// Fallthrough: any categories not in the canonical order, alphabetical.
+	var extras []string
+	for k := range r.Categories {
+		if _, ok := printed[k]; !ok {
+			extras = append(extras, k)
+		}
+	}
+	sort.Strings(extras)
+	for _, k := range extras {
+		printAuditCategory(w, k, r.Categories[k])
+	}
+
+	_, _ = fmt.Fprintf(w, "Overall: %s\n", strings.ToUpper(string(r.OverallStatus)))
+}
+
+func printAuditCategory(w *os.File, key string, cat audittype.Category) {
+	icon := "✓"
+	switch cat.Status {
+	case audittype.StatusWarn:
+		icon = "⚠"
+	case audittype.StatusError:
+		icon = "✗"
+	}
+	_, _ = fmt.Fprintf(w, "%s %s — %s\n", icon, key, cat.Summary)
+	if len(cat.Details) > 0 {
+		// Print details indented; primitives inline, slices/maps collapsed.
+		keys := make([]string, 0, len(cat.Details))
+		for k := range cat.Details {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			v := cat.Details[k]
+			_, _ = fmt.Fprintf(w, "    %s: %s\n", k, formatDetailValue(v))
+		}
+	}
+	_, _ = fmt.Fprintln(w)
+}
+
+func formatDetailValue(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case []string:
+		if len(t) == 0 {
+			return "[]"
+		}
+		if len(t) <= 5 {
+			return "[" + strings.Join(t, ", ") + "]"
+		}
+		return fmt.Sprintf("[%s, ... (%d total)]", strings.Join(t[:5], ", "), len(t))
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		s := string(b)
+		if len(s) > 200 {
+			s = s[:197] + "..."
+		}
+		return s
+	}
+}

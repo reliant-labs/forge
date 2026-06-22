@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -794,26 +795,12 @@ func parseFrontmatter(content []byte) skillMeta {
 	return meta
 }
 
-// findProjectRoot walks upward from the cwd looking for a forge.yaml. Returns
-// the directory or "" when no project is found. Mirrors the loadProjectConfig
-// walk-up behavior in config.go (kept local to skill.go to avoid a circular
-// dep on its private helper).
-func findProjectRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "forge.yaml")); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", nil
-		}
-		dir = parent
-	}
-}
+// findProjectRoot forwards to cmdutil.FindProjectRoot — the shared home so the
+// dir-nested command groups (backlog, ...) reach it without importing
+// internal/cli. The forwarder keeps the unexported name working for the flat
+// command files in this package (api, friction, skill, upgrade_migrations)
+// without rewriting their call sites.
+func findProjectRoot() (string, error) { return cmdutil.FindProjectRoot() }
 
 // jsonSkill is the JSON shape emitted by `skill list --json` and inside
 // `skill search --json`. Keep field tags stable — sub-agents parse this.

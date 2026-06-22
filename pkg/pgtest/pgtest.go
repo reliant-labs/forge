@@ -34,6 +34,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -206,6 +207,12 @@ const staleInstanceAge = 30 * time.Minute
 // instance's postmaster.pid start time, so a live concurrent instance
 // (recently started) is left untouched; a dead postmaster (pid gone) is
 // reaped regardless of age. Best-effort: every error is ignored.
+//
+// Each reap also reclaims the instance's leaked SysV shared-memory segment
+// (reclaimShmSegment) BEFORE removing its dir — the segment is the resource
+// that actually exhausts; the dir is just where its id is recorded. Removing
+// the dir first (as this used to) deleted the pid file and orphaned the
+// segment permanently, so segments piled up even though dirs were cleaned.
 func reapStaleInstances() {
 	root := filepath.Join(os.TempDir(), "forge-pgtest")
 	entries, err := os.ReadDir(root)
@@ -230,8 +237,57 @@ func reapStaleInstances() {
 				_ = proc.Signal(syscall.SIGKILL)
 			}
 		}
+		// Reclaim the leaked shm segment while the pid file (which names it)
+		// still exists — must precede RemoveAll.
+		reclaimShmSegment(pidFile)
 		_ = os.RemoveAll(dir)
 	}
+}
+
+// shmIDFromPidfile parses the System V shared-memory segment id postgres
+// records in its postmaster.pid lock file. Postgres writes "<shmkey> <shmid>"
+// on the 7th line (1-based; LOCK_FILE_LINE_SHMEM_KEY) precisely so a
+// replacement postmaster can detect and remove a stale segment — we reuse
+// that contract on reap. Returns ok=false when the line is absent (a pid file
+// written before shmem attached), the fields don't parse, or the id is
+// non-positive (no SysV segment recorded).
+func shmIDFromPidfile(content string) (int, bool) {
+	lines := strings.Split(content, "\n")
+	const shmemLine = 6 // 0-based index of the 7th line
+	if len(lines) <= shmemLine {
+		return 0, false
+	}
+	fields := strings.Fields(lines[shmemLine])
+	if len(fields) < 2 {
+		return 0, false
+	}
+	id, err := strconv.Atoi(fields[1])
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+// reclaimShmSegment best-effort removes the SysV shared-memory segment named
+// in pidFile. Even with shared_memory_type=mmap, postgres always creates one
+// tiny SysV interlock segment per instance; a postmaster that was SIGKILLed
+// or died with its test-binary parent never releases it, and these orphans
+// exhaust the kernel SHMMNI table (macOS default 32) until every initdb fails
+// with "could not create shared memory segment: No space left on device".
+// `ipcrm` exists on macOS and Linux; anywhere else this is a harmless no-op.
+func reclaimShmSegment(pidFile string) {
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		return
+	}
+	id, ok := shmIDFromPidfile(string(b))
+	if !ok {
+		return
+	}
+	// ipcrm -m marks the segment for removal (freed once the last attached
+	// process detaches). Best-effort: a missing ipcrm / already-gone id is
+	// ignored.
+	_ = exec.Command("ipcrm", "-m", strconv.Itoa(id)).Run()
 }
 
 // postmaster reads a postmaster.pid file and reports the server PID and

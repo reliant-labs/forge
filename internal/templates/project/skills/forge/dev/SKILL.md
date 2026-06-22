@@ -106,7 +106,7 @@ What flipping a service to host mode buys:
 - `forge build --env=dev` lists it under "host-mode services" so users know
   they need to run it with `forge up --target <name> --host-only` (or just
   `forge up --env=dev`).
-- The scaffolded `cmd/server.go` operator-gating helper won't start the
+- The scaffolded `cmd/<bin>/cmd/serve.go` operator-gating helper won't start the
   controller manager when the user filters to host-mode-only services
   (no more spurious "not running in-cluster" errors during a host run).
 
@@ -216,10 +216,13 @@ Every `forge cluster` command runs against `k3d-<cluster-name>` (resolved from
 `deploy/k3d.yaml` metadata.name, falling back to forge.yaml `name`). This means
 you cannot accidentally `forge cluster reload` into staging or prod.
 
-`forge deploy <env>` enforces the same guard: before applying, it verifies the
-current kubectl context matches the env's `forge.K8sCluster.cluster` declared
-in `deploy/kcl/<env>/main.k`. For dev this defaults to `k3d-<project>`; for
-staging/prod declare the expected context explicitly:
+`forge deploy <env>` is DECLARATIVE-ONLY for cluster selection: the target
+kubectl context comes SOLELY from the env's `forge.K8sCluster.cluster` declared
+in `deploy/kcl/<env>/main.k`, threaded as `--context <declared>` on every
+kubectl call. It never reads or falls back to your current kubectl context, and
+there is no CLI override — so you cannot deploy the wrong env to the wrong
+cluster regardless of what context is active. For dev this defaults to
+`k3d-<project>`; for staging/prod declare the expected context explicitly:
 
 ```kcl
 # deploy/kcl/prod/main.k
@@ -231,8 +234,12 @@ _prod_k8s = forge.K8sCluster {
 }
 ```
 
-CI deploy-bots that legitimately target multiple envs from one context use
-`forge deploy prod --context <name>` to override the guard.
+The deploy fails fast (even under `--dry-run`) if the declared cluster has no
+matching kubectl context. The only remedy is to fix your kubeconfig (e.g.
+`gcloud container clusters get-credentials ...`) or correct
+`forge.K8sCluster.cluster` in the env's KCL — there is no `--context` escape
+hatch. Use `forge deploy <env> --explain` to print the declared context and
+whether it exists.
 
 ## When the project needs more
 

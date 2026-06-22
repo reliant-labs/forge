@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/envutil"
 )
 
 // ExternalProvider deploys each service in a group by exec'ing a
@@ -115,9 +117,24 @@ func (p ExternalProvider) deployOne(ctx context.Context, runner commandRunner, g
 	tag := resolveExternalTag(spec, group)
 	fmt.Printf("  deploying %s via external command (tag %s)...\n", svc.Name, tag)
 
-	// Build the substitution map. LAST_TAG is left empty on deploy —
-	// it's only meaningful in the rollback path.
-	vars := externalVars(spec, group, svc.Name, p.projectDir(), tag, "")
+	// Read the previously-recorded forge deploy so we can (a) hand the
+	// deploy_cmd the prior tag as ${LAST_TAG} (some scripts label the
+	// outgoing container or keep a rollback pointer), and (b) WARN when
+	// the container forge is about to replace was shipped under a
+	// different tag/pipeline (fr-bde7b7e8e5). The warning makes "what
+	// code is live, and who deployed it?" answerable when a legacy manual
+	// script and `forge deploy` fight over the same container name. A
+	// missing/unreadable state file is non-fatal — best-effort context.
+	prevTag := ""
+	if prev, perr := ReadDeployState(p.projectDir(), "external", group.Env, svc.Name); perr == nil && prev != nil {
+		prevTag = prev.Tag
+	}
+	warnOnForeignContainerReplace(svc.Name, prevTag, tag)
+
+	// Build the substitution map. ${LAST_TAG} carries the previously
+	// deployed tag (empty on first deploy) so the script can stamp the
+	// outgoing container or keep its own rollback pointer.
+	vars := externalVars(spec, group, svc.Name, p.projectDir(), tag, prevTag)
 
 	// Deploy phase — required; the schema check enforces non-empty
 	// deploy_cmd.
@@ -146,18 +163,8 @@ func (p ExternalProvider) deployOne(ctx context.Context, runner commandRunner, g
 
 	// Merge resolved secrets (from a dotenv secret_provider) as the BASE
 	// layer, then let env_file entries override on conflict — the explicit
-	// file wins. No-op when svc.Secrets is nil/empty (the common case for
-	// external/none providers), preserving the pre-secrets behaviour.
-	if len(svc.Secrets) > 0 {
-		merged := make(map[string]string, len(svc.Secrets)+len(envOverlay))
-		for k, v := range svc.Secrets {
-			merged[k] = v
-		}
-		for k, v := range envOverlay {
-			merged[k] = v // env_file wins
-		}
-		envOverlay = merged
-	}
+	// file wins.
+	envOverlay = mergeSecretsUnderEnvFile(svc.Secrets, envOverlay)
 
 	if err := runner.RunWithEnv(ctx, envOverlay, "sh", "-c", expanded); err != nil {
 		return fmt.Errorf("external %s: deploy_cmd: %w", svc.Name, err)
@@ -238,12 +245,31 @@ func (p ExternalProvider) rollbackOne(ctx context.Context, runner commandRunner,
 // silently dropping a misconfigured file would let the deploy proceed
 // with the wrong env, which is exactly the failure mode env_file is
 // meant to prevent.
+// mergeSecretsUnderEnvFile layers resolved secrets (from a dotenv
+// secret_provider) as the BASE env map, then lets envFile entries
+// override on conflict — the explicit file wins. It is a no-op (returns
+// envFile unchanged) when secrets is nil/empty (the common case for
+// external/none providers), preserving the pre-secrets behaviour.
+func mergeSecretsUnderEnvFile(secrets, envFile map[string]string) map[string]string {
+	if len(secrets) == 0 {
+		return envFile
+	}
+	merged := make(map[string]string, len(secrets)+len(envFile))
+	for k, v := range secrets {
+		merged[k] = v
+	}
+	for k, v := range envFile {
+		merged[k] = v // env_file wins
+	}
+	return merged
+}
+
 func loadExternalEnvFile(path string) (map[string]string, error) {
 	if path == "" {
 		return nil, nil
 	}
 	path = expandHomePath(path)
-	m, err := readDotEnvFile(path)
+	m, err := envutil.ParseDotEnv(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Printf("  Warning: env_file %s not found — skipping (no env overlay applied).\n", path)
@@ -309,10 +335,41 @@ func externalVars(spec *ExternalSpec, group ServiceGroup, svcName, projectDir, t
 	}
 	vars["IMAGE"] = spec.Image
 	vars["TAG"] = tag
+	// CODE_VERSION is the canonical version forge wants stamped into the
+	// running container — identical to the resolved image TAG. Exposed as
+	// its own token so deploy scripts can pass it to `docker run`
+	// (`-e CODE_VERSION=${CODE_VERSION}` or a `--label`) and the binary's
+	// reported code_version always agrees with the image tag (fr-bde7b7e8e5).
+	// Without a single forge-blessed source, a manual deploy path stamps a
+	// different ldflags version than the forge semver tag and "what code is
+	// live?" becomes ambiguous.
+	vars["CODE_VERSION"] = tag
+	// PIPELINE marks the deployer so a deploy_cmd can label the container
+	// (`--label forge.pipeline=${PIPELINE} --label forge.tag=${TAG}`),
+	// making a forge-deployed container distinguishable from one a legacy
+	// manual script placed under the same name.
+	vars["PIPELINE"] = "forge"
 	vars["LAST_TAG"] = lastTag
 	vars["SERVICE"] = svcName
 	vars["ENV"] = group.Env
 	vars["ENV_FILE"] = spec.EnvFile
 	vars["PROJECT_DIR"] = projectDir
 	return vars
+}
+
+// warnOnForeignContainerReplace prints a heads-up when forge is about to
+// replace a container it previously deployed under a DIFFERENT tag — the
+// "two pipelines fighting over one container" smell (fr-bde7b7e8e5). It
+// can only reason about what forge itself recorded; a container placed by
+// a manual out-of-band script leaves no forge state, so the warning is
+// best-effort. The common, benign case (same tag re-deployed, or a clean
+// first deploy) stays silent.
+func warnOnForeignContainerReplace(svcName, prevTag, newTag string) {
+	if prevTag == "" || prevTag == newTag {
+		return
+	}
+	fmt.Printf("  Warning: %s was last deployed by forge as tag %q; replacing with %q.\n",
+		svcName, prevTag, newTag)
+	fmt.Printf("           If another deploy path (a manual script) also targets this container, " +
+		"the live version may not match either record — stamp ${PIPELINE}/${TAG} as container labels to disambiguate.\n")
 }

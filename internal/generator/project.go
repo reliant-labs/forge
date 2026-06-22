@@ -66,20 +66,6 @@ func (g *ProjectGenerator) isBinaryShared() bool {
 	return g.isService() && g.effectiveBinary() == config.ProjectBinaryShared
 }
 
-// allServices returns the full list of service names this generator
-// will emit at scaffold time (ServiceName first, then
-// AdditionalServices). Used by binary=shared paths that need to enumerate
-// every service before the post-scaffold AppendServiceToConfig loop runs.
-func (g *ProjectGenerator) allServices() []string {
-	if g.ServiceName == "" {
-		return nil
-	}
-	out := make([]string, 0, 1+len(g.AdditionalServices))
-	out = append(out, g.ServiceName)
-	out = append(out, g.AdditionalServices...)
-	return out
-}
-
 // effectiveKind returns the project kind, defaulting to service so a
 // zero-value ProjectGenerator preserves pre-existing behavior.
 func (g *ProjectGenerator) effectiveKind() string {
@@ -148,7 +134,17 @@ func (g *ProjectGenerator) Generate() error {
 		// would just leave a dangling .gitkeep or an untracked empty dir.
 	}
 	if g.isService() {
-		dirs = append(dirs, "handlers", "handlers/mocks", "pkg/app", "pkg/middleware")
+		dirs = append(dirs, "internal/handlers", "internal/handlers/mocks", "pkg/app", "pkg/middleware")
+		// The command tree lives under cmd/<bin>/cmd, dir-nested by category
+		// (devspace idiom). Pre-create the group subpackage dirs so main.go's
+		// blank imports resolve even before any service/worker/operator exists.
+		bin := g.binaryName()
+		dirs = append(dirs,
+			filepath.Join("cmd", bin, "cmd"),
+			filepath.Join("cmd", bin, "cmd", "services"),
+			filepath.Join("cmd", bin, "cmd", "workers"),
+			filepath.Join("cmd", bin, "cmd", "operators"),
+		)
 	}
 	if g.hasCmd() {
 		dirs = append(dirs, "cmd")
@@ -190,7 +186,7 @@ func (g *ProjectGenerator) Generate() error {
 	// Go code (hyphens in CLI names become underscores on disk).
 	if g.ServiceName != "" {
 		svcPkg := naming.ServicePackage(g.ServiceName)
-		dirs = append(dirs, fmt.Sprintf("handlers/%s", svcPkg))
+		dirs = append(dirs, fmt.Sprintf("internal/handlers/%s", svcPkg))
 		dirs = append(dirs, fmt.Sprintf("proto/services/%s/v1", svcPkg))
 	}
 
@@ -242,114 +238,12 @@ func (g *ProjectGenerator) Generate() error {
 		}
 	}
 
-	goVersion := g.resolveGoVersion()
-
-	// Sanitize name for proto files (no hyphens allowed). Use underscores
-	// rather than stripping so that "my-cool-app" becomes "my_cool_app"
-	// (a valid proto package identifier) instead of "mycoolapp" — which
-	// silently loses the word boundaries and breaks grep.
-	protoName := strings.ReplaceAll(g.Name, "-", "_")
-
-	// ServicePackage is the Go-package-safe form of ServiceName: hyphens
-	// become underscores so the value is valid in `package` declarations
-	// and proto package segments. Templates that emit Go/proto identifiers
-	// must use ServicePackage; ServiceName is retained for display strings.
-	servicePackage := ""
-	if g.ServiceName != "" {
-		servicePackage = naming.ServicePackage(g.ServiceName)
-	}
-
-	templateData := struct {
-		Name                   string
-		ProtoName              string
-		Module                 string
-		ServiceName            string
-		ServicePackage         string
-		ServicePort            int
-		ProjectName            string
-		FrontendName           string
-		FrontendPort           int
-		GoVersion              string
-		GoVersionMinor         string
-		DockerBuilderGoVersion string
-		ConfigFields           map[string]bool
-		// LocalForgePkgVendored indicates whether <projectDir>/.forge-pkg/
-		// holds a vendored copy of forge/pkg (sibling-checkout dev mode).
-		// At scaffold time this is always false; `forge generate` flips it
-		// on if the project's go.mod has a host-absolute replace pointing
-		// at forge/pkg. The Dockerfile template uses this to gate the
-		// COPY .forge-pkg/ ./.forge-pkg/ line.
-		LocalForgePkgVendored bool
-		// RESTEnabled mirrors the `api.rest` toggle in forge.yaml. At
-		// scaffold time this is always false (REST is opt-in via post-
-		// scaffold edit), but the field is declared here so buf.yaml's
-		// dep gate has a known input shape; `forge upgrade` regenerates
-		// buf.yaml from the live forge.yaml's api.rest value.
-		RESTEnabled bool
-		// ForgePkgVersion / ForgePkgDevReplace drive the forge/pkg
-		// dependency block in go.mod.tmpl. Exactly one (or neither) is
-		// non-empty — see resolveForgePkgDep in project_pkgdep.go and
-		// docs/pkg-versioning.md for the dev-vs-release model.
-		ForgePkgVersion    string
-		ForgePkgDevReplace string
-		// AuthProvider / AuthProviderExternal gate cmd-server.go.tmpl's
-		// generated-auth call site. Always zero at scaffold time (forge
-		// new never configures an auth provider); `forge generate`
-		// re-renders cmd/server.go from the live forge.yaml value.
-		AuthProvider         string
-		AuthProviderExternal bool
-		// VersionVar mirrors forge.yaml build.version_var. The Dockerfile
-		// template stamps an extra `-X <VersionVar>=${FORGE_VERSION}` when
-		// set; empty (the scaffold default) renders nothing. See
-		// ProjectGenerator.BuildVersionVar.
-		VersionVar string
-	}{
-		Name:                   g.Name,
-		ProtoName:              protoName,
-		Module:                 g.ModulePath,
-		ServiceName:            g.ServiceName,
-		ServicePackage:         servicePackage,
-		ServicePort:            g.ServicePort,
-		ProjectName:            g.Name,
-		FrontendName:           g.FrontendName,
-		FrontendPort:           g.FrontendPort,
-		GoVersion:              goVersion,
-		GoVersionMinor:         goVersionMinor(goVersion),
-		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
-		ConfigFields:           codegen.DefaultConfigFieldNames(),
-		// false by default — only flipped by RegenerateInfraFiles after
-		// dev-mode vendoring has run.
-		LocalForgePkgVendored: false,
-		// REST is off at scaffold time; users opt-in post-scaffold by
-		// editing forge.yaml's `api.rest:` and re-running `forge generate`
-		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
-		RESTEnabled: false,
-		VersionVar:  g.BuildVersionVar,
-	}
-	templateData.ForgePkgVersion, templateData.ForgePkgDevReplace = resolveForgePkgDep(g.Path)
-	// When the scaffold emits a dev-mode forge/pkg replace AND codegen is
-	// on, the `forge generate` run that `forge new` performs immediately
-	// after will vendor the target into ./.forge-pkg/ — so the Dockerfile
-	// (Tier 2: never auto-regenerated later) must carry the COPY line
-	// from the start or docker builds diverge from host builds. Without
-	// codegen there is no generate run to create the vendor dir, so the
-	// COPY line would reference a missing path; keep it off.
-	if templateData.ForgePkgDevReplace != "" && g.Features.CodegenEnabled() {
-		templateData.LocalForgePkgVendored = true
-	}
-
-	// Strip migration-related config fields when migrations are disabled.
-	// The server template conditionally includes migration code based on
-	// ConfigFields["AutoMigrate"], so removing the field here prevents
-	// the template from emitting app.AutoMigrate() calls.
-	if !g.Features.MigrationsEnabled() {
-		delete(templateData.ConfigFields, "AutoMigrate")
-		delete(templateData.ConfigFields, "DatabaseUrl")
-		delete(templateData.ConfigFields, "MaxOpenConns")
-		delete(templateData.ConfigFields, "MaxIdleConns")
-		delete(templateData.ConfigFields, "ConnMaxIdleTime")
-		delete(templateData.ConfigFields, "ConnMaxLifetime")
-	}
+	// All per-field derivations (protoName, servicePackage, the goVersion
+	// family, the forge/pkg dep + its LocalForgePkgVendored gate, the
+	// migrations-off ConfigFields pruning) live in ForScaffold so the
+	// scaffold and upgrade lanes share one named render type. See
+	// project_template_data.go.
+	templateData := g.ForScaffold()
 
 	if g.Features.CodegenEnabled() {
 		if err := g.copyForgeV1Proto(); err != nil {
@@ -435,29 +329,26 @@ func (g *ProjectGenerator) Generate() error {
 
 	switch {
 	case g.isService():
-		// In binary=shared mode the canonical cmd/main.go cobra root is
-		// replaced with cmd-shared-main.go.tmpl, which adds doc text about
-		// the one-image-many-services deploy story. Functionally identical
-		// to cmd-root for top-level routing — both consume the user-owned
-		// userCommands() extension point (cmd/commands.go) and the
-		// generated per-service subcommands (cmd/services_gen.go, emitted
-		// below) register themselves via init().
-		if g.isBinaryShared() {
-			files = append(files,
-				struct{ template, dest string }{"cmd-shared-main.go.tmpl", "cmd/main.go"},
-				struct{ template, dest string }{"cmd-version.go.tmpl", "cmd/version.go"},
-			)
-		} else {
-			files = append(files,
-				struct{ template, dest string }{"cmd-root.go.tmpl", "cmd/main.go"},
-				struct{ template, dest string }{"cmd-version.go.tmpl", "cmd/version.go"},
-			)
-		}
-		// cmd/commands.go — the user-owned cobra extension point
-		// cmd/main.go consumes (userCommands()). Scaffolded once here;
-		// the generate pipeline re-ensures it for older projects but
-		// never overwrites an existing copy.
-		files = append(files, struct{ template, dest string }{"cmd-commands.go.tmpl", "cmd/commands.go"})
+		// The command tree lives under cmd/<bin>/cmd as a real cobra package,
+		// dir-nested by category (devspace idiom). cmd/<bin>/main.go is a thin
+		// cmd.Execute() that blank-imports the group subpackages so their
+		// commands self-register. binary=shared only changes the DEPLOY story
+		// (one image serving many services via cobra subcommands); the command
+		// tree itself is identical in both modes, so both use the same thin
+		// main (the cmd-main.go.tmpl doc text already covers the shared story).
+		bin := g.binaryName()
+		cmdDir := filepath.Join("cmd", bin)
+		treeDir := filepath.Join(cmdDir, "cmd")
+		files = append(files,
+			struct{ template, dest string }{"cmd-main.go.tmpl", filepath.Join(cmdDir, "main.go")},
+			struct{ template, dest string }{"cmd-tree-root.go.tmpl", filepath.Join(treeDir, "root.go")},
+			struct{ template, dest string }{"cmd-tree-version.go.tmpl", filepath.Join(treeDir, "version.go")},
+		)
+		// cmd/<bin>/cmd/commands.go — the user-owned cobra extension point
+		// newRootCmd consumes (userCommands(deps)). Scaffolded once here;
+		// the generate pipeline re-ensures it for older projects but never
+		// overwrites an existing copy.
+		files = append(files, struct{ template, dest string }{"cmd-tree-commands.go.tmpl", filepath.Join(treeDir, "commands.go")})
 	case g.isCLI():
 		// CLI binaries get their own root.go + version.go under
 		// cmd/<binary>/ so multi-binary projects extend cleanly later.
@@ -468,22 +359,24 @@ func (g *ProjectGenerator) Generate() error {
 		)
 	}
 
-	// cmd/server.go, cmd/otel.go, and cmd/db.go import pkg/config and
-	// pkg/app which are only generated by the codegen pipeline. They are
+	// cmd/<bin>/cmd/{serve,server,db}.go import pkg/config and pkg/app
+	// which are only generated by the codegen pipeline. They are
 	// service-shaped, so CLI/library kinds never emit them.
+	//
+	// OTel is owned by serverkit now (it calls observe.Setup internally from
+	// the projected serverkit.Config OTLPEndpoint + ServiceName); there is
+	// no generated cmd/otel.go shim.
 	if g.isService() && g.Features.CodegenEnabled() {
-		// otel.go is always emitted alongside server.go because
-		// server.go calls setupOTel(). The observability feature flag
-		// controls infra files (alloy, grafana, prometheus rules), not
-		// the Go-level tracing wiring.
+		bin := g.binaryName()
+		treeDir := filepath.Join("cmd", bin, "cmd")
 		files = append(files,
-			struct{ template, dest string }{"cmd-server.go.tmpl", "cmd/server.go"},
-			struct{ template, dest string }{"otel.go", "cmd/otel.go"},
+			struct{ template, dest string }{"cmd-tree-serve.go.tmpl", filepath.Join(treeDir, "serve.go")},
+			struct{ template, dest string }{"cmd-tree-server.go.tmpl", filepath.Join(treeDir, "server.go")},
 		)
-		// cmd/db.go (migrate CLI) depends on both pkg/config and
+		// cmd/<bin>/cmd/db.go (migrate CLI) depends on both pkg/config and
 		// golang-migrate; skip when migrations are also disabled.
 		if g.Features.MigrationsEnabled() {
-			files = append(files, struct{ template, dest string }{"cmd-db.go.tmpl", "cmd/db.go"})
+			files = append(files, struct{ template, dest string }{"cmd-tree-db.go.tmpl", filepath.Join(treeDir, "db.go")})
 		}
 	}
 
@@ -506,17 +399,26 @@ func (g *ProjectGenerator) Generate() error {
 		}
 	}
 
-	// cmd/services_gen.go — one cobra subcommand per registered service,
-	// the cmd-side projection of the pkg/app/services.go registration
-	// rows (every initial service is registered by the scaffold). Each
-	// subcommand delegates to the `runServer` pipeline (cmd/server.go)
-	// with a single-name filter so only that service is mounted; the
-	// canonical `./<bin> server [<svc>...]` form still works. Emitted for
-	// every service-kind codegen project (not just binary=shared — the
-	// subcommand surface is identical; binary mode only changes deploy).
+	// cmd/commands.go — the user-owned cobra extension point the
+	// generated cmd/main.go consumes (userCommands()). Scaffolded once so
+	// the initial build compiles. The REAL per-service subcommands
+	// (cmd/services_gen.go — one first-class cobra command per service,
+	// each delegating to runServer with its own name pre-selected over the
+	// data-only internal/app Inventory) are emitted by the generate
+	// pipeline's internal/app composition step, which the service-kind
+	// scaffold runs immediately via bootstrapGeneratedCode.
 	if g.isService() && g.Features.CodegenEnabled() {
-		if err := g.generateServiceSubcommands(); err != nil {
-			return fmt.Errorf("failed to generate per-service subcommands: %w", err)
+		if err := codegen.GenerateCmdCommands(g.Path, g.binaryName()); err != nil {
+			return fmt.Errorf("failed to scaffold cmd/<bin>/cmd/commands.go: %w", err)
+		}
+		// Emit the command-group anchors (services/workers/operators
+		// register_gen.go) with ZERO items so the group subpackages exist
+		// from the first scaffold — cmd/<bin>/main.go blank-imports them, so
+		// an empty (Go-file-less) group dir would make `go mod tidy` 404 the
+		// local import. The post-scaffold composition step re-emits these
+		// alongside the per-item files once proto is compiled.
+		if err := codegen.GenerateCmdGroups(codegen.CmdServiceGroupInput{Bin: g.binaryName()}, g.Path, nil); err != nil {
+			return fmt.Errorf("failed to scaffold cmd/<bin>/cmd group anchors: %w", err)
 		}
 	}
 
@@ -535,34 +437,18 @@ func (g *ProjectGenerator) Generate() error {
 	// Generate so every managed file exists when its checksum is taken.
 
 	if g.isService() && g.Features.CodegenEnabled() {
-		if err := g.generateBootstrap(); err != nil {
-			return fmt.Errorf("failed to generate pkg/app/bootstrap.go: %w", err)
-		}
-		// Generate setup.go (user-owned, never overwritten) so bootstrap.go compiles
-		// even with zero services.
-		// Initial scaffold: no database driver wired and no ORM. Because
-		// setup.go is NEVER rewritten, DB/ORM construction does not live
-		// here — the Tier-1 bootstrap.go's ensureDatabase backfills
-		// app.DB/app.ORM from cfg.DatabaseUrl as the project grows
-		// entities (setup.go-constructed values always win).
-		if err := codegen.GenerateSetup(g.ModulePath, "", false, g.Path); err != nil {
-			return fmt.Errorf("failed to generate pkg/app/setup.go: %w", err)
-		}
-		// Generate post_bootstrap.go (user-owned, never overwritten). The
-		// scaffolded cmd/server.go calls app.PostBootstrap(application);
-		// without the file, the project would not compile on initial
-		// `forge new` even before any user edits.
-		if err := codegen.GeneratePostBootstrap(g.Path); err != nil {
-			return fmt.Errorf("failed to generate pkg/app/post_bootstrap.go: %w", err)
-		}
+		// pkg/app is now a thin substrate: the LIVE runtime DI composition
+		// lives in internal/app (OpenInfra → NewComponents, emitted by the
+		// post-scaffold `forge generate`). At scaffold time we only emit the
+		// per-component test harness (testing.go) + the CONVENTIONS explainer;
+		// migrate.go is emitted below when migrations are enabled.
 		if err := g.generateBootstrapTesting(); err != nil {
 			return fmt.Errorf("failed to generate pkg/app/testing.go: %w", err)
 		}
 		// Emit pkg/app/CONVENTIONS.md once at scaffold so per-service
 		// service.go files can point at a single canonical explainer for
-		// the wire_gen / Setup / validateDeps story (post-2026-05-07
-		// wire-gen migration), instead of each shipping a 12-line block
-		// comment that drifts.
+		// the OpenInfra → NewComponents composition + validateDeps story
+		// instead of each shipping a block comment that drifts.
 		if err := g.generatePkgAppConventions(); err != nil {
 			return fmt.Errorf("failed to generate pkg/app/CONVENTIONS.md: %w", err)
 		}
@@ -832,7 +718,7 @@ func (g *ProjectGenerator) applyKindFeatureDefaults() {
 
 func (g *ProjectGenerator) copyForgeV1Proto() error {
 	v1Dir := filepath.Join(g.Path, "proto", "forge", "v1")
-	return assets.WriteForgeV1Proto(v1Dir, g.ModulePath)
+	return assets.WriteForgeV1Proto(v1Dir)
 }
 
 func (g *ProjectGenerator) createConfigProto(data interface{}) error {
@@ -869,26 +755,6 @@ func (g *ProjectGenerator) generatePkgAppConventions() error {
 		return fmt.Errorf("create pkg/app dir: %w", err)
 	}
 	return os.WriteFile(filepath.Join(appDir, "CONVENTIONS.md"), content, 0o644)
-}
-
-// generateServiceSubcommands writes cmd/services_gen.go: one cobra
-// subcommand per service this scaffold registers (every initial
-// service — pkg/app/services.go lists them all at scaffold time). Each
-// subcommand delegates to runServer (cmd/server.go) with a pre-filled
-// single-name service filter so only that service is mounted. Tier-1:
-// the post-scaffold `forge generate` re-emits the file as the
-// projection of the user-owned RegisteredServices rows.
-//
-// File naming follows the existing flat cmd/ layout (no per-binary
-// subdirectory) so the Dockerfile / Taskfile / VSCode launch configs
-// continue to point at `./cmd` without modification.
-func (g *ProjectGenerator) generateServiceSubcommands() error {
-	data := codegen.CmdServiceSubcommandsFromNames(g.allServices())
-	dest := filepath.Join(g.Path, "cmd", "services_gen.go")
-	if err := assets.WriteTemplateWithData("cmd-services-gen.go.tmpl", dest, data); err != nil {
-		return fmt.Errorf("write cmd/services_gen.go: %w", err)
-	}
-	return nil
 }
 
 func (g *ProjectGenerator) generateFrontendFiles() error {

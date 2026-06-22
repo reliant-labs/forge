@@ -29,9 +29,10 @@ func init() {
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
-	// Honor forge.yaml's contracts.exclude — packages explicitly excluded by
-	// the user must be skipped before any analysis runs.
-	if IsExcluded(pass.Pkg.Path()) {
+	// Honor forge.yaml's contracts.exclude AND the per-package
+	// //forge:exclude-contract header — packages explicitly excluded by the
+	// user (via either opt-out source) must be skipped before any analysis runs.
+	if IsExcludedPass(pass) {
 		return nil, nil
 	}
 	// Step 1: Find contract.go and extract interfaces from it.

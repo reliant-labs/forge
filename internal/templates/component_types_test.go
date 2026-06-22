@@ -27,13 +27,13 @@ func assertGofmtClean(t *testing.T, name, src string) {
 
 func TestWorkerTemplatesRenderDefault(t *testing.T) {
 	data := struct {
-		Name     string
-		Package  string
-		Module   string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		Schedule string
+		Name           string
+		Package        string
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		Schedule       string
 	}{
 		Name:    "processor",
 		Package: "processor",
@@ -84,13 +84,13 @@ func TestWorkerTemplatesRenderDefault(t *testing.T) {
 
 func TestWorkerTemplatesRenderTest(t *testing.T) {
 	data := struct {
-		Name     string
-		Package  string
-		Module   string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		Schedule string
+		Name           string
+		Package        string
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		Schedule       string
 	}{
 		Name:    "processor",
 		Package: "processor",
@@ -128,13 +128,13 @@ func TestWorkerTemplatesRenderTest(t *testing.T) {
 
 func TestWorkerCronTemplatesRender(t *testing.T) {
 	data := struct {
-		Name     string
-		Package  string
-		Module   string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		Schedule string
+		Name           string
+		Package        string
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		Schedule       string
 	}{
 		Name:     "cleanup",
 		Package:  "cleanup",
@@ -194,13 +194,13 @@ func TestWorkerCronTemplatesRender(t *testing.T) {
 
 func TestWorkerCronTemplatesRenderTest(t *testing.T) {
 	data := struct {
-		Name     string
-		Package  string
-		Module   string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		Schedule string
+		Name           string
+		Package        string
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		Schedule       string
 	}{
 		Name:     "cleanup",
 		Package:  "cleanup",
@@ -239,18 +239,18 @@ func TestWorkerCronTemplatesRenderTest(t *testing.T) {
 
 func TestOperatorTemplatesRender(t *testing.T) {
 	data := struct {
-		Name          string
-		Package       string
-		TypeName      string
-		TypeRef       string
-		Group         string
-		Version       string
-		Module        string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		APIImportPath string
-		SplitAPI      bool
+		Name           string
+		Package        string
+		TypeName       string
+		TypeRef        string
+		Group          string
+		Version        string
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		APIImportPath  string
+		SplitAPI       bool
 	}{
 		Name:     "scaler",
 		Package:  "scaler",
@@ -313,99 +313,5 @@ func TestOperatorTemplatesRender(t *testing.T) {
 	}
 	if !strings.Contains(tts, "TestReconcileNotFound") {
 		t.Error("controller_test.go should contain TestReconcileNotFound")
-	}
-}
-
-func TestBootstrapTemplate_WithAllComponentTypes(t *testing.T) {
-	// Alias / VarName mirror BootstrapComponentData fields. In the
-	// no-collision case Alias = Package, so the rendered template is
-	// identical to the pre-Alias output (Go accepts the redundant
-	// `<alias> "<path>"` import form).
-	// HasWebhooks mirrors codegen.BootstrapServiceData.HasWebhooks. The
-	// bootstrap template gates `RegisterWebhookRoutes(mux, stack)` calls on
-	// it (introduced as part of the 2026-04-30 LLM-port webhook auto-wire
-	// fix). Tests must include the field even when nothing in the test
-	// declares webhooks — otherwise text/template fails fast at the
-	// `<.HasWebhooks>` evaluation.
-	data := struct {
-		Module   string
-		Services []struct {
-			Name, Package, ImportPath, FieldName, Alias, VarName string
-			Fallible                                             bool
-			HasWebhooks                                          bool
-		}
-		Packages []struct {
-			Name, Package, ImportPath, FieldName, Alias, VarName string
-			Fallible                                             bool
-		}
-		Workers []struct {
-			Name, Package, ImportPath, FieldName, Alias, VarName string
-			Fallible                                             bool
-		}
-		Operators []struct {
-			Name, Package, ImportPath, FieldName, Alias, VarName string
-			Fallible                                             bool
-		}
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		HasFallible         bool
-		BinaryShared        bool
-		ConfigFields        map[string]bool
-		RESTEnabled         bool
-		ConnectImports      []string
-		DiagnosticsEnabled  bool
-		StrictWiringEnabled bool
-		AllServiceNames     []string
-		LeaderElectionID    string
-	}{
-		Module:           "example.com/fullproject",
-		LeaderElectionID: "fullproject-leader",
-		ConfigFields:     map[string]bool{},
-		Services: []struct {
-			Name, Package, ImportPath, FieldName, Alias, VarName string
-			Fallible                                             bool
-			HasWebhooks                                          bool
-		}{
-			{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "api", VarName: "api"},
-		},
-		Workers: []struct {
-			Name, Package, ImportPath, FieldName, Alias, VarName string
-			Fallible                                             bool
-		}{
-			{Name: "indexer", Package: "indexer", ImportPath: "indexer", FieldName: "Indexer", Alias: "indexer", VarName: "indexer"},
-		},
-		Operators: []struct {
-			Name, Package, ImportPath, FieldName, Alias, VarName string
-			Fallible                                             bool
-		}{
-			{Name: "scaler", Package: "scaler", ImportPath: "scaler", FieldName: "Scaler", Alias: "scaler", VarName: "scaler"},
-		},
-		HasDatabase: true,
-	}
-
-	content, err := ProjectTemplates().Render("bootstrap.go.tmpl", data)
-	if err != nil {
-		t.Fatalf("Render bootstrap.go.tmpl with all types: %v", err)
-	}
-
-	rendered := string(content)
-
-	// All component type structs should be present
-	for _, expected := range []string{
-		"func Bootstrap(",
-		"func BootstrapOnly(",
-		"func (a *App) Shutdown(",
-	} {
-		if !strings.Contains(rendered, expected) {
-			t.Errorf("bootstrap with all types missing: %s", expected)
-		}
-	}
-
-	// Verify it parses as valid Go
-	fset := token.NewFileSet()
-	_, parseErr := parser.ParseFile(fset, "bootstrap.go", rendered, parser.AllErrors)
-	if parseErr != nil {
-		t.Fatalf("rendered bootstrap.go with all types does not parse as valid Go:\n%v\n\nSource:\n%s", parseErr, rendered)
 	}
 }

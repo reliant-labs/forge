@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/cli/audittype"
 )
 
 // TestAuditExternalBuilds_NoServicesIsOK pins the "category always
@@ -34,7 +35,7 @@ func TestAuditExternalBuilds_NoServicesIsOK(t *testing.T) {
 		t.Fatalf("RenderKCL: %v", err)
 	}
 	cat := collectExternalBuildEntries(entities, []string{"dev"}, dir)
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status = %q, want ok", cat.Status)
 	}
 	if !strings.Contains(cat.Summary, "0 service") {
@@ -66,7 +67,7 @@ func TestAuditExternalBuilds_PresentCwdNoConflictIsOK(t *testing.T) {
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	entities, _ := RenderKCL(t.Context(), dir, "dev")
 	cat := collectExternalBuildEntries(entities, nil, dir)
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status = %q, want ok; details=%v", cat.Status, cat.Details)
 	}
 	svcs, _ := cat.Details["services"].([]externalBuildEntry)
@@ -98,7 +99,7 @@ func TestAuditExternalBuilds_MissingCwdWarns(t *testing.T) {
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	entities, _ := RenderKCL(t.Context(), dir, "dev")
 	cat := collectExternalBuildEntries(entities, nil, dir)
-	if cat.Status != AuditStatusWarn {
+	if cat.Status != audittype.StatusWarn {
 		t.Errorf("status = %q, want warn", cat.Status)
 	}
 	if cnt, _ := cat.Details["missing_cwd_count"].(int); cnt != 1 {
@@ -130,7 +131,7 @@ func TestAuditExternalBuilds_BuildEnvConflictWarns(t *testing.T) {
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	entities, _ := RenderKCL(t.Context(), dir, "dev")
 	cat := collectExternalBuildEntries(entities, nil, dir)
-	if cat.Status != AuditStatusWarn {
+	if cat.Status != audittype.StatusWarn {
 		t.Errorf("status = %q, want warn", cat.Status)
 	}
 	if cnt, _ := cat.Details["conflict_count"].(int); cnt != 1 {
@@ -177,7 +178,7 @@ func TestAuditExternalBuilds_StateReadAggregatesEnvs(t *testing.T) {
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
 	entities, _ := RenderKCL(t.Context(), dir, "dev")
 	cat := collectExternalBuildEntries(entities, []string{"dev", "prod"}, dir)
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status = %q, want ok; details=%v", cat.Status, cat.Details)
 	}
 	svcs, _ := cat.Details["services"].([]externalBuildEntry)
@@ -329,7 +330,7 @@ func TestExternalBuildBuiltinTokens_MatchesBuildtargetVars(t *testing.T) {
 // auditIngress's no-forge.yaml branch.
 func TestAuditExternalBuilds_NoCfgIsError(t *testing.T) {
 	cat := auditExternalBuilds(nil, t.TempDir())
-	if cat.Status != AuditStatusError {
+	if cat.Status != audittype.StatusError {
 		t.Errorf("status = %q, want error", cat.Status)
 	}
 }

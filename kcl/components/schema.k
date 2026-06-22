@@ -15,7 +15,7 @@ The inheritance hierarchy:
       ├── Worker(Component)   → Deployment (no Service)
       ├── Cron(Component)     → CronJob (uses schedule)
       ├── Operator(Component) → manager Deployment + cluster RBAC
-      └── Binary(Component)   → Deployment running ["/app/<proj>", "<name>"]
+      └── Binary(Component)   → Deployment running ["/app/<bin>"]
 
 `kind` selects the subtype. forge JSON and these schemas are
 deliberately NOT 1:1 — the JSON is the minimal denormalized base, and
@@ -84,6 +84,17 @@ schema Component:
     group: str = ""
     version: str = ""
     crds: [str] = []
+    # Polymorphic build declaration (from components_gen.json). A plain
+    # dict carrying a `type` discriminator ("go" | "docker" | "shell")
+    # plus the type's fields — typed loosely as `{str:any}` so the env
+    # main.k can overlay either a forge.GoBuild literal or a plain dict
+    # per env without cross-package type-identity friction, exactly the
+    # way `resources` / `env_vars` / `health_check` are handled. forge
+    # codegen emits a GoBuild { cmd = "./cmd/<binpkg>" } default per
+    # component; the bridge passes it straight to forge.Service.build.
+    # Empty {} means "no build declared" — the bridge omits it and the
+    # Go side synthesizes the ./cmd/<name> default.
+    build: {str:any} = {}
 
     # --- Per-env overlay (set in deploy/kcl/<env>/main.k) ---
     # The container image. Defaults to the component name; env files
@@ -153,12 +164,14 @@ schema Operator(Component):
         len(crds) > 0, "Operator.crds must list at least one CRD kind"
 
 schema Binary(Component):
-    """A standalone cobra subcommand off the shared image. Expands to a
-    Deployment whose container runs `command` (["/app/<proj>", "<name>"]
-    as emitted by forge). No Service — binaries are not Connect surfaces.
+    """A standalone binary entrypoint built into the shared image. Each
+    binary has its OWN cmd/<bin>/main.go (devspace idiom), built to
+    /app/<bin>; the image bundles every binary and this Deployment's
+    container runs `command` (["/app/<bin>"] as emitted by forge) to
+    select this one. No Service — binaries are not Connect surfaces.
     """
     kind: str = "binary"
 
     check:
         kind == "binary", "Binary.kind must be 'binary'"
-        len(command) > 0, "Binary.command must be set (forge emits ['/app/<proj>', '<name>'])"
+        len(command) > 0, "Binary.command must be set (forge emits ['/app/<bin>'])"

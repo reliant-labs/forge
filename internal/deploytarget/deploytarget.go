@@ -96,6 +96,14 @@ type ServiceGroup struct {
 	// the dispatched view of the rendered KCL — see ResolvedService.
 	Services []ResolvedService
 
+	// Frontends carries the frontends a frontend-target provider ships
+	// (today: the "firebase" provider). It's the frontend analogue of
+	// Services — empty for the service-shaped providers (k8s-cluster /
+	// external / compose), which read Services instead. The Firebase
+	// provider reads Frontends + DryRun off the group so it dispatches
+	// through the registry like every other provider.
+	Frontends []FirebaseFrontend
+
 	// ImageTag is the tag forge built (or is about to build) for
 	// these services. Passed through to the provider so it can stamp
 	// the image references correctly.
@@ -198,14 +206,20 @@ type Registry struct {
 }
 
 // NewRegistry returns a Registry pre-populated with the canonical
-// forge providers (k8s-cluster + external + compose). Callers that
-// need to inject test doubles should construct an empty Registry and
-// Register the doubles directly.
+// forge providers (k8s-cluster + external + compose + firebase).
+// Callers that need to inject test doubles should construct an empty
+// Registry and Register the doubles directly.
+//
+// The Firebase provider is registered with its zero value here; the
+// deploy dispatcher re-registers a ProjectDir-configured one (the same
+// pattern K8sClusterProvider uses for its ApplyOptsBuilder) before
+// dispatching the frontend group.
 func NewRegistry() *Registry {
 	r := &Registry{providers: map[string]Provider{}}
 	r.Register(K8sClusterProvider{})
 	r.Register(ExternalProvider{})
 	r.Register(ComposeProvider{})
+	r.Register(FirebaseProvider{})
 	return r
 }
 
@@ -367,9 +381,12 @@ type RawK8sCluster struct {
 //
 //	[<provider>] <target>: <svc-1>, <svc-2>, ...
 func FormatGroupSummary(g ServiceGroup) string {
-	names := make([]string, 0, len(g.Services))
+	names := make([]string, 0, len(g.Services)+len(g.Frontends))
 	for _, s := range g.Services {
 		names = append(names, s.Name)
+	}
+	for _, f := range g.Frontends {
+		names = append(names, f.Name)
 	}
 	target := groupTarget(g)
 	return fmt.Sprintf("[%s] %s: %s", g.ProviderID, target, strings.Join(names, ", "))
@@ -389,6 +406,11 @@ func groupTarget(g ServiceGroup) string {
 			return "file=" + g.Services[0].Compose.ComposeFile
 		}
 		return "file=?"
+	case "firebase":
+		if len(g.Frontends) > 0 {
+			return "site=" + g.Frontends[0].Spec.resolvedTarget()
+		}
+		return "site=?"
 	default:
 		return ""
 	}

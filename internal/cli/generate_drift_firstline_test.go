@@ -45,7 +45,7 @@ func TestStepCheckTier1Drift_FirstLineNamesFilesAndRemedies(t *testing.T) {
 	mustWriteScopeFile(t, filepath.Join(dir, "proto", "services", "api", "v1", "api.proto"), "syntax = \"proto3\";\n")
 
 	cs := &checksums.FileChecksums{}
-	drifted := []string{"pkg/app/wire_gen.go", "cmd/server.go"}
+	drifted := []string{"pkg/app/wire_gen.go", "internal/cli/serve.go"}
 	for _, rel := range drifted {
 		// Hand-edited Tier-1 file: marker carries the as-generated hash,
 		// body is the edit → Verify == Modified.

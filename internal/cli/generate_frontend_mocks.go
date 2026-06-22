@@ -30,19 +30,19 @@ import (
 //
 // `connect.ts` unconditionally references `@/lib/mock-transport` (it
 // dynamic-`require`s the path under NEXT_PUBLIC_MOCK_API=true), so we
-// must always emit at least a stub — even when there are no CRUD
-// entities and the rich mock-transport would have nothing to dispatch
-// on. Without the stub, webpack's static-analysis fails the production
-// build with "Module not found: Can't resolve '@/lib/mock-transport'".
+// must always emit a real, scenario-capable mock-transport for every
+// frontend — even when there are no CRUD entities. Without the file,
+// webpack's static-analysis fails the production build with "Module not
+// found: Can't resolve '@/lib/mock-transport'".
+//
+// Scenario support is DECOUPLED from entity-CRUD: the transport's
+// scenario-dispatch + hybrid-passthrough + Unimplemented-fallback
+// pipeline depends only on the scenarios scaffolding (always emitted),
+// not on entity fixtures. The per-entity fixture switch is the ONLY part
+// gated on entities — when the project has none, the template simply
+// omits that section, leaving a fully scenario-capable transport (never
+// a do-nothing stub that would silently drop the scenario mechanism).
 func generateFrontendMocks(cfg *config.ProjectConfig, services []codegen.ServiceDef, entities []codegen.EntityDef, projectDir string) error {
-	// When the project has no CRUD entities or services, we still need
-	// to emit a stub mock-transport for every frontend so the static
-	// import in connect.ts resolves, plus the scenarios scaffolding so
-	// the stub can dispatch via `?scenario=`.
-	if len(entities) == 0 || len(services) == 0 {
-		return emitMockTransportStubs(cfg, projectDir, services)
-	}
-
 	// Load templates
 	mockDataTmplContent, err := templates.FrontendTemplates().Get(filepath.Join("mocks", "mock-data.ts.tmpl"))
 	if err != nil {
@@ -118,34 +118,32 @@ func generateFrontendMocks(cfg *config.ProjectConfig, services []codegen.Service
 
 		// Generate mock transport.
 		//
-		// When the project has CRUD entities the rich template produces a
-		// dispatch table keyed on RPC names. When it doesn't (services
-		// exist but only carry bespoke non-CRUD methods) we fall back to
-		// the stub so connect.ts's static import still resolves.
+		// The rich template is ALWAYS used — scenario dispatch is decoupled
+		// from entity-CRUD. When the project has CRUD entities it also
+		// produces the per-entity fixture dispatch table; when it has none
+		// (no entities at all, or services that carry only bespoke non-CRUD
+		// methods), the template omits the fixture switch but still emits
+		// the full scenario-dispatch + hybrid-passthrough +
+		// Unimplemented-fallback pipeline. connect.ts's static import
+		// resolves either way, and the scenario mechanism is never dropped.
 		libDir := filepath.Join(projectDir, feDir, "src", "lib")
 		if err := os.MkdirAll(libDir, 0o755); err != nil {
 			return fmt.Errorf("create lib directory: %w", err)
 		}
 		outPath := filepath.Join(libDir, "mock-transport.ts")
 
-		if len(transportEntities) > 0 {
-			transportData := codegen.MockTransportTemplateData{
-				Entities:           transportEntities,
-				SchemaImportGroups: codegen.BuildMockTransportSchemaImportGroups(transportEntities),
-			}
+		transportData := codegen.MockTransportTemplateData{
+			Entities:           transportEntities,
+			SchemaImportGroups: codegen.BuildMockTransportSchemaImportGroups(transportEntities),
+		}
 
-			var buf bytes.Buffer
-			if err := mockTransportTmpl.Execute(&buf, transportData); err != nil {
-				return fmt.Errorf("render mock transport: %w", err)
-			}
+		var buf bytes.Buffer
+		if err := mockTransportTmpl.Execute(&buf, transportData); err != nil {
+			return fmt.Errorf("render mock transport: %w", err)
+		}
 
-			if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
-				return fmt.Errorf("write mock transport: %w", err)
-			}
-		} else {
-			if err := os.WriteFile(outPath, []byte(mockTransportStubContent), 0o644); err != nil {
-				return fmt.Errorf("write mock transport stub: %w", err)
-			}
+		if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
+			return fmt.Errorf("write mock transport: %w", err)
 		}
 
 		// Generate barrel index.ts for mocks
@@ -176,160 +174,6 @@ func buildEntityServiceMap(services []codegen.ServiceDef, entities []codegen.Ent
 		}
 	}
 	return result
-}
-
-// mockTransportStubContent is a minimal mock-transport with scenario
-// support that returns a `Code.Unavailable` ConnectError on every RPC
-// when no scenario handler matches. It exists so connect.ts's static
-// import of `@/lib/mock-transport` resolves at build time even when the
-// project has no entity-CRUD RPCs to dispatch on.
-//
-// Crucially, `createMockTransport()` itself MUST NOT throw — Next.js
-// prerender (e.g. of `/_not-found`) evaluates `connect.ts` which calls
-// `createMockTransport()` at module-eval time when
-// `NEXT_PUBLIC_MOCK_API=true` is in `.env.local`. A throw at module-eval
-// fails `npm run build` with an opaque `digest: ...` error that doesn't
-// finger-point at the env var. Returning a valid `Transport` whose
-// `unary` / `stream` reject with `Code.Unavailable` lets pages render
-// their existing 3-state error UI (the same UI they show for any
-// transient backend outage), which prerender treats as a successful
-// render.
-//
-// Scenario support: even with no CRUD entities, projects can ship a
-// scenario file (e.g. `src/mocks/scenarios/seeded.ts`) that overrides
-// specific RPCs. The stub reads `?scenario=` once at module init, runs
-// the optional `setup()`, and dispatches matching handlers. Anything
-// unmatched still rejects with Code.Unavailable.
-const mockTransportStubContent = `// Code generated by forge. DO NOT EDIT.
-// forge-owned: regenerated every run — do not edit (forge disown to take ownership)
-//
-// Stub mock-transport — emitted when the project has no entity-CRUD RPCs
-// to dispatch on. The real transport is generated when CRUD-shaped methods
-// exist on at least one service. The stub exists so connect.ts's static
-// import of '@/lib/mock-transport' resolves at build time AND so that
-// NEXT_PUBLIC_MOCK_API=true builds don't fail at prerender.
-//
-// Scenario overlay (see docs/adr/0002-frontend-scenarios.md): the stub
-// reads ?scenario=<name> once at module init and dispatches matching
-// handlers from the named scenario. RPCs not covered by a scenario
-// handler reject with Code.Unavailable + a clear message.
-
-import type { Transport, UnaryResponse } from "@connectrpc/connect";
-import { Code, ConnectError } from "@connectrpc/connect";
-import * as scenarios from "@/mocks/scenarios";
-
-const STUB_MESSAGE =
-  "mock-transport stub: project has no entity-CRUD RPCs; no fixture data " +
-  "to dispatch. Add CRUD methods to a service so forge generate produces a " +
-  "real mock-transport, or set NEXT_PUBLIC_MOCK_API=false.";
-
-// Resolve the active scenario once at module init. Reading the URL here
-// (vs. on every RPC) means a navigation away from ?scenario= keeps the
-// scenario active until a full reload — matching the agent-driven flow
-// where the URL is the single source of truth.
-const requested =
-  typeof globalThis !== "undefined" && globalThis.location
-    ? new URLSearchParams(globalThis.location.search).get("scenario")
-    : null;
-// Use a ternary instead of && so the empty-string falsy branch doesn't
-// leak '' into the inferred union type. With ?? alone, requested && X
-// narrows to '' | Scenario | undefined, and the empty-string survives ??
-// because it only replaces null/undefined — so subsequent access on
-// active.setup / active.handlers would error under strict tsc.
-const active =
-  (requested ? scenarios.byName(requested) : undefined) ??
-  scenarios.defaultScenario;
-
-// setup() runs once before any RPC fires. Reserved for non-RPC state
-// (localStorage flags, sessionStorage). Synchronous; no network calls.
-active.setup?.();
-
-function makeUnaryResponse<T>(
-  service: { typeName: string },
-  method: { name: string },
-  message: T,
-): UnaryResponse<never, never> {
-  return {
-    service: service as never,
-    method: method as never,
-    stream: false,
-    header: new Headers(),
-    message: message as never,
-    trailer: new Headers(),
-  };
-}
-
-export function createMockTransport(): Transport {
-  return {
-    async unary(
-      service: { typeName: string },
-      method: { name: string },
-      _signal: AbortSignal | undefined,
-      _timeoutMs: number | undefined,
-      _header: HeadersInit | undefined,
-      message: unknown,
-    ) {
-      const key = ` + "`${service.typeName}/${method.name}`" + `;
-
-      // Scenario overlay — first crack at every unary RPC.
-      const handler = active.handlers[key];
-      if (handler) {
-        const result = await handler(message as never);
-        return makeUnaryResponse(service, method, result);
-      }
-
-      // No handler — same behavior as the pre-scenarios stub.
-      return Promise.reject(new ConnectError(STUB_MESSAGE, Code.Unavailable));
-    },
-    // Streaming is not supported in v1. See ADR 0002.
-    stream() {
-      throw new ConnectError(
-        "mock-transport: scenarios don't support streaming yet",
-        Code.Unimplemented,
-      );
-    },
-  } as unknown as Transport;
-}
-
-// Re-export the active scenario so tests + dev tools can introspect it.
-export const activeScenario = active;
-`
-
-// emitMockTransportStubs writes the no-op mock-transport stub to every
-// frontend, along with the scenarios scaffolding. Used when the project
-// has no CRUD entities at all (the early-return path of
-// generateFrontendMocks).
-func emitMockTransportStubs(cfg *config.ProjectConfig, projectDir string, services []codegen.ServiceDef) error {
-	for _, fe := range cfg.Frontends {
-		if !strings.EqualFold(fe.Type, "nextjs") && !strings.EqualFold(fe.Type, "vite-spa") {
-			continue
-		}
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
-		}
-
-		// Scenarios scaffolding lives under src/mocks/ — emit it before
-		// the stub so the stub's `import * as scenarios from "@/mocks/scenarios"`
-		// resolves on a fresh scaffold with no other mocks.
-		mocksDir := filepath.Join(projectDir, feDir, "src", "mocks")
-		if err := os.MkdirAll(mocksDir, 0o755); err != nil {
-			return fmt.Errorf("create mocks directory: %w", err)
-		}
-		if err := emitScenarioScaffolding(mocksDir, services); err != nil {
-			return fmt.Errorf("emit scenario scaffolding: %w", err)
-		}
-
-		libDir := filepath.Join(projectDir, feDir, "src", "lib")
-		if err := os.MkdirAll(libDir, 0o755); err != nil {
-			return fmt.Errorf("create lib directory: %w", err)
-		}
-		outPath := filepath.Join(libDir, "mock-transport.ts")
-		if err := os.WriteFile(outPath, []byte(mockTransportStubContent), 0o644); err != nil {
-			return fmt.Errorf("write mock transport stub: %w", err)
-		}
-	}
-	return nil
 }
 
 // writeMocksIndex writes a barrel index.ts that re-exports all mock data files.

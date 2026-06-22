@@ -27,25 +27,19 @@ func New(deps Deps) *Worker {
 // Name returns the worker's identifier.
 func (w *Worker) Name() string { return "{{.Name | kebabCase}}" }
 
-// Start runs the worker's cycle loop until ctx is cancelled. The
-// supervisor cancels ctx the moment graceful shutdown begins, so the
-// select below is the shutdown seam: the next loop iteration observes
-// ctx.Done() and Start returns promptly instead of finishing out the
-// schedule.
+// Start runs the worker's cycle loop until ctx is cancelled. Keep the
+// ctx.Done() arm — it is the graceful-shutdown seam. See the forge
+// `workers` skill.
 func (w *Worker) Start(ctx context.Context) error {
 	w.deps.Logger.Info("worker started", "worker", w.Name())
 
-	// TODO: tune the cadence — or replace the ticker with a queue
-	// subscription / event stream. Keep the ctx.Done() arm either way;
-	// it is what lets this worker honor graceful shutdown.
+	// TODO: tune the cadence, or replace the ticker with a queue/event stream.
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Graceful shutdown: return promptly so the supervisor can
-			// proceed to Stop and the rest of the shutdown sequence.
 			return nil
 		case <-ticker.C:
 			if err := w.runOnce(ctx); err != nil {
@@ -55,11 +49,8 @@ func (w *Worker) Start(ctx context.Context) error {
 	}
 }
 
-// runOnce performs a single work cycle. ctx is the worker's lifecycle
-// context — pass it into every context-aware call (DB queries, HTTP
-// requests, downstream adapters) so a long cycle observes shutdown
-// mid-flight instead of running to completion after the supervisor
-// cancels. Return ctx.Err() (or bail early) once ctx is done.
+// runOnce performs a single work cycle. Pass ctx into every context-aware
+// call so a long cycle observes shutdown mid-flight.
 func (w *Worker) runOnce(ctx context.Context) error {
 	// TODO: implement your per-cycle work here.
 	w.deps.Logger.InfoContext(ctx, "worker cycle", "worker", w.Name())

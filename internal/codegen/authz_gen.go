@@ -184,8 +184,8 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		// not the synthesized package name — writing to a synthesized path
 		// here is how the historical handlers/adminserver-vs-admin_server
 		// duplicate-dir bug was born.
-		relPath := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf), "authorizer_gen.go")
-		if _, err := checksums.WriteGeneratedFile(targetDir, relPath, content, cs, true); err != nil {
+		relPath := filepath.Join("internal", "handlers", filepath.FromSlash(res.ImportLeaf), "authorizer_gen.go")
+		if err := writeForgeOwned(targetDir, relPath, content, cs); err != nil {
 			return fmt.Errorf("write authorizer_gen.go for %s: %w", svc.Name, err)
 		}
 		generatedDirs[res.ImportLeaf] = true
@@ -195,7 +195,7 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 	// have no corresponding ServiceDef (e.g., scaffold created the handler
 	// dir before any RPCs were defined in the proto). This ensures
 	// authorizer.go can always reference GeneratedAuthorizer.
-	handlersDir := filepath.Join(targetDir, "handlers")
+	handlersDir := filepath.Join(targetDir, "internal", "handlers")
 	entries, err := os.ReadDir(handlersDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -256,8 +256,8 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 			return fmt.Errorf("render authorizer_gen.go.tmpl for %s: %w", pkg, err)
 		}
 
-		relPath := filepath.Join("handlers", dirName, "authorizer_gen.go")
-		if _, err := checksums.WriteGeneratedFile(targetDir, relPath, content, cs, true); err != nil {
+		relPath := filepath.Join("internal", "handlers", dirName, "authorizer_gen.go")
+		if err := writeForgeOwned(targetDir, relPath, content, cs); err != nil {
 			return fmt.Errorf("write authorizer_gen.go for %s: %w", pkg, err)
 		}
 	}

@@ -545,3 +545,59 @@ func TestDockerConfig_BuildContextsOmittedWhenEmpty(t *testing.T) {
 		t.Errorf("empty BuildContexts should not appear in marshalled YAML, got:\n%s", got)
 	}
 }
+
+func TestConfigGuardConfig_EffectiveEnforceTypedAccess(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"absent defaults to warn", "", EnforceTypedAccessWarn},
+		{"whitespace defaults to warn", "   ", EnforceTypedAccessWarn},
+		{"off", "off", EnforceTypedAccessOff},
+		{"warn", "warn", EnforceTypedAccessWarn},
+		{"error", "error", EnforceTypedAccessError},
+		{"warning alias", "warning", EnforceTypedAccessWarn},
+		{"case-insensitive Error", "Error", EnforceTypedAccessError},
+		{"unknown defaults to warn", "nonsense", EnforceTypedAccessWarn},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := ConfigGuardConfig{EnforceTypedAccess: tt.in}
+			if got := c.EffectiveEnforceTypedAccess(); got != tt.want {
+				t.Errorf("EffectiveEnforceTypedAccess(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConfigGuardConfig_EffectiveLoaderPackage(t *testing.T) {
+	if got := (ConfigGuardConfig{}).EffectiveLoaderPackage(); got != DefaultLoaderPackage {
+		t.Errorf("absent loader_package = %q, want %q", got, DefaultLoaderPackage)
+	}
+	if got := (ConfigGuardConfig{LoaderPackage: "internal/cfg"}).EffectiveLoaderPackage(); got != "internal/cfg" {
+		t.Errorf("explicit loader_package = %q, want internal/cfg", got)
+	}
+}
+
+func TestConfigGuardConfig_GuardGatesAndEnabled(t *testing.T) {
+	tests := []struct {
+		in          string
+		wantEnabled bool
+		wantGates   bool
+	}{
+		{"", true, false},     // absent → warn: enabled, advisory
+		{"off", false, false}, // off → nothing
+		{"warn", true, false}, // warn → enabled, advisory
+		{"error", true, true}, // error → enabled, gating
+	}
+	for _, tt := range tests {
+		c := ConfigGuardConfig{EnforceTypedAccess: tt.in}
+		if got := c.TypedAccessGuardEnabled(); got != tt.wantEnabled {
+			t.Errorf("TypedAccessGuardEnabled(%q) = %v, want %v", tt.in, got, tt.wantEnabled)
+		}
+		if got := c.TypedAccessGuardGates(); got != tt.wantGates {
+			t.Errorf("TypedAccessGuardGates(%q) = %v, want %v", tt.in, got, tt.wantGates)
+		}
+	}
+}

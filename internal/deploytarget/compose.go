@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/statefile"
 )
 
 // ComposeProvider deploys each service in a group via docker-compose
@@ -166,18 +168,8 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 
 	// Merge resolved secrets (from a dotenv secret_provider) as the BASE
 	// layer, then let env_file entries override on conflict — the explicit
-	// file wins. No-op when svc.Secrets is nil/empty (the common case for
-	// external/none providers), preserving the pre-secrets behaviour.
-	if len(svc.Secrets) > 0 {
-		merged := make(map[string]string, len(svc.Secrets)+len(envOverlay))
-		for k, v := range svc.Secrets {
-			merged[k] = v
-		}
-		for k, v := range envOverlay {
-			merged[k] = v // env_file wins
-		}
-		envOverlay = merged
-	}
+	// file wins.
+	envOverlay = mergeSecretsUnderEnvFile(svc.Secrets, envOverlay)
 
 	if err := runner.RunWithEnv(ctx, envOverlay, "docker", pullArgs...); err != nil {
 		return fmt.Errorf("compose %s: pull: %w", svc.Name, err)
@@ -306,11 +298,11 @@ func (p ComposeProvider) rollbackOne(ctx context.Context, runner commandRunner, 
 // fixed, well-understood, and the output is short enough that string
 // formatting is more legible than yaml.Marshal.
 func writeComposeOverride(projectDir, env, svc, composeService, image, tag string) (string, error) {
-	dir := filepath.Join(projectDir, stateDirRel)
+	dir := filepath.Join(projectDir, statefile.DirRel)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("compose-%s-%s-rollback.override.yml", safeStateSegment(env), safeStateSegment(svc))
+	name := fmt.Sprintf("compose-%s-%s-rollback.override.yml", statefile.SafeSegment(env), statefile.SafeSegment(svc))
 	path := filepath.Join(dir, name)
 	body := fmt.Sprintf("services:\n  %s:\n    image: %s:%s\n", composeService, image, tag)
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {

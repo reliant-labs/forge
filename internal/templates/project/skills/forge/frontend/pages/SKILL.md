@@ -9,9 +9,19 @@ End-to-end recipe for adding a typed CRUD page to a forge frontend. Follow it li
 
 The example walks through adding `app/users/page.tsx` for a hypothetical `UserService`. Substitute your domain — the recipe is mechanical.
 
-## Step 1 — define the proto entity + RPCs
+## Step 1 — scaffold the entity (migration + CRUD RPCs)
 
-In `proto/services/users/v1/users.proto`:
+The schema lives in `db/migrations/`, not in proto — there is no
+`(forge.v1.entity)` annotation (those are retired and ignored). The
+fastest path is `forge add entity user email:string name:string`, which
+writes the create-table migration and scaffolds the CRUD messages + RPCs
+into the service proto in one step. An entity is a table plus matching
+CRUD RPCs; `forge generate` projects the entity struct, ORM, and these
+pages from the applied schema.
+
+The resulting `proto/services/users/v1/users.proto` is a plain message
+plus the CRUD service (no field annotations needed — columns are read off
+the migration):
 
 ```proto
 syntax = "proto3";
@@ -21,13 +31,11 @@ import "forge/v1/forge.proto";
 import "google/protobuf/timestamp.proto";
 
 message User {
-  option (forge.v1.entity) = { table: "users", timestamps: true };
-
-  string id = 1 [(forge.v1.field) = { pk: true }];
-  string org_id = 2 [(forge.v1.field) = { tenant: true }];
-  string email = 3 [(forge.v1.field) = { unique: true }];
-  string name = 4;  // plain fields persist by default — no annotation needed
-  google.protobuf.Timestamp created_at = 100;  // managed by timestamps: true
+  string id = 1;
+  string org_id = 2;
+  string email = 3;
+  string name = 4;
+  google.protobuf.Timestamp created_at = 100;
 }
 
 service UserService {

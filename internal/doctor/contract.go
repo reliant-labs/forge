@@ -55,22 +55,37 @@ func New(_ Deps) Service { return &svc{} }
 
 type svc struct{}
 
+// standardChecks is the canonical full check set, used by both
+// RunStandard and the RunFiltered "all" arm. Having one table is what
+// keeps the two surfaces from drifting on display names (they previously
+// disagreed: "docker" vs "Docker Compose", "app" vs "App Health", …).
+// dockerCheckName names the entry that must run sequentially first
+// because it discovers ports the parallel checks consume.
+const dockerCheckName = "Docker Compose"
+
+func standardChecks() []namedCheck {
+	return []namedCheck{
+		{dockerCheckName, CheckDocker},
+		{"App Health", CheckAppHealth},
+		{"pprof", CheckPprof},
+		{"Prometheus", CheckPrometheus},
+		{"Traces (Tempo)", CheckTempo},
+		{"Logs (Loki)", CheckLoki},
+		{"Profiles (Pyro)", CheckPyroscope},
+		{"Delve", CheckDelve},
+		{"covdata", CheckCovdata},
+		{"Disowned Files", CheckDisownedFiles},
+	}
+}
+
 // RunStandard wires the standard check set and runs it.
 func (s *svc) RunStandard(ctx context.Context, projectName, projectDir string) Report {
 	d := newDoctor(projectName, projectDir)
-	d.register("docker", CheckDocker)
-	d.register("app", CheckAppHealth)
-	d.register("pprof", CheckPprof)
-	d.register("prometheus", CheckPrometheus)
-	d.register("tempo", CheckTempo)
-	d.register("loki", CheckLoki)
-	d.register("pyroscope", CheckPyroscope)
-	d.register("delve", CheckDelve)
-	d.register("covdata", CheckCovdata)
-	d.register("disowned files", CheckDisownedFiles)
-	// Docker discovers ports, so it runs sequentially first. Delve also
-	// runs sequentially because it discovers the dlv port on demand.
-	return d.run(ctx, []string{"docker", "delve"})
+	for _, c := range standardChecks() {
+		d.register(c.name, c.fn)
+	}
+	// Docker discovers ports, so it runs sequentially first.
+	return d.run(ctx, []string{dockerCheckName})
 }
 
 // RunFiltered runs the named subset of checks. Empty signal means "all".
@@ -78,33 +93,26 @@ func (s *svc) RunFiltered(ctx context.Context, projectName, projectDir, signal s
 	d := newDoctor(projectName, projectDir)
 	switch signal {
 	case "":
-		d.register("Docker Compose", CheckDocker)
-		d.register("App Health", CheckAppHealth)
-		d.register("pprof", CheckPprof)
-		d.register("Prometheus", CheckPrometheus)
-		d.register("Traces (Tempo)", CheckTempo)
-		d.register("Logs (Loki)", CheckLoki)
-		d.register("Profiles (Pyro)", CheckPyroscope)
-		d.register("Delve", CheckDelve)
-		d.register("covdata", CheckCovdata)
-		d.register("Disowned Files", CheckDisownedFiles)
+		for _, c := range standardChecks() {
+			d.register(c.name, c.fn)
+		}
 	case "metrics":
-		d.register("Docker Compose", CheckDocker)
+		d.register(dockerCheckName, CheckDocker)
 		d.register("Prometheus", CheckPrometheus)
 	case "traces":
-		d.register("Docker Compose", CheckDocker)
+		d.register(dockerCheckName, CheckDocker)
 		d.register("Traces (Tempo)", CheckTempo)
 	case "logs":
-		d.register("Docker Compose", CheckDocker)
+		d.register(dockerCheckName, CheckDocker)
 		d.register("Logs (Loki)", CheckLoki)
 	case "profiles":
-		d.register("Docker Compose", CheckDocker)
+		d.register(dockerCheckName, CheckDocker)
 		d.register("pprof", CheckPprof)
 		d.register("Profiles (Pyro)", CheckPyroscope)
 	default:
 		return Report{}, fmt.Errorf("unknown signal %q (use: metrics, traces, logs, profiles)", signal)
 	}
-	return d.run(ctx, []string{"Docker Compose"}), nil
+	return d.run(ctx, []string{dockerCheckName}), nil
 }
 
 // PrintReport delegates to the package-level pretty printer.

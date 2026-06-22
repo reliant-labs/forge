@@ -167,8 +167,12 @@ Pre-1.7 forge also emitted `middleware_gen.go`, `tracing_gen.go` and
 - **Connect interceptors at the handler boundary** — `forge/pkg/observe`
   exposes `LoggingInterceptor`, `TracingInterceptor`,
   `MetricsInterceptor`, `RecoveryInterceptor`, `RequestIDInterceptor`
-  plus a one-call canonical chain `observe.DefaultMiddlewares(deps)`.
-  The scaffolded `cmd/server.go` wires that chain for you.
+  plus a one-call canonical chain `observe.Chain(observe.Deps{…})`.
+  The generated `cmd serve.go` builds that chain (handing in the
+  already-built `Auth`/`Audit`/`RateLimit` interceptors by name) and
+  applies it as handler options; the explicit composition root
+  (`internal/app/compose.go`, `NewComponents`) constructs the components
+  it mounts.
 
 - **Opt-in per-method helpers** — for the rare case where one Service
   calls another and you want a child span / log line / metric, use
@@ -185,16 +189,18 @@ Pre-1.7 forge also emitted `middleware_gen.go`, `tracing_gen.go` and
 
 For projects upgrading from the old shape, see the
 `v0.x-to-observe-libs` migration skill — `forge generate` removes the
-stale wrappers and `bootstrap.go` / `cmd/server.go` are regenerated
-automatically.
+stale wrappers. The interceptor chain is assembled in the generated
+`cmd serve.go` via `observe.Chain`; the owned composition seam is
+`internal/app/providers.go` (`OpenInfra`) for infra and the regenerated
+`internal/app/compose.go` (`NewComponents`) for component construction.
 
 ## Using mocks in tests
 
 Mocks come from `mock_gen.go`. They are designed to be drop-in for the real service in handler unit tests:
 
 ```go
-// handlers/users/service_test.go
-package users
+// internal/user/service_test.go
+package user
 
 import (
     "context"
@@ -212,7 +218,7 @@ func TestCreateUser_SendsWelcomeEmail(t *testing.T) {
         },
     }
 
-    svc := &UserService{Email: mockEmail}
+    svc := New(Deps{Email: mockEmail})
     _, err := svc.CreateUser(context.Background(), &usersv1.CreateUserRequest{
         Email: "alice@example.com",
     })
@@ -233,7 +239,7 @@ func TestCreateUser_SendsWelcomeEmail(t *testing.T) {
 
 The mock satisfies the `Service` interface, so the handler under test does not know it's running against a mock — it talks to its dependency the same way it does in production.
 
-For integration tests that need the real implementation, use `pkg/app/testing.go`'s `NewTestHarness(t)` — it wires real services against a test database.
+For integration tests that need the real implementation, use the harness in `internal/app/` (`NewTestHarness(t)`) — it calls the owned composition root (`Build`) to wire real services against a test database.
 
 ## Pure-utility packages — three options
 
@@ -267,7 +273,7 @@ forge package new <name>
 Scaffolds `internal/<name>/`:
 - `contract.go` with a starter `Service` interface
 - `<name>.go` with a stub implementation
-- The four `*_gen.go` files via `forge generate`
+- `mock_gen.go` via `forge generate`
 
 It will refuse if the directory already exists. For ports of existing packages, hand-write `contract.go` first (extracted from the source's exported surface), run `forge generate`, then copy the implementation behind the interface. See `migration-cli` and `migration-service` for the porting flow.
 

@@ -14,7 +14,7 @@ func TestGenerateWorkerFilesDefault(t *testing.T) {
 		t.Fatalf("GenerateWorkerFiles() error = %v", err)
 	}
 
-	workerDir := filepath.Join(root, "workers", "processor")
+	workerDir := filepath.Join(root, "internal", "workers", "processor")
 
 	// Both files must exist
 	for _, f := range []string{"worker.go", "worker_test.go"} {
@@ -50,7 +50,7 @@ func TestGenerateWorkerFilesCron(t *testing.T) {
 		t.Fatalf("GenerateWorkerFiles(cron) error = %v", err)
 	}
 
-	workerDir := filepath.Join(root, "workers", "cleanup")
+	workerDir := filepath.Join(root, "internal", "workers", "cleanup")
 
 	// Both files must exist
 	for _, f := range []string{"worker.go", "worker_test.go"} {

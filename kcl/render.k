@@ -126,6 +126,11 @@ _render_external = lambda d: External -> any {
         "deploy_cmd": d.deploy_cmd
         "rollback_cmd": d.rollback_cmd if d.rollback_cmd else None
         "health_cmd": d.health_cmd if d.health_cmd else None
+        # build_cmd is the build-side mirror of deploy_cmd; the Go-side
+        # parser (ExternalDeploy.BuildCmd) reads it for `forge build -t
+        # external`. None when unset so existing External targets that
+        # only deploy through forge stay unchanged.
+        "build_cmd": d.build_cmd if d.build_cmd else None
         "env_file": d.env_file if d.env_file else None
         "env": d.env if d.env else {}
     }
@@ -164,6 +169,107 @@ _render_deploy = lambda d: any -> any {
     _render_deploy_populated(d) if d else None
 }
 
+# build_of coerces a plain build dict (the shape components_gen.json
+# emits and a per-env overlay authors) into the right TYPED Build subtype,
+# dispatching on the `type` discriminator. This exists because KCL union
+# coercion is structural-first: a ShellBuild dict ({type=shell, cmd=...})
+# also satisfies GoBuild's required `cmd`, so a bare dict assigned to
+# `build: GoBuild | DockerBuild | ShellBuild` wrongly commits to GoBuild
+# and fails its `type == "go"` check. Routing the dict through this
+# discriminator-aware constructor at the bridge (build = forge.build_of(
+# c.build)) yields the exact subtype so the union match is unambiguous —
+# the same way the deploy bridge passes typed K8sCluster / BuildOnly
+# literals rather than bare dicts. Module-level (not a lambda body) so it
+# may instantiate schema literals (the v0.11 lambda restriction doesn't
+# apply here). An empty dict returns Undefined so `if c.build` stays the
+# "no build declared" signal.
+_build_go = lambda b: {str:any} -> GoBuild {
+    GoBuild {
+        cmd = b.cmd
+        output_name = b.output_name if "output_name" in b else ""
+        goos = b.goos if "goos" in b else ""
+        goarch = b.goarch if "goarch" in b else ""
+        ldflags = b.ldflags if "ldflags" in b else []
+        tags = b.tags if "tags" in b else []
+        flags = b.flags if "flags" in b else []
+        env = b.env if "env" in b else {}
+    }
+}
+
+_build_docker = lambda b: {str:any} -> DockerBuild {
+    DockerBuild {
+        output_name = b.output_name if "output_name" in b else ""
+        dockerfile = b.dockerfile if "dockerfile" in b else "Dockerfile"
+        platform = b.platform if "platform" in b else ""
+        target = b.target if "target" in b else ""
+        build_args = b.build_args if "build_args" in b else {}
+    }
+}
+
+_build_shell = lambda b: {str:any} -> ShellBuild {
+    ShellBuild {
+        output_name = b.output_name if "output_name" in b else ""
+        cmd = b.cmd
+    }
+}
+
+build_of = lambda b: {str:any} -> any {
+    _build_go(b) if (b and b.type == "go") else \
+        (_build_docker(b) if (b and b.type == "docker") else \
+        (_build_shell(b) if (b and b.type == "shell") else Undefined))
+}
+
+# Build union render. One branch per discriminator value (go / docker /
+# shell), each returning a fully-populated dict so the Go consumer
+# (ServiceEntity.Build) sees a stable key shape per type. Mirrors the
+# deploy-union dispatch above exactly.
+_render_go_build = lambda b: GoBuild -> any {
+    {
+        "type": "go"
+        "output_name": b.output_name if b.output_name else None
+        "cmd": b.cmd
+        "goos": b.goos if b.goos else None
+        "goarch": b.goarch if b.goarch else None
+        "ldflags": b.ldflags
+        "tags": b.tags
+        "flags": b.flags
+        "env": b.env if b.env else {}
+    }
+}
+
+_render_docker_build = lambda b: DockerBuild -> any {
+    {
+        "type": "docker"
+        "output_name": b.output_name if b.output_name else None
+        "dockerfile": b.dockerfile
+        "platform": b.platform if b.platform else None
+        "target": b.target if b.target else None
+        "build_args": b.build_args if b.build_args else {}
+    }
+}
+
+_render_shell_build = lambda b: ShellBuild -> any {
+    {
+        "type": "shell"
+        "output_name": b.output_name if b.output_name else None
+        "cmd": b.cmd
+    }
+}
+
+# Dispatch on the populated build's discriminator. Called only when `b`
+# is not Undefined / None. An unset build projects as null — the Go side
+# (build.go) then synthesizes the GoBuild { cmd = "./cmd/<name>" }
+# default, so a hand-authored forge.Service that omits `build` still
+# builds.
+_render_build_populated = lambda b: any -> any {
+    _render_go_build(b) if b.type == "go" else \
+        (_render_docker_build(b) if b.type == "docker" else _render_shell_build(b))
+}
+
+_render_build = lambda b: any -> any {
+    _render_build_populated(b) if b else None
+}
+
 _render_service = lambda s: Service -> any {
     {
         "name": s.name
@@ -171,6 +277,7 @@ _render_service = lambda s: Service -> any {
         "command": s.command
         "env_vars": [_render_env_var(e) for e in s.env_vars]
         "deploy": _render_deploy(s.deploy)
+        "build": _render_build(s.build)
         "build_cmd": s.build_cmd if s.build_cmd else None
         "build_cwd": s.build_cwd if s.build_cwd else None
         "build_env": s.build_env if s.build_env else {}

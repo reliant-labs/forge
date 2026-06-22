@@ -16,7 +16,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
+	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 )
 
 // descriptorStageDir is the per-invocation staging directory under the
@@ -467,6 +467,17 @@ func noticeLegacyEntityAnnotation(file *protogen.File, msg *protogen.Message) {
 		file.Desc.Path(), msg.Desc.Name())
 }
 
+// configFieldRoleString maps the ConfigFieldRole enum to the bare enum
+// spelling stored on codegen.ConfigField.Role ("" for UNSPECIFIED so old
+// descriptors and unannotated fields serialize identically). Config codegen
+// keys semantic behavior on this string, never on the field name.
+func configFieldRoleString(r forgev1.ConfigFieldRole) string {
+	if r == forgev1.ConfigFieldRole_CONFIG_FIELD_ROLE_UNSPECIFIED {
+		return ""
+	}
+	return r.String()
+}
+
 // appendConfigMessages extracts msg (and, recursively, its nested
 // message declarations) into out. Nested declarations matter for
 // component config blocks: `message AppConfig { message TraderConfig
@@ -540,6 +551,7 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 			Description:  cf.GetDescription(),
 			Sensitive:    cf.GetSensitive(),
 			Category:     cf.GetCategory(),
+			Role:         configFieldRoleString(cf.GetRole()),
 		})
 	}
 
@@ -610,14 +622,4 @@ func protoKindToString(k protoreflect.Kind) string {
 	default:
 		return "string"
 	}
-}
-
-// splitRef splits a "table.column" reference string.
-func splitRef(ref string) []string {
-	for i := len(ref) - 1; i >= 0; i-- {
-		if ref[i] == '.' {
-			return []string{ref[:i], ref[i+1:]}
-		}
-	}
-	return []string{ref}
 }

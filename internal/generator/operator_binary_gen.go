@@ -18,10 +18,10 @@ import (
 //
 // The generator emits two files:
 //
-//   - operators/<package>/doc.go — package documentation that explains
+//   - internal/operators/<package>/doc.go — package documentation that explains
 //     the operator's role and points users at `forge add crd`.
 //
-//   - operators/<package>/operator.go — the wiring symbols
+//   - internal/operators/<package>/operator.go — the wiring symbols
 //     (Controller, Deps, New, AddToScheme) that the bootstrap
 //     template expects every operator package to export. The
 //     Controller type is a thin holder for the manager-level deps
@@ -32,7 +32,7 @@ import (
 // the standard project bootstrap step.
 func GenerateOperatorBinaryOnly(root, modulePath, name, group, version string) error {
 	operatorPackage := naming.ServicePackage(name)
-	operatorDir := filepath.Join(root, "operators", operatorPackage)
+	operatorDir := filepath.Join(root, "internal", "operators", operatorPackage)
 	if err := os.MkdirAll(operatorDir, 0755); err != nil {
 		return fmt.Errorf("create directory %s: %w", operatorDir, err)
 	}
@@ -73,8 +73,8 @@ func GenerateOperatorBinaryOnly(root, modulePath, name, group, version string) e
 // That command emits:
 //
 //   - api/%s/<lower>_types.go             CRD spec/status types
-//   - operators/%s/<lower>_controller.go  thin reconciler shim
-//   - operators/%s/<lower>_controller_test.go fake-client unit test
+//   - internal/operators/%s/<lower>_controller.go  thin reconciler shim
+//   - internal/operators/%s/<lower>_controller_test.go fake-client unit test
 //
 // The reconciler shim embeds forge/pkg/controller.Reconciler[T] which
 // owns the fetch / NotFound / finalizer / dispatch lifecycle; you

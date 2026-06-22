@@ -20,8 +20,10 @@
 //
 //   - no file on disk            → new file: write it.
 //   - marker matches body        → pristine render of SOME vintage. If
-//     it differs from the current render, that's stale codegen: heal it
-//     LOUDLY (once-per-file notice; `--no-heal` opts out).
+//     it differs from the current render, it is byte-indistinguishable
+//     from a deliberate edit (FRICTION fr-2c1c2328c7), so by DEFAULT the
+//     write SKIPS it loudly (once-per-file notice). Overwriting requires
+//     explicit opt-in: `--heal` (whole tree) or `--force` (this file).
 //   - marker mismatches body     → hand-edited: the stomp guard refuses,
 //     naming the file (per-run-scoped `--force` overwrites, `forge
 //     disown` transfers ownership).
@@ -100,11 +102,6 @@ var Tier1TargetSet = map[string]bool{}
 // transfers.
 func markTier1Target(relPath string) { Tier1TargetSet[relPath] = true }
 
-// MarkTier1Target is the exported shim for tests that bypass the
-// WriteGeneratedFile chokepoint but still need to simulate the Tier-1
-// target set the retirement logic consults.
-func MarkTier1Target(relPath string) { markTier1Target(relPath) }
-
 // WrittenThisRun is a per-pipeline-run set of relative paths that the
 // current `forge generate` invocation has successfully written via the
 // `WriteGeneratedFile*` family. The marker-driven stale-artifact sweep
@@ -131,15 +128,15 @@ var sideRenderOnly = map[string]bool{}
 func AddSideRenderOnly(relPath string) { sideRenderOnly[relPath] = true }
 
 // ResetPerRunState clears the per-pipeline-run tracking sets (the
-// side-render redirects, the heal-notice machinery, the --no-heal
-// strict mode, and the per-run --force scope). Called at the start of
+// side-render redirects, the heal-notice machinery, the --heal opt-in
+// (AutoHeal), and the per-run --force scope). Called at the start of
 // each pipeline run so a long-lived process doesn't leak state across
 // invocations.
 func ResetPerRunState() {
 	sideRenderOnly = map[string]bool{}
 	healNoticed = map[string]bool{}
 	pendingHeals = map[string]string{}
-	DisableAutoHeal = false
+	AutoHeal = false
 	forceScope = nil
 }
 
@@ -181,40 +178,58 @@ func forceApplies(relPath string, force bool) bool {
 	return forceScope[relPath]
 }
 
-// DisableAutoHeal is the `forge generate --no-heal` strict mode: when
-// true, on-disk content whose marker VERIFIES but whose body differs
-// from the current render (a pristine render of an older vintage) is
-// treated as a hand-edit instead of stale codegen — the write skips it
-// and says so. The default (false) keeps the auto-heal that `forge
-// upgrade` depends on: stale codegen regenerates cleanly without
-// --force. The strict mode exists because a deliberate user revert to
-// content forge once rendered is indistinguishable from stale codegen
-// (FRICTION cp-forge fr-2c1c2328c7). Auto-heal stays the default but is
-// LOUD (HealNoticeFn); --no-heal is the escape hatch the notice
-// teaches.
-var DisableAutoHeal bool
+// AutoHeal opts IN to overwriting on-disk content whose marker VERIFIES
+// but whose body differs from the current render (a pristine render of
+// an older vintage). It is OFF by default, and that default is the
+// correctness fix for FRICTION cp-forge fr-2c1c2328c7.
+//
+// The hazard: a deliberate user revert (or hand-edit) to content forge
+// once rendered is BYTE-INDISTINGUISHABLE from stale codegen — both
+// produce a file whose embedded marker self-verifies (Pristine) but
+// whose body is an older vintage. The old default healed (overwrote)
+// these silently-then-loudly, which SILENTLY DESTROYED a real hand-edit
+// in pkg/app/bootstrap.go: the edit happened to hash-equal a prior
+// render, so generate treated the user's drift as stale codegen and
+// reverted it. The notice fired AFTER the bytes were already gone.
+//
+// forge generate must never be silently destructive, so the default is
+// now the NON-DESTRUCTIVE outcome: a pristine-but-stale file is treated
+// as a possible hand-edit — the write SKIPS it and NoHealSkipFn fires
+// once per file per run, naming the file and the remedies. Overwriting
+// requires explicit intent: `forge generate --heal` (sets AutoHeal) to
+// advance the whole tree to the current templates, or `forge generate
+// --force` to discard a specific drifted file. Either way the user, not
+// forge, decides to throw the bytes away.
+//
+// `forge upgrade` does not consult this var — it has its own diff-driven
+// writer with its own --force.
+var AutoHeal bool
 
-// HealNoticeFn is invoked once per file per run when a regeneration has
-// replaced on-disk content that was a PRISTINE OLDER forge render with
-// the current template's output — the "auto-heal stale codegen" path.
-// Healing must never be silent: if the old vintage was actually a
-// deliberate user revert, this notice is the only trace.
+// HealNoticeFn is invoked once per file per run when an EXPLICITLY
+// requested heal (--heal / AutoHeal, or a scoped --force) has replaced
+// on-disk content that was a PRISTINE OLDER forge render with the
+// current template's output. Healing must never be silent: even when the
+// user opted in, if the old vintage was actually a deliberate edit, this
+// notice is the only trace that forge threw it away.
 //
 // Package var so the CLI can redirect the report; the default prints to
 // stderr. Never nil it out — assign a no-op func in tests instead.
 var HealNoticeFn = func(relPath string) {
 	fmt.Fprintf(os.Stderr,
-		"♻️  healing stale codegen: %s — on-disk content was a pristine prior forge render (not the latest); overwrote it with the current template. If that content was a deliberate edit, restore it and re-run with --no-heal, then move the edit to an extension point or `forge disown` the file.\n",
+		"♻️  healed stale codegen: %s — on-disk content was a pristine prior forge render (not the latest); overwrote it with the current template (you opted in via --heal/--force). If that content was a deliberate edit, restore it, then move the edit to an extension point or `forge disown` the file.\n",
 		relPath)
 }
 
-// NoHealSkipFn is invoked once per file per run when --no-heal caused a
-// write to SKIP a pristine-but-stale file (the strict-mode counterpart
-// of HealNoticeFn). Default prints to stderr.
+// NoHealSkipFn is invoked once per file per run when the default
+// non-destructive behavior caused a write to SKIP a pristine-but-stale
+// file. This is the DEFAULT outcome (AutoHeal off): the file's body is an
+// older forge render than the current template, which is
+// byte-indistinguishable from a deliberate user revert/edit, so forge
+// refuses to silently overwrite it. Default prints to stderr.
 var NoHealSkipFn = func(relPath string) {
 	fmt.Fprintf(os.Stderr,
-		"⏭️  --no-heal: %s matches a prior forge render but not the current template — left untouched (treated as a hand-edit). Run without --no-heal to regenerate it, or `forge disown` to keep it permanently.\n",
-		relPath)
+		"⏭️  %s matches a PRIOR forge render but not the current template — left untouched, because that is byte-indistinguishable from a deliberate edit and forge will not silently revert your work. To regenerate it from the current templates: `forge generate --heal` (advances every such file) or `forge generate --force` (this file only). To keep your version permanently: `forge disown %s`.\n",
+		relPath, relPath)
 }
 
 // healNoticed is the per-run dedupe set for HealNoticeFn / NoHealSkipFn
@@ -469,11 +484,13 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 		case Pristine:
 			oldBody := BodyHash(onDisk)
 			if oldBody != BodyHash(stamped) {
-				// A pristine render of some OLDER vintage. Heal by
-				// default — loudly (notice deferred past the formatters;
-				// see pendingHeals). Under --no-heal, treat as a
-				// hand-edit and skip.
-				if DisableAutoHeal && !forceApplies(relPath, force) {
+				// A pristine render of some OLDER vintage. This is
+				// byte-indistinguishable from a deliberate user revert
+				// (FRICTION fr-2c1c2328c7), so the DEFAULT is to NOT
+				// overwrite: skip and say so loudly via NoHealSkipFn.
+				// Healing (overwrite) requires explicit opt-in — AutoHeal
+				// (--heal) for the whole tree, or this file's --force scope.
+				if !AutoHeal && !forceApplies(relPath, force) {
 					if !healNoticed[relPath] {
 						healNoticed[relPath] = true
 						if NoHealSkipFn != nil {
@@ -504,6 +521,9 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
 	}
+	// Capture the pre-run bytes BEFORE the first write so a failed run can
+	// be rolled back to a clean pre-regen tree (fr-40f7ec9bd9).
+	recordPreWrite(root, relPath)
 	if err := os.WriteFile(fullPath, stamped, 0o644); err != nil {
 		return false, err
 	}
@@ -537,10 +557,11 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 		onDiskBody := BodyHash(onDisk)
 		switch {
 		case tracked && onDiskBody == recorded:
-			// Pristine last render. Heal-notice when regeneration
-			// actually changes it.
+			// Pristine last render. When regeneration would actually
+			// change it, the default is non-destructive: skip and say so
+			// (same fr-2c1c2328c7 rationale as the stamped path).
 			if onDiskBody != newBody {
-				if DisableAutoHeal && !forceApplies(relPath, force) {
+				if !AutoHeal && !forceApplies(relPath, force) {
 					if !healNoticed[relPath] {
 						healNoticed[relPath] = true
 						if NoHealSkipFn != nil {
@@ -563,6 +584,7 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
 	}
+	recordPreWrite(root, relPath)
 	if err := os.WriteFile(fullPath, content, 0o644); err != nil {
 		return false, err
 	}
@@ -649,6 +671,7 @@ func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileCheck
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
 	}
+	recordPreWrite(root, relPath)
 	if err := os.WriteFile(fullPath, content, 0o644); err != nil {
 		return false, err
 	}

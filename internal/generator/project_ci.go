@@ -81,9 +81,12 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		GitHubOwner:  githubOwner,
 
 		// Stamp forge's version so `verify-generated` installs exactly the
-		// same version that produced the scaffold. Git SHA is a fallback when
-		// the binary was built without a version tag (local `dev` builds).
-		ForgeVersion:   buildinfo.Version(),
+		// same version that produced the scaffold. We stamp the INSTALLABLE
+		// version (release tag or clean pseudo-version) — never a `+dirty`
+		// build, which no module proxy can serve. When the running binary is
+		// a dirty/dev build InstallableVersion returns "" and the template
+		// falls back to pinning by git SHA (fr-8c8a24ea97).
+		ForgeVersion:   buildinfo.InstallableVersion(),
 		ForgeGitCommit: buildinfo.GitCommit(),
 	}
 

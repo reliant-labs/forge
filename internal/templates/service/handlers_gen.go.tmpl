@@ -2,19 +2,9 @@
 // forge-owned: regenerated every run — do not edit (forge disown to take ownership)
 // Source: {{.ProtoImportPath}}/v1/*.proto
 //
-// This file holds Unimplemented stubs for every RPC in the service that
-// does not yet have a real handler in this package. It is regenerated on
-// every `forge generate`, so any edits here will be overwritten.
-//
-// To customize: create a new file in this package (e.g.
-// `service_create.go`, `service_list.go`) with a method on `*Service`:
-//
-//	func (s *Service) Create(ctx context.Context,
-//		req *connect.Request[pb.CreateRequest],
-//	) (*connect.Response[pb.CreateResponse], error) { ... }
-//
-// The next `forge generate` will detect the real implementation and drop
-// the stub for that RPC from this file automatically.
+// Unimplemented stubs for RPCs without a real handler yet. To customize,
+// add the method on *Service in a NEW file in this package; the next
+// `forge generate` drops the stub. See the forge `api` skill.
 package {{.ServicePackage}}
 
 {{- if .Methods}}
@@ -31,11 +21,7 @@ import (
 {{range .Methods}}
 {{- if and .ClientStreaming .ServerStreaming}}
 // {{.Name}} implements the {{.Name}} bidirectional streaming RPC.
-// TODO: implement {{.Name}} as a *Service method in a NEW user-owned file
-// in this package (e.g. service_create.go — see the file header). Do NOT
-// write the implementation here: this file is regenerated on every
-// `forge generate` and edits to it are lost. The stub disappears once a
-// real implementation exists.
+// TODO: implement {{.Name}} on *Service in a NEW file in this package.
 // forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name}}
 func (s *Service) {{.Name}}(
 	ctx context.Context,
@@ -45,11 +31,7 @@ func (s *Service) {{.Name}}(
 }
 {{- else if .ClientStreaming}}
 // {{.Name}} implements the {{.Name}} client streaming RPC.
-// TODO: implement {{.Name}} as a *Service method in a NEW user-owned file
-// in this package (e.g. service_create.go — see the file header). Do NOT
-// write the implementation here: this file is regenerated on every
-// `forge generate` and edits to it are lost. The stub disappears once a
-// real implementation exists.
+// TODO: implement {{.Name}} on *Service in a NEW file in this package.
 // forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name}}
 func (s *Service) {{.Name}}(
 	ctx context.Context,
@@ -59,11 +41,7 @@ func (s *Service) {{.Name}}(
 }
 {{- else if .ServerStreaming}}
 // {{.Name}} implements the {{.Name}} server streaming RPC.
-// TODO: implement {{.Name}} as a *Service method in a NEW user-owned file
-// in this package (e.g. service_create.go — see the file header). Do NOT
-// write the implementation here: this file is regenerated on every
-// `forge generate` and edits to it are lost. The stub disappears once a
-// real implementation exists.
+// TODO: implement {{.Name}} on *Service in a NEW file in this package.
 // forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name}}
 func (s *Service) {{.Name}}(
 	ctx context.Context,
@@ -74,11 +52,7 @@ func (s *Service) {{.Name}}(
 }
 {{- else}}
 // {{.Name}} implements the {{.Name}} RPC.
-// TODO: implement {{.Name}} as a *Service method in a NEW user-owned file
-// in this package (e.g. service_create.go — see the file header). Do NOT
-// write the implementation here: this file is regenerated on every
-// `forge generate` and edits to it are lost. The stub disappears once a
-// real implementation exists.
+// TODO: implement {{.Name}} on *Service in a NEW file in this package.
 // forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name}}
 func (s *Service) {{.Name}}(
 	ctx context.Context,

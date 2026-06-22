@@ -101,7 +101,7 @@ func TestBuildExternalBuildDoctorChecks_MissingCwdWarns(t *testing.T) {
 func TestBuildExternalBuildDoctorChecks_FirstTokenMissingWarns(t *testing.T) {
 	projectDir := "/proj"
 	stat := stubStat{projectDir: {}}.Stat // cwd ok (empty BuildCwd = projectDir)
-	lookup := stubLookupErr{}.Lookup       // nothing on PATH
+	lookup := stubLookupErr{}.Lookup      // nothing on PATH
 
 	svcs := []ServiceEntity{
 		{Name: "gw", BuildCmd: "go build ./..."},

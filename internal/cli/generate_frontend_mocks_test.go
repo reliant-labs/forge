@@ -351,3 +351,56 @@ func TestMockTransport_DistinctModules_KeepsImportsSeparate(t *testing.T) {
 		t.Errorf("expected separate control_pb import line. Got:\n%s", got)
 	}
 }
+
+// TestMockTransport_NoEntities_EmitsScenarioCapableTransport is the
+// regression test for the scenario-downgrade bug: forge used to emit a
+// ~28-line do-nothing stub whenever the project had no entity-CRUD RPCs,
+// which DROPPED the scenario-dispatch mechanism entirely. Scenarios do
+// not require entity-CRUD (only the per-entity fixtures do), so the
+// no-entity output must still be the rich, scenario-capable transport —
+// scenario overlay + hybrid passthrough + Unimplemented fallback — just
+// without the per-entity fixture switch.
+func TestMockTransport_NoEntities_EmitsScenarioCapableTransport(t *testing.T) {
+	got := renderMockTransport(t, nil)
+
+	// Scenario dispatch must survive: active-scenario resolution, the
+	// handler lookup, and the passthrough fallback wiring.
+	for _, want := range []string{
+		`import * as scenarios from "../mocks/scenarios"`,
+		`scenarios.defaultScenario`,
+		`const handler = active.handlers[key]`,
+		`active.passthrough === true`,
+		`export function createMockTransport(fallback?: Transport): Transport`,
+		`Code.Unimplemented`,
+		`export const activeScenario = active`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected scenario-capable transport to contain %q. Got:\n%s", want, got)
+		}
+	}
+
+	// It must NOT be the old do-nothing stub.
+	for _, unwanted := range []string{
+		"STUB_MESSAGE",
+		"project has no entity-CRUD RPCs",
+		"Code.Unavailable",
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("did not expect stub marker %q in scenario-capable transport. Got:\n%s", unwanted, got)
+		}
+	}
+
+	// With no entities the per-entity fixture machinery is omitted: no
+	// `create(...Schema` fixture builders, no `Store` maps, and the
+	// `create` import (used only by fixtures) is dropped to keep the file
+	// free of unused-import errors under strict tsc / eslint.
+	for _, unwanted := range []string{
+		`import { create } from "@bufbuild/protobuf"`,
+		"Store = new Map(",
+		`from "@/mocks/`,
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("did not expect entity-fixture artifact %q in no-entity transport. Got:\n%s", unwanted, got)
+		}
+	}
+}

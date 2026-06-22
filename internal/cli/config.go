@@ -1,18 +1,20 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
-// ErrProjectConfigNotFound is returned when forge.yaml does not exist.
-var ErrProjectConfigNotFound = errors.New("forge.yaml not found in current directory (run 'forge new' to create a project)")
+// ErrProjectConfigNotFound is returned when forge.yaml does not exist. The
+// canonical sentinel lives in cmdutil (the shared leaf package) so the
+// dir-nested command groups compare against the same value; this is an alias.
+var ErrProjectConfigNotFound = cmdutil.ErrProjectConfigNotFound
 
 const defaultProjectConfigFile = "forge.yaml"
 

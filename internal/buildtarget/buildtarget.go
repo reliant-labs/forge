@@ -33,7 +33,6 @@ package buildtarget
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,6 +41,8 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/envutil"
+	"github.com/reliant-labs/forge/internal/statefile"
 )
 
 // Spec is the per-service build-target shape consumed by the runner.
@@ -83,6 +84,12 @@ type Spec struct {
 	// when BuildCwd is empty.
 	ProjectDir string
 
+	// Env is the deploy-env name (dev/staging/prod). Used as the
+	// ${ENV} substitution token so a build_cmd can branch on env (e.g.
+	// a different Dockerfile or build-arg per env). Mirrors the
+	// deploy-side External provider's ${ENV} token.
+	Env string
+
 	// BuildCmd is the shell command to exec via `sh -c`. Required —
 	// callers should NOT construct a Spec without a build_cmd set.
 	BuildCmd string
@@ -110,6 +117,11 @@ type Spec struct {
 type commandRunner interface {
 	Run(ctx context.Context, name string, args ...string) error
 	RunWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error
+	// RunInDir runs the command with its working directory set to dir
+	// (and an optional env overlay). Unlike a shell `cd <dir> && …`
+	// prefix this never quotes the path through a shell, so a dir with
+	// spaces or shell metacharacters is handled correctly.
+	RunInDir(ctx context.Context, dir string, env map[string]string, name string, args ...string) error
 }
 
 // execRunner is the production commandRunner. Run pipes through to
@@ -121,11 +133,18 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) error {
 }
 
 func (execRunner) RunWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error {
+	return execRunner{}.RunInDir(ctx, "", env, name, args...)
+}
+
+func (execRunner) RunInDir(ctx context.Context, dir string, env map[string]string, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// Empty dir leaves cmd.Dir unset, so the command inherits the host
+	// cwd — which equals ProjectDir for forge build invocations.
+	cmd.Dir = dir
 	if len(env) > 0 {
-		cmd.Env = mergeEnv(os.Environ(), env)
+		cmd.Env = envutil.MergeExtraWins(os.Environ(), env)
 	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
@@ -133,42 +152,9 @@ func (execRunner) RunWithEnv(ctx context.Context, env map[string]string, name st
 	return nil
 }
 
-// mergeEnv layers extra KEY=VALUE pairs onto a base os.Environ()
-// slice. Extra wins on key conflict — the BuildEnv map is meant to be
-// authoritative for the variables it declares. Returns a fresh slice
-// safe to assign to cmd.Env.
-//
-// Internal duplicate of deploytarget's mergeEnv. The two packages
-// don't share an exec-helper module today; the function is 15 lines
-// and importing one from the other would couple build and deploy
-// concerns the dispatcher tables deliberately keep separate.
-func mergeEnv(base []string, extra map[string]string) []string {
-	if len(extra) == 0 {
-		return append([]string(nil), base...)
-	}
-	out := make([]string, 0, len(base)+len(extra))
-	seen := map[string]struct{}{}
-	for k, v := range extra {
-		seen[k] = struct{}{}
-		out = append(out, k+"="+v)
-	}
-	for _, kv := range base {
-		eq := strings.IndexByte(kv, '=')
-		if eq <= 0 {
-			out = append(out, kv)
-			continue
-		}
-		if _, dup := seen[kv[:eq]]; dup {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
-}
-
 // Vars returns the substitution map for a Spec's ${X} tokens. The
-// built-in keys (IMAGE/TAG/SERVICE/TARGETARCH/REGISTRY/PROJECT_DIR/
-// BUILD_CWD) win on conflict with BuildEnv keys — same precedence
+// built-in keys (IMAGE/TAG/CODE_VERSION/SERVICE/TARGETARCH/REGISTRY/
+// PROJECT_DIR/ENV/BUILD_CWD) win on conflict with BuildEnv keys — same precedence
 // the deploy-side External provider uses (so users carry one mental
 // model across both escape hatches).
 //
@@ -184,10 +170,15 @@ func Vars(spec Spec) map[string]string {
 	}
 	vars["IMAGE"] = spec.Image
 	vars["TAG"] = spec.Tag
+	// CODE_VERSION mirrors TAG — the canonical version to stamp into
+	// the image so the running container's reported code_version always
+	// matches its tag. Same semantics as the deploy-side External token.
+	vars["CODE_VERSION"] = spec.Tag
 	vars["SERVICE"] = spec.Service
 	vars["TARGETARCH"] = spec.TargetArch
 	vars["REGISTRY"] = spec.Registry
 	vars["PROJECT_DIR"] = spec.ProjectDir
+	vars["ENV"] = spec.Env
 	vars["BUILD_CWD"] = spec.BuildCwd
 	return vars
 }
@@ -294,20 +285,16 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 
 	expanded := Expand(spec.BuildCmd, spec)
 
-	// Override the working directory via the shell `cd` prefix when
-	// non-empty. We can't set cmd.Dir on the runner indirection
-	// because the runner is the `sh -c` invocation, not the user's
-	// command. `cd <abs> && <expanded>` is the canonical shape.
-	final := expanded
-	if cwd != "" {
-		final = fmt.Sprintf("cd %s && %s", cwd, expanded)
-	}
-
 	runner := r.runner
 	if runner == nil {
 		runner = execRunner{}
 	}
-	err := runner.RunWithEnv(ctx, spec.BuildEnv, "sh", "-c", final)
+	// Set the working directory on the runner (cmd.Dir) rather than via
+	// a shell `cd <dir> && …` prefix: the latter breaks on a cwd with
+	// spaces or shell metacharacters. RunInDir with an empty dir leaves
+	// cmd.Dir unset, inheriting the host cwd (== ProjectDir for forge
+	// build) — matching the prior no-cwd behavior.
+	err := runner.RunInDir(ctx, cwd, spec.BuildEnv, "sh", "-c", expanded)
 	result.Err = err
 	result.Duration = time.Since(start)
 	return result
@@ -341,7 +328,15 @@ func statePath(projectDir, env, service string) string {
 	if env == "" {
 		env = "default"
 	}
-	return filepath.Join(projectDir, ".forge", "state", "build-"+env+"-"+service+".json")
+	// Sanitize the env/service segments before composing the filename.
+	// They're KCL-validated identifiers in practice, so for real inputs
+	// SafeSegment is a no-op and existing build-<env>-<service>.json
+	// files keep loading — but a separator-bearing value used to be able
+	// to escape .forge/state, which is the latent path-traversal smell
+	// this hoist closes (deploytarget already sanitized; this side did
+	// not).
+	name := "build-" + statefile.SafeSegment(env) + "-" + statefile.SafeSegment(service) + ".json"
+	return statefile.Path(projectDir, name)
 }
 
 // WriteState persists a successful Runner.Build to disk. Called from
@@ -353,18 +348,7 @@ func statePath(projectDir, env, service string) string {
 // external-build path never grow .forge/state/build-*-*.json files.
 // File mode is 0o644 to match the project-docker state file.
 func WriteState(projectDir, env string, state State) error {
-	path := statePath(projectDir, env, state.Service)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create build-state dir: %w", err)
-	}
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal build state: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write build state %s: %w", path, err)
-	}
-	return nil
+	return statefile.Write(statePath(projectDir, env, state.Service), "build state", state)
 }
 
 // ReadState loads the per-service build-state file. Returns
@@ -374,19 +358,7 @@ func WriteState(projectDir, env string, state State) error {
 // Returns (nil, err) for malformed JSON or unreadable files; callers
 // should not silently swallow these.
 func ReadState(projectDir, env, service string) (*State, error) {
-	path := statePath(projectDir, env, service)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read build state %s: %w", path, err)
-	}
-	var st State
-	if err := json.Unmarshal(data, &st); err != nil {
-		return nil, fmt.Errorf("parse build state %s: %w", path, err)
-	}
-	return &st, nil
+	return statefile.Read[State](statePath(projectDir, env, service), "build state")
 }
 
 // StatePath exposes the per-service state path for callers that want

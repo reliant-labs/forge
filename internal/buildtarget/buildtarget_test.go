@@ -21,6 +21,7 @@ type fakeRunner struct {
 }
 
 type fakeCall struct {
+	dir  string
 	env  map[string]string
 	name string
 	args []string
@@ -30,10 +31,14 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) error {
 	return f.RunWithEnv(nil, nil, name, args...)
 }
 
-func (f *fakeRunner) RunWithEnv(_ context.Context, env map[string]string, name string, args ...string) error {
+func (f *fakeRunner) RunWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error {
+	return f.RunInDir(ctx, "", env, name, args...)
+}
+
+func (f *fakeRunner) RunInDir(_ context.Context, dir string, env map[string]string, name string, args ...string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, fakeCall{env: env, name: name, args: append([]string(nil), args...)})
+	f.calls = append(f.calls, fakeCall{dir: dir, env: env, name: name, args: append([]string(nil), args...)})
 	return f.err
 }
 
@@ -91,6 +96,44 @@ func TestVars_BuiltinsWin(t *testing.T) {
 	}
 	if got["CUSTOM"] != "user-custom" {
 		t.Errorf("CUSTOM (user-declared): want user-custom, got %q", got["CUSTOM"])
+	}
+}
+
+// TestVars_CodeVersionAndEnv pins the two External-mirror tokens added
+// for the External.build_cmd feature: ${CODE_VERSION} (== ${TAG}, the
+// version to stamp into the image) and ${ENV} (the deploy env name).
+// These let an External build_cmd carry the same provenance the
+// deploy-side deploy_cmd does.
+func TestVars_CodeVersionAndEnv(t *testing.T) {
+	spec := Spec{
+		Tag: "forge-test",
+		Env: "prod",
+	}
+	got := Vars(spec)
+	if got["CODE_VERSION"] != "forge-test" {
+		t.Errorf("CODE_VERSION: want forge-test (==TAG), got %q", got["CODE_VERSION"])
+	}
+	if got["ENV"] != "prod" {
+		t.Errorf("ENV: want prod, got %q", got["ENV"])
+	}
+}
+
+// TestExpand_ExternalBuildShape validates the substitution against the
+// exact build_cmd the kalshi-trader e2e declares on its External target
+// — the build-side mirror of deploy_cmd. Pins that ${IMAGE} ${TAG}
+// ${PROJECT_DIR} ${TARGETARCH} all resolve in one shell string.
+func TestExpand_ExternalBuildShape(t *testing.T) {
+	spec := Spec{
+		Image:      "ghcr.io/kalshi-trader",
+		Tag:        "forge-test",
+		TargetArch: "amd64",
+		ProjectDir: "/Users/x/src/kalshi-trader",
+		Env:        "prod",
+	}
+	template := `docker build --platform linux/${TARGETARCH} -t ${IMAGE}:${TAG} -f ${PROJECT_DIR}/Dockerfile ${PROJECT_DIR}`
+	want := `docker build --platform linux/amd64 -t ghcr.io/kalshi-trader:forge-test -f /Users/x/src/kalshi-trader/Dockerfile /Users/x/src/kalshi-trader`
+	if got := Expand(template, spec); got != want {
+		t.Errorf("Expand:\n got %q\nwant %q", got, want)
 	}
 }
 
@@ -161,57 +204,6 @@ func TestExpand_UserEnvAvailable(t *testing.T) {
 	}
 }
 
-// TestMergeEnv_ExtraWins pins the env-overlay precedence the runner
-// uses: extra (BuildEnv) wins on key conflict over the inherited
-// os.Environ. Mirrors deploytarget.mergeEnv, kept as a duplicate
-// because the two packages run in different dispatcher tables and
-// importing one from the other would couple build/deploy concerns
-// the codebase deliberately keeps separate.
-func TestMergeEnv_ExtraWins(t *testing.T) {
-	base := []string{"PATH=/usr/bin", "FOO=base-foo", "BAR=base-bar"}
-	extra := map[string]string{
-		"FOO":     "extra-foo",
-		"NEW_KEY": "extra-new",
-	}
-	merged := mergeEnv(base, extra)
-	got := map[string]string{}
-	for _, kv := range merged {
-		eq := strings.IndexByte(kv, '=')
-		if eq <= 0 {
-			continue
-		}
-		got[kv[:eq]] = kv[eq+1:]
-	}
-	if got["FOO"] != "extra-foo" {
-		t.Errorf("FOO: want extra-foo (overlay wins), got %q", got["FOO"])
-	}
-	if got["BAR"] != "base-bar" {
-		t.Errorf("BAR: want base-bar (unchanged), got %q", got["BAR"])
-	}
-	if got["NEW_KEY"] != "extra-new" {
-		t.Errorf("NEW_KEY: want extra-new, got %q", got["NEW_KEY"])
-	}
-	if got["PATH"] != "/usr/bin" {
-		t.Errorf("PATH: want /usr/bin (unchanged), got %q", got["PATH"])
-	}
-}
-
-// TestMergeEnv_EmptyExtra confirms the no-overlay path returns a
-// fresh slice (not the base aliased) so callers can mutate the result
-// without surprising other code holding the base slice.
-func TestMergeEnv_EmptyExtra(t *testing.T) {
-	base := []string{"PATH=/usr/bin", "FOO=bar"}
-	merged := mergeEnv(base, nil)
-	if len(merged) != 2 {
-		t.Fatalf("len: want 2, got %d", len(merged))
-	}
-	// Mutating the result must not touch the base.
-	merged[0] = "PATH=/tmp"
-	if base[0] != "PATH=/usr/bin" {
-		t.Errorf("base was aliased: %s", base[0])
-	}
-}
-
 // TestBuild_ExpandsAndExecs pins the happy path: tokens substitute,
 // BuildEnv flows through to the runner env overlay, the final command
 // is wrapped with `cd <abs> && <expanded>` when BuildCwd is set, and
@@ -263,13 +255,18 @@ func TestBuild_ExpandsAndExecs(t *testing.T) {
 	if len(call.args) != 2 || call.args[0] != "-c" {
 		t.Fatalf("runner args: got %v, want [-c <cmd>]", call.args)
 	}
-	wantSuffix := "docker build -t localhost:5051/reliant-daemon-gateway:v1.2.3 ."
-	if !strings.HasSuffix(call.args[1], wantSuffix) {
-		t.Errorf("expanded suffix: got %q, want suffix %q", call.args[1], wantSuffix)
+	// The working directory is carried as cmd.Dir (call.dir), NOT a
+	// shell `cd <cwd> && …` prefix — so a path with spaces or shell
+	// metacharacters can never break the script.
+	wantCmd := "docker build -t localhost:5051/reliant-daemon-gateway:v1.2.3 ."
+	if call.args[1] != wantCmd {
+		t.Errorf("expanded cmd: got %q, want %q", call.args[1], wantCmd)
 	}
-	wantPrefix := "cd " + cwd + " && "
-	if !strings.HasPrefix(call.args[1], wantPrefix) {
-		t.Errorf("expanded prefix: got %q, want prefix %q", call.args[1], wantPrefix)
+	if call.dir != cwd {
+		t.Errorf("runner dir: got %q, want %q", call.dir, cwd)
+	}
+	if strings.Contains(call.args[1], "cd ") {
+		t.Errorf("expanded cmd should not carry a `cd …` shell prefix; got %q", call.args[1])
 	}
 	if call.env["REGION"] != "us-east-1" {
 		t.Errorf("env REGION: got %q, want us-east-1", call.env["REGION"])
@@ -326,6 +323,9 @@ func TestBuild_NoCwd(t *testing.T) {
 		t.Fatalf("Build: unexpected err: %v", res.Err)
 	}
 	call, _ := fake.last()
+	if call.dir != "" {
+		t.Errorf("no BuildCwd should leave runner dir empty; got %q", call.dir)
+	}
 	if strings.HasPrefix(call.args[1], "cd ") {
 		t.Errorf("no BuildCwd should not produce a `cd …` prefix; got %q", call.args[1])
 	}

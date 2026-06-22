@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package forge.v1;
 
-option go_package = "github.com/reliant-labs/forge/internal/gen/forge/v1;forgev1";
+option go_package = "github.com/reliant-labs/forge/pkg/forgepb;forgepb";
 
 import "google/protobuf/descriptor.proto";
 import "google/protobuf/duration.proto";
@@ -204,6 +204,14 @@ message ServiceOptions {
 
   // Authentication configuration for the service.
   AuthConfig auth = 6;
+
+  // Service-wide default authorization roles. A method that declares no
+  // (forge.v1.method).required_roles inherits this list: the caller must
+  // hold at least one of these roles. An empty list here means "no service
+  // default" — every method must then declare its own required_roles (the
+  // authz completeness lint enforces exactly this, so a method can never
+  // silently default to open). See pkg/authz and the `auth` skill.
+  repeated string default_roles = 7;
 }
 
 // ServiceVisibility determines how a service is exposed.
@@ -264,6 +272,51 @@ message MethodOptions {
   // The list is informational at runtime today; future work may enforce
   // that handlers can only return declared codes.
   repeated string errors = 6;
+
+  // Per-method authorization role allow-list. The caller must hold AT LEAST
+  // ONE of these roles for the call to be authorized (any-of semantics).
+  // Role implication is applied by pkg/authz at decision time (e.g. "admin"
+  // implies "user" when an implication map is configured), so listing only
+  // the least-privileged sufficient role is the idiom.
+  //
+  // Presence is what the authz completeness lint checks: a method that sets
+  // required_roles (even to a single role) is "explicitly authorized". A
+  // method that wants any-authenticated access with NO role restriction must
+  // say so explicitly via the `authz_public` marker below — an empty
+  // required_roles is treated as "unannotated" and fails the lint, so a
+  // method can never silently default to open. When absent, the service's
+  // (forge.v1.service).default_roles applies; if neither is set the lint
+  // fails the build naming the method.
+  repeated string required_roles = 7;
+
+  // Marks a method as intentionally reachable by ANY caller the auth layer
+  // admits, with no role restriction (e.g. a health check or a public read).
+  // This is the explicit, greppable opt-out that satisfies the authz
+  // completeness lint without granting it by accident: a method is "open"
+  // only when an author typed `authz_public = true`, never by omission.
+  // Mutually exclusive with required_roles (setting both fails the lint).
+  bool authz_public = 8;
+
+  // Marks a method whose authorization is performed by a HAND-WRITTEN
+  // per-service authorizer (middleware.Authorizer), not by the shared
+  // descriptor RoleInterceptor. Use this ONLY when the decision is genuinely
+  // not expressible as a role allow-list — e.g. it gates on a specific
+  // subject/identity, a per-request resource scope, or an out-of-band
+  // (client-only / reverse-proxied) RPC the local server never serves.
+  //
+  // It is the explicit, greppable escape that satisfies the authz
+  // completeness lint for such methods: the build accepts the method as
+  // "intentionally custom-authorized" instead of forcing a role annotation
+  // that would mis-state the real policy. It grants NOTHING — pkg/authz's
+  // descriptor policy builder still leaves the method OUT of the shared
+  // RolePolicy, so if such a method is ever routed through the shared
+  // RoleInterceptor it fail-closes (denied). The service must keep its own
+  // authorizer (and, when served, route through it) — this marker only
+  // records that the proto deliberately delegates the decision to code.
+  //
+  // Mutually exclusive with required_roles and authz_public (setting more
+  // than one fails the lint).
+  bool authz_custom = 9;
 }
 
 // =============================================================================
@@ -311,4 +364,54 @@ message ConfigFieldOptions {
   // category: "stripe" → STRIPE_ENV bundle). Empty category lands the
   // field in the default APP_ENV bundle.
   string category = 7;
+
+  // Role tags a field with a SEMANTIC meaning that drives behavior, so
+  // forge/pkg/config can offer annotation-driven helpers without matching
+  // on the field's NAME. Renaming a field never changes behavior — the
+  // behavior follows the annotation. Naming a field "environment" without
+  // the annotation does NOT make it the mode field.
+  ConfigFieldRole role = 8;
+
+  // AllowedValues constrains a STRING field to a closed set of valid
+  // values, validated at startup by config.Validate. It is the
+  // type/annotation-driven replacement for the old name-matched log-format
+  // check ("json"/"text"): a string field carrying allowed_values is a
+  // string ENUM, rejected when its resolved value is outside the set. The
+  // empty value is always permitted (an unset, non-required field). True
+  // proto enum fields don't need this — protoreflect already enforces their
+  // domain. Renaming the field changes nothing; the set follows the
+  // annotation.
+  repeated string allowed_values = 9;
+}
+
+// ConfigFieldRole enumerates the semantic roles a config field can carry.
+// Today the only role is MODE (the runtime production/development switch
+// that gates dev ergonomics and the explicit auth bypass). Additional
+// roles can be added here as new annotation-driven semantics appear.
+enum ConfigFieldRole {
+  // CONFIG_FIELD_ROLE_UNSPECIFIED is the default: an ordinary config
+  // field with no special semantics.
+  CONFIG_FIELD_ROLE_UNSPECIFIED = 0;
+
+  // CONFIG_FIELD_ROLE_MODE marks the field whose string value selects the
+  // runtime mode: "development"/"dev" → development, anything else →
+  // production. config.Mode(msg) and config.DevAuthBypass(msg) key off
+  // THIS field, regardless of its name.
+  CONFIG_FIELD_ROLE_MODE = 1;
+
+  // CONFIG_FIELD_ROLE_TLS_CERT and CONFIG_FIELD_ROLE_TLS_KEY mark the two
+  // halves of a TLS keypair. config.Validate enforces both-or-neither:
+  // setting exactly one is a configuration error (the server would silently
+  // fall back to plaintext). Selected by annotation, not by the names
+  // "tls_cert_path"/"tls_key_path".
+  CONFIG_FIELD_ROLE_TLS_CERT = 2;
+  CONFIG_FIELD_ROLE_TLS_KEY = 3;
+
+  // CONFIG_FIELD_ROLE_CORS_ORIGINS marks the comma-separated CORS allow-list
+  // and CONFIG_FIELD_ROLE_CORS_ALLOW_CREDENTIALS marks the credentials bool.
+  // config.Validate rejects the spec-invalid combination of a wildcard
+  // origin ("*") with credentials=true. Selected by annotation, not by the
+  // field names.
+  CONFIG_FIELD_ROLE_CORS_ORIGINS = 4;
+  CONFIG_FIELD_ROLE_CORS_ALLOW_CREDENTIALS = 5;
 }

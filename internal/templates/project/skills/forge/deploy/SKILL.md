@@ -102,6 +102,92 @@ providers (K8sCluster, External, Compose, HostDeploy). For External,
 `rollback_cmd`; deploys with no `rollback_cmd` declared error loudly
 rather than guessing.
 
+## External / host-VM targets (Fly, Cloud Run, scp-to-a-VM, systemd)
+
+`forge.External` is the CLI-driven escape hatch — anything not in a k8s
+cluster you control. Declared per-env in `deploy/kcl/<env>/main.k`:
+
+```kcl
+MAIN = forge.Service {
+    name   = "trader"
+    image  = "registry.fly.io/trader"     # ${IMAGE} is hoisted from here
+    deploy = forge.External {
+        deploy_cmd   = "flyctl deploy -i ${IMAGE}:${TAG} -a trader"
+        rollback_cmd = "flyctl deploy -i ${IMAGE}:${LAST_TAG} -a trader"  # optional
+        health_cmd   = "curl -fsS https://trader.fly.dev/healthz"          # optional
+        env_file     = "~/.config/trader/.env"                            # optional
+        env          = { REGION = "iad" }                                  # optional map
+    }
+}
+```
+
+Only `deploy_cmd` is required. (Source: `kcl/schema.k` schema `External`;
+`internal/deploytarget/external.go`.)
+
+**Substitution tokens.** forge expands these into `deploy_cmd` /
+`rollback_cmd` / `health_cmd` via `os.Expand` (`${X}` and `$X`; unknown
+keys → empty string), built from `externalVars`:
+
+| Token | Value |
+|---|---|
+| `${IMAGE}` | forge-built image name, hoisted from the surrounding `Service.image` |
+| `${TAG}` | resolved tag (build-state or `--tag`) |
+| `${CODE_VERSION}` | == `${TAG}` — pass to `docker run -e CODE_VERSION=…` / a label so the binary's reported `code_version` matches the image |
+| `${PIPELINE}` | `"forge"` — label the container with it to distinguish forge deploys from manual ones |
+| `${LAST_TAG}` | prior deployed tag (rollback target on rollback; empty on first deploy) |
+| `${SERVICE}` | `Service.name` |
+| `${ENV}` | env name (dev/staging/prod) |
+| `${ENV_FILE}` | the `env_file` path (if any) |
+| `${PROJECT_DIR}` | project root |
+| any key in `env` | its declared value (built-ins win on conflict) |
+
+(Source: `externalVars` in `external.go`; token list mirrored in the
+`External` schema doc-comment.)
+
+**Build → deploy value flow.** A `forge build` writes a `BuildState`
+(`image`, `tag`, `pushed`, …) to `.forge/state/build-<env>.json`;
+`forge deploy <env>` (no `--tag`) reads it and resolves `${TAG}` /
+`${IMAGE}` from there, so the deploy reuses the exact tag the build
+produced instead of recomputing it. (Source: `internal/cli/build_state.go`
+`BuildState` + `WriteBuildState`; `internal/cli/deploy.go` build-state read.)
+
+### Recommended pattern: single-image host-VM deploy (scp-to-VM)
+
+For the common case — one project image shipped to a VM — use forge's
+**NATIVE build, not `-t external`**:
+
+```bash
+forge build --docker --tag v42          # local <registry>/<name>:v42, NOT pushed
+```
+
+`forge build --docker` builds the project's root `Dockerfile` into a
+LOCAL `<registry>/<name>:<tag>` image (registry from
+`cfg.Docker.Registry`, falling back to the project name) and
+AUTO-injects `--build-arg FORGE_VERSION/COMMIT/DATE`, so `code_version`
+stamps correctly. It does NOT push unless you pass `--push <registry>`.
+(Source: `dockerBuildProject` in `internal/cli/build.go` — version-arg
+injection + push-only-when-`pushRegistry` set.)
+
+Then a custom `deploy_cmd` ships that local image — no `build_cmd`:
+
+```kcl
+deploy = forge.External {
+    deploy_cmd = "docker save ${IMAGE}:${TAG} | ssh vm 'docker load && docker run -d --rm -e CODE_VERSION=${CODE_VERSION} ${IMAGE}:${TAG}'"
+}
+```
+
+**When you DO need `build_cmd`:** only for genuine external/sibling-repo
+builds (the "cp-forge" pattern, where a sibling binary is built by a
+custom command). A custom `build_cmd` does NOT get forge's auto
+version-injection — it must forward `${CODE_VERSION}` itself as a
+build-arg, or `code_version` stamps `dev`. (Source: `External` schema
+doc-comment — `build_cmd` "owns BOTH the build AND any push.")
+
+**Decision note.** k3d / k8s (default) → `forge deploy dev/staging/prod`
+builds + pushes to a registry and applies manifests. External / host-VM
+→ native `forge build --docker` (local image) + a custom `deploy_cmd`
+that ships it.
+
 ## forge up — full local-dev orchestrator
 
 ```
@@ -146,41 +232,46 @@ Fast revert with `kubectl rollout undo deployment/<name>`, then fix forward via 
 - KCL schema changes are forever in production overlays — deprecate, don't delete.
 - Don't `kubectl apply` hand-edited manifests — everything through `deploy/kcl/`.
 
-## Per-env config rendering (`config_gen.k`)
+## Per-env config — KCL is the surface
 
-`forge generate` emits `deploy/kcl/<env>/config_gen.k` from
-`proto/config/v1/config.proto` + the sibling `config.<env>.yaml` file
-next to forge.yaml. (Per-env config used to live in
-`forge.yaml -> environments[].config`; that block was removed — see
-the `environments-to-kcl` migration skill.) A few things are
-surprising on first read:
+Per-env config (logging, env vars) lives **directly in
+`deploy/kcl/<env>/`**, where the rest of the env already lives. Set
+env vars on the `Service` and let the binary apply proto defaults at
+startup via `internal/config` — don't project a second redundant YAML
+into KCL.
 
-- **Default-only fields don't appear.** If a proto field has a
-  `default_value:` and no per-env override in `config.<env>.yaml`, the
-  generated KCL skips the env-var entirely. The binary applies the
-  default at startup via `pkg/config/config.go::Load()`. The rendered
-  Deployment will NOT show the default as a literal env var, and that
-  is intentional — defaults are the binary's contract, not the
-  manifest's. To make a default visible in the rendered manifest, add
-  the value (or a `${secret-ref}`) to `config.<env>.yaml`.
-- **Empty categories are elided.** A category that ends up with no
-  emitted entries (e.g. all of its fields are non-sensitive defaults)
-  is skipped from the generated file rather than emitting an empty
-  `<CATEGORY>_ENV: [schema.EnvVar] = []`. If your `main.k` references
-  `cfg.<CATEGORY>_ENV` and KCL errors with "no attribute", regenerate
-  and concatenate only the categories that actually produced entries.
-- **Sensitive fields always emit.** Every `(forge.v1.config) = {
-  sensitive: true }` field projects to a `secret_ref` EnvVar
-  regardless of whether `config.<env>.yaml` provides a `${...}`
-  override — the project-level default secret name + lowercased
-  env-var key apply unconditionally.
-- **Component config-block leaves use flat keys.** Fields of a
+```kcl
+MAIN = forge.Service {
+    name = "trader"
+    port = 8090
+    env  = {
+        LOG_LEVEL    = "info"
+        MAX_PER_TICK = "50"
+    }
+}
+```
+
+A few things to keep straight:
+
+- **Defaults are the binary's contract, not the manifest's.** A proto
+  field with a `default_value:` and no KCL override emits no env var;
+  `internal/config` applies the default at startup. The rendered
+  Deployment won't carry the default as a literal env var, and that's
+  intentional. To make a default visible in the manifest, set it
+  explicitly in the env's KCL.
+- **Sensitive fields use secret refs, never literals.** A `(forge.v1.config)
+  = { sensitive: true }` field is bound via a `${secret-ref}` per the
+  `secrets` skill — its value never lands in rendered KCL.
+- **The generate-time `config.*.yaml` files are gutted.** They only
+  shaped generated KCL projection; that projection is removed. Don't
+  reach for a sibling `config.<env>.yaml` — edit the env's KCL.
+- **Component config-block leaves are flat env keys.** Fields of a
   component config block (`message TraderConfig { int32 max_per_tick
   ... }` composed on `AppConfig` — see the `architecture` skill,
-  "Component config blocks") participate in `config.<env>.yaml` under
-  their own snake_case leaf name (`max_per_tick: 50`), the same flat
-  namespace as root fields, and project to the ConfigMap/env vars
-  identically. Keep leaf names unique across blocks.
+  "Component config blocks") are consumed as one typed
+  `Cfg config.TraderConfig` Deps field and bound from the matching
+  snake_case env var (`MAX_PER_TICK`). Keep leaf names unique across
+  blocks.
 
 ## Cross-references between schemas — declare once, denormalize at render
 
@@ -190,7 +281,7 @@ When two fields must agree — a service's bind port and the HTTPRoute that targ
 ADMIN = forge.Service {
     name = "admin-server"
     port = 8090
-    source = forge.GoSource { path = "handlers/admin_server" }
+    source = forge.GoSource { path = "internal/admin_server" }
 }
 
 ADMIN_ROUTE = forge.HTTPRoute {

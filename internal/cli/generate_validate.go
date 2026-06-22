@@ -13,19 +13,21 @@ import (
 func validateGeneratedProject(projectDir string) []string {
 	var warnings []string
 
-	// Check: if cmd/server.go imports pkg/config, config.go must exist.
-	serverPath := filepath.Join(projectDir, "cmd", "server.go")
-	if fileImportsPackage(serverPath, "pkg/config") {
+	// Check: if the primary binary's cmd/<bin>/cmd/serve.go imports
+	// pkg/config, config.go must exist.
+	bin := bootstrapBinaryName(projectDir)
+	servePath := filepath.Join(projectDir, "cmd", bin, "cmd", "serve.go")
+	if fileImportsPackage(servePath, "pkg/config") {
 		if !fileExists(filepath.Join(projectDir, "pkg", "config", "config.go")) {
 			warnings = append(warnings,
-				"cmd/server.go imports pkg/config but pkg/config/config.go was not generated. "+
+				"cmd/"+bin+"/cmd/serve.go imports pkg/config but pkg/config/config.go was not generated. "+
 					"Check your proto/config/ annotations.")
 		}
 	}
 
 	// Check: if any authorizer.go references GeneratedAuthorizer, the
 	// corresponding authorizer_gen.go must exist.
-	handlersDir := filepath.Join(projectDir, "handlers")
+	handlersDir := filepath.Join(projectDir, "internal", "handlers")
 	entries, err := os.ReadDir(handlersDir)
 	if err == nil {
 		for _, entry := range entries {
@@ -36,7 +38,7 @@ func validateGeneratedProject(projectDir string) []string {
 			genPath := filepath.Join(handlersDir, entry.Name(), "authorizer_gen.go")
 			if fileContains(authPath, "GeneratedAuthorizer") && !fileExists(genPath) {
 				warnings = append(warnings,
-					"handlers/"+entry.Name()+"/authorizer.go references GeneratedAuthorizer "+
+					"internal/handlers/"+entry.Name()+"/authorizer.go references GeneratedAuthorizer "+
 						"but authorizer_gen.go was not generated.")
 			}
 		}

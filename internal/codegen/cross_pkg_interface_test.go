@@ -15,13 +15,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // writeTestModule lays out a temp Go module with:
 //
 //	<root>/go.mod                     (module example.com/proj)
 //	<root>/internal/repo/repo.go      (interface declaration the handler imports)
-//	<root>/handlers/billing/service.go (Deps struct referencing repo.Repository)
+//	<root>/internal/handlers/billing/service.go (Deps struct referencing repo.Repository)
 //
 // Returns the handler dir so callers can pass it straight to the
 // auto-stub helpers.
@@ -54,7 +56,7 @@ type User struct {
 	Name string
 }
 `,
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import (
 	"log/slog"
@@ -83,7 +85,7 @@ type Deps struct {
 		}
 	}
 
-	return filepath.Join(root, "handlers/billing")
+	return filepath.Join(root, "internal", "handlers", "billing")
 }
 
 // TestResolveCrossPkgInterface_HappyPath verifies that a Deps field
@@ -208,7 +210,7 @@ type User struct {
 	ID string
 }
 `,
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import "example.com/proj/internal/repo"
 
@@ -238,7 +240,7 @@ func TestResolveCrossPkgInterface_UnknownAlias(t *testing.T) {
 // in the module), the resolver returns ok=false rather than crashing.
 func TestResolveCrossPkgInterface_UnloadablePackage(t *testing.T) {
 	handlerDir := writeTestModule(t, map[string]string{
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import broken "example.com/proj/internal/does_not_exist"
 
@@ -303,7 +305,7 @@ func TestComputeAutoStubs_CrossPackage(t *testing.T) {
 func TestComputeAutoStubs_LocalInterfacePreserved(t *testing.T) {
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": "", // not used in this variant
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import "log/slog"
 
@@ -341,7 +343,7 @@ type Deps struct {
 }
 
 // TestGenerateBootstrapTesting_CrossPackageStub is the end-to-end
-// validation: lay down a tiny module with handlers/billing/service.go
+// validation: lay down a tiny module with internal/handlers/billing/service.go
 // pointing at an interface in internal/repo, run GenerateBootstrapTesting
 // against that project root, and inspect the resulting pkg/app/testing.go.
 //
@@ -351,13 +353,20 @@ type Deps struct {
 //   - the stub struct itself + at least one method are emitted
 func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
 	handlerDir := writeTestModule(t, nil)
-	projectRoot := filepath.Dir(filepath.Dir(handlerDir)) // <root>/handlers/billing -> <root>
+	projectRoot := filepath.Dir(filepath.Dir(filepath.Dir(handlerDir))) // <root>/internal/handlers/billing -> <root>
 
 	services := []ServiceDef{
 		{Name: "BillingService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrapTesting(services, nil, nil, nil, "example.com/proj", false, projectRoot, nil); err != nil {
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext:         GenContext{ProjectDir: projectRoot, ModulePath: "example.com/proj", Checksums: nil},
+		Services:           services,
+		Packages:           nil,
+		Workers:            nil,
+		Operators:          nil,
+		MultiTenantEnabled: false,
+	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
 
@@ -413,13 +422,85 @@ func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
 	}
 }
 
+// TestGenerateBootstrapTesting_CrossPackageStubImportUsed is the regression
+// for the control-plane testing.go disown's residual compile bug: a cross-
+// package auto-stub whose interface's METHOD SIGNATURES reference a DIFFERENT
+// package than the interface's own (e.g. an external-component domain service
+// `internal/user` whose Service methods return `db.User`). The stub's method
+// bodies then never name the interface type, only its parameter/result types,
+// so the interface package (internal/user) would be imported SOLELY for the
+// stub yet referenced nowhere in code → "imported and not used" build failure.
+// The generated compile-time guard `var _ <iface> = <stub>{}` both proves the
+// stub satisfies the interface AND keeps that import used.
+func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
+	// Render the template directly with a hand-built CrossPackage AutoStub
+	// whose method signatures reference a THIRD package (dbpkg.User), never the
+	// interface's own package — the control-plane `internal/user` shape. The
+	// stub's interface type (userpkg.Service) then appears ONLY in comments, so
+	// without the compile-time guard its import is unused (build failure). This
+	// pins the TEMPLATE behavior independent of go/packages resolution.
+	svc := BootstrapTestServiceData{
+		Name: "billing", Package: "billing", ImportPath: "billing", FieldName: "Billing",
+		ProtoServiceName:       "BillingService",
+		ProtoConnectImportPath: "example.com/proj/gen/services/billing/v1/billingv1connect",
+		ProtoConnectPkg:        "billingv1connect",
+		HasAuthorizer:          true,
+		Alias:                  "billing", VarName: "billing",
+		AutoStubs: []DepsAutoStub{{
+			FieldName:          "Users",
+			StubType:           "stubBillingUsers",
+			InterfaceQualified: "userpkg.Service",
+			CrossPackage:       true,
+			Methods: []InterfaceMethod{{
+				Name: "GetUser", Params: "ctx context.Context, id string",
+				Results: "(*dbpkg.User, error)", ReturnStatement: "return nil, nil",
+			}},
+			ExtraImports: []ExtraImport{
+				{Alias: "userpkg", Path: "example.com/proj/internal/user"},
+				{Alias: "dbpkg", Path: "example.com/proj/internal/db"},
+			},
+		}},
+	}
+	data := struct {
+		Module             string
+		Services           []BootstrapTestServiceData
+		ConnectImports     []string
+		Packages           []BootstrapPackageData
+		MultiTenantEnabled bool
+		AnyServiceHasDB    bool
+		HasMigrationsFS    bool
+		ExtraImports       []ExtraImport
+	}{
+		Module:         "example.com/proj",
+		Services:       []BootstrapTestServiceData{svc},
+		ConnectImports: []string{svc.ProtoConnectImportPath},
+		ExtraImports: []ExtraImport{
+			{Alias: "userpkg", Path: "example.com/proj/internal/user"},
+			{Alias: "dbpkg", Path: "example.com/proj/internal/db"},
+		},
+	}
+
+	body, err := templates.ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)
+	if err != nil {
+		t.Fatalf("render bootstrap_testing.go.tmpl: %v", err)
+	}
+	content := string(body)
+
+	// The compile-time guard must reference the interface in CODE (not just a
+	// comment), so the import imported solely for the stub is genuinely used.
+	if !strings.Contains(content, "var _ userpkg.Service = stubBillingUsers{}") {
+		t.Errorf("testing.go must emit the cross-package stub interface assertion:\n%s", content)
+	}
+	mustParseGo(t, "testing.go", body)
+}
+
 // TestGenerateBootstrapTesting_UnresolvedSelectorTODO confirms that a
 // selector forge can't resolve produces a visible TODO comment in the
 // generated NewTest<Svc> body.
 func TestGenerateBootstrapTesting_UnresolvedSelectorTODO(t *testing.T) {
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": "",
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import broken "example.com/proj/internal/does_not_exist"
 
@@ -428,12 +509,19 @@ type Deps struct {
 }
 `,
 	})
-	projectRoot := filepath.Dir(filepath.Dir(handlerDir))
+	projectRoot := filepath.Dir(filepath.Dir(filepath.Dir(handlerDir)))
 
 	services := []ServiceDef{
 		{Name: "BillingService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrapTesting(services, nil, nil, nil, "example.com/proj", false, projectRoot, nil); err != nil {
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext:         GenContext{ProjectDir: projectRoot, ModulePath: "example.com/proj", Checksums: nil},
+		Services:           services,
+		Packages:           nil,
+		Workers:            nil,
+		Operators:          nil,
+		MultiTenantEnabled: false,
+	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
 	body, _ := os.ReadFile(filepath.Join(projectRoot, "pkg", "app", "testing.go"))
@@ -451,7 +539,7 @@ type Deps struct {
 func TestComputeAutoStubs_UnresolvedSelector(t *testing.T) {
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": "", // remove the would-be target package
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import broken "example.com/proj/internal/does_not_exist"
 

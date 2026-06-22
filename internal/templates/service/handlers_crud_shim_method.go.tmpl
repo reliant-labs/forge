@@ -3,23 +3,11 @@
 //
 // forge:custom-read-shape: {{.MismatchReason}}
 //
-// Custom read shape — this RPC's request/response deliberately diverges
-// from the AIP-158 CRUD conventions (see `forge skill load proto`), so
-// the body is YOURS to refine. forge scaffolded a WIRED starting point
-// rather than a blank stub: it runs a real (if naive) {{.EntityName}}
-// query against the database and projects the rows onto the wire via the
-// generated {{.EntityLower}}ToProto helper. Compose the pkg/crud + pkg/orm
-// helpers as building blocks — orm.WhereEq / orm.WhereILikeAny / orm.WithWhere
-// (filters), orm.WithOrderBy / orm.WithLimit (shaping; validate any order_by
-// against db.{{.EntityName}}Columns first), orm.EncodeCursor / orm.DecodeCursor
-// (cursor pagination) — or drop to raw SQL via s.deps.DB.Bun() (bun.Raw /
-// NewRaw / NewSelect), or s.deps.DB.Exec/Query/QueryRow for a hand-written
-// string. When you build a SQL string yourself, get postgres-correct markers
-// and identifiers from s.deps.DB.Dialect() — Placeholder(i) for $N params,
-// QuoteIdentifier(name) for safe column/table names — instead of hardcoding
-// $1/"col". See internal/db/{{.EntityLower}}_repo_ext.go for the
-// hand-written-query seam. `forge audit` lists this RPC under crud_stubs
-// until you finish wiring the response (remove the TODO below).
+// This RPC diverges from AIP-158 CRUD, so the body is yours to refine.
+// forge scaffolded a WIRED (if naive) {{.EntityName}} query as a starting
+// point. Compose pkg/crud + pkg/orm helpers, or drop to raw SQL via
+// s.deps.DB. `forge audit` lists this under crud_stubs until you finish
+// wiring the response (remove the TODO below). See the forge `db` skill.
 func (s *Service) {{.MethodName}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType}}],
@@ -64,7 +52,7 @@ func (s *Service) {{.MethodName}}(
 
 	rows, err := db.List{{.EntityName}}(ctx, s.deps.DB{{if .HasTenant}}, tenantID{{end}}, opts...)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, svcerr.Wrap(err)
 	}
 
 	items := make([]*pb.{{.EntityName}}, 0, len(rows))
@@ -77,22 +65,17 @@ func (s *Service) {{.MethodName}}(
 }
 {{- else}}
 // {{.MethodName}} handles the {{.MethodName}} RPC (CRUD {{.Operation}}).
-// The lifecycle (auth, tenant scoping, error mapping{{if eq .Operation "list"}}, pagination,
-// filter/order-by validation{{end}}) lives in forge/pkg/crud; the entity wiring is
-// generated in handlers_crud_ops_gen.go and tracks proto/schema changes
-// automatically. To customize, replace this delegation with a real
-// implementation — this file is yours.
+// The lifecycle lives in forge/pkg/crud; entity wiring is generated in
+// handlers_crud_ops_gen.go. To customize, replace this delegation — this
+// file is yours. See the forge `db` / `contracts` skill.
 {{- if eq .Operation "update"}}
 //
 {{- if .UpdateMaskField}}
-// AIP-134: req.Msg.{{.UpdateMaskField}} is honored — concrete paths write
-// only the named columns; an absent/empty (or "*") mask is a documented
-// full-object replace. Unknown or immutable paths → InvalidArgument.
+// AIP-134: req.Msg.{{.UpdateMaskField}} is honored (concrete paths write
+// only named columns; empty/"*" mask is a full replace; bad paths → InvalidArgument).
 {{- else}}
-// NOTE: this update request carries no update_mask field, so the
-// generated update is a whole-row write. Add a
-// `google.protobuf.FieldMask update_mask` field to the request to get
-// AIP-134 partial updates (https://google.aip.dev/134).
+// NOTE: no update_mask field → whole-row write. Add a
+// `google.protobuf.FieldMask update_mask` for AIP-134 partial updates.
 {{- end}}
 {{- end}}
 func (s *Service) {{.MethodName}}(

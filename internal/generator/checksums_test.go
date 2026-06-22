@@ -191,13 +191,31 @@ func TestWriteGeneratedFile(t *testing.T) {
 		t.Errorf("written file should self-certify")
 	}
 
-	// Second write with new render should succeed (on-disk is pristine).
+	// Second write with a NEW render: the on-disk file is a pristine-but-
+	// STALE prior vintage. The current default is non-destructive heal-SKIP
+	// — a pristine prior render is byte-indistinguishable from a deliberate
+	// user revert, so forge leaves it untouched unless heal/force opts in.
 	written, err = WriteGeneratedFile(root, "main.go", []byte("// updated\npackage main\n"), cs, false)
 	if err != nil {
-		t.Fatalf("WriteGeneratedFile (update): %v", err)
+		t.Fatalf("WriteGeneratedFile (stale render): %v", err)
+	}
+	if written {
+		t.Errorf("pristine-but-stale render should be heal-SKIPPED by default, not overwritten")
+	}
+	// On disk is still the prior vintage.
+	if got, _ := os.ReadFile(filepath.Join(root, "main.go")); checksums.BodyHash(got) != checksums.BodyHash(content) {
+		t.Errorf("stale-skip must leave the prior render on disk")
+	}
+
+	// With --heal (AutoHeal) the stale file is advanced to the new render.
+	checksums.AutoHeal = true
+	written, err = WriteGeneratedFile(root, "main.go", []byte("// updated\npackage main\n"), cs, false)
+	checksums.AutoHeal = false
+	if err != nil {
+		t.Fatalf("WriteGeneratedFile (heal): %v", err)
 	}
 	if !written {
-		t.Errorf("re-write of unmodified file should succeed")
+		t.Errorf("--heal should overwrite a pristine-but-stale render")
 	}
 
 	// Now simulate user modification: marker kept, body changed. (A
@@ -254,13 +272,15 @@ func TestStampedVintagesStayPristine(t *testing.T) {
 	}
 }
 
-// TestWriteGeneratedFile_HealsStaleCodegen — the headline behaviour the
-// legacy history machinery existed for. A template update produces a
-// v2 render; the on-disk file is still the stamped v1 render (stale
-// codegen). Forge must NOT treat the file as user-modified: the marker
-// verifies, so regeneration proceeds (auto-heal). A genuine user edit
-// is still detected and skipped.
-func TestWriteGeneratedFile_HealsStaleCodegen(t *testing.T) {
+// TestWriteGeneratedFile_HealSkipStaleCodegen — the heal-skip contract.
+// A template update produces a v2 render; the on-disk file is still the
+// stamped v1 render (stale codegen). Because a pristine prior render is
+// byte-indistinguishable from a deliberate user revert, the DEFAULT is
+// non-destructive: forge SKIPS the file (does not silently revert the
+// user's tree). Overwriting is opt-in only — `--heal` (AutoHeal) for the
+// whole tree, or a scoped `--force` for the single path. A genuine user
+// edit is detected and skipped regardless.
+func TestWriteGeneratedFile_HealSkipStaleCodegen(t *testing.T) {
 	checksums.ResetSkipWrite()
 	checksums.ResetPerRunState()
 	t.Cleanup(checksums.ResetPerRunState)
@@ -276,21 +296,37 @@ func TestWriteGeneratedFile_HealsStaleCodegen(t *testing.T) {
 	}
 
 	// Template update: forge now renders v2; the on-disk file is the
-	// stale v1 vintage. Not user-modified → regenerated.
+	// stale v1 vintage. Default (no heal/force) → SKIP, leave v1 in place.
 	v2 := []byte("// rendered v2\npackage s\n")
 	wrote, err := WriteGeneratedFile(root, rel, v2, cs, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !wrote {
-		t.Errorf("stale codegen (pristine prior render) should regenerate without --force")
+	if wrote {
+		t.Errorf("stale codegen (pristine prior render) must be SKIPPED by default, not overwritten")
 	}
 	got, _ := os.ReadFile(filepath.Join(root, rel))
-	if checksums.BodyHash(got) != checksums.BodyHash(v2) {
-		t.Errorf("on-disk not healed to the v2 render")
+	if checksums.BodyHash(got) != checksums.BodyHash(v1) {
+		t.Errorf("default heal-skip must leave the v1 render on disk")
 	}
 
-	// A real user edit should still be detected.
+	// Opt in via --heal (AutoHeal): the stale file is advanced to v2.
+	checksums.AutoHeal = true
+	wrote, err = WriteGeneratedFile(root, rel, v2, cs, false)
+	checksums.AutoHeal = false
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wrote {
+		t.Errorf("--heal should overwrite a pristine-but-stale render")
+	}
+	got, _ = os.ReadFile(filepath.Join(root, rel))
+	if checksums.BodyHash(got) != checksums.BodyHash(v2) {
+		t.Errorf("on-disk not healed to the v2 render under --heal")
+	}
+
+	// A real user edit should still be detected and skipped (even though
+	// AutoHeal is off — a modified marker is the stomp guard's territory).
 	if err := os.WriteFile(filepath.Join(root, rel), append(got, []byte("// user wrote this\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}

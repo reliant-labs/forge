@@ -25,9 +25,11 @@ func init() {
 }
 
 func runExportedVars(pass *analysis.Pass) (interface{}, error) {
-	// Honor forge.yaml's contracts.exclude — packages opted out of contract
-	// enforcement (e.g. //go:embed wrappers) should not be flagged.
-	if IsExcluded(pass.Pkg.Path()) {
+	// Honor forge.yaml's contracts.exclude AND the per-package
+	// //forge:exclude-contract header — packages opted out of contract
+	// enforcement (e.g. //go:embed wrappers, global metric collectors)
+	// should not be flagged by EITHER opt-out source.
+	if IsExcludedPass(pass) {
 		return nil, nil
 	}
 

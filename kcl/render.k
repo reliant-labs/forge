@@ -169,6 +169,57 @@ _render_deploy = lambda d: any -> any {
     _render_deploy_populated(d) if d else None
 }
 
+# Build union render. One branch per discriminator value (go / docker /
+# shell), each returning a fully-populated dict so the Go consumer
+# (ServiceEntity.Build) sees a stable key shape per type. Mirrors the
+# deploy-union dispatch above exactly.
+_render_go_build = lambda b: GoBuild -> any {
+    {
+        "type": "go"
+        "output_name": b.output_name if b.output_name else None
+        "cmd": b.cmd
+        "goos": b.goos if b.goos else None
+        "goarch": b.goarch if b.goarch else None
+        "ldflags": b.ldflags
+        "tags": b.tags
+        "flags": b.flags
+        "env": b.env if b.env else {}
+    }
+}
+
+_render_docker_build = lambda b: DockerBuild -> any {
+    {
+        "type": "docker"
+        "output_name": b.output_name if b.output_name else None
+        "dockerfile": b.dockerfile
+        "platform": b.platform if b.platform else None
+        "target": b.target if b.target else None
+        "build_args": b.build_args if b.build_args else {}
+    }
+}
+
+_render_shell_build = lambda b: ShellBuild -> any {
+    {
+        "type": "shell"
+        "output_name": b.output_name if b.output_name else None
+        "cmd": b.cmd
+    }
+}
+
+# Dispatch on the populated build's discriminator. Called only when `b`
+# is not Undefined / None. An unset build projects as null — the Go side
+# (build.go) then synthesizes the GoBuild { cmd = "./cmd/<name>" }
+# default, so a hand-authored forge.Service that omits `build` still
+# builds.
+_render_build_populated = lambda b: any -> any {
+    _render_go_build(b) if b.type == "go" else \
+        (_render_docker_build(b) if b.type == "docker" else _render_shell_build(b))
+}
+
+_render_build = lambda b: any -> any {
+    _render_build_populated(b) if b else None
+}
+
 _render_service = lambda s: Service -> any {
     {
         "name": s.name
@@ -176,6 +227,7 @@ _render_service = lambda s: Service -> any {
         "command": s.command
         "env_vars": [_render_env_var(e) for e in s.env_vars]
         "deploy": _render_deploy(s.deploy)
+        "build": _render_build(s.build)
         "build_cmd": s.build_cmd if s.build_cmd else None
         "build_cwd": s.build_cwd if s.build_cwd else None
         "build_env": s.build_env if s.build_env else {}

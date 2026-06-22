@@ -375,32 +375,20 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 	}
 }
 
-// TestPostBootstrapTemplate_ScaffoldsNoOp verifies the user-owned
-// post_bootstrap.go scaffold renders as valid Go with the expected
-// signature `func PostBootstrap(app *App) error`. The default body is
-// a no-op the user replaces; if the signature drifts, every project
-// that owns the file will fail to compile when cmd/server.go's
-// generated call site updates underneath it.
-func TestPostBootstrapTemplate_ScaffoldsNoOp(t *testing.T) {
-	content, err := ProjectTemplates().Render("post_bootstrap.go.tmpl", struct{}{})
-	if err != nil {
-		t.Fatalf("render post_bootstrap.go.tmpl: %v", err)
-	}
-	rendered := string(content)
-
-	if !strings.Contains(rendered, "func PostBootstrap(app *App) error") {
-		t.Errorf("post_bootstrap.go.tmpl must declare `func PostBootstrap(app *App) error`; got:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "return nil") {
-		t.Errorf("post_bootstrap.go.tmpl default body must `return nil` (no-op); got:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "//forge:allow") {
-		t.Errorf("post_bootstrap.go.tmpl must carry //forge:allow so the audit walker treats it as user-owned")
-	}
-
-	// Verify it parses as valid Go.
-	fset := token.NewFileSet()
-	if _, perr := parser.ParseFile(fset, "post_bootstrap.go", rendered, parser.AllErrors); perr != nil {
-		t.Fatalf("rendered post_bootstrap.go does not parse:\n%v\n\nSource:\n%s", perr, rendered)
+// TestDeadAppSubstrateTemplatesRemoved asserts the retired pkg/app DI
+// substrate templates are gone. The LIVE runtime composition is
+// internal/app (OpenInfra → NewComponents); setup.go / post_bootstrap.go /
+// app_extras.go / app_gen.go described a DI lifecycle that no longer runs,
+// so a fresh scaffold must not emit them.
+func TestDeadAppSubstrateTemplatesRemoved(t *testing.T) {
+	for _, name := range []string{
+		"setup.go.tmpl",
+		"post_bootstrap.go.tmpl",
+		"app_extras.go.tmpl",
+		"app_gen.go.tmpl",
+	} {
+		if _, err := ProjectTemplates().Get(name); err == nil {
+			t.Errorf("dead substrate template %q must not exist; the live DI is internal/app (OpenInfra → NewComponents)", name)
+		}
 	}
 }

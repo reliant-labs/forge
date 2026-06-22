@@ -70,7 +70,6 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"MCP manifest",
 		"internal/app composition (hybrid DI)",
 		"go mod tidy (pre-wiring)",
-		"pkg/app substrate (app_gen/setup)",
 		"cmd/commands.go (user extension point)",
 		"pkg/app/testing.go",
 		"pkg/app/migrate.go",
@@ -293,7 +292,6 @@ func TestTemplatesOnlyExcludesCleanupAndValidate(t *testing.T) {
 func TestTemplatesOnlyIncludesTemplateRenderSteps(t *testing.T) {
 	mustInclude := []string{
 		"service stubs",
-		"pkg/app substrate (app_gen/setup)",
 		"pkg/app/testing.go",
 		"pkg/app/migrate.go",
 		"CI workflows",
@@ -348,8 +346,8 @@ func TestTemplatesOnlyFilterShape(t *testing.T) {
 		if !names["service stubs"] {
 			t.Error("--templates-only must keep \"service stubs\" — it's a template-driven render step")
 		}
-		if !names["pkg/app substrate (app_gen/setup)"] {
-			t.Error("--templates-only must keep \"pkg/app substrate (app_gen/setup)\" — the canonical template the flag exists to re-render")
+		if !names["pkg/app/testing.go"] {
+			t.Error("--templates-only must keep \"pkg/app/testing.go\" — the per-component test harness is template-driven")
 		}
 		if !names["regenerate infra files"] {
 			t.Error("--templates-only must keep \"regenerate infra files\" — Tier-1 infra is template-driven")

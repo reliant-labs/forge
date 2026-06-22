@@ -2,82 +2,11 @@ package codegen
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
 )
-
-// GenerateAppGen writes pkg/app/app_gen.go — the forge-owned minimal
-// *App carrier (DB / ORM) with `*AppExtras` embedded so the user can
-// extend App by appending fields to AppExtras in the user-owned
-// pkg/app/app_extras.go file.
-//
-// FORGE_SHAPE_REDESIGN §2: the LIVE runtime DI lives in internal/app;
-// app_gen.go now exists only so the user-owned setup.go compiles. The
-// user-side extension workflow is a clean two-step:
-//  1. Add field to AppExtras in pkg/app/app_extras.go (Tier-2).
-//  2. Assign `app.<Field> = ...` in pkg/app/setup.go (Tier-2).
-func GenerateAppGen(hasDatabase bool, ormEnabled bool, hasServices bool, hasWorkers bool, hasOperators bool, hasPackages bool, projectDir string, cs *checksums.FileChecksums) error {
-	appDir := filepath.Join(projectDir, "pkg", "app")
-	if err := os.MkdirAll(appDir, 0755); err != nil {
-		return err
-	}
-
-	data := struct {
-		HasDatabase bool
-		OrmEnabled  bool
-		Services    bool
-		Workers     bool
-		Operators   bool
-		Packages    bool
-		RESTEnabled bool
-	}{
-		HasDatabase: hasDatabase,
-		OrmEnabled:  ormEnabled,
-		Services:    hasServices,
-		Workers:     hasWorkers,
-		Operators:   hasOperators,
-		Packages:    hasPackages,
-		RESTEnabled: hasServices && projectAPIRESTEnabled(projectDir),
-	}
-
-	content, err := templates.ProjectTemplates().Render("app_gen.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render app_gen.go.tmpl: %w", err)
-	}
-
-	if err := writeForgeOwned(projectDir, filepath.Join("pkg", "app", "app_gen.go"), content, cs); err != nil {
-		return fmt.Errorf("write pkg/app/app_gen.go: %w", err)
-	}
-	return nil
-}
-
-// GenerateAppExtras writes pkg/app/app_extras.go ONCE — it's the
-// Tier-2 user-extension scaffold that holds the empty AppExtras struct
-// + a comment block explaining how to add fields. Never overwritten on
-// subsequent generates (mirrors GenerateSetup's never-overwrite rule).
-func GenerateAppExtras(projectDir string) error {
-	appDir := filepath.Join(projectDir, "pkg", "app")
-	extrasPath := filepath.Join(appDir, "app_extras.go")
-
-	if _, err := os.Stat(extrasPath); err == nil {
-		// User-owned file already exists — leave it alone.
-		return nil
-	}
-
-	if err := os.MkdirAll(appDir, 0755); err != nil {
-		return err
-	}
-
-	content, err := templates.ProjectTemplates().Render("app_extras.go.tmpl", struct{}{})
-	if err != nil {
-		return fmt.Errorf("render app_extras.go.tmpl: %w", err)
-	}
-
-	return writeUserScaffold(extrasPath, content)
-}
 
 // GenerateMigrate writes pkg/app/migrate.go with embedded migration support.
 // When hasMigrations is true, the generated file includes go:embed directives
@@ -124,71 +53,3 @@ var MigrationsFS embed.FS
 	return nil
 }
 
-// GenerateSetup generates pkg/app/setup.go if it does not already exist.
-// This file is user-owned and never overwritten.
-func GenerateSetup(modulePath string, databaseDriver string, ormEnabled bool, targetDir string) error {
-	appDir := filepath.Join(targetDir, "pkg", "app")
-	setupPath := filepath.Join(appDir, "setup.go")
-
-	// Never overwrite — this is user-owned code
-	if _, err := os.Stat(setupPath); err == nil {
-		return nil
-	}
-
-	if err := os.MkdirAll(appDir, 0755); err != nil {
-		return err
-	}
-
-	data := struct {
-		Module         string
-		HasDatabase    bool
-		OrmEnabled     bool
-		DatabaseDriver string
-	}{
-		Module:         modulePath,
-		HasDatabase:    databaseDriver != "",
-		OrmEnabled:     ormEnabled,
-		DatabaseDriver: databaseDriver,
-	}
-
-	content, err := templates.ProjectTemplates().Render("setup.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render setup.go.tmpl: %w", err)
-	}
-
-	return writeUserScaffold(setupPath, content)
-}
-
-// GeneratePostBootstrap writes pkg/app/post_bootstrap.go ONCE — it's a
-// Tier-3 user-owned scaffold whose default body is a no-op. Users own
-// the file after first emit and forge generate never overwrites it
-// (same rule as GenerateSetup and GenerateAppExtras).
-//
-// The hook exists so projects can run wiring that depends on a
-// constructed component (e.g. setting a snapshot saver onto a
-// concrete worker singleton); wire_gen only resolves Deps fields, so
-// post-construct registrations can't live in Setup.
-//
-// cmd/server.go.tmpl calls `app.PostBootstrap(application)` after
-// Bootstrap returns and propagates any returned error as a fatal boot
-// failure.
-func GeneratePostBootstrap(targetDir string) error {
-	appDir := filepath.Join(targetDir, "pkg", "app")
-	hookPath := filepath.Join(appDir, "post_bootstrap.go")
-
-	// Never overwrite — this is user-owned code.
-	if _, err := os.Stat(hookPath); err == nil {
-		return nil
-	}
-
-	if err := os.MkdirAll(appDir, 0755); err != nil {
-		return err
-	}
-
-	content, err := templates.ProjectTemplates().Render("post_bootstrap.go.tmpl", struct{}{})
-	if err != nil {
-		return fmt.Errorf("render post_bootstrap.go.tmpl: %w", err)
-	}
-
-	return writeUserScaffold(hookPath, content)
-}

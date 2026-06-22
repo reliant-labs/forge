@@ -9,27 +9,6 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// generateBootstrap scaffolds the minimal pkg/app substrate
-// (app_gen.go + app_extras.go) at `forge new` time.
-//
-// FORGE_SHAPE_REDESIGN §2: the LIVE runtime DI composition is the
-// internal/app layer (OpenInfra -> Build -> PostBuild -> Inventory),
-// emitted by the post-scaffold `forge generate`. The old name-matched
-// pkg/app DI unit (bootstrap.go / wire_gen.go / services_gen.go /
-// services.go) is retired. All this scaffold step needs to emit is the
-// minimal *App carrier the user-owned setup.go compiles against;
-// app_extras.go is the (user-owned, never-overwritten) extension shell.
-func (g *ProjectGenerator) generateBootstrap() error {
-	hasServices := g.ServiceName != "" || len(g.AdditionalServices) > 0
-	if err := g.generateAppGen(hasServices, false, false, false); err != nil {
-		return fmt.Errorf("generate app_gen.go: %w", err)
-	}
-	if err := g.generateAppExtras(); err != nil {
-		return fmt.Errorf("generate app_extras.go: %w", err)
-	}
-	return nil
-}
-
 // generateBootstrapTesting writes pkg/app/testing.go with test helper functions.
 func (g *ProjectGenerator) generateBootstrapTesting() error {
 	type autoStub struct {
@@ -148,61 +127,6 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 	}
 
 	destPath := filepath.Join(g.Path, "pkg", "app", "testing.go")
-	return os.WriteFile(destPath, content, 0644)
-}
-
-// generateAppGen writes pkg/app/app_gen.go at scaffold time. The App
-// struct definition lives here (forge-owned, regenerated as components
-// are added/removed) instead of bootstrap.go so the user-extension
-// scaffold (app_extras.go) can embed AppExtras into it cleanly.
-//
-// At initial scaffold time we always pass false for HasDatabase /
-// OrmEnabled — the project hasn't grown a db driver yet. The codegen
-// pipeline re-emits app_gen.go with the right values once forge.yaml
-// and proto/db/ have entities.
-func (g *ProjectGenerator) generateAppGen(hasServices, hasWorkers, hasOperators, hasPackages bool) error {
-	data := struct {
-		HasDatabase bool
-		OrmEnabled  bool
-		Services    bool
-		Workers     bool
-		Operators   bool
-		Packages    bool
-		RESTEnabled bool
-	}{
-		HasDatabase: false,
-		OrmEnabled:  false,
-		Services:    hasServices,
-		Workers:     hasWorkers,
-		Operators:   hasOperators,
-		Packages:    hasPackages,
-		// Initial scaffold: REST is off by default. Users opt-in by setting
-		// `api.rest: true` in forge.yaml; the post-scaffold `forge generate`
-		// then re-renders app_gen.go and bootstrap.go with the vanguard wrap.
-		RESTEnabled: false,
-	}
-	content, err := templates.ProjectTemplates().Render("app_gen.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render app_gen.go.tmpl: %w", err)
-	}
-	destPath := filepath.Join(g.Path, "pkg", "app", "app_gen.go")
-	return os.WriteFile(destPath, content, 0644)
-}
-
-// generateAppExtras writes pkg/app/app_extras.go ONCE at scaffold time
-// — the Tier-2 user-extension scaffold with an empty AppExtras struct.
-// Subsequent `forge generate` runs leave it alone (matches setup.go's
-// never-overwrite rule).
-func (g *ProjectGenerator) generateAppExtras() error {
-	destPath := filepath.Join(g.Path, "pkg", "app", "app_extras.go")
-	if _, err := os.Stat(destPath); err == nil {
-		// User-owned file already exists — leave it alone.
-		return nil
-	}
-	content, err := templates.ProjectTemplates().Render("app_extras.go.tmpl", struct{}{})
-	if err != nil {
-		return fmt.Errorf("render app_extras.go.tmpl: %w", err)
-	}
 	return os.WriteFile(destPath, content, 0644)
 }
 

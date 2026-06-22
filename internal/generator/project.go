@@ -437,32 +437,18 @@ func (g *ProjectGenerator) Generate() error {
 	// Generate so every managed file exists when its checksum is taken.
 
 	if g.isService() && g.Features.CodegenEnabled() {
-		if err := g.generateBootstrap(); err != nil {
-			return fmt.Errorf("failed to scaffold pkg/app substrate: %w", err)
-		}
-		// Generate setup.go (user-owned, never overwritten) so the pkg/app
-		// substrate compiles even with zero services. Initial scaffold has
-		// no database driver wired and no ORM; the LIVE infra construction
-		// lives in internal/app/providers.go (OpenInfra), emitted by the
-		// post-scaffold `forge generate`.
-		if err := codegen.GenerateSetup(g.ModulePath, "", false, g.Path); err != nil {
-			return fmt.Errorf("failed to generate pkg/app/setup.go: %w", err)
-		}
-		// Generate post_bootstrap.go (user-owned, never overwritten). The
-		// scaffolded cmd/server.go calls app.PostBootstrap(application);
-		// without the file, the project would not compile on initial
-		// `forge new` even before any user edits.
-		if err := codegen.GeneratePostBootstrap(g.Path); err != nil {
-			return fmt.Errorf("failed to generate pkg/app/post_bootstrap.go: %w", err)
-		}
+		// pkg/app is now a thin substrate: the LIVE runtime DI composition
+		// lives in internal/app (OpenInfra → NewComponents, emitted by the
+		// post-scaffold `forge generate`). At scaffold time we only emit the
+		// per-component test harness (testing.go) + the CONVENTIONS explainer;
+		// migrate.go is emitted below when migrations are enabled.
 		if err := g.generateBootstrapTesting(); err != nil {
 			return fmt.Errorf("failed to generate pkg/app/testing.go: %w", err)
 		}
 		// Emit pkg/app/CONVENTIONS.md once at scaffold so per-service
 		// service.go files can point at a single canonical explainer for
-		// the wire_gen / Setup / validateDeps story (post-2026-05-07
-		// wire-gen migration), instead of each shipping a 12-line block
-		// comment that drifts.
+		// the OpenInfra → NewComponents composition + validateDeps story
+		// instead of each shipping a block comment that drifts.
 		if err := g.generatePkgAppConventions(); err != nil {
 			return fmt.Errorf("failed to generate pkg/app/CONVENTIONS.md: %w", err)
 		}

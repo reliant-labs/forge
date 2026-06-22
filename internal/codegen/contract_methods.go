@@ -69,10 +69,6 @@ func (s *svc) GenerateMigrate(targetDir string, modulePath string, hasMigrations
 	return GenerateMigrate(targetDir, modulePath, hasMigrations, cs)
 }
 
-func (s *svc) GenerateSetup(modulePath string, databaseDriver string, ormEnabled bool, targetDir string) error {
-	return GenerateSetup(modulePath, databaseDriver, ormEnabled, targetDir)
-}
-
 // --- Parser: descriptor + go.mod parsing ---
 
 func (p *parserSvc) ParseServicesFromProtos(dir string, projectDir string) ([]ServiceDef, error) {

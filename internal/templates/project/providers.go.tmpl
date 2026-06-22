@@ -20,56 +20,56 @@ import (
 {{- end}}
 )
 
-// Infra is the OWNED provider set (FORGE_SHAPE_REDESIGN §2) — everything
-// the generated injector (internal/app/inject_gen.go) cannot derive. The
-// generated Build fills each component's Deps BY TYPE: from another
-// constructed component, or from a field on THIS struct. So a collaborator
-// the injector can't build itself becomes a field here, constructed in
-// OpenInfra.
+// Infra is the OWNED provider set — everything the explicit composition
+// (internal/app/compose.go: NewComponents) wires into each component's Deps.
+// compose.go is regenerated every run from the discovered component set and
+// fills each Deps field INLINE off a field on THIS struct (there is NO by-type
+// injector). So a collaborator a component needs becomes a field here,
+// constructed in OpenInfra; NewComponents references it as `infra.<Field>`.
 //
 // Three categories of provider live here:
 //
 //  1. INFRA — DB pool, NATS conn, k8s client, third-party clients
 //     (constructed in OpenInfra; nil-able on unset env).
 //  2. ADAPTER — concrete wrappings, e.g.
-//     `enforcement.NewDBRepository(repo)` assigned onto a field so the
-//     injector binds it to a narrow Deps interface BY TYPE.
-//  3. BINDING — explicit concrete->interface choices where the by-type
-//     resolver would be ambiguous (two producers of one interface, or
-//     in-process-service vs Connect-client selection).
+//     `enforcement.NewDBRepository(repo)` assigned onto a field so
+//     NewComponents can hand it to a narrow Deps interface field.
+//  3. BINDING — explicit concrete->interface choices (two producers of one
+//     interface, or in-process-service vs Connect-client selection).
 //
 // yours: scaffolded once, never touched again — forge will not overwrite this file
 //
 //forge:allow
 type Infra struct {
-	// Log and Cfg are the conventional sources Build wires for every
+	// Log and Cfg are the conventional sources NewComponents wires for every
 	// component's Logger / Config Deps field. Keep them named exactly.
 	Log *slog.Logger
 	Cfg *config.Config
 {{- if .HasDatabase}}
 
-	// DB is the shared database pool. A narrow per-component Repository
-	// Deps field is filled from this by the injector when *sql.DB (or a
-	// repository wrapping it) is assignable to that interface.
+	// DB is the shared database pool. A per-component Repository Deps field
+	// is filled from this in NewComponents (directly, or via an adapter
+	// wrapping it that satisfies the narrow Deps interface).
 	DB *sql.DB
 {{- if .OrmEnabled}}
 	ORM *orm.Client
 {{- end}}
 {{- end}}
 
-	// FORGE_SCAFFOLD: add a field here for every collaborator the injector
+	// FORGE_SCAFFOLD: add a field here for every collaborator NewComponents
 	// reported as "no provider" — a DB repository, a NATS publisher, a
-	// third-party client, or an adapter wrapping. Construct it in
-	// OpenInfra. The injector binds it to the consuming Deps field by TYPE,
-	// so the field type only has to be ASSIGNABLE to the Deps field
+	// third-party client, or an adapter wrapping. Construct it in OpenInfra.
+	// NewComponents passes `infra.<Field>` into the consuming Deps field, so
+	// the field type only has to be ASSIGNABLE to that Deps field
 	// (a concrete *db.PostgresRepository fills a narrow audit.Repository).
 }
 
 // OpenInfra builds the owned provider set: open every piece of
 // infrastructure (DB/NATS/k8s/clients), wrap adapters, and pick explicit
-// bindings. Build (inject_gen.go) then constructs the component graph from
-// the returned *Infra. Two-phase / late-bound wiring goes in PostBuild
-// (post_build.go), which runs after Build.
+// bindings. NewComponents (compose.go) then constructs every component
+// INLINE off the returned *Infra. Late-bound / two-phase wiring (a setter on
+// one constructed component fed by another) goes in compose.go after the
+// component values exist — `forge disown internal/app/compose.go` to own it.
 //
 // yours: scaffolded once, never touched again — forge will not overwrite this file
 //

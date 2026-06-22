@@ -11,61 +11,6 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-// generateAppSubstrate scaffolds the user-owned pkg/app substrate
-// (app_gen.go / app_extras.go / setup.go / post_bootstrap.go).
-//
-// FORGE_SHAPE_REDESIGN §2: the LIVE runtime DI composition is the
-// internal/app layer (OpenInfra → Build → PostBuild → Inventory),
-// emitted by stepInternalAppComposition. The old name-matched pkg/app
-// DI unit (bootstrap.go, wire_gen.go, services_gen.go, services.go,
-// diagnostics_gen.go, the appkit.Def/ServiceDef/Run table) is retired.
-//
-// What remains under pkg/app is the user-owned scaffold setup.go +
-// post_bootstrap.go reference (a minimal *App carrier in app_gen.go +
-// the AppExtras extension surface). These are kept so the user-owned
-// setup.go — which forge never overwrites — still compiles. See the
-// setup.go↔providers.go reconciliation note in the redesign doc.
-func generateAppSubstrate(services []codegen.ServiceDef, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, cs *checksums.FileChecksums) error {
-	workers, err := discoverWorkers(projectDir)
-	if err != nil {
-		return err
-	}
-	operators, err := discoverOperators(projectDir)
-	if err != nil {
-		return err
-	}
-
-	if len(services) == 0 && len(workers) == 0 && len(operators) == 0 {
-		return nil
-	}
-
-	hasDatabase := databaseDriver != ""
-
-	// app_gen.go owns the minimal *App carrier (DB / ORM + the embedded
-	// *AppExtras) that the user-owned setup.go compiles against.
-	if err := codegen.GenerateAppGen(hasDatabase, ormEnabled, len(services) > 0, len(workers) > 0, len(operators) > 0, false, projectDir, cs); err != nil {
-		return fmt.Errorf("failed to generate app_gen.go: %w", err)
-	}
-	fmt.Println("  ✅ Generated pkg/app/app_gen.go")
-
-	// app_extras.go (Tier-2 user-owned). Written ONCE — never overwritten.
-	if err := codegen.GenerateAppExtras(projectDir); err != nil {
-		return fmt.Errorf("failed to generate app_extras.go: %w", err)
-	}
-
-	// setup.go (user-owned, never overwritten).
-	if err := codegen.GenerateSetup(modulePath, databaseDriver, ormEnabled, projectDir); err != nil {
-		return fmt.Errorf("failed to generate setup.go: %w", err)
-	}
-
-	// post_bootstrap.go (user-owned, never overwritten).
-	if err := codegen.GeneratePostBootstrap(projectDir); err != nil {
-		return fmt.Errorf("failed to generate post_bootstrap.go: %w", err)
-	}
-
-	return nil
-}
-
 // generateHybridComposition emits the internal/app composition layer
 // (PASS 1, additive). Scaffold-once owned files (providers.go, post_build.go)
 // are written before the generated injector so its Infra-field resolution

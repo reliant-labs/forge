@@ -353,7 +353,6 @@ func generateSteps() []GenStep {
 		{Name: "MCP manifest", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepMCPManifest, Tag: "codegen"},
 		{Name: "internal/app composition (hybrid DI)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepInternalAppComposition, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools"},
-		{Name: "pkg/app substrate (app_gen/setup)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepAppSubstrate, Tag: "codegen"},
 		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
 		{Name: "pkg/app/testing.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
 		{Name: "pkg/app/migrate.go", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
@@ -464,7 +463,6 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		// preset previously got for free from the composition step.
 		"cmd command groups (services/workers/operators)": true,
 		"go mod tidy (pre-wiring)":                        true,
-		"pkg/app substrate (app_gen/setup)":      true,
 		"cmd/commands.go (user extension point)": true,
 		"pkg/app/testing.go":                     true,
 		"pkg/app/migrate.go":                     true,
@@ -587,7 +585,6 @@ var templatesOnlyStepAllow = map[string]bool{
 	"tenant middleware (auto-enable + emit)": true,
 	"webhook routes":                         true,
 	"MCP manifest":                           true,
-	"pkg/app substrate (app_gen/setup)":      true,
 	"internal/app composition (hybrid DI)":   true,
 	"cmd/commands.go (user extension point)": true,
 	"pkg/app/testing.go":                     true,
@@ -1839,34 +1836,6 @@ func deriveOrmEnabled(projectDir string) (bool, error) {
 		}
 	}
 	return false, nil
-}
-
-// stepAppSubstrate scaffolds the user-owned pkg/app substrate
-// (app_gen.go / app_extras.go / setup.go / post_bootstrap.go).
-//
-// The LIVE runtime DI composition is the internal/app layer
-// (stepInternalAppComposition); the old name-matched pkg/app DI unit
-// (bootstrap.go / wire_gen.go / services_gen.go / services.go /
-// diagnostics_gen.go) is retired (FORGE_SHAPE_REDESIGN §2). This step
-// keeps only the minimal substrate the user-owned setup.go compiles
-// against. ormEnabled is the contentious bit; see deriveOrmEnabled.
-func stepAppSubstrate(ctx *pipelineContext) error {
-	var dbDriver string
-	if ctx.Cfg != nil {
-		dbDriver = ctx.Cfg.Database.Driver
-	}
-	ormEnabled, err := deriveOrmEnabled(ctx.ProjectDir)
-	if err != nil {
-		return err
-	}
-	rows, err := ctx.rowServiceDefs()
-	if err != nil {
-		return err
-	}
-	if err := generateAppSubstrate(rows, ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.Checksums); err != nil {
-		return fmt.Errorf("pkg/app substrate generation failed: %w", err)
-	}
-	return nil
 }
 
 // stepInternalAppComposition emits the §2 hybrid-DI composition layer under

@@ -707,6 +707,84 @@ schema BuildOnly:
         type == "build-only", "BuildOnly.type must be 'build-only'"
 
 # ---------------------------------------------------------------------------
+# Polymorphic BUILD union.
+#
+# Build is the per-service answer to "HOW is this service's artifact
+# produced". It is a POLYMORPHIC UNION of concrete build-type schemas —
+# GoBuild | DockerBuild | ShellBuild — each inheriting the `Build` base
+# and discriminated by a `type` field on the subschema, IDENTICAL in
+# shape to the deploy union above. KCL emits the discriminator into the
+# rendered JSON automatically so forge's Go (build.go) dispatches on
+# `build.type` exactly the way it dispatches on `deploy.type` — no
+# side channel, no hardcoded `./cmd`, no built-in auto-docker step.
+#
+# `Service.build` carries one of these per service and is per-env
+# overridable through the existing `deploy/kcl/<env>/` overlay
+# mechanism (an env's main.k can switch a service's build entirely —
+# e.g. e2e sets flags=["-cover"], prod sets goos/goarch + stripped
+# ldflags). The default is a GoBuild (the dominant case); the bridge
+# supplies `cmd = "./cmd/<name>"` so the default stays self-contained
+# without a schema-level reference to `self.name` (KCL can't default a
+# field from a sibling field).
+# ---------------------------------------------------------------------------
+
+schema Build:
+    """Base build concept. Concrete build types (GoBuild / DockerBuild /
+    ShellBuild) inherit this. Discriminated by `type` in the rendered
+    JSON (mirrors the deploy union). `output_name` optionally overrides
+    the produced artifact's basename (default: the service name)."""
+    type: str
+    output_name: str = ""
+
+schema GoBuild(Build):
+    """Build the service with `go build`. `cmd` is the build target
+    package (e.g. "./cmd/trader") — REQUIRED, so there is no hardcoded
+    `./cmd` anywhere in forge's Go. goos/goarch cross-compile;
+    ldflags/tags/flags are passed through to `go build` verbatim;
+    env is build-time process env (e.g. {"CGO_ENABLED": "0"})."""
+    type: str = "go"
+    cmd: str
+    goos: str = ""
+    goarch: str = ""
+    ldflags: [str] = []
+    tags: [str] = []
+    flags: [str] = []
+    env: {str: str} = {}
+
+    check:
+        type == "go", "GoBuild.type must be 'go'"
+        cmd, "GoBuild.cmd is required (the go build target, e.g. './cmd/<name>')"
+
+schema DockerBuild(Build):
+    """Build the service as a container image via `docker build`. Reuses
+    forge's existing docker primitives (tag/registry/push/build-contexts)
+    as this type's behavior — a DockerBuild service is the ONLY way forge
+    builds an image; there is no unconditional auto-docker step.
+    dockerfile/platform/target/build_args map to the corresponding
+    `docker build` flags."""
+    type: str = "docker"
+    dockerfile: str = "Dockerfile"
+    platform: str = ""
+    target: str = ""
+    build_args: {str: str} = {}
+
+    check:
+        type == "docker", "DockerBuild.type must be 'docker'"
+        dockerfile, "DockerBuild.dockerfile is required"
+
+schema ShellBuild(Build):
+    """Build the service by running `cmd` verbatim via `sh -c`. The
+    general escape hatch (generalizes the old build_cmd / EffectiveBuildCmd
+    path): cross-repo builds, language runtimes forge doesn't natively
+    build, pre-built image re-pushes. The command owns the whole build."""
+    type: str = "shell"
+    cmd: str
+
+    check:
+        type == "shell", "ShellBuild.type must be 'shell'"
+        cmd, "ShellBuild.cmd is required"
+
+# ---------------------------------------------------------------------------
 # Frontend deploy union.
 #
 # Frontends have their own deploy discriminator (parallel to the Service
@@ -846,6 +924,17 @@ schema Service:
     command: [str] = []
     env_vars: [EnvVar] = []
     deploy?: HostDeploy | K8sCluster | External | Compose | BuildOnly
+    # Polymorphic build declaration — HOW this service's artifact is
+    # produced. One of GoBuild | DockerBuild | ShellBuild, discriminated
+    # by `build.type` in the rendered JSON (mirrors the deploy union).
+    # forge build dispatches on it; there is no hardcoded `./cmd` and no
+    # auto-docker step. Per-env overridable via the deploy/kcl/<env>/
+    # overlay (an env can switch the build type or tune flags/arch).
+    # Optional at the schema level: the deploy-as-data bridge supplies a
+    # `GoBuild { cmd = "./cmd/<name>" }` default per component so a plain
+    # service never has to spell it out, while a hand-authored
+    # forge.Service may set it explicitly.
+    build?: GoBuild | DockerBuild | ShellBuild
     build_cmd?: str
     build_cwd?: str
     build_env: {str: str} = {}

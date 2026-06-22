@@ -435,18 +435,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 	}
 
-	// Resolve the KCL-driven go-build target set. With --env (entities
-	// present) iterate the declared services; otherwise build only the
-	// shared project binary. buildBinary==false (frontend-only / external
-	// target) drops the go-builds entirely.
-	var goTargets []goBuildTarget
-	if buildBinary {
-		if entities != nil {
-			goTargets = goBuildTargetsFromKCL(entities)
-		} else {
-			goTargets = []goBuildTarget{projectGoBuildTarget(cfg)}
-		}
-	}
+	goTargets := resolveGoTargets(buildBinary, entities, cfg)
 
 	start := time.Now()
 	var results []buildResult
@@ -719,6 +708,21 @@ type goBuildTarget struct {
 	env        map[string]string
 }
 
+// resolveGoTargets returns the KCL-driven go-build target set for this
+// run. With --env (entities present) it iterates the declared services;
+// otherwise it builds only the shared project binary at ./cmd/<project>.
+// buildBinary==false (a frontend-only / external --target) drops the
+// go-builds entirely.
+func resolveGoTargets(buildBinary bool, entities *KCLEntities, cfg *config.ProjectConfig) []goBuildTarget {
+	if !buildBinary {
+		return nil
+	}
+	if entities != nil {
+		return goBuildTargetsFromKCL(entities)
+	}
+	return []goBuildTarget{projectGoBuildTarget(cfg)}
+}
+
 // goBuildTargetsFromKCL resolves the unique set of go-build targets from
 // the KCL service set. Each service's EffectiveBuild() supplies its
 // GoBuild (synthesizing the ./cmd/<name> default when the service omits
@@ -783,7 +787,12 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	if t.goarch != "" {
 		arch = t.goarch
 	}
-	goos := t.goos
+	// When cross-compiling (arch set) GOOS defaults to linux — the deploy
+	// target — unless the GoBuild pins an explicit goos.
+	targetOS := t.goos
+	if arch != "" && targetOS == "" {
+		targetOS = "linux"
+	}
 
 	if debug {
 		fmt.Printf("[build] %s: go build (debug) %s -> %s\n", t.outputName, t.cmd, binaryPath)
@@ -791,12 +800,8 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 		fmt.Printf("[build] %s: go build %s -> %s\n", t.outputName, t.cmd, binaryPath)
 	}
 	if arch != "" {
-		os := goos
-		if os == "" {
-			os = "linux"
-		}
 		fmt.Printf("[build] cross-compiling for %s/%s (host: %s/%s)\n",
-			os, arch, runtime.GOOS, runtime.GOARCH)
+			targetOS, arch, runtime.GOOS, runtime.GOARCH)
 	}
 
 	args := []string{"build", "-o", binaryPath}
@@ -827,13 +832,9 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	// override it (and any other build-time var) since it's appended last.
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if arch != "" {
-		os := goos
-		if os == "" {
-			os = "linux"
-		}
-		cmd.Env = append(cmd.Env, "GOOS="+os, "GOARCH="+arch)
-	} else if goos != "" {
-		cmd.Env = append(cmd.Env, "GOOS="+goos)
+		cmd.Env = append(cmd.Env, "GOOS="+targetOS, "GOARCH="+arch)
+	} else if targetOS != "" {
+		cmd.Env = append(cmd.Env, "GOOS="+targetOS)
 	}
 	for k, v := range t.env {
 		cmd.Env = append(cmd.Env, k+"="+v)

@@ -240,10 +240,10 @@ func defaultToolChecks() []toolCheck {
 			UpstreamURL: "https://nodejs.org/en/download/",
 		},
 		{
-			Name:         "mkcert",
-			Description:  "mkcert — host-side TLS cert generator for dev clusters using tls.mode=\"mkcert\"",
-			Required:     requiredForMkcert,
-			VersionArgs:  []string{"-version"},
+			Name:        "mkcert",
+			Description: "mkcert — host-side TLS cert generator for dev clusters using tls.mode=\"mkcert\"",
+			Required:    requiredForMkcert,
+			VersionArgs: []string{"-version"},
 			InstallHints: map[string]string{
 				"darwin":  "brew install mkcert   (then `mkcert -install` once per machine)",
 				"linux":   "see https://github.com/FiloSottile/mkcert#installation  (then `mkcert -install` once)",

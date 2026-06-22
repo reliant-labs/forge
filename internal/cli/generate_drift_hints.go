@@ -8,7 +8,6 @@
 // a designated user-owned home" — these hints name that home, per
 // file shape, so the error message teaches the extension point first
 // and the disown one-way door last.
-//
 package cli
 
 import (

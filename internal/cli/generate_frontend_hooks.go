@@ -303,9 +303,9 @@ type hookStarterMethod struct {
 
 // hookStarterData is the template data for hooks.test.tsx.tmpl.
 type hookStarterData struct {
-	ServiceName  string
-	HookImports  []hookStarterImport
-	Methods      []hookStarterMethod
+	ServiceName string
+	HookImports []hookStarterImport
+	Methods     []hookStarterMethod
 }
 
 // writeHookStarterTest emits a `<file>.test.tsx.starter` next to the

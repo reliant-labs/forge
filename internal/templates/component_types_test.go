@@ -27,13 +27,13 @@ func assertGofmtClean(t *testing.T, name, src string) {
 
 func TestWorkerTemplatesRenderDefault(t *testing.T) {
 	data := struct {
-		Name     string
-		Package  string
-		Module   string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		Schedule string
+		Name           string
+		Package        string
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		Schedule       string
 	}{
 		Name:    "processor",
 		Package: "processor",
@@ -84,13 +84,13 @@ func TestWorkerTemplatesRenderDefault(t *testing.T) {
 
 func TestWorkerTemplatesRenderTest(t *testing.T) {
 	data := struct {
-		Name     string
-		Package  string
-		Module   string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		Schedule string
+		Name           string
+		Package        string
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		Schedule       string
 	}{
 		Name:    "processor",
 		Package: "processor",
@@ -128,13 +128,13 @@ func TestWorkerTemplatesRenderTest(t *testing.T) {
 
 func TestWorkerCronTemplatesRender(t *testing.T) {
 	data := struct {
-		Name     string
-		Package  string
-		Module   string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		Schedule string
+		Name           string
+		Package        string
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		Schedule       string
 	}{
 		Name:     "cleanup",
 		Package:  "cleanup",
@@ -194,13 +194,13 @@ func TestWorkerCronTemplatesRender(t *testing.T) {
 
 func TestWorkerCronTemplatesRenderTest(t *testing.T) {
 	data := struct {
-		Name     string
-		Package  string
-		Module   string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		Schedule string
+		Name           string
+		Package        string
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		Schedule       string
 	}{
 		Name:     "cleanup",
 		Package:  "cleanup",
@@ -239,18 +239,18 @@ func TestWorkerCronTemplatesRenderTest(t *testing.T) {
 
 func TestOperatorTemplatesRender(t *testing.T) {
 	data := struct {
-		Name          string
-		Package       string
-		TypeName      string
-		TypeRef       string
-		Group         string
-		Version       string
-		Module        string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		APIImportPath string
-		SplitAPI      bool
+		Name           string
+		Package        string
+		TypeName       string
+		TypeRef        string
+		Group          string
+		Version        string
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		APIImportPath  string
+		SplitAPI       bool
 	}{
 		Name:     "scaler",
 		Package:  "scaler",

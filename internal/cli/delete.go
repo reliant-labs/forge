@@ -34,10 +34,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -60,9 +60,9 @@ Subcommands:
 
 func newDeleteServiceCmd() *cobra.Command {
 	var (
-		dryRun     bool
-		assumeYes  bool
-		keepTypes  bool
+		dryRun    bool
+		assumeYes bool
+		keepTypes bool
 	)
 
 	cmd := &cobra.Command{
@@ -104,10 +104,10 @@ Example:
 // deleteServicePlan is the resolved set of mutations runDeleteService will
 // apply — computed once so dry-run and the real run share one description.
 type deleteServicePlan struct {
-	name        string
-	handlerDir  string // project-relative; "" when no scaffold dir on disk
-	inComponents bool
-	registryState serviceRegistration
+	name           string
+	handlerDir     string // project-relative; "" when no scaffold dir on disk
+	inComponents   bool
+	registryState  serviceRegistration
 	servicesGoPath string // project-relative; "" when no services.go
 }
 

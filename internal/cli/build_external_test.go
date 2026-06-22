@@ -370,9 +370,9 @@ func TestResolveExternalBuildTargetArch_Precedence(t *testing.T) {
 		// We can't assert against runtime.GOARCH directly because the
 		// fallback case's expectation is "anything non-empty"; the
 		// test runs on whatever CI arch is current.
-		wantEqualFlag    bool   // when true, expect == flagArch
-		wantEqualCfg     bool   // when true, expect == cfgArch
-		wantNonEmptyOnly bool   // when true, just assert non-empty
+		wantEqualFlag    bool // when true, expect == flagArch
+		wantEqualCfg     bool // when true, expect == cfgArch
+		wantNonEmptyOnly bool // when true, just assert non-empty
 	}{
 		{name: "flag wins over cfg", cfgArch: "amd64", flagArch: "arm64", wantEqualFlag: true},
 		{name: "cfg used when flag empty", cfgArch: "arm64", flagArch: "", wantEqualCfg: true},

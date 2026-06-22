@@ -2,16 +2,16 @@
 // forge-owned: regenerated every run — do not edit (forge disown to take ownership)
 // Source: internal/{workers,operators}/<x>/contract.go + forge.yaml.
 //
-// The LIFECYCLE inventory (FORGE_SHAPE_REDESIGN §2). Where inventory_gen.go
-// is the HTTP-mount surface (which Connect services to mount), this file is
-// the SUPERVISED-component surface: the workers and operators serverkit
-// runs over the constructed *Services.
+// The SUPERVISED-component surface. Where mounts_services.go is the HTTP-mount
+// surface (which Connect services to mount), this file is the workers and
+// operators serverkit runs over the constructed *Components.
 //
 // THIN DATA + DISPATCH: all the uniform machinery (the WrapWorker runtime
 // type-switch, the operator/controller-manager bridge) lives in
 // forge/pkg/lifecyclekit. This file is per-app DATA only — explicit
 // lifecyclekit.WrapWorker rows and one Controller row per operator —
-// dispatching into the lib.
+// dispatching into the lib. To customize (a late-bound worker cross-edge),
+// `forge disown internal/app/lifecycle.go` and own the bytes.
 package app
 
 import (
@@ -24,44 +24,44 @@ import (
 {{- end}}
 )
 
-// WorkerList adapts every constructed worker on s to a lifecyclekit.Worker.
+// WorkerList adapts every constructed worker on c to a lifecyclekit.Worker.
 // Each row goes through lifecyclekit.WrapWorker — a runtime type-switch that
 // gives ctx-aware workers (those implementing RunContext) per-worker
 // cancel-on-shutdown and leaves legacy Start/Stop workers on the legacy
 // path. The cmd layer selects which of these to run per subcommand and
-// packs them into serverkit.Server.Workers.
-func WorkerList(s *Services) []lifecyclekit.Worker {
+// registers them onto the serverkit.Server.
+func WorkerList(c *Components) []lifecyclekit.Worker {
 {{- if .Workers}}
 	return []lifecyclekit.Worker{
 {{- range .Workers}}
-		lifecyclekit.WrapWorker("{{.Name}}", s.{{.FieldName}}),
+		lifecyclekit.WrapWorker("{{.Name}}", c.{{.FieldName}}),
 {{- end}}
 	}
 {{- else}}
-	_ = s
+	_ = c
 	return nil
 {{- end}}
 }
 
-// OperatorList adapts every constructed operator on s to a
+// OperatorList adapts every constructed operator on c to a
 // lifecyclekit.Operator (Name only — the controller-manager hookup is in
 // RunOperators). Emitted unconditionally so the cmd layer compiles even
 // with no operators.
-func OperatorList(s *Services) []lifecyclekit.Operator {
+func OperatorList(c *Components) []lifecyclekit.Operator {
 {{- if .Operators}}
 	return []lifecyclekit.Operator{
 {{- range .Operators}}
-		operatorRow{{.FieldName}}{name: "{{.Name}}", inst: s.{{.FieldName}}},
+		operatorRow{{.FieldName}}{name: "{{.Name}}", inst: c.{{.FieldName}}},
 {{- end}}
 	}
 {{- else}}
-	_ = s
+	_ = c
 	return nil
 {{- end}}
 }
 
 // HasOperators reports whether the project has any operators configured.
-func HasOperators(s *Services) bool { return lifecyclekit.HasOperators(OperatorList(s)) }
+func HasOperators(c *Components) bool { return lifecyclekit.HasOperators(OperatorList(c)) }
 
 {{- if .Operators}}
 {{range .Operators}}
@@ -75,18 +75,18 @@ type operatorRow{{.FieldName}} struct {
 func (o operatorRow{{.FieldName}}) Name() string { return o.name }
 {{end}}
 // RunOperators starts the controller manager with one row per operator,
-// reading each constructed controller off s. Manager behavior (kubeconfig
+// reading each constructed controller off c. Manager behavior (kubeconfig
 // resolution with graceful no-cluster degrade, leader election, scheme /
 // controller registration) lives in lifecyclekit.Run (over operatorkit).
 // Blocks until ctx cancels — the caller (serverkit) runs it in a goroutine.
 // healthProbeAddr is forwarded from serverkit.Config.OperatorHealthProbeAddr.
-func RunOperators(s *Services, ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
+func RunOperators(c *Components, ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
 	return lifecyclekit.Run(ctx, logger, lifecyclekit.Options{
 		LeaderElectionID:       "{{.LeaderElectionID}}",
 		HealthProbeBindAddress: healthProbeAddr,
 	}, []lifecyclekit.Controller{
 {{- range .Operators}}
-		{Name: "{{.Name}}", AddToScheme: {{.Alias}}.AddToScheme, SetupWithManager: s.{{.FieldName}}.SetupWithManager},
+		{Name: "{{.Name}}", AddToScheme: {{.Alias}}.AddToScheme, SetupWithManager: c.{{.FieldName}}.SetupWithManager},
 {{- end}}
 	})
 }
@@ -95,8 +95,8 @@ func RunOperators(s *Services, ctx context.Context, logger *slog.Logger, healthP
 // RunOperators is a no-op when no operators are configured. Signature
 // matches serverkit.Server.RunOperators so the cmd layer passes it through
 // unconditionally.
-func RunOperators(s *Services, ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
-	_ = s
+func RunOperators(c *Components, ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
+	_ = c
 	return nil
 }
 {{- end}}

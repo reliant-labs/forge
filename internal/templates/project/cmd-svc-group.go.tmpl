@@ -4,7 +4,7 @@
 //
 // REAL per-service subcommand, in the services/ command group. `<bin> {{.Name}}`
 // is its OWN first-class command with its own -h / Short / Long. Its RunE calls
-// cmd.Serve() with the TYPED mount method expression (*app.Services).Mount{{.MountFieldName}}
+// cmd.Serve() with the TYPED mount method expression (*app.Components).Mount{{.MountFieldName}}
 // — selection is compile-time typed, never a string. Sibling services are still
 // CONSTRUCTED (the DI graph builds everything; cross-service in-process reads
 // stay nil-safe); only their routes are not registered, and this single-
@@ -34,7 +34,7 @@ func New{{.FieldName}}Cmd(deps cmd.Deps) *cobra.Command {
 		RunE: func(c *cobra.Command, args []string) error {
 			deps.Cmd = c
 			// TYPED mount: the method expression, passed DIRECTLY to Serve.
-			return cmd.Serve(c.Context(), deps, (*app.Services).Mount{{.MountFieldName}}, cmd.ServeOptions{})
+			return cmd.Serve(c.Context(), deps, (*app.Components).Mount{{.MountFieldName}}, cmd.ServeOptions{})
 		},
 	}
 	config.RegisterFlags(c)

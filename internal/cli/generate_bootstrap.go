@@ -83,24 +83,23 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	if err := codegen.GenerateProviders(modulePath, databaseDriver, ormEnabled, projectDir); err != nil {
 		return fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)
 	}
-	if err := codegen.GeneratePostBuild(projectDir); err != nil {
-		return fmt.Errorf("failed to scaffold internal/app/post_build.go: %w", err)
-	}
 
-	// Generated injector + Services registry (regenerated every run). A
-	// MissingProvider here is a LOUD generate-time error naming the type +
-	// component + field the user must add to Infra.
-	if err := codegen.GenerateInject(codegen.InjectGenInput{
+	// Explicit per-binary component construction site (compose.go: Components +
+	// NewComponents), regenerated every run from the discovered component set.
+	// A MissingProvider here is a LOUD generate-time error naming the type +
+	// component + field the user must add to Infra. This REPLACES the retired
+	// by-type injector (inject_gen.go + app_services_gen.go).
+	if err := codegen.GenerateCompose(codegen.InjectGenInput{
 		GenContext: codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
 		Services:   services,
 		Packages:   packages,
 		Workers:    workers,
 		Operators:  operators,
 	}); err != nil {
-		return fmt.Errorf("failed to generate internal/app/inject_gen.go: %w", err)
+		return fmt.Errorf("failed to generate internal/app/compose.go: %w", err)
 	}
 
-	// Supervised-component surface (workers/operators) over *Services.
+	// Supervised-component surface (workers/operators) over *Components.
 	if err := codegen.GenerateLifecycle(codegen.InjectGenInput{
 		GenContext: codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
 		Services:   services,
@@ -108,10 +107,10 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		Workers:    workers,
 		Operators:  operators,
 	}); err != nil {
-		return fmt.Errorf("failed to generate internal/app/lifecycle_gen.go: %w", err)
+		return fmt.Errorf("failed to generate internal/app/lifecycle.go: %w", err)
 	}
 
-	// Data-only mount inventory (services only).
+	// Typed per-service mount surface + data-only inventory (mounts_services.go).
 	if err := codegen.GenerateInventory(codegen.InventoryGenInput{
 		GenContext:      codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
 		Services:        services,
@@ -120,7 +119,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		Operators:       operators,
 		WebhookServices: webhookServices,
 	}); err != nil {
-		return fmt.Errorf("failed to generate internal/app/inventory_gen.go: %w", err)
+		return fmt.Errorf("failed to generate internal/app/mounts_services.go: %w", err)
 	}
 
 	// NOTE: the REAL per-component cmd-group subcommands (dir-nested under
@@ -134,14 +133,14 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	// would 404 the empty (Go-file-less) local group dirs. See
 	// generateCmdGroups + stepCmdGroups.
 
-	fmt.Println("  ✅ Generated internal/app composition layer (Build + Inventory + Infra)")
+	fmt.Println("  ✅ Generated internal/app composition layer (compose.go + mounts_services.go + lifecycle.go)")
 	return nil
 }
 
 // generateCmdGroups anchors the dir-nested per-component command-group
 // subpackages under cmd/<bin>/cmd/{services,workers,operators}: one
 // services/<name>.go per service whose RunE calls cmd.Serve() with the TYPED
-// mount method expression (*app.Services).Mount<Svc> (no string selection);
+// mount method expression (*app.Components).Mount<Svc> (no string selection);
 // one workers/<name>.go and operators/<name>.go per worker/operator
 // (cmd.MountNone + a named supervised subset). Each group also gets a
 // register_gen.go anchor so the subpackage compiles (and main.go's blank

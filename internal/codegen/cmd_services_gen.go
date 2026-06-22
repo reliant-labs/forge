@@ -45,20 +45,20 @@ type CmdGroupItem struct {
 	// the PLAIN per-role name (ToPascalCase of the trimmed service name) —
 	// the constructor is a local symbol in the group package, so it is not
 	// subject to the cross-role collision rename. Workers/operators set
-	// FieldName == MountFieldName (no Services-field mount, no collision).
+	// FieldName == MountFieldName (no Components-field mount, no collision).
 	FieldName string
 
 	// MountFieldName is the exported suffix of the typed mount METHOD the
-	// service command calls: (*app.Services).Mount<MountFieldName>. For
+	// service command calls: (*app.Components).Mount<MountFieldName>. For
 	// services it MUST equal the name inventory_gen emitted — which is
 	// collision-aware (ResolveCollisionNaming), so a service whose handler
 	// package collides cross-role with an internal package mounts as
 	// MountSvc<Pkg>, not Mount<Pkg>. Keeping this SEPARATE from FieldName lets
 	// the constructor stay New<Plain>Cmd while the mount call names the
-	// collision-renamed Services method — matching inventory_gen exactly and
+	// collision-renamed Components method — matching inventory_gen exactly and
 	// killing the MountBilling/MountSvcBilling mismatch (BUG 1). For
 	// workers/operators it is set equal to FieldName (their template doesn't
-	// reference a Services mount method).
+	// reference a Components mount method).
 	MountFieldName string
 }
 
@@ -90,10 +90,10 @@ func cmdSvcFieldName(name string) string {
 // for a given raw service name — the EXACT name inventory_gen's
 // ResolveCollisionNaming produced for that service (the Svc-prefixed name when
 // its handler package collides cross-role with an internal package). The
-// cmd-group command's typed mount call ((*app.Services).Mount<MountFieldName>)
+// cmd-group command's typed mount call ((*app.Components).Mount<MountFieldName>)
 // MUST match the method inventory_gen emitted, so when a collision exists the
 // caller passes the resolved name here. The constructor name (FieldName) is
-// always the PLAIN name — it's a local group-package symbol, not a Services
+// always the PLAIN name — it's a local group-package symbol, not a Components
 // method, so it isn't collision-renamed. When mountOverride is nil or lacks an
 // entry for a name, MountFieldName == FieldName (the no-collision common case
 // and disk-less unit fixtures).
@@ -136,7 +136,7 @@ type CmdServiceGroupInput struct {
 // GenerateCmdGroups renders the dir-nested command groups under
 // cmd/<bin>/cmd (devspace idiom): ONE FILE PER ITEM in the services/,
 // workers/, and operators/ SUBPACKAGES, each `New<X>Cmd(cmd.Deps)` whose
-// RunE calls cmd.Serve() with a TYPED selection (the (*app.Services).Mount<Svc>
+// RunE calls cmd.Serve() with a TYPED selection (the (*app.Components).Mount<Svc>
 // method expression for services; cmd.MountNone + a named supervised subset
 // for workers/operators). Each group also gets a register_gen.go anchor so
 // the package compiles (and main.go's blank import resolves) with zero items;
@@ -160,7 +160,7 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 	// Derive the collision-aware MOUNT method name for each service from the
 	// SAME single source GenerateInventory uses (ResolveCollisionNaming over
 	// CollisionCounts), so the cmd-group command's typed mount call
-	// ((*app.Services).Mount<MountFieldName>) always names the EXACT method
+	// ((*app.Components).Mount<MountFieldName>) always names the EXACT method
 	// inventory_gen emitted. A service whose handler package collides
 	// cross-role with an internal package (control-plane: handler
 	// internal/handlers/billing `package billing` vs domain internal/billing
@@ -242,7 +242,7 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 // inventory_gen.go. It is the SINGLE shared derivation point between the
 // cmd-group generator and inventory_gen: both feed the resolved handler
 // package clause + the cross-role CollisionCounts into ResolveCollisionNaming,
-// so the cmd-group's `(*app.Services).Mount<MountFieldName>` call can never
+// so the cmd-group's `(*app.Components).Mount<MountFieldName>` call can never
 // name a method inventory_gen didn't emit.
 //
 // Only services whose name maps to a NON-plain field (i.e. a real collision)

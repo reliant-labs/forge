@@ -86,7 +86,7 @@ type InventoryServiceData struct {
 	HasAuthorizer bool
 }
 
-// InventoryGenData is the rendered template input for inventory_gen.go.tmpl.
+// InventoryGenData is the rendered template input for mounts_services.go.tmpl.
 type InventoryGenData struct {
 	Module      string
 	RESTEnabled bool
@@ -96,14 +96,13 @@ type InventoryGenData struct {
 	ConnectImports []string
 }
 
-// GenerateInventory emits internal/app/inventory_gen.go: the data-only
-// `var Inventory = []ComponentInfo{...}` the generated cmd/server.go reads to
-// list and mount services. It is ALWAYS written when internal/app is emitted
-// (no len(Services)==0 early-return): cmd/server.go references app.Inventory
-// unconditionally, so the symbol must exist even when there are no Connect
-// services to mount (the template renders an empty []ComponentInfo).
-//
-// ADDITIVE in PASS 1: written alongside the existing pkg/app machinery.
+// GenerateInventory emits internal/app/mounts_services.go: the typed
+// per-service Mount<Svc> methods over *Components, the typed MountByName map,
+// MountAll, and the data-only `var Inventory = []ComponentInfo{...}` that
+// introspection (forge map / audit / services listing) reads. It is ALWAYS
+// written when internal/app is emitted (no len(Services)==0 early-return):
+// cmd/server.go references app.Inventory / the typed mounts unconditionally,
+// so the symbols must exist even with no Connect services.
 func GenerateInventory(in InventoryGenInput) error {
 	appDir := filepath.Join(in.ProjectDir, "internal", "app")
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
@@ -202,12 +201,12 @@ func GenerateInventory(in InventoryGenInput) error {
 		ConnectImports: imports,
 	}
 
-	content, err := templates.ProjectTemplates().Render("inventory_gen.go.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("mounts_services.go.tmpl", data)
 	if err != nil {
-		return fmt.Errorf("render inventory_gen.go.tmpl: %w", err)
+		return fmt.Errorf("render mounts_services.go.tmpl: %w", err)
 	}
-	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "inventory_gen.go"), content, in.Checksums); err != nil {
-		return fmt.Errorf("write internal/app/inventory_gen.go: %w", err)
+	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "mounts_services.go"), content, in.Checksums); err != nil {
+		return fmt.Errorf("write internal/app/mounts_services.go: %w", err)
 	}
 	return nil
 }

@@ -28,7 +28,7 @@ This creates:
 - `internal/workers/<name>/worker_test.go` — Basic lifecycle test
 - An entry in `forge.yaml` under `services:` with type `worker`
 
-After adding a worker, construct it in the binary's composition root (`Build`) and append it to `Server.Workers` — see [Wiring](#wiring) below.
+After adding a worker, construct it in the explicit composition (`internal/app/compose.go` `NewComponents`, off the owned `internal/app/providers.go` `Infra`/`OpenInfra`) onto its `Components` field — see [Wiring](#wiring) below.
 
 ## Worker Lifecycle
 
@@ -140,7 +140,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 ## Wiring
 
-A worker's `Deps` are interface-typed fields filled **by type in the binary's composition root** (`Build`), not by string-matched field names and not by a generated `wire_gen.go`. You construct the worker in topological order, pass it its collaborators' interfaces, and append it to `Server.Workers`:
+A worker's `Deps` are interface-typed fields filled **by type in `internal/app/compose.go` `NewComponents`**, not by string-matched field names and not by a generated `wire_gen.go`. You construct the worker in type-topological order, pass it its collaborators' interfaces (read off the owned `infra.<Field>`), and assign it onto its `Components` field. The generated `internal/app/lifecycle.go` `WorkerList(c)` adapts every constructed worker, and the cmd serve path supervises them — you don't append to a slice here:
 
 ```go
 type Deps struct {
@@ -149,41 +149,39 @@ type Deps struct {
     Queue  queue.Client         // an interface — the default fill is the real in-process impl
 }
 
-// in internal/app/build.go
-func BuildServer(infra Infra) (*serverkit.Server, error) {
-    q := queue.New(infra.QueueConn)          // construct collaborators once
-    cleanup := cleanup.New(cleanup.Deps{
-        Logger: infra.Logger,
-        Cfg:    infra.Config.Cleanup,
+// in internal/app/compose.go
+func NewComponents(infra *Infra) (*Components, error) {
+    c := &Components{}
+    q := queue.New(infra.QueueConn)          // construct collaborators once, off infra
+    c.Cleanup = cleanup.New(cleanup.Deps{
+        Logger: infra.Log,
+        Cfg:    infra.Cfg.Cleanup,
         Queue:  q,                            // resolved by type/interface
     })
-    srv := &serverkit.Server{ /* Handler, ... */ }
-    srv.Workers = append(srv.Workers, cleanup)
-    return srv, nil
+    return c, nil
 }
 ```
 
-Because `Queue` is an interface, swapping a mock (in a test) or a Connect client (when the producer moves to its own binary) is a one-line change in `Build` with the worker untouched. There is no name-matched `*App` field, no typed-zero-with-TODO fallback, and no `wire_gen.go` — a collaborator that doesn't satisfy the interface fails to compile rather than being silently dropped.
+Because `Queue` is an interface, swapping a mock (in a test) or a Connect client (when the producer moves to its own binary) is a one-line change in `NewComponents` with the worker untouched. There is no name-matched `*App` field, no typed-zero-with-TODO fallback, and no `wire_gen.go` — a collaborator that doesn't satisfy the interface fails to compile rather than being silently dropped.
 
 ## Late-bound dependencies between workers
 
-When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't pass it through B's constructor — both workers are constructed in the same pass, so a constructor-only graph would deadlock. **Two-phase wiring is the answer, and it's just plain Go:** construct both ends, then inject with a setter, inside `Build`.
+When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't pass it through B's constructor — both workers are constructed in the same pass, so a constructor-only graph would deadlock. **Two-phase wiring is the answer, and it's just plain Go:** `forge disown internal/app/compose.go`, then construct both ends and inject with a setter, by hand inside `NewComponents`.
 
 ```go
-func BuildServer(infra Infra) (*serverkit.Server, error) {
-    snapshotter := snapshotter.New(...)
-    trader := trader.New(...)
+func NewComponents(infra *Infra) (*Components, error) {
+    c := &Components{}
+    c.Snapshotter = snapshotter.New(...)
+    c.Trader = trader.New(...)
 
     // construct-then-inject: both ends now exist
-    trader.SetSnapshotSaver(snapshotter.SnapshotSaver())
+    c.Trader.SetSnapshotSaver(c.Snapshotter.SnapshotSaver())
 
-    srv := &serverkit.Server{ /* ... */ }
-    srv.Workers = append(srv.Workers, snapshotter, trader)
-    return srv, nil
+    return c, nil
 }
 ```
 
-This is the canonical seam for near-diamonds and producer/consumer pairs. Don't invent a parallel hook system (`PostBootstrap`, `wire_*_hooks.go`, post-Setup passes) — the composition root supports construct-then-inject directly. See the `interactor` skill for the full pattern.
+This is the canonical seam for near-diamonds and producer/consumer pairs. Don't invent a parallel hook system (`PostBootstrap`, `wire_*_hooks.go`, post-Setup passes) — disowning `compose.go` lets `NewComponents` support construct-then-inject directly. See the `interactor` skill for the full pattern.
 
 ## Testing
 
@@ -212,7 +210,7 @@ Because `Deps` fields are interfaces filled in one place, instantiating a worker
 - `Start()` must respect context cancellation — always select on `ctx.Done()`.
 - `Stop()` receives a context with a deadline — finish cleanup before it expires.
 - Workers live under `internal/workers/<name>/`, never a top-level `workers/` dir. On-disk directory leaves must match the canonical snake_case form.
-- Worker `Deps` are interface-typed and filled by type in `Build`; scalars travel in a typed `<Component>Config` block, never as naked Deps fields.
-- Wire workers explicitly: construct in `Build`, append to `Server.Workers`. Use setters for late-bound, cross-worker deps. There is no `wire_gen.go` and no name-matched `*App` resolution.
+- Worker `Deps` are interface-typed and filled by type in `internal/app/compose.go` `NewComponents`; scalars travel in a typed `<Component>Config` block, never as naked Deps fields.
+- Wire workers explicitly: construct in `NewComponents` onto the worker's `Components` field; the generated `lifecycle.go` `WorkerList` and the cmd serve path supervise them. For late-bound, cross-worker deps, `forge disown internal/app/compose.go` and use setters. There is no `wire_gen.go` and no name-matched `*App` resolution.
 - Use `forge add worker`, not manual directory creation.
 - Cron workers require `--schedule` with a valid cron expression (5-field standard format).

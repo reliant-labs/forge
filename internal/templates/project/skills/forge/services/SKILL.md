@@ -26,7 +26,7 @@ Follow this sequence every time you scaffold a new component:
 2. **Define the contract** — edit the `.proto` file (services) or the interface (packages).
 3. **Generate** — run `forge generate` to produce Go code from protos and contracts (handler stubs, mocks, Connect clients).
 4. **Implement** — write the business logic behind the `Service` interface in `internal/handlers/<svc>/contract.go`.
-5. **Compose it into a binary** — a binary serves a service because its `Build` constructs and mounts it. Add the constructor call to the composition root (see below); selection is code, not a string table.
+5. **Compose it into a binary** — a binary serves a service because `NewComponents` constructs it and the serve path mounts it. Add the constructor call to the composition (see below); selection is code, not a string table.
 
 ## Port Assignment
 
@@ -42,26 +42,25 @@ Ports are assigned automatically via `forge.yaml`. Do not hard-code port numbers
 
 ## Serving a service = composing it (the composition root)
 
-**What a binary serves is the set of constructors it calls — not a string row in a registry.** Each binary owns a typed composition root (`Build(infra) (*Server, error)`, e.g. `BuildServer`) under `internal/app/`. A binary serves a service because `Build` constructs it and mounts its handler:
+**What a binary serves is the set of constructors it calls — not a string row in a registry.** The explicit composition is split across two files under `internal/app/`: the owned `providers.go` (`Infra` + `OpenInfra`) and the generated `compose.go` (`Components` + `NewComponents(infra *Infra) (*Components, error)`). A binary serves a service because `NewComponents` constructs it and the serve path mounts its handler:
 
 ```go
-func BuildServer(infra Infra) (*Server, error) {
-    shared := buildShared(infra)                  // infra + services both roots reuse
-    users := user.New(user.Deps{Repo: shared.Repo})
-    bill  := billing.New(billing.Deps{Users: users})  // collaborator by INTERFACE, in-process default
-    bill.WithReliantAPIKeyIssuer(shared.LLM)          // two-phase: construct, then inject
-
-    mux := http.NewServeMux()
-    MountUsers(mux, users)
-    MountBilling(mux, bill)
-    return &Server{Handler: mux, /* Workers, Operators, OnShutdown */}, nil
+// internal/app/compose.go (forge-owned, regenerated — disown to hand-own)
+func NewComponents(infra *Infra) (*Components, error) {
+    c := &Components{}
+    c.Users = user.New(user.Deps{Repo: infra.Repo})
+    c.Bill  = billing.New(billing.Deps{Users: c.Users})  // collaborator by INTERFACE, in-process default
+    // two-phase (bill.WithReliantAPIKeyIssuer(infra.LLM)) → disown compose.go and edit here
+    return c, nil
 }
 ```
 
-- **Selection is code.** To stop serving a service, stop calling its constructor and `MountX`. To serve it elsewhere, call its constructor in that binary's `Build`. No `forge.yaml` edit, no string match.
-- **The collaborator interface is the seam.** A consumer depends on `Users user.Service`, never the concrete type — it can't tell whether it got the in-process instance, a Connect client, or a mock. Splitting a service into its own Deployment later is a one-line swap in `Build` (`billing.New(billing.Deps{Users: userclient.New(conn)})`) with the consumer untouched.
-- **Per-binary singletons are natural.** A collaborator that must be one instance within each process (e.g. `enforcement` in both the server and the workspace-proxy) is one `var` per `Build`; factor shared infra/services into `buildShared(infra)`.
-- **`serverkit.Run` takes a composed `Server`, not service-name strings.** It runs handlers + workers + operators + lifecycle; *which* of each is decided by what `Build` constructed. There is no `args`/`names` variadic, no name-matched wiring.
+The serve path (`cmd/<bin>/cmd/serve.go`) then applies the typed `Mount<Svc>` method values onto a `serverkit.Server` and calls `srv.RequireMounted(...)`.
+
+- **Selection is code.** To stop serving a service, stop constructing it in `NewComponents` and stop mounting it. To serve it elsewhere, construct it in that binary's composition. No `forge.yaml` edit, no string match.
+- **The collaborator interface is the seam.** A consumer depends on `Users user.Service`, never the concrete type — it can't tell whether it got the in-process instance, a Connect client, or a mock. Splitting a service into its own Deployment later is a one-line swap in `NewComponents` (`billing.New(billing.Deps{Users: userclient.New(conn)})`) with the consumer untouched.
+- **Per-binary singletons are natural.** A collaborator that must be one instance within each process (e.g. `enforcement` in both the server and the workspace-proxy) is one field on the owned `Infra`, opened once in `OpenInfra` and shared across the components.
+- **`serverkit.Run` takes a composed server with typed mounts, not service-name strings.** It runs handlers + workers + operators + lifecycle; *which* of each is decided by what `NewComponents` constructed and the serve path mounted. There is no `args`/`names` variadic, no name-matched wiring.
 
 ## Subcommands are real, owned compositions
 

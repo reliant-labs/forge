@@ -7,7 +7,7 @@ description: REST URLs on top of Connect handlers via connectrpc.com/vanguard �
 
 Forge's default API surface is Connect-RPC: JSON-over-POST at
 `/<service>/<Method>`. Set `api.rest: true` in `forge.yaml` and the
-handler assembly in your owned composition root (`internal/app/build.go`)
+explicit composition in `internal/app/compose.go` (`NewComponents`)
 wraps the Connect mux with
 [`connectrpc.com/vanguard`](https://github.com/connectrpc/vanguard-go) —
 Buf's official Connect↔REST transcoder. The same handler now answers
@@ -29,14 +29,15 @@ api:
 
 Then re-run `forge generate`. Three things happen:
 
-1. **The handler assembly in `internal/app/build.go`** (the owned,
-   typed composition root) imports `connectrpc.com/vanguard` and wraps
+1. **The explicit composition in `internal/app/compose.go`
+   (`NewComponents`)** imports `connectrpc.com/vanguard` and wraps
    the mounted Connect mux in a `vanguard.Transcoder` before returning
    it on the composed `serverkit.Server.Handler`. Connect / gRPC
    requests pass through unchanged; REST requests are translated to
    Connect calls before reaching the handler. There is no generated
    `pkg/app/bootstrap.go` and no `app.RESTHandler` global — the wrap is
-   plain Go in the same `Build` where the interceptor chain is composed.
+   plain Go in the same `NewComponents` where the interceptor chain is
+   composed.
 2. **`buf.yaml`** gains the `buf.build/googleapis/googleapis` BSR dep
    so `google/api/annotations.proto` resolves.
 3. **CRUD-prefixed RPCs** in `.proto` files (`Get<Entity>`,

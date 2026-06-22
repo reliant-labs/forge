@@ -46,7 +46,7 @@ description: |
   Production-ready JWT authentication with JWKS, dev-mode bypass,
   and multi-provider support. Code is installed into
   internal/middleware/auth/jwtauth/ — compose its interceptor in the
-  handler assembly inside internal/app/build.go.
+  explicit composition in internal/app/compose.go (NewComponents).
 subpath: middleware/auth/jwtauth         # under internal/, where pack code lands
 
 # What the pack adds to forge.yaml on install.
@@ -167,7 +167,7 @@ Uninstall is the inverse: remove pack files (the manifest tracks them), revert t
 
 ## Avoiding scaffold collisions
 
-The scaffold emits some defaults the user expects to find — the `internal/middleware/middleware.go` policy file, generic `Authenticator` symbols, etc. If your pack contributes to the same area, **do not** overwrite the scaffold's symbol. Use a per-pack name (`AuditInterceptorWithStore` instead of `AuditInterceptor`) and document the override surface in the pack README. Composing happens explicitly in the handler assembly of the consumer's owned composition root, `internal/app/build.go` (there is no `setup.go` god-hook).
+The scaffold emits some defaults the user expects to find — the `internal/middleware/middleware.go` policy file, generic `Authenticator` symbols, etc. If your pack contributes to the same area, **do not** overwrite the scaffold's symbol. Use a per-pack name (`AuditInterceptorWithStore` instead of `AuditInterceptor`) and document the override surface in the pack README. Composing happens explicitly in the consumer's explicit composition, `internal/app/compose.go` (`NewComponents`) (there is no `setup.go` god-hook).
 
 ## Testing your pack
 

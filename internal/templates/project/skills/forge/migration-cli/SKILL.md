@@ -15,13 +15,13 @@ Use this skill when the existing project is a Cobra CLI binary, a code generator
 forge new <name>-next --kind cli --mod github.com/<owner>/<name>-next
 ```
 
-`--kind cli` skips the auto-emitted Connect-RPC service, service protos, `deploy/`, and KCL manifests. It does NOT skip config or wiring — config and the composition root are app code regardless of kind. You get:
+`--kind cli` skips the auto-emitted Connect-RPC service, service protos, `deploy/`, and KCL manifests. It does NOT skip config or wiring — config and the composition are app code regardless of kind. You get:
 
 ```
 cmd/<name>-next/main.go    # Cobra root command
 internal/                  # DEFAULT HOME for your packages
 internal/config/           # typed config — generated from proto config blocks
-internal/app/              # composition roots (build.go)
+internal/app/              # composition (providers.go owned + compose.go generated)
 forge.yaml                 # Project config (strictly top-level)
 go.work + go.mod           # Workspace + module
 ```
@@ -38,9 +38,9 @@ The Cobra `Use:` field inside `internal/cli/root.go` (or wherever your CLI sourc
 
 A CLI's settings live in a `<Component>Config` proto message annotated with `(forge.v1.config)`, projected into typed `internal/config` and bound via the cmdkit flag/env path. Scalars (`string`/`int`/`bool`/`Duration`, including timeouts) are config — they go in the config block, consumed as one typed `Cfg config.<Component>Config` field. Do not scatter raw `os.Getenv("FOO")` with magic strings or duplicate the same timeout constant across commands. `forge.yaml` stays strictly top-level (identity, features); per-env config lives in `deploy/kcl/<env>/` for deployed binaries.
 
-## Composition root — owned, typed, even for a CLI
+## Composition — owned providers, generated wiring, even for a CLI
 
-A binary still owns a small typed composition root for whatever it constructs: `Build(infra) (*App, error)` in `internal/app/build.go`, building the dependency closure in topological order and handing each component its `Deps` as interface-typed fields resolved by type, never by string name. For a one-package CLI this is a few lines; the point is that the logger, DB handle, and config flow through one owned place — not a fresh ad-hoc logger per command. There is NO string-keyed registry and NO name-matched wiring.
+A binary still has a small typed composition for whatever it constructs: the owned `Infra` provider set + `OpenInfra` in `internal/app/providers.go`, plus the generated `NewComponents(infra *Infra) (*Components, error)` in `internal/app/compose.go` that builds the dependency closure in type-topological order, handing each component its `Deps` as interface-typed fields resolved by type off `infra.<Field>`, never by string name. For a one-package CLI this is a few lines; the point is that the logger, DB handle, and config flow through one owned place (`Infra`) — not a fresh ad-hoc logger per command. There is NO string-keyed registry and NO name-matched wiring.
 
 ## Adding a second binary
 

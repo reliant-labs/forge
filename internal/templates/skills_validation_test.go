@@ -43,9 +43,9 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/reliant-labs/forge/internal/cli"
-	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
+	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 )
 
 // ─── shared fixtures ────────────────────────────────────────────────────
@@ -264,11 +264,11 @@ var knownDotForgeEntries = map[string]bool{
 	// checksums.json is the DEAD legacy manifest — still referenced by
 	// migration docs (forge reads + deletes it during the one-time
 	// migration), so it stays a known entry.
-	"checksums.json": true,
-	"disowned.json":  true,
-	"hashes.json":    true,
-	"render":         true,
-	"friction.jsonl": true,
+	"checksums.json":        true,
+	"disowned.json":         true,
+	"hashes.json":           true,
+	"render":                true,
+	"friction.jsonl":        true,
 	"skills":                true,
 	"state":                 true,
 	"logs":                  true, // forge up writes per-service logs to .forge/logs/<env>/<name>.log

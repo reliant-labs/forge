@@ -49,7 +49,7 @@ gen/db/v1/cycle_run.pb.orm.go:55:18: undefined: orm.TypeDoublePrecision`,
 			},
 		},
 		{
-			name: "orm-TypeReal-skew",
+			name:      "orm-TypeReal-skew",
 			errOutput: `gen/db/v1/model_performance.pb.orm.go:48:18: undefined: orm.TypeReal`,
 			wantContains: []string{
 				"forge/pkg pin is older",

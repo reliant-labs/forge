@@ -178,7 +178,7 @@ internal/handlers/mocks/
 
 `forge generate` reads `contract.go`, emits `handlers_gen.go` alongside your owned files, and writes the service mock to the shared `internal/handlers/mocks/` directory (package `mocks`, one `<svc>_mock.go` per service).
 
-Per-package observability wrappers (`middleware_gen.go`, `tracing_gen.go`, `metrics_gen.go`) were removed in 1.7. Logging, tracing, metrics, recovery, and request-id are applied uniformly at the Connect handler boundary via `forge/pkg/observe` interceptors (`observe.DefaultMiddlewares(deps)` in `cmd/server.go`). Per-method opt-in helpers — `observe.LogCall` / `observe.TraceCall` / `observe.NewCallMetrics` — are available for the rare case of an explicit child span at a service-to-service call site.
+Per-package observability wrappers (`middleware_gen.go`, `tracing_gen.go`, `metrics_gen.go`) were removed in 1.7. Logging, tracing, metrics, recovery, and request-id are applied uniformly at the Connect handler boundary via `forge/pkg/observe` interceptors (`observe.Chain(observe.Deps{…})` in the generated `cmd/<bin>/cmd/serve.go`). Per-method opt-in helpers — `observe.LogCall` / `observe.TraceCall` / `observe.NewCallMetrics` — are available for the rare case of an explicit child span at a service-to-service call site.
 
 ## Forge svcerr sentinels
 
@@ -197,27 +197,28 @@ Custom typed errors `Unwrap() error` to the matching `svcerr.Err*` sentinel:
 func (e ValidationError) Unwrap() error { return svcerr.ErrInvalidArgument }
 ```
 
-## Wiring in the composition root (`internal/app/build.go`)
+## Wiring in the composition root (`internal/app/compose.go`)
 
-The service is constructed in the binary's owned composition root, `Build`. There is no god-hook and no name-matched `*App` fields — you call `things.New` yourself and hand each collaborator in by type:
+The service is constructed in the explicit composition root, `NewComponents` in the regenerated `internal/app/compose.go`. There is no god-hook and no name-matched `*App` fields — `NewComponents` calls `things.New` and hands each collaborator in by type, reading the collaborator off the owned `*Infra` (built in `internal/app/providers.go`, `OpenInfra`):
 
 ```go
-// internal/app/build.go (your code — the owned composition root)
-func BuildServer(infra Infra) (*serverkit.Server, error) {
-    s := buildShared(infra) // db, logger, shared services
+// internal/app/compose.go (regenerated — Deps filled inline off *Infra)
+func NewComponents(infra *Infra) (*Components, error) {
+    c := &Components{}
 
-    things := things.New(things.Deps{
-        Repo:  s.Repo,    // an interface, resolved by type — not by field name
+    c.Things = things.New(things.Deps{
+        Repo:  infra.Repo,   // an interface, resolved by type — not by field name
         Now:   time.Now,
         NewID: ulid.Make,
     })
-    // ... mount things into the handler, append workers/operators ...
+    // ... every other component constructed inline off *Infra ...
+    return c, nil
 }
 ```
 
-A collaborator is passed as its *interface* (`Users user.Service`), so `things` can't tell whether it got the in-process service, a Connect client, or a mock. Splitting `things` out to its own Deployment later is a one-line swap here — `things.New(things.Deps{Users: userclient.New(conn)})` — with the consumer untouched.
+A collaborator is passed as its *interface* (`Users user.Service`), so `things` can't tell whether it got the in-process service, a Connect client, or a mock. Which concrete value fills `infra.Users` is chosen once in `OpenInfra` (`internal/app/providers.go`) — splitting `things` out to its own Deployment later is a one-line swap there (`infra.Users = userclient.New(conn)`), with the consumer untouched. To hand-customize the composition (a carved authz, a two-phase setter), `forge disown internal/app/compose.go` and own the bytes.
 
-The service body and `build.go` carry no observability code — `observe.DefaultMiddlewares(deps)` wraps it at the handler boundary.
+The service body carries no observability code — `observe.Chain(observe.Deps{…})` in the generated `cmd serve.go` wraps it at the handler boundary.
 
 ## Optional Deps fields
 
@@ -240,7 +241,7 @@ The marker tells:
 - **`validateDeps()`** — do NOT add a check. The marker says "nil is OK". (Required deps are still gated here at construction.)
 - **the upgrade codemod** — leave per-RPC `if s.deps.X != nil { ... }` guards alone.
 
-Optionality is expressed in `Build`: you simply pass `nil` (or omit the field fill) for the optional collaborator. There is no name-matched wiring layer to "emit a typed-zero" — `Build` is owned Go, so the absence is explicit at the one call site.
+Optionality is expressed in the composition: `infra.<Field>` is left nil (or the optional field is omitted from the `Deps` literal) for the optional collaborator. There is no name-matched wiring layer to "emit a typed-zero" — the construction site (`NewComponents` off `OpenInfra`) is explicit, so the absence is visible at the one place.
 
 Misplaced markers (on the struct itself, on a method docstring, etc.) are caught by `forge lint --conventions` (`forgeconv-optional-dep-marker-position`).
 
@@ -248,7 +249,7 @@ Misplaced markers (on the struct itself, on a method docstring, etc.) are caught
 
 - **Never hand-edit the generated mock** (`internal/handlers/mocks/<svc>_mock.go`). Edit `contract.go` and re-run `forge generate`.
 - **`Service` is the canonical name** for single-impl. `forge generate` assumes it. Use `<Name>er` only for multi-impl strategies.
-- **Construct and wire the service in `internal/app/build.go`.** Collaborators are passed by interface, resolved by type — never assigned to name-matched `*App` fields. Observability is applied at the handler boundary by `forge/pkg/observe` interceptors.
+- **Construct and wire the service in the explicit composition (`internal/app/compose.go`, `NewComponents`, off the owned `internal/app/providers.go` `Infra`/`OpenInfra`).** Collaborators are passed by interface, resolved by type — never assigned to name-matched `*App` fields. Observability is applied at the handler boundary by `forge/pkg/observe` interceptors.
 
 ## When this skill is not enough (forge sub-skills)
 

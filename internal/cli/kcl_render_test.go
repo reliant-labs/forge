@@ -283,6 +283,29 @@ func TestEffectiveBuild_SynthesizesGoDefault(t *testing.T) {
 	if s2.EffectiveBuild().Type != "shell" {
 		t.Errorf("explicit build dropped: %+v", s2.EffectiveBuild())
 	}
+	// A compose service has no Go artifact — no synthesized GoBuild.
+	sc := ServiceEntity{Name: "dev-infra", Deploy: DeployConfigEntity{Type: "compose"}}
+	if sc.EffectiveBuild().Type != "" {
+		t.Errorf("compose service synthesized a build: %+v", sc.EffectiveBuild())
+	}
+	// An external service owns its own build via build_cmd / deploy_cmd —
+	// no synthesized GoBuild against a package that may not exist locally.
+	se := ServiceEntity{Name: "sibling", Deploy: DeployConfigEntity{Type: "external"}}
+	if se.EffectiveBuild().Type != "" {
+		t.Errorf("external service synthesized a build: %+v", se.EffectiveBuild())
+	}
+	// A top-level build_cmd (generic shell escape hatch for a non-external
+	// deploy type) also suppresses the synthesized GoBuild.
+	sb := ServiceEntity{Name: "sib2", Deploy: DeployConfigEntity{Type: "host"}, BuildCmd: "make foo"}
+	if sb.EffectiveBuild().Type != "" {
+		t.Errorf("build_cmd service synthesized a build: %+v", sb.EffectiveBuild())
+	}
+	// An EXPLICIT build still wins even for compose (defensive — a user can
+	// force a go build onto any deploy type).
+	scb := ServiceEntity{Name: "x", Deploy: DeployConfigEntity{Type: "compose"}, Build: BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/x"}}}
+	if scb.EffectiveBuild().Type != "go" {
+		t.Errorf("explicit go build dropped for compose: %+v", scb.EffectiveBuild())
+	}
 }
 
 func TestGoBuildTargetsFromKCL_DedupsSharedBinary(t *testing.T) {

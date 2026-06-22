@@ -351,6 +351,15 @@ var removedSchemaKeys = map[string]removedKeyHint{
 		replacement: "remove the key — per-environment cluster choice now lives in KCL " +
 			"`forge.K8sCluster` blocks under deploy/kcl/; see `forge skill load migrations/environments-to-kcl`.",
 	},
+	// deploy.provider was never read: the CI provider lives in `ci.provider`
+	// (generate_ci.go reads cfg.CI.Provider). Removed in the forge.yaml
+	// schema cleanup (FORGE_SHAPE_REDESIGN §4 — deploy is pipeline-control
+	// only; provider belongs to ci).
+	"deploy.provider": {
+		removedIn: "the forge.yaml schema cleanup (deploy is pipeline-control only)",
+		replacement: "delete the key — the CI provider is set via `ci.provider` (github is the " +
+			"default); `deploy.provider` was never read.",
+	},
 	// kind: moved off forge.yaml in the ProjectStore per-service data move.
 	// Project kind now DERIVES from the components in components.json (a
 	// server-shaped component → service, binary-only → cli, none → library).
@@ -409,6 +418,33 @@ var removedSchemaKeys = map[string]removedKeyHint{
 		replacement: "delete the key — document the serving binary as a comment next to the " +
 			"deleted serviceRow line in pkg/app/services.go; see the `services` skill " +
 			"(Types-Only Services).",
+	},
+	// stack.{backend,database,proto,deploy,ci} were "forward-looking
+	// declarations" that no codegen path ever read — they DUPLICATED the
+	// canonical sources. Removed in the forge.yaml schema cleanup
+	// (FORGE_SHAPE_REDESIGN §4). Only `stack.frontend` survives. Each old
+	// sub-block points the user at the real source of truth.
+	"stack.backend": {
+		removedIn: "the forge.yaml schema cleanup (stack was forward-looking, never consumed)",
+		replacement: "delete the key — backend language/framework is not a codegen input; " +
+			"forge projects are Go + Connect RPC.",
+	},
+	"stack.database": {
+		removedIn: "the forge.yaml schema cleanup (stack duplicated database.driver)",
+		replacement: "delete the key and set the driver under `database.driver` (postgres | none).",
+	},
+	"stack.proto": {
+		removedIn: "the forge.yaml schema cleanup (stack.proto was never consumed)",
+		replacement: "delete the key — the proto toolchain is buf; there is no per-project toggle.",
+	},
+	"stack.deploy": {
+		removedIn: "the forge.yaml schema cleanup (stack.deploy duplicated docker.registry + per-env KCL)",
+		replacement: "delete the key — the image registry lives in `docker.registry`, and the " +
+			"deploy target/cluster is declared per-env in `deploy/kcl/<env>/main.k` (forge.K8sCluster).",
+	},
+	"stack.ci": {
+		removedIn: "the forge.yaml schema cleanup (stack.ci duplicated ci.provider)",
+		replacement: "delete the key and set the CI provider under `ci.provider` (github is the default).",
 	},
 	// deploy graduated from experimental to a stable kind-derived flag in
 	// the front-door rework; projects scaffolded in the experimental
@@ -507,12 +543,24 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 			// Levenshtein "did you mean" (which would suggest renaming
 			// instead of migrating — the exact trap an agent reading
 			// the error would fall into).
+			//
+			// A removed key is one forge ITSELF wrote a version ago, so it
+			// is a WARNING, not a hard fail (fr-57edf33aca): a forge.yaml
+			// forge authored must keep loading across a schema removal —
+			// every config-loading command hard-failing on forge's own
+			// retired key strands the project until a human edits the file.
+			// The warning still carries the migration hint, and the next
+			// forge.yaml rewrite (NormalizeForWrite) drops the dead key, so
+			// the deprecation is visible and self-healing. Genuine typos
+			// (NOT in removedSchemaKeys) stay fatal below — that distinction
+			// is the whole point of the map.
 			if hint, removed := removedSchemaKeys[normalizeKeyPath(full)]; removed {
 				out = append(out, validationIssue{
-					line:   keyNode.Line,
-					column: keyNode.Column,
-					msg:    fmt.Sprintf("%q was removed in %s", full, hint.removedIn),
-					fix:    hint.replacement,
+					line:    keyNode.Line,
+					column:  keyNode.Column,
+					msg:     fmt.Sprintf("%q was removed in %s", full, hint.removedIn),
+					fix:     hint.replacement,
+					warning: true,
 				})
 				continue
 			}
@@ -663,18 +711,11 @@ func levenshtein(a, b string) int {
 			if ar[i-1] == br[j-1] {
 				cost = 0
 			}
-			curr[j] = minInt(curr[j-1]+1, minInt(prev[j]+1, prev[j-1]+cost))
+			curr[j] = min(curr[j-1]+1, min(prev[j]+1, prev[j-1]+cost))
 		}
 		prev, curr = curr, prev
 	}
 	return prev[len(br)]
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // splitYAMLErrorLines turns a yaml decoding error into one issue per
@@ -709,6 +750,40 @@ func splitYAMLErrorLines(err error) []string {
 // required field here corresponds to a real downstream breakage when
 // absent (broken go.mod, empty deploy, ambiguous codegen target).
 func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	var out []validationIssue
+	out = append(out, validateProjectFields(cfg, root)...)
+	out = append(out, validateComponents(cfg, root)...)
+	out = append(out, validateFrontends(cfg, root)...)
+	out = append(out, validateORMDriver(cfg, root)...)
+	out = append(out, validateConfigGuard(cfg, root)...)
+	return out
+}
+
+// validateConfigGuard checks the `config:` section's enumerated
+// enforce_typed_access value. Empty is valid (resolves to "warn"); any
+// non-empty value outside {off, warn, error} (case/alias-normalized) is a
+// fatal, clearly-explained error rather than a silently-ignored typo.
+func validateConfigGuard(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	raw := strings.TrimSpace(cfg.Config.EnforceTypedAccess)
+	if raw == "" {
+		return nil
+	}
+	switch strings.ToLower(raw) {
+	case EnforceTypedAccessOff, EnforceTypedAccessWarn, EnforceTypedAccessError, "warning":
+		return nil
+	}
+	line, col := findNodePos(root, []string{"config", "enforce_typed_access"})
+	return []validationIssue{{
+		line:   line,
+		column: col,
+		msg:    fmt.Sprintf("config.enforce_typed_access value %q is invalid", cfg.Config.EnforceTypedAccess),
+		fix:    "use one of: off, warn, error (absent defaults to warn).",
+	}}
+}
+
+// validateProjectFields checks the top-level project identity fields
+// (name, module_path) that the project cannot meaningfully be missing.
+func validateProjectFields(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	var out []validationIssue
 
 	// rootPos is the fallback location for "this required field is
@@ -748,6 +823,14 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	// kind is no longer a forge.yaml field — it is DERIVED from the
 	// components (DeriveProjectKind) before validateRequired runs, so it is
 	// always one of the valid values and needs no validation here.
+
+	return out
+}
+
+// validateComponents checks per-component required fields and the
+// enumerated values (name, kind, schedule-for-cron).
+func validateComponents(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	var out []validationIssue
 
 	for i, comp := range cfg.Components {
 		prefix := fmt.Sprintf("components[%d]", i)
@@ -793,6 +876,14 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 		// components[].path is intentionally not required: the cli loader
 		// applies a kind-derived default when the user omits it.
 	}
+
+	return out
+}
+
+// validateFrontends checks per-frontend required fields and the
+// enumerated values (name, type, output, base_path).
+func validateFrontends(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	var out []validationIssue
 
 	for i, fe := range cfg.Frontends {
 		prefix := fmt.Sprintf("frontends[%d]", i)
@@ -854,6 +945,20 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 				})
 			}
 		}
+	}
+
+	return out
+}
+
+// validateORMDriver requires database.driver when the ORM feature has
+// been explicitly enabled.
+func validateORMDriver(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	var out []validationIssue
+
+	// rootPos is the fallback when the `database:` block is absent.
+	var rootLine, rootCol int
+	if root != nil {
+		rootLine, rootCol = root.Line, root.Column
 	}
 
 	// Only require database.driver when ORM has been *explicitly* enabled.

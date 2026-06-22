@@ -2,7 +2,6 @@ package serverkit
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"connectrpc.com/connect"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
@@ -26,138 +24,123 @@ import (
 )
 
 // Run starts the server and blocks until SIGINT/SIGTERM or a fatal
-// error. It owns the full lifecycle described in the package doc:
-// logger init, OTel setup, optional auto-migrate, Connect interceptor
-// chain, bootstrap, post-bootstrap, health probes, REST handler swap,
-// CORS/security/request-id/h2c wrapping, listener bind, worker
-// supervision, operator manager gating, and graceful shutdown.
+// error. It takes an ALREADY-COMPOSED Server (handler with services
+// mounted, selected workers/operators, an OnShutdown closure) and owns
+// only the uniform lifecycle: logger init, health probes, the HTTP edge
+// (CORS/security/request-id/h2c driven by Config + Server's factory
+// fields), listener bind, worker supervision, operator-manager gating,
+// graceful shutdown, and pprof.
 //
-// args is the trailing positional slice from the cobra command — when
-// non-empty it filters which services bootstrap and which workers run
-// (the project's BootstrapOnly path). args is passed through to the
-// Bootstrap hook verbatim.
+// Service SELECTION (the old args/names filter) and composition (mux
+// build, service mount, interceptor chain, OTel setup, auto-migrate) all
+// happen ABOVE serverkit in the generated cmd-server shim. serverkit no
+// longer receives names and knows nothing about which services run.
 //
 // Run is the only entry point projects call. Every other type and
-// helper exists to shape the hook surface or document the lifecycle.
-func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
+// helper exists to shape the Server surface or document the lifecycle.
+func Run(ctx context.Context, cfg Config, srv Server) error {
 	cfg.defaults()
 
-	if hooks.Bootstrap == nil {
-		return fmt.Errorf("serverkit.Run: Hooks.Bootstrap is required")
+	// Handler is required, but the Mux ergonomics let a composition root
+	// leave it nil and rely on Server.Mux as the handler (the common case:
+	// no REST swap, no outer wrapper). Fall back to Mux before failing.
+	if srv.Handler == nil {
+		if srv.Mux != nil {
+			srv.Handler = srv.Mux
+		} else {
+			return fmt.Errorf("serverkit.Run: Server.Handler is required (or set Server.Mux)")
+		}
 	}
 	if cfg.Addr == "" {
 		return fmt.Errorf("serverkit.Run: Config.Addr is required")
 	}
-
-	logger := newLogger(cfg)
-	slog.SetDefault(logger)
-
-	// OTel is optional — degrade gracefully if not configured.
-	var (
-		shutdownOTel   func(context.Context) error
-		metricsHandler http.Handler
-	)
-	if hooks.SetupOTel != nil {
-		s, m, err := hooks.SetupOTel(ctx)
-		if err != nil {
-			logger.Error("failed to initialize OpenTelemetry", "error", err)
-			// Continue without telemetry — this is intentional.
-		}
-		shutdownOTel = s
-		metricsHandler = m
+	if len(srv.Operators) > 0 && srv.RunOperators == nil {
+		return fmt.Errorf("serverkit.Run: Server.Operators is non-empty but Server.RunOperators is nil")
 	}
+
+	// Logger: prefer the caller's (so mount-time and run-time logs share
+	// attrs); build one from Config only when the caller passed nil.
+	logger := srv.Logger
+	if logger == nil {
+		logger = newLogger(cfg)
+	}
+	slog.SetDefault(logger)
 
 	// Warn loudly when running in development mode. Development mode enables
 	// permissive defaults (e.g. authz allow-all) for local ergonomics — this
 	// must never be used in production. The permissive behavior is selected
-	// at Bootstrap time based on cfg.Environment.
+	// by the caller (at mount time) based on cfg.Environment.
 	if cfg.Environment == "development" {
 		logger.Warn("running in development mode — permissive authz defaults are enabled. NEVER set ENVIRONMENT=development in production.")
 	}
 
-	// Auto-migrate: serverkit dials the DB, applies pool tuning, calls
-	// the hook, and closes. The hook owns the actual migration body so
-	// projects can pick goose/atlas/their own SQL.
-	if cfg.AutoMigrate {
-		if hooks.AutoMigrate == nil {
-			return fmt.Errorf("serverkit.Run: Config.AutoMigrate is true but Hooks.AutoMigrate is nil")
-		}
-		if cfg.DatabaseURL == "" {
-			return fmt.Errorf("auto-migrate is enabled but DatabaseURL is not set")
-		}
-		db, dbErr := sql.Open(cfg.DBDriver, cfg.DatabaseURL)
-		if dbErr != nil {
-			return fmt.Errorf("failed to connect to database for migration: %w", dbErr)
-		}
-		ApplyDBPoolTuning(db, cfg.DBPoolTuning)
-		if migrateErr := hooks.AutoMigrate(ctx, db, logger); migrateErr != nil {
-			_ = db.Close()
-			return fmt.Errorf("auto-migration failed: %w", migrateErr)
-		}
-		_ = db.Close()
-		logger.Info("db migration completed")
-	}
-
-	mux := http.NewServeMux()
-
-	// Expose Prometheus metrics endpoint.
-	if metricsHandler != nil {
-		mux.Handle("/metrics", metricsHandler)
-	}
-
-	// Project-specific interceptors are layered AFTER the canonical
-	// observability chain so failures from auth/audit are still
-	// observable. The project owns inter-extra ordering (typical chain:
-	// otelconnect → rate-limit → auth → audit).
-	var projectInterceptors []connect.Interceptor
-	if hooks.ProjectInterceptors != nil {
-		projectInterceptors = hooks.ProjectInterceptors(logger)
-	}
-
-	// observe.DefaultMiddlewares returns the canonical observability
-	// chain (recovery → request-id → logging → tracing → metrics).
-	// Pass project-specific interceptors via Extras; they run AFTER
-	// the canonical chain so auth/audit failures stay observable.
-	interceptors := observe.DefaultMiddlewares(observe.DefaultMiddlewareDeps{
-		Logger: logger,
-		Extras: projectInterceptors,
+	// OTel: serverkit OWNS OpenTelemetry setup (the generated cmd/otel.go
+	// shim is gone). observe.Setup installs the global trace/metric
+	// providers from cfg.OTLPEndpoint + cfg.ServiceName, always wires the
+	// Prometheus reader, and returns the /metrics handler (mounted on the
+	// top mux below, IN FRONT of the edge so scrapers bypass CORS/auth) and
+	// a shutdown fn (flushed in the graceful-shutdown sequence). A setup
+	// error is logged, not fatal — projects depending on OTLP fail config
+	// validation before Run.
+	instanceID, _ := os.Hostname()
+	otelShutdown, metricsHandler, otelErr := observe.Setup(ctx, observe.Config{
+		ServiceName:    cfg.ServiceName,
+		ServiceVersion: cfg.ServiceVersion,
+		OTLPEndpoint:   cfg.OTLPEndpoint,
+		InstanceID:     instanceID,
 	})
-
-	opts := []connect.HandlerOption{
-		connect.WithInterceptors(interceptors...),
-		connect.WithReadMaxBytes(cfg.ReadMaxBytes),
-		connect.WithSendMaxBytes(cfg.SendMaxBytes),
+	if otelErr != nil {
+		logger.Error("failed to initialize OpenTelemetry", "error", otelErr)
 	}
 
-	// Bootstrap packages and services. Readiness flips AFTER the
-	// listener successfully binds (see ln/Serve below) so /readyz is
-	// an accurate signal to load balancers and probes.
+	// Readiness flips AFTER the listener successfully binds (see ln/Serve
+	// below) so /readyz is an accurate signal to load balancers.
 	var ready atomic.Bool
-	application, bootstrapErr := hooks.Bootstrap(ctx, mux, logger, args, opts...)
-	if bootstrapErr != nil {
-		return fmt.Errorf("bootstrap failed: %w", bootstrapErr)
-	}
-	if application == nil {
-		return fmt.Errorf("serverkit.Run: Bootstrap returned nil Application")
+
+	// serverkit no longer owns the service mux, so it can't MOUNT its
+	// probes on it. Instead it applies the edge wrap to the CALLER's
+	// handler only, then builds a tiny top mux that routes /healthz +
+	// /readyz to its own probes and everything else to the edge-wrapped
+	// handler. The probes therefore sit IN FRONT of the edge — they are
+	// never gated behind CORS, auth, or security-headers middleware.
+	var handler http.Handler = srv.Handler
+
+	// CORS: project-supplied middleware factory keeps the existing
+	// pkg/middleware.CORSMiddleware in charge of the actual matching
+	// logic. serverkit only owns the gating.
+	if len(cfg.CORSOrigins) > 0 && srv.CORSMiddleware != nil {
+		handler = srv.CORSMiddleware(cfg.CORSOrigins, cfg.CORSAllowCredentials)(handler)
 	}
 
-	// PostBootstrap is the single forge-blessed chokepoint for wiring
-	// that depends on a CONSTRUCTED component — wire_gen only resolves
-	// Deps fields, so post-construct registrations must happen here.
-	if hooks.PostBootstrap != nil {
-		if hookErr := hooks.PostBootstrap(application); hookErr != nil {
-			return fmt.Errorf("post-bootstrap hook failed: %w", hookErr)
-		}
+	// Security headers — OWASP defaults via project middleware. HSTS is
+	// only emitted in production (Environment != "development").
+	if cfg.SecurityHeaders && srv.SecurityHeadersMiddleware != nil {
+		production := cfg.Environment != "development"
+		handler = srv.SecurityHeadersMiddleware(production)(handler)
 	}
 
-	// Liveness probe: always 200 if the process is alive.
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	// RequestID runs at the outermost layer so every subsequent
+	// middleware (CORS, security headers, logging) can see the
+	// correlation ID on both inbound context and outbound response
+	// header.
+	if srv.RequestIDMiddleware != nil {
+		handler = srv.RequestIDMiddleware()(handler)
+	}
+
+	// Project-owned outer wrapper. Runs OUTSIDE serverkit's own stack,
+	// INSIDE h2c.
+	if srv.HTTPMiddleware != nil {
+		handler = srv.HTTPMiddleware(handler)
+	}
+
+	// Top mux: probes bypass the edge; all other paths hit the
+	// edge-wrapped caller handler.
+	top := http.NewServeMux()
+	top.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
 	})
-
-	// Readiness probe: 200 only after bootstrap + listener bind.
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+	top.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if !ready.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -165,50 +148,19 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
 	})
-
-	// When `api.rest: true` in forge.yaml, Bootstrap installs a vanguard
-	// REST transcoder over the Connect mux and stores the wrapped handler
-	// on the Application. Substituting it here means REST/gRPC/Connect
-	// share the same handler chain (CORS, security headers, request-id)
-	// without the caller having to know which protocol skins are active.
-	var handler http.Handler = mux
-	if rest := application.RESTHandler(); rest != nil {
-		handler = rest
+	// /metrics is mounted on the top mux (in front of the edge) so Prometheus
+	// scrapers reach it without CORS/auth/security-headers. serverkit owns it
+	// now that it owns OTel setup.
+	if metricsHandler != nil {
+		top.Handle("/metrics", metricsHandler)
 	}
+	top.Handle("/", handler)
 
-	// CORS: project-supplied middleware factory keeps the existing
-	// pkg/middleware.CORSMiddleware in charge of the actual matching
-	// logic. serverkit only owns the gating.
-	if len(cfg.CORSOrigins) > 0 && hooks.CORSMiddleware != nil {
-		handler = hooks.CORSMiddleware(cfg.CORSOrigins, cfg.CORSAllowCredentials)(handler)
-	}
+	finalHandler := h2c.NewHandler(top, &http2.Server{})
 
-	// Security headers — OWASP defaults via project middleware. HSTS is
-	// only emitted in production (Environment != "development").
-	if cfg.SecurityHeaders && hooks.SecurityHeadersMiddleware != nil {
-		production := cfg.Environment != "development"
-		handler = hooks.SecurityHeadersMiddleware(production)(handler)
-	}
-
-	// RequestID runs at the outermost layer so every subsequent
-	// middleware (CORS, security headers, logging) can see the
-	// correlation ID on both inbound context and outbound response
-	// header.
-	if hooks.RequestIDMiddleware != nil {
-		handler = hooks.RequestIDMiddleware()(handler)
-	}
-
-	// Project-owned outer wrapper. Runs OUTSIDE serverkit's own stack,
-	// INSIDE h2c.
-	if hooks.HTTPMiddleware != nil {
-		handler = hooks.HTTPMiddleware(handler)
-	}
-
-	handler = h2c.NewHandler(handler, &http2.Server{})
-
-	srv := &http.Server{
+	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           handler,
+		Handler:           finalHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -218,9 +170,10 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 		MaxHeaderBytes: 1 << 20,
 	}
 
-	// Graceful shutdown: serverkit owns the signal context. A caller-
-	// supplied ctx is used only for the bootstrap phase; once we hit
-	// the serve loop the signal-derived ctx takes over.
+	// Graceful shutdown: serverkit owns the signal context. The caller-
+	// supplied ctx governed composition (mount, migrate, OTel setup)
+	// before Run was entered; from here the signal-derived ctx drives the
+	// serve loop and shutdown.
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -267,9 +220,9 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 	go func() {
 		var serveErr error
 		if tls {
-			serveErr = srv.ServeTLS(ln, cfg.TLSCertPath, cfg.TLSKeyPath)
+			serveErr = httpSrv.ServeTLS(ln, cfg.TLSCertPath, cfg.TLSKeyPath)
 		} else {
-			serveErr = srv.Serve(ln)
+			serveErr = httpSrv.Serve(ln)
 		}
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			errCh <- serveErr
@@ -305,30 +258,23 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 		}()
 	}
 
-	// Build the set of requested names for filtering (empty = run all).
-	nameSet := make(map[string]bool, len(args))
-	for _, n := range args {
-		nameSet[n] = true
-	}
-
 	// Start workers in background goroutines. Each worker gets its own
 	// context derived from the shared supervisor context: cancelling
 	// workerCtx on shutdown fans out to every per-worker ctx, and one
 	// worker exiting early can't disturb its siblings.
 	//
-	// Workers that implement the optional ContextWorker interface get
-	// RunContext (the ctx-aware lifecycle, preferred); everything else
-	// falls back to the legacy Start signature unchanged. See the
-	// ContextWorker doc for the full shutdown contract.
+	// Selection already happened above serverkit — srv.Workers holds
+	// exactly the workers this process should run, so there's no name
+	// filter here. Workers that implement the optional ContextWorker
+	// interface get RunContext (the ctx-aware lifecycle, preferred);
+	// everything else falls back to the legacy Start signature
+	// unchanged. See the ContextWorker doc for the full shutdown
+	// contract.
 	workerCtx, workerCancel := context.WithCancel(runCtx)
 	defer workerCancel()
 	var workerWg sync.WaitGroup
 
-	for _, w := range application.WorkerList() {
-		// If a name filter was provided, only start matching workers.
-		if len(nameSet) > 0 && !nameSet[w.Name()] {
-			continue
-		}
+	for _, w := range srv.Workers {
 		workerWg.Add(1)
 		go func(w Worker) {
 			defer workerWg.Done()
@@ -350,16 +296,17 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 
 	// Start controller manager for operators (if any).
 	//
-	// Operator gating: when the user filtered with `server [services...]`
-	// args, only start the controller manager if the filter includes at
-	// least one operator-shape service. Otherwise an admin-server-only
-	// host run logs "controller manager failed: not running in-cluster"
-	// because controller-runtime mandates a kubeconfig the host process
-	// doesn't have. The unfiltered case (no args) keeps the legacy
-	// behaviour — start every operator the project declared.
-	if application.HasOperators() && shouldRunOperators(application, nameSet) {
+	// Operator gating: the caller already decided WHICH operators to
+	// populate into srv.Operators (the relocated name filter), so
+	// serverkit only honours the process-wide RUN_OPERATORS opt-out.
+	// Setting RUN_OPERATORS=false lets a catch-all API-server process run
+	// no controller manager (and need no operator RBAC) while a separate
+	// process runs the manager. With no operators populated, the manager
+	// never starts — avoiding the misleading "not running in-cluster"
+	// warning on a host process.
+	if len(srv.Operators) > 0 && shouldRunOperators() {
 		go func() {
-			if opErr := application.RunOperators(runCtx, logger, cfg.OperatorHealthProbeAddr); opErr != nil && !errors.Is(opErr, context.Canceled) {
+			if opErr := srv.RunOperators(runCtx, logger, cfg.OperatorHealthProbeAddr); opErr != nil && !errors.Is(opErr, context.Canceled) {
 				failComponent("controller manager", opErr)
 			}
 		}()
@@ -378,9 +325,9 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 	//   1. Flip readiness to false so /readyz starts failing.
 	//   2. Sleep pre_stop_delay so load balancers observe the failing
 	//      probe and stop routing new traffic to this replica.
-	//   3. Begin srv.Shutdown, bounded by shutdown_timeout, so in-flight
+	//   3. Begin httpSrv.Shutdown, bounded by shutdown_timeout, so in-flight
 	//      requests drain without accepting new ones.
-	// Without step 1 + 2, srv.Shutdown stops accepting new conns
+	// Without step 1 + 2, httpSrv.Shutdown stops accepting new conns
 	// immediately but the LB keeps sending them until it next polls
 	// /readyz — producing brief but real 502s on every rollout.
 	ready.Store(false)
@@ -396,29 +343,33 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 	// Stop workers first (cancel context + wait + call Stop).
 	workerCancel()
 	workerWg.Wait()
-	for _, w := range application.WorkerList() {
-		if len(nameSet) > 0 && !nameSet[w.Name()] {
-			continue
-		}
+	for _, w := range srv.Workers {
 		if stopErr := w.Stop(shutdownCtx); stopErr != nil {
 			logger.Error("worker stop error", "worker", w.Name(), "error", stopErr)
 		}
 	}
 
-	if shutErr := application.Shutdown(shutdownCtx); shutErr != nil {
-		logger.Error("shutdown error", "error", shutErr)
+	// OnShutdown is the caller-composed teardown (the old
+	// Application.Shutdown). Runs after workers stop, before the OTel flush
+	// and the http.Server shutdown.
+	if srv.OnShutdown != nil {
+		if shutErr := srv.OnShutdown(shutdownCtx); shutErr != nil {
+			logger.Error("shutdown error", "error", shutErr)
+		}
 	}
-	if shutErr := srv.Shutdown(shutdownCtx); shutErr != nil {
+
+	// OTel flush — serverkit owns it now (folded out of the cmd shim).
+	if otelShutdown != nil {
+		if shutErr := otelShutdown(shutdownCtx); shutErr != nil {
+			logger.Error("otel shutdown error", "error", shutErr)
+		}
+	}
+	if shutErr := httpSrv.Shutdown(shutdownCtx); shutErr != nil {
 		logger.Error("server shutdown error", "error", shutErr)
 	}
 	if pprofSrv != nil {
 		if shutErr := pprofSrv.Shutdown(shutdownCtx); shutErr != nil {
 			logger.Error("pprof shutdown error", "error", shutErr)
-		}
-	}
-	if shutdownOTel != nil {
-		if shutErr := shutdownOTel(shutdownCtx); shutErr != nil {
-			logger.Error("otel shutdown error", "error", shutErr)
 		}
 	}
 
@@ -433,9 +384,15 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 	return runErr
 }
 
-// newLogger builds the slog.Logger Run dispatches on. LOG_FORMAT picks
-// between structured JSON (for log aggregators) and human-friendly text
-// (for local dev tails); anything other than "text" emits JSON.
+// NewLogger builds the slog.Logger serverkit would use from Config:
+// LOG_FORMAT picks between structured JSON (for log aggregators) and
+// human-friendly text (for local dev tails); anything other than "text"
+// emits JSON. Exported so the cmd layer — which now composes the server
+// and bootstraps BEFORE calling Run — can build the SAME logger and pass
+// it as Server.Logger, keeping mount-time and run-time logs consistent.
+func NewLogger(cfg Config) *slog.Logger { return newLogger(cfg) }
+
+// newLogger builds the slog.Logger Run dispatches on.
 func newLogger(cfg Config) *slog.Logger {
 	var handler slog.Handler
 	switch cfg.LogFormat {
@@ -448,35 +405,18 @@ func newLogger(cfg Config) *slog.Logger {
 }
 
 // shouldRunOperators decides whether the controller manager should
-// start given the user's `server [services...]` filter. The unfiltered
-// case (nameSet empty) preserves the legacy "always start all
-// operators" behaviour. When a filter is active, we only start the
-// manager if the filter explicitly includes at least one operator-
-// shape service.
+// start. Service SELECTION moved above serverkit — the caller only
+// populates Server.Operators for processes that should run the manager —
+// so serverkit's only remaining gate is the process-wide RUN_OPERATORS
+// opt-out.
 //
-// Explicit opt-out (RUN_OPERATORS=false) wins over the empty-filter
-// default. A project's catch-all API server (`server` with no service
-// filter) would otherwise ALSO start the controller-runtime manager the
-// dedicated operator process runs — needing the operator's cluster RBAC
-// just to sync informer caches, and contending with the operator for
-// the SAME leader-election lease. Setting RUN_OPERATORS=false on the
-// API-server Deployment lets it run no manager (and need no operator
-// RBAC) while a separate `server <operator>` process runs the manager.
+// Setting RUN_OPERATORS=false lets a catch-all API-server Deployment run
+// no manager (and need no operator RBAC) even if its build happens to
+// link operators, while a separate operator process runs the manager.
 // Default behaviour is unchanged when the var is unset/empty, so
 // existing projects are unaffected.
-func shouldRunOperators(app Application, nameSet map[string]bool) bool {
-	if !runOperatorsEnvDefault() {
-		return false
-	}
-	if len(nameSet) == 0 {
-		return true
-	}
-	for _, op := range app.OperatorList() {
-		if nameSet[op.Name()] {
-			return true
-		}
-	}
-	return false
+func shouldRunOperators() bool {
+	return runOperatorsEnvDefault()
 }
 
 // runOperatorsEnvDefault reports whether operators are permitted to run

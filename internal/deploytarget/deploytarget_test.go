@@ -108,10 +108,10 @@ func TestGroupServices_ComposeByFile(t *testing.T) {
 }
 
 // TestRegistry_DefaultProviders confirms the canonical Registry comes
-// pre-populated with the three providers forge ships in this release.
+// pre-populated with the providers forge ships in this release.
 func TestRegistry_DefaultProviders(t *testing.T) {
 	r := NewRegistry()
-	for _, id := range []string{"k8s-cluster", "external", "compose"} {
+	for _, id := range []string{"k8s-cluster", "external", "compose", "firebase"} {
 		if r.Lookup(id) == nil {
 			t.Errorf("Registry missing provider %q", id)
 		}

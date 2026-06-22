@@ -120,7 +120,7 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, reg *serviceRegistry, proj
 			return fmt.Errorf("render webhook routes for %s: %w", svc.Name, err)
 		}
 
-		relPath := filepath.Join("handlers", svcDirLeaf, "webhook_routes_gen.go")
+		relPath := filepath.Join("internal", "handlers", svcDirLeaf, "webhook_routes_gen.go")
 		if _, err := generator.WriteGeneratedFile(projectDir, relPath, content, cs, true); err != nil {
 			return fmt.Errorf("write webhook routes for %s: %w", svc.Name, err)
 		}
@@ -215,6 +215,20 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			return nil
 		} else if statErr != nil {
 			return statErr
+		}
+
+		// Per-package opt-out: `//forge:exclude-contract` in this package's
+		// source is an alternative to listing it in forge.yaml
+		// contracts.exclude — same effect (no mock/observability scaffold),
+		// expressed locally next to the code. Union with the central list:
+		// either source excludes. The directive lives ON a contract-shaped
+		// package, so it is only consulted once a contract.go is present (a
+		// package with no contract.go is skipped above regardless). We do NOT
+		// SkipDir here — descendants may still want codegen and carry their
+		// own directive; only THIS package opts out.
+		if codegen.HasExcludeContractDirective(path) {
+			fmt.Printf("  ⏭️  Skipped contract codegen for %s/ (//forge:exclude-contract)\n", rel)
+			return nil
 		}
 
 		if genErr := contract.GenerateWithOptions(contractPath, contractOpts); genErr != nil {
@@ -379,13 +393,13 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, aut
 		delete(configFields, "ConnMaxLifetime")
 	}
 
-	// Re-render cmd/server.go so it stays in sync with the config fields
-	// and the forge.yaml auth provider.
+	// Re-render the primary binary's cmd/<bin>/cmd/serve.go so it stays in
+	// sync with the config fields and the forge.yaml auth provider.
 	if err := codegen.GenerateCmdServerWithFields(configFields, authProvider, projectDir, cs); err != nil {
-		return nil, fmt.Errorf("failed to regenerate cmd/server.go: %w", err)
+		return nil, fmt.Errorf("failed to regenerate cmd/<bin>/cmd/serve.go: %w", err)
 	}
 
-	fmt.Println("  ✅ Regenerated cmd/server.go")
+	fmt.Println("  ✅ Regenerated cmd/<bin>/cmd/serve.go")
 	return configFields, nil
 }
 
@@ -441,13 +455,12 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 			envCfg = map[string]any{}
 		}
 		if err := codegen.GenerateDeployConfig(codegen.DeployConfigGenInput{
+			GenContext:  codegen.GenContext{ProjectDir: projectDir, Checksums: cs},
 			ProjectName: cfg.Name,
 			EnvName:     envName,
 			KCLDir:      kclDirAbs,
-			ProjectDir:  projectDir,
 			Fields:      fields,
 			EnvConfig:   envCfg,
-			Checksums:   cs,
 		}); err != nil {
 			return fmt.Errorf("emit %s config_gen.k: %w", envName, err)
 		}

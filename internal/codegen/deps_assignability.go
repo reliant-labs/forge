@@ -84,6 +84,7 @@ import (
 	"go/types"
 	"path"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"golang.org/x/tools/go/packages"
@@ -119,6 +120,19 @@ const (
 	// match": the compiler arbitrates a wrong wire loudly, whereas
 	// emitting nil would silently un-wire a live collaborator.
 	MatchUnavailable
+	// MatchUnprovenBackstop — the Infra-field matcher (infra_assignability.go)
+	// found NO assignable Infra field AND could not PROVE one is absent because
+	// the universe is mid-write (some relevant field type did not type-check —
+	// e.g. internal/app references the not-yet-regenerated Build, or the
+	// new component package is a fresh stub). This is the generate-ORDERING
+	// fragility class: raising a generate-time MissingProvider here is a
+	// FALSE NEGATIVE (the user's Infra field, named differently from the Deps
+	// field, would prove assignable on a clean load). The injector emits the
+	// compile-time backstop `infra.<DepsField>` and lets the Go compiler
+	// arbitrate — loud if genuinely missing, silently correct once the next
+	// clean generate proves the assignable match. It is ONLY used by the
+	// Infra matcher; the Deps/AppExtras matcher never returns it.
+	MatchUnprovenBackstop
 )
 
 // DepsAssignabilityMatcher answers "is AppExtras.<FieldName> assignable
@@ -152,6 +166,11 @@ type matcherUniverse struct {
 	ok         bool
 	appFields  map[string]types.Type // App + AppExtras exported fields → declared type
 	depsFields map[string]types.Type // component Deps exported fields → declared type
+	// appPkgPath is the import path of pkg/app in this universe. Types
+	// that live in pkg/app itself must render UNQUALIFIED in the emitted
+	// pkg/app/interface_assertions_gen.go (a package cannot import
+	// itself), so AssignablePairs strips this path's qualifier.
+	appPkgPath string
 }
 
 // NewDepsAssignabilityMatcher returns a matcher rooted at projectDir.
@@ -225,6 +244,126 @@ func (m *DepsAssignabilityMatcher) Match(roleRoot, pkgDir, depsFieldName, depsTy
 	return MatchNameMismatch
 }
 
+// InterfaceAssertion is one proven (concrete satisfies interface) pair,
+// rendered ready for emission. Both type strings are qualified with the
+// package selector form `<pkg>.<Name>` (via types.TypeString), and
+// Imports lists every package path the two strings reference so the
+// emitter can build a valid import block.
+type InterfaceAssertion struct {
+	// DepsField is the Deps field name the pair came from — used only for
+	// a deterministic sort + a human-readable comment in the emitted file.
+	DepsField string
+	// Interface is the qualified interface type string the concrete type
+	// satisfies (e.g. "user.Repository", "billing.PlanAssigner").
+	Interface string
+	// Concrete is the qualified concrete type string assigned to the
+	// interface in wire_gen (e.g. "*db.PostgresRepository"). Always a
+	// pointer or interface spelling — the matcher only emits assertions
+	// for those (see AssignablePairs) so `(Concrete)(nil)` always compiles.
+	Concrete string
+	// Imports maps package path → package name for every package the two
+	// type strings reference. The emitter dedupes across assertions.
+	Imports map[string]string
+}
+
+// AssignablePairs returns the proven concrete→interface satisfaction
+// pairs for one component, ready to emit as `var _ <Interface> =
+// (<Concrete>)(nil)` assertions. For each Deps field of the component
+// whose declared type is an INTERFACE and whose name-matched App/AppExtras
+// field holds a POINTER-or-INTERFACE concrete that the type checker
+// proves satisfies it, one assertion is produced.
+//
+// Why only interface Deps fields with pointer/interface concretes:
+//   - The whole value of the assertion (FORGE_SHAPE_REDESIGN §6c) is
+//     making "what implements <Interface>" greppable. That only applies
+//     when Deps.<F> IS an interface and the wired concrete is a distinct
+//     named type (the fat-repo case: *db.PostgresRepository satisfies a
+//     dozen narrow per-service Repository interfaces with no assertion).
+//   - `(<Concrete>)(nil)` is a guaranteed-valid zero only for pointer and
+//     interface concretes. Value-typed collaborators (rare for the
+//     repo/client shape this targets) are skipped rather than risk an
+//     un-compilable zero expression.
+//
+// Pairs where the concrete and interface are identical (Deps field typed
+// as the same interface the App field already holds) are skipped — the
+// assertion would be a tautology.
+//
+// Returns nil (no assertions, no error) when the component's universe
+// could not be loaded/type-checked — assertions are a best-effort
+// greppability aid, never a generate-blocking gate.
+func (m *DepsAssignabilityMatcher) AssignablePairs(roleRoot, pkgDir string) []InterfaceAssertion {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	key := roleRoot + "|" + pkgDir
+	u, loaded := m.universes[key]
+	if !loaded {
+		u = m.loadUniverseLocked(roleRoot, pkgDir)
+		m.universes[key] = u
+	}
+	if !u.ok {
+		return nil
+	}
+
+	// qualifier renders every package as its own name (`pkg.Name`) and
+	// records the path→name mapping so the emitter can build imports. The
+	// closure mutates the per-call imports map.
+	var out []InterfaceAssertion
+	for depsName, depsT := range u.depsFields {
+		appT, ok := u.appFields[depsName]
+		if !ok {
+			continue
+		}
+		iface, ok := depsT.Underlying().(*types.Interface)
+		if !ok {
+			continue // Deps field is not an interface — nothing to grep for.
+		}
+		// Concrete must be a pointer or interface so (Concrete)(nil)
+		// compiles. (A named interface satisfying another interface is a
+		// legitimate, greppable seam too — e.g. a client type.)
+		switch appT.Underlying().(type) {
+		case *types.Pointer, *types.Interface:
+		default:
+			continue
+		}
+		if !types.Implements(appT, iface) && !types.AssignableTo(appT, iface) {
+			continue
+		}
+		imports := map[string]string{}
+		q := func(p *types.Package) string {
+			if p == nil {
+				return ""
+			}
+			// Types declared in pkg/app itself render unqualified — the
+			// emitted file IS package app and cannot import itself.
+			if u.appPkgPath != "" && p.Path() == u.appPkgPath {
+				return ""
+			}
+			imports[p.Path()] = p.Name()
+			return p.Name()
+		}
+		ifaceStr := types.TypeString(depsT, q)
+		concreteStr := types.TypeString(appT, q)
+		if ifaceStr == concreteStr {
+			continue // tautology — App field already typed as the interface.
+		}
+		out = append(out, InterfaceAssertion{
+			DepsField: depsName,
+			Interface: ifaceStr,
+			Concrete:  concreteStr,
+			Imports:   imports,
+		})
+	}
+	// Deterministic order so the emitted file is stable across regens.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Interface != out[j].Interface {
+			return out[i].Interface < out[j].Interface
+		}
+		return out[i].Concrete < out[j].Concrete
+	})
+	return out
+}
+
 // loadUniverseLocked runs ONE packages.Load covering both pkg/app and
 // roleRoot/pkgDir, then indexes each side's fields. Caller holds m.mu.
 //
@@ -287,6 +426,7 @@ func (m *DepsAssignabilityMatcher) loadUniverseLocked(roleRoot, pkgDir string) *
 	u.ok = true
 	u.appFields = collectAppFieldTypes(appPkg)
 	u.depsFields = collectDepsFieldTypes(compPkg)
+	u.appPkgPath = appPkg.PkgPath
 	return u
 }
 

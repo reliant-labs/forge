@@ -89,6 +89,9 @@ type ProjectStore interface {
 	K8s() config.K8sConfig
 	Lint() config.LintConfig
 	Contracts() config.ContractsConfig
+	// ConfigGuard returns the `config:` section — the typed-access
+	// guardrail (enforce_typed_access / loader_package).
+	ConfigGuard() config.ConfigGuardConfig
 	Auth() config.AuthConfig
 	Docs() config.DocsConfig
 	Stack() config.StackConfig

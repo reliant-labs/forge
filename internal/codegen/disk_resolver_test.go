@@ -9,7 +9,7 @@ package codegen
 // produced, on every `forge generate`:
 //
 //   - bootstrap.go + wire_gen.go importing
-//     `engineshadow "example.com/proj/workers/engineshadow"` — a
+//     `engineshadow "example.com/proj/internal/workers/engineshadow"` — a
 //     directory that does NOT exist (the synthesis compacted the
 //     separators), breaking the build;
 //   - an EMPTY `engineshadow.Deps{}` literal in wireWorkerEngineShadowDeps
@@ -209,191 +209,22 @@ func TestParsePackageClause_Diagnostics(t *testing.T) {
 	})
 }
 
-// TestGenerateWireGen_SnakeCaseWorkerDir is the end-to-end regression
-// for the kalshi-trader bug: snake_case worker dir → wire_gen.go must
-// import the REAL dir, wire the Logger dep parsed from the REAL dir,
-// and parse as valid Go.
-func TestGenerateWireGen_SnakeCaseWorkerDir(t *testing.T) {
-	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "workers", "engine_shadow", "worker.go", "engine_shadow")
-
-	workers, err := WorkerDataFromNames([]string{"engine_shadow"}, projectDir)
-	if err != nil {
-		t.Fatalf("WorkerDataFromNames: %v", err)
-	}
-	if err := GenerateWireGen(nil, nil, workers, nil, "example.com/proj", projectDir, false, nil); err != nil {
-		t.Fatalf("GenerateWireGen: %v", err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "wire_gen.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(data)
-	mustParseGo(t, "wire_gen.go", data)
-
-	for _, want := range []string{
-		// Import path matches the real dir; alias is the real clause.
-		`engine_shadow "example.com/proj/workers/engine_shadow"`,
-		// Function name from the separator-aware FieldName.
-		"func wireWorkerEngineShadowDeps",
-		// Deps were parsed from the REAL dir (pre-fix: empty literal).
-		`Logger: logger.With("service", "engine-shadow")`,
-		// Selector uses the real package clause.
-		"engine_shadow.Deps{",
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("wire_gen.go missing %q\n--- content ---\n%s", want, content)
-		}
-	}
-	// The pre-fix synthesized (nonexistent) dir must never appear.
-	if strings.Contains(content, "workers/engineshadow") {
-		t.Errorf("wire_gen.go still references synthesized workers/engineshadow:\n%s", content)
-	}
-}
-
-// TestGenerateWireGen_WorkerDirWithCompactClause covers the package
-// clause legally differing from the dir name: import path follows the
-// dir, alias/selector follow the clause.
-func TestGenerateWireGen_WorkerDirWithCompactClause(t *testing.T) {
-	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "workers", "engine_shadow", "worker.go", "engineshadow")
-
-	workers, err := WorkerDataFromNames([]string{"engine_shadow"}, projectDir)
-	if err != nil {
-		t.Fatalf("WorkerDataFromNames: %v", err)
-	}
-	if err := GenerateWireGen(nil, nil, workers, nil, "example.com/proj", projectDir, false, nil); err != nil {
-		t.Fatalf("GenerateWireGen: %v", err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "wire_gen.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(data)
-	mustParseGo(t, "wire_gen.go", data)
-
-	for _, want := range []string{
-		`engineshadow "example.com/proj/workers/engine_shadow"`,
-		"engineshadow.Deps{",
-		"func wireWorkerEngineShadowDeps",
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("wire_gen.go missing %q\n--- content ---\n%s", want, content)
-		}
-	}
-}
-
-// TestGenerateBootstrap_SnakeCaseWorkerDir asserts bootstrap.go gets the
-// same disk-first treatment: real import path, real package clause as
-// alias, and (pre-fix regression) NO reference to the synthesized dir.
-func TestGenerateBootstrap_SnakeCaseWorkerDir(t *testing.T) {
-	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "workers", "engine_shadow", "worker.go", "engine_shadow")
-
-	workers, err := WorkerDataFromNames([]string{"engine_shadow"}, projectDir)
-	if err != nil {
-		t.Fatalf("WorkerDataFromNames: %v", err)
-	}
-	if err := GenerateBootstrap(nil, nil, workers, nil, "example.com/proj", "", false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
-		t.Fatalf("GenerateBootstrap: %v", err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(data)
-	mustParseGo(t, "bootstrap.go", data)
-
-	for _, want := range []string{
-		`engine_shadow "example.com/proj/workers/engine_shadow"`,
-		"app.Workers.EngineShadow",
-		"wireWorkerEngineShadowDeps",
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("bootstrap.go missing %q\n--- content ---\n%s", want, content)
-		}
-	}
-	if strings.Contains(content, "workers/engineshadow") {
-		t.Errorf("bootstrap.go still references synthesized workers/engineshadow:\n%s", content)
-	}
-}
-
-// TestGenerateBootstrapAndWireGen_SnakeCaseHandlerDir covers the service
-// role: handlers/engine_shadow with a snake_case clause and the proto
-// name "EngineShadowService". Both generated files must import the real
-// dir, and the wireXxxDeps function name must MATCH between bootstrap's
-// call site and wire_gen's definition (pre-fix, multi-word services got
-// wireEngineshadowDeps in wire_gen vs wireEngineShadowDeps in bootstrap).
-func TestGenerateBootstrapAndWireGen_SnakeCaseHandlerDir(t *testing.T) {
-	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "handlers", "engine_shadow", "service.go", "engine_shadow")
-
-	services := []ServiceDef{{Name: "EngineShadowService", ModulePath: "example.com/proj"}}
-
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
-		t.Fatalf("GenerateBootstrap: %v", err)
-	}
-	if err := GenerateWireGen(services, nil, nil, nil, "example.com/proj", projectDir, false, nil); err != nil {
-		t.Fatalf("GenerateWireGen: %v", err)
-	}
-
-	bs, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The wireXxxDeps call site moved into the row constructors
-	// (services_gen.go) with the registration-in-code rework; bootstrap
-	// keeps the Services-struct import of the real dir.
-	rows, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	wg, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "wire_gen.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustParseGo(t, "bootstrap.go", bs)
-	mustParseGo(t, "services_gen.go", rows)
-	mustParseGo(t, "wire_gen.go", wg)
-
-	if !strings.Contains(string(bs), `engine_shadow "example.com/proj/handlers/engine_shadow"`) {
-		t.Errorf("bootstrap.go missing real-dir import\n--- content ---\n%s", bs)
-	}
-	for _, want := range []string{
-		`engine_shadow "example.com/proj/handlers/engine_shadow"`,
-		"wireEngineShadowDeps(app, cfg, logger)",
-	} {
-		if !strings.Contains(string(rows), want) {
-			t.Errorf("services_gen.go missing %q\n--- content ---\n%s", want, rows)
-		}
-	}
-	for _, want := range []string{
-		`engine_shadow "example.com/proj/handlers/engine_shadow"`,
-		"func wireEngineShadowDeps(app *App, cfg *config.Config, logger *slog.Logger) engine_shadow.Deps",
-		`Logger: logger.With("service", "engine-shadow")`,
-	} {
-		if !strings.Contains(string(wg), want) {
-			t.Errorf("wire_gen.go missing %q\n--- content ---\n%s", want, wg)
-		}
-	}
-
-	if strings.Contains(string(bs), "handlers/engineshadow") || strings.Contains(string(wg), "handlers/engineshadow") {
-		t.Error("generated output still references synthesized handlers/engineshadow")
-	}
-}
-
 // TestGenerateBootstrapTesting_SnakeCaseHandlerDir asserts testing.go
 // imports the real handler dir too (it renders from the same component
 // data through a separate template path).
 func TestGenerateBootstrapTesting_SnakeCaseHandlerDir(t *testing.T) {
 	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "handlers", "engine_shadow", "service.go", "engine_shadow")
+	scaffoldComponentDir(t, projectDir, "internal/handlers", "engine_shadow", "service.go", "engine_shadow")
 
 	services := []ServiceDef{{Name: "EngineShadowService", ModulePath: "example.com/proj"}}
-	if err := GenerateBootstrapTesting(services, nil, nil, nil, "example.com/proj", false, projectDir, nil); err != nil {
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext:         GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:           services,
+		Packages:           nil,
+		Workers:            nil,
+		Operators:          nil,
+		MultiTenantEnabled: false,
+	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
 
@@ -405,16 +236,205 @@ func TestGenerateBootstrapTesting_SnakeCaseHandlerDir(t *testing.T) {
 	mustParseGo(t, "testing.go", data)
 
 	for _, want := range []string{
-		`engine_shadow "example.com/proj/handlers/engine_shadow"`,
+		`engine_shadow "example.com/proj/internal/handlers/engine_shadow"`,
 		"func NewTestEngineShadow(",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("testing.go missing %q\n--- content ---\n%s", want, content)
 		}
 	}
-	if strings.Contains(content, "handlers/engineshadow") {
+	if strings.Contains(content, "internal/handlers/engineshadow") {
 		t.Errorf("testing.go still references synthesized handlers/engineshadow:\n%s", content)
 	}
+}
+
+// TestGenerateBootstrapTesting_AuthzAware is the regression for the
+// control-plane disown of pkg/app/testing.go: a service that declares no
+// Authorizer dep (carve-out / external-component / descriptor-authz) must NOT
+// get deps.Authorizer wired in its test factory — that field doesn't exist on
+// its Deps, so emitting it is a compile error. A service that DOES declare the
+// dep keeps the wiring. The signal is the same one inventory_gen reads (a Deps
+// field named "Authorizer"), so the test harness and the run path agree.
+func TestGenerateBootstrapTesting_AuthzAware(t *testing.T) {
+	projectDir := t.TempDir()
+
+	// Service WITH an Authorizer dep — the normal case.
+	authedSrc := `package authed
+
+import "log/slog"
+
+type Authorizer interface{ Can(string) bool }
+
+type Deps struct {
+	Logger     *slog.Logger
+	Authorizer Authorizer
+}
+
+type Service struct{ deps Deps }
+
+func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
+
+func (s *Service) Register(mux interface{ Handle(string, interface{}) }, opts ...interface{}) {}
+`
+	writeFileT(t, filepath.Join(projectDir, "internal", "handlers", "authed", "service.go"), authedSrc)
+
+	// Service WITHOUT an Authorizer dep — carve-out / descriptor-authz shape.
+	carveSrc := `package carve
+
+import "log/slog"
+
+type Deps struct {
+	Logger *slog.Logger
+}
+
+type Service struct{ deps Deps }
+
+func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
+
+func (s *Service) Register(mux interface{ Handle(string, interface{}) }, opts ...interface{}) {}
+`
+	writeFileT(t, filepath.Join(projectDir, "internal", "handlers", "carve", "service.go"), carveSrc)
+
+	services := []ServiceDef{
+		{Name: "AuthedService", ModulePath: "example.com/proj"},
+		{Name: "CarveService", ModulePath: "example.com/proj"},
+	}
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext: GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:   services,
+	}); err != nil {
+		t.Fatalf("GenerateBootstrapTesting: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "testing.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	mustParseGo(t, "testing.go", data)
+
+	// The authed service keeps its Authorizer wiring.
+	if !strings.Contains(content, "deps.Authorizer = cfg.authz") {
+		t.Errorf("authed service must wire deps.Authorizer:\n%s", content)
+	}
+	// And the file still declares the shared authz scaffolding.
+	for _, want := range []string{"func WithAuthorizer(", "authz  middleware.Authorizer", "testkit.PermissiveAuthorizer{}"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("testing.go missing %q (an authed service is present):\n%s", want, content)
+		}
+	}
+
+	// The carve service's factory body must NOT wire deps.Authorizer (the
+	// field doesn't exist on its Deps — this is the compile fix).
+	carveDeps := sliceBetween(content, "func newTestCarveDeps(", "return deps")
+	if strings.Contains(carveDeps, "deps.Authorizer") {
+		t.Errorf("carve service (no Authorizer dep) must NOT wire deps.Authorizer:\n%s", carveDeps)
+	}
+	// But the test seam is preserved: NewTestCarveServer still mounts the authz
+	// interceptor — threading the cross-cutting test authorizer (cfg.authz)
+	// directly, NOT the non-existent deps.Authorizer — so WithAuthorizer can
+	// still exercise denials end-to-end for carved services.
+	carveServer := sliceBetween(content, "func NewTestCarveServer(", "return srv, client")
+	if !strings.Contains(carveServer, "middleware.AuthzInterceptor(cfg.authz)") {
+		t.Errorf("carve service server must mount AuthzInterceptor(cfg.authz):\n%s", carveServer)
+	}
+	if strings.Contains(carveServer, "deps.Authorizer") {
+		t.Errorf("carve service server must NOT reference deps.Authorizer:\n%s", carveServer)
+	}
+	// The authed service threads its own deps.Authorizer.
+	authedServer := sliceBetween(content, "func NewTestAuthedServer(", "return srv, client")
+	if !strings.Contains(authedServer, "middleware.AuthzInterceptor(deps.Authorizer)") {
+		t.Errorf("authed service server must mount AuthzInterceptor(deps.Authorizer):\n%s", authedServer)
+	}
+}
+
+// TestGenerateBootstrapTesting_AllCarvedServices pins the all-carve-out case:
+// when NO service declares an Authorizer dep, the shared authz scaffolding
+// (testConfig.authz, WithAuthorizer, the permissive default, the connect
+// import) is STILL emitted — every test server mounts the authz interceptor
+// (threading cfg.authz) to preserve the WithAuthorizer test seam — but no
+// service's factory wires the non-existent deps.Authorizer field, so the file
+// compiles.
+func TestGenerateBootstrapTesting_AllCarvedServices(t *testing.T) {
+	projectDir := t.TempDir()
+	carveSrc := `package carve
+
+import "log/slog"
+
+type Deps struct {
+	Logger *slog.Logger
+}
+
+type Service struct{ deps Deps }
+
+func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
+
+func (s *Service) Register(mux interface{ Handle(string, interface{}) }, opts ...interface{}) {}
+`
+	writeFileT(t, filepath.Join(projectDir, "internal", "handlers", "carve", "service.go"), carveSrc)
+
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext: GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:   []ServiceDef{{Name: "CarveService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("GenerateBootstrapTesting: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "testing.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	mustParseGo(t, "testing.go", data)
+
+	// Shared authz scaffolding stays (the test seam needs it).
+	for _, want := range []string{
+		"func WithAuthorizer(",
+		"authz  middleware.Authorizer",
+		"testkit.PermissiveAuthorizer{}",
+		`"connectrpc.com/connect"`,
+		"middleware.AuthzInterceptor(cfg.authz)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("all-carve-out project: testing.go must still contain %q:\n%s", want, content)
+		}
+	}
+	// But no service's factory wires deps.Authorizer (the compile fix). Scope
+	// the check to the code bodies, not the doc comments that mention the field.
+	carveDeps := sliceBetween(content, "func newTestCarveDeps(", "return deps")
+	if strings.Contains(carveDeps, "deps.Authorizer") {
+		t.Errorf("all-carve-out project: newTestCarveDeps must NOT wire deps.Authorizer:\n%s", carveDeps)
+	}
+	carveServer := sliceBetween(content, "func NewTestCarveServer(", "return srv, client")
+	if strings.Contains(carveServer, "deps.Authorizer") {
+		t.Errorf("all-carve-out project: NewTestCarveServer must NOT reference deps.Authorizer:\n%s", carveServer)
+	}
+}
+
+// writeFileT writes content to path, creating parent dirs.
+func writeFileT(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sliceBetween returns the substring of s from the first occurrence of start
+// up to (and including) the first occurrence of end after it. Empty if either
+// marker is missing — the caller's Contains checks then operate on "".
+func sliceBetween(s, start, end string) string {
+	i := strings.Index(s, start)
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(s[i:], end)
+	if j < 0 {
+		return ""
+	}
+	return s[i : i+j+len(end)]
 }
 
 // TestWorkerDataFromNames_ConflictingClausesError pins the mismatch
@@ -423,8 +443,8 @@ func TestGenerateBootstrapTesting_SnakeCaseHandlerDir(t *testing.T) {
 // to a guessed identity.
 func TestWorkerDataFromNames_ConflictingClausesError(t *testing.T) {
 	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "workers", "engine_shadow", "worker.go", "engine_shadow")
-	stray := filepath.Join(projectDir, "workers", "engine_shadow", "stray.go")
+	scaffoldComponentDir(t, projectDir, "internal/workers", "engine_shadow", "worker.go", "engine_shadow")
+	stray := filepath.Join(projectDir, "internal", "workers", "engine_shadow", "stray.go")
 	if err := os.WriteFile(stray, []byte("package engineshadow\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -447,8 +467,8 @@ func TestWorkerDataFromNames_ConflictingClausesError(t *testing.T) {
 // `package engine_shadow`, breaking the build with a mixed-package dir.
 func TestGenerateMissingHandlerStubs_DiskFirstPackageClause(t *testing.T) {
 	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "handlers", "engine_shadow", "service.go", "engine_shadow")
-	targetDir := filepath.Join(projectDir, "handlers", "engine_shadow")
+	scaffoldComponentDir(t, projectDir, "internal/handlers", "engine_shadow", "service.go", "engine_shadow")
+	targetDir := filepath.Join(projectDir, "internal", "handlers", "engine_shadow")
 
 	svc := ServiceDef{
 		Name:       "EngineShadowService",
@@ -489,7 +509,7 @@ func TestGenerateMissingHandlerStubs_DiskFirstPackageClause(t *testing.T) {
 // real package clause.
 func TestGenerateCRUDHandlers_DiskFirstTargetDir(t *testing.T) {
 	projectDir := t.TempDir()
-	dir := filepath.Join(projectDir, "handlers", "engine_shadow")
+	dir := filepath.Join(projectDir, "internal", "handlers", "engine_shadow")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +561,7 @@ type Service struct{ deps Deps }
 			t.Errorf("%s must declare the dir's real clause:\n%.300s", name, data)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(projectDir, "handlers", "engineshadow")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "handlers", "engineshadow")); !os.IsNotExist(err) {
 		t.Error("synthesized duplicate dir handlers/engineshadow was created")
 	}
 }

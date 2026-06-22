@@ -5,6 +5,7 @@ package config.v1;
 option go_package = "{{.Module}}/gen/config/v1;configv1";
 
 import "forge/v1/forge.proto";
+import "google/protobuf/duration.proto";
 
 // AppConfig defines the application's runtime configuration.
 // Each field maps to an environment variable and/or CLI flag via
@@ -25,8 +26,8 @@ import "forge/v1/forge.proto";
 //   //   TraderConfig trader = <next tag>;
 //
 // The component then takes `Cfg config.TraderConfig` in its Deps and
-// wire_gen resolves it from the loaded Config by type. Per-env values
-// go in config.<env>.yaml under the leaf name (max_per_tick: 50).
+// internal/app/compose.go (NewComponents) wires it from the loaded Config.
+// Per-env values go in config.<env>.yaml under the leaf name (max_per_tick: 50).
 // Never put scalars (string/int/bool/duration) directly in Deps.
 message AppConfig {
   int32 port = 1 [(forge.v1.config) = {
@@ -52,36 +53,44 @@ message AppConfig {
   string cors_origins = 4 [(forge.v1.config) = {
     env_var: "CORS_ORIGINS",
     flag: "cors-origins",
-    description: "Comma-separated list of allowed CORS origins"
+    role: CONFIG_FIELD_ROLE_CORS_ORIGINS,
+    description: "Comma-separated list of allowed CORS origins. The CONFIG_FIELD_ROLE_CORS_ORIGINS annotation — not this field's name — is what makes config.Validate reject a wildcard ('*') combined with credentials."
   }];
 
   bool cors_allow_credentials = 15 [(forge.v1.config) = {
     env_var: "CORS_ALLOW_CREDENTIALS",
     flag: "cors-allow-credentials",
     default_value: "false",
-    description: "Set Access-Control-Allow-Credentials: true on CORS responses. MUST NOT be combined with a wildcard origin ('*') — that combination is spec-invalid and will be rejected at startup."
+    role: CONFIG_FIELD_ROLE_CORS_ALLOW_CREDENTIALS,
+    description: "Set Access-Control-Allow-Credentials: true on CORS responses. MUST NOT be combined with a wildcard origin ('*') — that combination is spec-invalid and config.Validate rejects it at startup (via the CORS role annotations, not field names)."
   }];
 
   string tls_cert_path = 16 [(forge.v1.config) = {
     env_var: "TLS_CERT_PATH",
     flag: "tls-cert-path",
-    description: "Path to the TLS certificate (PEM). When both this and TLS_KEY_PATH are set, the server listens over HTTPS; otherwise it serves plaintext. Setting only one of the two is a configuration error."
+    role: CONFIG_FIELD_ROLE_TLS_CERT,
+    description: "Path to the TLS certificate (PEM). When both this and TLS_KEY_PATH are set, the server listens over HTTPS; otherwise it serves plaintext. config.Validate enforces both-or-neither (via the TLS role annotations); setting only one is a configuration error."
   }];
 
   string tls_key_path = 17 [(forge.v1.config) = {
     env_var: "TLS_KEY_PATH",
     flag: "tls-key-path",
+    role: CONFIG_FIELD_ROLE_TLS_KEY,
     description: "Path to the TLS private key (PEM). See TLS_CERT_PATH."
   }];
 
-  string pre_stop_delay = 18 [(forge.v1.config) = {
+  // Duration-shaped fields are declared as google.protobuf.Duration, so the
+  // config object IS the proto type with native *durationpb.Duration values
+  // (consume via .AsDuration()). The descriptor-driven loader parses a Go
+  // duration string ("5s", "30m") from flag/env/default into the message.
+  google.protobuf.Duration pre_stop_delay = 18 [(forge.v1.config) = {
     env_var: "PRE_STOP_DELAY",
     flag: "pre-stop-delay",
     default_value: "5s",
     description: "Duration to wait after flipping readiness to false before beginning HTTP shutdown. Gives load balancers time to observe the failing probe and stop routing new traffic (Go duration)."
   }];
 
-  string shutdown_timeout = 19 [(forge.v1.config) = {
+  google.protobuf.Duration shutdown_timeout = 19 [(forge.v1.config) = {
     env_var: "SHUTDOWN_TIMEOUT",
     flag: "shutdown-timeout",
     default_value: "30s",
@@ -92,7 +101,9 @@ message AppConfig {
     env_var: "LOG_FORMAT",
     flag: "log-format",
     default_value: "json",
-    description: "Log output format. One of 'json' (structured, machine-readable) or 'text' (human-friendly). Any other value is rejected at startup."
+    allowed_values: "json",
+    allowed_values: "text",
+    description: "Log output format. One of 'json' (structured, machine-readable) or 'text' (human-friendly). config.Validate rejects any other value at startup (via allowed_values, not a name match)."
   }];
 
   bool auto_migrate = 5 [(forge.v1.config) = {
@@ -106,7 +117,8 @@ message AppConfig {
     env_var: "ENVIRONMENT",
     flag: "environment",
     default_value: "production",
-    description: "Runtime environment (production, development). In development, some defaults are permissive (e.g. authz allow-all) for local ergonomics — never use development in production."
+    role: CONFIG_FIELD_ROLE_MODE,
+    description: "Runtime environment (production, development). In development, some defaults are permissive (e.g. authz allow-all) for local ergonomics — never use development in production. The CONFIG_FIELD_ROLE_MODE annotation — NOT this field's name — is what makes config.Mode()/DevAuthBypass() read it; rename freely, the behavior follows the annotation."
   }];
 
   int32 rate_limit_rps = 7 [(forge.v1.config) = {
@@ -137,14 +149,14 @@ message AppConfig {
     description: "Maximum number of idle database connections kept in the pool."
   }];
 
-  string db_conn_max_idle_time = 11 [(forge.v1.config) = {
+  google.protobuf.Duration db_conn_max_idle_time = 11 [(forge.v1.config) = {
     env_var: "DB_CONN_MAX_IDLE_TIME",
     flag: "db-conn-max-idle-time",
     default_value: "5m",
     description: "Maximum amount of time a connection may be idle before being closed (Go duration, e.g. 5m)."
   }];
 
-  string db_conn_max_lifetime = 12 [(forge.v1.config) = {
+  google.protobuf.Duration db_conn_max_lifetime = 12 [(forge.v1.config) = {
     env_var: "DB_CONN_MAX_LIFETIME",
     flag: "db-conn-max-lifetime",
     default_value: "30m",
@@ -163,4 +175,18 @@ message AppConfig {
     default_value: "true",
     description: "Set OWASP security response headers (CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS in production). Disable only if a dedicated edge proxy already sets them."
   }];
+
+  string otlp_endpoint = 21 [(forge.v1.config) = {
+    env_var: "OTEL_EXPORTER_OTLP_ENDPOINT",
+    flag: "otlp-endpoint",
+    description: "OTLP/gRPC collector endpoint for traces and metrics (e.g. http://localhost:4317). Empty disables OTLP export; the always-on Prometheus /metrics endpoint is unaffected."
+  }];
+
+  // NOTE: there is intentionally NO `service_name` config field. The OTel
+  // service.name is the binary's APP IDENTITY, emitted as the generated
+  // `ServiceName` constant in internal/cli/root.go and passed to serverkit
+  // directly — it is not an operator-tunable runtime knob. Field tag 22 is
+  // reserved so it is never reused for a different meaning.
+  reserved 22;
+  reserved "service_name";
 }

@@ -51,7 +51,7 @@ import (
 	{{/* Import path uses the on-disk dir leaf; selectors use the package
 	     clause. The two may legally differ — Go resolves the selector via
 	     the explicit alias. */ -}}
-	{{.ServicePackage}} "{{.Module}}/handlers/{{.ServiceImportPath}}"
+	{{.ServicePackage}} "{{.Module}}/internal/handlers/{{.ServiceImportPath}}"
 	"{{.Module}}/pkg/app"
 {{- if $unary}}
 	"{{.Module}}/pkg/middleware"

@@ -39,9 +39,11 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/linter/scaffolds"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/projectstore"
 )
@@ -315,51 +317,85 @@ func generateSteps() []GenStep {
 		{Name: "check Tier-1 file-stomp guard", Gate: always, Run: stepCheckTier1Drift, Tag: "validate"},
 		{Name: "snapshot Tier-1 exports", Gate: always, Run: stepSnapshotTier1Exports, Tag: "validate"},
 		{Name: "sync forge/pkg dev replace", Gate: always, Run: stepSyncDevForgePkg, Tag: "config"},
+		{Name: "forge/pkg compatibility handshake", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPkgCompatHandshake, Tag: "validate"},
 		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config"},
 		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPreCodegenContractCheck, Tag: "validate"},
 		{Name: "detect proto directories", Gate: always, Run: stepDetectProtoDirs, Tag: "proto"},
 		{Name: "ensure gen/go.mod", Gate: always, Run: stepEnsureGenModule, Tag: "config"},
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepBufGenerateGo, Tag: "proto"},
 		{Name: "descriptor extraction", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepDescriptorGenerate, Tag: "proto"},
+		{Name: "authz completeness gate", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepAuthzCompleteness, Tag: "proto"},
 		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, GateReason: "api.openapi=false or features.codegen=false", Run: stepOpenAPIGenerate, Tag: "proto"},
-		{Name: "frontend workspaces scaffold", Gate: gateFrontendEnabled, GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendWorkspaces, Tag: "frontend"},
-		{Name: "TypeScript stubs (frontends)", Gate: gateFrontendEnabled, GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend"},
-		{Name: "config loader (proto/config)", Gate: gateCodegenHasConfig, GateReason: "no proto/config/ directory or features.codegen=false", Run: stepConfigLoader, Tag: "codegen"},
-		{Name: "parse services + module path", Gate: gateNeedsServices, GateReason: "no services/workers/operators or features.codegen=false", Run: stepParseServicesAndModule, Tag: "codegen"},
+		{Name: "frontend workspaces scaffold", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendWorkspaces, Tag: "frontend"},
+		{Name: "TypeScript stubs (frontends)", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend"},
+		{Name: "config loader (proto/config)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no proto/config/ directory or features.codegen=false", Run: stepConfigLoader, Tag: "codegen"},
+		// parse services: needed when the project has proto/services/
+		// (handlers, mocks, CRUD, auth, bootstrap all read ctx.Services) OR
+		// workers/operators (bootstrap still needs ModulePath, even if
+		// Services is empty). Codegen-disabled projects skip it: the
+		// consumers of ctx.Services are all themselves codegen-gated.
+		{Name: "parse services + module path", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasAnyEntrypoint), GateReason: "no services/workers/operators or features.codegen=false", Run: stepParseServicesAndModule, Tag: "codegen"},
 		{Name: "frontend hooks", Gate: gateFrontendHasServices, GateReason: "no services in forge.yaml or features.frontend=false", Run: stepFrontendHooks, Tag: "frontend"},
 		{Name: "ensure frontend components", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendComponents, Tag: "frontend"},
 		{Name: "frontend CRUD pages", Gate: gateFrontendHasServices, GateReason: "no services in forge.yaml or features.frontend=false", Run: stepFrontendPages, Tag: "frontend"},
 		{Name: "frontend nav + dashboard", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendNav, Tag: "frontend"},
-		{Name: "service stubs", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepServiceStubs, Tag: "codegen"},
-		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no proto/services/ directory or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
-		{Name: "CRUD handlers", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCRUDHandlers, Tag: "codegen"},
-		{Name: "authorizer", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepAuthorizer, Tag: "codegen"},
-		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
+		{Name: "service stubs", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceStubs, Tag: "codegen"},
+		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no Connect services defined or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
+		{Name: "CRUD handlers", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCRUDHandlers, Tag: "codegen"},
+		{Name: "authorizer", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepAuthorizer, Tag: "codegen"},
+		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
 		{Name: "internal package contracts", Gate: gateContractsEnabled, GateReason: "features.contracts=false", Run: stepInternalContracts, Tag: "codegen"},
-		{Name: "auth middleware", Gate: gateAuthProviderConfigured, GateReason: "auth.provider unset or 'none'", Run: stepAuthMiddleware, Tag: "codegen"},
-		{Name: "tenant middleware (auto-enable + emit)", Gate: gateCodegenHasServicesCfg, GateReason: "no services or no forge.yaml or features.codegen=false", Run: stepTenantMiddleware, Tag: "codegen"},
-		{Name: "webhook routes", Gate: gateCodegenHasCfg, GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
-		{Name: "MCP manifest", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepMCPManifest, Tag: "codegen"},
+		{Name: "auth middleware", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML, func(c *pipelineContext) bool {
+			return c.Cfg.Auth.Provider != "" && c.Cfg.Auth.Provider != "none"
+		}), GateReason: "auth.provider unset or 'none'", Run: stepAuthMiddleware, Tag: "codegen"},
+		{Name: "tenant middleware (auto-enable + emit)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML, hasServices), GateReason: "no services or no forge.yaml or features.codegen=false", Run: stepTenantMiddleware, Tag: "codegen"},
+		{Name: "webhook routes", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
+		{Name: "MCP manifest", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepMCPManifest, Tag: "codegen"},
+		{Name: "internal/app composition (hybrid DI)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepInternalAppComposition, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools"},
-		{Name: "pkg/app/bootstrap.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrap, Tag: "codegen"},
-		{Name: "per-service subcommands (cmd/services_gen.go)", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCmdSubcommands, Tag: "codegen"},
+		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
 		{Name: "pkg/app/testing.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
 		{Name: "pkg/app/migrate.go", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
 		{Name: "sqlc generate", Gate: always, Run: stepSqlcGenerate, Tag: "tools"},
 		{Name: "go mod tidy (gen/)", Gate: always, Run: stepGoModTidyGen, Tag: "tools"},
-		{Name: "CI workflows", Gate: gateCIWorkflows, GateReason: "no forge.yaml or features.ci=false", Run: stepCIWorkflows, Tag: "deploy"},
-		{Name: "pack generate hooks", Gate: gateHasPacks, GateReason: "no packs installed or features.packs=false", Run: stepPackGenerateHooks, Tag: "codegen"},
+		{Name: "CI workflows", Gate: and(feature(config.FeaturesConfig.CIEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.ci=false", Run: stepCIWorkflows, Tag: "deploy"},
+		// Pack generate hooks only fire when the project has packs installed
+		// AND the packs feature is on. Disabling the feature with packs
+		// already installed skips the regenerate-on-generate step silently —
+		// the user opted out of the subsystem, codegen respects it. The
+		// installed packs themselves stay on disk; flipping `features.packs:
+		// true` later resumes the generate hooks without losing state.
+		{Name: "pack generate hooks", Gate: and(hasForgeYAML, feature(config.FeaturesConfig.PacksEnabled), func(c *pipelineContext) bool {
+			return len(c.Cfg.Packs) > 0
+		}), GateReason: "no packs installed or features.packs=false", Run: stepPackGenerateHooks, Tag: "codegen"},
 		{Name: "regenerate infra files", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepRegenerateInfra, Tag: "deploy"},
+		// MUST follow "regenerate infra files": that step (re)creates
+		// cmd/<bin>/cmd/serve.go + cmd/<bin>/main.go (which blank-imports the
+		// three group subpackages). Anchoring the cmd-group subpackages here —
+		// after serve.go exists but before "go mod tidy (root)" / "go build
+		// (validate generated code)" — is what lets a flat→nested migration
+		// reach a buildable state without manual dir pre-creation or skip-flags.
+		// See stepCmdGroups for the full ordering rationale.
+		// Gate mirrors stepInternalAppComposition (features.codegen only, NOT
+		// hasAnyEntrypoint): a degenerate tree with serve.go but zero parsed
+		// services still needs the three group register_gen.go anchors (with
+		// zero items) so main.go's blank imports resolve. The step itself
+		// no-ops when serve.go is absent (CLI/library/codegen-less trees).
+		{Name: "cmd command groups (services/workers/operators)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepCmdGroups, Tag: "codegen"},
 		{Name: "components_gen.json", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepComponentsGenJSON, Tag: "deploy"},
-		{Name: "per-env deploy config", Gate: gateDeployHasConfig, GateReason: "no proto/config/ directory or features.deploy=false", Run: stepPerEnvDeployConfig, Tag: "deploy"},
-		{Name: "ingress k3d ports fragment", Gate: gateIngressEnabled, GateReason: "features.ingress=false or features.deploy=false", Run: stepIngressK3dPorts, Tag: "deploy"},
-		{Name: "Grafana dashboards", Gate: gateObservabilityHasCfg, GateReason: "no forge.yaml or features.observability=false", Run: stepGrafanaDashboards, Tag: "deploy"},
-		{Name: "entity-aware seed data", Gate: gateMigrationsHasDBOrServices, GateReason: "no proto/db or proto/services or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
+		{Name: "per-env deploy config", Gate: and(hasForgeYAML, feature(config.FeaturesConfig.DeployEnabled), hasConfig), GateReason: "no proto/config/ directory or features.deploy=false", Run: stepPerEnvDeployConfig, Tag: "deploy"},
+		// Ingress (Gateway API codegen — the k3d-ports fragment and, in
+		// later phases, other ingress-derived artifacts) is off when
+		// features.ingress is explicitly false OR features.deploy is off
+		// (no cluster, no k3d, no ingress to wire up).
+		{Name: "ingress k3d ports fragment", Gate: and(hasForgeYAML, feature(config.FeaturesConfig.DeployEnabled), feature(config.FeaturesConfig.IngressEnabled)), GateReason: "features.ingress=false or features.deploy=false", Run: stepIngressK3dPorts, Tag: "deploy"},
+		{Name: "Grafana dashboards", Gate: and(feature(config.FeaturesConfig.ObservabilityEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.observability=false", Run: stepGrafanaDashboards, Tag: "deploy"},
+		{Name: "entity-aware seed data", Gate: and(feature(config.FeaturesConfig.MigrationsEnabled), hasDBOrServices), GateReason: "no proto/db or proto/services or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
 		{Name: "agent skills (.claude/skills)", Gate: always, Run: stepAgentSkills, Tag: "tools"},
 		{Name: "go mod tidy (root)", Gate: always, Run: stepGoModTidyRoot, Tag: "tools"},
 		{Name: "goimports on generated Go", Gate: always, Run: stepGoimports, Tag: "tools"},
-		{Name: "cleanup stale codegen", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCleanupStale, Tag: "codegen"},
+		{Name: "cleanup stale codegen", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCleanupStale, Tag: "codegen"},
 		// Runs after every Tier-1 emitter so checksums.Tier1TargetSet is
 		// complete: drop disowns whose path forge no longer Tier-1-owns
 		// (now scaffold-once, or no longer emitted). Always — the
@@ -375,7 +411,7 @@ func generateSteps() []GenStep {
 		// `go build` (the validate step) skips _test.go files, so a stale
 		// pb reference there would otherwise surface only at the user's
 		// next `go test`. See generate_stale_scaffold.go.
-		{Name: "check stale scaffold tests", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCheckStaleScaffoldTests, Tag: "validate"},
+		{Name: "check stale scaffold tests", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCheckStaleScaffoldTests, Tag: "validate"},
 		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, GateReason: "--skip-validate was passed", Run: stepGoBuildValidate, Tag: "validate"},
 	}
 }
@@ -409,27 +445,35 @@ func generateSteps() []GenStep {
 // unrelated files per call.
 var stepPresetAllowlist = map[string]map[string]bool{
 	"bootstrap-only": {
-		"load project config":                  true,
-		"load checksums":                       true,
-		"check Tier-1 file-stomp guard":        true,
-		"snapshot Tier-1 exports":              true,
-		"sync forge/pkg dev replace":           true,
-		"announce project":                     true,
-		"detect proto directories":             true,
-		"ensure gen/go.mod":                    true,
-		"parse services + module path":         true,
-		"go mod tidy (pre-wiring)":             true,
-		"pkg/app/bootstrap.go":                 true,
-		"pkg/app/testing.go":                   true,
-		"pkg/app/migrate.go":                   true,
-		"go mod tidy (gen/)":                   true,
-		"go mod tidy (root)":                   true,
-		"goimports on generated Go":            true,
-		"rehash tracked files":                 true,
-		"post-gen validation":                  true,
-		"detect renamed Tier-1 exports":        true,
-		"check disowned-sibling dangling refs": true,
-		"go build (validate generated code)":   true,
+		"load project config":                    true,
+		"load checksums":                         true,
+		"check Tier-1 file-stomp guard":          true,
+		"snapshot Tier-1 exports":                true,
+		"sync forge/pkg dev replace":             true,
+		"announce project":                       true,
+		"detect proto directories":               true,
+		"ensure gen/go.mod":                      true,
+		"parse services + module path":           true,
+		"internal/app composition (hybrid DI)":   true,
+		// cmd-group anchors moved out of the composition step into their own
+		// step (so a flat→nested migration anchors them AFTER infra creates
+		// serve.go). `forge add worker` runs on an already-nested project
+		// where serve.go exists, so this step anchors the new worker's
+		// cmd/<bin>/cmd/workers/<name>.go subcommand — the behavior the
+		// preset previously got for free from the composition step.
+		"cmd command groups (services/workers/operators)": true,
+		"go mod tidy (pre-wiring)":                        true,
+		"cmd/commands.go (user extension point)": true,
+		"pkg/app/testing.go":                     true,
+		"pkg/app/migrate.go":                     true,
+		"go mod tidy (gen/)":                     true,
+		"go mod tidy (root)":                     true,
+		"goimports on generated Go":              true,
+		"rehash tracked files":                   true,
+		"post-gen validation":                    true,
+		"detect renamed Tier-1 exports":          true,
+		"check disowned-sibling dangling refs":   true,
+		"go build (validate generated code)":     true,
 	},
 	// The "mocks" step preset covers the fast-path "I just edited
 	// contract.go, regenerate mock_gen.go" workflow. Mocks live behind a
@@ -517,40 +561,45 @@ var stepPresetAllowlist = map[string]map[string]bool{
 // `--steps=bootstrap-only --templates-only` a well-defined narrower
 // run rather than a precedence riddle.
 var templatesOnlyStepAllow = map[string]bool{
-	"load project config":                           true,
-	"load checksums":                                true,
-	"migrate legacy checksums manifest":             true,
-	"sync forge/pkg dev replace":                    true,
-	"announce project":                              true,
-	"detect proto directories":                      true,
-	"ensure gen/go.mod":                             true,
-	"frontend workspaces scaffold":                  true,
-	"config loader (proto/config)":                  true,
-	"parse services + module path":                  true,
-	"frontend hooks":                                true,
-	"ensure frontend components":                    true,
-	"frontend CRUD pages":                           true,
-	"frontend nav + dashboard":                      true,
-	"service stubs":                                 true,
-	"internal/db/ ORM (entity-driven)":              true,
-	"CRUD handlers":                                 true,
-	"authorizer":                                    true,
-	"service mocks":                                 true,
-	"internal package contracts":                    true,
-	"auth middleware":                               true,
-	"tenant middleware (auto-enable + emit)":        true,
-	"webhook routes":                                true,
-	"MCP manifest":                                  true,
-	"pkg/app/bootstrap.go":                          true,
-	"per-service subcommands (cmd/services_gen.go)": true,
-	"pkg/app/testing.go":                            true,
-	"pkg/app/migrate.go":                            true,
-	"CI workflows":                                  true,
-	"pack generate hooks":                           true,
-	"regenerate infra files":                        true,
-	"per-env deploy config":                         true,
-	"Grafana dashboards":                            true,
-	"frontend mocks + transport":                    true,
+	"load project config":                    true,
+	"load checksums":                         true,
+	"migrate legacy checksums manifest":      true,
+	"sync forge/pkg dev replace":             true,
+	"announce project":                       true,
+	"detect proto directories":               true,
+	"ensure gen/go.mod":                      true,
+	"frontend workspaces scaffold":           true,
+	"config loader (proto/config)":           true,
+	"parse services + module path":           true,
+	"frontend hooks":                         true,
+	"ensure frontend components":             true,
+	"frontend CRUD pages":                    true,
+	"frontend nav + dashboard":               true,
+	"service stubs":                          true,
+	"internal/db/ ORM (entity-driven)":       true,
+	"CRUD handlers":                          true,
+	"authorizer":                             true,
+	"service mocks":                          true,
+	"internal package contracts":             true,
+	"auth middleware":                        true,
+	"tenant middleware (auto-enable + emit)": true,
+	"webhook routes":                         true,
+	"MCP manifest":                           true,
+	"internal/app composition (hybrid DI)":   true,
+	"cmd/commands.go (user extension point)": true,
+	"pkg/app/testing.go":                     true,
+	"pkg/app/migrate.go":                     true,
+	"CI workflows":                           true,
+	"pack generate hooks":                    true,
+	"regenerate infra files":                 true,
+	// cmd-group anchors are template-driven (cmd-svc/worker/operator-group +
+	// register_gen anchors) and MUST stay after "regenerate infra files" in
+	// the allowlist's logical group — the step itself no-ops until serve.go
+	// exists, which infra regen provides.
+	"cmd command groups (services/workers/operators)": true,
+	"per-env deploy config":                           true,
+	"Grafana dashboards":                     true,
+	"frontend mocks + transport":             true,
 }
 
 // knownStepPresetNames returns a comma-joined string of every
@@ -591,11 +640,67 @@ func gatePreChecksNotSkipped(ctx *pipelineContext) bool {
 	return !ctx.SkipPreChecks
 }
 
-// Gate helpers. Pure predicates over ctx — no I/O. Tests assert these
-// don't mutate ctx by calling them twice and comparing field-wise.
+// Gate combinators. Gates are pure predicates over ctx — no I/O. Tests
+// assert they don't mutate ctx by calling them twice and comparing
+// field-wise. Most gates are a mechanical AND of "the feature is on" and
+// one or two preconditions on what's present on disk; the combinators
+// below let those gates be spelled out inline in the GenStep table
+// instead of each getting a one-off named func.
+
+// feature returns the canonical "nil-cfg-or-enabled" feature check: a gate
+// that is true when there is no forge.yaml (directory-scan fallback — the
+// feature is implicitly on) OR the named feature flag is enabled. f is a
+// method expression over config.FeaturesConfig (e.g.
+// config.FeaturesConfig.CodegenEnabled).
+func feature(f func(config.FeaturesConfig) bool) func(*pipelineContext) bool {
+	return func(ctx *pipelineContext) bool {
+		return ctx.Cfg == nil || f(ctx.Cfg.Features)
+	}
+}
+
+// and combines predicates with short-circuiting logical AND. An empty
+// list is vacuously true.
+func and(preds ...func(*pipelineContext) bool) func(*pipelineContext) bool {
+	return func(ctx *pipelineContext) bool {
+		for _, p := range preds {
+			if !p(ctx) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// Context preconditions — the on-disk / config-presence facts that gates
+// AND against a feature check.
+func hasServices(ctx *pipelineContext) bool { return ctx.HasServices }
+func hasDB(ctx *pipelineContext) bool       { return ctx.HasDB }
+func hasConfig(ctx *pipelineContext) bool   { return ctx.HasConfig }
+
+// hasForgeYAML is true when a forge.yaml was loaded (Cfg != nil). Gates
+// that emit forge.yaml-derived artifacts AND it in so the directory-scan
+// fallback (Cfg == nil) skips them rather than panicking on a nil Cfg.
+func hasForgeYAML(ctx *pipelineContext) bool { return ctx.Cfg != nil }
+
+// hasAnyEntrypoint is true when the project has any service, worker, or
+// operator — the precondition for the bootstrap/wiring family of steps.
+func hasAnyEntrypoint(ctx *pipelineContext) bool {
+	return ctx.HasServices || ctx.HasWorkers || ctx.HasOperators
+}
+
+// hasDBOrServices is the entity-source precondition: either proto/db
+// (migrations) or proto/services (entity structs) can produce entities.
+func hasDBOrServices(ctx *pipelineContext) bool {
+	return ctx.HasDB || ctx.HasServices
+}
+
+// The gates below are referenced from other files (generate_tier1_scope.go,
+// generate_retire_disowns.go) or directly from tests, so they keep their
+// named definitions; their bodies are expressed via the combinators for
+// consistency with the inline gates in the table.
 
 func gateCodegenEnabled(ctx *pipelineContext) bool {
-	return ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()
+	return feature(config.FeaturesConfig.CodegenEnabled)(ctx)
 }
 
 // gateOpenAPIEnabled fires the OpenAPI spec step. Off by default — the
@@ -605,130 +710,51 @@ func gateCodegenEnabled(ctx *pipelineContext) bool {
 // same proto inputs as the Go-stub buf step and there's no value in
 // emitting a spec if we're not also emitting the handlers it documents.
 func gateOpenAPIEnabled(ctx *pipelineContext) bool {
-	if ctx.Cfg == nil {
-		return false
-	}
-	if !ctx.Cfg.Features.CodegenEnabled() {
-		return false
-	}
-	return ctx.Cfg.API.OpenAPI
-}
-
-func gateORMHasDB(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.ORMEnabled()) && ctx.HasDB
+	return and(
+		feature(config.FeaturesConfig.CodegenEnabled),
+		hasForgeYAML,
+		func(c *pipelineContext) bool { return c.Cfg.API.OpenAPI },
+	)(ctx)
 }
 
 func gateORMHasServices(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.ORMEnabled()) && ctx.HasServices
-}
-
-func gateCIWorkflows(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CIEnabled()) && ctx.Cfg != nil
-}
-
-func gateHasPacks(ctx *pipelineContext) bool {
-	// Pack generate hooks only fire when the project has packs installed
-	// AND the packs feature is on. Disabling the feature with packs
-	// already installed skips the regenerate-on-generate step silently —
-	// the user opted out of the subsystem, codegen respects it. The
-	// installed packs themselves stay on disk; flipping `features.packs:
-	// true` later resumes the generate hooks without losing state.
-	return ctx.Cfg != nil &&
-		ctx.Cfg.Features.PacksEnabled() &&
-		len(ctx.Cfg.Packs) > 0
+	return and(feature(config.FeaturesConfig.ORMEnabled), hasServices)(ctx)
 }
 
 func gateDeployEnabled(ctx *pipelineContext) bool {
-	return ctx.Cfg == nil || ctx.Cfg.Features.DeployEnabled()
-}
-
-// gateIngressEnabled controls Gateway API codegen — the k3d-ports
-// fragment and (in later phases) other ingress-derived artifacts.
-// Off when features.ingress is explicitly false OR features.deploy
-// is off (no cluster, no k3d, no ingress to wire up).
-func gateIngressEnabled(ctx *pipelineContext) bool {
-	if ctx.Cfg == nil {
-		return false
-	}
-	return ctx.Cfg.Features.DeployEnabled() && ctx.Cfg.Features.IngressEnabled()
-}
-
-func gateDeployHasConfig(ctx *pipelineContext) bool {
-	return ctx.Cfg != nil && ctx.Cfg.Features.DeployEnabled() && ctx.HasConfig
-}
-
-func gateObservabilityHasCfg(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.ObservabilityEnabled()) && ctx.Cfg != nil
-}
-
-func gateMigrationsHasDBOrServices(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.MigrationsEnabled()) && (ctx.HasDB || ctx.HasServices)
-}
-
-func gateFrontendEnabled(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.FrontendEnabled()) && ctx.Cfg != nil
+	return feature(config.FeaturesConfig.DeployEnabled)(ctx)
 }
 
 func gateFrontendHasFrontends(ctx *pipelineContext) bool {
-	return ctx.Cfg != nil && ctx.Cfg.Features.FrontendEnabled() && len(ctx.Cfg.Frontends) > 0
+	return and(
+		hasForgeYAML,
+		feature(config.FeaturesConfig.FrontendEnabled),
+		func(c *pipelineContext) bool { return len(c.Cfg.Frontends) > 0 },
+	)(ctx)
 }
 
 func gateFrontendHasServices(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.FrontendEnabled()) && ctx.Cfg != nil && ctx.HasServices
-}
-
-func gateCodegenHasConfig(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()) && ctx.HasConfig
+	return and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML, hasServices)(ctx)
 }
 
 func gateCodegenHasServices(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()) && ctx.HasServices
-}
-
-func gateCodegenHasServicesCfg(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()) && ctx.Cfg != nil && ctx.HasServices
-}
-
-func gateCodegenHasCfg(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()) && ctx.Cfg != nil
+	return and(feature(config.FeaturesConfig.CodegenEnabled), hasServices)(ctx)
 }
 
 func gateContractsEnabled(ctx *pipelineContext) bool {
-	return ctx.Cfg == nil || ctx.Cfg.Features.ContractsEnabled()
-}
-
-func gateAuthProviderConfigured(ctx *pipelineContext) bool {
-	if ctx.Cfg == nil {
-		return false
-	}
-	if !ctx.Cfg.Features.CodegenEnabled() {
-		return false
-	}
-	return ctx.Cfg.Auth.Provider != "" && ctx.Cfg.Auth.Provider != "none"
+	return feature(config.FeaturesConfig.ContractsEnabled)(ctx)
 }
 
 func gateCodegenHasAnyEntrypoint(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()) && (ctx.HasServices || ctx.HasWorkers || ctx.HasOperators)
+	return and(feature(config.FeaturesConfig.CodegenEnabled), hasAnyEntrypoint)(ctx)
 }
 
 func gateMigrateHasDriver(ctx *pipelineContext) bool {
-	if ctx.Cfg == nil {
-		return false
-	}
-	return ctx.Cfg.Features.MigrationsEnabled() && ctx.Cfg.Database.Driver != ""
-}
-
-// gateNeedsServices triggers the parse-services step. We need to parse
-// when the project has either proto/services/ (handlers, mocks, CRUD,
-// auth, bootstrap all read ctx.Services) OR workers/operators (bootstrap
-// still needs ModulePath, even if Services is empty). Codegen-disabled
-// projects skip it: the consumers of ctx.Services are all themselves
-// codegen-gated.
-func gateNeedsServices(ctx *pipelineContext) bool {
-	if ctx.Cfg != nil && !ctx.Cfg.Features.CodegenEnabled() {
-		return false
-	}
-	return ctx.HasServices || ctx.HasWorkers || ctx.HasOperators
+	return and(
+		hasForgeYAML,
+		feature(config.FeaturesConfig.MigrationsEnabled),
+		func(c *pipelineContext) bool { return c.Cfg.Database.Driver != "" },
+	)(ctx)
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1069,7 +1095,22 @@ func short(h string) string {
 func stepSyncDevForgePkg(ctx *pipelineContext) error {
 	vendored, vendorErr := syncDevForgePkgReplace(ctx.ProjectDir)
 	_ = vendored
-	return ctx.warnOrFail("forge/pkg dev-mode vendor sync", vendorErr)
+	if err := ctx.warnOrFail("forge/pkg dev-mode vendor sync", vendorErr); err != nil {
+		return err
+	}
+
+	// fr-04c408ebbe: generate manages `.forge-pkg/` but does NOT re-render
+	// the Tier-2 Dockerfile, so a project scaffolded before the
+	// `COPY .forge-pkg/` template feature has a Dockerfile that fails
+	// `go mod download` inside docker. generate knows the vendor state here
+	// — emit a non-gating WARN pointing at the one-line fix (or `forge
+	// upgrade`) so the broken docker build doesn't surface only at build
+	// time. Warn, don't fail: per the migrations-ship-partial-scaffolds
+	// rule, a stale Tier-2 file must not block iteration.
+	if finding, ok := scaffolds.DevVendorDockerfileWarning(ctx.ProjectDir); ok {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: %s — %s\n", finding.Path, finding.Message)
+	}
+	return nil
 }
 
 // stepAnnounceProject prints the "📦 Generating code for project: …"
@@ -1118,7 +1159,15 @@ func stepAnnounceProject(ctx *pipelineContext) error {
 // flag, and the bootstrap step re-runs discovery and surfaces the
 // disk-first resolution error with full context.
 func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
-	ctx.HasServices = dirExists(filepath.Join(ctx.ProjectDir, "proto/services"))
+	// HasServices reflects "the project defines >=1 Connect service in ANY
+	// proto package" — sourced from the protoc-gen-forge descriptor (with a
+	// proto-source fallback for the pre-descriptor first run), NOT the mere
+	// existence of a proto/services/ directory. This unblocks flat /
+	// multi-service layouts (e.g. control-plane's proto/controlplane/v1/)
+	// whose services would otherwise be invisible to every HasServices-gated
+	// step. stepParseServicesAndModule later reconciles this to the exact
+	// descriptor count. See projectDefinesConnectServices.
+	ctx.HasServices = projectDefinesConnectServices(ctx.ProjectDir)
 	ctx.HasAPI = dirExists(filepath.Join(ctx.ProjectDir, "proto/api"))
 	ctx.HasDB = dirExists(filepath.Join(ctx.ProjectDir, "proto/db"))
 	ctx.HasConfig = dirExists(filepath.Join(ctx.ProjectDir, "proto/config"))
@@ -1151,6 +1200,20 @@ func stepPreCodegenContractCheck(ctx *pipelineContext) error {
 	return preCodegenContractCheck(ctx.ProjectDir, ctx.Cfg)
 }
 
+// stepPkgCompatHandshake probes the project's resolved forge/pkg for the
+// symbols this binary's ORM/CRUD generator emits, BEFORE any codegen
+// mutates the tree (kalshi fr-ac69216583). A too-old forge/pkg pin lacking
+// e.g. orm.UnknownFieldError would otherwise let generate rewrite the
+// whole tree and only then fail its own validate, leaving the repo
+// mid-regen. Failing here keeps the tree untouched and names the fix.
+//
+// Gated by gatePreChecksNotSkipped (same opt-out as the contract check):
+// --skip-pre-checks bypasses it for the parallel-lane case where the
+// module graph is intentionally mid-migration.
+func stepPkgCompatHandshake(ctx *pipelineContext) error {
+	return checkPkgCompat(ctx.ProjectDir)
+}
+
 // stepDetectProtoDirs populates the proto-tree presence flags
 // (HasServices/HasAPI/HasDB/HasConfig) and worker/operator presence.
 // Was inline at lines 188-213 of the pre-refactor pipeline. Also
@@ -1171,7 +1234,7 @@ func stepDetectProtoDirs(ctx *pipelineContext) error {
 			fmt.Println("  ✓ proto/api/ (API messages)")
 		}
 		if ctx.HasServices {
-			fmt.Println("  ✓ proto/services/ (Service definitions)")
+			fmt.Println("  ✓ Connect service definitions")
 		}
 		if ctx.HasDB {
 			fmt.Println("  ✓ proto/db/ (Database models)")
@@ -1194,7 +1257,15 @@ func stepDetectProtoDirs(ctx *pipelineContext) error {
 // concern. Best-effort: see ensureGenGoMod for the no-op fallthrough
 // conditions.
 func stepEnsureGenModule(ctx *pipelineContext) error {
-	return ensureGenGoMod(ctx.ProjectDir)
+	if err := ensureGenGoMod(ctx.ProjectDir); err != nil {
+		return err
+	}
+	// Keep an EXISTING gen/go.mod's forge/pkg replace in lockstep with the
+	// root module's (which stepSyncDevForgePkg may have rewritten earlier
+	// this run). Bootstrap covers the missing-file case; this covers the
+	// scaffolded-without-sibling and root-replace-changed cases so the
+	// downstream `go mod tidy (gen/)` can resolve the unpublished forge/pkg.
+	return reconcileGenForgePkgReplace(ctx.ProjectDir)
 }
 
 // stepBufGenerateGo — was Step 1.
@@ -1215,6 +1286,19 @@ func stepBufGenerateGo(ctx *pipelineContext) error {
 // rest of the pipeline can still emit code.
 func stepDescriptorGenerate(ctx *pipelineContext) error {
 	return ctx.warnOrFail("descriptor generation", runDescriptorGenerate(ctx.ProjectDir))
+}
+
+// stepAuthzCompleteness fails the build when any RPC lacks an explicit
+// authorization decision (required_roles / authz_public / a service
+// default_roles), naming the offending methods. It is the generate-time
+// first line of defense for descriptor-driven authorization — the runtime
+// fail-closed deny in forge/pkg/authz is the backstop. The check lives in
+// the internal/cli/lint group (it is the same gate `forge lint` runs); cli
+// imports that group, which only depends on factory/cmdutil, so there is no
+// cycle. It HARD-gates (not warnOrFail): an un-annotated RPC is exactly the
+// silent-open-method bug this gate exists to stop.
+func stepAuthzCompleteness(ctx *pipelineContext) error {
+	return lint.CheckAuthzCompleteness(context.Background(), ctx.ProjectDir)
 }
 
 // stepOpenAPIGenerate is the api.openapi: true projection. Runs
@@ -1329,8 +1413,24 @@ func stepParseServicesAndModule(ctx *pipelineContext) error {
 	var modulePath string
 	var err error
 
+	// Services are read from the protoc-gen-forge descriptor, which
+	// enumerates every Connect service in ANY proto package — flat /
+	// multi-service (proto/controlplane/v1/) and per-service
+	// (proto/services/<svc>/v1/) layouts alike. The dir arg has been
+	// vestigial since ParseServicesFromProtos became descriptor-backed.
+	//
+	// We do NOT reconcile ctx.HasServices to len(services) here. HasServices
+	// is the project's declared shape (descriptor-or-proto-source presence,
+	// established at detect time); the descriptor *enumeration* can be empty
+	// for a window or a transient reason (descriptor generation is
+	// best-effort / warnOrFail, and a fresh tree may not have produced it
+	// yet). Flipping HasServices false off an empty enumeration would
+	// silently disable every service codegen step — the exact silent-stomp
+	// failure mode the loud-by-default architecture forbids. The downstream
+	// per-service emitters already iterate ctx.Services, so an empty slice
+	// is a self-correcting no-op without disabling the steps wholesale.
 	if ctx.HasServices {
-		services, err = codegen.ParseServicesFromProtos(filepath.Join(ctx.ProjectDir, "proto/services"), ctx.ProjectDir)
+		services, err = codegen.ParseServicesFromProtos("", ctx.ProjectDir)
 		if err != nil {
 			return fmt.Errorf("failed to parse service protos: %w", err)
 		}
@@ -1522,7 +1622,10 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 		return err
 	}
 	// The alias file from the proto-entity era; remove so stale aliases
-	// to deleted pb types can't shadow the generated structs.
+	// to deleted pb types can't shadow the generated structs. Journal the
+	// pre-run bytes first so a failed-validate rollback restores it (this
+	// removal bypasses the WriteGeneratedFile* chokepoint).
+	checksums.RecordPreWrite(ctx.AbsPath, filepath.ToSlash(filepath.Join("internal", "db", "types.go")))
 	_ = os.Remove(filepath.Join(ctx.ProjectDir, "internal", "db", "types.go"))
 	fmt.Printf("  ✅ Generated internal/db/ (%d entity ORM files)\n", len(entities))
 	return nil
@@ -1697,10 +1800,9 @@ func stepMCPManifest(ctx *pipelineContext) error {
 	}
 	return ctx.warnOrFail("MCP manifest generation",
 		codegen.GenerateMCPManifest(codegen.MCPGenInput{
-			ProjectDir:  ctx.ProjectDir,
+			GenContext:  codegen.GenContext{ProjectDir: ctx.ProjectDir, Checksums: ctx.Checksums},
 			ProjectName: projectName,
 			Services:    registered,
-			Checksums:   ctx.Checksums,
 		}))
 }
 
@@ -1736,12 +1838,58 @@ func deriveOrmEnabled(projectDir string) (bool, error) {
 	return false, nil
 }
 
-// stepBootstrap — was Step 6 (HIGHEST RISK in the polish-phase
-// extraction; see TestDeriveOrmEnabledMatrix for the golden test).
+// stepInternalAppComposition emits the §2 hybrid-DI composition layer under
+// internal/app (providers.go / post_build.go / app_services_gen.go /
+// inject_gen.go / inventory_gen.go / lifecycle_gen.go).
 //
-// Emits pkg/app/bootstrap.go. ormEnabled is the contentious bit; see
-// deriveOrmEnabled for the probe rules and rationale.
-func stepBootstrap(ctx *pipelineContext) error {
+// It is gated on the primary binary's cmd/<bin>/cmd/serve.go EXISTING — not
+// on len(services|workers|operators) — because that shared serve pipeline
+// imports internal/app unconditionally (OpenInfra → Build → PostBuild → typed
+// mount → serverkit.Run). If internal/app were only emitted on the
+// entrypoint-bearing path, a degenerate tree (no proto service parses / no
+// forge_descriptor.json, so ctx.Services is empty) would leave internal/app
+// EMPTY while serve.go still imports it — and `go mod tidy` would 404 trying
+// to fetch the local package remotely. The generators + templates render
+// valid empty Build/Inventory/Services/lifecycle so the package always compiles.
+//
+// Runs BEFORE the go-mod-tidy steps so the local package is resolvable.
+// Skipped silently when serve.go doesn't exist (CLI/library kinds and
+// codegen-less trees have no serve pipeline that imports internal/app).
+func stepInternalAppComposition(ctx *pipelineContext) error {
+	bin := bootstrapBinaryName(ctx.ProjectDir)
+	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "cmd", bin, "cmd", "serve.go")); err != nil {
+		return nil
+	}
+
+	rows, err := ctx.rowServiceDefs()
+	if err != nil {
+		return err
+	}
+	workers, err := discoverWorkers(ctx.ProjectDir)
+	if err != nil {
+		return err
+	}
+	operators, err := discoverOperators(ctx.ProjectDir)
+	if err != nil {
+		return err
+	}
+	packages, err := discoverPackages(ctx.ProjectDir)
+	if err != nil {
+		return fmt.Errorf("discover internal packages: %w", err)
+	}
+	webhookServices := discoverWebhookServices(ctx.ProjectDir)
+
+	// ctx.ModulePath is only populated by the entrypoint-gated parse step, so
+	// it may be empty here (the very case this step exists to cover). Read it
+	// directly from go.mod as a fallback so the generated import lines resolve.
+	modulePath := ctx.ModulePath
+	if modulePath == "" {
+		modulePath, err = codegen.GetModulePath(ctx.ProjectDir)
+		if err != nil {
+			return fmt.Errorf("read module path for internal/app composition: %w", err)
+		}
+	}
+
 	var dbDriver string
 	if ctx.Cfg != nil {
 		dbDriver = ctx.Cfg.Database.Driver
@@ -1750,68 +1898,72 @@ func stepBootstrap(ctx *pipelineContext) error {
 	if err != nil {
 		return err
 	}
-	// Diagnostics / strict-wiring feature toggles flow from forge.yaml
-	// straight into the bootstrap template so the diagnostics.Default.Boot
-	// call (and its StrictEmitter wrap) is only emitted when the project
-	// opted in. Default off — existing projects don't suddenly start
-	// logging warns on regen.
-	var bootstrapFeatures codegen.BootstrapFeatures
-	if ctx.Cfg != nil {
-		bootstrapFeatures.DiagnosticsEnabled = ctx.Cfg.Features.DiagnosticsEnabled()
-		bootstrapFeatures.StrictWiringEnabled = ctx.Cfg.Features.StrictWiringEnabled()
-	}
-	// The COMPLETE service inventory (including tombstoned types-only
-	// services) renders into BootstrapOnly's registration guard, which
-	// errors helpfully when an unregistered service name is passed to
-	// the `server [services...]` name filter.
-	bootstrapFeatures.AllServiceNames = allServiceRuntimeNames(ctx.Services)
-	// Row services only (registered + newly-added unlisted): the
-	// serviceRow constructors, wire_gen, and diagnostics rows exist per
-	// service whose handlers scaffold lives in this repo. Which of those
-	// rows the binary SERVES is pkg/app/services.go's call, consumed by
-	// the bootstrap template via RegisteredServices.
-	rows, err := ctx.rowServiceDefs()
-	if err != nil {
-		return err
-	}
-	if err := generateBootstrap(rows, ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.ConfigFields, bootstrapFeatures, ctx.Checksums); err != nil {
-		return fmt.Errorf("bootstrap generation failed: %w", err)
+
+	if err := generateHybridComposition(rows, packages, workers, operators, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums); err != nil {
+		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}
 	return nil
 }
 
-// stepCmdSubcommands regenerates cmd/services_gen.go — one cobra
-// subcommand per REGISTERED service, the cmd-side projection of the
-// same registration table (pkg/app/services.go rows) bootstrap
-// consumes — and ensures the user-owned cmd/commands.go extension
-// point exists (the generated cmd/main.go calls userCommands(), so a
-// missing file would break the build of any pre-M6 project on its
-// first regenerate).
+// stepCmdGroups anchors the dir-nested per-component command-group subpackages
+// under cmd/<bin>/cmd/{services,workers,operators} (one file per service /
+// worker / operator + a register_gen.go anchor per group so the subpackage
+// compiles with zero items).
 //
-// Skipped silently when cmd/server.go doesn't exist: CLI/library kinds
-// and codegen-less trees have no runServer to delegate to.
-func stepCmdSubcommands(ctx *pipelineContext) error {
-	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "cmd", "server.go")); err != nil {
-		return nil
-	}
-	if err := codegen.GenerateCmdCommands(ctx.ProjectDir); err != nil {
-		return fmt.Errorf("scaffold cmd/commands.go: %w", err)
-	}
-	// REGISTERED only — a row constructor without a registration line is
-	// not served by this binary and must not get a subcommand (it would
-	// boot a server that warns "unknown service" and mounts nothing).
-	registered, err := ctx.registeredServiceDefs()
+// Ordering is load-bearing: this MUST run AFTER stepRegenerateInfra, which is
+// what (re)creates cmd/<bin>/cmd/serve.go + cmd/<bin>/main.go. On a flat→nested
+// migration (an old project with a flat cmd/*.go layout running `forge generate`
+// for the first time on the nested layout) serve.go does NOT exist when
+// stepInternalAppComposition runs upstream, so the group subpackages cannot be
+// anchored there. The freshly-regenerated main.go blank-imports the three group
+// subpackages, so if they stayed Go-file-less the subsequent `go mod tidy
+// (root)` / `go build (validate)` steps would 404 the empty local import and
+// abort the pipeline — exactly the kalshi migration friction (the mid-run
+// `go mod tidy` failed on the not-yet-created group subpackages before they
+// could be anchored). Anchoring here, after serve.go exists but before those
+// tidy/build steps, lets a flat→nested project reach a buildable state with no
+// manual dir pre-creation and no skip-flags.
+//
+// Idempotent: GenerateCmdGroups writes byte-identical content on re-run, so a
+// normal already-nested project (where the anchors already exist) is a no-op.
+// Skipped silently when serve.go doesn't exist (CLI/library kinds and
+// codegen-less trees have no serve pipeline to delegate to).
+func stepCmdGroups(ctx *pipelineContext) error {
+	rows, err := ctx.rowServiceDefs()
 	if err != nil {
 		return err
 	}
-	names := make([]string, 0, len(registered))
-	for _, svc := range registered {
-		names = append(names, svc.Name)
+	workers, err := discoverWorkers(ctx.ProjectDir)
+	if err != nil {
+		return err
 	}
-	if err := codegen.GenerateCmdServices(names, ctx.ProjectDir, ctx.Checksums); err != nil {
-		return fmt.Errorf("per-service subcommand generation failed: %w", err)
+	operators, err := discoverOperators(ctx.ProjectDir)
+	if err != nil {
+		return err
 	}
-	fmt.Println("  ✅ Generated cmd/services_gen.go (subcommands projected from RegisteredServices rows)")
+	return generateCmdGroups(rows, workers, operators, ctx.ProjectDir, ctx.Checksums)
+}
+
+// stepCmdCommands ensures the user-owned cmd/<bin>/cmd/commands.go extension
+// point exists (the generated cmd/<bin>/cmd/root.go calls userCommands(), so
+// a missing file would break the build on first regenerate).
+//
+// String-projected per-service subcommands (the old cmd/services_gen.go)
+// are retired (FORGE_SHAPE_REDESIGN §1/§2): per-subcommand mount
+// selection lives in the cmd layer over the data-only internal/app
+// Inventory, and `server [services...]` handles the subset surface.
+//
+// Skipped silently when the primary binary's cmd/<bin>/cmd/serve.go doesn't
+// exist: CLI/library kinds and codegen-less trees have no serve pipeline to
+// delegate to.
+func stepCmdCommands(ctx *pipelineContext) error {
+	bin := bootstrapBinaryName(ctx.ProjectDir)
+	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "cmd", bin, "cmd", "serve.go")); err != nil {
+		return nil
+	}
+	if err := codegen.GenerateCmdCommands(ctx.ProjectDir, bin); err != nil {
+		return fmt.Errorf("scaffold cmd/%s/cmd/commands.go: %w", bin, err)
+	}
 	return nil
 }
 
@@ -1983,9 +2135,8 @@ func stepIngressK3dPorts(ctx *pipelineContext) error {
 		return ctx.warnOrFail("remove stale k3d-ports.yaml", codegen.RemoveK3dPorts(ctx.ProjectDir))
 	}
 	return ctx.warnOrFail("write deploy/k3d-ports.yaml", codegen.GenerateK3dPorts(codegen.K3dPortsGenInput{
-		ProjectDir: ctx.ProjectDir,
+		GenContext: codegen.GenContext{ProjectDir: ctx.ProjectDir, Checksums: ctx.Checksums},
 		Listeners:  listeners,
-		Checksums:  ctx.Checksums,
 	}))
 }
 

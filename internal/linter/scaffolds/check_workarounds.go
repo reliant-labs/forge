@@ -328,6 +328,18 @@ var devVendorReplaceRE = regexp.MustCompile(
 // so a hand-added variant still satisfies the rule.
 var dockerfileCopyForgePkgRE = regexp.MustCompile(`(?m)^\s*COPY\s+\.forge-pkg[/ ]`)
 
+// DevVendorDockerfileWarning is the exported, single-rule entry point for
+// the dev-vendor Dockerfile drift check (fr-04c408ebbe). It lets callers
+// outside the linter (notably `forge generate`) surface JUST this finding
+// — generate knows it manages `.forge-pkg/` but does not re-render the
+// Tier-2 Dockerfile, so it must independently WARN when the vendored
+// state and the Dockerfile have drifted apart. Returns ok=false when
+// there's nothing to warn about (not dev-vendor mode, no Dockerfile, or
+// the COPY line is already present).
+func DevVendorDockerfileWarning(root string) (Finding, bool) {
+	return lintDevVendorDockerfile(root)
+}
+
 // lintDevVendorDockerfile reports the stale-dev-vendor-Dockerfile
 // workaround: the project is in dev-vendor mode (go.mod replace targeting
 // ./.forge-pkg, or a `.forge-pkg/go.mod` on disk) but its Dockerfile

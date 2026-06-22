@@ -12,7 +12,7 @@ import (
 // removing stale files, not this function.
 func TestGenerateK3dPorts_Empty_NoFile(t *testing.T) {
 	tmp := t.TempDir()
-	if err := GenerateK3dPorts(K3dPortsGenInput{ProjectDir: tmp}); err != nil {
+	if err := GenerateK3dPorts(K3dPortsGenInput{GenContext: GenContext{ProjectDir: tmp}}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(tmp, "deploy", "k3d-ports.yaml")); !os.IsNotExist(err) {
@@ -21,14 +21,14 @@ func TestGenerateK3dPorts_Empty_NoFile(t *testing.T) {
 }
 
 // TestGenerateK3dPorts_RendersSorted asserts:
-//  - one ports entry per listener
-//  - sorted by port number ascending
-//  - each entry has nodeFilters: loadbalancer
-//  - a comment line ties each entry back to gateway/listener name
+//   - one ports entry per listener
+//   - sorted by port number ascending
+//   - each entry has nodeFilters: loadbalancer
+//   - a comment line ties each entry back to gateway/listener name
 func TestGenerateK3dPorts_RendersSorted(t *testing.T) {
 	tmp := t.TempDir()
 	in := K3dPortsGenInput{
-		ProjectDir: tmp,
+		GenContext: GenContext{ProjectDir: tmp},
 		Listeners: []K3dListener{
 			{GatewayName: "public", ListenerName: "grpc", Port: 19190},
 			{GatewayName: "public", ListenerName: "http", Port: 18080},
@@ -71,7 +71,7 @@ func TestGenerateK3dPorts_RendersSorted(t *testing.T) {
 func TestGenerateK3dPorts_DedupSamePort(t *testing.T) {
 	tmp := t.TempDir()
 	in := K3dPortsGenInput{
-		ProjectDir: tmp,
+		GenContext: GenContext{ProjectDir: tmp},
 		Listeners: []K3dListener{
 			{GatewayName: "public", ListenerName: "http", Port: 18080},
 			{GatewayName: "internal", ListenerName: "http", Port: 18080},
@@ -99,10 +99,10 @@ func TestGenerateK3dPorts_Determinism(t *testing.T) {
 		{GatewayName: "public", ListenerName: "http", Port: 18080},
 		{GatewayName: "public", ListenerName: "grpc", Port: 19190},
 	}
-	if err := GenerateK3dPorts(K3dPortsGenInput{ProjectDir: tmp1, Listeners: in}); err != nil {
+	if err := GenerateK3dPorts(K3dPortsGenInput{GenContext: GenContext{ProjectDir: tmp1}, Listeners: in}); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if err := GenerateK3dPorts(K3dPortsGenInput{ProjectDir: tmp2, Listeners: in}); err != nil {
+	if err := GenerateK3dPorts(K3dPortsGenInput{GenContext: GenContext{ProjectDir: tmp2}, Listeners: in}); err != nil {
 		t.Fatalf("second: %v", err)
 	}
 	a, _ := os.ReadFile(filepath.Join(tmp1, "deploy", "k3d-ports.yaml"))

@@ -97,6 +97,19 @@ func TestExportedVars_Bad(t *testing.T) {
 	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsbad")
 }
 
+// Regression: a package carrying the per-package //forge:exclude-contract
+// header is opted out of EVERY contract rule — including exported-vars —
+// exactly as a forge.yaml contracts.exclude entry would. Without this, a
+// project that drops the central exclude list in favour of headers (the
+// contract-system conformance migration) would see exported-var findings
+// resurface on packages like internal/metrics (global Prometheus
+// collectors). The fixture declares exported vars with NO `// want`
+// comments: zero findings expected.
+func TestExportedVars_ExcludeContractDirectiveExempt(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsexcludedirective")
+}
+
 // Regression: //go:embed targets must be exported package vars (the embed
 // package requires it). The analyzer must exempt them — see scaffold-1 in
 // PACK_AUDIT.md for the pristine-scaffold breakage that motivated this.

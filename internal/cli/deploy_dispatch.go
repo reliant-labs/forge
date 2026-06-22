@@ -239,21 +239,18 @@ func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) er
 // where the per-service deploy block dictates the namespace rather than
 // forge.yaml.
 //
-// Context is DECLARATIVE by default: every K8sCluster group already
-// carries its target cluster in group.Cluster (populated from the KCL
-// `forge.K8sCluster.cluster`, which IS the kubectl context name), so
-// the per-group kubectl context is derived from group.Cluster. This is
-// the "can't deploy the wrong env to the wrong cluster" property — the
-// binding lives in the env's KCL, not in whatever context happens to be
-// active. A multi-cluster env (rare) therefore applies each group to
-// ITS OWN declared cluster context.
-//
-// kubeContextOverride is the explicit `--context` escape hatch (a
-// renamed local context); when non-empty it wins over the declared
-// cluster for EVERY group. When both are empty (host-only / compose,
-// no K8sCluster.cluster), Context stays empty = kubectl's current
-// context, preserving the pre-declarative single-cluster/dev behaviour.
-func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env, kubeContextOverride string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
+// Context is purely DECLARATIVE: every K8sCluster group already carries
+// its target cluster in group.Cluster (populated from the KCL
+// `forge.K8sCluster.cluster`, which IS the kubectl context name), so the
+// per-group kubectl context is derived from group.Cluster. This is the
+// "can't deploy the wrong env to the wrong cluster" property — the binding
+// lives in the env's KCL, not in whatever context happens to be active,
+// and there is no CLI override. A multi-cluster env (rare) therefore
+// applies each group to ITS OWN declared cluster context. When a group
+// declares no cluster (host-only / compose), Context stays empty — and the
+// cluster.KubectlApply chokepoint refuses an empty context rather than
+// falling back to the active one.
+func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
 	return func(group deploytarget.ServiceGroup) cluster.ApplyOpts {
 		ns := group.Namespace
 		if ns == "" {
@@ -264,7 +261,7 @@ func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env, kubeCo
 			ImageTag:     imageTag,
 			Namespace:    ns,
 			Env:          env,
-			Context:      resolveGroupContext(group, kubeContextOverride),
+			Context:      resolveGroupContext(group),
 			EnvConfigKV:  envCfgKV,
 			DryRun:       dryRun,
 			DryRunFramed: true,
@@ -277,36 +274,29 @@ func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env, kubeCo
 }
 
 // resolveGroupContext picks the kubectl context for a single deploy
-// group. The declared cluster (group.Cluster, from KCL
-// `forge.K8sCluster.cluster`) IS the kubectl context name, so it is the
-// default and source of truth. The explicit `--context` override, when
-// provided, wins for every group (escape hatch for renamed local
-// contexts / a CI deploy-bot context). An empty result means "use
-// kubectl's current context" — the fallback for host-only / compose
-// envs that declare no cluster.
-func resolveGroupContext(group deploytarget.ServiceGroup, override string) string {
-	if override != "" {
-		return override
-	}
+// group. The kubectl context is purely DECLARATIVE: the declared cluster
+// (group.Cluster, from KCL `forge.K8sCluster.cluster`) IS the kubectl
+// context name, and it is the ONLY source — there is no CLI override. An
+// empty result means the group declares no cluster (host-only / compose);
+// the cluster.KubectlApply chokepoint refuses an empty context on a write
+// rather than falling back to kubectl's current context.
+func resolveGroupContext(group deploytarget.ServiceGroup) string {
 	return group.Cluster
 }
 
 // declaredEnvContext returns the env-wide kubectl context for the
 // consumers that don't iterate groups per-target: the secrets pre-apply,
-// the empty-groups direct cluster.Apply, and the rollback provider. The
-// explicit `--context` override wins; otherwise it's the first declared
-// K8sCluster cluster (group.Cluster, from KCL `forge.K8sCluster.cluster`).
-// Empty when no cluster is declared (host-only / compose) — kubectl's
-// current context is used, preserving the pre-declarative default.
+// the empty-groups direct cluster.Apply, and the rollback provider. It is
+// the first declared K8sCluster cluster (group.Cluster, from KCL
+// `forge.K8sCluster.cluster`) — there is no CLI override. Empty when no
+// cluster is declared (host-only / compose); the apply chokepoint refuses
+// an empty context on a write rather than using kubectl's current one.
 //
 // A multi-cluster env's per-group dispatch still routes each group to its
 // own declared cluster via resolveGroupContext; this single value covers
 // only the env-wide single-cluster paths, which already assume one
 // namespace per env.
-func declaredEnvContext(groups []deploytarget.ServiceGroup, override string) string {
-	if override != "" {
-		return override
-	}
+func declaredEnvContext(groups []deploytarget.ServiceGroup) string {
 	for _, g := range groups {
 		if g.ProviderID == "k8s-cluster" && g.Cluster != "" {
 			return g.Cluster

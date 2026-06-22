@@ -172,6 +172,13 @@ type MockTransportEntity struct {
 	HasCreate        bool
 	HasUpdate        bool
 	HasDelete        bool
+	// ItemsField is the camelCase (protojson) name of the list response's
+	// repeated field — the key the mock List handler must set on the
+	// ListXxxResponse it builds. It mirrors PageTemplateData.ItemsField:
+	// the ACTUAL repeated proto field name (e.g. `keys`), not the
+	// camelCased entity plural. The mock store variable keeps the plural
+	// camelCase identifier; only the response-message KEY uses this.
+	ItemsField       string
 	ImportPath string // service proto import path for response-schema imports
 	// EntityImportPath is the module declaring the ENTITY message schema
 	// ("db/v1/patients_pb"). May differ from ImportPath when the entity
@@ -364,6 +371,7 @@ func ExtractMockTransportEntities(services []ServiceDef, entities []EntityDef) [
 				HasCreate:          page.HasCreate,
 				HasUpdate:          page.HasUpdate,
 				HasDelete:          page.HasDelete,
+				ItemsField:         page.ItemsField,
 				ImportPath:         importPath,
 				EntityImportPath:   entityImportPath,
 				TypeImport:         page.EntityName,

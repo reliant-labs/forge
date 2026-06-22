@@ -27,26 +27,28 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
-// Severity indicates how important a finding is.
-type Severity string
+// Severity and Finding now live in the shared internal/linter/finding
+// package — these aliases keep the historical scaffolds.* spellings
+// working for callers and tests. scaffold findings populate
+// Rule/Severity/Path/Message (Path, not File — scaffold rules are
+// whole-file, not line-scoped).
+type (
+	Severity = finding.Severity
+	Finding  = finding.Finding
+)
 
-// Severity enum values.
+// Severity enum values (aliases onto the canonical single-spelling set).
 const (
-	SeverityError   Severity = "error"
-	SeverityWarning Severity = "warning"
+	SeverityError   = finding.SeverityError
+	SeverityWarning = finding.SeverityWarning
 )
 
-// Finding represents a single lint finding.
-type Finding struct {
-	Rule     string   `json:"rule"`
-	Severity Severity `json:"severity"`
-	Path     string   `json:"path"`
-	Message  string   `json:"message"`
-}
-
-// Result holds all findings from a lint run.
+// Result holds all findings from a lint run. Distinct type (not an
+// alias) so scaffolds keeps its own FormatText.
 type Result struct {
 	Findings []Finding `json:"findings"`
 }

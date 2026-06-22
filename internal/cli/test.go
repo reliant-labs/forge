@@ -212,7 +212,7 @@ func runTestE2E(ctx context.Context, flags testFlags) error {
 func runGoTests(ctx context.Context, pkg string, extraArgs []string, flags testFlags) ([]testResult, error) {
 	// If --service is specified, scope to that service directory
 	if flags.service != "" {
-		svcDir := filepath.Join("handlers", flags.service)
+		svcDir := filepath.Join("internal", "handlers", flags.service)
 		if dirExists(svcDir) && hasGoFiles(svcDir) {
 			pkg = "./" + svcDir + "/..."
 		} else {
@@ -361,13 +361,13 @@ func runGoTestInDir(ctx context.Context, dir, pkg string, extraArgs []string, fl
 func discoverGoServices() []string {
 	var dirs []string
 
-	// Check handlers/ directory
-	if dirExists("handlers") {
-		entries, err := os.ReadDir("handlers")
+	// Check internal/handlers/ directory
+	if dirExists("internal/handlers") {
+		entries, err := os.ReadDir("internal/handlers")
 		if err == nil {
 			for _, e := range entries {
 				if e.IsDir() && e.Name() != "all" && e.Name() != "mocks" {
-					svcDir := filepath.Join("handlers", e.Name())
+					svcDir := filepath.Join("internal", "handlers", e.Name())
 					if hasGoFiles(svcDir) {
 						dirs = append(dirs, svcDir)
 					}
@@ -583,7 +583,7 @@ func emitCoverageReport(ctx context.Context) {
 // When only one profile is found at the root, this is a no-op success.
 func mergeCoverageProfiles(mergedPath string) error {
 	var profiles []string
-	roots := []string{".", "handlers", "internal", "pkg", "cmd"}
+	roots := []string{".", "internal", "pkg", "cmd"}
 	for _, root := range roots {
 		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil {

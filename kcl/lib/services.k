@@ -26,6 +26,24 @@ _managed_labels = lambda name: str -> {str: str} {
     }
 }
 
+# Collapse an EnvVar list to one entry per name, LAST-occurrence-wins.
+#
+# The common authoring pattern is `cfg.APP_ENV + [ ...per-service overrides ]`
+# (KCL `+` concatenates; the docs promise "KCL wins on conflict"). Without a
+# dedup the rendered container env carries BOTH entries for an overridden key,
+# and kubectl server-side apply REJECTS the Deployment: "duplicate entries for
+# key [name=...]". Keep the last occurrence so a per-service override (e.g. a
+# plain value) supersedes the base (e.g. an APP_ENV secretKeyRef) exactly the
+# way the host-mode env layering already resolves it — one consistent rule
+# across host and cluster.
+_dedup_env_vars = lambda evs: [any] -> [any] {
+    [
+        evs[i] for i in range(len(evs))
+        # include this entry only if no LATER entry shares its name
+        if len([1 for j in range(i + 1, len(evs)) if evs[j].name == evs[i].name]) == 0
+    ]
+}
+
 _env_source = lambda ev: any -> any {
     {
         name = ev.name
@@ -216,7 +234,7 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
                             ]
                             resources = _resource_block(_resources)
                             if svc.env_vars:
-                                env = [_env_source(e) for e in svc.env_vars]
+                                env = [_env_source(e) for e in _dedup_env_vars(svc.env_vars)]
                             securityContext = _default_container_security_context
                             if _volumes:
                                 volumeMounts = [_volume_mount(v) for v in _volumes]
@@ -274,7 +292,7 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
                 if cj.command:
                     command = cj.command
                 if cj.env_vars:
-                    env = [_env_source(e) for e in cj.env_vars]
+                    env = [_env_source(e) for e in _dedup_env_vars(cj.env_vars)]
                 securityContext = _default_container_security_context
                 if _volumes:
                     volumeMounts = [_volume_mount(v) for v in _volumes]
@@ -321,7 +339,7 @@ render_operator = lambda op: any, namespace: str, image_registry: str, image_tag
     _leader_env_dict = [
         {name = "LEADER_ELECTION", value = "true"}
     ] if op.leader_election else []
-    _user_env = [_env_source(e) for e in op.env_vars]
+    _user_env = [_env_source(e) for e in _dedup_env_vars(op.env_vars)]
     _all_env = _user_env + _leader_env_dict
     _volumes = op.volumes if op.volumes else []
     [{

@@ -29,10 +29,10 @@ import (
 	"io"
 	"net"
 	"os"
-	"strconv"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,8 +40,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/envutil"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/secrets"
@@ -55,6 +57,7 @@ type upOptions struct {
 	clusterOnly bool // build + deploy cluster manifests, skip host/frontend
 	hostOnly    bool // skip cluster build+deploy, run host + frontend phases only
 	background  bool // detach and write PID files; use `forge up stop --env=<env>` to teardown
+	watch       bool // force supervise (hold + Ctrl-C teardown) even without a TTY
 	restart     bool // stop any stack already running for this env first, then up
 	noGenerate  bool // skip the pre-build "ensure generated code" step (--no-generate)
 	noInstall   bool // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
@@ -106,14 +109,29 @@ Use --no-build / --no-deploy to skip phases when iterating. Use
 --cluster-only / --host-only to scope the orchestrator to one side of
 the split (cluster CI / host-only debugging respectively).
 
-With --background, the orchestrator detaches every long-running child
-under ~/.cache/forge/up/<env>/ and returns immediately. Use
-` + "`forge up stop --env=<env>`" + ` to terminate the tracked PIDs.
+Lifecycle (what happens after host services + frontends start):
+
+  * With a TTY (interactive shell): forge holds the foreground and
+    tears the whole stack down on Ctrl-C.
+  * Without a TTY (agent / CI / piped): forge brings everything up,
+    prints the summary (URLs + per-service log paths), and RETURNS,
+    leaving the processes running — the same end-state as --background.
+    This is what keeps ` + "`forge up --env=<env>`" + ` from hanging an agent.
+  * --watch forces the hold-and-teardown lifecycle even without a TTY
+    (for a human piping the output through a tool).
+  * --background always detaches and returns immediately, regardless of
+    the TTY. If both --watch and --background are passed, --background
+    wins (detach + return).
+
+Either way the long-running children are tracked under
+~/.cache/forge/up/<env>/; stop a detached / non-TTY stack with
+` + "`forge up stop --env=<env>`" + `.
 
 Examples:
   forge up --env=dev
   forge up --env=dev --no-build
   forge up --env=dev --cluster-only
+  forge up --env=dev --watch        # hold + Ctrl-C teardown even when piped
   forge up --env=dev --background
   forge up stop --env=dev`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -122,6 +140,14 @@ Examples:
 			}
 			if opts.clusterOnly && opts.hostOnly {
 				return fmt.Errorf("--cluster-only and --host-only are mutually exclusive")
+			}
+			// --watch and --background both override the TTY default, in
+			// opposite directions (hold vs detach). They are not combinable:
+			// resolveUpLifecycle documents --background as the winner, but a
+			// user passing both almost certainly has a mistaken mental model,
+			// so reject it loudly rather than silently picking one.
+			if opts.watch && opts.background {
+				return fmt.Errorf("--watch and --background are mutually exclusive (--watch holds the foreground; --background detaches and returns)")
 			}
 			return runUp(cmd.Context(), opts)
 		},
@@ -132,7 +158,8 @@ Examples:
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
 	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend")
 	cmd.Flags().BoolVar(&opts.hostOnly, "host-only", false, "Only run host phases (host + frontend); skip build/deploy")
-	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge up stop --env=<env>`)")
+	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge up stop --env=<env>`). Beats --watch and the TTY default.")
+	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Force the hold-and-teardown lifecycle (block until Ctrl-C, then cascade-stop) even without a TTY. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
 	cmd.Flags().BoolVar(&opts.restart, "restart", false, "If a stack is already running for this env, stop it (whole process tree) and bring it back up, instead of erroring on the port conflict")
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default `forge up` installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
@@ -206,20 +233,27 @@ func runUp(ctx context.Context, opts upOptions) error {
 	}
 	summarizeKCLBuildPlan(entities)
 
+	// Derive this run's scope (which phases execute) from --cluster-only /
+	// --host-only. scope is the single source of truth the phase gates below
+	// read, instead of re-testing the raw flags at each site — and the seam
+	// where a future entity kind (e.g. Terraform infra) becomes one more
+	// scope field + gated block rather than another scattered conditional.
+	scope := upScope(opts.clusterOnly, opts.hostOnly)
+
 	// Build the per-env secret provider ONCE for this run (dotenv reads
 	// the file now; external/none are cheap no-ops). Reused for both the
 	// fail-fast validation below and the host-service env injection in
 	// upHostServices — building it here avoids re-reading the dotenv per
-	// service. Unless --cluster-only, the host phase WILL run, so validate
-	// up front that every host service's declared secret_ref resolves
-	// against the provider before any process starts. ValidateDeclaredRefs
-	// is a no-op for external/none providers, so this only bites a dotenv
+	// service. When the host phase is in scope it WILL run, so validate up
+	// front that every host service's declared secret_ref resolves against
+	// the provider before any process starts. ValidateDeclaredRefs is a
+	// no-op for external/none providers, so this only bites a dotenv
 	// provider missing a declared key (and lists every miss at once).
 	prov, err := secretProviderFromEntities(entities, projectDir)
 	if err != nil {
 		return fmt.Errorf("secret provider: %w", err)
 	}
-	if !opts.clusterOnly {
+	if scope.host {
 		dotenvPath := ""
 		if entities.SecretProvider != nil {
 			dotenvPath = entities.SecretProvider.Path
@@ -236,7 +270,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// `forge deploy` invocations still error — see requireFeature
 	// in feature_gate.go for the strict-gate shape used by the cobra
 	// RunE for those commands.
-	if !opts.hostOnly {
+	if scope.cluster {
 		// Kick off the docker-compose infra (postgres/nats/temporal/...)
 		// NOW, concurrent with the build phase. Image pulls + container
 		// health warmup are the long pole on a warm `up` and are wholly
@@ -249,7 +283,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 		// when the deploy phase won't run (--no-deploy): nothing would
 		// consume the infra and nothing later barriers on it.
 		var infraWarm chan error
-		if !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:infra") {
+		if scope.composeInfra && !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:infra") {
 			infraWarm = make(chan error, 1)
 			go func() {
 				fmt.Println("\n[up] infra phase (compose — concurrent with build)")
@@ -276,16 +310,21 @@ func runUp(ctx context.Context, opts upOptions) error {
 		if !opts.noDeploy {
 			if !skipFeature(store, config.FeatureDeploy, "up:deploy") {
 				fmt.Println("\n[up] deploy phase")
-				if err := upDeployCluster(ctx, opts.env); err != nil {
+				// Cluster reconcile through the SAME named entry point
+				// `forge deploy` uses. `up`'s cluster step carries a
+				// scope-derived (zero-value) deployOptions — no surgical
+				// knobs today — instead of a blank `deployOptions{}` literal
+				// standing in for "deploy with no options."
+				if err := reconcileCluster(ctx, opts.env, deployOptions{}); err != nil {
 					return fmt.Errorf("deploy: %w", err)
 				}
 			}
 		}
 	}
 
-	// --cluster-only stops here: skip the host/frontend phases. Useful
-	// for CI lanes that only care about the apply.
-	if opts.clusterOnly {
+	// Nothing left to run once neither host nor frontend is in scope — the
+	// --cluster-only case. Return after the apply; no processes to supervise.
+	if !scope.host && !scope.frontend {
 		fmt.Println("\n[up] --cluster-only: skipping host/frontend phases")
 		return nil
 	}
@@ -296,7 +335,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// with the same "cannot load module gen" error the build phase would
 	// have pre-empted. No-op when up-to-date or --no-generate. (The
 	// non-skipped path already ran this inside runBuild.)
-	if opts.hostOnly || opts.noBuild {
+	if !scope.cluster || opts.noBuild {
 		if err := ensureGeneratedCode(projectDirForKCL(), opts.noGenerate); err != nil {
 			return fmt.Errorf("ensure generated code: %w", err)
 		}
@@ -350,6 +389,21 @@ func runUp(ctx context.Context, opts upOptions) error {
 		}
 	}
 
+	// Resolve the lifecycle (Part B): supervise (hold + Ctrl-C teardown)
+	// vs once (start, persist PIDs, return). `up`'s default is auto —
+	// resolved here by the TTY check so an agent / CI `forge up` doesn't
+	// hang on the interactive hold. --background and --watch override the
+	// default (--background wins if somehow both set; rejected upstream).
+	// `detach` collapses the lifecycle to the single behaviour the host
+	// phase + summary need: a "once" run detaches every child (log files,
+	// Process.Release, no foreground hold) so the stack OUTLIVES this
+	// process, exactly as --background always has; a "supervise" run keeps
+	// the live prefixed streams and holds. detach is true for BOTH the
+	// explicit --background and the non-TTY default — they share the
+	// return path verbatim.
+	lifecycle := resolveUpLifecycle(cliutil.StdinIsTTY(), opts.watch, opts.background)
+	detach := lifecycle == lifecycleOnce
+
 	// Host phases — host services + frontends. These are tracked under
 	// the orchestrator's child-process registry so Ctrl-C tears them
 	// all down together.
@@ -357,33 +411,35 @@ func runUp(ctx context.Context, opts upOptions) error {
 	defer procs.shutdownOnExit()
 
 	// Phase 3: host-mode services.
-	hostFailures := upHostServices(ctx, cfg, entities, prov, opts.env, opts.background, opts.targets, procs)
-	if hostFailures > 0 {
-		fmt.Printf("[up] %d host service(s) failed to start (see above)\n", hostFailures)
+	if scope.host {
+		hostFailures := upHostServices(ctx, cfg, entities, prov, opts.env, detach, opts.targets, procs)
+		if hostFailures > 0 {
+			fmt.Printf("[up] %d host service(s) failed to start (see above)\n", hostFailures)
+		}
 	}
 
-	// Phase 4: frontends. Skipped (with a log line) when
-	// features.frontend: false — the orchestrator otherwise tries to
-	// npm-run-dev a tree that the project never scaffolded.
-	if !skipFeature(store, config.FeatureFrontend, "up:frontend") {
-		feFailures := upFrontends(ctx, entities, opts.env, opts.background, opts.noInstall, opts.targets, procs)
+	// Phase 4: frontends. In scope unless --cluster-only; further skipped
+	// (with a log line) when features.frontend: false — the orchestrator
+	// otherwise tries to npm-run-dev a tree that the project never scaffolded.
+	if scope.frontend && !skipFeature(store, config.FeatureFrontend, "up:frontend") {
+		feFailures := upFrontends(ctx, entities, opts.env, detach, opts.noInstall, opts.targets, procs)
 		if feFailures > 0 {
 			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
 		}
 	}
 
 	// Summary box: what's listening where, and where to find each
-	// service's log. Printed in both foreground and background so the
+	// service's log. Printed in both the supervise and detach paths so the
 	// URLs + log paths are one glance away (and greppable for an agent).
-	printUpSummary(entities, opts.env, opts.background, opts.targets)
+	printUpSummary(entities, opts.env, detach, opts.targets)
 
-	// Persist the per-env lock (tracked PIDs) for BOTH foreground and
-	// background, so a concurrent `forge up` for this env detects the running
-	// stack and `forge up stop` works. Foreground removes it again on
-	// shutdown (procs.shutdown / shutdownOnExit).
+	// Persist the per-env lock (tracked PIDs) for BOTH the supervise and
+	// detach paths, so a concurrent `forge up` for this env detects the
+	// running stack and `forge up stop` works. The supervise path removes
+	// it again on shutdown (procs.shutdown / shutdownOnExit).
 	procs.persist()
 
-	if opts.background {
+	if detach {
 		fmt.Printf("[up] detached %d process(es). Stop with `forge up stop --env=%s`.\n",
 			procs.count(), opts.env)
 		return nil
@@ -645,11 +701,16 @@ func prewarmComposeInfra(ctx context.Context, env string, entities *KCLEntities)
 	return nil
 }
 
-// upDeployCluster invokes runDeploy with the per-env defaults. The
-// deploy command itself reads KCL again to drive the rollout-wait
-// skip and one-shot Job dispatch (deliverable 4).
-func upDeployCluster(ctx context.Context, env string) error {
-	return runDeploy(ctx, env, deployOptions{})
+// reconcileCluster is the cluster-scope reconcile entry point shared by
+// `forge deploy` and `forge up`'s deploy phase: render the env's KCL,
+// resolve context / namespace / secrets, and apply the in-cluster
+// workloads + External/Compose deploy targets. opts carries the surgical
+// knobs (tag / rollback / prune / dry-run / context override / targets /
+// skip-frontend); `forge deploy` fills it from its flags, `forge up` passes
+// the zero value (no knobs). Both reach the SAME pipeline — there is no
+// longer a blank-`deployOptions{}` literal hiding the up-vs-deploy seam.
+func reconcileCluster(ctx context.Context, env string, opts deployOptions) error {
+	return runDeploy(ctx, env, opts)
 }
 
 // upHostServices starts every host-mode service as a child process,
@@ -724,6 +785,9 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 		WorkingDir: host.WorkingDir,
 		ProjectDir: projectDirForKCL(),
 		Command:    svc.Command,
+		// go-run target = the service's KCL GoBuild.cmd (the same package
+		// `forge build` compiles), not a hardcoded ./cmd.
+		GoRunCmd: goRunCmdForService(svc),
 	}
 	cmd := hostlaunch.BuildCmd(ctx, svc.Name, spec)
 
@@ -887,7 +951,7 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	// explicit per-env KCL config beats the generic env-file, the
 	// developer's shell can still override, and the KCL port binding wins
 	// last. Missing env-file is non-fatal (nil map collapses to no-op).
-	envFileMap, _ := hostlaunch.ReadDotEnvFile(envFile)
+	envFileMap, _ := envutil.ParseDotEnv(envFile)
 	cmd.Env = hostlaunch.LayerHostEnv(parentEnv, envFileMap, nil, kclEnvVarsToMap(fe.EnvVars))
 
 	if fe.Port > 0 {

@@ -5,7 +5,7 @@
 #
 # Adjust thresholds for your project:
 #   Stricter (CRUD APIs):    cyclop 12, funlen 60, gocognit 15
-#   Looser (operators/billing): cyclop 20, funlen 120, gocognit 30
+#   Looser (internal/operators/billing): cyclop 20, funlen 120, gocognit 30
 # Use path-based exclusions for complex subsystems rather than raising
 # global thresholds.
 
@@ -34,6 +34,15 @@ linters:
     - gocognit      # cognitive complexity (subjectively closer to readability)
     - nestif        # block-nesting depth
     - interfacebloat # cap interface method count
+{{- if eq .TypedAccessGuard "error"}}
+    # Typed-config guardrail (config.enforce_typed_access: error) — GATING:
+    # os.Getenv / os.LookupEnv / os.Environ fail the build. Enabling forbidigo
+    # HERE is what gates it: a plain `golangci-lint run` (the command CI runs
+    # directly) fails on these findings. In `warn` mode forbidigo is
+    # intentionally absent from this list and `forge lint` runs it as a
+    # separate advisory (non-failing) step instead.
+    - forbidigo
+{{- end}}
   settings:
     govet:
       enable-all: true
@@ -104,6 +113,55 @@ linters:
         # `hugeParam` flags struct-by-value args >80 bytes; we routinely
         # pass *Request / Deps structs by value as a deliberate API choice.
         - hugeParam
+{{- if .TypedAccessGuard}}
+    forbidigo:
+      # Typed-config guardrail (forge.yaml: config.enforce_typed_access).
+      # Steers humans and LLMs away from reading the environment directly and
+      # toward forge's generated, dependency-injected typed config object.
+      # The allowlisted loader package ({{.LoaderPackage}}) is excluded under
+      # `exclusions.rules` below.
+{{- if eq .TypedAccessGuard "warn"}}
+      # ADVISORY mode. forbidigo is deliberately ABSENT from `linters.enable`
+      # above, so a plain `golangci-lint run` — the command CI invokes
+      # directly via golangci-lint-action — never fails on these findings.
+      # `linters.enable` membership IS the gate, and CI is the consumer, which
+      # is why the warn/error switch lives here (in this file) rather than in
+      # `forge lint`. `forge lint` re-runs forbidigo as a separate non-failing
+      # step (--enable-only=forbidigo --issues-exit-code=0) so the findings are
+      # still visible locally. To make them GATE the build, set
+      # `config.enforce_typed_access: error` in forge.yaml, then re-render this
+      # file (it is scaffold-once / user-owned — `rm .golangci.yml && forge
+      # upgrade`, or `forge upgrade --force` if you have no local edits).
+{{- end}}
+      forbid:
+        - pattern: 'os\.Getenv'
+          msg: >-
+            Read configuration from the injected forge config object, not the
+            environment directly. Declare new settings in
+            proto/config/v1/*.proto with the (forge.v1.config) annotation, then
+            run `forge generate` — forge produces a typed loader (pkg/config),
+            fails fast when a required value is missing, and wires secrets
+            automatically. To opt out: add //nolint:forbidigo on this line, or
+            set config.enforce_typed_access to warn/off in forge.yaml.
+        - pattern: 'os\.LookupEnv'
+          msg: >-
+            Read configuration from the injected forge config object, not the
+            environment directly. Declare new settings in
+            proto/config/v1/*.proto with the (forge.v1.config) annotation, then
+            run `forge generate` — forge produces a typed loader (pkg/config),
+            fails fast when a required value is missing, and wires secrets
+            automatically. To opt out: add //nolint:forbidigo on this line, or
+            set config.enforce_typed_access to warn/off in forge.yaml.
+        - pattern: 'os\.Environ'
+          msg: >-
+            Read configuration from the injected forge config object, not the
+            environment directly. Declare new settings in
+            proto/config/v1/*.proto with the (forge.v1.config) annotation, then
+            run `forge generate` — forge produces a typed loader (pkg/config),
+            fails fast when a required value is missing, and wires secrets
+            automatically. To opt out: add //nolint:forbidigo on this line, or
+            set config.enforce_typed_access to warn/off in forge.yaml.
+{{- end}}
   exclusions:
     paths:
       - gen
@@ -125,12 +183,20 @@ linters:
           - cyclop
           - gocognit
           - funlen
-      - path: operators/
+      - path: internal/operators/
         linters:
           - funlen
           - gocognit
           - nestif
           - cyclop
+{{- if .TypedAccessGuard}}
+      # The generated config loader is the ONE package allowed to read the
+      # environment directly (os.Getenv / os.LookupEnv); the typed-access
+      # guardrail allowlists it so the loader itself is not flagged.
+      - path: ^{{.LoaderPackage}}/
+        linters:
+          - forbidigo
+{{- end}}
 
 formatters:
   enable:

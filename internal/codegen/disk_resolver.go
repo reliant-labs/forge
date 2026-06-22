@@ -216,7 +216,7 @@ func ResolveServiceComponent(projectDir, svcName string) (ResolvedComponent, err
 	if trimmed == "" {
 		trimmed = svcName
 	}
-	return ResolveComponentDir(projectDir, "handlers", trimmed)
+	return ResolveComponentDir(projectDir, "internal/handlers", trimmed)
 }
 
 // ParsePackageClause returns the Go package name declared by the .go

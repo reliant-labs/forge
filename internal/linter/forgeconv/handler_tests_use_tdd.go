@@ -46,11 +46,11 @@ import (
 // LintHandlerTests walks rootDir/handlers/ for *_test.go files and warns
 // when each looks like the hand-rolled `tests := []struct{name, call}`
 // shape rather than `tdd.RunRPCCases`. Returns findings in deterministic
-// order (file, then line). A missing handlers/ directory is not an error
-// — projects without a handlers/ tree (CLI, library kinds) get an empty
+// order (file, then line). A missing internal/handlers/ directory is not an error
+// — projects without an internal/handlers/ tree (CLI, library kinds) get an empty
 // result.
 func LintHandlerTests(rootDir string) (Result, error) {
-	handlersDir := filepath.Join(rootDir, "handlers")
+	handlersDir := filepath.Join(rootDir, "internal", "handlers")
 	if _, err := os.Stat(handlersDir); os.IsNotExist(err) {
 		return Result{}, nil
 	}

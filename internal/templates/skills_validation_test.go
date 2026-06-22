@@ -15,7 +15,7 @@
 //  3. `(forge.v1.<ext>) = { ... }` annotation literals (and dotted
 //     `(forge.v1.<ext>).<field>` references) must use field names that
 //     exist on the real annotation payload messages. Truth source: the
-//     protoreflect descriptors of internal/gen/forge/v1 (generated from
+//     protoreflect descriptors of pkg/forgepb (generated from
 //     internal/assets/proto/forge/v1/forge.proto), so a schema change
 //     that strands the skills fails here. Enum-valued fields (e.g.
 //     `store:`) must use enum value names, bool fields must get
@@ -43,9 +43,9 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/reliant-labs/forge/internal/cli"
-	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
+	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 )
 
 // ─── shared fixtures ────────────────────────────────────────────────────
@@ -264,11 +264,11 @@ var knownDotForgeEntries = map[string]bool{
 	// checksums.json is the DEAD legacy manifest — still referenced by
 	// migration docs (forge reads + deletes it during the one-time
 	// migration), so it stays a known entry.
-	"checksums.json": true,
-	"disowned.json":  true,
-	"hashes.json":    true,
-	"render":         true,
-	"friction.jsonl": true,
+	"checksums.json":        true,
+	"disowned.json":         true,
+	"hashes.json":           true,
+	"render":                true,
+	"friction.jsonl":        true,
 	"skills":                true,
 	"state":                 true,
 	"logs":                  true, // forge up writes per-service logs to .forge/logs/<env>/<name>.log
@@ -414,7 +414,7 @@ func TestSkillsPathReferencesExist(t *testing.T) {
 // annotationDescriptors maps the extension names skills use —
 // (forge.v1.entity) etc. — to the protoreflect descriptors of their real
 // payload messages. These descriptors come from the generated package
-// internal/gen/forge/v1, itself generated from
+// pkg/forgepb, itself generated from
 // internal/assets/proto/forge/v1/forge.proto, so the schema is the truth:
 // renaming/removing a proto field makes any skill that still documents
 // the old name fail here.
@@ -890,9 +890,11 @@ func TestSkillsValidatorsCatchKnownBadClaims(t *testing.T) {
 		}
 	}
 
-	// Dotted references to nonexistent fields must be flagged.
-	if vs := scanAnnotationRegion("(forge.v1.method).required_roles", descs); len(vs) == 0 {
-		t.Error("annotation validator accepted dotted reference to nonexistent field (forge.v1.method).required_roles")
+	// Dotted references to nonexistent fields must be flagged. (required_roles
+	// is now a REAL method option — the descriptor-driven authz field — so this
+	// negative case uses a field that genuinely does not exist on MethodOptions.)
+	if vs := scanAnnotationRegion("(forge.v1.method).nonexistent_field", descs); len(vs) == 0 {
+		t.Error("annotation validator accepted dotted reference to nonexistent field (forge.v1.method).nonexistent_field")
 	}
 }
 

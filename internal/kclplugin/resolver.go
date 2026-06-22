@@ -147,6 +147,3 @@ var defaultResolver = NewPortResolver()
 // the dev-launch path — not for read-only renders like `forge ci`, which
 // shouldn't write a ports file. Safe to call repeatedly.
 func UsePortStore(path string) { defaultResolver = NewPersistentPortResolver(path) }
-
-// ResetForTest clears the default resolver's allocations. Test-only.
-func ResetForTest() { defaultResolver = NewPortResolver() }

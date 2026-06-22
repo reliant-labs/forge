@@ -47,7 +47,12 @@ func TestFirebaseDryRunPlan(t *testing.T) {
 	prov := FirebaseProvider{ProjectDir: projectDir, Runner: fake, StagingRoot: staging}
 
 	out := captureStdout(t, func() {
-		if err := prov.Deploy(context.Background(), []FirebaseFrontend{fakeFirebaseFrontend(projectDir, staging)}, true); err != nil {
+		group := ServiceGroup{
+			ProviderID: prov.Name(),
+			Frontends:  []FirebaseFrontend{fakeFirebaseFrontend(projectDir, staging)},
+			DryRun:     true,
+		}
+		if err := prov.Deploy(context.Background(), group); err != nil {
 			t.Fatalf("dry-run deploy: %v", err)
 		}
 	})
@@ -94,7 +99,7 @@ func TestFirebaseAssembleLayout(t *testing.T) {
 	prov := FirebaseProvider{ProjectDir: projectDir, Runner: fake, StagingRoot: staging}
 
 	fe := fakeFirebaseFrontend(projectDir, staging)
-	if err := prov.Deploy(context.Background(), []FirebaseFrontend{fe}, false); err != nil {
+	if err := prov.Deploy(context.Background(), ServiceGroup{ProviderID: prov.Name(), Frontends: []FirebaseFrontend{fe}}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 
@@ -159,7 +164,7 @@ func TestFirebaseTargetDefaultsToSite(t *testing.T) {
 	}
 	fake := &fakeRunner{}
 	prov := FirebaseProvider{ProjectDir: projectDir, Runner: fake, StagingRoot: staging}
-	if err := prov.Deploy(context.Background(), []FirebaseFrontend{fe}, false); err != nil {
+	if err := prov.Deploy(context.Background(), ServiceGroup{ProviderID: prov.Name(), Frontends: []FirebaseFrontend{fe}}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	// public_dir at the root (no base_path), no /admin mount.

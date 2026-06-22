@@ -9,9 +9,9 @@ import (
 )
 
 // GenerateOperatorFiles generates all files for a single operator:
-//   - operators/<package>/types.go           (from operator/types.go.tmpl)
-//   - operators/<package>/controller.go      (from operator/controller.go.tmpl)
-//   - operators/<package>/controller_test.go (from operator/controller_test.go.tmpl)
+//   - internal/operators/<package>/types.go           (from operator/types.go.tmpl)
+//   - internal/operators/<package>/controller.go      (from operator/controller.go.tmpl)
+//   - internal/operators/<package>/controller_test.go (from operator/controller_test.go.tmpl)
 //
 // The CLI/display name (which may contain hyphens) is translated to a
 // Go-package-safe form for the directory and `package` declaration.
@@ -37,7 +37,7 @@ func GenerateOperatorFiles(root, modulePath, name, group, version string) error 
 // PascalCase(name) otherwise (preserving original behaviour).
 func GenerateOperatorFilesWithAPI(root, modulePath, name, group, version, apiPackage, crdType string) error {
 	operatorPackage := naming.ServicePackage(name)
-	operatorDir := filepath.Join(root, "operators", operatorPackage)
+	operatorDir := filepath.Join(root, "internal", "operators", operatorPackage)
 
 	if err := os.MkdirAll(operatorDir, 0755); err != nil {
 		return fmt.Errorf("create directory %s: %w", operatorDir, err)

@@ -12,6 +12,7 @@
 //	forgeconv-pk-annotation          fields named `id` need `pk: true` (or message must mark some field PK)
 //	forgeconv-timestamps             `*_at` Timestamp fields need entity timestamps:true OR field-level annotation
 //	forgeconv-tenant-annotation      tenant-shaped field names need `tenant: true` when entity is tenant-scoped
+//	forgeconv-method-auth-annotation each RPC declares its auth posture via (forge.v1.method); auth-by-omission is a security hazard
 //
 // The package exposes a single LintProtoTree entry point that takes a
 // project root (or any directory containing .proto files) and returns a
@@ -27,29 +28,29 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
-// Severity classifies a finding. Errors fail `forge lint`; warnings are
-// printed but don't gate the build.
-type Severity string
+// Severity and Finding now live in the shared internal/linter/finding
+// package — these aliases keep the historical forgeconv.* spellings
+// working for callers and tests while the underlying vocabulary is
+// single-sourced. forgeconv findings populate
+// Rule/Severity/File/Line/Message/Remediation.
+type (
+	Severity = finding.Severity
+	Finding  = finding.Finding
+)
 
-// Severity enum values.
+// Severity enum values (aliases onto the canonical single-spelling set).
 const (
-	SeverityError   Severity = "error"
-	SeverityWarning Severity = "warning"
+	SeverityError   = finding.SeverityError
+	SeverityWarning = finding.SeverityWarning
 )
 
-// Finding is a single lint diagnostic against a proto file.
-type Finding struct {
-	Rule        string   `json:"rule"`
-	Severity    Severity `json:"severity"`
-	File        string   `json:"file"`
-	Line        int      `json:"line"` // 1-indexed; 0 if file-level
-	Message     string   `json:"message"`
-	Remediation string   `json:"remediation,omitempty"`
-}
-
-// Result aggregates findings from a single lint run.
+// Result aggregates findings from a single lint run. It is a distinct
+// type (not an alias) so forgeconv can hang its own FormatText rendering
+// on it; the finding vocabulary inside is the shared one.
 type Result struct {
 	Findings []Finding `json:"findings"`
 }
@@ -90,11 +91,32 @@ func (r Result) FormatText() string {
 	return sb.String()
 }
 
-// LintProtoTree walks rootDir for .proto files and runs every analyzer.
-// Files under proto/forge/ (vendored forge annotation protos) are
-// skipped — they're external definitions, not user code. Returns a
-// deterministic Result ordered by (file, line, rule).
+// LintOptions tunes the proto convention analyzers. The zero value is
+// the default (advisory) posture; callers opt into stricter gating.
+type LintOptions struct {
+	// Strict escalates advisory security findings to errors. Today this
+	// flips forgeconv-method-auth-annotation from warning to error so a
+	// missing `(forge.v1.method)` annotation fails `forge lint --strict`
+	// (and, by extension, CI). The default keeps it a warning so the rule
+	// can land without breaking existing trees on day one — see
+	// FORGE_SHAPE_REDESIGN §7e (auth-by-omission is a security hazard;
+	// the long-term intent is default-deny / required annotation).
+	Strict bool
+}
+
+// LintProtoTree walks rootDir for .proto files and runs every analyzer
+// in the default (advisory) posture. Thin wrapper over LintProtoTreeOpts
+// kept for the existing call sites + tests.
 func LintProtoTree(rootDir string) (Result, error) {
+	return LintProtoTreeOpts(rootDir, LintOptions{})
+}
+
+// LintProtoTreeOpts walks rootDir for .proto files and runs every
+// analyzer with the supplied options. Files under proto/forge/ (vendored
+// forge annotation protos) are skipped — they're external definitions,
+// not user code. Returns a deterministic Result ordered by
+// (file, line, rule).
+func LintProtoTreeOpts(rootDir string, opts LintOptions) (Result, error) {
 	var protoFiles []string
 	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -138,7 +160,7 @@ func LintProtoTree(rootDir string) (Result, error) {
 		if relErr != nil {
 			rel = file
 		}
-		result.Findings = append(result.Findings, lintProtoFile(rel, string(content))...)
+		result.Findings = append(result.Findings, lintProtoFile(rel, string(content), opts)...)
 	}
 
 	// Stable ordering: by file, then line, then rule.
@@ -158,7 +180,7 @@ func LintProtoTree(rootDir string) (Result, error) {
 // lintProtoFile runs every rule against the parsed view of one .proto
 // file. Exposed for testability (the test suite renders fake proto
 // content via this function rather than going through filesystem walk).
-func lintProtoFile(relPath, content string) []Finding {
+func lintProtoFile(relPath, content string, opts LintOptions) []Finding {
 	var findings []Finding
 	pf := parseProtoFile(relPath, content)
 
@@ -166,6 +188,7 @@ func lintProtoFile(relPath, content string) []Finding {
 	findings = append(findings, checkPKAnnotation(pf)...)
 	findings = append(findings, checkTimestampAnnotation(pf)...)
 	findings = append(findings, checkTenantAnnotation(pf)...)
+	findings = append(findings, checkMethodAuthAnnotation(pf, opts)...)
 
 	return findings
 }
@@ -362,6 +385,51 @@ func isTenantShapedFieldName(name string) bool {
 		name == "account_id" || name == "workspace_id"
 }
 
+// ─── Rule 5: every RPC declares its auth posture ─────────────────────────────
+//
+// Auth-by-omission is a security hazard (FORGE_SHAPE_REDESIGN §7e): when
+// an RPC carries no `(forge.v1.method)` annotation, the auth posture is
+// implicit. forge's descriptor parser defaults unannotated methods to
+// fail-closed (auth_required = true), so the *runtime* default is safe —
+// but the proto then SAYS NOTHING about intent, and a reviewer can't tell
+// "deliberately authenticated" from "nobody thought about it." A PUBLIC
+// endpoint shipped by forgetting the annotation is the dangerous case the
+// inverse can't catch: the proto reads identically whether the author
+// meant public-by-mistake or authenticated-by-default.
+//
+// The rule therefore requires EVERY RPC to declare the annotation
+// explicitly — `auth_required: true` for authenticated, `false` for
+// deliberately public. Default severity is warning so the rule can land
+// without breaking sparsely-annotated trees (control-plane today); strict
+// mode (`forge lint --strict`) escalates to error to gate CI on the
+// default-deny intent.
+func checkMethodAuthAnnotation(pf parsedProto, opts LintOptions) []Finding {
+	severity := SeverityWarning
+	if opts.Strict {
+		severity = SeverityError
+	}
+	var findings []Finding
+	for _, svc := range pf.Services {
+		for _, m := range svc.Methods {
+			if m.HasMethodAnnotation {
+				continue
+			}
+			findings = append(findings, Finding{
+				Rule:     "forgeconv-method-auth-annotation",
+				Severity: severity,
+				File:     pf.Path,
+				Line:     m.Line,
+				Message: fmt.Sprintf(
+					"RPC %q in service %q declares no `(forge.v1.method)` annotation; its auth posture is implicit (forge defaults to auth-required, but the proto records no intent — auth-by-omission is a security hazard)",
+					m.Name, svc.Name),
+				Remediation: "declare the posture explicitly: `option (forge.v1.method) = { auth_required: true };` " +
+					"for an authenticated RPC, or `{ auth_required: false }` for a deliberately public one",
+			})
+		}
+	}
+	return findings
+}
+
 // ─── proto file mini-parser ──────────────────────────────────────────────────
 //
 // Full proto parsing requires a dependency on a proto AST library; for
@@ -383,6 +451,22 @@ type parsedProto struct {
 type protoService struct {
 	Name string
 	Line int
+	// Methods lists the RPC declarations inside this service block, with
+	// per-method auth-annotation presence. Used by the method-auth rule.
+	Methods []protoMethod
+}
+
+// protoMethod is one `rpc Name(Req) returns (Resp)` declaration. The
+// linter tracks only whether a `(forge.v1.method)` option block is
+// present — auth posture (auth_required true/false) is read from the
+// real descriptor at generate time; the lint only guards against the
+// annotation being ABSENT entirely (auth-by-omission).
+type protoMethod struct {
+	Name string
+	Line int
+	// HasMethodAnnotation is true when the RPC body declares
+	// `option (forge.v1.method) = { ... }` (the auth-posture marker).
+	HasMethodAnnotation bool
 }
 
 type protoMessage struct {
@@ -424,8 +508,13 @@ var (
 	// Field declaration: optional `optional`/`repeated` qualifier, type,
 	// name, `=`, number. Trailing `[ ... ]` annotation block (if any) is
 	// captured separately by the line-aggregation logic below.
-	reField          = regexp.MustCompile(`^\s*(?:(?:optional|repeated)\s+)?([\w.]+)\s+(\w+)\s*=\s*(\d+)`)
-	rePKTrue         = regexp.MustCompile(`\bpk\s*:\s*true\b`)
+	reField = regexp.MustCompile(`^\s*(?:(?:optional|repeated)\s+)?([\w.]+)\s+(\w+)\s*=\s*(\d+)`)
+	// reRPC matches `rpc MethodName(` at the start of an RPC declaration.
+	// The remainder (request/response/options block) is handled by the
+	// brace/annotation scanner so multi-line RPC bodies are supported.
+	reRPC      = regexp.MustCompile(`^\s*rpc\s+(\w+)\s*\(`)
+	reMethodOpt = regexp.MustCompile(`\(forge\.v1\.method\)`)
+	rePKTrue    = regexp.MustCompile(`\bpk\s*:\s*true\b`)
 	reTenantTrue     = regexp.MustCompile(`\btenant\s*:\s*true\b`)
 	reTimestampTrue  = regexp.MustCompile(`\btimestamp\s*:\s*true\b`)
 	reTimestampsTrue = regexp.MustCompile(`\btimestamps\s*:\s*true\b`)
@@ -465,6 +554,18 @@ func parseProtoFile(path, content string) parsedProto {
 		messageBraceDepth int
 		inEntityOpts      bool
 		entityOptsDepth   int
+		// Service-block tracking: when inside a `service Foo { ... }` block
+		// we scan for `rpc` declarations and per-RPC `(forge.v1.method)`
+		// annotations so the method-auth rule can flag auth-by-omission.
+		inService         bool
+		currentService    *protoService
+		serviceBraceDepth int
+		// pendingRPC holds an RPC-in-progress whose options block may span
+		// multiple lines (`rpc X(..) returns (..) { option (...) = {..}; }`).
+		// We keep accumulating annotation presence until the RPC body
+		// closes (or, for single-line `rpc X(..) returns (..);`, immediately).
+		pendingRPC       *protoMethod
+		rpcBodyDepth     int
 		// pendingField holds a field-in-progress when the field's annotation
 		// (the [...] part) spans multiple lines.
 		pendingField        *protoField
@@ -496,16 +597,74 @@ func parseProtoFile(path, content string) parsedProto {
 		// practice but a common bad-fixture shape, and the smoke test
 		// in `forge lint`'s docs explicitly does this. Use FindAll so
 		// each service is recorded.
-		if !inMessage && braceDepth == 0 {
+		if !inMessage && !inService && braceDepth == 0 {
 			matches := reService.FindAllStringSubmatch(trimmed, -1)
 			if len(matches) > 0 {
 				for _, m := range matches {
 					pf.Services = append(pf.Services, protoService{Name: m[1], Line: lineNum})
 				}
-				braceDepth += strings.Count(line, "{")
-				braceDepth -= strings.Count(line, "}")
+				netBraces := strings.Count(line, "{") - strings.Count(line, "}")
+				// A single-line `service Foo {}` opens and closes on the
+				// same line — don't enter the block. Only the canonical
+				// multi-line form (net brace depth > 0) becomes the active
+				// service we scan RPCs inside; multi-service-per-line is a
+				// rule-1 violation anyway, so scan only the first.
+				if netBraces > 0 && len(matches) == 1 {
+					inService = true
+					currentService = &pf.Services[len(pf.Services)-1]
+					serviceBraceDepth = netBraces
+				} else {
+					braceDepth += netBraces
+				}
 				continue
 			}
+		}
+
+		// Inside a service block: scan for RPC declarations and per-RPC
+		// (forge.v1.method) annotations. RPC bodies may be single-line
+		// (`rpc X(..) returns (..);`) or span multiple lines with an
+		// `{ option (forge.v1.method) = {..}; }` body.
+		if inService {
+			netBraces := strings.Count(line, "{") - strings.Count(line, "}")
+			serviceBraceDepth += netBraces
+			// Continue accumulating an open RPC body's annotation presence.
+			if pendingRPC != nil {
+				if reMethodOpt.MatchString(line) {
+					pendingRPC.HasMethodAnnotation = true
+				}
+				rpcBodyDepth += netBraces
+				if rpcBodyDepth <= 0 {
+					currentService.Methods = append(currentService.Methods, *pendingRPC)
+					pendingRPC = nil
+					rpcBodyDepth = 0
+				}
+			} else if m := reRPC.FindStringSubmatch(trimmed); m != nil {
+				method := protoMethod{Name: m[1], Line: lineNum}
+				if reMethodOpt.MatchString(line) {
+					method.HasMethodAnnotation = true
+				}
+				// Count only braces that open the RPC body `{ ... }`, not
+				// the `( ... )` request/response parens. If the line has a
+				// net-positive brace depth the body is open across lines.
+				if netBraces > 0 {
+					pendingRPC = &method
+					rpcBodyDepth = netBraces
+				} else {
+					currentService.Methods = append(currentService.Methods, method)
+				}
+			}
+			// Leaving the service block.
+			if serviceBraceDepth <= 0 {
+				if pendingRPC != nil {
+					currentService.Methods = append(currentService.Methods, *pendingRPC)
+					pendingRPC = nil
+				}
+				inService = false
+				currentService = nil
+				serviceBraceDepth = 0
+				rpcBodyDepth = 0
+			}
+			continue
 		}
 
 		// Detect message blocks (top-level only — nested messages don't

@@ -3,13 +3,9 @@
 // Source: (forge.v1.method).auth_required annotations on RPC methods in
 // proto/services/{{.Package}}/v1/*.proto.
 //
-// NOTE: there is NO required_roles proto annotation — role policy is
-// code, not proto. To grant roles or customize access control, edit
-// handlers/{{.Package}}/authorizer.go (the user-owned sibling); do not
-// add role options to the proto, they don't exist. The shim below is
-// regenerated on every `forge generate`. All matching logic lives in
-// forge/pkg/authz; this file carries only the per-method data derived
-// from proto annotations.
+// Per-method data only; matching logic lives in forge/pkg/authz. Role
+// policy is code, not proto — edit the sibling authorizer.go to grant
+// roles. See the forge `auth` skill.
 package {{.Package}}
 
 import (
@@ -18,21 +14,10 @@ import (
 	"{{.Module}}/pkg/middleware"
 )
 
-// methodRoles is the per-method role allow-list. Proto annotations
-// cannot populate it (there is no required_roles option); every entry
-// is empty unless the user-owned authorizer.go layers role policy on
-// top. Empty slice → any authenticated user; missing entry → falls through to
-// authz.RolesDecider.Default (nil here, so unknown methods DENY — the
-// decider's zero-value FailMode is authz.FailClosed).
-//
-// Keys come in two spellings, both emitted from the same proto-derived
-// extraction so the key universe matches every generated call site:
-//
-//   - Connect procedure paths ("/pkg.v1.Svc/CreatePatient") — checked by
-//     the auth middleware via CanAccess.
-//   - "<action>:<resource>" pairs ("create:patient") — checked by the
-//     generated CRUD handler bodies via Can. Each alias carries the same
-//     roles/auth flags as its underlying RPC.
+// methodRoles is the per-method role allow-list, empty unless authorizer.go
+// layers role policy on top. Empty slice → any authenticated user; missing
+// entry → DENY (decider fails closed). Keys are both Connect procedure paths
+// and "<action>:<resource>" aliases, carrying identical roles/auth flags.
 var methodRoles = map[string][]string{
 {{- range .Methods}}
 {{- if .AuthRequired}}
@@ -42,23 +27,16 @@ var methodRoles = map[string][]string{
 }
 
 // methodAuthRequired records which methods require authentication.
-// Default is fail-closed (true) for any RPC without an explicit
-// `(forge.v1.method).auth_required = false` annotation. When false,
-// the method is allowed unconditionally; when true, claims must be
-// present and roles checked.
+// Fail-closed (true) unless the proto sets auth_required = false.
 var methodAuthRequired = map[string]bool{
 {{- range .Methods}}
 	"{{.Procedure}}": {{.AuthRequired}},
 {{- end}}
 }
 
-// methodErrors records the declared Connect/gRPC error codes each method
-// may return, derived from (forge.v1.method).errors. The list is
-// informational today — it documents the typed error contract for
-// handler authors (and LLMs implementing handlers) so the error space
-// is visible at a glance from the generated package. Methods without
-// declared errors are omitted from the map. Values match connect.Code
-// names — e.g. "NotFound", "PermissionDenied", "InvalidArgument".
+// methodErrors records the declared Connect error codes per method (from
+// (forge.v1.method).errors), informational. Values are connect.Code names
+// (e.g. "NotFound"); methods without declared errors are omitted.
 var methodErrors = map[string][]string{
 {{- range .Methods}}
 {{- if .Errors}}
@@ -68,31 +46,20 @@ var methodErrors = map[string][]string{
 }
 
 // init wires the project's claims-from-context helper into authz so the
-// library can read claims without a back-import on pkg/middleware.
-// Idempotent across N services in one binary — every shim points authz
-// at the same lookup.
+// library reads claims without a back-import on pkg/middleware. Idempotent
+// across N services in one binary.
 func init() {
 	authz.SetClaimsLookup(middleware.ClaimsFromContext)
 }
 
-// GeneratedAuthorizer is the per-service role-based authorizer. The type
-// alias preserves the public API of pre-1.x scaffolds (authorizer.go
-// embeds *GeneratedAuthorizer and delegates Can / CanAccess to it).
+// GeneratedAuthorizer is the per-service role-based authorizer.
 type GeneratedAuthorizer = authz.Authorizer
 
 // NewGeneratedAuthorizer constructs the default RBAC authorizer from the
-// tables above (auth flags from proto annotations; role lists empty by
-// default — roles are code, not proto). Customize policy by editing
-// the sibling authorizer.go and either returning a fully custom
-// *authz.Authorizer (built via authz.New) or composing this one.
-//
-// The decider FAILS CLOSED (the authz.FailMode zero value): an RPC
-// reaching this authorizer with no entry in either table — proto drift,
-// a hand-mounted endpoint, or an attacker probing procedure names — is
-// denied, with a once-per-method slog.Warn naming the missing procedure
-// so it can be added to the proto and regenerated. Local-dev
-// permissiveness comes from the bootstrap dev-mode DevAuthorizer swap,
-// never from this table.
+// tables above. It FAILS CLOSED: an RPC with no entry in either table is
+// denied (with a once-per-method slog.Warn). Customize via the sibling
+// authorizer.go; dev-mode permissiveness comes from the bootstrap
+// DevAuthorizer swap, never this table.
 func NewGeneratedAuthorizer() *GeneratedAuthorizer {
 	return authz.New(authz.RolesDecider{
 		MethodRoles:        methodRoles,

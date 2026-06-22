@@ -112,17 +112,17 @@ func TestEmbeddedForgeProtoMatchesSource(t *testing.T) {
 	t.Fatal(b.String())
 }
 
-// TestWriteForgeV1ProtoRewritesGoPackage pins the load-bearing rewrite:
-// the forge.proto vendored into a scaffolded project MUST declare a
-// go_package inside the project's own module (`<module>/gen/forge/v1`),
-// because that is where the project's buf run emits forge.pb.go
-// (out: gen, paths=source_relative). Any other value — most notably the
-// historical `github.com/reliant-labs/forge/gen/forge/v1` — makes every
-// generated *.pb.go in the project import a module that doesn't exist.
+// TestWriteForgeV1ProtoRewritesGoPackage pins the load-bearing rewrite under
+// "Path A" proto unification: the forge.proto vendored into a scaffolded
+// project MUST declare a FIXED go_package pointing at forge's shared forgepb
+// package. The project does NOT generate a local gen/forge/v1 copy (buf.gen.yaml
+// excludes that path from Go output) and instead links forge/pkg/forgepb, so
+// every other generated *.pb.go blank-imports the shared package — a single
+// descriptor registration for "forge/v1/forge.proto", so binaries don't panic
+// with "already registered".
 func TestWriteForgeV1ProtoRewritesGoPackage(t *testing.T) {
 	dir := t.TempDir()
-	const module = "github.com/example/demo"
-	if err := WriteForgeV1Proto(dir, module); err != nil {
+	if err := WriteForgeV1Proto(dir); err != nil {
 		t.Fatalf("WriteForgeV1Proto: %v", err)
 	}
 	out, err := os.ReadFile(filepath.Join(dir, "forge.proto"))
@@ -131,9 +131,12 @@ func TestWriteForgeV1ProtoRewritesGoPackage(t *testing.T) {
 	}
 	got := string(out)
 
-	want := `option go_package = "github.com/example/demo/gen/forge/v1;forgev1";`
+	want := `option go_package = "github.com/reliant-labs/forge/pkg/forgepb;forgepb";`
 	if !strings.Contains(got, want) {
-		t.Errorf("written forge.proto missing rewritten go_package %q", want)
+		t.Errorf("written forge.proto missing fixed forgepb go_package %q", want)
+	}
+	if strings.Contains(got, "/gen/forge/v1") {
+		t.Errorf("written forge.proto still points go_package at a project-local gen/forge/v1 copy")
 	}
 	if strings.Contains(got, "reliant-labs/forge/gen/") {
 		t.Errorf("written forge.proto still references the nonexistent forge/gen module")
@@ -143,27 +146,6 @@ func TestWriteForgeV1ProtoRewritesGoPackage(t *testing.T) {
 	}
 	if n := strings.Count(got, "option go_package"); n != 1 {
 		t.Errorf("expected exactly one go_package option, got %d", n)
-	}
-}
-
-// TestWriteForgeV1ProtoEmptyModuleKeepsSource documents the modulePath==""
-// escape hatch: no rewrite is performed (callers always pass a module in
-// practice; the scaffold pipeline guarantees one).
-func TestWriteForgeV1ProtoEmptyModuleKeepsSource(t *testing.T) {
-	dir := t.TempDir()
-	if err := WriteForgeV1Proto(dir, ""); err != nil {
-		t.Fatalf("WriteForgeV1Proto: %v", err)
-	}
-	out, err := os.ReadFile(filepath.Join(dir, "forge.proto"))
-	if err != nil {
-		t.Fatalf("read written forge.proto: %v", err)
-	}
-	embedded, err := GetForgeV1Proto()
-	if err != nil {
-		t.Fatalf("read embedded proto: %v", err)
-	}
-	if !bytes.Equal(out, embedded) {
-		t.Errorf("empty modulePath should write the embedded proto unmodified")
 	}
 }
 

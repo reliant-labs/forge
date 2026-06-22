@@ -57,7 +57,7 @@ linters:
         - name: max-control-nesting
           arguments: [5]
     cyclop:
-      # CLI dispatch functions (runNew, runAddService) branch
+      # CLI dispatch functions (runNew, runAddService, runConfigSet) branch
       # heavily on flags and resume/force modes — the complexity is in the
       # control flow, not in the logic. Threshold tuned to the natural
       # baseline of those functions; further bumps should refactor instead.

@@ -5,7 +5,7 @@ tmp_dir = "tmp"
 [build]
   # Atomic binary replacement: build to .tmp then mv
   bin = "./tmp/{{.Name}}"
-  cmd = "CGO_ENABLED=0 go build -gcflags='all=-N -l' -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd && mv ./tmp/{{.Name}}.tmp ./tmp/{{.Name}}"
+  cmd = "CGO_ENABLED=0 go build -gcflags='all=-N -l' -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd/{{.Name}} && mv ./tmp/{{.Name}}.tmp ./tmp/{{.Name}}"
   delay = 1000
   # exclude_dir entries are root-relative: the bare "node_modules" only
   # covers a top-level node_modules. "frontends" excludes the whole

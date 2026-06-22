@@ -95,11 +95,35 @@ func Version() string {
 	return v
 }
 
-// BuildDate returns the build date recorded via Set (or "unknown").
-func BuildDate() string {
-	mu.RLock()
-	defer mu.RUnlock()
-	return buildDate
+// installableVersionRE matches a forge version string that is a valid
+// `go install github.com/.../forge/cmd/forge@<ref>` target: either a
+// release tag (vX.Y.Z[-pre]) or a clean Go pseudo-version
+// (v0.0.0-<timestamp>-<commit>). Crucially it does NOT match build
+// metadata (`+dirty`, `+incompatible` is allowed as a require but never
+// as an install ref here): a `+dirty` pseudo-version is produced by
+// building from a dirty working tree and no module proxy can ever serve
+// it, so emitting it as a CI install target makes `go install` fail on
+// every run (FRICTION fr-8c8a24ea97).
+var installableVersionRE = regexp.MustCompile(
+	`^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`)
+
+// InstallableVersion returns the forge binary's version ONLY when it is a
+// ref that `go install ...@<ref>` can actually resolve from a module
+// proxy — a release tag or a clean Go pseudo-version. For anything else
+// (the "dev" sentinel, "(devel)", an empty value, or a `+dirty`
+// pseudo-version from a dirty-tree build) it returns "" so callers fall
+// back to pinning by git SHA instead.
+//
+// This is the boundary that keeps `+dirty` out of generated CI: callers
+// stamp this (not raw Version()) into the `go install` step, and the
+// empty return routes the CI template's three-branch policy onto the SHA
+// branch. See internal/templates/ci/github/ci.yml.tmpl.
+func InstallableVersion() string {
+	v := Version()
+	if !installableVersionRE.MatchString(v) {
+		return ""
+	}
+	return v
 }
 
 // GitCommit returns the git commit SHA recorded via Set. Falls back to the

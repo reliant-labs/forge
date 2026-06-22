@@ -50,15 +50,15 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// LintOptionalDepMarkerPosition walks rootDir's handlers/, workers/,
-// and operators/ trees for files whose comments mention the
+// LintOptionalDepMarkerPosition walks rootDir's internal/handlers/,
+// internal/workers/, and internal/operators/ trees for files whose comments mention the
 // `forge:optional-dep` marker, and emits a finding when the marker is
 // not attached to a `Deps` struct field. Returns findings in
 // deterministic order (file, then line). Missing component dirs are
 // not an error — projects may ship none of them.
 func LintOptionalDepMarkerPosition(rootDir string) (Result, error) {
 	var pkgDirs []string
-	for _, sub := range []string{"handlers", "workers", "operators"} {
+	for _, sub := range []string{"internal/handlers", "internal/workers", "internal/operators"} {
 		root := filepath.Join(rootDir, sub)
 		if _, err := os.Stat(root); os.IsNotExist(err) {
 			continue

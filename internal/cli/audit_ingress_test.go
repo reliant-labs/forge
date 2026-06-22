@@ -1,42 +1,18 @@
 package cli
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/cli/audittype"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// TestAuditIngress_FeatureOffSkipsCategory pins the additive-extension
-// contract: when features.ingress is off (or unset for cli/library
-// kinds where it defaults off), the ingress key is absent from the
-// report entirely. Sub-agents that branch on `.ingress` get nil and
-// know the subsystem isn't in play, without misreading "status: ok"
-// as "all routes wired".
-func TestAuditIngress_FeatureOffSkipsCategory(t *testing.T) {
-	dir := t.TempDir()
-	// Ingress is experimental — default off. A forge.yaml with no
-	// `features.experimental.ingress` opt-in produces the same
-	// no-ingress-category shape as the old explicit-disable case.
-	yamlBody := `name: t
-module_path: github.com/test/t
-version: 0.0.1
-forge_version: dev
-`
-	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	writeComponentsJSON(t, dir)
-	report, err := buildAuditReport(dir)
-	if err != nil {
-		t.Fatalf("buildAuditReport: %v", err)
-	}
-	if _, ok := report.Categories["ingress"]; ok {
-		t.Error("ingress category present despite features.experimental.ingress not opted in")
-	}
-}
+// auditIngress / crossCheckIngress / ingressBackendNames stay in package
+// cli (audit_ingress_cli.go) because they depend on the KCL render + entity
+// structs; the audit command group reaches auditIngress through
+// factory.AuditAPI.Ingress. The buildAuditReport-level feature-gate test
+// moved to package audit alongside the report assembly.
 
 // TestCrossCheckIngress_UnknownService asserts that routes referencing
 // a non-existent forge.yaml backend produce an error-level finding and
@@ -50,7 +26,7 @@ func TestCrossCheckIngress_UnknownService(t *testing.T) {
 		{Name: "ghost-route", Service: "ghost", Port: 9000},
 	}
 	cat := crossCheckIngress(services, []string{"api"}, nil, routes, nil)
-	if cat.Status != AuditStatusError {
+	if cat.Status != audittype.StatusError {
 		t.Fatalf("status = %q, want error", cat.Status)
 	}
 	findings, ok := cat.Details["findings"].([]string)
@@ -80,7 +56,7 @@ func TestCrossCheckIngress_ServiceWithoutRoute(t *testing.T) {
 		{Name: "api-route", Service: "api", Port: 8080},
 	}
 	cat := crossCheckIngress(services, []string{"api", "internal-only"}, nil, routes, nil)
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Fatalf("status = %q, want ok (info findings shouldn't downgrade)", cat.Status)
 	}
 	findings, _ := cat.Details["findings"].([]string)
@@ -106,7 +82,7 @@ func TestCrossCheckIngress_PortZeroSkipped(t *testing.T) {
 		{Name: "worker"},
 	}
 	cat := crossCheckIngress(services, []string{"worker"}, nil, nil, nil)
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status = %q, want ok", cat.Status)
 	}
 	if _, ok := cat.Details["findings"]; ok {
@@ -123,7 +99,7 @@ func TestCrossCheckIngress_GRPCRoutesAlsoChecked(t *testing.T) {
 		{Name: "grpc-ghost", Service: "ghost", Port: 9000},
 	}
 	cat := crossCheckIngress(services, []string{"api"}, nil, nil, grpc)
-	if cat.Status != AuditStatusError {
+	if cat.Status != audittype.StatusError {
 		t.Errorf("status = %q, want error", cat.Status)
 	}
 }
@@ -141,7 +117,7 @@ func TestAuditIngress_KCLRenderFailureWarn(t *testing.T) {
 		},
 	}
 	cat := auditIngress(cfg, dir) // no deploy/kcl/dev → RenderKCL errors
-	if cat.Status != AuditStatusWarn {
+	if cat.Status != audittype.StatusWarn {
 		t.Errorf("status = %q, want warn (no dev KCL)", cat.Status)
 	}
 	if !strings.Contains(cat.Summary, "could not evaluate dev KCL") {
@@ -186,7 +162,7 @@ func TestCrossCheckIngress_FrontendBackend(t *testing.T) {
 		{Name: "web-route", Service: "web", Port: 3000},
 	}
 	cat := crossCheckIngress(services, backends, nil, routes, nil)
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Fatalf("status = %q, want ok (frontend is a valid backend)", cat.Status)
 	}
 	if findings, ok := cat.Details["findings"].([]string); ok {
@@ -209,7 +185,7 @@ func TestCrossCheckIngress_WebhookBackend(t *testing.T) {
 		{Name: "stripe-webhook", Service: "stripe", Port: 8080},
 	}
 	cat := crossCheckIngress(services, backends, nil, routes, nil)
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Fatalf("status = %q, want ok (webhook is a valid backend)", cat.Status)
 	}
 	if findings, ok := cat.Details["findings"].([]string); ok {
@@ -231,7 +207,7 @@ func TestCrossCheckIngress_UnknownNonBackend(t *testing.T) {
 		{Name: "ghost-route", Service: "nobody", Port: 8080},
 	}
 	cat := crossCheckIngress(services, backends, nil, routes, nil)
-	if cat.Status != AuditStatusError {
+	if cat.Status != audittype.StatusError {
 		t.Fatalf("status = %q, want error (unknown backend)", cat.Status)
 	}
 }

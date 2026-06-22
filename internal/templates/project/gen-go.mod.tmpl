@@ -5,4 +5,25 @@ go {{.GoVersion}}
 require (
 	connectrpc.com/connect v1.19.0
 	google.golang.org/protobuf v1.36.9
+	// The generated *.pb.go in this module blank-import forge's shared
+	// forgepb package (proto/forge/v1/forge.proto declares
+	// `option go_package = ".../forgepb;forgepb"`) instead of a local
+	// gen/forge/v1 copy, so the descriptor "forge/v1/forge.proto" registers
+	// exactly once across the binary. The replace that resolves this to a
+	// local/vendored forge/pkg lives in the workspace go.work (dev) or is a
+	// proxy-resolved version (release) — same wiring as the root module.
+	github.com/reliant-labs/forge/pkg{{if .ForgePkgVersion}} {{.ForgePkgVersion}}{{else}} v0.0.0{{end}}
 )
+{{- if and .ForgePkgGenReplace (not .ForgePkgVersion)}}
+
+// Dev-mode forge/pkg wiring for the gen/ submodule. The root module
+// resolves forge/pkg via a `replace` in its own go.mod, but that replace
+// does NOT cascade into this separate gen/ submodule — so `go mod tidy`
+// here would try (and fail) to resolve the unpublished `v0.0.0` from the
+// proxy. We therefore mirror the root replace, rebased to gen/'s extra
+// directory depth (root `./.forge-pkg` → `../.forge-pkg`; root
+// `../forge/pkg` → `../../forge/pkg`; an absolute host path is used
+// verbatim). When you move to a released forge, drop this replace and
+// pin a real version alongside the root module. See docs/pkg-versioning.md.
+replace github.com/reliant-labs/forge/pkg => {{.ForgePkgGenReplace}}
+{{- end}}

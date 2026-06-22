@@ -69,18 +69,19 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // MCPGenInput is the per-project input for [GenerateMCPManifest]. The
 // shape mirrors K3dPortsGenInput so the call-site in the generate
 // pipeline stays uniform across codegen emitters.
+// Embeds GenContext for ProjectDir + Checksums (ModulePath is unused —
+// the manifest is JSON, not Go).
 type MCPGenInput struct {
-	ProjectDir  string                   // project root; output path is gen/mcp/manifest.json relative to here
-	ProjectName string                   // emitted as the manifest's "project" field; "" tolerated
-	Services    []ServiceDef             // every parsed Connect service; empty → no-op
-	Checksums   *checksums.FileChecksums // when set, the rendered manifest is recorded in .forge/hashes.json (JSON cannot carry an embedded marker)
+	GenContext
+
+	ProjectName string       // emitted as the manifest's "project" field; "" tolerated
+	Services    []ServiceDef // every parsed Connect service; empty → no-op
 }
 
 // mcpManifest is the top-level JSON shape. Field order in the JSON
@@ -200,7 +201,7 @@ func GenerateMCPManifest(in MCPGenInput) error {
 	body = append(body, '\n')
 
 	rel := filepath.Join("gen", "mcp", "manifest.json")
-	if _, err := checksums.WriteGeneratedFile(in.ProjectDir, rel, body, in.Checksums, true); err != nil {
+	if err := writeForgeOwned(in.ProjectDir, rel, body, in.Checksums); err != nil {
 		return fmt.Errorf("write %s: %w", rel, err)
 	}
 	return nil

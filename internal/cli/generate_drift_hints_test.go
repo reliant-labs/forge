@@ -12,18 +12,18 @@ func TestTier1ExtensionPointHint(t *testing.T) {
 		path     string
 		wantSubs []string // all must appear in the hint; empty slice → want ""
 	}{
-		{"pkg/app/bootstrap.go", []string{"setup.go", "post_bootstrap.go", "app_extras.go", "user-owned"}},
-		{"pkg/app/app_gen.go", []string{"setup.go", "post_bootstrap.go", "app_extras.go"}},
-		{"pkg/app/wire_gen.go", []string{"setup.go", "post_bootstrap.go", "app_extras.go"}},
-		{"handlers/echo/authorizer_gen.go", []string{"handlers/echo/authorizer.go", "user-owned", "NewAuthorizer()"}},
-		{"handlers/orders/handlers_gen.go", []string{"contract.go", "proto"}},
-		{"handlers/orders/mock_gen.go", []string{"contract.go", "proto"}},
+		{"pkg/app/bootstrap.go", []string{"internal/app/providers.go", "internal/app/compose.go", "OpenInfra"}},
+		{"pkg/app/app_gen.go", []string{"internal/app/providers.go", "internal/app/compose.go"}},
+		{"pkg/app/wire_gen.go", []string{"internal/app/providers.go", "internal/app/compose.go"}},
+		{"internal/handlers/echo/authorizer_gen.go", []string{"internal/handlers/echo/authorizer.go", "user-owned", "NewAuthorizer()"}},
+		{"internal/handlers/orders/handlers_gen.go", []string{"contract.go", "proto"}},
+		{"internal/handlers/orders/mock_gen.go", []string{"contract.go", "proto"}},
 		// No designated extension point — no hint.
 		{"pkg/app/testing.go", nil},
 		{"pkg/config/config.go", nil},
-		{"cmd/server.go", nil},
+		{"internal/cli/serve.go", nil},
 		// Leading ./ normalized.
-		{"./pkg/app/bootstrap.go", []string{"setup.go"}},
+		{"./pkg/app/bootstrap.go", []string{"internal/app/providers.go"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -61,7 +61,7 @@ func TestFormatTier1DriftReport(t *testing.T) {
 		// EMBEDDED marker hash vs the recomputed CURRENT body hash.
 		"embedded: aaaa1111",
 		"current:  bbbb2222",
-		"↪ custom wiring belongs in pkg/app/setup.go / post_bootstrap.go / app_extras.go (user-owned)",
+		"↪ custom wiring belongs in internal/app/providers.go (OpenInfra) + internal/app/compose.go (NewComponents) — the retired pkg/app DI unit no longer runs",
 		"--explain-drift",
 		"forge friction add",
 		"forge disown <path> --reason",

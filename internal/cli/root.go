@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cli/factory"
 )
 
 var (
@@ -21,23 +23,26 @@ func Execute() error {
 	return NewRootCmd().Execute()
 }
 
+// projectRoot forwards to cmdutil.ProjectRoot — the shared project-root
+// resolver. The `add` group moved to internal/cli/add and now calls cmdutil
+// directly; this unexported forwarder keeps the remaining internal/cli call
+// sites (ci.go, delete.go, disown.go, package.go) unchanged.
+func projectRoot() (string, error) { return cmdutil.ProjectRoot() }
+
+// validateProjectName / validateServiceName / validateFrontendName forward
+// to the shared validators in cmdutil (now the canonical home, shared with
+// the internal/cli/add group). new.go calls these.
+func validateProjectName(name string) error  { return cmdutil.ValidateProjectName(name) }
+func validateServiceName(name string) error  { return cmdutil.ValidateServiceName(name) }
+func validateFrontendName(name string) error { return cmdutil.ValidateFrontendName(name) }
+
 // Name returns the command name users should type to invoke Forge.
 // When the binary is "forge" (standalone install), it returns "forge".
 // When embedded in another binary (e.g. "reliant"), it returns "reliant forge".
+// Forwards to cmdutil.Name so the dir-nested command groups share one
+// implementation without importing internal/cli.
 func Name() string {
-	return strings.Join(forgeCommand(), " ")
-}
-
-// forgeCommand returns the command tokens needed to invoke Forge.
-// Standalone: ["forge"]. Embedded: ["reliant", "forge"].
-// The first element is always the resolved executable path when called
-// via forgeExecCommand, or the base name for display purposes here.
-func forgeCommand() []string {
-	base := filepath.Base(os.Args[0])
-	if base == "forge" {
-		return []string{"forge"}
-	}
-	return []string{base, "forge"}
+	return cmdutil.Name()
 }
 
 // forgeExecCommand returns exec-ready command tokens using the resolved
@@ -60,19 +65,6 @@ func SetVersion(v, date, commit string) {
 	version = v
 	buildDate = date
 	gitCommit = commit
-}
-
-// GetVersion returns the forge binary's version string. Callers can use this
-// to stamp the current forge version into generated artifacts (e.g. the
-// forge.yaml pin), which enables pinned installs in CI.
-func GetVersion() string {
-	return version
-}
-
-// GetGitCommit returns the git commit SHA the forge binary was built from.
-// Returns "unknown" if the binary was not built with ldflags.
-func GetGitCommit() string {
-	return gitCommit
 }
 
 // NewRootCmd builds and returns the fully assembled root command.
@@ -144,27 +136,30 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newDBCmd())
 	rootCmd.AddCommand(newMigrateCmd())
 	rootCmd.AddCommand(newNewCmd())
-	rootCmd.AddCommand(newAddCmd())
+	// `add` migrated to the internal/cli/add group (factory registry).
+	rootCmd.AddCommand(newDeleteCmd())
 	rootCmd.AddCommand(newBuildCmd())
 	rootCmd.AddCommand(newDeployCmd())
+	rootCmd.AddCommand(newSmokeCmd())
 	rootCmd.AddCommand(newSecretsCmd())
 	rootCmd.AddCommand(newTestCmd())
-	rootCmd.AddCommand(newLintCmd())
+	// `lint` migrated to the internal/cli/lint group (factory registry).
 	rootCmd.AddCommand(newPackageCmd())
-	rootCmd.AddCommand(newPackCmd())
-	rootCmd.AddCommand(newDebugCmd())
+	// `pack` migrated to the internal/cli/pack group (factory registry).
+	// `debug` migrated to the internal/cli/debug group (factory registry).
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newUpgradeCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
-	rootCmd.AddCommand(newComponentCmd())
+	// `component` migrated to the internal/cli/component group (registered
+	// via the factory registry below).
 	rootCmd.AddCommand(newSkillCmd())
 	rootCmd.AddCommand(newCICmd())
 	rootCmd.AddCommand(newToolsCmd())
-	rootCmd.AddCommand(newBacklogCmd())
+	// `backlog` migrated to the internal/cli/backlog group (factory registry).
 	rootCmd.AddCommand(newFrictionCmd())
-	rootCmd.AddCommand(newAuditCmd())
+	// `audit` migrated to the internal/cli/audit group (factory registry).
 	rootCmd.AddCommand(newGraphCmd())
 	rootCmd.AddCommand(newMapCmd())
 	rootCmd.AddCommand(newIntrospectCmd())
@@ -172,6 +167,18 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newAPICmd())
 	rootCmd.AddCommand(newUpCmd())
 	rootCmd.AddCommand(newFeaturesCmd())
+
+	// Dir-nested command groups (internal/cli/<group>) self-register a
+	// command factory via init() — they are blank-imported in groups.go so
+	// the registration runs. Range the registry and attach each one. As
+	// groups migrate out of the flat files above, their flat AddCommand line
+	// moves here automatically (it disappears from above, appears via the
+	// registry). The factory carries the shared I/O surface; group commands
+	// still call package-level helpers in internal/cli directly.
+	f := factory.New()
+	for _, makeCmd := range factory.Registered() {
+		rootCmd.AddCommand(makeCmd(f))
+	}
 
 	return rootCmd
 }
@@ -188,4 +195,3 @@ func newVersionCmd() *cobra.Command {
 		},
 	}
 }
-

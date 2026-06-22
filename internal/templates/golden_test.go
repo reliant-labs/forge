@@ -76,6 +76,10 @@ func projectData() any {
 		CLI                    string
 		LocalForgePkgVendored  bool
 		VersionVar             string
+		Binaries               []struct {
+			Dir     string
+			Primary bool
+		}
 	}{
 		Name:                   "demo",
 		ProtoName:              "demo",
@@ -91,6 +95,14 @@ func projectData() any {
 		CLI:                    "forge",
 		LocalForgePkgVendored:  false,
 		VersionVar:             "",
+		// A fresh scaffold ships only the primary binary; the golden
+		// Dockerfile builds + copies just cmd/demo. Multi-binary projects
+		// add entries here (covered by the generator suite's scratch
+		// 2-binary test); the golden pins the single-binary baseline.
+		Binaries: []struct {
+			Dir     string
+			Primary bool
+		}{{Dir: "demo", Primary: true}},
 	}
 }
 

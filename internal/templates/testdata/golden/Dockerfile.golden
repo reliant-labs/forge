@@ -39,9 +39,18 @@ RUN go mod download
 COPY . .
 
 # Build with optimizations.
+#
+# ONE image, EVERY binary. Each `cmd/<bin>/` entrypoint (the primary
+# server plus any `forge add binary` siblings — proxy / ctl / worker-style
+# processes) builds into /app/bin/<bin>. The production stage runs the
+# primary by default; secondary binaries are launched by overriding the
+# container command to /app/<bin> per-workload (KCL emits one Deployment
+# per binary, each with its own command). Building them all into a single
+# image keeps one build + one push + one registry tag for the whole
+# project; the per-binary entrypoints differ only at run time.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
-    CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=${FORGE_VERSION} -X main.commit=${FORGE_COMMIT} -X main.date=${FORGE_DATE}" -o /app/bin/demo ./cmd
+    CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=${FORGE_VERSION} -X main.commit=${FORGE_COMMIT} -X main.date=${FORGE_DATE}" -o /app/bin/demo ./cmd/demo
 
 # ── Debug builder (only used by the `debug` stage) ──
 # Split out so the default production build doesn't pay the debug-build
@@ -55,7 +64,7 @@ FROM builder AS debug-builder
 # Debug build — full symbols, no inlining.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
-    CGO_ENABLED=0 go build -trimpath -buildvcs=true -gcflags="all=-N -l" -o /app/bin/demo-debug ./cmd
+    CGO_ENABLED=0 go build -trimpath -buildvcs=true -gcflags="all=-N -l" -o /app/bin/demo-debug ./cmd/demo
 
 # Install Delve
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -104,7 +113,11 @@ RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
 
-COPY --from=builder /app/bin/demo .
+# Copy EVERY built binary into the image. The default entrypoint runs the
+# primary server (CMD below); secondary binaries are run by overriding the
+# container command to ./<bin> per-workload at deploy time (KCL emits one
+# Deployment per binary with command = ["/app/<bin>"]).
+COPY --from=builder /app/bin/demo ./demo
 
 USER 65532:65532
 

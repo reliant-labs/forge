@@ -5,7 +5,7 @@
 //
 //   - runDeploy           (internal/cli/deploy.go)
 //   - runDevClusterReload (internal/cli/dev_cluster.go)
-//   - upDeployCluster     (internal/cli/up.go)
+//   - reconcileCluster    (internal/cli/up.go)
 //
 // All three drove the same kubectl invocations against the same KCL
 // renderer; they differed only in the pre-flight (context guard vs
@@ -442,7 +442,7 @@ func extractManifests(kclOutput []byte) (string, error) {
 	return sb.String(), nil
 }
 
-// kubectlArgs prepends `--context <kctx>` to a kubectl argument list
+// KubectlArgs prepends `--context <kctx>` to a kubectl argument list
 // when kctx is non-empty, and returns the args unchanged otherwise.
 // Threading the context PER COMMAND (rather than mutating the global
 // active context via `kubectl config use-context`) is what makes
@@ -453,7 +453,7 @@ func extractManifests(kclOutput []byte) (string, error) {
 //
 // `--context` is a global kubectl flag, so it's valid as the leading
 // argument before any subcommand (apply / wait / rollout / get / …).
-func kubectlArgs(kctx string, args ...string) []string {
+func KubectlArgs(kctx string, args ...string) []string {
 	if kctx == "" {
 		return args
 	}
@@ -463,23 +463,71 @@ func kubectlArgs(kctx string, args ...string) []string {
 }
 
 // kubectlCmd builds an *exec.Cmd for `kubectl <args>` with the context
-// flag threaded in via kubectlArgs. The single construction point keeps
+// flag threaded in via KubectlArgs. The single construction point keeps
 // the per-command `--context` invariant in one place (and testable).
 func kubectlCmd(ctx context.Context, kctx string, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, "kubectl", kubectlArgs(kctx, args...)...)
+	return exec.CommandContext(ctx, "kubectl", KubectlArgs(kctx, args...)...)
 }
 
 // KubectlApply pipes the rendered YAML document stream into
-// `kubectl [--context <kctx>] apply --server-side -f -`. Stdout/stderr
-// are inherited so the user sees the per-resource
+// `kubectl [--context <kctx>] apply --server-side --force-conflicts -f -`.
+// Stdout/stderr are inherited so the user sees the per-resource
 // `created`/`configured`/`unchanged` lines kubectl emits. kctx (when
 // non-empty) targets a specific kubectl context for this command only.
+//
+// --force-conflicts is unconditional and deliberate: forge is the
+// declarative source of truth, so its Server-Side Apply field manager
+// always wins. Without it, any resource previously touched by a plain
+// `kubectl apply` (manager `kubectl-client-side-apply`, common after
+// manual debugging or an older bootstrap) makes SSA abort the whole
+// deploy with "Apply failed with N conflicts ... conflicts with
+// kubectl-client-side-apply" / `exit status 1`. Forcing forge to take
+// ownership of those fields overrides the stale manager and keeps the
+// deploy idempotent. (--force-conflicts is an SSA-only flag — it has no
+// effect without --server-side, which we always pass.)
+//
+// An empty kctx is a HARD ERROR, never a fall-through to kubectl's
+// current/default context. The target cluster is declarative —
+// forge.K8sCluster.cluster in the env's KCL IS the context — so an empty
+// value here means some group failed to carry its declared cluster. Applying
+// to whatever context happens to be active is the footgun where an unrelated
+// tool (e.g. `k3d cluster create`, which silently flips current-context) makes
+// a deploy land in the WRONG cluster. Writes must fail LOUDLY instead. (Reads
+// /waits via KubectlArgs may still default; only the destructive apply is
+// gated here.)
 func KubectlApply(ctx context.Context, kctx, manifests string) error {
-	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "-f", "-")
+	if strings.TrimSpace(kctx) == "" {
+		return fmt.Errorf("refusing to apply manifests without an explicit kubectl context: " +
+			"the target cluster is declarative (forge.K8sCluster.cluster in the env's KCL) — " +
+			"forge never falls back to the current context for a write")
+	}
+	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "--force-conflicts", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifests)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// EnsureNamespace idempotently creates the target namespace so resources
+// scoped to it (e.g. dotenv-projected Secrets) can be applied BEFORE the
+// main manifest stream — which is where the Namespace object itself is
+// rendered. Without this, the first thing the deploy applies (the
+// secret_provider Secrets) lands before the Namespace exists and fails
+// "namespaces \"…\" not found". The full manifest apply later re-applies
+// the Namespace with its labels (server-side apply is idempotent), so this
+// early create is a pure ordering fix, not a competing owner.
+//
+// Uses `kubectl create --dry-run=client -o yaml | kubectl apply` so a
+// pre-existing namespace is a no-op rather than an AlreadyExists error.
+func EnsureNamespace(ctx context.Context, kctx, namespace string) error {
+	if strings.TrimSpace(kctx) == "" {
+		return fmt.Errorf("refusing to create a namespace without an explicit kubectl context")
+	}
+	if strings.TrimSpace(namespace) == "" {
+		return nil
+	}
+	manifest := "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: " + namespace + "\n"
+	return KubectlApply(ctx, kctx, manifest)
 }
 
 // WaitRollout blocks until the named Deployment reaches a healthy
@@ -515,6 +563,15 @@ func WaitRollout(ctx context.Context, kctx, name, namespace string) error {
 	return nil
 }
 
+// podSelectorForDeploy builds the label selector that matches the pods
+// of a forge-deployed Deployment. forge stamps workloads with
+// appNameLabel (app.kubernetes.io/name), never a bare `app=` label, so
+// the selector MUST reference the constant — a literal "app=" matched
+// zero pods and silently produced empty rollout diagnostics.
+func podSelectorForDeploy(deploy string) string {
+	return appNameLabel + "=" + deploy
+}
+
 // diagnoseFailedRollout prints the most useful kubectl diagnostics for
 // a Deployment that didn't reach Ready in time. Indented under a clear
 // banner so the existing "Warning: rollout for X" line precedes it.
@@ -529,7 +586,7 @@ func diagnoseFailedRollout(ctx context.Context, kctx, deploy, namespace string) 
 	// Pod status — phase, reason, message. The most useful single line.
 	pods := kubectlCmd(ctx, kctx, "get", "pods",
 		"-n", namespace,
-		"-l", "app="+deploy,
+		"-l", podSelectorForDeploy(deploy),
 		"-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase,REASON:.status.containerStatuses[*].state.waiting.reason,MESSAGE:.status.containerStatuses[*].state.waiting.message",
 		"--no-headers",
 	)
@@ -629,6 +686,48 @@ func ListManagedDeployments(ctx context.Context, kctx, namespace string) ([]stri
 	return names, nil
 }
 
+// docDelimiter is the separator between documents in a `---`-separated
+// multi-doc YAML stream. It is the single source of truth for both
+// splitting (splitDocs) and re-joining manifest streams in this file.
+const docDelimiter = "\n---\n"
+
+// splitDocs splits a `---`-separated multi-doc YAML stream into its
+// individual documents, trimming surrounding whitespace and dropping
+// empty / whitespace-only docs. It is the single source of the
+// delimiter for the manifest-scanning helpers below.
+func splitDocs(manifests string) []string {
+	raw := strings.Split(manifests, docDelimiter)
+	docs := make([]string, 0, len(raw))
+	for _, doc := range raw {
+		if trimmed := strings.TrimSpace(doc); trimmed != "" {
+			docs = append(docs, trimmed)
+		}
+	}
+	return docs
+}
+
+// parsedDoc is the minimal view of a Kubernetes manifest the scanning
+// helpers below need: the document's kind, its metadata.name, and its
+// metadata.labels.
+type parsedDoc struct {
+	Kind     string `yaml:"kind"`
+	Metadata struct {
+		Name   string            `yaml:"name"`
+		Labels map[string]string `yaml:"labels"`
+	} `yaml:"metadata"`
+}
+
+// parseDoc unmarshals a single YAML manifest document into a parsedDoc.
+// A doc that doesn't parse returns ok=false so callers can apply their
+// own conservative fallback (keep, or place in rest).
+func parseDoc(doc string) (parsedDoc, bool) {
+	var m parsedDoc
+	if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+		return parsedDoc{}, false
+	}
+	return m, true
+}
+
 // FilterManifestsByApp filters a `---`-separated multi-doc YAML stream
 // down to the manifests belonging to the named apps, PLUS every shared
 // manifest. The rule, doc by doc:
@@ -655,25 +754,20 @@ func FilterManifestsByApp(manifests string, targets []string) (string, error) {
 		want[t] = struct{}{}
 	}
 
-	docs := strings.Split(manifests, "\n---\n")
 	var kept []string
 	present := map[string]struct{}{} // every app name seen on a labelled doc
 	matchedAny := false              // did any doc carry a targeted app label?
 
-	for _, doc := range docs {
-		trimmed := strings.TrimSpace(doc)
-		if trimmed == "" {
-			continue
-		}
-		app := manifestAppLabel(trimmed)
+	for _, doc := range splitDocs(manifests) {
+		app := manifestAppLabel(doc)
 		if app == "" {
 			// Shared / infra resource — always keep.
-			kept = append(kept, trimmed)
+			kept = append(kept, doc)
 			continue
 		}
 		present[app] = struct{}{}
 		if _, ok := want[app]; ok {
-			kept = append(kept, trimmed)
+			kept = append(kept, doc)
 			matchedAny = true
 		}
 	}
@@ -689,7 +783,7 @@ func FilterManifestsByApp(manifests string, targets []string) (string, error) {
 			strings.Join(targets, ", "), strings.Join(avail, ", "))
 	}
 
-	return strings.Join(kept, "\n---\n"), nil
+	return strings.Join(kept, docDelimiter), nil
 }
 
 // manifestAppLabel reads metadata.labels["app.kubernetes.io/name"] from
@@ -697,12 +791,8 @@ func FilterManifestsByApp(manifests string, targets []string) (string, error) {
 // label (shared/infra resource) or doesn't parse — callers treat "" as
 // "shared, keep".
 func manifestAppLabel(doc string) string {
-	var m struct {
-		Metadata struct {
-			Labels map[string]string `yaml:"labels"`
-		} `yaml:"metadata"`
-	}
-	if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+	m, ok := parseDoc(doc)
+	if !ok {
 		return ""
 	}
 	return m.Metadata.Labels[appNameLabel]
@@ -715,23 +805,22 @@ func manifestAppLabel(doc string) string {
 //
 // Malformed documents are skipped (callers get a best-effort list).
 func RenderedDeploymentNames(manifests string) []string {
-	docs := strings.Split(manifests, "\n---\n")
+	return renderedNamesByKind(manifests, "Deployment")
+}
+
+// renderedNamesByKind extracts the `metadata.name` of every document
+// whose `kind` matches kind in a `---`-separated YAML stream. Malformed
+// documents are skipped (callers get a best-effort list). It backs both
+// RenderedDeploymentNames and RenderedJobNames, which differ only by the
+// kind they select.
+func renderedNamesByKind(manifests, kind string) []string {
 	var out []string
-	for _, doc := range docs {
-		trimmed := strings.TrimSpace(doc)
-		if trimmed == "" {
+	for _, doc := range splitDocs(manifests) {
+		m, ok := parseDoc(doc)
+		if !ok {
 			continue
 		}
-		var m struct {
-			Kind     string `yaml:"kind"`
-			Metadata struct {
-				Name string `yaml:"name"`
-			} `yaml:"metadata"`
-		}
-		if err := yaml.Unmarshal([]byte(trimmed), &m); err != nil {
-			continue
-		}
-		if m.Kind == "Deployment" && m.Metadata.Name != "" {
+		if m.Kind == kind && m.Metadata.Name != "" {
 			out = append(out, m.Metadata.Name)
 		}
 	}
@@ -765,27 +854,21 @@ var configFirstKinds = map[string]struct{}{
 // is applied (and kubectl returns) before rest, so a workload in rest
 // never schedules ahead of the ConfigMap/Secret it references.
 func PartitionConfigManifests(manifests string) (config, rest string) {
-	docs := strings.Split(manifests, "\n---\n")
 	var cfg, other []string
-	for _, doc := range docs {
-		trimmed := strings.TrimSpace(doc)
-		if trimmed == "" {
-			continue
-		}
-		var m struct {
-			Kind string `yaml:"kind"`
-		}
-		if err := yaml.Unmarshal([]byte(trimmed), &m); err != nil {
-			other = append(other, trimmed)
+	for _, doc := range splitDocs(manifests) {
+		m, ok := parseDoc(doc)
+		if !ok {
+			// Can't be confirmed config — rest is the pass that always runs.
+			other = append(other, doc)
 			continue
 		}
 		if _, ok := configFirstKinds[m.Kind]; ok {
-			cfg = append(cfg, trimmed)
+			cfg = append(cfg, doc)
 		} else {
-			other = append(other, trimmed)
+			other = append(other, doc)
 		}
 	}
-	return strings.Join(cfg, "\n---\n"), strings.Join(other, "\n---\n")
+	return strings.Join(cfg, docDelimiter), strings.Join(other, docDelimiter)
 }
 
 // RenderedJobNames extracts the `metadata.name` of every `kind: Job`
@@ -807,27 +890,7 @@ func PartitionConfigManifests(manifests string) (config, rest string) {
 //
 // Malformed documents are skipped (callers get a best-effort list).
 func RenderedJobNames(manifests string) []string {
-	docs := strings.Split(manifests, "\n---\n")
-	var out []string
-	for _, doc := range docs {
-		trimmed := strings.TrimSpace(doc)
-		if trimmed == "" {
-			continue
-		}
-		var m struct {
-			Kind     string `yaml:"kind"`
-			Metadata struct {
-				Name string `yaml:"name"`
-			} `yaml:"metadata"`
-		}
-		if err := yaml.Unmarshal([]byte(trimmed), &m); err != nil {
-			continue
-		}
-		if m.Kind == "Job" && m.Metadata.Name != "" {
-			out = append(out, m.Metadata.Name)
-		}
-	}
-	return out
+	return renderedNamesByKind(manifests, "Job")
 }
 
 // Prune deletes every forge-managed Deployment in namespace that is

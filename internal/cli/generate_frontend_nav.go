@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -241,13 +242,29 @@ func emitTier2OnceIfMissing(projectDir, relPath, tmplPath string, data templates
 
 // buildNavPages derives navigation page entries from CRUD service methods.
 // A nav entry is created only for entities that (a) have a List RPC — the
-// nav links the list page — AND (b) exist in the proto entity set, the
-// SAME predicate generateFrontendPages applies before emitting page files.
+// nav links the list page — AND (b) exist in the entity set, the SAME
+// predicate generateFrontendPages applies before emitting page files.
 // Anything looser advertises 404s on a pristine scaffold.
+//
+// The two halves are matched on the kebab SLUG — the actual route
+// identity — not on the raw EntityDef.Name string. The entity set
+// (BuildSchemaEntities) carries the singular as EntityDef.Name; the route
+// side (ExtractCRUDEntities) re-derives plural + slug. Keying the gate on
+// PascalToKebab(Pluralize(Name)) ties it to the SAME transform that
+// produces e.EntitySlug, so the match tracks the route the page generator
+// actually emits rather than an incidental name string that an entity-
+// projection change can reshape underneath it. The applied-schema entity
+// join (BuildSchemaEntities) replaced the old proto-annotation entity
+// names with singular CRUD-RPC names; matching on the derived slug keeps
+// this gate stable across that projection churn — if the slug a route is
+// emitted under matches an entity in the set, the route is kept, full
+// stop. A regression here empties ALL_ROUTES silently (no error), dropping
+// every dashboard tile, so the match is pinned by
+// TestBuildNavPages_ControlPlaneEntitySet.
 func buildNavPages(services []codegen.ServiceDef, entities []codegen.EntityDef) []templates.NavPageData {
 	entitySet := make(map[string]struct{}, len(entities))
 	for _, e := range entities {
-		entitySet[strings.ToLower(e.Name)] = struct{}{}
+		entitySet[codegen.PascalToKebab(naming.Pluralize(e.Name))] = struct{}{}
 	}
 
 	seen := make(map[string]bool)
@@ -259,7 +276,7 @@ func buildNavPages(services []codegen.ServiceDef, entities []codegen.EntityDef) 
 			if !e.HasList {
 				continue
 			}
-			if _, ok := entitySet[strings.ToLower(e.EntityName)]; !ok {
+			if _, ok := entitySet[e.EntitySlug]; !ok {
 				continue
 			}
 			if seen[e.EntitySlug] {
@@ -275,7 +292,7 @@ func buildNavPages(services []codegen.ServiceDef, entities []codegen.EntityDef) 
 				HasCreate:      e.HasCreate,
 				ListHook:       "use" + e.ListRPC,
 				HooksModule:    e.HooksImportPath,
-				ItemsField:     codegen.ToCamelCaseFromPascalExport(e.EntityNamePlural),
+				ItemsField:     e.ItemsField,
 				ComponentIdent: e.EntityNamePlural,
 			})
 		}

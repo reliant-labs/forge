@@ -69,7 +69,7 @@ var (
 
 // RegisterServiceCmd registers a per-service subcommand factory. Called from
 // the services/ subpackage's init(). Selection stays TYPED: each factory's
-// RunE passes a (*app.Services).Mount<Svc> method expression to Serve.
+// RunE passes a (*app.Components).Mount<Svc> method expression to Serve.
 func RegisterServiceCmd(f CmdFactory) { serviceCmdFactories = append(serviceCmdFactories, f) }
 
 // RegisterWorkerCmd registers a per-worker subcommand factory (workers/ init()).

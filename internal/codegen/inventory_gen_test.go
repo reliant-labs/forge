@@ -22,7 +22,7 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateInventory: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "inventory_gen.go"))
+	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "mounts_services.go"))
 	if err != nil {
 		t.Fatalf("read inventory: %v", err)
 	}
@@ -49,15 +49,15 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	// TYPED MOUNTS — the run path. One typed method per service + MountAll +
 	// the typed MountByName map of method expressions (no string lookup).
 	for _, want := range []string{
-		`func (s *Services) MountBilling(mux *http.ServeMux`,
-		`func (s *Services) MountUser(mux *http.ServeMux`,
-		`func (s *Services) MountAll(mux *http.ServeMux`,
-		`s.Billing.Register(`,
-		`s.User.Register(`,
-		`s.Billing.RegisterHTTP(`,
+		`func (c *Components) MountBilling(mux *http.ServeMux`,
+		`func (c *Components) MountUser(mux *http.ServeMux`,
+		`func (c *Components) MountAll(mux *http.ServeMux`,
+		`c.Billing.Register(`,
+		`c.User.Register(`,
+		`c.Billing.RegisterHTTP(`,
 		`var MountByName = map[string]MountFunc{`,
-		`"billing": (*Services).MountBilling,`,
-		`"user": (*Services).MountUser,`,
+		`"billing": (*Components).MountBilling,`,
+		`"user": (*Components).MountUser,`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("typed mounts missing %q:\n%s", want, out)
@@ -71,8 +71,8 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 
 	// The authorizer-bearing service threads its authz interceptor in its
 	// typed mount; the authorizer-free one does not construct an authz var.
-	billingMount := out[strings.Index(out, `func (s *Services) MountBilling`):]
-	if next := strings.Index(billingMount, "func (s *Services) MountUser"); next > 0 {
+	billingMount := out[strings.Index(out, `func (c *Components) MountBilling`):]
+	if next := strings.Index(billingMount, "func (c *Components) MountUser"); next > 0 {
 		billingMount = billingMount[:next]
 	}
 	if !strings.Contains(billingMount, "AuthzInterceptor(authz)") {
@@ -101,7 +101,7 @@ func TestGenerateInventory_VersionMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateInventory: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "inventory_gen.go"))
+	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "mounts_services.go"))
 	if err != nil {
 		t.Fatalf("read inventory: %v", err)
 	}
@@ -131,9 +131,9 @@ func TestGenerateInventory_NoServicesEmptyInventory(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("GenerateInventory: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "inventory_gen.go"))
+	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "mounts_services.go"))
 	if err != nil {
-		t.Fatalf("no-services run should still emit inventory_gen.go: %v", err)
+		t.Fatalf("no-services run should still emit mounts_services.go: %v", err)
 	}
 	out := string(data)
 	if !strings.Contains(out, `var Inventory = []inventory.ComponentInfo{`) {

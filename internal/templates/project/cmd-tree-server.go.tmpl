@@ -3,11 +3,11 @@
 // Source: internal/templates/project/cmd-tree-server.go.tmpl.
 //
 // The all-services command. `{{.Name}} server` mounts EVERY service via the
-// typed (*app.Services).MountAll method expression and runs every worker/
+// typed (*app.Components).MountAll method expression and runs every worker/
 // operator. The optional `server [services...]` convenience mounts a named
 // subset by composing the TYPED app.MountByName function values — still no
 // string→inventory lookup on the run path; each map entry is a typed
-// (*app.Services).Mount<Svc> method expression. Prefer the dedicated
+// (*app.Components).Mount<Svc> method expression. Prefer the dedicated
 // per-service subcommands (cmd/services/<name>.go) for the single-service case.
 package cmd
 
@@ -31,11 +31,12 @@ func newServerCmd(deps Deps) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			deps.Cmd = cmd
 			if len(args) == 0 {
-				// All services: the typed MountAll method expression.
-				return Serve(cmd.Context(), deps, (*app.Services).MountAll, ServeOptions{RunSupervised: true})
+				// All services: the typed MountAll method expression. MountAll
+				// turns on the boot-time completeness gate.
+				return Serve(cmd.Context(), deps, (*app.Components).MountAll, ServeOptions{RunSupervised: true, MountAll: true})
 			}
 			// Named subset: compose the TYPED mount funcs from MountByName
-			// (each is a (*app.Services).Mount<Svc> method expression).
+			// (each is a (*app.Components).Mount<Svc> method expression).
 			mount, err := composeMount(args)
 			if err != nil {
 				return err
@@ -63,10 +64,10 @@ func composeMount(names []string) (MountFunc, error) {
 		}
 		funcs = append(funcs, mf)
 	}
-	return func(s *app.Services, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {
+	return func(c *app.Components, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {
 		var mounted []string
 		for _, mf := range funcs {
-			mounted = append(mounted, mf(s, mux, cfg, logger, opts...)...)
+			mounted = append(mounted, mf(c, mux, cfg, logger, opts...)...)
 		}
 		return mounted
 	}, nil

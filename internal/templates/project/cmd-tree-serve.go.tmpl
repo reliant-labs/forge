@@ -9,21 +9,24 @@
 //
 //   - Project the typed *config.Config onto a vendor-neutral serverkit.Config
 //     (including OTLPEndpoint + the app-identity ServiceName so serverkit
-//     owns OTel setup — there is no generated cmd/otel.go shim anymore).
+//     owns OTel setup).
 //   - Build the logger, run migrations.
-//   - Open the OWNED infra (app.OpenInfra), run the GENERATED injector
-//     (app.Build — by-type DI), then the OWNED two-phase wiring
-//     (app.PostBuild).
-//   - Build the Connect interceptor chain, then apply a TYPED MOUNT FUNCTION
-//     (an (*app.Services).Mount<Svc> method value, or MountAll) — selection
-//     is compile-time typed, NEVER a string→inventory lookup on the run path.
-//   - Resolve the REST swap and pack everything into serverkit.Server.
+//   - Open the OWNED infra (app.OpenInfra) and construct the explicit
+//     component graph (app.NewComponents) — there is NO by-type injector.
+//   - Build the EXPLICIT interceptor chain via observe.Chain(observe.Deps{…})
+//     with the already-built auth/audit/rate-limit interceptors named by field
+//     (NO Set* globals), and pack it onto serverkit.Server.HandlerOpts.
+//   - Apply a TYPED MOUNT FUNCTION (an (*app.Components).Mount<Svc> method
+//     value, or MountAll) onto srv.Mux — selection is compile-time typed,
+//     NEVER a string→inventory lookup on the run path — then srv.AddWorker /
+//     srv.AddOperator the selected supervised set and srv.RequireMounted the
+//     project's own declared proto services before serverkit.Run.
 //
 // Serve / ServeOptions / SelectWorkers / SelectOperators are EXPORTED so the
 // command-group subpackages (services/, workers/, operators/) consume them.
 //
-// Customizations should land in internal/app/providers.go (infra) /
-// internal/app/post_build.go (two-phase wiring) — both user-owned.
+// Customizations should land in internal/app/providers.go (infra), or by
+// `forge disown`-ing this file / internal/app/compose.go to own the bytes.
 package cmd
 
 import (
@@ -43,6 +46,8 @@ import (
 {{- if .RESTEnabled}}
 	"connectrpc.com/vanguard"
 {{- end}}
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 
 	fmw "github.com/reliant-labs/forge/pkg/middleware"
 	"github.com/reliant-labs/forge/pkg/observe"
@@ -59,21 +64,21 @@ import (
 {{- end}}
 )
 
-// MountFunc is a TYPED mount: it takes the constructed *app.Services and
+// MountFunc is a TYPED mount: it takes the constructed *app.Components and
 // registers a selected set of services on mux, returning their Connect
-// paths. Serve receives one of these directly — `(*app.Services).MountAll`
-// for the all-services command, `(*app.Services).Mount<Svc>` (a method
-// value) for a per-service subcommand. There is NO string selection on
-// this path. It mirrors app.MountFunc; the group subpackages pass an
-// app method expression DIRECTLY.
-type MountFunc func(s *app.Services, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string
+// paths. Serve receives one of these directly — `(*app.Components).MountAll`
+// for the all-services command, `(*app.Components).Mount<Svc>` (a method
+// value) for a per-service subcommand. There is NO string selection on this
+// path. It is app.MountFunc; the group subpackages pass an app method
+// expression DIRECTLY.
+type MountFunc = app.MountFunc
 
 // MountNone is a typed mount that registers no services. Worker-only and
-// operator-only subcommands pass it to Serve: the DI graph still constructs
-// everything (cross-component reads stay nil-safe), but no Connect routes
-// are mounted — the process is a pure supervisor for its named component.
-func MountNone(s *app.Services, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {
-	_, _, _, _, _ = s, mux, cfg, logger, opts
+// operator-only subcommands pass it to Serve: the component graph still
+// constructs everything (cross-component reads stay nil-safe), but no Connect
+// routes are mounted — the process is a pure supervisor for its named component.
+func MountNone(c *app.Components, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {
+	_, _, _, _, _ = c, mux, cfg, logger, opts
 	return nil
 }
 
@@ -82,10 +87,15 @@ func MountNone(s *app.Services, mux *http.ServeMux, cfg *config.Config, logger *
 // all-services `server` command runs everything. The optional
 // `server [names...]` convenience overrides the worker/operator selection.
 type ServeOptions struct {
-	// RunSupervised, when true, populates serverkit with the project's
-	// workers/operators. Per-service subcommands leave it false (a single
-	// service is an HTTP-only process); the `server` command sets it true.
+	// RunSupervised, when true, registers the project's workers/operators
+	// onto the serverkit.Server. Per-service subcommands leave it false (a
+	// single service is an HTTP-only process); the `server` command sets it true.
 	RunSupervised bool
+	// MountAll, when true, tells Serve this is the all-services path: the
+	// completeness gate (every declared proto service must be mounted) runs.
+	// The `server` command sets it; per-service subcommands and the
+	// `server [names...]` subset selector leave it false.
+	MountAll bool
 	// WorkerNames/OperatorNames, when non-nil, restrict the supervised
 	// set to the named subset — used by the `server [names...]` convenience
 	// selector AND by the per-worker / per-operator subcommands (which name
@@ -96,8 +106,9 @@ type ServeOptions struct {
 
 // Serve is the canonical server pipeline shared by every server-shaped
 // subcommand. It loads + validates config, builds the logger, runs OTel-
-// owning serverkit, opens infra, runs DI, applies the TYPED mount func,
-// and calls serverkit.Run. mount is a method value — selection is typed.
+// owning serverkit, opens infra, constructs the explicit component graph,
+// builds the explicit interceptor chain, applies the TYPED mount func onto
+// a serverkit.Server, verifies completeness, and calls serverkit.Run.
 func Serve(ctx context.Context, deps Deps, mount MountFunc, sopts ServeOptions) error {
 	// Load config from env vars and flags, then run cross-field validation.
 	cfg, err := config.Load(deps.Cmd)
@@ -140,14 +151,12 @@ func Serve(ctx context.Context, deps Deps, mount MountFunc, sopts ServeOptions) 
 	logger := serverkit.NewLogger(skCfg)
 	slog.SetDefault(logger)
 
-	// serverkit OWNS OTel now: it calls observe.Setup internally from
-	// skCfg.OTLPEndpoint + skCfg.ServiceName and mounts /metrics on its
-	// own edge. The cmd no longer builds a /metrics handler or an
-	// otel-shutdown closure (the generated cmd/otel.go shim is gone).
+	// serverkit OWNS OTel: it calls observe.Setup internally from
+	// skCfg.OTLPEndpoint + skCfg.ServiceName and mounts /metrics on its own edge.
 	mux := http.NewServeMux()
 {{- if index .ConfigFields "AutoMigrate"}}
 
-	// Auto-migrate BEFORE mounting services: the cmd owns the DB ceremony
+	// Auto-migrate BEFORE constructing services: the cmd owns the DB ceremony
 	// (dial + pool-tune + migrate + close) so the migrate-before-mount
 	// ordering is preserved.
 	if skCfg.AutoMigrate {
@@ -168,74 +177,55 @@ func Serve(ctx context.Context, deps Deps, mount MountFunc, sopts ServeOptions) 
 	}
 {{- end}}
 
-	// Connect interceptor chain: observe.DefaultMiddlewares (recovery →
-	// request-id → logging → tracing → metrics) wrapping the project
-	// interceptors. Built here and handed to the mount func as
-	// HandlerOptions so the appkit opts plumbing applies them at mount time.
-	interceptors := observe.DefaultMiddlewares(observe.DefaultMiddlewareDeps{
+	// EXPLICIT interceptor chain via observe.Chain: the already-built
+	// auth/audit/rate-limit interceptors handed in BY NAME (no Set* globals).
+	// Canonical forge order: recovery → request-id → logging → tracing →
+	// metrics (observability), then auth → audit → rate-limit (application).
+	// otelconnect rides Extras (outermost of the application layer).
+	chainDeps := observe.Deps{
 		Logger: logger,
-		Extras: buildProjectInterceptors(cfg, authInterceptor)(logger),
-	})
+		Auth:   authInterceptor,
+		Audit:  fmw.AuditInterceptor(logger, middleware.ClaimsFromContext),
+{{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}
+		RateLimit: fmw.RateLimitInterceptor(fmw.RateLimitOptions{Rps: int(cfg.RateLimitRps), Burst: int(cfg.RateLimitBurst)}, middleware.ClaimsFromContext),
+{{- end}}
+	}
+{{- if .AuthProviderExternal}}
+	// Header-carried auth provider: mount the generated auth interceptor in
+	// the chain (inner to the named application layer) unless auth is bypassed.
+	if !config.DevAuthBypass(cfg) {
+		chainDeps.Extras = append(chainDeps.Extras, middleware.GeneratedAuthInterceptor())
+	}
+{{- end}}
+	if otelInt, oerr := otelconnect.NewInterceptor(); oerr == nil {
+		chainDeps.Extras = append([]connect.Interceptor{otelInt}, chainDeps.Extras...)
+	} else {
+		logger.Error("failed to create otelconnect interceptor", "error", oerr)
+	}
 	opts := []connect.HandlerOption{
-		connect.WithInterceptors(interceptors...),
+		connect.WithInterceptors(observe.Chain(chainDeps)...),
 		connect.WithReadMaxBytes(skCfg.ReadMaxBytes),
 		connect.WithSendMaxBytes(skCfg.SendMaxBytes),
 	}
 
-	// HYBRID DI: open owned infra, run the generated by-type injector, then
-	// the owned two-phase wiring.
+	// EXPLICIT COMPOSITION: open owned infra, then construct the full
+	// component graph (no by-type injector).
 	infra, err := app.OpenInfra(ctx, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("open infra: %w", err)
 	}
-	services, err := app.Build(infra)
+	components, err := app.NewComponents(infra)
 	if err != nil {
-		return fmt.Errorf("build services: %w", err)
-	}
-	if pbErr := app.PostBuild(services); pbErr != nil {
-		return fmt.Errorf("post-build wiring failed: %w", pbErr)
+		return fmt.Errorf("build components: %w", err)
 	}
 
-	// TYPED MOUNT. mount is a method value over *app.Services — no string
-	// selection, no inventory lookup. It returns the Connect paths of the
-	// services it mounted (for the REST transcoder).
-	mounted := mount(services, mux, cfg, logger, opts...)
-{{- if .RESTEnabled}}
-
-	// REST swap (forge.yaml api.rest): build a vanguard transcoder over the
-	// MOUNTED services' Connect paths.
-	var handler http.Handler = mux
-	if rest := restHandler(mux, mounted); rest != nil {
-		handler = rest
-	}
-{{- else}}
-
-	var handler http.Handler = mux
-	_ = mounted
-{{- end}}
-
-	// Worker/operator selection. The TYPED run path: a per-service
-	// subcommand runs NO supervised components (sopts.RunSupervised
-	// false); the all-services `server` command runs the full typed lists.
-	// String name-filtering happens ONLY in the `server [names...]`
-	// convenience AND the per-worker / per-operator subcommands
-	// (SelectWorkers/SelectOperators), never on the typed mount path.
-	var (
-		workers   []serverkit.Worker
-		operators []serverkit.Operator
-	)
-	if sopts.RunSupervised {
-		workers = SelectWorkers(app.WorkerList(services), sopts.WorkerNames)
-		operators = SelectOperators(app.OperatorList(services), sopts.OperatorNames)
-	}
-
-	return serverkit.Run(ctx, skCfg, serverkit.Server{
-		Handler:   handler,
-		Logger:    logger,
-		Workers:   workers,
-		Operators: operators,
+	// serverkit.Server with explicit Mux + HandlerOpts. Components mount onto it.
+	srv := serverkit.Server{
+		Mux:         mux,
+		HandlerOpts: opts,
+		Logger:      logger,
 		RunOperators: func(ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
-			return app.RunOperators(services, ctx, logger, healthProbeAddr)
+			return app.RunOperators(components, ctx, logger, healthProbeAddr)
 		},
 {{- if index .ConfigFields "CorsOrigins"}}
 		CORSMiddleware: func(origins []string, allowCredentials bool) func(http.Handler) http.Handler {
@@ -251,7 +241,87 @@ func Serve(ctx context.Context, deps Deps, mount MountFunc, sopts ServeOptions) 
 		},
 {{- end}}
 		RequestIDMiddleware: fmw.RequestIDMiddleware,
-	})
+	}
+
+	// TYPED MOUNT. mount is a method value over *app.Components — no string
+	// selection, no inventory lookup. Each Mount<Svc> returns its Connect
+	// path(s); we record them on the server for the completeness gate.
+	mounted := mount(components, srv.Mux, cfg, logger, opts...)
+	for _, path := range mounted {
+		srv.Mounted(path)
+	}
+{{- if .RESTEnabled}}
+
+	// REST swap (forge.yaml api.rest): build a vanguard transcoder over the
+	// MOUNTED services' Connect paths and serve it instead of the bare mux.
+	if rest := restHandler(srv.Mux, mounted); rest != nil {
+		srv.Handler = rest
+	}
+{{- end}}
+
+	// Worker/operator registration. The TYPED run path: a per-service
+	// subcommand runs NO supervised components (sopts.RunSupervised false);
+	// the all-services `server` command runs the full typed lists. String
+	// name-filtering happens ONLY in the `server [names...]` convenience AND
+	// the per-worker / per-operator subcommands (SelectWorkers /
+	// SelectOperators), never on the typed mount path.
+	if sopts.RunSupervised {
+		for _, w := range SelectWorkers(app.WorkerList(components), sopts.WorkerNames) {
+			srv.AddWorker(w)
+		}
+		for _, op := range SelectOperators(app.OperatorList(components), sopts.OperatorNames) {
+			srv.AddOperator(op)
+		}
+	}
+
+	// COMPLETENESS GATE: on the all-services path every PROJECT service
+	// (app.Inventory) must be mounted before we serve — fail-closed against a
+	// half-wired server. Scoped to the project's own declared services via a
+	// *protoregistry.Files built from the inventory's Connect paths;
+	// protoregistry.GlobalFiles is NOT used directly because it also carries
+	// framework / transitively-imported proto files this binary does not serve
+	// (grpc.health.v1.Health — serverkit mounts it itself — and the OTel
+	// collector services pulled in by the SDK). A per-service subcommand
+	// intentionally mounts a subset, so the gate runs only when mounting all.
+	if sopts.MountAll {
+		projectFiles, sErr := projectServiceFiles()
+		if sErr != nil {
+			return fmt.Errorf("server completeness check: scoping project descriptors: %w", sErr)
+		}
+		if rmErr := srv.RequireMounted(projectFiles); rmErr != nil {
+			return fmt.Errorf("server completeness check: %w", rmErr)
+		}
+	}
+
+	return serverkit.Run(ctx, skCfg, srv)
+}
+
+// projectServiceFiles builds a *protoregistry.Files scoped to the PROJECT's
+// own declared services (app.Inventory), for the RequireMounted completeness
+// gate. It looks each inventory ConnectPath (a fully-qualified Connect service
+// name) up in protoregistry.GlobalFiles and registers ONLY those services'
+// parent FileDescriptors — so the gate sees exactly the services this binary
+// is responsible for and ignores framework / transitively-imported proto
+// (grpc.health, OTel collector). A missing descriptor is a hard error: the
+// inventory and the gen packages must agree.
+func projectServiceFiles() (*protoregistry.Files, error) {
+	files := &protoregistry.Files{}
+	seen := make(map[protoreflect.FullName]struct{})
+	for _, info := range app.Inventory {
+		desc, err := protoregistry.GlobalFiles.FindDescriptorByName(protoreflect.FullName(info.ConnectPath))
+		if err != nil {
+			return nil, fmt.Errorf("service %q (%s) not found in global proto registry: %w", info.Name, info.ConnectPath, err)
+		}
+		fd := desc.ParentFile()
+		if _, ok := seen[fd.FullName()]; ok {
+			continue
+		}
+		seen[fd.FullName()] = struct{}{}
+		if rerr := files.RegisterFile(fd); rerr != nil {
+			return nil, fmt.Errorf("registering file for service %q: %w", info.Name, rerr)
+		}
+	}
+	return files, nil
 }
 {{- if .RESTEnabled}}
 
@@ -405,35 +475,4 @@ func projectServerkitConfig(cfg *config.Config) (serverkit.Config, error) {
 {{- end}}
 
 	return skCfg, nil
-}
-
-// buildProjectInterceptors returns the project-specific Connect interceptor
-// chain layered AFTER observe.DefaultMiddlewares. Order: otelconnect
-// (outermost) → rate-limit → auth → audit.
-func buildProjectInterceptors(cfg *config.Config, authInterceptor connect.Interceptor) func(logger *slog.Logger) []connect.Interceptor {
-	return func(logger *slog.Logger) []connect.Interceptor {
-		projectInterceptors := []connect.Interceptor{
-			authInterceptor,
-			fmw.AuditInterceptor(logger, middleware.ClaimsFromContext),
-		}
-{{- if .AuthProviderExternal}}
-		if !config.DevAuthBypass(cfg) {
-			projectInterceptors = append([]connect.Interceptor{middleware.GeneratedAuthInterceptor()}, projectInterceptors...)
-		}
-{{- end}}
-{{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}
-		if rl := fmw.RateLimitInterceptor(fmw.RateLimitOptions{
-			Rps:   int(cfg.RateLimitRps),
-			Burst: int(cfg.RateLimitBurst),
-		}, middleware.ClaimsFromContext); rl != nil {
-			projectInterceptors = append([]connect.Interceptor{rl}, projectInterceptors...)
-		}
-{{- end}}
-		if otelInt, oerr := otelconnect.NewInterceptor(); oerr == nil {
-			projectInterceptors = append([]connect.Interceptor{otelInt}, projectInterceptors...)
-		} else {
-			logger.Error("failed to create otelconnect interceptor", "error", oerr)
-		}
-		return projectInterceptors
-	}
 }

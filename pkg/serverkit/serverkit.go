@@ -4,7 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
+
+	"connectrpc.com/connect"
 )
 
 // Server carries the already-composed inputs serverkit runs. Service
@@ -24,7 +27,33 @@ type Server struct {
 	// OWN edge (CORS/security/request-id/h2c from Config + the factory
 	// fields below) and routes /healthz + /readyz to its own probes
 	// IN FRONT of that edge, but never re-mounts services. Required.
+	//
+	// A composition root that uses the Mux ergonomics below need not set
+	// Handler explicitly: when Handler is nil at Run time and Mux is
+	// non-nil, Run uses Mux as the handler. Setting Handler is still the
+	// way to install a REST-transcoder swap or any wrapper around the raw
+	// mux — set Handler to the wrapped value after mounting.
 	Handler http.Handler
+
+	// Mux is the composition root's service mux — the *http.ServeMux that
+	// mountkit.RegisterService (or this Server's Mount* helpers) mount
+	// onto. It is OPTIONAL ergonomics: a composition root can `srv.Mux =
+	// http.NewServeMux()`, mount services through Server.Mount (which both
+	// registers on Mux AND records the proto service name for the
+	// completeness check), and leave Handler nil — Run falls back to Mux.
+	// When the caller needs to wrap the mux (REST swap, an outer handler)
+	// it builds Mux, mounts, then sets Handler to the wrapped value; Mux
+	// stays the mount target and the recorded-names set is unaffected.
+	Mux *http.ServeMux
+
+	// HandlerOpts is the shared []connect.HandlerOption (the interceptor
+	// chain from observe.Chain wrapped via connect.WithInterceptors, plus
+	// the ReadMaxBytes/SendMaxBytes payload limits) that every service's
+	// Register call receives. Carried on the Server so the Mount helpers
+	// can thread it through without the caller repeating it per service.
+	// Callers that mount via mountkit.RegisterService directly pass it
+	// themselves and may leave this nil.
+	HandlerOpts []connect.HandlerOption
 
 	// Logger is the root logger the caller already built (the same one
 	// it passed into bootstrap so mount-time logs and run-time logs
@@ -54,6 +83,16 @@ type Server struct {
 	// config error. Optional when Operators is empty.
 	RunOperators func(ctx context.Context, logger *slog.Logger, healthProbeAddr string) error
 
+	// mounted is the set of fully-qualified proto service names this
+	// Server has recorded as MOUNTED, populated by Mounted (which the
+	// Mount helpers call, and which a caller mounting through
+	// mountkit.RegisterService directly calls itself). It is the input to
+	// RequireMounted's completeness check: every DECLARED proto service
+	// (walked from protoregistry) must appear here or boot fails. Unexported
+	// — callers record via Mounted and read the result via RequireMounted,
+	// never by poking the map.
+	mounted map[string]struct{}
+
 	// Edge factories: kept as fields (not pure Config) because the
 	// concrete middleware still lives in the project's generated
 	// pkg/middleware tree and serverkit must not import the project.
@@ -64,6 +103,65 @@ type Server struct {
 	SecurityHeadersMiddleware func(production bool) func(http.Handler) http.Handler
 	RequestIDMiddleware       func() func(http.Handler) http.Handler
 	HTTPMiddleware            func(http.Handler) http.Handler
+}
+
+// AddWorker appends a constructed worker to Server.Workers. It is pure
+// ergonomics for the composition root — `srv.AddWorker(w)` reads cleaner
+// than re-slicing srv.Workers — and is equivalent to appending directly.
+// A nil worker is ignored so a composition root can pass the result of a
+// conditional builder without a guard.
+func (s *Server) AddWorker(w Worker) {
+	if w == nil {
+		return
+	}
+	s.Workers = append(s.Workers, w)
+}
+
+// AddOperator appends a constructed operator to Server.Operators. Like
+// AddWorker it is ergonomics over a direct append; a nil operator is
+// ignored. Remember that a non-empty Operators requires Server.RunOperators
+// to be set (Run rejects the mismatch).
+func (s *Server) AddOperator(o Operator) {
+	if o == nil {
+		return
+	}
+	s.Operators = append(s.Operators, o)
+}
+
+// Mounted records that the proto service named name (its fully-qualified
+// Connect path, e.g. "acme.billing.v1.BillingService") has had its handler
+// mounted on this Server. It is the recording seam for the boot-time
+// completeness check: the Mount helpers call it after a successful
+// RegisterService, and a composition root that mounts through
+// mountkit.RegisterService DIRECTLY calls it itself with the same name so
+// RequireMounted can later verify nothing declared was left unmounted.
+//
+// name is the DECLARED proto identity — the same string that appears in the
+// proto FileDescriptor's services list and that RequireMounted walks the
+// registry for. Recording the kebab runtime name or the procedure path
+// instead would make the completeness check compare apples to oranges, so
+// callers must pass the fully-qualified proto service name. Empty names are
+// ignored.
+func (s *Server) Mounted(name string) {
+	if name == "" {
+		return
+	}
+	if s.mounted == nil {
+		s.mounted = make(map[string]struct{})
+	}
+	s.mounted[name] = struct{}{}
+}
+
+// MountedNames returns the sorted set of proto service names recorded via
+// Mounted. Exposed for diagnostics and tests; the run path uses
+// RequireMounted, not this.
+func (s *Server) MountedNames() []string {
+	out := make([]string, 0, len(s.mounted))
+	for n := range s.mounted {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Worker is the runtime contract for a long-running background task.

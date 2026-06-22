@@ -41,8 +41,15 @@ import (
 func Run(ctx context.Context, cfg Config, srv Server) error {
 	cfg.defaults()
 
+	// Handler is required, but the Mux ergonomics let a composition root
+	// leave it nil and rely on Server.Mux as the handler (the common case:
+	// no REST swap, no outer wrapper). Fall back to Mux before failing.
 	if srv.Handler == nil {
-		return fmt.Errorf("serverkit.Run: Server.Handler is required")
+		if srv.Mux != nil {
+			srv.Handler = srv.Mux
+		} else {
+			return fmt.Errorf("serverkit.Run: Server.Handler is required (or set Server.Mux)")
+		}
 	}
 	if cfg.Addr == "" {
 		return fmt.Errorf("serverkit.Run: Config.Addr is required")

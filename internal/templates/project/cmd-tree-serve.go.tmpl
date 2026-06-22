@@ -123,15 +123,28 @@ func Serve(ctx context.Context, deps Deps, mount MountFunc, sopts ServeOptions) 
 	if err != nil {
 		return err
 	}
+	// authDeps carries the EXPLICIT auth policy into the interceptor (no
+	// package globals). DevMode is the single auth-bypass source of truth.
+	authDeps := middleware.AuthDeps{DevMode: config.DevAuthBypass(cfg)}
 {{- if .AuthProvider}}
 
-	// forge.yaml declares `auth.provider: {{.AuthProvider}}` — wire the
-	// generated validator into the policy surface BEFORE the interceptor
-	// chain is constructed. Skipped ONLY under an explicit auth bypass.
+	// forge.yaml declares `auth.provider: {{.AuthProvider}}` — build the
+	// generated provider BEFORE the interceptor chain is constructed and
+	// thread its validator (jwt) or external signal (api_key/both) into
+	// authDeps. Skipped ONLY under an explicit auth bypass.
 	if !config.DevAuthBypass(cfg) {
-		if ierr := middleware.InstallGeneratedAuth(); ierr != nil {
+		validate, ierr := middleware.InstallGeneratedAuth()
+		if ierr != nil {
 			return fmt.Errorf("auth provider configuration: %w", ierr)
 		}
+{{- if .AuthProviderExternal}}
+		// Header-carried provider owns its own interceptor (mounted below);
+		// the authn layer above it runs in passthrough.
+		authDeps.ExternalAuth = true
+		_ = validate
+{{- else}}
+		authDeps.Validate = validate
+{{- end}}
 	}
 {{- end}}
 
@@ -141,7 +154,7 @@ func Serve(ctx context.Context, deps Deps, mount MountFunc, sopts ServeOptions) 
 	if config.DevAuthBypass(cfg) {
 		slog.Warn("AUTH BYPASS ACTIVE — authentication and authorization are DISABLED (dev claims injected). This is gated on AUTH_DEV_MODE=true; never set it in production.")
 	}
-	authInterceptor, err := middleware.NewAuthInterceptor(config.DevAuthBypass(cfg))
+	authInterceptor, err := middleware.NewAuthInterceptor(authDeps)
 	if err != nil {
 		return fmt.Errorf("auth configuration: %w", err)
 	}

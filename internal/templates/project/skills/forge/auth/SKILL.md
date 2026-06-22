@@ -67,43 +67,44 @@ If you need additional claim DATA, prefer the `enrichClaims` hook in `internal/m
 
 The auth MECHANISM (mode resolution, refusal-to-start, allow-list gate, Bearer parsing, claims plumbing) lives in `forge/pkg/authn`; the authorization interceptor in `forge/pkg/authz`; commodity middlewares (CORS, security headers, request-id, rate limit, idempotency, HTTP stack, audit) in `forge/pkg/middleware`. The project keeps ONE scaffolded-once file, `internal/middleware/middleware.go`, wiring the four things projects actually customize:
 
-1. **Token validator** — `SetTokenValidator(fn)` installs it; `ValidateToken` dispatches per-request. Install it in the composition root (`Build`) before the interceptor chain is assembled if you want validate mode — a two-phase setter is fine since dispatch is per-request.
+1. **Token validator** — passed EXPLICITLY into `NewAuthInterceptor(AuthDeps{Validate: fn})`; there is no package-global slot. The composition root (`OpenInfra` in `internal/app/providers.go`, or the generated `auth_gen.go`) builds the validator and the generated `cmd serve.go` threads it into `AuthDeps.Validate` before the interceptor chain is assembled.
 2. **Identity enricher** — `enrichClaims(ctx, claims)` runs after validation; hydrate roles/org membership/feature flags from your DB here. Errors reject the request.
 3. **Allow-list** — `unauthenticatedProcedures`, exact full-procedure strings only.
 4. **Dev claims** — `devClaims()` returns the synthetic principal attached while auth is off (dev mode / `AUTH_MODE=none`). The scaffolded default is a fixed dev user (`UserID: "dev-user"`, `Email: "dev@localhost"`, `Role: "admin"`) so claim-demanding handlers (generated CRUD calls `GetUser`) work in dev with zero config; return nil to keep dev passthrough claim-free. Ignored entirely in validate/external-auth modes.
 
 The file also owns `Claims`, the claims context key (`ClaimsFromContext` / `ContextWithClaims`), and the `Authorizer` interface + `DevAuthorizer` that generated code references — so regenerating never churns your handler-facing surface.
 
-Auth mode resolution (in `forge/pkg/authn`, decided ONCE at interceptor construction): validator installed → validate every non-allow-listed request; `MarkExternalAuth()` called (packs do this) → passthrough; `AUTH_MODE=none` → passthrough; dev mode (injected from `cfg.Mode()`) → passthrough; otherwise **the server refuses to start**.
+Auth mode resolution (in `forge/pkg/authn`, decided ONCE at interceptor construction): `AuthDeps.Validate` non-nil → validate every non-allow-listed request; `AuthDeps.ExternalAuth` true (a header-carried provider or a pack mounts its own interceptor) → passthrough; `AUTH_MODE=none` → passthrough; dev mode (`AuthDeps.DevMode`, injected from `config.DevAuthBypass(cfg)`) → passthrough; otherwise **the server refuses to start**.
 
 ## How auth wiring works
 
 When forge.yaml declares `auth.provider`, the generated
 `internal/middleware/auth_gen.go` is a thin shim over `forge/pkg/auth`.
-The composition root (`Build` in `internal/app`, where the handler
-assembly lives) calls `middleware.InstallGeneratedAuth()` as it wires
-the interceptor chain, except in dev mode (the dev-claims passthrough
-applies instead; set `ENVIRONMENT` to anything non-development to
-exercise real auth locally). The auth provider is installed where the
-chain is composed — not via a string-arg `runServer` and not via a
-post-bootstrap hook reading off an `App` value.
+The generated `cmd serve.go` calls `middleware.InstallGeneratedAuth()`
+as it wires the interceptor chain and threads the result into
+`middleware.AuthDeps`, except under an auth bypass
+(`config.DevAuthBypass(cfg)` — the dev-claims passthrough applies
+instead). The auth provider is wired EXPLICITLY where the chain is
+composed — not via a package-global setter and not via a post-bootstrap
+hook reading off an `App` value.
 
 - **`provider: jwt`** — `InstallGeneratedAuth` constructs the
-  `pkg/auth` validator from the forge.yaml config and installs it via
-  `SetTokenValidator(v.Validate)`, and merges the proto-annotated
+  `pkg/auth` validator from the forge.yaml config and RETURNS its
+  `Validate` func, which the generated `cmd serve.go` threads into
+  `AuthDeps.Validate`; it also merges the proto-annotated
   `auth_required = false` procedures into `unauthenticatedProcedures`.
   The user-owned policy surface (enrichClaims, allow-list, dev claims)
   stays fully in the loop; there is no parallel interceptor.
 - **`provider: api_key` / `both`** — API keys arrive in a header, not
-  a bearer token, so `InstallGeneratedAuth` marks external auth
-  (`MarkExternalAuth`) and the chain mounts the header-aware
-  `middleware.GeneratedAuthInterceptor()`. API-key requests FAIL CLOSED
-  until you implement `KeyValidator`
-  (`internal/middleware/auth_validator.go`) and install it via a
-  post-construction setter in `Build`:
+  a bearer token, so `InstallGeneratedAuth` returns a nil validator and
+  the generated `cmd serve.go` sets `AuthDeps.ExternalAuth = true` and
+  mounts the header-aware `middleware.GeneratedAuthInterceptor()`.
+  API-key requests FAIL CLOSED until you implement `KeyValidator`
+  (`internal/middleware/auth_validator.go`) and install it from
+  `OpenInfra` in `internal/app/providers.go`:
 
 ```go
-// internal/app/build.go — after the DB is constructed, before Run
+// internal/app/providers.go — in OpenInfra, before the chain is built
 middleware.SetGeneratedKeyValidator(&DBKeyValidator{db: repo})
 ```
 

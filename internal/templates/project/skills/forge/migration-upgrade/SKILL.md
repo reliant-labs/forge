@@ -106,6 +106,34 @@ helper, a changed file layout — those do.
 - `migration` — the top-level skill for porting a non-forge project
   *into* forge in the first place. This skill is for upgrading an
   already-forge project.
+- `migrations/v0.x-to-typed-di` — retire the `pkg/app` name-matched DI
+  (`wire_gen.go` / the appkit string-keyed table) for the EXPLICIT
+  composition: an OWNED `internal/app/providers.go` (`Infra` +
+  `OpenInfra`) plus a generated `internal/app/compose.go`
+  (`func NewComponents(infra) (*Components, error)`) that resolves every
+  `Deps` field BY TYPE. A missing provider is a loud generate-/compile-
+  time error, not a silent nil. This is the canonical "arrive at the
+  explicit composition root" upgrade.
+- `migrations/v0.x-to-serverkit-composed` — retire `serverkit.Run` with
+  string service-NAME selection for `Run(ctx, cfg, serverkit.Server{…})`
+  with TYPED mount selection: each service gets a typed
+  `(*app.Components).Mount<Svc>` method (in
+  `internal/app/mounts_services.go`) and its own
+  `cmd/<bin>/cmd/services/<name>.go` subcommand that hands that method
+  EXPRESSION to a shared `cmd.Serve`. The `Application` interface, Hooks,
+  the string→inventory mount lookup, and the generated `cmd/otel.go` shim
+  are gone; serverkit OWNS OTel.
+- `migrations/v0.x-to-serverkit` — collapse the ~520-line inline
+  `cmd/server.go` scaffold onto a thin shim over `forge/pkg/serverkit`
+  (the library owns the HTTP listener, observability chain, health
+  probes, worker/operator supervision, and graceful shutdown).
+- `migrations/v0.x-to-internal-layout` — move top-level `handlers/`,
+  `workers/`, `operators/` under `internal/` (mechanical move +
+  import-path rewrite; the compiler then enforces app-internal privacy).
+- `migrations/v0.x-to-self-certifying` — drop the global
+  `.forge/checksums.json` manifest for self-certifying generated files
+  (each Tier-1 file embeds its own `forge:hash=<sha256>`); automatic on
+  the next `forge generate` / `forge upgrade`.
 - `migrations/v0.x-to-contractkit` — the canonical per-version
   migration example (mock/middleware/tracing/metrics → contractkit).
 - `migrations/v0.x-to-observe-libs` — per-package wrapper codegen →

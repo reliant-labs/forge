@@ -122,10 +122,16 @@ type ProjectConfig struct {
 	// forge.yaml leaves them absent and the loader fills shape-derived
 	// defaults (see ApplyDerivedDefaults in derive.go). A present block
 	// is taken literally — write the block (or a single key) to override.
-	Database  DatabaseConfig  `yaml:"database,omitempty"`
-	CI        CIConfig        `yaml:"ci,omitempty"`
-	Build     BuildConfig     `yaml:"build,omitempty"`
-	Deploy    DeployConfig    `yaml:"deploy,omitempty"`
+	Database DatabaseConfig `yaml:"database,omitempty"`
+	CI       CIConfig       `yaml:"ci,omitempty"`
+	// NOTE: there is intentionally NO `build:` field. Build is declared
+	// per-service, per-env in KCL (the polymorphic Build union —
+	// GoBuild | DockerBuild | ShellBuild on each forge.Service); forge.yaml
+	// carries zero build config. A `build:` key in forge.yaml is REJECTED
+	// as an unknown key by the strict loader (walkUnknownKeys) rather than
+	// silently ignored — version stamping moves to a KCL GoBuild.ldflags
+	// `-X` entry.
+	Deploy DeployConfig `yaml:"deploy,omitempty"`
 	Docker    DockerConfig    `yaml:"docker,omitempty"`
 	K8s       K8sConfig       `yaml:"k8s,omitempty"`
 	Lint      LintConfig      `yaml:"lint,omitempty"`
@@ -761,19 +767,11 @@ func (d *DeployConfig) IsConcurrencyEnabled() bool {
 	return d.Concurrency == (DeployConcurrency{}) || d.Concurrency.Enabled
 }
 
-// BuildConfig controls build-time version stamping. Empty = forge's
-// defaults (version derived from git, stamped into main.version).
-type BuildConfig struct {
-	// Version pins the embedded build version, overriding git derivation.
-	Version string `yaml:"version,omitempty"`
-	// VersionVar is an ADDITIONAL `-ldflags -X` target stamped with the
-	// resolved version, e.g.
-	//   "github.com/acme/app/internal/buildinfo.Version"
-	// main.version/commit/date are ALWAYS stamped; this is extra, for
-	// code that can't import package main. Requires an exported pkg-level
-	// string var at that path.
-	VersionVar string `yaml:"version_var,omitempty"`
-}
+// (BuildConfig was removed: forge.yaml no longer carries any build
+// config. Build is a per-service, per-env polymorphic declaration in KCL
+// — see the GoBuild | DockerBuild | ShellBuild union on forge.Service.
+// Version stamping moved to a KCL GoBuild.ldflags `-X` entry. A `build:`
+// key in forge.yaml is now rejected as an unknown key.)
 
 // DockerConfig holds Docker registry configuration.
 type DockerConfig struct {

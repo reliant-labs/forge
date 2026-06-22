@@ -28,18 +28,33 @@ func TestBuildHostServiceCmd(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "go-run default",
+			// No build block → EffectiveBuild synthesizes the
+			// ./cmd/<name> default, so the go-run target is ./cmd/api,
+			// NOT the legacy ./cmd hardcode.
+			name: "go-run default uses ./cmd/<name>",
 			svc: ServiceEntity{Name: "api", Deploy: DeployConfigEntity{
 				Type: "host", Host: &HostDeploy{Runner: "go-run"},
 			}},
-			want: []string{"go", "run", "./cmd", "server", "api"},
+			want: []string{"go", "run", "./cmd/api", "server", "api"},
 		},
 		{
 			name: "empty runner defaults to go-run",
 			svc: ServiceEntity{Name: "api", Deploy: DeployConfigEntity{
 				Type: "host", Host: &HostDeploy{Runner: ""},
 			}},
-			want: []string{"go", "run", "./cmd", "server", "api"},
+			want: []string{"go", "run", "./cmd/api", "server", "api"},
+		},
+		{
+			// An explicit GoBuild.cmd flows into the go-run target so
+			// host-run matches the build target exactly (shared binary at
+			// ./cmd/<project>, not ./cmd/<service>).
+			name: "go-run uses explicit GoBuild.cmd",
+			svc: ServiceEntity{
+				Name:   "api",
+				Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{Runner: "go-run"}},
+				Build:  BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/myproj"}},
+			},
+			want: []string{"go", "run", "./cmd/myproj", "server", "api"},
 		},
 		{
 			name: "air with custom config",

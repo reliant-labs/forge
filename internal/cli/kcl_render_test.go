@@ -195,6 +195,118 @@ func TestDispatchServiceDeploy_Errors(t *testing.T) {
 	}
 }
 
+func TestDispatchServiceBuild(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		wantType string
+		check    func(t *testing.T, b BuildConfigEntity)
+	}{
+		{
+			name:     "go",
+			raw:      `{"type":"go","cmd":"./cmd/trader","goarch":"arm64","flags":["-cover"],"ldflags":["-s"],"env":{"CGO_ENABLED":"0"}}`,
+			wantType: "go",
+			check: func(t *testing.T, b BuildConfigEntity) {
+				if b.Go == nil || b.Go.Cmd != "./cmd/trader" || b.Go.GOARCH != "arm64" {
+					t.Errorf("go build = %+v", b.Go)
+				}
+				if len(b.Go.Flags) != 1 || b.Go.Flags[0] != "-cover" {
+					t.Errorf("flags = %v", b.Go.Flags)
+				}
+			},
+		},
+		{
+			name:     "docker",
+			raw:      `{"type":"docker","dockerfile":"Dockerfile.x","platform":"linux/arm64","target":"runtime"}`,
+			wantType: "docker",
+			check: func(t *testing.T, b BuildConfigEntity) {
+				if b.Docker == nil || b.Docker.Dockerfile != "Dockerfile.x" || b.Docker.Platform != "linux/arm64" {
+					t.Errorf("docker build = %+v", b.Docker)
+				}
+			},
+		},
+		{
+			name:     "shell",
+			raw:      `{"type":"shell","cmd":"make build"}`,
+			wantType: "shell",
+			check: func(t *testing.T, b BuildConfigEntity) {
+				if b.Shell == nil || b.Shell.Cmd != "make build" {
+					t.Errorf("shell build = %+v", b.Shell)
+				}
+			},
+		},
+		{
+			name:     "null is absent",
+			raw:      `null`,
+			wantType: "",
+			check:    func(t *testing.T, b BuildConfigEntity) {},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b, err := dispatchServiceBuild("svc", []byte(c.raw))
+			if err != nil {
+				t.Fatalf("dispatchServiceBuild: %v", err)
+			}
+			if b.Type != c.wantType {
+				t.Fatalf("type = %q, want %q", b.Type, c.wantType)
+			}
+			c.check(t, b)
+		})
+	}
+}
+
+func TestDispatchServiceBuild_Errors(t *testing.T) {
+	for _, c := range []struct{ name, raw, wantErr string }{
+		{"missing type", `{"cmd":"x"}`, "build.type missing"},
+		{"unknown type", `{"type":"rust"}`, "unrecognised build.type"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := dispatchServiceBuild("svc", []byte(c.raw))
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("err = %v, want substring %q", err, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestEffectiveBuild_SynthesizesGoDefault(t *testing.T) {
+	// A service with no build block falls back to GoBuild { cmd =
+	// ./cmd/<name> } — the ONE place the default lives.
+	s := ServiceEntity{Name: "api"}
+	b := s.EffectiveBuild()
+	if b.Type != "go" || b.Go == nil || b.Go.Cmd != "./cmd/api" || b.Go.OutputName != "api" {
+		t.Fatalf("EffectiveBuild default = %+v / %+v", b, b.Go)
+	}
+	// An explicit build wins over the synthesized default.
+	s2 := ServiceEntity{Name: "api", Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cmd: "x"}}}
+	if s2.EffectiveBuild().Type != "shell" {
+		t.Errorf("explicit build dropped: %+v", s2.EffectiveBuild())
+	}
+}
+
+func TestGoBuildTargetsFromKCL_DedupsSharedBinary(t *testing.T) {
+	// Two server services that map to the same shared ./cmd/proj binary
+	// collapse to ONE go-build target; a distinct binary stays separate.
+	e := &KCLEntities{Services: []ServiceEntity{
+		{Name: "users", Build: BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/proj", OutputName: "proj"}}},
+		{Name: "orders", Build: BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/proj", OutputName: "proj"}}},
+		{Name: "gateway", Build: BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/gateway", OutputName: "gateway"}}},
+		{Name: "image", Build: BuildConfigEntity{Type: "docker", Docker: &DockerBuild{}}},
+	}}
+	targets := goBuildTargetsFromKCL(e)
+	if len(targets) != 2 {
+		t.Fatalf("want 2 deduped go targets, got %d: %+v", len(targets), targets)
+	}
+	got := map[string]bool{}
+	for _, tt := range targets {
+		got[tt.cmd] = true
+	}
+	if !got["./cmd/proj"] || !got["./cmd/gateway"] {
+		t.Errorf("targets = %+v, want ./cmd/proj + ./cmd/gateway (docker excluded)", targets)
+	}
+}
+
 func TestParseKCLEntities_EmptyJSON(t *testing.T) {
 	entities, err := parseKCLEntities([]byte("  "))
 	if err != nil {

@@ -169,6 +169,56 @@ _render_deploy = lambda d: any -> any {
     _render_deploy_populated(d) if d else None
 }
 
+# build_of coerces a plain build dict (the shape components_gen.json
+# emits and a per-env overlay authors) into the right TYPED Build subtype,
+# dispatching on the `type` discriminator. This exists because KCL union
+# coercion is structural-first: a ShellBuild dict ({type=shell, cmd=...})
+# also satisfies GoBuild's required `cmd`, so a bare dict assigned to
+# `build: GoBuild | DockerBuild | ShellBuild` wrongly commits to GoBuild
+# and fails its `type == "go"` check. Routing the dict through this
+# discriminator-aware constructor at the bridge (build = forge.build_of(
+# c.build)) yields the exact subtype so the union match is unambiguous —
+# the same way the deploy bridge passes typed K8sCluster / BuildOnly
+# literals rather than bare dicts. Module-level (not a lambda body) so it
+# may instantiate schema literals (the v0.11 lambda restriction doesn't
+# apply here). An empty dict returns Undefined so `if c.build` stays the
+# "no build declared" signal.
+_build_go = lambda b: {str:any} -> GoBuild {
+    GoBuild {
+        cmd = b.cmd
+        output_name = b.output_name if "output_name" in b else ""
+        goos = b.goos if "goos" in b else ""
+        goarch = b.goarch if "goarch" in b else ""
+        ldflags = b.ldflags if "ldflags" in b else []
+        tags = b.tags if "tags" in b else []
+        flags = b.flags if "flags" in b else []
+        env = b.env if "env" in b else {}
+    }
+}
+
+_build_docker = lambda b: {str:any} -> DockerBuild {
+    DockerBuild {
+        output_name = b.output_name if "output_name" in b else ""
+        dockerfile = b.dockerfile if "dockerfile" in b else "Dockerfile"
+        platform = b.platform if "platform" in b else ""
+        target = b.target if "target" in b else ""
+        build_args = b.build_args if "build_args" in b else {}
+    }
+}
+
+_build_shell = lambda b: {str:any} -> ShellBuild {
+    ShellBuild {
+        output_name = b.output_name if "output_name" in b else ""
+        cmd = b.cmd
+    }
+}
+
+build_of = lambda b: {str:any} -> any {
+    _build_go(b) if (b and b.type == "go") else \
+        (_build_docker(b) if (b and b.type == "docker") else \
+        (_build_shell(b) if (b and b.type == "shell") else Undefined))
+}
+
 # Build union render. One branch per discriminator value (go / docker /
 # shell), each returning a fully-populated dict so the Go consumer
 # (ServiceEntity.Build) sees a stable key shape per type. Mirrors the

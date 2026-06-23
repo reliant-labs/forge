@@ -196,6 +196,11 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
     _resources = _deploy.resources if _deploy.resources else _default_resources
     _image = _image_ref(svc.image, image_registry, image_tag)
     _ports = _deploy.ports if len(_deploy.ports) > 0 else [8080]
+    # Optional per-port appProtocol map ({port: appProtocol}). Only
+    # K8sCluster carries this; absent/empty => no port gets the field,
+    # so the Service ports render byte-identically to before. Service-
+    # port-only — never projected onto containerPorts.
+    _app_protocols = _deploy.app_protocols if _deploy.app_protocols else {}
     # Optional writable / projected volumes (the readOnlyRootFilesystem
     # escape hatch). `svc.volumes` is None/Undefined when unset.
     _volumes = svc.volumes if svc.volumes else []
@@ -258,7 +263,18 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
         spec = {
             selector = {"app.kubernetes.io/name" = _name}
             ports = [
-                {name = "port-${p}", port = p, targetPort = p, protocol = "TCP"}
+                {
+                    name = "port-${p}"
+                    port = p
+                    targetPort = p
+                    protocol = "TCP"
+                    # appProtocol is rendered only for ports listed in
+                    # app_protocols (keyed by port-as-string); every other
+                    # port omits the field and is byte-identical to the
+                    # pre-appProtocol render.
+                    if str(p) in _app_protocols:
+                        appProtocol = _app_protocols[str(p)]
+                }
                 for p in _ports
             ]
         }

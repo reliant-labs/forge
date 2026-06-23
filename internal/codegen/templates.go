@@ -18,6 +18,9 @@ import (
 {{- if .NeedsPb}}
 	pb "{{.GoPackage}}"
 {{- end}}
+{{- range .ForeignImports}}
+	{{.Alias}} "{{.Path}}"
+{{- end}}
 	"{{.GoPackage}}/{{.PkgName}}connect"
 {{- if .NeedsEmptypb}}
 	"google.golang.org/protobuf/types/known/emptypb"

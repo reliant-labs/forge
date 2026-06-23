@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,6 +161,84 @@ func TestGenerateMock_ZeroMethods_Skipped(t *testing.T) {
 	mockFile := filepath.Join(mockDir, "orders_mock.go")
 	if _, err := os.Stat(mockFile); !os.IsNotExist(err) {
 		t.Errorf("expected no mock file for zero-RPC service, but %s exists", mockFile)
+	}
+}
+
+// TestGenerateMock_CrossPackageMessageImports covers the proto-split shape
+// where a thin service-surface proto file reuses request/response messages
+// from an IMPORTED proto file that generates into a DIFFERENT Go package.
+// The descriptor records the foreign provenance on each method via
+// Input/OutputProtoFile; the mock generator must import that foreign package
+// under its own alias and qualify the type with it instead of the service's
+// own `pb`. Before the fix every type was hardcoded to `pb.`, producing
+// `undefined: pb.X` build failures for every cross-package reference.
+func TestGenerateMock_CrossPackageMessageImports(t *testing.T) {
+	mockDir := filepath.Join(t.TempDir(), "mocks")
+
+	const module = "github.com/test/proj"
+	svc := ServiceDef{
+		Name:       "DaemonTokenService",
+		Package:    "reliant.v1",
+		GoPackage:  module + "/gen/services/daemon_token/v1",
+		PkgName:    "daemon_tokenv1",
+		ProtoFile:  "services/daemon_token/v1/daemon_token.proto",
+		ModulePath: module,
+		Methods: []Method{
+			{
+				// Request/response come from an IMPORTED proto file →
+				// gen/reliant/v1, NOT the service's own package.
+				Name:            "CreateDaemonToken",
+				InputType:       "CreateDaemonTokenRequest",
+				OutputType:      "CreateDaemonTokenResponse",
+				InputProtoFile:  "reliant/v1/daemon_registry.proto",
+				OutputProtoFile: "reliant/v1/daemon_registry.proto",
+			},
+			{
+				// Declared in the service's own proto file → stays `pb`.
+				Name:            "MintManagedDaemonToken",
+				InputType:       "MintManagedDaemonTokenRequest",
+				OutputType:      "MintManagedDaemonTokenResponse",
+				InputProtoFile:  "services/daemon_token/v1/daemon_token.proto",
+				OutputProtoFile: "services/daemon_token/v1/daemon_token.proto",
+			},
+		},
+	}
+
+	written, err := GenerateMock(svc, mockDir)
+	if err != nil {
+		t.Fatalf("GenerateMock() error = %v", err)
+	}
+	if !written {
+		t.Fatal("expected mock file to be written")
+	}
+
+	b, err := os.ReadFile(filepath.Join(mockDir, "daemon_token_mock.go"))
+	if err != nil {
+		t.Fatalf("read mock: %v", err)
+	}
+	got := string(b)
+
+	// The foreign package must be imported under a distinct alias...
+	if !strings.Contains(got, `reliantv1 "`+module+`/gen/reliant/v1"`) {
+		t.Errorf("expected aliased foreign import for gen/reliant/v1, got:\n%s", got)
+	}
+	// ...and the cross-package message must be qualified with that alias,
+	// never with the service's own `pb`.
+	if !strings.Contains(got, "reliantv1.CreateDaemonTokenRequest") {
+		t.Errorf("expected reliantv1.CreateDaemonTokenRequest, got:\n%s", got)
+	}
+	if strings.Contains(got, "pb.CreateDaemonTokenRequest") {
+		t.Errorf("cross-package message must NOT be qualified with pb., got:\n%s", got)
+	}
+	// Same-file messages stay on `pb`.
+	if !strings.Contains(got, "pb.MintManagedDaemonTokenRequest") {
+		t.Errorf("expected same-file message to stay pb.MintManagedDaemonTokenRequest, got:\n%s", got)
+	}
+
+	// The emitted file must be valid, gofmt-able Go (catches malformed
+	// import blocks / dangling aliases).
+	if _, err := format.Source(b); err != nil {
+		t.Errorf("generated mock is not valid Go: %v\n%s", err, got)
 	}
 }
 

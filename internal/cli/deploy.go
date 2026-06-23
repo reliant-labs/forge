@@ -521,7 +521,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// the builder is unused for rollback groups, but the registry
 		// still needs the provider registered. We reuse the deploy-
 		// shaped builder for symmetry with the deploy path.
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities)
 		registry := deploytarget.NewRegistry()
 		// Rollback's per-group context is resolved by the provider purely
 		// from each group's declared cluster (forge.K8sCluster.cluster) —
@@ -574,7 +574,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// / prune / host-skip / one-shot jobs) flows through verbatim.
 		hostSkip := hostDeploymentSkipSetFromKCL(cfg, entities)
 		oneShotJobs := oneShotJobNamesFromKCL(entities)
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities)
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
 		if err := dispatchDeployGroups(ctx, registry, groups, ""); err != nil {

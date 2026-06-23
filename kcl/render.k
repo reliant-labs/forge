@@ -37,6 +37,7 @@ import .lib.services as svc_lib
 import .lib.rbac as rbac_lib
 import .lib.netpol as netpol_lib
 import .lib.gateway as gw_lib
+import .lib.jwks as jwks_lib
 
 # ---------------------------------------------------------------------------
 # JSON contract render — typed Bundle -> stable dict shape.
@@ -472,6 +473,27 @@ _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
         "namespace": k.namespace if k.namespace else None
         "reachability": k.reachability
     }
+}
+
+# test_jwks_manifests — top-level re-export of the lib builder so user
+# code calls `forge.test_jwks_manifests(jwks, namespace, public_jwk)`
+# directly in a Bundle's additional_manifests or a service's owned
+# manifests. Emits ConfigMap + static-file Deployment + Service serving
+# `/.well-known/jwks.json`.
+#
+# `public_jwk` is the derived PUBLIC JWK. The caller derives it from the
+# ES256 private PEM (read from .env.<env>) via the plugin — the same
+# pattern as resolve_port, so the plugin is imported in the USER's file
+# and the forge module renders fine under a plugin-less `kcl run`:
+#
+#     import forge
+#     import kcl_plugin.forge as plugin
+#     _jwks = forge.TestJWKS { name = "auth-jwks", kid = "k1",
+#                              private_key = forge.DotenvRef { key = "JWKS_PEM" } }
+#     _jwk  = plugin.derive_jwk(option("jwks_pem"), _jwks.kid, _jwks.alg)
+#     manifests = forge.test_jwks_manifests(_jwks, "auth", _jwk)
+test_jwks_manifests = lambda j: TestJWKS, namespace: str, public_jwk: any -> [any] {
+    jwks_lib.test_jwks_manifests(j, namespace, public_jwk)
 }
 
 # Project a Bundle to the stable JSON contract. Consumed by forge CLI.

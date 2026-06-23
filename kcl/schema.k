@@ -774,6 +774,58 @@ schema RenderedSecrets:
         type == "rendered", "RenderedSecrets.type must be 'rendered'"
         len(secrets) > 0, "RenderedSecrets.secrets must declare at least one Secret"
 
+schema DotenvRef:
+    """A reference to a value in the gitignored `.env.<env>` (keyed by
+    `key`). The CLI resolves it before render; the VALUE never enters KCL
+    render output (only the reference). Used where a render-time builder
+    needs a secret-sourced value it must NOT echo — e.g. TestJWKS's
+    ES256 private key, which is read to derive the PUBLIC JWK but never
+    published."""
+    from: str = "dotenv"
+    key: str
+
+    check:
+        from == "dotenv", "DotenvRef.from must be 'dotenv'"
+        key, "DotenvRef.key is required"
+
+schema TestJWKS:
+    """An in-cluster JWKS endpoint serving the PUBLIC half of a test
+    ES256 key, so services that validate JWTs against it exercise the
+    REAL validation path (a normal in-cluster dependency: an HTTPS-less
+    `http://<name>.<ns>/.well-known/jwks.json` URL) instead of a
+    host-port boot race or a dev auth-bypass.
+
+    The PUBLIC JWK is derived from the ES256 PRIVATE key PEM at render
+    time via the `forge.derive_jwk` plugin, so the served JWKS can NEVER
+    drift from whatever signs the tokens (same key, two halves). The
+    private key is sourced from `.env.<env>` (DotenvRef) — the CLI reads
+    it, passes it to the JWKS builder, and it never appears in the
+    rendered output (only the derived public JWK does).
+
+    Render with `forge.test_jwks_manifests(jwks, namespace, private_pem)`
+    in a Bundle's `additional_manifests` (or a service's owned
+    `manifests`, to pin it to a specific cluster) — it emits a ConfigMap
+    (the JWKS JSON) + a tiny static-file Deployment + Service serving
+    `/.well-known/jwks.json`.
+
+    Fields:
+      * `name`        — base name for the ConfigMap / Deployment / Service.
+      * `kid`         — the JWK key id (matches the signer's kid).
+      * `alg`         — JWK algorithm (default "ES256").
+      * `private_key` — DotenvRef to the ES256 private-key PEM in
+                        `.env.<env>`. Read at render time to derive the
+                        public JWK; never published.
+    """
+    name: str
+    kid: str
+    alg: str = "ES256"
+    private_key: DotenvRef
+
+    check:
+        name, "TestJWKS.name is required"
+        kid, "TestJWKS.kid is required (the JWK key id; must match the signer's kid)"
+        alg == "ES256", "TestJWKS.alg must be 'ES256' (the only supported test-JWKS algorithm today)"
+
 schema Cluster:
     """A k3d cluster forge ensures exists before deploying into it.
 

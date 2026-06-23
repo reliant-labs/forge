@@ -440,9 +440,25 @@ _render_runtime_class = lambda rc: RuntimeClass -> any {
     }
 }
 
+# Render a Cluster to its stable dict form. Optional fields project as
+# null (not omitted) so the Go consumer (ClusterEntity) sees stable
+# keys; servers/agents always carry their (defaulted) int.
+_render_cluster = lambda c: Cluster -> any {
+    {
+        "name": c.name
+        "config": c.config if c.config else None
+        "network": c.network if c.network else None
+        "registry_mirror": c.registry_mirror if c.registry_mirror else None
+        "servers": c.servers
+        "agents": c.agents
+        "api_port": c.api_port if c.api_port else None
+    }
+}
+
 # Project a Bundle to the stable JSON contract. Consumed by forge CLI.
 render = lambda bundle: Bundle -> any {
     {
+        "clusters": [_render_cluster(c) for c in bundle.clusters]
         "services": [_render_service(s) for s in bundle.services]
         "operators": [_render_operator(o) for o in bundle.operators]
         "frontends": [_render_frontend(f) for f in bundle.frontends]

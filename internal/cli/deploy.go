@@ -391,18 +391,37 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	start := time.Now()
 
-	// Dev environment: ensure k3d cluster and push images locally. Skip
-	// the cluster bootstrap and docker build/push when --dry-run is set —
-	// dry-run only renders manifests and never touches the cluster or
-	// registry, so the slow image step is dead weight. Also skip when
-	// the project has no K8sCluster services (external-only dev env
-	// doesn't need a k3d cluster) and on rollback (rollback uses the
-	// tag already in the cluster / state file; no rebuild required).
-	if envName == "dev" && !dryRun && !rollback && hasK8sServices {
-		if err := ensureDevCluster(ctx); err != nil {
-			return err
+	// Cluster bootstrap. Declarative first: when the env's Bundle declares
+	// `clusters = [...]`, reconcile each (create-if-absent, no-op if
+	// present) — the multi-cluster generalization of the dev-only ensure
+	// below, ownership implicit via Cluster.network / registry_mirror. A
+	// declared-cluster env works in ANY env name (not just "dev"), so a
+	// multi-cluster e2e/preview env stands up its clusters here. When the
+	// env declares NO clusters, fall back to the legacy dev-only
+	// ensureDevCluster (single cluster from deploy/k3d.yaml) so existing
+	// single-cluster dev envs are byte-identical.
+	//
+	// Skipped under --dry-run (renders only; never touches a cluster /
+	// registry), on rollback (reuses the tag already in the cluster), and
+	// when the env has no K8sCluster services (external-only env needs no
+	// k3d cluster).
+	if !dryRun && !rollback && hasK8sServices {
+		if entities != nil && len(entities.Clusters) > 0 {
+			if err := reconcileDeclaredClusters(ctx, entities.Clusters); err != nil {
+				return err
+			}
+		} else if envName == "dev" {
+			if err := ensureDevCluster(ctx); err != nil {
+				return err
+			}
 		}
+	}
 
+	// Local image build+push: dev only (the local registry path). Remote
+	// envs build/push out-of-band (CI). Independent of the cluster
+	// bootstrap above so a multi-cluster dev env still pushes to its
+	// owner cluster's registry.
+	if envName == "dev" && !dryRun && !rollback && hasK8sServices {
 		if err := buildAndPushLocal(ctx, cfg, imageTag, targetArchFlag); err != nil {
 			return err
 		}

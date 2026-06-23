@@ -134,6 +134,46 @@ type ApplyOpts struct {
 	// targeted app's dependencies aren't dropped. Empty means "apply the
 	// whole bundle", the unchanged default. See FilterManifestsByApp.
 	Targets []string
+
+	// ClusterScope, when non-nil, scopes the rendered env bundle to ONE
+	// deploy group's cluster before applying — the multi-cluster fix. KCL
+	// renders the whole env as a unit (every service's manifests in one
+	// stream), but a service whose `deploy` targets a SECOND cluster must
+	// land ONLY on that cluster, and the other cluster must NOT receive it.
+	// Without this, every group applied the entire bundle to its own
+	// `--context`, so a two-cluster env cross-contaminated both clusters
+	// (the secondary got the whole primary stack and hard-failed on missing
+	// CRDs). ScopeManifestsToGroup does the per-doc partition; nil leaves
+	// the stream untouched (the single-cluster path, byte-identical to the
+	// pre-fix behaviour). See ScopeManifestsToGroup for the ownership rule.
+	ClusterScope *GroupScope
+}
+
+// GroupScope describes how to filter the env's rendered manifest stream
+// down to ONE deploy group's cluster. It is the input to
+// ScopeManifestsToGroup, applied by Apply before the kubectl apply when
+// ApplyOpts.ClusterScope is set.
+//
+// The fields name the app sets the filter discriminates between; see
+// ScopeManifestsToGroup for the precise per-document keep/drop rule.
+type GroupScope struct {
+	// OwnApps is the set of `app.kubernetes.io/name` values belonging to
+	// THIS group's services (and their per-service RBAC / HPA, which carry
+	// the same label). These workloads land on this group's cluster.
+	OwnApps map[string]struct{}
+
+	// OtherApps is the set of app-name labels owned by OTHER k8s groups —
+	// services that target a DIFFERENT cluster. These are dropped from this
+	// group so a service never lands on a cluster it doesn't declare.
+	OtherApps map[string]struct{}
+
+	// Primary marks the env's primary cluster group — the cluster the env's
+	// bundle was rendered against (its Namespace, Gateways, CRDs, infra, the
+	// shared ConfigMap/Secret, and every operator / CronJob / additional
+	// manifest that isn't pinned to a secondary cluster). Exactly one group
+	// is primary; the rest are secondary and receive ONLY their own
+	// services' workloads plus the Namespace they live in.
+	Primary bool
 }
 
 // appNameLabel is the per-service workload label forge's KCL renderer
@@ -174,6 +214,18 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 			return ferr
 		}
 		manifests = filtered
+	}
+
+	// Multi-cluster scope: a service whose `deploy` targets a SECOND cluster
+	// must land ONLY on that cluster. KCL renders the whole env as one
+	// stream, so each per-group apply scopes that stream to its own cluster
+	// here — the secondary cluster gets only its services' workloads (+ its
+	// Namespace), the primary gets everything else. nil = single-cluster
+	// (whole bundle), unchanged. Applied AFTER the --target filter so a
+	// `forge deploy <env> --target <svc>` in a multi-cluster env still scopes
+	// to the right cluster.
+	if opts.ClusterScope != nil {
+		manifests = ScopeManifestsToGroup(manifests, *opts.ClusterScope)
 	}
 
 	if opts.DryRun {
@@ -796,6 +848,78 @@ func manifestAppLabel(doc string) string {
 		return ""
 	}
 	return m.Metadata.Labels[appNameLabel]
+}
+
+// ScopeManifestsToGroup filters a `---`-separated env manifest stream down
+// to the documents that belong on ONE deploy group's cluster. This is the
+// multi-cluster fix: KCL renders the WHOLE env as a single stream (every
+// service's manifests, the namespace, gateways, CRDs, infra), but a service
+// whose `deploy` targets a SECOND cluster must land ONLY on that cluster —
+// and the other cluster must NOT receive it. The per-group apply pipes the
+// same env stream through this filter (with the group's GroupScope) so each
+// `--context` apply carries only its own cluster's manifests.
+//
+// The ownership rule, document by document (by its
+// `app.kubernetes.io/name` label `a`):
+//
+//   - a ∈ scope.OwnApps        → KEEP. This group's own service workload
+//     (Deployment / Service / per-service RBAC / HPA all carry the label).
+//   - a ∈ scope.OtherApps      → DROP. A service owned by a DIFFERENT
+//     cluster's group — never apply it here.
+//   - a != "" but in NEITHER set (an operator / CronJob, which carry an
+//     app label but are not in any K8sCluster service group) → KEEP only
+//     on the PRIMARY cluster. Operators/CronJobs aren't pinned to a
+//     secondary cluster, so they follow the env's primary cluster.
+//   - a == "" (a shared / infra / cluster-scoped doc with no app label —
+//     ConfigMap, Secret, CRD, Gateway, HTTPRoute, RuntimeClass, in-cluster
+//     NATS/Temporal/LiteLLM, additional_manifests) → KEEP only on the
+//     PRIMARY cluster, EXCEPT the Namespace, which every cluster needs (a
+//     secondary cluster's workloads can't apply into a missing namespace),
+//     so the Namespace is KEPT on every group.
+//
+// A doc that doesn't parse as YAML is conservatively KEPT on the primary
+// (it can't be confirmed as another cluster's workload) and DROPPED on a
+// secondary (a secondary cluster gets only what's provably its own).
+//
+// Empty / whitespace-only docs are dropped. The single-cluster path never
+// reaches here (ApplyOpts.ClusterScope stays nil), so this is a no-op for
+// the common case and the multi-cluster envs are the only behaviour change.
+func ScopeManifestsToGroup(manifests string, scope GroupScope) string {
+	var kept []string
+	for _, doc := range splitDocs(manifests) {
+		m, parsed := parseDoc(doc)
+		app := ""
+		if parsed {
+			app = m.Metadata.Labels[appNameLabel]
+		}
+		switch {
+		case app != "":
+			if _, own := scope.OwnApps[app]; own {
+				kept = append(kept, doc) // this group's workload
+				continue
+			}
+			if _, other := scope.OtherApps[app]; other {
+				continue // another cluster's workload — drop
+			}
+			// App-labelled but ungrouped (operator / CronJob): primary only.
+			if scope.Primary {
+				kept = append(kept, doc)
+			}
+		case !parsed:
+			// Unparseable: keep on primary, drop on secondary.
+			if scope.Primary {
+				kept = append(kept, doc)
+			}
+		case m.Kind == "Namespace":
+			kept = append(kept, doc) // every cluster needs its namespace
+		default:
+			// Shared / infra / cluster-scoped: primary only.
+			if scope.Primary {
+				kept = append(kept, doc)
+			}
+		}
+	}
+	return strings.Join(kept, docDelimiter)
 }
 
 // RenderedDeploymentNames extracts the `metadata.name` of every

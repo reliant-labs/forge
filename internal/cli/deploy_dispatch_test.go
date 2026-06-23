@@ -304,3 +304,87 @@ func TestDeployCmd_RollbackAndTagMutuallyExclusive(t *testing.T) {
 		t.Errorf("error should mention mutual exclusion, got %v", err)
 	}
 }
+
+// k8sGroupWithSvcs builds a k8s-cluster ServiceGroup on the given cluster
+// with the named services — the input shape clusterScopeForGroups consumes.
+func k8sGroupWithSvcs(cluster string, svcNames ...string) deploytarget.ServiceGroup {
+	g := deploytarget.ServiceGroup{ProviderID: "k8s-cluster", Cluster: cluster, Namespace: "ns"}
+	for _, n := range svcNames {
+		g.Services = append(g.Services, deploytarget.ResolvedService{Name: n})
+	}
+	return g
+}
+
+// TestClusterScopeForGroups_SingleClusterIsNil pins the no-op invariant:
+// when every k8s group declares the SAME cluster (the dev-k8s / staging /
+// prod common case), there is no second cluster to isolate, so the scope
+// closure returns nil and the apply path stays byte-identical to the pre-fix
+// behaviour.
+func TestClusterScopeForGroups_SingleClusterIsNil(t *testing.T) {
+	groups := []deploytarget.ServiceGroup{
+		k8sGroupWithSvcs("k3d-control-plane", "admin-server", "workspace-controller"),
+	}
+	scopeFor := clusterScopeForGroups(groups)
+	if got := scopeFor(groups[0]); got != nil {
+		t.Errorf("single-cluster env must yield nil scope (no-op), got %+v", got)
+	}
+}
+
+// TestClusterScopeForGroups_TwoClustersPartition is the multi-cluster
+// assertion mirroring the e2e env: the bulk of services on k3d-control-plane
+// (primary) and a lone workspace-proxy on k3d-cp-daemon (secondary). Each
+// group's scope must own only its own services, mark the other cluster's
+// services as OtherApps, and flag exactly the bulk cluster as primary.
+func TestClusterScopeForGroups_TwoClustersPartition(t *testing.T) {
+	primaryG := k8sGroupWithSvcs("k3d-control-plane", "admin-server", "workspace-controller", "reliant-api-server")
+	secondaryG := k8sGroupWithSvcs("k3d-cp-daemon", "workspace-proxy")
+	groups := []deploytarget.ServiceGroup{primaryG, secondaryG}
+	scopeFor := clusterScopeForGroups(groups)
+
+	ps := scopeFor(primaryG)
+	if ps == nil {
+		t.Fatal("primary group should get a non-nil scope in a multi-cluster env")
+	}
+	if !ps.Primary {
+		t.Errorf("k3d-control-plane (most services) should be the primary cluster")
+	}
+	if _, ok := ps.OwnApps["admin-server"]; !ok {
+		t.Errorf("primary scope must own admin-server, got %+v", ps.OwnApps)
+	}
+	if _, ok := ps.OtherApps["workspace-proxy"]; !ok {
+		t.Errorf("primary scope must mark workspace-proxy as another cluster's app")
+	}
+	if _, leaked := ps.OwnApps["workspace-proxy"]; leaked {
+		t.Errorf("primary scope must NOT own the secondary cluster's workspace-proxy")
+	}
+
+	ss := scopeFor(secondaryG)
+	if ss == nil {
+		t.Fatal("secondary group should get a non-nil scope in a multi-cluster env")
+	}
+	if ss.Primary {
+		t.Errorf("k3d-cp-daemon (one service) must NOT be the primary cluster")
+	}
+	if _, ok := ss.OwnApps["workspace-proxy"]; !ok {
+		t.Errorf("secondary scope must own workspace-proxy, got %+v", ss.OwnApps)
+	}
+	if _, ok := ss.OtherApps["admin-server"]; !ok {
+		t.Errorf("secondary scope must mark admin-server as another cluster's app")
+	}
+}
+
+// TestPrimaryCluster_MostServicesWinsTieByName confirms the primary is the
+// cluster with the most services, and that an exact tie breaks
+// deterministically by lexicographically smallest cluster name.
+func TestPrimaryCluster_MostServicesWinsTieByName(t *testing.T) {
+	if got := primaryCluster(map[string]int{"a": 3, "b": 1}); got != "a" {
+		t.Errorf("most-services cluster should win: want a, got %q", got)
+	}
+	// Tie on count → smaller name wins.
+	if got := primaryCluster(map[string]int{"zeta": 2, "alpha": 2}); got != "alpha" {
+		t.Errorf("tie should break to lexicographically smallest name: want alpha, got %q", got)
+	}
+	if got := primaryCluster(map[string]int{}); got != "" {
+		t.Errorf("empty input should yield empty primary, got %q", got)
+	}
+}

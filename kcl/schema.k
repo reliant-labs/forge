@@ -35,7 +35,7 @@ For Service.deploy the dispatch keys are:
                             "env_vars", "secrets_file", "delve_port",
                             "working_dir" }
     { "type": "cluster",    "replicas", "ingress", "resources", "platform", "ports",
-                            "cluster_rbac", "image_pull_secrets" }
+                            "app_protocols", "cluster_rbac", "image_pull_secrets" }
     { "type": "build-only", "build_variants" }
 
 HostDeploy splits per-env config from secrets:
@@ -561,6 +561,22 @@ schema K8sCluster:
     security_context?: SecurityContext
     env_vars: [EnvVar] = []
     ports: [int] = []
+    # Optional per-port `appProtocol` for the generated Service ports,
+    # keyed by port number (as a string — KCL dict keys must be strings).
+    # `appProtocol` is a Kubernetes-standard hint the Service exposes so
+    # Gateway/Ingress controllers negotiate the backend wire protocol —
+    # e.g. `kubernetes.io/h2c` for an h2c/gRPC backend sitting behind a
+    # cloud Gateway controller:
+    #
+    #     ports = [8080]
+    #     app_protocols = {"8080" = "kubernetes.io/h2c"}
+    #
+    # Keyed by port so the int-shorthand `ports = [int]` stays untouched;
+    # a port absent from this map renders exactly as before (no
+    # `appProtocol` field). appProtocol is a Service-port-only concept —
+    # it is NOT projected onto the Deployment's containerPorts.
+    # Unset/empty => omitted.
+    app_protocols: {str: str} = {}
     platform?: str
     cluster_rbac?: ClusterRBAC
     # Names of EXISTING image-pull Secrets (kubernetes.io/dockerconfigjson)

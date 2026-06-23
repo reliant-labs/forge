@@ -115,6 +115,7 @@ _render_k8s_cluster = lambda d: K8sCluster -> any {
         "env_vars": [_render_env_var(e) for e in d.env_vars]
         "platform": d.platform if d.platform else None
         "ports": d.ports
+        "app_protocols": d.app_protocols if d.app_protocols else None
         "cluster_rbac": _render_cluster_rbac(d.cluster_rbac) if d.cluster_rbac else None
         "image_pull_secrets": d.image_pull_secrets if d.image_pull_secrets else None
     }

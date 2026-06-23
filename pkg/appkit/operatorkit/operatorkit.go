@@ -47,10 +47,47 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+)
+
+// Leader-election timing + client-rate defaults.
+//
+// controller-runtime's stock leader-election timings (LeaseDuration 15s,
+// RenewDeadline 10s, RetryPeriod 2s) are tuned for a fast, dedicated API
+// server and an HA controller where a quick failover is worth a hair-trigger
+// self-termination: when the acting leader can't renew its lease within
+// RenewDeadline, the manager invokes its FailureProcess and the PROCESS EXITS
+// ("leader election lost" → "component failed — terminating process"). On a
+// contended/single-node API server a brief latency spike (slow networkpolicy
+// PUT, an HTTP/2 connection drop, a TLS-handshake timeout) blows past a 10s
+// RenewDeadline and kills an otherwise-healthy controller mid-reconcile,
+// stalling every CR it owns until the relist completes.
+//
+// For the common forge shape — a SINGLE-replica controller — fast failover
+// buys nothing (there is no standby to fail over to) while the tight deadline
+// costs a spurious crash. So we triple the timings to a tolerance band that
+// rides out transient API slowness, and keep them env-overridable for ops
+// tuning. These are the conventional hardened values for single-replica
+// controllers on shared/edge clusters.
+const (
+	defaultLeaseDuration = 45 * time.Second
+	defaultRenewDeadline = 30 * time.Second
+	defaultRetryPeriod   = 5 * time.Second
+
+	// Client-go's stock rest.Config limits (QPS 5 / Burst 10 raw; 20 / 30
+	// once controller-runtime applies its own defaults) throttle the
+	// controller's OWN requests client-side under reconcile fan-out — the
+	// "client-side throttling, request waited …" / priority-and-fairness
+	// stalls that compound a slow API server into renew-deadline misses.
+	// Raise the ceiling so a burst of reconciles isn't self-queued; the
+	// server's APF still protects the API server from genuine overload.
+	defaultClientQPS   float32 = 50
+	defaultClientBurst int     = 100
 )
 
 // Controller is one generated operator row: the CRD scheme installer
@@ -133,13 +170,33 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 
 	leaderID := resolveLeaderElectionID(opts.LeaderElectionID)
 
+	// Lift the client's own request ceiling before NewManager derives its
+	// clients from cfg. Only set when unconfigured so an explicit kubeconfig /
+	// caller value still wins. See defaultClientQPS for rationale.
+	if cfg.QPS == 0 {
+		cfg.QPS = envFloat32("OPERATOR_CLIENT_QPS", defaultClientQPS)
+	}
+	if cfg.Burst == 0 {
+		cfg.Burst = envInt("OPERATOR_CLIENT_BURST", defaultClientBurst)
+	}
+
+	leaseDuration := envDuration("OPERATOR_LEASE_DURATION", defaultLeaseDuration)
+	renewDeadline := envDuration("OPERATOR_RENEW_DEADLINE", defaultRenewDeadline)
+	retryPeriod := envDuration("OPERATOR_RETRY_PERIOD", defaultRetryPeriod)
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		LeaderElection:   true,
 		LeaderElectionID: leaderID,
 		// Empty in-cluster — controller-runtime infers the namespace from
 		// the ServiceAccount mount. Non-empty only via the env opt-in above.
 		LeaderElectionNamespace: leaderNS,
-		HealthProbeBindAddress:  probeAddr,
+		// Hardened leader-election timings so a transient API-server latency
+		// spike doesn't trip RenewDeadline and self-terminate a healthy
+		// single-replica controller. See defaultLeaseDuration for rationale.
+		LeaseDuration:          &leaseDuration,
+		RenewDeadline:          &renewDeadline,
+		RetryPeriod:            &retryPeriod,
+		HealthProbeBindAddress: probeAddr,
 	})
 	if err != nil {
 		return fmt.Errorf("creating controller manager: %w", err)
@@ -194,6 +251,42 @@ func resolveLeaderElectionID(optsID string) string {
 		return envID
 	}
 	return optsID
+}
+
+// envDuration returns the duration parsed from the named env var, or def when
+// the var is unset or unparseable. Used for the ops-tunable leader-election
+// timing overrides — a typo'd value falls back to the hardened default rather
+// than silently zeroing a timing (which controller-runtime would then replace
+// with its own short stock default).
+func envDuration(name string, def time.Duration) time.Duration {
+	if v := os.Getenv(name); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return def
+}
+
+// envFloat32 returns the float32 parsed from the named env var, or def when the
+// var is unset or unparseable.
+func envFloat32(name string, def float32) float32 {
+	if v := os.Getenv(name); v != "" {
+		if f, err := strconv.ParseFloat(v, 32); err == nil && f > 0 {
+			return float32(f)
+		}
+	}
+	return def
+}
+
+// envInt returns the int parsed from the named env var, or def when the var is
+// unset or unparseable.
+func envInt(name string, def int) int {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
 }
 
 // runningInCluster reports whether the process is running inside a

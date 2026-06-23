@@ -238,3 +238,103 @@ func TestRenderK8sSecrets_NoResolvable_Nil(t *testing.T) {
 		t.Errorf("no-resolvable RenderK8sSecrets should be nil, got: %v", got)
 	}
 }
+
+// dotenvFor builds a dotenv provider over a temp .env file with body.
+func dotenvFor(t *testing.T, body string) Provider {
+	t.Helper()
+	p, err := NewProvider(&ProviderConfig{Type: "dotenv", Path: writeDotenv(t, body)})
+	if err != nil {
+		t.Fatalf("NewProvider dotenv: %v", err)
+	}
+	return p
+}
+
+// secretStringData pulls the stringData map off a rendered Secret manifest.
+func secretStringData(t *testing.T, m map[string]any) map[string]any {
+	t.Helper()
+	sd, ok := m["stringData"].(map[string]any)
+	if !ok {
+		t.Fatalf("manifest has no stringData: %v", m)
+	}
+	return sd
+}
+
+func TestRenderDeclaredSecrets_Dotenv(t *testing.T) {
+	dot := dotenvFor(t, "DB_PASSWORD=hunter2\nDB_USER=admin\n")
+	declared := []DeclaredSecret{{
+		Name: "db-credentials",
+		Keys: map[string]DeclaredSecretKey{
+			"password": {From: "dotenv", Key: "DB_PASSWORD"},
+			"username": {From: "dotenv", Key: "DB_USER"},
+		},
+	}}
+	mans, err := RenderDeclaredSecrets(declared, dot, "dev", "myns")
+	if err != nil {
+		t.Fatalf("RenderDeclaredSecrets: %v", err)
+	}
+	if len(mans) != 1 {
+		t.Fatalf("got %d manifests want 1", len(mans))
+	}
+	sd := secretStringData(t, mans[0])
+	if sd["password"] != "hunter2" || sd["username"] != "admin" {
+		t.Errorf("stringData wrong: %v", sd)
+	}
+	if md := mans[0]["metadata"].(map[string]any); md["namespace"] != "myns" || md["name"] != "db-credentials" {
+		t.Errorf("metadata wrong: %v", md)
+	}
+}
+
+func TestRenderDeclaredSecrets_MissingDotenvKey(t *testing.T) {
+	dot := dotenvFor(t, "DB_USER=admin\n")
+	declared := []DeclaredSecret{{
+		Name: "db-credentials",
+		Keys: map[string]DeclaredSecretKey{"password": {From: "dotenv", Key: "DB_PASSWORD"}},
+	}}
+	_, err := RenderDeclaredSecrets(declared, dot, "dev", "myns")
+	if err == nil {
+		t.Fatal("expected error for missing dotenv key")
+	}
+	if !strings.Contains(err.Error(), "DB_PASSWORD") {
+		t.Errorf("error should name the missing key: %v", err)
+	}
+}
+
+func TestRenderDeclaredSecrets_LiteralAllowedDevE2E(t *testing.T) {
+	declared := []DeclaredSecret{{
+		Name: "fixtures",
+		Keys: map[string]DeclaredSecretKey{"ISSUER": {From: "literal", Value: "https://test.local/"}},
+	}}
+	for _, env := range []string{"dev", "e2e"} {
+		mans, err := RenderDeclaredSecrets(declared, noopProvider{}, env, "myns")
+		if err != nil {
+			t.Fatalf("env=%s: literal should be allowed: %v", env, err)
+		}
+		if secretStringData(t, mans[0])["ISSUER"] != "https://test.local/" {
+			t.Errorf("env=%s: literal value not rendered", env)
+		}
+	}
+}
+
+func TestRenderDeclaredSecrets_LiteralRejectedNonDev(t *testing.T) {
+	declared := []DeclaredSecret{{
+		Name: "leak",
+		Keys: map[string]DeclaredSecretKey{"API_KEY": {From: "literal", Value: "sk-prod"}},
+	}}
+	for _, env := range []string{"prod", "staging", "preprod", ""} {
+		_, err := RenderDeclaredSecrets(declared, noopProvider{}, env, "myns")
+		if err == nil {
+			t.Errorf("env=%q: literal must be rejected outside dev/e2e", env)
+			continue
+		}
+		if !strings.Contains(err.Error(), "literal") {
+			t.Errorf("env=%q: error should mention literal: %v", env, err)
+		}
+	}
+}
+
+func TestRenderDeclaredSecrets_Empty(t *testing.T) {
+	mans, err := RenderDeclaredSecrets(nil, noopProvider{}, "dev", "myns")
+	if err != nil || mans != nil {
+		t.Errorf("empty declared => (nil, nil), got (%v, %v)", mans, err)
+	}
+}

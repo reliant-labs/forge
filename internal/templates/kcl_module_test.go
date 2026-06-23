@@ -79,6 +79,12 @@ func TestKCLModule_PositiveAssertions(t *testing.T) {
 		if name == "positive_image_tag_numeric.k" {
 			continue
 		}
+		// Skip the rendered-secrets literal fixture — it expects
+		// `-D env=dev|e2e` (the literal-gate binding) and has a
+		// dedicated test (TestKCLModule_RenderedSecretsLiteral).
+		if name == "positive_rendered_secrets_literal.k" {
+			continue
+		}
 		found++
 		t.Run(name, func(t *testing.T) {
 			out, err := runKCL(t, filepath.Join(testsDir, name))
@@ -208,6 +214,47 @@ func TestKCLModule_ImageTagNumericIsString(t *testing.T) {
 	// path above is the real guarantee.
 	if bareOut, bareErr := runKCL(t, entry, "-D", "image_tag=3826648"); bareErr == nil {
 		t.Logf("note: bare `-D image_tag=3826648` did NOT fail; kcl may have coerced silently:\n%s", bareOut)
+	}
+}
+
+// TestKCLModule_RenderedSecretsLiteral pins the dev/e2e literal gate on
+// RenderedSecrets: `from='literal'` renders only when `-D env=` is dev or
+// e2e (the per-key schema check). The negative case — a render with no
+// env binding, which rejects the literal — is covered by
+// negative_rendered_secrets_literal_prod.k.
+func TestKCLModule_RenderedSecretsLiteral(t *testing.T) {
+	if _, err := exec.LookPath("kcl"); err != nil {
+		t.Skip("kcl not on PATH; skipping RenderedSecrets literal test")
+	}
+	root := kclModuleRoot(t)
+	entry := filepath.Join(root, "tests", "positive_rendered_secrets_literal.k")
+
+	for _, env := range []string{"dev", "e2e"} {
+		t.Run("env="+env, func(t *testing.T) {
+			out, err := runKCL(t, entry, "-D", "env="+env)
+			if err != nil {
+				t.Fatalf("kcl run literal -D env=%s failed (literal must be allowed in %s): %v\n%s", env, env, err, out)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(out, &parsed); err != nil {
+				t.Fatalf("unmarshal: %v\n%s", err, out)
+			}
+			for k, v := range parsed {
+				if !strings.HasPrefix(k, "assert_") {
+					continue
+				}
+				if b, ok := v.(bool); !ok || !b {
+					t.Errorf("env=%s: assertion %q not true: %v", env, k, v)
+				}
+			}
+		})
+	}
+
+	// A literal under a NON-dev/e2e env binding must be rejected.
+	if out, err := runKCL(t, entry, "-D", "env=prod"); err == nil {
+		t.Errorf("expected kcl to reject from='literal' under -D env=prod, but it succeeded:\n%s", out)
+	} else if !strings.Contains(string(out), "Check failed") {
+		t.Errorf("expected 'Check failed' rejecting literal in prod, got:\n%s", out)
 	}
 }
 

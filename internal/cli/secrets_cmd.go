@@ -96,5 +96,5 @@ func runSecretsSync(ctx context.Context, envName string, dryRun bool) error {
 
 	// secrets sync is local-cluster-only and targets the current kubectl
 	// context (no --context flag), so the context override is empty.
-	return applyK8sSecretsFromProvider(ctx, entities, groups, namespace, "", dryRun)
+	return applyK8sSecretsFromProvider(ctx, entities, groups, namespace, "", envName, dryRun)
 }

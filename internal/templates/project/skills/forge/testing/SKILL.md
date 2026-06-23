@@ -36,6 +36,15 @@ This is the most critical testing decision. Get it wrong and tests either break 
 
 Mock at **system boundaries**, keep internals real. If two components live in the same service, test them together. If they cross a network boundary, mock the far side.
 
+### Real-vs-mock discipline by tier
+
+The boundary moves as scope widens — and the one rule that never bends is **never mock the subject under test**:
+
+- **Unit** — exercise the real subject (handler / contract method); mock its *collaborators* via the generated contract mocks. A test that stubs the very thing it claims to test proves nothing.
+- **Integration / e2e** — exercise the REAL subject *and* its real internal collaborators (DB, sibling services). Mock ONLY external boundaries you don't own — third-party providers, payment gateways, upstream APIs. Replacing an internal collaborator with a mock at this tier defeats the point of the tier.
+
+If you catch yourself mocking the subject — or mocking an internal collaborator in an integration/e2e test — stop: you've either picked the wrong tier or you're about to write a test that can't fail for the right reason.
+
 ## Test Harness Patterns
 
 - **Test database** — transaction-per-test with rollback for isolation. Each test starts with a known fixture, mutates freely, and the rollback wipes its state without contaminating the next.
@@ -75,6 +84,8 @@ Test `validateXArgs` from a unit test. Never `runX` — the runner is an integra
 
 Anything that touches subprocesses, network, the filesystem outside a managed temp dir, time-based behavior, or external services belongs behind a tag/marker (Go build tags, pytest marks, Jest projects — whatever your runtime offers) so the default test command runs only fast unit tests with a tight timeout. Heavy tests opt-in.
 
+Tests that hit a **live external dependency** (a real third-party sandbox, a deployed environment, a real credential) go one step further: gate them behind an explicit opt-in env var (e.g. `RUN_LIVE_TESTS=1`) and skip-with-a-reason when it's unset. The default suite stays hermetic and green in CI; the live test runs only when a human (or a dedicated CI job) asks for it. A live test that runs by default is a flaky test waiting to happen and a credential leak waiting to bite.
+
 ### Determinism rule
 
 Diagnostics, golden files, and assertions over hash-map data MUST sort keys before formatting or comparing. Map iteration order is non-deterministic in most languages; tests that compare formatted strings against a fixture will flake intermittently. Sort first, format second.
@@ -107,6 +118,15 @@ forge test --coverage   # with coverage report
 forge test -V           # verbose; use when debugging failures
 forge test --race       # Go race detector
 ```
+
+## Don't hand-roll what forge already provides
+
+Before you stand up your own test infra, reach for the capabilities forge ships — agents routinely reinvent these:
+
+- **Full environment for integration/e2e — `forge up --env=<env>`.** This builds every service, brings up the compose-managed infra (Postgres, observability, …), and deploys each service to its declared target. Use it instead of hand-rolling `kubectl apply` / raw manifests / a bespoke docker-compose to get a stack under test. Once it's up, point real Connect clients at the running services.
+- **Multi-cluster is native — let the deploy target drive it.** A service's `deploy` block names its own `K8sCluster` (the `cluster` field is the kubectl context). `forge up` / `forge deploy` send each service to its own context, so a flow that spans clusters is just the normal deploy talking to multiple contexts. Don't script per-cluster `kubectl --context` juggling in your test — declare the targets and let forge route. Verify each context is reachable first (see the `debug` skill).
+- **Fixtures + scenarios + mocks — `pkg/testkit` and the generated `mock_gen.go`.** `pkg/testkit` provides the harness primitives (migrated test DB, authed contexts, claims options) plus a fixture builder and a scenario builder for composing multi-step setups. Per-contract mocks are generated into `mock_gen.go` — use those for collaborators rather than hand-writing stubs. See the `pkg/tdd` table above for the table-driven entry points that sit on top.
+- **Auth is pluggable — pick the right mode for what you're testing.** Authentication runs through `pkg/authn.Policy`; the jwt-auth pack ships a **dev-auth bypass** (a synthetic dev token, gated on a dev-mode flag) so most tests can skip the real token dance. But when the behavior under test IS the auth/authz path — token validation, role gating, tenant scoping — turn the bypass OFF and drive a real token / real claims. A test of the auth path that runs under the dev bypass proves nothing about production auth.
 
 ## Go build tags (forge's tag/marker mechanism)
 

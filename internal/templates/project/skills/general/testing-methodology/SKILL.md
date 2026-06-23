@@ -128,6 +128,10 @@ waitFor(func() bool { return result.IsComplete() }, timeout: 5s, poll: 100ms)
 - Don't rely on test execution order
 - Clean up resources in teardown, not in test body
 
+**Live / heavy tests are opt-in:**
+- A test that hits a live external dependency (real sandbox, deployed environment, real credential) must be gated behind an explicit opt-in env var (e.g. `RUN_LIVE_TESTS=1`) and skip-with-a-reason when it's unset.
+- The default suite stays hermetic and green in CI; the live test runs only when a human or a dedicated job asks for it. A live test that runs by default is a flake and a credential-leak risk.
+
 **Non-determinism:**
 - Mock time.Now() for time-dependent logic
 - Seed random generators deterministically

@@ -199,23 +199,112 @@ func ServiceRowFuncName(svcName string) string {
 	return ServiceRowPrefix + fieldName
 }
 
+// foreignImport records one non-`pb` protobuf package the mock must import,
+// with the alias used to qualify its message types.
+type foreignImport struct {
+	Alias string // e.g. "reliantv1"
+	Path  string // e.g. "github.com/proj/gen/reliant/v1"
+}
+
+// goPackageForProtoFile derives the generated Go import path for a proto
+// file under the buf module root. The buf module root is "proto/", and the
+// go_package convention forge projects use is `<module>/gen/<dir>` where
+// <dir> is the proto file's directory relative to "proto/" (e.g.
+// "reliant/v1/daemon_registry.proto" → "<module>/gen/reliant/v1"). Returns
+// "" when modulePath is empty or the path has no directory component.
+func goPackageForProtoFile(protoFile, modulePath string) string {
+	if modulePath == "" || protoFile == "" {
+		return ""
+	}
+	rel := strings.TrimPrefix(protoFile, "proto/")
+	dir := filepath.ToSlash(filepath.Dir(rel))
+	if dir == "" || dir == "." {
+		return ""
+	}
+	return modulePath + "/gen/" + dir
+}
+
+// mockTypeResolver maps a method's input/output message to the qualified Go
+// type the mock should reference. Messages declared in the service's own
+// proto file (the common case) keep the `pb.` qualifier — the package the
+// connect stub itself lives in. Messages pulled in from an IMPORTED proto
+// file (proto-split: a thin service surface that reuses request/response
+// messages from a shared package) live in a DIFFERENT generated Go package,
+// so the mock must import that package under a distinct alias and qualify
+// the type with it. Before this resolver every type was hardcoded to `pb.`,
+// which produced `undefined: pb.X` build failures for every cross-package
+// reference.
+type mockTypeResolver struct {
+	svc      ServiceDef
+	aliases  map[string]string // go import path -> alias
+	imports  []foreignImport
+	needsPb  bool
+	needsEmp bool
+}
+
+func newMockTypeResolver(svc ServiceDef) *mockTypeResolver {
+	return &mockTypeResolver{svc: svc, aliases: map[string]string{}}
+}
+
+// qualify returns the Go type reference (e.g. "pb.GetItemRequest",
+// "reliantv1.CreateDaemonTokenRequest", "emptypb.Empty") for one message,
+// registering any foreign import it implies as a side effect.
+func (r *mockTypeResolver) qualify(msgType, fqType, protoFile string) string {
+	if msgType == "google.protobuf.Empty" {
+		r.needsEmp = true
+		return "emptypb.Empty"
+	}
+	// Short name: drop any "pkg." qualifier the descriptor may carry on
+	// InputType/OutputType (it is the proto short name in practice).
+	short := msgType
+	if i := strings.LastIndex(short, "."); i >= 0 {
+		short = short[i+1:]
+	}
+	goPkg := goPackageForProtoFile(protoFile, r.svc.ModulePath)
+	// Same-file (or unknown provenance) → the service's own package, `pb`.
+	if protoFile == "" || goPkg == "" || protoFile == r.svc.ProtoFile || goPkg == r.svc.GoPackage {
+		r.needsPb = true
+		return "pb." + short
+	}
+	alias, ok := r.aliases[goPkg]
+	if !ok {
+		alias = mockImportAlias(goPkg, len(r.aliases))
+		r.aliases[goPkg] = alias
+		r.imports = append(r.imports, foreignImport{Alias: alias, Path: goPkg})
+	}
+	return alias + "." + short
+}
+
+// mockImportAlias builds a deterministic, collision-free import alias for a
+// generated proto package path. It uses the last two path segments
+// (dir + version, e.g. "reliant/v1" → "reliantv1") which is unique across a
+// project's gen/ tree; the seq suffix is a defensive tiebreaker only used if
+// two distinct paths ever normalize to the same alias.
+func mockImportAlias(goPkg string, seq int) string {
+	parts := strings.Split(strings.Trim(goPkg, "/"), "/")
+	base := goPkg
+	if len(parts) >= 2 {
+		base = parts[len(parts)-2] + parts[len(parts)-1]
+	} else if len(parts) == 1 {
+		base = parts[0]
+	}
+	base = naming.GoPackage(base)
+	if base == "" {
+		base = fmt.Sprintf("pbx%d", seq)
+	}
+	return base
+}
+
 // prepareServiceData prepares template data for service generation
 func prepareServiceData(svc ServiceDef) map[string]any {
 	var methods []map[string]any
-	needsEmptypb := false
-	needsPb := false
+	res := newMockTypeResolver(svc)
 
 	for _, method := range svc.Methods {
-		if method.IsInputEmpty() || method.IsOutputEmpty() {
-			needsEmptypb = true
-		}
-		if !method.IsInputEmpty() || !method.IsOutputEmpty() {
-			needsPb = true
-		}
 		methods = append(methods, map[string]any{
 			"Name":       method.Name,
-			"Signature":  buildMethodSignature(method),
-			"ReturnType": buildReturnType(method),
+			"Signature":  buildMethodSignature(method, res),
+			"ReturnType": buildReturnType(method, res),
 			"ReturnStub": buildReturnStub(method),
 			"CallArgs":   buildCallArgs(method),
 		})
@@ -229,38 +318,50 @@ func prepareServiceData(svc ServiceDef) map[string]any {
 		"ModulePath":     svc.ModulePath,
 		"Methods":        methods,
 		"HasMethods":     len(svc.Methods) > 0,
-		"NeedsEmptypb":   needsEmptypb,
-		"NeedsPb":        needsPb,
+		"NeedsEmptypb":   res.needsEmp,
+		"NeedsPb":        res.needsPb,
+		"ForeignImports": res.imports,
 	}
 }
 
-func buildMethodSignature(m Method) string {
+// inputGoType / outputGoType resolve a method's input/output message to its
+// qualified Go type via the resolver, replacing Method.GoInputType's
+// hardcoded `pb.` assumption for the mock path.
+func inputGoType(m Method, r *mockTypeResolver) string {
+	return r.qualify(m.InputType, m.InputTypeFQ, m.InputProtoFile)
+}
+
+func outputGoType(m Method, r *mockTypeResolver) string {
+	return r.qualify(m.OutputType, m.OutputTypeFQ, m.OutputProtoFile)
+}
+
+func buildMethodSignature(m Method, r *mockTypeResolver) string {
 	switch {
 	case m.ClientStreaming && m.ServerStreaming:
 		// Bidirectional streaming
-		return fmt.Sprintf("ctx context.Context, stream *connect.BidiStream[%s, %s]", m.GoInputType(), m.GoOutputType())
+		return fmt.Sprintf("ctx context.Context, stream *connect.BidiStream[%s, %s]", inputGoType(m, r), outputGoType(m, r))
 	case m.ClientStreaming:
 		// Client streaming
-		return fmt.Sprintf("ctx context.Context, stream *connect.ClientStream[%s]", m.GoInputType())
+		return fmt.Sprintf("ctx context.Context, stream *connect.ClientStream[%s]", inputGoType(m, r))
 	case m.ServerStreaming:
 		// Server streaming
-		return fmt.Sprintf("ctx context.Context, req *connect.Request[%s], stream *connect.ServerStream[%s]", m.GoInputType(), m.GoOutputType())
+		return fmt.Sprintf("ctx context.Context, req *connect.Request[%s], stream *connect.ServerStream[%s]", inputGoType(m, r), outputGoType(m, r))
 	default:
 		// Unary
-		return fmt.Sprintf("ctx context.Context, req *connect.Request[%s]", m.GoInputType())
+		return fmt.Sprintf("ctx context.Context, req *connect.Request[%s]", inputGoType(m, r))
 	}
 }
 
-func buildReturnType(m Method) string {
+func buildReturnType(m Method, r *mockTypeResolver) string {
 	switch {
 	case m.ClientStreaming && m.ServerStreaming:
 		return "error"
 	case m.ClientStreaming:
-		return fmt.Sprintf("(*connect.Response[%s], error)", m.GoOutputType())
+		return fmt.Sprintf("(*connect.Response[%s], error)", outputGoType(m, r))
 	case m.ServerStreaming:
 		return "error"
 	default:
-		return fmt.Sprintf("(*connect.Response[%s], error)", m.GoOutputType())
+		return fmt.Sprintf("(*connect.Response[%s], error)", outputGoType(m, r))
 	}
 }
 

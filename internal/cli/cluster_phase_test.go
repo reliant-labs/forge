@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"testing"
 )
 
@@ -71,11 +72,50 @@ func TestParseKCLEntities_NoClusters(t *testing.T) {
 // cluster list never shells out to k3d, so it's safe to call
 // unconditionally at the head of every `forge up` / `forge deploy`.
 func TestReconcileDeclaredClusters_EmptyIsNoop(t *testing.T) {
-	if err := reconcileDeclaredClusters(t.Context(), nil); err != nil {
+	if err := reconcileDeclaredClusters(t.Context(), nil, "", ""); err != nil {
 		t.Errorf("empty reconcile should be a no-op, got %v", err)
 	}
-	if err := reconcileDeclaredClusters(t.Context(), []ClusterEntity{}); err != nil {
+	if err := reconcileDeclaredClusters(t.Context(), []ClusterEntity{}, "", ""); err != nil {
 		t.Errorf("empty-slice reconcile should be a no-op, got %v", err)
+	}
+}
+
+// TestReconcileDeclaredClusters_IngressInstall asserts the per-cluster
+// ingress install is invoked for EXACTLY the clusters that declare
+// `ingress = True`, and skipped for the rest. Both shell-out seams
+// (clusterExistsFn, installClusterIngressFn) are stubbed so the test is
+// hermetic — it never touches k3d or kubectl. The clusters are reported
+// as already existing (warm path) so the create branch's k3d call is
+// never reached either.
+func TestReconcileDeclaredClusters_IngressInstall(t *testing.T) {
+	origExists := clusterExistsFn
+	origInstall := installClusterIngressFn
+	t.Cleanup(func() {
+		clusterExistsFn = origExists
+		installClusterIngressFn = origInstall
+	})
+
+	clusterExistsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
+
+	var installed []string
+	installClusterIngressFn = func(_ context.Context, c ClusterEntity, projectDir, env string) error {
+		installed = append(installed, c.Name)
+		if projectDir != "proj" || env != "e2e" {
+			t.Errorf("install got projectDir=%q env=%q want proj/e2e", projectDir, env)
+		}
+		return nil
+	}
+
+	clusters := []ClusterEntity{
+		{Name: "control-plane", Ingress: true},
+		{Name: "cp-daemon", Ingress: false},
+	}
+	if err := reconcileDeclaredClusters(t.Context(), clusters, "proj", "e2e"); err != nil {
+		t.Fatalf("reconcileDeclaredClusters: %v", err)
+	}
+
+	if len(installed) != 1 || installed[0] != "control-plane" {
+		t.Fatalf("ingress install invoked for %v; want exactly [control-plane]", installed)
 	}
 }
 

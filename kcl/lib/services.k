@@ -26,6 +26,55 @@ _managed_labels = lambda name: str -> {str: str} {
     }
 }
 
+# Stamp the OWNING service's app.kubernetes.io/name onto an arbitrary raw
+# manifest dict so the deploy layer can route it to that service's declared
+# cluster (declared-cluster-only routing — there is no primary-cluster
+# heuristic). Used by render_owned_manifests for the per-service
+# `Service.manifests` field.
+#
+# The merge is deliberately non-destructive and kind-agnostic: it rebuilds
+# `metadata` from whatever the manifest already carried (preserving name,
+# namespace, annotations, ownerReferences, …) and merges the forge-managed
+# labels UNDER any labels the user already set, so a user label always wins
+# on key conflict. This works for ANY object — namespaced or cluster-scoped
+# (Namespace, CRD, ClusterRole, ClusterIssuer) — because every k8s object
+# has a metadata block and metadata.labels is universally legal.
+#
+# Label precedence (`_managed_labels(name) | _existing_labels`) mirrors how
+# _render_config_map_manifest already merges forge defaults under user
+# labels: the stamp is the DEFAULT owner, an explicit user-set
+# app.kubernetes.io/name (rare) wins and routes the manifest to whatever
+# the user named — explicit intent over the forge default. Re-rendering is
+# idempotent (the stamp equals the existing label on the second pass).
+#
+# KCL v0.11 note: the body instantiates no schema literals — only raw-dict
+# operations (`|`) and member access — so it is legal inside a lambda body.
+_stamp_owner_label = lambda manifest: any, name: str -> any {
+    _existing_meta = manifest.metadata if manifest.metadata else {}
+    _existing_labels = _existing_meta.labels if _existing_meta.labels else {}
+    manifest | {
+        metadata = _existing_meta | {
+            labels = _managed_labels(name) | _existing_labels
+        }
+    }
+}
+
+# Render a service's OWNED raw manifests (the per-service `Service.manifests`
+# field), each stamped with the service's app.kubernetes.io/name so the
+# deploy layer routes them to THIS service's declared cluster. Pure
+# pass-through of the user's manifest dicts + the ownership label.
+#
+# This is the load-bearing mechanism for declared-cluster-only routing:
+#   * a workload service may attach its CRD / extra RBAC here — those land
+#     on the same cluster as the workload;
+#   * an IMAGE-LESS "infra service" (a forge.Service with `manifests` + a
+#     `deploy = K8sCluster{...}` and no image) declares env-level / ownerless
+#     resources (Namespace, gateways, ClusterIssuers, bootstrap) onto a
+#     specific cluster — no global render, no primary heuristic.
+render_owned_manifests = lambda svc: any -> [any] {
+    [_stamp_owner_label(m, svc.name) for m in (svc.manifests if svc.manifests else [])]
+}
+
 # Collapse an EnvVar list to one entry per name, LAST-occurrence-wins.
 #
 # The common authoring pattern is `cfg.APP_ENV + [ ...per-service overrides ]`

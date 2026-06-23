@@ -331,60 +331,67 @@ func TestClusterScopeForGroups_SingleClusterIsNil(t *testing.T) {
 }
 
 // TestClusterScopeForGroups_TwoClustersPartition is the multi-cluster
-// assertion mirroring the e2e env: the bulk of services on k3d-control-plane
-// (primary) and a lone workspace-proxy on k3d-cp-daemon (secondary). Each
-// group's scope must own only its own services, mark the other cluster's
-// services as OtherApps, and flag exactly the bulk cluster as primary.
+// assertion mirroring the e2e env, in the DECLARED-CLUSTER-ONLY model: the
+// bulk of services on k3d-control-plane and a lone workspace-proxy on
+// k3d-cp-daemon. Each group's scope must own ONLY its own services and mark
+// the other cluster's services as OtherApps — there is NO primary flag (the
+// most-services heuristic is gone; routing is by the manifest's owner).
 func TestClusterScopeForGroups_TwoClustersPartition(t *testing.T) {
-	primaryG := k8sGroupWithSvcs("k3d-control-plane", "admin-server", "workspace-controller", "reliant-api-server")
-	secondaryG := k8sGroupWithSvcs("k3d-cp-daemon", "workspace-proxy")
-	groups := []deploytarget.ServiceGroup{primaryG, secondaryG}
+	controlPlaneG := k8sGroupWithSvcs("k3d-control-plane", "admin-server", "workspace-controller", "reliant-api-server")
+	daemonG := k8sGroupWithSvcs("k3d-cp-daemon", "workspace-proxy")
+	groups := []deploytarget.ServiceGroup{controlPlaneG, daemonG}
 	scopeFor := clusterScopeForGroups(groups)
 
-	ps := scopeFor(primaryG)
-	if ps == nil {
-		t.Fatal("primary group should get a non-nil scope in a multi-cluster env")
+	cs := scopeFor(controlPlaneG)
+	if cs == nil {
+		t.Fatal("control-plane group should get a non-nil scope in a multi-cluster env")
 	}
-	if !ps.Primary {
-		t.Errorf("k3d-control-plane (most services) should be the primary cluster")
+	if _, ok := cs.OwnApps["admin-server"]; !ok {
+		t.Errorf("control-plane scope must own admin-server, got %+v", cs.OwnApps)
 	}
-	if _, ok := ps.OwnApps["admin-server"]; !ok {
-		t.Errorf("primary scope must own admin-server, got %+v", ps.OwnApps)
+	if _, ok := cs.OtherApps["workspace-proxy"]; !ok {
+		t.Errorf("control-plane scope must mark workspace-proxy as another cluster's app")
 	}
-	if _, ok := ps.OtherApps["workspace-proxy"]; !ok {
-		t.Errorf("primary scope must mark workspace-proxy as another cluster's app")
-	}
-	if _, leaked := ps.OwnApps["workspace-proxy"]; leaked {
-		t.Errorf("primary scope must NOT own the secondary cluster's workspace-proxy")
+	if _, leaked := cs.OwnApps["workspace-proxy"]; leaked {
+		t.Errorf("control-plane scope must NOT own the daemon cluster's workspace-proxy")
 	}
 
-	ss := scopeFor(secondaryG)
-	if ss == nil {
-		t.Fatal("secondary group should get a non-nil scope in a multi-cluster env")
+	ds := scopeFor(daemonG)
+	if ds == nil {
+		t.Fatal("daemon group should get a non-nil scope in a multi-cluster env")
 	}
-	if ss.Primary {
-		t.Errorf("k3d-cp-daemon (one service) must NOT be the primary cluster")
+	if _, ok := ds.OwnApps["workspace-proxy"]; !ok {
+		t.Errorf("daemon scope must own workspace-proxy, got %+v", ds.OwnApps)
 	}
-	if _, ok := ss.OwnApps["workspace-proxy"]; !ok {
-		t.Errorf("secondary scope must own workspace-proxy, got %+v", ss.OwnApps)
+	if _, ok := ds.OtherApps["admin-server"]; !ok {
+		t.Errorf("daemon scope must mark admin-server as another cluster's app")
 	}
-	if _, ok := ss.OtherApps["admin-server"]; !ok {
-		t.Errorf("secondary scope must mark admin-server as another cluster's app")
+	if _, leaked := ds.OwnApps["admin-server"]; leaked {
+		t.Errorf("daemon scope must NOT own the control-plane cluster's admin-server")
 	}
 }
 
-// TestPrimaryCluster_MostServicesWinsTieByName confirms the primary is the
-// cluster with the most services, and that an exact tie breaks
-// deterministically by lexicographically smallest cluster name.
-func TestPrimaryCluster_MostServicesWinsTieByName(t *testing.T) {
-	if got := primaryCluster(map[string]int{"a": 3, "b": 1}); got != "a" {
-		t.Errorf("most-services cluster should win: want a, got %q", got)
+// TestClusterScopeForGroups_InfraServiceRoutesToItsCluster pins the declared
+// model's no-primary property: an IMAGE-LESS infra service (here "cp-infra",
+// which owns the env-level Namespace/Gateway via forge.Service.manifests) is
+// a normal cluster group member, so its name lands in OwnApps for the cluster
+// it declares and OtherApps for the other — its stamped manifests route to
+// THAT cluster, with no most-services guess.
+func TestClusterScopeForGroups_InfraServiceRoutesToItsCluster(t *testing.T) {
+	controlPlaneG := k8sGroupWithSvcs("k3d-control-plane", "admin-server", "cp-infra")
+	daemonG := k8sGroupWithSvcs("k3d-cp-daemon", "workspace-proxy")
+	groups := []deploytarget.ServiceGroup{controlPlaneG, daemonG}
+	scopeFor := clusterScopeForGroups(groups)
+
+	cs := scopeFor(controlPlaneG)
+	if _, ok := cs.OwnApps["cp-infra"]; !ok {
+		t.Errorf("control-plane scope must own the infra service cp-infra, got %+v", cs.OwnApps)
 	}
-	// Tie on count → smaller name wins.
-	if got := primaryCluster(map[string]int{"zeta": 2, "alpha": 2}); got != "alpha" {
-		t.Errorf("tie should break to lexicographically smallest name: want alpha, got %q", got)
+	ds := scopeFor(daemonG)
+	if _, ok := ds.OtherApps["cp-infra"]; !ok {
+		t.Errorf("daemon scope must mark cp-infra as another cluster's app (its manifests stay on control-plane)")
 	}
-	if got := primaryCluster(map[string]int{}); got != "" {
-		t.Errorf("empty input should yield empty primary, got %q", got)
+	if _, leaked := ds.OwnApps["cp-infra"]; leaked {
+		t.Errorf("daemon scope must NOT own cp-infra")
 	}
 }

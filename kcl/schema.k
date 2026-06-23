@@ -976,6 +976,27 @@ schema Service:
     # writable. Only meaningful for a K8sCluster (cluster) deploy.
     # Unset => no volumes (field omitted from the manifest entirely).
     volumes?: [Volume]
+    # Raw k8s manifests OWNED by this service. Each is rendered tagged with
+    # this service's app.kubernetes.io/name (lib/services.k
+    # render_owned_manifests) so the deploy layer routes it to this
+    # service's DECLARED cluster — the load-bearing primitive for
+    # declared-cluster-only multi-cluster routing (there is NO
+    # primary-cluster / most-services heuristic; a manifest lands on the
+    # cluster of its owning service, nowhere else).
+    #
+    # Two ownership shapes:
+    #   1. A workload service attaches its CRD / extra RBAC here — those
+    #      land on the SAME cluster as the workload.
+    #   2. An IMAGE-LESS "infra service" (this field + a
+    #      `deploy = forge.K8sCluster {...}` and NO `image`) declares
+    #      env-level / ownerless resources (Namespace, Gateways,
+    #      ClusterIssuers, bootstrap) onto a specific cluster. An
+    #      image-less cluster service renders NO Deployment/Service/RBAC —
+    #      only its stamped manifests (see render.k render_manifests).
+    #
+    # Each entry is a raw manifest dict (same shape as
+    # Bundle.additional_manifests). Unset => no owned manifests.
+    manifests: [any] = []
 
     check:
         name, "Service.name is required"

@@ -283,6 +283,10 @@ _render_service = lambda s: Service -> any {
         "build_cwd": s.build_cwd if s.build_cwd else None
         "build_env": s.build_env if s.build_env else {}
         "namespaced_rbac": s.namespaced_rbac if s.namespaced_rbac else None
+        # Owned raw manifests project into the JSON contract too (null when
+        # empty) so a consumer that reads `output` sees the same stable
+        # key shape; the cluster manifest stream stamps + routes them.
+        "manifests": s.manifests if s.manifests else None
     }
 }
 
@@ -594,11 +598,18 @@ _render_config_map_manifest = lambda cm: ConfigMap, env: RenderEnv -> any {
 # `forge deploy <env>` is the right owner.
 render_manifests = lambda bundle: Bundle, env: RenderEnv -> [any] {
     _cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"]
+    # Only a service with an `image` renders a workload (Deployment +
+    # Service + RBAC). An image-less cluster service is an INFRA service:
+    # it contributes ONLY its owned `manifests` (below), no phantom
+    # Deployment. This split is the declared-cluster-only model's no-build
+    # infra-service shape — explicit (no image) rather than inferred.
+    _workload_services = [s for s in _cluster_services if s.image]
     [_render_runtime_class_manifest(rc, env) for rc in bundle.runtime_classes] \
         + [_render_namespace(env)] \
         + [_render_config_map_manifest(cm, env) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
-        + [item for s in _cluster_services for item in _render_cluster_service(s, env)] \
+        + [item for s in _workload_services for item in _render_cluster_service(s, env)] \
+        + [item for s in _cluster_services for item in svc_lib.render_owned_manifests(s)] \
         + [item for o in bundle.operators for item in _render_operator_manifests(o, env)] \
         + [item for c in bundle.cronjobs for item in _render_cronjob_manifests(c, env)] \
         + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, env.cluster.namespace)] \
@@ -621,9 +632,15 @@ render_manifests = lambda bundle: Bundle, env: RenderEnv -> [any] {
 # Namespace + network policies are owned by render_components, so they
 # are deliberately omitted here to avoid duplication.
 render_support = lambda bundle: Bundle, env: RenderEnv -> [any] {
+    # Owned manifests of any cluster services declared on the support
+    # Bundle (the deploy-as-data path's home for image-less infra
+    # services that pin env-level resources to a specific cluster). Stamped
+    # with the owning service's app label so the deploy layer routes them.
+    _support_cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"]
     [_render_runtime_class_manifest(rc, env) for rc in bundle.runtime_classes] \
         + [_render_config_map_manifest(cm, env) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
+        + [item for s in _support_cluster_services for item in svc_lib.render_owned_manifests(s)] \
         + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, env.cluster.namespace)] \
         + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, env.cluster.namespace)] \
         + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, env.cluster.namespace)] \

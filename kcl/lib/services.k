@@ -137,9 +137,43 @@ _default_container_security_context = {
     capabilities = {drop = ["ALL"]}
 }
 
+# Does `image` already carry its OWN tag or digest — `name:tag` or
+# `name@sha256:...` — so the env/service tag must NOT be appended?
+#
+# The disambiguation mirrors _pull_policy: a registry-port colon
+# (`localhost:5050/foo`) is BEFORE the last `/`, so a tag colon is the
+# rightmost `:` AFTER the rightmost `/`. A digest is any `@` in the ref.
+_image_has_tag_or_digest = lambda image: str -> bool {
+    _last_slash = image.rfind("/")
+    _tail = image[_last_slash + 1:] if _last_slash >= 0 else image
+    ("@" in image) or (":" in _tail)
+}
+
+# Build the full image reference for a container.
+#
+#   1. If `image` already pins its own tag/digest (`foo:1.2.3`,
+#      `ghcr.io/x/y@sha256:...`), pass it through VERBATIM — only
+#      prefixing the registry when one is set and the image has no
+#      registry host of its own. The caller-supplied tag is ignored:
+#      an explicitly-pinned image wins.
+#   2. Otherwise append `:image_tag` (the per-service pin or the
+#      env-wide tag, resolved by the caller).
 _image_ref = lambda image: str, image_registry: str, image_tag: str -> str {
-    "${image_registry}/${image}:${image_tag}" if image_registry \
-        else "${image}:${image_tag}"
+    _pinned = _image_has_tag_or_digest(image)
+    "${image_registry}/${image}" if (_pinned and image_registry) \
+        else (image if _pinned \
+        else ("${image_registry}/${image}:${image_tag}" if image_registry \
+        else "${image}:${image_tag}"))
+}
+
+# Resolve the tag to stamp onto an entity's image: the entity's pinned
+# `image_tag` when set (a no-op ShellBuild sibling that was never built
+# under the env-wide git tag pins the tag it WAS pushed under), else the
+# env-wide tag. `entity` is any schema carrying an optional `image_tag`
+# field (Service / CronJob / Operator), all of which declare it so the
+# read is always safe.
+_effective_image_tag = lambda entity: any, env_tag: str -> str {
+    entity.image_tag if entity.image_tag else env_tag
 }
 
 # Pick `imagePullPolicy` for a container based on the image tag.
@@ -243,7 +277,7 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
     _labels = _managed_labels(_name)
     _deploy = svc.deploy
     _resources = _deploy.resources if _deploy.resources else _default_resources
-    _image = _image_ref(svc.image, image_registry, image_tag)
+    _image = _image_ref(svc.image, image_registry, _effective_image_tag(svc, image_tag))
     _ports = _deploy.ports if len(_deploy.ports) > 0 else [8080]
     # Optional per-port appProtocol map ({port: appProtocol}). Only
     # K8sCluster carries this; absent/empty => no port gets the field,
@@ -336,7 +370,7 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
 render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag: str -> [any] {
     _name = cj.name
     _labels = _managed_labels(_name)
-    _image = _image_ref(cj.image, image_registry, image_tag)
+    _image = _image_ref(cj.image, image_registry, _effective_image_tag(cj, image_tag))
     _volumes = cj.volumes if cj.volumes else []
     _pod_spec = {
         # Bind the per-CronJob ServiceAccount forge generates
@@ -400,7 +434,7 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
 render_operator = lambda op: any, namespace: str, image_registry: str, image_tag: str -> [any] {
     _name = op.name
     _labels = _managed_labels(_name)
-    _image = _image_ref(op.image, image_registry, image_tag)
+    _image = _image_ref(op.image, image_registry, _effective_image_tag(op, image_tag))
     _leader_env_dict = [
         {name = "LEADER_ELECTION", value = "true"}
     ] if op.leader_election else []

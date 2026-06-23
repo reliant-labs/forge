@@ -275,6 +275,7 @@ _render_service = lambda s: Service -> any {
     {
         "name": s.name
         "image": s.image if s.image else None
+        "image_tag": s.image_tag if s.image_tag else None
         "command": s.command
         "env_vars": [_render_env_var(e) for e in s.env_vars]
         "deploy": _render_deploy(s.deploy)
@@ -294,6 +295,7 @@ _render_operator = lambda o: Operator -> any {
     {
         "name": o.name
         "image": o.image
+        "image_tag": o.image_tag if o.image_tag else None
         "replicas": o.replicas
         "platform": o.platform if o.platform else None
         "crds": o.crds
@@ -421,6 +423,7 @@ _render_cronjob = lambda c: CronJob -> any {
         "name": c.name
         "schedule": c.schedule if c.schedule else None
         "image": c.image
+        "image_tag": c.image_tag if c.image_tag else None
         "platform": c.platform if c.platform else None
         "command": c.command
         "env_vars": [_render_env_var(e) for e in c.env_vars]

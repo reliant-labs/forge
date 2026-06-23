@@ -638,3 +638,168 @@ func TestPodSelectorForDeploy(t *testing.T) {
 		t.Errorf("selector must use %q, not a bare app= label; got %q", appNameLabel, got)
 	}
 }
+
+// multiClusterManifests mirrors what the e2e env renders: a shared
+// Namespace + ConfigMap + Gateway (no app label), an operator Deployment
+// (app-labelled but in NO service group), a primary-cluster service
+// (admin-server), and a SECOND-cluster service (workspace-proxy, which
+// `deploy`s to k3d-cp-daemon) plus its own per-service RBAC (carrying the
+// same app label). This is the exact shape the multi-cluster bug
+// cross-contaminated.
+const multiClusterManifests = `apiVersion: v1
+kind: Namespace
+metadata:
+  name: control-plane-e2e
+  labels:
+    app.kubernetes.io/managed-by: forge
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: control-plane-e2e
+  labels:
+    app.kubernetes.io/managed-by: forge
+data:
+  KEY: value
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: public-gateway
+  namespace: control-plane-e2e
+spec: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-controller
+  namespace: control-plane-e2e
+  labels:
+    app.kubernetes.io/name: workspace-controller
+    app.kubernetes.io/managed-by: forge
+spec: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-server
+  namespace: control-plane-e2e
+  labels:
+    app.kubernetes.io/name: admin-server
+    app.kubernetes.io/managed-by: forge
+spec: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-proxy
+  namespace: control-plane-e2e
+  labels:
+    app.kubernetes.io/name: workspace-proxy
+    app.kubernetes.io/managed-by: forge
+spec: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workspace-proxy
+  namespace: control-plane-e2e
+  labels:
+    app.kubernetes.io/name: workspace-proxy`
+
+// TestScopeManifestsToGroup_PrimaryKeepsSharedAndOwn proves the primary
+// cluster receives its own services' workloads, every shared/infra manifest
+// (Namespace, ConfigMap, Gateway), and the ungrouped operator — but NOT the
+// secondary cluster's service (workspace-proxy) or its RBAC.
+func TestScopeManifestsToGroup_PrimaryKeepsSharedAndOwn(t *testing.T) {
+	scope := GroupScope{
+		OwnApps:   map[string]struct{}{"admin-server": {}},
+		OtherApps: map[string]struct{}{"workspace-proxy": {}},
+		Primary:   true,
+	}
+	got := ScopeManifestsToGroup(multiClusterManifests, scope)
+
+	for _, want := range []string{
+		"name: admin-server",         // own service
+		"name: workspace-controller", // ungrouped operator follows primary
+		"kind: Namespace",            // shared
+		"name: app-config",           // shared ConfigMap
+		"kind: Gateway",              // shared Gateway (the CRD-bearing doc)
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("primary cluster missing %q:\n%s", want, got)
+		}
+	}
+	// The secondary cluster's service AND its RBAC must NOT land on primary.
+	if strings.Contains(got, "name: workspace-proxy") {
+		t.Errorf("secondary-cluster service workspace-proxy must not land on primary:\n%s", got)
+	}
+}
+
+// TestScopeManifestsToGroup_SecondaryOnlyOwnPlusNamespace is the
+// load-bearing isolation assertion: the SECONDARY cluster (the one hosting
+// only workspace-proxy) receives ONLY its own service's workloads + RBAC and
+// the Namespace it lives in — and NONE of the primary's stack: no Gateway
+// (the CRD it doesn't have), no ConfigMap, no other-cluster services, no
+// operator. This is the cross-contamination the bug caused.
+func TestScopeManifestsToGroup_SecondaryOnlyOwnPlusNamespace(t *testing.T) {
+	scope := GroupScope{
+		OwnApps:   map[string]struct{}{"workspace-proxy": {}},
+		OtherApps: map[string]struct{}{"admin-server": {}},
+		Primary:   false,
+	}
+	got := ScopeManifestsToGroup(multiClusterManifests, scope)
+
+	// Kept: the proxy Deployment, its RBAC, and the Namespace.
+	if !strings.Contains(got, "name: workspace-proxy") {
+		t.Errorf("secondary cluster must keep its own service workspace-proxy:\n%s", got)
+	}
+	if !strings.Contains(got, "kind: ServiceAccount") {
+		t.Errorf("secondary cluster must keep the proxy's own RBAC:\n%s", got)
+	}
+	if !strings.Contains(got, "kind: Namespace") {
+		t.Errorf("secondary cluster must keep the Namespace its workload lives in:\n%s", got)
+	}
+	// Dropped: everything that belongs to the primary cluster.
+	for _, notWant := range []string{
+		"kind: Gateway",              // the CRD cp-daemon doesn't have — the hard-fail
+		"name: app-config",           // shared ConfigMap stays on primary
+		"name: admin-server",         // other cluster's service
+		"name: workspace-controller", // operator follows primary
+	} {
+		if strings.Contains(got, notWant) {
+			t.Errorf("secondary cluster must NOT receive %q (primary-only):\n%s", notWant, got)
+		}
+	}
+}
+
+// TestScopeManifestsToGroup_NoCrossContamination is the round-trip
+// invariant: partition the SAME rendered stream into primary + secondary and
+// assert the two service sets are disjoint and together cover every
+// workload exactly once — neither cluster sees the other's service, and no
+// service is dropped entirely.
+func TestScopeManifestsToGroup_NoCrossContamination(t *testing.T) {
+	primary := ScopeManifestsToGroup(multiClusterManifests, GroupScope{
+		OwnApps:   map[string]struct{}{"admin-server": {}, "workspace-controller": {}},
+		OtherApps: map[string]struct{}{"workspace-proxy": {}},
+		Primary:   true,
+	})
+	secondary := ScopeManifestsToGroup(multiClusterManifests, GroupScope{
+		OwnApps:   map[string]struct{}{"workspace-proxy": {}},
+		OtherApps: map[string]struct{}{"admin-server": {}, "workspace-controller": {}},
+		Primary:   false,
+	})
+	// admin-server only on primary.
+	if !strings.Contains(primary, "name: admin-server") || strings.Contains(secondary, "name: admin-server") {
+		t.Errorf("admin-server must be on primary only")
+	}
+	// workspace-proxy only on secondary.
+	if strings.Contains(primary, "name: workspace-proxy") || !strings.Contains(secondary, "name: workspace-proxy") {
+		t.Errorf("workspace-proxy must be on secondary only")
+	}
+	// The Gateway (CRD-bearing) only on primary — the cp-daemon hard-fail guard.
+	if !strings.Contains(primary, "kind: Gateway") || strings.Contains(secondary, "kind: Gateway") {
+		t.Errorf("Gateway must be on primary only")
+	}
+}

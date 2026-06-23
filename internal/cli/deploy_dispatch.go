@@ -250,7 +250,8 @@ func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) er
 // declares no cluster (host-only / compose), Context stays empty — and the
 // cluster.KubectlApply chokepoint refuses an empty context rather than
 // falling back to the active one.
-func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
+func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string, groups []deploytarget.ServiceGroup) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
+	scopeFor := clusterScopeForGroups(groups)
 	return func(group deploytarget.ServiceGroup) cluster.ApplyOpts {
 		ns := group.Namespace
 		if ns == "" {
@@ -269,8 +270,99 @@ func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string,
 			HostSkip:     hostSkip,
 			OneShotJobs:  oneShotJobs,
 			Targets:      targets,
+			ClusterScope: scopeFor(group),
 		}
 	}
+}
+
+// clusterScopeForGroups returns a closure that maps one k8s-cluster group
+// to the cluster.GroupScope that filters the env's rendered manifest
+// stream to THAT group's cluster — the load-bearing half of the
+// multi-cluster fix.
+//
+// KCL renders the whole env as a single manifest stream (every service's
+// workloads, the namespace, gateways, CRDs, infra). Each k8s group applies
+// it to its OWN declared `--context`, so without scoping a two-cluster env
+// dumps the entire bundle onto BOTH clusters: the secondary cluster
+// receives the primary's whole stack (and hard-fails on CRDs it doesn't
+// have), and the primary receives the secondary's service. The GroupScope
+// partitions the stream so each cluster gets only what belongs on it (see
+// cluster.ScopeManifestsToGroup for the per-document ownership rule).
+//
+// SINGLE-CLUSTER no-op: when every k8s group declares the SAME cluster
+// (the common dev-k8s / staging / prod case), there is no second cluster to
+// isolate, so the closure returns nil and the apply path is byte-identical
+// to the pre-fix behaviour. Scoping engages ONLY when >1 distinct cluster
+// is declared across the k8s groups.
+//
+// PRIMARY cluster: the cluster the env's bundle was rendered against — its
+// Namespace, Gateways, CRDs, infra, and every ungrouped app-labelled
+// manifest (operators / CronJobs) follow it. We pick the cluster that the
+// MOST services target (the bulk of the env); the lone proxy-on-a-second-
+// cluster pattern this fix targets makes that unambiguous, and ties break
+// deterministically by cluster name so the choice is stable across runs.
+func clusterScopeForGroups(groups []deploytarget.ServiceGroup) func(deploytarget.ServiceGroup) *cluster.GroupScope {
+	// Distinct clusters across the k8s groups, and the apps each owns.
+	clusters := map[string]struct{}{}
+	appsByCluster := map[string][]string{}
+	svcCountByCluster := map[string]int{}
+	for _, g := range groups {
+		if g.ProviderID != "k8s-cluster" || g.Cluster == "" {
+			continue
+		}
+		clusters[g.Cluster] = struct{}{}
+		for _, s := range g.Services {
+			appsByCluster[g.Cluster] = append(appsByCluster[g.Cluster], s.Name)
+			svcCountByCluster[g.Cluster]++
+		}
+	}
+	// Single-cluster (or no-cluster) env: nothing to isolate — no-op.
+	if len(clusters) < 2 {
+		return func(deploytarget.ServiceGroup) *cluster.GroupScope { return nil }
+	}
+
+	primary := primaryCluster(svcCountByCluster)
+	return func(group deploytarget.ServiceGroup) *cluster.GroupScope {
+		if group.ProviderID != "k8s-cluster" || group.Cluster == "" {
+			return nil
+		}
+		own := map[string]struct{}{}
+		for _, name := range appsByCluster[group.Cluster] {
+			own[name] = struct{}{}
+		}
+		other := map[string]struct{}{}
+		for c, apps := range appsByCluster {
+			if c == group.Cluster {
+				continue
+			}
+			for _, name := range apps {
+				other[name] = struct{}{}
+			}
+		}
+		return &cluster.GroupScope{
+			OwnApps:   own,
+			OtherApps: other,
+			Primary:   group.Cluster == primary,
+		}
+	}
+}
+
+// primaryCluster picks the env's primary cluster from the per-cluster
+// service counts: the cluster the MOST services target. Ties break by
+// cluster name (lexicographically smallest) so the choice is deterministic
+// across runs. The primary is where the env's shared resources (Namespace,
+// Gateways, CRDs, infra, operators, CronJobs) land; secondary clusters
+// receive only their own services' workloads. Empty input returns "".
+func primaryCluster(svcCountByCluster map[string]int) string {
+	primary := ""
+	best := -1
+	for c, n := range svcCountByCluster {
+		if n > best || (n == best && c < primary) {
+			best = n
+			primary = c
+		}
+	}
+	return primary
 }
 
 // resolveGroupContext picks the kubectl context for a single deploy

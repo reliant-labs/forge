@@ -271,6 +271,22 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// in feature_gate.go for the strict-gate shape used by the cobra
 	// RunE for those commands.
 	if scope.cluster {
+		// Cluster phase — ensure every declared k3d cluster exists BEFORE
+		// anything builds or deploys (image pushes target a cluster's
+		// registry; the deploy mounts Secrets into a cluster that must
+		// already be up). Idempotent on warm runs (existing clusters are a
+		// no-op). An env that declares no clusters (Bundle.clusters empty)
+		// is a no-op here, preserving today's behavior. Skipped on
+		// --no-deploy: with nothing to deploy there's no need to stand a
+		// cluster up. Declared-cluster ensure is the multi-cluster
+		// generalization of the dev-only ensureDevCluster on the deploy
+		// path — ownership is implicit (Cluster.network / registry_mirror),
+		// no "primary" cluster.
+		if !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:clusters") {
+			if err := reconcileDeclaredClusters(ctx, entities.Clusters); err != nil {
+				return fmt.Errorf("clusters: %w", err)
+			}
+		}
 		// Kick off the docker-compose infra (postgres/nats/temporal/...)
 		// NOW, concurrent with the build phase. Image pulls + container
 		// health warmup are the long pole on a warm `up` and are wholly

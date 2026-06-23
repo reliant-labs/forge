@@ -710,6 +710,75 @@ schema ExternalSecrets:
     check:
         type == "external", "ExternalSecrets.type must be 'external'"
 
+schema Cluster:
+    """A k3d cluster forge ensures exists before deploying into it.
+
+    An env declares a LIST of these (Bundle.clusters); `forge up
+    --env=<env>` reconciles each at the head of the run: if a cluster
+    of the given `name` is absent, forge runs `k3d cluster create` with
+    the declared flags; if present, it's a no-op (idempotent on warm
+    runs). This is the declarative replacement for the dev-only,
+    single-cluster `ensureDevCluster` bootstrap — an env that stands up
+    several clusters (e.g. a control-plane cluster + a workload cluster)
+    declares them all here, with NO imperative glue.
+
+    Multi-cluster ownership is IMPLICIT. There is no "primary" cluster:
+    a secondary cluster names its owner via `network` (the k3d docker
+    network it joins) and `registry_mirror = "inherit"` (it reuses the
+    owner cluster's registry). The owner cluster declares neither —
+    forge creates its own network/registry. There is no most-X
+    heuristic anywhere; ownership is exactly what the fields say.
+
+    Fields:
+      * `name`            — k3d cluster name. The kubectl context is
+                            `k3d-<name>` by convention (k3d's own).
+      * `config`          — path to a k3d Simple-config YAML. When set,
+                            forge runs `k3d cluster create --config
+                            <config>` and the servers/agents/api_port/
+                            network flags below are ignored (the config
+                            file is authoritative). Relative paths
+                            resolve against the project root.
+      * `network`         — the docker network this cluster joins
+                            (`k3d cluster create --network <network>`).
+                            For a secondary cluster set this to the
+                            OWNER cluster's network (k3d names a
+                            cluster's auto-created network `k3d-<owner>`)
+                            so the two clusters' nodes share a network
+                            and can reach each other by container IP.
+                            Unset => k3d creates this cluster's own
+                            network.
+      * `registry_mirror` — "inherit" reuses the OWNER cluster's k3d
+                            registry: after create, forge writes the
+                            owner's registries.yaml onto this cluster's
+                            node and restarts it to reload (so in-cluster
+                            pulls of `localhost:<port>/...` images
+                            resolve to the shared registry). Unset =>
+                            this cluster has no mirror config (it owns
+                            its registry via `config`, or pulls from a
+                            real registry).
+      * `servers`         — control-plane node count (default 1).
+      * `agents`          — worker node count (default 0).
+      * `api_port`        — host port to bind the cluster's API server
+                            to (`k3d cluster create --api-port
+                            0.0.0.0:<port>`). Distinct per cluster so
+                            several clusters coexist on one host. Unset
+                            => k3d picks a random free port.
+    """
+    name: str
+    config?: str
+    network?: str
+    registry_mirror?: str
+    servers: int = 1
+    agents: int = 0
+    api_port?: int
+
+    check:
+        name, "Cluster.name is required"
+        servers > 0, "Cluster.servers must be positive"
+        agents >= 0, "Cluster.agents must be non-negative"
+        registry_mirror == Undefined or registry_mirror == "inherit", \
+            "Cluster.registry_mirror, when set, must be 'inherit' (reuse the owner cluster's registry)"
+
 schema BuildOnly:
     """Service is built but not auto-orchestrated.
 
@@ -1114,6 +1183,15 @@ schema Bundle:
     passes it to `forge.render(...)`. The output is the JSON contract
     documented at the top of this file.
     """
+    # k3d clusters forge ensures exist before deploying. An env that
+    # stands up several clusters (a control-plane cluster + a workload
+    # cluster) declares them here; `forge up` reconciles each at the
+    # head of the run (create-if-absent, no-op if present). Empty =>
+    # forge ensures no cluster (today's `forge up --env=e2e` behavior,
+    # or a single dev cluster bootstrapped the legacy way). Ownership is
+    # implicit via Cluster.network / Cluster.registry_mirror — there is
+    # no "primary" cluster.
+    clusters: [Cluster] = []
     services: [Service] = []
     operators: [Operator] = []
     frontends: [Frontend] = []

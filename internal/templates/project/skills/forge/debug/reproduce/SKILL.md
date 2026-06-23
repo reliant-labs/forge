@@ -32,6 +32,8 @@ What to log, in order of placement:
 
 ## Triggering the Bug
 
+- **First confirm the wire.** Before blaming the code, verify the caller can actually reach the target: is the service up, is the kubectl context current (services may live in different clusters), are credentials live? Stale connection state is a top false-cause.
+- Read the **actual** server / pod logs for the request — don't infer behavior from the client error alone.
 - curl API endpoints directly
 - Exercise via Connect client
 - Query DB state before and after the operation

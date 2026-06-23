@@ -46,6 +46,7 @@ import (
 	"github.com/reliant-labs/forge/internal/envutil"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/secrets"
 )
 
@@ -188,6 +189,30 @@ func newUpStopCmd() *cobra.Command {
 	return cmd
 }
 
+// upDeployNamespace resolves the env's deploy namespace from the
+// in-scope entities — the DEFAULT a KubeconfigSecret without its own
+// namespace lands in. Order: the first cluster-service's declared
+// namespace, then the manifests-only fallback (ManifestNamespace), then
+// `<project>-<env>` (forge's namespace convention). Reads the entities
+// already in hand rather than re-rendering KCL.
+func upDeployNamespace(entities *KCLEntities, store projectstore.ProjectStore, env string) string {
+	if entities != nil {
+		for i := range entities.Services {
+			s := &entities.Services[i]
+			if s.Deploy.Type == "cluster" && s.Deploy.Cluster != nil && s.Deploy.Cluster.Namespace != "" {
+				return s.Deploy.Cluster.Namespace
+			}
+		}
+		if entities.ManifestNamespace != "" {
+			return entities.ManifestNamespace
+		}
+	}
+	if store != nil && env != "" {
+		return store.Meta().Name + "-" + env
+	}
+	return ""
+}
+
 // runUp is the orchestrator. Returns the first error encountered in
 // phases 1-2 (no point bringing host processes up against a busted
 // cluster). Phases 3-4 are collected into the running-process set and
@@ -285,6 +310,18 @@ func runUp(ctx context.Context, opts upOptions) error {
 		if !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:clusters") {
 			if err := reconcileDeclaredClusters(ctx, entities.Clusters); err != nil {
 				return fmt.Errorf("clusters: %w", err)
+			}
+			// Mint cross-cluster kubeconfigs at the cluster→deploy
+			// boundary: the clusters exist now (so `k3d kubeconfig get` +
+			// the serverlb container are available), and the deploy phase
+			// below hasn't rolled out the workloads that mount the Secret.
+			// The in-network IP is resolved FRESH here and never persisted,
+			// killing the IP-drift that a committed kubeconfig suffers when
+			// a k3d cluster is recreated. No-op when none are declared.
+			ownerNetwork := ownerNetworkFromClusters(entities.Clusters)
+			deployNS := upDeployNamespace(entities, store, opts.env)
+			if err := mintKubeconfigSecrets(ctx, entities.KubeconfigSecrets, ownerNetwork, deployNS); err != nil {
+				return fmt.Errorf("kubeconfig secrets: %w", err)
 			}
 		}
 		// Kick off the docker-compose infra (postgres/nats/temporal/...)

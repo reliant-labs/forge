@@ -24,6 +24,12 @@ import (
 // because deployment placement is a per-env decision that lives in the
 // KCL layer, not on services[] in the project config.
 type KCLEntities struct {
+	// Clusters are the k3d clusters forge ensures exist at the head of
+	// `forge up` before any workload deploys. Empty for an env that
+	// declares no clusters (today's no-ensure behavior). Ownership is
+	// implicit via Cluster.Network / Cluster.RegistryMirror — there is
+	// no "primary" cluster.
+	Clusters   []ClusterEntity   `json:"clusters,omitempty"`
 	Services   []ServiceEntity   `json:"services,omitempty"`
 	Operators  []OperatorEntity  `json:"operators,omitempty"`
 	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
@@ -56,6 +62,24 @@ type KCLEntities struct {
 type SecretProviderEntity struct {
 	Type string `json:"type"`
 	Path string `json:"path,omitempty"`
+}
+
+// ClusterEntity mirrors the kcl/schema.k Cluster — a k3d cluster forge
+// ensures exists before deploying. The reconcile (clusterPhase) reads
+// these and runs `k3d cluster create` for any that are absent.
+//
+// Ownership is IMPLICIT: a secondary cluster sets Network to the owner
+// cluster's network (`k3d-<owner>`) and RegistryMirror="inherit" to
+// reuse the owner's registry. The owner declares neither. There is no
+// "primary" field and no most-X heuristic.
+type ClusterEntity struct {
+	Name           string `json:"name"`
+	Config         string `json:"config,omitempty"`
+	Network        string `json:"network,omitempty"`
+	RegistryMirror string `json:"registry_mirror,omitempty"`
+	Servers        int    `json:"servers,omitempty"`
+	Agents         int    `json:"agents,omitempty"`
+	APIPort        int    `json:"api_port,omitempty"`
 }
 
 // GatewayEntity mirrors the kcl/schema.k Gateway. Listeners are inlined.
@@ -471,6 +495,7 @@ type KCLEnvVar struct {
 // -o json`. We unmarshal into this first, then dispatch each service's
 // deploy block by type to populate the typed [KCLEntities].
 type kclRenderRaw struct {
+	Clusters   []ClusterEntity   `json:"clusters,omitempty"`
 	Services   []kclServiceRaw   `json:"services,omitempty"`
 	Operators  []OperatorEntity  `json:"operators,omitempty"`
 	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
@@ -592,6 +617,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		return nil, fmt.Errorf("parse kcl json: %w", err)
 	}
 	out := &KCLEntities{
+		Clusters:          raw.Clusters,
 		Operators:         raw.Operators,
 		Frontends:         raw.Frontends,
 		CronJobs:          raw.CronJobs,

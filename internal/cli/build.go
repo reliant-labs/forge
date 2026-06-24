@@ -231,6 +231,14 @@ type buildResult struct {
 	kind     string // "service", "frontend", or "docker"
 	duration time.Duration
 	err      error
+	// digest is the content-addressed manifest digest (`sha256:...`) of a
+	// pushed docker image, captured after `docker push` for the PROJECT
+	// image so runBuild can record it in the build state. Empty for
+	// non-docker results, non-pushed builds, and any build where the digest
+	// lookup failed (capture is best-effort). platforms is the arch set the
+	// pushed manifest advertises, captured alongside.
+	digest    string
+	platforms []string
 }
 
 func runBuild(ctx context.Context, opts buildOptions) error {
@@ -550,23 +558,29 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// Dockerfile) or the docker build failed.
 	if opts.buildDocker && resolvedTag != "" && !skipProjectDocker {
 		projectDockerSucceeded := false
+		var projectDigest string
+		var projectPlatforms []string
 		for _, r := range succeeded {
 			if r.kind == "docker" && r.name == cfg.Name+" (docker)" {
 				projectDockerSucceeded = true
+				projectDigest = r.digest
+				projectPlatforms = r.platforms
 				break
 			}
 		}
 		if projectDockerSucceeded {
 			commit, gitTag, dirty := gitBuildProvenance(ctx)
 			state := BuildState{
-				Image:    cfg.Name,
-				Tag:      resolvedTag,
-				Registry: opts.pushRegistry,
-				Pushed:   opts.pushRegistry != "",
-				Commit:   commit,
-				GitTag:   gitTag,
-				Dirty:    dirty,
-				PushedAt: nowRFC3339(),
+				Image:     cfg.Name,
+				Tag:       resolvedTag,
+				Registry:  opts.pushRegistry,
+				Pushed:    opts.pushRegistry != "",
+				Commit:    commit,
+				GitTag:    gitTag,
+				Dirty:     dirty,
+				PushedAt:  nowRFC3339(),
+				Digest:    projectDigest,
+				Platforms: projectPlatforms,
 			}
 			if werr := WriteBuildState(projectDirForKCL(), opts.env, state); werr != nil {
 				// Non-fatal: the build succeeded; recording the state is
@@ -1117,11 +1131,30 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 		}
 	}
 
+	// Capture the pushed image's content-addressed digest so deploy can pin
+	// the manifest to `<image>@sha256:...` (immutable, cache-proof) instead
+	// of the mutable `:tag`. Inspect the last pushed ref — the version tag
+	// when present (most specific), else `:latest`; both resolve to the same
+	// manifest digest. Best-effort: a lookup failure logs and records no
+	// digest, leaving deploy on the unchanged tag-fallback path.
+	digest, platforms := "", []string(nil)
+	if len(pushTags) > 0 {
+		ref := pushTags[len(pushTags)-1]
+		if d, p, derr := imageRepoDigest(ctx, ref); derr == nil {
+			digest, platforms = d, p
+			fmt.Printf("[build] %s: pushed digest %s\n", cfg.Name, digest)
+		} else {
+			fmt.Printf("[build]   Note: could not capture image digest for %s (%v); deploy will use the tag\n", ref, derr)
+		}
+	}
+
 	return buildResult{
-		name:     cfg.Name + " (docker)",
-		kind:     "docker",
-		duration: time.Since(start),
-		err:      nil,
+		name:      cfg.Name + " (docker)",
+		kind:      "docker",
+		duration:  time.Since(start),
+		err:       nil,
+		digest:    digest,
+		platforms: platforms,
 	}
 }
 

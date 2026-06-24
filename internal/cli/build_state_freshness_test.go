@@ -88,7 +88,7 @@ func TestResolveDeployImageTag_StaleCommitRefuses(t *testing.T) {
 		t.Fatalf("write state: %v", err)
 	}
 
-	_, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "")
+	_, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
 	if err == nil {
 		t.Fatal("expected stale-image refusal, got nil error (would silently ship old code)")
 	}
@@ -113,7 +113,7 @@ func TestResolveDeployImageTag_FreshCommitAllows(t *testing.T) {
 		t.Fatalf("write state: %v", err)
 	}
 
-	tag, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "")
+	tag, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
 	if err != nil {
 		t.Fatalf("fresh build should deploy, got error: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestResolveDeployImageTag_StaleButFlagOverrides(t *testing.T) {
 		t.Fatalf("write state: %v", err)
 	}
 
-	tag, src, err := resolveDeployImageTag(context.Background(), dir, "prod", "v0.1.0")
+	tag, _, src, err := resolveDeployImageTag(context.Background(), dir, "prod", "v0.1.0", false)
 	if err != nil {
 		t.Fatalf("--tag override should bypass the staleness guard, got: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestResolveDeployImageTag_DirtyTrackedFileSkipsFreshnessCheck(t *testing.T)
 		t.Fatalf("write state: %v", err)
 	}
 
-	tag, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "")
+	tag, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
 	if err != nil {
 		t.Fatalf("dirty tracked file should skip the staleness guard, got: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestResolveDeployImageTag_UntrackedFileDoesNotMaskStaleness(t *testing.T) {
 	if err := WriteBuildState(dir, "prod", BuildState{Tag: "v0.1.0", Commit: builtCommit, GitTag: "v0.1.0"}); err != nil {
 		t.Fatalf("write state: %v", err)
 	}
-	_, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "")
+	_, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
 	if err == nil {
 		t.Fatal("untracked clutter must not mask the staleness guard; expected refusal")
 	}
@@ -205,7 +205,7 @@ func TestResolveDeployImageTag_NoCommitSkipsFreshnessCheck(t *testing.T) {
 	if err := WriteBuildState(dir, "prod", BuildState{Tag: "legacy"}); err != nil {
 		t.Fatalf("write state: %v", err)
 	}
-	tag, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "")
+	tag, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
 	if err != nil {
 		t.Fatalf("commit-less state should not be blocked, got: %v", err)
 	}

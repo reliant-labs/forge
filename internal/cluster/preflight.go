@@ -265,6 +265,28 @@ type ImageChecker interface {
 	ImageExists(ctx context.Context, ref string) (exists bool, err error)
 }
 
+// ImageArchChecker reports the architecture(s) an image ref advertises — the
+// `architecture` field of a single-platform manifest, or every platform's
+// architecture in a multi-arch manifest index. A deploy GATE compares this to
+// the TARGET cluster's declared node arch and BLOCKS on mismatch, turning the
+// runtime `exec format error` (an amd64 node trying to run an arm64 binary —
+// the 2026-06-24 cross-env incident) into a pre-apply failure.
+//
+// Contract mirrors ImageChecker's "don't block on a blind spot, don't pass on
+// a confirmed problem" discipline:
+//
+//   - (archs, nil)  — the image's architectures, resolved. Compare + gate.
+//   - (nil, err) where errors.Is(err, ErrImageCheckInconclusive) — the arch
+//     could not be read (transport failure, image absent — already reported by
+//     the existence check, daemon down). The arch is UNKNOWN, so the gate
+//     WARNS and proceeds rather than false-failing. Mismatch can only be
+//     asserted on a KNOWN arch.
+//   - (nil, err) for anything else — a genuine checker failure surfaced by the
+//     caller.
+type ImageArchChecker interface {
+	ImageArchitectures(ctx context.Context, ref string) (archs []string, err error)
+}
+
 // ErrImageCheckInconclusive marks an image check that could not reach the
 // registry at all — a transport-class failure (DNS, connection refused, i/o
 // timeout, docker daemon down). That says nothing about the image: the CLUSTER
@@ -313,9 +335,23 @@ type PreflightOpts struct {
 	// Images checks image existence against the registry.
 	Images ImageChecker
 
+	// ImageArch reports an image's advertised architecture(s) for the arch
+	// gate. Nil disables the gate entirely (the existence check still runs).
+	ImageArch ImageArchChecker
+
+	// TargetArch is the DECLARED node architecture of the target cluster
+	// (GOARCH form: "amd64" / "arm64"), resolved from the env's KCL
+	// `deploy.Cluster.platform`. When set AND ImageArch is configured, each
+	// checked image's architectures are compared to it and a mismatch BLOCKS
+	// the deploy (the exec-format-error gate). EMPTY means the env hasn't
+	// declared a platform yet — the gate is INERT (WARN-don't-block) so envs
+	// that predate the platform field (incl. the local e2e path) are never
+	// false-failed.
+	TargetArch string
+
 	// SkipImageRef, when non-nil, returns true for image refs that should
 	// NOT be checked (e.g. local k3d / registry.localhost refs in a dev
-	// loop). A nil func checks every image.
+	// loop). A nil func checks every image (both existence AND arch).
 	SkipImageRef func(ref string) bool
 }
 
@@ -347,6 +383,18 @@ type PreflightResult struct {
 	// nothing about the image. These do NOT block the deploy — they are
 	// printed so the user knows the gate couldn't vouch for those images.
 	ImageWarnings []string
+	// ArchMismatchImages is the sorted list of "<ref>: image is <archs>,
+	// cluster nodes are <target>" entries for images whose advertised
+	// architecture does NOT include the target cluster's declared arch. These
+	// BLOCK — running an arm64 image on amd64 nodes is the exec-format-error
+	// crash, caught here before a single pod schedules. Only populated when a
+	// target arch is DECLARED (an undeclared target arch can't assert a
+	// mismatch).
+	ArchMismatchImages []string
+	// ArchWarnings is the sorted list of advisory notes for images whose arch
+	// could not be read (transport failure / inconclusive). These do NOT
+	// block — a mismatch can only be asserted on a known arch.
+	ArchWarnings []string
 }
 
 // OK reports whether nothing was found missing. Inconclusive image warnings
@@ -355,7 +403,8 @@ func (r PreflightResult) OK() bool {
 	return len(r.MissingSecretKeys) == 0 &&
 		len(r.MissingConfigMapKeys) == 0 &&
 		len(r.MissingImages) == 0 &&
-		len(r.UnverifiableImages) == 0
+		len(r.UnverifiableImages) == 0 &&
+		len(r.ArchMismatchImages) == 0
 }
 
 // wholeSecretMarker is the placeholder listed under a Secret that doesn't
@@ -382,6 +431,12 @@ func Preflight(ctx context.Context, opts PreflightOpts) error {
 	// run blocks or proceeds, so the user knows the gate couldn't vouch
 	// for those images (and isn't surprised by a later ImagePullBackOff).
 	for _, w := range result.ImageWarnings {
+		fmt.Printf("preflight: %s\n", w)
+	}
+	// Arch checks that couldn't read an image's architecture are advisory
+	// too (an undeclared target arch, or an unreadable manifest) — surface
+	// them so a later exec-format-error isn't a surprise.
+	for _, w := range result.ArchWarnings {
 		fmt.Printf("preflight: %s\n", w)
 	}
 	if result.OK() {
@@ -485,6 +540,51 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 		}
 	}
 
+	// Arch gate — one manifest-inspect per distinct image, comparing the
+	// image's advertised architecture(s) to the TARGET cluster's declared
+	// arch. Only runs when BOTH an arch checker and a declared target arch
+	// are configured: an undeclared target arch can't assert a mismatch
+	// (WARN-don't-block), so the gate is inert for envs that predate the
+	// platform field (incl. the local e2e path). Skips the same local-
+	// registry refs as the existence check.
+	target := strings.TrimSpace(opts.TargetArch)
+	if opts.ImageArch != nil && target != "" {
+		for ref := range refs.Images {
+			ref := ref
+			if opts.SkipImageRef != nil && opts.SkipImageRef(ref) {
+				continue
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				archs, aerr := opts.ImageArch.ImageArchitectures(ctx, ref)
+				if aerr != nil {
+					// Couldn't read the arch (transport / image-absent —
+					// already reported by the existence check / daemon down).
+					// A mismatch can only be asserted on a KNOWN arch, so warn
+					// and proceed rather than false-failing.
+					if errors.Is(aerr, ErrImageCheckInconclusive) {
+						mu.Lock()
+						result.ArchWarnings = append(result.ArchWarnings,
+							fmt.Sprintf("couldn't read architecture of image %q: %v; skipping arch gate for it", ref, aerr))
+						mu.Unlock()
+						return
+					}
+					recordErr(fmt.Errorf("preflight: read image arch %q: %w", ref, aerr))
+					return
+				}
+				if archMatchesTarget(archs, target) {
+					return
+				}
+				mu.Lock()
+				result.ArchMismatchImages = append(result.ArchMismatchImages,
+					fmt.Sprintf("%s: image is %s, cluster nodes are %s — rebuild for the target platform (exec-format-error class)",
+						ref, archList(archs), target))
+				mu.Unlock()
+			}()
+		}
+	}
+
 	wg.Wait()
 	if firstErr != nil {
 		return PreflightResult{}, firstErr
@@ -492,7 +592,41 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	sort.Strings(result.MissingImages)
 	sort.Strings(result.UnverifiableImages)
 	sort.Strings(result.ImageWarnings)
+	sort.Strings(result.ArchMismatchImages)
+	sort.Strings(result.ArchWarnings)
 	return result, nil
+}
+
+// archMatchesTarget reports whether the target cluster arch is among the
+// image's advertised architectures. A multi-arch index that includes the
+// target (e.g. ["amd64","arm64"] for an amd64 target) MATCHES — the kubelet
+// selects the right manifest. An empty arch set is treated as "unknown" →
+// matches (don't block on a blind spot; the warn path handles unreadable
+// arch). Comparison is case-insensitive and trims whitespace.
+func archMatchesTarget(archs []string, target string) bool {
+	if len(archs) == 0 {
+		return true
+	}
+	t := strings.ToLower(strings.TrimSpace(target))
+	for _, a := range archs {
+		if strings.ToLower(strings.TrimSpace(a)) == t {
+			return true
+		}
+	}
+	return false
+}
+
+// archList renders an image's architecture set for a report message:
+// "arm64", or "[amd64 arm64]" for a multi-arch image, "unknown" when empty.
+func archList(archs []string) string {
+	switch len(archs) {
+	case 0:
+		return "unknown"
+	case 1:
+		return archs[0]
+	default:
+		return "[" + strings.Join(archs, " ") + "]"
+	}
 }
 
 // checkKeyedResources fans out one existence/key lookup per distinct named
@@ -577,6 +711,13 @@ func FormatPreflightReport(r PreflightResult) string {
 		}
 	}
 
+	if len(r.ArchMismatchImages) > 0 {
+		b.WriteString("\n  Images built for the WRONG architecture (would crash with exec format error):\n")
+		for _, img := range r.ArchMismatchImages {
+			b.WriteString(fmt.Sprintf("    - %s\n", img))
+		}
+	}
+
 	b.WriteString("\nNothing was applied. Fix the gaps, then re-run the deploy:\n")
 	if len(r.MissingSecretKeys) > 0 {
 		b.WriteString("  - provision the missing Secret key(s) in the target cluster/namespace\n")
@@ -593,6 +734,10 @@ func FormatPreflightReport(r PreflightResult) string {
 		b.WriteString("      (b) the deploy host lacks pull credentials for that registry\n")
 		b.WriteString("          (e.g. `docker login ghcr.io`, `gcloud auth configure-docker`).\n")
 		b.WriteString("    Verify the image really exists, then re-run; only --skip-preflight once you've confirmed it.\n")
+	}
+	if len(r.ArchMismatchImages) > 0 {
+		b.WriteString("  - rebuild the wrong-arch image(s) for the target cluster's node architecture\n")
+		b.WriteString("      (forge build --target-arch <arch>, or set deploy.target_arch / the env's K8sCluster.platform).\n")
 	}
 	b.WriteString("  - or pass --skip-preflight to bypass this check (you accept the risk of a crash-on-apply).")
 	return b.String()
@@ -731,6 +876,82 @@ func (DockerImageChecker) ImageExists(ctx context.Context, ref string) (bool, er
 	// daemon's own message as the inconclusive reason so the warning is
 	// actionable.
 	return false, fmt.Errorf("%w: %s", ErrImageCheckInconclusive, reason)
+}
+
+// DockerImageArchChecker is the live ImageArchChecker: it reads an image's
+// advertised architecture(s) via `docker manifest inspect <ref>` against the
+// registry. It parses BOTH shapes the command can return:
+//
+//   - a manifest LIST / OCI index — `.manifests[].platform.architecture`,
+//     one entry per platform (a multi-arch image). "unknown" attestation
+//     entries (buildx provenance/SBOM) are dropped — they aren't runnable.
+//   - a single image manifest — the top-level `.architecture` field.
+//
+// A lookup that can't reach the registry (transport failure, image absent,
+// daemon down) is returned as ErrImageCheckInconclusive so the gate WARNS
+// rather than blocking — a mismatch can only be asserted on a known arch.
+type DockerImageArchChecker struct{}
+
+// ImageArchitectures returns the distinct architectures ref advertises. See
+// the type doc for the two manifest shapes handled.
+func (DockerImageArchChecker) ImageArchitectures(ctx context.Context, ref string) ([]string, error) {
+	args := []string{"manifest", "inspect"}
+	if registryRefIsInsecure(ref) {
+		args = append(args, "--insecure")
+	}
+	args = append(args, ref)
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		reason := strings.TrimSpace(string(out))
+		if reason == "" {
+			reason = err.Error()
+		}
+		// Any non-zero exit leaves the arch UNKNOWN — existence is the
+		// existence check's job; here we only fail open so the gate warns.
+		return nil, fmt.Errorf("%w: %s", ErrImageCheckInconclusive, reason)
+	}
+	return parseManifestArchitectures(out)
+}
+
+// parseManifestArchitectures extracts the distinct architectures from a
+// `docker manifest inspect` JSON blob — a manifest list (`.manifests[].
+// platform.architecture`) or a single image (`.architecture`). "unknown"
+// platforms (buildx attestation entries) are dropped. Order is stable
+// (sorted) so the report message is deterministic.
+func parseManifestArchitectures(raw []byte) ([]string, error) {
+	var parsed struct {
+		Architecture string `json:"architecture"`
+		Manifests    []struct {
+			Platform struct {
+				Architecture string `json:"architecture"`
+				OS           string `json:"os"`
+			} `json:"platform"`
+		} `json:"manifests"`
+	}
+	if jerr := json.Unmarshal(raw, &parsed); jerr != nil {
+		return nil, fmt.Errorf("%w: parse manifest json: %v", ErrImageCheckInconclusive, jerr)
+	}
+	seen := map[string]struct{}{}
+	var archs []string
+	add := func(a string) {
+		a = strings.TrimSpace(a)
+		if a == "" || a == "unknown" {
+			return
+		}
+		if _, ok := seen[a]; !ok {
+			seen[a] = struct{}{}
+			archs = append(archs, a)
+		}
+	}
+	for _, m := range parsed.Manifests {
+		add(m.Platform.Architecture)
+	}
+	if len(archs) == 0 {
+		add(parsed.Architecture)
+	}
+	sort.Strings(archs)
+	return archs, nil
 }
 
 // imageOutputIsConfirmedMiss reports whether `docker manifest inspect`'s

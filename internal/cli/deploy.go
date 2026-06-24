@@ -34,6 +34,7 @@ func newDeployCmd() *cobra.Command {
 		targets       []string
 		skipFrontend  bool
 		skipPreflight bool
+		noDigest      bool
 	)
 
 	cmd := &cobra.Command{
@@ -135,6 +136,7 @@ Examples:
 				targets:       targets,
 				skipFrontend:  skipFrontend,
 				skipPreflight: skipPreflight,
+				noDigest:      noDigest,
 			})
 		},
 	}
@@ -150,6 +152,7 @@ Examples:
 	cmd.Flags().StringArrayVar(&targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
 	cmd.Flags().BoolVar(&skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
 	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
+	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
 
 	return cmd
 }
@@ -275,10 +278,26 @@ type deployOptions struct {
 	// when there's nothing to check. Bypass is the escape hatch when you
 	// knowingly accept the risk. No effect on rollback.
 	skipPreflight bool
+
+	// noDigest, when true, forces deploy to reference the mutable :tag even
+	// when the build state captured an immutable content-addressed digest.
+	// By default (false) forge prefers the digest — pinning the manifest to
+	// <image>@sha256:... so a re-tagged / node-cached layer can never ship
+	// (the structural fix for the mutable-tag/exec-format incident). The
+	// escape hatch exists for the rare case a tag reference is wanted (e.g.
+	// debugging a registry that mishandles digest pulls). No effect when no
+	// digest was captured — the tag is used either way.
+	noDigest bool
 }
 
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
+	// imageTag is the reference the KCL manifest render pins — a digest
+	// (`@sha256:...`) when one was captured and preferred, else the mutable
+	// tag. plainTag is always the mutable tag, used by External/Compose for
+	// their ${TAG} substitution (a digest would break `${IMAGE}:${TAG}`).
+	// For every tag-only deploy the two are identical.
 	imageTag := opts.imageTag
+	plainTag := opts.imageTag
 	dryRun := opts.dryRun
 	namespace := opts.namespace
 	targetArchFlag := opts.targetArch
@@ -316,11 +335,12 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// without stubbing the whole deploy pipeline. Rollback never
 		// consults this chain — it reads the per-service state file
 		// inside dispatchDeployGroups instead.
-		tag, src, terr := resolveDeployImageTag(ctx, projectDir, envName, imageTag)
+		ref, pt, src, terr := resolveDeployImageTag(ctx, projectDir, envName, imageTag, opts.noDigest)
 		if terr != nil {
 			return terr
 		}
-		imageTag = tag
+		imageTag = ref
+		plainTag = pt
 		tagSource = src
 	}
 
@@ -482,10 +502,14 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// path uses ImageTag implicitly via cluster.Apply, but the
 	// external/compose providers read group.ImageTag for ${TAG}
 	// substitution — without this, External deploy_cmd sees an empty
-	// tag and downstream scripts (vultr-deploy.sh) error out.
+	// tag and downstream scripts (vultr-deploy.sh) error out. Use the
+	// PLAIN tag here, never the digest form: a `${IMAGE}:${TAG}` with
+	// `${TAG}=@sha256:...` would render a broken `image:@sha256:...`
+	// ref. (The K8sCluster manifest render gets the digest via imageTag
+	// below; group.ImageTag is the External/Compose ${TAG} only.)
 	for i := range groups {
 		if groups[i].ImageTag == "" {
-			groups[i].ImageTag = imageTag
+			groups[i].ImageTag = plainTag
 		}
 	}
 
@@ -536,14 +560,25 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// registry the checker can't reach). Runs under --dry-run too (pure
 	// read-only check). --skip-preflight bypasses it.
 	if hasK8sServices && !rollback && !opts.skipPreflight {
+		// Resolve the target cluster's declared node arch for the preflight
+		// arch gate from the env's KCL deploy.Cluster.platform — the explicit
+		// per-env SSOT the cloud envs set to "amd64". We deliberately do NOT
+		// fall back to forge.yaml deploy.target_arch here: that field carries
+		// an implicit "amd64" default, and seeding the gate from a value the
+		// author never declared would risk false-failing an env that simply
+		// hasn't opted into platform pinning yet (the WARN-don't-block
+		// contract). Empty (no platform declared — e.g. the local e2e env)
+		// leaves the gate inert.
+		targetArch := kclFirstClusterPlatform(entities)
 		if err := runDeployPreflight(ctx, deployPreflightInput{
-			mainK:     mainK,
-			imageTag:  imageTag,
-			namespace: namespace,
-			env:       envName,
-			envCfgKV:  envCfgKV,
-			deployCtx: deployContext,
-			targets:   targets,
+			mainK:      mainK,
+			imageTag:   imageTag,
+			namespace:  namespace,
+			env:        envName,
+			envCfgKV:   envCfgKV,
+			deployCtx:  deployContext,
+			targets:    targets,
+			targetArch: targetArch,
 		}); err != nil {
 			return err
 		}
@@ -932,6 +967,16 @@ func hostDeploymentSkipSetFromKCL(cfg *config.ProjectConfig, e *KCLEntities) map
 //     --always --dirty`). The standalone-deploy path: no preceding
 //     build, no override — recompute the tag the way build would.
 //
+// DIGEST PINNING: when the build-state record carries a content-addressed
+// Digest (captured by `forge build --push`), the returned reference is the
+// IMMUTABLE digest form `@sha256:...` instead of the mutable :tag — unless
+// noDigest is set. The KCL `_image_ref` seam recognises an `@`-prefixed
+// image_tag and pins `<image>@sha256:...`, dropping the env tag. A digest
+// can't go stale and can't be re-pointed, so the node-cache / re-tag-didn't-
+// take failure class is structurally impossible. Fallback is automatic: no
+// captured digest (third-party images, non-pushed builds, the local-registry
+// e2e path) → the tag is used exactly as before.
+//
 // Errors:
 //
 //   - flagOverride bypasses every error path (the user told us
@@ -941,9 +986,15 @@ func hostDeploymentSkipSetFromKCL(cfg *config.ProjectConfig, e *KCLEntities) map
 //   - A missing state file is fine; the function falls through to git.
 //   - A git-derivation failure on the fallback path is wrapped with a
 //     "pass --tag to override" hint so users have an escape hatch.
-func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverride string) (string, string, error) {
+// Return values: (imageRef, plainTag, source, err). imageRef is what the
+// KCL manifest render pins — the digest form `@sha256:...` when a digest is
+// preferred, else the plain tag. plainTag is ALWAYS the mutable tag, used by
+// the External/Compose providers for their `${TAG}` substitution (a digest
+// there would break `${IMAGE}:${TAG}`). For every tag-only path the two are
+// identical.
+func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverride string, noDigest bool) (imageRef, plainTag, source string, err error) {
 	if flagOverride != "" {
-		return flagOverride, "explicit --tag flag", nil
+		return flagOverride, flagOverride, "explicit --tag flag", nil
 	}
 	// Per-env record first, then the env-agnostic "default" written by a
 	// plain `forge build` (no --env). This is what makes
@@ -952,7 +1003,7 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 	for _, key := range buildStateLookupEnvs(envName) {
 		st, berr := ReadBuildState(projectDir, key)
 		if berr != nil {
-			return "", "", fmt.Errorf("read build state: %w (delete .forge/state/build-%s.json to recompute from git)", berr, key)
+			return "", "", "", fmt.Errorf("read build state: %w (delete .forge/state/build-%s.json to recompute from git)", berr, key)
 		}
 		if st == nil {
 			continue
@@ -967,17 +1018,31 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 		// the build can be "behind," and warnIfNonReproducible already
 		// flags the dirty build.
 		if serr := checkBuildStateFreshness(ctx, projectDir, st); serr != nil {
-			return "", "", serr
+			return "", "", "", serr
 		}
 		warnIfNonReproducible(st)
+		// Prefer the immutable digest over the mutable tag when one was
+		// captured (and the operator hasn't opted out). The `@sha256:...`
+		// form flows into the env-wide image_tag slot; the KCL _image_ref
+		// seam pins `<image>@<digest>` and drops the env tag. This is the
+		// structural fix for the node-cache / re-tag-didn't-take incident —
+		// a digest reference can't be re-pointed. Third-party pinned images
+		// (litellm/nats/postgres) already carry their own tag, so the seam
+		// ignores this value for them; only forge-built images get pinned.
+		// plainTag stays the mutable tag for the External/Compose ${TAG}
+		// path (a digest there would break `${IMAGE}:${TAG}`).
+		if st.Digest != "" && !noDigest {
+			src := fmt.Sprintf(".forge/state/build-%s.json (built %s, digest %s)", key, st.PushedAt, st.Digest)
+			return "@" + st.Digest, st.Tag, src, nil
+		}
 		src := fmt.Sprintf(".forge/state/build-%s.json (built %s)", key, st.PushedAt)
-		return st.Tag, src, nil
+		return st.Tag, st.Tag, src, nil
 	}
 	t, terr := resolveImageTag(ctx, envName)
 	if terr != nil {
-		return "", "", fmt.Errorf("failed to determine image tag: %w\nUse --tag to specify one manually", terr)
+		return "", "", "", fmt.Errorf("failed to determine image tag: %w\nUse --tag to specify one manually", terr)
 	}
-	return t, "git describe --tags --always --dirty", nil
+	return t, t, "git describe --tags --always --dirty", nil
 }
 
 // buildStateLookupEnvs is the ordered fallback of build-state keys to try
@@ -1312,6 +1377,13 @@ type deployPreflightInput struct {
 	envCfgKV  map[string]string
 	deployCtx string
 	targets   []string
+	// targetArch is the DECLARED node architecture of the target cluster
+	// (GOARCH form, from the env's KCL deploy.Cluster.platform). Threads into
+	// PreflightOpts.TargetArch to drive the arch gate. EMPTY when the env
+	// hasn't declared a platform — the gate is inert (WARN-don't-block), so
+	// envs that predate the platform field (incl. local e2e) aren't
+	// false-failed.
+	targetArch string
 }
 
 // runDeployPreflight renders the env's manifest bundle and runs the
@@ -1348,6 +1420,8 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		Manifests:    manifests,
 		Namespace:    in.namespace,
 		Images:       cluster.DockerImageChecker{},
+		ImageArch:    cluster.DockerImageArchChecker{},
+		TargetArch:   in.targetArch,
 		SkipImageRef: cluster.LocalImageRef,
 	}
 	// Secret + ConfigMap checks only against a REMOTE cluster (see

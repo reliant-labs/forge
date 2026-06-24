@@ -156,14 +156,25 @@ _image_has_tag_or_digest = lambda image: str -> bool {
 #      prefixing the registry when one is set and the image has no
 #      registry host of its own. The caller-supplied tag is ignored:
 #      an explicitly-pinned image wins.
-#   2. Otherwise append `:image_tag` (the per-service pin or the
+#   2. Else, if the caller-supplied `image_tag` is a DIGEST (it starts
+#      with `@`, e.g. `@sha256:abc…`), append it directly with NO `:`
+#      separator → `<registry>/<image>@sha256:…`. This is the immutable,
+#      content-addressed deploy reference `forge deploy` emits when the
+#      build state captured a pushed digest: a digest can't go stale and
+#      can't be re-pointed, so the node-cache / re-tag-didn't-take class
+#      of bug is impossible. The `@`-prefix is the unambiguous signal —
+#      a real tag never starts with `@`.
+#   3. Otherwise append `:image_tag` (the per-service pin or the
 #      env-wide tag, resolved by the caller).
 _image_ref = lambda image: str, image_registry: str, image_tag: str -> str {
     _pinned = _image_has_tag_or_digest(image)
+    _digest = image_tag.startswith("@")
     "${image_registry}/${image}" if (_pinned and image_registry) \
         else (image if _pinned \
+        else ("${image_registry}/${image}${image_tag}" if (_digest and image_registry) \
+        else ("${image}${image_tag}" if _digest \
         else ("${image_registry}/${image}:${image_tag}" if image_registry \
-        else "${image}:${image_tag}"))
+        else "${image}:${image_tag}"))))
 }
 
 # Resolve the tag to stamp onto an entity's image: the entity's pinned

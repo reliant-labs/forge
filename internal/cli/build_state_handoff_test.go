@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -33,7 +34,7 @@ func TestResolveDeployImageTag_DefaultFallback(t *testing.T) {
 		t.Fatalf("write default state: %v", err)
 	}
 
-	tag, src, err := resolveDeployImageTag(context.Background(), dir, "prod", "")
+	tag, _, src, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
 	if err != nil {
 		t.Fatalf("resolveDeployImageTag: %v", err)
 	}
@@ -55,7 +56,7 @@ func TestResolveDeployImageTag_EnvWinsOverDefault(t *testing.T) {
 	if err := WriteBuildState(dir, "prod", BuildState{Tag: "from-prod"}); err != nil {
 		t.Fatalf("write prod: %v", err)
 	}
-	tag, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "")
+	tag, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestResolveDeployImageTag_EnvWinsOverDefault(t *testing.T) {
 func TestResolveDeployImageTag_FlagOverridesAll(t *testing.T) {
 	dir := t.TempDir()
 	_ = WriteBuildState(dir, "prod", BuildState{Tag: "from-state"})
-	tag, src, err := resolveDeployImageTag(context.Background(), dir, "prod", "explicit")
+	tag, _, src, err := resolveDeployImageTag(context.Background(), dir, "prod", "explicit", false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -77,6 +78,70 @@ func TestResolveDeployImageTag_FlagOverridesAll(t *testing.T) {
 	}
 	if src != "explicit --tag flag" {
 		t.Fatalf("src = %q, want explicit flag", src)
+	}
+}
+
+// TestResolveDeployImageTag_PrefersDigest proves Step 2 of the artifact
+// pipeline: when the build state captured a content-addressed digest, deploy
+// pins the IMMUTABLE `@sha256:...` reference (imageRef) instead of the mutable
+// tag — while plainTag stays the tag for the External/Compose ${TAG} path.
+func TestResolveDeployImageTag_PrefersDigest(t *testing.T) {
+	dir := t.TempDir()
+	digest := "sha256:" + strings.Repeat("a", 64)
+	if err := WriteBuildState(dir, "prod", BuildState{
+		Tag: "v1.4.0", Image: "control-plane", Digest: digest,
+	}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	ref, plain, src, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if ref != "@"+digest {
+		t.Errorf("imageRef = %q, want @%s (digest form)", ref, digest)
+	}
+	if plain != "v1.4.0" {
+		t.Errorf("plainTag = %q, want v1.4.0 (the External/Compose ${TAG})", plain)
+	}
+	if !strings.Contains(src, digest) {
+		t.Errorf("source should mention the digest, got %q", src)
+	}
+}
+
+// TestResolveDeployImageTag_FallsBackToTagWhenNoDigest proves the safe
+// fallback: a build state with NO digest (third-party images, non-pushed
+// builds, the local-registry e2e path) keeps deploying by the tag, unchanged.
+func TestResolveDeployImageTag_FallsBackToTagWhenNoDigest(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteBuildState(dir, "prod", BuildState{Tag: "v1.4.0", Image: "app"}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	ref, plain, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", false)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if ref != "v1.4.0" || plain != "v1.4.0" {
+		t.Errorf("imageRef=%q plainTag=%q, want both v1.4.0 (tag fallback)", ref, plain)
+	}
+}
+
+// TestResolveDeployImageTag_NoDigestFlagForcesTag proves the --no-digest
+// escape hatch: even with a captured digest, the operator can opt back to the
+// mutable tag.
+func TestResolveDeployImageTag_NoDigestFlagForcesTag(t *testing.T) {
+	dir := t.TempDir()
+	digest := "sha256:" + strings.Repeat("b", 64)
+	if err := WriteBuildState(dir, "prod", BuildState{
+		Tag: "v1.4.0", Image: "app", Digest: digest,
+	}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	ref, _, _, err := resolveDeployImageTag(context.Background(), dir, "prod", "", true)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if ref != "v1.4.0" {
+		t.Errorf("imageRef = %q, want v1.4.0 (--no-digest forces the tag)", ref)
 	}
 }
 

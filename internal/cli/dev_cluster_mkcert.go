@@ -215,7 +215,7 @@ func provisionMkcertSecrets(ctx context.Context, projectDir string) error {
 		if err := ensureNamespace(ctx, spec.Namespace); err != nil {
 			return err
 		}
-		if err := kubectlApplyBytes(ctx, secretYAML); err != nil {
+		if err := kubectlApplyBytes(ctx, "", secretYAML); err != nil {
 			return fmt.Errorf("apply mkcert Secret %s: %w", spec.SecretName, err)
 		}
 	}
@@ -251,5 +251,5 @@ func ensureNamespace(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("render namespace manifest: %w", err)
 	}
-	return kubectlApplyBytes(ctx, out)
+	return kubectlApplyBytes(ctx, "", out)
 }

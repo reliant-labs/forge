@@ -52,6 +52,12 @@ Integration tests require a running Postgres instance via docker-compose. If you
 forge up --env=dev    # starts the full stack including postgres
 ```
 
+## Harness primitives: don't hand-roll the DB setup
+
+`pkg/testkit` ships the harness pieces an integration test needs — a migrated test DB, authed contexts, claims options — and `pkg/tdd` exposes table-driven entry points on top (`tdd.SetupMockDB`, `app.NewMigratedTestDB`). Reach for those before hand-rolling connection + migration boilerplate. See the `testing` and `testing/patterns` skills for the cheat sheet.
+
+Mock discipline at this tier: the subject and its real internal collaborators (including the DB) stay real — that's the whole point of integration. Mock only third-party boundaries you don't own.
+
 ## Transaction-Per-Test Isolation
 
 Each test runs inside a database transaction that is rolled back in cleanup. This guarantees complete state isolation between tests:

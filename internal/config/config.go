@@ -132,6 +132,12 @@ type ProjectConfig struct {
 	// silently ignored — version stamping moves to a KCL GoBuild.ldflags
 	// `-X` entry.
 	Deploy DeployConfig `yaml:"deploy,omitempty"`
+	// Test holds per-env test recipes for `forge test --env=<env>` — the
+	// port-forward + env-var + test-command block that turns a multi-cluster
+	// e2e run into the two-command loop `forge up --env=e2e && forge test
+	// --env=e2e`. See [TestConfig]. Absent when a project drives tests by
+	// hand; a present block is read verbatim (no codegen).
+	Test      TestConfig      `yaml:"test,omitempty"`
 	Docker    DockerConfig    `yaml:"docker,omitempty"`
 	K8s       K8sConfig       `yaml:"k8s,omitempty"`
 	Lint      LintConfig      `yaml:"lint,omitempty"`
@@ -751,6 +757,63 @@ type DeployEnvConfig struct {
 type DeployConcurrency struct {
 	Enabled          bool `yaml:"enabled"`                      // default true
 	CancelInProgress bool `yaml:"cancel_in_progress,omitempty"` // default false
+}
+
+// TestConfig is the `test:` section of forge.yaml: a map from environment
+// name (the `--env` selector value, e.g. "e2e") to its test recipe. It backs
+// `forge test --env=<env>`, the second half of the two-command e2e loop
+// (`forge up --env=<env>` then `forge test --env=<env>`). The key is matched
+// exactly against `--env`; no env name is special-cased. Each entry is a
+// fully-declared, self-contained recipe for reaching an env's in-cluster
+// services from the test process and running its suite:
+//
+//   - `forwards` lists the in-cluster services to kubectl-port-forward to a
+//     local port before the suite runs (and tear down after). Each forward
+//     names its own kube-context, so a multi-cluster env (e.g. control-plane
+//   - cp-daemon) forwards each service against the right cluster.
+//   - `env` is a literal env-var map exported into the test process.
+//   - `command` is the test command run with both the forward URLs (per
+//     forward `url_env`) and `env` set.
+//
+// There is intentionally NO codegen, no schema derivation, and no in-process
+// harness: the block is read verbatim and executed. A project that wires this
+// up shrinks its Taskfile `e2e` target to `forge up --env=e2e && forge test
+// --env=e2e`.
+type TestConfig map[string]TestEnvConfig
+
+// TestEnvConfig is one environment's test recipe under `test:`.
+type TestEnvConfig struct {
+	// Command is the test command (argv form), run after the forwards bind.
+	// Streamed to stdout/stderr; its exit code is propagated. Required.
+	Command []string `yaml:"command"`
+	// Env is a literal env-var map exported into the test command's
+	// environment, on top of the per-forward url_env entries.
+	Env map[string]string `yaml:"env,omitempty"`
+	// Forwards lists the in-cluster services to port-forward before the
+	// command runs and tear down on exit (success, failure, or signal).
+	Forwards []TestForward `yaml:"forwards,omitempty"`
+}
+
+// TestForward declares one `kubectl port-forward` for a test env: which
+// in-cluster service to forward, in which cluster (Context) and Namespace,
+// from RemotePort to LocalPort, exporting http://127.0.0.1:<LocalPort> as
+// URLEnv into the test command.
+type TestForward struct {
+	// Service is the in-cluster Service name (svc/<Service>). Required.
+	Service string `yaml:"service"`
+	// Context is the kube-context the Service lives in (e.g.
+	// "k3d-control-plane"). Required for multi-cluster envs; when empty the
+	// current kube-context is used.
+	Context string `yaml:"context,omitempty"`
+	// Namespace is the Service's namespace. Required.
+	Namespace string `yaml:"namespace"`
+	// RemotePort is the Service port to forward from. Required.
+	RemotePort int `yaml:"remote_port"`
+	// LocalPort is the local port the forward binds. Required.
+	LocalPort int `yaml:"local_port"`
+	// URLEnv, when set, is the env-var name exported into the test command
+	// as "http://127.0.0.1:<LocalPort>".
+	URLEnv string `yaml:"url_env,omitempty"`
 }
 
 // EffectiveRegistry returns the deploy registry, defaulting to "ghcr".

@@ -24,13 +24,22 @@ import (
 // because deployment placement is a per-env decision that lives in the
 // KCL layer, not on services[] in the project config.
 type KCLEntities struct {
-	Services   []ServiceEntity   `json:"services,omitempty"`
-	Operators  []OperatorEntity  `json:"operators,omitempty"`
-	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
-	CronJobs   []CronJobEntity   `json:"cronjobs,omitempty"`
-	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
-	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
-	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
+	// Clusters are the k3d clusters forge ensures exist at the head of
+	// `forge up` before any workload deploys. Empty for an env that
+	// declares no clusters (today's no-ensure behavior). Ownership is
+	// implicit via Cluster.Network / Cluster.RegistryMirror — there is
+	// no "primary" cluster.
+	Clusters []ClusterEntity `json:"clusters,omitempty"`
+	// KubeconfigSecrets are cross-cluster kubeconfigs forge mints fresh
+	// each up (at the cluster→deploy boundary) and applies as k8s Secrets.
+	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
+	Services          []ServiceEntity          `json:"services,omitempty"`
+	Operators         []OperatorEntity         `json:"operators,omitempty"`
+	Frontends         []FrontendEntity         `json:"frontends,omitempty"`
+	CronJobs          []CronJobEntity          `json:"cronjobs,omitempty"`
+	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
+	HTTPRoutes        []HTTPRouteEntity        `json:"http_routes,omitempty"`
+	GRPCRoutes        []GRPCRouteEntity        `json:"grpc_routes,omitempty"`
 	// SecretProvider is the bundle-level secret provider declaration
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider — preserving today's no-provider behavior.
@@ -51,11 +60,83 @@ type KCLEntities struct {
 }
 
 // SecretProviderEntity is the parsed bundle-level secret provider
-// declaration. Type is "dotenv" | "external". Path is the dotenv path
-// (dotenv only), resolved relative to the project root by the CLI.
+// declaration. Type is "dotenv" | "external" | "rendered". Path is the
+// dotenv path (dotenv only), resolved relative to the project root by the
+// CLI. Secrets is the declared Secret set (rendered only).
 type SecretProviderEntity struct {
 	Type string `json:"type"`
 	Path string `json:"path,omitempty"`
+	// Secrets is populated for Type=="rendered": the explicit Secret
+	// declarations (name + per-key source) forge renders + applies per
+	// cluster. Empty for dotenv/external.
+	Secrets []RenderedSecretEntity `json:"secrets,omitempty"`
+}
+
+// RenderedSecretEntity mirrors the kcl/schema.k RenderedSecret — one k8s
+// Secret forge renders from declared sources. Keys maps each in-Secret
+// key to its value source.
+type RenderedSecretEntity struct {
+	Name string                             `json:"name"`
+	Keys map[string]RenderedSecretKeyEntity `json:"keys"`
+}
+
+// RenderedSecretKeyEntity mirrors the kcl/schema.k RenderedSecretKey.
+// From is "dotenv" (read .env.<env> at Key) or "literal" (inline Value,
+// dev/e2e only). A "dotenv" key carries no Value; a "literal" key carries
+// no dotenv Key.
+type RenderedSecretKeyEntity struct {
+	From  string `json:"from"`
+	Key   string `json:"key,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
+// ClusterEntity mirrors the kcl/schema.k Cluster — a k3d cluster forge
+// ensures exists before deploying. The reconcile (clusterPhase) reads
+// these and runs `k3d cluster create` for any that are absent.
+//
+// Ownership is a REFERENCE: a secondary cluster names its `owner`
+// Cluster; the KCL render layer DERIVES the joined network
+// (`k3d-<owner.name>`, projected into Network) and the registry-inherit
+// behavior (projected into RegistryInherit=true). An owner cluster
+// projects an empty Network and RegistryInherit=false. There is no
+// "primary" field and no most-X heuristic.
+type ClusterEntity struct {
+	Name string `json:"name"`
+	// Context is the derived kubectl context (`k3d-<name>`), projected so
+	// the reconcile / kubeconfig mint can target the cluster without
+	// re-deriving the prefix.
+	Context string `json:"context,omitempty"`
+	Config  string `json:"config,omitempty"`
+	// Network is the derived docker network this cluster joins —
+	// `k3d-<owner.name>` for a secondary, empty for an owner cluster.
+	Network string `json:"network,omitempty"`
+	// RegistryInherit is the derived registry-inherit flag — true when an
+	// `owner` is set (forge mirrors the owner's registry onto this
+	// cluster's node), false for an owner cluster.
+	RegistryInherit bool `json:"registry_inherit,omitempty"`
+	Servers         int  `json:"servers,omitempty"`
+	Agents          int  `json:"agents,omitempty"`
+	APIPort         int  `json:"api_port,omitempty"`
+	// Ingress, when true, installs the Gateway API stack (pinned Gateway-API
+	// CRDs + vendored Traefik controller + the `traefik` GatewayClass) into
+	// this cluster after it's ensured. A fresh k3d cluster ships none of
+	// these; an env whose Gateway/HTTPRoute/GRPCRoute resources land on this
+	// cluster needs it on. Idempotent (kubectl apply + a CRD cache).
+	Ingress bool `json:"ingress,omitempty"`
+}
+
+// KubeconfigSecretEntity mirrors the kcl/schema.k KubeconfigSecret — a
+// cross-cluster kubeconfig forge mints FRESH each up and stores as a k8s
+// Secret. The mint step (mintKubeconfigSecrets) resolves the target's
+// endpoint at runtime and never persists the IP.
+type KubeconfigSecretEntity struct {
+	Name          string `json:"name"`
+	InCluster     string `json:"in_cluster"`
+	TargetCluster string `json:"target_cluster"`
+	ContextName   string `json:"context_name"`
+	Key           string `json:"key,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
+	Reachability  string `json:"reachability,omitempty"`
 }
 
 // GatewayEntity mirrors the kcl/schema.k Gateway. Listeners are inlined.
@@ -150,9 +231,16 @@ type GRPCRouteEntity struct {
 //     environment AND added to the substitution map (built-ins win
 //     on conflict).
 type ServiceEntity struct {
-	Name   string             `json:"name"`
-	Image  string             `json:"image,omitempty"`
-	Deploy DeployConfigEntity `json:"deploy"`
+	Name string `json:"name"`
+	// Image is the (registry-less) image name. ImageTag, when set, is the
+	// per-service tag PIN the KCL render layer stamps instead of the
+	// env-wide tag — surfaced here so audit / parity consumers can see the
+	// pin rather than inferring an untagged image. The rendered image ref
+	// (registry + tag resolution) is built KCL-side in _image_ref; this is
+	// the declaration, not the resolved ref.
+	Image    string             `json:"image,omitempty"`
+	ImageTag string             `json:"image_tag,omitempty"`
+	Deploy   DeployConfigEntity `json:"deploy"`
 	// Build is the polymorphic build declaration — exactly one of
 	// Go / Docker / Shell is populated according to Build.Type. Mirrors
 	// Deploy. When the KCL `build` block is absent (a hand-authored
@@ -471,13 +559,15 @@ type KCLEnvVar struct {
 // -o json`. We unmarshal into this first, then dispatch each service's
 // deploy block by type to populate the typed [KCLEntities].
 type kclRenderRaw struct {
-	Services   []kclServiceRaw   `json:"services,omitempty"`
-	Operators  []OperatorEntity  `json:"operators,omitempty"`
-	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
-	CronJobs   []CronJobEntity   `json:"cronjobs,omitempty"`
-	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
-	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
-	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
+	Clusters          []ClusterEntity          `json:"clusters,omitempty"`
+	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
+	Services          []kclServiceRaw          `json:"services,omitempty"`
+	Operators         []OperatorEntity         `json:"operators,omitempty"`
+	Frontends         []FrontendEntity         `json:"frontends,omitempty"`
+	CronJobs          []CronJobEntity          `json:"cronjobs,omitempty"`
+	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
+	HTTPRoutes        []HTTPRouteEntity        `json:"http_routes,omitempty"`
+	GRPCRoutes        []GRPCRouteEntity        `json:"grpc_routes,omitempty"`
 	// SecretProvider rides alongside services in the entity output; nil
 	// when the bundle declares no provider (KCL omits the key entirely).
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
@@ -500,6 +590,7 @@ type rawManifest struct {
 type kclServiceRaw struct {
 	Name     string            `json:"name"`
 	Image    string            `json:"image,omitempty"`
+	ImageTag string            `json:"image_tag,omitempty"`
 	Deploy   json.RawMessage   `json:"deploy"`
 	Build    json.RawMessage   `json:"build"`
 	EnvVars  []KCLEnvVar       `json:"env_vars,omitempty"`
@@ -592,6 +683,8 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		return nil, fmt.Errorf("parse kcl json: %w", err)
 	}
 	out := &KCLEntities{
+		Clusters:          raw.Clusters,
+		KubeconfigSecrets: raw.KubeconfigSecrets,
 		Operators:         raw.Operators,
 		Frontends:         raw.Frontends,
 		CronJobs:          raw.CronJobs,
@@ -613,6 +706,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		out.Services = append(out.Services, ServiceEntity{
 			Name:     s.Name,
 			Image:    s.Image,
+			ImageTag: s.ImageTag,
 			Deploy:   deploy,
 			Build:    build,
 			EnvVars:  s.EnvVars,

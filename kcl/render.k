@@ -37,6 +37,7 @@ import .lib.services as svc_lib
 import .lib.rbac as rbac_lib
 import .lib.netpol as netpol_lib
 import .lib.gateway as gw_lib
+import .lib.jwks as jwks_lib
 
 # ---------------------------------------------------------------------------
 # JSON contract render — typed Bundle -> stable dict shape.
@@ -115,6 +116,7 @@ _render_k8s_cluster = lambda d: K8sCluster -> any {
         "env_vars": [_render_env_var(e) for e in d.env_vars]
         "platform": d.platform if d.platform else None
         "ports": d.ports
+        "app_protocols": d.app_protocols if d.app_protocols else None
         "cluster_rbac": _render_cluster_rbac(d.cluster_rbac) if d.cluster_rbac else None
         "image_pull_secrets": d.image_pull_secrets if d.image_pull_secrets else None
     }
@@ -162,11 +164,15 @@ _render_deploy_populated = lambda d: any -> any {
         (_render_compose(d) if d.type == "compose" else _render_build_only(d))))
 }
 
-# Top-level deploy dispatcher. An unset deploy projects as null
-# (consumer should treat that as `BuildOnly { build_variants = [] }`
-# equivalent — just build).
+# Top-level deploy dispatcher. `deploy = None` (or an omitted deploy) is
+# the EXPLICIT build-only mode: project a `{type: "build-only"}` block so
+# the Go consumer dispatches it exactly like a `forge.BuildOnly` deploy —
+# the service is in the build set (its `build` runs + pushes its image)
+# and out of the deploy set (no Deployment/Service/manifests). This is
+# self-describing (the consumer never has to special-case a null deploy),
+# and render_manifests still skips it (it isn't `type == "cluster"`).
 _render_deploy = lambda d: any -> any {
-    _render_deploy_populated(d) if d else None
+    _render_deploy_populated(d) if d else {"type": "build-only", "build_variants": []}
 }
 
 # build_of coerces a plain build dict (the shape components_gen.json
@@ -274,6 +280,7 @@ _render_service = lambda s: Service -> any {
     {
         "name": s.name
         "image": s.image if s.image else None
+        "image_tag": s.image_tag if s.image_tag else None
         "command": s.command
         "env_vars": [_render_env_var(e) for e in s.env_vars]
         "deploy": _render_deploy(s.deploy)
@@ -282,6 +289,10 @@ _render_service = lambda s: Service -> any {
         "build_cwd": s.build_cwd if s.build_cwd else None
         "build_env": s.build_env if s.build_env else {}
         "namespaced_rbac": s.namespaced_rbac if s.namespaced_rbac else None
+        # Owned raw manifests project into the JSON contract too (null when
+        # empty) so a consumer that reads `output` sees the same stable
+        # key shape; the cluster manifest stream stamps + routes them.
+        "manifests": s.manifests if s.manifests else None
     }
 }
 
@@ -289,6 +300,7 @@ _render_operator = lambda o: Operator -> any {
     {
         "name": o.name
         "image": o.image
+        "image_tag": o.image_tag if o.image_tag else None
         "replicas": o.replicas
         "platform": o.platform if o.platform else None
         "crds": o.crds
@@ -416,6 +428,7 @@ _render_cronjob = lambda c: CronJob -> any {
         "name": c.name
         "schedule": c.schedule if c.schedule else None
         "image": c.image
+        "image_tag": c.image_tag if c.image_tag else None
         "platform": c.platform if c.platform else None
         "command": c.command
         "env_vars": [_render_env_var(e) for e in c.env_vars]
@@ -435,9 +448,72 @@ _render_runtime_class = lambda rc: RuntimeClass -> any {
     }
 }
 
+# Render a Cluster to its stable dict form. Optional fields project as
+# null (not omitted) so the Go consumer (ClusterEntity) sees stable
+# keys; servers/agents always carry their (defaulted) int.
+#
+# Ownership is the `owner` reference; the render layer projects the
+# DERIVED `network` (k3d-<owner.name>, null for an owner cluster) and
+# `registry_inherit` (true for a secondary) — the two behaviors the
+# stringly `network` + `registry_mirror = "inherit"` pair used to carry.
+# `context` (k3d-<name>) is projected too so a Go-side consumer can read
+# the kubectl context without re-deriving the prefix.
+_render_cluster = lambda c: Cluster -> any {
+    {
+        "name": c.name
+        "context": c.context
+        "config": c.config if c.config else None
+        "network": c.network if c.network else None
+        "registry_inherit": c.registry_inherit
+        "servers": c.servers
+        "agents": c.agents
+        "api_port": c.api_port if c.api_port else None
+        "ingress": c.ingress if c.ingress else None
+    }
+}
+
+# Render a KubeconfigSecret to its stable dict form. The CLI mints the
+# kubeconfig + applies the Secret Go-side (the IP is resolved fresh, never
+# in KCL); this projection only carries the DECLARATION. Never appears in
+# render_manifests — the Secret has a runtime-minted value, not a static one.
+_render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
+    {
+        "name": k.name
+        "in_cluster": k.in_cluster
+        "target_cluster": k.target_cluster
+        "context_name": k.context_name
+        "key": k.key
+        "namespace": k.namespace if k.namespace else None
+        "reachability": k.reachability
+    }
+}
+
+# test_jwks_manifests — top-level re-export of the lib builder so user
+# code calls `forge.test_jwks_manifests(jwks, namespace, public_jwk)`
+# directly in a Bundle's additional_manifests or a service's owned
+# manifests. Emits ConfigMap + static-file Deployment + Service serving
+# `/.well-known/jwks.json`.
+#
+# `public_jwk` is the derived PUBLIC JWK. The caller derives it from the
+# ES256 private PEM (read from .env.<env>) via the plugin — the same
+# pattern as resolve_port, so the plugin is imported in the USER's file
+# and the forge module renders fine under a plugin-less `kcl run`:
+#
+#     import forge
+#     import kcl_plugin.forge as plugin
+#     _jwks = forge.TestJWKS { name = "auth-jwks", kid = "k1",
+#                              private_key = forge.DotenvRef { key = "JWKS_PEM" } }
+#     _jwk  = plugin.derive_jwk(option("jwks_pem"), _jwks.kid, _jwks.alg)
+#     manifests = forge.test_jwks_manifests(_jwks, "auth", _jwk)
+test_jwks_manifests = lambda j: TestJWKS, namespace: str, public_jwk: any -> [any] {
+    jwks_lib.test_jwks_manifests(j, namespace, public_jwk)
+}
+
 # Project a Bundle to the stable JSON contract. Consumed by forge CLI.
 render = lambda bundle: Bundle -> any {
     {
+        "clusters": [_render_cluster(c) for c in bundle.clusters]
+        "kubeconfig_secrets": [_render_kubeconfig_secret(k) for k in bundle.kubeconfig_secrets]
         "services": [_render_service(s) for s in bundle.services]
         "operators": [_render_operator(o) for o in bundle.operators]
         "frontends": [_render_frontend(f) for f in bundle.frontends]
@@ -593,11 +669,18 @@ _render_config_map_manifest = lambda cm: ConfigMap, env: RenderEnv -> any {
 # `forge deploy <env>` is the right owner.
 render_manifests = lambda bundle: Bundle, env: RenderEnv -> [any] {
     _cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"]
+    # Only a service with an `image` renders a workload (Deployment +
+    # Service + RBAC). An image-less cluster service is an INFRA service:
+    # it contributes ONLY its owned `manifests` (below), no phantom
+    # Deployment. This split is the declared-cluster-only model's no-build
+    # infra-service shape — explicit (no image) rather than inferred.
+    _workload_services = [s for s in _cluster_services if s.image]
     [_render_runtime_class_manifest(rc, env) for rc in bundle.runtime_classes] \
         + [_render_namespace(env)] \
         + [_render_config_map_manifest(cm, env) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
-        + [item for s in _cluster_services for item in _render_cluster_service(s, env)] \
+        + [item for s in _workload_services for item in _render_cluster_service(s, env)] \
+        + [item for s in _cluster_services for item in svc_lib.render_owned_manifests(s)] \
         + [item for o in bundle.operators for item in _render_operator_manifests(o, env)] \
         + [item for c in bundle.cronjobs for item in _render_cronjob_manifests(c, env)] \
         + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, env.cluster.namespace)] \
@@ -620,9 +703,15 @@ render_manifests = lambda bundle: Bundle, env: RenderEnv -> [any] {
 # Namespace + network policies are owned by render_components, so they
 # are deliberately omitted here to avoid duplication.
 render_support = lambda bundle: Bundle, env: RenderEnv -> [any] {
+    # Owned manifests of any cluster services declared on the support
+    # Bundle (the deploy-as-data path's home for image-less infra
+    # services that pin env-level resources to a specific cluster). Stamped
+    # with the owning service's app label so the deploy layer routes them.
+    _support_cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"]
     [_render_runtime_class_manifest(rc, env) for rc in bundle.runtime_classes] \
         + [_render_config_map_manifest(cm, env) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
+        + [item for s in _support_cluster_services for item in svc_lib.render_owned_manifests(s)] \
         + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, env.cluster.namespace)] \
         + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, env.cluster.namespace)] \
         + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, env.cluster.namespace)] \

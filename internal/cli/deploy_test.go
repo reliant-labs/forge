@@ -270,16 +270,23 @@ func TestResolveGroupContext_NoClusterEmpty(t *testing.T) {
 // There is no override parameter to bypass it.
 func TestApplyOptsBuilder_ContextFromDeclaredCluster(t *testing.T) {
 	const declared = "gke_reliant-labs-475814_us-central1_prod"
+	group := k8sGroup(declared, "cp-forge-prod")
 	builder := applyOptsBuilderFromContext(
 		"deploy/kcl/prod/main.k", "v1.2.3", "fallback-ns", "prod",
 		nil, false, false, nil, nil, nil,
+		[]deploytarget.ServiceGroup{group}, nil,
 	)
-	opts := builder(k8sGroup(declared, "cp-forge-prod"))
+	opts := builder(group)
 	if opts.Context != declared {
 		t.Errorf("ApplyOpts.Context should be the declared cluster: want %q, got %q", declared, opts.Context)
 	}
 	if opts.Namespace != "cp-forge-prod" {
 		t.Errorf("ApplyOpts.Namespace = %q, want the group namespace", opts.Namespace)
+	}
+	// Single-cluster env: no second cluster to isolate, so no per-group
+	// manifest scoping — the apply stays byte-identical to the pre-fix path.
+	if opts.ClusterScope != nil {
+		t.Errorf("single-cluster env must not engage multi-cluster scoping; got %+v", opts.ClusterScope)
 	}
 }
 

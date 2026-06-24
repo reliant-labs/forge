@@ -26,6 +26,55 @@ _managed_labels = lambda name: str -> {str: str} {
     }
 }
 
+# Stamp the OWNING service's app.kubernetes.io/name onto an arbitrary raw
+# manifest dict so the deploy layer can route it to that service's declared
+# cluster (declared-cluster-only routing — there is no primary-cluster
+# heuristic). Used by render_owned_manifests for the per-service
+# `Service.manifests` field.
+#
+# The merge is deliberately non-destructive and kind-agnostic: it rebuilds
+# `metadata` from whatever the manifest already carried (preserving name,
+# namespace, annotations, ownerReferences, …) and merges the forge-managed
+# labels UNDER any labels the user already set, so a user label always wins
+# on key conflict. This works for ANY object — namespaced or cluster-scoped
+# (Namespace, CRD, ClusterRole, ClusterIssuer) — because every k8s object
+# has a metadata block and metadata.labels is universally legal.
+#
+# Label precedence (`_managed_labels(name) | _existing_labels`) mirrors how
+# _render_config_map_manifest already merges forge defaults under user
+# labels: the stamp is the DEFAULT owner, an explicit user-set
+# app.kubernetes.io/name (rare) wins and routes the manifest to whatever
+# the user named — explicit intent over the forge default. Re-rendering is
+# idempotent (the stamp equals the existing label on the second pass).
+#
+# KCL v0.11 note: the body instantiates no schema literals — only raw-dict
+# operations (`|`) and member access — so it is legal inside a lambda body.
+_stamp_owner_label = lambda manifest: any, name: str -> any {
+    _existing_meta = manifest.metadata if manifest.metadata else {}
+    _existing_labels = _existing_meta.labels if _existing_meta.labels else {}
+    manifest | {
+        metadata = _existing_meta | {
+            labels = _managed_labels(name) | _existing_labels
+        }
+    }
+}
+
+# Render a service's OWNED raw manifests (the per-service `Service.manifests`
+# field), each stamped with the service's app.kubernetes.io/name so the
+# deploy layer routes them to THIS service's declared cluster. Pure
+# pass-through of the user's manifest dicts + the ownership label.
+#
+# This is the load-bearing mechanism for declared-cluster-only routing:
+#   * a workload service may attach its CRD / extra RBAC here — those land
+#     on the same cluster as the workload;
+#   * an IMAGE-LESS "infra service" (a forge.Service with `manifests` + a
+#     `deploy = K8sCluster{...}` and no image) declares env-level / ownerless
+#     resources (Namespace, gateways, ClusterIssuers, bootstrap) onto a
+#     specific cluster — no global render, no primary heuristic.
+render_owned_manifests = lambda svc: any -> [any] {
+    [_stamp_owner_label(m, svc.name) for m in (svc.manifests if svc.manifests else [])]
+}
+
 # Collapse an EnvVar list to one entry per name, LAST-occurrence-wins.
 #
 # The common authoring pattern is `cfg.APP_ENV + [ ...per-service overrides ]`
@@ -88,9 +137,43 @@ _default_container_security_context = {
     capabilities = {drop = ["ALL"]}
 }
 
+# Does `image` already carry its OWN tag or digest — `name:tag` or
+# `name@sha256:...` — so the env/service tag must NOT be appended?
+#
+# The disambiguation mirrors _pull_policy: a registry-port colon
+# (`localhost:5050/foo`) is BEFORE the last `/`, so a tag colon is the
+# rightmost `:` AFTER the rightmost `/`. A digest is any `@` in the ref.
+_image_has_tag_or_digest = lambda image: str -> bool {
+    _last_slash = image.rfind("/")
+    _tail = image[_last_slash + 1:] if _last_slash >= 0 else image
+    ("@" in image) or (":" in _tail)
+}
+
+# Build the full image reference for a container.
+#
+#   1. If `image` already pins its own tag/digest (`foo:1.2.3`,
+#      `ghcr.io/x/y@sha256:...`), pass it through VERBATIM — only
+#      prefixing the registry when one is set and the image has no
+#      registry host of its own. The caller-supplied tag is ignored:
+#      an explicitly-pinned image wins.
+#   2. Otherwise append `:image_tag` (the per-service pin or the
+#      env-wide tag, resolved by the caller).
 _image_ref = lambda image: str, image_registry: str, image_tag: str -> str {
-    "${image_registry}/${image}:${image_tag}" if image_registry \
-        else "${image}:${image_tag}"
+    _pinned = _image_has_tag_or_digest(image)
+    "${image_registry}/${image}" if (_pinned and image_registry) \
+        else (image if _pinned \
+        else ("${image_registry}/${image}:${image_tag}" if image_registry \
+        else "${image}:${image_tag}"))
+}
+
+# Resolve the tag to stamp onto an entity's image: the entity's pinned
+# `image_tag` when set (a no-op ShellBuild sibling that was never built
+# under the env-wide git tag pins the tag it WAS pushed under), else the
+# env-wide tag. `entity` is any schema carrying an optional `image_tag`
+# field (Service / CronJob / Operator), all of which declare it so the
+# read is always safe.
+_effective_image_tag = lambda entity: any, env_tag: str -> str {
+    entity.image_tag if entity.image_tag else env_tag
 }
 
 # Pick `imagePullPolicy` for a container based on the image tag.
@@ -194,8 +277,13 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
     _labels = _managed_labels(_name)
     _deploy = svc.deploy
     _resources = _deploy.resources if _deploy.resources else _default_resources
-    _image = _image_ref(svc.image, image_registry, image_tag)
+    _image = _image_ref(svc.image, image_registry, _effective_image_tag(svc, image_tag))
     _ports = _deploy.ports if len(_deploy.ports) > 0 else [8080]
+    # Optional per-port appProtocol map ({port: appProtocol}). Only
+    # K8sCluster carries this; absent/empty => no port gets the field,
+    # so the Service ports render byte-identically to before. Service-
+    # port-only — never projected onto containerPorts.
+    _app_protocols = _deploy.app_protocols if _deploy.app_protocols else {}
     # Optional writable / projected volumes (the readOnlyRootFilesystem
     # escape hatch). `svc.volumes` is None/Undefined when unset.
     _volumes = svc.volumes if svc.volumes else []
@@ -258,7 +346,18 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
         spec = {
             selector = {"app.kubernetes.io/name" = _name}
             ports = [
-                {name = "port-${p}", port = p, targetPort = p, protocol = "TCP"}
+                {
+                    name = "port-${p}"
+                    port = p
+                    targetPort = p
+                    protocol = "TCP"
+                    # appProtocol is rendered only for ports listed in
+                    # app_protocols (keyed by port-as-string); every other
+                    # port omits the field and is byte-identical to the
+                    # pre-appProtocol render.
+                    if str(p) in _app_protocols:
+                        appProtocol = _app_protocols[str(p)]
+                }
                 for p in _ports
             ]
         }
@@ -271,7 +370,7 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
 render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag: str -> [any] {
     _name = cj.name
     _labels = _managed_labels(_name)
-    _image = _image_ref(cj.image, image_registry, image_tag)
+    _image = _image_ref(cj.image, image_registry, _effective_image_tag(cj, image_tag))
     _volumes = cj.volumes if cj.volumes else []
     _pod_spec = {
         # Bind the per-CronJob ServiceAccount forge generates
@@ -335,7 +434,7 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
 render_operator = lambda op: any, namespace: str, image_registry: str, image_tag: str -> [any] {
     _name = op.name
     _labels = _managed_labels(_name)
-    _image = _image_ref(op.image, image_registry, image_tag)
+    _image = _image_ref(op.image, image_registry, _effective_image_tag(op, image_tag))
     _leader_env_dict = [
         {name = "LEADER_ELECTION", value = "true"}
     ] if op.leader_election else []

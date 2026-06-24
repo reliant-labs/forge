@@ -389,6 +389,15 @@ var removedSchemaKeys = map[string]removedKeyHint{
 		removedIn:   "the ProjectStore per-service data move (forge.yaml is global-only)",
 		replacement: "move each `binaries:` entry into the project-root `components.json` with `kind: binary`.",
 	},
+	// test: backed the orphaned `forge test --env=<env>` port-forward flow,
+	// superseded by the `forge up --env=<env> && go test` two-command loop.
+	// The per-env recipe (forwards + env + command) was removed; drive e2e
+	// suites with a plain `go test` after `forge up`.
+	"test": {
+		removedIn: "the removal of the orphaned `forge test --env` flow (use `forge up && go test`)",
+		replacement: "delete the key — bring the env up with `forge up --env=<env>` and run the " +
+			"suite with a plain `go test` (port-forward and env-vars are no longer declared in forge.yaml).",
+	},
 	"components[].type": {
 		removedIn:   "the component-model unification (kind replaces type)",
 		replacement: "delete `type:` and set `kind:` instead (go_service → server).",

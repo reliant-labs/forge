@@ -60,11 +60,34 @@ type KCLEntities struct {
 }
 
 // SecretProviderEntity is the parsed bundle-level secret provider
-// declaration. Type is "dotenv" | "external". Path is the dotenv path
-// (dotenv only), resolved relative to the project root by the CLI.
+// declaration. Type is "dotenv" | "external" | "rendered". Path is the
+// dotenv path (dotenv only), resolved relative to the project root by the
+// CLI. Secrets is the declared Secret set (rendered only).
 type SecretProviderEntity struct {
 	Type string `json:"type"`
 	Path string `json:"path,omitempty"`
+	// Secrets is populated for Type=="rendered": the explicit Secret
+	// declarations (name + per-key source) forge renders + applies per
+	// cluster. Empty for dotenv/external.
+	Secrets []RenderedSecretEntity `json:"secrets,omitempty"`
+}
+
+// RenderedSecretEntity mirrors the kcl/schema.k RenderedSecret — one k8s
+// Secret forge renders from declared sources. Keys maps each in-Secret
+// key to its value source.
+type RenderedSecretEntity struct {
+	Name string                            `json:"name"`
+	Keys map[string]RenderedSecretKeyEntity `json:"keys"`
+}
+
+// RenderedSecretKeyEntity mirrors the kcl/schema.k RenderedSecretKey.
+// From is "dotenv" (read .env.<env> at Key) or "literal" (inline Value,
+// dev/e2e only). A "dotenv" key carries no Value; a "literal" key carries
+// no dotenv Key.
+type RenderedSecretKeyEntity struct {
+	From  string `json:"from"`
+	Key   string `json:"key,omitempty"`
+	Value string `json:"value,omitempty"`
 }
 
 // ClusterEntity mirrors the kcl/schema.k Cluster — a k3d cluster forge

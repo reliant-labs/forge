@@ -17,6 +17,16 @@ func secretProviderFromEntities(e *KCLEntities, projectDir string) (secrets.Prov
 	if e == nil || e.SecretProvider == nil {
 		return secrets.NewProvider(nil)
 	}
+	// A "rendered" provider declares cluster Secrets explicitly (name +
+	// per-key source) — it is NOT an env-var-keyed resolver like dotenv.
+	// Its cluster apply runs through applyRenderedSecretsPerGroup; for the
+	// env-var-resolution consumers here (host secret-ref validation /
+	// injection) it has nothing to offer, so return a noop. The dedicated
+	// per-group path builds its own `.env.<env>` dotenv source for
+	// from="dotenv" keys.
+	if e.SecretProvider.Type == "rendered" {
+		return secrets.NewProvider(nil)
+	}
 	cfg := &secrets.ProviderConfig{
 		Type: e.SecretProvider.Type,
 		Path: e.SecretProvider.Path,

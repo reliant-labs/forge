@@ -91,7 +91,24 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		// network/registries from it. We still pass the cluster NAME
 		// positionally (k3d merges it with metadata.name) so clusterExists
 		// can find it by the declared name afterward.
-		args = append(args, "--config", c.Config)
+		//
+		// When this cluster hosts the ingress Gateway (c.Ingress), merge the
+		// generated deploy/k3d-ports.yaml listener host-port fragment into the
+		// config the SAME way the dev `forge cluster up` path does. The
+		// Gateway's listeners (e.g. grpc :29190 for daemon dial-out) need host
+		// ports mapped through the k3d loadbalancer at CREATE time, or
+		// in-cluster→host→cluster traffic (host.k3d.internal:<port>) finds
+		// nothing listening. k3d.yaml deliberately carries no `ports:` block —
+		// the ports live in the generated fragment, merged here.
+		cfgPath, cleanup, err := mergeK3dConfig(c.Config, c.Ingress)
+		if err != nil {
+			return fmt.Errorf("merge k3d ports for cluster %q: %w", c.Name, err)
+		}
+		defer cleanup()
+		if cfgPath.temporary {
+			fmt.Printf("  (merging deploy/k3d-ports.yaml — Gateway listener host ports)\n")
+		}
+		args = append(args, "--config", cfgPath.path)
 	} else {
 		args = append(args, "--servers", strconv.Itoa(effectiveServers(c)))
 		if c.Agents > 0 {

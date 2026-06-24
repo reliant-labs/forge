@@ -879,6 +879,19 @@ schema Cluster:
                             0.0.0.0:<port>`). Distinct per cluster so
                             several clusters coexist on one host. Unset
                             => k3d picks a random free port.
+      * `ingress`         — install the Gateway API stack (pinned
+                            Gateway-API CRDs + the vendored Traefik
+                            controller + the `traefik` GatewayClass) into
+                            THIS cluster after it's ensured. A fresh `k3d
+                            cluster create` ships none of these, so a
+                            cluster that hosts the env's Gateway /
+                            HTTPRoute / GRPCRoute resources needs it on or
+                            their apply fails ("no matches for kind
+                            Gateway in gateway.networking.k8s.io/v1"). The
+                            install is idempotent (kubectl apply + a CRD-
+                            cache), so re-runs no-op. Default False — a
+                            cluster with no ingress resources (reached via
+                            port-forward) leaves it off.
     """
     name: str
     config?: str
@@ -887,6 +900,7 @@ schema Cluster:
     servers: int = 1
     agents: int = 0
     api_port?: int
+    ingress: bool = False
 
     check:
         name, "Cluster.name is required"

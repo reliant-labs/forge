@@ -308,7 +308,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 		// path — ownership is implicit (Cluster.network / registry_mirror),
 		// no "primary" cluster.
 		if !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:clusters") {
-			if err := reconcileDeclaredClusters(ctx, entities.Clusters); err != nil {
+			if err := reconcileDeclaredClusters(ctx, entities.Clusters, projectDir, opts.env); err != nil {
 				return fmt.Errorf("clusters: %w", err)
 			}
 			// Mint cross-cluster kubeconfigs at the cluster→deploy

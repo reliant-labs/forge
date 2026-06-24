@@ -29,17 +29,17 @@ type KCLEntities struct {
 	// declares no clusters (today's no-ensure behavior). Ownership is
 	// implicit via Cluster.Network / Cluster.RegistryMirror — there is
 	// no "primary" cluster.
-	Clusters   []ClusterEntity   `json:"clusters,omitempty"`
+	Clusters []ClusterEntity `json:"clusters,omitempty"`
 	// KubeconfigSecrets are cross-cluster kubeconfigs forge mints fresh
 	// each up (at the cluster→deploy boundary) and applies as k8s Secrets.
 	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
 	Services          []ServiceEntity          `json:"services,omitempty"`
 	Operators         []OperatorEntity         `json:"operators,omitempty"`
-	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
-	CronJobs   []CronJobEntity   `json:"cronjobs,omitempty"`
-	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
-	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
-	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
+	Frontends         []FrontendEntity         `json:"frontends,omitempty"`
+	CronJobs          []CronJobEntity          `json:"cronjobs,omitempty"`
+	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
+	HTTPRoutes        []HTTPRouteEntity        `json:"http_routes,omitempty"`
+	GRPCRoutes        []GRPCRouteEntity        `json:"grpc_routes,omitempty"`
 	// SecretProvider is the bundle-level secret provider declaration
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider — preserving today's no-provider behavior.
@@ -76,7 +76,7 @@ type SecretProviderEntity struct {
 // Secret forge renders from declared sources. Keys maps each in-Secret
 // key to its value source.
 type RenderedSecretEntity struct {
-	Name string                            `json:"name"`
+	Name string                             `json:"name"`
 	Keys map[string]RenderedSecretKeyEntity `json:"keys"`
 }
 
@@ -106,6 +106,12 @@ type ClusterEntity struct {
 	Servers        int    `json:"servers,omitempty"`
 	Agents         int    `json:"agents,omitempty"`
 	APIPort        int    `json:"api_port,omitempty"`
+	// Ingress, when true, installs the Gateway API stack (pinned Gateway-API
+	// CRDs + vendored Traefik controller + the `traefik` GatewayClass) into
+	// this cluster after it's ensured. A fresh k3d cluster ships none of
+	// these; an env whose Gateway/HTTPRoute/GRPCRoute resources land on this
+	// cluster needs it on. Idempotent (kubectl apply + a CRD cache).
+	Ingress bool `json:"ingress,omitempty"`
 }
 
 // KubeconfigSecretEntity mirrors the kcl/schema.k KubeconfigSecret — a
@@ -545,12 +551,12 @@ type kclRenderRaw struct {
 	Clusters          []ClusterEntity          `json:"clusters,omitempty"`
 	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
 	Services          []kclServiceRaw          `json:"services,omitempty"`
-	Operators  []OperatorEntity  `json:"operators,omitempty"`
-	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
-	CronJobs   []CronJobEntity   `json:"cronjobs,omitempty"`
-	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
-	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
-	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
+	Operators         []OperatorEntity         `json:"operators,omitempty"`
+	Frontends         []FrontendEntity         `json:"frontends,omitempty"`
+	CronJobs          []CronJobEntity          `json:"cronjobs,omitempty"`
+	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
+	HTTPRoutes        []HTTPRouteEntity        `json:"http_routes,omitempty"`
+	GRPCRoutes        []GRPCRouteEntity        `json:"grpc_routes,omitempty"`
 	// SecretProvider rides alongside services in the entity output; nil
 	// when the bundle declares no provider (KCL omits the key entirely).
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`

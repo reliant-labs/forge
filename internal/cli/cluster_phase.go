@@ -34,13 +34,18 @@ import (
 // today's behavior (`forge up --env=e2e` ensures nothing; the legacy
 // single dev cluster is bootstrapped by ensureDevCluster on the deploy
 // path).
-func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity) error {
+// projectDir + env are threaded through for the per-cluster ingress
+// install: a cluster that declares `ingress = True` gets the Gateway API
+// stack installed into it after ensure, with entrypoints derived from the
+// env's Gateway listeners. Both are empty-tolerant — a cluster with
+// ingress off ignores them entirely.
+func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, projectDir, env string) error {
 	if len(clusters) == 0 {
 		return nil
 	}
 	fmt.Printf("\n[up] cluster phase — ensuring %d declared cluster(s)\n", len(clusters))
 	for i := range clusters {
-		if err := ensureDeclaredCluster(ctx, clusters[i]); err != nil {
+		if err := ensureDeclaredCluster(ctx, clusters[i], projectDir, env); err != nil {
 			return fmt.Errorf("ensure cluster %q: %w", clusters[i].Name, err)
 		}
 	}
@@ -51,13 +56,32 @@ func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity) er
 // applying the declared flags; no-op when it already exists. After a
 // fresh create with RegistryMirror=="inherit", it mirrors the owner
 // cluster's registries.yaml onto the new node and restarts it to reload.
-func ensureDeclaredCluster(ctx context.Context, c ClusterEntity) error {
-	exists, err := clusterExists(ctx, c.Name)
+// clusterExistsFn / installClusterIngressFn are indirection seams so the
+// reconcile decision logic is unit-testable without shelling out to k3d /
+// kubectl. Production wires them to the real implementations; tests stub
+// them to assert the ingress install is invoked exactly when (and only
+// when) a cluster declares `ingress = True`.
+var (
+	clusterExistsFn         = clusterExists
+	installClusterIngressFn = installClusterIngress
+)
+
+func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env string) error {
+	exists, err := clusterExistsFn(ctx, c.Name)
 	if err != nil {
 		return err
 	}
 	if exists {
 		fmt.Printf("  cluster %q already exists — no-op\n", c.Name)
+		// Re-run the ingress install on a warm cluster too: it's
+		// idempotent (kubectl apply + CRD cache), and a cluster that was
+		// created before `ingress` was declared — or had its Traefik
+		// deleted — heals on the next `forge up`.
+		if c.Ingress {
+			if err := installClusterIngressFn(ctx, c, projectDir, env); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -100,6 +124,32 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity) error {
 		if err := inheritRegistryMirror(ctx, c); err != nil {
 			return fmt.Errorf("inherit registry mirror: %w", err)
 		}
+	}
+
+	// Install the Gateway API stack into the freshly-created cluster when
+	// it declares `ingress = True`. A fresh `k3d cluster create` ships no
+	// Gateway API CRDs / no Gateway controller, so a cluster that hosts
+	// the env's Gateway/HTTPRoute/GRPCRoute resources needs the stack
+	// installed before the deploy phase applies them.
+	if c.Ingress {
+		if err := installClusterIngressFn(ctx, c, projectDir, env); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// installClusterIngress installs the Gateway API stack (pinned
+// Gateway-API CRDs + the vendored Traefik controller + the `traefik`
+// GatewayClass) into the named declared cluster, targeting its
+// `k3d-<name>` kubectl context explicitly so it lands on THAT cluster
+// regardless of the active context. Reuses the same installIngressBundle
+// the dev `forge cluster up` path uses; idempotent on warm clusters.
+func installClusterIngress(ctx context.Context, c ClusterEntity, projectDir, env string) error {
+	kctx := "k3d-" + c.Name
+	fmt.Printf("  installing Gateway API + Traefik ingress into cluster %q (context %s)...\n", c.Name, kctx)
+	if err := installIngressBundle(ctx, kctx, projectDir, env); err != nil {
+		return fmt.Errorf("install ingress on cluster %q: %w", c.Name, err)
 	}
 	return nil
 }

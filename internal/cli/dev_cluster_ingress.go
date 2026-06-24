@@ -34,7 +34,9 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -152,11 +154,26 @@ func fetchGatewayAPICRDs(ctx context.Context, version string) (string, error) {
 	return cachePath, nil
 }
 
+// kubeContextArgs returns the `--context <kctx>` prefix for a kubectl
+// invocation, or an empty slice when kctx is "". An empty context means
+// "use whatever context the caller pinned via pinKubectlContext" — the
+// dev `forge cluster up` path. The declared-cluster path
+// (reconcileDeclaredClusters) passes an explicit `k3d-<name>` context so
+// the install targets THAT cluster regardless of the active context.
+func kubeContextArgs(kctx string) []string {
+	if kctx == "" {
+		return nil
+	}
+	return []string{"--context", kctx}
+}
+
 // kubectlApplyBytes runs `kubectl apply -f -` with the given YAML
-// piped in via stdin. Inherits the current kubectl context (caller is
-// responsible for pinning it via pinKubectlContext first).
-func kubectlApplyBytes(ctx context.Context, yamlBytes []byte) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+// piped in via stdin. When kctx is non-empty it targets that context
+// explicitly (`--context <kctx>`); kctx == "" inherits the current
+// pinned context (caller pins it via pinKubectlContext first).
+func kubectlApplyBytes(ctx context.Context, kctx string, yamlBytes []byte) error {
+	args := append(kubeContextArgs(kctx), "apply", "-f", "-")
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	cmd.Stdin = strings.NewReader(string(yamlBytes))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -166,10 +183,11 @@ func kubectlApplyBytes(ctx context.Context, yamlBytes []byte) error {
 	return nil
 }
 
-// kubectlApplyFile runs `kubectl apply -f <path>` against the
-// currently pinned context.
-func kubectlApplyFile(ctx context.Context, path string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", path)
+// kubectlApplyFile runs `kubectl apply -f <path>`. kctx targets a
+// specific context when non-empty; "" uses the pinned context.
+func kubectlApplyFile(ctx context.Context, kctx, path string) error {
+	args := append(kubeContextArgs(kctx), "apply", "-f", path)
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -181,9 +199,9 @@ func kubectlApplyFile(ctx context.Context, path string) error {
 // waitForCRDs blocks until the named Gateway API CRDs report
 // Established=True, or times out. Run between CRD apply and
 // GatewayClass apply so the latter doesn't race the controller's
-// CRD reconciler.
-func waitForCRDs(ctx context.Context, crds []string, timeout time.Duration) error {
-	args := []string{"wait", "--for=condition=Established", "--timeout=" + timeout.String()}
+// CRD reconciler. kctx targets a specific context when non-empty.
+func waitForCRDs(ctx context.Context, kctx string, crds []string, timeout time.Duration) error {
+	args := append(kubeContextArgs(kctx), "wait", "--for=condition=Established", "--timeout="+timeout.String())
 	for _, c := range crds {
 		args = append(args, "crd/"+c)
 	}
@@ -207,31 +225,40 @@ type traefikEntrypoint struct {
 	Protocol string
 }
 
-// collectTraefikEntrypoints renders the dev env's KCL and projects
-// Gateway listeners into the entrypoint shape the Traefik template
+// collectTraefikEntrypoints renders the given env's KCL and projects
+// its Gateway listeners into the entrypoint shape the Traefik template
 // expects. Dedupes by port — a port can have only one entrypoint, so
 // the first listener (sorted by port, then gateway, then name) wins
 // on collisions.
 //
-// Returns (nil, nil) when the dev env has no gateways or the dev KCL
-// directory is missing. That's a normal state — projects with
-// features.ingress on but no ingress.k yet still need the bundle
-// installed; they just get the default `ping` entrypoint and add
-// listeners later via a re-run of `forge cluster up`.
-func collectTraefikEntrypoints(ctx context.Context, projectDir string) ([]traefikEntrypoint, error) {
+// Gateways are sourced from the rendered `manifests` stream (every
+// `kind: Gateway` object), NOT the typed `entities.Gateways` echo.
+// That's deliberate: an env may render its Gateways as RAW manifests
+// (e.g. a multi-cluster env that stamps each Gateway with an owning-app
+// label to pin it to one cluster, leaving the bundle-level `gateways`
+// list empty) — those don't appear in the typed echo but DO appear in
+// the manifest stream. Reading the stream covers both shapes.
+//
+// env is the env being brought up (`forge cluster up` passes "dev"; the
+// declared-cluster path passes the active `forge up --env=<env>`). A
+// missing KCL dir or a render with no gateways returns (nil, nil): a
+// normal state for a project with features.ingress on but no routes yet
+// (Traefik installs with the default `ping` entrypoint; listeners are
+// added on a later re-run).
+func collectTraefikEntrypoints(ctx context.Context, projectDir, env string) ([]traefikEntrypoint, error) {
 	if projectDir == "" {
 		return nil, nil
 	}
-	devKCL := filepath.Join(projectDir, "deploy", "kcl", "dev")
-	if _, err := os.Stat(devKCL); err != nil {
-		return nil, nil //nolint:nilerr // missing dev KCL is a normal first-scaffold state
+	if env == "" {
+		env = "dev"
 	}
-	entities, err := RenderKCL(ctx, projectDir, "dev")
+	envKCL := filepath.Join(projectDir, "deploy", "kcl", env)
+	if _, err := os.Stat(envKCL); err != nil {
+		return nil, nil //nolint:nilerr // missing env KCL is a normal first-scaffold state
+	}
+	rawJSON, err := renderKCLRaw(ctx, projectDir, env)
 	if err != nil {
 		return nil, err
-	}
-	if entities == nil {
-		return nil, nil
 	}
 
 	type candidate struct {
@@ -241,9 +268,9 @@ func collectTraefikEntrypoints(ctx context.Context, projectDir string) ([]traefi
 		proto string
 	}
 	var raw []candidate
-	for _, gw := range entities.Gateways {
-		for _, l := range gw.Listeners {
-			raw = append(raw, candidate{gw: gw.Name, name: l.Name, port: l.Port, proto: l.Protocol})
+	for _, gw := range gatewayListenersFromRender(rawJSON) {
+		for _, l := range gw.listeners {
+			raw = append(raw, candidate{gw: gw.name, name: l.name, port: l.port, proto: l.proto})
 		}
 	}
 	// Stable sort: port, then gateway, then listener. Deterministic
@@ -282,6 +309,110 @@ func collectTraefikEntrypoints(ctx context.Context, projectDir string) ([]traefi
 	return out, nil
 }
 
+// renderGateway is one Gateway object recovered from the rendered
+// manifest stream — just the bits collectTraefikEntrypoints needs.
+type renderGateway struct {
+	name      string
+	listeners []renderGatewayListener
+}
+
+type renderGatewayListener struct {
+	name  string
+	port  int
+	proto string
+}
+
+// gatewayListenersFromRender extracts every Gateway's listeners from a
+// forge KCL render's JSON, from BOTH shapes a render can carry:
+//
+//   - the typed `gateways` ENTITY echo (`output.gateways[*]` or top-level
+//     `gateways[*]`), where each gateway is `{name, listeners:[{name,
+//     port, protocol}]}`. This is the bundle-level `gateways` field —
+//     what the dev `forge cluster up` path consumes.
+//   - the rendered `manifests` STREAM (`output.manifests[*]` or top-level
+//     `manifests[*]`), matching `kind: Gateway` in any
+//     gateway.networking.k8s.io apiVersion. This covers an env that
+//     renders its Gateways as RAW manifests (e.g. a multi-cluster env that
+//     stamps each with an owning-app label to pin it to one cluster,
+//     leaving the bundle-level `gateways` list empty) — those never appear
+//     in the typed echo but DO appear here.
+//
+// Reading both means the entrypoint collection works whether an env wires
+// its Gateway through the typed field or as a raw manifest. Best-effort:
+// malformed JSON or a render with no Gateways yields nil. A Gateway seen
+// in more than one shape (by name) is emitted once.
+func gatewayListenersFromRender(data []byte) []renderGateway {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil
+	}
+	type listenerJSON struct {
+		Name     string `json:"name"`
+		Port     int    `json:"port"`
+		Protocol string `json:"protocol"`
+	}
+	// Typed entity echo: gateways[*].listeners[*].
+	type gatewayEntityJSON struct {
+		Name      string         `json:"name"`
+		Listeners []listenerJSON `json:"listeners"`
+	}
+	// Raw k8s manifest: kind Gateway, spec.listeners[*].
+	type gatewayManifestJSON struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+		Metadata   struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+		Spec struct {
+			Listeners []listenerJSON `json:"listeners"`
+		} `json:"spec"`
+	}
+	var doc struct {
+		Gateways  []gatewayEntityJSON `json:"gateways"`
+		Manifests []json.RawMessage   `json:"manifests"`
+		Output    struct {
+			Gateways  []gatewayEntityJSON `json:"gateways"`
+			Manifests []json.RawMessage   `json:"manifests"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+
+	var out []renderGateway
+	seen := map[string]bool{} // dedupe a Gateway that appears in more than one shape
+
+	add := func(name string, listeners []listenerJSON) {
+		if seen[name] {
+			return
+		}
+		seen[name] = true
+		rg := renderGateway{name: name}
+		for _, l := range listeners {
+			rg.listeners = append(rg.listeners, renderGatewayListener{name: l.Name, port: l.Port, proto: l.Protocol})
+		}
+		out = append(out, rg)
+	}
+
+	// Typed entity echo first (the bundle-level `gateways` field).
+	for _, ge := range append(append([]gatewayEntityJSON{}, doc.Gateways...), doc.Output.Gateways...) {
+		add(ge.Name, ge.Listeners)
+	}
+	// Then the raw manifest stream (kind: Gateway).
+	for _, stream := range [][]json.RawMessage{doc.Manifests, doc.Output.Manifests} {
+		for _, rawM := range stream {
+			var g gatewayManifestJSON
+			if err := json.Unmarshal(rawM, &g); err != nil {
+				continue
+			}
+			if g.Kind != "Gateway" || !strings.HasPrefix(g.APIVersion, "gateway.networking.k8s.io") {
+				continue
+			}
+			add(g.Metadata.Name, g.Spec.Listeners)
+		}
+	}
+	return out
+}
+
 // renderTraefikInstall executes the vendored Traefik install template
 // against the given entrypoints and returns the rendered YAML bytes.
 // Empty entrypoints are valid — the bundle still installs (Traefik
@@ -313,7 +444,13 @@ func renderTraefikInstall(entrypoints []traefikEntrypoint) ([]byte, error) {
 // isn't, so subsequent `forge deploy dev` will fail apply on the
 // project's Gateway resources. The error message is what the user
 // acts on; we don't try to clean up the partial install.
-func installIngressBundle(ctx context.Context, projectDir string) error {
+// kctx pins the kubectl context the install targets. "" means "use the
+// caller-pinned current context" (the dev `forge cluster up` path, which
+// pins via pinKubectlContext first). The declared-cluster path passes an
+// explicit `k3d-<name>` so the install lands on THAT cluster regardless
+// of the active context. env is the env whose Gateway listeners drive
+// the Traefik entrypoints (collectTraefikEntrypoints).
+func installIngressBundle(ctx context.Context, kctx, projectDir, env string) error {
 	_, gatewayAPIVer, err := ingressPinnedVersions()
 	if err != nil {
 		return err
@@ -324,7 +461,7 @@ func installIngressBundle(ctx context.Context, projectDir string) error {
 		return err
 	}
 	fmt.Println("Applying Gateway API CRDs...")
-	if err := kubectlApplyFile(ctx, crdPath); err != nil {
+	if err := kubectlApplyFile(ctx, kctx, crdPath); err != nil {
 		return err
 	}
 
@@ -334,7 +471,7 @@ func installIngressBundle(ctx context.Context, projectDir string) error {
 	// them in v1; including them in the wait list would only delay
 	// happy-path cluster-up if upstream renames or splits them.
 	fmt.Println("Waiting for Gateway API CRDs to be Established...")
-	if err := waitForCRDs(ctx, []string{
+	if err := waitForCRDs(ctx, kctx, []string{
 		"gatewayclasses.gateway.networking.k8s.io",
 		"gateways.gateway.networking.k8s.io",
 		"httproutes.gateway.networking.k8s.io",
@@ -343,16 +480,15 @@ func installIngressBundle(ctx context.Context, projectDir string) error {
 		return fmt.Errorf("wait for Gateway API CRDs: %w", err)
 	}
 
-	entrypoints, err := collectTraefikEntrypoints(ctx, projectDir)
+	entrypoints, err := collectTraefikEntrypoints(ctx, projectDir, env)
 	if err != nil {
 		// Intentional soft warning: KCL render failures here are
-		// non-fatal — the project may not have a dev env yet, or kcl
+		// non-fatal — the project may not have this env's KCL yet, or kcl
 		// may not be installed locally. Install the bundle with no
-		// extra entrypoints and let the user re-run cluster-up once
-		// their KCL is ready. `forge cluster up` has no --strict
-		// equivalent because the command is itself a developer-loop
-		// helper, not a CI gate.
-		fmt.Fprintf(os.Stderr, "Warning: could not evaluate dev gateways for Traefik entrypoints; installing without listener-derived entrypoints: %v\n", err)
+		// extra entrypoints and let the user re-run once their KCL is
+		// ready. There's no --strict equivalent because the install is a
+		// developer-loop helper, not a CI gate.
+		fmt.Fprintf(os.Stderr, "Warning: could not evaluate %s gateways for Traefik entrypoints; installing without listener-derived entrypoints: %v\n", env, err)
 		entrypoints = nil
 	}
 	if len(entrypoints) > 0 {
@@ -368,7 +504,7 @@ func installIngressBundle(ctx context.Context, projectDir string) error {
 	if err != nil {
 		return fmt.Errorf("render vendored Traefik install: %w", err)
 	}
-	if err := kubectlApplyBytes(ctx, traefikYAML); err != nil {
+	if err := kubectlApplyBytes(ctx, kctx, traefikYAML); err != nil {
 		return err
 	}
 
@@ -377,7 +513,7 @@ func installIngressBundle(ctx context.Context, projectDir string) error {
 		return fmt.Errorf("load vendored GatewayClass: %w", err)
 	}
 	fmt.Println("Applying traefik GatewayClass...")
-	if err := kubectlApplyBytes(ctx, gcYAML); err != nil {
+	if err := kubectlApplyBytes(ctx, kctx, gcYAML); err != nil {
 		return err
 	}
 

@@ -1350,12 +1350,16 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		Images:       cluster.DockerImageChecker{},
 		SkipImageRef: cluster.LocalImageRef,
 	}
-	// Secret check only against a REMOTE cluster (see docstring). An empty
-	// or local context leaves opts.Secrets nil → cluster.Preflight skips
-	// the Secret check entirely.
+	// Secret + ConfigMap checks only against a REMOTE cluster (see
+	// docstring). An empty or local context leaves opts.Secrets /
+	// opts.ConfigMaps nil → cluster.Preflight skips those checks entirely.
+	// Both are gated identically: on a local dev cluster forge applies the
+	// projected Secret AND ConfigMap moments after this runs, so neither
+	// exists yet and checking would false-fail the inner loop.
 	if in.deployCtx != "" && !isLocalCluster(in.deployCtx) {
 		opts.Context = in.deployCtx
 		opts.Secrets = cluster.KubectlSecretGetter{}
+		opts.ConfigMaps = cluster.KubectlConfigMapGetter{}
 	}
 	return cluster.Preflight(ctx, opts)
 }

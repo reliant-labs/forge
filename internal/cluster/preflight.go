@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -14,43 +15,54 @@ import (
 
 // Preflight is the deploy-time "deployability contract": before a single
 // manifest is applied, it checks that the rendered bundle's external
-// dependencies actually exist on the LIVE target — every Secret KEY a
-// container references is present in the target cluster, and every
-// container image: is resolvable in its registry. When something is
+// dependencies actually exist on the LIVE target — every Secret KEY and
+// ConfigMap KEY a container references is present in the target cluster, and
+// every container image: is resolvable in its registry. When something is
 // missing it returns a single grouped error naming EVERYTHING missing at
 // once, so the user fixes it all in one pass instead of discovering each
 // gap one-at-a-time as pods crash (CreateContainerConfigError /
 // ImagePullBackOff) over a live rollout.
 //
-// The checks are injected (SecretGetter / ImageChecker) so the orchestration
-// is unit-testable without a live cluster or registry; the deploy path wires
-// the real kubectl-/docker-backed implementations (see KubectlSecretGetter /
-// DockerImageChecker).
+// The checks are injected (SecretGetter / ConfigMapGetter / ImageChecker) so
+// the orchestration is unit-testable without a live cluster or registry; the
+// deploy path wires the real kubectl-/docker-backed implementations (see
+// KubectlSecretGetter / KubectlConfigMapGetter / DockerImageChecker).
 
 // ManifestRefs is the set of external references a rendered manifest bundle
-// depends on at schedule time: the Secret (name, key) pairs its containers
-// project into env, and the distinct container images it runs.
+// depends on at schedule time: the Secret / ConfigMap (name, key) pairs its
+// containers project into env or mount, and the distinct container images it
+// runs.
 type ManifestRefs struct {
 	// Secrets maps a Secret name to the set of keys referenced from it. A
-	// key of "" (present in the set) means a whole-Secret reference (envFrom
-	// secretRef) — verify existence only.
+	// key of "" (present in the set) means a whole-Secret reference
+	// (envFrom secretRef, a volume mount, an imagePullSecret) — verify
+	// existence only.
 	Secrets map[string]map[string]struct{}
+	// ConfigMaps maps a ConfigMap name to the set of keys referenced from
+	// it. A key of "" means a whole-ConfigMap reference (envFrom
+	// configMapRef or a whole-ConfigMap volume mount) — verify existence
+	// only. A missing ConfigMap key fails a pod identically to a missing
+	// Secret key (CreateContainerConfigError).
+	ConfigMaps map[string]map[string]struct{}
 	// Images is the set of distinct container image refs in the bundle.
 	Images map[string]struct{}
 }
 
 // CollectManifestRefs walks a `---`-separated multi-doc YAML manifest stream
-// and collects every Secret reference (secretKeyRef + envFrom secretRef) and
-// every container image. It recurses the whole document tree rather than
-// hard-coding pod-spec paths, so it picks references up uniformly across
-// Deployments, StatefulSets, DaemonSets, Jobs, CronJobs, Pods, and any
-// nested template — wherever a `secretKeyRef`, `secretRef`, or `image`
-// appears. Malformed documents are skipped (best-effort, mirroring the other
-// manifest scanners in this package).
+// and collects every Secret reference (secretKeyRef, envFrom secretRef,
+// secret-backed volumes, projected secret sources, imagePullSecrets), every
+// ConfigMap reference (configMapKeyRef, envFrom configMapRef, configMap-backed
+// volumes, projected configMap sources), and every container image. It
+// recurses the whole document tree rather than hard-coding pod-spec paths, so
+// it picks references up uniformly across Deployments, StatefulSets,
+// DaemonSets, Jobs, CronJobs, Pods, and any nested template — including init
+// containers and CronJob/Job pod templates. Malformed documents are skipped
+// (best-effort, mirroring the other manifest scanners in this package).
 func CollectManifestRefs(manifests string) ManifestRefs {
 	refs := ManifestRefs{
-		Secrets: map[string]map[string]struct{}{},
-		Images:  map[string]struct{}{},
+		Secrets:    map[string]map[string]struct{}{},
+		ConfigMaps: map[string]map[string]struct{}{},
+		Images:     map[string]struct{}{},
 	}
 	for _, doc := range splitDocs(manifests) {
 		var node any
@@ -63,35 +75,15 @@ func CollectManifestRefs(manifests string) ManifestRefs {
 }
 
 // collectRefs recursively descends a decoded YAML value, recording any
-// secretKeyRef / envFrom secretRef / container image it finds into refs.
+// Secret / ConfigMap reference and container image it finds into refs. The
+// recursion is shape-driven (it matches on the well-known key names wherever
+// they appear), so it covers every pod-template site uniformly.
 func collectRefs(node any, refs *ManifestRefs) {
 	switch v := node.(type) {
 	case map[string]any:
-		// secretKeyRef: {name, key} — a single (Secret, key) projection.
-		if skr, ok := mapAt(v, "secretKeyRef"); ok {
-			name := stringAt(skr, "name")
-			key := stringAt(skr, "key")
-			if name != "" {
-				addSecretKey(refs, name, key)
-			}
-		}
-		// envFrom secretRef: {name} — projects the WHOLE Secret. Record
-		// with key "" so the check verifies existence only (we can't know
-		// which keys the image reads).
-		if sr, ok := mapAt(v, "secretRef"); ok {
-			// Skip the secretKeyRef's nested case (handled above): a
-			// secretKeyRef value is never itself keyed "secretRef".
-			if name := stringAt(sr, "name"); name != "" {
-				addSecretKey(refs, name, "")
-			}
-		}
-		// Container image. Only treat a STRING image as a container ref;
-		// objects keyed "image" elsewhere (rare) are ignored.
-		if img, ok := v["image"]; ok {
-			if s, ok := img.(string); ok && strings.TrimSpace(s) != "" {
-				refs.Images[strings.TrimSpace(s)] = struct{}{}
-			}
-		}
+		collectSecretRefs(v, refs)
+		collectConfigMapRefs(v, refs)
+		collectImageRef(v, refs)
 		for _, child := range v {
 			collectRefs(child, refs)
 		}
@@ -102,11 +94,111 @@ func collectRefs(node any, refs *ManifestRefs) {
 	}
 }
 
-func addSecretKey(refs *ManifestRefs, name, key string) {
-	if refs.Secrets[name] == nil {
-		refs.Secrets[name] = map[string]struct{}{}
+// collectSecretRefs records every Secret reference shape rooted at this map:
+// a keyed projection (secretKeyRef), a whole-Secret env projection (envFrom
+// secretRef), a secret-backed volume (volumes[].secret.secretName), a
+// projected secret source (sources[].secret.name), and an image-pull Secret
+// (imagePullSecrets[].name). The volume / projected / imagePullSecret shapes
+// are existence-only (key ""): forge can't know which keys the runtime reads,
+// and an imagePullSecret is consumed whole. These cover the
+// `ClusterClient external=True` out-of-band kubeconfig Secret that forge does
+// NOT mint — mounted via a secret volume — so the gate catches it instead of
+// letting the pod crash on first schedule.
+func collectSecretRefs(v map[string]any, refs *ManifestRefs) {
+	// secretKeyRef: {name, key} — a single (Secret, key) projection.
+	if skr, ok := mapAt(v, "secretKeyRef"); ok {
+		if name := stringAt(skr, "name"); name != "" {
+			addRef(refs.Secrets, name, stringAt(skr, "key"))
+		}
 	}
-	refs.Secrets[name][key] = struct{}{}
+	// envFrom secretRef: {name} — projects the WHOLE Secret. Existence only.
+	if sr, ok := mapAt(v, "secretRef"); ok {
+		if name := stringAt(sr, "name"); name != "" {
+			addRef(refs.Secrets, name, "")
+		}
+	}
+	// volumes[].secret.secretName — a secret-backed volume mount.
+	if sv, ok := mapAt(v, "secret"); ok {
+		// A pod-volume secret source keys the name as `secretName`; a
+		// projected source keys it as `name`. Accept either so both the
+		// `volumes[].secret` and `sources[].secret` shapes are covered.
+		if name := stringAt(sv, "secretName"); name != "" {
+			addRef(refs.Secrets, name, "")
+		}
+		if name := stringAt(sv, "name"); name != "" {
+			addRef(refs.Secrets, name, "")
+		}
+	}
+	// imagePullSecrets[].name — a list of {name} Secret references.
+	collectNamedListRefs(v, "imagePullSecrets", refs.Secrets)
+}
+
+// collectConfigMapRefs records every ConfigMap reference shape rooted at this
+// map, mirroring collectSecretRefs: a keyed projection (configMapKeyRef), a
+// whole-ConfigMap env projection (envFrom configMapRef), a configMap-backed
+// volume (volumes[].configMap.name), and a projected configMap source
+// (sources[].configMap.name). control-plane projects non-sensitive config to
+// ConfigMaps, so a missing ConfigMap key is a real CreateContainerConfigError
+// class the gate must catch.
+func collectConfigMapRefs(v map[string]any, refs *ManifestRefs) {
+	// configMapKeyRef: {name, key} — a single (ConfigMap, key) projection.
+	if ckr, ok := mapAt(v, "configMapKeyRef"); ok {
+		if name := stringAt(ckr, "name"); name != "" {
+			addRef(refs.ConfigMaps, name, stringAt(ckr, "key"))
+		}
+	}
+	// envFrom configMapRef / volumes[].configMap / sources[].configMap:
+	// each is {name} — existence only. All three use the `configMap` key
+	// EXCEPT envFrom, which uses `configMapRef`; handle both.
+	if cmr, ok := mapAt(v, "configMapRef"); ok {
+		if name := stringAt(cmr, "name"); name != "" {
+			addRef(refs.ConfigMaps, name, "")
+		}
+	}
+	if cm, ok := mapAt(v, "configMap"); ok {
+		if name := stringAt(cm, "name"); name != "" {
+			addRef(refs.ConfigMaps, name, "")
+		}
+	}
+}
+
+// collectImageRef records a container image ref. Only a STRING image is a
+// container ref; objects keyed "image" elsewhere (rare) are ignored.
+func collectImageRef(v map[string]any, refs *ManifestRefs) {
+	if img, ok := v["image"]; ok {
+		if s, ok := img.(string); ok && strings.TrimSpace(s) != "" {
+			refs.Images[strings.TrimSpace(s)] = struct{}{}
+		}
+	}
+}
+
+// collectNamedListRefs records an existence-only (key "") reference for every
+// {name: ...} entry in the list at v[key]. Used for imagePullSecrets.
+func collectNamedListRefs(v map[string]any, key string, into map[string]map[string]struct{}) {
+	raw, ok := v[key]
+	if !ok {
+		return
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return
+	}
+	for _, item := range list {
+		if m, ok := item.(map[string]any); ok {
+			if name := stringAt(m, "name"); name != "" {
+				addRef(into, name, "")
+			}
+		}
+	}
+}
+
+// addRef records (name, key) into a name→keyset map (Secrets or ConfigMaps),
+// lazily allocating the inner set.
+func addRef(into map[string]map[string]struct{}, name, key string) {
+	if into[name] == nil {
+		into[name] = map[string]struct{}{}
+	}
+	into[name][key] = struct{}{}
 }
 
 // mapAt returns m[key] as a map[string]any when present and of that type.
@@ -139,13 +231,40 @@ type SecretGetter interface {
 	GetSecretKeys(ctx context.Context, kctx, namespace, name string) (keys map[string]struct{}, exists bool, err error)
 }
 
+// ConfigMapGetter resolves which keys exist on a ConfigMap in a target
+// cluster, mirroring SecretGetter. exists=false means the ConfigMap is
+// absent; an error is a genuine lookup failure that aborts the preflight.
+type ConfigMapGetter interface {
+	GetConfigMapKeys(ctx context.Context, kctx, namespace, name string) (keys map[string]struct{}, exists bool, err error)
+}
+
 // ImageChecker reports whether an image ref is resolvable in its registry.
-// An error is a genuine check failure (registry unreachable for a reason
-// other than not-found) the caller may choose to surface; a clean
-// (false, nil) means "definitely not present".
+//
+// The three outcomes are deliberately distinct, because a deploy GATE must
+// not block on its own blind spots:
+//
+//   - (true, nil)   — the image is present. Proceed.
+//   - (false, nil)  — the image is CONFIRMED absent (a real registry
+//     not-found / MANIFEST_UNKNOWN). BLOCK the deploy.
+//   - (false, err) where errors.Is(err, ErrImageCheckInconclusive) — the
+//     check could not reach a verdict (no creds / network / transport
+//     error against a registry the CLUSTER may still be able to pull). The
+//     preflight WARNS and PROCEEDS rather than false-failing a present
+//     image.
+//   - (_, err) for any other error — a genuine checker failure the caller
+//     surfaces (aborts the preflight).
 type ImageChecker interface {
 	ImageExists(ctx context.Context, ref string) (exists bool, err error)
 }
+
+// ErrImageCheckInconclusive marks an image check that could not reach a
+// present/absent verdict — typically because the LOCAL docker daemon lacks
+// credentials or network for a private registry the CLUSTER can still pull.
+// The preflight treats it as a non-blocking warning ("couldn't verify image
+// X: <reason>; proceeding") rather than a confirmed miss, so the gate never
+// blocks a present image just because the laptop running the deploy can't see
+// it. Wrap it with %w to carry the underlying reason.
+var ErrImageCheckInconclusive = errors.New("image existence could not be verified")
 
 // PreflightOpts bundles everything Preflight needs: the rendered manifests
 // to scan, the target cluster context + namespace the Secret checks run
@@ -168,6 +287,10 @@ type PreflightOpts struct {
 	// Secrets resolves Secret keys against the target cluster.
 	Secrets SecretGetter
 
+	// ConfigMaps resolves ConfigMap keys against the target cluster. Like
+	// Secrets, the check runs only when this and Context are both set.
+	ConfigMaps ConfigMapGetter
+
 	// Images checks image existence against the registry.
 	Images ImageChecker
 
@@ -178,20 +301,34 @@ type PreflightOpts struct {
 }
 
 // PreflightResult is the structured outcome of a preflight run — the
-// grouped missing-by-secret and missing-images sets. OK reports whether
-// the deploy may proceed.
+// grouped missing-by-secret / missing-by-configmap / missing-images sets,
+// plus non-blocking image warnings. OK reports whether the deploy may
+// proceed (warnings do NOT block).
 type PreflightResult struct {
 	// MissingSecretKeys maps "<namespace>/<secret>" to the sorted list of
 	// referenced keys that are absent (or the whole Secret, rendered as a
-	// single "<the Secret itself>" marker when the Secret doesn't exist).
+	// single marker when the Secret doesn't exist).
 	MissingSecretKeys map[string][]string
-	// MissingImages is the sorted list of image refs that don't resolve.
+	// MissingConfigMapKeys maps "<namespace>/<configmap>" to the sorted
+	// list of referenced keys that are absent (or the whole-ConfigMap
+	// marker when the ConfigMap doesn't exist).
+	MissingConfigMapKeys map[string][]string
+	// MissingImages is the sorted list of image refs CONFIRMED absent.
 	MissingImages []string
+	// ImageWarnings is the sorted list of "could not verify" notes for
+	// images whose existence check was inconclusive (local docker daemon
+	// can't see a registry the cluster might pull from). These do NOT
+	// block the deploy — they are printed so the user knows the gate
+	// couldn't vouch for those images.
+	ImageWarnings []string
 }
 
-// OK reports whether nothing was found missing.
+// OK reports whether nothing was found missing. Inconclusive image warnings
+// are advisory and do NOT make the result fail.
 func (r PreflightResult) OK() bool {
-	return len(r.MissingSecretKeys) == 0 && len(r.MissingImages) == 0
+	return len(r.MissingSecretKeys) == 0 &&
+		len(r.MissingConfigMapKeys) == 0 &&
+		len(r.MissingImages) == 0
 }
 
 // wholeSecretMarker is the placeholder listed under a Secret that doesn't
@@ -214,6 +351,12 @@ func Preflight(ctx context.Context, opts PreflightOpts) error {
 	if err != nil {
 		return err
 	}
+	// Inconclusive image checks are advisory — surface them whether the
+	// run blocks or proceeds, so the user knows the gate couldn't vouch
+	// for those images (and isn't surprised by a later ImagePullBackOff).
+	for _, w := range result.ImageWarnings {
+		fmt.Printf("preflight: %s\n", w)
+	}
 	if result.OK() {
 		return nil
 	}
@@ -224,7 +367,10 @@ func Preflight(ctx context.Context, opts PreflightOpts) error {
 // assembles the PreflightResult. Split out from Preflight so tests can
 // assert on the structured result directly.
 func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRefs) (PreflightResult, error) {
-	result := PreflightResult{MissingSecretKeys: map[string][]string{}}
+	result := PreflightResult{
+		MissingSecretKeys:    map[string][]string{},
+		MissingConfigMapKeys: map[string][]string{},
+	}
 
 	var (
 		mu       sync.Mutex
@@ -239,29 +385,26 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 		mu.Unlock()
 	}
 
+	hasContext := strings.TrimSpace(opts.Context) != ""
+
 	// Secret checks — one lookup per distinct Secret, only when a getter
 	// and a target context are configured.
-	if opts.Secrets != nil && strings.TrimSpace(opts.Context) != "" {
-		for name, keys := range refs.Secrets {
-			name, keys := name, keys
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				present, exists, err := opts.Secrets.GetSecretKeys(ctx, opts.Context, opts.Namespace, name)
-				if err != nil {
-					recordErr(fmt.Errorf("preflight: read Secret %s/%s: %w", opts.Namespace, name, err))
-					return
-				}
-				missing := missingSecretKeys(keys, present, exists)
-				if len(missing) == 0 {
-					return
-				}
-				sort.Strings(missing)
-				mu.Lock()
-				result.MissingSecretKeys[opts.Namespace+"/"+name] = missing
-				mu.Unlock()
-			}()
-		}
+	if opts.Secrets != nil && hasContext {
+		checkKeyedResources(ctx, &wg, refs.Secrets, "Secret", opts.Namespace,
+			func(ctx context.Context, name string) (map[string]struct{}, bool, error) {
+				return opts.Secrets.GetSecretKeys(ctx, opts.Context, opts.Namespace, name)
+			},
+			result.MissingSecretKeys, &mu, recordErr)
+	}
+
+	// ConfigMap checks — symmetric with Secrets. A missing ConfigMap key
+	// fails a pod identically (CreateContainerConfigError).
+	if opts.ConfigMaps != nil && hasContext {
+		checkKeyedResources(ctx, &wg, refs.ConfigMaps, "ConfigMap", opts.Namespace,
+			func(ctx context.Context, name string) (map[string]struct{}, bool, error) {
+				return opts.ConfigMaps.GetConfigMapKeys(ctx, opts.Context, opts.Namespace, name)
+			},
+			result.MissingConfigMapKeys, &mu, recordErr)
 	}
 
 	// Image checks — one lookup per distinct image, skipping refs the
@@ -277,6 +420,17 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 				defer wg.Done()
 				exists, err := opts.Images.ImageExists(ctx, ref)
 				if err != nil {
+					// An inconclusive check (no creds / network for a
+					// registry the CLUSTER may still pull) must NOT block
+					// or abort — warn and proceed. Any other checker error
+					// is a genuine failure that aborts the preflight.
+					if errors.Is(err, ErrImageCheckInconclusive) {
+						mu.Lock()
+						result.ImageWarnings = append(result.ImageWarnings,
+							fmt.Sprintf("couldn't verify image %q: %v; proceeding", ref, err))
+						mu.Unlock()
+						return
+					}
 					recordErr(fmt.Errorf("preflight: check image %q: %w", ref, err))
 					return
 				}
@@ -295,7 +449,45 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 		return PreflightResult{}, firstErr
 	}
 	sort.Strings(result.MissingImages)
+	sort.Strings(result.ImageWarnings)
 	return result, nil
+}
+
+// checkKeyedResources fans out one existence/key lookup per distinct named
+// resource (Secret or ConfigMap) and records the missing keys into out under
+// "<namespace>/<name>". getKeys returns (presentKeys, exists, err); a lookup
+// error aborts the preflight via recordErr. Shared by the Secret and
+// ConfigMap checks so both behave identically.
+func checkKeyedResources(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	refs map[string]map[string]struct{},
+	kind, namespace string,
+	getKeys func(ctx context.Context, name string) (map[string]struct{}, bool, error),
+	out map[string][]string,
+	mu *sync.Mutex,
+	recordErr func(error),
+) {
+	for name, keys := range refs {
+		name, keys := name, keys
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			present, exists, err := getKeys(ctx, name)
+			if err != nil {
+				recordErr(fmt.Errorf("preflight: read %s %s/%s: %w", kind, namespace, name, err))
+				return
+			}
+			missing := missingSecretKeys(keys, present, exists)
+			if len(missing) == 0 {
+				return
+			}
+			sort.Strings(missing)
+			mu.Lock()
+			out[namespace+"/"+name] = missing
+			mu.Unlock()
+		}()
+	}
 }
 
 // missingSecretKeys returns the referenced keys not satisfied by the
@@ -326,18 +518,8 @@ func FormatPreflightReport(r PreflightResult) string {
 	var b strings.Builder
 	b.WriteString("deploy preflight failed — the live target is missing dependencies the rendered manifests require:\n")
 
-	if len(r.MissingSecretKeys) > 0 {
-		b.WriteString("\n")
-		names := make([]string, 0, len(r.MissingSecretKeys))
-		for k := range r.MissingSecretKeys {
-			names = append(names, k)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			b.WriteString(fmt.Sprintf("  Secret %s missing keys: [%s]\n",
-				name, strings.Join(r.MissingSecretKeys[name], ", ")))
-		}
-	}
+	writeMissingKeyBlock(&b, "Secret", r.MissingSecretKeys)
+	writeMissingKeyBlock(&b, "ConfigMap", r.MissingConfigMapKeys)
 
 	if len(r.MissingImages) > 0 {
 		b.WriteString("\n  Images not found:\n")
@@ -350,11 +532,32 @@ func FormatPreflightReport(r PreflightResult) string {
 	if len(r.MissingSecretKeys) > 0 {
 		b.WriteString("  - provision the missing Secret key(s) in the target cluster/namespace\n")
 	}
+	if len(r.MissingConfigMapKeys) > 0 {
+		b.WriteString("  - provision the missing ConfigMap key(s) in the target cluster/namespace\n")
+	}
 	if len(r.MissingImages) > 0 {
 		b.WriteString("  - build + push the missing image(s) to the registry\n")
 	}
 	b.WriteString("  - or pass --skip-preflight to bypass this check (you accept the risk of a crash-on-apply).")
 	return b.String()
+}
+
+// writeMissingKeyBlock renders one "<kind> <ns/name> missing keys: [...]"
+// line per entry, in deterministic name order. No-op for an empty map.
+func writeMissingKeyBlock(b *strings.Builder, kind string, missing map[string][]string) {
+	if len(missing) == 0 {
+		return
+	}
+	b.WriteString("\n")
+	names := make([]string, 0, len(missing))
+	for k := range missing {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		b.WriteString(fmt.Sprintf("  %s %s missing keys: [%s]\n",
+			kind, name, strings.Join(missing[name], ", ")))
+	}
 }
 
 // KubectlSecretGetter is the live SecretGetter: it reads a Secret's `.data`
@@ -367,27 +570,44 @@ type KubectlSecretGetter struct{}
 
 // GetSecretKeys returns the keys of the named Secret's `.data` in namespace.
 func (KubectlSecretGetter) GetSecretKeys(ctx context.Context, kctx, namespace, name string) (map[string]struct{}, bool, error) {
-	args := []string{"get", "secret", name, "-o", "json"}
+	return kubectlDataKeys(ctx, kctx, namespace, "secret", name)
+}
+
+// KubectlConfigMapGetter is the live ConfigMapGetter: it reads a ConfigMap's
+// `.data` keys from the target cluster via `kubectl --context <ctx> get
+// configmap <name> -n <ns> -o json`, mirroring KubectlSecretGetter (same
+// declared-context discipline, same not-found → exists=false handling).
+type KubectlConfigMapGetter struct{}
+
+// GetConfigMapKeys returns the keys of the named ConfigMap's `.data`.
+func (KubectlConfigMapGetter) GetConfigMapKeys(ctx context.Context, kctx, namespace, name string) (map[string]struct{}, bool, error) {
+	return kubectlDataKeys(ctx, kctx, namespace, "configmap", name)
+}
+
+// kubectlDataKeys reads the `.data` keys of a `kubectl get <kind> <name>`
+// object in namespace, threading the DECLARED context per command. A
+// not-found object returns exists=false (a clean "missing", not a lookup
+// failure); any other non-zero exit (RBAC denial, unreachable apiserver,
+// kubectl misconfig) is a real error that aborts the preflight. Shared by the
+// Secret and ConfigMap getters — both project `.data` keys identically.
+func kubectlDataKeys(ctx context.Context, kctx, namespace, kind, name string) (map[string]struct{}, bool, error) {
+	args := []string{"get", kind, name, "-o", "json"}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
 	cmd := kubectlCmd(ctx, kctx, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// `kubectl get` exits non-zero AND prints "NotFound" when the
-		// Secret is absent — that's a clean "missing", not a lookup
-		// failure. Anything else (RBAC denial, unreachable apiserver,
-		// kubectl misconfig) is a real error that aborts the preflight.
 		if strings.Contains(string(out), "NotFound") || strings.Contains(string(out), "not found") {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("kubectl get secret: %v: %s", err, strings.TrimSpace(string(out)))
+		return nil, false, fmt.Errorf("kubectl get %s: %v: %s", kind, err, strings.TrimSpace(string(out)))
 	}
 	var parsed struct {
 		Data map[string]string `json:"data"`
 	}
 	if jerr := json.Unmarshal(out, &parsed); jerr != nil {
-		return nil, false, fmt.Errorf("parse secret json: %w", jerr)
+		return nil, false, fmt.Errorf("parse %s json: %w", kind, jerr)
 	}
 	keys := make(map[string]struct{}, len(parsed.Data))
 	for k := range parsed.Data {
@@ -397,15 +617,27 @@ func (KubectlSecretGetter) GetSecretKeys(ctx context.Context, kctx, namespace, n
 }
 
 // DockerImageChecker is the live ImageChecker: it resolves an image ref via
-// `docker manifest inspect <ref>` (a cheap registry HEAD, no pull). Local /
-// HTTP registries get --insecure. A clean non-zero exit means "not present"
-// (exists=false, nil err); forge can't distinguish absent-manifest from
-// other manifest-API failures, so any failure is reported as not-found
-// rather than aborting — the conservative choice for a check whose miss is
-// already actionable ("build + push the image").
+// `docker manifest inspect <ref>` (a cheap registry HEAD, no pull) against the
+// LOCAL docker daemon. Local / HTTP registries get --insecure.
+//
+// As a deploy GATE it must distinguish two very different non-zero exits:
+//
+//   - A CONFIRMED miss — the registry answered "no such manifest"
+//     (MANIFEST_UNKNOWN / "manifest unknown" / "not found" / a 404). The
+//     image genuinely isn't there → (false, nil), BLOCK.
+//   - An INCONCLUSIVE failure — the LOCAL daemon couldn't even ask: no
+//     credentials for a private registry, an auth/login error, DNS/TLS/
+//     network failure, docker not running. The CLUSTER may still pull the
+//     image fine, so blocking here would false-fail a present image and
+//     push people to reflexively --skip-preflight. → (false,
+//     ErrImageCheckInconclusive), WARN and PROCEED.
+//
+// The distinction is made by scanning combined stdout+stderr for the
+// well-known not-found markers; anything else is treated as inconclusive.
 type DockerImageChecker struct{}
 
-// ImageExists reports whether `docker manifest inspect` resolves ref.
+// ImageExists reports whether `docker manifest inspect` resolves ref. See the
+// type doc for the confirmed-miss vs inconclusive distinction.
 func (DockerImageChecker) ImageExists(ctx context.Context, ref string) (bool, error) {
 	args := []string{"manifest", "inspect"}
 	if registryRefIsInsecure(ref) {
@@ -413,10 +645,43 @@ func (DockerImageChecker) ImageExists(ctx context.Context, ref string) (bool, er
 	}
 	args = append(args, ref)
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	if cmd.Run() == nil {
+	out, err := cmd.CombinedOutput()
+	if err == nil {
 		return true, nil
 	}
-	return false, nil
+	if imageOutputIsConfirmedMiss(string(out)) {
+		return false, nil
+	}
+	// Couldn't reach a verdict locally — surface the daemon's own message
+	// as the inconclusive reason so the warning is actionable.
+	reason := strings.TrimSpace(string(out))
+	if reason == "" {
+		reason = err.Error()
+	}
+	return false, fmt.Errorf("%w: %s", ErrImageCheckInconclusive, reason)
+}
+
+// imageOutputIsConfirmedMiss reports whether `docker manifest inspect`'s
+// combined output indicates the image is genuinely ABSENT (a registry
+// not-found), as opposed to a transport/auth/network failure that leaves
+// existence unknown. Matching is case-insensitive on the registry/CLI markers
+// for a missing manifest or repository.
+func imageOutputIsConfirmedMiss(out string) bool {
+	l := strings.ToLower(out)
+	for _, marker := range []string{
+		"manifest unknown",
+		"manifest_unknown",
+		"not found",
+		"no such manifest",
+		"name unknown",
+		"name_unknown",
+		"repository name not known",
+	} {
+		if strings.Contains(l, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // registryRefIsInsecure reports whether an image ref points at a registry

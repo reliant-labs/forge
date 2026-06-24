@@ -35,6 +35,22 @@ func Register() {
 						return &plugin.MethodResult{V: p}, nil
 					},
 				},
+				// derive_jwk(private_key_pem, kid, alg) -> JWK dict. Derives
+				// the PUBLIC JWK from an ES256 private-key PEM at render time
+				// so a forge.TestJWKS publishes the public half of the EXACT
+				// key its signer uses — signer + JWKS can't drift.
+				"derive_jwk": {
+					Body: func(args *plugin.MethodArgs) (*plugin.MethodResult, error) {
+						pemStr := args.StrArg(0)
+						kid := args.StrArg(1)
+						alg := args.StrArg(2)
+						jwk, err := DeriveES256JWK(pemStr, kid, alg)
+						if err != nil {
+							return nil, err
+						}
+						return &plugin.MethodResult{V: jwk}, nil
+					},
+				},
 			},
 		})
 	})

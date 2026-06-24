@@ -394,7 +394,8 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// Cluster bootstrap. Declarative first: when the env's Bundle declares
 	// `clusters = [...]`, reconcile each (create-if-absent, no-op if
 	// present) — the multi-cluster generalization of the dev-only ensure
-	// below, ownership implicit via Cluster.network / registry_mirror. A
+	// below, ownership a reference via Cluster.owner (derived network /
+	// registry-inherit). A
 	// declared-cluster env works in ANY env name (not just "dev"), so a
 	// multi-cluster e2e/preview env stands up its clusters here. When the
 	// env declares NO clusters, fall back to the legacy dev-only

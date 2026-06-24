@@ -305,8 +305,8 @@ func runUp(ctx context.Context, opts upOptions) error {
 		// --no-deploy: with nothing to deploy there's no need to stand a
 		// cluster up. Declared-cluster ensure is the multi-cluster
 		// generalization of the dev-only ensureDevCluster on the deploy
-		// path — ownership is implicit (Cluster.network / registry_mirror),
-		// no "primary" cluster.
+		// path — ownership is a reference (Cluster.owner drives the derived
+		// network / registry-inherit), no "primary" cluster.
 		if !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:clusters") {
 			if err := reconcileDeclaredClusters(ctx, entities.Clusters, projectDir, opts.env); err != nil {
 				return fmt.Errorf("clusters: %w", err)

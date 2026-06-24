@@ -58,7 +58,7 @@ func TestOwnerNetworkFromClusters(t *testing.T) {
 			name: "secondary declares owner network",
 			in: []ClusterEntity{
 				{Name: "cp"},
-				{Name: "workload", Network: "k3d-cp", RegistryMirror: "inherit"},
+				{Name: "workload", Network: "k3d-cp", RegistryInherit: true},
 			},
 			want: "k3d-cp",
 		},

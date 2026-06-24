@@ -66,6 +66,17 @@ _bundle = forge.Bundle {
                 ]
             }
         }
+        # Build-only IMAGE via `deploy = None`: forge builds + pushes the
+        # image but renders no Deployment/Service. Use it for a base image
+        # other workloads reference at runtime (e.g. per-user pods pull it).
+        forge.Service {
+            name = "workspace-base"
+            image = "workspace-base"
+            deploy = None
+            build = forge.DockerBuild {
+                dockerfile = "docker/Dockerfile.workspace-base"
+            }
+        }
     ]
     operators = [
         forge.Operator {

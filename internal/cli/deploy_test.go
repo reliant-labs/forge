@@ -274,7 +274,7 @@ func TestApplyOptsBuilder_ContextFromDeclaredCluster(t *testing.T) {
 	builder := applyOptsBuilderFromContext(
 		"deploy/kcl/prod/main.k", "v1.2.3", "fallback-ns", "prod",
 		nil, false, false, nil, nil, nil,
-		[]deploytarget.ServiceGroup{group},
+		[]deploytarget.ServiceGroup{group}, nil,
 	)
 	opts := builder(group)
 	if opts.Context != declared {

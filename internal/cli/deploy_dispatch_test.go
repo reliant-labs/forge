@@ -324,7 +324,7 @@ func TestClusterScopeForGroups_SingleClusterIsNil(t *testing.T) {
 	groups := []deploytarget.ServiceGroup{
 		k8sGroupWithSvcs("k3d-control-plane", "admin-server", "workspace-controller"),
 	}
-	scopeFor := clusterScopeForGroups(groups)
+	scopeFor := clusterScopeForGroups(groups, nil)
 	if got := scopeFor(groups[0]); got != nil {
 		t.Errorf("single-cluster env must yield nil scope (no-op), got %+v", got)
 	}
@@ -340,7 +340,7 @@ func TestClusterScopeForGroups_TwoClustersPartition(t *testing.T) {
 	controlPlaneG := k8sGroupWithSvcs("k3d-control-plane", "admin-server", "workspace-controller", "reliant-api-server")
 	daemonG := k8sGroupWithSvcs("k3d-cp-daemon", "workspace-proxy")
 	groups := []deploytarget.ServiceGroup{controlPlaneG, daemonG}
-	scopeFor := clusterScopeForGroups(groups)
+	scopeFor := clusterScopeForGroups(groups, nil)
 
 	cs := scopeFor(controlPlaneG)
 	if cs == nil {
@@ -381,7 +381,7 @@ func TestClusterScopeForGroups_InfraServiceRoutesToItsCluster(t *testing.T) {
 	controlPlaneG := k8sGroupWithSvcs("k3d-control-plane", "admin-server", "cp-infra")
 	daemonG := k8sGroupWithSvcs("k3d-cp-daemon", "workspace-proxy")
 	groups := []deploytarget.ServiceGroup{controlPlaneG, daemonG}
-	scopeFor := clusterScopeForGroups(groups)
+	scopeFor := clusterScopeForGroups(groups, nil)
 
 	cs := scopeFor(controlPlaneG)
 	if _, ok := cs.OwnApps["cp-infra"]; !ok {
@@ -393,5 +393,99 @@ func TestClusterScopeForGroups_InfraServiceRoutesToItsCluster(t *testing.T) {
 	}
 	if _, leaked := ds.OwnApps["cp-infra"]; leaked {
 		t.Errorf("daemon scope must NOT own cp-infra")
+	}
+}
+
+// clusterSvcEntity builds a cluster-shaped ServiceEntity on the given cluster —
+// the render-order input mainClusterForEntities walks to resolve the env's main
+// cluster (the env-level deploy target an operator/cronjob lands on).
+func clusterSvcEntity(name, cluster string) ServiceEntity {
+	return ServiceEntity{
+		Name: name,
+		Deploy: DeployConfigEntity{
+			Type:    "cluster",
+			Cluster: &K8sCluster{Cluster: cluster, Namespace: "ns"},
+		},
+	}
+}
+
+// TestClusterScopeForGroups_OperatorAttributedToMainCluster is the regression
+// for the manifest-scoping leak: an OPERATOR (and a CRONJOB) carry no per-service
+// deploy block, so they're never part of the service-to-cluster grouping — but
+// forge stamps `app.kubernetes.io/name` on their Deployment/Job/RBAC all the
+// same. Before the fix the scoper saw those app labels as ungrouped and KEPT
+// them on EVERY cluster, replicating a control-plane operator (workspace-
+// controller) into the daemon cluster (no SA / no secret → stuck
+// ContainerCreating → failed rollout). With operators/cronjobs attributed to the
+// env's main cluster (the first cluster-shaped service's cluster), their app
+// labels must land in the main cluster's OwnApps and the OTHER cluster's
+// OtherApps — so the scoper DROPS them from the daemon cluster.
+func TestClusterScopeForGroups_OperatorAttributedToMainCluster(t *testing.T) {
+	// Mirror the e2e env: bulk of services + the operator + the migrate cronjob
+	// on k3d-control-plane (the env's main cluster — admin-server is the first
+	// cluster-shaped service), and a lone workspace-proxy on k3d-cp-daemon.
+	controlPlaneG := k8sGroupWithSvcs("k3d-control-plane", "admin-server", "reliant-api-server")
+	daemonG := k8sGroupWithSvcs("k3d-cp-daemon", "workspace-proxy")
+	groups := []deploytarget.ServiceGroup{controlPlaneG, daemonG}
+	entities := &KCLEntities{
+		Services: []ServiceEntity{
+			clusterSvcEntity("admin-server", "k3d-control-plane"),
+			clusterSvcEntity("workspace-proxy", "k3d-cp-daemon"),
+			clusterSvcEntity("reliant-api-server", "k3d-control-plane"),
+		},
+		Operators: []OperatorEntity{{Name: "workspace-controller"}},
+		CronJobs:  []CronJobEntity{{Name: "control-plane-migrate"}},
+	}
+	scopeFor := clusterScopeForGroups(groups, entities)
+
+	cs := scopeFor(controlPlaneG)
+	if cs == nil {
+		t.Fatal("control-plane group should get a non-nil scope in a multi-cluster env")
+	}
+	if _, ok := cs.OwnApps["workspace-controller"]; !ok {
+		t.Errorf("control-plane scope must OWN the operator workspace-controller, got %+v", cs.OwnApps)
+	}
+	if _, ok := cs.OwnApps["control-plane-migrate"]; !ok {
+		t.Errorf("control-plane scope must OWN the cronjob control-plane-migrate, got %+v", cs.OwnApps)
+	}
+
+	ds := scopeFor(daemonG)
+	if ds == nil {
+		t.Fatal("daemon group should get a non-nil scope in a multi-cluster env")
+	}
+	// The leak: the operator/cronjob must be in the daemon cluster's OtherApps
+	// (→ DROPPED there), and NOT in its OwnApps (→ would be replicated).
+	if _, ok := ds.OtherApps["workspace-controller"]; !ok {
+		t.Errorf("daemon scope must mark workspace-controller as another cluster's app (dropped from cp-daemon), got OtherApps %+v", ds.OtherApps)
+	}
+	if _, leaked := ds.OwnApps["workspace-controller"]; leaked {
+		t.Errorf("daemon scope must NOT own workspace-controller — that's the replication leak")
+	}
+	if _, ok := ds.OtherApps["control-plane-migrate"]; !ok {
+		t.Errorf("daemon scope must mark control-plane-migrate as another cluster's app (dropped from cp-daemon)")
+	}
+	if _, leaked := ds.OwnApps["control-plane-migrate"]; leaked {
+		t.Errorf("daemon scope must NOT own control-plane-migrate")
+	}
+}
+
+// TestMainClusterForEntities_FirstClusterShapedService pins the main-cluster
+// resolution: it's the FIRST cluster-shaped service's cluster in render order
+// (matching firstK8sClusterField / expectedClusterForEnv), so a lone
+// cross-cluster override later in the list never wins.
+func TestMainClusterForEntities_FirstClusterShapedService(t *testing.T) {
+	entities := &KCLEntities{
+		Services: []ServiceEntity{
+			clusterSvcEntity("admin-server", "k3d-control-plane"),
+			clusterSvcEntity("workspace-proxy", "k3d-cp-daemon"),
+		},
+	}
+	if got := mainClusterForEntities(entities, nil); got != "k3d-control-plane" {
+		t.Errorf("main cluster should be the first cluster-shaped service's cluster, got %q", got)
+	}
+	// Fallback: no service carries a cluster → first k8s group's cluster.
+	groups := []deploytarget.ServiceGroup{k8sGroupWithSvcs("k3d-only", "svc")}
+	if got := mainClusterForEntities(&KCLEntities{}, groups); got != "k3d-only" {
+		t.Errorf("fallback should use the first k8s group's cluster, got %q", got)
 	}
 }

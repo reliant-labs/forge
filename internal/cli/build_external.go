@@ -85,7 +85,7 @@ func externalBuildServices(e *KCLEntities) []ServiceEntity {
 // single source of truth a subsequent `forge deploy <env>` reads to
 // pin the image tag — eliminating the build/deploy tag divergence
 // the External (deploy) provider already closes for the deploy side.
-func buildExternalServices(ctx context.Context, services []ServiceEntity, opts buildOptions, registry, tag, projectDir, targetArch string) []buildResult {
+func buildExternalServices(ctx context.Context, services []ServiceEntity, opts buildOptions, registry, tag, projectDir, targetArch string, entities *KCLEntities) []buildResult {
 	if len(services) == 0 {
 		return nil
 	}
@@ -93,10 +93,25 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 	resultCh := make(chan buildResult, len(services))
 
 	dispatch := func(svc ServiceEntity) {
+		// Per-service tag: honor an explicit KCL per-service pin
+		// (Service.image_tag, e.g. e2e's reliant_image_tag="e2e" or the
+		// workspace-base "dev-per-daemon" build-only pin) first, then the
+		// env's resolved tag for THIS service's image off the rendered
+		// manifests, then the env-wide build-loop tag. This keeps the
+		// ${TAG} a build_cmd interpolates equal to the tag the env's
+		// deploy manifests reference for the SAME image — so the external
+		// build pushes exactly what deploy pulls, even when different
+		// external images carry different env tags.
+		svcTag := tag
+		if svc.ImageTag != "" {
+			svcTag = svc.ImageTag
+		} else if envTag := envImageTagFor(entities, svc.Image); envTag != "" {
+			svcTag = envTag
+		}
 		spec := buildtarget.Spec{
 			Service:    svc.Name,
 			Image:      svc.Image,
-			Tag:        tag,
+			Tag:        svcTag,
 			TargetArch: targetArch,
 			Registry:   registry,
 			ProjectDir: projectDir,
@@ -111,7 +126,7 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 			BuildCwd: svc.BuildCwd,
 			BuildEnv: svc.EffectiveBuildEnv(),
 		}
-		fmt.Printf("[build] %s: external build_cmd (tag %s)\n", svc.Name, tag)
+		fmt.Printf("[build] %s: external build_cmd (tag %s)\n", svc.Name, svcTag)
 		res := runner.Build(ctx, spec)
 
 		// Skip-with-warn: the runner returns Skipped=true when the
@@ -149,7 +164,7 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 		state := buildtarget.State{
 			Service:  svc.Name,
 			Image:    svc.Image,
-			Tag:      tag,
+			Tag:      svcTag,
 			Registry: registry,
 			PushedAt: nowRFC3339(),
 		}
@@ -171,7 +186,7 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 		// matches the single-file-per-env shape the --push path uses.
 		deployState := BuildState{
 			Image:    svc.Image,
-			Tag:      tag,
+			Tag:      svcTag,
 			Registry: registry,
 			// The user's build_cmd owns build AND push; we record the
 			// registry coordinates but can't prove a push happened, so

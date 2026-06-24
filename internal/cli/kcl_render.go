@@ -57,6 +57,20 @@ type KCLEntities struct {
 	// working without forcing the user to echo `output` or pass
 	// --namespace. Empty when the render carries no namespaced manifests.
 	ManifestNamespace string `json:"-"`
+
+	// ManifestImageTags maps a (registry-less) image NAME to the tag the
+	// rendered Deployment/Statefulset/Job manifests reference for it —
+	// recovered from `manifests[].spec.template.spec.containers[].image`.
+	// This is the env's RESOLVED image_tag (the `option("image_tag") or
+	// "<default>"` value baked into the manifest image refs), the exact
+	// tag `forge deploy <env>` will pull. `forge build --env <env>` reads
+	// it back so its default build tag MATCHES the deploy tag by
+	// construction — closing the build/deploy tag-divergence footgun
+	// where build tagged from git-describe but deploy referenced the
+	// env's literal default (e.g. "staging"), pushing one tag and
+	// deploying another → ImagePullBackOff. nil/empty when the render
+	// carries no Deployment-shaped manifests.
+	ManifestImageTags map[string]string `json:"-"`
 }
 
 // SecretProviderEntity is the parsed bundle-level secret provider
@@ -589,11 +603,21 @@ type kclRenderRaw struct {
 }
 
 // rawManifest is a minimal view of one rendered k8s object — just enough
-// to read its namespace. The rest of the object is ignored.
+// to read its namespace and (for workload kinds) the container images
+// its pod template references. The rest of the object is ignored.
 type rawManifest struct {
 	Metadata struct {
 		Namespace string `json:"namespace,omitempty"`
 	} `json:"metadata,omitempty"`
+	Spec struct {
+		Template struct {
+			Spec struct {
+				Containers []struct {
+					Image string `json:"image,omitempty"`
+				} `json:"containers,omitempty"`
+			} `json:"spec,omitempty"`
+		} `json:"template,omitempty"`
+	} `json:"spec,omitempty"`
 }
 
 type kclServiceRaw struct {
@@ -674,6 +698,10 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 	// both). We read the namespace off it from the outer bytes BEFORE we
 	// unwrap `output` — under the wrapper the manifests aren't visible.
 	manifestNS := manifestNamespaceFromOuter(data)
+	// Same OUTER-bytes-before-unwrap rule for the per-image tags: the
+	// workload manifests carry the env's resolved image_tag on their
+	// container image refs, which the `output` echo does NOT.
+	manifestImageTags := manifestImageTagsFromOuter(data)
 
 	// Peek for an "output" wrapper. If present, recurse on its bytes —
 	// the inner shape is the same kclRenderRaw shape we already parse.
@@ -702,6 +730,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		GRPCRoutes:        raw.GRPCRoutes,
 		SecretProvider:    raw.SecretProvider,
 		ManifestNamespace: manifestNS,
+		ManifestImageTags: manifestImageTags,
 	}
 	for _, s := range raw.Services {
 		deploy, err := dispatchServiceDeploy(s.Name, s.Deploy)
@@ -765,6 +794,86 @@ func manifestNamespaceFromOuter(outer []byte) string {
 		}
 	}
 	return best
+}
+
+// manifestImageTagsFromOuter maps each (registry-less) image NAME in the
+// rendered `manifests` stream to the tag the workload manifests reference
+// for it. It reads every container image off the pod templates
+// (Deployment/StatefulSet/Job all share spec.template.spec.containers),
+// splits "<registry>/<name>:<tag>" into name+tag, and records name→tag.
+//
+// This is the env's RESOLVED image_tag — the literal default an env's
+// `image_tag = option("image_tag") or "staging"` bakes into the image
+// refs when no `-D image_tag` override is passed (which is exactly how
+// RenderKCL renders: env only, no tag override). It is the tag
+// `forge deploy <env>` pulls, so `forge build --env <env>` defaults its
+// build tag to it (per image) and the two phases agree by construction.
+//
+// A digest-pinned image ("name@sha256:…") or an untagged image
+// ("name", implying :latest) contributes no entry — there's no tag to
+// align to. When an image name appears with conflicting tags across
+// manifests the LAST one wins; in practice every replica of a given
+// image carries the same env tag, so the map is unambiguous. Returns nil
+// when the render carries no tagged workload images.
+func manifestImageTagsFromOuter(outer []byte) map[string]string {
+	var probe struct {
+		Manifests []rawManifest `json:"manifests,omitempty"`
+	}
+	if err := json.Unmarshal(outer, &probe); err != nil {
+		return nil
+	}
+	var tags map[string]string
+	for _, m := range probe.Manifests {
+		for _, c := range m.Spec.Template.Spec.Containers {
+			name, tag, ok := splitImageNameTag(c.Image)
+			if !ok {
+				continue
+			}
+			if tags == nil {
+				tags = map[string]string{}
+			}
+			tags[name] = tag
+		}
+	}
+	return tags
+}
+
+// splitImageNameTag parses a container image ref into its registry-less
+// NAME and TAG, mirroring how KCL composes `${registry}/${image}:${tag}`.
+// "ghcr.io/reliant-labs/reliant:staging" → ("reliant", "staging", true).
+//
+// Returns ok=false for digest refs ("…@sha256:…"), tagless refs (no
+// ":"), or an empty/whitespace tag — none of which carry an env tag to
+// align a build to. The name is the final path segment (the registry +
+// org prefix is stripped) so it matches the KCL Service.image string a
+// build_cmd interpolates as ${IMAGE}.
+func splitImageNameTag(image string) (name, tag string, ok bool) {
+	image = strings.TrimSpace(image)
+	if image == "" || strings.Contains(image, "@") {
+		return "", "", false
+	}
+	// The tag is the substring after the LAST colon — but only when that
+	// colon is in the final path segment, so a registry "host:port/img"
+	// (colon before a slash) isn't mistaken for a tag.
+	lastColon := strings.LastIndex(image, ":")
+	if lastColon < 0 || strings.Contains(image[lastColon+1:], "/") {
+		return "", "", false
+	}
+	tag = strings.TrimSpace(image[lastColon+1:])
+	if tag == "" {
+		return "", "", false
+	}
+	ref := image[:lastColon]
+	// Strip the registry/org prefix: the build-side ${IMAGE} is the bare
+	// image name (the KCL Service.image), not the fully-qualified ref.
+	name = ref
+	if slash := strings.LastIndex(ref, "/"); slash >= 0 {
+		name = ref[slash+1:]
+	}
+	if name == "" {
+		return "", "", false
+	}
+	return name, tag, true
 }
 
 // dispatchServiceDeploy unmarshals the raw deploy block, reads the type

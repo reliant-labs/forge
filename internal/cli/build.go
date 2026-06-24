@@ -249,21 +249,58 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return err
 	}
 
+	// When --env is set, read the rendered KCL to drive the docker-skip
+	// set, the per-service platform override, the build-only variant
+	// builds, AND the default image tag (below). Missing KCL render is
+	// logged and treated as "no env filter" so projects that haven't
+	// migrated to the deploy module yet keep working unchanged. Rendered
+	// BEFORE tag resolution so the env's resolved image_tag can seed the
+	// default build tag.
+	var entities *KCLEntities
+	if opts.env != "" {
+		projectDir := projectDirForKCL()
+		ents, kerr := RenderKCL(ctx, projectDir, opts.env)
+		if kerr != nil {
+			fmt.Printf("[build]   Note: skipping KCL filter (%v)\n", kerr)
+		} else {
+			entities = ents
+		}
+	}
+
 	// Resolve the docker image tag once, up front. Both the docker
 	// build/push path below and the post-push build-state write consume
 	// this; resolving once guarantees the tag the user sees printed
 	// equals the tag that lands in .forge/state/build-<env>.json and the
-	// tag that subsequent `forge deploy` reads back. Override priority
-	// matches the deploy side: --tag flag > resolveImageTag from git.
+	// tag that subsequent `forge deploy` reads back. Override priority:
+	//
+	//  1. --tag flag (explicit; always wins).
+	//  2. With --env: the env's RESOLVED image_tag for the PROJECT image
+	//     (cfg.Name), read off the rendered manifests. This is the exact
+	//     tag `forge deploy <env>` references — so `forge build --env
+	//     <env> --push` then `forge deploy <env>` push and deploy the
+	//     SAME tag by construction, instead of build tagging from
+	//     git-describe while the manifests bake the env literal (e.g.
+	//     "staging") → ImagePullBackOff.
+	//  3. git-describe (resolveImageTag) — the standalone fallback when
+	//     no --env, or the env render carries no tag for the project
+	//     image.
 	resolvedTag := opts.tag
+	tagSource := "explicit --tag flag"
 	if resolvedTag == "" && opts.buildDocker {
-		// Only resolve when we'll actually use a tag — avoids surfacing
-		// "not a git repo" errors on a plain `forge build` (no docker).
-		t, terr := resolveImageTag(ctx, opts.env)
-		if terr != nil {
-			return fmt.Errorf("resolve image tag: %w (pass --tag to override)", terr)
+		if envTag := envImageTagFor(entities, cfg.Name); envTag != "" {
+			resolvedTag = envTag
+			tagSource = fmt.Sprintf("env %q image_tag (deploy ref)", opts.env)
+		} else {
+			// Only resolve from git when we'll actually use a tag — avoids
+			// surfacing "not a git repo" errors on a plain `forge build`
+			// (no docker), and is the no-env / no-manifest-tag fallback.
+			t, terr := resolveImageTag(ctx, opts.env)
+			if terr != nil {
+				return fmt.Errorf("resolve image tag: %w (pass --tag to override)", terr)
+			}
+			resolvedTag = t
+			tagSource = "git describe --tags --always --dirty"
 		}
-		resolvedTag = t
 	}
 
 	// Resolve the EMBEDDED build version once, up front, so every binary
@@ -285,24 +322,11 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		fmt.Printf("[build]   Env:      %s\n", opts.env)
 	}
 	if opts.buildDocker {
-		fmt.Printf("[build]   Tag:      %s\n", resolvedTag)
+		fmt.Printf("[build]   Tag:      %s (%s)\n", resolvedTag, tagSource)
 	}
 
-	// When --env is set, read the rendered KCL to drive the docker-skip
-	// set, the per-service platform override, and the build-only variant
-	// builds. Missing KCL render is logged and treated as "no env filter"
-	// so projects that haven't migrated to the deploy module yet keep
-	// working unchanged.
-	var entities *KCLEntities
-	if opts.env != "" {
-		projectDir := projectDirForKCL()
-		ents, kerr := RenderKCL(ctx, projectDir, opts.env)
-		if kerr != nil {
-			fmt.Printf("[build]   Note: skipping KCL filter (%v)\n", kerr)
-		} else {
-			entities = ents
-			summarizeKCLBuildPlan(entities)
-		}
+	if entities != nil {
+		summarizeKCLBuildPlan(entities)
 	}
 	fmt.Println()
 
@@ -502,7 +526,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 			}
 			externalArch := resolveExternalBuildTargetArch(cfgArchForDocker, opts.targetArch)
 			projDir := projectDirForKCL()
-			results = append(results, buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch)...)
+			results = append(results, buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch, entities)...)
 		}
 	}
 

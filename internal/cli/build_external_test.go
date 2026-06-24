@@ -190,7 +190,7 @@ func TestBuildExternalServices_ExternalLevelWritesDeployState(t *testing.T) {
 		},
 	}
 	opts := buildOptions{env: "prod", parallel: false}
-	results := buildExternalServices(context.Background(), services, opts, "ghcr.io", "forge-test", projDir, "amd64")
+	results := buildExternalServices(context.Background(), services, opts, "ghcr.io", "forge-test", projDir, "amd64", nil)
 	if len(results) != 1 || results[0].err != nil {
 		t.Fatalf("results: %+v", results)
 	}
@@ -268,6 +268,7 @@ func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
 		"v1.2.3",         // tag
 		projDir,
 		"amd64",
+		nil, // no rendered entities → env-wide tag applies
 	)
 	if len(results) != 1 {
 		t.Fatalf("results: got %d, want 1", len(results))
@@ -290,22 +291,23 @@ func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
 	}
 }
 
-// TestBuildExternalServices_SkipsWhenCwdMissing pins the local-dev
-// pattern: a missing build_cwd is logged as "skipped: …" and surfaces
-// as a buildResult with kind=="external-skip" and err=nil. CI runs
-// without the optional sibling repo must not fail the build.
+// TestBuildExternalServices_FailsWhenCwdMissing pins the gotcha-B
+// contract: a service that IS in the current env (it reached the
+// dispatcher) but whose build_cwd is missing must FAIL the build (a
+// buildResult with err set), not skip. Skipping reported success while
+// producing no image, so a following `forge deploy` referenced an
+// unpushed tag → ImagePullBackOff.
 //
-// Critically: the state file must NOT be written for a skipped build
-// (skipped builds produced nothing to deploy, so a state file would
-// poison a downstream `forge deploy` into pinning a tag for an image
-// that was never pushed).
-func TestBuildExternalServices_SkipsWhenCwdMissing(t *testing.T) {
+// Critically: a FAILED build must NOT write a state file either — that
+// would still let a downstream `forge deploy` pin a tag for an image
+// that was never pushed.
+func TestBuildExternalServices_FailsWhenCwdMissing(t *testing.T) {
 	projDir := t.TempDir()
 	services := []ServiceEntity{
 		{
 			Name:     "edge",
 			Image:    "edge-img",
-			BuildCmd: "false", // would fail if it ran, proving the skip path short-circuited
+			BuildCmd: "false", // would fail if it ran; the missing-cwd check short-circuits first
 			BuildCwd: "missing-sibling",
 		},
 	}
@@ -318,23 +320,27 @@ func TestBuildExternalServices_SkipsWhenCwdMissing(t *testing.T) {
 		"v1",
 		projDir,
 		"amd64",
+		nil,
 	)
 	if len(results) != 1 {
 		t.Fatalf("results: got %d, want 1", len(results))
 	}
 	r := results[0]
-	if r.err != nil {
-		t.Errorf("err: got %v, want nil for skip", r.err)
+	if r.err == nil {
+		t.Fatal("err: got nil, want a failure for a missing build_cwd (skip-masquerading-as-success regression)")
 	}
-	if r.kind != "external-skip" {
-		t.Errorf("kind: got %q, want external-skip", r.kind)
+	if !strings.Contains(r.err.Error(), "missing-sibling") {
+		t.Errorf("err: got %q, want it to name the missing path", r.err.Error())
 	}
-	// Skipped builds MUST NOT write a state file — that would let a
+	if r.kind != "external" {
+		t.Errorf("kind: got %q, want external (a real failure, not external-skip)", r.kind)
+	}
+	// Failed builds MUST NOT write a state file — that would let a
 	// downstream `forge deploy` pin a tag for an image that was never
 	// pushed.
 	statePath := filepath.Join(projDir, ".forge", "state", "build-dev-edge.json")
 	if _, err := os.Stat(statePath); err == nil {
-		t.Errorf("state file at %s exists; skipped builds must not write state", statePath)
+		t.Errorf("state file at %s exists; failed builds must not write state", statePath)
 	}
 }
 

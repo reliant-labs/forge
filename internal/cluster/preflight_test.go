@@ -49,13 +49,17 @@ func (f fakeConfigMapGetter) GetConfigMapKeys(_ context.Context, _, _, name stri
 }
 
 // fakeImageChecker resolves image existence from an in-memory set.
-// confirmedMiss images return (false, nil) — a real registry not-found that
-// must BLOCK. inconclusive images return (false, ErrImageCheckInconclusive)
-// — a transport/auth failure that must WARN+proceed, not block. err (when
-// set) is a hard checker failure returned for every lookup.
+// present images return (true, nil). Images absent from every set return
+// (false, nil) — a real registry not-found that must BLOCK. inconclusive
+// images return (false, ErrImageCheckInconclusive) — a TRANSPORT failure that
+// must WARN+proceed, not block. authDenied images return (false,
+// ErrImageCheckAuthDenied) — the registry refused the lookup, so existence is
+// UNKNOWN and the gate must BLOCK (cannot confirm) rather than fail open. err
+// (when set) is a hard checker failure returned for every lookup.
 type fakeImageChecker struct {
 	present      map[string]struct{}
 	inconclusive map[string]struct{}
+	authDenied   map[string]struct{}
 	err          error
 }
 
@@ -64,7 +68,10 @@ func (f fakeImageChecker) ImageExists(_ context.Context, ref string) (bool, erro
 		return false, f.err
 	}
 	if _, ok := f.inconclusive[ref]; ok {
-		return false, fmt.Errorf("%w: no basic auth credentials", ErrImageCheckInconclusive)
+		return false, fmt.Errorf("%w: dial tcp: connection refused", ErrImageCheckInconclusive)
+	}
+	if _, ok := f.authDenied[ref]; ok {
+		return false, fmt.Errorf("%w: denied: requested access to the resource is denied", ErrImageCheckAuthDenied)
 	}
 	_, ok := f.present[ref]
 	return ok, nil
@@ -607,6 +614,82 @@ func TestRunPreflightChecks_InconclusiveIsWarningNotMiss(t *testing.T) {
 	}
 }
 
+// --- Preflight: image auth-denied → BLOCKED (cannot confirm, no fail-open) -
+
+// A private-registry auth denial leaves the image's presence UNKNOWN; the gate
+// must BLOCK rather than silently pass (which would ImagePullBackOff in prod).
+func TestPreflight_AuthDeniedImageBlocks(t *testing.T) {
+	opts := PreflightOpts{
+		Manifests: deploymentManifest,
+		Context:   "gke_prod",
+		Namespace: "app-prod",
+		Secrets: fakeSecretGetter{secrets: map[string]map[string]struct{}{
+			"app-secrets": keySet("service_secret", "db_url"),
+		}},
+		Images: fakeImageChecker{authDenied: keySet("ghcr.io/acme/api:abc123")},
+	}
+	err := Preflight(context.Background(), opts)
+	if err == nil {
+		t.Fatal("an auth-denied image lookup must BLOCK the deploy (cannot confirm), not fail open")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "could not be confirmed") {
+		t.Errorf("report should name the unverifiable-image block; got:\n%s", msg)
+	}
+	// Message must name BOTH possible causes + the override.
+	for _, want := range []string{
+		"never pushed",
+		"pull credentials",
+		"--skip-preflight",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("report must mention %q so the operator can act; got:\n%s", want, msg)
+		}
+	}
+}
+
+// The auth-denied verdict is a BLOCKING UnverifiableImage, NOT a non-blocking
+// ImageWarning — that distinction is the whole fix.
+func TestRunPreflightChecks_AuthDeniedIsBlockNotWarning(t *testing.T) {
+	refs := CollectManifestRefs(deploymentManifest)
+	opts := PreflightOpts{
+		Manifests: deploymentManifest,
+		Images:    fakeImageChecker{authDenied: keySet("ghcr.io/acme/api:abc123")},
+	}
+	res, err := runPreflightChecks(context.Background(), opts, refs)
+	if err != nil {
+		t.Fatalf("auth-denied image must not abort the preflight: %v", err)
+	}
+	if len(res.ImageWarnings) != 0 {
+		t.Errorf("auth-denied must NOT be a non-blocking warning; got ImageWarnings=%v", res.ImageWarnings)
+	}
+	if len(res.UnverifiableImages) != 1 {
+		t.Fatalf("expected one UnverifiableImage (blocking); got %v", res.UnverifiableImages)
+	}
+	if res.OK() {
+		t.Error("a run with an auth-denied (unverifiable) image must NOT be OK() — it blocks")
+	}
+}
+
+// --- Preflight: image transport error → WARN + proceed (not block) --------
+
+// A genuine transport failure (connection refused) says nothing about the
+// image — the cluster may still pull it — so it must WARN+proceed, unchanged.
+func TestPreflight_TransportErrorWarnsAndProceeds(t *testing.T) {
+	opts := PreflightOpts{
+		Manifests: deploymentManifest,
+		Context:   "gke_prod",
+		Namespace: "app-prod",
+		Secrets: fakeSecretGetter{secrets: map[string]map[string]struct{}{
+			"app-secrets": keySet("service_secret", "db_url"),
+		}},
+		Images: fakeImageChecker{inconclusive: keySet("ghcr.io/acme/api:abc123")},
+	}
+	if err := Preflight(context.Background(), opts); err != nil {
+		t.Fatalf("a transport-class inconclusive check must warn+proceed, not block; got: %v", err)
+	}
+}
+
 // --- Preflight: image confirmed-404 → blocked ----------------------------
 
 func TestPreflight_Confirmed404ImageBlocks(t *testing.T) {
@@ -644,18 +727,86 @@ func TestImageOutputIsConfirmedMiss(t *testing.T) {
 			t.Errorf("expected confirmed miss for %q", out)
 		}
 	}
-	inconclusive := []string{
-		"no basic auth credentials",
+	// Neither auth denials nor transport noise are a CONFIRMED miss.
+	notConfirmedMiss := []string{
+		"denied: requested access to the resource is denied",
 		"unauthorized: authentication required",
+		"no basic auth credentials",
+		"403 Forbidden",
 		"dial tcp: lookup registry.example.com: no such host",
 		"Cannot connect to the Docker daemon",
 		"net/http: TLS handshake timeout",
+		"dial tcp 10.0.0.1:443: connect: connection refused",
 	}
-	for _, out := range inconclusive {
+	for _, out := range notConfirmedMiss {
 		if imageOutputIsConfirmedMiss(out) {
-			t.Errorf("expected inconclusive (not a confirmed miss) for %q", out)
+			t.Errorf("expected NOT a confirmed miss for %q", out)
 		}
 	}
+}
+
+// imageOutputIsAuthDenied separates auth-class registry denials (BLOCK —
+// cannot confirm) from transport failures (WARN+proceed). A private-registry
+// MISSING image surfaces as a denial, so these must classify as auth-denied,
+// never as inconclusive transport noise.
+func TestImageOutputIsAuthDenied(t *testing.T) {
+	authDenied := []string{
+		"denied: requested access to the resource is denied",
+		"unauthorized: authentication required",
+		"403 Forbidden",
+		"Error response from daemon: access denied",
+		"no basic auth credentials",
+	}
+	for _, out := range authDenied {
+		if !imageOutputIsAuthDenied(out) {
+			t.Errorf("expected auth-denied for %q", out)
+		}
+	}
+	// Genuine transport failures are NOT auth denials — they stay
+	// inconclusive (the cluster may still pull).
+	transport := []string{
+		"dial tcp: lookup registry.example.com: no such host",
+		"dial tcp 10.0.0.1:443: connect: connection refused",
+		"Cannot connect to the Docker daemon",
+		"net/http: TLS handshake timeout",
+		"i/o timeout",
+	}
+	for _, out := range transport {
+		if imageOutputIsAuthDenied(out) {
+			t.Errorf("expected NOT auth-denied (transport) for %q", out)
+		}
+	}
+}
+
+// --- DockerImageChecker.ImageExists: end-to-end classification ------------
+//
+// Drives the real ImageExists output-classification through the error types
+// (via mapping the fake checker's strings) to lock the auth-denied →
+// ErrImageCheckAuthDenied and transport → ErrImageCheckInconclusive contract
+// the preflight relies on.
+func TestImageExistsErrorClassification(t *testing.T) {
+	authReason := "denied: requested access to the resource is denied"
+	if got := classifyImageErr(authReason); !errors.Is(got, ErrImageCheckAuthDenied) {
+		t.Errorf("auth denial should map to ErrImageCheckAuthDenied; got %v", got)
+	}
+	netReason := "dial tcp 10.0.0.1:443: connect: connection refused"
+	if got := classifyImageErr(netReason); !errors.Is(got, ErrImageCheckInconclusive) {
+		t.Errorf("transport error should map to ErrImageCheckInconclusive; got %v", got)
+	}
+}
+
+// classifyImageErr mirrors ImageExists's post-`docker manifest inspect`
+// branching for an already-failed lookup, so the classification can be
+// asserted without invoking docker. confirmed-miss returns nil (no error;
+// (false,nil) is the confirmed-absent signal).
+func classifyImageErr(out string) error {
+	if imageOutputIsConfirmedMiss(out) {
+		return nil
+	}
+	if imageOutputIsAuthDenied(out) {
+		return fmt.Errorf("%w: %s", ErrImageCheckAuthDenied, out)
+	}
+	return fmt.Errorf("%w: %s", ErrImageCheckInconclusive, out)
 }
 
 func TestLocalImageRef(t *testing.T) {

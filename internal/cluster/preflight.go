@@ -240,31 +240,50 @@ type ConfigMapGetter interface {
 
 // ImageChecker reports whether an image ref is resolvable in its registry.
 //
-// The three outcomes are deliberately distinct, because a deploy GATE must
-// not block on its own blind spots:
+// The outcomes are deliberately distinct, because a deploy GATE must not block
+// on its own blind spots — but it equally must not SILENTLY PASS an image it
+// could not confirm is present:
 //
 //   - (true, nil)   — the image is present. Proceed.
 //   - (false, nil)  — the image is CONFIRMED absent (a real registry
 //     not-found / MANIFEST_UNKNOWN). BLOCK the deploy.
+//   - (false, err) where errors.Is(err, ErrImageCheckAuthDenied) — the
+//     registry refused the lookup with an auth-class denial (denied /
+//     unauthorized / 403 forbidden). The image's presence is UNKNOWN, and on
+//     a private prod registry an auth-denied manifest lookup is exactly what a
+//     genuinely-missing image looks like. BLOCK (cannot confirm), with an
+//     actionable message — but the operator can --skip-preflight after
+//     verifying. Failing open here is what produces ImagePullBackOff in prod.
 //   - (false, err) where errors.Is(err, ErrImageCheckInconclusive) — the
-//     check could not reach a verdict (no creds / network / transport
-//     error against a registry the CLUSTER may still be able to pull). The
-//     preflight WARNS and PROCEEDS rather than false-failing a present
-//     image.
+//     check could not reach the registry AT ALL (DNS / connection refused /
+//     i/o timeout / docker daemon down). That is a transport problem, not a
+//     statement about the image, and the CLUSTER may still pull fine, so the
+//     preflight WARNS and PROCEEDS rather than false-failing a present image.
 //   - (_, err) for any other error — a genuine checker failure the caller
 //     surfaces (aborts the preflight).
 type ImageChecker interface {
 	ImageExists(ctx context.Context, ref string) (exists bool, err error)
 }
 
-// ErrImageCheckInconclusive marks an image check that could not reach a
-// present/absent verdict — typically because the LOCAL docker daemon lacks
-// credentials or network for a private registry the CLUSTER can still pull.
-// The preflight treats it as a non-blocking warning ("couldn't verify image
-// X: <reason>; proceeding") rather than a confirmed miss, so the gate never
-// blocks a present image just because the laptop running the deploy can't see
-// it. Wrap it with %w to carry the underlying reason.
+// ErrImageCheckInconclusive marks an image check that could not reach the
+// registry at all — a transport-class failure (DNS, connection refused, i/o
+// timeout, docker daemon down). That says nothing about the image: the CLUSTER
+// may still pull it fine, so the preflight treats it as a non-blocking warning
+// ("couldn't verify image X: <reason>; proceeding") rather than a confirmed
+// miss. Wrap it with %w to carry the underlying reason.
 var ErrImageCheckInconclusive = errors.New("image existence could not be verified")
+
+// ErrImageCheckAuthDenied marks an image check the registry refused with an
+// auth-class denial (denied / unauthorized / 403 forbidden). Unlike a
+// transport error, this DID reach the registry — it just wouldn't answer
+// whether the manifest exists. On a private registry (ghcr.io private
+// packages, GCP Artifact Registry) a genuinely-MISSING image returns exactly
+// this denial, so treating it as inconclusive would let the gate silently pass
+// a missing image and ImagePullBackOff in prod. The preflight therefore BLOCKS
+// on it (cannot confirm the image is present) with a message naming both
+// causes — image not pushed, OR the deploy host lacks pull creds — and the
+// --skip-preflight escape. Wrap it with %w to carry the underlying reason.
+var ErrImageCheckAuthDenied = errors.New("image existence could not be confirmed (registry denied the lookup)")
 
 // PreflightOpts bundles everything Preflight needs: the rendered manifests
 // to scan, the target cluster context + namespace the Secret checks run
@@ -315,11 +334,18 @@ type PreflightResult struct {
 	MissingConfigMapKeys map[string][]string
 	// MissingImages is the sorted list of image refs CONFIRMED absent.
 	MissingImages []string
+	// UnverifiableImages is the sorted list of "<ref>: <reason>" entries for
+	// images whose registry lookup was AUTH-DENIED (denied / unauthorized /
+	// 403). Their presence is unknown and a deploy gate must not silently
+	// pass an image it cannot confirm — these BLOCK, with a message naming
+	// both possible causes (image not pushed, OR the deploy host lacks pull
+	// creds for the registry).
+	UnverifiableImages []string
 	// ImageWarnings is the sorted list of "could not verify" notes for
-	// images whose existence check was inconclusive (local docker daemon
-	// can't see a registry the cluster might pull from). These do NOT
-	// block the deploy — they are printed so the user knows the gate
-	// couldn't vouch for those images.
+	// images whose existence check was inconclusive — a TRANSPORT failure
+	// (DNS, connection refused, i/o timeout, docker daemon down) that says
+	// nothing about the image. These do NOT block the deploy — they are
+	// printed so the user knows the gate couldn't vouch for those images.
 	ImageWarnings []string
 }
 
@@ -328,7 +354,8 @@ type PreflightResult struct {
 func (r PreflightResult) OK() bool {
 	return len(r.MissingSecretKeys) == 0 &&
 		len(r.MissingConfigMapKeys) == 0 &&
-		len(r.MissingImages) == 0
+		len(r.MissingImages) == 0 &&
+		len(r.UnverifiableImages) == 0
 }
 
 // wholeSecretMarker is the placeholder listed under a Secret that doesn't
@@ -420,10 +447,24 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 				defer wg.Done()
 				exists, err := opts.Images.ImageExists(ctx, ref)
 				if err != nil {
-					// An inconclusive check (no creds / network for a
-					// registry the CLUSTER may still pull) must NOT block
-					// or abort — warn and proceed. Any other checker error
-					// is a genuine failure that aborts the preflight.
+					// An auth-denied lookup did reach the registry but
+					// wouldn't say whether the image is present — and on a
+					// private registry a MISSING image looks exactly like
+					// this. The gate must not silently pass an image it
+					// can't confirm, so this BLOCKS (the operator can
+					// --skip-preflight after a 5-second check).
+					if errors.Is(err, ErrImageCheckAuthDenied) {
+						mu.Lock()
+						result.UnverifiableImages = append(result.UnverifiableImages,
+							fmt.Sprintf("%s (%v)", ref, err))
+						mu.Unlock()
+						return
+					}
+					// A transport-class inconclusive check (DNS / connection
+					// refused / timeout for a registry the CLUSTER may still
+					// pull) says nothing about the image — warn and proceed.
+					// Any other checker error is a genuine failure that
+					// aborts the preflight.
 					if errors.Is(err, ErrImageCheckInconclusive) {
 						mu.Lock()
 						result.ImageWarnings = append(result.ImageWarnings,
@@ -449,6 +490,7 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 		return PreflightResult{}, firstErr
 	}
 	sort.Strings(result.MissingImages)
+	sort.Strings(result.UnverifiableImages)
 	sort.Strings(result.ImageWarnings)
 	return result, nil
 }
@@ -528,6 +570,13 @@ func FormatPreflightReport(r PreflightResult) string {
 		}
 	}
 
+	if len(r.UnverifiableImages) > 0 {
+		b.WriteString("\n  Images that could not be confirmed (registry denied the lookup):\n")
+		for _, img := range r.UnverifiableImages {
+			b.WriteString(fmt.Sprintf("    - %s\n", img))
+		}
+	}
+
 	b.WriteString("\nNothing was applied. Fix the gaps, then re-run the deploy:\n")
 	if len(r.MissingSecretKeys) > 0 {
 		b.WriteString("  - provision the missing Secret key(s) in the target cluster/namespace\n")
@@ -537,6 +586,13 @@ func FormatPreflightReport(r PreflightResult) string {
 	}
 	if len(r.MissingImages) > 0 {
 		b.WriteString("  - build + push the missing image(s) to the registry\n")
+	}
+	if len(r.UnverifiableImages) > 0 {
+		b.WriteString("  - the registry refused to confirm the image(s) above — this means ONE of:\n")
+		b.WriteString("      (a) the image was never pushed (build + push it), OR\n")
+		b.WriteString("      (b) the deploy host lacks pull credentials for that registry\n")
+		b.WriteString("          (e.g. `docker login ghcr.io`, `gcloud auth configure-docker`).\n")
+		b.WriteString("    Verify the image really exists, then re-run; only --skip-preflight once you've confirmed it.\n")
 	}
 	b.WriteString("  - or pass --skip-preflight to bypass this check (you accept the risk of a crash-on-apply).")
 	return b.String()
@@ -625,15 +681,23 @@ func kubectlDataKeys(ctx context.Context, kctx, namespace, kind, name string) (m
 //   - A CONFIRMED miss — the registry answered "no such manifest"
 //     (MANIFEST_UNKNOWN / "manifest unknown" / "not found" / a 404). The
 //     image genuinely isn't there → (false, nil), BLOCK.
-//   - An INCONCLUSIVE failure — the LOCAL daemon couldn't even ask: no
-//     credentials for a private registry, an auth/login error, DNS/TLS/
-//     network failure, docker not running. The CLUSTER may still pull the
-//     image fine, so blocking here would false-fail a present image and
-//     push people to reflexively --skip-preflight. → (false,
-//     ErrImageCheckInconclusive), WARN and PROCEED.
+//   - An AUTH-DENIED lookup — the registry refused to answer ("denied",
+//     "unauthorized", "403 forbidden", "access to the resource is denied").
+//     This DID reach the registry but left the image's presence UNKNOWN — and
+//     on a PRIVATE registry (ghcr.io private packages, GCP Artifact Registry)
+//     a genuinely-MISSING image returns exactly this denial. Passing it as
+//     inconclusive would fail OPEN and ImagePullBackOff in prod, so →
+//     (false, ErrImageCheckAuthDenied), BLOCK (cannot confirm) — overridable
+//     via --skip-preflight once the operator has verified the image.
+//   - An INCONCLUSIVE failure — the LOCAL daemon couldn't reach the registry
+//     at all: DNS/TLS failure, connection refused, i/o timeout, docker not
+//     running. That is a transport problem, not a statement about the image;
+//     the CLUSTER may still pull it fine, so blocking here would false-fail a
+//     present image. → (false, ErrImageCheckInconclusive), WARN and PROCEED.
 //
-// The distinction is made by scanning combined stdout+stderr for the
-// well-known not-found markers; anything else is treated as inconclusive.
+// The distinction is made by scanning combined stdout+stderr: not-found
+// markers first (most specific), then auth-denied markers; anything left is
+// treated as inconclusive transport noise.
 type DockerImageChecker struct{}
 
 // ImageExists reports whether `docker manifest inspect` resolves ref. See the
@@ -652,12 +716,20 @@ func (DockerImageChecker) ImageExists(ctx context.Context, ref string) (bool, er
 	if imageOutputIsConfirmedMiss(string(out)) {
 		return false, nil
 	}
-	// Couldn't reach a verdict locally — surface the daemon's own message
-	// as the inconclusive reason so the warning is actionable.
 	reason := strings.TrimSpace(string(out))
 	if reason == "" {
 		reason = err.Error()
 	}
+	// An auth-class denial reached the registry but won't confirm the image.
+	// On a private registry a MISSING image is indistinguishable from this,
+	// so a deploy gate must BLOCK rather than fail open. Checked before the
+	// inconclusive fallback so a denial is never mistaken for transport noise.
+	if imageOutputIsAuthDenied(string(out)) {
+		return false, fmt.Errorf("%w: %s", ErrImageCheckAuthDenied, reason)
+	}
+	// Couldn't even reach the registry — transport noise. Surface the
+	// daemon's own message as the inconclusive reason so the warning is
+	// actionable.
 	return false, fmt.Errorf("%w: %s", ErrImageCheckInconclusive, reason)
 }
 
@@ -676,6 +748,35 @@ func imageOutputIsConfirmedMiss(out string) bool {
 		"name unknown",
 		"name_unknown",
 		"repository name not known",
+	} {
+		if strings.Contains(l, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// imageOutputIsAuthDenied reports whether `docker manifest inspect`'s combined
+// output is an AUTH-CLASS denial from the registry — the registry was reached
+// but refused to confirm the manifest. On a PRIVATE registry a genuinely-
+// missing image surfaces as exactly this denial (ghcr.io private packages, GCP
+// Artifact Registry `us-docker.pkg.dev`, Docker Hub private repos), so the
+// gate treats it as "cannot confirm → block" rather than failing open.
+//
+// Matching is case-insensitive. These markers are auth/authorization denials,
+// distinct from the transport failures (DNS, connection refused, timeout,
+// daemon down) that remain inconclusive.
+func imageOutputIsAuthDenied(out string) bool {
+	l := strings.ToLower(out)
+	for _, marker := range []string{
+		"denied",        // "denied: requested access to the resource is denied"
+		"unauthorized",  // "unauthorized: authentication required"
+		"forbidden",     // "403 Forbidden"
+		"403",           // bare 403 status
+		"access denied", // some registries phrase it this way
+		"requested access to the resource is denied",
+		"authentication required",
+		"no basic auth credentials", // local daemon has no creds for a private registry
 	} {
 		if strings.Contains(l, marker) {
 			return true

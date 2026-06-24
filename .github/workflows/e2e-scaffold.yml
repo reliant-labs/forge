@@ -25,7 +25,7 @@ jobs:
       # Set once so every step uses the same workspace path.
       E2E_DIR: ${{ github.workspace }}/e2e-workspace
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:

@@ -23,16 +23,17 @@ import (
 
 func newDeployCmd() *cobra.Command {
 	var (
-		imageTag     string
-		tag          string
-		dryRun       bool
-		namespace    string
-		explain      bool
-		targetArch   string
-		prune        bool
-		rollback     bool
-		targets      []string
-		skipFrontend bool
+		imageTag      string
+		tag           string
+		dryRun        bool
+		namespace     string
+		explain       bool
+		targetArch    string
+		prune         bool
+		rollback      bool
+		targets       []string
+		skipFrontend  bool
+		skipPreflight bool
 	)
 
 	cmd := &cobra.Command{
@@ -66,6 +67,15 @@ to fix your kubeconfig or the KCL forge.K8sCluster.cluster.
 
 Use --explain to print the declared context, whether it exists in your
 kubeconfig, and the verdict without applying.
+
+Deployability preflight: before the first apply (remote/cloud clusters),
+forge verifies against the LIVE target that every Secret KEY the rendered
+manifests reference is provisioned and every container image: resolves in
+its registry. A missing key (CreateContainerConfigError) or image
+(ImagePullBackOff) is reported up front — all at once — and the deploy
+refuses to apply, instead of surfacing one pod crash at a time mid-rollout.
+The preflight is skipped for local dev clusters and runs under --dry-run as
+a pure read-only check. Bypass with --skip-preflight.
 
 Use --target <app> (repeatable) to deploy ONLY the named application(s)
 instead of the whole env bundle. It filters by app NAME — service,
@@ -116,14 +126,15 @@ Examples:
 				return errors.New("--rollback and --tag are mutually exclusive")
 			}
 			return runDeploy(cmd.Context(), args[0], deployOptions{
-				imageTag:     effectiveTag,
-				dryRun:       dryRun,
-				namespace:    namespace,
-				targetArch:   targetArch,
-				prune:        prune,
-				rollback:     rollback,
-				targets:      targets,
-				skipFrontend: skipFrontend,
+				imageTag:      effectiveTag,
+				dryRun:        dryRun,
+				namespace:     namespace,
+				targetArch:    targetArch,
+				prune:         prune,
+				rollback:      rollback,
+				targets:       targets,
+				skipFrontend:  skipFrontend,
+				skipPreflight: skipPreflight,
 			})
 		},
 	}
@@ -138,6 +149,7 @@ Examples:
 	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back the env to the last successfully deployed tag (per service, from .forge/state).")
 	cmd.Flags().StringArrayVar(&targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
 	cmd.Flags().BoolVar(&skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
+	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
 
 	return cmd
 }
@@ -251,6 +263,18 @@ type deployOptions struct {
 	// covers the deploy-everything-but-the-frontend case in one flag. No
 	// effect on rollback (which never dispatches frontends).
 	skipFrontend bool
+
+	// skipPreflight, when true, bypasses the deploy-time deployability
+	// preflight (verify every referenced Secret key + container image exists
+	// on the LIVE target BEFORE the first apply). The preflight is
+	// default-ON for remote/cloud clusters — it turns a deploy-time pod
+	// crash (CreateContainerConfigError / ImagePullBackOff, discovered
+	// one-at-a-time over a rollout) into one fail-fast error up front. It is
+	// naturally skipped for local dev clusters (where images live in the
+	// in-cluster registry the checker can't reach the same way) and no-ops
+	// when there's nothing to check. Bypass is the escape hatch when you
+	// knowingly accept the risk. No effect on rollback.
+	skipPreflight bool
 }
 
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
@@ -497,6 +521,32 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// uses.
 	if deployContext == "" {
 		deployContext = expectedClusterForEnv(ctx, cfg, envName)
+	}
+
+	// Deployability preflight: BEFORE the first apply (including the dotenv
+	// Secret projection below), verify against the LIVE target that every
+	// Secret KEY the rendered manifests reference is provisioned and every
+	// container image resolves. A missing key (CreateContainerConfigError)
+	// or missing image (ImagePullBackOff) otherwise only surfaces as a pod
+	// crash mid-rollout, discovered one-at-a-time. This prints ALL the gaps
+	// at once and refuses to apply. Default-ON for remote/cloud clusters;
+	// the Secret check is skipped for local dev clusters (forge applies the
+	// dotenv Secrets itself moments later, so they don't exist yet) and
+	// local-registry images are skipped (they live in the in-cluster
+	// registry the checker can't reach). Runs under --dry-run too (pure
+	// read-only check). --skip-preflight bypasses it.
+	if hasK8sServices && !rollback && !opts.skipPreflight {
+		if err := runDeployPreflight(ctx, deployPreflightInput{
+			mainK:     mainK,
+			imageTag:  imageTag,
+			namespace: namespace,
+			env:       envName,
+			envCfgKV:  envCfgKV,
+			deployCtx: deployContext,
+			targets:   targets,
+		}); err != nil {
+			return err
+		}
 	}
 
 	// k8s Secret projection: for a dotenv secret_provider, render the
@@ -1250,6 +1300,64 @@ func isInsecureRegistry(ref string) bool {
 		return true
 	}
 	return false
+}
+
+// deployPreflightInput bundles what runDeployPreflight needs to render the
+// env's manifests and run the deployability checks against the live target.
+type deployPreflightInput struct {
+	mainK     string
+	imageTag  string
+	namespace string
+	env       string
+	envCfgKV  map[string]string
+	deployCtx string
+	targets   []string
+}
+
+// runDeployPreflight renders the env's manifest bundle and runs the
+// cluster.Preflight deployability checks (referenced Secret keys present in
+// the live cluster + container images present in the registry) BEFORE the
+// first apply. Returns a grouped, actionable error when anything is missing
+// — nothing is applied. A no-op when the bundle has nothing to check.
+//
+// The Secret check is gated to REMOTE clusters: on a local dev cluster
+// forge applies the dotenv-projected Secrets itself moments after this
+// runs, so they don't exist yet and checking them would false-fail the
+// inner loop. Local-registry images are skipped via cluster.LocalImageRef
+// for the same don't-break-dev-loop reason. Image checks DO still run on a
+// local cluster for remote-registry images (e.g. ghcr.io refs in a local
+// test), since those are reachable and a miss is real.
+func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
+	// Render the same manifest stream the apply will consume. Applying the
+	// --target filter keeps the preflight scoped to exactly the apps about
+	// to be applied (a targeted single-app deploy shouldn't fail on another
+	// app's missing image).
+	manifests, err := cluster.RenderManifests(ctx, in.mainK, in.imageTag, in.namespace, in.env, in.envCfgKV)
+	if err != nil {
+		return fmt.Errorf("preflight: render manifests: %w", err)
+	}
+	if len(in.targets) > 0 {
+		filtered, ferr := cluster.FilterManifestsByApp(manifests, in.targets)
+		if ferr != nil {
+			return fmt.Errorf("preflight: scope manifests to --target: %w", ferr)
+		}
+		manifests = filtered
+	}
+
+	opts := cluster.PreflightOpts{
+		Manifests:    manifests,
+		Namespace:    in.namespace,
+		Images:       cluster.DockerImageChecker{},
+		SkipImageRef: cluster.LocalImageRef,
+	}
+	// Secret check only against a REMOTE cluster (see docstring). An empty
+	// or local context leaves opts.Secrets nil → cluster.Preflight skips
+	// the Secret check entirely.
+	if in.deployCtx != "" && !isLocalCluster(in.deployCtx) {
+		opts.Context = in.deployCtx
+		opts.Secrets = cluster.KubectlSecretGetter{}
+	}
+	return cluster.Preflight(ctx, opts)
 }
 
 // expectedClusterForEnv returns the expected kubectl context name for

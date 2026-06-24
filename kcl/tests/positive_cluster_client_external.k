@@ -114,3 +114,44 @@ assert_pinned_mints = _pinned.secret != Undefined
 assert_pinned_secret_name = _pinned.secret.name == "daemon-kubeconfig-pinned"
 assert_pinned_vol_name = _pinned.volume.name == "daemon-kubeconfig-pinned"
 assert_pinned_vol_source = _pinned.volume.source == "daemon-kubeconfig-pinned"
+
+# ── secret_name decouples the volume NAME from the sourced Secret NAME ──
+# dev/prod mount an out-of-band kubeconfig under a volume named
+# `daemon-cluster-kubeconfig` but source it from a Secret named
+# `cp-daemon-kubeconfig`. The two differ, so `volume_name` alone (which sets
+# BOTH name and source) can't model it — `secret_name` pins the source.
+_split = forge.ClusterClient {
+    id = "cp-daemon"
+    cluster = _prod
+    in_cluster = _cp
+    mount_path = "/etc/daemon-cluster"
+    external = True
+    reachability = "endpoint"
+    volume_name = "daemon-cluster-kubeconfig"  # pod volume name
+    secret_name = "cp-daemon-kubeconfig"       # sourced (out-of-band) Secret name
+}
+# The volume keeps its own NAME but SOURCES the differently-named Secret.
+assert_split_vol_name = _split.volume.name == "daemon-cluster-kubeconfig"
+assert_split_vol_source = _split.volume.source == "cp-daemon-kubeconfig"
+assert_split_no_secret = _split.secret == Undefined
+# config_json still derives from mount_path + key — unaffected by the name split.
+_split_cfg = json.decode(_split.config_json)
+assert_split_cfg_id = _split_cfg[0].id == "cp-daemon"
+assert_split_cfg_path = _split_cfg[0].kubeconfigPath == "/etc/daemon-cluster/kubeconfig"
+assert_split_cfg_context = _split_cfg[0].context == "cp-daemon"
+
+# ── secret_name in MINTING mode keeps mint+source self-consistent ──
+# When secret_name is set in minting mode, BOTH the minted Secret and the
+# volume's source follow it (so the volume mounts exactly what's minted),
+# while the volume NAME follows volume_name.
+_split_mint = forge.ClusterClient {
+    id = "daemon"
+    cluster = _prod
+    in_cluster = _cp
+    mount_path = "/etc/daemon-cluster"
+    volume_name = "daemon-vol"
+    secret_name = "daemon-secret"
+}
+assert_split_mint_secret_name = _split_mint.secret.name == "daemon-secret"
+assert_split_mint_vol_name = _split_mint.volume.name == "daemon-vol"
+assert_split_mint_vol_source = _split_mint.volume.source == "daemon-secret"

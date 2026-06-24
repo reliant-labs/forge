@@ -1106,10 +1106,15 @@ schema ClusterClient:
                         external where the endpoint is reachable verbatim).
       * `external`    — reference a pre-existing Secret instead of minting
                         (default False — keep minting).
-      * `volume_name` — name of the kubeconfig Secret + pod volume the
-                        `.volume` sources. Default `<id>-kubeconfig`. Pin an
-                        EXISTING name here to migrate render-equivalently or
-                        to point external mode at the out-of-band Secret.
+      * `volume_name` — name of the pod volume the `.volume` declares.
+                        Default `<id>-kubeconfig`. Pin an EXISTING name here to
+                        migrate render-equivalently.
+      * `secret_name` — name of the kubeconfig Secret the `.volume` SOURCES (and
+                        the minted Secret's name). Default `volume_name`. Set it
+                        when the existing pod volume NAME differs from the
+                        sourced Secret NAME (e.g. dev/prod, where the volume is
+                        `daemon-cluster-kubeconfig` but the out-of-band Secret is
+                        `cp-daemon-kubeconfig`).
     """
     id: str
     cluster: Cluster
@@ -1121,23 +1126,27 @@ schema ClusterClient:
     # external = True references a pre-existing Secret (no k3d mint); the
     # default keeps the minting behaviour the e2e path relies on.
     external: bool = False
-    # The Secret/Volume name. Defaults to the <id>-kubeconfig derivation so
-    # minting mode sources exactly the minted Secret; override to pin an
-    # existing name (render-equivalent migration / external Secret).
+    # The pod volume name. Defaults to the <id>-kubeconfig derivation; override
+    # to pin an existing volume name (render-equivalent migration).
     volume_name?: str
+    # The kubeconfig Secret name the volume sources (and the minted Secret's
+    # name). Defaults to volume_name; set it when the existing volume name and
+    # the sourced/minted Secret name differ (dev/prod external Secrets).
+    secret_name?: str
     # Derived names/paths — the single source the emitted things share.
-    # The Secret (minted or external) and the Volume share ONE name so
-    # they can't drift: default `<id>-kubeconfig`, overridable via volume_name.
+    # The pod VOLUME's name: default `<id>-kubeconfig`, overridable via volume_name.
     _volume_name: str = volume_name if volume_name else id + "-kubeconfig"
+    # The SECRET name the volume sources / the mint targets: defaults to the
+    # volume name (minting mode stays self-consistent), overridable via secret_name.
+    _secret_name: str = secret_name if secret_name else _volume_name
     _kubeconfig_path: str = mount_path + "/" + key
     # The minted cross-cluster kubeconfig Secret (in_cluster -> cluster).
-    # Named `_volume_name` so the minted Secret and `.volume` ALWAYS agree
-    # (a pinned volume_name mints a Secret of that name; the volume sources
-    # it). Undefined in external mode — forge mints NOTHING, the Secret is
-    # provided out-of-band; `.secret` projects to null and contributes no
-    # entry to the Bundle's kubeconfig_secrets.
+    # Named `_secret_name` so the minted Secret and `.volume`'s source ALWAYS
+    # agree (the volume sources exactly what's minted). Undefined in external
+    # mode — forge mints NOTHING, the Secret is provided out-of-band; `.secret`
+    # projects to null and contributes no entry to the Bundle's kubeconfig_secrets.
     secret?: KubeconfigSecret = KubeconfigSecret {
-        name = _volume_name
+        name = _secret_name
         in_cluster = in_cluster.context
         target_cluster = cluster.name
         context_name = id
@@ -1145,15 +1154,15 @@ schema ClusterClient:
         namespace = namespace
         reachability = reachability
     } if not external else Undefined
-    # The Volume the consuming workload mounts to read the kubeconfig. In
-    # minting mode it sources the minted Secret (_volume_name == _secret_name
-    # by default); in external mode it sources the pre-existing Secret named
-    # by volume_name.
+    # The Volume the consuming workload mounts to read the kubeconfig. Its NAME
+    # is `_volume_name`; it SOURCES the Secret `_secret_name` (the minted Secret
+    # in minting mode, the pre-existing Secret in external mode). The two default
+    # equal, so unset secret_name keeps name == source render-equivalent to before.
     volume: Volume = Volume {
         name = _volume_name
         mount_path = mount_path
         type = "secret"
-        source = _volume_name
+        source = _secret_name
         read_only = True
     }
     # The CLUSTER_CONFIGS entry the workload reads — id + the derived

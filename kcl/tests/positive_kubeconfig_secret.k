@@ -35,10 +35,11 @@ _explicit = forge.KubeconfigSecret {
     reachability = "endpoint"
 }
 
+_cp = forge.Cluster { name = "cp" }
 _bundle = forge.Bundle {
     clusters = [
-        forge.Cluster { name = "cp" }
-        forge.Cluster { name = "workload", network = "k3d-cp", registry_mirror = "inherit" }
+        _cp
+        forge.Cluster { name = "workload", owner = _cp }
     ]
     kubeconfig_secrets = [_default_reach, _explicit]
     services = []

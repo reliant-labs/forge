@@ -336,8 +336,10 @@ func TestKCLModule_JSONContractShape(t *testing.T) {
 		s := sRaw.(map[string]any)
 		dep, ok := s["deploy"].(map[string]any)
 		if !ok || dep == nil {
-			// Services with no deploy project as deploy: null — that's
-			// also valid; skip those.
+			// A service with deploy = None projects an explicit
+			// {type: "build-only"} block (the build-only mode), so the
+			// null branch shouldn't be hit for forge-rendered output; keep
+			// the guard tolerant in case a hand-authored fixture emits null.
 			continue
 		}
 		typ, _ := dep["type"].(string)

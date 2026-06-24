@@ -94,18 +94,29 @@ type RenderedSecretKeyEntity struct {
 // ensures exists before deploying. The reconcile (clusterPhase) reads
 // these and runs `k3d cluster create` for any that are absent.
 //
-// Ownership is IMPLICIT: a secondary cluster sets Network to the owner
-// cluster's network (`k3d-<owner>`) and RegistryMirror="inherit" to
-// reuse the owner's registry. The owner declares neither. There is no
+// Ownership is a REFERENCE: a secondary cluster names its `owner`
+// Cluster; the KCL render layer DERIVES the joined network
+// (`k3d-<owner.name>`, projected into Network) and the registry-inherit
+// behavior (projected into RegistryInherit=true). An owner cluster
+// projects an empty Network and RegistryInherit=false. There is no
 // "primary" field and no most-X heuristic.
 type ClusterEntity struct {
-	Name           string `json:"name"`
-	Config         string `json:"config,omitempty"`
-	Network        string `json:"network,omitempty"`
-	RegistryMirror string `json:"registry_mirror,omitempty"`
-	Servers        int    `json:"servers,omitempty"`
-	Agents         int    `json:"agents,omitempty"`
-	APIPort        int    `json:"api_port,omitempty"`
+	Name string `json:"name"`
+	// Context is the derived kubectl context (`k3d-<name>`), projected so
+	// the reconcile / kubeconfig mint can target the cluster without
+	// re-deriving the prefix.
+	Context string `json:"context,omitempty"`
+	Config  string `json:"config,omitempty"`
+	// Network is the derived docker network this cluster joins —
+	// `k3d-<owner.name>` for a secondary, empty for an owner cluster.
+	Network string `json:"network,omitempty"`
+	// RegistryInherit is the derived registry-inherit flag — true when an
+	// `owner` is set (forge mirrors the owner's registry onto this
+	// cluster's node), false for an owner cluster.
+	RegistryInherit bool `json:"registry_inherit,omitempty"`
+	Servers         int  `json:"servers,omitempty"`
+	Agents          int  `json:"agents,omitempty"`
+	APIPort         int  `json:"api_port,omitempty"`
 	// Ingress, when true, installs the Gateway API stack (pinned Gateway-API
 	// CRDs + vendored Traefik controller + the `traefik` GatewayClass) into
 	// this cluster after it's ensured. A fresh k3d cluster ships none of

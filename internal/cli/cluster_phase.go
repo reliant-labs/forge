@@ -5,11 +5,12 @@
 // `Bundle.clusters = [forge.Cluster {...}, ...]` and forge ensures each
 // exists at the head of `forge up` (create-if-absent, no-op if present).
 //
-// Multi-cluster ownership is IMPLICIT. There is no "primary" cluster: a
-// secondary cluster names its owner via Cluster.Network (the k3d docker
-// network it joins, `k3d-<owner>`) and reuses the owner's registry via
-// Cluster.RegistryMirror == "inherit". The owner declares neither — k3d
-// creates its own network/registry. There is no most-X heuristic.
+// Multi-cluster ownership is a REFERENCE. There is no "primary" cluster:
+// a secondary cluster names its `owner` Cluster, and the KCL render layer
+// DERIVES the joined docker network (Cluster.Network = `k3d-<owner.name>`)
+// and the registry-inherit flag (Cluster.RegistryInherit = true) from
+// that one edge. The owner cluster projects neither — k3d creates its own
+// network/registry. There is no most-X heuristic.
 package cli
 
 import (
@@ -55,8 +56,9 @@ func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, pr
 
 // ensureDeclaredCluster creates one declared k3d cluster if it's absent,
 // applying the declared flags; no-op when it already exists. After a
-// fresh create with RegistryMirror=="inherit", it mirrors the owner
-// cluster's registries.yaml onto the new node and restarts it to reload.
+// fresh create of a cluster with RegistryInherit (an `owner` reference),
+// it mirrors the owner cluster's registries.yaml onto the new node and
+// restarts it to reload.
 // clusterExistsFn / installClusterIngressFn are indirection seams so the
 // reconcile decision logic is unit-testable without shelling out to k3d /
 // kubectl. Production wires them to the real implementations; tests stub
@@ -69,13 +71,14 @@ var (
 )
 
 // isNestedSecondary reports whether a cluster is a SECONDARY joined to an
-// owner cluster's docker network — i.e. it sets both `network` (the
-// owner's k3d network, `k3d-<owner>`) and `registry_mirror = "inherit"`.
-// That pair uniquely identifies a nested secondary; an owner cluster
-// declares neither. Such a cluster needs the extra node setup
+// owner cluster's docker network — i.e. it declared an `owner`, which the
+// render layer projects as RegistryInherit=true + a derived Network
+// (`k3d-<owner.name>`). RegistryInherit keys directly off `owner != None`,
+// so it's the load-bearing signal; Network carries the owner the node
+// setup needs. Such a cluster needs the extra node setup
 // setupSecondaryClusterNode performs.
 func isNestedSecondary(c ClusterEntity) bool {
-	return c.Network != "" && c.RegistryMirror == "inherit"
+	return c.RegistryInherit && c.Network != ""
 }
 
 func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env string) error {
@@ -154,11 +157,11 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		return fmt.Errorf("k3d cluster create: %w", err)
 	}
 
-	if c.RegistryMirror == "inherit" {
+	if c.RegistryInherit {
 		if c.Network == "" {
 			return fmt.Errorf(
-				"cluster %q: registry_mirror=\"inherit\" requires `network` set to the owner cluster's network "+
-					"(k3d names it k3d-<owner>) so forge can resolve the owner whose registry to mirror", c.Name)
+				"cluster %q: registry_inherit is set but the derived network is empty — an `owner` Cluster "+
+					"reference is required so forge can resolve the owner whose registry to mirror", c.Name)
 		}
 		if err := inheritRegistryMirror(ctx, c); err != nil {
 			return fmt.Errorf("inherit registry mirror: %w", err)

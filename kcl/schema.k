@@ -779,6 +779,66 @@ schema Cluster:
         registry_mirror == Undefined or registry_mirror == "inherit", \
             "Cluster.registry_mirror, when set, must be 'inherit' (reuse the owner cluster's registry)"
 
+schema KubeconfigSecret:
+    """A cross-cluster kubeconfig, minted FRESH each `forge up` and
+    stored as a k8s Secret so a workload in one cluster can talk to
+    another cluster's API server.
+
+    This kills the IP-drift footgun: in a multi-k3d-cluster dev/e2e env,
+    the target cluster's serverlb container gets a fresh docker-network
+    IP on every `k3d cluster create`. A kubeconfig with that IP baked in
+    and committed to git goes stale the moment the cluster is recreated.
+    Instead forge resolves the endpoint at mint time (never persisting
+    the IP) and writes the kubeconfig into a Secret the workload mounts.
+
+    Minting (at the cluster→deploy boundary, after clusters exist):
+      1. `k3d kubeconfig get <target_cluster>`.
+      2. For reachability == "in-network", resolve the target's API
+         endpoint FRESH from docker — the serverlb container's IP on the
+         OWNER network — and rewrite the kubeconfig's cluster.server to
+         `https://<ip>:6443`, unset the CA, set insecure-skip-tls-verify
+         (the serverlb cert doesn't cover the container IP). The IP is
+         resolved every run and never written to a committed file.
+      3. Rename the context to `context_name` (stable name the workload
+         selects).
+      4. EnsureNamespace(in_cluster, namespace) + apply the Secret into
+         in_cluster.
+
+    Fields:
+      * `name`           — the k8s Secret name (in `in_cluster`).
+      * `in_cluster`     — kubectl context of the cluster the Secret is
+                           CREATED in (where the consuming workload runs).
+      * `target_cluster` — k3d cluster name whose kubeconfig is minted
+                           (the cluster the workload will REACH).
+      * `context_name`   — context name written into the kubeconfig (the
+                           workload selects it by this stable name).
+      * `key`            — key within the Secret holding the kubeconfig
+                           YAML (default "kubeconfig").
+      * `namespace`      — namespace for the Secret in `in_cluster`
+                           (default: the env's namespace).
+      * `reachability`   — "in-network" (default): in-docker-network IP
+                           rewrite + insecure TLS (the dev/e2e seam).
+                           "endpoint": use the kubeconfig's own endpoint
+                           verbatim (prod, where the API server has a
+                           stable reachable address + valid cert). Only
+                           "in-network" needs the insecure rewrite path.
+    """
+    name: str
+    in_cluster: str
+    target_cluster: str
+    context_name: str
+    key: str = "kubeconfig"
+    namespace?: str
+    reachability: str = "in-network"
+
+    check:
+        name, "KubeconfigSecret.name is required"
+        in_cluster, "KubeconfigSecret.in_cluster is required (kubectl context the Secret lands in)"
+        target_cluster, "KubeconfigSecret.target_cluster is required (k3d cluster to mint a kubeconfig for)"
+        context_name, "KubeconfigSecret.context_name is required (stable context name the workload selects)"
+        reachability in ["in-network", "endpoint"], \
+            "KubeconfigSecret.reachability must be 'in-network' (dev/e2e IP rewrite) or 'endpoint' (verbatim)"
+
 schema BuildOnly:
     """Service is built but not auto-orchestrated.
 
@@ -1210,6 +1270,11 @@ schema Bundle:
     # implicit via Cluster.network / Cluster.registry_mirror — there is
     # no "primary" cluster.
     clusters: [Cluster] = []
+    # Cross-cluster kubeconfigs minted FRESH each `forge up` and stored
+    # as k8s Secrets (so a workload in one cluster can reach another's
+    # API server without a committed, IP-drifting kubeconfig). Minted at
+    # the cluster→deploy boundary. Empty => none. See KubeconfigSecret.
+    kubeconfig_secrets: [KubeconfigSecret] = []
     services: [Service] = []
     operators: [Operator] = []
     frontends: [Frontend] = []

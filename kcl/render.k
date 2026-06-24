@@ -458,10 +458,27 @@ _render_cluster = lambda c: Cluster -> any {
     }
 }
 
+# Render a KubeconfigSecret to its stable dict form. The CLI mints the
+# kubeconfig + applies the Secret Go-side (the IP is resolved fresh, never
+# in KCL); this projection only carries the DECLARATION. Never appears in
+# render_manifests — the Secret has a runtime-minted value, not a static one.
+_render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
+    {
+        "name": k.name
+        "in_cluster": k.in_cluster
+        "target_cluster": k.target_cluster
+        "context_name": k.context_name
+        "key": k.key
+        "namespace": k.namespace if k.namespace else None
+        "reachability": k.reachability
+    }
+}
+
 # Project a Bundle to the stable JSON contract. Consumed by forge CLI.
 render = lambda bundle: Bundle -> any {
     {
         "clusters": [_render_cluster(c) for c in bundle.clusters]
+        "kubeconfig_secrets": [_render_kubeconfig_secret(k) for k in bundle.kubeconfig_secrets]
         "services": [_render_service(s) for s in bundle.services]
         "operators": [_render_operator(o) for o in bundle.operators]
         "frontends": [_render_frontend(f) for f in bundle.frontends]

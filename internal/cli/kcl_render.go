@@ -30,8 +30,11 @@ type KCLEntities struct {
 	// implicit via Cluster.Network / Cluster.RegistryMirror — there is
 	// no "primary" cluster.
 	Clusters   []ClusterEntity   `json:"clusters,omitempty"`
-	Services   []ServiceEntity   `json:"services,omitempty"`
-	Operators  []OperatorEntity  `json:"operators,omitempty"`
+	// KubeconfigSecrets are cross-cluster kubeconfigs forge mints fresh
+	// each up (at the cluster→deploy boundary) and applies as k8s Secrets.
+	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
+	Services          []ServiceEntity          `json:"services,omitempty"`
+	Operators         []OperatorEntity         `json:"operators,omitempty"`
 	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
 	CronJobs   []CronJobEntity   `json:"cronjobs,omitempty"`
 	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
@@ -80,6 +83,20 @@ type ClusterEntity struct {
 	Servers        int    `json:"servers,omitempty"`
 	Agents         int    `json:"agents,omitempty"`
 	APIPort        int    `json:"api_port,omitempty"`
+}
+
+// KubeconfigSecretEntity mirrors the kcl/schema.k KubeconfigSecret — a
+// cross-cluster kubeconfig forge mints FRESH each up and stores as a k8s
+// Secret. The mint step (mintKubeconfigSecrets) resolves the target's
+// endpoint at runtime and never persists the IP.
+type KubeconfigSecretEntity struct {
+	Name          string `json:"name"`
+	InCluster     string `json:"in_cluster"`
+	TargetCluster string `json:"target_cluster"`
+	ContextName   string `json:"context_name"`
+	Key           string `json:"key,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
+	Reachability  string `json:"reachability,omitempty"`
 }
 
 // GatewayEntity mirrors the kcl/schema.k Gateway. Listeners are inlined.
@@ -502,8 +519,9 @@ type KCLEnvVar struct {
 // -o json`. We unmarshal into this first, then dispatch each service's
 // deploy block by type to populate the typed [KCLEntities].
 type kclRenderRaw struct {
-	Clusters   []ClusterEntity   `json:"clusters,omitempty"`
-	Services   []kclServiceRaw   `json:"services,omitempty"`
+	Clusters          []ClusterEntity          `json:"clusters,omitempty"`
+	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
+	Services          []kclServiceRaw          `json:"services,omitempty"`
 	Operators  []OperatorEntity  `json:"operators,omitempty"`
 	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
 	CronJobs   []CronJobEntity   `json:"cronjobs,omitempty"`
@@ -626,6 +644,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 	}
 	out := &KCLEntities{
 		Clusters:          raw.Clusters,
+		KubeconfigSecrets: raw.KubeconfigSecrets,
 		Operators:         raw.Operators,
 		Frontends:         raw.Frontends,
 		CronJobs:          raw.CronJobs,

@@ -15,6 +15,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -62,9 +63,20 @@ func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, pr
 // them to assert the ingress install is invoked exactly when (and only
 // when) a cluster declares `ingress = True`.
 var (
-	clusterExistsFn         = clusterExists
-	installClusterIngressFn = installClusterIngress
+	clusterExistsFn             = clusterExists
+	installClusterIngressFn     = installClusterIngress
+	setupSecondaryClusterNodeFn = setupSecondaryClusterNode
 )
+
+// isNestedSecondary reports whether a cluster is a SECONDARY joined to an
+// owner cluster's docker network — i.e. it sets both `network` (the
+// owner's k3d network, `k3d-<owner>`) and `registry_mirror = "inherit"`.
+// That pair uniquely identifies a nested secondary; an owner cluster
+// declares neither. Such a cluster needs the extra node setup
+// setupSecondaryClusterNode performs.
+func isNestedSecondary(c ClusterEntity) bool {
+	return c.Network != "" && c.RegistryMirror == "inherit"
+}
 
 func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env string) error {
 	exists, err := clusterExistsFn(ctx, c.Name)
@@ -79,6 +91,16 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		// deleted — heals on the next `forge up`.
 		if c.Ingress {
 			if err := installClusterIngressFn(ctx, c, projectDir, env); err != nil {
+				return err
+			}
+		}
+		// Re-run the secondary-cluster node setup on warm runs too. Every
+		// step is idempotent (a guard check precedes each mutation), so a
+		// cluster whose host-gateway DNS alias or MSS clamp was lost (e.g.
+		// a manual node restart cleared the iptables rule) heals on the
+		// next `forge up`.
+		if isNestedSecondary(c) {
+			if err := setupSecondaryClusterNodeFn(ctx, c); err != nil {
 				return err
 			}
 		}
@@ -140,6 +162,18 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		}
 		if err := inheritRegistryMirror(ctx, c); err != nil {
 			return fmt.Errorf("inherit registry mirror: %w", err)
+		}
+	}
+
+	// A secondary cluster nested on an owner's docker network needs node
+	// setup beyond the registry mirror: the owner's host-gateway DNS alias
+	// (so its pods reach host services) and a TCP MSS clamp (so the nested
+	// path-MTU doesn't shred large outbound TLS handshakes). Run it AFTER
+	// inheritRegistryMirror, which restarts the node — the MSS clamp is
+	// applied to the node's live iptables and must outlive that restart.
+	if isNestedSecondary(c) {
+		if err := setupSecondaryClusterNodeFn(ctx, c); err != nil {
+			return err
 		}
 	}
 
@@ -227,6 +261,177 @@ func inheritRegistryMirror(ctx context.Context, c ClusterEntity) error {
 		return fmt.Errorf("wait %s ready after reload: %w", c.Name, err)
 	}
 	return nil
+}
+
+// setupSecondaryClusterNode performs the node setup a SECONDARY cluster
+// (nested on an owner's docker network) needs but that `k3d cluster
+// create` does not do — beyond the registry mirror inheritRegistryMirror
+// already handles. Two steps, both idempotent (a guard precedes each
+// mutation so warm re-runs no-op):
+//
+//  1. HOST-GATEWAY DNS. The owner cluster reaches host services (a
+//     host-mode Postgres/NATS, etc.) via `host.k3d.internal`, which k3d
+//     seeds in the OWNER node's /etc/hosts and CoreDNS NodeHosts. The
+//     secondary, joined to the owner's network, gets no such alias — and
+//     the registry-mirror node restart regenerates CoreDNS from
+//     /etc/hosts, dropping anything k3d injected. Without it the
+//     secondary's pods fail "lookup host.k3d.internal: no such host". We
+//     copy the alias FROM the owner cluster's CoreDNS NodeHosts (rather
+//     than hardcoding a host-gateway IP) so it tracks whatever gateway IP
+//     this docker host actually uses, then write it into the secondary's
+//     node /etc/hosts + CoreDNS NodeHosts and bounce CoreDNS.
+//
+//  2. TCP MSS CLAMP. A secondary nested on the owner's docker network has
+//     a lower effective egress path-MTU (pod → secondary node → shared
+//     bridge → host NAT) than the pod's interface MTU. Large TLS
+//     handshake packets are dropped with DF set, so outbound TLS (e.g. a
+//     git clone over HTTPS) dies "gnutls_handshake() failed: The TLS
+//     connection was non-properly terminated." Clamp TCP MSS on the
+//     node's FORWARD chain so sessions negotiate a fitting segment.
+//     Applied AFTER the registry-mirror node restart — iptables state
+//     does not survive it. Idempotent via an iptables -C check.
+func setupSecondaryClusterNode(ctx context.Context, c ClusterEntity) error {
+	owner := strings.TrimPrefix(c.Network, "k3d-")
+	if owner == "" {
+		return fmt.Errorf("cluster %q: cannot derive owner cluster from network %q", c.Name, c.Network)
+	}
+	node := "k3d-" + c.Name + "-server-0"
+
+	if err := ensureHostGatewayDNS(ctx, c, owner, node); err != nil {
+		return fmt.Errorf("ensure host-gateway DNS on %s: %w", node, err)
+	}
+	if err := ensureMSSClamp(ctx, node); err != nil {
+		return fmt.Errorf("clamp TCP MSS on %s: %w", node, err)
+	}
+	return nil
+}
+
+// ensureHostGatewayDNS copies the `host.k3d.internal` alias from the OWNER
+// cluster's CoreDNS NodeHosts onto the secondary cluster's node /etc/hosts
+// and CoreDNS NodeHosts, then bounces CoreDNS. Idempotent: a no-op when
+// the secondary already resolves the alias. Reading the IP from the owner
+// (instead of hardcoding the Docker Desktop gateway) keeps it portable
+// across docker hosts.
+func ensureHostGatewayDNS(ctx context.Context, c ClusterEntity, owner, node string) error {
+	const alias = "host.k3d.internal"
+	ownerKctx := "k3d-" + owner
+	secKctx := "k3d-" + c.Name
+
+	// Resolve the host-gateway line from the owner's CoreDNS NodeHosts —
+	// e.g. "192.168.65.254 host.k3d.internal". This is the source of truth
+	// for whatever gateway IP this docker host assigned.
+	ownerHosts, err := readCoreDNSNodeHosts(ctx, ownerKctx)
+	if err != nil {
+		return fmt.Errorf("read owner %s CoreDNS NodeHosts: %w", ownerKctx, err)
+	}
+	gwLine := nodeHostsLineFor(ownerHosts, alias)
+	if gwLine == "" {
+		// The owner doesn't advertise the alias (e.g. a docker host where
+		// k3d didn't seed it). Nothing to copy; skip rather than guess an IP.
+		fmt.Printf("  owner cluster %q has no %s alias — skipping host-gateway DNS for %q\n", owner, alias, c.Name)
+		return nil
+	}
+
+	// Node /etc/hosts: append the line if absent.
+	addHosts := fmt.Sprintf("grep -q %q /etc/hosts || echo %q >> /etc/hosts", alias, gwLine)
+	if err := execNodeShell(ctx, node, addHosts); err != nil {
+		return fmt.Errorf("append %s to %s /etc/hosts: %w", alias, node, err)
+	}
+
+	// CoreDNS NodeHosts: append the line + bounce CoreDNS, only if absent.
+	secHosts, err := readCoreDNSNodeHosts(ctx, secKctx)
+	if err != nil {
+		return fmt.Errorf("read %s CoreDNS NodeHosts: %w", secKctx, err)
+	}
+	if nodeHostsLineFor(secHosts, alias) != "" {
+		fmt.Printf("  %s already resolves %s in %q — no-op\n", alias, alias, c.Name)
+		return nil
+	}
+	newHosts := strings.TrimRight(secHosts, "\n") + "\n" + gwLine
+	fmt.Printf("  adding %q to cluster %q CoreDNS NodeHosts (copied from owner %q) and bouncing CoreDNS...\n", gwLine, c.Name, owner)
+	if err := patchCoreDNSNodeHosts(ctx, secKctx, newHosts); err != nil {
+		return err
+	}
+	return rolloutRestartCoreDNS(ctx, secKctx)
+}
+
+// ensureMSSClamp adds a TCP MSS-clamp rule to the node's mangle/FORWARD
+// chain, idempotently via an iptables -C check (append only when the
+// rule isn't already present).
+func ensureMSSClamp(ctx context.Context, node string) error {
+	const rule = "-p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360"
+	// `iptables -C` (check) exits non-zero when the rule is absent; only
+	// then do we append. Run as one shell so the check+append is atomic
+	// from the host's perspective.
+	clamp := fmt.Sprintf(
+		"iptables -t mangle -C FORWARD %s 2>/dev/null || iptables -t mangle -A FORWARD %s",
+		rule, rule)
+	fmt.Printf("  clamping TCP MSS on %s (nested-network MTU fix for outbound TLS)...\n", node)
+	return execNodeShell(ctx, node, clamp)
+}
+
+// readCoreDNSNodeHosts returns the kube-system/coredns ConfigMap's
+// NodeHosts data for the given kubectl context (empty string when unset).
+func readCoreDNSNodeHosts(ctx context.Context, kctx string) (string, error) {
+	out, err := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+		"get", "configmap", "coredns", "-n", "kube-system",
+		"-o", "jsonpath={.data.NodeHosts}").Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// nodeHostsLineFor returns the (trimmed) NodeHosts line whose host column
+// contains the alias, or "" when absent. NodeHosts is `<ip> <name>...`
+// lines; we match on a whitespace-delimited field so a substring like
+// `host.k3d.internal` doesn't false-match a longer hostname.
+func nodeHostsLineFor(nodeHosts, alias string) string {
+	for _, line := range strings.Split(nodeHosts, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		// fields[0] is the IP; the rest are hostnames for that IP.
+		for _, host := range fields[1:] {
+			if host == alias {
+				return strings.TrimSpace(line)
+			}
+		}
+	}
+	return ""
+}
+
+// patchCoreDNSNodeHosts writes newHosts as the coredns ConfigMap's
+// NodeHosts via a strategic-merge patch (avoids a get-mutate-apply race on
+// the rest of the ConfigMap).
+func patchCoreDNSNodeHosts(ctx context.Context, kctx, newHosts string) error {
+	patch := map[string]any{"data": map[string]string{"NodeHosts": newHosts}}
+	body, err := json.Marshal(patch)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+		"patch", "configmap", "coredns", "-n", "kube-system",
+		"--type", "merge", "-p", string(body))
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// rolloutRestartCoreDNS bounces the coredns deployment so it reloads the
+// patched NodeHosts.
+func rolloutRestartCoreDNS(ctx context.Context, kctx string) error {
+	cmd := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+		"rollout", "restart", "deployment/coredns", "-n", "kube-system")
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// execNodeShell runs a /bin/sh -c command inside a k3d node container.
+func execNodeShell(ctx context.Context, node, script string) error {
+	cmd := exec.CommandContext(ctx, "docker", "exec", node, "sh", "-c", script)
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // readNodeFile cats a file from inside a k3d node container.

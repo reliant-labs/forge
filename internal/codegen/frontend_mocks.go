@@ -357,10 +357,25 @@ func EntityDefToMockData(entity EntityDef, svc ServiceDef) MockEntityTemplateDat
 // prefix here keeps the fix local to mock codegen and leaves the
 // ORM/migration consumers of ProtoType untouched.
 func effectiveMockProtoType(f EntityField) string {
-	if f.Kind == FieldKindRepeatedScalar && !strings.HasPrefix(f.ProtoType, "repeated ") && !strings.HasPrefix(f.ProtoType, "[]") {
+	if alreadyRepeated(f.ProtoType) {
+		return f.ProtoType
+	}
+	// Both repeated scalars AND repeated messages carry only the element kind
+	// in ProtoType (a repeated `string` field is ProtoType "string"; a repeated
+	// message is ProtoType "message") — the repeated-ness lives in
+	// Kind/GoType. Without re-encoding the prefix, a repeated-message field
+	// would mock `{}` (an object) against the protobuf-es `Foo[]` array type and
+	// fail `tsc`, exactly as a repeated scalar mocked a bare scalar.
+	if f.Kind == FieldKindRepeatedScalar || f.Kind == FieldKindRepeatedMessage {
 		return "repeated " + f.ProtoType
 	}
 	return f.ProtoType
+}
+
+// alreadyRepeated reports whether a proto-type string already carries a
+// repeated/array marker (so re-encoding the prefix would double it).
+func alreadyRepeated(protoType string) bool {
+	return strings.HasPrefix(protoType, "repeated ") || strings.HasPrefix(protoType, "[]")
 }
 
 // mockPkFieldCamel returns the camelCase name of the entity's primary-key

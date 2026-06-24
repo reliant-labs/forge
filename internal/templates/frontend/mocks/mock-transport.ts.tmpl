@@ -199,14 +199,18 @@ export function createMockTransport(fallback?: Transport): Transport {
 {{- end }}
 {{- if .HasGet }}
         case "{{ .ServiceTypeName }}/{{ .GetRPC }}": {
-          const req = input as { id?: unknown };
-          const found = {{ .EntityNamePlural | camelCase }}Store.get(String(req?.id));
+          // Read the key off the SAME field the store is keyed by
+          // ({{ .PkFieldCamel }}), not a hardcoded `id` — surrogate-PK entities
+          // (e.g. a `usage_event_id` wire PK with no `id` field) would otherwise
+          // look up `String(undefined)` and miss every record.
+          const req = input as { {{ .PkFieldCamel }}?: unknown };
+          const found = {{ .EntityNamePlural | camelCase }}Store.get(String(req?.{{ .PkFieldCamel }}));
           if (!found) {
             // A miss is NotFound — exactly what the real backend returns.
             // (Falling back to the first fixture made every detail page
             // "work" against the wrong record and hid bad-id bugs.)
             return Promise.reject(
-              new ConnectError(`{{ .EntityName | lower }} ${String(req?.id)} not found`, Code.NotFound),
+              new ConnectError(`{{ .EntityName | lower }} ${String(req?.{{ .PkFieldCamel }})} not found`, Code.NotFound),
             );
           }
           const result = create({{ .GetResponseType }}Schema, {
@@ -223,9 +227,13 @@ export function createMockTransport(fallback?: Transport): Transport {
           const req = input as Record<string, unknown>;
           const init = { ...((req.{{ .EntityName | camelCase }} ?? req) as Record<string, unknown>) };
           delete init.$typeName;
-          const id = typeof init.id === "string" && init.id ? init.id : crypto.randomUUID();
-          const created = create({{ .SchemaImport }}, { ...init, id } as MessageInitShape<typeof {{ .SchemaImport }}>);
-          {{ .EntityNamePlural | camelCase }}Store.set(String(id), created);
+          // Mint the primary key on the PK field the store is keyed by
+          // ({{ .PkFieldCamel }}) — for a surrogate-PK entity this is NOT `id`,
+          // and writing a generated `id` would leave the store key (read from
+          // {{ .PkFieldCamel }}) `undefined` so the row never round-trips.
+          const pk = typeof init.{{ .PkFieldCamel }} === "string" && init.{{ .PkFieldCamel }} ? init.{{ .PkFieldCamel }} : crypto.randomUUID();
+          const created = create({{ .SchemaImport }}, { ...init, {{ .PkFieldCamel }}: pk } as MessageInitShape<typeof {{ .SchemaImport }}>);
+          {{ .EntityNamePlural | camelCase }}Store.set(String(pk), created);
           const result = create({{ .CreateResponseType }}Schema, {
             {{ .CreateEntityFieldCamel }}: created,
           });
@@ -240,15 +248,19 @@ export function createMockTransport(fallback?: Transport): Transport {
           // the top level.
           const patch = { ...((req.{{ .EntityName | camelCase }} ?? req) as Record<string, unknown>) };
           delete patch.$typeName;
-          const id = String(patch.id ?? req.id ?? "");
-          const existing = {{ .EntityNamePlural | camelCase }}Store.get(id);
+          // Resolve the key off the PK field the store is keyed by
+          // ({{ .PkFieldCamel }}); the id may ride inside the AIP wrapper or at
+          // the top level of a flat request. Hardcoding `id` misses every
+          // surrogate-PK record.
+          const pk = String(patch.{{ .PkFieldCamel }} ?? req.{{ .PkFieldCamel }} ?? "");
+          const existing = {{ .EntityNamePlural | camelCase }}Store.get(pk);
           if (!existing) {
             return Promise.reject(
-              new ConnectError(`{{ .EntityName | lower }} ${id} not found`, Code.NotFound),
+              new ConnectError(`{{ .EntityName | lower }} ${pk} not found`, Code.NotFound),
             );
           }
-          const updated = create({{ .SchemaImport }}, { ...existing, ...patch, id } as MessageInitShape<typeof {{ .SchemaImport }}>);
-          {{ .EntityNamePlural | camelCase }}Store.set(id, updated);
+          const updated = create({{ .SchemaImport }}, { ...existing, ...patch, {{ .PkFieldCamel }}: pk } as MessageInitShape<typeof {{ .SchemaImport }}>);
+          {{ .EntityNamePlural | camelCase }}Store.set(pk, updated);
           const result = create({{ .CreateResponseType }}Schema, {
             {{ .CreateEntityFieldCamel }}: updated,
           });
@@ -257,8 +269,9 @@ export function createMockTransport(fallback?: Transport): Transport {
 {{- end }}
 {{- if .HasDelete }}
         case "{{ .ServiceTypeName }}/{{ .DeleteRPC }}": {
-          const req = input as { id?: unknown };
-          {{ .EntityNamePlural | camelCase }}Store.delete(String(req?.id));
+          // Delete by the SAME field the store is keyed by ({{ .PkFieldCamel }}).
+          const req = input as { {{ .PkFieldCamel }}?: unknown };
+          {{ .EntityNamePlural | camelCase }}Store.delete(String(req?.{{ .PkFieldCamel }}));
           // Delete returns an empty response — matches the standard CRUD shape.
           return makeUnaryResponse(method, {});
         }

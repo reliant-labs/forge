@@ -32,6 +32,46 @@ func TestEffectiveMockProtoType_RepeatedScalar(t *testing.T) {
 	}
 }
 
+// TestEffectiveMockProtoType_RepeatedMessage pins that a repeated-MESSAGE
+// entity field is re-encoded with a `repeated ` prefix so the mock generators
+// emit an ARRAY literal + an `object[]` TS type. Like repeated scalars,
+// EntityField.ProtoType carries only the element kind ("message") for repeated
+// messages — the repeated-ness lives in Kind (FieldKindRepeatedMessage) /
+// GoType ("[]*Foo"). Without this, a `repeated Foo` field mocks a bare `{}`
+// object against the protobuf-es `Foo[]` field and fails `tsc`
+// ("Type '{}' is not assignable to type 'Foo[]'").
+func TestEffectiveMockProtoType_RepeatedMessage(t *testing.T) {
+	repeated := EntityField{Name: "items", ProtoType: "message", MessageType: "demo.v1.Item", GoType: "[]*Item", Kind: FieldKindRepeatedMessage}
+	if got := effectiveMockProtoType(repeated); got != "repeated message" {
+		t.Fatalf("effectiveMockProtoType(repeated message) = %q, want %q", got, "repeated message")
+	}
+	if ts := protoTypeToTSType(effectiveMockProtoType(repeated)); ts != "object[]" {
+		t.Errorf("TS type = %q, want %q", ts, "object[]")
+	}
+	ef := repeated
+	ef.ProtoType = effectiveMockProtoType(repeated)
+	v := mockGenerateValue("orders", ef, 0)
+	if !strings.HasPrefix(v, "[") || !strings.HasSuffix(v, "]") {
+		t.Errorf("repeated-message mock value = %q, want a TS array literal", v)
+	}
+
+	// A singular message field stays an empty-object init — `{}` is a valid
+	// partial MessageInitShape and type-checks against the message field.
+	singular := EntityField{Name: "meta", ProtoType: "message", MessageType: "demo.v1.Meta", GoType: "*Meta", Kind: FieldKindMessage}
+	if got := effectiveMockProtoType(singular); got != "message" {
+		t.Errorf("effectiveMockProtoType(message) = %q, want %q", got, "message")
+	}
+	if v := mockGenerateValue("orders", singular, 0); v != "{}" {
+		t.Errorf("singular-message mock value = %q, want %q", v, "{}")
+	}
+
+	// Idempotent: an already-prefixed proto type is not double-wrapped.
+	pre := EntityField{Name: "items", ProtoType: "repeated message", GoType: "[]*Item", Kind: FieldKindRepeatedMessage}
+	if got := effectiveMockProtoType(pre); got != "repeated message" {
+		t.Errorf("effectiveMockProtoType(already-repeated) = %q, want no double prefix", got)
+	}
+}
+
 // TestMockPkFieldCamel_ResolvesAgainstWireFields pins the contract that the
 // mutable mock-store key references a field that EXISTS on the entity's wire
 // message. The store maps over mock RECORDS (projections of the wire message),

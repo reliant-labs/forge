@@ -242,7 +242,7 @@ contracts:
 The deploy layer has two shapes on purpose. They are NOT redundant — each is tuned for a different reader:
 
 - **KCL is the author surface, and it is NORMALIZED.** You declare each object once and reference it by name; KCL computes everything derived. State a fact in exactly one place, let object references carry it everywhere else (DRY, single source of truth). This is the shape a human — or an LLM — writes.
-- **The rendered contract (`forge render`, the JSON the deploy machinery consumes) is DENORMALIZED.** The renderer flattens and expands every reference into the concrete strings, paths, and labels the machine needs, duplicating a value wherever the machine wants it inlined. This is the shape a program reads.
+- **The rendered contract (the JSON `forge.render(bundle)` produces, which the deploy machinery consumes) is DENORMALIZED.** The renderer flattens and expands every reference into the concrete strings, paths, and labels the machine needs, duplicating a value wherever the machine wants it inlined. This is the shape a program reads.
 
 **The principle: normalize for the human/LLM author, denormalize for the machine.** You never hand-write the denormalized form. The renderer owns the expansion, so derived values *cannot drift* — a flat string in the JSON can never disagree with the object reference it came from, because nothing typed it twice. This is *why* a KCL field takes an object reference while the JSON it produces is a flat string or label: the reference is the author's single source of truth; the flat value is the renderer's mechanical projection of it.
 

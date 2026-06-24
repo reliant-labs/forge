@@ -58,6 +58,18 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		return fmt.Errorf("serverkit.Run: Server.Operators is non-empty but Server.RunOperators is nil")
 	}
 
+	// Fail closed on configured-but-unwired edge layers. CORS and security
+	// headers are SECURITY controls: a composition root that configures
+	// them (origins set, SecurityHeaders=true) but forgets to supply the
+	// factory must NOT silently serve with the layer absent — that's the
+	// same trap as booting with a nil authz policy. Reject loudly instead.
+	if len(cfg.CORSOrigins) > 0 && srv.CORSMiddleware == nil {
+		return fmt.Errorf("serverkit.Run: Config.CORSOrigins is set but Server.CORSMiddleware is nil — refusing to serve with CORS unenforced")
+	}
+	if cfg.SecurityHeaders && srv.SecurityHeadersMiddleware == nil {
+		return fmt.Errorf("serverkit.Run: Config.SecurityHeaders is enabled but Server.SecurityHeadersMiddleware is nil — refusing to serve without security headers")
+	}
+
 	// Logger: prefer the caller's (so mount-time and run-time logs share
 	// attrs); build one from Config only when the caller passed nil.
 	logger := srv.Logger
@@ -107,14 +119,17 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 
 	// CORS: project-supplied middleware factory keeps the existing
 	// pkg/middleware.CORSMiddleware in charge of the actual matching
-	// logic. serverkit only owns the gating.
-	if len(cfg.CORSOrigins) > 0 && srv.CORSMiddleware != nil {
+	// logic. serverkit only owns the gating. A configured-but-unwired
+	// factory was already rejected above (fail closed), so a non-nil
+	// CORSMiddleware here is guaranteed when origins are set.
+	if len(cfg.CORSOrigins) > 0 {
 		handler = srv.CORSMiddleware(cfg.CORSOrigins, cfg.CORSAllowCredentials)(handler)
 	}
 
 	// Security headers — OWASP defaults via project middleware. HSTS is
-	// only emitted in production (Environment != "development").
-	if cfg.SecurityHeaders && srv.SecurityHeadersMiddleware != nil {
+	// only emitted in production (Environment != "development"). As with
+	// CORS, a configured-but-unwired factory was rejected above.
+	if cfg.SecurityHeaders {
 		production := cfg.Environment != "development"
 		handler = srv.SecurityHeadersMiddleware(production)(handler)
 	}
@@ -248,14 +263,22 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		}
 		pprofLn, lnErr := (&net.ListenConfig{}).Listen(runCtx, "tcp", cfg.PprofAddr)
 		if lnErr != nil {
-			return fmt.Errorf("listen pprof %s: %w", cfg.PprofAddr, lnErr)
+			// The main httpSrv goroutine is ALREADY serving by now, so a
+			// bare return here would leak the main listener/accept-loop and
+			// skip the OTel flush. Route the bind failure through the normal
+			// shutdown path instead: record it as a component failure and
+			// cancel runCtx so the select below drops straight into graceful
+			// shutdown and Run returns this error.
+			pprofSrv = nil // nothing to Shutdown — Serve never ran
+			failComponent("pprof listener", fmt.Errorf("listen pprof %s: %w", cfg.PprofAddr, lnErr))
+		} else {
+			go func() {
+				logger.Info("pprof server starting", "addr", cfg.PprofAddr)
+				if serveErr := pprofSrv.Serve(pprofLn); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+					logger.Error("pprof server error", "error", serveErr)
+				}
+			}()
 		}
-		go func() {
-			logger.Info("pprof server starting", "addr", cfg.PprofAddr)
-			if serveErr := pprofSrv.Serve(pprofLn); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				logger.Error("pprof server error", "error", serveErr)
-			}
-		}()
 	}
 
 	// Start workers in background goroutines. Each worker gets its own
@@ -304,8 +327,19 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// process runs the manager. With no operators populated, the manager
 	// never starts — avoiding the misleading "not running in-cluster"
 	// warning on a host process.
+	//
+	// The operator goroutine is supervised on operatorWg — the SAME
+	// WaitGroup pattern as workers — so Run WAITS for RunOperators to drain
+	// before returning. Without this wait, runCtx cancellation on shutdown
+	// would let Run return mid-reconcile (the process could exit before
+	// controller-runtime finishes its own ctx-cancel drain) AND a
+	// failComponent write that lands after the final componentFailure read
+	// would be silently lost.
+	var operatorWg sync.WaitGroup
 	if len(srv.Operators) > 0 && shouldRunOperators() {
+		operatorWg.Add(1)
 		go func() {
+			defer operatorWg.Done()
 			if opErr := srv.RunOperators(runCtx, logger, cfg.OperatorHealthProbeAddr); opErr != nil && !errors.Is(opErr, context.Canceled) {
 				failComponent("controller manager", opErr)
 			}
@@ -348,6 +382,14 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			logger.Error("worker stop error", "worker", w.Name(), "error", stopErr)
 		}
 	}
+
+	// Wait for the operator/controller-manager goroutine to drain. runCtx
+	// is already cancelled (it's what dropped us out of the serve select),
+	// so RunOperators is unwinding controller-runtime's own ctx-cancel
+	// drain; this Wait ensures Run does not return before that finishes and
+	// that any failComponent write from RunOperators lands before the final
+	// componentFailure read below.
+	operatorWg.Wait()
 
 	// OnShutdown is the caller-composed teardown (the old
 	// Application.Shutdown). Runs after workers stop, before the OTel flush

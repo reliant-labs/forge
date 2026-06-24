@@ -174,9 +174,16 @@ type GRPCRouteEntity struct {
 //     environment AND added to the substitution map (built-ins win
 //     on conflict).
 type ServiceEntity struct {
-	Name   string             `json:"name"`
-	Image  string             `json:"image,omitempty"`
-	Deploy DeployConfigEntity `json:"deploy"`
+	Name string `json:"name"`
+	// Image is the (registry-less) image name. ImageTag, when set, is the
+	// per-service tag PIN the KCL render layer stamps instead of the
+	// env-wide tag — surfaced here so audit / parity consumers can see the
+	// pin rather than inferring an untagged image. The rendered image ref
+	// (registry + tag resolution) is built KCL-side in _image_ref; this is
+	// the declaration, not the resolved ref.
+	Image    string             `json:"image,omitempty"`
+	ImageTag string             `json:"image_tag,omitempty"`
+	Deploy   DeployConfigEntity `json:"deploy"`
 	// Build is the polymorphic build declaration — exactly one of
 	// Go / Docker / Shell is populated according to Build.Type. Mirrors
 	// Deploy. When the KCL `build` block is absent (a hand-authored
@@ -525,6 +532,7 @@ type rawManifest struct {
 type kclServiceRaw struct {
 	Name     string            `json:"name"`
 	Image    string            `json:"image,omitempty"`
+	ImageTag string            `json:"image_tag,omitempty"`
 	Deploy   json.RawMessage   `json:"deploy"`
 	Build    json.RawMessage   `json:"build"`
 	EnvVars  []KCLEnvVar       `json:"env_vars,omitempty"`
@@ -639,6 +647,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		out.Services = append(out.Services, ServiceEntity{
 			Name:     s.Name,
 			Image:    s.Image,
+			ImageTag: s.ImageTag,
 			Deploy:   deploy,
 			Build:    build,
 			EnvVars:  s.EnvVars,

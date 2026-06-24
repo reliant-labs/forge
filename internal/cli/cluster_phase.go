@@ -125,6 +125,18 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		// in-cluster→host→cluster traffic (host.k3d.internal:<port>) finds
 		// nothing listening. k3d.yaml deliberately carries no `ports:` block —
 		// the ports live in the generated fragment, merged here.
+		// Ensure any standalone registry the config references via
+		// `registries.use` exists BEFORE create — a `use` reference fails the
+		// create if the registry container isn't already up. A standalone
+		// registry is owned by no cluster, so it (and its pushed images)
+		// survives a later `cluster delete`; the next cold create re-references
+		// the SAME registry and image pushes are cache hits. Idempotent: a
+		// present registry is a `k3d registry list` no-op. Reads the un-merged
+		// user config (the ports merge below doesn't touch `registries`).
+		if err := ensureConfigRegistries(ctx, c.Config); err != nil {
+			return fmt.Errorf("ensure standalone registry for cluster %q: %w", c.Name, err)
+		}
+
 		cfgPath, cleanup, err := mergeK3dConfig(c.Config, c.Ingress)
 		if err != nil {
 			return fmt.Errorf("merge k3d ports for cluster %q: %w", c.Name, err)

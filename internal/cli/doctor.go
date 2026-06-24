@@ -100,6 +100,14 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 	// docs/pkg-versioning.md.
 	appendIngressChecksToReport(&report, runPkgPinDoctorChecks(cfg, projectDir, signal))
 
+	// Docker daemon proxy check: warns when the Docker daemon is
+	// configured with an HTTP(S) proxy. A TLS-intercepting proxy
+	// (Proxyman, Charles, corporate MITM) silently breaks image pulls —
+	// ImagePullBackOff / "EOF" / "connection reset" with no mention of a
+	// proxy. WARN, not fail: a well-behaved proxy is legitimate. See
+	// doctor_dockerproxy.go.
+	appendIngressChecksToReport(&report, runDockerProxyDoctorChecks(ctx, cfg, projectDir, signal))
+
 	// External-build checks surface per-service warnings for KCL
 	// services that declare build_cmd — missing build_cwd, first
 	// token not on PATH, plus the resolved (substituted) command

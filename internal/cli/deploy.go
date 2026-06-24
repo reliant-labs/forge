@@ -407,7 +407,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// k3d cluster).
 	if !dryRun && !rollback && hasK8sServices {
 		if entities != nil && len(entities.Clusters) > 0 {
-			if err := reconcileDeclaredClusters(ctx, entities.Clusters); err != nil {
+			if err := reconcileDeclaredClusters(ctx, entities.Clusters, projectDir, envName); err != nil {
 				return err
 			}
 		} else if envName == "dev" {

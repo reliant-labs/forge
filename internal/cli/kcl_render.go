@@ -295,6 +295,15 @@ type DockerBuild struct {
 
 // ShellBuild mirrors the kcl/schema.k ShellBuild — a verbatim `sh -c`
 // build command (generalizes the old build_cmd escape hatch).
+//
+// Execution contract (consistent with the build_cmd escape hatch — see
+// internal/buildtarget): the command runs with cwd == the PROJECT ROOT
+// (the directory holding forge.yaml), so relative paths like
+// scripts/build-image.sh, ../sibling-repo, or docker/Dockerfile resolve
+// as a user expects. Before exec, forge substitutes the same ${X} tokens
+// build_cmd supports — ${IMAGE} ${TAG} ${CODE_VERSION} ${SERVICE}
+// ${TARGETARCH} ${REGISTRY} ${PROJECT_DIR} ${ENV} — into Cmd. The command
+// owns the whole build (and any push); forge does not wrap it.
 type ShellBuild struct {
 	OutputName string `json:"output_name,omitempty"`
 	Cmd        string `json:"cmd"`

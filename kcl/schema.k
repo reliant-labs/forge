@@ -1192,7 +1192,14 @@ schema ShellBuild(Build):
     """Build the service by running `cmd` verbatim via `sh -c`. The
     general escape hatch (generalizes the old build_cmd / EffectiveBuildCmd
     path): cross-repo builds, language runtimes forge doesn't natively
-    build, pre-built image re-pushes. The command owns the whole build."""
+    build, pre-built image re-pushes. The command owns the whole build.
+
+    Execution contract (consistent with the build_cmd escape hatch): the
+    command runs with cwd == the PROJECT ROOT (the dir holding forge.yaml),
+    so relative paths (scripts/build-image.sh, ../sibling, docker/Dockerfile)
+    resolve as expected. Before exec, forge substitutes the same ${X} tokens
+    build_cmd supports — ${IMAGE} ${TAG} ${CODE_VERSION} ${SERVICE}
+    ${TARGETARCH} ${REGISTRY} ${PROJECT_DIR} ${ENV} — into `cmd`."""
     type: str = "shell"
     cmd: str
 

@@ -59,6 +59,15 @@ forge debug start
 
 Inspect logs, database state, and service health while the failure is reproducible.
 
+When the stack spans **multiple clusters** (a secondary k3d cluster joined to the
+primary's docker network) and a workload is stuck `Pending` / not-ready, or a flow
+that passes in single-cluster dev fails here — read the pod's STATUS before the
+network layer. The failure is almost always image-pull or node-setup, not app
+logic. See the `forge/debug/multi-cluster-e2e` skill for the pod-status-first
+discipline, the hold-on-fail pattern, and the nested-cluster gotchas (registry
+mirror not loaded, host-gateway DNS missing on the secondary, path-MTU dropping
+TLS handshakes).
+
 ## Frontend E2E
 
 For UI-level end-to-end tests:

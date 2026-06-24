@@ -1006,6 +1006,18 @@ schema Service:
     """
     name: str
     image?: str
+    # Per-service image-tag PIN. When set, this service's rendered image
+    # is tagged with THIS value instead of the env-wide tag
+    # (RenderEnv.image_tag, typically `git describe --dirty`). Use it for
+    # a sibling image that forge does NOT build under the env-wide tag —
+    # e.g. a no-op ShellBuild service whose image was pushed under its own
+    # release tag. Without the pin, deploy fans the env-wide git tag onto
+    # every image, producing a tag that was never pushed for that image →
+    # ErrImagePull. Ignored when `image` already carries its own
+    # `:tag`/`@sha256:` (an explicitly-pinned reference always wins).
+    # Unset => the service uses the env-wide tag (single-image envs
+    # unchanged).
+    image_tag?: str
     command: [str] = []
     env_vars: [EnvVar] = []
     deploy?: HostDeploy | K8sCluster | External | Compose | BuildOnly
@@ -1085,6 +1097,9 @@ schema Operator:
     """
     name: str
     image: str
+    # Per-operator image-tag pin (see Service.image_tag). Unset => the
+    # env-wide tag.
+    image_tag?: str
     replicas: int = 1
     platform?: str
     crds: [str] = []
@@ -1155,6 +1170,9 @@ schema CronJob:
     """
     name: str
     image: str
+    # Per-cronjob image-tag pin (see Service.image_tag). Unset => the
+    # env-wide tag.
+    image_tag?: str
     schedule: str = ""
     platform?: str
     command: [str] = []

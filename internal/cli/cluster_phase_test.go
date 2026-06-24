@@ -79,6 +79,26 @@ func TestReconcileDeclaredClusters_EmptyIsNoop(t *testing.T) {
 	}
 }
 
+// TestParseKCLEntities_ServiceImageTagPin pins that a per-service
+// image_tag round-trips through the entity parse (the JSON contract
+// carries it; the KCL render layer uses it to stamp the image ref).
+func TestParseKCLEntities_ServiceImageTagPin(t *testing.T) {
+	const js = `{"services":[
+      {"name":"reliant","image":"reliant","image_tag":"v1.4.2","deploy":{"type":"cluster","cluster":"k3d-dev","namespace":"dev","registry":"localhost:5050"}},
+      {"name":"api","image":"api","deploy":{"type":"cluster","cluster":"k3d-dev","namespace":"dev","registry":"localhost:5050"}}
+    ]}`
+	entities, err := parseKCLEntities([]byte(js))
+	if err != nil {
+		t.Fatalf("parseKCLEntities: %v", err)
+	}
+	if got := entities.FindService("reliant").ImageTag; got != "v1.4.2" {
+		t.Errorf("reliant.ImageTag = %q want v1.4.2", got)
+	}
+	if got := entities.FindService("api").ImageTag; got != "" {
+		t.Errorf("api.ImageTag = %q want empty (env-wide tag)", got)
+	}
+}
+
 // TestEffectiveServers defaults a zero/negative Servers to 1 (the schema
 // default; belt-and-suspenders for a hand-built entity).
 func TestEffectiveServers(t *testing.T) {

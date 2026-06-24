@@ -35,7 +35,7 @@ For Service.deploy the dispatch keys are:
                             "env_vars", "secrets_file", "delve_port",
                             "working_dir" }
     { "type": "cluster",    "replicas", "ingress", "resources", "platform", "ports",
-                            "cluster_rbac", "image_pull_secrets" }
+                            "app_protocols", "cluster_rbac", "image_pull_secrets" }
     { "type": "build-only", "build_variants" }
 
 HostDeploy splits per-env config from secrets:
@@ -60,6 +60,8 @@ code that imports `forge` and references `forge.Service { ... }`
 OUTSIDE a lambda body is fine; only lambda-internal instantiation
 needs the alias trick.
 """
+
+import json
 
 # ---------------------------------------------------------------------------
 # Shared sub-structures.
@@ -561,6 +563,22 @@ schema K8sCluster:
     security_context?: SecurityContext
     env_vars: [EnvVar] = []
     ports: [int] = []
+    # Optional per-port `appProtocol` for the generated Service ports,
+    # keyed by port number (as a string — KCL dict keys must be strings).
+    # `appProtocol` is a Kubernetes-standard hint the Service exposes so
+    # Gateway/Ingress controllers negotiate the backend wire protocol —
+    # e.g. `kubernetes.io/h2c` for an h2c/gRPC backend sitting behind a
+    # cloud Gateway controller:
+    #
+    #     ports = [8080]
+    #     app_protocols = {"8080" = "kubernetes.io/h2c"}
+    #
+    # Keyed by port so the int-shorthand `ports = [int]` stays untouched;
+    # a port absent from this map renders exactly as before (no
+    # `appProtocol` field). appProtocol is a Service-port-only concept —
+    # it is NOT projected onto the Deployment's containerPorts.
+    # Unset/empty => omitted.
+    app_protocols: {str: str} = {}
     platform?: str
     cluster_rbac?: ClusterRBAC
     # Names of EXISTING image-pull Secrets (kubernetes.io/dockerconfigjson)
@@ -693,6 +711,384 @@ schema ExternalSecrets:
     type: str = "external"
     check:
         type == "external", "ExternalSecrets.type must be 'external'"
+
+schema RenderedSecretKey:
+    """One key within a RenderedSecrets Secret.
+
+    `from` selects the value SOURCE:
+      * "dotenv"  — read the value at apply time from the gitignored
+                    `.env.<env>` (keyed by `key`). The value NEVER enters
+                    KCL render output — only the reference (from + key).
+      * "literal" — an inline literal `value`. GATED to dev/e2e only (a
+                    check below + a Go guard) — rejected for any other
+                    env. Use for non-sensitive fixed test values
+                    (a test JWKS issuer URL, a fixed e2e password) where
+                    a dotenv round-trip is pure friction.
+
+    A "dotenv" key carries NO value (forge resolves it); a "literal" key
+    carries `value` and NO dotenv `key`.
+    """
+    from: str = "dotenv"
+    key?: str
+    value?: str
+
+    check:
+        from in ["dotenv", "literal"], \
+            "RenderedSecretKey.from must be 'dotenv' or 'literal'"
+        from != "dotenv" or key, \
+            "RenderedSecretKey(from='dotenv') requires `key` (the dotenv key to read)"
+        from != "literal" or value != Undefined, \
+            "RenderedSecretKey(from='literal') requires `value`"
+        from != "literal" or value == Undefined or option("env") in ["dev", "e2e"], \
+            "RenderedSecretKey(from='literal') is only allowed in dev/e2e — other envs must not inline secret values; use from='dotenv'"
+
+schema RenderedSecret:
+    """A single k8s Secret forge renders + applies from declared
+    sources. `name` is the Secret name; `keys` maps each in-Secret key
+    to its value source (RenderedSecretKey)."""
+    name: str
+    keys: {str: RenderedSecretKey}
+
+    check:
+        name, "RenderedSecret.name is required"
+        len(keys) > 0, "RenderedSecret.keys must declare at least one key"
+
+schema RenderedSecrets:
+    """Dev/e2e secret provider that RENDERS named k8s Secrets from
+    declared sources (a gitignored `.env.<env>` for `from='dotenv'`, or
+    inline literals for `from='literal'`, the latter gated to dev/e2e).
+
+    Like DotenvSecrets this is for LOCAL clusters only — forge renders
+    PLAINTEXT Secret objects CLI-side. The difference: DotenvSecrets
+    projects the env-var-keyed dotenv onto the secret_refs declared on
+    services; RenderedSecrets declares the Secrets EXPLICITLY (name +
+    keys + per-key source), so per-cluster, multi-Secret seeding is a
+    first-class declaration. Each rendered Secret is applied ONLY into
+    the cluster(s) whose services reference it — never projected across
+    the trust boundary.
+
+    Values NEVER enter KCL render output except `from='literal'`, which
+    is dev/e2e-only (a per-key check + a Go guard)."""
+    type: str = "rendered"
+    secrets: [RenderedSecret] = []
+
+    check:
+        type == "rendered", "RenderedSecrets.type must be 'rendered'"
+        len(secrets) > 0, "RenderedSecrets.secrets must declare at least one Secret"
+
+schema DotenvRef:
+    """A reference to a value in the gitignored `.env.<env>` (keyed by
+    `key`). The CLI resolves it before render; the VALUE never enters KCL
+    render output (only the reference). Used where a render-time builder
+    needs a secret-sourced value it must NOT echo — e.g. TestJWKS's
+    ES256 private key, which is read to derive the PUBLIC JWK but never
+    published."""
+    from: str = "dotenv"
+    key: str
+
+    check:
+        from == "dotenv", "DotenvRef.from must be 'dotenv'"
+        key, "DotenvRef.key is required"
+
+schema TestJWKS:
+    """An in-cluster JWKS endpoint serving the PUBLIC half of a test
+    ES256 key, so services that validate JWTs against it exercise the
+    REAL validation path (a normal in-cluster dependency: an HTTPS-less
+    `http://<name>.<ns>/.well-known/jwks.json` URL) instead of a
+    host-port boot race or a dev auth-bypass.
+
+    The PUBLIC JWK is derived from the ES256 PRIVATE key PEM at render
+    time via the `forge.derive_jwk` plugin, so the served JWKS can NEVER
+    drift from whatever signs the tokens (same key, two halves). The
+    private key is sourced from `.env.<env>` (DotenvRef) — the CLI reads
+    it, passes it to the JWKS builder, and it never appears in the
+    rendered output (only the derived public JWK does).
+
+    Render with `forge.test_jwks_manifests(jwks, namespace, private_pem)`
+    in a Bundle's `additional_manifests` (or a service's owned
+    `manifests`, to pin it to a specific cluster) — it emits a ConfigMap
+    (the JWKS JSON) + a tiny static-file Deployment + Service serving
+    `/.well-known/jwks.json`.
+
+    Fields:
+      * `name`        — base name for the ConfigMap / Deployment / Service.
+      * `kid`         — the JWK key id (matches the signer's kid).
+      * `alg`         — JWK algorithm (default "ES256").
+      * `private_key` — DotenvRef to the ES256 private-key PEM in
+                        `.env.<env>`. Read at render time to derive the
+                        public JWK; never published.
+    """
+    name: str
+    kid: str
+    alg: str = "ES256"
+    private_key: DotenvRef
+
+    check:
+        name, "TestJWKS.name is required"
+        kid, "TestJWKS.kid is required (the JWK key id; must match the signer's kid)"
+        alg == "ES256", "TestJWKS.alg must be 'ES256' (the only supported test-JWKS algorithm today)"
+
+schema Cluster:
+    """A k3d cluster forge ensures exists before deploying into it.
+
+    An env declares a LIST of these (Bundle.clusters); `forge up
+    --env=<env>` reconciles each at the head of the run: if a cluster
+    of the given `name` is absent, forge runs `k3d cluster create` with
+    the declared flags; if present, it's a no-op (idempotent on warm
+    runs). This is the declarative replacement for the dev-only,
+    single-cluster `ensureDevCluster` bootstrap — an env that stands up
+    several clusters (e.g. a control-plane cluster + a workload cluster)
+    declares them all here, with NO imperative glue.
+
+    Multi-cluster ownership is a REFERENCE. There is no "primary"
+    cluster: a secondary cluster names its `owner` — a reference to the
+    owner Cluster INSTANCE — and forge derives BOTH the docker network it
+    joins (`k3d-<owner.name>`) AND the registry-inherit behavior from that
+    one reference. The owner cluster declares no `owner` — forge creates
+    its own network/registry. There is no most-X heuristic anywhere;
+    ownership is exactly the `owner` edge.
+
+    Stating the owner ONCE (rather than restating the stringly
+    `network = "k3d-<owner>"` + `registry_mirror = "inherit"` pair) keeps
+    cross-cluster wiring DRY and unforgeable: the derived `.network` can
+    never disagree with the owner's actual k3d network name, and a
+    consumer that needs the owner's kubectl context references
+    `<owner>.context` instead of re-spelling the `k3d-` prefix.
+
+    Computed/derived properties (read by consumers + the render layer):
+      * `.context`          — the kubectl context string, `k3d-<name>`
+                              (k3d's own convention). Reference it from a
+                              ClusterClient / KubeconfigSecret wiring
+                              instead of re-spelling the prefix.
+      * `.network`          — the docker network this cluster joins.
+                              Derived as `k3d-<owner.name>` when `owner`
+                              is set (a secondary joins the owner's
+                              auto-created network so their nodes share a
+                              bridge and reach each other by container IP);
+                              Undefined for an owner cluster (k3d creates
+                              its own network).
+      * `.registry_inherit` — True when `owner` is set: forge writes the
+                              owner's registries.yaml onto this cluster's
+                              node and restarts it to reload (so in-cluster
+                              pulls of `localhost:<port>/...` resolve to
+                              the shared registry). False for an owner
+                              cluster (it owns its registry via `config`,
+                              or pulls from a real registry).
+
+    Fields:
+      * `name`     — k3d cluster name. `.context` is `k3d-<name>`.
+      * `owner`    — reference to the OWNER Cluster instance. Set on a
+                     SECONDARY cluster to join the owner's network +
+                     inherit its registry (both DERIVED, see above). Unset
+                     on an owner cluster.
+      * `config`   — path to a k3d Simple-config YAML. When set, forge
+                     runs `k3d cluster create --config <config>` and the
+                     servers/agents/api_port/network flags are ignored
+                     (the config file is authoritative). Relative paths
+                     resolve against the project root.
+      * `servers`  — control-plane node count (default 1).
+      * `agents`   — worker node count (default 0).
+      * `api_port` — host port to bind the cluster's API server to
+                     (`k3d cluster create --api-port 0.0.0.0:<port>`).
+                     Distinct per cluster so several clusters coexist on
+                     one host. Unset => k3d picks a random free port.
+      * `ingress`  — install the Gateway API stack (pinned Gateway-API
+                     CRDs + the vendored Traefik controller + the
+                     `traefik` GatewayClass) into THIS cluster after it's
+                     ensured. A fresh `k3d cluster create` ships none of
+                     these, so a cluster that hosts the env's Gateway /
+                     HTTPRoute / GRPCRoute resources needs it on or their
+                     apply fails ("no matches for kind Gateway in
+                     gateway.networking.k8s.io/v1"). The install is
+                     idempotent (kubectl apply + a CRD-cache), so re-runs
+                     no-op. Default False — a cluster with no ingress
+                     resources (reached via port-forward) leaves it off.
+    """
+    name: str
+    owner?: Cluster
+    config?: str
+    servers: int = 1
+    agents: int = 0
+    api_port?: int
+    ingress: bool = False
+    # Derived: kubectl context (k3d-<name>). Computed from `name` so
+    # consumers reference `<cluster>.context` rather than re-spelling the
+    # `k3d-` prefix. Always present.
+    context: str = "k3d-" + name
+    # Derived: the docker network this cluster joins. `k3d-<owner.name>`
+    # when `owner` is set (join the owner's auto-created network);
+    # Undefined for an owner cluster (k3d creates its own). Projects to
+    # JSON `null` for an owner cluster, the owner's network for a
+    # secondary.
+    network?: str = ("k3d-" + owner.name) if owner else Undefined
+    # Derived: True when `owner` is set — forge mirrors the owner's
+    # registry onto this cluster's node (the registry-inherit behavior
+    # the stringly `registry_mirror = "inherit"` used to request). False
+    # for an owner cluster.
+    registry_inherit: bool = True if owner else False
+
+    check:
+        name, "Cluster.name is required"
+        servers > 0, "Cluster.servers must be positive"
+        agents >= 0, "Cluster.agents must be non-negative"
+
+schema KubeconfigSecret:
+    """A cross-cluster kubeconfig, minted FRESH each `forge up` and
+    stored as a k8s Secret so a workload in one cluster can talk to
+    another cluster's API server.
+
+    This kills the IP-drift footgun: in a multi-k3d-cluster dev/e2e env,
+    the target cluster's serverlb container gets a fresh docker-network
+    IP on every `k3d cluster create`. A kubeconfig with that IP baked in
+    and committed to git goes stale the moment the cluster is recreated.
+    Instead forge resolves the endpoint at mint time (never persisting
+    the IP) and writes the kubeconfig into a Secret the workload mounts.
+
+    Minting (at the cluster→deploy boundary, after clusters exist):
+      1. `k3d kubeconfig get <target_cluster>`.
+      2. For reachability == "in-network", resolve the target's API
+         endpoint FRESH from docker — the serverlb container's IP on the
+         OWNER network — and rewrite the kubeconfig's cluster.server to
+         `https://<ip>:6443`, unset the CA, set insecure-skip-tls-verify
+         (the serverlb cert doesn't cover the container IP). The IP is
+         resolved every run and never written to a committed file.
+      3. Rename the context to `context_name` (stable name the workload
+         selects).
+      4. EnsureNamespace(in_cluster, namespace) + apply the Secret into
+         in_cluster.
+
+    Fields:
+      * `name`           — the k8s Secret name (in `in_cluster`).
+      * `in_cluster`     — kubectl context of the cluster the Secret is
+                           CREATED in (where the consuming workload runs).
+      * `target_cluster` — k3d cluster name whose kubeconfig is minted
+                           (the cluster the workload will REACH).
+      * `context_name`   — context name written into the kubeconfig (the
+                           workload selects it by this stable name).
+      * `key`            — key within the Secret holding the kubeconfig
+                           YAML (default "kubeconfig").
+      * `namespace`      — namespace for the Secret in `in_cluster`
+                           (default: the env's namespace).
+      * `reachability`   — "in-network" (default): in-docker-network IP
+                           rewrite + insecure TLS (the dev/e2e seam).
+                           "endpoint": use the kubeconfig's own endpoint
+                           verbatim (prod, where the API server has a
+                           stable reachable address + valid cert). Only
+                           "in-network" needs the insecure rewrite path.
+    """
+    name: str
+    in_cluster: str
+    target_cluster: str
+    context_name: str
+    key: str = "kubeconfig"
+    namespace?: str
+    reachability: str = "in-network"
+
+    check:
+        name, "KubeconfigSecret.name is required"
+        in_cluster, "KubeconfigSecret.in_cluster is required (kubectl context the Secret lands in)"
+        target_cluster, "KubeconfigSecret.target_cluster is required (k3d cluster to mint a kubeconfig for)"
+        context_name, "KubeconfigSecret.context_name is required (stable context name the workload selects)"
+        reachability in ["in-network", "endpoint"], \
+            "KubeconfigSecret.reachability must be 'in-network' (dev/e2e IP rewrite) or 'endpoint' (verbatim)"
+
+schema ClusterClient:
+    """A workload's cross-cluster client wiring, stated ONCE.
+
+    A workload that reaches ANOTHER cluster's API server today restates
+    the same three things by hand, with hand-correlated names/paths/
+    contexts that must agree or the workload silently breaks:
+
+      1. a `KubeconfigSecret` minting the target cluster's kubeconfig into
+         the workload's cluster;
+      2. a `Volume` mounting that Secret at a path;
+      3. a consumer config value — the JSON the workload reads (e.g.
+         `CLUSTER_CONFIGS = '[{"id","kubeconfigPath","context"}]'`) — whose
+         `kubeconfigPath` must equal the Volume's mount_path + the Secret
+         key, and whose `context` must equal the Secret's context_name.
+
+    `ClusterClient` DERIVES all three from `cluster` (the Cluster to
+    reach, a reference), `in_cluster` (the Cluster the workload runs in,
+    a reference), and `mount_path`. The consumer then references:
+
+      * `.secret`      — the minted KubeconfigSecret (emit it in the
+                         Bundle's `kubeconfig_secrets`).
+      * `.volume`      — the Volume to attach to the consuming workload
+                         (`volumes = [link.volume]`).
+      * `.config_json` — the single-element JSON array string the workload
+                         reads (drop into the `CLUSTER_CONFIGS` EnvVar).
+      * `.config_entry`— the raw `{id, kubeconfigPath, context}` dict, for
+                         a workload that aggregates SEVERAL clients into
+                         one array (`json.encode([a.config_entry,
+                         b.config_entry])`).
+
+    Because the kubeconfigPath inside `.config_json` is computed from the
+    SAME `mount_path` + `key` the `.volume`/`.secret` use, the three can't
+    drift. The `id` is the stable handle the workload keys on (the
+    CLUSTER_CONFIGS entry `id` AND the kubeconfig context name).
+
+    Fields:
+      * `id`          — stable client id. Used as the CLUSTER_CONFIGS
+                        entry id, the minted kubeconfig context name, and
+                        the Secret/Volume base name (`<id>-kubeconfig`).
+      * `cluster`     — reference to the Cluster the workload REACHES
+                        (kubeconfig is minted FOR this cluster).
+      * `in_cluster`  — reference to the Cluster the workload RUNS in
+                        (the Secret/Volume land here).
+      * `mount_path`  — absolute dir the kubeconfig Secret mounts at; the
+                        kubeconfig file is `<mount_path>/<key>`.
+      * `key`         — key within the Secret holding the kubeconfig YAML
+                        (default "kubeconfig"); also the mounted filename.
+      * `namespace`   — namespace for the minted Secret in `in_cluster`
+                        (default: the env's namespace, resolved Go-side).
+      * `reachability`— passed through to the minted KubeconfigSecret
+                        ("in-network" dev/e2e IP rewrite, "endpoint" prod).
+    """
+    id: str
+    cluster: Cluster
+    in_cluster: Cluster
+    mount_path: str
+    key: str = "kubeconfig"
+    namespace?: str
+    reachability: str = "in-network"
+    # Derived names/paths — the single source the three emitted things share.
+    _secret_name: str = id + "-kubeconfig"
+    _kubeconfig_path: str = mount_path + "/" + key
+    # The minted cross-cluster kubeconfig Secret (in_cluster -> cluster).
+    secret: KubeconfigSecret = KubeconfigSecret {
+        name = _secret_name
+        in_cluster = in_cluster.context
+        target_cluster = cluster.name
+        context_name = id
+        key = key
+        namespace = namespace
+        reachability = reachability
+    }
+    # The Volume the consuming workload mounts to read the kubeconfig.
+    volume: Volume = Volume {
+        name = _secret_name
+        mount_path = mount_path
+        type = "secret"
+        source = _secret_name
+        read_only = True
+    }
+    # The CLUSTER_CONFIGS entry the workload reads — id + the derived
+    # kubeconfig path + the context the kubeconfig was renamed to.
+    config_entry: {str: str} = {
+        id = id
+        kubeconfigPath = _kubeconfig_path
+        context = id
+    }
+    # The single-element JSON array form for the common one-client case;
+    # drop straight into the CLUSTER_CONFIGS EnvVar value.
+    config_json: str = json.encode([config_entry])
+
+    check:
+        id, "ClusterClient.id is required"
+        mount_path, "ClusterClient.mount_path is required"
+        mount_path.startswith("/"), "ClusterClient.mount_path must be absolute (start with '/')"
+        reachability in ["in-network", "endpoint"], \
+            "ClusterClient.reachability must be 'in-network' or 'endpoint'"
 
 schema BuildOnly:
     """Service is built but not auto-orchestrated.
@@ -883,8 +1279,22 @@ schema Service:
       * Compose     — forge runs docker-compose up -d.
       * BuildOnly   — forge builds the artifact only (CLI shape).
 
-    Omit `deploy` entirely to mean "just build the binary" — the
-    render layer projects it as `BuildOnly { build_variants = [] }`.
+    `deploy = None` (or omitting `deploy` entirely) is the explicit
+    BUILD-ONLY mode: forge runs this service's `build` (building AND
+    pushing its image when the build is a DockerBuild/ShellBuild) but
+    renders NO Deployment / Service / RBAC / owned manifests — it is not
+    orchestrated. Use it for an IMAGE other workloads reference at
+    runtime (a base image baked once and pulled by per-user pods, a
+    sidecar image), or a CLI binary shipped in a release artifact. The
+    render layer projects an explicit `{ "type": "build-only" }` deploy
+    block so the Go consumer dispatches it the same way as a
+    `forge.BuildOnly` deploy: in the build set, out of the deploy set.
+
+    This is distinct from the IMAGE-LESS infra-bundle path (a service
+    with a `K8sCluster` deploy and NO `image`, which renders only its
+    owned `manifests` onto a specific cluster). `deploy = None` skips the
+    deploy phase ENTIRELY; an image-less cluster service still
+    participates in the deploy phase to pin its owned manifests.
 
     Build side — `build_cmd` (mirror of `External` for the build step):
 
@@ -921,6 +1331,18 @@ schema Service:
     """
     name: str
     image?: str
+    # Per-service image-tag PIN. When set, this service's rendered image
+    # is tagged with THIS value instead of the env-wide tag
+    # (RenderEnv.image_tag, typically `git describe --dirty`). Use it for
+    # a sibling image that forge does NOT build under the env-wide tag —
+    # e.g. a no-op ShellBuild service whose image was pushed under its own
+    # release tag. Without the pin, deploy fans the env-wide git tag onto
+    # every image, producing a tag that was never pushed for that image →
+    # ErrImagePull. Ignored when `image` already carries its own
+    # `:tag`/`@sha256:` (an explicitly-pinned reference always wins).
+    # Unset => the service uses the env-wide tag (single-image envs
+    # unchanged).
+    image_tag?: str
     command: [str] = []
     env_vars: [EnvVar] = []
     deploy?: HostDeploy | K8sCluster | External | Compose | BuildOnly
@@ -960,6 +1382,27 @@ schema Service:
     # writable. Only meaningful for a K8sCluster (cluster) deploy.
     # Unset => no volumes (field omitted from the manifest entirely).
     volumes?: [Volume]
+    # Raw k8s manifests OWNED by this service. Each is rendered tagged with
+    # this service's app.kubernetes.io/name (lib/services.k
+    # render_owned_manifests) so the deploy layer routes it to this
+    # service's DECLARED cluster — the load-bearing primitive for
+    # declared-cluster-only multi-cluster routing (there is NO
+    # primary-cluster / most-services heuristic; a manifest lands on the
+    # cluster of its owning service, nowhere else).
+    #
+    # Two ownership shapes:
+    #   1. A workload service attaches its CRD / extra RBAC here — those
+    #      land on the SAME cluster as the workload.
+    #   2. An IMAGE-LESS "infra service" (this field + a
+    #      `deploy = forge.K8sCluster {...}` and NO `image`) declares
+    #      env-level / ownerless resources (Namespace, Gateways,
+    #      ClusterIssuers, bootstrap) onto a specific cluster. An
+    #      image-less cluster service renders NO Deployment/Service/RBAC —
+    #      only its stamped manifests (see render.k render_manifests).
+    #
+    # Each entry is a raw manifest dict (same shape as
+    # Bundle.additional_manifests). Unset => no owned manifests.
+    manifests: [any] = []
 
     check:
         name, "Service.name is required"
@@ -979,6 +1422,9 @@ schema Operator:
     """
     name: str
     image: str
+    # Per-operator image-tag pin (see Service.image_tag). Unset => the
+    # env-wide tag.
+    image_tag?: str
     replicas: int = 1
     platform?: str
     crds: [str] = []
@@ -1049,6 +1495,9 @@ schema CronJob:
     """
     name: str
     image: str
+    # Per-cronjob image-tag pin (see Service.image_tag). Unset => the
+    # env-wide tag.
+    image_tag?: str
     schedule: str = ""
     platform?: str
     command: [str] = []
@@ -1077,6 +1526,21 @@ schema Bundle:
     passes it to `forge.render(...)`. The output is the JSON contract
     documented at the top of this file.
     """
+    # k3d clusters forge ensures exist before deploying. An env that
+    # stands up several clusters (a control-plane cluster + a workload
+    # cluster) declares them here; `forge up` reconciles each at the
+    # head of the run (create-if-absent, no-op if present). Empty =>
+    # forge ensures no cluster (today's `forge up --env=e2e` behavior,
+    # or a single dev cluster bootstrapped the legacy way). Ownership is
+    # a REFERENCE: a secondary names its `owner` Cluster and forge derives
+    # the joined network + registry-inherit from it — there is no
+    # "primary" cluster.
+    clusters: [Cluster] = []
+    # Cross-cluster kubeconfigs minted FRESH each `forge up` and stored
+    # as k8s Secrets (so a workload in one cluster can reach another's
+    # API server without a committed, IP-drifting kubeconfig). Minted at
+    # the cluster→deploy boundary. Empty => none. See KubeconfigSecret.
+    kubeconfig_secrets: [KubeconfigSecret] = []
     services: [Service] = []
     operators: [Operator] = []
     frontends: [Frontend] = []
@@ -1104,7 +1568,7 @@ schema Bundle:
     # render Secret objects CLI-side; "external" (prod/staging) means
     # forge never sees values — k8s references pre-existing Secrets.
     # KCL only emits this DECLARATION; secret VALUES never enter KCL.
-    secret_provider?: DotenvSecrets | ExternalSecrets
+    secret_provider?: DotenvSecrets | ExternalSecrets | RenderedSecrets
     # Cluster-scoped node.k8s.io/v1 RuntimeClass declarations. Used to
     # bind a workload-facing name ("gvisor", "kata-qemu") to a
     # node-installed handler, OR to declare a dev-cluster alias that

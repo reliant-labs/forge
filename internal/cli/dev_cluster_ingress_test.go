@@ -267,7 +267,7 @@ func TestCollectTraefikEntrypoints_ProjectsListeners(t *testing.T) {
 			{"name": "private", "listeners": [{"name": "grpc", "port": 19190, "protocol": "H2C"}]}
 		]
 	}`)
-	got, err := collectTraefikEntrypoints(context.Background(), dir)
+	got, err := collectTraefikEntrypoints(context.Background(), dir, "dev")
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestCollectTraefikEntrypoints_PortDedupe(t *testing.T) {
 			{"name": "a-gw", "listeners": [{"name": "http", "port": 18080, "protocol": "HTTP"}]}
 		]
 	}`)
-	got, err := collectTraefikEntrypoints(context.Background(), dir)
+	got, err := collectTraefikEntrypoints(context.Background(), dir, "dev")
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestCollectTraefikEntrypoints_NameCollisionDistinctPorts(t *testing.T) {
 			{"name": "private", "listeners": [{"name": "http", "port": 18081, "protocol": "HTTP"}]}
 		]
 	}`)
-	got, err := collectTraefikEntrypoints(context.Background(), dir)
+	got, err := collectTraefikEntrypoints(context.Background(), dir, "dev")
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestCollectTraefikEntrypoints_NameCollisionDistinctPorts(t *testing.T) {
 // still off) returns nil/nil. Cluster-up must still succeed.
 func TestCollectTraefikEntrypoints_NoDevKCL(t *testing.T) {
 	dir := t.TempDir() // intentionally no deploy/kcl/dev
-	got, err := collectTraefikEntrypoints(context.Background(), dir)
+	got, err := collectTraefikEntrypoints(context.Background(), dir, "dev")
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
@@ -353,12 +353,60 @@ func TestCollectTraefikEntrypoints_NoDevKCL(t *testing.T) {
 // install applies with only the default ping entrypoint.
 func TestCollectTraefikEntrypoints_NoGateways(t *testing.T) {
 	dir := setupTraefikEntrypointFixture(t, `{"gateways": []}`)
-	got, err := collectTraefikEntrypoints(context.Background(), dir)
+	got, err := collectTraefikEntrypoints(context.Background(), dir, "dev")
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("expected 0 entrypoints, got %+v", got)
+	}
+}
+
+// TestCollectTraefikEntrypoints_RawManifestGateways — an env that
+// renders its Gateway as a RAW k8s manifest (kind: Gateway) in the
+// `manifests` stream, with the bundle-level `gateways` echo EMPTY (the
+// multi-cluster e2e shape). The entrypoints must still be derived from
+// the manifest's spec.listeners, or a fresh cluster's Traefik comes up
+// without the listener ports bound.
+func TestCollectTraefikEntrypoints_RawManifestGateways(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "deploy", "kcl", "e2e"), 0o755); err != nil {
+		t.Fatalf("mkdir e2e kcl: %v", err)
+	}
+	// gateways echo empty; the Gateway lives in the manifests stream
+	// under an `output` wrapper (the forge.render(...) shape).
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, `{
+		"output": {
+			"gateways": [],
+			"manifests": [
+				{
+					"apiVersion": "gateway.networking.k8s.io/v1",
+					"kind": "Gateway",
+					"metadata": {"name": "public", "namespace": "control-plane-e2e"},
+					"spec": {"listeners": [
+						{"name": "http", "port": 28080, "protocol": "HTTP"},
+						{"name": "grpc", "port": 29190, "protocol": "HTTP"}
+					]}
+				},
+				{"apiVersion": "v1", "kind": "Service", "metadata": {"name": "admin-server"}}
+			]
+		}
+	}`))
+	got, err := collectTraefikEntrypoints(context.Background(), dir, "e2e")
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	want := []traefikEntrypoint{
+		{Name: "http", Port: 28080, Protocol: "HTTP"},
+		{Name: "grpc", Port: 29190, Protocol: "HTTP"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d (got %+v)", len(got), len(want), got)
+	}
+	for i, e := range got {
+		if e != want[i] {
+			t.Errorf("entrypoint[%d] = %+v, want %+v", i, e, want[i])
+		}
 	}
 }
 

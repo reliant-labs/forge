@@ -391,18 +391,38 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	start := time.Now()
 
-	// Dev environment: ensure k3d cluster and push images locally. Skip
-	// the cluster bootstrap and docker build/push when --dry-run is set —
-	// dry-run only renders manifests and never touches the cluster or
-	// registry, so the slow image step is dead weight. Also skip when
-	// the project has no K8sCluster services (external-only dev env
-	// doesn't need a k3d cluster) and on rollback (rollback uses the
-	// tag already in the cluster / state file; no rebuild required).
-	if envName == "dev" && !dryRun && !rollback && hasK8sServices {
-		if err := ensureDevCluster(ctx); err != nil {
-			return err
+	// Cluster bootstrap. Declarative first: when the env's Bundle declares
+	// `clusters = [...]`, reconcile each (create-if-absent, no-op if
+	// present) — the multi-cluster generalization of the dev-only ensure
+	// below, ownership a reference via Cluster.owner (derived network /
+	// registry-inherit). A
+	// declared-cluster env works in ANY env name (not just "dev"), so a
+	// multi-cluster e2e/preview env stands up its clusters here. When the
+	// env declares NO clusters, fall back to the legacy dev-only
+	// ensureDevCluster (single cluster from deploy/k3d.yaml) so existing
+	// single-cluster dev envs are byte-identical.
+	//
+	// Skipped under --dry-run (renders only; never touches a cluster /
+	// registry), on rollback (reuses the tag already in the cluster), and
+	// when the env has no K8sCluster services (external-only env needs no
+	// k3d cluster).
+	if !dryRun && !rollback && hasK8sServices {
+		if entities != nil && len(entities.Clusters) > 0 {
+			if err := reconcileDeclaredClusters(ctx, entities.Clusters, projectDir, envName); err != nil {
+				return err
+			}
+		} else if envName == "dev" {
+			if err := ensureDevCluster(ctx); err != nil {
+				return err
+			}
 		}
+	}
 
+	// Local image build+push: dev only (the local registry path). Remote
+	// envs build/push out-of-band (CI). Independent of the cluster
+	// bootstrap above so a multi-cluster dev env still pushes to its
+	// owner cluster's registry.
+	if envName == "dev" && !dryRun && !rollback && hasK8sServices {
 		if err := buildAndPushLocal(ctx, cfg, imageTag, targetArchFlag); err != nil {
 			return err
 		}
@@ -485,7 +505,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// secretKeyRef resolves on first schedule). Skipped on rollback —
 	// rollback reuses the tag (and the Secret) already in the cluster.
 	if !rollback {
-		if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, dryRun); err != nil {
+		if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, envName, dryRun); err != nil {
 			return err
 		}
 	}
@@ -502,7 +522,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// the builder is unused for rollback groups, but the registry
 		// still needs the provider registered. We reuse the deploy-
 		// shaped builder for symmetry with the deploy path.
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities)
 		registry := deploytarget.NewRegistry()
 		// Rollback's per-group context is resolved by the provider purely
 		// from each group's declared cluster (forge.K8sCluster.cluster) —
@@ -555,7 +575,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// / prune / host-skip / one-shot jobs) flows through verbatim.
 		hostSkip := hostDeploymentSkipSetFromKCL(cfg, entities)
 		oneShotJobs := oneShotJobNamesFromKCL(entities)
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities)
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
 		if err := dispatchDeployGroups(ctx, registry, groups, ""); err != nil {
@@ -1460,7 +1480,15 @@ func verifyDeclaredContextsExist(ctx context.Context, groups []deploytarget.Serv
 //
 // external/none providers produce no manifests (RenderK8sSecrets returns
 // nil), so this is a no-op for them beyond the validation gate.
-func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, kubeContext string, dryRun bool) error {
+func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, kubeContext, envName string, dryRun bool) error {
+	// RenderedSecrets is a distinct provider shape: explicit named Secrets
+	// (name + per-key source) applied PER CLUSTER — each Secret lands ONLY
+	// in the cluster(s) whose services reference it, never projected across
+	// the trust boundary. Handled by its own per-group path.
+	if entities != nil && entities.SecretProvider != nil && entities.SecretProvider.Type == "rendered" {
+		return applyRenderedSecretsPerGroup(ctx, entities, groups, namespace, envName, dryRun)
+	}
+
 	prov, err := secretProviderFromEntities(entities, projectDirForKCL())
 	if err != nil {
 		return fmt.Errorf("secret provider: %w", err)
@@ -1526,6 +1554,138 @@ func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, gro
 		return fmt.Errorf("apply k8s secrets: %w", err)
 	}
 	return nil
+}
+
+// applyRenderedSecretsPerGroup renders + applies a RenderedSecrets
+// provider's declared Secrets, scoping each Secret to ONLY the cluster(s)
+// whose services reference it. This is the trust-safe, multi-cluster
+// generalization of the env-wide dotenv apply: a Secret declared for the
+// control-plane cluster never lands in the workload cluster (and vice
+// versa) — each cluster gets only the Secrets its own services declare.
+//
+// Sourcing: `from="dotenv"` keys resolve from `.env.<env>` (gitignored);
+// `from="literal"` keys are inlined but ONLY in dev/e2e (the Go guard in
+// secrets.RenderDeclaredSecrets mirrors the KCL check). Local-cluster
+// only — like DotenvSecrets, this renders PLAINTEXT Secrets, so a
+// non-local target cluster is refused.
+func applyRenderedSecretsPerGroup(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, envName string, dryRun bool) error {
+	declared := declaredSecretsFromEntities(entities)
+	if len(declared) == 0 {
+		return nil
+	}
+
+	// Dotenv source for `from="dotenv"` keys: the gitignored `.env.<env>`.
+	dotenvPath := filepath.Join(projectDirForKCL(), ".env."+envName)
+	dot, derr := secrets.NewProvider(&secrets.ProviderConfig{Type: "dotenv", Path: dotenvPath})
+	if derr != nil {
+		return fmt.Errorf("rendered secrets dotenv source: %w", derr)
+	}
+
+	// Index declared Secrets by name for the per-group lookup.
+	byName := make(map[string]secrets.DeclaredSecret, len(declared))
+	for _, d := range declared {
+		byName[d.Name] = d
+	}
+
+	for _, g := range groups {
+		if g.ProviderID != "k8s-cluster" {
+			continue
+		}
+		// GUARD: PLAINTEXT Secrets — local clusters only.
+		if !isLocalCluster(g.Cluster) {
+			return fmt.Errorf(
+				"secret_provider 'rendered' renders plaintext Secrets and is for LOCAL clusters only; target cluster %q is not local. "+
+					"Use secret_provider = forge.ExternalSecrets {} for remote clusters.",
+				g.Cluster)
+		}
+
+		// Which declared Secrets do THIS group's services reference? Only
+		// those land in this group's cluster — never project a Secret
+		// across the trust boundary.
+		refNames := referencedSecretNamesForGroup(entities, g)
+		var groupSecrets []secrets.DeclaredSecret
+		for name := range refNames {
+			if d, ok := byName[name]; ok {
+				groupSecrets = append(groupSecrets, d)
+			}
+		}
+		if len(groupSecrets) == 0 {
+			continue
+		}
+
+		ns := g.Namespace
+		if ns == "" {
+			ns = namespace
+		}
+		mans, rerr := secrets.RenderDeclaredSecrets(groupSecrets, dot, envName, ns)
+		if rerr != nil {
+			return rerr
+		}
+		if len(mans) == 0 {
+			continue
+		}
+		stream, merr := marshalManifestStream(mans)
+		if merr != nil {
+			return fmt.Errorf("render rendered secrets: %w", merr)
+		}
+		if dryRun {
+			fmt.Printf("\n--- Rendered Secret Manifests for cluster %s (dry-run) ---\n", g.Cluster)
+			fmt.Println(stream)
+			fmt.Println("--- End Rendered Secret Manifests ---")
+			continue
+		}
+		if err := cluster.EnsureNamespace(ctx, g.Cluster, ns); err != nil {
+			return fmt.Errorf("ensure namespace %q in %q before rendered secrets: %w", ns, g.Cluster, err)
+		}
+		fmt.Printf("Applying %d rendered Secret(s) into %s/%s...\n", len(mans), g.Cluster, ns)
+		if err := cluster.KubectlApply(ctx, g.Cluster, stream); err != nil {
+			return fmt.Errorf("apply rendered secrets to %s: %w", g.Cluster, err)
+		}
+	}
+	return nil
+}
+
+// declaredSecretsFromEntities maps the cli RenderedSecretEntity set to the
+// secrets-package DeclaredSecret shape (keeping the secrets package
+// decoupled from cli). Returns nil when the provider isn't "rendered".
+func declaredSecretsFromEntities(entities *KCLEntities) []secrets.DeclaredSecret {
+	if entities == nil || entities.SecretProvider == nil || entities.SecretProvider.Type != "rendered" {
+		return nil
+	}
+	var out []secrets.DeclaredSecret
+	for _, s := range entities.SecretProvider.Secrets {
+		keys := make(map[string]secrets.DeclaredSecretKey, len(s.Keys))
+		for k, src := range s.Keys {
+			keys[k] = secrets.DeclaredSecretKey{From: src.From, Key: src.Key, Value: src.Value}
+		}
+		out = append(out, secrets.DeclaredSecret{Name: s.Name, Keys: keys})
+	}
+	return out
+}
+
+// referencedSecretNamesForGroup returns the set of Secret names the
+// group's services reference via their env-var secret_refs. This is the
+// scoping key: a declared Secret lands in a cluster ONLY when one of that
+// cluster's services names it. The group carries service names; the
+// entities carry each service's secret_refs.
+func referencedSecretNamesForGroup(entities *KCLEntities, g deploytarget.ServiceGroup) map[string]struct{} {
+	inGroup := map[string]struct{}{}
+	for _, rs := range g.Services {
+		inGroup[rs.Name] = struct{}{}
+	}
+	names := map[string]struct{}{}
+	for i := range entities.Services {
+		s := &entities.Services[i]
+		if _, ok := inGroup[s.Name]; !ok {
+			continue
+		}
+		for _, ref := range secretRefsForService(s) {
+			if ref.SecretName != "" {
+				names[ref.SecretName] = struct{}{}
+			}
+		}
+	}
+	return names
 }
 
 // marshalManifestStream serialises a list of manifest maps into the

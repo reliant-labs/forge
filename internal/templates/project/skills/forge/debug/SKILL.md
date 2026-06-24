@@ -36,8 +36,11 @@ Combine findings from all tracks before proposing a fix:
 
 ## Discipline
 
+- **Root cause over symptom.** Trace the failing call through the *real* code path and read the actual server / pod / service logs — don't pattern-match the error message and guess. The first plausible explanation is often a symptom one layer down from the cause.
 - **Reproduce before you guess.** A bug you can't trigger on demand is one you can't verify a fix for.
 - **One hypothesis per test.** A failing test that "exercises the bug area" doesn't prove the hypothesis; one that fails for exactly one reason does.
+- **Check connectivity and credentials first.** For anything that crosses a process or cluster boundary, the top failure mode is stale connection state, not a logic bug: can the caller actually reach the target API/endpoint? Is the kubeconfig context current and pointed at the right cluster? Are the credentials live? Confirm the wire before you debug the payload.
+- **Fail fast — isolate and name the one blocker.** When stuck, don't loop re-running the same failing command with small tweaks. Identify the single specific thing that's blocking (a 403, an unreachable host, an undefined symbol) and state it plainly. A precise blocker is actionable; "it's broken" is not.
 - **Don't widen the diff.** Touch only what the evidence indicts; refactoring "while you're in there" turns a 1-line fix into a 200-line PR that needs its own review.
 
 <!-- @forge-only:start -->
@@ -45,7 +48,8 @@ Combine findings from all tracks before proposing a fix:
 
 On top of the generic triage above, common forge-shaped bug classes:
 
-- **Stale generated code** → run `forge generate` first, then retest. Forge generates from proto + forge.yaml; stale gen masquerades as a bug in hand-written code.
+- **Stale generated code / config drift** → if symbols are "undefined" or a build breaks *right after* a proto / forge.yaml / schema change, suspect stale gen before you chase the code. Run `forge generate`, then `forge audit` to surface drift, then retest. Forge generates from proto + forge.yaml; stale gen masquerades as a bug in hand-written code.
+- **Can't reach a service / cross-cluster flow fails** → verify connectivity and credentials before assuming a logic bug. Each service deploys to its own `K8sCluster` context (multi-cluster is native); a "service unreachable" or auth failure is usually a stale or wrong kubectl context, an expired credential, or a service that isn't up — not a code path. Confirm the context is current and the target responds first.
 - **Broken DI wiring** → check the explicit composition (`internal/app/compose.go` `NewComponents`, off the owned `internal/app/providers.go` `OpenInfra`). Deps are interface-typed fields resolved by type off `Infra`, so a missing required provider is a compile error (`NewComponents` won't build) or a `forge generate` "no provider" report, not a silent nil — but a wrong fill (an unintended optional dep left nil) can still surface as a nil-pointer panic deep in handler code. There is no generated `wire_gen.go`/`bootstrap.go` to inspect; the wiring is `NewComponents` filling typed `Deps` off `Infra`.
 - **Mock vs real divergence** → tests pass with generated mocks but the real adapter fails. Re-run the integration suite (`forge test integration`) before chasing a unit-test ghost.
 - **Proto-DB drift** → entity types and DB schema evolve independently; `forge audit` flags the mismatch. If the symptom is "column X not found" in a handler that names the right struct field, audit first.
@@ -73,6 +77,7 @@ The three investigation tracks above each have a dedicated forge sub-skill with 
 - `reproduce` — runtime evidence collection and e2e reproduction.
 - `isolate` — top-down bisection from e2e to unit test.
 - `investigate` — hypothesis formation and code tracing.
+- `multi-cluster-e2e` — a workload stuck `Pending` / not-ready, or a flow that fails only in a k3d multi-cluster e2e env: read the pod status before the network, hold the pod up on failure, and the nested-cluster image-pull / host-gateway-DNS / path-MTU gotchas.
 
 ## Observability (Grafana LGTM)
 

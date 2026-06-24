@@ -35,8 +35,8 @@ Returning `Internal` when it should be `InvalidArgument`, `NotFound`, or `Permis
 **Race conditions in handlers**
 Shared state modified without synchronization. Look for package-level vars, map writes, or shared slices accessed from handlers.
 
-**Migration drift**
-Code expects a column or table that hasn't been migrated yet. Compare struct fields against the latest migration.
+**Migration / codegen drift**
+Code expects a column or table that hasn't been migrated yet, or references generated symbols that are stale after a proto/schema change. Run `forge audit` to surface the mismatch and `forge generate` to refresh — do this *before* chasing the code when a symbol is "undefined" right after a schema change.
 
 **Missing error checks on Connect calls**
 Frontend calling Connect endpoints without handling error responses. Check for unchecked `.error` on client responses.

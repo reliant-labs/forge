@@ -326,7 +326,10 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	// right cluster.
 	if ingressOn {
 		projectDir, _ := os.Getwd()
-		if err := installIngressBundle(ctx, projectDir); err != nil {
+		// kctx="" — the dev path pins the context via pinKubectlContext
+		// above, so the install inherits it. env="dev" drives the Traefik
+		// entrypoints off the dev env's Gateway listeners.
+		if err := installIngressBundle(ctx, "", projectDir, "dev"); err != nil {
 			return fmt.Errorf("install ingress: %w", err)
 		}
 		// Provision mkcert TLS Secrets for any dev Gateway that

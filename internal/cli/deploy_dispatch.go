@@ -250,7 +250,8 @@ func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) er
 // declares no cluster (host-only / compose), Context stays empty — and the
 // cluster.KubectlApply chokepoint refuses an empty context rather than
 // falling back to the active one.
-func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
+func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string, groups []deploytarget.ServiceGroup, entities *KCLEntities) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
+	scopeFor := clusterScopeForGroups(groups, entities)
 	return func(group deploytarget.ServiceGroup) cluster.ApplyOpts {
 		ns := group.Namespace
 		if ns == "" {
@@ -269,8 +270,135 @@ func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string,
 			HostSkip:     hostSkip,
 			OneShotJobs:  oneShotJobs,
 			Targets:      targets,
+			ClusterScope: scopeFor(group),
 		}
 	}
+}
+
+// clusterScopeForGroups returns a closure that maps one k8s-cluster group
+// to the cluster.GroupScope that filters the env's rendered manifest
+// stream to THAT group's cluster — the load-bearing half of declared-
+// cluster-only multi-cluster routing.
+//
+// KCL renders the whole env as a single manifest stream (every service's
+// workloads, namespace, gateways, CRDs, infra). Each k8s group applies it
+// to its OWN declared `--context`, so without scoping a two-cluster env
+// dumps the entire bundle onto BOTH clusters: the secondary receives the
+// other cluster's whole stack (and hard-fails on CRDs it doesn't have).
+// The GroupScope partitions the stream so each cluster gets only the
+// manifests whose OWNING service targets it — every manifest carries its
+// owner's `app.kubernetes.io/name` label (workloads AND per-service owned
+// manifests, including the env-level resources an image-less infra service
+// pins to a cluster). There is NO primary cluster: a manifest lands on the
+// cluster its owner declares, nowhere else (see
+// cluster.ScopeManifestsToGroup for the per-document ownership rule).
+//
+// OPERATORS + CRONJOBS attribute to the env's MAIN cluster. Unlike services,
+// an operator (forge.Operator) and a non-host cronjob (forge.CronJob) carry no
+// per-service `deploy` K8sCluster — they are NOT part of the service-to-cluster
+// grouping, so they never land in any group's Services. But forge's renderer
+// stamps `app.kubernetes.io/name = <name>` on their Deployment / Job / RBAC all
+// the same. Without claiming those app labels for SOME cluster's OwnApps, the
+// scoper sees them as app-labelled-but-ungrouped and KEEPS them defensively on
+// every cluster — replicating a control-plane operator (e.g. workspace-controller,
+// whose ServiceAccount / ClusterRBAC / mounted kubeconfig Secret all live in the
+// main cluster) into the daemon cluster, where it's stuck ContainerCreating and
+// fails the rollout wait. An operator/cronjob deploys to the env's main cluster
+// (RenderEnv.cluster — the env-level deploy target, == the first cluster-shaped
+// service's cluster: see mainClusterForEntities), so we ADD their app names to
+// THAT cluster's OwnApps. They then land in every OTHER cluster's OtherApps and
+// the scoper drops them there. SINGLE-CLUSTER envs never scope (below), so this
+// is invariant for dev-k8s / staging / prod.
+//
+// SINGLE-CLUSTER no-op: when every k8s group declares the SAME cluster
+// (the common dev-k8s / staging / prod case), there is no second cluster to
+// isolate, so the closure returns nil and the apply path is byte-identical
+// to the pre-scoping behaviour. Scoping engages ONLY when >1 distinct
+// cluster is declared across the k8s groups.
+func clusterScopeForGroups(groups []deploytarget.ServiceGroup, entities *KCLEntities) func(deploytarget.ServiceGroup) *cluster.GroupScope {
+	// Distinct clusters across the k8s groups, and the apps each owns. The
+	// app set per cluster includes image-less infra services (they ARE
+	// cluster groups in buildDeployGroups), so an infra service's owned
+	// manifests route to its declared cluster via its app label.
+	clusters := map[string]struct{}{}
+	appsByCluster := map[string][]string{}
+	for _, g := range groups {
+		if g.ProviderID != "k8s-cluster" || g.Cluster == "" {
+			continue
+		}
+		clusters[g.Cluster] = struct{}{}
+		for _, s := range g.Services {
+			appsByCluster[g.Cluster] = append(appsByCluster[g.Cluster], s.Name)
+		}
+	}
+	// Attribute operators + cronjobs to the env's main cluster (see doc above).
+	// Operators/cronjobs carry no deploy cluster, so the main cluster is the
+	// env-level deploy target (the first cluster-shaped service's cluster).
+	if entities != nil {
+		if main := mainClusterForEntities(entities, groups); main != "" {
+			for _, o := range entities.Operators {
+				appsByCluster[main] = append(appsByCluster[main], o.Name)
+			}
+			for _, c := range entities.CronJobs {
+				appsByCluster[main] = append(appsByCluster[main], c.Name)
+			}
+		}
+	}
+	// Single-cluster (or no-cluster) env: nothing to isolate — no-op.
+	if len(clusters) < 2 {
+		return func(deploytarget.ServiceGroup) *cluster.GroupScope { return nil }
+	}
+
+	return func(group deploytarget.ServiceGroup) *cluster.GroupScope {
+		if group.ProviderID != "k8s-cluster" || group.Cluster == "" {
+			return nil
+		}
+		own := map[string]struct{}{}
+		for _, name := range appsByCluster[group.Cluster] {
+			own[name] = struct{}{}
+		}
+		other := map[string]struct{}{}
+		for c, apps := range appsByCluster {
+			if c == group.Cluster {
+				continue
+			}
+			for _, name := range apps {
+				other[name] = struct{}{}
+			}
+		}
+		return &cluster.GroupScope{
+			OwnApps:   own,
+			OtherApps: other,
+		}
+	}
+}
+
+// mainClusterForEntities resolves the env's MAIN cluster — the env-level deploy
+// target an operator / cronjob (which carry no per-service deploy block) lands
+// on. This is the SAME cluster the bulk of the stack deploys to: the FIRST
+// cluster-shaped service's `forge.K8sCluster.cluster`, matching the
+// firstK8sClusterField / expectedClusterForEnv resolution the rest of the deploy
+// path uses for the env-wide context. Walking entities.Services preserves the
+// KCL render order (the bundle's `services` list), so the env's catch-all first
+// service — admin-server in control-plane's full_stack — defines the main
+// cluster; the lone cross-cluster override (workspace-proxy on cp-daemon) never
+// wins. Falls back to the first k8s group's cluster when no service entity
+// carries a cluster (the manifests-only render shape), and "" when the env
+// declares no cluster at all (host-only / compose — nothing to attribute).
+func mainClusterForEntities(entities *KCLEntities, groups []deploytarget.ServiceGroup) string {
+	if entities != nil {
+		for _, s := range entities.Services {
+			if s.Deploy.Type == "cluster" && s.Deploy.Cluster != nil && s.Deploy.Cluster.Cluster != "" {
+				return s.Deploy.Cluster.Cluster
+			}
+		}
+	}
+	for _, g := range groups {
+		if g.ProviderID == "k8s-cluster" && g.Cluster != "" {
+			return g.Cluster
+		}
+	}
+	return ""
 }
 
 // resolveGroupContext picks the kubectl context for a single deploy

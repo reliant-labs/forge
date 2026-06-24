@@ -186,6 +186,117 @@ func ValidateDeclaredRefs(p Provider, refs []SecretRef, dotenvPath string) error
 	return errors.New(b.String())
 }
 
+// DeclaredSecret is one explicitly-declared k8s Secret a RenderedSecrets
+// provider renders: a Secret NAME and a map of in-Secret key -> value
+// SOURCE. Mirrors the cli RenderedSecretEntity (the secrets package stays
+// decoupled from cli, so cli maps its entity -> this).
+type DeclaredSecret struct {
+	Name string
+	Keys map[string]DeclaredSecretKey
+}
+
+// DeclaredSecretKey is the value source for one key in a DeclaredSecret.
+// From is "dotenv" (resolve Key from the dotenv provider) or "literal"
+// (inline Value, gated to dev/e2e by RenderDeclaredSecrets).
+type DeclaredSecretKey struct {
+	From  string
+	Key   string
+	Value string
+}
+
+// envAllowsLiteral reports whether `from='literal'` inline values are
+// permitted for env. The Go-side guard mirroring the KCL check: only
+// dev/e2e may inline a secret value; every other env must use a dotenv
+// source. Defense in depth — a hand-built entity (no KCL check) can't
+// smuggle a literal into prod.
+func envAllowsLiteral(env string) bool {
+	return env == "dev" || env == "e2e"
+}
+
+// RenderDeclaredSecrets builds k8s Secret manifests from a
+// RenderedSecrets provider's declared Secrets. Each declared key resolves
+// to its value:
+//
+//   - from="dotenv": resolve Key from the dotenv provider `dot` (the
+//     same .env.<env> machinery DotenvSecrets uses). A missing dotenv key
+//     is an error (listed per Secret/key) — the value can't be rendered.
+//   - from="literal": use the inline Value, but ONLY when env is dev/e2e.
+//     A literal in any other env is a hard error (the trust-safe gate).
+//
+// Returns the Secret manifests (one per declared Secret) in deterministic
+// order, or a single aggregated error listing every problem. namespace is
+// stamped on each Secret's metadata.
+func RenderDeclaredSecrets(declared []DeclaredSecret, dot Provider, env, namespace string) ([]map[string]any, error) {
+	if len(declared) == 0 {
+		return nil, nil
+	}
+	// Deterministic Secret order.
+	byName := make(map[string]DeclaredSecret, len(declared))
+	names := make([]string, 0, len(declared))
+	for _, d := range declared {
+		byName[d.Name] = d
+		names = append(names, d.Name)
+	}
+	sort.Strings(names)
+
+	var problems []string
+	out := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		d := byName[name]
+		sd := map[string]any{}
+		// Deterministic key order within a Secret.
+		keys := make([]string, 0, len(d.Keys))
+		for k := range d.Keys {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			src := d.Keys[k]
+			switch strings.ToLower(strings.TrimSpace(src.From)) {
+			case "literal":
+				if !envAllowsLiteral(env) {
+					problems = append(problems, fmt.Sprintf(
+						"Secret %s/%s: from='literal' is only allowed in dev/e2e (env %q must use from='dotenv')",
+						name, k, env))
+					continue
+				}
+				sd[k] = src.Value
+			case "dotenv", "":
+				dotKey := src.Key
+				if dotKey == "" {
+					dotKey = k
+				}
+				v, ok := dot.Resolve(dotKey)
+				if !ok {
+					problems = append(problems, fmt.Sprintf(
+						"Secret %s/%s: dotenv key %q not found", name, k, dotKey))
+					continue
+				}
+				sd[k] = v
+			default:
+				problems = append(problems, fmt.Sprintf(
+					"Secret %s/%s: unknown source %q (expected 'dotenv' or 'literal')", name, k, src.From))
+			}
+		}
+		out = append(out, map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata": map[string]any{
+				"name":      name,
+				"namespace": namespace,
+			},
+			"type":       "Opaque",
+			"stringData": sd,
+		})
+	}
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		return nil, fmt.Errorf("rendered secrets: %d problem(s):\n    %s",
+			len(problems), strings.Join(problems, "\n    "))
+	}
+	return out, nil
+}
+
 // RenderK8sSecrets builds k8s Secret manifests (as []map[string]any,
 // ready to marshal to YAML/JSON) from the resolved values, grouping refs
 // by SecretName; each Secret's stringData[SecretKey] = resolved(EnvName).

@@ -710,6 +710,70 @@ schema ExternalSecrets:
     check:
         type == "external", "ExternalSecrets.type must be 'external'"
 
+schema RenderedSecretKey:
+    """One key within a RenderedSecrets Secret.
+
+    `from` selects the value SOURCE:
+      * "dotenv"  — read the value at apply time from the gitignored
+                    `.env.<env>` (keyed by `key`). The value NEVER enters
+                    KCL render output — only the reference (from + key).
+      * "literal" — an inline literal `value`. GATED to dev/e2e only (a
+                    check below + a Go guard) — rejected for any other
+                    env. Use for non-sensitive fixed test values
+                    (a test JWKS issuer URL, a fixed e2e password) where
+                    a dotenv round-trip is pure friction.
+
+    A "dotenv" key carries NO value (forge resolves it); a "literal" key
+    carries `value` and NO dotenv `key`.
+    """
+    from: str = "dotenv"
+    key?: str
+    value?: str
+
+    check:
+        from in ["dotenv", "literal"], \
+            "RenderedSecretKey.from must be 'dotenv' or 'literal'"
+        from != "dotenv" or key, \
+            "RenderedSecretKey(from='dotenv') requires `key` (the dotenv key to read)"
+        from != "literal" or value != Undefined, \
+            "RenderedSecretKey(from='literal') requires `value`"
+        from != "literal" or value == Undefined or option("env") in ["dev", "e2e"], \
+            "RenderedSecretKey(from='literal') is only allowed in dev/e2e — other envs must not inline secret values; use from='dotenv'"
+
+schema RenderedSecret:
+    """A single k8s Secret forge renders + applies from declared
+    sources. `name` is the Secret name; `keys` maps each in-Secret key
+    to its value source (RenderedSecretKey)."""
+    name: str
+    keys: {str: RenderedSecretKey}
+
+    check:
+        name, "RenderedSecret.name is required"
+        len(keys) > 0, "RenderedSecret.keys must declare at least one key"
+
+schema RenderedSecrets:
+    """Dev/e2e secret provider that RENDERS named k8s Secrets from
+    declared sources (a gitignored `.env.<env>` for `from='dotenv'`, or
+    inline literals for `from='literal'`, the latter gated to dev/e2e).
+
+    Like DotenvSecrets this is for LOCAL clusters only — forge renders
+    PLAINTEXT Secret objects CLI-side. The difference: DotenvSecrets
+    projects the env-var-keyed dotenv onto the secret_refs declared on
+    services; RenderedSecrets declares the Secrets EXPLICITLY (name +
+    keys + per-key source), so per-cluster, multi-Secret seeding is a
+    first-class declaration. Each rendered Secret is applied ONLY into
+    the cluster(s) whose services reference it — never projected across
+    the trust boundary.
+
+    Values NEVER enter KCL render output except `from='literal'`, which
+    is dev/e2e-only (a per-key check + a Go guard)."""
+    type: str = "rendered"
+    secrets: [RenderedSecret] = []
+
+    check:
+        type == "rendered", "RenderedSecrets.type must be 'rendered'"
+        len(secrets) > 0, "RenderedSecrets.secrets must declare at least one Secret"
+
 schema Cluster:
     """A k3d cluster forge ensures exists before deploying into it.
 
@@ -1302,7 +1366,7 @@ schema Bundle:
     # render Secret objects CLI-side; "external" (prod/staging) means
     # forge never sees values — k8s references pre-existing Secrets.
     # KCL only emits this DECLARATION; secret VALUES never enter KCL.
-    secret_provider?: DotenvSecrets | ExternalSecrets
+    secret_provider?: DotenvSecrets | ExternalSecrets | RenderedSecrets
     # Cluster-scoped node.k8s.io/v1 RuntimeClass declarations. Used to
     # bind a workload-facing name ("gvisor", "kata-qemu") to a
     # node-installed handler, OR to declare a dev-cluster alias that

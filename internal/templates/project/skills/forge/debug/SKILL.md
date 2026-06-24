@@ -77,6 +77,7 @@ The three investigation tracks above each have a dedicated forge sub-skill with 
 - `reproduce` — runtime evidence collection and e2e reproduction.
 - `isolate` — top-down bisection from e2e to unit test.
 - `investigate` — hypothesis formation and code tracing.
+- `multi-cluster-e2e` — a workload stuck `Pending` / not-ready, or a flow that fails only in a k3d multi-cluster e2e env: read the pod status before the network, hold the pod up on failure, and the nested-cluster image-pull / host-gateway-DNS / path-MTU gotchas.
 
 ## Observability (Grafana LGTM)
 

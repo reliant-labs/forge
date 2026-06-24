@@ -52,30 +52,53 @@ func (r *fakeRunner) run(ctx context.Context, argv []string, env []string, stdou
 
 func newFakeDeps(fwd *fakeForwarder, run *fakeRunner) testEnvDeps {
 	return testEnvDeps{
-		forwarder:   fwd,
-		runner:      run,
-		waitForPort: func(ctx context.Context, port int) error { return nil },
-		stdout:      io.Discard,
-		stderr:      io.Discard,
+		forwarder:      fwd,
+		runner:         run,
+		waitForPort:    func(ctx context.Context, port int) error { return nil },
+		renderEntities: func(ctx context.Context, env string) (*KCLEntities, error) { return sampleEntities(), nil },
+		stdout:         io.Discard,
+		stderr:         io.Discard,
 	}
 }
 
+// sampleEntities is the rendered-KCL fixture the forward resolver derives
+// context/namespace/remote_port from — a 2-cluster (control-plane / cp-daemon)
+// shape mirroring control-plane's e2e env. admin-server is single-port;
+// workspace-proxy lives on the cp-daemon cluster.
+func sampleEntities() *KCLEntities {
+	return &KCLEntities{
+		Clusters: []ClusterEntity{
+			{Name: "control-plane", Context: "k3d-control-plane"},
+			{Name: "cp-daemon", Context: "k3d-cp-daemon"},
+		},
+		Services: []ServiceEntity{
+			{
+				Name: "admin-server",
+				Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{
+					Cluster: "control-plane", Namespace: "control-plane-e2e", Ports: []int{8090},
+				}},
+			},
+			{
+				Name: "workspace-proxy",
+				Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{
+					Cluster: "cp-daemon", Namespace: "control-plane-e2e", Ports: []int{8080},
+				}},
+			},
+		},
+	}
+}
+
+// sampleConfig is the SLIM forge.yaml shape: forwards author only
+// service/local_port/url_env; context/namespace/remote_port are derived from
+// sampleEntities at run time.
 func sampleConfig() config.TestConfig {
 	return config.TestConfig{
 		"e2e": {
 			Command: []string{"go", "test", "-tags=e2e", "./e2e/..."},
 			Env:     map[string]string{"DAEMON_KUBE_CONTEXT": "k3d-cp-daemon"},
 			Forwards: []config.TestForward{
-				{
-					Service: "admin-server", Context: "k3d-control-plane",
-					Namespace: "control-plane-e2e", RemotePort: 8090, LocalPort: 8090,
-					URLEnv: "E2E_ADMIN_SERVER_URL",
-				},
-				{
-					Service: "workspace-proxy", Context: "k3d-cp-daemon",
-					Namespace: "control-plane-e2e", RemotePort: 8080, LocalPort: 8088,
-					URLEnv: "PROXY_URL",
-				},
+				{Service: "admin-server", LocalPort: 8090, URLEnv: "E2E_ADMIN_SERVER_URL"},
+				{Service: "workspace-proxy", LocalPort: 8088, URLEnv: "PROXY_URL"},
 			},
 		},
 	}
@@ -219,6 +242,103 @@ func TestValidateForwards(t *testing.T) {
 				t.Fatalf("want error containing %q, got: %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestResolveForwards_DerivesFromRenderedEntities(t *testing.T) {
+	entities := sampleEntities()
+	forwards := []config.TestForward{
+		{Service: "admin-server", LocalPort: 8090, URLEnv: "E2E_ADMIN_SERVER_URL"},
+		{Service: "workspace-proxy", LocalPort: 8088, URLEnv: "PROXY_URL"},
+	}
+	got, err := resolveForwards("e2e", forwards, entities)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []config.TestForward{
+		{Service: "admin-server", Context: "k3d-control-plane", Namespace: "control-plane-e2e", RemotePort: 8090, LocalPort: 8090, URLEnv: "E2E_ADMIN_SERVER_URL"},
+		{Service: "workspace-proxy", Context: "k3d-cp-daemon", Namespace: "control-plane-e2e", RemotePort: 8080, LocalPort: 8088, URLEnv: "PROXY_URL"},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("forward[%d]:\n got %+v\nwant %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// multiPortEntities adds a multi-port service (mirrors control-plane's
+// reliant-api-server with ports [9090, 8081]) to the sample shape.
+func multiPortEntities() *KCLEntities {
+	e := sampleEntities()
+	e.Services = append(e.Services, ServiceEntity{
+		Name: "reliant-api-server",
+		Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{
+			Cluster: "control-plane", Namespace: "control-plane-e2e", Ports: []int{9090, 8081},
+		}},
+	})
+	return e
+}
+
+func TestResolveForwards_MultiPortOverrideWins(t *testing.T) {
+	forwards := []config.TestForward{
+		{Service: "reliant-api-server", RemotePort: 9090, LocalPort: 9090, URLEnv: "RELIANT_API_URL"},
+	}
+	got, err := resolveForwards("e2e", forwards, multiPortEntities())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := config.TestForward{Service: "reliant-api-server", Context: "k3d-control-plane", Namespace: "control-plane-e2e", RemotePort: 9090, LocalPort: 9090, URLEnv: "RELIANT_API_URL"}
+	if got[0] != want {
+		t.Fatalf("got %+v, want %+v", got[0], want)
+	}
+}
+
+func TestResolveForwards_MultiPortWithoutOverrideFails(t *testing.T) {
+	forwards := []config.TestForward{
+		{Service: "reliant-api-server", LocalPort: 9090, URLEnv: "RELIANT_API_URL"},
+	}
+	_, err := resolveForwards("e2e", forwards, multiPortEntities())
+	if err == nil || !strings.Contains(err.Error(), "multiple ports") || !strings.Contains(err.Error(), "9090") {
+		t.Fatalf("expected multi-port ambiguity error naming the choices, got: %v", err)
+	}
+}
+
+func TestResolveForwards_OverrideNotAmongDeclaredFails(t *testing.T) {
+	forwards := []config.TestForward{
+		{Service: "reliant-api-server", RemotePort: 7777, LocalPort: 9090},
+	}
+	_, err := resolveForwards("e2e", forwards, multiPortEntities())
+	if err == nil || !strings.Contains(err.Error(), "not one of") {
+		t.Fatalf("expected out-of-set remote_port error, got: %v", err)
+	}
+}
+
+func TestResolveForwards_UnknownServiceFails(t *testing.T) {
+	forwards := []config.TestForward{{Service: "nope", LocalPort: 9000}}
+	_, err := resolveForwards("e2e", forwards, sampleEntities())
+	if err == nil || !strings.Contains(err.Error(), "not found in rendered KCL") {
+		t.Fatalf("expected unknown-service error, got: %v", err)
+	}
+}
+
+func TestResolveForwards_AuthoredDerivedFieldRejected(t *testing.T) {
+	forwards := []config.TestForward{
+		{Service: "admin-server", Namespace: "control-plane-e2e", LocalPort: 8090},
+	}
+	_, err := resolveForwards("e2e", forwards, sampleEntities())
+	if err == nil || !strings.Contains(err.Error(), "namespace") || !strings.Contains(err.Error(), "derived") {
+		t.Fatalf("expected authored-namespace rejection, got: %v", err)
+	}
+}
+
+func TestResolveForwards_HostServiceRejected(t *testing.T) {
+	entities := &KCLEntities{
+		Services: []ServiceEntity{{Name: "admin-server", Deploy: DeployConfigEntity{Type: "host"}}},
+	}
+	forwards := []config.TestForward{{Service: "admin-server", LocalPort: 8090}}
+	_, err := resolveForwards("e2e", forwards, entities)
+	if err == nil || !strings.Contains(err.Error(), "not a cluster-mode service") {
+		t.Fatalf("expected host-service rejection, got: %v", err)
 	}
 }
 

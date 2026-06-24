@@ -52,22 +52,30 @@ type commandRunner interface {
 // testEnvDeps are the injectable collaborators for the env-scoped test flow.
 // Production wiring uses kubectlForwarder + execCommandRunner; tests inject
 // fakes. waitForPort is injectable so the readiness probe is hermetic in tests.
+// renderEntities renders the env's KCL — injectable so the forward-derivation
+// resolver runs against a fixture in tests without rendering on a real env.
 type testEnvDeps struct {
-	forwarder   forwarder
-	runner      commandRunner
-	waitForPort func(ctx context.Context, localPort int) error
-	stdout      io.Writer
-	stderr      io.Writer
+	forwarder      forwarder
+	runner         commandRunner
+	waitForPort    func(ctx context.Context, localPort int) error
+	renderEntities func(ctx context.Context, env string) (*KCLEntities, error)
+	stdout         io.Writer
+	stderr         io.Writer
 }
 
-// defaultTestEnvDeps returns the production collaborators.
-func defaultTestEnvDeps() testEnvDeps {
+// defaultTestEnvDeps returns the production collaborators. projectDir is the
+// project root the KCL render resolves against (the directory holding
+// forge.yaml + deploy/kcl/<env>/).
+func defaultTestEnvDeps(projectDir string) testEnvDeps {
 	return testEnvDeps{
 		forwarder:   kubectlForwarder{},
 		runner:      execCommandRunner{},
 		waitForPort: waitForLocalPort,
-		stdout:      os.Stdout,
-		stderr:      os.Stderr,
+		renderEntities: func(ctx context.Context, env string) (*KCLEntities, error) {
+			return RenderKCL(ctx, projectDir, env)
+		},
+		stdout: os.Stdout,
+		stderr: os.Stderr,
 	}
 }
 
@@ -94,6 +102,21 @@ func runTestEnvWithConfig(ctx context.Context, env string, tc config.TestConfig,
 	}
 	if len(recipe.Command) == 0 {
 		return fmt.Errorf("test recipe for env %q has no `command`", env)
+	}
+
+	// Derive each forward's context/namespace/remote_port from the rendered
+	// KCL for this env (SSOT: the topology lives in KCL, not forge.yaml).
+	// Render is skipped when the recipe declares no forwards.
+	if len(recipe.Forwards) > 0 {
+		entities, err := deps.renderEntities(ctx, env)
+		if err != nil {
+			return fmt.Errorf("render KCL for env %q to derive test forwards: %w", env, err)
+		}
+		resolved, err := resolveForwards(env, recipe.Forwards, entities)
+		if err != nil {
+			return err
+		}
+		recipe.Forwards = resolved
 	}
 	if err := validateForwards(env, recipe.Forwards); err != nil {
 		return err
@@ -200,6 +223,132 @@ func validateForwards(env string, forwards []config.TestForward) error {
 		seenLocal[f.LocalPort] = f.Service
 	}
 	return nil
+}
+
+// resolveForwards fills each forward's DERIVED fields (Context, Namespace,
+// RemotePort) from the rendered KCL for the env, leaving the authored fields
+// (Service, LocalPort, URLEnv) untouched. This is the SSOT enforcement: the
+// in-cluster topology lives in KCL, and forge.yaml only names the service +
+// where to bind it locally.
+//
+// For each forward it looks up the Service BY NAME among the rendered
+// cluster-mode services and derives:
+//
+//   - Context   — the service's deploy cluster → its kube-context. The
+//     ClusterEntity for that cluster supplies the `k3d-<name>` context; when
+//     no cluster entity matches, the declared cluster name is already the
+//     context (the deploy path treats forge.K8sCluster.cluster AS the kubectl
+//     context — see resolveGroupContext), so it is used verbatim.
+//   - Namespace — the service's K8sCluster.Namespace.
+//   - RemotePort — the service's single declared port. A multi-port service
+//     is ambiguous: the forge.yaml entry must pin `remote_port` (which is then
+//     validated against the declared set); an un-pinned multi-port service is
+//     a hard error naming the choices.
+//
+// An authored value for a derived field is rejected (not silently honored) so
+// the SSOT can't be quietly re-forked in forge.yaml — the one exception is
+// RemotePort, whose authored value is the legitimate multi-port disambiguator.
+func resolveForwards(env string, forwards []config.TestForward, entities *KCLEntities) ([]config.TestForward, error) {
+	out := make([]config.TestForward, 0, len(forwards))
+	for i, f := range forwards {
+		where := fmt.Sprintf("test.%s.forwards[%d]", env, i)
+		if f.Service == "" {
+			return nil, fmt.Errorf("%s: `service` is required", where)
+		}
+		if f.Context != "" {
+			return nil, fmt.Errorf("%s (svc/%s): `context` is derived from the rendered KCL and must not be set in forge.yaml — remove it", where, f.Service)
+		}
+		if f.Namespace != "" {
+			return nil, fmt.Errorf("%s (svc/%s): `namespace` is derived from the rendered KCL and must not be set in forge.yaml — remove it", where, f.Service)
+		}
+		svc := entities.FindService(f.Service)
+		if svc == nil {
+			return nil, fmt.Errorf("%s: service %q not found in rendered KCL for env %q (services: %s)", where, f.Service, env, strings.Join(serviceNames(entities), ", "))
+		}
+		if svc.Deploy.Type != "cluster" || svc.Deploy.Cluster == nil {
+			return nil, fmt.Errorf("%s: service %q is not a cluster-mode service in env %q (deploy type %q) — only in-cluster services can be port-forwarded", where, f.Service, env, svc.Deploy.Type)
+		}
+		k8s := svc.Deploy.Cluster
+
+		f.Context = deriveContext(entities, k8s.Cluster)
+		if f.Context == "" {
+			return nil, fmt.Errorf("%s: service %q declares no deploy cluster in env %q; cannot derive kube-context", where, f.Service, env)
+		}
+		f.Namespace = k8s.Namespace
+		if f.Namespace == "" {
+			return nil, fmt.Errorf("%s: service %q declares no namespace in env %q; cannot derive it", where, f.Service, env)
+		}
+
+		port, err := deriveRemotePort(where, f, k8s.Ports)
+		if err != nil {
+			return nil, err
+		}
+		f.RemotePort = port
+
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// deriveContext resolves the kube-context for a service's declared deploy
+// cluster. It prefers a matching ClusterEntity's projected Context (`k3d-<name>`),
+// matching either by the cluster's Name or by its already-derived Context (the
+// KCL may name the cluster either way). When no entity matches, the declared
+// cluster name is itself the context (the deploy path uses it verbatim).
+func deriveContext(entities *KCLEntities, cluster string) string {
+	if cluster == "" {
+		return ""
+	}
+	for i := range entities.Clusters {
+		c := &entities.Clusters[i]
+		if c.Name == cluster || c.Context == cluster {
+			if c.Context != "" {
+				return c.Context
+			}
+			return c.Name
+		}
+	}
+	return cluster
+}
+
+// deriveRemotePort picks the service's forward port from its declared ports.
+// A single declared port is used directly. A multi-port service requires an
+// authored `remote_port` to disambiguate, validated to be one of the declared
+// ports; an un-pinned multi-port service is an error naming the choices.
+func deriveRemotePort(where string, f config.TestForward, ports []int) (int, error) {
+	switch {
+	case len(ports) == 0:
+		if f.RemotePort > 0 {
+			// No declared ports to disambiguate against, but an explicit
+			// remote_port was authored — honor it rather than failing.
+			return f.RemotePort, nil
+		}
+		return 0, fmt.Errorf("%s: service %q declares no ports in the rendered KCL; cannot derive remote_port", where, f.Service)
+	case len(ports) == 1:
+		if f.RemotePort != 0 && f.RemotePort != ports[0] {
+			return 0, fmt.Errorf("%s: remote_port %d does not match svc/%s's single declared port %d", where, f.RemotePort, f.Service, ports[0])
+		}
+		return ports[0], nil
+	default:
+		if f.RemotePort == 0 {
+			return 0, fmt.Errorf("%s: svc/%s declares multiple ports %v — set `remote_port` in forge.yaml to pick one", where, f.Service, ports)
+		}
+		for _, p := range ports {
+			if p == f.RemotePort {
+				return f.RemotePort, nil
+			}
+		}
+		return 0, fmt.Errorf("%s: remote_port %d is not one of svc/%s's declared ports %v", where, f.RemotePort, f.Service, ports)
+	}
+}
+
+// serviceNames returns the rendered service names for an error message.
+func serviceNames(entities *KCLEntities) []string {
+	names := make([]string, 0, len(entities.Services))
+	for _, s := range entities.Services {
+		names = append(names, s.Name)
+	}
+	return names
 }
 
 func testEnvNames(tc config.TestConfig) []string {

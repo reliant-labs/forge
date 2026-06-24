@@ -55,7 +55,11 @@ Examples:
   forge test --env=e2e              # Run the e2e env's declared suite`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flags.env != "" {
-				return runTestEnv(cmd.Context(), flags.env, defaultTestEnvDeps())
+				projectDir, err := findProjectRoot()
+				if err != nil {
+					return err
+				}
+				return runTestEnv(cmd.Context(), flags.env, defaultTestEnvDeps(projectDir))
 			}
 			return runTestAll(cmd.Context(), flags)
 		},

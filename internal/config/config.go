@@ -769,14 +769,18 @@ type DeployConcurrency struct {
 //
 //   - `forwards` lists the in-cluster services to kubectl-port-forward to a
 //     local port before the suite runs (and tear down after). Each forward
-//     names its own kube-context, so a multi-cluster env (e.g. control-plane
-//   - cp-daemon) forwards each service against the right cluster.
+//     names a Service + local_port (+ url_env); the kube-context, namespace,
+//     and remote port are DERIVED from the rendered KCL for the env (see
+//     [TestForward]). A multi-cluster env (e.g. control-plane / cp-daemon)
+//     therefore forwards each service against the right cluster without the
+//     forge.yaml restating what the KCL already owns.
 //   - `env` is a literal env-var map exported into the test process.
 //   - `command` is the test command run with both the forward URLs (per
 //     forward `url_env`) and `env` set.
 //
-// There is intentionally NO codegen, no schema derivation, and no in-process
-// harness: the block is read verbatim and executed. A project that wires this
+// The suite-specific bits (command, env, local_port, url_env) are read
+// verbatim; the in-cluster topology (context/namespace/remote_port) is derived
+// from the render so it stays single-sourced in KCL. A project that wires this
 // up shrinks its Taskfile `e2e` target to `forge up --env=e2e && forge test
 // --env=e2e`.
 type TestConfig map[string]TestEnvConfig
@@ -795,21 +799,39 @@ type TestEnvConfig struct {
 }
 
 // TestForward declares one `kubectl port-forward` for a test env: which
-// in-cluster service to forward, in which cluster (Context) and Namespace,
-// from RemotePort to LocalPort, exporting http://127.0.0.1:<LocalPort> as
-// URLEnv into the test command.
+// in-cluster service to forward, from its (derived) RemotePort to LocalPort,
+// exporting http://127.0.0.1:<LocalPort> as URLEnv into the test command.
+//
+// SSOT — derived vs authored fields:
+//
+// Context, Namespace, and RemotePort are NOT authored in forge.yaml. They are
+// DERIVED at run time from the rendered KCL for the `--env` under test (the
+// named Service's deploy cluster → its kube-context, its namespace, and its
+// declared port). The rendered KCL already owns those values; copying them
+// into forge.yaml would duplicate the SSOT and silently drift. A forge.yaml
+// `forwards` entry therefore authors only Service + LocalPort + URLEnv. See
+// internal/cli/test_env.go resolveForwards for the derivation.
+//
+// RemotePort stays an OPTIONAL authored field for one case only: a service
+// that declares MULTIPLE ports is ambiguous, so the entry must pin which one
+// to forward. For a single-port service the field is left empty and derived.
 type TestForward struct {
-	// Service is the in-cluster Service name (svc/<Service>). Required.
+	// Service is the in-cluster Service name (svc/<Service>). Required —
+	// the key the resolver looks up in the rendered KCL.
 	Service string `yaml:"service"`
 	// Context is the kube-context the Service lives in (e.g.
-	// "k3d-control-plane"). Required for multi-cluster envs; when empty the
-	// current kube-context is used.
+	// "k3d-control-plane"). DERIVED from the Service's deploy cluster; not
+	// authored in forge.yaml.
 	Context string `yaml:"context,omitempty"`
-	// Namespace is the Service's namespace. Required.
-	Namespace string `yaml:"namespace"`
-	// RemotePort is the Service port to forward from. Required.
-	RemotePort int `yaml:"remote_port"`
-	// LocalPort is the local port the forward binds. Required.
+	// Namespace is the Service's namespace. DERIVED from the Service's
+	// deploy block; not authored in forge.yaml.
+	Namespace string `yaml:"namespace,omitempty"`
+	// RemotePort is the Service port to forward from. DERIVED from the
+	// Service's single declared port. Author it in forge.yaml ONLY to
+	// disambiguate a multi-port service (the resolver errors, naming the
+	// choices, if a multi-port service is left un-pinned).
+	RemotePort int `yaml:"remote_port,omitempty"`
+	// LocalPort is the local port the forward binds. Required (authored).
 	LocalPort int `yaml:"local_port"`
 	// URLEnv, when set, is the env-var name exported into the test command
 	// as "http://127.0.0.1:<LocalPort>".

@@ -164,11 +164,15 @@ _render_deploy_populated = lambda d: any -> any {
         (_render_compose(d) if d.type == "compose" else _render_build_only(d))))
 }
 
-# Top-level deploy dispatcher. An unset deploy projects as null
-# (consumer should treat that as `BuildOnly { build_variants = [] }`
-# equivalent — just build).
+# Top-level deploy dispatcher. `deploy = None` (or an omitted deploy) is
+# the EXPLICIT build-only mode: project a `{type: "build-only"}` block so
+# the Go consumer dispatches it exactly like a `forge.BuildOnly` deploy —
+# the service is in the build set (its `build` runs + pushes its image)
+# and out of the deploy set (no Deployment/Service/manifests). This is
+# self-describing (the consumer never has to special-case a null deploy),
+# and render_manifests still skips it (it isn't `type == "cluster"`).
 _render_deploy = lambda d: any -> any {
-    _render_deploy_populated(d) if d else None
+    _render_deploy_populated(d) if d else {"type": "build-only", "build_variants": []}
 }
 
 # build_of coerces a plain build dict (the shape components_gen.json
@@ -447,12 +451,20 @@ _render_runtime_class = lambda rc: RuntimeClass -> any {
 # Render a Cluster to its stable dict form. Optional fields project as
 # null (not omitted) so the Go consumer (ClusterEntity) sees stable
 # keys; servers/agents always carry their (defaulted) int.
+#
+# Ownership is the `owner` reference; the render layer projects the
+# DERIVED `network` (k3d-<owner.name>, null for an owner cluster) and
+# `registry_inherit` (true for a secondary) — the two behaviors the
+# stringly `network` + `registry_mirror = "inherit"` pair used to carry.
+# `context` (k3d-<name>) is projected too so a Go-side consumer can read
+# the kubectl context without re-deriving the prefix.
 _render_cluster = lambda c: Cluster -> any {
     {
         "name": c.name
+        "context": c.context
         "config": c.config if c.config else None
         "network": c.network if c.network else None
-        "registry_mirror": c.registry_mirror if c.registry_mirror else None
+        "registry_inherit": c.registry_inherit
         "servers": c.servers
         "agents": c.agents
         "api_port": c.api_port if c.api_port else None

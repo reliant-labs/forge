@@ -61,6 +61,8 @@ OUTSIDE a lambda body is fine; only lambda-internal instantiation
 needs the alias trick.
 """
 
+import json
+
 # ---------------------------------------------------------------------------
 # Shared sub-structures.
 # ---------------------------------------------------------------------------
@@ -838,76 +840,97 @@ schema Cluster:
     several clusters (e.g. a control-plane cluster + a workload cluster)
     declares them all here, with NO imperative glue.
 
-    Multi-cluster ownership is IMPLICIT. There is no "primary" cluster:
-    a secondary cluster names its owner via `network` (the k3d docker
-    network it joins) and `registry_mirror = "inherit"` (it reuses the
-    owner cluster's registry). The owner cluster declares neither —
-    forge creates its own network/registry. There is no most-X
-    heuristic anywhere; ownership is exactly what the fields say.
+    Multi-cluster ownership is a REFERENCE. There is no "primary"
+    cluster: a secondary cluster names its `owner` — a reference to the
+    owner Cluster INSTANCE — and forge derives BOTH the docker network it
+    joins (`k3d-<owner.name>`) AND the registry-inherit behavior from that
+    one reference. The owner cluster declares no `owner` — forge creates
+    its own network/registry. There is no most-X heuristic anywhere;
+    ownership is exactly the `owner` edge.
+
+    Stating the owner ONCE (rather than restating the stringly
+    `network = "k3d-<owner>"` + `registry_mirror = "inherit"` pair) keeps
+    cross-cluster wiring DRY and unforgeable: the derived `.network` can
+    never disagree with the owner's actual k3d network name, and a
+    consumer that needs the owner's kubectl context references
+    `<owner>.context` instead of re-spelling the `k3d-` prefix.
+
+    Computed/derived properties (read by consumers + the render layer):
+      * `.context`          — the kubectl context string, `k3d-<name>`
+                              (k3d's own convention). Reference it from a
+                              ClusterClient / KubeconfigSecret wiring
+                              instead of re-spelling the prefix.
+      * `.network`          — the docker network this cluster joins.
+                              Derived as `k3d-<owner.name>` when `owner`
+                              is set (a secondary joins the owner's
+                              auto-created network so their nodes share a
+                              bridge and reach each other by container IP);
+                              Undefined for an owner cluster (k3d creates
+                              its own network).
+      * `.registry_inherit` — True when `owner` is set: forge writes the
+                              owner's registries.yaml onto this cluster's
+                              node and restarts it to reload (so in-cluster
+                              pulls of `localhost:<port>/...` resolve to
+                              the shared registry). False for an owner
+                              cluster (it owns its registry via `config`,
+                              or pulls from a real registry).
 
     Fields:
-      * `name`            — k3d cluster name. The kubectl context is
-                            `k3d-<name>` by convention (k3d's own).
-      * `config`          — path to a k3d Simple-config YAML. When set,
-                            forge runs `k3d cluster create --config
-                            <config>` and the servers/agents/api_port/
-                            network flags below are ignored (the config
-                            file is authoritative). Relative paths
-                            resolve against the project root.
-      * `network`         — the docker network this cluster joins
-                            (`k3d cluster create --network <network>`).
-                            For a secondary cluster set this to the
-                            OWNER cluster's network (k3d names a
-                            cluster's auto-created network `k3d-<owner>`)
-                            so the two clusters' nodes share a network
-                            and can reach each other by container IP.
-                            Unset => k3d creates this cluster's own
-                            network.
-      * `registry_mirror` — "inherit" reuses the OWNER cluster's k3d
-                            registry: after create, forge writes the
-                            owner's registries.yaml onto this cluster's
-                            node and restarts it to reload (so in-cluster
-                            pulls of `localhost:<port>/...` images
-                            resolve to the shared registry). Unset =>
-                            this cluster has no mirror config (it owns
-                            its registry via `config`, or pulls from a
-                            real registry).
-      * `servers`         — control-plane node count (default 1).
-      * `agents`          — worker node count (default 0).
-      * `api_port`        — host port to bind the cluster's API server
-                            to (`k3d cluster create --api-port
-                            0.0.0.0:<port>`). Distinct per cluster so
-                            several clusters coexist on one host. Unset
-                            => k3d picks a random free port.
-      * `ingress`         — install the Gateway API stack (pinned
-                            Gateway-API CRDs + the vendored Traefik
-                            controller + the `traefik` GatewayClass) into
-                            THIS cluster after it's ensured. A fresh `k3d
-                            cluster create` ships none of these, so a
-                            cluster that hosts the env's Gateway /
-                            HTTPRoute / GRPCRoute resources needs it on or
-                            their apply fails ("no matches for kind
-                            Gateway in gateway.networking.k8s.io/v1"). The
-                            install is idempotent (kubectl apply + a CRD-
-                            cache), so re-runs no-op. Default False — a
-                            cluster with no ingress resources (reached via
-                            port-forward) leaves it off.
+      * `name`     — k3d cluster name. `.context` is `k3d-<name>`.
+      * `owner`    — reference to the OWNER Cluster instance. Set on a
+                     SECONDARY cluster to join the owner's network +
+                     inherit its registry (both DERIVED, see above). Unset
+                     on an owner cluster.
+      * `config`   — path to a k3d Simple-config YAML. When set, forge
+                     runs `k3d cluster create --config <config>` and the
+                     servers/agents/api_port/network flags are ignored
+                     (the config file is authoritative). Relative paths
+                     resolve against the project root.
+      * `servers`  — control-plane node count (default 1).
+      * `agents`   — worker node count (default 0).
+      * `api_port` — host port to bind the cluster's API server to
+                     (`k3d cluster create --api-port 0.0.0.0:<port>`).
+                     Distinct per cluster so several clusters coexist on
+                     one host. Unset => k3d picks a random free port.
+      * `ingress`  — install the Gateway API stack (pinned Gateway-API
+                     CRDs + the vendored Traefik controller + the
+                     `traefik` GatewayClass) into THIS cluster after it's
+                     ensured. A fresh `k3d cluster create` ships none of
+                     these, so a cluster that hosts the env's Gateway /
+                     HTTPRoute / GRPCRoute resources needs it on or their
+                     apply fails ("no matches for kind Gateway in
+                     gateway.networking.k8s.io/v1"). The install is
+                     idempotent (kubectl apply + a CRD-cache), so re-runs
+                     no-op. Default False — a cluster with no ingress
+                     resources (reached via port-forward) leaves it off.
     """
     name: str
+    owner?: Cluster
     config?: str
-    network?: str
-    registry_mirror?: str
     servers: int = 1
     agents: int = 0
     api_port?: int
     ingress: bool = False
+    # Derived: kubectl context (k3d-<name>). Computed from `name` so
+    # consumers reference `<cluster>.context` rather than re-spelling the
+    # `k3d-` prefix. Always present.
+    context: str = "k3d-" + name
+    # Derived: the docker network this cluster joins. `k3d-<owner.name>`
+    # when `owner` is set (join the owner's auto-created network);
+    # Undefined for an owner cluster (k3d creates its own). Projects to
+    # JSON `null` for an owner cluster, the owner's network for a
+    # secondary.
+    network?: str = ("k3d-" + owner.name) if owner else Undefined
+    # Derived: True when `owner` is set — forge mirrors the owner's
+    # registry onto this cluster's node (the registry-inherit behavior
+    # the stringly `registry_mirror = "inherit"` used to request). False
+    # for an owner cluster.
+    registry_inherit: bool = True if owner else False
 
     check:
         name, "Cluster.name is required"
         servers > 0, "Cluster.servers must be positive"
         agents >= 0, "Cluster.agents must be non-negative"
-        registry_mirror == Undefined or registry_mirror == "inherit", \
-            "Cluster.registry_mirror, when set, must be 'inherit' (reuse the owner cluster's registry)"
 
 schema KubeconfigSecret:
     """A cross-cluster kubeconfig, minted FRESH each `forge up` and
@@ -968,6 +991,104 @@ schema KubeconfigSecret:
         context_name, "KubeconfigSecret.context_name is required (stable context name the workload selects)"
         reachability in ["in-network", "endpoint"], \
             "KubeconfigSecret.reachability must be 'in-network' (dev/e2e IP rewrite) or 'endpoint' (verbatim)"
+
+schema ClusterClient:
+    """A workload's cross-cluster client wiring, stated ONCE.
+
+    A workload that reaches ANOTHER cluster's API server today restates
+    the same three things by hand, with hand-correlated names/paths/
+    contexts that must agree or the workload silently breaks:
+
+      1. a `KubeconfigSecret` minting the target cluster's kubeconfig into
+         the workload's cluster;
+      2. a `Volume` mounting that Secret at a path;
+      3. a consumer config value — the JSON the workload reads (e.g.
+         `CLUSTER_CONFIGS = '[{"id","kubeconfigPath","context"}]'`) — whose
+         `kubeconfigPath` must equal the Volume's mount_path + the Secret
+         key, and whose `context` must equal the Secret's context_name.
+
+    `ClusterClient` DERIVES all three from `cluster` (the Cluster to
+    reach, a reference), `in_cluster` (the Cluster the workload runs in,
+    a reference), and `mount_path`. The consumer then references:
+
+      * `.secret`      — the minted KubeconfigSecret (emit it in the
+                         Bundle's `kubeconfig_secrets`).
+      * `.volume`      — the Volume to attach to the consuming workload
+                         (`volumes = [link.volume]`).
+      * `.config_json` — the single-element JSON array string the workload
+                         reads (drop into the `CLUSTER_CONFIGS` EnvVar).
+      * `.config_entry`— the raw `{id, kubeconfigPath, context}` dict, for
+                         a workload that aggregates SEVERAL clients into
+                         one array (`json.encode([a.config_entry,
+                         b.config_entry])`).
+
+    Because the kubeconfigPath inside `.config_json` is computed from the
+    SAME `mount_path` + `key` the `.volume`/`.secret` use, the three can't
+    drift. The `id` is the stable handle the workload keys on (the
+    CLUSTER_CONFIGS entry `id` AND the kubeconfig context name).
+
+    Fields:
+      * `id`          — stable client id. Used as the CLUSTER_CONFIGS
+                        entry id, the minted kubeconfig context name, and
+                        the Secret/Volume base name (`<id>-kubeconfig`).
+      * `cluster`     — reference to the Cluster the workload REACHES
+                        (kubeconfig is minted FOR this cluster).
+      * `in_cluster`  — reference to the Cluster the workload RUNS in
+                        (the Secret/Volume land here).
+      * `mount_path`  — absolute dir the kubeconfig Secret mounts at; the
+                        kubeconfig file is `<mount_path>/<key>`.
+      * `key`         — key within the Secret holding the kubeconfig YAML
+                        (default "kubeconfig"); also the mounted filename.
+      * `namespace`   — namespace for the minted Secret in `in_cluster`
+                        (default: the env's namespace, resolved Go-side).
+      * `reachability`— passed through to the minted KubeconfigSecret
+                        ("in-network" dev/e2e IP rewrite, "endpoint" prod).
+    """
+    id: str
+    cluster: Cluster
+    in_cluster: Cluster
+    mount_path: str
+    key: str = "kubeconfig"
+    namespace?: str
+    reachability: str = "in-network"
+    # Derived names/paths — the single source the three emitted things share.
+    _secret_name: str = id + "-kubeconfig"
+    _kubeconfig_path: str = mount_path + "/" + key
+    # The minted cross-cluster kubeconfig Secret (in_cluster -> cluster).
+    secret: KubeconfigSecret = KubeconfigSecret {
+        name = _secret_name
+        in_cluster = in_cluster.context
+        target_cluster = cluster.name
+        context_name = id
+        key = key
+        namespace = namespace
+        reachability = reachability
+    }
+    # The Volume the consuming workload mounts to read the kubeconfig.
+    volume: Volume = Volume {
+        name = _secret_name
+        mount_path = mount_path
+        type = "secret"
+        source = _secret_name
+        read_only = True
+    }
+    # The CLUSTER_CONFIGS entry the workload reads — id + the derived
+    # kubeconfig path + the context the kubeconfig was renamed to.
+    config_entry: {str: str} = {
+        id = id
+        kubeconfigPath = _kubeconfig_path
+        context = id
+    }
+    # The single-element JSON array form for the common one-client case;
+    # drop straight into the CLUSTER_CONFIGS EnvVar value.
+    config_json: str = json.encode([config_entry])
+
+    check:
+        id, "ClusterClient.id is required"
+        mount_path, "ClusterClient.mount_path is required"
+        mount_path.startswith("/"), "ClusterClient.mount_path must be absolute (start with '/')"
+        reachability in ["in-network", "endpoint"], \
+            "ClusterClient.reachability must be 'in-network' or 'endpoint'"
 
 schema BuildOnly:
     """Service is built but not auto-orchestrated.
@@ -1158,8 +1279,22 @@ schema Service:
       * Compose     — forge runs docker-compose up -d.
       * BuildOnly   — forge builds the artifact only (CLI shape).
 
-    Omit `deploy` entirely to mean "just build the binary" — the
-    render layer projects it as `BuildOnly { build_variants = [] }`.
+    `deploy = None` (or omitting `deploy` entirely) is the explicit
+    BUILD-ONLY mode: forge runs this service's `build` (building AND
+    pushing its image when the build is a DockerBuild/ShellBuild) but
+    renders NO Deployment / Service / RBAC / owned manifests — it is not
+    orchestrated. Use it for an IMAGE other workloads reference at
+    runtime (a base image baked once and pulled by per-user pods, a
+    sidecar image), or a CLI binary shipped in a release artifact. The
+    render layer projects an explicit `{ "type": "build-only" }` deploy
+    block so the Go consumer dispatches it the same way as a
+    `forge.BuildOnly` deploy: in the build set, out of the deploy set.
+
+    This is distinct from the IMAGE-LESS infra-bundle path (a service
+    with a `K8sCluster` deploy and NO `image`, which renders only its
+    owned `manifests` onto a specific cluster). `deploy = None` skips the
+    deploy phase ENTIRELY; an image-less cluster service still
+    participates in the deploy phase to pin its owned manifests.
 
     Build side — `build_cmd` (mirror of `External` for the build step):
 
@@ -1397,8 +1532,9 @@ schema Bundle:
     # head of the run (create-if-absent, no-op if present). Empty =>
     # forge ensures no cluster (today's `forge up --env=e2e` behavior,
     # or a single dev cluster bootstrapped the legacy way). Ownership is
-    # implicit via Cluster.network / Cluster.registry_mirror — there is
-    # no "primary" cluster.
+    # a REFERENCE: a secondary names its `owner` Cluster and forge derives
+    # the joined network + registry-inherit from it — there is no
+    # "primary" cluster.
     clusters: [Cluster] = []
     # Cross-cluster kubeconfigs minted FRESH each `forge up` and stored
     # as k8s Secrets (so a workload in one cluster can reach another's

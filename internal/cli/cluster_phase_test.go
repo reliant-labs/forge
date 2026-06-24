@@ -7,16 +7,16 @@ import (
 
 const sampleClustersJSON = `{
   "clusters": [
-    {"name": "cp", "servers": 1, "agents": 0, "api_port": 6443},
-    {"name": "workload", "network": "k3d-cp", "registry_mirror": "inherit", "servers": 1, "agents": 2, "api_port": 6444},
-    {"name": "configured", "config": "deploy/k3d.workload.yaml", "servers": 1, "agents": 0}
+    {"name": "cp", "context": "k3d-cp", "registry_inherit": false, "servers": 1, "agents": 0, "api_port": 6443},
+    {"name": "workload", "context": "k3d-workload", "network": "k3d-cp", "registry_inherit": true, "servers": 1, "agents": 2, "api_port": 6444},
+    {"name": "configured", "context": "k3d-configured", "config": "deploy/k3d.workload.yaml", "servers": 1, "agents": 0}
   ],
   "services": []
 }`
 
 // TestParseKCLEntities_Clusters pins that the declared clusters block
-// parses into ClusterEntity in order, with the implicit-ownership fields
-// (network / registry_mirror) and api_port preserved.
+// parses into ClusterEntity in order, with the derived-ownership fields
+// (context / network / registry_inherit) and api_port preserved.
 func TestParseKCLEntities_Clusters(t *testing.T) {
 	entities, err := parseKCLEntities([]byte(sampleClustersJSON))
 	if err != nil {
@@ -30,9 +30,12 @@ func TestParseKCLEntities_Clusters(t *testing.T) {
 	if owner.Name != "cp" {
 		t.Errorf("clusters[0].Name = %q want cp", owner.Name)
 	}
-	if owner.Network != "" || owner.RegistryMirror != "" {
-		t.Errorf("owner cluster must declare no network/registry_mirror; got network=%q mirror=%q",
-			owner.Network, owner.RegistryMirror)
+	if owner.Context != "k3d-cp" {
+		t.Errorf("clusters[0].Context = %q want k3d-cp", owner.Context)
+	}
+	if owner.Network != "" || owner.RegistryInherit {
+		t.Errorf("owner cluster must derive no network/registry_inherit; got network=%q inherit=%v",
+			owner.Network, owner.RegistryInherit)
 	}
 	if owner.APIPort != 6443 {
 		t.Errorf("clusters[0].APIPort = %d want 6443", owner.APIPort)
@@ -40,10 +43,10 @@ func TestParseKCLEntities_Clusters(t *testing.T) {
 
 	sec := entities.Clusters[1]
 	if sec.Network != "k3d-cp" {
-		t.Errorf("secondary.Network = %q want k3d-cp (implicit owner)", sec.Network)
+		t.Errorf("secondary.Network = %q want k3d-cp (derived from owner)", sec.Network)
 	}
-	if sec.RegistryMirror != "inherit" {
-		t.Errorf("secondary.RegistryMirror = %q want inherit", sec.RegistryMirror)
+	if !sec.RegistryInherit {
+		t.Errorf("secondary.RegistryInherit = %v want true", sec.RegistryInherit)
 	}
 	if sec.Agents != 2 {
 		t.Errorf("secondary.Agents = %d want 2", sec.Agents)
@@ -119,10 +122,11 @@ func TestReconcileDeclaredClusters_IngressInstall(t *testing.T) {
 	}
 }
 
-// TestIsNestedSecondary pins the gate that uniquely identifies a
-// secondary cluster nested on an owner's docker network: BOTH `network`
-// set AND registry_mirror="inherit". An owner declares neither; a
-// half-declared cluster (only one of the two) is not treated as nested.
+// TestIsNestedSecondary pins the gate that identifies a secondary cluster
+// nested on an owner's docker network: an `owner` reference, which the
+// render layer projects as RegistryInherit=true + a derived Network. An
+// owner cluster derives neither; a malformed half-projection (only one of
+// the two) is not treated as nested.
 func TestIsNestedSecondary(t *testing.T) {
 	cases := []struct {
 		name string
@@ -130,9 +134,9 @@ func TestIsNestedSecondary(t *testing.T) {
 		want bool
 	}{
 		{"owner (neither)", ClusterEntity{Name: "cp"}, false},
-		{"nested secondary", ClusterEntity{Name: "wl", Network: "k3d-cp", RegistryMirror: "inherit"}, true},
+		{"nested secondary", ClusterEntity{Name: "wl", Network: "k3d-cp", RegistryInherit: true}, true},
 		{"network only", ClusterEntity{Name: "wl", Network: "k3d-cp"}, false},
-		{"inherit only", ClusterEntity{Name: "wl", RegistryMirror: "inherit"}, false},
+		{"inherit only", ClusterEntity{Name: "wl", RegistryInherit: true}, false},
 	}
 	for _, tc := range cases {
 		if got := isNestedSecondary(tc.c); got != tc.want {
@@ -142,8 +146,8 @@ func TestIsNestedSecondary(t *testing.T) {
 }
 
 // TestReconcileDeclaredClusters_SecondarySetup asserts the secondary-node
-// setup is invoked for EXACTLY the nested-secondary clusters (network +
-// registry_mirror=inherit) and skipped for standalone owners. All
+// setup is invoked for EXACTLY the nested-secondary clusters (derived
+// network + registry_inherit) and skipped for standalone owners. All
 // shell-out seams are stubbed so the test never touches k3d/docker/kubectl;
 // clusters report as already existing so the create branch is never
 // reached (the warm path also gates the secondary setup on the same
@@ -166,7 +170,7 @@ func TestReconcileDeclaredClusters_SecondarySetup(t *testing.T) {
 
 	clusters := []ClusterEntity{
 		{Name: "control-plane"}, // standalone owner — no setup
-		{Name: "cp-daemon", Network: "k3d-control-plane", RegistryMirror: "inherit"}, // nested — setup
+		{Name: "cp-daemon", Network: "k3d-control-plane", RegistryInherit: true}, // nested — setup
 	}
 	if err := reconcileDeclaredClusters(t.Context(), clusters, "", ""); err != nil {
 		t.Fatalf("reconcileDeclaredClusters: %v", err)

@@ -874,6 +874,82 @@ spec: {}`
 	}
 }
 
+// clusterPinnedManifests is a two-cluster ingress stream where the
+// Gateway carries the FIRST-CLASS `forge.dev/cluster` routing label
+// (forge's gateway builder stamps it when `cluster = "control-plane"` is
+// set) instead of riding an unrelated service's app label.
+const clusterPinnedManifests = `apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: cp-public
+  labels:
+    app.kubernetes.io/name: cp-public
+    forge.dev/cluster: control-plane
+spec: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-proxy
+  labels:
+    app.kubernetes.io/name: workspace-proxy
+spec: {}`
+
+// TestScopeManifestsToGroup_ClusterLabelKeepsOnNamedCluster asserts a
+// manifest stamped `forge.dev/cluster: control-plane` lands on the
+// control-plane group (whose GroupScope.Cluster matches) — routed by the
+// first-class label, not by any app-label membership.
+func TestScopeManifestsToGroup_ClusterLabelKeepsOnNamedCluster(t *testing.T) {
+	got := ScopeManifestsToGroup(clusterPinnedManifests, GroupScope{
+		Cluster:   "control-plane",
+		OwnApps:   map[string]struct{}{"admin-server": {}},
+		OtherApps: map[string]struct{}{"workspace-proxy": {}},
+	})
+	if !strings.Contains(got, "name: cp-public") {
+		t.Errorf("a forge.dev/cluster=control-plane manifest must land on the control-plane group:\n%s", got)
+	}
+	// The other cluster's app-labelled workload still drops via OtherApps.
+	if strings.Contains(got, "name: workspace-proxy") {
+		t.Errorf("workspace-proxy is OtherApps and must be dropped from control-plane:\n%s", got)
+	}
+}
+
+// TestScopeManifestsToGroup_ClusterLabelDroppedFromSibling is the
+// isolation half: the SAME first-class-pinned manifest is dropped from a
+// SIBLING cluster whose name doesn't match the routing label — even
+// though that cluster has no app-label opinion about the Gateway. This is
+// what makes `cluster = "control-plane"` keep the Gateway off the daemon
+// cluster without the app-label collision trick.
+func TestScopeManifestsToGroup_ClusterLabelDroppedFromSibling(t *testing.T) {
+	got := ScopeManifestsToGroup(clusterPinnedManifests, GroupScope{
+		Cluster:   "daemon",
+		OwnApps:   map[string]struct{}{"workspace-proxy": {}},
+		OtherApps: map[string]struct{}{"admin-server": {}},
+	})
+	if strings.Contains(got, "name: cp-public") {
+		t.Errorf("a forge.dev/cluster=control-plane manifest must be dropped from the daemon cluster:\n%s", got)
+	}
+	// The daemon's own service is kept.
+	if !strings.Contains(got, "name: workspace-proxy") {
+		t.Errorf("daemon's own workspace-proxy must be kept:\n%s", got)
+	}
+}
+
+// TestScopeManifestsToGroup_ClusterLabelIgnoredWhenScopeClusterUnset
+// documents the fall-through: with GroupScope.Cluster empty, the
+// first-class label is NOT consulted and the doc routes purely by its app
+// label (here cp-public is ungrouped → kept defensively). This keeps the
+// label inert for callers that haven't adopted the Cluster field.
+func TestScopeManifestsToGroup_ClusterLabelIgnoredWhenScopeClusterUnset(t *testing.T) {
+	got := ScopeManifestsToGroup(clusterPinnedManifests, GroupScope{
+		OwnApps:   map[string]struct{}{"admin-server": {}},
+		OtherApps: map[string]struct{}{"workspace-proxy": {}},
+	})
+	if !strings.Contains(got, "name: cp-public") {
+		t.Errorf("with no scope.Cluster, cp-public routes by app label (ungrouped → kept):\n%s", got)
+	}
+}
+
 // immutableJobManifests is a minimal warm-redeploy bundle: a namespaced
 // Job (the kind whose spec.template k8s treats as immutable) plus an
 // unrelated Deployment. The recovery must scope its delete to the Job and

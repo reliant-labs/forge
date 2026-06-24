@@ -20,6 +20,27 @@ _managed_labels = lambda name: str -> {str: str} {
     }
 }
 
+# cluster_routing_label is the dedicated wire key the Go multi-cluster
+# scoper (internal/cluster.ScopeManifestsToGroup) reads to route a
+# manifest to ONE cluster directly. When a Gateway / HTTPRoute /
+# GRPCRoute carries `cluster = "<name>"`, the builder stamps
+# `forge.dev/cluster: <name>` on the rendered manifest's labels; the
+# scoper keeps that manifest ONLY on the named cluster and drops it from
+# every other. This is the first-class replacement for the older
+# label-piggyback trick (stamping `app.kubernetes.io/name = <some
+# service>` so the manifest routes via that service's group). A manifest
+# WITHOUT this label still routes by `app.kubernetes.io/name` exactly as
+# before, so existing consumers are unaffected.
+#
+# `_cluster_label(cluster)` returns the one-key label dict when cluster
+# is set, or an empty dict (no key) when it isn't — merge it into the
+# managed labels with `|`.
+_cluster_routing_label_key = "forge.dev/cluster"
+
+_cluster_label = lambda cluster: str -> {str: str} {
+    {"${_cluster_routing_label_key}" = cluster} if cluster else {}
+}
+
 # Map a GatewayListener.protocol to the Gateway API spec value.
 # H2C maps to Gateway API's HTTP protocol (HTTP/2 cleartext is
 # expressed via the listener's underlying behavior; specific
@@ -87,7 +108,7 @@ _render_listener = lambda l: any, gw_tls: any, gw_host: str -> any {
 # Secret are involved (the listener carries no tls block — see
 # _render_listener).
 render_gateway = lambda gw: any, namespace: str -> [any] {
-    _labels = _managed_labels(gw.name)
+    _labels = _managed_labels(gw.name) | _cluster_label(gw.cluster or "")
     _annotations = {
         "networking.gke.io/certmap" = gw.tls.certmap
     } if gw.tls and gw.tls.mode == "gke_certmap" else {}
@@ -186,7 +207,7 @@ render_http_route = lambda route: any, gateways: [any], namespace: str -> [any] 
     _listener = _lookup_listener(_gw, route.listener) if _gw else None
     _host = _route_host(route, _gw) if _gw else ""
     _path = _route_path(route, _listener) if _listener else "/"
-    _labels = _managed_labels(route.name)
+    _labels = _managed_labels(route.name) | _cluster_label(route.cluster or "")
     [{
         apiVersion = "gateway.networking.k8s.io/v1"
         kind = "HTTPRoute"
@@ -230,7 +251,7 @@ render_grpc_route = lambda route: any, gateways: [any], namespace: str -> [any] 
     _gw = _lookup_gateway(gateways, route.gateway)
     _listener = _lookup_listener(_gw, route.listener) if _gw else None
     _host = _route_host(route, _gw) if _gw else ""
-    _labels = _managed_labels(route.name)
+    _labels = _managed_labels(route.name) | _cluster_label(route.cluster or "")
     # GRPCRoute path matches a gRPC service+method. Empty path means
     # match-everything; explicit path is interpreted as a method match
     # when prefixed with "/".

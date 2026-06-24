@@ -164,6 +164,15 @@ type ApplyOpts struct {
 // workload AND on every per-service owned manifest (forge.Service.manifests).
 // See ScopeManifestsToGroup for the precise per-document keep/drop rule.
 type GroupScope struct {
+	// Cluster is THIS group's cluster name (forge.K8sCluster.cluster). It
+	// is the value a manifest's first-class `forge.dev/cluster` routing
+	// label is matched against: a manifest carrying that label lands on
+	// this group iff the label equals Cluster, and is dropped otherwise —
+	// no app-label indirection. Empty disables the first-class match (the
+	// stream is routed purely by OwnApps/OtherApps, the pre-existing
+	// behaviour). See clusterRoutingLabel and ScopeManifestsToGroup.
+	Cluster string
+
 	// OwnApps is the set of `app.kubernetes.io/name` values belonging to
 	// THIS group's services — their workloads (Deployment / Service /
 	// per-service RBAC / HPA) AND the raw manifests those services own (a
@@ -187,6 +196,18 @@ type GroupScope struct {
 // asymmetry is what lets FilterManifestsByApp tell a targeted app's
 // workloads from another app's workloads while keeping shared deps.
 const appNameLabel = "app.kubernetes.io/name"
+
+// clusterRoutingLabel is the FIRST-CLASS per-manifest cluster-attribution
+// key. forge's KCL gateway/route builders stamp it
+// (`forge.dev/cluster: <name>`) when an ingress entity (Gateway /
+// HTTPRoute / GRPCRoute) declares `cluster = "<name>"`. ScopeManifestsToGroup
+// reads it directly: a manifest carrying this label routes to the named
+// cluster ONLY, no `app.kubernetes.io/name` indirection. It is the
+// replacement for the older label-piggyback trick (stamping an unrelated
+// service's app label so the manifest rode that service's group routing).
+// A manifest WITHOUT this label still routes by app label exactly as
+// before, so existing consumers are unaffected.
+const clusterRoutingLabel = "forge.dev/cluster"
 
 // Apply runs the render-KCL → kubectl-apply → wait-rollouts pipeline.
 // It is the single entry point for the three call sites this package
@@ -1013,6 +1034,18 @@ func manifestAppLabel(doc string) string {
 // specific declared cluster). KCL still renders the whole env as one
 // stream; this filter routes each doc to the cluster its owner declares.
 //
+// FIRST-CLASS cluster attribution takes priority over the app-label rule
+// below: a manifest carrying the `forge.dev/cluster` label (stamped by
+// forge's gateway/route builders when an ingress entity declares
+// `cluster = "<name>"`) is routed by that label DIRECTLY — kept iff the
+// label equals scope.Cluster, dropped otherwise — with no
+// `app.kubernetes.io/name` indirection. This is the explicit replacement
+// for the old trick of piggybacking an unrelated service's app label.
+// When scope.Cluster is empty (the label-only routing path), the
+// first-class match is skipped and the doc falls through to the app-label
+// rule. A manifest WITHOUT the routing label always uses the app-label
+// rule.
+//
 // The ownership rule, document by document (by its
 // `app.kubernetes.io/name` label `a`):
 //
@@ -1052,8 +1085,21 @@ func ScopeManifestsToGroup(manifests string, scope GroupScope) string {
 	for _, doc := range splitDocs(manifests) {
 		m, parsed := parseDoc(doc)
 		app := ""
+		routeCluster := ""
 		if parsed {
 			app = m.Metadata.Labels[appNameLabel]
+			routeCluster = m.Metadata.Labels[clusterRoutingLabel]
+		}
+		// First-class cluster attribution wins over the app-label rule: a
+		// manifest stamped with `forge.dev/cluster` routes to exactly that
+		// cluster. Only engaged when this group knows its own cluster name
+		// (scope.Cluster); otherwise fall through to app-label routing.
+		if routeCluster != "" && scope.Cluster != "" {
+			if routeCluster == scope.Cluster {
+				kept = append(kept, doc)
+			}
+			// routeCluster != scope.Cluster → drop (another cluster's).
+			continue
 		}
 		switch {
 		case app != "":

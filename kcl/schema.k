@@ -404,6 +404,15 @@ schema Gateway:
     so the Gateway keeps its IP across delete/recreate (otherwise a
     recreated Gateway gets a fresh ephemeral IP and breaks DNS). Empty
     by default — the controller assigns an ephemeral address.
+
+    `cluster` pins this Gateway to ONE cluster in a multi-cluster env.
+    When set, forge's deploy-time scoper
+    (internal/cluster.ScopeManifestsToGroup) routes the rendered Gateway
+    manifest to that cluster ONLY and drops it from every sibling — the
+    first-class replacement for the older trick of stamping an unrelated
+    service's `app.kubernetes.io/name` label to piggyback its routing.
+    Unset (the common single-cluster case) leaves routing unchanged. The
+    builder stamps the value as a `forge.dev/cluster: <name>` label.
     """
     name: str
     listeners: [GatewayListener]
@@ -412,6 +421,7 @@ schema Gateway:
     tls?: GatewayTLS
     raw_policy: str = ""
     addresses: [GatewayAddress] = []
+    cluster?: str
 
     check:
         name, "Gateway.name is required"
@@ -429,6 +439,10 @@ schema HTTPRoute:
     The full request path is `<listener.path_prefix>/<path>`. Empty
     `path` means the listener's prefix is the only match — useful for
     a service that owns the listener's path namespace entirely.
+
+    `cluster` pins this route to ONE cluster in a multi-cluster env (see
+    Gateway.cluster) — the rendered HTTPRoute manifest is routed to that
+    cluster only via a `forge.dev/cluster: <name>` label.
     """
     name: str
     gateway: str
@@ -438,6 +452,7 @@ schema HTTPRoute:
     host: str = ""
     path: str = ""
     raw_policy: str = ""
+    cluster?: str
 
     check:
         name, "HTTPRoute.name is required"
@@ -452,6 +467,10 @@ schema GRPCRoute:
     """A GRPCRoute attached to a Gateway+listener. Forwards gRPC
     traffic to a backend Service. The target listener must be H2C or
     HTTPS — gRPC over HTTP/1.1 isn't a thing.
+
+    `cluster` pins this route to ONE cluster in a multi-cluster env (see
+    Gateway.cluster) — the rendered GRPCRoute manifest is routed to that
+    cluster only via a `forge.dev/cluster: <name>` label.
     """
     name: str
     gateway: str
@@ -461,6 +480,7 @@ schema GRPCRoute:
     host: str = ""
     path: str = ""
     raw_policy: str = ""
+    cluster?: str
 
     check:
         name, "GRPCRoute.name is required"

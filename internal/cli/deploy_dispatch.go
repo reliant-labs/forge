@@ -367,6 +367,7 @@ func clusterScopeForGroups(groups []deploytarget.ServiceGroup, entities *KCLEnti
 			}
 		}
 		return &cluster.GroupScope{
+			Cluster:   group.Cluster,
 			OwnApps:   own,
 			OtherApps: other,
 		}

@@ -384,6 +384,7 @@ _render_gateway = lambda g: Gateway -> any {
         "listeners": [_render_gateway_listener(l) for l in g.listeners]
         "raw_policy": g.raw_policy if g.raw_policy else None
         "addresses": [_render_gateway_address(a) for a in g.addresses] if g.addresses else None
+        "cluster": g.cluster or None
     }
 }
 
@@ -397,6 +398,7 @@ _render_http_route = lambda r: HTTPRoute -> any {
         "host": r.host if r.host else None
         "path": r.path if r.path else None
         "raw_policy": r.raw_policy if r.raw_policy else None
+        "cluster": r.cluster or None
     }
 }
 
@@ -410,6 +412,7 @@ _render_grpc_route = lambda r: GRPCRoute -> any {
         "host": r.host if r.host else None
         "path": r.path if r.path else None
         "raw_policy": r.raw_policy if r.raw_policy else None
+        "cluster": r.cluster or None
     }
 }
 
@@ -507,6 +510,43 @@ _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
 #     manifests = forge.test_jwks_manifests(_jwks, "auth", _jwk)
 test_jwks_manifests = lambda j: TestJWKS, namespace: str, public_jwk: any -> [any] {
     jwks_lib.test_jwks_manifests(j, namespace, public_jwk)
+}
+
+# render_gateway / render_certificate / render_http_route /
+# render_grpc_route — top-level re-exports of the lib/gateway builders so
+# a consumer can emit a Gateway API manifest on a SPECIFIC cluster
+# without hand-reimplementing the ~90 lines of builder logic as raw
+# dicts. Same pattern as test_jwks_manifests above: a one-line shim onto
+# the internal lib function, exposed on the public `forge` namespace.
+#
+# Pin the manifest to one cluster in a multi-cluster env by setting
+# `cluster` on the entity — the builder stamps `forge.dev/cluster:
+# <name>`, which forge's deploy-time scoper routes to that cluster only:
+#
+#     import forge
+#     _gw = forge.Gateway {
+#         name = "cp-public", cluster = "control-plane"
+#         listeners = [forge.GatewayListener { name = "http", port = 80, protocol = "HTTP" }]
+#     }
+#     manifests = forge.render_gateway(_gw, "my-ns")
+#
+# render_http_route / render_grpc_route take the route plus the list of
+# gateways (so the builder can resolve the parent listener + host) and
+# the namespace, matching the internal signatures.
+render_gateway = lambda gw: Gateway, namespace: str -> [any] {
+    gw_lib.render_gateway(gw, namespace)
+}
+
+render_certificate = lambda gw: Gateway, namespace: str -> [any] {
+    gw_lib.render_certificate(gw, namespace)
+}
+
+render_http_route = lambda route: HTTPRoute, gateways: [Gateway], namespace: str -> [any] {
+    gw_lib.render_http_route(route, gateways, namespace)
+}
+
+render_grpc_route = lambda route: GRPCRoute, gateways: [Gateway], namespace: str -> [any] {
+    gw_lib.render_grpc_route(route, gateways, namespace)
 }
 
 # Project a Bundle to the stable JSON contract. Consumed by forge CLI.

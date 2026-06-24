@@ -20,6 +20,13 @@ type testFlags struct {
 	parallel bool
 	verbose  bool
 	service  string
+	// env selects the env-scoped flow: `forge test --env=<env>` reads the
+	// per-env `test:` block from forge.yaml, port-forwards that env's declared
+	// in-cluster services, runs the declared test command, and tears the
+	// forwards down on exit. The second half of `forge up --env=<env>` then
+	// `forge test --env=<env>`. See runTestEnv (test_env.go). When empty, the
+	// historic whole-project unit+integration flow runs.
+	env string
 }
 
 func newTestCmd() *cobra.Command {
@@ -27,17 +34,29 @@ func newTestCmd() *cobra.Command {
 
 	testCmd := &cobra.Command{
 		Use:   "test",
-		Short: "Run all tests (unit + integration)",
+		Short: "Run all tests (unit + integration), or an env's suite via --env",
 		Long: `Run all tests across Go services and frontends.
 
 When no subcommand is given, runs unit and integration tests.
+
+With --env=<env>, runs that environment's declared test suite instead: forge
+reads the per-env ` + "`test:`" + ` block from forge.yaml, port-forwards the env's
+in-cluster services to local ports (each against its own kube-context), exports
+the forward URLs + declared env vars, runs the declared test command, and tears
+the forwards down on exit. This is the second half of the two-command e2e loop:
+
+  forge up --env=e2e && forge test --env=e2e
 
 Examples:
   forge test                        # Run unit + integration tests
   forge test --coverage             # Enable coverage reporting
   forge test --service api-gateway  # Test specific service only
-  forge test -V                     # Verbose test output`,
+  forge test -V                     # Verbose test output
+  forge test --env=e2e              # Run the e2e env's declared suite`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if flags.env != "" {
+				return runTestEnv(cmd.Context(), flags.env, defaultTestEnvDeps())
+			}
 			return runTestAll(cmd.Context(), flags)
 		},
 	}
@@ -101,6 +120,9 @@ Examples:
 	testCmd.PersistentFlags().BoolVar(&flags.parallel, "parallel", true, "Run test suites in parallel")
 	testCmd.PersistentFlags().BoolVarP(&flags.verbose, "test-verbose", "V", false, "Verbose test output")
 	testCmd.PersistentFlags().StringVar(&flags.service, "service", "", "Test a specific service or frontend by name")
+	// --env is on the parent command only (not inherited by subcommands):
+	// `forge test --env=<env>` is its own flow, orthogonal to unit/integration/e2e.
+	testCmd.Flags().StringVar(&flags.env, "env", "", "Run the named env's declared `test:` suite from forge.yaml (port-forward + env + command); pairs with `forge up --env=<env>`")
 
 	return testCmd
 }

@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -870,5 +871,131 @@ spec: {}`
 	})
 	if !strings.Contains(got, "name: orphan") {
 		t.Errorf("an app-labelled doc owned by no group must be kept, not silently dropped:\n%s", got)
+	}
+}
+
+// immutableJobManifests is a minimal warm-redeploy bundle: a namespaced
+// Job (the kind whose spec.template k8s treats as immutable) plus an
+// unrelated Deployment. The recovery must scope its delete to the Job and
+// nothing else.
+const immutableJobManifests = `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: control-plane-migrate
+  namespace: app
+spec:
+  template:
+    spec:
+      containers:
+        - name: migrate
+          image: repo/migrate:newtag
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: app
+spec:
+  replicas: 1`
+
+// realImmutableStderr is the kubectl error a warm `forge up` produces when
+// the migrate Job already exists with a different image tag (every commit
+// changes the tag, and a Job's spec.template is immutable).
+const realImmutableStderr = `The Job "control-plane-migrate" is invalid: spec.template: Invalid value: ...: field is immutable`
+
+// TestApplyWithImmutableRecovery_DeletesJobThenReapplies pins the warm
+// re-deploy fix: a Job whose image tag changed makes the first apply fail
+// with the immutable-field error; forge must delete THAT Job (scoped, in
+// its namespace) and re-apply once, after which the deploy succeeds. The
+// trigger keys off the immutable error + the Job kind parsed from it — it
+// is NOT hardcoded to "control-plane-migrate".
+func TestApplyWithImmutableRecovery_DeletesJobThenReapplies(t *testing.T) {
+	var applies int
+	var deleted []immutableTarget
+
+	apply := func() (string, error) {
+		applies++
+		if applies == 1 {
+			// First apply fails immutable, as a real warm re-deploy does.
+			return realImmutableStderr, errors.New("exit status 1")
+		}
+		return "", nil // re-apply after the delete succeeds
+	}
+	del := func(t immutableTarget) error {
+		deleted = append(deleted, t)
+		return nil
+	}
+
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del); err != nil {
+		t.Fatalf("recovery should have healed the immutable apply, got %v", err)
+	}
+	if applies != 2 {
+		t.Fatalf("expected exactly two applies (fail then re-apply), got %d", applies)
+	}
+	if len(deleted) != 1 {
+		t.Fatalf("expected exactly one scoped delete, got %v", deleted)
+	}
+	got := deleted[0]
+	if got.Kind != "Job" || got.Name != "control-plane-migrate" || got.Namespace != "app" {
+		t.Fatalf("delete must target the failing Job in its namespace, got %+v", got)
+	}
+}
+
+// TestApplyWithImmutableRecovery_NonImmutableErrorSurfaces confirms the
+// recovery is surgical: an apply error that is NOT the immutable-field
+// case is returned unchanged, with no delete and no second apply.
+func TestApplyWithImmutableRecovery_NonImmutableErrorSurfaces(t *testing.T) {
+	var applies, deletes int
+	orig := errors.New("exit status 1")
+	apply := func() (string, error) {
+		applies++
+		return "Error from server (NotFound): namespaces \"app\" not found", orig
+	}
+	del := func(immutableTarget) error { deletes++; return nil }
+
+	err := applyWithImmutableRecovery(immutableJobManifests, apply, del)
+	if !errors.Is(err, orig) {
+		t.Fatalf("a non-immutable error must surface unchanged, got %v", err)
+	}
+	if applies != 1 || deletes != 0 {
+		t.Fatalf("non-immutable failure must not delete or re-apply (applies=%d deletes=%d)", applies, deletes)
+	}
+}
+
+// TestApplyWithImmutableRecovery_ReapplyStillFailsSurfacesOriginal pins
+// the safety property: if the re-apply after the delete still fails, the
+// ORIGINAL apply error is surfaced rather than swallowed.
+func TestApplyWithImmutableRecovery_ReapplyStillFailsSurfacesOriginal(t *testing.T) {
+	orig := errors.New("exit status 1")
+	apply := func() (string, error) { return realImmutableStderr, orig }
+	del := func(immutableTarget) error { return nil }
+
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del); !errors.Is(err, orig) {
+		t.Fatalf("a still-failing re-apply must surface the original error, got %v", err)
+	}
+}
+
+// TestImmutableResource_ParsesKindNameNamespace checks the pure detector:
+// the immutable-field error yields the Job kind+name, and the namespace is
+// recovered by matching that resource back to its manifest document.
+func TestImmutableResource_ParsesKindNameNamespace(t *testing.T) {
+	res, ok := immutableResource(realImmutableStderr, immutableJobManifests)
+	if !ok {
+		t.Fatal("an immutable-field error must be recognized as recoverable")
+	}
+	if res.Kind != "Job" || res.Name != "control-plane-migrate" || res.Namespace != "app" {
+		t.Fatalf("parsed the wrong resource: %+v", res)
+	}
+
+	// Not an immutable error → not recoverable.
+	if _, ok := immutableResource("Error from server (NotFound): ...", immutableJobManifests); ok {
+		t.Fatal("a non-immutable error must not be treated as recoverable")
+	}
+	// Immutable error naming a resource absent from the bundle still
+	// reports the kind+name (namespace just comes back empty).
+	other := `The Job "absent" is invalid: spec.template: field is immutable`
+	res, ok = immutableResource(other, immutableJobManifests)
+	if !ok || res.Name != "absent" || res.Namespace != "" {
+		t.Fatalf("unmatched resource should parse with empty namespace, got ok=%v res=%+v", ok, res)
 	}
 }

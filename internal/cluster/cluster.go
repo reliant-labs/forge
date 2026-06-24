@@ -31,8 +31,10 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -553,8 +555,158 @@ func KubectlApply(ctx context.Context, kctx, manifests string) error {
 			"the target cluster is declarative (forge.K8sCluster.cluster in the env's KCL) — " +
 			"forge never falls back to the current context for a write")
 	}
+	return applyWithImmutableRecovery(
+		manifests,
+		func() (string, error) { return applyOnce(ctx, kctx, manifests) },
+		func(t immutableTarget) error { return kubectlDeleteResource(ctx, kctx, t) },
+	)
+}
+
+// applyWithImmutableRecovery runs apply and, on the recoverable
+// immutable-field failure only, deletes the one offending resource and
+// re-applies once. The kubectl-touching steps are passed as closures so
+// the sequencing (apply → detect immutable → scoped delete → single
+// re-apply) is unit-testable without a live cluster; KubectlApply wires
+// the real applyOnce / kubectlDeleteResource.
+//
+// A k8s Job's spec.template is immutable, so a warm re-deploy whose image
+// tag changed (every commit does) makes the migrate Job's apply fail
+// "is invalid: ... field is immutable" even though cold (fresh namespace)
+// works. Any failure that ISN'T the immutable-field case — and a re-apply
+// that still fails — surfaces the original error unchanged.
+func applyWithImmutableRecovery(
+	manifests string,
+	apply func() (string, error),
+	del func(immutableTarget) error,
+) error {
+	stderr, err := apply()
+	if err == nil {
+		return nil
+	}
+	if res, ok := immutableResource(stderr, manifests); ok {
+		if delErr := del(res); delErr == nil {
+			if _, reErr := apply(); reErr == nil {
+				return nil
+			}
+		}
+	}
+	return err
+}
+
+// applyOnce runs a single `kubectl [--context] apply --server-side
+// --force-conflicts -f -` over the manifest stream. Stdout is inherited
+// so the user still sees the per-resource created/configured/unchanged
+// lines; stderr is tee'd to os.Stderr (so errors stay visible) AND
+// captured so KubectlApply can inspect it for the immutable-field
+// recovery. The captured stderr is returned alongside the run error.
+func applyOnce(ctx context.Context, kctx, manifests string) (string, error) {
 	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "--force-conflicts", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifests)
+	cmd.Stdout = os.Stdout
+	var buf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err := cmd.Run()
+	return buf.String(), err
+}
+
+// immutableTarget identifies the single resource an immutable-field apply
+// failure was about, so the recovery can scope its delete to exactly that
+// object (never a wipe).
+type immutableTarget struct {
+	Kind      string
+	Name      string
+	Namespace string // empty = cluster-scoped or unknown; delete omits -n
+}
+
+// immutableResource decides whether an apply failure is the recoverable
+// immutable-field case and, if so, which resource to reset. It keys off
+// the error text k8s emits for an immutable update —
+//
+//	The Job "control-plane-migrate" is invalid: spec.template: Invalid
+//	value: ...: field is immutable
+//
+// requiring BOTH the `is invalid:` framing and `field is immutable` so it
+// never fires on an unrelated apply error. The kind+name come from that
+// message (generic — Job is the motivating case, but any immutable kind
+// matches); the namespace is recovered by matching that kind+name back to
+// its source document in the applied manifests. Returns ok=false when the
+// stderr isn't an immutable-field error or the named resource can't be
+// found in the bundle.
+func immutableResource(stderr, manifests string) (immutableTarget, bool) {
+	if !strings.Contains(stderr, "is invalid:") || !strings.Contains(stderr, "field is immutable") {
+		return immutableTarget{}, false
+	}
+	kind, name, ok := parseInvalidResource(stderr)
+	if !ok {
+		return immutableTarget{}, false
+	}
+	ns := namespaceForResource(manifests, kind, name)
+	return immutableTarget{Kind: kind, Name: name, Namespace: ns}, true
+}
+
+// parseInvalidResource pulls the Kind and name out of a k8s
+// `The <Kind> "<name>" is invalid:` message. It scans for the `"…"`
+// quoted name and takes the single capitalized token immediately before
+// the opening quote as the Kind. Returns ok=false if the shape doesn't
+// match.
+func parseInvalidResource(stderr string) (kind, name string, ok bool) {
+	const inv = " is invalid:"
+	idx := strings.Index(stderr, inv)
+	if idx < 0 {
+		return "", "", false
+	}
+	head := stderr[:idx] // e.g. `The Job "control-plane-migrate"`
+	close := strings.LastIndex(head, `"`)
+	if close < 0 {
+		return "", "", false
+	}
+	open := strings.LastIndex(head[:close], `"`)
+	if open < 0 {
+		return "", "", false
+	}
+	name = head[open+1 : close]
+	// Kind is the last whitespace-delimited token before the opening quote.
+	fields := strings.Fields(strings.TrimSpace(head[:open]))
+	if len(fields) == 0 || name == "" {
+		return "", "", false
+	}
+	kind = fields[len(fields)-1]
+	return kind, name, true
+}
+
+// namespaceForResource finds the metadata.namespace of the manifest
+// document whose kind+name match, so the recovery delete can target the
+// right namespace. Returns "" when no doc matches or the doc carries no
+// namespace (cluster-scoped, or namespace defaulted at apply time).
+func namespaceForResource(manifests, kind, name string) string {
+	for _, doc := range splitDocs(manifests) {
+		var m struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name      string `yaml:"name"`
+				Namespace string `yaml:"namespace"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+			continue
+		}
+		if m.Kind == kind && m.Metadata.Name == name {
+			return m.Metadata.Namespace
+		}
+	}
+	return ""
+}
+
+// kubectlDeleteResource issues a scoped, idempotent
+// `kubectl delete <kind> <name> [-n <ns>] --ignore-not-found=true` for the
+// one resource an immutable apply failed on. --ignore-not-found keeps it
+// safe if the object vanished between apply and delete.
+func kubectlDeleteResource(ctx context.Context, kctx string, t immutableTarget) error {
+	args := []string{"delete", strings.ToLower(t.Kind), t.Name, "--ignore-not-found=true"}
+	if t.Namespace != "" {
+		args = append(args, "-n", t.Namespace)
+	}
+	cmd := kubectlCmd(ctx, kctx, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

@@ -25,6 +25,19 @@ type ServiceDef struct {
 	// can't alias two different messages.
 	Schemas map[string][]SchemaFieldDef `json:",omitempty"`
 
+	// SchemaFiles maps a fully-qualified message name (the same keys used
+	// in Schemas) to the proto file that physically DECLARES that message.
+	// For a message declared in the service's own proto file this equals
+	// ProtoFile; for a message pulled in from another file (e.g. a shared
+	// `shared.proto` holding the domain entity messages while the CRUD
+	// service lives in `services/<svc>/v1/<svc>.proto`) it differs. Codegen
+	// that emits a `*Schema` / type import for a message must resolve the
+	// import path from the message's DEFINING file, not the service file —
+	// otherwise it imports a symbol from a `_pb.ts` module that doesn't
+	// export it. Empty/nil on descriptors produced by forge versions before
+	// this field existed; consumers must fall back to the service ProtoFile.
+	SchemaFiles map[string]string `json:",omitempty"`
+
 	// Enums maps fully-qualified enum name → declared value names, in
 	// proto declaration order, for every enum reachable through
 	// Schemas. protojson encodes enums as their value-name strings, so

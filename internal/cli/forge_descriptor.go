@@ -324,9 +324,16 @@ func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
 	if sd.Schemas == nil {
 		sd.Schemas = make(map[string][]codegen.SchemaFieldDef)
 	}
+	if sd.SchemaFiles == nil {
+		sd.SchemaFiles = make(map[string]string)
+	}
 	if _, done := sd.Schemas[fq]; done {
 		return
 	}
+	// Record the file that physically declares this message so downstream
+	// codegen can import its generated `*Schema` from the right _pb module
+	// when the message lives in a different proto file than the service.
+	sd.SchemaFiles[fq] = msg.Desc.ParentFile().Path()
 	sd.Schemas[fq] = nil // recursion guard — overwritten with the real fields below
 
 	fields := make([]codegen.SchemaFieldDef, 0, len(msg.Fields))

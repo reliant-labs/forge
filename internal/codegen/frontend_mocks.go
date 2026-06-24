@@ -12,14 +12,14 @@ import (
 // MockEntityTemplateData holds data for rendering a single entity's TypeScript
 // mock data file (e.g., frontends/<fe>/src/mocks/patients.ts).
 type MockEntityTemplateData struct {
-	EntityName       string          // "Patient" (PascalCase)
-	EntityNamePlural string          // "Patients"
-	EntitySlug       string          // "patients" (kebab-case for filename)
-	SchemaImport     string          // "PatientSchema"
-	TypeImport       string          // "Patient"
-	ImportPath       string          // "services/clinic/v1/clinic_pb"
-	Fields           []MockField     // fields to populate in mock records
-	Records          []MockRecord    // 10 mock records
+	EntityName       string       // "Patient" (PascalCase)
+	EntityNamePlural string       // "Patients"
+	EntitySlug       string       // "patients" (kebab-case for filename)
+	SchemaImport     string       // "PatientSchema"
+	TypeImport       string       // "Patient"
+	ImportPath       string       // "services/clinic/v1/clinic_pb"
+	Fields           []MockField  // fields to populate in mock records
+	Records          []MockRecord // 10 mock records
 }
 
 // MockField describes a single field in the proto message for mock data.
@@ -161,25 +161,40 @@ type MockTransportEntity struct {
 	// `method.parent.typeName` returns this form, so the mock transport
 	// must build case keys from it (`${ServiceTypeName}/${RPC}`) or the
 	// fall-through dispatch silently never matches.
-	ServiceTypeName  string // "demo.v1.ClinicService"
-	ListRPC          string // "ListPatients"
-	GetRPC           string // "GetPatient"
-	CreateRPC        string // "CreatePatient"
-	UpdateRPC        string // "UpdatePatient"
-	DeleteRPC        string // "DeletePatient"
-	HasList          bool
-	HasGet           bool
-	HasCreate        bool
-	HasUpdate        bool
-	HasDelete        bool
+	ServiceTypeName string // "demo.v1.ClinicService"
+	ListRPC         string // "ListPatients"
+	GetRPC          string // "GetPatient"
+	CreateRPC       string // "CreatePatient"
+	UpdateRPC       string // "UpdatePatient"
+	DeleteRPC       string // "DeletePatient"
+	HasList         bool
+	HasGet          bool
+	HasCreate       bool
+	HasUpdate       bool
+	HasDelete       bool
 	// ItemsField is the camelCase (protojson) name of the list response's
 	// repeated field — the key the mock List handler must set on the
 	// ListXxxResponse it builds. It mirrors PageTemplateData.ItemsField:
 	// the ACTUAL repeated proto field name (e.g. `keys`), not the
 	// camelCased entity plural. The mock store variable keeps the plural
 	// camelCase identifier; only the response-message KEY uses this.
-	ItemsField       string
-	ImportPath string // service proto import path for response-schema imports
+	ItemsField string
+	// PkFieldCamel is the camelCase name of the entity message's
+	// PRIMARY-KEY field ("id", "usageEventId", ...). The mutable session
+	// store keys records by this field; hardcoding "id" breaks for entities
+	// whose PK column isn't literally `id` (e.g. a `usage_event_id` PK
+	// projects to a message with no `id` field, failing `tsc`).
+	PkFieldCamel string
+	// GetEntityFieldCamel / CreateEntityFieldCamel are the camelCase names
+	// of the field that wraps the entity on the Get / Create+Update RESPONSE
+	// messages. The proto is free to name this field anything
+	// (`GetLLMKeyResponse { LLMKey key = 1; }` → `key`, not `lLMKey`), so the
+	// mock dispatch must read it off the response descriptor instead of
+	// assuming `camelCase(EntityName)` — a wrong key fails `tsc` with "object
+	// literal may only specify known properties".
+	GetEntityFieldCamel    string
+	CreateEntityFieldCamel string
+	ImportPath             string // service proto import path for response-schema imports
 	// EntityImportPath is the module declaring the ENTITY message schema
 	// ("db/v1/patients_pb"). May differ from ImportPath when the entity
 	// lives in its own proto file; the mutable-store Create/Update paths
@@ -298,7 +313,7 @@ func EntityDefToMockData(entity EntityDef, svc ServiceDef) MockEntityTemplateDat
 		fields = append(fields, MockField{
 			Name:      fieldNameToCamel(f.Name),
 			ProtoName: f.Name,
-			TSType:    protoTypeToTSType(f.ProtoType),
+			TSType:    protoTypeToTSType(effectiveMockProtoType(f)),
 		})
 	}
 
@@ -307,7 +322,9 @@ func EntityDefToMockData(entity EntityDef, svc ServiceDef) MockEntityTemplateDat
 	for i := 0; i < 10; i++ {
 		var fieldValues []MockFieldValue
 		for j, f := range entity.Fields {
-			val := mockGenerateValue(entity.TableName, f, i)
+			ef := f
+			ef.ProtoType = effectiveMockProtoType(f)
+			val := mockGenerateValue(entity.TableName, ef, i)
 			fieldValues = append(fieldValues, MockFieldValue{
 				Name:  fieldNameToCamel(f.Name),
 				Value: val,
@@ -327,6 +344,73 @@ func EntityDefToMockData(entity EntityDef, svc ServiceDef) MockEntityTemplateDat
 		Fields:           fields,
 		Records:          records,
 	}
+}
+
+// effectiveMockProtoType returns the proto type string the mock generators
+// (protoTypeToTSType, mockGenerateValue) should see for a field. Those
+// helpers detect repeated scalars via a `repeated `/`[]` prefix on the proto
+// type, but EntityField.ProtoType carries only the element kind ("string")
+// for repeated scalars — the repeated-ness lives in Kind
+// (FieldKindRepeatedScalar) / GoType ("[]string"). Without this, a
+// `repeated string models` field mocks a scalar `"sample_models_1"` and
+// fails `tsc` against the protobuf-es `string[]` field. Re-encoding the
+// prefix here keeps the fix local to mock codegen and leaves the
+// ORM/migration consumers of ProtoType untouched.
+func effectiveMockProtoType(f EntityField) string {
+	if f.Kind == FieldKindRepeatedScalar && !strings.HasPrefix(f.ProtoType, "repeated ") && !strings.HasPrefix(f.ProtoType, "[]") {
+		return "repeated " + f.ProtoType
+	}
+	return f.ProtoType
+}
+
+// mockPkFieldCamel returns the camelCase name of the entity's primary-key
+// field for use as the mutable-store map key, defaulting to "id" when the
+// entity carries no explicit PK.
+//
+// The store keys MOCK records, which are projections of the entity's WIRE
+// message (EntityDef.Fields) — so the chosen field must EXIST on that wire
+// message, or `e.<field>` fails `tsc`. The DB PK column ("id") is the natural
+// first choice, but it is not always a wire field: a table can carry a
+// surrogate `id` PK while the published proto exposes a domain key
+// (`usage_event_id`) and omits `id` entirely. Resolution order:
+//  1. the DB PK field, if it appears among the wire fields;
+//  2. a `<entity_singular>_id` wire field (the conventional domain key);
+//  3. the first wire field;
+//  4. "id" as a last resort (matches the page generator's fallback).
+func mockPkFieldCamel(e EntityDef) string {
+	wire := make(map[string]bool, len(e.Fields))
+	for _, f := range e.Fields {
+		wire[f.Name] = true
+	}
+	if e.PkField != "" && wire[e.PkField] {
+		return fieldNameToCamel(e.PkField)
+	}
+	if conventional := inflection.Singular(e.TableName) + "_id"; wire[conventional] {
+		return fieldNameToCamel(conventional)
+	}
+	if len(e.Fields) > 0 {
+		return fieldNameToCamel(e.Fields[0].Name)
+	}
+	return "id"
+}
+
+// responseEntityField returns the camelCase name of the field on respType
+// (a Get/Create/Update response message) that wraps the entity message. The
+// proto names this field freely (`GetLLMKeyResponse { LLMKey key = 1; }` →
+// `key`), so the mock dispatch reads it off the response descriptor by
+// matching the field's message type against the entity, falling back to the
+// camelCased entity name for older descriptors / unresolvable cases.
+func responseEntityField(svc ServiceDef, respType, entityName string) string {
+	if respType != "" && svc.Messages != nil {
+		if fields, ok := svc.Messages[respType]; ok {
+			for _, f := range fields {
+				if fieldMatchesEntity(f, entityName) {
+					return fieldNameToCamel(f.Name)
+				}
+			}
+		}
+	}
+	return fieldNameToCamel(entityName)
 }
 
 // ExtractMockTransportEntities builds MockTransportEntity data from services
@@ -356,33 +440,36 @@ func ExtractMockTransportEntities(services []ServiceDef, entities []EntityDef) [
 				entityImportPath = ProtoFileToTSImportPath(entityDef.ProtoFile)
 			}
 			result = append(result, MockTransportEntity{
-				EntityName:         page.EntityName,
-				EntityNamePlural:   page.EntityNamePlural,
-				EntitySlug:         page.EntitySlug,
-				ServiceName:        svc.Name,
-				ServiceTypeName:    svc.Package + "." + svc.Name,
-				ListRPC:            page.ListRPC,
-				GetRPC:             page.GetRPC,
-				CreateRPC:          page.CreateRPC,
-				UpdateRPC:          page.UpdateRPC,
-				DeleteRPC:          page.DeleteRPC,
-				HasList:            page.HasList,
-				HasGet:             page.HasGet,
-				HasCreate:          page.HasCreate,
-				HasUpdate:          page.HasUpdate,
-				HasDelete:          page.HasDelete,
-				ItemsField:         page.ItemsField,
-				ImportPath:         importPath,
-				EntityImportPath:   entityImportPath,
-				TypeImport:         page.EntityName,
-				SchemaImport:       page.EntityName + "Schema",
-				ListResponseType:   page.ListResponseType,
-				GetResponseType:    page.GetResponseType,
-				CreateRequestType:  page.CreateRequestType,
-				CreateResponseType: page.CreateResponseType,
-				UpdateRequestType:  page.UpdateRequestType,
-				GetRequestType:     page.GetRequestType,
-				DeleteRequestType:  page.DeleteRequestType,
+				EntityName:             page.EntityName,
+				EntityNamePlural:       page.EntityNamePlural,
+				EntitySlug:             page.EntitySlug,
+				ServiceName:            svc.Name,
+				ServiceTypeName:        svc.Package + "." + svc.Name,
+				ListRPC:                page.ListRPC,
+				GetRPC:                 page.GetRPC,
+				CreateRPC:              page.CreateRPC,
+				UpdateRPC:              page.UpdateRPC,
+				DeleteRPC:              page.DeleteRPC,
+				HasList:                page.HasList,
+				HasGet:                 page.HasGet,
+				HasCreate:              page.HasCreate,
+				HasUpdate:              page.HasUpdate,
+				HasDelete:              page.HasDelete,
+				ItemsField:             page.ItemsField,
+				PkFieldCamel:           mockPkFieldCamel(entityDef),
+				GetEntityFieldCamel:    responseEntityField(svc, page.GetResponseType, page.EntityName),
+				CreateEntityFieldCamel: responseEntityField(svc, page.CreateResponseType, page.EntityName),
+				ImportPath:             importPath,
+				EntityImportPath:       entityImportPath,
+				TypeImport:             page.EntityName,
+				SchemaImport:           page.EntityName + "Schema",
+				ListResponseType:       page.ListResponseType,
+				GetResponseType:        page.GetResponseType,
+				CreateRequestType:      page.CreateRequestType,
+				CreateResponseType:     page.CreateResponseType,
+				UpdateRequestType:      page.UpdateRequestType,
+				GetRequestType:         page.GetRequestType,
+				DeleteRequestType:      page.DeleteRequestType,
 			})
 		}
 	}

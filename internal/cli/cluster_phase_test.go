@@ -119,6 +119,81 @@ func TestReconcileDeclaredClusters_IngressInstall(t *testing.T) {
 	}
 }
 
+// TestIsNestedSecondary pins the gate that uniquely identifies a
+// secondary cluster nested on an owner's docker network: BOTH `network`
+// set AND registry_mirror="inherit". An owner declares neither; a
+// half-declared cluster (only one of the two) is not treated as nested.
+func TestIsNestedSecondary(t *testing.T) {
+	cases := []struct {
+		name string
+		c    ClusterEntity
+		want bool
+	}{
+		{"owner (neither)", ClusterEntity{Name: "cp"}, false},
+		{"nested secondary", ClusterEntity{Name: "wl", Network: "k3d-cp", RegistryMirror: "inherit"}, true},
+		{"network only", ClusterEntity{Name: "wl", Network: "k3d-cp"}, false},
+		{"inherit only", ClusterEntity{Name: "wl", RegistryMirror: "inherit"}, false},
+	}
+	for _, tc := range cases {
+		if got := isNestedSecondary(tc.c); got != tc.want {
+			t.Errorf("%s: isNestedSecondary = %v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestReconcileDeclaredClusters_SecondarySetup asserts the secondary-node
+// setup is invoked for EXACTLY the nested-secondary clusters (network +
+// registry_mirror=inherit) and skipped for standalone owners. All
+// shell-out seams are stubbed so the test never touches k3d/docker/kubectl;
+// clusters report as already existing so the create branch is never
+// reached (the warm path also gates the secondary setup on the same
+// predicate, so this exercises that path).
+func TestReconcileDeclaredClusters_SecondarySetup(t *testing.T) {
+	origExists := clusterExistsFn
+	origSetup := setupSecondaryClusterNodeFn
+	t.Cleanup(func() {
+		clusterExistsFn = origExists
+		setupSecondaryClusterNodeFn = origSetup
+	})
+
+	clusterExistsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
+
+	var setup []string
+	setupSecondaryClusterNodeFn = func(_ context.Context, c ClusterEntity) error {
+		setup = append(setup, c.Name)
+		return nil
+	}
+
+	clusters := []ClusterEntity{
+		{Name: "control-plane"}, // standalone owner — no setup
+		{Name: "cp-daemon", Network: "k3d-control-plane", RegistryMirror: "inherit"}, // nested — setup
+	}
+	if err := reconcileDeclaredClusters(t.Context(), clusters, "", ""); err != nil {
+		t.Fatalf("reconcileDeclaredClusters: %v", err)
+	}
+
+	if len(setup) != 1 || setup[0] != "cp-daemon" {
+		t.Fatalf("secondary setup invoked for %v; want exactly [cp-daemon]", setup)
+	}
+}
+
+// TestNodeHostsLineFor checks the host-gateway alias is matched on a
+// whole whitespace field (not a substring), and returns the full line.
+func TestNodeHostsLineFor(t *testing.T) {
+	const hosts = "10.0.0.1 k3d-cp-server-0\n192.168.65.254 host.k3d.internal\n"
+	if got := nodeHostsLineFor(hosts, "host.k3d.internal"); got != "192.168.65.254 host.k3d.internal" {
+		t.Errorf("nodeHostsLineFor = %q want the host.k3d.internal line", got)
+	}
+	if got := nodeHostsLineFor(hosts, "missing.alias"); got != "" {
+		t.Errorf("nodeHostsLineFor(missing) = %q want empty", got)
+	}
+	// A longer hostname that merely contains the alias as a substring must
+	// not false-match.
+	if got := nodeHostsLineFor("10.0.0.2 host.k3d.internal.evil\n", "host.k3d.internal"); got != "" {
+		t.Errorf("nodeHostsLineFor(substring) = %q want empty (no substring match)", got)
+	}
+}
+
 // TestParseKCLEntities_ServiceImageTagPin pins that a per-service
 // image_tag round-trips through the entity parse (the JSON contract
 // carries it; the KCL render layer uses it to stamp the image ref).

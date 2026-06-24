@@ -1,0 +1,116 @@
+"""
+Positive test — forge.ClusterClient external/reference mode.
+
+The default ClusterClient MINTS its kubeconfig Secret via
+`k3d kubeconfig get` (covered by positive_cluster_client.k). dev/prod
+kubeconfigs are instead provided OUT-OF-BAND (a bootstrap script for dev;
+GKE for prod, reachability="endpoint"). `external = True` switches the
+client to REFERENCE a pre-existing Secret rather than mint one:
+
+  * `.secret` is None/Undefined — forge mints nothing, so the client
+    contributes NO entry to the Bundle's kubeconfig_secrets and the Go
+    mint step has nothing to do.
+  * `.volume` sources the pre-existing Secret named by `volume_name`,
+    with a chosen (decoupled) volume name — this is what lets a consumer
+    that already mounts a hand-named Secret migrate render-equivalently.
+  * `.config_json` / `.config_entry` derive from mount_path + key exactly
+    as in minting mode.
+"""
+
+import forge
+import json
+
+_prod = forge.Cluster { name = "workload-prod" }
+_cp = forge.Cluster { name = "control-plane-prod" }
+
+# A prod controller reaching into a workload cluster whose kubeconfig is
+# provided out-of-band (GKE). No mint; endpoint reachability; the Volume
+# sources an EXISTING, hand-named Secret.
+_link = forge.ClusterClient {
+    id = "workload"
+    cluster = _prod
+    in_cluster = _cp
+    mount_path = "/etc/workload-cluster"
+    namespace = "control-plane-prod"
+    external = True
+    reachability = "endpoint"
+    volume_name = "workload-kubeconfig-oob"  # pre-existing Secret name
+}
+
+_consumer = forge.Service {
+    name = "workspace-controller"
+    image = "control-plane"
+    deploy = forge.K8sCluster {
+        cluster = _cp.context
+        namespace = "control-plane-prod"
+        registry = "ghcr.io/reliant/control-plane"
+        env_vars = [
+            forge.EnvVar { name = "CLUSTER_CONFIGS", value = _link.config_json }
+        ]
+    }
+    volumes = [_link.volume]
+}
+
+# The external client emits NO secret into kubeconfig_secrets (it's
+# Undefined). The Bundle's list is left empty.
+_bundle = forge.Bundle {
+    clusters = [_cp, _prod]
+    services = [_consumer]
+}
+
+_env = forge.RenderEnv {
+    cluster = forge.K8sCluster {
+        cluster = "k3d-control-plane-prod"
+        namespace = "control-plane-prod"
+        registry = "ghcr.io/reliant/control-plane"
+    }
+}
+
+output = forge.render(_bundle)
+manifests = forge.render_manifests(_bundle, _env)
+
+# ── Invariants ─────────────────────────────────────────────────────
+
+# external mode mints NOTHING — .secret is Undefined.
+assert_no_secret = _link.secret == Undefined
+
+# The Volume sources the pre-existing Secret by the chosen volume_name —
+# NOT the <id>-kubeconfig derivation.
+assert_vol_name = _link.volume.name == "workload-kubeconfig-oob"
+assert_vol_source = _link.volume.source == "workload-kubeconfig-oob"
+assert_vol_mount = _link.volume.mount_path == "/etc/workload-cluster"
+assert_vol_type = _link.volume.type == "secret"
+assert_vol_ro = _link.volume.read_only == True
+
+# config_json/config_entry derive from mount_path + key exactly as minting
+# mode — the kubeconfigPath agrees with the volume mount.
+_cfg = json.decode(_link.config_json)
+assert_cfg_len = len(_cfg) == 1
+assert_cfg_id = _cfg[0].id == "workload"
+assert_cfg_path = _cfg[0].kubeconfigPath == "/etc/workload-cluster/kubeconfig"
+assert_cfg_context = _cfg[0].context == "workload"
+
+# No KubeconfigSecret rides the entity output (the Bundle declared none),
+# and certainly no minted Secret manifest is rendered.
+assert_no_secrets_emitted = len(output.kubeconfig_secrets) == 0
+assert_no_secret_manifest = len([m for m in manifests \
+    if m.kind == "Secret" and m.metadata.name == "workload-kubeconfig-oob"]) == 0
+
+# The consumer still wires the derived volume + config_json.
+assert_consumer_vol = output.services[0].deploy.env_vars[0].value == _link.config_json
+
+# ── A minting-mode client with an OVERRIDDEN volume_name still mints ──
+# volume_name decouples the name but does NOT disable minting; only
+# external = True does. The minted Secret AND the Volume share the pinned
+# name (they can never drift), so the workload mounts exactly what's minted.
+_pinned = forge.ClusterClient {
+    id = "daemon"
+    cluster = _prod
+    in_cluster = _cp
+    mount_path = "/etc/daemon-cluster"
+    volume_name = "daemon-kubeconfig-pinned"
+}
+assert_pinned_mints = _pinned.secret != Undefined
+assert_pinned_secret_name = _pinned.secret.name == "daemon-kubeconfig-pinned"
+assert_pinned_vol_name = _pinned.volume.name == "daemon-kubeconfig-pinned"
+assert_pinned_vol_source = _pinned.volume.source == "daemon-kubeconfig-pinned"

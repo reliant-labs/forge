@@ -199,10 +199,14 @@ const appNameLabel = "app.kubernetes.io/name"
 
 // clusterRoutingLabel is the FIRST-CLASS per-manifest cluster-attribution
 // key. forge's KCL gateway/route builders stamp it
-// (`forge.dev/cluster: <name>`) when an ingress entity (Gateway /
-// HTTPRoute / GRPCRoute) declares `cluster = "<name>"`. ScopeManifestsToGroup
-// reads it directly: a manifest carrying this label routes to the named
-// cluster ONLY, no `app.kubernetes.io/name` indirection. It is the
+// (`forge.dev/cluster: k3d-<name>`) when an ingress entity (Gateway /
+// HTTPRoute / GRPCRoute) declares `cluster = <forge.Cluster>` — the
+// builder denormalizes the referenced Cluster's kubectl CONTEXT
+// (`k3d-<name>`) into the label, which is exactly the value
+// GroupScope.Cluster (== forge.K8sCluster.cluster, the kubectl context)
+// is matched against. ScopeManifestsToGroup reads it directly: a manifest
+// carrying this label routes to the named cluster ONLY, no
+// `app.kubernetes.io/name` indirection. It is the
 // replacement for the older label-piggyback trick (stamping an unrelated
 // service's app label so the manifest rode that service's group routing).
 // A manifest WITHOUT this label still routes by app label exactly as

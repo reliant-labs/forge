@@ -384,7 +384,10 @@ _render_gateway = lambda g: Gateway -> any {
         "listeners": [_render_gateway_listener(l) for l in g.listeners]
         "raw_policy": g.raw_policy if g.raw_policy else None
         "addresses": [_render_gateway_address(a) for a in g.addresses] if g.addresses else None
-        "cluster": g.cluster or None
+        # cluster is a forge.Cluster REFERENCE; the machine-facing JSON
+        # carries the DENORMALIZED kubectl context (k3d-<name>) the scoper
+        # matches against — never the bare name.
+        "cluster": g.cluster.context if g.cluster else None
     }
 }
 
@@ -398,7 +401,8 @@ _render_http_route = lambda r: HTTPRoute -> any {
         "host": r.host if r.host else None
         "path": r.path if r.path else None
         "raw_policy": r.raw_policy if r.raw_policy else None
-        "cluster": r.cluster or None
+        # forge.Cluster reference -> denormalized kubectl context.
+        "cluster": r.cluster.context if r.cluster else None
     }
 }
 
@@ -412,7 +416,8 @@ _render_grpc_route = lambda r: GRPCRoute -> any {
         "host": r.host if r.host else None
         "path": r.path if r.path else None
         "raw_policy": r.raw_policy if r.raw_policy else None
-        "cluster": r.cluster or None
+        # forge.Cluster reference -> denormalized kubectl context.
+        "cluster": r.cluster.context if r.cluster else None
     }
 }
 
@@ -520,12 +525,14 @@ test_jwks_manifests = lambda j: TestJWKS, namespace: str, public_jwk: any -> [an
 # the internal lib function, exposed on the public `forge` namespace.
 #
 # Pin the manifest to one cluster in a multi-cluster env by setting
-# `cluster` on the entity — the builder stamps `forge.dev/cluster:
-# <name>`, which forge's deploy-time scoper routes to that cluster only:
+# `cluster` on the entity to the forge.Cluster INSTANCE — the builder
+# denormalizes its `.context` and stamps `forge.dev/cluster: k3d-<name>`,
+# which forge's deploy-time scoper routes to that cluster only:
 #
 #     import forge
+#     _cp = forge.Cluster { name = "control-plane" }
 #     _gw = forge.Gateway {
-#         name = "cp-public", cluster = "control-plane"
+#         name = "cp-public", cluster = _cp
 #         listeners = [forge.GatewayListener { name = "http", port = 80, protocol = "HTTP" }]
 #     }
 #     manifests = forge.render_gateway(_gw, "my-ns")

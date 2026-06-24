@@ -405,14 +405,20 @@ schema Gateway:
     recreated Gateway gets a fresh ephemeral IP and breaks DNS). Empty
     by default — the controller assigns an ephemeral address.
 
-    `cluster` pins this Gateway to ONE cluster in a multi-cluster env.
-    When set, forge's deploy-time scoper
-    (internal/cluster.ScopeManifestsToGroup) routes the rendered Gateway
-    manifest to that cluster ONLY and drops it from every sibling — the
-    first-class replacement for the older trick of stamping an unrelated
-    service's `app.kubernetes.io/name` label to piggyback its routing.
-    Unset (the common single-cluster case) leaves routing unchanged. The
-    builder stamps the value as a `forge.dev/cluster: <name>` label.
+    `cluster` pins this Gateway to ONE cluster in a multi-cluster env. It
+    is a REFERENCE to the `forge.Cluster` instance — NOT a bare name —
+    which removes the name-vs-context ambiguity that bit consumers: the
+    deploy-time scoper matches the routing label against a group's kubectl
+    CONTEXT (`k3d-<name>`), so the builder DENORMALIZES the referenced
+    Cluster's `.context` into the `forge.dev/cluster: k3d-<name>` label.
+    Passing the object (`cluster = control_plane`) means the context is
+    derived from the Cluster, never re-spelled. When set, forge's
+    deploy-time scoper (internal/cluster.ScopeManifestsToGroup) routes the
+    rendered Gateway manifest to that cluster ONLY and drops it from every
+    sibling — the first-class replacement for the older trick of stamping
+    an unrelated service's `app.kubernetes.io/name` label to piggyback its
+    routing. Unset (the common single-cluster case) leaves routing
+    unchanged.
     """
     name: str
     listeners: [GatewayListener]
@@ -421,7 +427,7 @@ schema Gateway:
     tls?: GatewayTLS
     raw_policy: str = ""
     addresses: [GatewayAddress] = []
-    cluster?: str
+    cluster?: Cluster
 
     check:
         name, "Gateway.name is required"
@@ -441,8 +447,10 @@ schema HTTPRoute:
     a service that owns the listener's path namespace entirely.
 
     `cluster` pins this route to ONE cluster in a multi-cluster env (see
-    Gateway.cluster) — the rendered HTTPRoute manifest is routed to that
-    cluster only via a `forge.dev/cluster: <name>` label.
+    Gateway.cluster). Like Gateway.cluster it is a REFERENCE to the
+    `forge.Cluster` instance — the builder denormalizes its `.context`
+    into a `forge.dev/cluster: k3d-<name>` label that routes the rendered
+    HTTPRoute manifest to that cluster only.
     """
     name: str
     gateway: str
@@ -452,7 +460,7 @@ schema HTTPRoute:
     host: str = ""
     path: str = ""
     raw_policy: str = ""
-    cluster?: str
+    cluster?: Cluster
 
     check:
         name, "HTTPRoute.name is required"
@@ -469,8 +477,10 @@ schema GRPCRoute:
     HTTPS — gRPC over HTTP/1.1 isn't a thing.
 
     `cluster` pins this route to ONE cluster in a multi-cluster env (see
-    Gateway.cluster) — the rendered GRPCRoute manifest is routed to that
-    cluster only via a `forge.dev/cluster: <name>` label.
+    Gateway.cluster). Like Gateway.cluster it is a REFERENCE to the
+    `forge.Cluster` instance — the builder denormalizes its `.context`
+    into a `forge.dev/cluster: k3d-<name>` label that routes the rendered
+    GRPCRoute manifest to that cluster only.
     """
     name: str
     gateway: str
@@ -480,7 +490,7 @@ schema GRPCRoute:
     host: str = ""
     path: str = ""
     raw_policy: str = ""
-    cluster?: str
+    cluster?: Cluster
 
     check:
         name, "GRPCRoute.name is required"
@@ -1047,12 +1057,42 @@ schema ClusterClient:
     drift. The `id` is the stable handle the workload keys on (the
     CLUSTER_CONFIGS entry `id` AND the kubeconfig context name).
 
+    Two provisioning modes
+    ======================
+
+    `external` selects WHERE the kubeconfig Secret comes from:
+
+      * `external = False` (default, the dev/e2e k3d case) — forge MINTS
+        the Secret via `k3d kubeconfig get <cluster>` at the cluster→deploy
+        boundary. `.secret` is the KubeconfigSecret to emit in the Bundle's
+        `kubeconfig_secrets`; `.volume` sources that minted Secret.
+
+      * `external = True` — the kubeconfig Secret is provided OUT-OF-BAND
+        (a bootstrap script writes it in dev; GKE / a real cluster supplies
+        it in prod, where `reachability = "endpoint"`). forge does NOT mint:
+        `.secret` is None (Undefined — nothing lands in `kubeconfig_secrets`,
+        so the Go mint step has nothing to do) and `.volume` sources the
+        pre-existing Secret named by `volume_name`. There is no in-network
+        IP rewrite and no k3d mint in this mode.
+
+    `volume_name` decouples the Secret/Volume name from the `<id>-kubeconfig`
+    derivation. In minting mode it defaults to `<id>-kubeconfig` (the minted
+    Secret's name) so `.volume` sources exactly what `.secret` mints —
+    render-equivalent to before. In external mode set it to the NAME of the
+    pre-existing kubeconfig Secret (and pod volume) — this is what lets a
+    dev/prod consumer that already mounts a hand-named Secret migrate to
+    ClusterClient render-EQUIVALENTLY (the emitted volume keeps its existing
+    name + source). `.config_json` / `.config_entry` derive from `mount_path`
+    + `key` in BOTH modes, unchanged.
+
     Fields:
       * `id`          — stable client id. Used as the CLUSTER_CONFIGS
                         entry id, the minted kubeconfig context name, and
-                        the Secret/Volume base name (`<id>-kubeconfig`).
+                        (when `volume_name` is unset) the Secret/Volume base
+                        name (`<id>-kubeconfig`).
       * `cluster`     — reference to the Cluster the workload REACHES
-                        (kubeconfig is minted FOR this cluster).
+                        (kubeconfig is minted FOR this cluster; ignored for
+                        the Secret in external mode, still used for context).
       * `in_cluster`  — reference to the Cluster the workload RUNS in
                         (the Secret/Volume land here).
       * `mount_path`  — absolute dir the kubeconfig Secret mounts at; the
@@ -1062,7 +1102,14 @@ schema ClusterClient:
       * `namespace`   — namespace for the minted Secret in `in_cluster`
                         (default: the env's namespace, resolved Go-side).
       * `reachability`— passed through to the minted KubeconfigSecret
-                        ("in-network" dev/e2e IP rewrite, "endpoint" prod).
+                        ("in-network" dev/e2e IP rewrite, "endpoint" prod /
+                        external where the endpoint is reachable verbatim).
+      * `external`    — reference a pre-existing Secret instead of minting
+                        (default False — keep minting).
+      * `volume_name` — name of the kubeconfig Secret + pod volume the
+                        `.volume` sources. Default `<id>-kubeconfig`. Pin an
+                        EXISTING name here to migrate render-equivalently or
+                        to point external mode at the out-of-band Secret.
     """
     id: str
     cluster: Cluster
@@ -1071,25 +1118,42 @@ schema ClusterClient:
     key: str = "kubeconfig"
     namespace?: str
     reachability: str = "in-network"
-    # Derived names/paths — the single source the three emitted things share.
-    _secret_name: str = id + "-kubeconfig"
+    # external = True references a pre-existing Secret (no k3d mint); the
+    # default keeps the minting behaviour the e2e path relies on.
+    external: bool = False
+    # The Secret/Volume name. Defaults to the <id>-kubeconfig derivation so
+    # minting mode sources exactly the minted Secret; override to pin an
+    # existing name (render-equivalent migration / external Secret).
+    volume_name?: str
+    # Derived names/paths — the single source the emitted things share.
+    # The Secret (minted or external) and the Volume share ONE name so
+    # they can't drift: default `<id>-kubeconfig`, overridable via volume_name.
+    _volume_name: str = volume_name if volume_name else id + "-kubeconfig"
     _kubeconfig_path: str = mount_path + "/" + key
     # The minted cross-cluster kubeconfig Secret (in_cluster -> cluster).
-    secret: KubeconfigSecret = KubeconfigSecret {
-        name = _secret_name
+    # Named `_volume_name` so the minted Secret and `.volume` ALWAYS agree
+    # (a pinned volume_name mints a Secret of that name; the volume sources
+    # it). Undefined in external mode — forge mints NOTHING, the Secret is
+    # provided out-of-band; `.secret` projects to null and contributes no
+    # entry to the Bundle's kubeconfig_secrets.
+    secret?: KubeconfigSecret = KubeconfigSecret {
+        name = _volume_name
         in_cluster = in_cluster.context
         target_cluster = cluster.name
         context_name = id
         key = key
         namespace = namespace
         reachability = reachability
-    }
-    # The Volume the consuming workload mounts to read the kubeconfig.
+    } if not external else Undefined
+    # The Volume the consuming workload mounts to read the kubeconfig. In
+    # minting mode it sources the minted Secret (_volume_name == _secret_name
+    # by default); in external mode it sources the pre-existing Secret named
+    # by volume_name.
     volume: Volume = Volume {
-        name = _secret_name
+        name = _volume_name
         mount_path = mount_path
         type = "secret"
-        source = _secret_name
+        source = _volume_name
         read_only = True
     }
     # The CLUSTER_CONFIGS entry the workload reads — id + the derived

@@ -7,19 +7,25 @@ Exercises:
   * The public re-exports `forge.render_gateway` / `forge.render_http_route`
     / `forge.render_grpc_route` render the SAME manifest a consumer would
     otherwise hand-reimplement, AND the same one render_manifests emits.
-  * Setting `cluster = "<name>"` on a Gateway / HTTPRoute / GRPCRoute
-    stamps a `forge.dev/cluster: <name>` label on the rendered manifest —
-    the first-class routing key forge's Go scoper reads to pin the
-    manifest to that cluster.
+  * Setting `cluster = <forge.Cluster>` on a Gateway / HTTPRoute / GRPCRoute
+    stamps a `forge.dev/cluster: k3d-<name>` label on the rendered manifest
+    — the DENORMALIZED kubectl context (NOT the bare name), which is the
+    first-class routing key forge's Go scoper reads to pin the manifest to
+    that cluster. Passing the Cluster object removes the old name-vs-context
+    footgun (a consumer once had to pass the `k3d-`-prefixed string by hand).
   * A Gateway WITHOUT `cluster` carries no such label (unchanged routing).
 """
 
 import forge
 
+# The cluster these ingress objects are pinned to — a reference, not a
+# bare name. Its `.context` is `k3d-control-plane`.
+_cp = forge.Cluster { name = "control-plane" }
+
 _public = forge.Gateway {
     name = "cp-public"
     host = "api.example.com"
-    cluster = "control-plane"
+    cluster = _cp
     listeners = [
         forge.GatewayListener {
             name = "http"
@@ -40,7 +46,7 @@ _route_http = forge.HTTPRoute {
     listener = "http"
     service = "admin-server"
     port = 8080
-    cluster = "control-plane"
+    cluster = _cp
 }
 
 _route_grpc = forge.GRPCRoute {
@@ -49,7 +55,7 @@ _route_grpc = forge.GRPCRoute {
     listener = "grpc"
     service = "daemon-gateway"
     port = 19190
-    cluster = "control-plane"
+    cluster = _cp
 }
 
 # A gateway with NO cluster attribution — must carry no routing label.
@@ -105,13 +111,20 @@ assert_gw_ns = _gw_manifests[0].metadata.namespace == "cp-ns"
 # The re-exported builder == the in-bundle render (same manifest).
 assert_reexport_matches_bundle = _gw_manifests[0] == _full_gw
 
-# cluster attribution stamps the routing label on every ingress kind.
-assert_gw_cluster_label = _gw_manifests[0].metadata.labels[_routing_key] == "control-plane"
-assert_http_cluster_label = _http_manifests[0].metadata.labels[_routing_key] == "control-plane"
-assert_grpc_cluster_label = _grpc_manifests[0].metadata.labels[_routing_key] == "control-plane"
+# cluster attribution stamps the DENORMALIZED context (k3d-<name>) routing
+# label on every ingress kind — NOT the bare name "control-plane".
+assert_gw_cluster_label = _gw_manifests[0].metadata.labels[_routing_key] == "k3d-control-plane"
+assert_http_cluster_label = _http_manifests[0].metadata.labels[_routing_key] == "k3d-control-plane"
+assert_grpc_cluster_label = _grpc_manifests[0].metadata.labels[_routing_key] == "k3d-control-plane"
 
 # The managed app label is still present (routing is additive).
 assert_gw_app_label = _gw_manifests[0].metadata.labels["app.kubernetes.io/name"] == "cp-public"
 
 # An unpinned gateway carries NO routing label — unchanged behaviour.
 assert_unpinned_no_label = _routing_key not in _unpinned_manifests[0].metadata.labels
+
+# The JSON contract (machine-facing) also carries the denormalized context.
+_out = forge.render(_bundle)
+assert_json_gw_cluster = _out.gateways[0].cluster == "k3d-control-plane"
+assert_json_http_cluster = _out.http_routes[0].cluster == "k3d-control-plane"
+assert_json_grpc_cluster = _out.grpc_routes[0].cluster == "k3d-control-plane"

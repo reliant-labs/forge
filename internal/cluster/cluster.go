@@ -42,6 +42,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -607,38 +608,105 @@ func KubectlApply(ctx context.Context, kctx, manifests string) error {
 		manifests,
 		func() (string, error) { return applyOnce(ctx, kctx, manifests) },
 		func(t immutableTarget) error { return kubectlDeleteResource(ctx, kctx, t) },
+		func(t immutableTarget) error { return kubectlWaitResourceGone(ctx, kctx, t) },
 	)
 }
 
+// immutableRecoveryAttempts bounds how many delete→wait-gone→re-apply
+// cycles the recovery runs before giving up. A warm redeploy whose only
+// conflict is the immutable migrate Job heals on the FIRST cycle; the
+// extra attempts exist purely to absorb the residual race where the
+// re-apply still observes the not-yet-finalized Job (see
+// applyWithImmutableRecovery). Two is enough in practice — the explicit
+// wait-gone poll already closes the window — but a small bound keeps a
+// genuinely stuck resource from looping forever.
+const immutableRecoveryAttempts = 3
+
 // applyWithImmutableRecovery runs apply and, on the recoverable
-// immutable-field failure only, deletes the one offending resource and
-// re-applies once. The kubectl-touching steps are passed as closures so
-// the sequencing (apply → detect immutable → scoped delete → single
-// re-apply) is unit-testable without a live cluster; KubectlApply wires
-// the real applyOnce / kubectlDeleteResource.
+// immutable-field failure only, deletes the one offending resource,
+// WAITS for it to actually disappear, then re-applies — retrying that
+// delete→wait-gone→re-apply cycle a bounded number of times if the
+// re-apply STILL hits the immutable error. The kubectl-touching steps are
+// passed as closures so the sequencing is unit-testable without a live
+// cluster; KubectlApply wires the real applyOnce / kubectlDeleteResource /
+// kubectlWaitResourceGone.
 //
 // A k8s Job's spec.template is immutable, so a warm re-deploy whose image
 // tag changed (every commit does) makes the migrate Job's apply fail
 // "is invalid: ... field is immutable" even though cold (fresh namespace)
-// works. Any failure that ISN'T the immutable-field case — and a re-apply
-// that still fails — surfaces the original error unchanged.
+// works.
+//
+// Why a LOOP and an explicit wait-gone, not a single delete+re-apply:
+// `kubectl delete --wait --cascade=foreground` blocks until the API
+// reports the object deleted, but the recovery still observed a flake on
+// CLOUD where the SAME code healed to exit 0 on staging yet exited 1 on
+// prod. The cause is a finalization race — under load the Job (and its GC)
+// can still be settling when the re-apply runs, so the re-apply re-reads
+// the not-yet-gone Job and re-hits `field is immutable`. The single-shot
+// recovery then surfaced that second immutable error as the deploy's exit
+// code even though the resource WAS on its way out. Polling the resource
+// to NotFound before re-applying, and retrying the whole cycle if the
+// re-apply still races, makes a warm cloud redeploy whose only conflict is
+// the immutable Job deterministically exit 0.
+//
+// Scope is kept to the immutable-Job case: the loop only re-enters while
+// the re-apply keeps returning the SAME immutable-field error for the same
+// resource. Any failure that ISN'T the immutable-field case — a delete
+// error, a re-apply error that isn't immutable, or attempts exhausted —
+// surfaces the relevant error unchanged. Unrelated apply failures are
+// never masked.
 func applyWithImmutableRecovery(
 	manifests string,
 	apply func() (string, error),
 	del func(immutableTarget) error,
+	waitGone func(immutableTarget) error,
 ) error {
 	stderr, err := apply()
 	if err == nil {
 		return nil
 	}
-	if res, ok := immutableResource(stderr, manifests); ok {
-		if delErr := del(res); delErr == nil {
-			if _, reErr := apply(); reErr == nil {
-				return nil
+	res, ok := immutableResource(stderr, manifests)
+	if !ok {
+		// Not the recoverable immutable case — surface unchanged.
+		return err
+	}
+
+	// Recovery loop: delete the offending resource, wait for it to actually
+	// be gone, then re-apply. Repeat (bounded) only while the re-apply keeps
+	// racing the same immutable resource.
+	lastErr := err
+	for attempt := 1; attempt <= immutableRecoveryAttempts; attempt++ {
+		if delErr := del(res); delErr != nil {
+			// A delete failure is its own problem — surface it rather than
+			// the original immutable error so the cause is visible.
+			return fmt.Errorf("recovering immutable %s %q: delete: %w", res.Kind, res.Name, delErr)
+		}
+		// Poll the resource to NotFound so the re-apply has a real
+		// happens-before. Best-effort: a wait error (e.g. kubectl flake)
+		// shouldn't abort the recovery — the re-apply below is the real
+		// arbiter of success — so it's logged and we proceed.
+		if waitGone != nil {
+			if wErr := waitGone(res); wErr != nil {
+				fmt.Printf("[deploy]   Note: wait-for-deletion of %s %q: %v (re-applying anyway)\n", res.Kind, res.Name, wErr)
 			}
 		}
+		reStderr, reErr := apply()
+		if reErr == nil {
+			// Recovery succeeded — the overall apply is a success.
+			return nil
+		}
+		// Only keep looping while the SAME immutable resource is still
+		// racing us. Any other re-apply failure is unrelated and surfaces.
+		reRes, reOK := immutableResource(reStderr, manifests)
+		if !reOK || reRes.Kind != res.Kind || reRes.Name != res.Name {
+			return reErr
+		}
+		lastErr = reErr
+		res = reRes
 	}
-	return err
+	// Bounded attempts exhausted and the resource is still immutable —
+	// recovery genuinely failed. Surface the last immutable error.
+	return lastErr
 }
 
 // applyOnce runs a single `kubectl [--context] apply --server-side
@@ -802,6 +870,49 @@ func kubectlDeleteResource(ctx context.Context, kctx string, t immutableTarget) 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// kubectlWaitResourceGone polls `kubectl get <kind> <name> [-n <ns>]`
+// until it reports NotFound (the resource is truly gone), or the timeout
+// elapses. This is the explicit happens-before the immutable recovery
+// needs BEFORE it re-applies: `kubectl delete --wait --cascade=foreground`
+// returns when the API has accepted+finalized the delete, but under cloud
+// load the recovery still observed the re-apply racing a not-yet-gone Job
+// (the staging-0 / prod-1 split). Polling get→NotFound closes that window
+// deterministically rather than trusting delete's --wait alone.
+//
+// Returns nil the instant a get fails with `NotFound` (the success
+// signal). A get that SUCCEEDS means the object still exists, so we keep
+// polling. Any other get error (transient kubectl/API flake) is treated as
+// "unknown, keep trying" until the deadline. On timeout it returns a
+// non-nil error, which the caller logs but does not treat as fatal — the
+// re-apply is the real arbiter.
+func kubectlWaitResourceGone(ctx context.Context, kctx string, t immutableTarget) error {
+	const (
+		timeout  = 30 * time.Second
+		interval = 500 * time.Millisecond
+	)
+	deadline := time.Now().Add(timeout)
+	for {
+		args := []string{"get", strings.ToLower(t.Kind), t.Name, "--ignore-not-found=true", "-o", "name"}
+		if t.Namespace != "" {
+			args = append(args, "-n", t.Namespace)
+		}
+		cmd := kubectlCmd(ctx, kctx, args...)
+		out, err := cmd.Output()
+		// --ignore-not-found makes a missing resource exit 0 with EMPTY
+		// stdout. Empty output therefore means "gone" — the success signal.
+		if err == nil && strings.TrimSpace(string(out)) == "" {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s waiting for %s %q to be deleted", timeout, t.Kind, t.Name)
+		}
+		time.Sleep(interval)
+	}
 }
 
 // EnsureNamespace idempotently creates the target namespace so resources

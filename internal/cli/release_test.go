@@ -1,12 +1,78 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
 )
+
+// TestReleaseFileStem_PreservesDots pins Fix 3: a semver version's literal
+// label IS its filename stem (dots are filesystem-safe), so "v1.0.0" maps
+// to "v1.0.0", NOT the surprising "v1_0_0" the old statefile.SafeSegment
+// produced. Path separators and other unsafe bytes still flatten to '_',
+// and a dot-only traversal token is neutralized.
+func TestReleaseFileStem_PreservesDots(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"v1.0.0", "v1.0.0"},   // the Fix 3 case: dots preserved, least surprise
+		{"v1.4.0", "v1.4.0"},   //
+		{"1.2.3-rc.1", "1.2.3-rc.1"},
+		{"v2", "v2"},           // no dots, unchanged
+		{"a/b", "a_b"},         // path separator flattened — never escapes the dir
+		{`a\b`, "a_b"},         // backslash too
+		{"a b", "a_b"},         // space flattened
+		{".", "_"},             // bare dot is a dir ref, neutralized
+		{"..", "__"},           // parent-dir traversal neutralized
+		{"...", "___"},         //
+		{"", "_"},              // empty never yields an empty stem
+	}
+	for _, c := range cases {
+		if got := releaseFileStem(c.in); got != c.want {
+			t.Errorf("releaseFileStem(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestReleasePath_VersionMappingRoundTrips is the cross-command consistency
+// guard for Fix 3: build (WriteRelease), promote/deploy (ReadRelease), and
+// the path the CLI prints all resolve a version label to the SAME file via
+// releasePath. A release written under "v1.0.0" must read back under
+// "v1.0.0", and the file on disk must be the non-surprising "v1.0.0.json".
+func TestReleasePath_VersionMappingRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	const version = "v1.0.0"
+
+	rel := Release{
+		Version:   version,
+		CreatedAt: nowRFC3339(),
+		Artifacts: map[string]ReleaseArtifact{
+			"control-plane": {Mode: "shared", Digests: map[string]string{"*": sha("a")}},
+		},
+	}
+	// build writes...
+	if err := WriteRelease(dir, rel); err != nil {
+		t.Fatalf("WriteRelease: %v", err)
+	}
+	// ...the on-disk file is the LITERAL version (dots preserved), not v1_0_0.
+	wantPath := filepath.Join(dir, ".forge/releases", "v1.0.0.json")
+	if got := releasePath(dir, version); got != wantPath {
+		t.Errorf("releasePath = %q, want %q", got, wantPath)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Errorf("expected ledger at %q (literal version): %v", wantPath, err)
+	}
+	// promote/deploy read the SAME version back through the SAME mapping.
+	got, err := ReadRelease(dir, version)
+	if err != nil || got == nil {
+		t.Fatalf("ReadRelease(%q) = (%v, %v), want a ledger", version, got, err)
+	}
+	if got.Version != version {
+		t.Errorf("round-tripped version = %q, want %q", got.Version, version)
+	}
+}
 
 func sha(c string) string { return "sha256:" + strings.Repeat(c, 64) }
 

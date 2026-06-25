@@ -192,6 +192,12 @@ without forcing the user to add /etc/hosts entries on the host.`,
 			if opts.release != "" {
 				opts.buildDocker = true
 			}
+			// Validate the --release/--env coupling up front, before any
+			// build work, so the failure is a clear message rather than a
+			// missing-image surprise. Pure + tested in build_test.go.
+			if err := validateReleaseFlags(opts); err != nil {
+				return err
+			}
 			return runBuild(cmd.Context(), opts)
 		},
 	}
@@ -206,9 +212,28 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set, services declared `deploy: host` in deploy/kcl/<env>/ are excluded from docker build/push (the Go binary still includes their code).")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge deploy uses the same value.")
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge build` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
-	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). Builds the env-agnostic images once, captures their digests, and writes a release ledger (.forge/releases/<version>.json). Promote it to an env with `forge promote <version> --to <env>`; `forge deploy <env>` then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
+	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). REQUIRES --env <env>: the release's image SET (project images plus per-env external build_cmd images like reliant/workspace-base) is discovered from deploy/kcl/<env>/main.k. The built images stay env-agnostic — pick any env that declares the full set, then promote to every env with `forge promote <version> --to <env>`. Captures each image's digest into a release ledger (.forge/releases/<version>.json); `forge deploy <env>` then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
 
 	return cmd
+}
+
+// validateReleaseFlags enforces that `forge build --release <ver>` is run
+// with --env. A release must pin the FULL image set, including the per-env
+// external build_cmd images (e.g. reliant, workspace-base) that exist ONLY
+// in deploy/kcl/<env>/main.k. Without --env, forge has no rendered KCL to
+// discover them, so it silently builds just the project's own images
+// (control-plane + frontends) — an incomplete release — and the build can
+// fail outright for want of env context. The images themselves stay
+// env-agnostic; --env only supplies the SET to build, after which the
+// release is promotable to every env. No-op when --release is unset.
+func validateReleaseFlags(opts buildOptions) error {
+	if opts.release == "" || opts.env != "" {
+		return nil
+	}
+	return fmt.Errorf("--release requires --env <env> so forge can build the full image set " +
+		"(including per-env external build_cmd images like reliant/workspace-base, which are declared " +
+		"in deploy/kcl/<env>/main.k); the images are still env-agnostic — pick any env that declares " +
+		"them, then promote the release to all envs with `forge promote <version> --to <env>`")
 }
 
 // resolveBuildArch chooses the GOARCH for `go build`. The arg-shaped

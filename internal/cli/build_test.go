@@ -71,6 +71,35 @@ func TestCountTagsHelper(t *testing.T) {
 
 // TestBuildPushFlagRegistered confirms the --push flag is wired into
 // the build command and implies --docker at parse time.
+// TestValidateReleaseFlags_RequiresEnv pins Fix 2: `forge build --release
+// <ver>` WITHOUT --env is rejected up front with an actionable message,
+// because the release image SET (project images + per-env external
+// build_cmd images like reliant/workspace-base) is only discoverable from
+// deploy/kcl/<env>/main.k. With --env (or without --release) it passes.
+func TestValidateReleaseFlags_RequiresEnv(t *testing.T) {
+	// --release without --env: error, and the message must steer the user
+	// to --env (not just say "missing flag").
+	err := validateReleaseFlags(buildOptions{release: "v1.0.0"})
+	if err == nil {
+		t.Fatal("--release without --env must error")
+	}
+	for _, want := range []string{"--env", "--release", "build_cmd"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error message %q should mention %q", err.Error(), want)
+		}
+	}
+
+	// --release WITH --env: allowed.
+	if err := validateReleaseFlags(buildOptions{release: "v1.0.0", env: "prod"}); err != nil {
+		t.Errorf("--release with --env must be allowed, got %v", err)
+	}
+
+	// No --release: --env optional, no error.
+	if err := validateReleaseFlags(buildOptions{}); err != nil {
+		t.Errorf("a non-release build must not require --env, got %v", err)
+	}
+}
+
 func TestBuildPushFlagRegistered(t *testing.T) {
 	cmd := newBuildCmd()
 	f := cmd.Flags().Lookup("push")

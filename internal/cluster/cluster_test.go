@@ -1012,6 +1012,10 @@ const realImmutableStderr = `The Job "control-plane-migrate" is invalid: spec.te
 // the namespace identically.
 const cloudImmutableStderr = `Job.batch "control-plane-migrate" is invalid: spec.template: Invalid value: core.PodTemplateSpec{...}: field is immutable`
 
+// noopWaitGone is the wait-for-deletion closure for tests that don't
+// exercise the poll itself — the resource is considered immediately gone.
+func noopWaitGone(immutableTarget) error { return nil }
+
 // TestApplyWithImmutableRecovery_DeletesJobThenReapplies pins the warm
 // re-deploy fix: a Job whose image tag changed makes the first apply fail
 // with the immutable-field error; forge must delete THAT Job (scoped, in
@@ -1035,7 +1039,7 @@ func TestApplyWithImmutableRecovery_DeletesJobThenReapplies(t *testing.T) {
 		return nil
 	}
 
-	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del); err != nil {
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); err != nil {
 		t.Fatalf("recovery should have healed the immutable apply, got %v", err)
 	}
 	if applies != 2 {
@@ -1062,7 +1066,7 @@ func TestApplyWithImmutableRecovery_NonImmutableErrorSurfaces(t *testing.T) {
 	}
 	del := func(immutableTarget) error { deletes++; return nil }
 
-	err := applyWithImmutableRecovery(immutableJobManifests, apply, del)
+	err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone)
 	if !errors.Is(err, orig) {
 		t.Fatalf("a non-immutable error must surface unchanged, got %v", err)
 	}
@@ -1072,15 +1076,27 @@ func TestApplyWithImmutableRecovery_NonImmutableErrorSurfaces(t *testing.T) {
 }
 
 // TestApplyWithImmutableRecovery_ReapplyStillFailsSurfacesOriginal pins
-// the safety property: if the re-apply after the delete still fails, the
-// ORIGINAL apply error is surfaced rather than swallowed.
+// the safety property: if EVERY re-apply after the delete still hits the
+// same immutable error, the recovery exhausts its bounded retries and
+// surfaces the immutable error rather than swallowing it (a genuinely
+// stuck resource must NOT silently succeed). It also verifies the loop is
+// bounded — apply runs the initial attempt plus exactly
+// immutableRecoveryAttempts retries, never unbounded.
 func TestApplyWithImmutableRecovery_ReapplyStillFailsSurfacesOriginal(t *testing.T) {
 	orig := errors.New("exit status 1")
-	apply := func() (string, error) { return realImmutableStderr, orig }
-	del := func(immutableTarget) error { return nil }
+	var applies, deletes int
+	apply := func() (string, error) { applies++; return realImmutableStderr, orig }
+	del := func(immutableTarget) error { deletes++; return nil }
 
-	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del); !errors.Is(err, orig) {
-		t.Fatalf("a still-failing re-apply must surface the original error, got %v", err)
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); !errors.Is(err, orig) {
+		t.Fatalf("a still-failing re-apply must surface the immutable error, got %v", err)
+	}
+	if applies != 1+immutableRecoveryAttempts {
+		t.Fatalf("recovery must be bounded: expected %d applies (initial + %d retries), got %d",
+			1+immutableRecoveryAttempts, immutableRecoveryAttempts, applies)
+	}
+	if deletes != immutableRecoveryAttempts {
+		t.Fatalf("expected %d scoped deletes (one per retry), got %d", immutableRecoveryAttempts, deletes)
 	}
 }
 
@@ -1160,7 +1176,7 @@ func TestApplyWithImmutableRecovery_CloudShape_DeleteWaitReapply(t *testing.T) {
 		return nil
 	}
 
-	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del); err != nil {
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); err != nil {
 		t.Fatalf("recovery should have healed the server-side immutable apply, got %v", err)
 	}
 	if applies != 2 {
@@ -1172,5 +1188,70 @@ func TestApplyWithImmutableRecovery_CloudShape_DeleteWaitReapply(t *testing.T) {
 	got := deleted[0]
 	if got.Kind != "Job" || got.Name != "control-plane-migrate" || got.Namespace != "app" {
 		t.Fatalf("delete must target the failing Job in its namespace (kind normalized from Job.batch), got %+v", got)
+	}
+}
+
+// TestApplyWithImmutableRecovery_ReapplyRacesThenSucceeds is the direct
+// regression for the staging-0 / prod-1 split. On prod the FIRST re-apply
+// after the delete still raced the not-yet-finalized Job and re-hit the
+// immutable error, and the old single-shot recovery surfaced that as exit
+// 1 — even though the resource was on its way out. The new bounded
+// delete→wait-gone→re-apply loop must absorb that race: the second
+// re-apply (after another delete+wait) creates the Job cleanly, so the
+// OVERALL apply returns success (exit 0). Verifies the wait-gone poll runs
+// before each re-apply, and that the delete+reapply was retried.
+func TestApplyWithImmutableRecovery_ReapplyRacesThenSucceeds(t *testing.T) {
+	var applies, deletes, waits int
+
+	apply := func() (string, error) {
+		applies++
+		switch applies {
+		case 1:
+			// Initial apply: warm-redeploy immutable failure.
+			return cloudImmutableStderr, errors.New("exit status 1")
+		case 2:
+			// First re-apply STILL races the finalizing Job (the prod flake).
+			return cloudImmutableStderr, errors.New("exit status 1")
+		default:
+			// Second re-apply: the Job is finally gone, apply succeeds → exit 0.
+			return "", nil
+		}
+	}
+	del := func(immutableTarget) error { deletes++; return nil }
+	waitGone := func(immutableTarget) error { waits++; return nil }
+
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, waitGone); err != nil {
+		t.Fatalf("recovery must absorb the re-apply race and exit 0, got %v", err)
+	}
+	if applies != 3 {
+		t.Fatalf("expected 3 applies (initial + 2 retries, the second succeeding), got %d", applies)
+	}
+	if deletes != 2 {
+		t.Fatalf("expected 2 deletes (one per retry cycle), got %d", deletes)
+	}
+	if waits != 2 {
+		t.Fatalf("expected wait-for-deletion before each re-apply (2 waits), got %d", waits)
+	}
+}
+
+// TestApplyWithImmutableRecovery_DeleteErrorSurfaces confirms a failing
+// delete during recovery is reported (wrapped) rather than swallowed or
+// retried into a loop — a delete that can't run is a genuine recovery
+// failure, not the race the loop exists to absorb.
+func TestApplyWithImmutableRecovery_DeleteErrorSurfaces(t *testing.T) {
+	delErr := errors.New("kubectl delete: forbidden")
+	var applies, deletes int
+	apply := func() (string, error) {
+		applies++
+		return cloudImmutableStderr, errors.New("exit status 1")
+	}
+	del := func(immutableTarget) error { deletes++; return delErr }
+
+	err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone)
+	if !errors.Is(err, delErr) {
+		t.Fatalf("a delete failure must surface (wrapped), got %v", err)
+	}
+	if applies != 1 || deletes != 1 {
+		t.Fatalf("a delete failure must abort immediately (applies=%d deletes=%d)", applies, deletes)
 	}
 }

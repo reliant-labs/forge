@@ -129,9 +129,56 @@ type EnvBinding struct {
 	PromotedAt string `json:"promoted_at"`
 }
 
-// releasePath returns the absolute path to a release ledger file.
+// releaseFileStem maps a release version label to its on-disk ledger
+// filename stem (without the .json extension). It is the SINGLE mapping
+// build (write), promote (read), and deploy (read) all funnel through via
+// releasePath, so they always agree on which file a version names.
+//
+// Unlike statefile.SafeSegment — which flattens EVERY non-[A-Za-z0-9_-]
+// byte to '_', turning the common semver "v1.0.0" into the surprising
+// "v1_0_0.json" a user never looks for — this preserves the dot, because a
+// dot IS filesystem-safe and keeping it makes the literal version the
+// filename ("v1.0.0" → "v1.0.0.json"): least surprise. Path separators
+// ('/', '\') and any other unsafe byte still flatten to '_' so the write
+// can never escape .forge/releases. The lone exception is the traversal
+// token "." / ".." (or a name that is only dots): a dot-only stem is a
+// directory reference, not a release, so it flattens to underscores. In
+// practice version labels never hit that case — it's a pure safety guard.
+func releaseFileStem(version string) string {
+	out := make([]byte, 0, len(version))
+	allDots := true
+	for i := 0; i < len(version); i++ {
+		c := version[i]
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '-' || c == '_':
+			out = append(out, c)
+			allDots = false
+		case c == '.':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+			allDots = false
+		}
+	}
+	if len(out) == 0 {
+		return "_"
+	}
+	// A stem composed only of dots (".", "..", "...") is a path reference,
+	// not a usable filename stem — neutralize it.
+	if allDots {
+		return strings.Repeat("_", len(out))
+	}
+	return string(out)
+}
+
+// releasePath returns the absolute path to a release ledger file. Build,
+// promote, and deploy all resolve the version→file mapping HERE so they
+// never disagree on a release's filename.
 func releasePath(projectDir, version string) string {
-	return filepath.Join(projectDir, releasesDirRel, statefile.SafeSegment(version)+".json")
+	return filepath.Join(projectDir, releasesDirRel, releaseFileStem(version)+".json")
 }
 
 // envReleasesPath returns the absolute path to the env→release binding ledger.

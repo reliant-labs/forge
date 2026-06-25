@@ -1607,6 +1607,15 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		opts.Context = in.deployCtx
 		opts.Secrets = cluster.KubectlSecretGetter{}
 		opts.ConfigMaps = cluster.KubectlConfigMapGetter{}
+		// Verify images using the CLUSTER's pull credentials (the bundle's
+		// imagePullSecrets), not just the local docker daemon: when the local
+		// daemon lacks creds for a private registry, an auth-denied lookup is a
+		// FALSE block for an image the cluster can pull. The resolver reads the
+		// pull Secrets' .dockerconfigjson from the target cluster so an
+		// auth-denied lookup is retried from the cluster's perspective for a
+		// TRUE verdict. Gated to remote clusters (same as the Secret check) —
+		// local k3d images are skipped via LocalImageRef anyway.
+		opts.PullCreds = cluster.KubectlPullCredsResolver{}
 	}
 	return cluster.Preflight(ctx, opts)
 }

@@ -2,10 +2,13 @@ package cluster
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +49,16 @@ type ManifestRefs struct {
 	ConfigMaps map[string]map[string]struct{}
 	// Images is the set of distinct container image refs in the bundle.
 	Images map[string]struct{}
+	// ImagePullSecrets is the set of distinct Secret names referenced via a
+	// pod spec's imagePullSecrets[].name. These are the credentials the
+	// CLUSTER uses to pull private images — the image-verification path
+	// resolves their .dockerconfigjson from the target cluster and uses it to
+	// authenticate an otherwise auth-denied registry lookup, so a present
+	// private image isn't false-flagged just because the LOCAL docker daemon
+	// lacks creds for that registry. A subset of the names in Secrets (which
+	// records every Secret reference shape); kept distinct here because only
+	// imagePullSecrets carry registry credentials.
+	ImagePullSecrets map[string]struct{}
 }
 
 // CollectManifestRefs walks a `---`-separated multi-doc YAML manifest stream
@@ -60,9 +73,10 @@ type ManifestRefs struct {
 // (best-effort, mirroring the other manifest scanners in this package).
 func CollectManifestRefs(manifests string) ManifestRefs {
 	refs := ManifestRefs{
-		Secrets:    map[string]map[string]struct{}{},
-		ConfigMaps: map[string]map[string]struct{}{},
-		Images:     map[string]struct{}{},
+		Secrets:          map[string]map[string]struct{}{},
+		ConfigMaps:       map[string]map[string]struct{}{},
+		Images:           map[string]struct{}{},
+		ImagePullSecrets: map[string]struct{}{},
 	}
 	for _, doc := range splitDocs(manifests) {
 		var node any
@@ -129,8 +143,35 @@ func collectSecretRefs(v map[string]any, refs *ManifestRefs) {
 			addRef(refs.Secrets, name, "")
 		}
 	}
-	// imagePullSecrets[].name — a list of {name} Secret references.
+	// imagePullSecrets[].name — a list of {name} Secret references. Recorded
+	// in BOTH Secrets (existence check) and ImagePullSecrets (the
+	// registry-credential source the image-verification path authenticates
+	// with).
 	collectNamedListRefs(v, "imagePullSecrets", refs.Secrets)
+	collectImagePullSecretNames(v, refs.ImagePullSecrets)
+}
+
+// collectImagePullSecretNames records the bare Secret name of every
+// imagePullSecrets[].name entry into out. These are the cluster's registry
+// pull credentials; the image-verification path resolves their
+// .dockerconfigjson and uses it to authenticate registry lookups the LOCAL
+// docker daemon would be denied.
+func collectImagePullSecretNames(v map[string]any, out map[string]struct{}) {
+	raw, ok := v["imagePullSecrets"]
+	if !ok {
+		return
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return
+	}
+	for _, item := range list {
+		if m, ok := item.(map[string]any); ok {
+			if name := stringAt(m, "name"); name != "" {
+				out[name] = struct{}{}
+			}
+		}
+	}
 }
 
 // collectConfigMapRefs records every ConfigMap reference shape rooted at this
@@ -287,6 +328,45 @@ type ImageArchChecker interface {
 	ImageArchitectures(ctx context.Context, ref string) (archs []string, err error)
 }
 
+// PullCredsResolver fetches the CLUSTER's registry pull credentials — the
+// `.dockerconfigjson` of a kubernetes.io/dockerconfigjson Secret — from the
+// target cluster, so the image-verification path can authenticate a registry
+// lookup the LOCAL docker daemon would be denied.
+//
+// The deploy already collects the bundle's imagePullSecret names for the
+// existence preflight (ManifestRefs.ImagePullSecrets); this resolves those
+// names to the credential blob the cluster would itself use to pull. The
+// returned bytes are a docker config.json `{"auths":{...}}` document (the
+// decoded `.dockerconfigjson`). A resolver MAY merge several pull Secrets into
+// one config (multiple registries). It returns (nil, nil) when no creds are
+// available (no imagePullSecrets, or none readable) — the caller then keeps
+// today's local-daemon behaviour rather than regressing. An error is a genuine
+// lookup failure (kubectl misconfigured) the caller surfaces.
+type PullCredsResolver interface {
+	ResolveDockerConfig(ctx context.Context, kctx, namespace string, secretNames []string) (dockerConfigJSON []byte, err error)
+}
+
+// CredentialedImageChecker is an OPTIONAL capability an ImageChecker /
+// ImageArchChecker may implement: given a docker config dir (a directory
+// holding a config.json with the cluster's pull creds), it returns a variant
+// of itself that authenticates registry lookups with those creds. The
+// preflight uses it to RETRY an auth-denied lookup from the CLUSTER's
+// perspective — turning a local-daemon "auth denied" (a false negative for an
+// image the cluster can pull) into a TRUE existence/arch verdict. A checker
+// that does not implement this is used as-is (no credentialed retry).
+type CredentialedImageChecker interface {
+	// WithDockerConfigDir returns an ImageChecker that runs `docker` with
+	// DOCKER_CONFIG=dir, so private-registry lookups authenticate with the
+	// cluster's pull creds materialised there.
+	WithDockerConfigDir(dir string) ImageChecker
+}
+
+// CredentialedImageArchChecker is the ImageArchChecker analogue of
+// CredentialedImageChecker.
+type CredentialedImageArchChecker interface {
+	WithDockerConfigDir(dir string) ImageArchChecker
+}
+
 // ErrImageCheckInconclusive marks an image check that could not reach the
 // registry at all — a transport-class failure (DNS, connection refused, i/o
 // timeout, docker daemon down). That says nothing about the image: the CLUSTER
@@ -338,6 +418,19 @@ type PreflightOpts struct {
 	// ImageArch reports an image's advertised architecture(s) for the arch
 	// gate. Nil disables the gate entirely (the existence check still runs).
 	ImageArch ImageArchChecker
+
+	// PullCreds resolves the CLUSTER's registry pull credentials (the
+	// .dockerconfigjson of the bundle's imagePullSecrets) from the target
+	// cluster. When set AND the image checker implements
+	// CredentialedImageChecker AND the bundle declares imagePullSecrets, an
+	// AUTH-DENIED registry lookup from the LOCAL docker daemon is RETRIED with
+	// those creds, so a present private image the cluster can pull yields a TRUE
+	// verdict instead of a false BLOCK. Nil (or no imagePullSecrets, or creds
+	// not resolvable) leaves the existing local-daemon behaviour unchanged — the
+	// auth-denied lookup still BLOCKS (fail-safe, no regression). Resolution
+	// runs against opts.Context / opts.Namespace, the same target the apply
+	// uses.
+	PullCreds PullCredsResolver
 
 	// TargetArch is the DECLARED node architecture of the target cluster
 	// (GOARCH form: "amd64" / "arm64"), resolved from the env's KCL
@@ -489,6 +582,33 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 			result.MissingConfigMapKeys, &mu, recordErr)
 	}
 
+	// Cluster-credentialed image checker — resolve the bundle's
+	// imagePullSecrets from the TARGET cluster into a temp DOCKER_CONFIG so an
+	// AUTH-DENIED local-daemon lookup can be RETRIED with the credentials the
+	// cluster would itself pull with. Built ONCE (not per-image). When creds
+	// can't be resolved, the bundle has no imagePullSecrets, or the checker
+	// isn't credentialed, credImages/credArch stay nil and the auth-denied
+	// path keeps today's block-on-can't-confirm behaviour (no regression).
+	credImages, credArch, credCleanup := prepareCredentialedCheckers(ctx, opts, refs)
+	defer credCleanup()
+
+	// recheckWithClusterCreds re-runs an auth-denied existence lookup with the
+	// cluster's pull creds. Returns (exists, retried): retried=false when no
+	// credentialed checker is available (caller keeps the auth-denied block).
+	recheckExistsWithCreds := func(ref string) (exists bool, retried bool) {
+		if credImages == nil {
+			return false, false
+		}
+		ok, err := credImages.ImageExists(ctx, ref)
+		if err != nil {
+			// Still denied (the cluster creds also lack access — or the secret
+			// was the wrong one) or now inconclusive: not a confirmed verdict,
+			// so leave it to the caller's existing block/warn handling.
+			return false, false
+		}
+		return ok, true
+	}
+
 	// Image checks — one lookup per distinct image, skipping refs the
 	// caller marks (local registries) when an image checker is configured.
 	if opts.Images != nil {
@@ -505,10 +625,26 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 					// An auth-denied lookup did reach the registry but
 					// wouldn't say whether the image is present — and on a
 					// private registry a MISSING image looks exactly like
-					// this. The gate must not silently pass an image it
-					// can't confirm, so this BLOCKS (the operator can
-					// --skip-preflight after a 5-second check).
+					// this. Before blocking, RETRY with the CLUSTER's pull
+					// creds: the local daemon may simply lack creds the
+					// cluster has, so an auth-denied here is a FALSE negative
+					// for an image the cluster can pull. A credentialed retry
+					// that resolves the lookup is AUTHORITATIVE (the cluster's
+					// view): a present image passes, a confirmed miss blocks.
 					if errors.Is(err, ErrImageCheckAuthDenied) {
+						if credExists, retried := recheckExistsWithCreds(ref); retried {
+							if credExists {
+								return // cluster can pull it — TRUE existence verdict
+							}
+							mu.Lock()
+							result.MissingImages = append(result.MissingImages, ref)
+							mu.Unlock()
+							return
+						}
+						// No cluster creds to retry with (or still denied with
+						// them): keep the conservative block — the gate must
+						// not silently pass an image it can't confirm (the
+						// operator can --skip-preflight after a 5-second check).
 						mu.Lock()
 						result.UnverifiableImages = append(result.UnverifiableImages,
 							fmt.Sprintf("%s (%v)", ref, err))
@@ -560,10 +696,20 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 				archs, aerr := opts.ImageArch.ImageArchitectures(ctx, ref)
 				if aerr != nil {
 					// Couldn't read the arch (transport / image-absent —
-					// already reported by the existence check / daemon down).
-					// A mismatch can only be asserted on a KNOWN arch, so warn
-					// and proceed rather than false-failing.
+					// already reported by the existence check / daemon down /
+					// auth-denied on a private registry the LOCAL daemon lacks
+					// creds for). Before warning, RETRY with the CLUSTER's pull
+					// creds: a private image's manifest the local daemon can't
+					// read is exactly the false-negative this fix targets, and
+					// a credentialed read lets the arch gate actually enforce
+					// on private images instead of silently skipping them.
 					if errors.Is(aerr, ErrImageCheckInconclusive) {
+						if credArch != nil {
+							if credArchs, cerr := credArch.ImageArchitectures(ctx, ref); cerr == nil {
+								archs = credArchs
+								goto haveArchs
+							}
+						}
 						mu.Lock()
 						result.ArchWarnings = append(result.ArchWarnings,
 							fmt.Sprintf("couldn't read architecture of image %q: %v; skipping arch gate for it", ref, aerr))
@@ -573,6 +719,7 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 					recordErr(fmt.Errorf("preflight: read image arch %q: %w", ref, aerr))
 					return
 				}
+			haveArchs:
 				if archMatchesTarget(archs, target) {
 					return
 				}
@@ -595,6 +742,72 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	sort.Strings(result.ArchMismatchImages)
 	sort.Strings(result.ArchWarnings)
 	return result, nil
+}
+
+// prepareCredentialedCheckers resolves the bundle's imagePullSecrets from the
+// TARGET cluster into a temp DOCKER_CONFIG dir and returns credentialed
+// variants of the existence + arch checkers that authenticate with them. It is
+// the seam that makes the image-verification path use the CLUSTER's pull creds
+// rather than the local docker daemon's: an auth-denied local lookup can then
+// be retried from the cluster's perspective for a TRUE verdict.
+//
+// It returns (nil, nil, no-op cleanup) — disabling the credentialed retry —
+// when ANY precondition is unmet, so the caller transparently keeps today's
+// local-daemon behaviour and never regresses:
+//   - no PullCreds resolver, or no target context, or
+//   - the bundle declares no imagePullSecrets, or
+//   - the configured checker doesn't implement the credentialed capability, or
+//   - the creds can't be resolved / materialised.
+//
+// The returned cleanup removes the temp dir; callers MUST defer it.
+func prepareCredentialedCheckers(ctx context.Context, opts PreflightOpts, refs ManifestRefs) (ImageChecker, ImageArchChecker, func()) {
+	noop := func() {}
+	if opts.PullCreds == nil || strings.TrimSpace(opts.Context) == "" || len(refs.ImagePullSecrets) == 0 {
+		return nil, nil, noop
+	}
+	// At least one of the checkers must be credentialed for the retry to mean
+	// anything.
+	credImagesCap, imgOK := opts.Images.(CredentialedImageChecker)
+	credArchCap, archOK := opts.ImageArch.(CredentialedImageArchChecker)
+	if !imgOK && !archOK {
+		return nil, nil, noop
+	}
+
+	names := make([]string, 0, len(refs.ImagePullSecrets))
+	for n := range refs.ImagePullSecrets {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	dockerConfig, err := opts.PullCreds.ResolveDockerConfig(ctx, opts.Context, opts.Namespace, names)
+	if err != nil || len(dockerConfig) == 0 {
+		// No usable creds (none of the imagePullSecrets resolved to a
+		// dockerconfigjson, or a lookup failed). Fall back — don't regress.
+		return nil, nil, noop
+	}
+
+	dir, err := os.MkdirTemp("", "forge-preflight-dockercfg-")
+	if err != nil {
+		return nil, nil, noop
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	// docker reads $DOCKER_CONFIG/config.json. The .dockerconfigjson blob IS a
+	// docker config.json ({"auths":{...}}), so it drops straight in. 0600: it
+	// carries registry credentials.
+	if werr := os.WriteFile(filepath.Join(dir, "config.json"), dockerConfig, 0o600); werr != nil {
+		cleanup()
+		return nil, nil, noop
+	}
+
+	var credImages ImageChecker
+	if imgOK {
+		credImages = credImagesCap.WithDockerConfigDir(dir)
+	}
+	var credArch ImageArchChecker
+	if archOK {
+		credArch = credArchCap.WithDockerConfigDir(dir)
+	}
+	return credImages, credArch, cleanup
 }
 
 // archMatchesTarget reports whether the target cluster arch is among the
@@ -843,17 +1056,38 @@ func kubectlDataKeys(ctx context.Context, kctx, namespace, kind, name string) (m
 // The distinction is made by scanning combined stdout+stderr: not-found
 // markers first (most specific), then auth-denied markers; anything left is
 // treated as inconclusive transport noise.
-type DockerImageChecker struct{}
+//
+// DockerConfigDir, when set, points `docker` at a DOCKER_CONFIG dir holding the
+// CLUSTER's pull credentials (its imagePullSecrets' .dockerconfigjson), so a
+// private-registry lookup the LOCAL daemon's creds would be denied succeeds
+// from the cluster's perspective. The preflight builds a credentialed copy via
+// WithDockerConfigDir to RETRY an auth-denied lookup, turning a false negative
+// into a TRUE existence verdict. Empty = use the ambient docker config.
+type DockerImageChecker struct {
+	// DockerConfigDir overrides DOCKER_CONFIG for the docker invocation. Empty
+	// means inherit the process environment (ambient docker login).
+	DockerConfigDir string
+}
+
+// WithDockerConfigDir returns a copy of the checker that runs docker with
+// DOCKER_CONFIG=dir — the cluster's pull creds. Implements
+// CredentialedImageChecker so the preflight can retry an auth-denied lookup
+// with the cluster's credentials.
+func (c DockerImageChecker) WithDockerConfigDir(dir string) ImageChecker {
+	c.DockerConfigDir = dir
+	return c
+}
 
 // ImageExists reports whether `docker manifest inspect` resolves ref. See the
 // type doc for the confirmed-miss vs inconclusive distinction.
-func (DockerImageChecker) ImageExists(ctx context.Context, ref string) (bool, error) {
+func (c DockerImageChecker) ImageExists(ctx context.Context, ref string) (bool, error) {
 	args := []string{"manifest", "inspect"}
 	if registryRefIsInsecure(ref) {
 		args = append(args, "--insecure")
 	}
 	args = append(args, ref)
 	cmd := exec.CommandContext(ctx, "docker", args...)
+	withDockerConfig(cmd, c.DockerConfigDir)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return true, nil
@@ -890,17 +1124,33 @@ func (DockerImageChecker) ImageExists(ctx context.Context, ref string) (bool, er
 // A lookup that can't reach the registry (transport failure, image absent,
 // daemon down) is returned as ErrImageCheckInconclusive so the gate WARNS
 // rather than blocking — a mismatch can only be asserted on a known arch.
-type DockerImageArchChecker struct{}
+//
+// DockerConfigDir mirrors DockerImageChecker: set it (via WithDockerConfigDir)
+// to read the manifest with the CLUSTER's pull creds when the local daemon
+// lacks access to a private registry.
+type DockerImageArchChecker struct {
+	// DockerConfigDir overrides DOCKER_CONFIG for the docker invocation. Empty
+	// inherits the process environment.
+	DockerConfigDir string
+}
+
+// WithDockerConfigDir returns a copy that runs docker with DOCKER_CONFIG=dir.
+// Implements CredentialedImageArchChecker.
+func (c DockerImageArchChecker) WithDockerConfigDir(dir string) ImageArchChecker {
+	c.DockerConfigDir = dir
+	return c
+}
 
 // ImageArchitectures returns the distinct architectures ref advertises. See
 // the type doc for the two manifest shapes handled.
-func (DockerImageArchChecker) ImageArchitectures(ctx context.Context, ref string) ([]string, error) {
+func (c DockerImageArchChecker) ImageArchitectures(ctx context.Context, ref string) ([]string, error) {
 	args := []string{"manifest", "inspect"}
 	if registryRefIsInsecure(ref) {
 		args = append(args, "--insecure")
 	}
 	args = append(args, ref)
 	cmd := exec.CommandContext(ctx, "docker", args...)
+	withDockerConfig(cmd, c.DockerConfigDir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		reason := strings.TrimSpace(string(out))
@@ -1029,4 +1279,104 @@ func registryRefIsInsecure(ref string) bool {
 // hard preflight failure there is more friction than value.
 func LocalImageRef(ref string) bool {
 	return registryRefIsInsecure(ref)
+}
+
+// withDockerConfig points a docker *exec.Cmd at a DOCKER_CONFIG dir when dir
+// is non-empty, so the lookup authenticates with the credentials materialised
+// there (the cluster's pull creds) instead of the ambient docker login. A
+// no-op for an empty dir (inherit the process environment). It seeds Env from
+// os.Environ() once so the docker binary still finds PATH/HOME etc.
+func withDockerConfig(cmd *exec.Cmd, dir string) {
+	if strings.TrimSpace(dir) == "" {
+		return
+	}
+	env := os.Environ()
+	// Drop any inherited DOCKER_CONFIG so ours is authoritative, then set it.
+	filtered := env[:0:0]
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "DOCKER_CONFIG=") {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	cmd.Env = append(filtered, "DOCKER_CONFIG="+dir)
+}
+
+// KubectlPullCredsResolver is the live PullCredsResolver: it reads the
+// `.dockerconfigjson` of each named imagePullSecret from the TARGET cluster
+// (via `kubectl --context <ctx> get secret <name> -n <ns> -o json`) and MERGES
+// their `auths` maps into a single docker config.json document. That document
+// is what the image-verification path materialises into a temp DOCKER_CONFIG so
+// `docker manifest inspect` authenticates with the cluster's pull creds.
+//
+// A secret that is absent, isn't a dockerconfigjson Secret, or has an
+// unparseable blob is SKIPPED (best-effort) rather than failing the resolve —
+// the goal is to recover creds when we can, never to turn a credential gap into
+// a hard preflight error (that would regress envs that worked before). Only a
+// genuine kubectl failure (misconfig / unreachable apiserver) surfaces as an
+// error. Returns (nil, nil) when no secret yielded any auths.
+type KubectlPullCredsResolver struct{}
+
+// ResolveDockerConfig implements PullCredsResolver.
+func (KubectlPullCredsResolver) ResolveDockerConfig(ctx context.Context, kctx, namespace string, secretNames []string) ([]byte, error) {
+	merged := map[string]json.RawMessage{}
+	for _, name := range secretNames {
+		args := []string{"get", "secret", name, "-o", "json"}
+		if namespace != "" {
+			args = append(args, "-n", namespace)
+		}
+		cmd := kubectlCmd(ctx, kctx, args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			// A not-found pull secret is a SKIP (the existence preflight already
+			// reports a genuinely-missing imagePullSecret); any other non-zero
+			// exit is a real kubectl failure worth surfacing.
+			if strings.Contains(string(out), "NotFound") || strings.Contains(string(out), "not found") {
+				continue
+			}
+			return nil, fmt.Errorf("kubectl get secret %s/%s: %v: %s", namespace, name, err, strings.TrimSpace(string(out)))
+		}
+		auths := dockerConfigAuthsFromSecret(out)
+		for reg, entry := range auths {
+			if _, exists := merged[reg]; !exists {
+				merged[reg] = entry
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return nil, nil
+	}
+	doc := map[string]any{"auths": merged}
+	return json.Marshal(doc)
+}
+
+// dockerConfigAuthsFromSecret extracts the `auths` map from a
+// kubernetes.io/dockerconfigjson Secret's JSON (`kubectl get secret -o json`).
+// The Secret stores the docker config under data[".dockerconfigjson"],
+// base64-encoded (kubectl -o json reports `.data` already... no — kubectl
+// reports `.data` values base64-encoded). Returns an empty map for any Secret
+// that isn't a parseable dockerconfigjson (best-effort: a non-cred Secret named
+// as a pull secret simply contributes nothing).
+func dockerConfigAuthsFromSecret(secretJSON []byte) map[string]json.RawMessage {
+	var parsed struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := json.Unmarshal(secretJSON, &parsed); err != nil {
+		return nil
+	}
+	b64, ok := parsed.Data[".dockerconfigjson"]
+	if !ok || strings.TrimSpace(b64) == "" {
+		return nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil
+	}
+	var cfg struct {
+		Auths map[string]json.RawMessage `json:"auths"`
+	}
+	if err := json.Unmarshal(decoded, &cfg); err != nil {
+		return nil
+	}
+	return cfg.Auths
 }

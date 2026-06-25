@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"sort"
@@ -75,6 +76,75 @@ func (f fakeImageChecker) ImageExists(_ context.Context, ref string) (bool, erro
 	}
 	_, ok := f.present[ref]
 	return ok, nil
+}
+
+// credAwareImageChecker is a fakeImageChecker that ALSO models cluster
+// credentials: an image in authDenied is auth-denied to the LOCAL daemon, but
+// once WithDockerConfigDir is called (the credentialed retry) it resolves the
+// ref from credPresent / credMiss as the CLUSTER would. This lets a test prove
+// the auth-denied → credentialed-retry → TRUE-verdict path without a real
+// docker daemon. It satisfies CredentialedImageChecker.
+type credAwareImageChecker struct {
+	fakeImageChecker
+	// credentialed reports whether this instance is the post-WithDockerConfigDir
+	// (cluster-creds) variant. The base instance is the local-daemon view.
+	credentialed bool
+	// credPresent / credMiss define the CLUSTER's view once authenticated.
+	credPresent map[string]struct{}
+	credMiss    map[string]struct{}
+	// dirSeen records the DOCKER_CONFIG dir handed to WithDockerConfigDir, so a
+	// test can assert the creds were actually materialised + threaded.
+	dirSeen *string
+}
+
+func (c credAwareImageChecker) WithDockerConfigDir(dir string) ImageChecker {
+	if c.dirSeen != nil {
+		*c.dirSeen = dir
+	}
+	c.credentialed = true
+	return c
+}
+
+func (c credAwareImageChecker) ImageExists(ctx context.Context, ref string) (bool, error) {
+	if !c.credentialed {
+		return c.fakeImageChecker.ImageExists(ctx, ref)
+	}
+	// Credentialed (cluster) view: the auth-denied refs now resolve.
+	if _, ok := c.credPresent[ref]; ok {
+		return true, nil
+	}
+	if _, ok := c.credMiss[ref]; ok {
+		return false, nil // confirmed miss from the cluster's perspective
+	}
+	// Still denied even with cluster creds.
+	return false, fmt.Errorf("%w: denied: requested access to the resource is denied", ErrImageCheckAuthDenied)
+}
+
+// fakePullCredsResolver returns a canned docker config.json for the named
+// secrets. err (when set) is a hard resolver failure. empty (when true) models
+// "no usable creds" — returns (nil, nil).
+type fakePullCredsResolver struct {
+	config []byte
+	err    error
+	empty  bool
+	// namesSeen records the secret names the resolver was asked for.
+	namesSeen *[]string
+}
+
+func (f fakePullCredsResolver) ResolveDockerConfig(_ context.Context, _, _ string, names []string) ([]byte, error) {
+	if f.namesSeen != nil {
+		*f.namesSeen = names
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.empty {
+		return nil, nil
+	}
+	if f.config != nil {
+		return f.config, nil
+	}
+	return []byte(`{"auths":{"ghcr.io":{"auth":"dGVzdDp0ZXN0"}}}`), nil
 }
 
 func keySet(keys ...string) map[string]struct{} {
@@ -189,6 +259,25 @@ spec:
           envFrom:
             - configMapRef:
                 name: bulk-config
+`
+
+// pullSecretManifest is a minimal Deployment that pulls a PRIVATE image with an
+// imagePullSecret — the shape that exercises the cluster-credentialed image
+// verification path. No env/secret refs so the test isolates image verification.
+const pullSecretManifest = `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: app-prod
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: registry-creds
+      containers:
+        - name: api
+          image: ghcr.io/acme/private-api:abc123
 `
 
 // --- CollectManifestRefs -------------------------------------------------
@@ -445,9 +534,17 @@ func TestCollectManifestRefs_SecretVolumesAndPullSecrets(t *testing.T) {
 	if _, ok := refs.Secrets["projected-secret"][""]; !ok {
 		t.Errorf("projected secret source should be recorded; got %v", refs.Secrets)
 	}
-	// imagePullSecrets[].name
+	// imagePullSecrets[].name — recorded in Secrets (existence)…
 	if _, ok := refs.Secrets["registry-creds"][""]; !ok {
-		t.Errorf("imagePullSecret should be recorded; got %v", refs.Secrets)
+		t.Errorf("imagePullSecret should be recorded in Secrets; got %v", refs.Secrets)
+	}
+	// …AND in ImagePullSecrets (the registry-credential source).
+	if _, ok := refs.ImagePullSecrets["registry-creds"]; !ok {
+		t.Errorf("imagePullSecret should be recorded in ImagePullSecrets; got %v", refs.ImagePullSecrets)
+	}
+	// A non-pull-secret reference must NOT leak into ImagePullSecrets.
+	if _, ok := refs.ImagePullSecrets["external-kubeconfig"]; ok {
+		t.Errorf("a secret-volume name must not be recorded as an imagePullSecret; got %v", refs.ImagePullSecrets)
 	}
 	// volumes[].configMap.name
 	if _, ok := refs.ConfigMaps["proxy-settings"][""]; !ok {
@@ -668,6 +765,149 @@ func TestRunPreflightChecks_AuthDeniedIsBlockNotWarning(t *testing.T) {
 	}
 	if res.OK() {
 		t.Error("a run with an auth-denied (unverifiable) image must NOT be OK() — it blocks")
+	}
+}
+
+// --- FIX 1: cluster-credentialed image verification ----------------------
+
+// The core fix: the LOCAL daemon is auth-denied for a private image (no creds),
+// but the bundle declares an imagePullSecret. The preflight resolves the
+// cluster's pull creds and RETRIES the lookup from the cluster's perspective —
+// the image IS present, so the verdict is TRUE and the deploy is NOT blocked.
+// Before the fix this auth-denied lookup was a false UnverifiableImage block.
+func TestRunPreflightChecks_AuthDeniedButClusterCredsConfirmPresent(t *testing.T) {
+	const ref = "ghcr.io/acme/private-api:abc123"
+	refs := CollectManifestRefs(pullSecretManifest)
+
+	var seenDir string
+	var seenNames []string
+	opts := PreflightOpts{
+		Manifests: pullSecretManifest,
+		Context:   "gke_prod",
+		Namespace: "app-prod",
+		Images: credAwareImageChecker{
+			fakeImageChecker: fakeImageChecker{authDenied: keySet(ref)}, // local daemon: denied
+			credPresent:      keySet(ref),                               // cluster: present
+			dirSeen:          &seenDir,
+		},
+		PullCreds: fakePullCredsResolver{namesSeen: &seenNames},
+	}
+
+	res, err := runPreflightChecks(context.Background(), opts, refs)
+	if err != nil {
+		t.Fatalf("credentialed retry must not abort the preflight: %v", err)
+	}
+	if len(res.UnverifiableImages) != 0 {
+		t.Errorf("cluster creds confirmed the image present — it must NOT be an UnverifiableImage block; got %v", res.UnverifiableImages)
+	}
+	if len(res.MissingImages) != 0 {
+		t.Errorf("image is present from the cluster's view — not a miss; got %v", res.MissingImages)
+	}
+	if !res.OK() {
+		t.Error("a present (cluster-credentialed) image must make the run OK() — no false block")
+	}
+	if seenDir == "" {
+		t.Error("the credentialed checker must be handed a DOCKER_CONFIG dir (creds materialised)")
+	}
+	if len(seenNames) != 1 || seenNames[0] != "registry-creds" {
+		t.Errorf("resolver should be asked for the bundle's imagePullSecret; got %v", seenNames)
+	}
+}
+
+// A confirmed miss from the cluster's perspective (creds resolve, but the image
+// genuinely isn't there) must BLOCK as a MissingImage — the credentialed verdict
+// is authoritative both ways.
+func TestRunPreflightChecks_AuthDeniedClusterCredsConfirmMiss(t *testing.T) {
+	const ref = "ghcr.io/acme/private-api:abc123"
+	refs := CollectManifestRefs(pullSecretManifest)
+	opts := PreflightOpts{
+		Manifests: pullSecretManifest,
+		Context:   "gke_prod",
+		Namespace: "app-prod",
+		Images: credAwareImageChecker{
+			fakeImageChecker: fakeImageChecker{authDenied: keySet(ref)},
+			credMiss:         keySet(ref), // cluster: confirmed absent
+		},
+		PullCreds: fakePullCredsResolver{},
+	}
+	res, err := runPreflightChecks(context.Background(), opts, refs)
+	if err != nil {
+		t.Fatalf("unexpected abort: %v", err)
+	}
+	if len(res.MissingImages) != 1 || res.MissingImages[0] != ref {
+		t.Errorf("a cluster-confirmed miss must be a blocking MissingImage; got missing=%v unverifiable=%v", res.MissingImages, res.UnverifiableImages)
+	}
+}
+
+// When the cluster creds ALSO can't confirm the image (still denied even with
+// the pull secret), the conservative block is kept — the gate must not pass an
+// image it cannot confirm. No regression of the auth-denied semantics.
+func TestRunPreflightChecks_AuthDeniedClusterCredsAlsoDenied_KeepsBlock(t *testing.T) {
+	const ref = "ghcr.io/acme/private-api:abc123"
+	refs := CollectManifestRefs(pullSecretManifest)
+	opts := PreflightOpts{
+		Manifests: pullSecretManifest,
+		Context:   "gke_prod",
+		Namespace: "app-prod",
+		Images: credAwareImageChecker{
+			fakeImageChecker: fakeImageChecker{authDenied: keySet(ref)},
+			// neither credPresent nor credMiss → credentialed lookup stays denied
+		},
+		PullCreds: fakePullCredsResolver{},
+	}
+	res, err := runPreflightChecks(context.Background(), opts, refs)
+	if err != nil {
+		t.Fatalf("unexpected abort: %v", err)
+	}
+	if len(res.UnverifiableImages) != 1 {
+		t.Errorf("still-denied-with-cluster-creds must keep the Unverifiable block; got unverifiable=%v missing=%v", res.UnverifiableImages, res.MissingImages)
+	}
+}
+
+// No imagePullSecret in the bundle → no creds to resolve → today's behaviour:
+// an auth-denied lookup BLOCKS as UnverifiableImage. The fix must not regress
+// the credentials-absent path.
+func TestRunPreflightChecks_AuthDeniedNoPullSecret_KeepsBlock(t *testing.T) {
+	const ref = "ghcr.io/acme/api:abc123"
+	refs := CollectManifestRefs(deploymentManifest) // no imagePullSecrets
+	opts := PreflightOpts{
+		Manifests: deploymentManifest,
+		Context:   "gke_prod",
+		Namespace: "app-prod",
+		Images: credAwareImageChecker{
+			fakeImageChecker: fakeImageChecker{authDenied: keySet(ref)},
+			credPresent:      keySet(ref), // would resolve IF asked — but it must NOT be
+		},
+		PullCreds: fakePullCredsResolver{},
+	}
+	res, err := runPreflightChecks(context.Background(), opts, refs)
+	if err != nil {
+		t.Fatalf("unexpected abort: %v", err)
+	}
+	if len(res.UnverifiableImages) != 1 {
+		t.Errorf("no imagePullSecret → no credentialed retry → auth-denied must still block; got unverifiable=%v missing=%v", res.UnverifiableImages, res.MissingImages)
+	}
+}
+
+// dockerConfigAuthsFromSecret must decode a real kubectl-shaped
+// dockerconfigjson Secret (base64 .data[".dockerconfigjson"]) into its auths.
+func TestKubectlPullCredsResolver_DecodesDockerConfigSecret(t *testing.T) {
+	const dockerCfg = `{"auths":{"ghcr.io":{"auth":"dXNlcjpwYXNz"}}}`
+	b64 := base64.StdEncoding.EncodeToString([]byte(dockerCfg))
+	secretJSON := []byte(`{"data":{".dockerconfigjson":"` + b64 + `"}}`)
+
+	auths := dockerConfigAuthsFromSecret(secretJSON)
+	if _, ok := auths["ghcr.io"]; !ok {
+		t.Errorf("expected ghcr.io auth entry decoded from the secret; got %v", auths)
+	}
+}
+
+// A Secret that isn't a dockerconfigjson (no .dockerconfigjson key) contributes
+// nothing — best-effort, never an error.
+func TestKubectlPullCredsResolver_NonCredSecretYieldsNothing(t *testing.T) {
+	secretJSON := []byte(`{"data":{"tls.crt":"abc"}}`)
+	if auths := dockerConfigAuthsFromSecret(secretJSON); len(auths) != 0 {
+		t.Errorf("a non-dockerconfigjson secret must yield no auths; got %v", auths)
 	}
 }
 

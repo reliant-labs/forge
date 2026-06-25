@@ -208,6 +208,13 @@ func applyMethodOptions(method *codegen.Method, mo *forgev1.MethodOptions) {
 	if len(mo.Errors) > 0 {
 		method.Errors = append([]string(nil), mo.Errors...)
 	}
+	// authz_custom delegates the authorization decision to a hand-written
+	// authorizer; the method carries no role allow-list. Carry the flag so the
+	// authorizer generator can emit it FAIL-CLOSED in the role table rather than
+	// with empty roles (which would read as an any-authenticated grant).
+	if mo.GetAuthzCustom() {
+		method.AuthzCustom = true
+	}
 }
 
 // extractService builds a codegen.ServiceDef from a protogen.Service.

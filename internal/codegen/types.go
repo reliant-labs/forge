@@ -60,6 +60,17 @@ type Method struct {
 	// roles if a non-proto source ever supplies them; today it is always
 	// empty in parsed descriptors.
 	RequiredRoles []string
+	// AuthzCustom records (forge.v1.method).authz_custom = true — the method
+	// delegates its authorization decision to a hand-written per-service
+	// authorizer (a subject/identity/resource-scoped rule not expressible as a
+	// role allow-list). Such a method carries NO RequiredRoles (the proto can't
+	// express its rule), so a naive role-table emit would write it with EMPTY
+	// roles — which on a role table reads as "any authenticated user allowed".
+	// The flag lets the authorizer generator emit it FAIL-CLOSED instead, so the
+	// generated table can never be misread as an any-authenticated grant. The
+	// LIVE decision is enforced by the descriptor-driven RoleInterceptor +
+	// the hand-written authorizer.go, not this table.
+	AuthzCustom bool
 	// Errors records the Connect/gRPC error codes this method may return,
 	// derived from (forge.v1.method).errors. Values match connect.Code
 	// names (e.g. "NotFound", "PermissionDenied"). Surfaced through

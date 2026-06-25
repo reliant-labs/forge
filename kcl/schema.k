@@ -81,6 +81,33 @@ schema EnvVar:
       * `config_map_ref` + `config_map_key` — projected from a
         forge-generated ConfigMap.
 
+    Secret-override syntax (config-contract)
+    ----------------------------------------
+    You rarely hand-write `secret_ref` for a SENSITIVE config field. Mark
+    the field `sensitive: true` in the config proto and forge's config
+    codegen emits the `secret_ref`/`secret_key` EnvVar for you into
+    `deploy/kcl/<env>/config_gen.k`, defaulting to
+    `secret_ref = "<project>-secrets", secret_key = "<env_var lowercased>"`.
+
+    To point a field at a DIFFERENT existing cluster Secret / key, set the
+    field's value in the per-env `config.<env>.yaml` to a DOLLAR-BRACE
+    reference. (Written below as `D{...}` because KCL's docstring lexer reads
+    a literal dollar-brace as string interpolation — in YAML write a real `$`
+    immediately followed by the `{...}`.)
+
+        "D{SECRET_NAME}"         -> secret_ref = "SECRET_NAME"
+                                    (secret_key = codegen default)
+        "D{SECRET_NAME#KEY}"     -> secret_ref = "SECRET_NAME", secret_key = "KEY"
+
+    e.g. config.<env>.yaml line
+        internal_service_secret: "D{control-plane-internal#secret}"
+    (with D replaced by `$`) binds that field to the `secret` key of the
+    `control-plane-internal` Secret. The `#KEY` form is for cluster secrets
+    whose keys are kebab-case (e.g. `D{db-credentials#database-url}`) and
+    don't match forge's lowercase-env-var default. The Secret itself is
+    provisioned out-of-band. See kcl/README.md "Secrets" for the copy-paste
+    YAML example (with the real `$`).
+
     Empty-value rationale: callers use empty strings as "disable"
     sentinels (e.g. RUNTIME_CLASS_NAME="" to skip runtimeClassName on
     Pod spec; webhook secrets="" to disable env-gated features). KCL

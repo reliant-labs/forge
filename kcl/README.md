@@ -140,19 +140,35 @@ Then:
 kcl run deploy/kcl/dev/ -S output --format json
 ```
 
-## Per-env conditional manifests
+## Standard `-D` render options
 
-The forge CLI passes the current environment name to KCL via
-`-D env=<env_name>` on every `kcl run` invocation. Your `main.k` can
-read it through KCL's `option()` builtin and conditionally include
-`additional_manifests` (or any other field) per-env.
+The forge CLI drives every render with a standard set of top-level KCL
+bindings (`kcl run -D <key>=<value>`). They carry per-invocation facts into
+your `main.k`. Read them through the **typed `forge` accessors** (each wraps
+`option(...)` with a default + doc) rather than raw `option()` so the whole
+set is discoverable from the `forge` surface:
 
-Canonical use — skip in-cluster infra on `dev-host` envs where
-docker-compose already provides those services:
+| `-D` key        | Accessor                  | Always passed? | What it is |
+| --------------- | ------------------------- | -------------- | ---------- |
+| `env`           | `forge.env(default)`      | yes            | environment name (`dev`/`staging`/`prod`/…) |
+| `image_tag`     | `forge.image_tag(env)`    | yes            | resolved image tag (override > per-env default > `latest`) |
+| `namespace`     | `forge.namespace(default)`| yes            | k8s namespace to deploy into |
+| `image_digests` | `forge.image_digests()`   | when deploying | JSON name→digest map (pins each image to its digest) |
+| `registry`      | `forge.registry(default)` | no (override)  | image registry; the per-env literal is yours, `-D registry=` overrides it |
+
+Plus every non-sensitive per-env **config** field is passed as its own
+`-D <FIELD>=` and surfaced through the generated `config_gen.k`
+(`cfg.APP_ENV` / `cfg.CONFIG_MAPS`) — read those via `cfg.<...>`, never raw
+`option()`.
+
+### Per-env conditional manifests
+
+Use `forge.env()` to conditionally include manifests — e.g. skip in-cluster
+infra on `dev-host` envs where docker-compose already provides those
+services:
 
 ```kcl
-_env_name = option("env")
-_is_dev_host = _env_name == "dev-host"
+_is_dev_host = forge.env() == "dev-host"
 
 _bundle = forge.Bundle {
     services = [...]
@@ -162,8 +178,27 @@ _bundle = forge.Bundle {
 }
 ```
 
-The `image_tag` and `registry` options are already passed for the
-same reason — `env` is the third member of the standard set.
+## Secrets — `${NAME#KEY}` config-contract override
+
+For a SENSITIVE config field (`sensitive: true` in the config proto), forge's
+config codegen emits the `secret_ref` EnvVar for you into
+`deploy/kcl/<env>/config_gen.k`, defaulting to the `<project>-secrets` Secret
+and a `<env_var lowercased>` key. To bind a field to a DIFFERENT existing
+cluster Secret/key, set its value in the per-env `config.<env>.yaml` to a
+reference string:
+
+```yaml
+# config.prod.yaml
+#   "${NAME}"      -> secret_ref = NAME            (key = codegen default)
+#   "${NAME#KEY}"  -> secret_ref = NAME, key = KEY (override both)
+internal_service_secret: "${control-plane-internal#secret}"
+```
+
+The `#KEY` form is for cluster secrets whose keys are kebab-case (e.g.
+`"${db-credentials#database-url}"`) and don't match forge's
+lowercase-env-var default. The Secret itself is provisioned out-of-band
+(ESO / sealed-secrets / `kubectl create secret`). Same rule on a hand-written
+`forge.EnvVar` — see the `EnvVar` schema doc in `schema.k`.
 
 ## Versioning
 

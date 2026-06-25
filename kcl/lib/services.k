@@ -77,14 +77,22 @@ render_owned_manifests = lambda svc: any -> [any] {
 
 # Collapse an EnvVar list to one entry per name, LAST-occurrence-wins.
 #
-# The common authoring pattern is `cfg.APP_ENV + [ ...per-service overrides ]`
-# (KCL `+` concatenates; the docs promise "KCL wins on conflict"). Without a
-# dedup the rendered container env carries BOTH entries for an overridden key,
-# and kubectl server-side apply REJECTS the Deployment: "duplicate entries for
-# key [name=...]". Keep the last occurrence so a per-service override (e.g. a
-# plain value) supersedes the base (e.g. an APP_ENV secretKeyRef) exactly the
-# way the host-mode env layering already resolves it — one consistent rule
-# across host and cluster.
+# This is the render-time SAFETY NET: it runs unconditionally on every
+# service / cronjob / operator env list regardless of how the author
+# assembled it, so a raw `base + overrides` concatenation (or any other
+# source of a duplicate name) never reaches kubectl as a duplicate key —
+# server-side apply REJECTS the Deployment: "duplicate entries for key
+# [name=...]". Keep the last occurrence so a per-service override (e.g. a
+# plain value) supersedes the base (e.g. an APP_ENV secretKeyRef) exactly
+# the way the host-mode env layering already resolves it — one consistent
+# rule across host and cluster.
+#
+# The PUBLIC, author-facing form of this same rule is `forge.env_merge(base,
+# overrides)` (kcl/base.k) — projects SHOULD assemble env lists with that
+# (explicit, discoverable, last-wins) rather than relying on this hidden
+# net. This lambda is byte-for-byte the same merge logic as env_merge, so
+# env_merge's output is already deduped and passing it through here is a
+# no-op (idempotent). Retained as defense-in-depth for hand-rolled `+`.
 _dedup_env_vars = lambda evs: [any] -> [any] {
     [
         evs[i] for i in range(len(evs))

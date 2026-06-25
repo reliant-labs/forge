@@ -18,7 +18,7 @@ import deploy.kcl.dev.config_gen as cfg
 import deploy.kcl.dev.ingress as ing
 {{- end}}
 
-_registry = option("registry") or "localhost:5050"
+_registry = forge.registry("localhost:5050")
 _namespace = "{{.ProjectName}}-dev"
 _cluster = forge.ClusterTarget {
     cluster = "k3d-{{.ProjectName}}"
@@ -26,9 +26,12 @@ _cluster = forge.ClusterTarget {
     registry = _registry
 }
 
-_base_env = forge.COMMON_ENV + cfg.APP_ENV + [
+# Base env every component sees, assembled with forge.env_merge (name-keyed,
+# LAST-wins) so a later layer overrides an earlier one by name instead of the
+# `+`-concat footgun (which emits duplicate keys kubectl rejects).
+_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, cfg.APP_ENV), [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
-]
+])
 
 # binary=shared: EVERY component runs the shared image with its cobra
 # subcommand. Binaries already carry that command from forge; for
@@ -40,7 +43,7 @@ _components = [c | {
     namespace = _namespace
     replicas = 1
     command = c.command if c.command else ["/app/{{.ProjectName}}", c.name]
-    env_vars = _base_env + [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}]
+    env_vars = forge.env_merge(_base_env, [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}])
 } for c in fc.load_components(fc.COMPONENTS_GEN)]
 
 _component_env = fc.ComponentEnv {

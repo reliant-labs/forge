@@ -23,7 +23,7 @@ import deploy.kcl.staging.ingress as ing
 # placeholder ("ghcr.io/OWNER") so a missing CI `-D registry=` surfaces
 # as a wrong image reference rather than silently deploying from an
 # unrelated registry.
-_registry = option("registry") or "ghcr.io/OWNER"
+_registry = forge.registry("ghcr.io/OWNER")
 _namespace = "{{.ProjectName}}-staging"
 _replicas = 2
 _resources = forge.Resources {
@@ -39,9 +39,12 @@ _cluster = forge.ClusterTarget {
     registry = _registry
 }
 
-_base_env = forge.COMMON_ENV + cfg.APP_ENV + [
+# Base env every component sees, assembled with forge.env_merge (name-keyed,
+# LAST-wins) so a later layer overrides an earlier one by name instead of the
+# `+`-concat footgun (which emits duplicate keys kubectl rejects).
+_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, cfg.APP_ENV), [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
-]
+])
 
 _components = [c | {
     image = "{{.ProjectName}}"
@@ -49,7 +52,7 @@ _components = [c | {
     namespace = _namespace
     replicas = _replicas
     resources = _resources
-    env_vars = _base_env + [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}]
+    env_vars = forge.env_merge(_base_env, [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}])
 } for c in fc.load_components(fc.COMPONENTS_GEN)]
 
 _component_env = fc.ComponentEnv {

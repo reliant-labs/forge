@@ -46,7 +46,7 @@ import deploy.kcl.dev.ingress as ing
 
 # Env-wide deploy target. Overridable via `kcl run -D registry=...`.
 # Local dev defaults to the k3d registry created by `deploy/k3d.yaml`.
-_registry = option("registry") or "localhost:5050"
+_registry = forge.registry("localhost:5050")
 _namespace = "{{.ProjectName}}-dev"
 _cluster = forge.ClusterTarget {
     cluster = "k3d-{{.ProjectName}}"
@@ -54,10 +54,13 @@ _cluster = forge.ClusterTarget {
     registry = _registry
 }
 
-# Base env every component sees (COMMON_ENV + per-env config_gen).
-_base_env = forge.COMMON_ENV + cfg.APP_ENV + [
+# Base env every component sees (COMMON_ENV + per-env config_gen), assembled
+# with forge.env_merge (name-keyed, LAST-wins) so a later layer overrides an
+# earlier one by name instead of the `+`-concat footgun (which emits duplicate
+# keys kubectl rejects).
+_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, cfg.APP_ENV), [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
-]
+])
 
 # Load the denormalized components forge emitted and overlay the dev
 # knobs. The `|` merge layers per-env config onto each loaded component;
@@ -68,7 +71,7 @@ _components = [c | {
     registry = _registry
     namespace = _namespace
     replicas = 1
-    env_vars = _base_env + [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}]
+    env_vars = forge.env_merge(_base_env, [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}])
 } for c in fc.load_components(fc.COMPONENTS_GEN)]
 
 _component_env = fc.ComponentEnv {

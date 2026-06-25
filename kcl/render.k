@@ -616,6 +616,14 @@ schema RenderEnv:
     cluster: K8sCluster
     image_tag: str = "latest"
     network_policies: bool = True
+    # image_digests pins each image NAME to its content-addressed manifest
+    # digest (`{<image>: "sha256:..."}`), so every service resolves to ITS
+    # OWN image's digest rather than one env-wide tag. forge deploy builds
+    # this map from the per-image build state and passes it via
+    # `-D image_digests=<json>`; main.k decodes it with
+    # `forge.image_digests()` and threads it here. Empty (the default, and
+    # the local-registry / no-digest path) leaves every image on its tag.
+    image_digests: {str:str} = {}
 
 _render_namespace = lambda env: RenderEnv -> any {
     {
@@ -641,7 +649,7 @@ _pull_secrets = lambda env: RenderEnv -> [str] {
 }
 
 _render_cluster_service = lambda s: Service, env: RenderEnv -> [any] {
-    svc_lib.render_k8s_service(s, env.cluster.namespace, env.cluster.registry, env.image_tag) \
+    svc_lib.render_k8s_service(s, env.cluster.namespace, env.cluster.registry, env.image_tag, env.image_digests) \
         + rbac_lib.render_namespaced_rbac(
             s.name,
             env.cluster.namespace,
@@ -651,12 +659,12 @@ _render_cluster_service = lambda s: Service, env: RenderEnv -> [any] {
 }
 
 _render_operator_manifests = lambda o: Operator, env: RenderEnv -> [any] {
-    svc_lib.render_operator(o, env.cluster.namespace, env.cluster.registry, env.image_tag) \
+    svc_lib.render_operator(o, env.cluster.namespace, env.cluster.registry, env.image_tag, env.image_digests) \
         + rbac_lib.render_cluster_rbac(o.name, env.cluster.namespace, o.cluster_rbac, _pull_secrets(env))
 }
 
 _render_cronjob_manifests = lambda c: CronJob, env: RenderEnv -> [any] {
-    svc_lib.render_cronjob(c, env.cluster.namespace, env.cluster.registry, env.image_tag) \
+    svc_lib.render_cronjob(c, env.cluster.namespace, env.cluster.registry, env.image_tag, env.image_digests) \
         + rbac_lib.render_namespaced_rbac(c.name, env.cluster.namespace, [], _pull_secrets(env))
 }
 

@@ -463,16 +463,25 @@ func TestBuildExternalServices_CapturesDigest(t *testing.T) {
 		t.Errorf("deploy-aggregate digest: got %q, want %q", dst.Digest, wantDigest)
 	}
 
-	// And resolveDeployImageTag pins the immutable @sha256 reference.
+	// resolveDeployImageTag returns the mutable tag (the env-wide image_tag
+	// fallback + the External/Compose ${TAG}); the digest is NOT stamped here
+	// anymore.
 	ref, plain, _, rerr := resolveDeployImageTag(context.Background(), projDir, "staging", "", false)
 	if rerr != nil {
 		t.Fatalf("resolveDeployImageTag: %v", rerr)
 	}
-	if ref != "@"+wantDigest {
-		t.Errorf("resolved imageRef: got %q, want %q", ref, "@"+wantDigest)
+	if ref != "staging" || plain != "staging" {
+		t.Errorf("resolved imageRef=%q plainTag=%q, want both the mutable tag %q", ref, plain, "staging")
 	}
-	if plain != "staging" {
-		t.Errorf("resolved plainTag: got %q, want the mutable tag %q", plain, "staging")
+
+	// resolveDeployImageDigests pins the per-IMAGE digest — the reliant image
+	// resolves to ITS captured digest (from the per-service external state).
+	digests, derr := resolveDeployImageDigests(projDir, "staging", false)
+	if derr != nil {
+		t.Fatalf("resolveDeployImageDigests: %v", derr)
+	}
+	if digests["reliant"] != wantDigest {
+		t.Errorf("reliant image digest: got %q, want %q", digests["reliant"], wantDigest)
 	}
 }
 

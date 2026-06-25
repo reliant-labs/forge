@@ -35,7 +35,7 @@ func indexOf(ss []string, s string) int {
 // unquoted — their KCL type is intentional project config.
 func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 	// Numeric tag: the regression trigger. Must come out QUOTED.
-	got := renderDArgs("3826648", "cp-forge-prod", "prod", nil)
+	got := renderDArgs("3826648", "cp-forge-prod", "prod", nil, nil)
 	for _, want := range []string{
 		`image_tag="3826648"`,
 		`namespace="cp-forge-prod"`,
@@ -47,13 +47,13 @@ func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 	}
 
 	// Non-numeric tag is also quoted (uniform handling).
-	got = renderDArgs("v1.2.3", "ns", "dev", nil)
+	got = renderDArgs("v1.2.3", "ns", "dev", nil, nil)
 	if !contains(got, `image_tag="v1.2.3"`) {
 		t.Errorf("expected image_tag=\"v1.2.3\" in dArgs, got %v", got)
 	}
 
 	// Empty env produces no env= binding.
-	got = renderDArgs("tag", "ns", "", nil)
+	got = renderDArgs("tag", "ns", "", nil, nil)
 	for _, a := range got {
 		if strings.HasPrefix(a, "env=") {
 			t.Errorf("expected no env= entry for empty env, got %v", got)
@@ -61,7 +61,7 @@ func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 	}
 
 	// envCfgKV values are appended sorted by key and UNquoted.
-	got = renderDArgs("tag", "ns", "", map[string]string{"B": "2", "A": "1"})
+	got = renderDArgs("tag", "ns", "", map[string]string{"B": "2", "A": "1"}, nil)
 	if !contains(got, "A=1") {
 		t.Errorf("expected unquoted A=1 in dArgs, got %v", got)
 	}
@@ -70,6 +70,27 @@ func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 	}
 	if ia, ib := indexOf(got, "A=1"), indexOf(got, "B=2"); ia == -1 || ib == -1 || ia > ib {
 		t.Errorf("expected A=1 before B=2 (sorted), got %v", got)
+	}
+
+	// image_digests is emitted as a QUOTED JSON string (so KCL types it as
+	// `str` and json.decodes it). encoding/json sorts object keys, so the
+	// JSON is deterministic.
+	got = renderDArgs("tag", "ns", "", nil, map[string]string{
+		"reliant":       "sha256:12ac",
+		"control-plane": "sha256:d181",
+	})
+	wantDigest := `image_digests="{\"control-plane\":\"sha256:d181\",\"reliant\":\"sha256:12ac\"}"`
+	if !contains(got, wantDigest) {
+		t.Errorf("expected %q in dArgs, got %v", wantDigest, got)
+	}
+
+	// Empty / nil image_digests produces NO image_digests binding — so a
+	// plain `kcl run` renders byte-identically (option yields None → {}).
+	got = renderDArgs("tag", "ns", "", nil, nil)
+	for _, a := range got {
+		if strings.HasPrefix(a, "image_digests=") {
+			t.Errorf("expected no image_digests entry for nil map, got %v", got)
+		}
 	}
 }
 

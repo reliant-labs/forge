@@ -33,6 +33,7 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -42,8 +43,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/kclrender"
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
 // ApplyOpts expresses the differences between the three existing call
@@ -57,6 +59,15 @@ type ApplyOpts struct {
 	// ImageTag is the value bound to KCL's `image_tag` -D variable.
 	// Required (callers default to gitShortSHA at the call site).
 	ImageTag string
+
+	// ImageDigests is the per-image content-addressed digest map bound to
+	// KCL's `image_digests` -D variable (image NAME → "sha256:..."). When
+	// set, each rendered service's manifest image resolves to ITS image's
+	// digest (`<image>@sha256:...`), not the env-wide ImageTag — the
+	// structural fix for a multi-image env pinning every service to one
+	// digest. May be nil/empty (the local-registry / no-digest path), in
+	// which case every image stays on ImageTag, byte-identical to before.
+	ImageDigests map[string]string
 
 	// Namespace is the value bound to KCL's `namespace` -D variable and
 	// passed to every kubectl invocation. Required.
@@ -220,7 +231,7 @@ const clusterRoutingLabel = "forge.dev/cluster"
 // warning messages, and ordering); per-call differences are expressed
 // through ApplyOpts fields.
 func Apply(ctx context.Context, opts ApplyOpts) error {
-	manifests, err := RenderManifests(ctx, opts.MainK, opts.ImageTag, opts.Namespace, opts.Env, opts.EnvConfigKV)
+	manifests, err := RenderManifests(ctx, opts.MainK, opts.ImageTag, opts.Namespace, opts.Env, opts.EnvConfigKV, opts.ImageDigests)
 	if err != nil {
 		// Reload's pre-extraction form used the shorter "KCL render:"
 		// wrap; the framed deploy/up path used the longer message.
@@ -429,13 +440,25 @@ func projectRootFromMainK(mainK string) string {
 // RenderEnv.image_tag's `str` type (the forge-deploy-prod regression).
 // envCfgKV values are left unquoted: they are project config whose KCL
 // type (int/bool/str) is intentional.
-func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string) []string {
+func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) []string {
 	dArgs := []string{
 		"image_tag=" + strconv.Quote(imageTag),
 		"namespace=" + strconv.Quote(namespace),
 	}
 	if env != "" {
 		dArgs = append(dArgs, "env="+strconv.Quote(env))
+	}
+	// image_digests is the per-image name→digest map forge deploy pins so
+	// each service resolves to ITS image's digest (not one env-wide digest
+	// stamped onto every image). Passed as a QUOTED JSON string so KCL types
+	// it as `str`; `forge.image_digests()` json.decodes it. Omitted entirely
+	// when empty (the local-registry / no-digest path) so a plain `kcl run`
+	// renders byte-identically — `option("image_digests")` then yields None
+	// and the helper returns {}.
+	if len(imageDigests) > 0 {
+		if b, err := json.Marshal(imageDigests); err == nil {
+			dArgs = append(dArgs, "image_digests="+strconv.Quote(string(b)))
+		}
 	}
 	keys := make([]string, 0, len(envCfgKV))
 	for k := range envCfgKV {
@@ -448,8 +471,8 @@ func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string) []
 	return dArgs
 }
 
-func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
-	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV)
+func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) (string, error) {
+	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests)
 	// Render from the project root so the deploy-as-data main.k's
 	// `file.read("deploy/kcl/components_gen.json")` resolves. mainK is
 	// `<root>/deploy/kcl/<env>/main.k`; strip the four trailing path

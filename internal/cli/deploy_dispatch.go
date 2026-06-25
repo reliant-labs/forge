@@ -250,7 +250,7 @@ func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) er
 // declares no cluster (host-only / compose), Context stays empty — and the
 // cluster.KubectlApply chokepoint refuses an empty context rather than
 // falling back to the active one.
-func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string, groups []deploytarget.ServiceGroup, entities *KCLEntities) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
+func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string, groups []deploytarget.ServiceGroup, entities *KCLEntities, imageDigests map[string]string) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
 	scopeFor := clusterScopeForGroups(groups, entities)
 	return func(group deploytarget.ServiceGroup) cluster.ApplyOpts {
 		ns := group.Namespace
@@ -260,6 +260,7 @@ func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string,
 		return cluster.ApplyOpts{
 			MainK:        mainK,
 			ImageTag:     imageTag,
+			ImageDigests: imageDigests,
 			Namespace:    ns,
 			Env:          env,
 			Context:      resolveGroupContext(group),

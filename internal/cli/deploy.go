@@ -15,10 +15,12 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/secrets"
+	"github.com/reliant-labs/forge/internal/statefile"
 )
 
 func newDeployCmd() *cobra.Command {
@@ -291,13 +293,17 @@ type deployOptions struct {
 }
 
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
-	// imageTag is the reference the KCL manifest render pins — a digest
-	// (`@sha256:...`) when one was captured and preferred, else the mutable
-	// tag. plainTag is always the mutable tag, used by External/Compose for
-	// their ${TAG} substitution (a digest would break `${IMAGE}:${TAG}`).
-	// For every tag-only deploy the two are identical.
+	// imageTag is the env-wide mutable tag bound to KCL's `image_tag` (the
+	// per-image fallback for vendored / no-digest images and the
+	// External/Compose ${TAG} source). plainTag is the same mutable tag.
+	// imageDigests is the PER-IMAGE name→digest map: each forge-built image
+	// resolves to ITS OWN captured digest, so the KCL render pins
+	// `<image>@<digest>` per service rather than stamping one env-wide digest
+	// onto every image (the multi-image correctness fix). Empty on the
+	// no-digest / local-registry path → every image stays on imageTag.
 	imageTag := opts.imageTag
 	plainTag := opts.imageTag
+	var imageDigests map[string]string
 	dryRun := opts.dryRun
 	namespace := opts.namespace
 	targetArchFlag := opts.targetArch
@@ -342,6 +348,16 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		imageTag = ref
 		plainTag = pt
 		tagSource = src
+		// Resolve the PER-IMAGE digest map (image name → sha256). Threaded
+		// into every manifest render below so each service pins ITS image's
+		// digest. Best-effort: a read error here never blocks the deploy (the
+		// tag path already ran and surfaced any hard state-file error); the
+		// worst case is falling back to the tag for some image.
+		digests, derr := resolveDeployImageDigests(projectDir, envName, opts.noDigest)
+		if derr != nil {
+			return derr
+		}
+		imageDigests = digests
 	}
 
 	// Resolve namespace.
@@ -571,14 +587,15 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// leaves the gate inert.
 		targetArch := kclFirstClusterPlatform(entities)
 		if err := runDeployPreflight(ctx, deployPreflightInput{
-			mainK:      mainK,
-			imageTag:   imageTag,
-			namespace:  namespace,
-			env:        envName,
-			envCfgKV:   envCfgKV,
-			deployCtx:  deployContext,
-			targets:    targets,
-			targetArch: targetArch,
+			mainK:        mainK,
+			imageTag:     imageTag,
+			namespace:    namespace,
+			env:          envName,
+			envCfgKV:     envCfgKV,
+			deployCtx:    deployContext,
+			targets:      targets,
+			targetArch:   targetArch,
+			imageDigests: imageDigests,
 		}); err != nil {
 			return err
 		}
@@ -607,7 +624,10 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// the builder is unused for rollback groups, but the registry
 		// still needs the provider registered. We reuse the deploy-
 		// shaped builder for symmetry with the deploy path.
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities)
+		// Rollback reuses the tag already in the cluster, so imageDigests is
+		// nil here (the digest-map resolution is gated behind `if !rollback`);
+		// the builder threads it through unused for symmetry.
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities, imageDigests)
 		registry := deploytarget.NewRegistry()
 		// Rollback's per-group context is resolved by the provider purely
 		// from each group's declared cluster (forge.K8sCluster.cluster) —
@@ -640,6 +660,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		if err := cluster.Apply(ctx, cluster.ApplyOpts{
 			MainK:        mainK,
 			ImageTag:     imageTag,
+			ImageDigests: imageDigests,
 			Namespace:    namespace,
 			Env:          envName,
 			Context:      deployContext,
@@ -660,7 +681,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// / prune / host-skip / one-shot jobs) flows through verbatim.
 		hostSkip := hostDeploymentSkipSetFromKCL(cfg, entities)
 		oneShotJobs := oneShotJobNamesFromKCL(entities)
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities, imageDigests)
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
 		if err := dispatchDeployGroups(ctx, registry, groups, ""); err != nil {
@@ -986,6 +1007,7 @@ func hostDeploymentSkipSetFromKCL(cfg *config.ProjectConfig, e *KCLEntities) map
 //   - A missing state file is fine; the function falls through to git.
 //   - A git-derivation failure on the fallback path is wrapped with a
 //     "pass --tag to override" hint so users have an escape hatch.
+//
 // Return values: (imageRef, plainTag, source, err). imageRef is what the
 // KCL manifest render pins — the digest form `@sha256:...` when a digest is
 // preferred, else the plain tag. plainTag is ALWAYS the mutable tag, used by
@@ -1021,20 +1043,15 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 			return "", "", "", serr
 		}
 		warnIfNonReproducible(st)
-		// Prefer the immutable digest over the mutable tag when one was
-		// captured (and the operator hasn't opted out). The `@sha256:...`
-		// form flows into the env-wide image_tag slot; the KCL _image_ref
-		// seam pins `<image>@<digest>` and drops the env tag. This is the
-		// structural fix for the node-cache / re-tag-didn't-take incident —
-		// a digest reference can't be re-pointed. Third-party pinned images
-		// (litellm/nats/postgres) already carry their own tag, so the seam
-		// ignores this value for them; only forge-built images get pinned.
-		// plainTag stays the mutable tag for the External/Compose ${TAG}
-		// path (a digest there would break `${IMAGE}:${TAG}`).
-		if st.Digest != "" && !noDigest {
-			src := fmt.Sprintf(".forge/state/build-%s.json (built %s, digest %s)", key, st.PushedAt, st.Digest)
-			return "@" + st.Digest, st.Tag, src, nil
-		}
+		// imageRef is ALWAYS the mutable tag now — never an env-wide digest.
+		// Digest pinning moved to resolveDeployImageDigests, which builds a
+		// PER-IMAGE name→digest map (control-plane→d…, reliant→12…,
+		// workspace-base→89…) from the per-service build states; the KCL
+		// `_image_ref` seam then pins each service to ITS image's digest.
+		// Returning one digest here was the bug: it stamped a single image's
+		// digest onto every service (reliant pinned to control-plane's digest
+		// → manifest unknown). The env tag is the per-image fallback (vendored
+		// images, no-digest builds) and the External/Compose ${TAG} source.
 		src := fmt.Sprintf(".forge/state/build-%s.json (built %s)", key, st.PushedAt)
 		return st.Tag, st.Tag, src, nil
 	}
@@ -1043,6 +1060,86 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 		return "", "", "", fmt.Errorf("failed to determine image tag: %w\nUse --tag to specify one manually", terr)
 	}
 	return t, t, "git describe --tags --always --dirty", nil
+}
+
+// resolveDeployImageDigests builds the PER-IMAGE name→digest map the KCL
+// manifest render pins each service's image to. This is the correctness fix
+// for the multi-image deploy: instead of one env-wide digest stamped onto
+// every service (which pinned reliant + workspace-base to the control-plane
+// digest → `manifest unknown`), each image resolves to ITS OWN captured
+// digest.
+//
+// The map is keyed on the BARE image name (`control-plane`, `reliant`,
+// `workspace-base`), the same key the KCL `_image_ref` seam looks up against
+// `svc.image`. Multiple services may share one image (reliant-api-server /
+// reliant-temporal-worker / daemon-gateway all run `reliant`); they all carry
+// the same digest, so a later write is a harmless overwrite.
+//
+// Sources, all best-effort (a missing/unreadable file is skipped, never
+// fatal — deploy still works on the tag for any image with no digest):
+//
+//   - The aggregate `.forge/state/build-<env>.json` (and the `default`
+//     fallback) the docker PROJECT build and the external-build deploy-side
+//     writer produce — carries the control-plane image's digest.
+//   - Every per-service `.forge/state/build-<env>-<service>.json` the
+//     external-build dispatcher writes — carries each external image's own
+//     digest (reliant, workspace-base).
+//
+// Returns nil when noDigest is set (the --no-digest escape hatch) or nothing
+// captured a digest — the render then leaves every image on its tag,
+// byte-identical to the pre-digest behaviour (the local-registry e2e path
+// captures no digests, so it is unaffected).
+func resolveDeployImageDigests(projectDir, envName string, noDigest bool) (map[string]string, error) {
+	if noDigest {
+		return nil, nil
+	}
+	out := map[string]string{}
+
+	// Aggregate build state(s): env-specific, then the env-agnostic default.
+	for _, key := range buildStateLookupEnvs(envName) {
+		st, err := ReadBuildState(projectDir, key)
+		if err != nil {
+			// A present-but-unreadable aggregate is already a hard error in
+			// resolveDeployImageTag (the tag path runs first), so here we
+			// treat it as "no digest from this source" rather than double-
+			// reporting — the tag resolver surfaces the real error.
+			continue
+		}
+		if st != nil && st.Image != "" && st.Digest != "" {
+			out[st.Image] = st.Digest
+		}
+	}
+
+	// Per-service external-build states: build-<env>-<service>.json. Glob the
+	// state dir for this env's per-service files and read each one. These
+	// carry the per-image digests the aggregate can't (the aggregate is a
+	// single last-writer-wins file).
+	stateDir := filepath.Join(projectDir, statefile.DirRel)
+	pattern := filepath.Join(stateDir, "build-"+statefile.SafeSegment(envName)+"-*.json")
+	matches, _ := filepath.Glob(pattern)
+	for _, path := range matches {
+		// Derive the service segment from the filename so we can read the
+		// typed per-service state via buildtarget.ReadState (one decode path,
+		// SafeSegment-aware). filename: build-<env>-<service>.json
+		base := filepath.Base(path)
+		prefix := "build-" + statefile.SafeSegment(envName) + "-"
+		if !strings.HasPrefix(base, prefix) || !strings.HasSuffix(base, ".json") {
+			continue
+		}
+		service := strings.TrimSuffix(strings.TrimPrefix(base, prefix), ".json")
+		st, err := buildtarget.ReadState(projectDir, envName, service)
+		if err != nil || st == nil {
+			continue
+		}
+		if st.Image != "" && st.Digest != "" {
+			out[st.Image] = st.Digest
+		}
+	}
+
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // buildStateLookupEnvs is the ordered fallback of build-state keys to try
@@ -1377,6 +1474,12 @@ type deployPreflightInput struct {
 	envCfgKV  map[string]string
 	deployCtx string
 	targets   []string
+	// imageDigests is the per-image name→digest map (image NAME →
+	// "sha256:..."). Threaded into the manifest render so the preflight
+	// checks the SAME `<image>@<digest>` refs the apply will ship — a
+	// preflight that pinned every image to one env-wide digest would pass
+	// or fail on the wrong refs. Empty on the no-digest path.
+	imageDigests map[string]string
 	// targetArch is the DECLARED node architecture of the target cluster
 	// (GOARCH form, from the env's KCL deploy.Cluster.platform). Threads into
 	// PreflightOpts.TargetArch to drive the arch gate. EMPTY when the env
@@ -1404,7 +1507,7 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 	// --target filter keeps the preflight scoped to exactly the apps about
 	// to be applied (a targeted single-app deploy shouldn't fail on another
 	// app's missing image).
-	manifests, err := cluster.RenderManifests(ctx, in.mainK, in.imageTag, in.namespace, in.env, in.envCfgKV)
+	manifests, err := cluster.RenderManifests(ctx, in.mainK, in.imageTag, in.namespace, in.env, in.envCfgKV, in.imageDigests)
 	if err != nil {
 		return fmt.Errorf("preflight: render manifests: %w", err)
 	}

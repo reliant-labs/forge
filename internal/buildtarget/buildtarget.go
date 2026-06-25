@@ -2,18 +2,20 @@
 // whose source lives outside the project's Go module — sibling repos,
 // third-party binaries, language runtimes forge doesn't natively build.
 // Mirrors internal/deploytarget for the BUILD side: a service declares
-// `build_cmd` on its KCL Service, and forge runs that command via
-// `sh -c` instead of the built-in Go-build pipeline.
+// `build = forge.ShellBuild { cmd, cwd, env }` on its KCL Service (the
+// SINGLE shell escape hatch), and forge runs that command via `sh -c`
+// instead of the built-in Go-build pipeline. The Spec's BuildCmd/BuildCwd/
+// BuildEnv fields below are the RESOLVED form of that ShellBuild.
 //
 // Design notes:
 //
 //   - Mirrors External (deploy provider) in shape — same `sh -c`
 //     execution, same ${X} substitution. The build side and deploy side
-//     are ORTHOGONAL: a service can have `build_cmd` (build externally)
+//     are ORTHOGONAL: a service can have a ShellBuild (build externally)
 //     AND `deploy = K8sCluster { ... }` (deploy to in-cluster) — the
 //     typical cp-forge pattern.
 //
-//   - A missing build_cwd is a HARD FAILURE, not a skip. The dispatcher
+//   - A missing cwd is a HARD FAILURE, not a skip. The dispatcher
 //     only constructs a Spec for services that are IN the current env, so
 //     by the time a Spec reaches Runner.Build its inputs are expected to
 //     exist; a missing source tree (e.g. an un-checked-out sibling repo)
@@ -265,35 +267,41 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 	}
 
 	// Resolve BuildCwd: relative paths against ProjectDir, absolute
-	// passes through. Empty BuildCwd means "use ProjectDir directly"
-	// — execRunner picks up the host cwd, which equals ProjectDir for
-	// forge build invocations (cobra runs with cwd=project root).
-	cwd := spec.BuildCwd
-	if cwd != "" && !filepath.IsAbs(cwd) {
-		cwd = filepath.Join(spec.ProjectDir, cwd)
-	}
-
-	// FAIL when the resolved build_cwd is missing on disk. By the time a
-	// Spec reaches Runner.Build, the dispatcher has already filtered to
-	// services that are IN the current env (externalBuildServices over
-	// the rendered KCL) — so a service-not-in-this-env is skipped UPSTREAM
-	// by never constructing a Spec, and is never seen here. That leaves
-	// exactly one meaning for a missing build_cwd at THIS point: the build
-	// was expected to run but its required source tree (e.g. a sibling
-	// repo like ../reliant) isn't checked out. Skipping-with-warn here
-	// reported the overall build as SUCCESS while silently producing no
-	// image — so a following `forge deploy` referenced an unpushed tag →
-	// ImagePullBackOff. Failing loudly, naming the missing path, is the
-	// correct contract: the user either checks out the sibling or removes
-	// the service from this env's KCL.
-	if cwd != "" {
+	// passes through. Empty BuildCwd means "use ProjectDir directly" —
+	// resolved EXPLICITLY to spec.ProjectDir (not left empty to inherit
+	// the host cwd) so a ShellBuild with no cwd always runs from the
+	// project root regardless of where forge was invoked. This is the
+	// single documented cwd contract for the shell hatch.
+	// A user-DECLARED cwd resolves against ProjectDir and must exist on
+	// disk; an UNSET cwd resolves explicitly to ProjectDir itself (always
+	// present, so no existence check) so a ShellBuild with no cwd always
+	// runs from the project root regardless of where forge was invoked.
+	cwd := spec.ProjectDir
+	if spec.BuildCwd != "" {
+		cwd = spec.BuildCwd
+		if !filepath.IsAbs(cwd) {
+			cwd = filepath.Join(spec.ProjectDir, cwd)
+		}
+		// FAIL when the declared cwd is missing on disk. By the time a
+		// Spec reaches Runner.Build, the dispatcher has already filtered to
+		// services that are IN the current env (externalBuildServices over
+		// the rendered KCL) — so a service-not-in-this-env is skipped UPSTREAM
+		// by never constructing a Spec, and is never seen here. That leaves
+		// exactly one meaning for a missing cwd at THIS point: the build
+		// was expected to run but its required source tree (e.g. a sibling
+		// repo like ../reliant) isn't checked out. Skipping-with-warn here
+		// reported the overall build as SUCCESS while silently producing no
+		// image — so a following `forge deploy` referenced an unpushed tag →
+		// ImagePullBackOff. Failing loudly, naming the missing path, is the
+		// correct contract: the user either checks out the sibling or removes
+		// the service from this env's KCL.
 		if _, err := os.Stat(cwd); err != nil {
 			if os.IsNotExist(err) {
-				result.Err = fmt.Errorf("build_cmd for service %q requires working directory %s, which does not exist on disk — check out the required source (e.g. the sibling repo) or remove the service from this env's KCL", spec.Service, cwd)
+				result.Err = fmt.Errorf("ShellBuild for service %q requires working directory %s, which does not exist on disk — check out the required source (e.g. the sibling repo) or remove the service from this env's KCL", spec.Service, cwd)
 				result.Duration = time.Since(start)
 				return result
 			}
-			result.Err = fmt.Errorf("stat build_cwd %s: %w", cwd, err)
+			result.Err = fmt.Errorf("stat cwd %s: %w", cwd, err)
 			result.Duration = time.Since(start)
 			return result
 		}

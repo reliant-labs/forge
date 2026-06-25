@@ -111,11 +111,8 @@ func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
 		t.Fatalf("parseKCLEntities: %v", err)
 	}
 	services := []ServiceEntity{
-		{
-			Name:     "reliant-api-server",
-			Image:    "reliant",
-			BuildCmd: "true", // no build_cwd → runs, writes state with the resolved tag
-		},
+		// no cwd → runs from project root, writes state with the resolved tag
+		shellSvc("reliant-api-server", "reliant", "true", "", nil),
 	}
 	opts := buildOptions{env: "staging", parallel: false}
 	// Thread a DIFFERENT env-wide tag (a stand-in for git-describe) to
@@ -155,14 +152,9 @@ func TestBuildExternalServices_PerServicePinWins(t *testing.T) {
 	ents := &KCLEntities{
 		ManifestImageTags: map[string]string{"workspace-base": "staging"},
 	}
-	services := []ServiceEntity{
-		{
-			Name:     "workspace-base",
-			Image:    "workspace-base",
-			ImageTag: "dev-per-daemon", // the KCL per-service pin
-			BuildCmd: "true",
-		},
-	}
+	wsbase := shellSvc("workspace-base", "workspace-base", "true", "", nil)
+	wsbase.ImageTag = "dev-per-daemon" // the KCL per-service pin
+	services := []ServiceEntity{wsbase}
 	opts := buildOptions{env: "e2e", parallel: false}
 	results := buildExternalServices(
 		context.Background(), services, opts,

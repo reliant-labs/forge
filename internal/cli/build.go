@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
 )
@@ -1595,50 +1594,27 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 	}
 }
 
-// buildKCLDockerShell dispatches the per-service build types that are NOT
-// go-builds: DockerBuild and ShellBuild. This is where a service's
-// declared image build (docker) or verbatim build command (shell) runs.
+// buildKCLDockerShell dispatches the per-service DockerBuild type — the
+// only per-service build run here. ShellBuild services are dispatched by
+// the single external-build dispatcher (buildExternalServices) so they
+// share ONE execution + state/digest path with the rest of the shell
+// escape hatch; there is no separate shell branch here anymore.
 //
 //   - docker → `docker build` reusing forge's existing image-build
 //     primitives (tags via cfg.Docker.Registry + resolvedTag, push when
 //     --push, build-contexts) with the service's dockerfile / platform /
 //     target / build_args. A DockerBuild is the ONLY per-service image
 //     build — there is no unconditional auto-docker step for these.
-//   - shell → run the verbatim command via `sh -c` (generalizes the old
-//     build_cmd escape hatch).
 //
-// A service whose EffectiveBuild() is a GoBuild is skipped here (handled
-// by the go-build path). Failures are captured, not short-circuited, so
-// the summary shows the full set.
+// A service whose EffectiveBuild() is a GoBuild (handled by the go-build
+// path) or a ShellBuild (handled by buildExternalServices) is skipped
+// here. Failures are captured, not short-circuited, so the summary shows
+// the full set.
 func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, opts buildOptions, cfgArchForDocker, resolvedTag string) []buildResult {
 	var out []buildResult
-	// Substitution context shared by every shell build in this env. Mirrors
-	// the values the external build_cmd path resolves (build_external.go) so
-	// a ShellBuild's ${IMAGE}/${TAG}/${REGISTRY}/${PROJECT_DIR}/${TARGETARCH}
-	// tokens expand identically. Resolved once: tag/registry/arch/projectDir
-	// are env-wide, only ${IMAGE}/${SERVICE} vary per service.
-	registry := cfg.Docker.Registry
-	if registry == "" {
-		registry = cfg.Name
-	}
-	shellArch := resolveExternalBuildTargetArch(cfgArchForDocker, opts.targetArch)
-	projDir := projectDirForKCL()
 	for _, svc := range e.Services {
-		b := svc.EffectiveBuild()
-		switch b.Type {
-		case "docker":
-			out = append(out, buildServiceDocker(ctx, cfg, svc.Name, b.Docker, opts, cfgArchForDocker, resolvedTag))
-		case "shell":
-			spec := buildtarget.Spec{
-				Service:    svc.Name,
-				Image:      svc.Image,
-				Tag:        resolvedTag,
-				TargetArch: shellArch,
-				Registry:   registry,
-				ProjectDir: projDir,
-				Env:        opts.env,
-			}
-			out = append(out, buildServiceShell(ctx, svc.Name, b.Shell, opts, spec))
+		if svc.EffectiveBuild().Type == "docker" {
+			out = append(out, buildServiceDocker(ctx, cfg, svc.Name, svc.EffectiveBuild().Docker, opts, cfgArchForDocker, resolvedTag))
 		}
 	}
 	return out
@@ -1734,40 +1710,3 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName 
 	return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start)}
 }
 
-// buildServiceShell runs a ShellBuild's verbatim command via `sh -c`. The
-// command owns the whole build (and any push) — forge does not wrap it.
-// Output is streamed; the produced artifact is whatever the command
-// writes (forge doesn't assume an output path for shell builds).
-//
-// Execution semantics deliberately match the external build_cmd path
-// (build_external.go / internal/buildtarget) so a user carries one mental
-// model across both shell escape hatches:
-//
-//   - cwd is the PROJECT ROOT (spec.ProjectDir), NOT the build output
-//     dir. Relative paths in the command (scripts/x.sh, ../reliant,
-//     docker/Dockerfile) then resolve as a user expects. (Previously the
-//     cwd was bin/, which silently broke a relative scripts/… path with
-//     exit 127.)
-//   - the same ${IMAGE}/${TAG}/${CODE_VERSION}/${SERVICE}/${TARGETARCH}/
-//     ${REGISTRY}/${PROJECT_DIR}/${ENV} tokens build_cmd expands are
-//     substituted into the command before exec, via the shared
-//     buildtarget.Expand helper (no duplicated substitution logic).
-func buildServiceShell(ctx context.Context, svcName string, sh *ShellBuild, opts buildOptions, spec buildtarget.Spec) buildResult {
-	start := time.Now()
-	if sh == nil || sh.Cmd == "" {
-		return buildResult{name: svcName + " (shell)", kind: "shell", duration: time.Since(start), err: fmt.Errorf("shell build: empty cmd")}
-	}
-	// Apply the same ${X} substitution the external build_cmd path uses so
-	// a ShellBuild and a build_cmd interpolate identically.
-	expanded := buildtarget.Expand(sh.Cmd, spec)
-	fmt.Printf("[build] %s: sh -c %q\n", svcName, expanded)
-	cmd := exec.CommandContext(ctx, "sh", "-c", expanded)
-	// Run from the project root (NOT the build output dir) so relative
-	// paths resolve as the user expects — matching build_cmd's contract.
-	cmd.Dir = spec.ProjectDir
-	cmd.Env = os.Environ()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	return buildResult{name: svcName + " (shell)", kind: "shell", duration: time.Since(start), err: err}
-}

@@ -1,7 +1,7 @@
 // Package cli — `forge audit` external-builds category (Phase 3 of the
 // build_cmd / external-build escape-hatch refactor).
 //
-// Surfaces every KCL service whose Service.build_cmd is non-empty. For
+// Surfaces every KCL service whose effective build is a ShellBuild. For
 // each such service the category emits:
 //
 //   - the resolved build_cwd state (exists / missing on disk),
@@ -25,7 +25,7 @@
 //
 // Status semantics:
 //
-//   - ok    — no services declare build_cmd, OR every service has a
+//   - ok    — no services declare a ShellBuild, OR every service has a
 //     present build_cwd, no env-key conflicts, and at least
 //     one env has recorded state (or no envs at all).
 //   - warn  — at least one service has a missing build_cwd on disk, OR
@@ -165,7 +165,7 @@ func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDi
 	if len(services) == 0 {
 		return audittype.Category{
 			Status:  audittype.StatusOK,
-			Summary: "0 service(s) declare build_cmd",
+			Summary: "0 service(s) declare a ShellBuild",
 			Details: map[string]any{
 				"services": []externalBuildEntry{},
 			},
@@ -216,7 +216,7 @@ func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDi
 		details["hint"] = hints
 	}
 
-	summary := fmt.Sprintf("%d service(s) declare build_cmd; %d missing cwd, %d env-key conflict(s), %d recorded build state(s)",
+	summary := fmt.Sprintf("%d service(s) declare a ShellBuild; %d missing cwd, %d env-key conflict(s), %d recorded build state(s)",
 		len(services), missingCwdCount, conflictCount, stateCount)
 	return audittype.Category{
 		Status:  status,
@@ -230,17 +230,19 @@ func collectExternalBuildEntries(entities *KCLEntities, envs []string, projectDi
 // reads state for each env, computes conflict tokens against
 // externalBuildBuiltinTokens.
 func buildExternalBuildEntry(svc ServiceEntity, projectDir string, envs []string) externalBuildEntry {
+	buildCwd := svc.EffectiveBuildCwd()
+	buildEnv := svc.EffectiveBuildEnv()
 	entry := externalBuildEntry{
 		Service:  svc.Name,
 		Image:    svc.Image,
-		BuildCwd: svc.BuildCwd,
+		BuildCwd: buildCwd,
 	}
 
-	// Resolve the build_cwd against the project root (relative paths
+	// Resolve the build cwd against the project root (relative paths
 	// resolve against projectDir; absolute pass through) and stat it.
 	// Empty cwd means "use projectDir directly" — projectDir always
 	// exists by construction (audit runs from it), so CwdExists=true.
-	resolved := svc.BuildCwd
+	resolved := buildCwd
 	if resolved == "" {
 		resolved = projectDir
 	} else if !filepath.IsAbs(resolved) {
@@ -256,14 +258,14 @@ func buildExternalBuildEntry(svc ServiceEntity, projectDir string, envs []string
 	// Sorted build_env keys + token-collision detection. Sorted keys
 	// keep the JSON stable across audit runs (map iteration order is
 	// non-deterministic).
-	if len(svc.BuildEnv) > 0 {
-		keys := make([]string, 0, len(svc.BuildEnv))
-		for k := range svc.BuildEnv {
+	if len(buildEnv) > 0 {
+		keys := make([]string, 0, len(buildEnv))
+		for k := range buildEnv {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		entry.BuildEnvKeys = keys
-		entry.ConflictTokens = conflictingBuildEnvKeys(svc.BuildEnv)
+		entry.ConflictTokens = conflictingBuildEnvKeys(buildEnv)
 	}
 
 	// Per-env state aggregation. Missing state files (ReadState

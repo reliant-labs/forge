@@ -128,11 +128,8 @@ _render_external = lambda d: External -> any {
         "deploy_cmd": d.deploy_cmd
         "rollback_cmd": d.rollback_cmd if d.rollback_cmd else None
         "health_cmd": d.health_cmd if d.health_cmd else None
-        # build_cmd is the build-side mirror of deploy_cmd; the Go-side
-        # parser (ExternalDeploy.BuildCmd) reads it for `forge build -t
-        # external`. None when unset so existing External targets that
-        # only deploy through forge stay unchanged.
-        "build_cmd": d.build_cmd if d.build_cmd else None
+        # Build is declared on Service.build (forge.ShellBuild) — the single
+        # shell hatch — NOT on the deploy block. No build_cmd is projected here.
         "env_file": d.env_file if d.env_file else None
         "env": d.env if d.env else {}
     }
@@ -216,6 +213,8 @@ _build_shell = lambda b: {str:any} -> ShellBuild {
     ShellBuild {
         output_name = b.output_name if "output_name" in b else ""
         cmd = b.cmd
+        cwd = b.cwd if "cwd" in b else ""
+        env = b.env if "env" in b else {}
     }
 }
 
@@ -259,6 +258,8 @@ _render_shell_build = lambda b: ShellBuild -> any {
         "type": "shell"
         "output_name": b.output_name if b.output_name else None
         "cmd": b.cmd
+        "cwd": b.cwd if b.cwd else None
+        "env": b.env if b.env else {}
     }
 }
 
@@ -285,9 +286,6 @@ _render_service = lambda s: Service -> any {
         "env_vars": [_render_env_var(e) for e in s.env_vars]
         "deploy": _render_deploy(s.deploy)
         "build": _render_build(s.build)
-        "build_cmd": s.build_cmd if s.build_cmd else None
-        "build_cwd": s.build_cwd if s.build_cwd else None
-        "build_env": s.build_env if s.build_env else {}
         "namespaced_rbac": s.namespaced_rbac if s.namespaced_rbac else None
         # Owned raw manifests project into the JSON contract too (null when
         # empty) so a consumer that reads `output` sees the same stable

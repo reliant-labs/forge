@@ -6,25 +6,21 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/buildtarget"
 )
 
-// TestBuildServiceShell_CwdAndSubstitution verifies the de-footgunned
-// ShellBuild contract: the command runs from the PROJECT ROOT (spec.ProjectDir,
-// NOT the build output dir), and the same ${X} tokens the build_cmd escape
-// hatch expands are substituted into the command before exec.
+// TestShellBuild_CwdAndSubstitution verifies the unified ShellBuild
+// contract through the single dispatcher (buildExternalServices): the
+// command runs from the resolved cwd (here the PROJECT ROOT, since the
+// ShellBuild declares no cwd), and the documented ${X} tokens are
+// substituted into the command before exec.
 //
-// This used a real `sh -c` rather than a mocked runner because
-// buildServiceShell intentionally execs inline (it owns its own
-// exec.CommandContext, matching buildServiceDocker) — so the faithful test
-// drives a real shell and inspects what it observed (its cwd via $PWD, and
-// the already-expanded ${PROJECT_DIR}/${IMAGE}/${TAG}/${REGISTRY} tokens).
-func TestBuildServiceShell_CwdAndSubstitution(t *testing.T) {
+// It drives a real `sh -c` and inspects what the shell observed (its cwd
+// via $(pwd), and the already-expanded ${PROJECT_DIR}/${IMAGE}/${TAG}/
+// ${REGISTRY}/${TARGETARCH} tokens).
+func TestShellBuild_CwdAndSubstitution(t *testing.T) {
 	projDir := t.TempDir()
-	// A relative script path under the project root — the exact shape that
-	// used to fail with exit 127 when cwd was bin/. Resolving it from the
-	// project root is the whole point of the fix.
+	// A relative script path under the project root — resolving it from
+	// the project root is the whole point of the cwd contract.
 	scriptsDir := filepath.Join(projDir, "scripts")
 	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
 		t.Fatalf("mkdir scripts: %v", err)
@@ -34,31 +30,23 @@ func TestBuildServiceShell_CwdAndSubstitution(t *testing.T) {
 	}
 
 	outFile := filepath.Join(projDir, "observed.txt")
-	spec := buildtarget.Spec{
-		Service:    "gw",
-		Image:      "my-gw",
-		Tag:        "v1.2.3",
-		Registry:   "reg.example.com",
-		ProjectDir: projDir,
-		TargetArch: "arm64",
-		Env:        "dev",
-	}
 	// The command exercises: (1) a relative scripts/ path that must resolve
-	// against the project root, and (2) ${X} substitution. It records $PWD
-	// and the post-substitution token values into observed.txt so the test
-	// can assert both behaviors from the shell's point of view.
+	// against the project root, and (2) ${X} substitution. It records $(pwd)
+	// and the post-substitution token values into observed.txt.
 	// Note: $(pwd) (command substitution) is used rather than $PWD because
 	// forge's substitution runs os.Expand over the whole string first, which
 	// would consume a bare $PWD (it's an unknown token → empty). $( is left
-	// untouched by os.Expand. This $PWD-is-eaten subtlety is itself identical
-	// to the build_cmd path — consistency is the point.
-	sh := &ShellBuild{Cmd: "sh scripts/build-image.sh > /dev/null && " +
+	// untouched by os.Expand.
+	cmd := "sh scripts/build-image.sh > /dev/null && " +
 		"printf 'pwd=%s\\nimage=%s\\ntag=%s\\nregistry=%s\\nproject_dir=%s\\narch=%s\\n' " +
-		"\"$(pwd)\" '${IMAGE}' '${TAG}' '${REGISTRY}' '${PROJECT_DIR}' '${TARGETARCH}' > observed.txt"}
+		"\"$(pwd)\" '${IMAGE}' '${TAG}' '${REGISTRY}' '${PROJECT_DIR}' '${TARGETARCH}' > observed.txt"
+	svcs := []ServiceEntity{shellSvc("gw", "my-gw", cmd, "", nil)}
 
-	res := buildServiceShell(context.Background(), "gw", sh, buildOptions{outputDir: "bin"}, spec)
-	if res.err != nil {
-		t.Fatalf("buildServiceShell returned error: %v", res.err)
+	opts := buildOptions{env: "dev", parallel: false, outputDir: "bin"}
+	results := buildExternalServices(context.Background(), svcs, opts,
+		"reg.example.com", "v1.2.3", projDir, "arm64", nil)
+	if len(results) != 1 || results[0].err != nil {
+		t.Fatalf("buildExternalServices: %+v", results)
 	}
 
 	raw, err := os.ReadFile(outFile)
@@ -76,8 +64,7 @@ func TestBuildServiceShell_CwdAndSubstitution(t *testing.T) {
 		t.Errorf("cwd: command ran from %q, want project root %q", gotPWD, wantPWD)
 	}
 
-	// ${X} tokens must have been expanded BEFORE the shell saw them — the
-	// shell echoes whatever forge substituted in.
+	// ${X} tokens must have been expanded BEFORE the shell saw them.
 	for _, tc := range []struct{ field, want string }{
 		{"image", "my-gw"},
 		{"tag", "v1.2.3"},
@@ -91,27 +78,19 @@ func TestBuildServiceShell_CwdAndSubstitution(t *testing.T) {
 	}
 }
 
-// TestBuildServiceShell_NoopTrue confirms the no-op ShellBuild the reliant
-// sibling services declare (`cmd = "true  # ..."`) still succeeds: no
-// relative paths, no ${} tokens, so the cwd + substitution change is a
-// harmless no-op for them.
-func TestBuildServiceShell_NoopTrue(t *testing.T) {
+// TestShellBuild_NoopTrue confirms the no-op ShellBuild the reliant
+// sibling services declare (`cmd = "true  # ..."`) still succeeds through
+// the unified dispatcher: no relative paths, no ${} tokens, nothing
+// pushed — so the digest lookup finds nothing and the build is a harmless
+// success.
+func TestShellBuild_NoopTrue(t *testing.T) {
 	projDir := t.TempDir()
-	spec := buildtarget.Spec{Service: "reliant-noop", ProjectDir: projDir}
-	res := buildServiceShell(context.Background(), "reliant-noop",
-		&ShellBuild{Cmd: "true  # built upstream; nothing to do here"},
-		buildOptions{outputDir: "bin"}, spec)
-	if res.err != nil {
-		t.Fatalf("no-op ShellBuild should succeed, got: %v", res.err)
-	}
-}
-
-// TestBuildServiceShell_EmptyCmd keeps the empty-cmd guard intact.
-func TestBuildServiceShell_EmptyCmd(t *testing.T) {
-	res := buildServiceShell(context.Background(), "svc", &ShellBuild{Cmd: ""},
-		buildOptions{}, buildtarget.Spec{ProjectDir: t.TempDir()})
-	if res.err == nil {
-		t.Fatalf("empty cmd should error")
+	svcs := []ServiceEntity{shellSvc("reliant-noop", "reliant", "true  # built upstream; nothing to do here", "", nil)}
+	results := buildExternalServices(context.Background(), svcs,
+		buildOptions{env: "dev", outputDir: "bin"},
+		"reg", "dev", projDir, "amd64", nil)
+	if len(results) != 1 || results[0].err != nil {
+		t.Fatalf("no-op ShellBuild should succeed, got: %+v", results)
 	}
 }
 

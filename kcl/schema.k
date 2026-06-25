@@ -773,37 +773,18 @@ schema External:
     successful deploy; failures short-circuit before the state-file
     write so the recorded last-good tag stays clean.
 
-    `build_cmd` is the build-side mirror of `deploy_cmd`. Set it so
-    `forge build -t external --env <env>` constructs the deployable
-    image via a user-supplied shell command (`docker build …`, `docker
-    buildx …`, a cross-repo build script, etc.) instead of requiring a
-    hand-run `docker build`. forge exec's it via `sh -c` after
-    substituting the SAME tokens deploy_cmd uses:
-
-      * ${IMAGE}        forge-built image name
-      * ${TAG}          current tag (build-resolved or --tag override)
-      * ${CODE_VERSION} == ${TAG}; the canonical version to stamp into
-                        the image (e.g. a build-arg or label) so the
-                        running container's reported code_version always
-                        matches the image tag.
-      * ${PROJECT_DIR}  project root
-      * ${ENV}          env name (e.g. dev, staging, prod)
-      * ${SERVICE}      Service.name
-      * Any keys declared in `env`.
-
-    The command owns BOTH the build AND any push — forge does NOT run
-    `docker push` after it (same "user owns the CLI" contract as
-    deploy_cmd). On a successful build forge persists the resolved tag
-    to `.forge/state/build-<env>.json` so a subsequent `forge deploy
-    <env>` reuses it without `--tag`. Optional: External targets that
-    omit `build_cmd` keep building their image out-of-band (the prior
-    behaviour) and only deploy through forge.
+    BUILD side: to build (and push) this service's image via a shell
+    command, declare a `build = forge.ShellBuild { cmd = ... }` on the
+    Service — build and deploy are orthogonal, so the build hatch lives on
+    `Service.build` (the polymorphic build union) regardless of deploy
+    target. (This replaces the former `External.build_cmd` deploy-block
+    mirror, which was a second shell escape hatch with the same semantics
+    as ShellBuild; there is now ONE.)
     """
     type: str = "external"
     deploy_cmd: str
     rollback_cmd?: str
     health_cmd?: str
-    build_cmd?: str
     env_file?: str
     env?: {str: str}
 
@@ -1368,19 +1349,56 @@ schema DockerBuild(Build):
         dockerfile, "DockerBuild.dockerfile is required"
 
 schema ShellBuild(Build):
-    """Build the service by running `cmd` verbatim via `sh -c`. The
-    general escape hatch (generalizes the old build_cmd / EffectiveBuildCmd
-    path): cross-repo builds, language runtimes forge doesn't natively
-    build, pre-built image re-pushes. The command owns the whole build.
+    """Build the service by running `cmd` verbatim via `sh -c`. The ONE
+    shell escape hatch — cross-repo builds, language runtimes forge
+    doesn't natively build, pre-built image re-pushes, sibling-repo
+    binaries. The command owns the WHOLE build AND any push (forge does
+    NOT run `docker push` afterwards).
 
-    Execution contract (consistent with the build_cmd escape hatch): the
-    command runs with cwd == the PROJECT ROOT (the dir holding forge.yaml),
-    so relative paths (scripts/build-image.sh, ../sibling, docker/Dockerfile)
-    resolve as expected. Before exec, forge substitutes the same ${X} tokens
-    build_cmd supports — ${IMAGE} ${TAG} ${CODE_VERSION} ${SERVICE}
-    ${TARGETARCH} ${REGISTRY} ${PROJECT_DIR} ${ENV} — into `cmd`."""
+    This is the single way to declare "run this shell command to produce
+    (and push) this artifact." It replaces the former second hatch — the
+    flat `Service.build_cmd` / `build_cwd` / `build_env` trio (and the
+    `External.build_cmd` deploy-block mirror) — which had the same
+    execution semantics but a different, surprising declaration surface.
+    Build and deploy are orthogonal: a service can carry a `ShellBuild`
+    (built externally) AND a `deploy = forge.External {...}` /
+    `forge.K8sCluster {...}` (deployed however) at the same time.
+
+    Execution contract (ONE documented contract):
+
+      * cwd — `cwd` resolved against the project root (relative paths join
+        the dir holding forge.yaml; absolute pass through). Unset => the
+        project root itself. Set it to a sibling-repo path (e.g.
+        `cwd = "../reliant"`) for a cross-repo build whose relative paths
+        resolve there. A `cwd` that doesn't exist on disk is a HARD build
+        failure (naming the missing path) — a build that was supposed to
+        run can't, and a following deploy would reference an unpushed
+        image.
+      * substitution — before exec forge substitutes these ${X} tokens
+        into `cmd`: ${IMAGE} ${TAG} ${CODE_VERSION} ${SERVICE}
+        ${TARGETARCH} ${REGISTRY} ${PROJECT_DIR} ${ENV} ${BUILD_CWD}, plus
+        any keys declared in `env` (the built-in tokens win on conflict).
+      * env — extra env vars merged into the command's PROCESS environment
+        AND added to the ${X} substitution map (built-ins win on conflict).
+      * state/digest — on success forge captures the pushed image's
+        content-addressed digest (best-effort) and writes the build-state
+        file so a subsequent `forge deploy <env>` pins the same
+        tag/digest, exactly as the project docker build does.
+
+    A no-op ShellBuild (`cmd = "true"`) is the idiomatic way to suppress
+    forge's default `./cmd/<name>` Go build for a service whose artifact
+    is built out-of-band (e.g. a sibling-repo binary pulled as a prebuilt
+    image): it pushes nothing, so the digest lookup finds nothing and
+    deploy falls through to the env tag, unchanged."""
     type: str = "shell"
     cmd: str
+    # Working directory the command runs from. Relative paths resolve
+    # against the project root; absolute pass through. Unset => the
+    # project root. A missing-on-disk cwd is a hard build failure.
+    cwd: str = ""
+    # Extra env vars merged into the command's process environment AND the
+    # ${X} substitution map (built-in tokens win on conflict).
+    env: {str: str} = {}
 
     check:
         type == "shell", "ShellBuild.type must be 'shell'"
@@ -1409,7 +1427,7 @@ schema FirebaseBundleDir:
                  (relative paths resolve against the project root). It is
                  NOT built by forge; the caller is expected to have run
                  the sibling build already (or to wire it via a separate
-                 forge.Service build_cmd).
+                 forge.Service `build = forge.ShellBuild {...}`).
       * `dest` — sub-path under the hosting site's public root to copy
                  `src` into. Empty (the default) means the site root.
                  A leading "/" is tolerated and stripped.
@@ -1502,38 +1520,16 @@ schema Service:
     deploy phase ENTIRELY; an image-less cluster service still
     participates in the deploy phase to pin its owned manifests.
 
-    Build side — `build_cmd` (mirror of `External` for the build step):
+    Build side — `build` (the polymorphic build union):
 
-      Set `build_cmd` to delegate image construction for this service
-      to a user-supplied shell command. `forge build` runs it via
-      `sh -c` after substituting the documented ${X} tokens (IMAGE,
-      TAG, SERVICE, TARGETARCH, REGISTRY, PROJECT_DIR, plus any keys
-      from `build_env`). The user's command is expected to own both
-      the build and the push — forge does NOT run `docker push` after
-      it. Mirrors the External deploy provider's "run THIS CLI command"
-      shape so the build side has the same escape hatch the deploy
-      side already has.
-
-      Use cases: sibling-repo binaries forge doesn't compile itself
-      (cross-repo `go build` then `docker build`), third-party
-      pre-built images re-pushed under your registry, language
-      runtimes forge doesn't natively build (Rust, Python wheels).
-
-      Mutually exclusive with the Go-build path: when `build_cmd` is
-      set, forge's built-in `path:` Go-build pipeline is skipped. The
-      forge.yaml `services[].path` field stays the source of truth
-      for the Go-build path; KCL `build_cmd` is the override.
-
-      `build_cwd` declares the working directory the shell command runs
-      from (typically a sibling repo path). Relative paths resolve
-      against the project root. If `build_cwd` points to a path that
-      doesn't exist on disk forge warns and skips the build rather
-      than failing — local dev pattern where the sibling repo is
-      optional, and CI without the sibling shouldn't fail.
-
-      `build_env` declares extra env vars merged into the command's
-      environment AND added to the ${X} substitution map (built-in
-      tokens win on conflict — same precedence External uses).
+      `build` declares HOW this service's artifact is produced — one of
+      GoBuild (the default: `go build ./cmd/<name>`), DockerBuild (an
+      image via `docker build`), or ShellBuild (a verbatim `sh -c`
+      command that owns the whole build + push). ShellBuild is the SINGLE
+      shell escape hatch for sibling-repo binaries forge doesn't compile,
+      third-party pre-built images re-pushed under your registry, and
+      language runtimes forge doesn't natively build — see ShellBuild for
+      its cwd / substitution / env / digest contract.
     """
     name: str
     image?: str
@@ -1563,9 +1559,6 @@ schema Service:
     # service never has to spell it out, while a hand-authored
     # forge.Service may set it explicitly.
     build?: GoBuild | DockerBuild | ShellBuild
-    build_cmd?: str
-    build_cwd?: str
-    build_env: {str: str} = {}
     # Extra namespaced RBAC rules appended to this Service's forge-
     # generated Role (lib/rbac.k always grants configmaps/secrets read;
     # these rules add to that). Use it when a Service runs a controller-
@@ -1612,10 +1605,6 @@ schema Service:
 
     check:
         name, "Service.name is required"
-        build_cwd == Undefined or build_cmd, \
-            "Service.build_cwd is only meaningful when build_cmd is set"
-        len(build_env) == 0 or build_cmd, \
-            "Service.build_env is only meaningful when build_cmd is set"
 
 schema Operator:
     """A cluster-scoped controller that reconciles CRDs.

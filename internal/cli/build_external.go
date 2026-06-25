@@ -1,12 +1,14 @@
-// build_external.go wires KCL Services that declare `build_cmd` into
-// the `forge build` loop. Mirrors the deploytarget/External provider
-// on the build side — same `sh -c` shape, same ${X} substitution,
-// same skip-when-cwd-missing contract. See internal/buildtarget for
-// the runner + spec types.
+// build_external.go is the SINGLE dispatcher for KCL Services whose
+// effective build is a ShellBuild (`build = forge.ShellBuild { cmd, cwd,
+// env }`) — the one shell escape hatch. Mirrors the deploytarget/External
+// provider on the build side — same `sh -c` shape, same ${X} substitution,
+// same fail-when-cwd-missing contract. See internal/buildtarget for the
+// runner + spec types.
 //
 // The dispatcher's responsibilities are deliberately narrow:
 //
-//   - Iterate KCL services whose Service.BuildCmd is non-empty.
+//   - Iterate KCL services whose effective build is a ShellBuild
+//     (EffectiveBuildCmd != "").
 //   - Build a Spec from KCL fields + the build-loop's resolved tag /
 //     registry / target arch.
 //   - Run Spec through buildtarget.Runner.Build.
@@ -39,10 +41,10 @@ import (
 var externalImageDigestResolver = imageRepoDigest
 
 // kclHasExternalBuildService reports whether the KCL entity set
-// contains any service with a non-empty BuildCmd. Used by runBuild
-// to decide whether to invoke the external-build dispatcher at all,
-// and by `--target external` validation to fail loudly when no
-// external-build services are declared.
+// contains any service whose effective build is a ShellBuild. Used by
+// runBuild to decide whether to invoke the external-build dispatcher at
+// all, and by `--target external` validation to fail loudly when no
+// shell-build services are declared.
 func kclHasExternalBuildService(e *KCLEntities) bool {
 	if e == nil {
 		return false
@@ -56,11 +58,12 @@ func kclHasExternalBuildService(e *KCLEntities) bool {
 }
 
 // externalBuildServices returns the subset of KCL services whose
-// Service.BuildCmd is non-empty. Convenience wrapper so the dispatcher
-// loop stays one-liner; also used by the `--target external` filter.
+// effective build is a ShellBuild (EffectiveBuildCmd non-empty).
+// Convenience wrapper so the dispatcher loop stays one-liner; also used
+// by the `--target external` filter.
 //
-// Returns nil (not an empty slice) when no external-build services
-// are declared so the parallel/sequential dispatch loops can use the
+// Returns nil (not an empty slice) when no shell-build services are
+// declared so the parallel/sequential dispatch loops can use the
 // idiomatic `len(s) > 0` guard.
 func externalBuildServices(e *KCLEntities) []ServiceEntity {
 	if e == nil {
@@ -124,17 +127,14 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 			Registry:   registry,
 			ProjectDir: projectDir,
 			Env:        opts.env,
-			// EffectiveBuildCmd resolves Service.build_cmd (generic
-			// escape hatch) before falling back to External.build_cmd
-			// (the build-side mirror of deploy_cmd). EffectiveBuildEnv
-			// mirrors that precedence so an External target's `env` map
-			// feeds the substitution + process env when build_cmd lives
-			// on the External block.
+			// The single shell hatch: EffectiveBuildCmd/Cwd/Env all read
+			// off the service's effective ShellBuild (build = forge.
+			// ShellBuild { cmd, cwd, env }). One source, one contract.
 			BuildCmd: svc.EffectiveBuildCmd(),
-			BuildCwd: svc.BuildCwd,
+			BuildCwd: svc.EffectiveBuildCwd(),
 			BuildEnv: svc.EffectiveBuildEnv(),
 		}
-		fmt.Printf("[build] %s: external build_cmd (tag %s)\n", svc.Name, svcTag)
+		fmt.Printf("[build] %s: ShellBuild (tag %s)\n", svc.Name, svcTag)
 		res := runner.Build(ctx, spec)
 
 		// Skip-with-warn: the runner returns Skipped=true when the

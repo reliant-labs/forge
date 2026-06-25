@@ -319,10 +319,11 @@ func TestBuild_FailsWhenCwdMissing(t *testing.T) {
 	}
 }
 
-// TestBuild_NoCwd confirms an empty BuildCwd runs the command without
-// the `cd <abs> && ` prefix. The execRunner inherits the current
-// process cwd (set to the project root by forge build), so omitting
-// the prefix is the right shape.
+// TestBuild_NoCwd confirms an UNSET BuildCwd resolves explicitly to the
+// project root (spec.ProjectDir) — the single documented cwd contract for
+// the shell hatch — rather than inheriting the host cwd. The command is
+// passed via cmd.Dir (not a `cd <abs> && ` shell prefix). ProjectDir is
+// trusted to exist, so no existence check fires for the no-cwd case.
 func TestBuild_NoCwd(t *testing.T) {
 	fake := &fakeRunner{}
 	r := Runner{runner: fake}
@@ -338,8 +339,8 @@ func TestBuild_NoCwd(t *testing.T) {
 		t.Fatalf("Build: unexpected err: %v", res.Err)
 	}
 	call, _ := fake.last()
-	if call.dir != "" {
-		t.Errorf("no BuildCwd should leave runner dir empty; got %q", call.dir)
+	if call.dir != "/proj" {
+		t.Errorf("no BuildCwd should resolve to ProjectDir; got %q, want /proj", call.dir)
 	}
 	if strings.HasPrefix(call.args[1], "cd ") {
 		t.Errorf("no BuildCwd should not produce a `cd …` prefix; got %q", call.args[1])

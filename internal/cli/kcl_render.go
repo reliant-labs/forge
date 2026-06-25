@@ -229,21 +229,10 @@ type GRPCRouteEntity struct {
 // polymorphic — exactly one of Host / Cluster / BuildOnly is populated
 // according to Deploy.Type. See [DeployConfigEntity] for the discriminator.
 //
-// Build-side fields (mirror of the External deploy provider for the
-// build step):
-//
-//   - BuildCmd, when non-empty, is the shell command `forge build`
-//     runs via `sh -c` instead of the built-in Go-build pipeline.
-//     Tokens (${IMAGE}/${TAG}/${SERVICE}/${TARGETARCH}/${REGISTRY}/
-//     ${PROJECT_DIR}/${BUILD_CWD} + keys from BuildEnv) are substituted
-//     by the build-side runner (see internal/buildtarget once Phase 2
-//     lands).
-//   - BuildCwd is the working directory the shell command runs from.
-//     Relative paths resolve against the project root. Skip-with-warn
-//     when the resolved path doesn't exist on disk.
-//   - BuildEnv carries extra env vars merged into the command's
-//     environment AND added to the substitution map (built-ins win
-//     on conflict).
+// The build side is the polymorphic Build union (Go / Docker / Shell).
+// A ShellBuild is the single shell escape hatch — its cmd / cwd / env /
+// digest contract lives on [ShellBuild], dispatched by the external-build
+// dispatcher (see internal/buildtarget).
 type ServiceEntity struct {
 	Name string `json:"name"`
 	// Image is the (registry-less) image name. ImageTag, when set, is the
@@ -260,12 +249,9 @@ type ServiceEntity struct {
 	// Deploy. When the KCL `build` block is absent (a hand-authored
 	// forge.Service that omits it) Build.Type is "" and callers
 	// synthesize the GoBuild default via [ServiceEntity.EffectiveBuild].
-	Build    BuildConfigEntity `json:"-"`
-	EnvVars  []KCLEnvVar       `json:"env_vars,omitempty"`
-	Command  []string          `json:"command,omitempty"`
-	BuildCmd string            `json:"build_cmd,omitempty"`
-	BuildCwd string            `json:"build_cwd,omitempty"`
-	BuildEnv map[string]string `json:"build_env,omitempty"`
+	Build   BuildConfigEntity `json:"-"`
+	EnvVars []KCLEnvVar       `json:"env_vars,omitempty"`
+	Command []string          `json:"command,omitempty"`
 }
 
 // BuildConfigEntity is the dispatched-by-type view of a service's build
@@ -307,20 +293,33 @@ type DockerBuild struct {
 	BuildArgs  map[string]string `json:"build_args,omitempty"`
 }
 
-// ShellBuild mirrors the kcl/schema.k ShellBuild — a verbatim `sh -c`
-// build command (generalizes the old build_cmd escape hatch).
+// ShellBuild mirrors the kcl/schema.k ShellBuild — the SINGLE shell
+// escape hatch: a verbatim `sh -c` build command that owns the whole
+// build (and any push).
 //
-// Execution contract (consistent with the build_cmd escape hatch — see
-// internal/buildtarget): the command runs with cwd == the PROJECT ROOT
-// (the directory holding forge.yaml), so relative paths like
-// scripts/build-image.sh, ../sibling-repo, or docker/Dockerfile resolve
-// as a user expects. Before exec, forge substitutes the same ${X} tokens
-// build_cmd supports — ${IMAGE} ${TAG} ${CODE_VERSION} ${SERVICE}
-// ${TARGETARCH} ${REGISTRY} ${PROJECT_DIR} ${ENV} — into Cmd. The command
-// owns the whole build (and any push); forge does not wrap it.
+// Execution contract (see internal/buildtarget):
+//
+//   - cwd == Cwd resolved against the project root (relative paths join
+//     the dir holding forge.yaml; absolute pass through). Empty Cwd =>
+//     the project root, so relative paths like scripts/build-image.sh,
+//     ../sibling-repo, or docker/Dockerfile resolve as a user expects. A
+//     Cwd that doesn't exist on disk is a HARD build failure.
+//   - before exec forge substitutes the ${X} tokens ${IMAGE} ${TAG}
+//     ${CODE_VERSION} ${SERVICE} ${TARGETARCH} ${REGISTRY} ${PROJECT_DIR}
+//     ${ENV} ${BUILD_CWD}, plus any keys in Env (built-ins win on
+//     conflict), into Cmd.
+//   - Env vars are merged into the command's process environment AND the
+//     substitution map.
+//   - on success forge captures the pushed digest (best-effort) and
+//     writes the build-state file so deploy pins the same tag/digest.
+//
+// Absorbs the former flat Service.build_cmd / build_cwd / build_env trio
+// (and External.build_cmd) — one declaration surface, one contract.
 type ShellBuild struct {
-	OutputName string `json:"output_name,omitempty"`
-	Cmd        string `json:"cmd"`
+	OutputName string            `json:"output_name,omitempty"`
+	Cmd        string            `json:"cmd"`
+	Cwd        string            `json:"cwd,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
 }
 
 // DeployConfigEntity is the dispatched-by-type view of a service's
@@ -342,18 +341,11 @@ type DeployConfigEntity struct {
 // `sh -c` after substituting ${IMAGE}/${TAG}/${SERVICE}/etc. and runs
 // HealthCmd / RollbackCmd through the same path.
 type ExternalDeploy struct {
-	DeployCmd   string `json:"deploy_cmd,omitempty"`
-	RollbackCmd string `json:"rollback_cmd,omitempty"`
-	HealthCmd   string `json:"health_cmd,omitempty"`
-	// BuildCmd is the build-side mirror of DeployCmd: the shell command
-	// `forge build -t external` exec's to construct the deployable
-	// image. Optional — External targets without it build their image
-	// out-of-band and only deploy through forge. Token set matches
-	// DeployCmd (IMAGE/TAG/CODE_VERSION/PROJECT_DIR/ENV/SERVICE + Env
-	// keys). See [ServiceEntity.EffectiveBuildCmd].
-	BuildCmd string            `json:"build_cmd,omitempty"`
-	EnvFile  string            `json:"env_file,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
+	DeployCmd   string            `json:"deploy_cmd,omitempty"`
+	RollbackCmd string            `json:"rollback_cmd,omitempty"`
+	HealthCmd   string            `json:"health_cmd,omitempty"`
+	EnvFile     string            `json:"env_file,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
 }
 
 // ComposeDeploy is the deploy block for a docker-compose service.
@@ -621,16 +613,13 @@ type rawManifest struct {
 }
 
 type kclServiceRaw struct {
-	Name     string            `json:"name"`
-	Image    string            `json:"image,omitempty"`
-	ImageTag string            `json:"image_tag,omitempty"`
-	Deploy   json.RawMessage   `json:"deploy"`
-	Build    json.RawMessage   `json:"build"`
-	EnvVars  []KCLEnvVar       `json:"env_vars,omitempty"`
-	Command  []string          `json:"command,omitempty"`
-	BuildCmd string            `json:"build_cmd,omitempty"`
-	BuildCwd string            `json:"build_cwd,omitempty"`
-	BuildEnv map[string]string `json:"build_env,omitempty"`
+	Name     string          `json:"name"`
+	Image    string          `json:"image,omitempty"`
+	ImageTag string          `json:"image_tag,omitempty"`
+	Deploy   json.RawMessage `json:"deploy"`
+	Build    json.RawMessage `json:"build"`
+	EnvVars  []KCLEnvVar     `json:"env_vars,omitempty"`
+	Command  []string        `json:"command,omitempty"`
 }
 
 // RenderKCL shells `kcl run deploy/kcl/<env>/ -o json`, parses the
@@ -749,9 +738,6 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 			Build:    build,
 			EnvVars:  s.EnvVars,
 			Command:  s.Command,
-			BuildCmd: s.BuildCmd,
-			BuildCwd: s.BuildCwd,
-			BuildEnv: s.BuildEnv,
 		})
 	}
 	return out, nil
@@ -984,20 +970,19 @@ func dispatchServiceBuild(svcName string, raw json.RawMessage) (BuildConfigEntit
 // default is deploy-type-aware: only forge-built deploy targets (host,
 // cluster, build-only) synthesize the ./cmd/<name> GoBuild. A `compose`
 // service has NO Go artifact (it's a docker-compose unit), and an
-// `external` service / one carrying a top-level `build_cmd` owns its own
-// build via the shell dispatcher — synthesizing a GoBuild for either
-// would make forge `go build ./cmd/<name>` a package that doesn't exist
-// (e.g. a sibling-repo binary or a compose aggregator). Those return the
-// zero BuildConfigEntity (Type=="") so goBuildTargetsFromKCL skips them.
+// `external` service owns its own deploy — synthesizing a GoBuild for
+// either would make forge `go build ./cmd/<name>` a package that doesn't
+// exist (e.g. a sibling-repo binary or a compose aggregator). Those
+// return the zero BuildConfigEntity (Type=="") so goBuildTargetsFromKCL
+// skips them. A service that builds via a shell command declares
+// `build = forge.ShellBuild {...}` explicitly (the single shell hatch),
+// which the first branch returns.
 func (s ServiceEntity) EffectiveBuild() BuildConfigEntity {
 	if s.Build.Type != "" {
 		return s.Build
 	}
 	switch s.Deploy.Type {
 	case "compose", "external":
-		return BuildConfigEntity{}
-	}
-	if s.BuildCmd != "" {
 		return BuildConfigEntity{}
 	}
 	return BuildConfigEntity{
@@ -1007,6 +992,20 @@ func (s ServiceEntity) EffectiveBuild() BuildConfigEntity {
 			OutputName: s.Name,
 		},
 	}
+}
+
+// effectiveShell returns this service's effective ShellBuild, or nil when
+// the service's effective build isn't a shell build. The single source of
+// truth for the shell escape hatch after the build-hatch unification:
+// EffectiveBuildCmd / EffectiveBuildCwd / EffectiveBuildEnv all read off
+// it, and the external-build dispatcher selects services for which it is
+// non-nil.
+func (s ServiceEntity) effectiveShell() *ShellBuild {
+	b := s.EffectiveBuild()
+	if b.Type == "shell" {
+		return b.Shell
+	}
+	return nil
 }
 
 // goRunCmdForService returns the `go run` target package for a host-mode
@@ -1023,40 +1022,36 @@ func goRunCmdForService(s ServiceEntity) string {
 }
 
 // EffectiveBuildCmd returns the shell command the external-build
-// dispatcher should run for this service, resolving the two sources of
-// truth in precedence order:
-//
-//  1. The top-level Service.build_cmd (the generic build-side escape
-//     hatch — works for any deploy type).
-//  2. The External target's build_cmd (the build-side mirror of
-//     deploy_cmd, declared next to it on a forge.External deploy block).
-//
-// The top-level field wins when both are set so an explicit
-// Service.build_cmd override stays authoritative. Returns "" when
-// neither is declared — the dispatcher's "no build_cmd" signal.
+// dispatcher should run for this service: the effective ShellBuild's Cmd,
+// or "" when the service's effective build isn't a ShellBuild (the
+// dispatcher's "not a shell build" signal). The single shell source after
+// the build-hatch unification — there is no longer a flat Service.build_cmd
+// or an External.build_cmd to fall back to.
 func (s ServiceEntity) EffectiveBuildCmd() string {
-	if s.BuildCmd != "" {
-		return s.BuildCmd
-	}
-	if s.Deploy.External != nil {
-		return s.Deploy.External.BuildCmd
+	if sh := s.effectiveShell(); sh != nil {
+		return sh.Cmd
 	}
 	return ""
 }
 
-// EffectiveBuildEnv returns the env-var map merged into the external
-// build command's environment + substitution map. Mirrors
-// EffectiveBuildCmd's precedence: the top-level Service.build_env wins;
-// otherwise an External target's `env` map (the same map deploy_cmd
-// sees) is used so build_cmd and deploy_cmd share one config surface.
+// EffectiveBuildCwd returns the working directory the shell build runs
+// from — the effective ShellBuild's Cwd (empty => the project root). "" for
+// a non-shell build.
+func (s ServiceEntity) EffectiveBuildCwd() string {
+	if sh := s.effectiveShell(); sh != nil {
+		return sh.Cwd
+	}
+	return ""
+}
+
+// EffectiveBuildEnv returns the env-var map merged into the shell build
+// command's environment + substitution map — the effective ShellBuild's
+// Env. nil for a non-shell build.
 func (s ServiceEntity) EffectiveBuildEnv() map[string]string {
-	if s.BuildCmd != "" {
-		return s.BuildEnv
+	if sh := s.effectiveShell(); sh != nil {
+		return sh.Env
 	}
-	if s.Deploy.External != nil {
-		return s.Deploy.External.Env
-	}
-	return s.BuildEnv
+	return nil
 }
 
 // FindService returns the named service from the entity set, or nil.

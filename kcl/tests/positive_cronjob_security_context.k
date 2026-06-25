@@ -21,14 +21,14 @@ This test pins the restricted baseline on BOTH render paths:
 
 import forge
 
-_k8s = forge.K8sCluster {
+_target = forge.ClusterTarget {
     cluster = "k3d-example"
     namespace = "example-dev"
     registry = "localhost:5051"
-    ports = [8080]
 }
 
 _bundle = forge.Bundle {
+    cluster_target = _target
     cronjobs = [
         forge.CronJob {
             name = "scheduled-sweep"
@@ -45,13 +45,7 @@ _bundle = forge.Bundle {
     ]
 }
 
-_env = forge.RenderEnv {
-    cluster = _k8s
-    image_tag = "abc1234"
-    network_policies = False
-}
-
-_manifests = forge.render_manifests(_bundle, _env)
+_manifests = forge.render_manifests(_bundle, "abc1234", {}, False)
 
 # Pull the scheduled CronJob's pod + container securityContext. The pod
 # template nests under spec.jobTemplate.spec.template.spec for a CronJob.

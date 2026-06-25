@@ -48,11 +48,10 @@ import deploy.kcl.dev.ingress as ing
 # Local dev defaults to the k3d registry created by `deploy/k3d.yaml`.
 _registry = option("registry") or "localhost:5050"
 _namespace = "{{.ProjectName}}-dev"
-_cluster = forge.K8sCluster {
+_cluster = forge.ClusterTarget {
     cluster = "k3d-{{.ProjectName}}"
     namespace = _namespace
     registry = _registry
-    ports = [8080]
 }
 
 # Base env every component sees (COMMON_ENV + per-env config_gen).
@@ -84,6 +83,7 @@ _component_env = fc.ComponentEnv {
 # expansion. render_support omits namespace/netpol (render_components
 # owns those).
 _support = forge.Bundle {
+    cluster_target = _cluster
     config_maps = cfg.CONFIG_MAPS
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
@@ -91,15 +91,10 @@ _support = forge.Bundle {
     grpc_routes = ing.GRPC_ROUTES
 {{- end}}
 }
-_render_env = forge.RenderEnv {
-    cluster = _cluster
-    image_tag = forge.image_tag("dev")
-    network_policies = False
-}
 
 # k8s manifests for `kubectl apply -f -`.
 manifests = fc.render_components(_components, _component_env) \
-    + forge.render_support(_support, _render_env)
+    + forge.render_support(_support)
 
 # JSON contract consumed by forge build/run/deploy. Bridges the loaded
 # components into forge.Service / CronJob / Operator entities so the
@@ -112,12 +107,13 @@ _cron_components = [c for c in _components if c.kind == "cron"]
 _op_components = [c for c in _components if c.kind == "operator"]
 
 _bundle = forge.Bundle {
+    cluster_target = _cluster
     services = [forge.Service {
         name = c.name
         image = "{{.ProjectName}}"
         command = c.command
         env_vars = c.env_vars
-        deploy = _cluster | {ports = [p.port for p in c.ports]}
+        deploy = _cluster.deploy | {ports = [p.port for p in c.ports]}
         if c.build:
             build = forge.build_of(c.build)
     } for c in _svc_components] + [forge.Service {

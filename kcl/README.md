@@ -5,6 +5,15 @@ Typed schemas + manifest render layer that forge projects import.
 ```kcl
 import forge
 
+# The env-wide Kubernetes facts, stated ONCE. Carried on the Bundle's
+# `cluster_target`; each service references its derived `.deploy` rather
+# than restating cluster/namespace/registry per service.
+_k8s = forge.ClusterTarget {
+    cluster = "k3d-myapp"
+    namespace = "myapp-dev"
+    registry = "localhost:5050"
+}
+
 forge.Service {
     name = "admin-server"
     image = "myapp:dev"
@@ -14,13 +23,8 @@ forge.Service {
 forge.Service {
     name = "workspace-proxy"
     image = "myapp:dev"
-    deploy = forge.K8sCluster {
-        cluster = "k3d-myapp"
-        namespace = "myapp-dev"
-        registry = "localhost:5050"
-        replicas = 1
-        ingress = forge.Ingress { host = "workspaces.localhost", tls = False }
-    }
+    # Reference the env-wide target; overlay only the per-service knobs.
+    deploy = _k8s.deploy | { replicas = 1, ports = [8080] }
 }
 
 forge.Operator {

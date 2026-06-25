@@ -559,29 +559,108 @@ schema HostDeploy:
         delve_port > 0 and delve_port < 65536, \
             "HostDeploy.delve_port must be 1..65535"
 
-schema K8sCluster:
-    """Service runs in-cluster as a Deployment + Service on a specific
-    Kubernetes cluster. Per-service deploy block that ALSO carries the
-    env-wide knobs (cluster/namespace/registry/domain), so KCL refs
-    DRY the common case across many services without an `environments[]`
-    block in forge.yaml.
+schema ClusterTarget:
+    """The env-wide Kubernetes facts, stated ONCE.
 
-    Typical project shape (one ref reused across services):
+    A `ClusterTarget` is the single source of truth for the coordinates
+    that are identical across every workload in a deploy group: the
+    kubectl `cluster` context, the `namespace`, the image `registry`, the
+    `image_pull_secrets`, the build `platform`, and the env-wide
+    `image_tag`. The `Bundle` carries it once (`Bundle.cluster_target`);
+    every service REFERENCES it for its per-service `deploy` block rather
+    than restating those facts:
 
-        _prod_k8s = forge.K8sCluster {
+        _prod = forge.ClusterTarget {
             cluster = "prod-cluster"
             namespace = "kalshi-prod"
             registry = "ghcr.io/reliant/kalshi"
             domain = "kalshi.com"
         }
 
-        forge.Service { name = "trader", deploy = _prod_k8s }
-        forge.Service { name = "admin",  deploy = _prod_k8s | { replicas = 5 } }
+        forge.Service { name = "trader", deploy = _prod.deploy }
+        forge.Service { name = "admin",  deploy = _prod.deploy | { replicas = 5 } }
+
+        forge.Bundle { cluster_target = _prod, services = [...] }
+
+    This replaces the old normalize→denormalize inversion (the env-wide
+    knobs copied into every service's `K8sCluster` block, then re-derived
+    by a Go "pull them off the first service in the group" heuristic): the
+    env-wide facts are first-class on the Bundle, and `render_manifests`
+    reads namespace/registry/tag/platform/pull_secrets straight off the
+    target. A second target (a different cluster) lets ONE service ride a
+    different group — the multi-cluster split — without the env-wide facts
+    drifting, because each service still references a single target.
+
+    `deploy` is the DERIVED per-service `K8sCluster` this target seeds:
+    its env-wide fields are pre-filled from the target, its per-service
+    knobs (replicas/resources/ports/env_vars/…) keep their defaults so a
+    service overlays only what differs (`_prod.deploy | { ports = [...] }`).
+    """
+    cluster: str
+    namespace: str
+    registry: str
+    domain?: str
+    # Env-wide build arch (GOARCH / --platform). Same node arch for every
+    # workload the env renders. Unset => the build falls through to the
+    # host arch.
+    platform?: str
+    # Names of EXISTING image-pull Secrets, applied to every workload's
+    # generated ServiceAccount. Env-wide (the registry is env-wide, so its
+    # pull secret is too). Unset => no imagePullSecrets.
+    image_pull_secrets?: [str]
+    # Env-wide image tag (the per-build override CI passes via
+    # `-D image_tag=<sha>`). A per-service `image_tag` pin still wins (a
+    # no-op sibling image pinned to the tag it WAS pushed under).
+    image_tag: str = "latest"
+    # Derived: the per-service K8sCluster deploy block this target seeds,
+    # pre-filled with the env-wide coordinates. A service references it
+    # (`target.deploy | { ports = [...] }`) instead of restating them.
+    deploy: K8sCluster = K8sCluster {
+        cluster = cluster
+        namespace = namespace
+        registry = registry
+        domain = domain if domain else Undefined
+        platform = platform if platform else Undefined
+        image_pull_secrets = image_pull_secrets if image_pull_secrets else Undefined
+    }
+
+    check:
+        cluster, "ClusterTarget.cluster is required (kubectl context name)"
+        namespace, "ClusterTarget.namespace is required"
+        registry, "ClusterTarget.registry is required (image registry, e.g. ghcr.io/org/proj)"
+
+schema K8sCluster:
+    """Service runs in-cluster as a Deployment + Service on a specific
+    Kubernetes cluster. The PER-SERVICE deploy block: it carries the
+    per-service knobs (replicas/resources/ports/env_vars/…) AND the
+    env-wide coordinates (cluster/namespace/registry/domain/platform/
+    image_pull_secrets) that route + identify it.
+
+    Don't construct this directly with the env-wide coordinates spelled
+    out per service — that's the denormalization the `ClusterTarget` split
+    removes. Instead declare a `ClusterTarget` once and reference its
+    derived `.deploy`:
+
+        _prod = forge.ClusterTarget {
+            cluster = "prod-cluster"
+            namespace = "kalshi-prod"
+            registry = "ghcr.io/reliant/kalshi"
+        }
+
+        forge.Service { name = "trader", deploy = _prod.deploy }
+        forge.Service { name = "admin",  deploy = _prod.deploy | { replicas = 5 } }
+
+    The env-wide fields remain ON this block because the rendered JSON
+    contract is per-service (the Go deploy dispatcher reads each service's
+    cluster/namespace/registry to group + route it, which is what lets ONE
+    service ride a second `ClusterTarget` — the multi-cluster split). They
+    are SOURCED from the target, not restated.
     """
     type: str = "cluster"
-    # Env-wide knobs — same value across every service in a deploy
-    # group; the cluster.Apply pipeline pulls them off the first
-    # service in the group.
+    # Env-wide coordinates — sourced from a ClusterTarget (the SSOT), NOT
+    # restated per service. Present on the per-service block because the
+    # rendered JSON contract is per-service: the deploy dispatcher routes
+    # each service by them.
     cluster: str
     namespace: str
     registry: str
@@ -1636,6 +1715,15 @@ schema Bundle:
     # the joined network + registry-inherit from it — there is no
     # "primary" cluster.
     clusters: [Cluster] = []
+    # The env-wide Kubernetes facts, stated ONCE (cluster context /
+    # namespace / registry / image_pull_secrets / platform / image_tag).
+    # `render_manifests` reads namespace/registry/platform/pull_secrets off
+    # this target instead of the old "pull them off the first cluster
+    # service" heuristic, and each service references `cluster_target.deploy`
+    # for its per-service deploy block. Optional so a manifests-free /
+    # host-only / External-only Bundle (no in-cluster workloads) need not
+    # declare one; `render_manifests` requires it.
+    cluster_target?: ClusterTarget
     # Cross-cluster kubeconfigs minted FRESH each `forge up` and stored
     # as k8s Secrets (so a workload in one cluster can reach another's
     # API server without a committed, IP-drifting kubeconfig). Minted at

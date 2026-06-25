@@ -9,19 +9,19 @@ backendRefs.
 
 import forge
 
-_k8s = forge.K8sCluster {
+_target = forge.ClusterTarget {
     cluster = "k3d-example"
     namespace = "example-dev"
     registry = "localhost:5050"
-    ports = [8080]
 }
 
 _bundle = forge.Bundle {
+    cluster_target = _target
     services = [
         forge.Service {
             name = "api"
             image = "example"
-            deploy = _k8s
+            deploy = _target.deploy | {ports = [8080]}
         }
     ]
     gateways = [
@@ -49,13 +49,7 @@ _bundle = forge.Bundle {
     ]
 }
 
-_env = forge.RenderEnv {
-    cluster = _k8s
-    image_tag = "latest"
-    network_policies = False
-}
-
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle, "latest", {}, False)
 
 # Find the Gateway + HTTPRoute manifests by kind.
 _gateways = [m for m in manifests if m.kind == "Gateway"]

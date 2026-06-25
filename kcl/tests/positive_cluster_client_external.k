@@ -37,13 +37,16 @@ _link = forge.ClusterClient {
     volume_name = "workload-kubeconfig-oob"  # pre-existing Secret name
 }
 
+_target = forge.ClusterTarget {
+    cluster = _cp.context
+    namespace = "control-plane-prod"
+    registry = "ghcr.io/reliant/control-plane"
+}
+
 _consumer = forge.Service {
     name = "workspace-controller"
     image = "control-plane"
-    deploy = forge.K8sCluster {
-        cluster = _cp.context
-        namespace = "control-plane-prod"
-        registry = "ghcr.io/reliant/control-plane"
+    deploy = _target.deploy | {
         env_vars = [
             forge.EnvVar { name = "CLUSTER_CONFIGS", value = _link.config_json }
         ]
@@ -54,20 +57,13 @@ _consumer = forge.Service {
 # The external client emits NO secret into kubeconfig_secrets (it's
 # Undefined). The Bundle's list is left empty.
 _bundle = forge.Bundle {
+    cluster_target = _target
     clusters = [_cp, _prod]
     services = [_consumer]
 }
 
-_env = forge.RenderEnv {
-    cluster = forge.K8sCluster {
-        cluster = "k3d-control-plane-prod"
-        namespace = "control-plane-prod"
-        registry = "ghcr.io/reliant/control-plane"
-    }
-}
-
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle)
 
 # ── Invariants ─────────────────────────────────────────────────────
 

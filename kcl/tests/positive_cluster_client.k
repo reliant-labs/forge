@@ -47,15 +47,18 @@ _cp_link = forge.ClusterClient {
     namespace = "control-plane-e2e"
 }
 
+_target = forge.ClusterTarget {
+    cluster = _cp.context
+    namespace = "control-plane-e2e"
+    registry = "localhost:5051"
+}
+
 # A consuming service references link.volume + link.config_json; the
 # derived secret is emitted in the Bundle's kubeconfig_secrets.
 _consumer = forge.Service {
     name = "workspace-controller"
     image = "control-plane"
-    deploy = forge.K8sCluster {
-        cluster = _cp.context
-        namespace = "control-plane-e2e"
-        registry = "localhost:5051"
+    deploy = _target.deploy | {
         env_vars = [
             forge.EnvVar { name = "CLUSTER_CONFIGS", value = _daemon_link.config_json }
         ]
@@ -64,21 +67,14 @@ _consumer = forge.Service {
 }
 
 _bundle = forge.Bundle {
+    cluster_target = _target
     clusters = [_cp, _daemon]
     kubeconfig_secrets = [_daemon_link.secret, _cp_link.secret]
     services = [_consumer]
 }
 
-_env = forge.RenderEnv {
-    cluster = forge.K8sCluster {
-        cluster = "k3d-control-plane"
-        namespace = "control-plane-e2e"
-        registry = "localhost:5051"
-    }
-}
-
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle)
 
 # ── Invariants ─────────────────────────────────────────────────────
 

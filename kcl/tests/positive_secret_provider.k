@@ -18,15 +18,18 @@ Exercises:
 
 import forge
 
+_target = forge.ClusterTarget {
+    cluster = "k3d-dev"
+    namespace = "dev"
+    registry = "localhost:5051"
+}
+
 _dotenv_bundle = forge.Bundle {
+    cluster_target = _target
     services = [forge.Service {
         name = "api"
         image = "api:dev"
-        deploy = forge.K8sCluster {
-            cluster = "k3d-dev"
-            namespace = "dev"
-            registry = "localhost:5051"
-        }
+        deploy = _target.deploy
     }]
     secret_provider = forge.DotenvSecrets {
         path = ".env.dev.secrets"
@@ -42,18 +45,10 @@ _no_provider_bundle = forge.Bundle {
     services = []
 }
 
-_env = forge.RenderEnv {
-    cluster = forge.K8sCluster {
-        cluster = "k3d-dev"
-        namespace = "dev"
-        registry = "localhost:5051"
-    }
-}
-
 output_dotenv = forge.render(_dotenv_bundle)
 output_external = forge.render(_external_bundle)
 output_none = forge.render(_no_provider_bundle)
-manifests_dotenv = forge.render_manifests(_dotenv_bundle, _env)
+manifests_dotenv = forge.render_manifests(_dotenv_bundle)
 
 # ── Invariants ─────────────────────────────────────────────────────
 

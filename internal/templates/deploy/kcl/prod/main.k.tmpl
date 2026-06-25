@@ -30,14 +30,11 @@ _resources = forge.Resources {
     cpu_limit = "2000m"
     memory_limit = "1Gi"
 }
-_cluster = forge.K8sCluster {
+_cluster = forge.ClusterTarget {
     # Set to the kubectl context name for the prod cluster.
     cluster = "{{.ProjectName}}-prod"
     namespace = _namespace
     registry = _registry
-    replicas = _replicas
-    ports = [8080]
-    resources = _resources
 }
 
 _base_env = forge.COMMON_ENV + cfg.APP_ENV + [
@@ -61,6 +58,7 @@ _component_env = fc.ComponentEnv {
 }
 
 _support = forge.Bundle {
+    cluster_target = _cluster
     config_maps = cfg.CONFIG_MAPS
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
@@ -68,14 +66,9 @@ _support = forge.Bundle {
     grpc_routes = ing.GRPC_ROUTES
 {{- end}}
 }
-_render_env = forge.RenderEnv {
-    cluster = _cluster
-    image_tag = forge.image_tag("prod")
-    network_policies = True
-}
 
 manifests = fc.render_components(_components, _component_env) \
-    + forge.render_support(_support, _render_env)
+    + forge.render_support(_support)
 
 _svc_components = [c for c in _components if c.kind in ["server", "worker"]]
 _bin_components = [c for c in _components if c.kind == "binary"]
@@ -83,12 +76,13 @@ _cron_components = [c for c in _components if c.kind == "cron"]
 _op_components = [c for c in _components if c.kind == "operator"]
 
 _bundle = forge.Bundle {
+    cluster_target = _cluster
     services = [forge.Service {
         name = c.name
         image = "{{.ProjectName}}"
         command = c.command
         env_vars = c.env_vars
-        deploy = _cluster | {ports = [p.port for p in c.ports]}
+        deploy = _cluster.deploy | {replicas = _replicas, resources = _resources, ports = [p.port for p in c.ports]}
         if c.build:
             build = forge.build_of(c.build)
     } for c in _svc_components] + [forge.Service {

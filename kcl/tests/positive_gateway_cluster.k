@@ -81,23 +81,18 @@ _routing_key = "forge.dev/cluster"
 # ── Re-exports match render_manifests' output ───────────────────────
 # render_manifests walks the same lib builders; the re-exported builder
 # must produce a byte-identical Gateway manifest.
-_k8s = forge.K8sCluster {
+_target = forge.ClusterTarget {
     cluster = "control-plane"
     namespace = "cp-ns"
     registry = "localhost:5050"
-    ports = [8080]
 }
 _bundle = forge.Bundle {
+    cluster_target = _target
     gateways = [_public]
     http_routes = [_route_http]
     grpc_routes = [_route_grpc]
 }
-_env = forge.RenderEnv {
-    cluster = _k8s
-    image_tag = "latest"
-    network_policies = False
-}
-_full = forge.render_manifests(_bundle, _env)
+_full = forge.render_manifests(_bundle, "latest", {}, False)
 _full_gw = [m for m in _full if m.kind == "Gateway"][0]
 
 # ── Invariants ──────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ Positive test — PER-IMAGE digest deploy references.
 
 `forge deploy` pins each service's manifest image to ITS OWN
 content-addressed digest when the build state captured one. It threads a
-PER-IMAGE name→digest map into RenderEnv.image_digests (built Go-side from
+PER-IMAGE name→digest map into render_manifests' image_digests (built Go-side from
 the per-image build-state files); the _image_ref seam looks up
 `image_digests[<image-name>]` and renders `<registry>/<image>@sha256:...`,
 dropping the env tag. A digest can't go stale or be re-pointed, so the
@@ -31,7 +31,7 @@ import forge
 _cp_digest = "sha256:d1818c3c2f8a3823f4f5a533a893bd735035fc6b0d79b700aaa8f1d6727e7182"
 _reliant_digest = "sha256:12ac5c2e15de35da3c47b8d0d23a68aad80e60dd69467bd0a689a0292f91d4e4"
 
-_cluster = forge.K8sCluster {
+_target = forge.ClusterTarget {
     cluster = "k3d-dev"
     namespace = "dev"
     registry = "ghcr.io/reliant"
@@ -41,7 +41,7 @@ _cluster = forge.K8sCluster {
 _cp_svc = forge.Service {
     name = "control-plane"
     image = "control-plane"
-    deploy = _cluster
+    deploy = _target.deploy
 }
 
 # reliant-api-server + reliant-worker SHARE the `reliant` image — both
@@ -50,19 +50,19 @@ _cp_svc = forge.Service {
 _reliant_api_svc = forge.Service {
     name = "reliant-api-server"
     image = "reliant"
-    deploy = _cluster
+    deploy = _target.deploy
 }
 _reliant_worker_svc = forge.Service {
     name = "reliant-temporal-worker"
     image = "reliant"
-    deploy = _cluster
+    deploy = _target.deploy
 }
 
 # An image with NO digest entry — falls back to the env tag.
 _nodigest_svc = forge.Service {
     name = "no-digest"
     image = "no-digest"
-    deploy = _cluster
+    deploy = _target.deploy
 }
 
 # Per-service plain pin — wins (image absent from digest map anyway).
@@ -70,34 +70,28 @@ _pinned_svc = forge.Service {
     name = "sidecar"
     image = "sidecar"
     image_tag = "v9.9.9"
-    deploy = _cluster
+    deploy = _target.deploy
 }
 
 # Third-party image with its own :tag — digest map ignored.
 _vendor_svc = forge.Service {
     name = "litellm"
     image = "ghcr.io/berriai/litellm:main-v1.0"
-    deploy = _cluster
+    deploy = _target.deploy
 }
 
 _bundle = forge.Bundle {
+    cluster_target = _target
     services = [_cp_svc, _reliant_api_svc, _reliant_worker_svc, _nodigest_svc, _pinned_svc, _vendor_svc]
 }
 
 # The PER-IMAGE digest map — exactly what forge deploy builds from the
 # per-image build-state files. control-plane and reliant carry DIFFERENT
 # digests; no-digest/sidecar/litellm are absent.
-_env = forge.RenderEnv {
-    cluster = _cluster
-    image_tag = "staging"
-    image_digests = {
-        "control-plane" = _cp_digest
-        "reliant" = _reliant_digest
-    }
-    network_policies = False
-}
-
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle, "staging", {
+    "control-plane" = _cp_digest
+    "reliant" = _reliant_digest
+}, False)
 
 _container_of = lambda n: str -> any {
     [m for m in manifests if m.metadata.name == n and "spec" in m \

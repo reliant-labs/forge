@@ -7,7 +7,7 @@ it → a tag that was never pushed for that image → ErrImagePull.
 
 Invariants:
   * A service with `image_tag` set is rendered with THAT tag, not the
-    env-wide RenderEnv.image_tag.
+    env-wide render_manifests image_tag.
   * A service WITHOUT `image_tag` uses the env-wide tag (single-image
     envs unchanged).
   * An `image` that already carries `:tag` passes through verbatim — the
@@ -21,45 +21,35 @@ Invariants:
 
 import forge
 
+_target = forge.ClusterTarget {
+    cluster = "k3d-dev"
+    namespace = "dev"
+    registry = "localhost:5050"
+}
+
 _pinned_svc = forge.Service {
     name = "reliant"
     image = "reliant"
     image_tag = "v1.4.2"
-    deploy = forge.K8sCluster {
-        cluster = "k3d-dev"
-        namespace = "dev"
-        registry = "localhost:5050"
-    }
+    deploy = _target.deploy
 }
 
 _env_tag_svc = forge.Service {
     name = "api"
     image = "api"
-    deploy = forge.K8sCluster {
-        cluster = "k3d-dev"
-        namespace = "dev"
-        registry = "localhost:5050"
-    }
+    deploy = _target.deploy
 }
 
 _explicit_tag_svc = forge.Service {
     name = "vendor"
     image = "ghcr.io/acme/vendor:3.0.0"
-    deploy = forge.K8sCluster {
-        cluster = "k3d-dev"
-        namespace = "dev"
-        registry = "localhost:5050"
-    }
+    deploy = _target.deploy
 }
 
 _digest_svc = forge.Service {
     name = "pinned-digest"
     image = "ghcr.io/acme/db@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
-    deploy = forge.K8sCluster {
-        cluster = "k3d-dev"
-        namespace = "dev"
-        registry = "localhost:5050"
-    }
+    deploy = _target.deploy
 }
 
 _pinned_cronjob = forge.CronJob {
@@ -77,23 +67,13 @@ _pinned_operator = forge.Operator {
 }
 
 _bundle = forge.Bundle {
+    cluster_target = _target
     services = [_pinned_svc, _env_tag_svc, _explicit_tag_svc, _digest_svc]
     cronjobs = [_pinned_cronjob]
     operators = [_pinned_operator]
 }
 
-# Env-wide tag is a dirty git tag — the kind the bug fanned onto everything.
-_env = forge.RenderEnv {
-    cluster = forge.K8sCluster {
-        cluster = "k3d-dev"
-        namespace = "dev"
-        registry = "localhost:5050"
-    }
-    image_tag = "abc1234-dirty"
-    network_policies = False
-}
-
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle, "abc1234-dirty", {}, False)
 
 # Helper: the container image string of the Deployment / Job / etc. named
 # `n`. Pulls the first container's image from any workload kind.

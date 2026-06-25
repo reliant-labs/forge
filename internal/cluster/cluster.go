@@ -668,18 +668,19 @@ type immutableTarget struct {
 
 // immutableResource decides whether an apply failure is the recoverable
 // immutable-field case and, if so, which resource to reset. It keys off
-// the error text k8s emits for an immutable update —
+// the error text k8s emits for an immutable update, in EITHER apply mode —
 //
-//	The Job "control-plane-migrate" is invalid: spec.template: Invalid
-//	value: ...: field is immutable
+//	client-side: The Job "control-plane-migrate" is invalid: spec.template: … field is immutable
+//	server-side: Job.batch "control-plane-migrate" is invalid: spec.template: … field is immutable
 //
 // requiring BOTH the `is invalid:` framing and `field is immutable` so it
 // never fires on an unrelated apply error. The kind+name come from that
 // message (generic — Job is the motivating case, but any immutable kind
-// matches); the namespace is recovered by matching that kind+name back to
-// its source document in the applied manifests. Returns ok=false when the
-// stderr isn't an immutable-field error or the named resource can't be
-// found in the bundle.
+// matches); parseInvalidResource normalizes the server-side GVR form
+// (`Job.batch` → `Job`) so the namespace is recovered by matching that
+// kind+name back to its source document in the applied manifests. Returns
+// ok=false when the stderr isn't an immutable-field error or the named
+// resource can't be found in the bundle.
 func immutableResource(stderr, manifests string) (immutableTarget, bool) {
 	if !strings.Contains(stderr, "is invalid:") || !strings.Contains(stderr, "field is immutable") {
 		return immutableTarget{}, false
@@ -693,17 +694,37 @@ func immutableResource(stderr, manifests string) (immutableTarget, bool) {
 }
 
 // parseInvalidResource pulls the Kind and name out of a k8s
-// `The <Kind> "<name>" is invalid:` message. It scans for the `"…"`
-// quoted name and takes the single capitalized token immediately before
-// the opening quote as the Kind. Returns ok=false if the shape doesn't
-// match.
+// `<Kind> "<name>" is invalid:` message. It scans for the `"…"` quoted
+// name and takes the single token immediately before the opening quote as
+// the Kind. Returns ok=false if the shape doesn't match.
+//
+// kubectl emits TWO shapes for the same failure depending on the apply
+// mode, and the recovery must handle both:
+//
+//   - client-side apply:  The Job "control-plane-migrate" is invalid: …
+//   - server-side apply:  Job.batch "control-plane-migrate" is invalid: …
+//
+// forge always applies with `--server-side` (see applyOnce), so the CLOUD
+// warm-redeploy path always hits the SECOND shape, where the token before
+// the name is the GVR-style `<resource>.<group>` ("Job.batch"), not the
+// bare kind ("Job"). The `.group` suffix is stripped here so the returned
+// kind is the bare `kind:` value — which is what namespaceForResource
+// matches against the manifest documents to recover the namespace. Without
+// this normalization the SSA error parsed kind="Job.batch", matched no
+// `kind: Job` document, lost the namespace, and the recovery delete ran in
+// the wrong (default) namespace as a no-op — so the re-apply hit the still
+// immutable Job again and the deploy exited 1. (The e2e path never tripped
+// it: a cold apply into a fresh namespace has no pre-existing Job to
+// conflict with, so the recovery only ever fires on a warm cloud
+// redeploy.) `kubectl delete` accepts the bare kind too, so deleting by
+// the normalized kind is correct for both shapes.
 func parseInvalidResource(stderr string) (kind, name string, ok bool) {
 	const inv = " is invalid:"
 	idx := strings.Index(stderr, inv)
 	if idx < 0 {
 		return "", "", false
 	}
-	head := stderr[:idx] // e.g. `The Job "control-plane-migrate"`
+	head := stderr[:idx] // e.g. `The Job "control-plane-migrate"` or `Job.batch "control-plane-migrate"`
 	close := strings.LastIndex(head, `"`)
 	if close < 0 {
 		return "", "", false
@@ -719,6 +740,12 @@ func parseInvalidResource(stderr string) (kind, name string, ok bool) {
 		return "", "", false
 	}
 	kind = fields[len(fields)-1]
+	// Strip the `.group` suffix of the server-side-apply GVR form
+	// ("Job.batch" → "Job") so the kind matches the bare `kind:` value in
+	// the manifest documents (namespaceForResource) on BOTH apply modes.
+	if dot := strings.IndexByte(kind, '.'); dot > 0 {
+		kind = kind[:dot]
+	}
 	return kind, name, true
 }
 
@@ -746,11 +773,28 @@ func namespaceForResource(manifests, kind, name string) string {
 }
 
 // kubectlDeleteResource issues a scoped, idempotent
-// `kubectl delete <kind> <name> [-n <ns>] --ignore-not-found=true` for the
-// one resource an immutable apply failed on. --ignore-not-found keeps it
-// safe if the object vanished between apply and delete.
+// `kubectl delete <kind> <name> [-n <ns>] --ignore-not-found=true
+// --wait=true --cascade=foreground` for the one resource an immutable
+// apply failed on. --ignore-not-found keeps it safe if the object vanished
+// between apply and delete.
+//
+// --wait + --cascade=foreground close the recovery RACE: the immutable
+// recovery deletes the offending resource and immediately re-applies it,
+// so the delete MUST finalize before the re-apply runs. For a Job the
+// dependents (its pods) matter — a default background delete returns as
+// soon as the delete is ACCEPTED, while the Job object and its pods are
+// still terminating, and the re-apply can then either re-hit the immutable
+// (the Job hasn't actually gone) or collide with the GC of the old pods.
+// Foreground cascade makes `kubectl delete` block until the Job AND its
+// dependents are gone, giving the re-apply a real happens-before. This is
+// what makes the warm CLOUD redeploy deterministic rather than racy.
 func kubectlDeleteResource(ctx context.Context, kctx string, t immutableTarget) error {
-	args := []string{"delete", strings.ToLower(t.Kind), t.Name, "--ignore-not-found=true"}
+	args := []string{
+		"delete", strings.ToLower(t.Kind), t.Name,
+		"--ignore-not-found=true",
+		"--wait=true",
+		"--cascade=foreground",
+	}
 	if t.Namespace != "" {
 		args = append(args, "-n", t.Namespace)
 	}

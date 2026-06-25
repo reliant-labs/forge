@@ -997,8 +997,20 @@ spec:
 
 // realImmutableStderr is the kubectl error a warm `forge up` produces when
 // the migrate Job already exists with a different image tag (every commit
-// changes the tag, and a Job's spec.template is immutable).
+// changes the tag, and a Job's spec.template is immutable). This is the
+// CLIENT-SIDE apply shape (`The <Kind> "<name>" is invalid:`).
 const realImmutableStderr = `The Job "control-plane-migrate" is invalid: spec.template: Invalid value: ...: field is immutable`
+
+// cloudImmutableStderr is the SERVER-SIDE apply shape of the very same
+// failure — the one a warm CLOUD `forge deploy` actually hits, because
+// forge always applies with `--server-side`. kubectl encodes the resource
+// as the GVR-style `<resource>.<group>` ("Job.batch") rather than the bare
+// kind ("Job"). The recovery used to parse kind="Job.batch", fail to match
+// any `kind: Job` document, lose the namespace, delete in the wrong
+// namespace as a no-op, and re-hit the immutable Job — exiting 1. The
+// kind-normalization fix in parseInvalidResource makes both shapes recover
+// the namespace identically.
+const cloudImmutableStderr = `Job.batch "control-plane-migrate" is invalid: spec.template: Invalid value: core.PodTemplateSpec{...}: field is immutable`
 
 // TestApplyWithImmutableRecovery_DeletesJobThenReapplies pins the warm
 // re-deploy fix: a Job whose image tag changed makes the first apply fail
@@ -1094,5 +1106,71 @@ func TestImmutableResource_ParsesKindNameNamespace(t *testing.T) {
 	res, ok = immutableResource(other, immutableJobManifests)
 	if !ok || res.Name != "absent" || res.Namespace != "" {
 		t.Fatalf("unmatched resource should parse with empty namespace, got ok=%v res=%+v", ok, res)
+	}
+}
+
+// TestImmutableResource_ServerSideApplyShape is the regression test for the
+// CLOUD deploy bug: forge applies with `--server-side`, so a warm redeploy
+// of a changed migrate Job fails with the GVR-style `Job.batch "..." is
+// invalid:` shape — not the client-side `The Job "..."` shape. Before the
+// fix, kind parsed as "Job.batch", matched no `kind: Job` document, and the
+// namespace came back empty — so the recovery deleted in the wrong
+// namespace and the re-apply re-hit the immutable Job (deploy exit 1). The
+// fix normalizes the kind to the bare `Job`, recovering the namespace so
+// the delete is scoped correctly.
+func TestImmutableResource_ServerSideApplyShape(t *testing.T) {
+	res, ok := immutableResource(cloudImmutableStderr, immutableJobManifests)
+	if !ok {
+		t.Fatal("the server-side-apply immutable error must be recognized as recoverable")
+	}
+	if res.Kind != "Job" {
+		t.Fatalf("kind must be normalized from the GVR form Job.batch to the bare Job, got %q", res.Kind)
+	}
+	if res.Name != "control-plane-migrate" {
+		t.Fatalf("name must parse from the SSA shape, got %q", res.Name)
+	}
+	if res.Namespace != "app" {
+		t.Fatalf("CLOUD BUG: namespace must be recovered (matched back to the kind: Job document), got %q", res.Namespace)
+	}
+}
+
+// TestApplyWithImmutableRecovery_CloudShape_DeleteWaitReapply is the
+// end-to-end recovery test for the cloud apply path: the first apply fails
+// with the server-side (`Job.batch …`) immutable error, the recovery must
+// delete EXACTLY the failing Job in its namespace, and the re-apply must
+// then succeed (exit 0). This is the warm-cloud-redeploy scenario that
+// previously raced/failed.
+func TestApplyWithImmutableRecovery_CloudShape_DeleteWaitReapply(t *testing.T) {
+	var applies int
+	var deleted []immutableTarget
+
+	apply := func() (string, error) {
+		applies++
+		if applies == 1 {
+			// First apply: the server-side immutable failure a warm cloud
+			// redeploy produces.
+			return cloudImmutableStderr, errors.New("exit status 1")
+		}
+		// After the scoped delete the Job is gone, so the re-apply creates
+		// it cleanly — the deploy exits 0.
+		return "", nil
+	}
+	del := func(target immutableTarget) error {
+		deleted = append(deleted, target)
+		return nil
+	}
+
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del); err != nil {
+		t.Fatalf("recovery should have healed the server-side immutable apply, got %v", err)
+	}
+	if applies != 2 {
+		t.Fatalf("expected fail-then-reapply (2 applies), got %d", applies)
+	}
+	if len(deleted) != 1 {
+		t.Fatalf("expected exactly one scoped delete, got %v", deleted)
+	}
+	got := deleted[0]
+	if got.Kind != "Job" || got.Name != "control-plane-migrate" || got.Namespace != "app" {
+		t.Fatalf("delete must target the failing Job in its namespace (kind normalized from Job.batch), got %+v", got)
 	}
 }

@@ -141,6 +141,12 @@ type buildOptions struct {
 	// a --release build with no captured digest fails loudly rather than
 	// writing an empty ledger. Empty (the default) is today's behavior.
 	release string
+	// repinBases re-resolves every docker.base_images tag's index digest
+	// through the mirror and rewrites .forge/base-images.lock.json, then
+	// exits WITHOUT building. It's the drift-control path: declare bases once,
+	// re-pin on demand (or as part of `forge upgrade`). Resolution goes
+	// through the mirror, so it never hits the rate-limited upstream.
+	repinBases bool
 }
 
 func newBuildCmd() *cobra.Command {
@@ -211,6 +217,7 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set, services declared `deploy: host` in deploy/kcl/<env>/ are excluded from docker build/push (the Go binary still includes their code).")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge deploy uses the same value.")
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge build` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
+	cmd.Flags().BoolVar(&opts.repinBases, "repin-bases", false, "Re-resolve every docker.base_images tag's multi-arch index digest THROUGH the configured mirror and rewrite .forge/base-images.lock.json, then exit without building. This is the drift-control path: declare bases once in forge.yaml, re-pin on demand. Resolution goes through the mirror (a pull-through cache), so it never hits the rate-limited upstream registry.")
 	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). REQUIRES --env <env>: the release's image SET (project images plus per-env external build_cmd images like reliant/workspace-base) is discovered from deploy/kcl/<env>/main.k. The built images stay env-agnostic — pick any env that declares the full set, then promote to every env with `forge promote <version> --to <env>`. Captures each image's digest into a release ledger (.forge/releases/<version>.json); `forge deploy <env>` then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
 
 	return cmd
@@ -289,6 +296,15 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return err
 	}
 	cfg := store.Config()
+
+	// --repin-bases: resolve the declared base images through the mirror,
+	// rewrite the lock, and stop. A re-pin is a deliberate, standalone
+	// operation (it mutates a committed file and makes network reads) — never
+	// folded into an ordinary build. Runs before generate so it doesn't pay
+	// the codegen-staleness scan it doesn't need.
+	if opts.repinBases {
+		return repinBaseImages(ctx, cfg, projectDirForKCL())
+	}
 
 	// Ensure generated code exists / is fresh before any `go build`.
 	// Missing gen/ (gitignored, or freshly cleaned) otherwise fails with
@@ -576,7 +592,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 			}
 			externalArch := resolveExternalBuildTargetArch(cfgArchForDocker, opts.targetArch)
 			projDir := projectDirForKCL()
-			results = append(results, buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch, entities)...)
+			results = append(results, buildExternalServices(ctx, cfg, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch, entities)...)
 		}
 	}
 
@@ -1191,6 +1207,10 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 	// `docker-image://`, …). cwd is the project root by construction
 	// (forge build runs alongside forge.yaml).
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
+	// Pinned, mirrored base images from .forge/base-images.lock.json:
+	// `--build-arg BASE_<slug>=<mirror-ref>@<digest>` overrides each
+	// Dockerfile ARG default so the build pulls the centrally-pinned base.
+	dockerArgs = appendBaseImageBuildArgs(dockerArgs, cfg, "")
 	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
 
@@ -1349,6 +1369,9 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 	// dockerBuildProject — useful when the frontend Dockerfile needs
 	// to reference paths outside its own subtree.
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
+	// Pinned, mirrored base images (see dockerBuildProject) — frontend image
+	// builds get the same centrally-pinned bases.
+	dockerArgs = appendBaseImageBuildArgs(dockerArgs, cfg, "")
 	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)
 
@@ -1689,6 +1712,9 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName 
 		}
 	}
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
+	// Pinned, mirrored base images (see dockerBuildProject) — KCL DockerBuild
+	// services get the same centrally-pinned bases.
+	dockerArgs = appendBaseImageBuildArgs(dockerArgs, cfg, "")
 	fmt.Printf("[build] %s: docker build -f %s (%d tags)\n", svcName, dockerfile, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
 

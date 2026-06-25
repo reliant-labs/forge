@@ -105,6 +105,46 @@ func TestLoadStrict_ConfigGuard_ValidValues(t *testing.T) {
 	}
 }
 
+// baseImagesYAML returns validBaseYAML with the docker block replaced by one
+// carrying a base_images section, so the base-image validation path is
+// exercised through the real LoadStrict pipeline.
+func baseImagesYAML(body string) string {
+	return strings.Replace(validBaseYAML,
+		"docker:\n  registry: ghcr.io\n",
+		"docker:\n  registry: ghcr.io\n  base_images:\n"+body,
+		1)
+}
+
+func TestLoadStrict_BaseImages_Valid(t *testing.T) {
+	in := baseImagesYAML("    mirror_prefix: us-docker.pkg.dev/p/dockerhub\n    tags:\n      - alpine:3.21\n      - golang:1.26-alpine\n")
+	cfg, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
+	if err != nil {
+		t.Fatalf("valid base_images should load clean, got: %v", err)
+	}
+	d := cfg.Docker.BaseImages.Declared()
+	if d.MirrorPrefix != "us-docker.pkg.dev/p/dockerhub" || len(d.Tags) != 2 {
+		t.Errorf("declared projection wrong: %+v", d)
+	}
+}
+
+func TestLoadStrict_BaseImages_MissingMirror(t *testing.T) {
+	in := baseImagesYAML("    tags:\n      - alpine:3.21\n")
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
+	ve := requireValidationError(t, err)
+	if !strings.Contains(ve.Error(), "mirror_prefix is required") {
+		t.Errorf("expected missing-mirror error, got:\n%s", ve.Error())
+	}
+}
+
+func TestLoadStrict_BaseImages_DigestPinnedTagRejected(t *testing.T) {
+	in := baseImagesYAML("    mirror_prefix: m/p\n    tags:\n      - alpine@sha256:abc\n")
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
+	ve := requireValidationError(t, err)
+	if !strings.Contains(ve.Error(), "must not be digest-pinned") {
+		t.Errorf("expected digest-pinned rejection, got:\n%s", ve.Error())
+	}
+}
+
 func TestLoadStrict_ConfigGuard_AbsentDefaultsToWarn(t *testing.T) {
 	cfg, err := LoadStrict([]byte(validBaseYAML), "forge.yaml", baseComponents()...)
 	if err != nil {

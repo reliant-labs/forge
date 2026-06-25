@@ -186,6 +186,11 @@ func loadStrict(data []byte, path string, components []ComponentConfig, hasCompo
 	// downstream error.
 	issues = append(issues, validateServices(&cfg, root)...)
 
+	// Phase 5: docker.base_images shape validation (mirror_prefix required
+	// when tags declared, tags well-formed + unambiguous). Delegated to the
+	// resolver package's Validate so the rule lives in one place.
+	issues = append(issues, validateBaseImages(&cfg, root)...)
+
 	// Partition non-fatal warnings (deprecated top-level keys) out of the
 	// gating error set. Warnings are flushed to the user unconditionally —
 	// whether or not the load also has hard errors — so a deprecated key
@@ -439,11 +444,11 @@ var removedSchemaKeys = map[string]removedKeyHint{
 			"forge projects are Go + Connect RPC.",
 	},
 	"stack.database": {
-		removedIn: "the forge.yaml schema cleanup (stack duplicated database.driver)",
+		removedIn:   "the forge.yaml schema cleanup (stack duplicated database.driver)",
 		replacement: "delete the key and set the driver under `database.driver` (postgres | none).",
 	},
 	"stack.proto": {
-		removedIn: "the forge.yaml schema cleanup (stack.proto was never consumed)",
+		removedIn:   "the forge.yaml schema cleanup (stack.proto was never consumed)",
 		replacement: "delete the key — the proto toolchain is buf; there is no per-project toggle.",
 	},
 	"stack.deploy": {
@@ -452,7 +457,7 @@ var removedSchemaKeys = map[string]removedKeyHint{
 			"deploy target/cluster is declared per-env in `deploy/kcl/<env>/main.k` (forge.K8sCluster).",
 	},
 	"stack.ci": {
-		removedIn: "the forge.yaml schema cleanup (stack.ci duplicated ci.provider)",
+		removedIn:   "the forge.yaml schema cleanup (stack.ci duplicated ci.provider)",
 		replacement: "delete the key and set the CI provider under `ci.provider` (github is the default).",
 	},
 	// deploy graduated from experimental to a stable kind-derived flag in
@@ -788,6 +793,23 @@ func validateConfigGuard(cfg *ProjectConfig, root *yaml.Node) []validationIssue 
 		msg:    fmt.Sprintf("config.enforce_typed_access value %q is invalid", cfg.Config.EnforceTypedAccess),
 		fix:    "use one of: off, warn, error (absent defaults to warn).",
 	}}
+}
+
+// validateBaseImages checks the docker.base_images block via the resolver
+// package's Validate (mirror_prefix required when tags declared, each tag
+// well-formed + slug-unambiguous). The error message is already user-facing
+// and self-explaining; we attach the line of the `base_images:` mapping so the
+// model can jump to it. No-op when the block is empty (feature off).
+func validateBaseImages(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	if err := cfg.Docker.BaseImages.Declared().Validate(); err != nil {
+		line, col := findNodePos(root, []string{"docker", "base_images"})
+		return []validationIssue{{
+			line:   line,
+			column: col,
+			msg:    err.Error(),
+		}}
+	}
+	return nil
 }
 
 // validateProjectFields checks the top-level project identity fields

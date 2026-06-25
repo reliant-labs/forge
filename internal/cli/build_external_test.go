@@ -9,7 +9,13 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/config"
 )
+
+// noBaseImagesCfg is the config the external-build tests pass: no
+// docker.base_images declared, so baseImageBuildEnv injects nothing and the
+// tests exercise the build_cmd path unchanged.
+func noBaseImagesCfg() *config.ProjectConfig { return &config.ProjectConfig{} }
 
 // shellSvc is a test helper building a ServiceEntity whose effective
 // build is a ShellBuild (the single shell escape hatch). cwd/env are
@@ -211,6 +217,7 @@ func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
 	opts := buildOptions{env: "dev", parallel: false}
 	results := buildExternalServices(
 		context.Background(),
+		noBaseImagesCfg(),
 		services,
 		opts,
 		"localhost:5051", // registry
@@ -258,6 +265,7 @@ func TestBuildExternalServices_FailsWhenCwdMissing(t *testing.T) {
 	opts := buildOptions{env: "dev", parallel: false}
 	results := buildExternalServices(
 		context.Background(),
+		noBaseImagesCfg(),
 		services,
 		opts,
 		"localhost:5051",
@@ -370,7 +378,7 @@ func TestBuildExternalServices_CapturesDigest(t *testing.T) {
 	}
 	opts := buildOptions{env: "staging", parallel: false}
 	results := buildExternalServices(
-		context.Background(), services, opts,
+		context.Background(), noBaseImagesCfg(), services, opts,
 		"ghcr.io/reliant-labs", "staging", projDir, "amd64", nil,
 	)
 	if len(results) != 1 || results[0].err != nil {
@@ -446,7 +454,7 @@ func TestBuildExternalServices_NoDigestSafeFallback(t *testing.T) {
 	}
 	opts := buildOptions{env: "e2e", parallel: false}
 	results := buildExternalServices(
-		context.Background(), services, opts,
+		context.Background(), noBaseImagesCfg(), services, opts,
 		"", "e2e", projDir, "amd64", nil, // empty registry → local ref
 	)
 	if len(results) != 1 || results[0].err != nil {

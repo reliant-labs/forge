@@ -329,6 +329,18 @@ type State struct {
 	Tag      string `json:"tag"`
 	Registry string `json:"registry,omitempty"`
 	PushedAt string `json:"pushed_at"`
+	// Digest is the content-addressed manifest digest of the pushed image
+	// (canonical `sha256:...`, no `@` prefix, no repo), captured best-effort
+	// from the registry after the user's build_cmd builds+pushes. EMPTY when
+	// the digest couldn't be resolved (local-only ref, registry unreachable,
+	// or buildx/docker absent) — capture never fails the build. Mirrors
+	// internal/cli.BuildState.Digest so `forge deploy` pins the immutable
+	// `<image>@<digest>` reference for external builds too, instead of
+	// falling back to the mutable env tag (the stale-arch-cache footgun).
+	Digest string `json:"digest,omitempty"`
+	// Platforms is the OS/arch set the pushed manifest advertises, captured
+	// alongside Digest. Informational; empty when the lookup failed.
+	Platforms []string `json:"platforms,omitempty"`
 }
 
 // statePath returns the absolute path to the per-service build-state

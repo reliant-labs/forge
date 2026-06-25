@@ -30,6 +30,14 @@ import (
 	"github.com/reliant-labs/forge/internal/buildtarget"
 )
 
+// externalImageDigestResolver resolves the content-addressed manifest digest
+// (+ platforms) of a pushed image ref. It defaults to imageRepoDigest — the
+// SAME registry/local-daemon read the docker PROJECT path uses (build_state.go)
+// — so external builds and the project build capture digests through one code
+// path. It's a package var purely so tests can substitute a deterministic fake
+// without shelling out to docker; production code never reassigns it.
+var externalImageDigestResolver = imageRepoDigest
+
 // kclHasExternalBuildService reports whether the KCL entity set
 // contains any service with a non-empty BuildCmd. Used by runBuild
 // to decide whether to invoke the external-build dispatcher at all,
@@ -156,17 +164,38 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 			return
 		}
 
+		// Capture the pushed image's content-addressed digest so deploy can
+		// pin `<image>@sha256:...` (immutable, node-cache-proof) instead of the
+		// mutable env tag — closing the external-build half of the digest gap:
+		// the user's build_cmd owns build AND push, so forge resolves the
+		// digest AFTER the command by querying the registry for the exact ref
+		// it pushed (${REGISTRY}/${IMAGE}:${TAG}). Best-effort, same contract as
+		// the docker PROJECT path: any lookup failure (local-only ref with no
+		// registry manifest — the e2e workspace-base/reliant case — or an
+		// unreachable registry) records no digest and deploy falls back to the
+		// tag exactly as before. NEVER fails the build.
+		pushedRef := externalPushedRef(registry, svc.Image, svcTag)
+		digest, platforms := "", []string(nil)
+		if d, p, derr := externalImageDigestResolver(ctx, pushedRef); derr == nil {
+			digest, platforms = d, p
+			fmt.Printf("[build] %s: pushed digest %s\n", svc.Name, digest)
+		} else {
+			fmt.Printf("[build]   Note: could not capture image digest for %s (%v); deploy will use the tag\n", pushedRef, derr)
+		}
+
 		// Success path: persist the per-service state file so
 		// `forge deploy <env>` reads the exact tag forge build just
 		// pushed. Non-fatal: a failed state write logs a warning but
 		// the build itself stays successful (a future deploy will
 		// fall back to git-derived tag resolution).
 		state := buildtarget.State{
-			Service:  svc.Name,
-			Image:    svc.Image,
-			Tag:      svcTag,
-			Registry: registry,
-			PushedAt: nowRFC3339(),
+			Service:   svc.Name,
+			Image:     svc.Image,
+			Tag:       svcTag,
+			Registry:  registry,
+			PushedAt:  nowRFC3339(),
+			Digest:    digest,
+			Platforms: platforms,
 		}
 		if werr := buildtarget.WriteState(projectDir, opts.env, state); werr != nil {
 			fmt.Printf("[build] %s: warning: failed to write build-state file: %v\n", svc.Name, werr)
@@ -193,6 +222,12 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 			// Pushed stays false (the deploy-side tag read doesn't gate
 			// on it — see BuildState.Pushed).
 			PushedAt: nowRFC3339(),
+			// Carry the digest into the deploy-readable aggregate too — this
+			// is the file resolveDeployImageTag actually reads, so without it
+			// the per-service capture above would never reach deploy and the
+			// reliant/workspace-base images would still pin the mutable tag.
+			Digest:    digest,
+			Platforms: platforms,
 		}
 		if werr := WriteBuildState(projectDir, opts.env, deployState); werr != nil {
 			fmt.Printf("[build] %s: warning: failed to write deploy build-state file: %v\n", svc.Name, werr)
@@ -228,6 +263,21 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 		results = append(results, r)
 	}
 	return results
+}
+
+// externalPushedRef reconstructs the image ref the external build_cmd was
+// handed via ${REGISTRY}/${IMAGE}:${TAG} — the exact ref the user's command
+// pushed — so the post-build digest lookup queries the same manifest. When
+// registry is empty (a local build_cmd that tags `${IMAGE}:${TAG}` with no
+// registry prefix, e.g. the e2e workspace-base/reliant images) we drop the
+// `<registry>/` segment, matching the deploy-side External ${IMAGE}:${TAG}
+// substitution. A local-only ref simply won't resolve a registry digest, so
+// the best-effort lookup returns empty and deploy stays on the tag.
+func externalPushedRef(registry, image, tag string) string {
+	if registry == "" {
+		return image + ":" + tag
+	}
+	return registry + "/" + image + ":" + tag
 }
 
 // resolveExternalBuildTargetArch picks the GOARCH for the ${TARGETARCH}

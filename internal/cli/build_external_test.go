@@ -2,10 +2,13 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/buildtarget"
 )
 
 // TestKCLHasExternalBuildService_PositiveAndNegative pins the discovery
@@ -397,5 +400,131 @@ func TestResolveExternalBuildTargetArch_Precedence(t *testing.T) {
 				t.Errorf("got empty; runtime fallback should never produce empty")
 			}
 		})
+	}
+}
+
+// TestBuildExternalServices_CapturesDigest pins the external-build half of
+// deploy-by-digest: when the pushed ref resolves to a content-addressed
+// manifest digest, that digest lands in BOTH the per-service State file
+// (forge audit/doctor) AND the deploy-readable aggregate build-<env>.json
+// (what resolveDeployImageTag reads) — so reliant/workspace-base get pinned
+// to `<image>@sha256:...` instead of the mutable env tag. The resolver is
+// faked so the test never shells out to docker; it also asserts the resolver
+// was queried with the exact ${REGISTRY}/${IMAGE}:${TAG} ref the build_cmd
+// pushed.
+func TestBuildExternalServices_CapturesDigest(t *testing.T) {
+	projDir := t.TempDir()
+
+	const wantDigest = "sha256:" + "abcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabc00"
+	var gotRef string
+	orig := externalImageDigestResolver
+	externalImageDigestResolver = func(_ context.Context, ref string) (string, []string, error) {
+		gotRef = ref
+		return wantDigest, []string{"linux/amd64"}, nil
+	}
+	t.Cleanup(func() { externalImageDigestResolver = orig })
+
+	services := []ServiceEntity{
+		{Name: "reliant-api-server", Image: "reliant", BuildCmd: "true"},
+	}
+	opts := buildOptions{env: "staging", parallel: false}
+	results := buildExternalServices(
+		context.Background(), services, opts,
+		"ghcr.io/reliant-labs", "staging", projDir, "amd64", nil,
+	)
+	if len(results) != 1 || results[0].err != nil {
+		t.Fatalf("results: %+v", results)
+	}
+
+	// Resolver must have been asked about the exact pushed ref.
+	if want := "ghcr.io/reliant-labs/reliant:staging"; gotRef != want {
+		t.Errorf("resolver ref: got %q, want %q", gotRef, want)
+	}
+
+	// Per-service State carries the digest.
+	st, err := buildtarget.ReadState(projDir, "staging", "reliant-api-server")
+	if err != nil || st == nil {
+		t.Fatalf("ReadState: st=%+v err=%v", st, err)
+	}
+	if st.Digest != wantDigest {
+		t.Errorf("per-service digest: got %q, want %q", st.Digest, wantDigest)
+	}
+	if len(st.Platforms) != 1 || st.Platforms[0] != "linux/amd64" {
+		t.Errorf("per-service platforms: got %v", st.Platforms)
+	}
+
+	// Deploy-readable aggregate carries the digest too — this is the file
+	// resolveDeployImageTag actually consumes.
+	dst, err := ReadBuildState(projDir, "staging")
+	if err != nil || dst == nil {
+		t.Fatalf("ReadBuildState: dst=%+v err=%v", dst, err)
+	}
+	if dst.Digest != wantDigest {
+		t.Errorf("deploy-aggregate digest: got %q, want %q", dst.Digest, wantDigest)
+	}
+
+	// And resolveDeployImageTag pins the immutable @sha256 reference.
+	ref, plain, _, rerr := resolveDeployImageTag(context.Background(), projDir, "staging", "", false)
+	if rerr != nil {
+		t.Fatalf("resolveDeployImageTag: %v", rerr)
+	}
+	if ref != "@"+wantDigest {
+		t.Errorf("resolved imageRef: got %q, want %q", ref, "@"+wantDigest)
+	}
+	if plain != "staging" {
+		t.Errorf("resolved plainTag: got %q, want the mutable tag %q", plain, "staging")
+	}
+}
+
+// TestBuildExternalServices_NoDigestSafeFallback pins the safety contract:
+// when the pushed ref has no resolvable digest (local-only ref — the e2e
+// workspace-base/reliant case — or an unreachable registry), the build still
+// succeeds and records NO digest, so deploy falls back to the mutable tag
+// exactly as before. A digest lookup failure must never break the build or
+// the local-registry/e2e path.
+func TestBuildExternalServices_NoDigestSafeFallback(t *testing.T) {
+	projDir := t.TempDir()
+
+	orig := externalImageDigestResolver
+	externalImageDigestResolver = func(_ context.Context, ref string) (string, []string, error) {
+		return "", nil, fmt.Errorf("no registry manifest for %s (local-only)", ref)
+	}
+	t.Cleanup(func() { externalImageDigestResolver = orig })
+
+	services := []ServiceEntity{
+		{Name: "workspace-base", Image: "workspace-base", BuildCmd: "true"},
+	}
+	opts := buildOptions{env: "e2e", parallel: false}
+	results := buildExternalServices(
+		context.Background(), services, opts,
+		"", "e2e", projDir, "amd64", nil, // empty registry → local ref
+	)
+	if len(results) != 1 || results[0].err != nil {
+		t.Fatalf("build must still succeed on a digest miss: %+v", results)
+	}
+
+	st, err := buildtarget.ReadState(projDir, "e2e", "workspace-base")
+	if err != nil || st == nil {
+		t.Fatalf("ReadState: st=%+v err=%v", st, err)
+	}
+	if st.Digest != "" {
+		t.Errorf("per-service digest: got %q, want empty (safe fallback)", st.Digest)
+	}
+
+	dst, err := ReadBuildState(projDir, "e2e")
+	if err != nil || dst == nil {
+		t.Fatalf("ReadBuildState: dst=%+v err=%v", dst, err)
+	}
+	if dst.Digest != "" {
+		t.Errorf("deploy-aggregate digest: got %q, want empty (safe fallback)", dst.Digest)
+	}
+
+	// Deploy resolves to the plain mutable tag, not a digest.
+	ref, _, _, rerr := resolveDeployImageTag(context.Background(), projDir, "e2e", "", false)
+	if rerr != nil {
+		t.Fatalf("resolveDeployImageTag: %v", rerr)
+	}
+	if ref != "e2e" {
+		t.Errorf("resolved imageRef: got %q, want the tag %q (no digest pinned)", ref, "e2e")
 	}
 }

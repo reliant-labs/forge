@@ -350,14 +350,33 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		tagSource = src
 		// Resolve the PER-IMAGE digest map (image name → sha256). Threaded
 		// into every manifest render below so each service pins ITS image's
-		// digest. Best-effort: a read error here never blocks the deploy (the
-		// tag path already ran and surfaced any hard state-file error); the
-		// worst case is falling back to the tag for some image.
-		digests, derr := resolveDeployImageDigests(projectDir, envName, opts.noDigest)
+		// digest.
+		//
+		// Resolution precedence (highest first):
+		//   1. A bound RELEASE (env promoted to a release via `forge promote`).
+		//      Pins the digests the release captured — so every env on the same
+		//      release deploys byte-identical images (build once, promote). This
+		//      is the new layer; it wins because a deliberate promotion is a
+		//      stronger signal than whatever the per-env build state happens to
+		//      hold.
+		//   2. The per-env build state (today's flow): the aggregate +
+		//      per-service build-<env>.json digests `forge build --push` wrote.
+		//   3. The mutable :tag (resolveDeployImageTag, above) for any image
+		//      with no captured digest.
+		//
+		// FULL BACKWARD COMPAT: when the env has NO release binding, this is
+		// byte-identical to before — resolveDeployImageDigests alone. The
+		// current cloud + e2e flow binds no release, so it is unaffected.
+		// --no-digest disables both digest paths (the tag-only escape hatch).
+		digests, boundRel, derr := resolveDeployDigests(projectDir, envName, opts.noDigest)
 		if derr != nil {
 			return derr
 		}
 		imageDigests = digests
+		if boundRel != "" {
+			tagSource = fmt.Sprintf("release %s (promoted; .forge/env-releases.json)", boundRel)
+			fmt.Printf("  Release:     %s  (env %q is promoted to it — pinning its digests)\n", boundRel, envName)
+		}
 	}
 
 	// Resolve namespace.
@@ -1140,6 +1159,57 @@ func resolveDeployImageDigests(projectDir, envName string, noDigest bool) (map[s
 		return nil, nil
 	}
 	return out, nil
+}
+
+// resolveDeployDigests is the per-image digest resolver with the release layer
+// folded in. It returns the image-name → digest map the KCL render pins each
+// service to, plus the bound release version (empty when the env has no
+// binding) so the caller can surface it in the deploy banner.
+//
+// Precedence (highest first):
+//
+//  1. A bound RELEASE (env promoted via `forge promote`). The release's
+//     resolved digests OVERRIDE the per-env build state per image: a deliberate
+//     promotion is the strongest signal, and pinning the release's digests is
+//     what makes every env on the same release deploy byte-identical images
+//     (build once, promote). This is the new layer.
+//  2. The per-env build state (today's flow): resolveDeployImageDigests reads
+//     the aggregate + per-service build-<env>.json digests `forge build --push`
+//     wrote.
+//  3. The mutable :tag (resolveDeployImageTag, the caller's separate step) for
+//     any image still carrying no digest.
+//
+// FULL BACKWARD COMPAT: an env with NO release binding gets exactly
+// resolveDeployImageDigests' result and a "" release — byte-identical to before
+// the release layer existed. The current cloud + e2e flow binds no release, so
+// it is unaffected. noDigest disables both digest paths (the tag-only escape
+// hatch) AND the release lookup.
+func resolveDeployDigests(projectDir, envName string, noDigest bool) (digests map[string]string, boundRelease string, err error) {
+	base, err := resolveDeployImageDigests(projectDir, envName, noDigest)
+	if err != nil {
+		return nil, "", err
+	}
+	if noDigest {
+		return base, "", nil
+	}
+	binding, bound, berr := boundReleaseForEnv(projectDir, envName)
+	if berr != nil {
+		return nil, "", fmt.Errorf("read env-release binding for %q: %w", envName, berr)
+	}
+	if !bound {
+		return base, "", nil
+	}
+	// Layer the release's resolved digests over the per-env build state. A
+	// per-image override (not a wholesale replace) keeps any image present in
+	// the build state but absent from the release still resolvable — though in
+	// practice a release is authoritative for everything it pins.
+	if base == nil {
+		base = map[string]string{}
+	}
+	for image, digest := range binding.Resolved {
+		base[image] = digest
+	}
+	return base, binding.Release, nil
 }
 
 // buildStateLookupEnvs is the ordered fallback of build-state keys to try

@@ -131,6 +131,17 @@ type buildOptions struct {
 	// caller wants to skip the staleness scan (e.g. a CI lane that runs
 	// generate as its own step). See ensureGeneratedCode.
 	skipGenerate bool
+	// release, when set, is the human-readable version label (semver,
+	// "v1.4.0") for a build-once → promote release. After the build's
+	// per-image digests are captured (the existing digest-capture flow),
+	// runBuild harvests them into a Release ledger at
+	// .forge/releases/<release>.json. `forge promote <release> --to <env>`
+	// then binds an env to it and `forge deploy <env>` pins the SAME
+	// digests — build once, promote, no per-env rebuild. Implies --push
+	// in spirit (a release pins registry digests), but is enforced softly:
+	// a --release build with no captured digest fails loudly rather than
+	// writing an empty ledger. Empty (the default) is today's behavior.
+	release string
 }
 
 func newBuildCmd() *cobra.Command {
@@ -175,6 +186,12 @@ without forcing the user to add /etc/hosts entries on the host.`,
 			if opts.pushRegistry != "" {
 				opts.buildDocker = true
 			}
+			// --release pins immutable image digests, which only a docker
+			// image build produces — so a release build is always a docker
+			// build, even if the user forgot --docker/--push.
+			if opts.release != "" {
+				opts.buildDocker = true
+			}
 			return runBuild(cmd.Context(), opts)
 		},
 	}
@@ -189,6 +206,7 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set, services declared `deploy: host` in deploy/kcl/<env>/ are excluded from docker build/push (the Go binary still includes their code).")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge deploy uses the same value.")
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge build` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
+	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). Builds the env-agnostic images once, captures their digests, and writes a release ledger (.forge/releases/<version>.json). Promote it to an env with `forge promote <version> --to <env>`; `forge deploy <env>` then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
 
 	return cmd
 }
@@ -610,8 +628,58 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return fmt.Errorf("%d of %d builds failed", len(failed), len(results))
 	}
 
+	// Cut the Release ledger when --release is set. This is the build-once →
+	// promote spine: harvest the per-image digests the build just captured
+	// (the SAME build-state sources resolveDeployImageDigests reads at deploy
+	// time) into a durable .forge/releases/<version>.json. A release with no
+	// captured digest fails loudly rather than writing an empty ledger — a
+	// release that can't pin anything is useless and almost always means the
+	// user forgot --push (or built against a registry that didn't return a
+	// digest). See writeReleaseLedger.
+	if opts.release != "" {
+		if err := writeReleaseLedger(ctx, opts); err != nil {
+			return err
+		}
+	}
+
 	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
 	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
+	return nil
+}
+
+// writeReleaseLedger harvests the digests captured by the just-completed
+// build into a Release ledger keyed by opts.release. It is the durable
+// projection of the ephemeral build state: every image whose build recorded a
+// content-addressed digest becomes a "shared" artifact promotable to any env.
+//
+// Fails (does not silently no-op) when no digest was captured: a release is a
+// promise that "these exact bytes ship everywhere", and an empty promise is a
+// latent footgun (a later `forge promote`/`deploy` would resolve nothing and
+// fall back to tags — exactly the mutable-tag failure the release model exists
+// to kill). The actionable remedy is in the error: pass --push.
+func writeReleaseLedger(ctx context.Context, opts buildOptions) error {
+	projectDir := projectDirForKCL()
+	artifacts := harvestReleaseArtifacts(projectDir, opts.env)
+	if len(artifacts) == 0 {
+		return fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
+			"  A release pins immutable digests, which require a registry push — re-run with --push <registry>\n"+
+			"  (a release built without --push has only a local tag, which can't be promoted across envs).", opts.release)
+	}
+
+	commit, gitTag, dirty := gitBuildProvenance(ctx)
+	rel := Release{
+		Version:   opts.release,
+		Git:       ReleaseGit{Commit: commit, Tag: gitTag, Dirty: dirty},
+		CreatedAt: nowRFC3339(),
+		Artifacts: artifacts,
+	}
+	if err := WriteRelease(projectDir, rel); err != nil {
+		return fmt.Errorf("--release %s: write release ledger: %w", opts.release, err)
+	}
+	fmt.Printf("\n[build] Cut release %s (%d image(s)): %s\n",
+		rel.Version, len(rel.Artifacts), strings.Join(releaseImageNames(rel), ", "))
+	fmt.Printf("[build]   Ledger: %s\n", releasePath(projectDir, rel.Version))
+	fmt.Printf("[build]   Promote: forge promote %s --to <env>\n", rel.Version)
 	return nil
 }
 

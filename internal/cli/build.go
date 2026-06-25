@@ -275,6 +275,27 @@ func resolveBuildArch(cfgArch, flagArch string, dockerCtx bool) string {
 	return target
 }
 
+// resolveBuildArchForImage resolves the GOARCH for a host go build whose
+// binary will be COPYed into the PROJECT image (the COPY-pattern Dockerfile,
+// no in-image `RUN go build`). Unlike resolveBuildArch it NEVER returns "" —
+// the caller always pairs the returned arch with GOOS=linux, so the produced
+// binary is a Linux ELF for the image's platform even when that arch equals
+// the host's (e.g. an arm64 image built on an arm64 Mac: GOOS=linux GOARCH=arm64,
+// NOT a native darwin/arm64 build). Precedence: --target-arch flag, then the
+// per-env deploy platform (cfgArch), then the HOST arch — matching the
+// ClusterTarget.platform schema's documented "unset => host arch" contract
+// (local k3d nodes share the host arch, so an undeclared platform should track
+// the host, not silently cross-build amd64).
+func resolveBuildArchForImage(cfgArch, flagArch string) string {
+	if flagArch != "" {
+		return flagArch
+	}
+	if cfgArch != "" {
+		return cfgArch
+	}
+	return runtime.GOARCH
+}
+
 type buildResult struct {
 	name     string
 	kind     string // "service", "frontend", or "docker"
@@ -731,7 +752,20 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 	)
 
 	// Build the KCL-driven go targets + frontends in parallel.
+	//
+	// When the project image will CONSUME these host-built binaries (the
+	// COPY-pattern Dockerfile: `COPY bin/<svc>` rather than an in-image
+	// `RUN go build`), they must be built for the IMAGE platform — GOOS=linux
+	// AND GOARCH=<deploy-target arch> — not the host. resolveBuildArch's plain
+	// (dockerCtx=false) path collapses "target == host GOARCH" to "" (a native
+	// build), which on a macOS host yields a Darwin/arm64 binary that the
+	// Dockerfile then COPYs into a linux image → "exec format error" CrashLoop.
+	// Resolving with the docker arch forces GOOS=linux/GOARCH=<arch> even when
+	// the arch equals the host's, so the binary matches the image it ships in.
 	goArch := resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false)
+	if opts.buildDocker && len(goTargets) > 0 && !skipProjectDocker {
+		goArch = resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
+	}
 	for _, t := range goTargets {
 		wg.Add(1)
 		go func(t goBuildTarget) {
@@ -770,12 +804,19 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 	// whenever the deploy-target arch differs from the host — even if the
 	// preceding go build above happened to use the host arch.
 	if opts.buildDocker && !hasBuildFailure {
+		// The image platform must match the arch the host go build above
+		// produced (resolveBuildArchForImage when the project image consumes
+		// those binaries), so a non-empty result here drives
+		// `docker build --platform=linux/<arch>` and the COPYed binary's ELF
+		// arch agrees with the image. Frontend docker builds (no host go
+		// binary) keep the plain resolution.
 		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
 		if len(goTargets) > 0 && !skipProjectDocker {
+			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch, resolvedTag, resolvedVersion)
+				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, resolvedVersion)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -800,7 +841,13 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, goTargets []goBuildTarget, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, resolvedVersion versionInfo, opts buildOptions) []buildResult {
 	var results []buildResult
 
+	// See buildParallel: when the project image COPYs these host-built
+	// binaries, they must be built for the image platform (GOOS=linux +
+	// deploy-target GOARCH), never a native (possibly darwin) host build.
 	goArch := resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false)
+	if opts.buildDocker && len(goTargets) > 0 && !skipProjectDocker {
+		goArch = resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
+	}
 	for _, t := range goTargets {
 		r := buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion)
 		results = append(results, r)
@@ -820,7 +867,9 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, 
 	if opts.buildDocker {
 		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
 		if len(goTargets) > 0 && !skipProjectDocker {
-			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch, resolvedTag, resolvedVersion)
+			// Image platform == the arch the project binaries were built for.
+			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
+			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, resolvedVersion)
 			results = append(results, r)
 			if r.err != nil {
 				return results

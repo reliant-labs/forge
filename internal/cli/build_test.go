@@ -310,6 +310,37 @@ func TestResolveBuildArch(t *testing.T) {
 	}
 }
 
+// TestResolveBuildArchForImage locks the COPY-pattern image arch resolution:
+// it NEVER returns "" (the caller always pairs it with GOOS=linux), precedence
+// is flag > per-env platform > host arch, and an UNSET platform tracks the host
+// (so a local arm64 build produces a linux/arm64 image+binary, not a native
+// darwin/arm64 binary nor a silently cross-built amd64 image).
+func TestResolveBuildArchForImage(t *testing.T) {
+	host := runtime.GOARCH
+	cases := []struct {
+		name             string
+		cfgArch, flagArch string
+		want             string
+	}{
+		{"unset tracks host arch (local k3d)", "", "", host},
+		{"per-env platform wins over host", "amd64", "", "amd64"},
+		{"flag overrides per-env platform", "amd64", "arm64", "arm64"},
+		{"flag wins when platform unset", "", "arm64", "arm64"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := resolveBuildArchForImage(c.cfgArch, c.flagArch)
+			if got != c.want {
+				t.Errorf("resolveBuildArchForImage(cfg=%q, flag=%q) = %q, want %q",
+					c.cfgArch, c.flagArch, got, c.want)
+			}
+			if got == "" {
+				t.Error("resolveBuildArchForImage must never return \"\" (caller pairs it with GOOS=linux)")
+			}
+		})
+	}
+}
+
 // Note: TestHostDevTargetServices was removed when services[].dev_target
 // moved to the KCL layer in feat/kcl-orchestration. The replacement
 // host-mode filter reads rendered KCL via [hostServicesFromKCL] — see

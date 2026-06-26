@@ -1255,3 +1255,117 @@ func TestApplyWithImmutableRecovery_DeleteErrorSurfaces(t *testing.T) {
 		t.Fatalf("a delete failure must abort immediately (applies=%d deletes=%d)", applies, deletes)
 	}
 }
+
+// batchedImmutableStderr is the shape a warm CLOUD redeploy produces when the
+// SINGLE server-side apply of the workload batch hits MORE THAN ONE immutable
+// conflict at once — kubectl emits one `<Kind> "<name>" is invalid: … field is
+// immutable` line per offending resource. Here the migrate Job AND the api
+// Deployment both report an immutable field. (Both resources are present in
+// immutableJobManifests so their namespaces recover.)
+const batchedImmutableStderr = `Job.batch "control-plane-migrate" is invalid: spec.template: Invalid value: core.PodTemplateSpec{...}: field is immutable
+Deployment.apps "api" is invalid: spec.selector: Invalid value: ...: field is immutable`
+
+// TestImmutableResources_BatchReportsEveryConflict pins the batch-aware
+// detector: a single apply whose stderr lists TWO immutable conflicts yields
+// BOTH targets (kind/name/namespace each recovered), not just the first.
+func TestImmutableResources_BatchReportsEveryConflict(t *testing.T) {
+	got := immutableResources(batchedImmutableStderr, immutableJobManifests)
+	if len(got) != 2 {
+		t.Fatalf("a batched apply with two immutable conflicts must yield two targets, got %d: %+v", len(got), got)
+	}
+	want := map[string]string{
+		"Job/control-plane-migrate": "app",
+		"Deployment/api":            "app",
+	}
+	for _, tgt := range got {
+		key := tgt.Kind + "/" + tgt.Name
+		ns, ok := want[key]
+		if !ok {
+			t.Fatalf("unexpected target %+v", tgt)
+		}
+		if tgt.Namespace != ns {
+			t.Fatalf("target %s: namespace must recover to %q, got %q", key, ns, tgt.Namespace)
+		}
+	}
+
+	// A stderr with NO immutable conflict yields no targets — the caller
+	// surfaces such an error unchanged.
+	if got := immutableResources(`Error from server (NotFound): namespaces "app" not found`, immutableJobManifests); len(got) != 0 {
+		t.Fatalf("a non-immutable error must yield no recoverable targets, got %+v", got)
+	}
+	// A batch where one resource is immutable but a DIFFERENT one failed for an
+	// unrelated reason must recover ONLY the immutable one — the per-resource
+	// body scoping keeps the non-immutable failure from masquerading.
+	mixed := `Job.batch "control-plane-migrate" is invalid: spec.template: ...: field is immutable
+Deployment.apps "api" is invalid: spec.replicas: Invalid value: must be non-negative`
+	gotMixed := immutableResources(mixed, immutableJobManifests)
+	if len(gotMixed) != 1 || gotMixed[0].Name != "control-plane-migrate" {
+		t.Fatalf("only the immutable resource must be recoverable in a mixed batch, got %+v", gotMixed)
+	}
+}
+
+// TestApplyWithImmutableRecovery_BatchedMultiConflict_ExitsZero is the direct
+// regression for the prod `forge deploy` exit-1-on-a-healthy-cluster bug. The
+// workload batch is applied in ONE server-side apply, so a warm redeploy can
+// report MORE THAN ONE immutable conflict at once (the migrate Job AND a
+// second resource). The OLD recovery only re-entered for the SAME Kind/Name as
+// the first conflict, so the second immutable resource was misclassified as
+// "unrelated" and its non-zero status propagated to the deploy's exit code —
+// exit 1 — even though deleting+re-applying it would have healed it and every
+// pod was already running. The recovery must now delete EVERY immutable
+// resource in the batch and re-apply, after which the apply succeeds (exit 0).
+func TestApplyWithImmutableRecovery_BatchedMultiConflict_ExitsZero(t *testing.T) {
+	var applies int
+	var deleted []immutableTarget
+	gone := map[string]bool{}
+
+	apply := func() (string, error) {
+		applies++
+		// The re-apply only succeeds once BOTH offenders have actually been
+		// deleted — realistic: re-applying the whole batch while a second
+		// immutable resource is still present re-hits its immutable field.
+		// (This is what makes single-resource recovery exit 1 on prod.)
+		jobGone := gone["Job/control-plane-migrate"]
+		depGone := gone["Deployment/api"]
+		switch {
+		case jobGone && depGone:
+			return "", nil
+		case jobGone && !depGone:
+			// Job healed, Deployment still immutable.
+			return `Deployment.apps "api" is invalid: spec.selector: Invalid value: ...: field is immutable`, errors.New("exit status 1")
+		case !jobGone && depGone:
+			return `Job.batch "control-plane-migrate" is invalid: spec.template: Invalid value: ...: field is immutable`, errors.New("exit status 1")
+		default:
+			// Neither deleted yet — both immutable (the initial batched apply).
+			return batchedImmutableStderr, errors.New("exit status 1")
+		}
+	}
+	del := func(target immutableTarget) error {
+		deleted = append(deleted, target)
+		gone[target.Kind+"/"+target.Name] = true
+		return nil
+	}
+
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); err != nil {
+		t.Fatalf("recovery must heal EVERY immutable conflict in the batch and exit 0, got %v", err)
+	}
+	if applies != 2 {
+		t.Fatalf("expected fail-then-reapply (2 applies), got %d", applies)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("recovery must delete BOTH immutable resources, deleted %d: %+v", len(deleted), deleted)
+	}
+	// Both offenders, each scoped to its namespace.
+	gotNames := map[string]string{}
+	for _, d := range deleted {
+		gotNames[d.Kind+"/"+d.Name] = d.Namespace
+	}
+	for key, ns := range map[string]string{
+		"Job/control-plane-migrate": "app",
+		"Deployment/api":            "app",
+	} {
+		if gotNames[key] != ns {
+			t.Fatalf("delete must scope %s to namespace %q, got %q (all: %+v)", key, ns, gotNames[key], deleted)
+		}
+	}
+}

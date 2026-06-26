@@ -665,47 +665,67 @@ func applyWithImmutableRecovery(
 	if err == nil {
 		return nil
 	}
-	res, ok := immutableResource(stderr, manifests)
-	if !ok {
+	targets := immutableResources(stderr, manifests)
+	if len(targets) == 0 {
 		// Not the recoverable immutable case — surface unchanged.
 		return err
 	}
 
-	// Recovery loop: delete the offending resource, wait for it to actually
-	// be gone, then re-apply. Repeat (bounded) only while the re-apply keeps
-	// racing the same immutable resource.
+	// Recovery loop: delete EVERY offending immutable resource the batch
+	// reported, wait for each to actually be gone, then re-apply the whole
+	// batch. Repeat (bounded) only while every re-apply failure is itself a
+	// (possibly different) set of recoverable immutable conflicts.
+	//
+	// Why "every" and not "the same one": forge applies the workload batch
+	// (the migrate Job + the Deployments) in a SINGLE server-side apply, so a
+	// warm redeploy can report MORE THAN ONE immutable conflict — and even
+	// when the first apply names only the migrate Job, a re-apply under load
+	// can surface a DIFFERENT immutable resource. The old loop only re-entered
+	// for the SAME Kind/Name; any other immutable resource was misclassified
+	// as "unrelated" and its non-zero status propagated to the deploy's exit
+	// code (exit 1) even though it was equally recoverable and every pod ended
+	// healthy. This is the staging-0 (1 immutable Job) / prod-1 (a second
+	// immutable conflict slipped through) split. We now recover the full
+	// immutable set each cycle, so the deploy exits 0 once — and only once —
+	// every immutable conflict has been deleted+re-applied successfully.
 	lastErr := err
 	for attempt := 1; attempt <= immutableRecoveryAttempts; attempt++ {
-		if delErr := del(res); delErr != nil {
-			// A delete failure is its own problem — surface it rather than
-			// the original immutable error so the cause is visible.
-			return fmt.Errorf("recovering immutable %s %q: delete: %w", res.Kind, res.Name, delErr)
-		}
-		// Poll the resource to NotFound so the re-apply has a real
-		// happens-before. Best-effort: a wait error (e.g. kubectl flake)
-		// shouldn't abort the recovery — the re-apply below is the real
-		// arbiter of success — so it's logged and we proceed.
-		if waitGone != nil {
-			if wErr := waitGone(res); wErr != nil {
-				fmt.Printf("[deploy]   Note: wait-for-deletion of %s %q: %v (re-applying anyway)\n", res.Kind, res.Name, wErr)
+		for _, res := range targets {
+			if delErr := del(res); delErr != nil {
+				// A delete failure is its own problem — surface it rather than
+				// the original immutable error so the cause is visible.
+				return fmt.Errorf("recovering immutable %s %q: delete: %w", res.Kind, res.Name, delErr)
+			}
+			// Poll the resource to NotFound so the re-apply has a real
+			// happens-before. Best-effort: a wait error (e.g. kubectl flake)
+			// shouldn't abort the recovery — the re-apply below is the real
+			// arbiter of success — so it's logged and we proceed.
+			if waitGone != nil {
+				if wErr := waitGone(res); wErr != nil {
+					fmt.Printf("[deploy]   Note: wait-for-deletion of %s %q: %v (re-applying anyway)\n", res.Kind, res.Name, wErr)
+				}
 			}
 		}
 		reStderr, reErr := apply()
 		if reErr == nil {
-			// Recovery succeeded — the overall apply is a success.
+			// Every immutable conflict recovered and the re-apply is clean —
+			// the overall apply is a success (exit 0), regardless of the stale
+			// non-zero status the ORIGINAL batched apply returned.
 			return nil
 		}
-		// Only keep looping while the SAME immutable resource is still
-		// racing us. Any other re-apply failure is unrelated and surfaces.
-		reRes, reOK := immutableResource(reStderr, manifests)
-		if !reOK || reRes.Kind != res.Kind || reRes.Name != res.Name {
+		// Keep looping only while the re-apply failure is ENTIRELY composed of
+		// recoverable immutable conflicts (the same one still racing us, a
+		// different immutable resource, or both). Any failure that ISN'T fully
+		// immutable-recoverable is a genuine error and surfaces unchanged.
+		reTargets := immutableResources(reStderr, manifests)
+		if len(reTargets) == 0 {
 			return reErr
 		}
 		lastErr = reErr
-		res = reRes
+		targets = reTargets
 	}
-	// Bounded attempts exhausted and the resource is still immutable —
-	// recovery genuinely failed. Surface the last immutable error.
+	// Bounded attempts exhausted and a resource is still immutable — recovery
+	// genuinely failed. Surface the last immutable error.
 	return lastErr
 }
 
@@ -759,6 +779,63 @@ func immutableResource(stderr, manifests string) (immutableTarget, bool) {
 	}
 	ns := namespaceForResource(manifests, kind, name)
 	return immutableTarget{Kind: kind, Name: name, Namespace: ns}, true
+}
+
+// immutableResources is the batch-aware extractor: it returns EVERY distinct
+// recoverable immutable-field conflict reported by a single apply, not just
+// the first. forge applies the workload batch (the migrate Job + Deployments)
+// in ONE `kubectl apply --server-side`, so a warm redeploy can fail with more
+// than one immutable conflict at once — kubectl emits one
+// `<Kind> "<name>" is invalid: … field is immutable` line per offending
+// resource. Healing only the first (immutableResource) left the rest to
+// re-surface on the re-apply and propagate a non-zero exit even though every
+// conflict was independently recoverable; that was the deploy-exits-1-on-a-
+// healthy-cluster bug. This scans all `is invalid:` segments, keeps only the
+// ones whose error is `field is immutable`, parses each Kind/name, recovers
+// the namespace from the manifest bundle, and de-dupes by Kind+Name+Namespace
+// (stable order: first occurrence wins). Returns an empty slice when the
+// stderr carries NO recoverable immutable conflict — the caller treats that as
+// "not the recoverable case, surface the error unchanged."
+func immutableResources(stderr, manifests string) []immutableTarget {
+	const inv = " is invalid:"
+	var out []immutableTarget
+	seen := map[string]struct{}{}
+	rest := stderr
+	for {
+		idx := strings.Index(rest, inv)
+		if idx < 0 {
+			break
+		}
+		// The segment up to and including this `is invalid:` head holds the
+		// `<Kind> "<name>"` for THIS conflict; parseInvalidResource keys off the
+		// LAST quoted token before the framing, so feeding it the head is exact.
+		head := rest[:idx+len(inv)]
+		// Advance past this match so the next iteration finds the following one.
+		rest = rest[idx+len(inv):]
+		// Scope the "field is immutable" check to THIS resource's error body —
+		// the text between this `is invalid:` and the next `is invalid:` (or end
+		// of stderr). Avoids a later resource's immutability bleeding onto an
+		// earlier non-immutable one.
+		body := rest
+		if next := strings.Index(rest, inv); next >= 0 {
+			body = rest[:next]
+		}
+		if !strings.Contains(body, "field is immutable") {
+			continue
+		}
+		kind, name, ok := parseInvalidResource(head)
+		if !ok {
+			continue
+		}
+		ns := namespaceForResource(manifests, kind, name)
+		key := kind + "\x00" + name + "\x00" + ns
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, immutableTarget{Kind: kind, Name: name, Namespace: ns})
+	}
+	return out
 }
 
 // parseInvalidResource pulls the Kind and name out of a k8s

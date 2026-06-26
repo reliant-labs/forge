@@ -813,10 +813,11 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
 		if len(goTargets) > 0 && !skipProjectDocker {
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
+			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, resolvedVersion)
+				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, resolvedVersion, guard)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -869,7 +870,8 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, 
 		if len(goTargets) > 0 && !skipProjectDocker {
 			// Image platform == the arch the project binaries were built for.
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
-			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, resolvedVersion)
+			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
+			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, resolvedVersion, guard)
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -1170,6 +1172,30 @@ func withForcedEnv(env []string, key, value string) []string {
 	return rewritten
 }
 
+// projectImageGuard carries the inputs the build-time ELF/arch backstop
+// (assertProjectImageBinaries, called inside dockerBuildProject) needs: where
+// the host go-builds wrote their binaries, the basenames the project image
+// will COPY, and the deploy env label for the error text. Bundled into one
+// struct so the dockerBuildProject signature doesn't grow three more params.
+type projectImageGuard struct {
+	outputDir   string
+	binaryNames []string
+	envLabel    string
+}
+
+// projectImageBinaryNames returns the output basenames of the go-build
+// targets — the binaries the project image's COPY-pattern Dockerfile consumes.
+// The guard stats each in outputDir, so a target whose binary the Dockerfile
+// doesn't actually COPY simply isn't found and is skipped (see
+// assertProjectImageBinaries).
+func projectImageBinaryNames(goTargets []goBuildTarget) []string {
+	names := make([]string, 0, len(goTargets))
+	for _, t := range goTargets {
+		names = append(names, t.outputName)
+	}
+	return names
+}
+
 // dockerBuildProject builds the single project Docker image from the
 // root Dockerfile. When pushRegistry is non-empty, the image is also
 // tagged with <pushRegistry>/<name>:<tag> and pushed after a successful
@@ -1180,7 +1206,7 @@ func withForcedEnv(env []string, key, value string) []string {
 // so the resulting image runs on a node whose arch matches the deploy
 // target rather than the build host. Empty means "let docker use the
 // host arch" — appropriate when host == target.
-func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch, resolvedTag string, resolvedVersion versionInfo) buildResult {
+func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch, resolvedTag string, resolvedVersion versionInfo, guard projectImageGuard) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 
@@ -1191,6 +1217,25 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 			kind:     "docker",
 			duration: time.Since(start),
 			err:      nil,
+		}
+	}
+
+	// Backstop guard: the production Dockerfile stage COPYs the host-built
+	// binaries straight into a distroless/static Linux image (no in-image
+	// `RUN go build`). Assert each is a Linux ELF for the image's arch BEFORE
+	// docker build, so a native macOS Mach-O / wrong-arch binary (the class of
+	// regression where the GOOS=linux GOARCH=<arch> resolution was skipped)
+	// fails the build with an actionable error rather than shipping an image
+	// that CrashLoopBackOffs with `exec format error` on every Linux node.
+	// crossArch is the resolved image GOARCH (resolveBuildArchForImage), the
+	// exact arch the binaries above were built for. Empty crossArch (no cross
+	// resolution requested) skips the arch pin but still requires ELF.
+	if err := assertProjectImageBinaries(guard.outputDir, crossArch, guard.envLabel, guard.binaryNames); err != nil {
+		return buildResult{
+			name:     cfg.Name + " (docker)",
+			kind:     "docker",
+			duration: time.Since(start),
+			err:      err,
 		}
 	}
 

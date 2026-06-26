@@ -34,10 +34,21 @@ import (
 )
 
 // externalImageDigestResolver resolves the content-addressed manifest digest
-// (+ platforms) of a pushed image ref. It defaults to imageRepoDigest — the
-// SAME registry/local-daemon read the docker PROJECT path uses (build_state.go)
-// — so external builds and the project build capture digests through one code
-// path. It's a package var purely so tests can substitute a deterministic fake
+// (+ platforms) of a pushed image ref by querying the REGISTRY ONLY
+// (imageRepoDigest → `docker buildx imagetools inspect`). This is load-bearing
+// for the external / ShellBuild / remote-built path: there the user's
+// build_cmd owns build AND push and the image may have been built on a remote
+// builder (so the local docker daemon never holds it) OR the local daemon may
+// hold a STALE image carrying the same `:tag` from an earlier, never-pushed
+// build. A local-daemon RepoDigest read in that situation captures a digest
+// that does NOT match what was pushed, and deploy would then pin
+// `<image>@<stale-digest>` — shipping the wrong image or one the registry
+// doesn't have (ImagePullBackOff, surfacing downstream as a deploy exit 1).
+// There is therefore deliberately NO local-cache fallback and NO fall-through
+// to a previously captured build-state digest: a registry miss records NO
+// digest and deploy falls back to the mutable tag.
+//
+// It's a package var purely so tests can substitute a deterministic fake
 // without shelling out to docker; production code never reassigns it.
 var externalImageDigestResolver = imageRepoDigest
 

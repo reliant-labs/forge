@@ -296,6 +296,76 @@ func TestBuildExternalServices_FailsWhenCwdMissing(t *testing.T) {
 	}
 }
 
+// TestBuildExternalServices_RegistryMissOverwritesPriorDigest pins the
+// "NO fallback to the previous build-state digest" half of the remote-built
+// digest contract. A first build resolves the pushed ref to a digest and
+// persists it. A SECOND build of the same env/service then has its registry
+// query MISS (remote-built image not yet/never in the registry, or an
+// unreachable registry). The miss must overwrite the persisted state with an
+// EMPTY digest — never silently retain the prior build's digest, which would
+// keep pinning deploy to a stale image (the wrong image or one the registry
+// no longer has → ImagePullBackOff, surfacing as a deploy exit 1).
+func TestBuildExternalServices_RegistryMissOverwritesPriorDigest(t *testing.T) {
+	projDir := t.TempDir()
+
+	const priorDigest = "sha256:" + "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	orig := externalImageDigestResolver
+	t.Cleanup(func() { externalImageDigestResolver = orig })
+
+	services := []ServiceEntity{
+		shellSvc("reliant-api-server", "reliant", "true", "", nil),
+	}
+	opts := buildOptions{env: "prod", parallel: false}
+
+	// First build: registry resolves a digest, which gets persisted.
+	externalImageDigestResolver = func(_ context.Context, _ string) (string, []string, error) {
+		return priorDigest, []string{"linux/amd64"}, nil
+	}
+	if r := buildExternalServices(context.Background(), noBaseImagesCfg(), services, opts,
+		"ghcr.io/reliant-labs", "prod", projDir, "amd64", nil); len(r) != 1 || r[0].err != nil {
+		t.Fatalf("first build: %+v", r)
+	}
+	if dst, err := ReadBuildState(projDir, "prod"); err != nil || dst == nil || dst.Digest != priorDigest {
+		t.Fatalf("after first build: want digest %q, got dst=%+v err=%v", priorDigest, dst, err)
+	}
+
+	// Second build: registry query MISSES. The persisted digest MUST be
+	// overwritten with empty — no fall-through to the prior build-state digest.
+	externalImageDigestResolver = func(_ context.Context, ref string) (string, []string, error) {
+		return "", nil, fmt.Errorf("not in registry: %s", ref)
+	}
+	if r := buildExternalServices(context.Background(), noBaseImagesCfg(), services, opts,
+		"ghcr.io/reliant-labs", "prod", projDir, "amd64", nil); len(r) != 1 || r[0].err != nil {
+		t.Fatalf("second build: %+v", r)
+	}
+
+	// Deploy-readable aggregate: digest cleared, so deploy falls back to the tag.
+	dst, err := ReadBuildState(projDir, "prod")
+	if err != nil || dst == nil {
+		t.Fatalf("ReadBuildState after miss: dst=%+v err=%v", dst, err)
+	}
+	if dst.Digest != "" {
+		t.Errorf("deploy-aggregate digest after registry miss: got %q, want empty (no stale fallback)", dst.Digest)
+	}
+	// Per-service state too.
+	st, err := buildtarget.ReadState(projDir, "prod", "reliant-api-server")
+	if err != nil || st == nil {
+		t.Fatalf("ReadState after miss: st=%+v err=%v", st, err)
+	}
+	if st.Digest != "" {
+		t.Errorf("per-service digest after registry miss: got %q, want empty (no stale fallback)", st.Digest)
+	}
+
+	// And deploy resolves to the mutable tag, not the stale digest.
+	digests, derr := resolveDeployImageDigests(projDir, "prod", false)
+	if derr != nil {
+		t.Fatalf("resolveDeployImageDigests: %v", derr)
+	}
+	if d := digests["reliant"]; d != "" {
+		t.Errorf("reliant image digest after registry miss: got %q, want empty (deploy must use the tag)", d)
+	}
+}
+
 // TestBuildTargetExternalFlag_Accepted confirms the --target flag
 // accepts the new "external" literal alongside the legacy "all" and
 // per-service values. Wires the user-facing entry point — if the

@@ -72,6 +72,15 @@ type HelmChartSpec struct {
 	// fetches it (pinned standard Gateway API CRDs / cert-manager CRDs at
 	// the chart version). Empty when the chart needs no forge CRDs.
 	CRDs string
+	// Manifests is the consumer-declared raw manifest YAML (a `---`-joined
+	// stream) that rides this chart's `--target`: the cluster-scoped
+	// instances a chart's controller reconciles but the chart doesn't ship
+	// (the `eg` GatewayClass, cert-manager ClusterIssuers). Applied AFTER
+	// the chart's controllers (so the controller is up before its
+	// instances), stamped with the chart's app-label like the chart's own
+	// output. Excluded from a bare app deploy — they only apply when the
+	// chart's --target selects them. Empty when the chart carries none.
+	Manifests string
 }
 
 // renderedChart pairs a chart spec with its rendered (stamped,
@@ -80,6 +89,10 @@ type HelmChartSpec struct {
 type renderedChart struct {
 	spec      HelmChartSpec
 	manifests string
+	// extra is the chart's consumer-declared raw manifests (HelmChartSpec.
+	// Manifests), stamped with the chart's app-label, applied AFTER the
+	// chart's controllers. Empty when the chart carries none.
+	extra string
 }
 
 // selectHelmCharts decides which platform deps THIS apply renders and

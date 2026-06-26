@@ -255,6 +255,12 @@ type HelmChartEntity struct {
 	// "gateway-api", or "cert-manager". The chart is rendered --skip-crds,
 	// so forge owns the CRD surface.
 	CRDs string `json:"crds,omitempty"`
+	// Manifests are consumer-declared raw k8s manifest dicts that ride this
+	// chart's `--target` (the `eg` GatewayClass, cert-manager ClusterIssuers)
+	// — the cluster-scoped instances the chart's controller reconciles but
+	// the chart itself doesn't ship. Stamped with the chart's app-label and
+	// applied AFTER its controllers; excluded from a bare app deploy.
+	Manifests []any `json:"manifests,omitempty"`
 }
 
 // ServiceEntity is one service from rendered KCL. The Deploy field is

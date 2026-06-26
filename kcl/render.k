@@ -517,6 +517,11 @@ _render_helm_chart = lambda h: HelmChart -> any {
         "namespace": h.namespace
         "values": h.values
         "crds": h.crds if h.crds else None
+        # Raw manifests that ride the chart's --target (GatewayClass,
+        # ClusterIssuers): applied with the chart, excluded from a bare
+        # app deploy. The CLI stamps the chart's app-label and applies
+        # them after the chart's controllers.
+        "manifests": h.manifests if h.manifests else None
     }
 }
 

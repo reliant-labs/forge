@@ -1806,6 +1806,18 @@ schema HelmChart:
     namespace: str
     values: {str: any} = {}
     crds: "" | "gateway-api" | "cert-manager" = ""
+    # Raw k8s manifests that ride WITH this platform dep: applied (and
+    # excluded from a bare `forge deploy <env>`) on the SAME `--target=<name>`
+    # axis as the chart, stamped with the chart's `app.kubernetes.io/name` and
+    # applied AFTER the chart's controllers (so a controller is Deployed
+    # before its instances). The natural home for the small cluster-scoped
+    # instances a chart's controller reconciles but the chart itself does not
+    # ship — e.g. the `eg` GatewayClass for envoy-gateway, or cert-manager
+    # ClusterIssuers. UNLIKE Bundle.additional_manifests (which renders into
+    # the env's main stream and so DOES apply on a bare app deploy), these are
+    # platform-only: a bare `forge deploy <env>` renders none of them. Each
+    # entry is a raw manifest dict. Empty => none.
+    manifests: [any] = []
 
     check:
         name, "HelmChart.name is required (the --target selector)"

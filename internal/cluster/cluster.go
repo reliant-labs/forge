@@ -310,13 +310,21 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		if rerr != nil {
 			return rerr
 		}
-		renderedCharts = append(renderedCharts, renderedChart{spec: spec, manifests: rendered})
+		// Consumer-declared raw manifests riding this chart's --target
+		// (GatewayClass / ClusterIssuers): stamp them with the chart's
+		// app-label exactly like the chart's own output, so they select +
+		// route as part of the same named platform dep.
+		var extra string
+		if strings.TrimSpace(spec.Manifests) != "" {
+			extra = stampAppLabel(spec.Manifests, spec.Name)
+		}
+		renderedCharts = append(renderedCharts, renderedChart{spec: spec, manifests: rendered, extra: extra})
 	}
 
 	if opts.DryRun {
 		dryRunManifests := manifests
 		for _, rc := range renderedCharts {
-			dryRunManifests = joinNonEmpty(dryRunManifests, rc.spec.CRDs, rc.manifests)
+			dryRunManifests = joinNonEmpty(dryRunManifests, rc.spec.CRDs, rc.manifests, rc.extra)
 		}
 		if opts.DryRunFramed {
 			fmt.Println("\n--- Generated Manifests (dry-run) ---")
@@ -341,6 +349,19 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		}
 		if err := applyCRDsThenRest(ctx, opts.Context, rc.spec.CRDs, rc.manifests); err != nil {
 			return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
+		}
+		// Consumer-declared manifests riding this chart's --target
+		// (GatewayClass / ClusterIssuers) — applied AFTER the chart's
+		// controllers so the controller (envoy-gateway / cert-manager) is up
+		// before the instances it reconciles. applyCRDsThenRest two-passes
+		// any CRD-then-rest within them too (harmless: these carry none).
+		if strings.TrimSpace(rc.extra) != "" {
+			if !opts.Quiet {
+				fmt.Printf("Applying platform dependency %q owned manifests...\n", rc.spec.Name)
+			}
+			if err := applyCRDsThenRest(ctx, opts.Context, "", rc.extra); err != nil {
+				return fmt.Errorf("platform dependency %q manifests: %w", rc.spec.Name, err)
+			}
 		}
 	}
 

@@ -20,9 +20,35 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/cluster"
 )
+
+// marshalManifestDicts serialises a list of raw manifest dicts (the KCL
+// `output.helm_charts[].manifests` projection — GatewayClass / ClusterIssuers
+// riding a chart's --target) into the `---`-separated multi-doc YAML stream
+// cluster.Apply stamps with the chart's app-label and applies after the
+// chart's controllers. Empty in => empty stream (the common no-manifests case).
+func marshalManifestDicts(mans []any) (string, error) {
+	if len(mans) == 0 {
+		return "", nil
+	}
+	var sb strings.Builder
+	for i, m := range mans {
+		if i > 0 {
+			sb.WriteString("---\n")
+		}
+		b, err := yaml.Marshal(m)
+		if err != nil {
+			return "", fmt.Errorf("marshal manifest %d: %w", i, err)
+		}
+		sb.Write(b)
+	}
+	return sb.String(), nil
+}
 
 // selectedHelmChartEntities returns the declared charts whose Name is in
 // targets — the platform deps THIS `--target` applies. Mirrors
@@ -72,6 +98,14 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity) (
 		if err != nil {
 			return nil, fmt.Errorf("platform dependency %q: %w", c.Name, err)
 		}
+		// Consumer-declared raw manifests (GatewayClass / ClusterIssuers)
+		// that ride this chart's --target: serialise the dicts into the
+		// `---`-separated stream cluster.Apply stamps + applies after the
+		// chart's controllers.
+		extra, err := marshalManifestDicts(c.Manifests)
+		if err != nil {
+			return nil, fmt.Errorf("platform dependency %q manifests: %w", c.Name, err)
+		}
 		specs = append(specs, cluster.HelmChartSpec{
 			Name:      c.Name,
 			Chart:     c.Chart,
@@ -81,6 +115,7 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity) (
 			Namespace: c.Namespace,
 			Values:    c.Values,
 			CRDs:      crds,
+			Manifests: extra,
 		})
 	}
 	return specs, nil

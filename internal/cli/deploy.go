@@ -1607,6 +1607,13 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		opts.Context = in.deployCtx
 		opts.Secrets = cluster.KubectlSecretGetter{}
 		opts.ConfigMaps = cluster.KubectlConfigMapGetter{}
+		// CRD / served-kind gate: verify the cluster serves every NON-CORE kind
+		// the bundle renders (e.g. GRPCRoute needs the Gateway API channel)
+		// BEFORE the apply. Without it a missing CRD fails `no matches for kind`
+		// mid-rollout, AFTER other resources already applied. Gated to remote
+		// clusters like the Secret check — the local dev cluster's CRDs are
+		// reconciled by the same up/deploy flow.
+		opts.ServedKinds = cluster.KubectlServedKinds{}
 		// Verify images using the CLUSTER's pull credentials (the bundle's
 		// imagePullSecrets), not just the local docker daemon: when the local
 		// daemon lacks creds for a private registry, an auth-denied lookup is a

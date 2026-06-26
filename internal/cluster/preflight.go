@@ -19,17 +19,46 @@ import (
 // Preflight is the deploy-time "deployability contract": before a single
 // manifest is applied, it checks that the rendered bundle's external
 // dependencies actually exist on the LIVE target — every Secret KEY and
-// ConfigMap KEY a container references is present in the target cluster, and
-// every container image: is resolvable in its registry. When something is
+// ConfigMap KEY a container references is present in the target cluster, every
+// container image: is resolvable in its registry, and every NON-CORE resource
+// KIND the bundle renders has a CRD installed on the cluster (so a rendered
+// GRPCRoute can't fail `no matches for kind` mid-rollout). When something is
 // missing it returns a single grouped error naming EVERYTHING missing at
 // once, so the user fixes it all in one pass instead of discovering each
 // gap one-at-a-time as pods crash (CreateContainerConfigError /
-// ImagePullBackOff) over a live rollout.
+// ImagePullBackOff) — or kubectl apply errors `no matches for kind` — over a
+// live rollout.
 //
 // The checks are injected (SecretGetter / ConfigMapGetter / ImageChecker) so
 // the orchestration is unit-testable without a live cluster or registry; the
 // deploy path wires the real kubectl-/docker-backed implementations (see
 // KubectlSecretGetter / KubectlConfigMapGetter / DockerImageChecker).
+
+// ManifestGVK is the GroupVersionKind of a rendered manifest document — the
+// (apiVersion, kind) pair `kubectl apply` keys a resource on — paired with the
+// document's name so the preflight report can point at WHICH manifest needs a
+// missing CRD. ApiVersion is the raw `apiVersion:` value ("apps/v1", "v1",
+// "gateway.networking.k8s.io/v1"); Kind is the raw `kind:` value.
+type ManifestGVK struct {
+	ApiVersion string
+	Kind       string
+	// Name is metadata.name of the document (best-effort, "" when absent) —
+	// used only to make the missing-CRD report actionable.
+	Name string
+}
+
+// group returns the API group of the GVK — the part of apiVersion before the
+// "/", or "" for a core-group resource (apiVersion "v1"). Used to decide
+// whether a kind is a CORE kind (group "") that every cluster serves, so the
+// CRD gate never false-positives on Deployment/Service/ConfigMap/etc.
+func (g ManifestGVK) group() string {
+	grp, _, found := strings.Cut(g.ApiVersion, "/")
+	if !found {
+		// No "/" → core group (apiVersion is a bare version like "v1").
+		return ""
+	}
+	return grp
+}
 
 // ManifestRefs is the set of external references a rendered manifest bundle
 // depends on at schedule time: the Secret / ConfigMap (name, key) pairs its
@@ -86,6 +115,39 @@ func CollectManifestRefs(manifests string) ManifestRefs {
 		collectRefs(node, &refs)
 	}
 	return refs
+}
+
+// CollectManifestGVKs walks a `---`-separated multi-doc YAML manifest stream
+// and returns the GroupVersionKind of every TOP-LEVEL document — the
+// (apiVersion, kind, name) `kubectl apply` will create a resource for. Only the
+// document's OWN apiVersion/kind is collected (not nested template kinds): the
+// cluster must serve the resource type forge actually applies, and a pod
+// template's `kind` is an embedded field, never an applied object. Documents
+// missing apiVersion or kind (a List wrapper, a malformed doc, a YAML comment-
+// only chunk) are skipped — there's nothing to gate. The result preserves
+// document order and may contain duplicate GVKs (the served-kind check
+// de-dupes).
+func CollectManifestGVKs(manifests string) []ManifestGVK {
+	var out []ManifestGVK
+	for _, doc := range splitDocs(manifests) {
+		var head struct {
+			ApiVersion string `yaml:"apiVersion"`
+			Kind       string `yaml:"kind"`
+			Metadata   struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &head); err != nil {
+			continue
+		}
+		av := strings.TrimSpace(head.ApiVersion)
+		kind := strings.TrimSpace(head.Kind)
+		if av == "" || kind == "" {
+			continue
+		}
+		out = append(out, ManifestGVK{ApiVersion: av, Kind: kind, Name: strings.TrimSpace(head.Metadata.Name)})
+	}
+	return out
 }
 
 // collectRefs recursively descends a decoded YAML value, recording any
@@ -279,6 +341,53 @@ type ConfigMapGetter interface {
 	GetConfigMapKeys(ctx context.Context, kctx, namespace, name string) (keys map[string]struct{}, exists bool, err error)
 }
 
+// ServedKindChecker reports which (group, kind) resource types a target
+// cluster's API server actually SERVES — its discovery surface
+// (`kubectl api-resources`). The CRD preflight uses it to verify, BEFORE a
+// single manifest is applied, that every NON-CORE kind the bundle renders has a
+// CRD installed on the cluster. The motivating footgun: a rendered GRPCRoute
+// (apiVersion gateway.networking.k8s.io/v1) applied to a cluster that never
+// installed the Gateway API channel fails mid-rollout with `no matches for kind
+// "GRPCRoute"` — AFTER other resources already applied. The check turns that
+// deploy-time partial failure into one fail-fast block.
+//
+// The contract mirrors the image checker's "don't block on a blind spot, don't
+// silently pass a confirmed problem" discipline:
+//
+//   - (served, nil) — discovery succeeded; served is the set of (group/kind)
+//     the cluster serves. The gate compares the bundle's kinds against it.
+//   - (_, err) — discovery itself FAILED (kubectl not configured, RBAC denial,
+//     unreachable apiserver). The cluster's served set is UNKNOWN, so the gate
+//     cannot assert a kind is missing — it surfaces the error and aborts the
+//     preflight rather than blocking on (or silently passing) every kind.
+//
+// Served keys are normalized to "<group>/<kind>" with a lowercased group and
+// the kind verbatim (CRD kinds are case-sensitive); a core-group kind keys as
+// "/<kind>". ServesKind does the comparison so callers never reimplement the
+// key shape.
+type ServedKindChecker interface {
+	// ServedKinds returns the set of resource types the cluster serves, keyed
+	// by servedKindKey(group, kind).
+	ServedKinds(ctx context.Context, kctx string) (served map[string]struct{}, err error)
+}
+
+// servedKindKey normalizes a (group, kind) pair to the key shape ServedKinds
+// returns and ServesKind compares against: "<lowercased-group>/<kind>". The
+// group is lowercased (API groups are DNS-style, case-insensitive); the kind is
+// kept verbatim (Kubernetes kinds are PascalCase and case-sensitive). A core-
+// group kind (group "") keys as "/<kind>".
+func servedKindKey(group, kind string) string {
+	return strings.ToLower(strings.TrimSpace(group)) + "/" + strings.TrimSpace(kind)
+}
+
+// ServesKind reports whether served (from a ServedKindChecker) contains the
+// (group, kind). Centralizes the key shape so call sites and the live checker
+// agree.
+func ServesKind(served map[string]struct{}, group, kind string) bool {
+	_, ok := served[servedKindKey(group, kind)]
+	return ok
+}
+
 // ImageChecker reports whether an image ref is resolvable in its registry.
 //
 // The outcomes are deliberately distinct, because a deploy GATE must not block
@@ -412,6 +521,16 @@ type PreflightOpts struct {
 	// Secrets, the check runs only when this and Context are both set.
 	ConfigMaps ConfigMapGetter
 
+	// ServedKinds resolves which resource types the target cluster serves, so
+	// the CRD preflight can BLOCK a deploy that renders a kind (e.g. GRPCRoute)
+	// whose CRD / Gateway API channel isn't installed — before the partial
+	// apply that otherwise errors `no matches for kind` mid-rollout. The check
+	// runs only when this and Context are both set, and only gates NON-CORE
+	// kinds (core kinds like Deployment/Service are served by every cluster, so
+	// gating them would false-positive on a discovery blind spot). Nil disables
+	// the CRD gate (local dev / nothing to verify).
+	ServedKinds ServedKindChecker
+
 	// Images checks image existence against the registry.
 	Images ImageChecker
 
@@ -488,6 +607,14 @@ type PreflightResult struct {
 	// could not be read (transport failure / inconclusive). These do NOT
 	// block — a mismatch can only be asserted on a known arch.
 	ArchWarnings []string
+	// MissingCRDs is the sorted list of "<Kind> (<apiVersion>) — required by
+	// <manifest-name>" entries for NON-CORE kinds the bundle renders that the
+	// target cluster's API server does NOT serve (no installed CRD / Gateway
+	// API channel). These BLOCK — applying such a manifest fails `no matches
+	// for kind` mid-rollout, AFTER other resources already applied. Only
+	// populated when a ServedKindChecker is configured (an undeclared discovery
+	// surface can't assert a kind is missing).
+	MissingCRDs []string
 }
 
 // OK reports whether nothing was found missing. Inconclusive image warnings
@@ -497,7 +624,8 @@ func (r PreflightResult) OK() bool {
 		len(r.MissingConfigMapKeys) == 0 &&
 		len(r.MissingImages) == 0 &&
 		len(r.UnverifiableImages) == 0 &&
-		len(r.ArchMismatchImages) == 0
+		len(r.ArchMismatchImages) == 0 &&
+		len(r.MissingCRDs) == 0
 }
 
 // wholeSecretMarker is the placeholder listed under a Secret that doesn't
@@ -580,6 +708,35 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 				return opts.ConfigMaps.GetConfigMapKeys(ctx, opts.Context, opts.Namespace, name)
 			},
 			result.MissingConfigMapKeys, &mu, recordErr)
+	}
+
+	// CRD / served-kind check — ONE discovery lookup against the target
+	// cluster, then every NON-CORE kind the bundle renders is verified to be in
+	// the served set. A kind whose CRD isn't installed (the GRPCRoute / Gateway
+	// API channel footgun) BLOCKS here instead of failing `no matches for kind`
+	// mid-rollout. Core kinds (group "") are skipped — every cluster serves
+	// them, so gating them would only risk a false-positive on a discovery blind
+	// spot. Runs only when a checker and a target context are configured. A
+	// discovery FAILURE aborts the preflight (the served set is unknown — we
+	// can't assert a kind is missing) rather than blocking on every kind.
+	if opts.ServedKinds != nil && hasContext {
+		gvks := CollectManifestGVKs(opts.Manifests)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			served, derr := opts.ServedKinds.ServedKinds(ctx, opts.Context)
+			if derr != nil {
+				recordErr(fmt.Errorf("preflight: discover served resource kinds on %q: %w", opts.Context, derr))
+				return
+			}
+			missing := missingCRDs(gvks, served)
+			if len(missing) == 0 {
+				return
+			}
+			mu.Lock()
+			result.MissingCRDs = missing
+			mu.Unlock()
+		}()
 	}
 
 	// Cluster-credentialed image checker — resolve the bundle's
@@ -741,7 +898,56 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	sort.Strings(result.ImageWarnings)
 	sort.Strings(result.ArchMismatchImages)
 	sort.Strings(result.ArchWarnings)
+	sort.Strings(result.MissingCRDs)
 	return result, nil
+}
+
+// missingCRDs returns one report line per DISTINCT non-core (group, kind) the
+// bundle renders that the cluster does NOT serve. Core-group kinds (group "")
+// are skipped — every cluster serves Deployment/Service/ConfigMap/etc, so
+// gating them would only produce a false-positive on a discovery blind spot.
+// The first manifest name seen for a missing kind is named in the line so the
+// report points the author at WHAT to install the CRD for. Output order is the
+// caller's responsibility (the result is sorted before formatting).
+func missingCRDs(gvks []ManifestGVK, served map[string]struct{}) []string {
+	// De-dupe by (group, kind): a bundle renders many GRPCRoutes but the CRD is
+	// either installed or not — report it once. Keep the first name seen so the
+	// message stays actionable without listing every offending document.
+	type miss struct {
+		apiVersion string
+		kind       string
+		name       string
+	}
+	seen := map[string]struct{}{}
+	var misses []miss
+	for _, g := range gvks {
+		group := g.group()
+		if group == "" {
+			// Core kind — served by every cluster. Don't gate it.
+			continue
+		}
+		key := servedKindKey(group, g.Kind)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		if ServesKind(served, group, g.Kind) {
+			continue
+		}
+		seen[key] = struct{}{}
+		misses = append(misses, miss{apiVersion: g.ApiVersion, kind: g.Kind, name: g.Name})
+	}
+	if len(misses) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(misses))
+	for _, m := range misses {
+		req := m.name
+		if req == "" {
+			req = "(unnamed manifest)"
+		}
+		out = append(out, fmt.Sprintf("%s (%s) — required by %s", m.kind, m.apiVersion, req))
+	}
+	return out
 }
 
 // prepareCredentialedCheckers resolves the bundle's imagePullSecrets from the
@@ -931,6 +1137,13 @@ func FormatPreflightReport(r PreflightResult) string {
 		}
 	}
 
+	if len(r.MissingCRDs) > 0 {
+		b.WriteString("\n  Resource kinds the cluster does NOT serve (missing CRD / Gateway API channel):\n")
+		for _, c := range r.MissingCRDs {
+			b.WriteString(fmt.Sprintf("    - %s\n", c))
+		}
+	}
+
 	b.WriteString("\nNothing was applied. Fix the gaps, then re-run the deploy:\n")
 	if len(r.MissingSecretKeys) > 0 {
 		b.WriteString("  - provision the missing Secret key(s) in the target cluster/namespace\n")
@@ -951,6 +1164,11 @@ func FormatPreflightReport(r PreflightResult) string {
 	if len(r.ArchMismatchImages) > 0 {
 		b.WriteString("  - rebuild the wrong-arch image(s) for the target cluster's node architecture\n")
 		b.WriteString("      (forge build --target-arch <arch>, or set deploy.target_arch / the env's K8sCluster.platform).\n")
+	}
+	if len(r.MissingCRDs) > 0 {
+		b.WriteString("  - install the CRD for the kind(s) above on the target cluster, or the\n")
+		b.WriteString("      Gateway API channel that provides them\n")
+		b.WriteString("      (e.g. kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/.../experimental-install.yaml).\n")
 	}
 	b.WriteString("  - or pass --skip-preflight to bypass this check (you accept the risk of a crash-on-apply).")
 	return b.String()
@@ -996,6 +1214,106 @@ type KubectlConfigMapGetter struct{}
 // GetConfigMapKeys returns the keys of the named ConfigMap's `.data`.
 func (KubectlConfigMapGetter) GetConfigMapKeys(ctx context.Context, kctx, namespace, name string) (map[string]struct{}, bool, error) {
 	return kubectlDataKeys(ctx, kctx, namespace, "configmap", name)
+}
+
+// KubectlServedKinds is the live ServedKindChecker: it enumerates the resource
+// types the target cluster's API server serves via `kubectl --context <ctx>
+// api-resources --no-headers -o wide` and keys each by servedKindKey(group,
+// kind). This is the cluster's discovery surface — a kind absent from it has no
+// installed CRD (the GRPCRoute / Gateway API channel footgun), so the preflight
+// can block before the apply that would otherwise fail `no matches for kind`.
+//
+// The DECLARED context is threaded per command (the same --context discipline
+// the rest of the apply path uses). A non-zero exit is a genuine discovery
+// failure (kubectl not configured, RBAC denial, unreachable apiserver) returned
+// as an error so the gate aborts rather than asserting a kind is missing
+// against an unknown served set.
+type KubectlServedKinds struct{}
+
+// ServedKinds implements ServedKindChecker. It parses `kubectl api-resources`
+// output, whose columns are NAME [SHORTNAMES] APIVERSION NAMESPACED KIND. The
+// APIVERSION column is the group/version ("apps/v1", "gateway.networking.k8s.io/
+// v1") or a bare version ("v1") for core; the KIND column is the last field.
+// We split the group off APIVERSION and key on (group, kind).
+func (KubectlServedKinds) ServedKinds(ctx context.Context, kctx string) (map[string]struct{}, error) {
+	// --no-headers keeps parsing simple; -o wide guarantees the APIVERSION
+	// column is present (some kubectl versions omit it without -o wide).
+	cmd := kubectlCmd(ctx, kctx, "api-resources", "--no-headers", "-o", "wide")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl api-resources: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return parseServedKinds(string(out)), nil
+}
+
+// parseServedKinds turns `kubectl api-resources --no-headers -o wide` output
+// into the served-kind key set. Each non-blank line is whitespace-split; the
+// APIVERSION column (a group/version or bare version) and KIND column are
+// located positionally. kubectl's columns are NAME [SHORTNAMES] APIVERSION
+// NAMESPACED KIND VERBS [CATEGORIES] — variable because SHORTNAMES/CATEGORIES
+// are optional. We anchor on the APIVERSION token (the field containing a "/"
+// for grouped resources, or a bare version like "v1" for core) and read KIND as
+// the token two positions after it (APIVERSION, NAMESPACED, KIND). A line we
+// can't confidently parse is skipped — discovery over-reporting a served kind
+// would only relax the gate, and the apply itself remains the backstop.
+func parseServedKinds(out string) map[string]struct{} {
+	served := map[string]struct{}{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		// Find the APIVERSION column: the first field that looks like an API
+		// group/version. A grouped resource has a "/" ("apps/v1"); a core
+		// resource has a bare version ("v1", "v2beta1"). NAME (and SHORTNAMES)
+		// never contain a "/", and NAME is a plural lowercase resource name —
+		// so the first "/"-bearing token, or a bare version token, is the
+		// APIVERSION. KIND is two tokens after it (APIVERSION NAMESPACED KIND).
+		avIdx := -1
+		for i, f := range fields {
+			if i == 0 {
+				continue // NAME is never the apiVersion
+			}
+			if strings.Contains(f, "/") || looksLikeBareVersion(f) {
+				avIdx = i
+				break
+			}
+		}
+		if avIdx < 0 || avIdx+2 >= len(fields) {
+			continue
+		}
+		apiVersion := fields[avIdx]
+		kind := fields[avIdx+2]
+		group, _, _ := strings.Cut(apiVersion, "/")
+		if !strings.Contains(apiVersion, "/") {
+			group = "" // bare version → core group
+		}
+		served[servedKindKey(group, kind)] = struct{}{}
+	}
+	return served
+}
+
+// looksLikeBareVersion reports whether s is a Kubernetes API version token with
+// no group (the core-group APIVERSION column, e.g. "v1", "v2", "v1beta1",
+// "v2beta3"). Used to locate the APIVERSION column for core resources, whose
+// token carries no "/". Matches `v<digits>` optionally followed by an
+// alpha/beta qualifier.
+func looksLikeBareVersion(s string) bool {
+	if len(s) < 2 || s[0] != 'v' {
+		return false
+	}
+	rest := s[1:]
+	// Must start with at least one digit.
+	i := 0
+	for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	// Remainder (if any) is an alpha/beta qualifier like "beta1" / "alpha2".
+	suffix := rest[i:]
+	return suffix == "" || strings.HasPrefix(suffix, "alpha") || strings.HasPrefix(suffix, "beta")
 }
 
 // kubectlDataKeys reads the `.data` keys of a `kubectl get <kind> <name>`

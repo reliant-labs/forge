@@ -317,11 +317,13 @@ func TestRenderedDeploymentNames_EmptyAndMalformed(t *testing.T) {
 	}
 }
 
-// filterTestManifests is a representative env bundle: two app
-// Deployments (each carrying app.kubernetes.io/name), a shared ConfigMap
-// and a Namespace (NO app.kubernetes.io/name — the shared/infra shape
-// forge's renderer produces). It mirrors what RenderManifests emits and
-// is `\n---\n`-joined exactly like the production stream.
+// filterTestManifests is a representative env bundle as RenderManifests
+// emits it: two app Deployments (each carrying its own SERVICE group
+// `app.kubernetes.io/name`), plus a Namespace and a ConfigMap that belong
+// to NO service and therefore carry NO `app.kubernetes.io/name` group — the
+// shared/infra shape. The group is always the service; shared infra is
+// ungrouped, so a service `--target` drops it. `\n---\n`-joined exactly
+// like the production stream.
 const filterTestManifests = `apiVersion: v1
 kind: Namespace
 metadata:
@@ -360,55 +362,79 @@ metadata:
     app.kubernetes.io/managed-by: forge
 spec: {}`
 
-// TestFilterManifestsByApp_KeepsTargetAndShared is the core assertion
-// of the --target application filter: targeting one app keeps that app's
-// Deployment plus every shared resource (the ConfigMap and Namespace
-// have no app.kubernetes.io/name label) and drops the other app's
-// Deployment.
-func TestFilterManifestsByApp_KeepsTargetAndShared(t *testing.T) {
-	got, err := FilterManifestsByApp(filterTestManifests, []string{"admin-server"})
-	if err != nil {
-		t.Fatalf("FilterManifestsByApp: %v", err)
-	}
+// TestSelectManifestsByGroup_ExclusiveSingleGroup is the core assertion of
+// the exclusive --target filter: targeting ONE service group keeps EXACTLY
+// that group's manifests and drops everything else — including the ungrouped
+// env-shared Namespace and ConfigMap. This is the EXCLUSIVE behaviour: no
+// shared-base is auto-kept; a manifest is kept only when its KCL-declared
+// service group is named.
+func TestSelectManifestsByGroup_ExclusiveSingleGroup(t *testing.T) {
+	got := SelectManifestsByGroup(filterTestManifests, []string{"admin-server"})
 	if !strings.Contains(got, "name: admin-server") {
-		t.Errorf("expected targeted app admin-server to be kept, got:\n%s", got)
+		t.Errorf("expected targeted group admin-server kept, got:\n%s", got)
 	}
-	if !strings.Contains(got, "kind: Namespace") {
-		t.Errorf("expected shared Namespace (no app label) to be kept, got:\n%s", got)
+	if strings.Contains(got, "kind: Namespace") {
+		t.Errorf("EXCLUSIVE: ungrouped env-shared Namespace must be DROPPED under a service target, got:\n%s", got)
 	}
-	if !strings.Contains(got, "name: example-config") {
-		t.Errorf("expected shared ConfigMap (no app label) to be kept, got:\n%s", got)
+	if strings.Contains(got, "name: example-config") {
+		t.Errorf("EXCLUSIVE: ungrouped env-shared ConfigMap must be DROPPED under a service target, got:\n%s", got)
 	}
 	if strings.Contains(got, "name: workspace-proxy") {
-		t.Errorf("expected non-targeted app workspace-proxy to be dropped, got:\n%s", got)
+		t.Errorf("non-targeted app workspace-proxy must be dropped, got:\n%s", got)
 	}
 }
 
-// TestFilterManifestsByApp_MultipleTargets confirms the filter unions
-// multiple --target apps and still keeps shared resources.
-func TestFilterManifestsByApp_MultipleTargets(t *testing.T) {
-	got, err := FilterManifestsByApp(filterTestManifests, []string{"admin-server", "workspace-proxy"})
-	if err != nil {
-		t.Fatalf("FilterManifestsByApp: %v", err)
+// TestSelectManifestsByGroup_NoSyntheticNamespaceGroup proves there is NO
+// synthetic env/namespace group: the ungrouped shared manifests are NOT
+// reachable by naming the namespace as a --target (it is not a service
+// group). Targeting `example-dev` matches nothing, so the result is empty —
+// shared infra rides only a bare deploy, never a --target.
+func TestSelectManifestsByGroup_NoSyntheticNamespaceGroup(t *testing.T) {
+	got := SelectManifestsByGroup(filterTestManifests, []string{"example-dev"})
+	if strings.TrimSpace(got) != "" {
+		t.Errorf("namespace is NOT a group — --target=example-dev must select nothing, got:\n%s", got)
 	}
-	for _, want := range []string{"name: admin-server", "name: workspace-proxy", "kind: Namespace", "name: example-config"} {
+}
+
+// TestSelectManifestsByGroup_MultiTargetUnion confirms multi-target is the
+// UNION of ONLY the named service groups — and nothing else implicitly.
+// Targeting the two app groups keeps both Deployments and DROPS the
+// ungrouped env-shared Namespace + ConfigMap.
+func TestSelectManifestsByGroup_MultiTargetUnion(t *testing.T) {
+	got := SelectManifestsByGroup(filterTestManifests, []string{"admin-server", "workspace-proxy"})
+	for _, want := range []string{"name: admin-server", "name: workspace-proxy"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("expected %q in output, got:\n%s", want, got)
+			t.Errorf("expected %q in union output, got:\n%s", want, got)
 		}
 	}
+	if strings.Contains(got, "kind: Namespace") {
+		t.Errorf("EXCLUSIVE: ungrouped Namespace must NOT be implicitly kept, got:\n%s", got)
+	}
+	if strings.Contains(got, "name: example-config") {
+		t.Errorf("EXCLUSIVE: ungrouped ConfigMap must NOT be implicitly kept, got:\n%s", got)
+	}
 }
 
-// TestFilterManifestsByApp_UnknownTargetErrors confirms a typo'd target
-// (matching no app workload) errors with the available app names rather
-// than applying a shared-only bundle that does nothing the user wanted.
-func TestFilterManifestsByApp_UnknownTargetErrors(t *testing.T) {
-	_, err := FilterManifestsByApp(filterTestManifests, []string{"nope"})
-	if err == nil {
-		t.Fatal("expected error for unknown target, got nil")
+// TestSelectManifestsByGroup_NoTargetIsCallerEverything documents that the
+// "no --target" case is NOT this function's job — Apply keeps everything
+// and never calls SelectManifestsByGroup when Targets is empty. Passing an
+// empty target set here keeps nothing, which is exactly why Apply gates the
+// call behind len(Targets) > 0.
+func TestSelectManifestsByGroup_NoTargetIsCallerEverything(t *testing.T) {
+	got := SelectManifestsByGroup(filterTestManifests, nil)
+	if strings.TrimSpace(got) != "" {
+		t.Errorf("empty target set selects nothing (Apply handles 'everything' itself); got:\n%s", got)
 	}
-	// Available app names should be surfaced for the fix.
-	if !strings.Contains(err.Error(), "admin-server") || !strings.Contains(err.Error(), "workspace-proxy") {
-		t.Errorf("expected available app names in error, got: %v", err)
+}
+
+// TestSelectManifestsByGroup_UnknownTargetSelectsNothing confirms a typo'd
+// target simply matches no group and yields an empty stream — the friendly
+// "did you mean" guard lives in the CLI (validateDeployTargets), not in
+// this mechanical filter.
+func TestSelectManifestsByGroup_UnknownTargetSelectsNothing(t *testing.T) {
+	got := SelectManifestsByGroup(filterTestManifests, []string{"nope"})
+	if strings.TrimSpace(got) != "" {
+		t.Errorf("unknown group selects nothing, got:\n%s", got)
 	}
 }
 
@@ -416,9 +442,9 @@ func TestFilterManifestsByApp_UnknownTargetErrors(t *testing.T) {
 // a Deployment plus its cluster RBAC trio (ServiceAccount, ClusterRole,
 // ClusterRoleBinding), every doc carrying app.kubernetes.io/name =
 // <operator>. A peer service Deployment (different app label) and a
-// shared Namespace (no app label) round it out — the exact shape the
-// control-plane `workspace-controller` operator produces alongside its
-// app services.
+// shared Namespace (NO app label — ungrouped) round it out — the exact
+// shape the control-plane `workspace-controller` operator produces
+// alongside its app services.
 const operatorFilterManifests = `apiVersion: v1
 kind: Namespace
 metadata:
@@ -468,26 +494,26 @@ metadata:
     app.kubernetes.io/managed-by: forge
 spec: {}`
 
-// TestFilterManifestsByApp_Operator is the GAP-1 assertion: targeting an
-// operator name keeps that operator's Deployment AND its cluster RBAC
-// (ServiceAccount / ClusterRole / ClusterRoleBinding all carry the
-// operator's app label), keeps shared infra (the Namespace), and drops
-// the unrelated service Deployment. This is what `forge deploy prod
-// --target workspace-controller` renders.
-func TestFilterManifestsByApp_Operator(t *testing.T) {
-	got, err := FilterManifestsByApp(operatorFilterManifests, []string{"workspace-controller"})
-	if err != nil {
-		t.Fatalf("FilterManifestsByApp: %v", err)
-	}
+// TestSelectManifestsByGroup_Operator asserts an operator is a first-class
+// --target group: targeting the operator name keeps EXACTLY that operator's
+// Deployment AND its cluster RBAC (ServiceAccount / ClusterRole /
+// ClusterRoleBinding all carry the operator's group), and DROPS everything
+// else — both the unrelated service Deployment AND the ungrouped env-shared
+// Namespace. This is the EXCLUSIVE
+// `forge deploy prod --target workspace-controller`.
+func TestSelectManifestsByGroup_Operator(t *testing.T) {
+	got := SelectManifestsByGroup(operatorFilterManifests, []string{"workspace-controller"})
 	for _, want := range []string{
 		"name: workspace-controller\n",                  // Deployment + ServiceAccount
 		"name: workspace-controller-clusterrole\n",      // ClusterRole
 		"name: workspace-controller-clusterrolebinding", // ClusterRoleBinding
-		"kind: Namespace",                               // shared infra kept
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected %q in scoped output, got:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "kind: Namespace") {
+		t.Errorf("EXCLUSIVE: ungrouped env-shared Namespace must be dropped when only the operator is targeted, got:\n%s", got)
 	}
 	if strings.Contains(got, "name: admin-server") {
 		t.Errorf("expected unrelated service admin-server to be dropped, got:\n%s", got)

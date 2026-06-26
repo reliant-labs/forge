@@ -10,11 +10,13 @@
 // `helm install`, NO helm-managed release, NO imperative installer.
 //
 // SELECTION IS `--target`. Because each chart's manifests carry the
-// chart's `name` as their `app.kubernetes.io/name`, the EXISTING
-// FilterManifestsByApp / `--target` axis selects them with no new tag:
+// chart's `name` as their `app.kubernetes.io/name` GROUP, the SAME
+// exclusive `--target` axis (SelectManifestsByGroup) selects them with no
+// new tag — a chart is just another manifest group:
 //
-//	forge deploy <env> --target <name>   # apply ONLY this platform dep
-//	forge deploy <env>                   # apply the app (no platform target)
+//	forge deploy <env> --target <name>   # render+apply ONLY this group
+//	forge deploy <env>                   # apply EVERYTHING (every group +
+//	                                     # every declared platform dep)
 //
 // APPLY ORDERING (the one real problem). A chart's controllers reference
 // CRDs that must exist + be Established first. The chart's OWN CRDs are
@@ -78,8 +80,9 @@ type HelmChartSpec struct {
 	// (the `eg` GatewayClass, cert-manager ClusterIssuers). Applied AFTER
 	// the chart's controllers (so the controller is up before its
 	// instances), stamped with the chart's app-label like the chart's own
-	// output. Excluded from a bare app deploy — they only apply when the
-	// chart's --target selects them. Empty when the chart carries none.
+	// output, so they ride the chart's GROUP under the exclusive `--target`
+	// filter (selected iff no targets, or the chart's Name ∈ targets — the
+	// same rule as the chart itself). Empty when the chart carries none.
 	Manifests string
 }
 
@@ -95,37 +98,32 @@ type renderedChart struct {
 	extra string
 }
 
-// selectHelmCharts decides which platform deps THIS apply renders and
-// returns the leftover targets that name APPS (not charts) for the env
-// manifest filter. The rule realizes "selection is --target":
+// selectHelmChartsByGroup applies the ONE uniform exclusive `--target`
+// rule to the platform deps: a chart's NAME is its GROUP, so a chart is
+// rendered iff (no targets) OR (its Name ∈ targets) — the IDENTICAL rule
+// SelectManifestsByGroup applies to every other manifest. There is NO
+// chart opt-in/opt-out asymmetry: a bare `forge deploy <env>` (empty
+// targets) reconciles every declared platform dep, exactly as it
+// reconciles every app manifest.
 //
-//   - Empty targets (the app-only default): render NO charts. Platform
-//     deps are infrequent, privileged, and applied EXPLICITLY via
-//     `--target=<name>`; a bare `forge deploy <env>` ships the app and
-//     must not re-apply cluster-wide infra.
-//   - Non-empty targets: render every chart whose Name is in targets; the
-//     remaining target names (not matching any chart) are app targets,
-//     returned for FilterManifestsByApp.
-//
-// So `--target=cert-manager` renders the cert-manager chart and returns no
-// app targets; `--target=api` renders no chart and returns ["api"]; a
-// mixed `--target=cert-manager --target=api` does both.
-func selectHelmCharts(charts []HelmChartSpec, targets []string) (selected []HelmChartSpec, appTargets []string) {
+// So `--target=cert-manager` renders ONLY the cert-manager chart; an empty
+// target renders ALL charts; a target naming no chart renders no chart
+// (its manifests, if any, are selected by SelectManifestsByGroup instead).
+func selectHelmChartsByGroup(charts []HelmChartSpec, targets []string) []HelmChartSpec {
 	if len(targets) == 0 {
-		return nil, nil
+		return charts
 	}
-	byName := make(map[string]HelmChartSpec, len(charts))
-	for _, c := range charts {
-		byName[c.Name] = c
-	}
+	want := make(map[string]struct{}, len(targets))
 	for _, t := range targets {
-		if c, ok := byName[t]; ok {
+		want[t] = struct{}{}
+	}
+	var selected []HelmChartSpec
+	for _, c := range charts {
+		if _, ok := want[c.Name]; ok {
 			selected = append(selected, c)
-		} else {
-			appTargets = append(appTargets, t)
 		}
 	}
-	return selected, appTargets
+	return selected
 }
 
 // helmTemplate runs `helm template <release> <chart-ref> --version <v>
@@ -207,7 +205,7 @@ func writeValuesFile(values map[string]any) (string, error) {
 
 // RenderHelmChart expands one HelmChart to its manifest stream, with every
 // rendered manifest stamped `app.kubernetes.io/name = spec.Name` so the
-// EXISTING `--target` / FilterManifestsByApp axis selects it. This is the
+// SAME exclusive `--target` axis (SelectManifestsByGroup) selects it. This is the
 // whole bridge from "a declared platform dep" to "manifests in the normal
 // apply stream": the result joins render output and flows through the same
 // filter → apply → wait pipeline as the app.
@@ -225,7 +223,7 @@ func RenderHelmChart(ctx context.Context, spec HelmChartSpec) (string, error) {
 
 // stampAppLabel FORCES `app.kubernetes.io/name = <name>` onto every
 // document in a `---`-separated manifest stream so the deploy layer's
-// `--target` / FilterManifestsByApp selection treats the WHOLE chart as
+// `--target` selection (SelectManifestsByGroup) treats the WHOLE chart as
 // ONE named app. Documents that don't parse are passed through unchanged.
 //
 // OVERRIDE, not defer-to-existing: unlike lib/services.k's
@@ -233,7 +231,7 @@ func RenderHelmChart(ctx context.Context, spec HelmChartSpec) (string, error) {
 // raw Service.manifests entry), a helm chart sets its OWN per-component
 // `app.kubernetes.io/name` (cert-manager's webhook / cainjector subcharts
 // label themselves "webhook" / "cainjector"). If those survived,
-// `--target=cert-manager` would DROP them (FilterManifestsByApp keeps only
+// `--target=cert-manager` would DROP them (SelectManifestsByGroup keeps only
 // docs whose app label equals the target), shipping a half-installed
 // chart. The chart `name` is the single `--target` selector for the whole
 // dependency, so it MUST overwrite any chart-set value.

@@ -137,29 +137,36 @@ type ApplyOpts struct {
 	// context (unchanged for single-cluster users).
 	Context string
 
-	// Targets, when non-empty, scopes the apply to the named
-	// applications (service / frontend names). The whole env bundle is
-	// still rendered (KCL renders the env as a unit), but after
-	// RenderManifests and before KubectlApply the multi-doc YAML is
-	// filtered: a workload manifest is kept when its
-	// `app.kubernetes.io/name` label is in Targets, and a shared/infra
-	// manifest (no `app.kubernetes.io/name` label — Namespace, the
-	// shared ConfigMap/Secret, RuntimeClass, etc.) is always kept so a
-	// targeted app's dependencies aren't dropped. Empty means "apply the
-	// whole bundle", the unchanged default. See FilterManifestsByApp.
+	// Targets, when non-empty, is the EXCLUSIVE set of KCL-declared service
+	// GROUPs (`app.kubernetes.io/name` values) this apply keeps. The whole
+	// env bundle is still rendered (KCL renders the env as a unit), but after
+	// RenderManifests and before KubectlApply the multi-doc YAML is filtered
+	// to EXACTLY the manifests whose group ∈ Targets — and EXACTLY the helm
+	// charts whose Name ∈ Targets are rendered. The filter is purely
+	// mechanical: it includes nothing implicitly. There is no shared-base
+	// auto-keep, and no synthetic group: the env-shared manifests (Namespace,
+	// ConfigMap, RuntimeClass, NetworkPolicy) and bundle-level
+	// `additional_manifests` carry NO group, so they apply ONLY on a bare
+	// deploy and are NEVER selected by a service Target. To make a manifest
+	// ride a service's Target, declare it on that service's `manifests`.
+	// Empty Targets means "apply EVERYTHING" — every manifest and every
+	// declared platform dep (the full declarative reconcile). See
+	// SelectManifestsByGroup and selectHelmChartsByGroup.
 	Targets []string
 
 	// HelmCharts are the env's declared platform dependencies, rendered
 	// with helm-as-a-RENDERER (helm template --skip-crds) and folded into
-	// THIS apply stream. Each is a renderable with a NAME the EXISTING
-	// Targets filter selects: a chart is rendered + applied only when its
-	// Name passes the Targets filter (empty Targets = the app-only default,
-	// which renders NO chart — platform deps are applied explicitly via
-	// `--target=<name>`). Apply renders each selected chart, stamps every
-	// manifest with `app.kubernetes.io/name = Name`, and applies it in
-	// CRD-first order (the chart's forge-supplied CRDs → wait Established →
-	// the chart's controllers) so the apply leaves CRDs Established +
-	// controllers Deployed. Empty => no platform deps. See helm.go.
+	// THIS apply stream. Each is a renderable whose NAME is its GROUP — the
+	// SAME exclusive Targets filter selects it: a chart is rendered + applied
+	// iff (no Targets) OR (its Name ∈ Targets), the identical rule every other
+	// manifest obeys (each chart's manifests are stamped
+	// `app.kubernetes.io/name = Name`). There is NO chart opt-in special case
+	// — a bare `forge deploy <env>` (no Targets) reconciles every declared
+	// platform dep too. Apply renders each selected chart, stamps every
+	// manifest with its group, and applies it in CRD-first order (the chart's
+	// forge-supplied CRDs → wait Established → the chart's controllers) so the
+	// apply leaves CRDs Established + controllers Deployed. Empty => no
+	// platform deps. See helm.go.
 	HelmCharts []HelmChartSpec
 
 	// ClusterScope, when non-nil, scopes the rendered env bundle to ONE
@@ -212,14 +219,21 @@ type GroupScope struct {
 	OtherApps map[string]struct{}
 }
 
-// appNameLabel is the per-service workload label forge's KCL renderer
-// stamps on every Deployment / Service / RBAC object via
-// `_managed_labels(<svc-name>)` (kcl/lib/services.k, kcl/lib/rbac.k).
-// Shared / infra manifests (Namespace, the shared ConfigMap/Secret,
-// RuntimeClass) deliberately omit it — they carry only
-// `app.kubernetes.io/managed-by` and `app.kubernetes.io/part-of`. That
-// asymmetry is what lets FilterManifestsByApp tell a targeted app's
-// workloads from another app's workloads while keeping shared deps.
+// appNameLabel is the KCL-declared GROUP key — the single `--target`
+// selector. The group is ALWAYS the SERVICE: forge's KCL renderer stamps it
+// with the service/component name on workloads / RBAC (`_managed_labels`,
+// kcl/lib/services.k, kcl/lib/rbac.k), gateways/routes, and on a service's
+// owned manifests (`Service.manifests`, which inherit THAT service's name).
+// Env-shared resources that belong to no service — Namespace, ConfigMap,
+// RuntimeClass, NetworkPolicy, and bundle-level `additional_manifests` —
+// carry NO `app.kubernetes.io/name`. There is no synthetic env/namespace
+// group.
+//
+// SelectManifestsByGroup is therefore a pure mechanical include filter —
+// keep iff group ∈ targets — with no Go-side "always keep shared infra"
+// policy. An ungrouped manifest matches no service `--target`, so it applies
+// only on a bare `forge deploy` (no `--target`). To make a manifest ride a
+// service's `--target`, declare it on that service's `manifests`.
 const appNameLabel = "app.kubernetes.io/name"
 
 // clusterRoutingLabel is the FIRST-CLASS per-manifest cluster-attribution
@@ -255,36 +269,30 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		return fmt.Errorf("KCL manifest generation failed: %w", err)
 	}
 
-	// Partition the rendered env Bundle from its declared platform deps.
-	// A HelmChart is a renderable with a NAME the SAME Targets axis selects
-	// (helm-as-a-RENDERER): a `--target=<chart>` deploy applies the chart;
-	// a no-platform-target deploy applies the app and renders no chart.
-	// Which charts this apply renders is decided here, BEFORE the app
-	// filter, so a target that names ONLY charts doesn't trip the app
-	// filter's "no application matched" guard.
-	selectedCharts, appTargets := selectHelmCharts(opts.HelmCharts, opts.Targets)
-
-	// Application-level filter: when --target scoped the deploy to one
-	// or more named apps, drop the other apps' workload manifests while
-	// keeping every shared/infra manifest. Applied to the rendered
-	// bundle (which KCL produces as a unit) so a single targeted app
-	// still lands with its Namespace, shared ConfigMap/Secret, etc.
+	// Exclusive --target selection — ONE uniform mechanical filter over the
+	// KCL-declared service GROUP (`app.kubernetes.io/name`).
 	//
-	// When EVERY --target named a platform dep (a `--target=cert-manager`
-	// apply), there are no app targets — the env bundle contributes
-	// nothing and only the selected charts apply. Skip the app filter in
-	// that case (it would reject "no application matched" for a chart name)
-	// and drop the env manifests entirely.
-	switch {
-	case len(opts.Targets) > 0 && len(appTargets) == 0:
-		// All targets were charts — apply only the charts, not the env.
-		manifests = ""
-	case len(appTargets) > 0:
-		filtered, ferr := FilterManifestsByApp(manifests, appTargets)
-		if ferr != nil {
-			return ferr
-		}
-		manifests = filtered
+	//   - No targets  → keep EVERYTHING (full declarative reconcile of the
+	//     whole env bundle + every declared platform dep).
+	//   - Targets set → keep EXACTLY the manifests whose group ∈ Targets, and
+	//     render EXACTLY the helm charts whose Name ∈ Targets. Nothing
+	//     implicit: no shared-base auto-kept, no chart opt-in/opt-out
+	//     asymmetry, no "no application matched" special case. The group is
+	//     always the service; env-shared manifests (Namespace, ConfigMap,
+	//     RuntimeClass, NetworkPolicy) and bundle-level additional_manifests
+	//     carry NO group, so a service Target drops them — they apply only on
+	//     a bare deploy. To make a shared resource an app needs ride that
+	//     app's Target, declare it on the service's `manifests` so it inherits
+	//     the service group (decided in KCL, never patched in by Go policy).
+	//
+	// A helm chart is helm-templated iff (no targets) OR (its Name ∈ Targets)
+	// — the SAME rule as any manifest, since each chart's manifests are
+	// stamped with the chart Name as their group. selectHelmChartsByGroup
+	// applies that rule to the chart specs; SelectManifestsByGroup applies it
+	// to the rendered env stream.
+	selectedCharts := selectHelmChartsByGroup(opts.HelmCharts, opts.Targets)
+	if len(opts.Targets) > 0 {
+		manifests = SelectManifestsByGroup(manifests, opts.Targets)
 	}
 
 	// Multi-cluster scope: a service whose `deploy` targets a SECOND cluster
@@ -1304,74 +1312,47 @@ func parseDoc(doc string) (parsedDoc, bool) {
 	return m, true
 }
 
-// FilterManifestsByApp filters a `---`-separated multi-doc YAML stream
-// down to the manifests belonging to the named apps, PLUS every shared
-// manifest. The rule, doc by doc:
+// SelectManifestsByGroup is the ONE uniform, mechanical, EXCLUSIVE
+// `--target` filter: it keeps a `---`-separated multi-doc YAML stream's
+// documents iff their KCL-declared service GROUP (`app.kubernetes.io/name`)
+// is in targets, and DROPS every other document. The rule, doc by doc:
 //
-//   - KEEP when the doc's `metadata.labels[app.kubernetes.io/name]`
-//     value is one of targets — that's a targeted app's workload.
-//   - KEEP when the doc has NO `app.kubernetes.io/name` label — that's
-//     a shared/infra resource (Namespace, the shared ConfigMap/Secret,
-//     RuntimeClass, CRDs) a targeted app may depend on. Dropping these
-//     would leave the app's pods unable to start.
-//   - DROP when the label is present but names a NON-targeted app.
+//   - KEEP iff `metadata.labels[app.kubernetes.io/name]` ∈ targets.
+//   - DROP otherwise — including a doc whose group is NOT targeted AND a
+//     doc with NO group label.
 //
-// Empty / whitespace-only docs are dropped. A doc that doesn't parse as
-// YAML is conservatively KEPT (better to apply an opaque doc than to
-// silently swallow it; kubectl will reject genuinely-broken YAML).
+// EXCLUSIVE means EXACTLY that: nothing is kept implicitly. The group is
+// always the service, and there is no synthetic group for shared infra:
+// the env-shared manifests (Namespace, ConfigMap, RuntimeClass,
+// NetworkPolicy) and bundle-level additional_manifests carry NO group, so a
+// service `--target` DROPS them — they apply only on a bare deploy. A shared
+// resource an app needs is kept under that app's `--target` ONLY if it was
+// declared on the service's `manifests` (so it inherits the service group)
+// in KCL. The decision of WHICH manifests a `--target` includes is thus
+// entirely KCL-declared data; this function only filters on it. Callers pass
+// targets only when non-empty — an empty/whole-env apply never calls this
+// (Apply keeps everything when Targets is empty).
 //
-// If the filter would drop every workload-labelled doc — i.e. none of
-// targets matched any app in the bundle (a typo'd --target) — it
-// returns an error listing the app names actually present, rather than
-// applying a shared-only bundle that does nothing the user asked for.
-func FilterManifestsByApp(manifests string, targets []string) (string, error) {
+// A doc that doesn't parse as YAML carries no readable group and is DROPPED
+// like any ungrouped doc: under exclusive targeting "I can't read its
+// group" means "it isn't in the target set". Empty / whitespace-only docs
+// are dropped.
+func SelectManifestsByGroup(manifests string, targets []string) string {
 	want := map[string]struct{}{}
 	for _, t := range targets {
 		want[t] = struct{}{}
 	}
-
 	var kept []string
-	present := map[string]struct{}{} // every app name seen on a labelled doc
-	matchedAny := false              // did any doc carry a targeted app label?
-
 	for _, doc := range splitDocs(manifests) {
-		app := manifestAppLabel(doc)
-		if app == "" {
-			// Shared / infra resource — always keep.
-			kept = append(kept, doc)
+		m, ok := parseDoc(doc)
+		if !ok {
 			continue
 		}
-		present[app] = struct{}{}
-		if _, ok := want[app]; ok {
+		if _, in := want[m.Metadata.Labels[appNameLabel]]; in {
 			kept = append(kept, doc)
-			matchedAny = true
 		}
 	}
-
-	if !matchedAny {
-		avail := make([]string, 0, len(present))
-		for a := range present {
-			avail = append(avail, a)
-		}
-		sort.Strings(avail)
-		return "", fmt.Errorf(
-			"no application matched --target %s; available apps in this env: %s",
-			strings.Join(targets, ", "), strings.Join(avail, ", "))
-	}
-
-	return strings.Join(kept, docDelimiter), nil
-}
-
-// manifestAppLabel reads metadata.labels["app.kubernetes.io/name"] from
-// a single YAML manifest document. Returns "" when the doc has no such
-// label (shared/infra resource) or doesn't parse — callers treat "" as
-// "shared, keep".
-func manifestAppLabel(doc string) string {
-	m, ok := parseDoc(doc)
-	if !ok {
-		return ""
-	}
-	return m.Metadata.Labels[appNameLabel]
+	return strings.Join(kept, docDelimiter)
 }
 
 // ScopeManifestsToGroup filters a `---`-separated env manifest stream down

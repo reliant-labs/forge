@@ -738,6 +738,20 @@ _render_config_map_manifest = lambda cm: ConfigMap, namespace: str -> any {
 # read off `bundle.cluster_target`. `image_tag` / `image_digests` /
 # `network_policies` are the deploy-time params.
 #
+# `--target` GROUP model: the group is ALWAYS the SERVICE
+# (`app.kubernetes.io/name`). Workload / operator / cronjob / gateway /
+# route manifests carry their own service/component name (stamped by their
+# builders); per-service owned manifests (`Service.manifests`, via
+# render_owned_manifests) inherit THEIR service's name. The env-shared
+# resources (Namespace, RuntimeClass, ConfigMap, NetworkPolicy) and
+# bundle-level `additional_manifests` belong to NO service, so they carry
+# NO `app.kubernetes.io/name` — they apply on a bare `forge deploy` (no
+# `--target`) and are NEVER selected by a service `--target`. There is no
+# synthetic env/namespace group and no Go "keep shared infra" policy: a
+# manifest that needs to ride a service's `--target` is declared on that
+# service's `manifests` (or on a near-bare image-less infra service the
+# author creates to hold it), exactly like `HelmChart.manifests`.
+#
 # RuntimeClasses come first so they exist in the cluster before any
 # workload that references one (a Pod spec'ing `runtimeClassName =
 # "gvisor"` would otherwise hit "RuntimeClass not found" while
@@ -756,6 +770,10 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
     # Deployment. This split is the declared-cluster-only model's no-build
     # infra-service shape — explicit (no image) rather than inferred.
     _workload_services = [s for s in _cluster_services if s.image]
+    # Env-shared manifests + bundle-level additional_manifests carry NO
+    # service group: they belong to no service, so they apply only on a bare
+    # deploy and are never picked by a service --target. To ride a service's
+    # --target, declare a manifest on that service's `manifests` instead.
     [_render_runtime_class_manifest(rc, _ns) for rc in bundle.runtime_classes] \
         + [_render_namespace(_ns)] \
         + [_render_config_map_manifest(cm, _ns) for cm in bundle.config_maps] \
@@ -790,6 +808,9 @@ render_support = lambda bundle: Bundle -> [any] {
     # services that pin env-level resources to a specific cluster). Stamped
     # with the owning service's app label so the deploy layer routes them.
     _support_cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"]
+    # Env-shared support manifests + bundle-level additional_manifests carry
+    # NO service group (apply on a bare deploy, never on a service --target);
+    # per-service owned manifests inherit their service name below.
     [_render_runtime_class_manifest(rc, _ns) for rc in bundle.runtime_classes] \
         + [_render_config_map_manifest(cm, _ns) for cm in bundle.config_maps] \
         + bundle.additional_manifests \

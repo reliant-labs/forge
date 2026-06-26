@@ -12,8 +12,8 @@ import (
 
 // TestStampAppLabel_OverridesEveryDoc proves the helm-as-a-RENDERER
 // bridge: every manifest a chart renders is FORCED to
-// `app.kubernetes.io/name = <name>` so the EXISTING --target /
-// FilterManifestsByApp axis selects the WHOLE chart as one app — even the
+// `app.kubernetes.io/name = <name>` so the SAME exclusive --target axis
+// (SelectManifestsByGroup) selects the WHOLE chart as one group — even the
 // chart's sub-components that label THEMSELVES (cert-manager's webhook /
 // cainjector), which would otherwise be dropped by --target=cert-manager.
 func TestStampAppLabel_OverridesEveryDoc(t *testing.T) {
@@ -40,12 +40,9 @@ spec: {}`
 		t.Errorf("chart sub-component label must be overridden to the chart name:\n%s", got)
 	}
 
-	// Round-trip through FilterManifestsByApp: a --target=cert-manager
-	// deploy must KEEP EVERY doc — the whole chart selects as one app.
-	kept, err := FilterManifestsByApp(got, []string{"cert-manager"})
-	if err != nil {
-		t.Fatalf("FilterManifestsByApp after stamp: %v", err)
-	}
+	// Round-trip through SelectManifestsByGroup: a --target=cert-manager
+	// deploy must KEEP EVERY doc — the whole chart selects as one group.
+	kept := SelectManifestsByGroup(got, []string{"cert-manager"})
 	if !strings.Contains(kept, "kind: ServiceAccount") || !strings.Contains(kept, "cert-manager-webhook") {
 		t.Errorf("every chart doc must be selected by --target=cert-manager:\n%s", kept)
 	}
@@ -92,37 +89,42 @@ metadata:
 	}
 }
 
-// TestSelectHelmCharts_TargetSelection proves "selection is --target": an
-// empty --target renders NO platform dep (the app-only default); a target
-// naming a chart selects it and returns the leftover names as app targets.
-func TestSelectHelmCharts_TargetSelection(t *testing.T) {
+// TestSelectHelmChartsByGroup_UniformExclusiveRule proves a chart obeys the
+// SAME uniform exclusive --target rule as any manifest (a chart's Name is
+// its group): EVERY chart on a bare deploy (no targets — the full
+// declarative reconcile), EXACTLY the named chart when targeted, and NO
+// chart when the target names something else (its manifests are selected by
+// SelectManifestsByGroup instead, not here).
+func TestSelectHelmChartsByGroup_UniformExclusiveRule(t *testing.T) {
 	charts := []HelmChartSpec{
 		{Name: "cert-manager"},
 		{Name: "envoy-gateway"},
 	}
 
-	// No targets → no charts (the bare `forge deploy <env>` app path).
-	sel, apps := selectHelmCharts(charts, nil)
-	if len(sel) != 0 || len(apps) != 0 {
-		t.Errorf("empty targets must select no charts: sel=%v apps=%v", sel, apps)
+	// No targets → ALL charts (bare `forge deploy <env>` reconciles every
+	// declared platform dep — the uniform "no target = everything" rule).
+	sel := selectHelmChartsByGroup(charts, nil)
+	if len(sel) != 2 {
+		t.Errorf("empty targets must select EVERY chart, got %v", sel)
 	}
 
-	// --target=cert-manager → that chart, no app targets.
-	sel, apps = selectHelmCharts(charts, []string{"cert-manager"})
+	// --target=cert-manager → exactly that chart.
+	sel = selectHelmChartsByGroup(charts, []string{"cert-manager"})
 	if len(sel) != 1 || sel[0].Name != "cert-manager" {
-		t.Errorf("expected cert-manager selected, got %v", sel)
-	}
-	if len(apps) != 0 {
-		t.Errorf("a chart-only target must yield no app targets, got %v", apps)
+		t.Errorf("expected only cert-manager selected, got %v", sel)
 	}
 
-	// Mixed: chart + app name → chart selected, app name passed through.
-	sel, apps = selectHelmCharts(charts, []string{"envoy-gateway", "api"})
+	// Mixed: chart + app name → only the chart is selected here (the app
+	// name selects manifests via SelectManifestsByGroup, not charts).
+	sel = selectHelmChartsByGroup(charts, []string{"envoy-gateway", "api"})
 	if len(sel) != 1 || sel[0].Name != "envoy-gateway" {
-		t.Errorf("expected envoy-gateway selected, got %v", sel)
+		t.Errorf("expected only envoy-gateway selected, got %v", sel)
 	}
-	if len(apps) != 1 || apps[0] != "api" {
-		t.Errorf("expected [api] app targets, got %v", apps)
+
+	// A target naming no chart → no chart rendered.
+	sel = selectHelmChartsByGroup(charts, []string{"api"})
+	if len(sel) != 0 {
+		t.Errorf("a target naming no chart must select no chart, got %v", sel)
 	}
 }
 

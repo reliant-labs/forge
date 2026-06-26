@@ -50,14 +50,17 @@ func marshalManifestDicts(mans []any) (string, error) {
 	return sb.String(), nil
 }
 
-// selectedHelmChartEntities returns the declared charts whose Name is in
-// targets — the platform deps THIS `--target` applies. Mirrors
-// cluster.selectHelmCharts (which re-applies the same selection inside
-// Apply); pre-selecting here keeps the CRD-bundle fetch off the app-only
-// deploy path. Empty targets => no charts (the app-only default).
+// selectedHelmChartEntities returns the declared charts THIS `--target`
+// renders, applying the SAME uniform exclusive rule as
+// cluster.selectHelmChartsByGroup (which re-applies it inside Apply): a
+// chart's NAME is its GROUP, so the result is EVERY chart when targets is
+// empty (a bare `forge deploy <env>` reconciles every declared platform
+// dep — the full declarative reconcile), and EXACTLY the charts whose Name
+// ∈ targets otherwise. Pre-selecting here keeps the CRD-bundle network
+// fetch scoped to the charts the apply will actually render.
 func selectedHelmChartEntities(charts []HelmChartEntity, targets []string) []HelmChartEntity {
 	if len(targets) == 0 {
-		return nil
+		return charts
 	}
 	want := map[string]struct{}{}
 	for _, t := range targets {

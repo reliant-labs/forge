@@ -255,9 +255,10 @@ type deployOptions struct {
 	// buildDeployGroups, so External/Compose dispatch and the
 	// rollout-wait / host-skip sets cover only the targeted apps;
 	// (2) the K8sCluster apply filters the rendered multi-doc manifest
-	// stream to the targeted apps' workloads plus shared resources (see
-	// cluster.FilterManifestsByApp). Empty means "deploy the whole env
-	// bundle", the unchanged default.
+	// stream EXCLUSIVELY to the manifests whose KCL-declared group ∈ targets
+	// — nothing implicit, no shared-base auto-keep (see
+	// cluster.SelectManifestsByGroup). Empty means "deploy EVERYTHING in the
+	// env bundle" (the full declarative reconcile), the unchanged default.
 	targets []string
 
 	// skipFrontend, when true, runs the k8s apply but suppresses the
@@ -582,16 +583,18 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		deployContext = expectedClusterForEnv(ctx, cfg, envName)
 	}
 
-	// Resolve the env's declared platform deps (forge.HelmChart) that THIS
-	// --target selects into cluster.HelmChartSpec values for the apply path
-	// (helm-as-a-RENDERER). Only charts named in --target are resolved (the
-	// CRD-bundle fetch is network I/O, skipped for the app-only default),
-	// matching cluster.Apply's selectHelmCharts: a bare `forge deploy <env>`
-	// applies no platform dep. cluster.Apply renders each selected chart
-	// (helm template --skip-crds), stamps app.kubernetes.io/name, and
-	// applies CRDs-first/Established-gated before the chart's controllers.
+	// Resolve the env's declared platform deps (forge.HelmChart) THIS apply
+	// renders into cluster.HelmChartSpec values (helm-as-a-RENDERER). The
+	// uniform exclusive --target rule (selectedHelmChartEntities, mirroring
+	// cluster.selectHelmChartsByGroup): EVERY declared chart on a bare
+	// `forge deploy <env>` (no --target — the full declarative reconcile),
+	// or EXACTLY the charts whose Name ∈ --target. cluster.Apply renders
+	// each selected chart (helm template --skip-crds), stamps
+	// app.kubernetes.io/name, and applies CRDs-first/Established-gated before
+	// the chart's controllers. The CRD-bundle network fetch only runs for the
+	// charts actually selected here.
 	var helmSpecs []cluster.HelmChartSpec
-	if entities != nil && len(targets) > 0 {
+	if entities != nil {
 		selected := selectedHelmChartEntities(entities.HelmCharts, targets)
 		if len(selected) > 0 {
 			helmSpecs, err = helmChartSpecsFromEntities(ctx, selected)
@@ -879,11 +882,17 @@ func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 // Deployment + cluster RBAC (ServiceAccount / ClusterRole /
 // ClusterRoleBinding) all carrying `app.kubernetes.io/name = <op>`, so
 // naming an operator scopes the K8sCluster apply to that operator's
-// workload + shared resources exactly the way a Service target does
-// (cluster.FilterManifestsByApp is app-label-driven, not kind-driven).
+// workload exactly the way a Service target does
+// (cluster.SelectManifestsByGroup is group-label-driven, not kind-driven).
 // Without operators in this set, `forge deploy <env> --target <op>`
 // errored "unknown --target" because operators were absent from the
-// available-apps list — you couldn't deploy just an operator.
+// available-groups list — you couldn't deploy just an operator.
+//
+// A --target is always a SERVICE group (service / operator / frontend /
+// helm-chart name). The env-shared manifests (Namespace, ConfigMap,
+// RuntimeClass, NetworkPolicy, bundle-level additional_manifests) belong to
+// no service — they carry no group, apply only on a bare deploy, and are
+// not addressable by `--target`, so they are deliberately NOT in this set.
 func validateDeployTargets(e *KCLEntities, targets []string) error {
 	avail := map[string]struct{}{}
 	for _, s := range e.Services {
@@ -896,10 +905,9 @@ func validateDeployTargets(e *KCLEntities, targets []string) error {
 		avail[f.Name] = struct{}{}
 	}
 	// Platform deps (forge.HelmChart) are first-class --target subjects:
-	// `forge deploy <env> --target=<chart>` is THE way a platform dep is
-	// applied (helm-as-a-RENDERER). A chart NAME is a valid target the same
-	// way a service name is — its rendered manifests carry it as their
-	// app.kubernetes.io/name, so the same --target axis selects it.
+	// `forge deploy <env> --target=<chart>` renders + applies that chart's
+	// group. A chart NAME is a valid target the same way a service name is —
+	// its rendered manifests carry it as their app.kubernetes.io/name group.
 	for _, h := range e.HelmCharts {
 		avail[h.Name] = struct{}{}
 	}
@@ -925,9 +933,9 @@ func validateDeployTargets(e *KCLEntities, targets []string) error {
 // Operators, and Frontends narrowed to the names in targets (reusing
 // inTargetSet from up.go for the membership test). The remaining entity
 // slices — cronjobs, gateways, routes — are carried through UNCHANGED:
-// those are either shared infra or aren't addressable by the app-name
-// filter, and cluster.FilterManifestsByApp keeps the ones with no app
-// label anyway.
+// those carry their own group label, and the K8sCluster apply's exclusive
+// cluster.SelectManifestsByGroup is what actually drops the non-targeted
+// ones from the rendered stream.
 //
 // Narrowing Operators here (not just Services/Frontends) is what makes
 // an operator a first-class --target. It scopes the entity-derived sets
@@ -936,10 +944,11 @@ func validateDeployTargets(e *KCLEntities, targets []string) error {
 // <env> --target <operator>` doesn't accidentally look like a
 // frontend-only env. The K8sCluster apply does the load-bearing scoping
 // at the manifest level: with the operator name in opts.Targets,
-// cluster.FilterManifestsByApp keeps that operator's Deployment + RBAC
-// (all app-labelled) and the shared/infra docs, and drops every other
-// app's workload — operators included. Operators have no
-// External/Compose/host dispatch, so there's nothing else to scope.
+// cluster.SelectManifestsByGroup keeps EXACTLY that operator's Deployment +
+// RBAC (all carry the operator's group) and drops every other group —
+// other apps AND the env-shared manifests (unless their group is also
+// targeted). Operators have no External/Compose/host dispatch, so there's
+// nothing else to scope.
 func filterEntitiesByTarget(e *KCLEntities, targets []string) *KCLEntities {
 	out := *e // shallow copy; slices below are rebuilt, the rest shared
 	var svcs []ServiceEntity
@@ -1623,11 +1632,10 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		return fmt.Errorf("preflight: render manifests: %w", err)
 	}
 	if len(in.targets) > 0 {
-		filtered, ferr := cluster.FilterManifestsByApp(manifests, in.targets)
-		if ferr != nil {
-			return fmt.Errorf("preflight: scope manifests to --target: %w", ferr)
-		}
-		manifests = filtered
+		// Same exclusive --target filter the apply uses (keep iff the
+		// manifest's KCL-declared group ∈ targets) so the preflight checks
+		// EXACTLY the manifests about to be applied.
+		manifests = cluster.SelectManifestsByGroup(manifests, in.targets)
 	}
 
 	opts := cluster.PreflightOpts{

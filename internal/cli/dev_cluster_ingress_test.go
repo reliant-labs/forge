@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // TestSpliceK3dPorts_AppendsToExisting covers the canonical case —
@@ -240,42 +238,5 @@ func TestGatewayAPICRDsURL(t *testing.T) {
 	want := "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/standard-install.yaml"
 	if got != want {
 		t.Errorf("URL = %q, want %q", got, want)
-	}
-}
-
-// TestEnvoyGatewayChartRef pins the gateway-helm chart coordinates the
-// local install shells `helm` against — the SAME release name/namespace
-// the cloud envs run. Drift here means a laptop install lands somewhere
-// the cloud doesn't, breaking the "one controller everywhere" invariant.
-func TestEnvoyGatewayChartRef(t *testing.T) {
-	if envoyGatewayChartRef != "oci://docker.io/envoyproxy/gateway-helm" {
-		t.Errorf("chart ref = %q, want the gateway-helm OCI ref", envoyGatewayChartRef)
-	}
-	if envoyGatewayReleaseName != "eg" {
-		t.Errorf("release name = %q, want eg", envoyGatewayReleaseName)
-	}
-	if envoyGatewayNamespace != "envoy-gateway-system" {
-		t.Errorf("namespace = %q, want envoy-gateway-system", envoyGatewayNamespace)
-	}
-}
-
-// TestEgGatewayClassVendored asserts the vendored GatewayClass forge
-// applies after the controller install names the `eg` class and the
-// Envoy Gateway controllerName — the class every forge env's Gateways
-// reference via the schema default.
-func TestEgGatewayClassVendored(t *testing.T) {
-	out, err := templates.IngressTemplates().Get("envoy/gatewayclass.yaml")
-	if err != nil {
-		t.Fatalf("load vendored GatewayClass: %v", err)
-	}
-	s := string(out)
-	for _, want := range []string{
-		"kind: GatewayClass",
-		"name: eg",
-		"controllerName: gateway.envoyproxy.io/gatewayclass-controller",
-	} {
-		if !strings.Contains(s, want) {
-			t.Errorf("vendored GatewayClass missing %q", want)
-		}
 	}
 }

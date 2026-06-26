@@ -9,13 +9,17 @@ import (
 
 func TestIngressTemplatesEmbedded(t *testing.T) {
 	cat := templates.IngressTemplates()
-	// The local ingress install is Envoy Gateway: VERSION pins the
-	// gateway-helm chart + Gateway API CRD versions, gatewayclass.yaml
-	// is the vendored `eg` GatewayClass forge applies after the helm
-	// install. See internal/cli/dev_cluster_ingress.go.
+	// VERSION pins the gateway-helm chart + Gateway API CRD versions. It is
+	// the SINGLE source of truth the declarative platform path reads:
+	// ingressPinnedVersions → fetchGatewayAPICRDs supplies the pinned
+	// standard-channel CRDs for a forge.HelmChart with crds="gateway-api"
+	// (deploy_helm.go::fetchHelmChartCRDs). The Envoy Gateway controller and
+	// the `eg` GatewayClass are NO LONGER vendored/installed imperatively —
+	// they come from the env's declared helm_charts (the controller chart +
+	// the GatewayClass riding its `manifests`). See
+	// internal/cli/dev_cluster_ingress.go.
 	for _, name := range []string{
 		"envoy/VERSION",
-		"envoy/gatewayclass.yaml",
 	} {
 		b, err := cat.Get(name)
 		if err != nil {
@@ -26,7 +30,7 @@ func TestIngressTemplatesEmbedded(t *testing.T) {
 			t.Errorf("Get(%q) returned empty bytes", name)
 		}
 	}
-	// VERSION carries both pin lines for cluster-up to read.
+	// VERSION carries both pin lines for the declarative CRD fetch to read.
 	b, _ := cat.Get("envoy/VERSION")
 	for _, want := range []string{"envoy_gateway=", "gateway_api="} {
 		if !strings.Contains(string(b), want) {

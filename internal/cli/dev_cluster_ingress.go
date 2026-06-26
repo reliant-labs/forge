@@ -221,96 +221,18 @@ func kubectlApplyBytes(ctx context.Context, kctx string, yamlBytes []byte) error
 	return nil
 }
 
-// kubectlApplyServerSideFile runs `kubectl apply --server-side
-// --force-conflicts -f <path>`. The Gateway API CRD bundle carries
-// large last-applied-configuration annotations that overflow the 256KB
-// client-side apply limit on some CRDs; server-side apply (the same mode
-// the cloud install uses) sidesteps that and resolves field-manager
-// conflicts deterministically. kctx targets a specific context when
-// non-empty; "" uses the pinned context.
-func kubectlApplyServerSideFile(ctx context.Context, kctx, path string) error {
-	args := append(kubeContextArgs(kctx), "apply", "--server-side", "--force-conflicts", "-f", path)
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("kubectl apply --server-side -f %s: %w", path, err)
-	}
-	return nil
-}
-
-// waitForCRDs blocks until the named Gateway API CRDs report
-// Established=True, or times out. Run between CRD apply and
-// GatewayClass apply so the latter doesn't race the controller's
-// CRD reconciler. kctx targets a specific context when non-empty.
-func waitForCRDs(ctx context.Context, kctx string, crds []string, timeout time.Duration) error {
-	args := append(kubeContextArgs(kctx), "wait", "--for=condition=Established", "--timeout="+timeout.String())
-	for _, c := range crds {
-		args = append(args, "crd/"+c)
-	}
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-// envoyGatewayChartRef is the OCI ref of the gateway-helm chart — the
-// SAME chart the cloud envs install. The pinned version comes from
-// internal/templates/ingress/envoy/VERSION (envoy_gateway=).
-const envoyGatewayChartRef = "oci://docker.io/envoyproxy/gateway-helm"
-
-// envoyGatewayReleaseName / envoyGatewayNamespace are the helm release
-// name and namespace the cloud envs use, kept identical for the local
-// install so `helm list -n envoy-gateway-system` reads the same here.
-const (
-	envoyGatewayReleaseName = "eg"
-	envoyGatewayNamespace   = "envoy-gateway-system"
-)
-
-// helmInstallEnvoyGateway runs `helm upgrade --install` for the pinned
-// gateway-helm chart into envoy-gateway-system, targeting the given
-// kubectl context when non-empty. Idempotent: `--install` creates the
-// release on a cold cluster and upgrades-in-place on a warm one. `--wait`
-// blocks until the controller Deployment is Available so the GatewayClass
-// apply (and the subsequent deploy phase) doesn't race a controller that
-// isn't reconciling yet.
-//
-// `--skip-crds` is load-bearing. forge OWNS the Gateway API CRD surface
-// explicitly: installIngressBundle applies the pinned standard-channel
-// CRDs (gateway_api= in VERSION) BEFORE this helm install, matching the
-// cloud envs. The gateway-helm chart bundles its OWN copy of the CRDs in
-// crds/gatewayapi-crds.yaml — and as of v1.7.2 that bundle is the
-// EXPERIMENTAL channel at an OLDER bundle-version (v1.4.1) than the
-// standard CRDs forge pins (v1.5.1). The v1.5.0+ standard-install.yaml
-// ships a `safe-upgrades` ValidatingAdmissionPolicy (which forge's CRD
-// apply installs and activates) that DENIES any CRD apply judged
-// "before v1.5.0" or "experimental on top of standard". So letting helm
-// manage CRDs makes the install deny ITSELF: forge's standard v1.5.1
-// apply activates the policy, then helm's bundled v1.4.1-experimental
-// CRDs trip it (the exact "Installing CRDs with version before v1.5.0 is
-// prohibited" failure). Skipping the chart's CRDs leaves forge as the
-// single source of truth for the CRD version (in lockstep with cloud)
-// and installs ONLY the controller here.
-func helmInstallEnvoyGateway(ctx context.Context, kctx, chartVersion string) error {
-	args := []string{
-		"upgrade", "--install", envoyGatewayReleaseName, envoyGatewayChartRef,
-		"--version", chartVersion,
-		"--namespace", envoyGatewayNamespace,
-		"--create-namespace",
-		"--skip-crds",
-		"--wait", "--timeout", "180s",
-	}
-	if kctx != "" {
-		args = append(args, "--kube-context", kctx)
-	}
-	cmd := exec.CommandContext(ctx, "helm", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("helm upgrade --install %s %s: %w", envoyGatewayReleaseName, envoyGatewayChartRef, err)
-	}
-	return nil
-}
+// NOTE: the Gateway API controller (Envoy Gateway) is no longer installed
+// imperatively. Like cert-manager (below), it is a DECLARATIVE platform
+// dependency — a forge.HelmChart in the env Bundle's `helm_charts`, rendered
+// (`helm template --skip-crds`) with forge-supplied pinned standard-channel
+// Gateway API CRDs (crds="gateway-api") and the `eg` GatewayClass riding the
+// chart's `manifests`, applied CRD-first via `forge deploy <env>
+// --target=envoy-gateway` (helm-as-a-RENDERER, internal/cluster). The pinned
+// CRD bundle is still fetched here (fetchGatewayAPICRDs, reused by
+// deploy_helm.go's fetchHelmChartCRDs). The former imperative
+// installIngressBundle / helmInstallEnvoyGateway machinery — and the vendored
+// `eg` GatewayClass — were removed: dev/e2e now bring up ingress the SAME
+// declarative way the cloud envs do. ONE model everywhere.
 
 // NOTE: cert-manager is no longer installed imperatively here. It is a
 // declarative platform dependency — a forge.HelmChart in the env Bundle,
@@ -318,110 +240,6 @@ func helmInstallEnvoyGateway(ctx context.Context, kctx, chartVersion string) err
 // <env> --target=cert-manager` (helm-as-a-RENDERER, internal/cluster).
 // The former `helm upgrade --install` cert-manager machinery (chart
 // coordinates, repo-add, install fn) was removed with `forge cluster-setup`.
-
-// resourceExists reports whether the named cluster resource exists in the
-// given kubectl context. Used for the idempotency skip checks (a present
-// GatewayClass / cert-manager Deployment means the stack is already
-// installed). A non-zero exit (NotFound) returns false with no error; a
-// genuine kubectl failure (e.g. no such context) returns the error so the
-// caller fails loudly rather than silently re-installing.
-func resourceExists(ctx context.Context, kctx string, getArgs ...string) (bool, error) {
-	args := append(kubeContextArgs(kctx), "get")
-	args = append(args, getArgs...)
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
-	// Suppress NotFound noise on stdout/stderr — we only care about exit code.
-	if err := cmd.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			// kubectl get of an absent resource exits 1 with "NotFound";
-			// treat as "doesn't exist". A bad context / unreachable API
-			// server also exits non-zero, but those surface downstream when
-			// the install itself runs against the same context.
-			return false, nil
-		}
-		return false, fmt.Errorf("kubectl get %s: %w", strings.Join(getArgs, " "), err)
-	}
-	return true, nil
-}
-
-// installIngressBundle is the post-cluster-up wiring entrypoint.
-// Called from runDevClusterUp when features.ingress is on.
-//
-// Order matters:
-//  1. Apply the pinned Gateway API standard-channel CRDs (fetched if not
-//     cached, applied server-side).
-//  2. Wait for CRDs Established.
-//  3. `helm upgrade --install` the Envoy Gateway controller (the SAME
-//     gateway-helm chart/version the cloud envs run). Envoy Gateway
-//     derives each managed proxy's listener sockets from the Gateway's
-//     spec.listeners dynamically — no per-listener static config to
-//     template, so the install is env-independent.
-//  4. Apply the vendored `eg` GatewayClass (depends on CRDs being live).
-//
-// projectDir/env are retained for signature stability with the
-// declared-cluster caller; the Envoy install needs neither (the
-// listener-derived host ports come from deploy/k3d-ports.yaml at cluster
-// CREATE time, not from the controller install).
-//
-// Failure anywhere short-circuits — the cluster is up but ingress
-// isn't, so subsequent `forge deploy <env>` will fail apply on the
-// project's Gateway resources. The error message is what the user
-// acts on; we don't try to clean up the partial install.
-// kctx pins the kubectl context the install targets. "" means "use the
-// caller-pinned current context" (the dev `forge cluster up` path, which
-// pins via pinKubectlContext first). The declared-cluster path passes an
-// explicit `k3d-<name>` so the install lands on THAT cluster regardless
-// of the active context.
-func installIngressBundle(ctx context.Context, kctx, projectDir, env string) error {
-	_ = projectDir // retained for caller signature stability (see doc above)
-	_ = env
-	envoyVer, gatewayAPIVer, err := ingressPinnedVersions()
-	if err != nil {
-		return err
-	}
-
-	crdPath, err := fetchGatewayAPICRDs(ctx, gatewayAPIVer)
-	if err != nil {
-		return err
-	}
-	fmt.Println("Applying Gateway API CRDs...")
-	if err := kubectlApplyServerSideFile(ctx, kctx, crdPath); err != nil {
-		return err
-	}
-
-	// The names below are the Gateway API standard-channel CRDs we
-	// actually consume. We skip ReferenceGrant + the experimental-
-	// channel TCPRoute/TLSRoute/UDPRoute because forge doesn't render
-	// them in v1; including them in the wait list would only delay
-	// happy-path cluster-up if upstream renames or splits them.
-	fmt.Println("Waiting for Gateway API CRDs to be Established...")
-	if err := waitForCRDs(ctx, kctx, []string{
-		"gatewayclasses.gateway.networking.k8s.io",
-		"gateways.gateway.networking.k8s.io",
-		"httproutes.gateway.networking.k8s.io",
-		"grpcroutes.gateway.networking.k8s.io",
-	}, 60*time.Second); err != nil {
-		return fmt.Errorf("wait for Gateway API CRDs: %w", err)
-	}
-
-	fmt.Printf("Installing Envoy Gateway %s (helm release %q, namespace %s)...\n",
-		envoyVer, envoyGatewayReleaseName, envoyGatewayNamespace)
-	if err := helmInstallEnvoyGateway(ctx, kctx, envoyVer); err != nil {
-		return err
-	}
-
-	gcYAML, err := templates.IngressTemplates().Get("envoy/gatewayclass.yaml")
-	if err != nil {
-		return fmt.Errorf("load vendored GatewayClass: %w", err)
-	}
-	fmt.Println("Applying eg GatewayClass...")
-	if err := kubectlApplyBytes(ctx, kctx, gcYAML); err != nil {
-		return err
-	}
-
-	fmt.Println("Ingress install complete.")
-	return nil
-}
 
 // k3dConfigPath holds the path to the (possibly merged) k3d config
 // passed to `k3d cluster create`. Callers that don't need the merge

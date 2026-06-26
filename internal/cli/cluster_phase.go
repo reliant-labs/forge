@@ -36,11 +36,15 @@ import (
 // today's behavior (`forge up --env=e2e` ensures nothing; the legacy
 // single dev cluster is bootstrapped by ensureDevCluster on the deploy
 // path).
-// projectDir + env are threaded through for the per-cluster ingress
-// install: a cluster that declares `ingress = True` gets the Gateway API
-// stack installed into it after ensure, with entrypoints derived from the
-// env's Gateway listeners. Both are empty-tolerant — a cluster with
-// ingress off ignores them entirely.
+// projectDir + env are retained for caller signature stability (the deploy
+// phase that follows reconcile reads the same render). Ingress is NO LONGER
+// installed imperatively per cluster: the Gateway API controller (Envoy
+// Gateway) + CRDs + the `eg` GatewayClass come from the env's DECLARED
+// `helm_charts` (a forge.HelmChart), rendered and applied by the deploy phase
+// (`forge deploy <env> --target=envoy-gateway`) EXACTLY like the cloud envs —
+// one declarative model everywhere. This phase only ensures the bare k3d
+// clusters exist (create-if-absent) with their host-port mappings and any
+// nested-secondary node setup.
 func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, projectDir, env string) error {
 	if len(clusters) == 0 {
 		return nil
@@ -59,14 +63,13 @@ func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, pr
 // fresh create of a cluster with RegistryInherit (an `owner` reference),
 // it mirrors the owner cluster's registries.yaml onto the new node and
 // restarts it to reload.
-// clusterExistsFn / installClusterIngressFn are indirection seams so the
+// clusterExistsFn / setupSecondaryClusterNodeFn are indirection seams so the
 // reconcile decision logic is unit-testable without shelling out to k3d /
-// kubectl. Production wires them to the real implementations; tests stub
-// them to assert the ingress install is invoked exactly when (and only
-// when) a cluster declares `ingress = True`.
+// kubectl / docker. Production wires them to the real implementations; tests
+// stub them to assert (e.g.) the secondary-node setup runs exactly for the
+// nested-secondary clusters.
 var (
 	clusterExistsFn             = clusterExists
-	installClusterIngressFn     = installClusterIngress
 	setupSecondaryClusterNodeFn = setupSecondaryClusterNode
 )
 
@@ -88,15 +91,6 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 	}
 	if exists {
 		fmt.Printf("  cluster %q already exists — no-op\n", c.Name)
-		// Re-run the ingress install on a warm cluster too: it's
-		// idempotent (kubectl apply + CRD cache), and a cluster that was
-		// created before `ingress` was declared — or had its Traefik
-		// deleted — heals on the next `forge up`.
-		if c.Ingress {
-			if err := installClusterIngressFn(ctx, c, projectDir, env); err != nil {
-				return err
-			}
-		}
 		// Re-run the secondary-cluster node setup on warm runs too. Every
 		// step is idempotent (a guard check precedes each mutation), so a
 		// cluster whose host-gateway DNS alias or MSS clamp was lost (e.g.
@@ -117,9 +111,8 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		// positionally (k3d merges it with metadata.name) so clusterExists
 		// can find it by the declared name afterward.
 		//
-		// When this cluster hosts a Gateway — whether installed imperatively
-		// (c.Ingress) or declaratively as a forge.HelmChart platform dep
-		// (c.HostPorts, ingress=false) — merge the generated
+		// When this cluster hosts a Gateway — declared as a forge.HelmChart
+		// platform dep with `host_ports = True` — merge the generated
 		// deploy/k3d-ports.yaml listener host-port fragment into the config the
 		// SAME way the dev `forge cluster up` path does. The
 		// Gateway's listeners (e.g. grpc :29190 for daemon dial-out) need host
@@ -139,7 +132,7 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 			return fmt.Errorf("ensure standalone registry for cluster %q: %w", c.Name, err)
 		}
 
-		cfgPath, cleanup, err := mergeK3dConfig(c.Config, c.Ingress || c.HostPorts)
+		cfgPath, cleanup, err := mergeK3dConfig(c.Config, c.HostPorts)
 		if err != nil {
 			return fmt.Errorf("merge k3d ports for cluster %q: %w", c.Name, err)
 		}
@@ -194,31 +187,13 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		}
 	}
 
-	// Install the Gateway API stack into the freshly-created cluster when
-	// it declares `ingress = True`. A fresh `k3d cluster create` ships no
-	// Gateway API CRDs / no Gateway controller, so a cluster that hosts
-	// the env's Gateway/HTTPRoute/GRPCRoute resources needs the stack
-	// installed before the deploy phase applies them.
-	if c.Ingress {
-		if err := installClusterIngressFn(ctx, c, projectDir, env); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// installClusterIngress installs the Gateway API stack (pinned
-// Gateway-API CRDs + the Envoy Gateway controller via helm + the `eg`
-// GatewayClass) into the named declared cluster, targeting its
-// `k3d-<name>` kubectl context explicitly so it lands on THAT cluster
-// regardless of the active context. Reuses the same installIngressBundle
-// the dev `forge cluster up` path uses; idempotent on warm clusters.
-func installClusterIngress(ctx context.Context, c ClusterEntity, projectDir, env string) error {
-	kctx := "k3d-" + c.Name
-	fmt.Printf("  installing Gateway API + Envoy Gateway ingress into cluster %q (context %s)...\n", c.Name, kctx)
-	if err := installIngressBundle(ctx, kctx, projectDir, env); err != nil {
-		return fmt.Errorf("install ingress on cluster %q: %w", c.Name, err)
-	}
+	// The Gateway API stack (controller + CRDs + `eg` GatewayClass) is NOT
+	// installed here. A fresh `k3d cluster create` ships none of it, but the
+	// env declares Envoy Gateway as a forge.HelmChart platform dependency —
+	// the deploy phase that follows reconcile renders + applies it
+	// (`forge deploy <env> --target=envoy-gateway`, CRD-first) BEFORE the
+	// project's Gateway/HTTPRoute/GRPCRoute resources, EXACTLY like the cloud
+	// envs. One declarative model everywhere.
 	return nil
 }
 

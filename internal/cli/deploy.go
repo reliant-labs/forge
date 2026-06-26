@@ -25,18 +25,19 @@ import (
 
 func newDeployCmd() *cobra.Command {
 	var (
-		imageTag      string
-		tag           string
-		dryRun        bool
-		namespace     string
-		explain       bool
-		targetArch    string
-		prune         bool
-		rollback      bool
-		targets       []string
-		skipFrontend  bool
-		skipPreflight bool
-		noDigest      bool
+		imageTag        string
+		tag             string
+		dryRun          bool
+		namespace       string
+		explain         bool
+		targetArch      string
+		prune           bool
+		rollback        bool
+		targets         []string
+		skipFrontend    bool
+		skipPreflight   bool
+		noDigest        bool
+		noClusterEnsure bool
 	)
 
 	cmd := &cobra.Command{
@@ -129,16 +130,17 @@ Examples:
 				return errors.New("--rollback and --tag are mutually exclusive")
 			}
 			return runDeploy(cmd.Context(), args[0], deployOptions{
-				imageTag:      effectiveTag,
-				dryRun:        dryRun,
-				namespace:     namespace,
-				targetArch:    targetArch,
-				prune:         prune,
-				rollback:      rollback,
-				targets:       targets,
-				skipFrontend:  skipFrontend,
-				skipPreflight: skipPreflight,
-				noDigest:      noDigest,
+				imageTag:        effectiveTag,
+				dryRun:          dryRun,
+				namespace:       namespace,
+				targetArch:      targetArch,
+				prune:           prune,
+				rollback:        rollback,
+				targets:         targets,
+				skipFrontend:    skipFrontend,
+				skipPreflight:   skipPreflight,
+				noDigest:        noDigest,
+				noClusterEnsure: noClusterEnsure,
 			})
 		},
 	}
@@ -155,6 +157,7 @@ Examples:
 	cmd.Flags().BoolVar(&skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
 	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
 	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
+	cmd.Flags().BoolVar(&noClusterEnsure, "no-cluster-ensure", false, "Skip the deploy-time ensure-cluster-deps phase (install forge's ingress/cert stack — cert-manager, Envoy Gateway, the eg GatewayClass, declared ClusterIssuers — when ABSENT, never upgrading a present install). Use when the deployer has only namespace-scoped RBAC and pre-runs `forge cluster-setup`.")
 
 	return cmd
 }
@@ -290,6 +293,18 @@ type deployOptions struct {
 	// debugging a registry that mishandles digest pulls). No effect when no
 	// digest was captured — the tag is used either way.
 	noDigest bool
+
+	// noClusterEnsure, when true, skips the deploy-time "ensure cluster deps
+	// are PRESENT" phase (ensureClusterDepsForDeploy). That phase installs
+	// forge's own ingress/cert stack — cert-manager, Envoy Gateway, the eg
+	// GatewayClass, the env's declared ClusterIssuers — when ABSENT, never
+	// upgrading a present install, so a routine `forge deploy <env>` "just
+	// works" on a fresh cluster instead of hard-blocking at the preflight CRD
+	// gate + requiring a manual `forge cluster-setup`. The escape hatch is for
+	// deployers with only namespace-scoped RBAC (can't install cluster-scoped
+	// resources) who pre-run cluster-setup. No effect under --dry-run / on
+	// rollback / for external-only envs (the phase doesn't run there anyway).
+	noClusterEnsure bool
 }
 
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
@@ -580,6 +595,27 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// uses.
 	if deployContext == "" {
 		deployContext = expectedClusterForEnv(ctx, cfg, envName)
+	}
+
+	// Ensure cluster deps are PRESENT: BEFORE the preflight (which would
+	// otherwise hard-BLOCK on a missing CRD / controller) and the first apply,
+	// install forge's own ingress/cert stack — cert-manager, Envoy Gateway, the
+	// eg GatewayClass, the env's declared ClusterIssuers — when ABSENT, in a
+	// strict INSTALL-IF-MISSING / NEVER-UPGRADE mode (a present install is left
+	// untouched; version bumps stay an explicit `forge cluster-setup --force`).
+	// This makes the missing-CRD/controller situation self-healing on a routine
+	// deploy instead of a manual cluster-setup step. It runs ONLY when the env
+	// declares the ingress feature (declaration-scoped) and is cheap when
+	// everything's present (a few `kubectl get` existence checks). Skipped
+	// under --dry-run (renders only; never touches a cluster), on rollback
+	// (reuses what's already there), for external-only envs (no cluster), and
+	// when --no-cluster-ensure is set (deployers with only namespace-scoped RBAC
+	// who pre-run cluster-setup). The preflight's CRD gate still BLOCKS for any
+	// kind deploy can't fix (a controller forge doesn't manage).
+	if shouldEnsureClusterDeps(hasK8sServices, dryRun, rollback, opts.noClusterEnsure) {
+		if err := ensureClusterDepsForDeploy(ctx, store, envName, deployContext); err != nil {
+			return err
+		}
 	}
 
 	// Deployability preflight: BEFORE the first apply (including the dotenv

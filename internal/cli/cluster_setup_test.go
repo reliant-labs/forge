@@ -38,7 +38,7 @@ func installSeams(t *testing.T, rec *setupRecorder) {
 		rec.certCalls = append(rec.certCalls, kctx)
 		return nil
 	}
-	applyClusterIssuersFn = func(_ context.Context, _, _ string, issuers []string) error {
+	applyClusterIssuersFn = func(_ context.Context, _, _ string, issuers []string, _ bool) error {
 		rec.issuerCalls = append(rec.issuerCalls, issuers)
 		return nil
 	}
@@ -193,7 +193,7 @@ func TestApplyClusterIssuers_AppliesEachFile(t *testing.T) {
 		"deploy/certs/issuers/a.yaml",
 		"deploy/certs/issuers/*.yaml",
 	}
-	if err := applyClusterIssuers(t.Context(), "gke-prod", dir, issuers); err != nil {
+	if err := applyClusterIssuers(t.Context(), "gke-prod", dir, issuers, false); err != nil {
 		t.Fatalf("applyClusterIssuers: %v", err)
 	}
 	// a.yaml (explicit) + a.yaml + b.yaml (glob) = 3 applies.
@@ -206,7 +206,7 @@ func TestApplyClusterIssuers_AppliesEachFile(t *testing.T) {
 // issuer path is a hard error (a typo must surface, not silently skip).
 func TestApplyClusterIssuers_MissingFileErrors(t *testing.T) {
 	dir := t.TempDir()
-	err := applyClusterIssuers(t.Context(), "gke-prod", dir, []string{"deploy/certs/issuers/nope.yaml"})
+	err := applyClusterIssuers(t.Context(), "gke-prod", dir, []string{"deploy/certs/issuers/nope.yaml"}, false)
 	if err == nil {
 		t.Fatal("expected an error for a missing issuer file, got nil")
 	}

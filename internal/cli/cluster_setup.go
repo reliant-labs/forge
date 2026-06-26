@@ -55,9 +55,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/config"
 )
@@ -76,6 +78,10 @@ var (
 	// kubectlApplyBytesFn is the seam the issuer apply pipes through so the
 	// per-file apply is unit-testable without shelling out to kubectl.
 	kubectlApplyBytesFn = kubectlApplyBytes
+	// clusterIssuerExistsFn is the seam the install-if-missing issuer check
+	// pipes through (deploy's ensure phase) so the present-skip is unit-testable
+	// without shelling out to kubectl.
+	clusterIssuerExistsFn = clusterIssuerExists
 )
 
 func newClusterSetupCmd() *cobra.Command {
@@ -139,6 +145,15 @@ type clusterSetupOptions struct {
 	skipIngress     bool
 	skipCertManager bool
 	skipIssuers     bool
+	// ensureIssuers switches the ClusterIssuer step from the explicit
+	// cluster-setup verb's UNCONDITIONAL re-apply (so an edited issuer heals)
+	// to INSTALL-IF-MISSING: a declared issuer's ClusterIssuer is applied only
+	// when ABSENT from the cluster, and left untouched when present. It is set
+	// by the deploy-time ensure phase (ensureClusterDepsForDeploy) so a routine
+	// deploy never re-mutates cluster-wide infra; cluster-setup leaves it false
+	// (re-apply every run). No effect when skipIssuers is set or no issuers are
+	// declared.
+	ensureIssuers bool
 }
 
 // runClusterSetup is the cluster-setup orchestration. It resolves the
@@ -252,13 +267,16 @@ func runClusterSetupSteps(ctx context.Context, p clusterSetupPlan) error {
 		}
 	}
 
-	// 3. Project-declared ClusterIssuer(s). Always re-applied (idempotent
-	//    kubectl apply) so an edited issuer heals on re-run.
+	// 3. Project-declared ClusterIssuer(s). The explicit cluster-setup verb
+	//    re-applies them every run (idempotent kubectl apply) so an edited
+	//    issuer heals. The deploy-time ensure phase (opts.ensureIssuers) flips
+	//    this to INSTALL-IF-MISSING — apply only the issuers ABSENT from the
+	//    cluster — so a routine deploy never re-mutates cluster-wide infra.
 	if p.opts.skipIssuers {
 		fmt.Println("[issuers] skipped (--skip-issuers)")
 	} else if len(p.issuers) == 0 {
 		fmt.Printf("[issuers] env %q declares no experimental.ingress_issuers — no ClusterIssuer applied\n", p.env)
-	} else if err := applyClusterIssuersFn(ctx, p.kctx, p.projectDir, p.issuers); err != nil {
+	} else if err := applyClusterIssuersFn(ctx, p.kctx, p.projectDir, p.issuers, p.opts.ensureIssuers); err != nil {
 		return err
 	}
 
@@ -304,7 +322,16 @@ func installCertManagerStack(ctx context.Context, kctx string) error {
 // exist, are hard errors — a declared-but-missing issuer is almost
 // certainly a typo, and silently skipping it would leave TLS un-bootstrapped
 // with no signal.
-func applyClusterIssuers(ctx context.Context, kctx, projectDir string, issuers []string) error {
+//
+// installIfMissing switches between the two callers' contracts:
+//   - false (explicit cluster-setup): UNCONDITIONALLY apply every file so an
+//     edited issuer heals on re-run.
+//   - true (deploy's ensure phase): apply a file's ClusterIssuer ONLY when it
+//     is ABSENT from the cluster, so a routine deploy never re-mutates a
+//     present cluster-wide ClusterIssuer. A file whose ClusterIssuer name can't
+//     be determined (no metadata.name parsed) is applied anyway — failing safe
+//     toward "present" (kubectl apply is idempotent).
+func applyClusterIssuers(ctx context.Context, kctx, projectDir string, issuers []string, installIfMissing bool) error {
 	for _, decl := range issuers {
 		pattern := decl
 		if !filepath.IsAbs(pattern) {
@@ -324,15 +351,57 @@ func applyClusterIssuers(ctx context.Context, kctx, projectDir string, issuers [
 			}
 		}
 		for _, path := range matches {
-			fmt.Printf("[issuers] applying %s...\n", path)
 			data, rerr := os.ReadFile(path)
 			if rerr != nil {
 				return fmt.Errorf("read issuer %s: %w", path, rerr)
 			}
+			// Install-if-missing (deploy ensure phase): skip a ClusterIssuer
+			// that's already on the cluster. We only skip when we can both
+			// resolve the issuer's name AND confirm it's present — an
+			// unparseable name or a lookup miss falls through to apply
+			// (idempotent), so we never silently leave TLS un-bootstrapped.
+			if installIfMissing {
+				if name := clusterIssuerName(data); name != "" {
+					present, cerr := clusterIssuerExistsFn(ctx, kctx, name)
+					if cerr != nil {
+						return fmt.Errorf("check ClusterIssuer %s: %w", name, cerr)
+					}
+					if present {
+						fmt.Printf("[issuers] ClusterIssuer %q already present on %s — leaving untouched (%s)\n", name, kctx, path)
+						continue
+					}
+				}
+			}
+			fmt.Printf("[issuers] applying %s...\n", path)
 			if aerr := kubectlApplyBytesFn(ctx, kctx, data); aerr != nil {
 				return fmt.Errorf("apply issuer %s: %w", path, aerr)
 			}
 		}
 	}
 	return nil
+}
+
+// clusterIssuerName parses metadata.name from a ClusterIssuer manifest
+// document so the install-if-missing path can check whether that specific
+// ClusterIssuer is already present. Returns "" when the manifest can't be
+// parsed or names nothing — the caller then applies unconditionally
+// (fail-safe). Only the FIRST document's name is read (issuer files are
+// single-resource by convention).
+func clusterIssuerName(manifest []byte) string {
+	var head struct {
+		Metadata struct {
+			Name string `yaml:"name"`
+		} `yaml:"metadata"`
+	}
+	if err := yaml.Unmarshal(manifest, &head); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(head.Metadata.Name)
+}
+
+// clusterIssuerExists reports whether a ClusterIssuer of the given name is
+// present in the context — the install-if-missing signal for deploy's ensure
+// phase.
+func clusterIssuerExists(ctx context.Context, kctx, name string) (bool, error) {
+	return resourceExists(ctx, kctx, "clusterissuer", name)
 }

@@ -263,6 +263,101 @@ func helmInstallEnvoyGateway(ctx context.Context, kctx, chartVersion string) err
 	return nil
 }
 
+// certManagerChartRepo / certManagerChartName / certManagerReleaseName /
+// certManagerNamespace are the helm coordinates for cert-manager — the
+// jetstack chart the cloud envs run (staging already has v1.20.1). Kept
+// as named constants so the cloud cluster-setup install is byte-aligned
+// with what an operator would type by hand (the install this REPLACES).
+const (
+	certManagerChartRepoURL  = "https://charts.jetstack.io"
+	certManagerChartRepoName = "jetstack"
+	certManagerChartName     = "jetstack/cert-manager"
+	certManagerReleaseName   = "cert-manager"
+	certManagerNamespace     = "cert-manager"
+)
+
+// certManagerChartVersion is the pinned cert-manager chart version. Kept
+// in lockstep with what staging runs (v1.20.1) so cloud clusters forge
+// bootstraps match the cluster the project was validated against. A
+// single source so a future bump is one edit.
+const certManagerChartVersion = "v1.20.1"
+
+// helmRepoAddUpdate registers (idempotently) a helm chart repo and
+// refreshes the local index. `helm repo add` is a no-op when the repo is
+// already registered with the same URL; we tolerate its non-zero exit on a
+// re-add by always following with `helm repo update`, which is the
+// load-bearing step (it makes the chart resolvable). Stdout/stderr stream
+// so the user sees the fetch.
+func helmRepoAddUpdate(ctx context.Context, name, url string) error {
+	add := exec.CommandContext(ctx, "helm", "repo", "add", name, url)
+	add.Stdout = os.Stdout
+	add.Stderr = os.Stderr
+	// A duplicate add (same name) exits non-zero with "already exists";
+	// that's fine — the subsequent update is what matters. Only a genuine
+	// failure (e.g. network) surfaces via the update below.
+	_ = add.Run()
+	upd := exec.CommandContext(ctx, "helm", "repo", "update", name)
+	upd.Stdout = os.Stdout
+	upd.Stderr = os.Stderr
+	if err := upd.Run(); err != nil {
+		return fmt.Errorf("helm repo update %s: %w", name, err)
+	}
+	return nil
+}
+
+// helmInstallCertManager runs `helm upgrade --install` for the pinned
+// jetstack/cert-manager chart into the cert-manager namespace, targeting
+// the given kubectl context when non-empty. crds.enabled=true installs the
+// CRDs with the chart (matching staging). Idempotent: `--install` creates
+// on a cold cluster and upgrades-in-place on a warm one; `--wait` blocks
+// until the controller Deployments are Available so the ClusterIssuer apply
+// that follows doesn't race the webhook coming up.
+func helmInstallCertManager(ctx context.Context, kctx, chartVersion string) error {
+	args := []string{
+		"upgrade", "--install", certManagerReleaseName, certManagerChartName,
+		"--version", chartVersion,
+		"--namespace", certManagerNamespace,
+		"--create-namespace",
+		"--set", "crds.enabled=true",
+		"--wait", "--timeout", "300s",
+	}
+	if kctx != "" {
+		args = append(args, "--kube-context", kctx)
+	}
+	cmd := exec.CommandContext(ctx, "helm", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("helm upgrade --install %s %s: %w", certManagerReleaseName, certManagerChartName, err)
+	}
+	return nil
+}
+
+// resourceExists reports whether the named cluster resource exists in the
+// given kubectl context. Used for the idempotency skip checks (a present
+// GatewayClass / cert-manager Deployment means the stack is already
+// installed). A non-zero exit (NotFound) returns false with no error; a
+// genuine kubectl failure (e.g. no such context) returns the error so the
+// caller fails loudly rather than silently re-installing.
+func resourceExists(ctx context.Context, kctx string, getArgs ...string) (bool, error) {
+	args := append(kubeContextArgs(kctx), "get")
+	args = append(args, getArgs...)
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	// Suppress NotFound noise on stdout/stderr — we only care about exit code.
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			// kubectl get of an absent resource exits 1 with "NotFound";
+			// treat as "doesn't exist". A bad context / unreachable API
+			// server also exits non-zero, but those surface downstream when
+			// the install itself runs against the same context.
+			return false, nil
+		}
+		return false, fmt.Errorf("kubectl get %s: %w", strings.Join(getArgs, " "), err)
+	}
+	return true, nil
+}
+
 // installIngressBundle is the post-cluster-up wiring entrypoint.
 // Called from runDevClusterUp when features.ingress is on.
 //

@@ -62,6 +62,12 @@ Examples:
 	cmd.AddCommand(newDevClusterResetCmd())
 	cmd.AddCommand(newDevClusterReloadCmd())
 
+	// Cloud ingress/cert bootstrap: install Envoy Gateway + cert-manager +
+	// the env's declared ClusterIssuer(s) into a PRE-EXISTING cloud cluster
+	// (staging/preprod/prod), idempotently. The declarative counterpart to
+	// the ad-hoc `helm install` an operator would otherwise run by hand.
+	cmd.AddCommand(newClusterSetupCmd())
+
 	// `status` is the dev_status.go implementation (a superset of the old
 	// nested `dev cluster status`): it shows cluster up/down + current
 	// kubectl context + config path + pods + ingress URLs + siblings.

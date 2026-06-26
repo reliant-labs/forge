@@ -136,6 +136,11 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newDBCmd())
 	rootCmd.AddCommand(newMigrateCmd())
 	rootCmd.AddCommand(newNewCmd())
+	// `new-env` scaffolds a new deploy/kcl/<env>/ by deriving it from an
+	// existing env — converting the silent copy-paste-a-sibling footgun
+	// (inherited cluster/namespace/registry/platform) into REPLACE_ME_*
+	// author-time placeholders gated by `new-env --check`.
+	rootCmd.AddCommand(newNewEnvCmd())
 	// `add` migrated to the internal/cli/add group (factory registry).
 	rootCmd.AddCommand(newDeleteCmd())
 	rootCmd.AddCommand(newBuildCmd())

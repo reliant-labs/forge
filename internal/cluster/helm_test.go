@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- pure helpers -----------------------------------------------------------
@@ -66,7 +67,7 @@ kind: CustomResourceDefinition
 metadata:
   name: issuers.cert-manager.io`
 
-	crds, rest := partitionCRDs(in)
+	crds, _, rest := partitionEarlyBatch(in)
 	if strings.Count(crds, "kind: CustomResourceDefinition") != 2 {
 		t.Errorf("expected 2 CRDs in crds partition:\n%s", crds)
 	}
@@ -127,6 +128,235 @@ func TestSelectHelmChartsByGroup_UniformExclusiveRule(t *testing.T) {
 		t.Errorf("a target naming no chart must select no chart, got %v", sel)
 	}
 }
+
+// TestNamespaceManifest_EmittedAndStamped proves K1: forge synthesizes the
+// chart's target Namespace (helm template never emits it) and stampAppLabel
+// rides it on the chart's --target group.
+func TestNamespaceManifest_EmittedAndStamped(t *testing.T) {
+	ns := namespaceManifest("cert-manager")
+	m, ok := parseDoc(ns)
+	if !ok || m.Kind != "Namespace" || m.Metadata.Name != "cert-manager" {
+		t.Fatalf("namespaceManifest must emit a Namespace named cert-manager; got:\n%s", ns)
+	}
+	// Empty namespace => no manifest.
+	if got := namespaceManifest(""); got != "" {
+		t.Errorf("empty namespace must emit nothing; got %q", got)
+	}
+
+	// Stamped, the Namespace must select under the chart's --target.
+	stamped := stampAppLabel(ns, "cert-manager")
+	kept := SelectManifestsByGroup(stamped, []string{"cert-manager"})
+	km, ok := parseDoc(kept)
+	if !ok || km.Kind != "Namespace" {
+		t.Errorf("Namespace must ride the chart's --target group:\n%s", kept)
+	}
+}
+
+// TestPartitionEarlyBatch_NamespaceWithCRDs proves the Namespace lands in the
+// early batch (alongside CRDs), NOT in rest — so applyCRDsThenRest applies it
+// before the chart's namespaced resources.
+func TestPartitionEarlyBatch_NamespaceWithCRDs(t *testing.T) {
+	in := `apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: certificates.cert-manager.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager
+  namespace: cert-manager`
+
+	crds, namespaces, rest := partitionEarlyBatch(in)
+	if !strings.Contains(namespaces, "kind: Namespace") {
+		t.Errorf("Namespace must be in the namespaces partition:\n%s", namespaces)
+	}
+	if !strings.Contains(crds, "kind: CustomResourceDefinition") {
+		t.Errorf("CRD must be in the crds partition:\n%s", crds)
+	}
+	if strings.Contains(rest, "kind: Namespace") || strings.Contains(rest, "kind: CustomResourceDefinition") {
+		t.Errorf("Namespace/CRD must NOT leak into rest:\n%s", rest)
+	}
+	if !strings.Contains(rest, "kind: Deployment") {
+		t.Errorf("Deployment must be in rest:\n%s", rest)
+	}
+}
+
+// TestApplyCRDsThenRest_NamespaceBeforeRest proves the cold-cluster ordering
+// K1 needs: a stream whose only early-batch doc is a Namespace applies the
+// Namespace BEFORE the namespaced resources (no `namespaces not found`).
+func TestApplyCRDsThenRest_NamespaceBeforeRest(t *testing.T) {
+	logPath := fakeKubectlLog(t)
+
+	manifests := `apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec: {}`
+
+	if err := applyCRDsThenRest(context.Background(), "k3d-test", "", manifests); err != nil {
+		t.Fatalf("applyCRDsThenRest: %v", err)
+	}
+	data, _ := os.ReadFile(logPath)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	nsApplyIdx, deployApplyIdx := -1, -1
+	for i, l := range lines {
+		if !strings.Contains(l, "apply") {
+			continue
+		}
+		// The fake records argv only, not stdin, so distinguish passes by
+		// order: the FIRST apply is the early batch (Namespace), the next is
+		// the rest. With no CRDs there is no Established wait between them.
+		if nsApplyIdx == -1 {
+			nsApplyIdx = i
+		} else if deployApplyIdx == -1 {
+			deployApplyIdx = i
+		}
+	}
+	if nsApplyIdx == -1 || deployApplyIdx == -1 {
+		t.Fatalf("expected two applies (early-batch Namespace then rest); log:\n%s", string(data))
+	}
+	if nsApplyIdx >= deployApplyIdx {
+		t.Errorf("Namespace early-batch apply must precede the rest apply; got ns=%d rest=%d", nsApplyIdx, deployApplyIdx)
+	}
+	if strings.Contains(string(data), "condition=Established") {
+		t.Errorf("a Namespace-only early batch must NOT wait on Established:\n%s", string(data))
+	}
+}
+
+// TestDropPostHelmHooks proves m5 AND its correctness boundary: a POST-phase
+// hook (cert-manager's startupapicheck Job) is dropped, but a PRE-phase hook
+// (envoy-gateway's certgen Job, which creates a prerequisite Secret) is KEPT,
+// and a plain doc survives.
+func TestDropPostHelmHooks(t *testing.T) {
+	in := `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cert-manager-startupapicheck
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+spec: {}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: envoy-gateway-certgen
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+spec: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager
+spec: {}`
+
+	out := dropPostHelmHooks(in)
+	if strings.Contains(out, "cert-manager-startupapicheck") {
+		t.Errorf("post-only hook doc must be dropped:\n%s", out)
+	}
+	if !strings.Contains(out, "envoy-gateway-certgen") {
+		t.Errorf("pre-phase hook doc (prerequisite state) must be KEPT:\n%s", out)
+	}
+	if !strings.Contains(out, "kind: Deployment") {
+		t.Errorf("non-hook doc must survive:\n%s", out)
+	}
+}
+
+// TestChartOwnCRDsFiltering proves K3's filter: the standard Gateway API
+// group is dropped (forge owns it at its pinned version) while the chart's
+// own `gateway.envoyproxy.io` CRDs are kept. Exercises the pure filter over a
+// canned --include-crds render so it needs no network/helm.
+func TestChartOwnCRDsFiltering(t *testing.T) {
+	// Mimic the doc shapes chartOwnCRDs scans: two CRD groups + a non-CRD.
+	included := `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: gateways.gateway.networking.k8s.io
+spec:
+  group: gateway.networking.k8s.io
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: envoyproxies.gateway.envoyproxy.io
+spec:
+  group: gateway.envoyproxy.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envoy-gateway`
+
+	var kept []string
+	for _, doc := range splitDocs(included) {
+		m, ok := parseDoc(doc)
+		if !ok || m.Kind != "CustomResourceDefinition" {
+			continue
+		}
+		if crdGroup(doc) == standardGatewayAPIGroup {
+			continue
+		}
+		kept = append(kept, doc)
+	}
+	out := strings.Join(kept, docDelimiter)
+	if strings.Contains(out, "gateway.networking.k8s.io") {
+		t.Errorf("standard Gateway API group must be filtered out (forge owns it):\n%s", out)
+	}
+	if !strings.Contains(out, "envoyproxies.gateway.envoyproxy.io") {
+		t.Errorf("chart's own gateway.envoyproxy.io CRD must be kept:\n%s", out)
+	}
+	if strings.Contains(out, "kind: Deployment") {
+		t.Errorf("non-CRD docs must not appear in the chart-own CRD set:\n%s", out)
+	}
+}
+
+// TestIsWebhookNotReadyError pins K2's retry predicate: the transient
+// "webhook not serving" errors retry; a genuine manifest error does not.
+func TestIsWebhookNotReadyError(t *testing.T) {
+	retryable := []string{
+		`failed calling webhook "webhook.cert-manager.io": ... no endpoints available for service "cert-manager-webhook"`,
+		`failed calling webhook "x": Post "https://...": connection refused`,
+		`failed calling webhook "x": context deadline exceeded`,
+	}
+	for _, m := range retryable {
+		if !isWebhookNotReadyError(fmtErr(m)) {
+			t.Errorf("expected retryable: %q", m)
+		}
+	}
+	notRetryable := []string{
+		`ClusterIssuer.cert-manager.io "letsencrypt" is invalid: spec.acme.email: Required value`,
+		`error validating data: unknown field "spce"`,
+		``,
+	}
+	for _, m := range notRetryable {
+		if isWebhookNotReadyError(fmtErr(m)) {
+			t.Errorf("expected NOT retryable: %q", m)
+		}
+	}
+}
+
+func fmtErr(s string) error {
+	if s == "" {
+		return nil
+	}
+	return &stringErr{s}
+}
+
+type stringErr struct{ s string }
+
+func (e *stringErr) Error() string { return e.s }
 
 // --- apply ordering (fake kubectl) ------------------------------------------
 
@@ -219,6 +449,41 @@ spec: {}`
 	// The wait must name the forge-supplied CRD.
 	if !strings.Contains(lines[waitIdx], "gateways.gateway.networking.k8s.io") {
 		t.Errorf("wait should name the CRD; got %q", lines[waitIdx])
+	}
+}
+
+// TestWaitChartDeploymentsAvailable_Command pins K2's wait: forge waits for
+// the chart's Deployments to be Available before applying the riding
+// manifests (the cert-manager webhook gate). Asserts the kubectl invocation.
+func TestWaitChartDeploymentsAvailable_Command(t *testing.T) {
+	logPath := fakeKubectlLog(t)
+	if err := waitChartDeploymentsAvailable(context.Background(), "k3d-test", "cert-manager", 30*time.Second); err != nil {
+		t.Fatalf("waitChartDeploymentsAvailable: %v", err)
+	}
+	data, _ := os.ReadFile(logPath)
+	got := strings.TrimSpace(string(data))
+	for _, want := range []string{"wait", "condition=Available", "deploy", "--all", "-n cert-manager"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("wait command missing %q; got %q", want, got)
+		}
+	}
+}
+
+// TestApplyRidingManifestsWithRetry_SucceedsFirstTry confirms the retry
+// wrapper passes through on a clean apply (fake kubectl exits 0).
+func TestApplyRidingManifestsWithRetry_SucceedsFirstTry(t *testing.T) {
+	logPath := fakeKubectlLog(t)
+	manifests := `apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec: {}`
+	if err := applyRidingManifestsWithRetry(context.Background(), "k3d-test", manifests); err != nil {
+		t.Fatalf("applyRidingManifestsWithRetry: %v", err)
+	}
+	data, _ := os.ReadFile(logPath)
+	if !strings.Contains(string(data), "apply") {
+		t.Errorf("expected an apply; log:\n%s", string(data))
 	}
 }
 

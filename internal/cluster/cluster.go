@@ -326,13 +326,24 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		if strings.TrimSpace(spec.Manifests) != "" {
 			extra = stampAppLabel(spec.Manifests, spec.Name)
 		}
-		renderedCharts = append(renderedCharts, renderedChart{spec: spec, manifests: rendered, extra: extra})
+		// The FULL CRD set: forge's pinned forge-supplied bundle (spec.CRDs)
+		// PLUS the chart's OWN CRDs that forge does not own (the chart's
+		// `gateway.envoyproxy.io` CRDs the envoy controller starts informers
+		// on; the main render is --skip-crds so they'd otherwise never land
+		// and the controller crashloops on cache-sync). chartOwnCRDs filters
+		// out the standard Gateway API group forge pins separately.
+		ownCRDs, cerr := chartOwnCRDs(ctx, spec)
+		if cerr != nil {
+			return cerr
+		}
+		crds := joinNonEmpty(spec.CRDs, ownCRDs)
+		renderedCharts = append(renderedCharts, renderedChart{spec: spec, manifests: rendered, crds: crds, extra: extra})
 	}
 
 	if opts.DryRun {
 		dryRunManifests := manifests
 		for _, rc := range renderedCharts {
-			dryRunManifests = joinNonEmpty(dryRunManifests, rc.spec.CRDs, rc.manifests, rc.extra)
+			dryRunManifests = joinNonEmpty(dryRunManifests, rc.crds, rc.manifests, rc.extra)
 		}
 		if opts.DryRunFramed {
 			fmt.Println("\n--- Generated Manifests (dry-run) ---")
@@ -355,7 +366,7 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		if !opts.Quiet {
 			fmt.Printf("Applying platform dependency %q (helm-rendered)...\n", rc.spec.Name)
 		}
-		if err := applyCRDsThenRest(ctx, opts.Context, rc.spec.CRDs, rc.manifests); err != nil {
+		if err := applyCRDsThenRest(ctx, opts.Context, rc.crds, rc.manifests); err != nil {
 			return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
 		}
 		// Consumer-declared manifests riding this chart's --target
@@ -364,10 +375,27 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		// before the instances it reconciles. applyCRDsThenRest two-passes
 		// any CRD-then-rest within them too (harmless: these carry none).
 		if strings.TrimSpace(rc.extra) != "" {
+			// WAIT for the chart's Deployments to be Available before applying
+			// its riding manifests. cert-manager ships a ValidatingWebhook
+			// (failurePolicy: Fail) that REJECTS ClusterIssuers until the
+			// webhook Deployment is Ready + cainjector has injected the
+			// caBundle — without this gate the issuer apply fails `failed
+			// calling webhook ... no endpoints available`. A namespace with no
+			// Deployments returns immediately.
+			if rc.spec.Namespace != "" {
+				if !opts.Quiet {
+					fmt.Printf("Waiting for %q controller Deployments to be Available...\n", rc.spec.Name)
+				}
+				if err := waitChartDeploymentsAvailable(ctx, opts.Context, rc.spec.Namespace, 180*time.Second); err != nil {
+					return fmt.Errorf("platform dependency %q: wait controllers Available: %w", rc.spec.Name, err)
+				}
+			}
 			if !opts.Quiet {
 				fmt.Printf("Applying platform dependency %q owned manifests...\n", rc.spec.Name)
 			}
-			if err := applyCRDsThenRest(ctx, opts.Context, "", rc.extra); err != nil {
+			// Bounded retry: the webhook Service's endpoints can lag a few
+			// seconds after the Deployment reports Available.
+			if err := applyRidingManifestsWithRetry(ctx, opts.Context, rc.extra); err != nil {
 				return fmt.Errorf("platform dependency %q manifests: %w", rc.spec.Name, err)
 			}
 		}

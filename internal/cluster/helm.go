@@ -19,15 +19,29 @@
 //	                                     # every declared platform dep)
 //
 // APPLY ORDERING (the one real problem). A chart's controllers reference
-// CRDs that must exist + be Established first. The chart's OWN CRDs are
-// excluded from the render (`--skip-crds`) because a chart's bundled
-// (often older / experimental-channel) Gateway-API CRDs trip the
-// `safe-upgrades` ValidatingAdmissionPolicy and make the install
-// self-deny. forge instead SUPPLIES the correct CRDs itself (the caller
-// fetches the pinned standard Gateway API CRDs / cert-manager's CRDs at
-// the matching chart version and hands them in as HelmChartSpec.CRDs);
-// Apply applies those CRDs FIRST and waits until Established before the
-// chart's controller manifests. See applyCRDsThenRest.
+// CRDs that must exist + be Established first. The chart's bundled
+// STANDARD Gateway-API CRDs (group gateway.networking.k8s.io) are excluded
+// from the render (`--skip-crds`) because the chart's copy is often older /
+// experimental-channel and trips the `safe-upgrades`
+// ValidatingAdmissionPolicy, making the install self-deny. forge SUPPLIES
+// that group itself at a pinned version (the caller fetches the pinned
+// standard Gateway API CRDs / cert-manager's CRDs at the matching chart
+// version and hands them in as HelmChartSpec.CRDs).
+//
+// But a chart ALSO ships its OWN, non-Gateway-API CRDs the controller
+// needs — envoy-gateway's eight `gateway.envoyproxy.io` CRDs the controller
+// starts informers on; `--skip-crds` would drop those too and the controller
+// crashloops on cache-sync. So forge ADDITIONALLY renders the chart
+// `--include-crds` (chartOwnCRDs) and supplies the chart's NON-standard-
+// Gateway-API CRDs alongside the pinned bundle. Net CRD set = pinned standard
+// Gateway-API + the chart's own CRDs.
+//
+// Apply applies that combined CRD set (+ the chart's synthesized Namespace,
+// which `helm template` never emits) FIRST and waits until the CRDs are
+// Established before the chart's controller manifests; then waits for the
+// chart's Deployments to be Available before the chart's riding manifests
+// (the cert-manager webhook would reject ClusterIssuers until then). See
+// applyCRDsThenRest, RenderHelmChart, waitChartDeploymentsAvailable.
 package cluster
 
 import (
@@ -92,6 +106,13 @@ type HelmChartSpec struct {
 type renderedChart struct {
 	spec      HelmChartSpec
 	manifests string
+	// crds is the FULL CRD set applied (Established-gated) before this chart's
+	// controllers: forge's pinned forge-supplied bundle (spec.CRDs — e.g. the
+	// standard Gateway API v1.5.1) PLUS the chart's OWN CRDs that forge does
+	// not own (the chart's `gateway.envoyproxy.io` / x-k8s.io CRDs, rendered
+	// via `helm template --include-crds` and filtered to exclude the standard
+	// Gateway API group forge pins). See RenderHelmChart / chartOwnCRDs.
+	crds string
 	// extra is the chart's consumer-declared raw manifests (HelmChartSpec.
 	// Manifests), stamped with the chart's app-label, applied AFTER the
 	// chart's controllers. Empty when the chart carries none.
@@ -218,7 +239,212 @@ func RenderHelmChart(ctx context.Context, spec HelmChartSpec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return stampAppLabel(rendered, spec.Name), nil
+	// helm template does NOT emit the chart's target Namespace, and a chart's
+	// rendered resources are namespaced into spec.Namespace (cert-manager →
+	// cert-manager, envoy → envoy-gateway-system). On a cold cluster the
+	// first config-pass apply then fails `namespaces "<ns>" not found`. So
+	// forge EMITS the Namespace itself, stamped with the chart's group so it
+	// rides the chart's --target, and applyCRDsThenRest promotes it into the
+	// early (CRD) batch so it lands+waits BEFORE the namespaced resources.
+	withNS := joinNonEmpty(namespaceManifest(spec.Namespace), rendered)
+	// Drop helm POST-phase / test hooks (cert-manager-startupapicheck): a
+	// `helm template` render carries `helm.sh/hook`-annotated docs that are
+	// meaningless under a declarative reconcile and, being immutable Jobs,
+	// force a delete/recreate on every warm redeploy. PRE-phase hooks
+	// (envoy-gateway's certgen, which creates the controller's serving-cert
+	// Secret) are KEPT — they produce prerequisite cluster state the
+	// workloads mount, not a post-facto check. See dropPostHelmHooks.
+	withNS = dropPostHelmHooks(withNS)
+	return stampAppLabel(withNS, spec.Name), nil
+}
+
+// namespaceManifest renders a bare `kind: Namespace` document for ns, or ""
+// when ns is empty (a chart with no namespace renders into whatever the
+// apply default is — nothing to create). The Namespace carries no labels
+// here; stampAppLabel adds the chart group + managed-by afterwards so it
+// rides the chart's --target and applyCRDsThenRest promotes it ahead of the
+// namespaced resources. Idempotent at apply time (already-exists is fine
+// under server-side apply).
+func namespaceManifest(ns string) string {
+	if strings.TrimSpace(ns) == "" {
+		return ""
+	}
+	return "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: " + ns
+}
+
+// dropPostHelmHooks removes docs whose `helm.sh/hook` annotation is
+// EXCLUSIVELY a post-phase or test hook (post-install / post-upgrade /
+// post-rollback / post-delete / test) from a `---`-separated stream. Those
+// hooks (cert-manager's cert-manager-startupapicheck Job + its RBAC) are
+// post-facto CHECKS: under `helm template` they're inert, and left in the
+// render the startupapicheck Job's immutable spec.template forces the
+// immutable-Job delete/recreate recovery on EVERY warm redeploy. Dropping
+// them keeps the declarative reconcile a true no-op when nothing changed.
+//
+// PRE-phase hooks are KEPT. The distinction is correctness, not cosmetics: a
+// pre-install/pre-upgrade hook PRODUCES prerequisite cluster state the
+// workloads depend on — envoy-gateway's `certgen` Job (pre-install,
+// pre-upgrade) generates the `envoy-gateway` serving-cert Secret the
+// controller pod mounts; drop it and the controller wedges forever on
+// `MountVolume.SetUp failed ... secret "envoy-gateway" not found`. Helm's own
+// `upgrade --install` runs that certgen on every install/upgrade, so keeping
+// it (it reconciles as a plain Job, healed by the immutable-Job recovery on a
+// warm redeploy) matches the imperative install's behaviour exactly.
+//
+// A doc with no hook annotation, or a mixed pre+post hook, is KEPT (only a
+// purely post/test hook is dropped). Docs that don't parse pass through.
+func dropPostHelmHooks(manifests string) string {
+	var kept []string
+	for _, doc := range splitDocs(manifests) {
+		if isPostOnlyHelmHook(doc) {
+			continue
+		}
+		kept = append(kept, doc)
+	}
+	return strings.Join(kept, docDelimiter)
+}
+
+// postPhaseHelmHooks is the set of `helm.sh/hook` values that mark a doc as a
+// post-facto / test hook (vs a pre-phase hook that sets up prerequisites).
+var postPhaseHelmHooks = map[string]struct{}{
+	"post-install":  {},
+	"post-upgrade":  {},
+	"post-rollback": {},
+	"post-delete":   {},
+	"test":          {},
+	"test-success":  {},
+}
+
+// isPostOnlyHelmHook reports whether a doc carries a `helm.sh/hook` annotation
+// whose phases are ALL post-phase/test (so it's safe to drop under a
+// declarative reconcile). A doc with no hook annotation returns false (kept);
+// a doc with ANY pre-phase hook returns false (kept — it may set up
+// prerequisite state). The annotation is a comma-separated list
+// (`post-install,post-upgrade`).
+func isPostOnlyHelmHook(doc string) bool {
+	var m struct {
+		Metadata struct {
+			Annotations map[string]string `yaml:"annotations"`
+		} `yaml:"metadata"`
+	}
+	if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+		return false
+	}
+	raw, ok := m.Metadata.Annotations["helm.sh/hook"]
+	if !ok || strings.TrimSpace(raw) == "" {
+		return false
+	}
+	for _, h := range strings.Split(raw, ",") {
+		if _, post := postPhaseHelmHooks[strings.TrimSpace(h)]; !post {
+			// A non-post (pre-phase) hook — keep the whole doc.
+			return false
+		}
+	}
+	return true
+}
+
+// standardGatewayAPIGroup is the CRD group forge OWNS at a pinned version
+// (the standard-channel Gateway API CRDs, v1.5.1). A chart that bundles its
+// OWN copy of this group (envoy gateway-helm ships an older,
+// experimental-channel copy) must NOT have it supplied from the chart render
+// — forge pins it separately so the chart's copy never trips the
+// safe-upgrades ValidatingAdmissionPolicy. chartOwnCRDs filters this group
+// out of the `--include-crds` render.
+const standardGatewayAPIGroup = "gateway.networking.k8s.io"
+
+// chartOwnCRDs renders a chart with `--include-crds` and returns the chart's
+// OWN CRDs that forge does NOT already own — i.e. every CRD in the chart's
+// crds/ EXCEPT the standard Gateway API group (standardGatewayAPIGroup),
+// which forge supplies separately at its pinned version.
+//
+// THE BUG THIS FIXES (K3): the envoy gateway-helm chart's controller starts
+// informers on its EIGHT `gateway.envoyproxy.io` CRDs (envoyproxies,
+// clienttrafficpolicies, backendtrafficpolicies, securitypolicies,
+// envoypatchpolicies, envoyextensionpolicies, httproutefilters, backends).
+// With the main render `--skip-crds` those CRDs never land → the controller's
+// cache-sync fails → it never goes Ready → ingress is dead. forge must supply
+// the chart's OWN CRDs IN ADDITION to the standard Gateway API CRDs it pins.
+//
+// Why filter the standard Gateway API group OUT: the chart bundles an older,
+// experimental-channel copy of `gateway.networking.k8s.io` that the
+// safe-upgrades ValidatingAdmissionPolicy (activated by forge's pinned
+// standard v1.5.1) DENIES. forge keeps owning that group at v1.5.1; only the
+// chart's NON-standard-Gateway-API CRDs (its `gateway.envoyproxy.io` +
+// x-k8s.io ones) are taken from the chart render. A chart that bundles no
+// CRDs (cert-manager, rendered --skip-crds and supplied separately) yields ""
+// here.
+func chartOwnCRDs(ctx context.Context, spec HelmChartSpec) (string, error) {
+	rendered, err := helmTemplateIncludeCRDs(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+	var kept []string
+	for _, doc := range splitDocs(rendered) {
+		m, ok := parseDoc(doc)
+		if !ok || m.Kind != "CustomResourceDefinition" {
+			continue
+		}
+		if crdGroup(doc) == standardGatewayAPIGroup {
+			// forge owns this group at its pinned version — never from the chart.
+			continue
+		}
+		kept = append(kept, doc)
+	}
+	return strings.Join(kept, docDelimiter), nil
+}
+
+// crdGroup extracts spec.group from a CustomResourceDefinition document
+// (e.g. `gateway.envoyproxy.io`, `gateway.networking.k8s.io`). Empty when
+// the doc has no readable group.
+func crdGroup(doc string) string {
+	var m struct {
+		Spec struct {
+			Group string `yaml:"group"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+		return ""
+	}
+	return m.Spec.Group
+}
+
+// helmTemplateIncludeCRDs runs the SAME `helm template` as helmTemplate but
+// with `--include-crds` instead of `--skip-crds`, so the chart's bundled CRDs
+// (its crds/ directory) appear in the output. chartOwnCRDs filters the result
+// down to the chart's own non-standard-Gateway-API CRDs. Kept separate from
+// helmTemplate (which stays --skip-crds for the controller render) so the two
+// passes never share the CRD-channel decision.
+func helmTemplateIncludeCRDs(ctx context.Context, spec HelmChartSpec) (string, error) {
+	args := []string{
+		"template", spec.Name,
+		"--version", spec.Version,
+		"--namespace", spec.Namespace,
+		"--include-crds",
+	}
+	chartRef := spec.OCI
+	if chartRef == "" {
+		chartRef = spec.Chart
+		args = append(args, "--repo", spec.Repo)
+	}
+	if len(spec.Values) > 0 {
+		f, err := writeValuesFile(spec.Values)
+		if err != nil {
+			return "", fmt.Errorf("helm chart %q: write values: %w", spec.Name, err)
+		}
+		defer os.Remove(f)
+		args = append(args, "--values", f)
+	}
+	args = append(args, chartRef)
+
+	cmd := exec.CommandContext(ctx, "helm", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("helm template --include-crds %s (%s@%s): %w\n%s",
+			spec.Name, chartRef, spec.Version, err, stderr.String())
+	}
+	return stdout.String(), nil
 }
 
 // stampAppLabel FORCES `app.kubernetes.io/name = <name>` onto every
@@ -296,12 +522,19 @@ func stampDocAppLabel(doc, name string) string {
 // When there are no CRDs in either source this degenerates to a single
 // apply of `rest`, byte-identical to a plain apply.
 func applyCRDsThenRest(ctx context.Context, kctx, extraCRDs, manifests string) error {
-	streamCRDs, rest := partitionCRDs(manifests)
+	streamCRDs, streamNS, rest := partitionEarlyBatch(manifests)
 
+	// Early batch: CRDs + Namespaces. The chart's namespaced resources target
+	// a Namespace `helm template` never emits (RenderHelmChart synthesizes
+	// it), so the Namespace must land BEFORE the rest pass or the config-first
+	// apply fails `namespaces "<ns>" not found`. CRDs + Namespaces are both
+	// pre-requisites of the rest, applied together; only the CRDs gate on
+	// Established (a Namespace is ready the moment it exists).
 	crds := joinNonEmpty(extraCRDs, streamCRDs)
-	if strings.TrimSpace(crds) != "" {
-		if err := KubectlApply(ctx, kctx, crds); err != nil {
-			return fmt.Errorf("apply CRDs: %w", err)
+	early := joinNonEmpty(crds, streamNS)
+	if strings.TrimSpace(early) != "" {
+		if err := KubectlApply(ctx, kctx, early); err != nil {
+			return fmt.Errorf("apply CRDs/Namespaces: %w", err)
 		}
 		names := crdNames(crds)
 		if len(names) > 0 {
@@ -329,21 +562,29 @@ func applyCRDsThenRest(ctx context.Context, kctx, extraCRDs, manifests string) e
 	return nil
 }
 
-// partitionCRDs splits a `---`-separated stream into (crds, rest): crds
-// holds every `kind: CustomResourceDefinition` document (in order), rest
-// holds everything else. An unparseable doc goes to rest (it can't be
-// confirmed a CRD, and rest is the pass that always runs).
-func partitionCRDs(manifests string) (crds, rest string) {
-	var crdDocs, restDocs []string
+// partitionEarlyBatch splits a `---`-separated stream into (crds, namespaces,
+// rest): crds holds every `kind: CustomResourceDefinition` document (in
+// order), namespaces holds every `kind: Namespace` document, rest holds
+// everything else. CRDs and Namespaces are the early-batch prerequisites
+// applyCRDsThenRest lands before the rest (CRDs additionally gate on
+// Established). An unparseable doc goes to rest (it can't be confirmed a CRD
+// or Namespace, and rest is the pass that always runs).
+func partitionEarlyBatch(manifests string) (crds, namespaces, rest string) {
+	var crdDocs, nsDocs, restDocs []string
 	for _, doc := range splitDocs(manifests) {
 		m, ok := parseDoc(doc)
-		if ok && m.Kind == "CustomResourceDefinition" {
+		switch {
+		case ok && m.Kind == "CustomResourceDefinition":
 			crdDocs = append(crdDocs, doc)
-		} else {
+		case ok && m.Kind == "Namespace":
+			nsDocs = append(nsDocs, doc)
+		default:
 			restDocs = append(restDocs, doc)
 		}
 	}
-	return strings.Join(crdDocs, docDelimiter), strings.Join(restDocs, docDelimiter)
+	return strings.Join(crdDocs, docDelimiter),
+		strings.Join(nsDocs, docDelimiter),
+		strings.Join(restDocs, docDelimiter)
 }
 
 // crdNames extracts the metadata.name of every CustomResourceDefinition in
@@ -373,6 +614,80 @@ func waitCRDsEstablished(ctx context.Context, kctx string, names []string, timeo
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// waitChartDeploymentsAvailable blocks until every Deployment in the chart's
+// namespace reports Available=True (or the timeout elapses). This is the
+// happens-before the chart's RIDING manifests need: a chart that ships an
+// admission webhook (cert-manager's `webhook.cert-manager.io`
+// ValidatingWebhookConfiguration, failurePolicy: Fail) REJECTS the
+// cluster-scoped instances its controller reconciles (ClusterIssuers) with
+// `failed calling webhook ... no endpoints available` until the webhook
+// Deployment is Ready and cainjector has injected the caBundle. Waiting for
+// the chart's Deployments to be Available closes that race before the riding
+// manifests apply. A namespace with no Deployments (kubectl wait --all over
+// an empty set) returns immediately.
+func waitChartDeploymentsAvailable(ctx context.Context, kctx, namespace string, timeout time.Duration) error {
+	cmd := kubectlCmd(ctx, kctx,
+		"wait", "--for=condition=Available",
+		"deploy", "--all",
+		"-n", namespace,
+		"--timeout="+timeout.String(),
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// applyRidingManifestsWithRetry applies a chart's riding manifests (the
+// GatewayClass / ClusterIssuers stamped with the chart's group) with a
+// bounded retry. Even after the chart's webhook Deployment reports Available,
+// the webhook Service's endpoints can lag a few seconds (the readiness gate
+// and Endpoints publication aren't perfectly simultaneous), so an apply that
+// hits `no endpoints available` / `connection refused` for the webhook is
+// retried rather than failing the deploy. A non-webhook error surfaces
+// immediately (no point retrying a genuine manifest error).
+func applyRidingManifestsWithRetry(ctx context.Context, kctx, manifests string) error {
+	const attempts = 6
+	const delay = 5 * time.Second
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = applyCRDsThenRest(ctx, kctx, "", manifests); err == nil {
+			return nil
+		}
+		if !isWebhookNotReadyError(err) {
+			return err
+		}
+		if i < attempts-1 {
+			fmt.Printf("Webhook endpoint not ready yet (attempt %d/%d); retrying in %s...\n",
+				i+1, attempts, delay)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+	return err
+}
+
+// isWebhookNotReadyError reports whether an apply error is the transient
+// "the admission webhook isn't serving yet" failure — the only error
+// applyRidingManifestsWithRetry retries. The cert-manager validating webhook
+// surfaces as `failed calling webhook ... no endpoints available for service`
+// (or `connection refused` / `context deadline exceeded`) while its
+// Deployment's endpoints are still publishing.
+func isWebhookNotReadyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "failed calling webhook") &&
+		(strings.Contains(msg, "no endpoints available") ||
+			strings.Contains(msg, "connection refused") ||
+			strings.Contains(msg, "context deadline exceeded") ||
+			strings.Contains(msg, "EOF") ||
+			strings.Contains(msg, "i/o timeout"))
 }
 
 // joinNonEmpty joins manifest streams with the doc delimiter, skipping

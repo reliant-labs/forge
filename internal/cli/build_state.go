@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -109,13 +110,25 @@ func imageRepoDigest(ctx context.Context, ref string) (digest string, platforms 
 		}
 		return "", nil, fmt.Errorf("docker buildx imagetools inspect %s: %w", ref, derr)
 	}
-	d := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(d, "sha256:") {
+	// buildx's `--format` support varies by version: when the template is
+	// honored the output is a bare digest; when it is NOT (older buildx), buildx
+	// ignores --format and prints its human table, whose first `Digest:` line is
+	// the SAME top-level (index) digest. Scanning for the first sha256 handles
+	// both, version-independently — and the first match is always the top-level
+	// manifest/index digest (a multi-arch index lists its own digest before the
+	// per-platform sub-manifests), which is exactly what the tag resolves to.
+	d := digestRE.FindString(string(out))
+	if d == "" {
 		return "", nil, fmt.Errorf("docker buildx imagetools inspect %s: "+
-			"unexpected manifest digest %q (want sha256:...)", ref, d)
+			"no sha256 digest in output %q", ref, strings.TrimSpace(string(out)))
 	}
 	return d, imageToolsPlatforms(ctx, ref), nil
 }
+
+// digestRE matches a content-addressable sha256 manifest digest. Used to pull
+// the digest out of `docker buildx imagetools inspect` output whether buildx
+// honored the --format template (bare digest) or fell back to its human table.
+var digestRE = regexp.MustCompile(`sha256:[0-9a-f]{64}`)
 
 // buildxAvailable reports whether `docker buildx` is installed and runnable.
 // Used to turn a failed `imagetools inspect` into an actionable error: a

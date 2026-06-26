@@ -654,7 +654,15 @@ schema ClusterTarget:
     check:
         cluster, "ClusterTarget.cluster is required (kubectl context name)"
         namespace, "ClusterTarget.namespace is required"
-        registry, "ClusterTarget.registry is required (image registry, e.g. ghcr.io/org/proj)"
+        # registry is a REQUIRED input — empty is a load-time failure, NOT a
+        # deploy-time ImagePullBackOff. This is the guard that bites the
+        # cloud-env footgun: a typo'd / unset `-D registry=` that resolves to
+        # "" (no consumer-side `or <default>` to mask it) is rejected HERE,
+        # at KCL load, instead of rendering manifests with an image reference
+        # missing its registry that only fails when kubelet tries to pull.
+        # The companion build-platform guard lives on Bundle (it needs the
+        # services list to see whether any external image build is declared).
+        registry, "ClusterTarget.registry is required (image registry, e.g. ghcr.io/org/proj) — a cloud env MUST state it; an unset/typo'd `-D registry=` that resolves to empty is rejected here rather than producing an ImagePullBackOff at deploy"
 
 schema K8sCluster:
     """Service runs in-cluster as a Deployment + Service on a specific
@@ -1780,3 +1788,29 @@ schema Bundle:
     # handler so Pods stay schedulable when the real runtime isn't
     # installed. See RuntimeClass docstring for the full rationale.
     runtime_classes: [RuntimeClass] = []
+
+    check:
+        # `platform` is REQUIRED on a CLOUD cluster_target whenever ANY
+        # service ships a REAL external image build (a DockerBuild or a
+        # non-no-op ShellBuild — see forge.builds_an_image). Those builds
+        # interpolate the env's `platform` as ${TARGETARCH} / the docker
+        # `--platform`; WITHOUT it the build pipeline falls through to the
+        # dev HOST's arch (resolveExternalBuildTargetArch → runtime.GOARCH),
+        # so a `forge build` from an arm64 Mac pushes arm64 images that
+        # exec-format-error / ImagePullBackOff on amd64 cloud nodes — the
+        # class that broke prod. Making it a LOAD-time failure (naming the
+        # field) converts that silent deploy-time break into an author-time
+        # one.
+        #
+        # The registry is the authoritative local-vs-cloud signal: a LOCAL
+        # k3d target rides a host-local registry (localhost:/registry.localhost:)
+        # whose nodes share the dev-host arch, so an omitted platform
+        # correctly tracks the host — the dev/e2e path that legitimately omits
+        # it stays exempt. A CLOUD target (any real remote registry) whose
+        # nodes have a FIXED arch must state it. Using the registry (not the
+        # cluster name) keeps the signal reliable: a localhost registry can
+        # only be served to the host's own cluster, period.
+        not cluster_target or cluster_target.platform \
+            or is_local_registry(cluster_target.registry) \
+            or all s in services { not builds_an_image(s) }, \
+            "Bundle.cluster_target.platform is required: this env deploys to a cloud target (a non-local registry) AND declares a service with a real external image build (DockerBuild / non-no-op ShellBuild), but states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so external builds cross-compile for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."

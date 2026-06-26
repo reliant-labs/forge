@@ -11,6 +11,54 @@ the same KCL package see them as bare names — no `import` needed.
 """
 
 import json
+import regex
+
+# ---------------------------------------------------------------------------
+# Local-vs-cloud target detection.
+# ---------------------------------------------------------------------------
+#
+# A handful of load-time guards (ClusterTarget.registry / Bundle platform)
+# need to tell a LOCAL deploy target (k3d on the dev host — host arch, an
+# in-host registry) apart from a CLOUD target (GKE/EKS/… — a fixed node arch,
+# a real remote registry). The two guards must agree on that classification,
+# so the predicate lives ONCE here and both reference it.
+#
+# The registry is the load-bearing signal: a localhost-style registry can
+# only be reached from the host's own k3d cluster — a CLOUD node could never
+# pull from it — so `localhost:`, `127.0.0.1:`, and `*.localhost:` registries
+# unambiguously mark a LOCAL target, while any real remote registry
+# (ghcr.io/…, *.pkg.dev/…, *.amazonaws.com/…, a bare `org/img`) marks a CLOUD
+# one. This is exactly the dev/e2e (localhost:5051) vs staging/prod
+# (ghcr.io/…) split the control-plane envs already encode, so the guards stay
+# inert for the local envs that legitimately omit a platform / ride a local
+# registry, and fire only for the cloud envs where the omission is a bug.
+#
+# is_local_registry(registry) — True when `registry` is a host-local registry
+# (the LOCAL-target signal). Matches a leading `localhost`, `127.0.0.1`, or
+# any `*.localhost` host (with or without a `:port`), before the first `/`.
+is_local_registry = lambda registry: str -> bool {
+    _host = registry.split("/")[0]
+    bool(regex.match(_host, r"^(localhost|127\.0\.0\.1|[A-Za-z0-9.-]+\.localhost)(:[0-9]+)?$"))
+}
+
+# builds_an_image(svc) — True when a Service's `build` PRODUCES (and pushes)
+# a container image whose ARCH the build pipeline must pin from the env's
+# `platform`. That is a DockerBuild (forge `docker build`s it) or a real
+# ShellBuild — an external `sh -c` build that cross-compiles + `docker build`s
+# + pushes. A no-op ShellBuild (`cmd = "true"`, the idiomatic "suppress the
+# default Go build for a prebuilt sibling image" hatch) pushes NOTHING, so it
+# imposes no arch requirement and does NOT count. A GoBuild produces a binary
+# COPY'd into the project image whose arch forge already derives — also not an
+# external image build. This is the signal the `platform`-required guard keys
+# on: an env that ships a real external image build onto a CLOUD node MUST
+# state the node arch, or the build silently falls through to the dev host's
+# arch (the arm64-image-on-amd64-node class that ImagePull/exec-format-errors
+# in prod).
+builds_an_image = lambda svc: Service -> bool {
+    _b = svc.build
+    True if _b and _b.type == "docker" else \
+    (True if _b and _b.type == "shell" and _b.cmd != "true" else False)
+}
 
 # Default env-var bundle for accessing a Postgres database via
 # a Kubernetes Secret. Projects that use a different secret name

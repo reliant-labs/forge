@@ -1731,6 +1731,91 @@ schema CronJob:
             "CronJob.schedule must be '' (one-shot Job), a named expression ('@hourly', ...), or a 5-field cron expression"
 
 # ---------------------------------------------------------------------------
+# Platform dependency — a helm chart rendered (NOT installed) by forge.
+# ---------------------------------------------------------------------------
+
+schema HelmChart:
+    """A platform dependency rendered from a helm chart.
+
+    THE MODEL: helm is a RENDERER, not an installer. forge runs
+    `helm template <chart> --version <version> --values <vals>
+    -n <namespace> --skip-crds` to expand the chart to a manifest list,
+    then folds those manifests into the SAME render → kubectl-apply →
+    wait pipeline every other forge entity flows through. There is no
+    `helm install`, no helm-managed release, no imperative installer — a
+    platform dep is just another renderable.
+
+    SELECTION IS `--target`. A HelmChart is a renderable with a NAME, in
+    the SAME env Bundle as the app — it differs from the app only in which
+    `--target` you pick. forge stamps `app.kubernetes.io/name = <name>` on
+    every manifest the chart renders, so the EXISTING `--target` /
+    FilterManifestsByApp axis selects it:
+
+        forge deploy <env> --target <name>   # apply ONLY this platform dep
+        forge deploy <env>                   # apply the app (no platform target)
+
+    cert-manager and Envoy Gateway are declared as two such HelmCharts the
+    consumer lists per env; applying them with `--target` leaves the
+    cluster with their CRDs Established + controllers Deployed, so a
+    subsequent `forge deploy <env>` (the app) finds the CRDs present.
+
+    DECLARATIVE UPGRADES are allowed: bump `version` (or edit `values`)
+    and re-apply via `--target`; the render → apply reconciles it. There
+    is no never-upgrade guardrail.
+
+    APPLY ORDERING. The chart's own CRDs are deliberately EXCLUDED from
+    the render (`--skip-crds`) — letting a chart's bundled (often older /
+    experimental-channel) CRDs hit the cluster makes the Gateway-API
+    `safe-upgrades` ValidatingAdmissionPolicy self-deny. forge instead
+    supplies the correct CRDs itself (the pinned standard Gateway API CRDs
+    + cert-manager's CRDs at the matching chart version) and applies them
+    FIRST, waiting until Established before the chart's controller
+    manifests. `crds` selects which forge-owned CRD bundle to supply.
+
+    Fields:
+      * `name`      — the platform dep's NAME; the `--target` selector and
+                      the `app.kubernetes.io/name` stamped on every
+                      rendered manifest.
+      * `chart`     — chart name (repo charts: the chart name, e.g.
+                      "cert-manager"; OCI charts: ignored, `oci` carries
+                      the full ref).
+      * `repo`      — chart repository URL (e.g. "https://charts.jetstack.io").
+                      Mutually exclusive with `oci`.
+      * `oci`       — OCI chart ref (e.g.
+                      "oci://docker.io/envoyproxy/gateway-helm"). Mutually
+                      exclusive with `repo`.
+      * `version`   — pinned chart version (e.g. "v1.20.1"). REQUIRED — a
+                      platform dep is always version-pinned.
+      * `namespace` — namespace to render the chart into (`helm template
+                      -n <namespace>`). The chart's namespaced resources
+                      land here.
+      * `values`    — helm values (the `--values` overlay), a raw dict
+                      passed through verbatim. Empty => chart defaults.
+      * `crds`      — which forge-owned CRD bundle to apply FIRST (before
+                      the chart's controllers), Established-gated:
+                        "" (default) — none; the chart needs no forge CRDs.
+                        "gateway-api" — the pinned standard-channel Gateway
+                          API CRDs (Envoy Gateway).
+                        "cert-manager" — cert-manager's CRDs at `version`.
+    """
+    name: str
+    chart: str = ""
+    repo: str = ""
+    oci: str = ""
+    version: str
+    namespace: str
+    values: {str: any} = {}
+    crds: "" | "gateway-api" | "cert-manager" = ""
+
+    check:
+        name, "HelmChart.name is required (the --target selector)"
+        version, "HelmChart.version is required (a platform dep is always version-pinned)"
+        namespace, "HelmChart.namespace is required (helm template -n <namespace>)"
+        repo or oci, "HelmChart must set `repo` (a chart-repo URL) or `oci` (an OCI chart ref)"
+        not (repo and oci), "HelmChart.repo and HelmChart.oci are mutually exclusive"
+        oci or chart, "HelmChart.chart is required for a repo chart (the chart name)"
+
+# ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
 
@@ -1800,6 +1885,14 @@ schema Bundle:
     # handler so Pods stay schedulable when the real runtime isn't
     # installed. See RuntimeClass docstring for the full rationale.
     runtime_classes: [RuntimeClass] = []
+    # Platform dependencies rendered from helm charts (helm-as-a-RENDERER:
+    # `helm template --skip-crds` → manifests folded into the normal apply
+    # pipeline; NO `helm install`). Each is a renderable with a NAME the
+    # EXISTING `--target` axis selects: `forge deploy <env> --target <name>`
+    # applies that platform dep; `forge deploy <env>` (no platform target)
+    # applies the app. cert-manager + Envoy Gateway are declared here per
+    # env. See HelmChart. Empty => no platform deps (the app-only default).
+    helm_charts: [HelmChart] = []
 
     check:
         # `platform` is REQUIRED on a CLOUD cluster_target whenever ANY

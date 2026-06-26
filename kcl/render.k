@@ -499,6 +499,27 @@ _render_cluster = lambda c: Cluster -> any {
 # kubeconfig + applies the Secret Go-side (the IP is resolved fresh, never
 # in KCL); this projection only carries the DECLARATION. Never appears in
 # render_manifests — the Secret has a runtime-minted value, not a static one.
+# Render a HelmChart (platform dependency) to its stable dict form. The
+# CLI reads this list and runs `helm template <chart|oci> --version
+# <version> --values <values> -n <namespace> --skip-crds` Go-side, stamps
+# `app.kubernetes.io/name = name` on every rendered manifest, and folds
+# them into the apply stream — so `--target <name>` selects them via the
+# existing FilterManifestsByApp axis. `values` passes through verbatim.
+# NEVER appears in render_manifests — the expansion is a Go-side shell-out
+# (helm), not a KCL render.
+_render_helm_chart = lambda h: HelmChart -> any {
+    {
+        "name": h.name
+        "chart": h.chart if h.chart else None
+        "repo": h.repo if h.repo else None
+        "oci": h.oci if h.oci else None
+        "version": h.version
+        "namespace": h.namespace
+        "values": h.values
+        "crds": h.crds if h.crds else None
+    }
+}
+
 _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
     {
         "name": k.name
@@ -592,6 +613,10 @@ render = lambda bundle: Bundle -> any {
         "http_routes": [_render_http_route(r) for r in bundle.http_routes]
         "grpc_routes": [_render_grpc_route(r) for r in bundle.grpc_routes]
         "runtime_classes": [_render_runtime_class(rc) for rc in bundle.runtime_classes]
+        # Platform deps (helm-as-RENDERER). The CLI expands each via
+        # `helm template --skip-crds` and folds the manifests into the apply
+        # stream, selected by `--target <name>`. NOT in render_manifests.
+        "helm_charts": [_render_helm_chart(h) for h in bundle.helm_charts]
         # The secret PROVIDER declaration rides alongside the entities so
         # the CLI can read WHERE secret values come from. Absent when
         # unset (no null garbage). Secret VALUES never enter this output —

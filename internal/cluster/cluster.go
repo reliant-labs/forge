@@ -149,6 +149,19 @@ type ApplyOpts struct {
 	// whole bundle", the unchanged default. See FilterManifestsByApp.
 	Targets []string
 
+	// HelmCharts are the env's declared platform dependencies, rendered
+	// with helm-as-a-RENDERER (helm template --skip-crds) and folded into
+	// THIS apply stream. Each is a renderable with a NAME the EXISTING
+	// Targets filter selects: a chart is rendered + applied only when its
+	// Name passes the Targets filter (empty Targets = the app-only default,
+	// which renders NO chart — platform deps are applied explicitly via
+	// `--target=<name>`). Apply renders each selected chart, stamps every
+	// manifest with `app.kubernetes.io/name = Name`, and applies it in
+	// CRD-first order (the chart's forge-supplied CRDs → wait Established →
+	// the chart's controllers) so the apply leaves CRDs Established +
+	// controllers Deployed. Empty => no platform deps. See helm.go.
+	HelmCharts []HelmChartSpec
+
 	// ClusterScope, when non-nil, scopes the rendered env bundle to ONE
 	// deploy group's cluster before applying — declared-cluster-only
 	// multi-cluster routing. KCL renders the whole env as a unit (every
@@ -242,13 +255,32 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		return fmt.Errorf("KCL manifest generation failed: %w", err)
 	}
 
+	// Partition the rendered env Bundle from its declared platform deps.
+	// A HelmChart is a renderable with a NAME the SAME Targets axis selects
+	// (helm-as-a-RENDERER): a `--target=<chart>` deploy applies the chart;
+	// a no-platform-target deploy applies the app and renders no chart.
+	// Which charts this apply renders is decided here, BEFORE the app
+	// filter, so a target that names ONLY charts doesn't trip the app
+	// filter's "no application matched" guard.
+	selectedCharts, appTargets := selectHelmCharts(opts.HelmCharts, opts.Targets)
+
 	// Application-level filter: when --target scoped the deploy to one
 	// or more named apps, drop the other apps' workload manifests while
 	// keeping every shared/infra manifest. Applied to the rendered
 	// bundle (which KCL produces as a unit) so a single targeted app
 	// still lands with its Namespace, shared ConfigMap/Secret, etc.
-	if len(opts.Targets) > 0 {
-		filtered, ferr := FilterManifestsByApp(manifests, opts.Targets)
+	//
+	// When EVERY --target named a platform dep (a `--target=cert-manager`
+	// apply), there are no app targets — the env bundle contributes
+	// nothing and only the selected charts apply. Skip the app filter in
+	// that case (it would reject "no application matched" for a chart name)
+	// and drop the env manifests entirely.
+	switch {
+	case len(opts.Targets) > 0 && len(appTargets) == 0:
+		// All targets were charts — apply only the charts, not the env.
+		manifests = ""
+	case len(appTargets) > 0:
+		filtered, ferr := FilterManifestsByApp(manifests, appTargets)
 		if ferr != nil {
 			return ferr
 		}
@@ -267,15 +299,54 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		manifests = ScopeManifestsToGroup(manifests, *opts.ClusterScope)
 	}
 
+	// Render the selected platform deps (helm-as-a-RENDERER). Each chart's
+	// manifests are stamped `app.kubernetes.io/name = <name>` so they read
+	// as ONE named app, and carry their forge-supplied CRDs for the
+	// CRD-first apply below. Rendered here (before dry-run) so `--dry-run`
+	// shows the chart manifests too — they flow through the SAME pipeline.
+	renderedCharts := make([]renderedChart, 0, len(selectedCharts))
+	for _, spec := range selectedCharts {
+		rendered, rerr := RenderHelmChart(ctx, spec)
+		if rerr != nil {
+			return rerr
+		}
+		renderedCharts = append(renderedCharts, renderedChart{spec: spec, manifests: rendered})
+	}
+
 	if opts.DryRun {
+		dryRunManifests := manifests
+		for _, rc := range renderedCharts {
+			dryRunManifests = joinNonEmpty(dryRunManifests, rc.spec.CRDs, rc.manifests)
+		}
 		if opts.DryRunFramed {
 			fmt.Println("\n--- Generated Manifests (dry-run) ---")
-			fmt.Println(manifests)
+			fmt.Println(dryRunManifests)
 			fmt.Println("--- End Manifests ---")
 			fmt.Println("\nDry run complete. No changes applied.")
 		} else {
-			fmt.Println(manifests)
+			fmt.Println(dryRunManifests)
 		}
+		return nil
+	}
+
+	// Apply the platform deps FIRST: a `--target=<platform>` apply must
+	// leave the cluster with the chart's CRDs Established + controllers
+	// Deployed (so a later `forge deploy` app finds the CRDs present). Each
+	// chart applies in CRD-first order (forge-supplied CRDs → wait
+	// Established → the --skip-crds controllers). When this apply also
+	// carries app manifests (a mixed --target), the charts land before them.
+	for _, rc := range renderedCharts {
+		if !opts.Quiet {
+			fmt.Printf("Applying platform dependency %q (helm-rendered)...\n", rc.spec.Name)
+		}
+		if err := applyCRDsThenRest(ctx, opts.Context, rc.spec.CRDs, rc.manifests); err != nil {
+			return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
+		}
+	}
+
+	// A platform-only apply (every --target named a chart) is done once the
+	// charts are applied — there are no env/app manifests to apply or wait on.
+	if strings.TrimSpace(manifests) == "" && len(renderedCharts) > 0 {
 		return nil
 	}
 

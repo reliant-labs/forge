@@ -40,6 +40,11 @@ type KCLEntities struct {
 	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
 	HTTPRoutes        []HTTPRouteEntity        `json:"http_routes,omitempty"`
 	GRPCRoutes        []GRPCRouteEntity        `json:"grpc_routes,omitempty"`
+	// HelmCharts are the env's declared platform deps (forge.HelmChart),
+	// each a renderable with a NAME the `--target` axis selects. forge
+	// expands them via helm-as-a-RENDERER and folds the manifests into the
+	// apply stream. Empty => no platform deps. See HelmChartEntity.
+	HelmCharts []HelmChartEntity `json:"helm_charts,omitempty"`
 	// SecretProvider is the bundle-level secret provider declaration
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider — preserving today's no-provider behavior.
@@ -223,6 +228,33 @@ type GRPCRouteEntity struct {
 	Host      string `json:"host,omitempty"`
 	Path      string `json:"path,omitempty"`
 	RawPolicy string `json:"raw_policy,omitempty"`
+}
+
+// HelmChartEntity is one declared platform dependency from rendered KCL
+// (the `output.helm_charts` projection of forge.HelmChart). It is the
+// declaration only — forge expands it via `helm template --skip-crds`
+// Go-side (internal/cluster.RenderHelmChart) and folds the manifests into
+// the apply stream, selected by `--target=<name>`. helm is a RENDERER,
+// not an installer: there is no release, no `helm install`.
+type HelmChartEntity struct {
+	Name string `json:"name"`
+	// Chart is the chart name for a repo chart; empty for an OCI chart.
+	Chart string `json:"chart,omitempty"`
+	// Repo is the chart-repo URL; mutually exclusive with OCI.
+	Repo string `json:"repo,omitempty"`
+	// OCI is the OCI chart ref; mutually exclusive with Repo.
+	OCI string `json:"oci,omitempty"`
+	// Version is the pinned chart version.
+	Version string `json:"version"`
+	// Namespace is the namespace the chart renders into (helm template -n).
+	Namespace string `json:"namespace"`
+	// Values is the helm values overlay, passed through verbatim.
+	Values map[string]any `json:"values,omitempty"`
+	// CRDs selects which forge-owned CRD bundle to apply FIRST
+	// (Established-gated) before the chart's controllers: "" (none),
+	// "gateway-api", or "cert-manager". The chart is rendered --skip-crds,
+	// so forge owns the CRD surface.
+	CRDs string `json:"crds,omitempty"`
 }
 
 // ServiceEntity is one service from rendered KCL. The Deploy field is
@@ -583,6 +615,7 @@ type kclRenderRaw struct {
 	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
 	HTTPRoutes        []HTTPRouteEntity        `json:"http_routes,omitempty"`
 	GRPCRoutes        []GRPCRouteEntity        `json:"grpc_routes,omitempty"`
+	HelmCharts        []HelmChartEntity        `json:"helm_charts,omitempty"`
 	// SecretProvider rides alongside services in the entity output; nil
 	// when the bundle declares no provider (KCL omits the key entirely).
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
@@ -717,6 +750,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Gateways:          raw.Gateways,
 		HTTPRoutes:        raw.HTTPRoutes,
 		GRPCRoutes:        raw.GRPCRoutes,
+		HelmCharts:        raw.HelmCharts,
 		SecretProvider:    raw.SecretProvider,
 		ManifestNamespace: manifestNS,
 		ManifestImageTags: manifestImageTags,

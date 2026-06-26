@@ -120,6 +120,34 @@ func ingressCacheDir() (string, error) {
 // (a forge upgrade changes the VERSION file, the new release URL
 // hashes to a different filename, the old cache file stays around).
 func fetchGatewayAPICRDs(ctx context.Context, version string) (string, error) {
+	return fetchCachedCRDYAML(ctx, "gateway-api-crds-"+version+".yaml",
+		gatewayAPICRDsURL(version), fmt.Sprintf("Gateway API CRDs %s", version))
+}
+
+// certManagerCRDsURL builds the upstream release URL for cert-manager's
+// CRDs at a chart version (the chart and its CRDs move in lockstep, so the
+// CRD bundle is fetched at the chart's own version).
+func certManagerCRDsURL(version string) string {
+	return "https://github.com/cert-manager/cert-manager/releases/download/" + version + "/cert-manager.crds.yaml"
+}
+
+// fetchCertManagerCRDs ensures cert-manager's CRD YAML for the chart
+// version is on disk and returns the path. Version-pinned cache filename,
+// same scheme as fetchGatewayAPICRDs. Used by the helm-as-a-RENDERER apply
+// path (deploy_helm.go) so a `--target=cert-manager` apply lands the CRDs
+// (Established-gated) before the chart's --skip-crds controllers.
+func fetchCertManagerCRDs(ctx context.Context, version string) (string, error) {
+	return fetchCachedCRDYAML(ctx, "cert-manager-crds-"+version+".yaml",
+		certManagerCRDsURL(version), fmt.Sprintf("cert-manager CRDs %s", version))
+}
+
+// fetchCachedCRDYAML downloads a CRD YAML bundle from url into the ingress
+// cache under cacheName, returning the on-disk path. A present cache file
+// is a no-op (the version-pinned filename is the cache key). label is the
+// human name printed on a cold fetch. The atomic temp-write-then-rename
+// keeps a concurrent reader from seeing a half-written file. Shared by the
+// Gateway API + cert-manager CRD fetchers.
+func fetchCachedCRDYAML(ctx context.Context, cacheName, url, label string) (string, error) {
 	dir, err := ingressCacheDir()
 	if err != nil {
 		return "", err
@@ -127,13 +155,12 @@ func fetchGatewayAPICRDs(ctx context.Context, version string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create cache dir: %w", err)
 	}
-	cachePath := filepath.Join(dir, "gateway-api-crds-"+version+".yaml")
+	cachePath := filepath.Join(dir, cacheName)
 	if _, err := os.Stat(cachePath); err == nil {
 		return cachePath, nil
 	}
 
-	url := gatewayAPICRDsURL(version)
-	fmt.Printf("Fetching Gateway API CRDs %s from upstream...\n", version)
+	fmt.Printf("Fetching %s from upstream...\n", label)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
@@ -147,7 +174,7 @@ func fetchGatewayAPICRDs(ctx context.Context, version string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
 	}
-	tmp, err := os.CreateTemp(dir, "gateway-api-crds-*.yaml.tmp")
+	tmp, err := os.CreateTemp(dir, cacheName+".*.tmp")
 	if err != nil {
 		return "", err
 	}
@@ -285,75 +312,12 @@ func helmInstallEnvoyGateway(ctx context.Context, kctx, chartVersion string) err
 	return nil
 }
 
-// certManagerChartRepo / certManagerChartName / certManagerReleaseName /
-// certManagerNamespace are the helm coordinates for cert-manager — the
-// jetstack chart the cloud envs run (staging already has v1.20.1). Kept
-// as named constants so the cloud cluster-setup install is byte-aligned
-// with what an operator would type by hand (the install this REPLACES).
-const (
-	certManagerChartRepoURL  = "https://charts.jetstack.io"
-	certManagerChartRepoName = "jetstack"
-	certManagerChartName     = "jetstack/cert-manager"
-	certManagerReleaseName   = "cert-manager"
-	certManagerNamespace     = "cert-manager"
-)
-
-// certManagerChartVersion is the pinned cert-manager chart version. Kept
-// in lockstep with what staging runs (v1.20.1) so cloud clusters forge
-// bootstraps match the cluster the project was validated against. A
-// single source so a future bump is one edit.
-const certManagerChartVersion = "v1.20.1"
-
-// helmRepoAddUpdate registers (idempotently) a helm chart repo and
-// refreshes the local index. `helm repo add` is a no-op when the repo is
-// already registered with the same URL; we tolerate its non-zero exit on a
-// re-add by always following with `helm repo update`, which is the
-// load-bearing step (it makes the chart resolvable). Stdout/stderr stream
-// so the user sees the fetch.
-func helmRepoAddUpdate(ctx context.Context, name, url string) error {
-	add := exec.CommandContext(ctx, "helm", "repo", "add", name, url)
-	add.Stdout = os.Stdout
-	add.Stderr = os.Stderr
-	// A duplicate add (same name) exits non-zero with "already exists";
-	// that's fine — the subsequent update is what matters. Only a genuine
-	// failure (e.g. network) surfaces via the update below.
-	_ = add.Run()
-	upd := exec.CommandContext(ctx, "helm", "repo", "update", name)
-	upd.Stdout = os.Stdout
-	upd.Stderr = os.Stderr
-	if err := upd.Run(); err != nil {
-		return fmt.Errorf("helm repo update %s: %w", name, err)
-	}
-	return nil
-}
-
-// helmInstallCertManager runs `helm upgrade --install` for the pinned
-// jetstack/cert-manager chart into the cert-manager namespace, targeting
-// the given kubectl context when non-empty. crds.enabled=true installs the
-// CRDs with the chart (matching staging). Idempotent: `--install` creates
-// on a cold cluster and upgrades-in-place on a warm one; `--wait` blocks
-// until the controller Deployments are Available so the ClusterIssuer apply
-// that follows doesn't race the webhook coming up.
-func helmInstallCertManager(ctx context.Context, kctx, chartVersion string) error {
-	args := []string{
-		"upgrade", "--install", certManagerReleaseName, certManagerChartName,
-		"--version", chartVersion,
-		"--namespace", certManagerNamespace,
-		"--create-namespace",
-		"--set", "crds.enabled=true",
-		"--wait", "--timeout", "300s",
-	}
-	if kctx != "" {
-		args = append(args, "--kube-context", kctx)
-	}
-	cmd := exec.CommandContext(ctx, "helm", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("helm upgrade --install %s %s: %w", certManagerReleaseName, certManagerChartName, err)
-	}
-	return nil
-}
+// NOTE: cert-manager is no longer installed imperatively here. It is a
+// declarative platform dependency — a forge.HelmChart in the env Bundle,
+// rendered (`helm template --skip-crds`) and applied via `forge deploy
+// <env> --target=cert-manager` (helm-as-a-RENDERER, internal/cluster).
+// The former `helm upgrade --install` cert-manager machinery (chart
+// coordinates, repo-add, install fn) was removed with `forge cluster-setup`.
 
 // resourceExists reports whether the named cluster resource exists in the
 // given kubectl context. Used for the idempotency skip checks (a present

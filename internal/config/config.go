@@ -1181,34 +1181,11 @@ type ExperimentalConfig struct {
 	ExternalBuilds bool `yaml:"external_builds,omitempty"`
 	Operators      bool `yaml:"operators,omitempty"`
 	StrictWiring   bool `yaml:"strict_wiring,omitempty"`
-
-	// IngressIssuers declares, per environment, the cert-manager
-	// ClusterIssuer manifest files `forge cluster-setup <env>` applies
-	// after it installs cert-manager + Envoy Gateway on the env's cluster.
-	// Keyed by env name; each value is a list of file paths (or globs,
-	// relative to the project root) the project OWNS — e.g.
-	//
-	//   experimental:
-	//     ingress: true
-	//     ingress_issuers:
-	//       staging: [deploy/certs/issuers/staging-http01-gw-issuer.yaml]
-	//       prod:    [deploy/certs/issuers/prod-issuer.yaml]
-	//
-	// forge applies whatever the env declares — it does NOT ship or assume
-	// any particular issuer. This keeps forge the MECHANISM (install
-	// cert-manager + Envoy, apply the env's declared issuers) while the
-	// project DECLARES the what. An env with no entry installs the ingress
-	// stack but applies no ClusterIssuer (the cluster may carry its own, or
-	// terminate TLS out-of-band).
-	IngressIssuers map[string][]string `yaml:"ingress_issuers,omitempty"`
 }
 
 // IsZero reports whether the experimental block carries nothing explicit.
-// Hand-rolled (rather than `== ExperimentalConfig{}`) because the
-// IngressIssuers map makes the struct incomparable.
 func (e ExperimentalConfig) IsZero() bool {
-	return !e.Ingress && !e.ExternalBuilds && !e.Operators && !e.StrictWiring &&
-		len(e.IngressIssuers) == 0
+	return !e.Ingress && !e.ExternalBuilds && !e.Operators && !e.StrictWiring
 }
 
 // resolve resolves a stable feature flag by name: an explicit value wins;
@@ -1315,15 +1292,6 @@ func (f FeaturesConfig) PacksEnabled() bool { return f.resolve(FeaturePacks) }
 // the Envoy Gateway + GatewayClass install, `forge cluster urls` returns
 // nothing, and the audit ingress category is suppressed.
 func (f FeaturesConfig) IngressEnabled() bool { return f.Experimental.Ingress }
-
-// IngressIssuersForEnv returns the project-declared cert-manager
-// ClusterIssuer manifest paths/globs `forge cluster-setup <env>` applies
-// for the named environment, or nil when the env declares none. The
-// values are paths relative to the project root; forge applies whatever
-// the project names (it ships no issuers of its own).
-func (f FeaturesConfig) IngressIssuersForEnv(env string) []string {
-	return f.Experimental.IngressIssuers[env]
-}
 
 // ExternalBuildsEnabled reports the raw value of the RETIRED
 // `features.experimental.external_builds` flag. It no longer gates the

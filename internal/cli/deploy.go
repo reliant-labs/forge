@@ -25,19 +25,18 @@ import (
 
 func newDeployCmd() *cobra.Command {
 	var (
-		imageTag        string
-		tag             string
-		dryRun          bool
-		namespace       string
-		explain         bool
-		targetArch      string
-		prune           bool
-		rollback        bool
-		targets         []string
-		skipFrontend    bool
-		skipPreflight   bool
-		noDigest        bool
-		noClusterEnsure bool
+		imageTag      string
+		tag           string
+		dryRun        bool
+		namespace     string
+		explain       bool
+		targetArch    string
+		prune         bool
+		rollback      bool
+		targets       []string
+		skipFrontend  bool
+		skipPreflight bool
+		noDigest      bool
 	)
 
 	cmd := &cobra.Command{
@@ -130,17 +129,16 @@ Examples:
 				return errors.New("--rollback and --tag are mutually exclusive")
 			}
 			return runDeploy(cmd.Context(), args[0], deployOptions{
-				imageTag:        effectiveTag,
-				dryRun:          dryRun,
-				namespace:       namespace,
-				targetArch:      targetArch,
-				prune:           prune,
-				rollback:        rollback,
-				targets:         targets,
-				skipFrontend:    skipFrontend,
-				skipPreflight:   skipPreflight,
-				noDigest:        noDigest,
-				noClusterEnsure: noClusterEnsure,
+				imageTag:      effectiveTag,
+				dryRun:        dryRun,
+				namespace:     namespace,
+				targetArch:    targetArch,
+				prune:         prune,
+				rollback:      rollback,
+				targets:       targets,
+				skipFrontend:  skipFrontend,
+				skipPreflight: skipPreflight,
+				noDigest:      noDigest,
 			})
 		},
 	}
@@ -157,7 +155,6 @@ Examples:
 	cmd.Flags().BoolVar(&skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
 	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
 	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
-	cmd.Flags().BoolVar(&noClusterEnsure, "no-cluster-ensure", false, "Skip the deploy-time ensure-cluster-deps phase (install forge's ingress/cert stack — cert-manager, Envoy Gateway, the eg GatewayClass, declared ClusterIssuers — when ABSENT, never upgrading a present install). Use when the deployer has only namespace-scoped RBAC and pre-runs `forge cluster-setup`.")
 
 	return cmd
 }
@@ -293,18 +290,6 @@ type deployOptions struct {
 	// debugging a registry that mishandles digest pulls). No effect when no
 	// digest was captured — the tag is used either way.
 	noDigest bool
-
-	// noClusterEnsure, when true, skips the deploy-time "ensure cluster deps
-	// are PRESENT" phase (ensureClusterDepsForDeploy). That phase installs
-	// forge's own ingress/cert stack — cert-manager, Envoy Gateway, the eg
-	// GatewayClass, the env's declared ClusterIssuers — when ABSENT, never
-	// upgrading a present install, so a routine `forge deploy <env>` "just
-	// works" on a fresh cluster instead of hard-blocking at the preflight CRD
-	// gate + requiring a manual `forge cluster-setup`. The escape hatch is for
-	// deployers with only namespace-scoped RBAC (can't install cluster-scoped
-	// resources) who pre-run cluster-setup. No effect under --dry-run / on
-	// rollback / for external-only envs (the phase doesn't run there anyway).
-	noClusterEnsure bool
 }
 
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
@@ -597,26 +582,35 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		deployContext = expectedClusterForEnv(ctx, cfg, envName)
 	}
 
-	// Ensure cluster deps are PRESENT: BEFORE the preflight (which would
-	// otherwise hard-BLOCK on a missing CRD / controller) and the first apply,
-	// install forge's own ingress/cert stack — cert-manager, Envoy Gateway, the
-	// eg GatewayClass, the env's declared ClusterIssuers — when ABSENT, in a
-	// strict INSTALL-IF-MISSING / NEVER-UPGRADE mode (a present install is left
-	// untouched; version bumps stay an explicit `forge cluster-setup --force`).
-	// This makes the missing-CRD/controller situation self-healing on a routine
-	// deploy instead of a manual cluster-setup step. It runs ONLY when the env
-	// declares the ingress feature (declaration-scoped) and is cheap when
-	// everything's present (a few `kubectl get` existence checks). Skipped
-	// under --dry-run (renders only; never touches a cluster), on rollback
-	// (reuses what's already there), for external-only envs (no cluster), and
-	// when --no-cluster-ensure is set (deployers with only namespace-scoped RBAC
-	// who pre-run cluster-setup). The preflight's CRD gate still BLOCKS for any
-	// kind deploy can't fix (a controller forge doesn't manage).
-	if shouldEnsureClusterDeps(hasK8sServices, dryRun, rollback, opts.noClusterEnsure) {
-		if err := ensureClusterDepsForDeploy(ctx, store, envName, deployContext); err != nil {
-			return err
+	// Resolve the env's declared platform deps (forge.HelmChart) that THIS
+	// --target selects into cluster.HelmChartSpec values for the apply path
+	// (helm-as-a-RENDERER). Only charts named in --target are resolved (the
+	// CRD-bundle fetch is network I/O, skipped for the app-only default),
+	// matching cluster.Apply's selectHelmCharts: a bare `forge deploy <env>`
+	// applies no platform dep. cluster.Apply renders each selected chart
+	// (helm template --skip-crds), stamps app.kubernetes.io/name, and
+	// applies CRDs-first/Established-gated before the chart's controllers.
+	var helmSpecs []cluster.HelmChartSpec
+	if entities != nil && len(targets) > 0 {
+		selected := selectedHelmChartEntities(entities.HelmCharts, targets)
+		if len(selected) > 0 {
+			helmSpecs, err = helmChartSpecsFromEntities(ctx, selected)
+			if err != nil {
+				return err
+			}
 		}
 	}
+
+	// Platform dependencies (cert-manager, Envoy Gateway, …) are NOT
+	// install-if-missing'd here. They are declarative renderables (KCL
+	// forge.HelmChart) applied EXPLICITLY via `forge deploy <env>
+	// --target=<platform-name>` — helm-as-a-RENDERER folds the chart's
+	// manifests (and forge-supplied CRDs, CRD-first + Established-gated)
+	// into the same apply pipeline. A `--target=<platform>` apply leaves
+	// the cluster with the CRDs Established + controllers Deployed, so this
+	// app deploy finds them present. The preflight's CRD gate still BLOCKS
+	// if a referenced CRD is absent — the fix is to apply the platform dep
+	// first, not a hidden per-deploy install.
 
 	// Deployability preflight: BEFORE the first apply (including the dotenv
 	// Secret projection below), verify against the LIVE target that every
@@ -681,8 +675,10 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// shaped builder for symmetry with the deploy path.
 		// Rollback reuses the tag already in the cluster, so imageDigests is
 		// nil here (the digest-map resolution is gated behind `if !rollback`);
-		// the builder threads it through unused for symmetry.
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities, imageDigests)
+		// the builder threads it through unused for symmetry. Rollback
+		// applies no platform deps (it reverts workloads to the last tag),
+		// so helmSpecs is nil here.
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities, imageDigests, nil)
 		registry := deploytarget.NewRegistry()
 		// Rollback's per-group context is resolved by the provider purely
 		// from each group's declared cluster (forge.K8sCluster.cluster) —
@@ -726,6 +722,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 			HostSkip:     hostDeploymentSkipSetFromKCL(cfg, entities),
 			OneShotJobs:  oneShotJobNamesFromKCL(entities),
 			Targets:      targets,
+			HelmCharts:   helmSpecs,
 		}); err != nil {
 			return err
 		}
@@ -736,7 +733,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// / prune / host-skip / one-shot jobs) flows through verbatim.
 		hostSkip := hostDeploymentSkipSetFromKCL(cfg, entities)
 		oneShotJobs := oneShotJobNamesFromKCL(entities)
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities, imageDigests)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities, imageDigests, helmSpecs)
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
 		if err := dispatchDeployGroups(ctx, registry, groups, ""); err != nil {
@@ -897,6 +894,14 @@ func validateDeployTargets(e *KCLEntities, targets []string) error {
 	}
 	for _, f := range e.Frontends {
 		avail[f.Name] = struct{}{}
+	}
+	// Platform deps (forge.HelmChart) are first-class --target subjects:
+	// `forge deploy <env> --target=<chart>` is THE way a platform dep is
+	// applied (helm-as-a-RENDERER). A chart NAME is a valid target the same
+	// way a service name is — its rendered manifests carry it as their
+	// app.kubernetes.io/name, so the same --target axis selects it.
+	for _, h := range e.HelmCharts {
+		avail[h.Name] = struct{}{}
 	}
 	var unknown []string
 	for _, t := range targets {

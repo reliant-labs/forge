@@ -73,49 +73,71 @@ type BuildState struct {
 }
 
 // imageRepoDigest reads the content-addressed manifest digest of a pushed
-// image ref from the registry, returning the canonical `sha256:...` form
+// image ref from the REGISTRY, returning the canonical `sha256:...` form
 // (no `@`, no repo prefix) plus the platforms the manifest advertises.
 //
-// It prefers `docker buildx imagetools inspect`, which queries the REGISTRY
-// (so it reports the manifest-list / index digest for a multi-arch push and
-// the platform set), and falls back to `docker inspect`'s RepoDigests (a
-// local-daemon read) when buildx is unavailable. Best-effort by contract:
-// any failure returns ("", nil, err) and the caller records no digest and
-// proceeds — a missing digest only costs the tag-fallback deploy path, never
-// the build.
+// The ONLY source is `docker buildx imagetools inspect`, which queries the
+// registry directly (so it reports the manifest-list / index digest for a
+// multi-arch push and the platform set). There is deliberately no fallback to
+// `docker inspect`'s local-daemon RepoDigests: that read addresses a DIFFERENT
+// source of truth (the build host's image cache) that can silently return a
+// STALE digest from a prior local pull of the same tag — masking a missing or
+// broken buildx with a wrong-but-plausible answer, exactly the failure this
+// digest capture exists to prevent. A pushed image's authoritative digest
+// lives in the registry; if we can't reach the registry we record nothing.
+//
+// Best-effort by contract: any failure returns ("", nil, err) and the caller
+// records no digest and proceeds — a missing digest only costs the
+// tag-fallback deploy path, never the build. When buildx is unavailable the
+// error names the missing tool so the operator can install it (and so the
+// caller's log line points at a fixable cause, not a silent stale read).
 func imageRepoDigest(ctx context.Context, ref string) (digest string, platforms []string, err error) {
 	// buildx imagetools inspect hits the registry and prints the top-level
 	// manifest digest (the index digest for a multi-arch push). The raw
 	// format avoids parsing the human table. Platforms come from a second,
 	// equally cheap format pass.
-	digCmd := exec.CommandContext(ctx, "docker", "buildx", "imagetools", "inspect", ref,
-		"--format", "{{.Manifest.Digest}}")
-	if out, derr := digCmd.Output(); derr == nil {
-		if d := strings.TrimSpace(string(out)); strings.HasPrefix(d, "sha256:") {
-			platforms = imageToolsPlatforms(ctx, ref)
-			return d, platforms, nil
+	out, derr := imagetoolsInspect(ctx, ref, "{{.Manifest.Digest}}")
+	if derr != nil {
+		// Distinguish "buildx isn't installed" (an operator-fixable setup gap)
+		// from "the registry query failed" (ref not pushed, auth, network) so
+		// the returned error is actionable. Either way we return NO digest —
+		// never a local-cache substitute that could be stale.
+		if !buildxAvailable(ctx) {
+			return "", nil, fmt.Errorf("docker buildx imagetools unavailable; "+
+				"cannot resolve registry digest for %s (install buildx to enable "+
+				"digest-pinned deploys): %w", ref, derr)
 		}
+		return "", nil, fmt.Errorf("docker buildx imagetools inspect %s: %w", ref, derr)
 	}
-	// Fallback: `docker inspect` reads RepoDigests off the LOCAL daemon —
-	// "<repo>@sha256:...". Match the entry for this ref's repo so we don't
-	// pick a stale digest from another tag of a different repo.
-	out, ierr := exec.CommandContext(ctx, "docker", "inspect",
-		"--format", "{{range .RepoDigests}}{{println .}}{{end}}", ref).Output()
-	if ierr != nil {
-		return "", nil, ierr
+	d := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(d, "sha256:") {
+		return "", nil, fmt.Errorf("docker buildx imagetools inspect %s: "+
+			"unexpected manifest digest %q (want sha256:...)", ref, d)
 	}
-	repo := refRepo(ref)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		at := strings.LastIndex(line, "@")
-		if at < 0 {
-			continue
-		}
-		if refRepo(line[:at]) == repo {
-			return line[at+1:], nil, nil
-		}
-	}
-	return "", nil, fmt.Errorf("no RepoDigest for %s", ref)
+	return d, imageToolsPlatforms(ctx, ref), nil
+}
+
+// buildxAvailable reports whether `docker buildx` is installed and runnable.
+// Used to turn a failed `imagetools inspect` into an actionable error: a
+// missing buildx is an operator-fixable setup gap, distinct from a registry
+// query that failed for the ref itself. Best-effort — a non-nil error from the
+// probe is treated as "unavailable". A package var so tests can drive the
+// buildx-unavailable branch deterministically; production never reassigns it.
+var buildxAvailable = func(ctx context.Context) bool {
+	return exec.CommandContext(ctx, "docker", "buildx", "version").Run() == nil
+}
+
+// imagetoolsInspect runs `docker buildx imagetools inspect <ref> --format
+// <format>` and returns its stdout. It is the SINGLE registry-read seam for
+// digest + platform capture: both imageRepoDigest and imageToolsPlatforms go
+// through it, and nothing here ever touches the local docker daemon. It's a
+// package var purely so tests can substitute a deterministic fake — proving
+// the no-stale-local-fallback contract without a real registry — and so a test
+// can assert imageRepoDigest returns ("", nil, err) (NOT a stale digest) when
+// the registry query fails. Production never reassigns it.
+var imagetoolsInspect = func(ctx context.Context, ref, format string) ([]byte, error) {
+	return exec.CommandContext(ctx, "docker", "buildx", "imagetools", "inspect", ref,
+		"--format", format).Output()
 }
 
 // imageToolsPlatforms returns the OS/arch platforms a registry manifest
@@ -123,8 +145,8 @@ func imageRepoDigest(ctx context.Context, ref string) (digest string, platforms 
 // for a single-platform image). Best-effort: returns nil on any failure so a
 // digest is still recorded without it.
 func imageToolsPlatforms(ctx context.Context, ref string) []string {
-	out, err := exec.CommandContext(ctx, "docker", "buildx", "imagetools", "inspect", ref,
-		"--format", "{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}\n{{end}}").Output()
+	out, err := imagetoolsInspect(ctx, ref,
+		"{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}\n{{end}}")
 	if err != nil {
 		return nil
 	}
@@ -144,28 +166,6 @@ func imageToolsPlatforms(ctx context.Context, ref string) []string {
 		}
 	}
 	return platforms
-}
-
-// refRepo strips an image ref down to its repository, dropping any `:tag`
-// or `@digest` suffix while preserving a `registry:port/` host. The tag/
-// digest separator is the rightmost `:`/`@` AFTER the rightmost `/`, so a
-// registry-port colon (`localhost:5051/foo`) is never mistaken for a tag.
-func refRepo(ref string) string {
-	if at := strings.LastIndex(ref, "@"); at >= 0 {
-		ref = ref[:at]
-	}
-	slash := strings.LastIndex(ref, "/")
-	tail := ref
-	if slash >= 0 {
-		tail = ref[slash+1:]
-	}
-	if colon := strings.LastIndex(tail, ":"); colon >= 0 {
-		tail = tail[:colon]
-	}
-	if slash >= 0 {
-		return ref[:slash+1] + tail
-	}
-	return tail
 }
 
 // gitBuildProvenance captures the HEAD commit, an exact tag on HEAD (if

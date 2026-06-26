@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -99,6 +100,85 @@ func TestAppendBaseImageBuildArgs_FeatureOff(t *testing.T) {
 	got := appendBaseImageBuildArgs([]string{"build"}, &config.ProjectConfig{}, t.TempDir())
 	if len(got) != 1 {
 		t.Errorf("feature off should be a no-op, got %v", got)
+	}
+}
+
+// TestEnforceBaseImagesFresh_InSyncPasses confirms a lock that pins exactly the
+// declared tag set through the declared mirror is NOT treated as stale.
+func TestEnforceBaseImagesFresh_InSyncPasses(t *testing.T) {
+	dir := t.TempDir()
+	prefix := "us-docker.pkg.dev/p/dockerhub"
+	writeLockForTest(t, dir, prefix, "alpine:3.21")
+	cfg := cfgWithBases(prefix, "alpine:3.21")
+	if err := enforceBaseImagesFresh(cfg, dir, false); err != nil {
+		t.Fatalf("in-sync lock should pass, got %v", err)
+	}
+}
+
+// TestEnforceBaseImagesFresh_StaleTagSetErrors is the core of the friction fix:
+// when forge.yaml declares a base the lock doesn't pin, a normal build is a HARD
+// error (not a warning), so stale pins can't ship silently. The message must be
+// actionable — name the lock, point at --repin-bases and --force-stale-bases.
+func TestEnforceBaseImagesFresh_StaleTagSetErrors(t *testing.T) {
+	dir := t.TempDir()
+	prefix := "us-docker.pkg.dev/p/dockerhub"
+	// Lock pins only alpine; forge.yaml now also declares golang → drift.
+	writeLockForTest(t, dir, prefix, "alpine:3.21")
+	cfg := cfgWithBases(prefix, "alpine:3.21", "golang:1.26-alpine")
+
+	err := enforceBaseImagesFresh(cfg, dir, false)
+	if err == nil {
+		t.Fatal("stale tag set should be a hard error without --force-stale-bases")
+	}
+	if !errors.Is(err, errStaleBaseImages) {
+		t.Errorf("error should wrap errStaleBaseImages, got %v", err)
+	}
+	for _, want := range []string{baseimage.LockRel, "--repin-bases", "--force-stale-bases"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error message missing %q: %v", want, err)
+		}
+	}
+}
+
+// TestEnforceBaseImagesFresh_StaleMirrorErrors confirms a moved mirror prefix
+// (same tags, different mirror) is also caught as drift.
+func TestEnforceBaseImagesFresh_StaleMirrorErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeLockForTest(t, dir, "old-mirror.example/p/dockerhub", "alpine:3.21")
+	cfg := cfgWithBases("new-mirror.example/p/dockerhub", "alpine:3.21")
+	if err := enforceBaseImagesFresh(cfg, dir, false); !errors.Is(err, errStaleBaseImages) {
+		t.Fatalf("moved mirror should be stale, got %v", err)
+	}
+}
+
+// TestEnforceBaseImagesFresh_ForceProceeds confirms --force-stale-bases turns
+// the hard error back into a non-fatal proceed.
+func TestEnforceBaseImagesFresh_ForceProceeds(t *testing.T) {
+	dir := t.TempDir()
+	prefix := "us-docker.pkg.dev/p/dockerhub"
+	writeLockForTest(t, dir, prefix, "alpine:3.21")
+	cfg := cfgWithBases(prefix, "alpine:3.21", "golang:1.26-alpine")
+	if err := enforceBaseImagesFresh(cfg, dir, true); err != nil {
+		t.Fatalf("--force-stale-bases should proceed, got %v", err)
+	}
+}
+
+// TestEnforceBaseImagesFresh_MissingLockPasses confirms "declared but not yet
+// pinned" is NOT an error — that path falls back to the Dockerfile ARG defaults
+// (themselves pinned). It's a hint, not drift.
+func TestEnforceBaseImagesFresh_MissingLockPasses(t *testing.T) {
+	dir := t.TempDir()
+	cfg := cfgWithBases("m/p", "alpine:3.21")
+	if err := enforceBaseImagesFresh(cfg, dir, false); err != nil {
+		t.Fatalf("missing lock should pass (not yet pinned), got %v", err)
+	}
+}
+
+// TestEnforceBaseImagesFresh_FeatureOffPasses confirms a project declaring no
+// base_images is never gated.
+func TestEnforceBaseImagesFresh_FeatureOffPasses(t *testing.T) {
+	if err := enforceBaseImagesFresh(&config.ProjectConfig{}, t.TempDir(), false); err != nil {
+		t.Fatalf("feature off should pass, got %v", err)
 	}
 }
 

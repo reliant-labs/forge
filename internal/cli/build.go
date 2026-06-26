@@ -147,6 +147,14 @@ type buildOptions struct {
 	// re-pin on demand (or as part of `forge upgrade`). Resolution goes
 	// through the mirror, so it never hits the rate-limited upstream.
 	repinBases bool
+	// forceStaleBases lets a build PROCEED with a base-images lock that is
+	// out of sync with forge.yaml docker.base_images (a declared tag the lock
+	// is missing, or the mirror moved). By default that drift is a HARD error
+	// — shipping images off stale pins silently misses the security/bug-fix
+	// updates a re-pin would pull, so the build refuses rather than warns.
+	// This escape hatch is for the deliberate "I know the lock is behind and
+	// want to ship anyway" case (e.g. an air-gapped re-pin happens later).
+	forceStaleBases bool
 }
 
 func newBuildCmd() *cobra.Command {
@@ -218,6 +226,7 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge deploy uses the same value.")
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge build` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.repinBases, "repin-bases", false, "Re-resolve every docker.base_images tag's multi-arch index digest THROUGH the configured mirror and rewrite .forge/base-images.lock.json, then exit without building. This is the drift-control path: declare bases once in forge.yaml, re-pin on demand. Resolution goes through the mirror (a pull-through cache), so it never hits the rate-limited upstream registry.")
+	cmd.Flags().BoolVar(&opts.forceStaleBases, "force-stale-bases", false, "Proceed with the build even when .forge/base-images.lock.json is out of sync with forge.yaml docker.base_images (declared tag set changed or mirror moved). By default that drift is a hard error — stale pins silently ship images that miss base-image security/bug-fix updates. Prefer `forge build --repin-bases` to refresh the lock; this flag is the deliberate ship-anyway escape hatch.")
 	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). REQUIRES --env <env>: the release's image SET (project images plus per-env external build_cmd images like reliant/workspace-base) is discovered from deploy/kcl/<env>/main.k. The built images stay env-agnostic — pick any env that declares the full set, then promote to every env with `forge promote <version> --to <env>`. Captures each image's digest into a release ledger (.forge/releases/<version>.json); `forge deploy <env>` then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
 
 	return cmd
@@ -325,6 +334,18 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// the codegen-staleness scan it doesn't need.
 	if opts.repinBases {
 		return repinBaseImages(ctx, cfg, projectDirForKCL())
+	}
+
+	// Enforce base-image lock freshness BEFORE any build work. A lock that's
+	// out of sync with forge.yaml docker.base_images (declared tag set changed
+	// or mirror moved) means the build would inject STALE pins — silently
+	// shipping images off base refs that may have pending security/bug-fix
+	// updates. That's a hard error (run `forge build --repin-bases`), not a
+	// warning the user scrolls past; --force-stale-bases is the deliberate
+	// ship-anyway escape hatch. Runs up front so the failure is immediate and
+	// deterministic rather than racing the concurrent per-docker lock reads.
+	if err := enforceBaseImagesFresh(cfg, projectDirForKCL(), opts.forceStaleBases); err != nil {
+		return err
 	}
 
 	// Ensure generated code exists / is fresh before any `go build`.

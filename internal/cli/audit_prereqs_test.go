@@ -22,7 +22,7 @@ func TestCrossCheckPrereqs_Checklist(t *testing.T) {
 	dns := []DNSRecordEntity{
 		{Host: "*.workspaces.example.com", Type: "A", Reason: "wildcard"},
 	}
-	cat := crossCheckPrereqs(secrets, dns)
+	cat := crossCheckPrereqs(secrets, dns, nil)
 	if cat.Status != audittype.StatusOK {
 		t.Fatalf("status = %q, want ok (a multi-member byte-match group is fine)", cat.Status)
 	}
@@ -51,7 +51,7 @@ func TestCrossCheckPrereqs_SingletonGroupWarns(t *testing.T) {
 	secrets := []ExternalSecretEntity{
 		{Name: "lonely", Namespace: "prod", Keys: []string{"k"}, ValueGroup: "solo"},
 	}
-	cat := crossCheckPrereqs(secrets, nil)
+	cat := crossCheckPrereqs(secrets, nil, nil)
 	if cat.Status != audittype.StatusWarn {
 		t.Fatalf("status = %q, want warn for a single-member byte-match group", cat.Status)
 	}
@@ -63,7 +63,7 @@ func TestCrossCheckPrereqs_SingletonGroupWarns(t *testing.T) {
 
 // TestCrossCheckPrereqs_Empty asserts no declarations => ok with zero counts.
 func TestCrossCheckPrereqs_Empty(t *testing.T) {
-	cat := crossCheckPrereqs(nil, nil)
+	cat := crossCheckPrereqs(nil, nil, nil)
 	if cat.Status != audittype.StatusOK {
 		t.Fatalf("status = %q, want ok", cat.Status)
 	}

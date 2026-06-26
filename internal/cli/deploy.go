@@ -659,6 +659,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 			targetArch:      targetArch,
 			imageDigests:    imageDigests,
 			requiredSecrets: requiredSecretsForPreflight(entities),
+			secretSupply:    secretSupplyForPreflight(entities),
 		}); err != nil {
 			return err
 		}
@@ -1624,6 +1625,14 @@ type deployPreflightInput struct {
 	// declared-required-but-absent Secret/key BLOCKS the deploy (and a
 	// value_group byte mismatch is caught). Empty => no declared prereqs.
 	requiredSecrets []cluster.RequiredSecret
+	// secretSupply is the env's bundle-internal Secret SUPPLY for the
+	// render-time back-propagation gate: the Secrets the bundle PROVIDES via a
+	// forge.KubeconfigSecret mint, a forge.ExternalSecret promise, or a
+	// rendered secret_provider Secret. Threaded into PreflightOpts.SecretSupply
+	// so a workload mounting a Secret NOTHING declares fails at render time
+	// (the silent FailedMount fix). Rendered-stream Secrets are collected from
+	// the manifests directly, so this carries only the entity-derived supply.
+	secretSupply []cluster.SecretSupply
 }
 
 // requiredSecretsForPreflight projects the env's declared external Secret
@@ -1643,6 +1652,56 @@ func requiredSecretsForPreflight(entities *KCLEntities) []cluster.RequiredSecret
 			Keys:       s.Keys,
 			ValueGroup: s.ValueGroup,
 		})
+	}
+	return out
+}
+
+// secretSupplyForPreflight projects the env's bundle-internal Secret SUPPLY
+// onto the cluster-package SecretSupply shape the render-time back-propagation
+// gate consumes — keeping the cluster package decoupled from the cli entity
+// types (the same pattern requiredSecretsForPreflight uses). It enumerates the
+// Secrets the bundle PROVIDES that aren't rendered as a `kind: Secret`
+// document (those the gate collects from the manifest stream itself):
+//
+//   - forge.KubeconfigSecret mints (entities.KubeconfigSecrets) — forge mints
+//     each fresh every up and applies it as a k8s Secret. The control-plane bug
+//     that motivated this gate was a mounted Secret with NO matching
+//     KubeconfigSecret; declaring one is the supply that satisfies the demand.
+//   - forge.ExternalSecret promises (entities.RequiredSecrets) — the author's
+//     explicit out-of-band promise the Secret exists. Counts as SATISFIED here;
+//     the LIVE preflight separately verifies it's actually provisioned.
+//   - rendered secret_provider Secrets (SecretProvider.Secrets, Type=="rendered")
+//     — forge renders + applies these per cluster; recorded as supply for
+//     completeness even though they typically also appear in the manifest
+//     stream.
+//
+// nil entities / no supply => nil (only rendered-stream Secrets then count).
+func secretSupplyForPreflight(entities *KCLEntities) []cluster.SecretSupply {
+	if entities == nil {
+		return nil
+	}
+	var out []cluster.SecretSupply
+	for _, k := range entities.KubeconfigSecrets {
+		out = append(out, cluster.SecretSupply{
+			Name:      k.Name,
+			Namespace: k.Namespace,
+			Kind:      cluster.SupplyKubeconfigSecret,
+		})
+	}
+	for _, s := range entities.RequiredSecrets {
+		out = append(out, cluster.SecretSupply{
+			Name:      s.Name,
+			Namespace: s.Namespace,
+			Kind:      cluster.SupplyExternalSecret,
+		})
+	}
+	if entities.SecretProvider != nil {
+		for _, s := range entities.SecretProvider.Secrets {
+			out = append(out, cluster.SecretSupply{
+				Name: s.Name,
+				Kind: cluster.SupplyRenderedManifest,
+			})
+		}
 	}
 	return out
 }
@@ -1683,6 +1742,15 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		ImageArch:    cluster.DockerImageArchChecker{},
 		TargetArch:   in.targetArch,
 		SkipImageRef: cluster.LocalImageRef,
+		// Render-time secret back-propagation supply. Set UNCONDITIONALLY (not
+		// gated behind the remote-cluster block below): the back-propagation
+		// gate is a pure, no-cluster check that runs on every deploy — incl.
+		// local dev clusters and --dry-run — so a workload mounting a Secret
+		// nothing declares fails fast at render time rather than rotting on
+		// FailedMount. Rendered-stream Secrets are collected from the manifests;
+		// this carries the KubeconfigSecret / ExternalSecret / rendered-provider
+		// supply.
+		SecretSupply: in.secretSupply,
 	}
 	// Secret + ConfigMap checks only against a REMOTE cluster (see
 	// docstring). An empty or local context leaves opts.Secrets /

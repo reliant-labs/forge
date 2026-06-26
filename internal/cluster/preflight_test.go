@@ -470,6 +470,10 @@ func TestPreflight_NoContextSkipsSecretCheck(t *testing.T) {
 		// Context empty → secret check skipped entirely, even with a getter.
 		Secrets: fakeSecretGetter{secrets: map[string]map[string]struct{}{}},
 		Images:  fakeImageChecker{present: keySet("ghcr.io/acme/api:abc123")},
+		// app-secrets is provided out-of-band (this test exercises the live
+		// secret-check skip, not the render-time back-prop gate); declare the
+		// supply so the back-prop gate doesn't flag the fixture's secretKeyRef.
+		SecretSupply: []SecretSupply{{Name: "app-secrets", Kind: SupplyGenerated}},
 	}
 	if err := Preflight(context.Background(), opts); err != nil {
 		t.Fatalf("missing secret context should skip the secret check, got: %v", err)
@@ -695,6 +699,10 @@ func TestRunPreflightChecks_InconclusiveIsWarningNotMiss(t *testing.T) {
 	opts := PreflightOpts{
 		Manifests: deploymentManifest,
 		Images:    fakeImageChecker{inconclusive: keySet("ghcr.io/acme/api:abc123")},
+		// Supply the fixture's secret so the render-time back-prop gate
+		// (which runs on this no-context path) doesn't flag it — this test
+		// asserts only the image-inconclusive behavior.
+		SecretSupply: []SecretSupply{{Name: "app-secrets", Kind: SupplyGenerated}},
 	}
 	res, err := runPreflightChecks(context.Background(), opts, refs)
 	if err != nil {

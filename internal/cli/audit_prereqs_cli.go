@@ -27,9 +27,11 @@ package cli
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 
 	"github.com/reliant-labs/forge/internal/cli/audittype"
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -41,14 +43,28 @@ func auditPrerequisites(cfg *config.ProjectConfig, projectDir string) audittype.
 	if cfg == nil {
 		return audittype.Category{Status: audittype.StatusError, Summary: "no forge.yaml"}
 	}
-	entities, err := RenderKCL(context.Background(), projectDir, "dev")
+	ctx := context.Background()
+	entities, err := RenderKCL(ctx, projectDir, "dev")
 	if err != nil {
 		return audittype.Category{
 			Status:  audittype.StatusWarn,
 			Summary: fmt.Sprintf("could not evaluate dev KCL: %v", err),
 		}
 	}
-	return crossCheckPrereqs(entities.RequiredSecrets, entities.RequiredDNS)
+	// Render the dev manifest stream and run the render-time secret
+	// back-propagation gate: a workload mounting/referencing a Secret nothing
+	// in the bundle provides (no rendered Secret / KubeconfigSecret /
+	// ExternalSecret) is an ERROR — the pod would FailedMount forever. This is
+	// the static, no-cluster half of the same gate the deploy preflight runs;
+	// surfacing it in audit lets CI catch a silently-undeclared mount without a
+	// deploy. A render failure here is non-fatal (the declarations above still
+	// audit); we just skip the supply check.
+	var undeclared []cluster.UndeclaredSecretMount
+	mainK := filepath.Join(projectDir, "deploy", "kcl", "dev", "main.k")
+	if manifests, merr := cluster.RenderManifests(ctx, mainK, "audit", "", "dev", nil, nil); merr == nil {
+		undeclared = cluster.CheckSecretSupply(manifests, secretSupplyForPreflight(entities))
+	}
+	return crossCheckPrereqs(entities.RequiredSecrets, entities.RequiredDNS, undeclared)
 }
 
 // crossCheckPrereqs is the pure decision core: takes the declared external
@@ -62,7 +78,7 @@ func auditPrerequisites(cfg *config.ProjectConfig, projectDir string) audittype.
 //   - one line per declared DNSRecord (host, type, target, reason),
 //   - one line per cross-secret byte-match group naming its members (so the
 //     operator sees which Secrets must carry identical bytes).
-func crossCheckPrereqs(secrets []ExternalSecretEntity, dns []DNSRecordEntity) audittype.Category {
+func crossCheckPrereqs(secrets []ExternalSecretEntity, dns []DNSRecordEntity, undeclared []cluster.UndeclaredSecretMount) audittype.Category {
 	var findings []string
 
 	for _, s := range secrets {
@@ -110,18 +126,41 @@ func crossCheckPrereqs(secrets []ExternalSecretEntity, dns []DNSRecordEntity) au
 			id, len(members), joinSorted(members)))
 	}
 
+	// Undeclared secret mounts: a workload mounts/references a Secret nothing in
+	// the bundle provides. This is the static half of the deploy preflight's
+	// back-propagation gate — an ERROR (the pod FailedMounts), not a smell.
+	var undeclaredFindings []string
+	for _, m := range undeclared {
+		who := "a workload"
+		if len(m.Workloads) > 0 {
+			who = joinSorted(m.Workloads)
+		}
+		undeclaredFindings = append(undeclaredFindings, fmt.Sprintf(
+			"undeclared-mount: Secret %q mounted by %s but nothing declares it (no rendered Secret, KubeconfigSecret, or ExternalSecret) — it will FailedMount",
+			m.Secret, who))
+	}
+	findings = append(findings, undeclaredFindings...)
+
 	sort.Strings(findings)
 
 	status := audittype.StatusOK
 	if singletonGroups > 0 {
 		status = audittype.StatusWarn
 	}
+	// An undeclared mount is a hard defect — it dominates the singleton warn.
+	if len(undeclared) > 0 {
+		status = audittype.StatusError
+	}
 	summary := fmt.Sprintf("%d external secret(s), %d dns record(s), %d byte-match group(s)",
 		len(secrets), len(dns), len(groups))
+	if len(undeclared) > 0 {
+		summary += fmt.Sprintf(", %d UNDECLARED secret mount(s)", len(undeclared))
+	}
 	details := map[string]any{
-		"external_secrets":  len(secrets),
-		"dns_records":       len(dns),
-		"byte_match_groups": len(groups),
+		"external_secrets":         len(secrets),
+		"dns_records":              len(dns),
+		"byte_match_groups":        len(groups),
+		"undeclared_secret_mounts": len(undeclared),
 	}
 	if len(findings) > 0 {
 		details["findings"] = findings

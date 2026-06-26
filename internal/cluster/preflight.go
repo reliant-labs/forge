@@ -588,6 +588,18 @@ type PreflightOpts struct {
 	// (the KCL schema still enforces that a group's members declare the same
 	// KEY SET; only the live byte equality needs cluster reads).
 	SecretValues SecretValueGetter
+
+	// SecretSupply is the env's bundle-internal Secret SUPPLY for the
+	// RENDER-TIME back-propagation gate (CheckSecretSupply): the Secrets the
+	// bundle PROVIDES via a forge.KubeconfigSecret mint, a forge.ExternalSecret
+	// out-of-band promise, or any other generated/known Secret forge produces.
+	// Rendered-stream Secrets (kind: Secret) are collected from Manifests
+	// directly, so this need only carry the entity-derived supply. The gate is
+	// pure (NO cluster) and ALWAYS runs — it converts a workload mounting a
+	// Secret nothing declares (the silent FailedMount / 15-min ContainerCreating
+	// rot) into a fail-fast render-time BLOCK. Empty => only rendered-stream
+	// Secrets count as supply. See SecretSupply / CheckSecretSupply.
+	SecretSupply []SecretSupply
 }
 
 // RequiredSecret is one declared external Secret prerequisite the preflight
@@ -679,6 +691,15 @@ type PreflightResult struct {
 	// member Secret exists (a missing member is reported by the existence
 	// check, not here).
 	ByteMatchMismatches []string
+	// UndeclaredSecretMounts is the RENDER-TIME back-propagation result: every
+	// Secret a workload mounts/references that NOTHING in the rendered bundle
+	// provides (no rendered Secret, no KubeconfigSecret, no ExternalSecret, no
+	// generated/known Secret). These BLOCK — the pod would stick on
+	// MountVolume.SetUp failed / CreateContainerConfigError forever, with zero
+	// error at deploy time. Unlike every other field here this is a PURE,
+	// no-cluster check that ALWAYS runs (incl. dry-run / local clusters) — it's
+	// the complement to the live Secret preflight. See CheckSecretSupply.
+	UndeclaredSecretMounts []UndeclaredSecretMount
 }
 
 // OK reports whether nothing was found missing. Inconclusive image warnings
@@ -691,7 +712,8 @@ func (r PreflightResult) OK() bool {
 		len(r.ArchMismatchImages) == 0 &&
 		len(r.MissingCRDs) == 0 &&
 		len(r.MissingRequiredSecretKeys) == 0 &&
-		len(r.ByteMatchMismatches) == 0
+		len(r.ByteMatchMismatches) == 0 &&
+		len(r.UndeclaredSecretMounts) == 0
 }
 
 // wholeSecretMarker is the placeholder listed under a Secret that doesn't
@@ -742,6 +764,30 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 		MissingRequiredSecretKeys: map[string][]string{},
 	}
 
+	hasContext := strings.TrimSpace(opts.Context) != ""
+
+	// RENDER-TIME secret back-propagation gate — PURE, no cluster. This is the
+	// COMPLEMENT to the live Secret check below: it flags a workload mounting a
+	// Secret that NOTHING in the rendered bundle provides (no rendered Secret,
+	// KubeconfigSecret, or ExternalSecret), turning a silent 15-minute
+	// FailedMount rot into a fail-fast block on the no-cluster path
+	// (forge up --env=dev / --dry-run / host-only).
+	//
+	// It runs ONLY when the LIVE Secret check is NOT active (no SecretGetter or
+	// no context). When a live check IS configured, that check is authoritative
+	// for the deploy-namespace Secrets: a cluster-provisioned Secret (out-of-band,
+	// like an ExternalSecret) is reported PRESENT, and a genuinely-absent one is
+	// already reported by the live MissingSecretKeys path — so running the
+	// back-prop gate too would double-report (and false-flag a legitimately
+	// cluster-provided Secret the bundle deliberately doesn't render). Gating it
+	// to the no-cluster path keeps the two checks non-overlapping: live check
+	// when a cluster is present, render-time back-prop when it isn't.
+	if !(opts.Secrets != nil && hasContext) {
+		if misses := CheckSecretSupply(opts.Manifests, opts.SecretSupply); len(misses) > 0 {
+			result.UndeclaredSecretMounts = misses
+		}
+	}
+
 	var (
 		mu       sync.Mutex
 		wg       sync.WaitGroup
@@ -754,8 +800,6 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 		}
 		mu.Unlock()
 	}
-
-	hasContext := strings.TrimSpace(opts.Context) != ""
 
 	// Secret checks — one lookup per distinct Secret, only when a getter
 	// and a target context are configured.
@@ -1347,6 +1391,17 @@ func FormatPreflightReport(r PreflightResult) string {
 		}
 	}
 
+	if len(r.UndeclaredSecretMounts) > 0 {
+		b.WriteString("\n  Secrets a workload mounts/references but NOTHING in the bundle provides (would FailedMount at schedule time):\n")
+		for _, m := range r.UndeclaredSecretMounts {
+			who := "a workload"
+			if len(m.Workloads) > 0 {
+				who = quoteJoin(m.Workloads)
+			}
+			b.WriteString(fmt.Sprintf("    - Secret %q mounted by %s — no rendered Secret, KubeconfigSecret, or ExternalSecret declares it\n", m.Secret, who))
+		}
+	}
+
 	b.WriteString("\nNothing was applied. Fix the gaps, then re-run the deploy:\n")
 	if len(r.MissingSecretKeys) > 0 {
 		b.WriteString("  - provision the missing Secret key(s) in the target cluster/namespace\n")
@@ -1381,6 +1436,11 @@ func FormatPreflightReport(r PreflightResult) string {
 	if len(r.ByteMatchMismatches) > 0 {
 		b.WriteString("  - re-sync the value-group Secret(s) above so every ref carries identical bytes\n")
 		b.WriteString("      (a divergence means a half-rotated shared credential).\n")
+	}
+	if len(r.UndeclaredSecretMounts) > 0 {
+		b.WriteString("  - declare a forge.KubeconfigSecret (to MINT it) or forge.ExternalSecret (to\n")
+		b.WriteString("      promise it out-of-band), render it via a secret_provider, or remove the\n")
+		b.WriteString("      mount/reference if the workload doesn't need it.\n")
 	}
 	b.WriteString("  - or pass --skip-preflight to bypass this check (you accept the risk of a crash-on-apply).")
 	return b.String()

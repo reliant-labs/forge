@@ -1155,8 +1155,8 @@ func (f FeaturesConfig) IsZero() bool {
 //
 // What lives here today:
 //
-//   - Ingress:        Gateway API codegen + cert-manager + Traefik
-//     wiring. Provider matrix is fragile and not yet
+//   - Ingress:        Gateway API codegen + cert-manager + Envoy
+//     Gateway wiring. Provider matrix is fragile and not yet
 //     proven across real cloud providers.
 //   - ExternalBuilds: RETIRED gate (kept as an accepted, inert key for
 //     back-compat). `Service.build_cmd` is the build-side
@@ -1284,8 +1284,8 @@ func (f FeaturesConfig) PacksEnabled() bool { return f.resolve(FeaturePacks) }
 // IngressEnabled reports whether Gateway API ingress is wired
 // (default: OFF — opt-in under `features.experimental.ingress: true`).
 // When off, forge skips ingress codegen, `forge cluster up` skips
-// the Traefik + GatewayClass install, `forge cluster urls` returns nothing,
-// and the audit ingress category is suppressed.
+// the Envoy Gateway + GatewayClass install, `forge cluster urls` returns
+// nothing, and the audit ingress category is suppressed.
 func (f FeaturesConfig) IngressEnabled() bool { return f.Experimental.Ingress }
 
 // ExternalBuildsEnabled reports the raw value of the RETIRED

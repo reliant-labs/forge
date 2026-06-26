@@ -132,10 +132,10 @@ type ClusterEntity struct {
 	Agents          int  `json:"agents,omitempty"`
 	APIPort         int  `json:"api_port,omitempty"`
 	// Ingress, when true, installs the Gateway API stack (pinned Gateway-API
-	// CRDs + vendored Traefik controller + the `traefik` GatewayClass) into
-	// this cluster after it's ensured. A fresh k3d cluster ships none of
+	// CRDs + the Envoy Gateway controller via helm + the `eg` GatewayClass)
+	// into this cluster after it's ensured. A fresh k3d cluster ships none of
 	// these; an env whose Gateway/HTTPRoute/GRPCRoute resources land on this
-	// cluster needs it on. Idempotent (kubectl apply + a CRD cache).
+	// cluster needs it on. Idempotent (helm upgrade --install + kubectl apply).
 	Ingress bool `json:"ingress,omitempty"`
 }
 

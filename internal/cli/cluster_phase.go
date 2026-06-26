@@ -206,14 +206,14 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 }
 
 // installClusterIngress installs the Gateway API stack (pinned
-// Gateway-API CRDs + the vendored Traefik controller + the `traefik`
+// Gateway-API CRDs + the Envoy Gateway controller via helm + the `eg`
 // GatewayClass) into the named declared cluster, targeting its
 // `k3d-<name>` kubectl context explicitly so it lands on THAT cluster
 // regardless of the active context. Reuses the same installIngressBundle
 // the dev `forge cluster up` path uses; idempotent on warm clusters.
 func installClusterIngress(ctx context.Context, c ClusterEntity, projectDir, env string) error {
 	kctx := "k3d-" + c.Name
-	fmt.Printf("  installing Gateway API + Traefik ingress into cluster %q (context %s)...\n", c.Name, kctx)
+	fmt.Printf("  installing Gateway API + Envoy Gateway ingress into cluster %q (context %s)...\n", c.Name, kctx)
 	if err := installIngressBundle(ctx, kctx, projectDir, env); err != nil {
 		return fmt.Errorf("install ingress on cluster %q: %w", c.Name, err)
 	}

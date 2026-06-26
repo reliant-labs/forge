@@ -320,15 +320,16 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		}
 	}
 
-	// Install the ingress bundle (Gateway API CRDs + Traefik +
-	// GatewayClass) when the project has features.ingress enabled.
-	// Runs AFTER the kubectl context is pinned so applies hit the
+	// Install the ingress bundle (Gateway API CRDs + Envoy Gateway via
+	// helm + the `eg` GatewayClass) when the project has features.ingress
+	// enabled. Runs AFTER the kubectl context is pinned so applies hit the
 	// right cluster.
 	if ingressOn {
 		projectDir, _ := os.Getwd()
 		// kctx="" — the dev path pins the context via pinKubectlContext
-		// above, so the install inherits it. env="dev" drives the Traefik
-		// entrypoints off the dev env's Gateway listeners.
+		// above, so the install inherits it. env="dev" is informational
+		// (Envoy Gateway derives proxy listeners from each Gateway's
+		// spec.listeners dynamically — no env-specific install state).
 		if err := installIngressBundle(ctx, "", projectDir, "dev"); err != nil {
 			return fmt.Errorf("install ingress: %w", err)
 		}

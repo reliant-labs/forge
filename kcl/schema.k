@@ -415,22 +415,21 @@ schema Gateway:
     public / internal / webhooks each typically gets its own Gateway
     with its own listeners and TLS.
 
-    `gateway_class_name` names the GatewayClass the cloud Gateway
-    controller installs. forge is OPINIONATED on Envoy Gateway as the
-    single Gateway API controller, so this defaults to `eg` (the
+    `gateway_class_name` names the GatewayClass the Gateway controller
+    installs. forge is OPINIONATED on Envoy Gateway as the SINGLE Gateway
+    API controller — local k3d AND cloud — so this defaults to `eg` (the
     GatewayClass the Envoy Gateway install creates, controllerName
     `gateway.envoyproxy.io/gatewayclass-controller`). Envoy Gateway
     serves HTTPRoute AND GRPCRoute natively (native gRPC bidi streams),
     so one controller covers every forge ingress shape — there is no
     reason for an env to silently pick a second controller.
 
-    LOCAL-DEV EXCEPTION: `forge dev cluster up` still installs Traefik +
-    the `traefik` GatewayClass into the local k3d cluster (the dev
-    installer is Traefik-based). A dev / e2e env that renders against
-    that local cluster must therefore pin `gateway_class_name =
-    "traefik"` explicitly. The default stays `eg` because the
-    OPINIONATED, production-facing answer is one Envoy controller; the
-    local Traefik install is the documented exception, not the default.
+    `forge cluster up` / `forge up --env=<env>` install the SAME Envoy
+    Gateway helm chart into the local k3d cluster that the cloud envs
+    run, so the default `eg` is correct EVERYWHERE — no per-env pin, no
+    local-dev exception. (Earlier forge installed Traefik for local dev,
+    which required dev/e2e envs to pin `gateway_class_name = "traefik"`;
+    that exception is gone — every env now uses the `eg` default.)
 
     `host` is the default hostname for routes on this gateway. Per-
     route `host:` overrides win. `raw_policy` is the v1 escape hatch

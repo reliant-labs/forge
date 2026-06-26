@@ -1,0 +1,20 @@
+# Forge-managed GatewayClass for the Envoy Gateway provider. Cluster-scoped;
+# applied once at `forge cluster up` / `forge up --env=<env>` time. Project
+# Gateways reference this by name via `gateway_class_name = "eg"` (the
+# default in forge kcl/schema.k Gateway.gateway_class_name), which is now the
+# SAME class every forge env uses — local k3d AND cloud (staging/preprod/prod).
+#
+# The gateway-helm chart's controller (gateway.envoyproxy.io/gatewayclass-
+# controller) reconciles this class into a managed Envoy proxy per Gateway.
+# Applied idempotently after the controller install so the class is ready
+# before the deploy phase applies the env's Gateways. Envoy Gateway serves
+# HTTPRoute AND GRPCRoute natively, so this one class covers every forge
+# ingress shape.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+  labels:
+    app.kubernetes.io/managed-by: forge
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller

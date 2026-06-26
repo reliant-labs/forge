@@ -9,15 +9,13 @@ import (
 
 func TestIngressTemplatesEmbedded(t *testing.T) {
 	cat := templates.IngressTemplates()
-	// traefik.yaml.tmpl is templated at install time (per-project
-	// Gateway listeners → --entrypoints args); see
-	// internal/cli/dev_cluster_ingress.go. Get() returns the raw
-	// template bytes — the render path is exercised in
-	// ingress_install_test.go.
+	// The local ingress install is Envoy Gateway: VERSION pins the
+	// gateway-helm chart + Gateway API CRD versions, gatewayclass.yaml
+	// is the vendored `eg` GatewayClass forge applies after the helm
+	// install. See internal/cli/dev_cluster_ingress.go.
 	for _, name := range []string{
-		"traefik/VERSION",
-		"traefik/traefik.yaml.tmpl",
-		"traefik/gatewayclass.yaml",
+		"envoy/VERSION",
+		"envoy/gatewayclass.yaml",
 	} {
 		b, err := cat.Get(name)
 		if err != nil {
@@ -29,8 +27,8 @@ func TestIngressTemplatesEmbedded(t *testing.T) {
 		}
 	}
 	// VERSION carries both pin lines for cluster-up to read.
-	b, _ := cat.Get("traefik/VERSION")
-	for _, want := range []string{"traefik=", "gateway_api="} {
+	b, _ := cat.Get("envoy/VERSION")
+	for _, want := range []string{"envoy_gateway=", "gateway_api="} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("VERSION missing %q in:\n%s", want, b)
 		}

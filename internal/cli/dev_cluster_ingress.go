@@ -18,9 +18,13 @@
 //     needs, but we apply the pinned standard channel explicitly first
 //     (server-side) so the CRD surface matches the cloud install and so
 //     `kubectl wait` on Established gates the GatewayClass apply.
-//  2. `helm upgrade --install` the Envoy Gateway controller from the
-//     pinned gateway-helm chart version into envoy-gateway-system, the
-//     SAME release the cloud envs run. Envoy Gateway provisions a managed
+//  2. `helm upgrade --install --skip-crds` the Envoy Gateway controller
+//     from the pinned gateway-helm chart version into envoy-gateway-system,
+//     the SAME release the cloud envs run. `--skip-crds` is required: the
+//     chart bundles an OLDER, experimental-channel copy of the Gateway API
+//     CRDs that the safe-upgrades ValidatingAdmissionPolicy (shipped by the
+//     standard CRDs applied in step 1) would DENY — see helmInstallEnvoyGateway.
+//     Envoy Gateway provisions a managed
 //     Envoy proxy per Gateway with listener sockets derived dynamically
 //     from Gateway.spec.listeners — no static per-listener entrypoint
 //     config to template (unlike the old Traefik install). The proxy's
@@ -243,12 +247,30 @@ const (
 // blocks until the controller Deployment is Available so the GatewayClass
 // apply (and the subsequent deploy phase) doesn't race a controller that
 // isn't reconciling yet.
+//
+// `--skip-crds` is load-bearing. forge OWNS the Gateway API CRD surface
+// explicitly: installIngressBundle applies the pinned standard-channel
+// CRDs (gateway_api= in VERSION) BEFORE this helm install, matching the
+// cloud envs. The gateway-helm chart bundles its OWN copy of the CRDs in
+// crds/gatewayapi-crds.yaml — and as of v1.7.2 that bundle is the
+// EXPERIMENTAL channel at an OLDER bundle-version (v1.4.1) than the
+// standard CRDs forge pins (v1.5.1). The v1.5.0+ standard-install.yaml
+// ships a `safe-upgrades` ValidatingAdmissionPolicy (which forge's CRD
+// apply installs and activates) that DENIES any CRD apply judged
+// "before v1.5.0" or "experimental on top of standard". So letting helm
+// manage CRDs makes the install deny ITSELF: forge's standard v1.5.1
+// apply activates the policy, then helm's bundled v1.4.1-experimental
+// CRDs trip it (the exact "Installing CRDs with version before v1.5.0 is
+// prohibited" failure). Skipping the chart's CRDs leaves forge as the
+// single source of truth for the CRD version (in lockstep with cloud)
+// and installs ONLY the controller here.
 func helmInstallEnvoyGateway(ctx context.Context, kctx, chartVersion string) error {
 	args := []string{
 		"upgrade", "--install", envoyGatewayReleaseName, envoyGatewayChartRef,
 		"--version", chartVersion,
 		"--namespace", envoyGatewayNamespace,
 		"--create-namespace",
+		"--skip-crds",
 		"--wait", "--timeout", "180s",
 	}
 	if kctx != "" {

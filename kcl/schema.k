@@ -1040,6 +1040,27 @@ schema Cluster:
                      idempotent (kubectl apply + a CRD-cache), so re-runs
                      no-op. Default False — a cluster with no ingress
                      resources (reached via port-forward) leaves it off.
+
+                     `ingress` is the IMPERATIVE install. An env that
+                     declares its Gateway API controller DECLARATIVELY as a
+                     `forge.HelmChart` platform dep (Bundle.helm_charts, the
+                     helm-as-a-RENDERER model the cloud envs use) leaves
+                     `ingress = False` and sets `host_ports = True` instead —
+                     the chart is applied in the deploy phase, but the k3d
+                     host-port mapping still needs to happen at CREATE time.
+      * `host_ports` — merge the generated `deploy/k3d-ports.yaml` Gateway
+                     listener host-port fragment into the k3d config at
+                     `cluster create` time. The Gateway's listeners (e.g.
+                     grpc :29190 for daemon dial-out) need host ports mapped
+                     through the k3d loadbalancer at CREATE time, or
+                     in-cluster→host→cluster traffic (host.k3d.internal:<port>)
+                     finds nothing listening. `ingress = True` IMPLIES this
+                     (an imperatively-installed Gateway also needs the ports);
+                     set `host_ports = True` EXPLICITLY when the controller is
+                     installed declaratively (ingress = False) but the cluster
+                     still hosts a Gateway whose listeners must be host-mapped.
+                     Default False. No-op when the cluster has no `config` or
+                     no deploy/k3d-ports.yaml fragment.
     """
     name: str
     owner?: Cluster
@@ -1048,6 +1069,7 @@ schema Cluster:
     agents: int = 0
     api_port?: int
     ingress: bool = False
+    host_ports: bool = False
     # Derived: kubectl context (k3d-<name>). Computed from `name` so
     # consumers reference `<cluster>.context` rather than re-spelling the
     # `k3d-` prefix. Always present.

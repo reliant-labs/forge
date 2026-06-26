@@ -141,7 +141,18 @@ type ClusterEntity struct {
 	// into this cluster after it's ensured. A fresh k3d cluster ships none of
 	// these; an env whose Gateway/HTTPRoute/GRPCRoute resources land on this
 	// cluster needs it on. Idempotent (helm upgrade --install + kubectl apply).
+	//
+	// This is the IMPERATIVE install. An env that declares its Gateway API
+	// controller DECLARATIVELY as a forge.HelmChart platform dep
+	// (Bundle.helm_charts) leaves Ingress false and sets HostPorts true.
 	Ingress bool `json:"ingress,omitempty"`
+	// HostPorts, when true, merges the generated deploy/k3d-ports.yaml Gateway
+	// listener host-port fragment into the k3d config at create time. Ingress
+	// IMPLIES this (an imperatively-installed Gateway also needs the host
+	// ports). Set HostPorts explicitly when the controller is installed
+	// declaratively (Ingress=false) but the cluster still hosts a Gateway
+	// whose listeners must be host-mapped at create time.
+	HostPorts bool `json:"host_ports,omitempty"`
 }
 
 // KubeconfigSecretEntity mirrors the kcl/schema.k KubeconfigSecret — a

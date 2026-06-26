@@ -492,6 +492,7 @@ _render_cluster = lambda c: Cluster -> any {
         "agents": c.agents
         "api_port": c.api_port if c.api_port else None
         "ingress": c.ingress if c.ingress else None
+        "host_ports": c.host_ports if c.host_ports else None
     }
 }
 

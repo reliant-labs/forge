@@ -415,15 +415,28 @@ schema Gateway:
     public / internal / webhooks each typically gets its own Gateway
     with its own listeners and TLS.
 
-    `gateway_class_name` names the GatewayClass installed by
-    `forge dev cluster up` (in dev) or the cloud Gateway controller
-    (in prod). Default `traefik` matches forge's dev install.
+    `gateway_class_name` names the GatewayClass the cloud Gateway
+    controller installs. forge is OPINIONATED on Envoy Gateway as the
+    single Gateway API controller, so this defaults to `eg` (the
+    GatewayClass the Envoy Gateway install creates, controllerName
+    `gateway.envoyproxy.io/gatewayclass-controller`). Envoy Gateway
+    serves HTTPRoute AND GRPCRoute natively (native gRPC bidi streams),
+    so one controller covers every forge ingress shape — there is no
+    reason for an env to silently pick a second controller.
+
+    LOCAL-DEV EXCEPTION: `forge dev cluster up` still installs Traefik +
+    the `traefik` GatewayClass into the local k3d cluster (the dev
+    installer is Traefik-based). A dev / e2e env that renders against
+    that local cluster must therefore pin `gateway_class_name =
+    "traefik"` explicitly. The default stays `eg` because the
+    OPINIONATED, production-facing answer is one Envoy controller; the
+    local Traefik install is the documented exception, not the default.
 
     `host` is the default hostname for routes on this gateway. Per-
     route `host:` overrides win. `raw_policy` is the v1 escape hatch
-    for provider-specific policy CRDs (Traefik Middleware, Envoy
-    Gateway BackendTrafficPolicy, etc.) — emitted verbatim alongside
-    the route.
+    for provider-specific policy CRDs (Envoy Gateway
+    BackendTrafficPolicy / ClientTrafficPolicy, etc.) — emitted
+    verbatim alongside the route.
 
     `addresses` pins the Gateway to specific load-balancer addresses
     (Gateway API `spec.addresses`). On GKE, reference a reserved global
@@ -449,7 +462,7 @@ schema Gateway:
     """
     name: str
     listeners: [GatewayListener]
-    gateway_class_name: str = "traefik"
+    gateway_class_name: str = "eg"
     host: str = ""
     tls?: GatewayTLS
     raw_policy: str = ""

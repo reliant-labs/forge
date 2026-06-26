@@ -65,7 +65,7 @@ assert_route_count = len(_routes) == 1
 assert_gw_api = _gateways[0].apiVersion == "gateway.networking.k8s.io/v1"
 assert_gw_name = _gateways[0].metadata.name == "public"
 assert_gw_ns = _gateways[0].metadata.namespace == "example-dev"
-assert_gw_class = _gateways[0].spec.gatewayClassName == "traefik"
+assert_gw_class = _gateways[0].spec.gatewayClassName == "eg"
 assert_gw_listener_port = _gateways[0].spec.listeners[0].port == 18080
 assert_gw_listener_proto = _gateways[0].spec.listeners[0].protocol == "HTTP"
 

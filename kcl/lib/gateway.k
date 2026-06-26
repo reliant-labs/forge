@@ -51,9 +51,9 @@ _cluster_label = lambda context: str -> {str: str} {
 
 # Map a GatewayListener.protocol to the Gateway API spec value.
 # H2C maps to Gateway API's HTTP protocol (HTTP/2 cleartext is
-# expressed via the listener's underlying behavior; specific
-# controllers — Traefik in particular — pick up h2c through the
-# combination of HTTP + a GRPCRoute attachment).
+# expressed via the listener's underlying behavior; Envoy Gateway
+# picks up h2c through the combination of HTTP + a GRPCRoute
+# attachment and serves native gRPC bidi streams on it).
 _listener_protocol = lambda p: str -> str {
     "HTTPS" if p == "HTTPS" else "HTTP"
 }

@@ -17,17 +17,17 @@ import (
 // and a dot-only traversal token is neutralized.
 func TestReleaseFileStem_PreservesDots(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"v1.0.0", "v1.0.0"},   // the Fix 3 case: dots preserved, least surprise
-		{"v1.4.0", "v1.4.0"},   //
+		{"v1.0.0", "v1.0.0"}, // the Fix 3 case: dots preserved, least surprise
+		{"v1.4.0", "v1.4.0"}, //
 		{"1.2.3-rc.1", "1.2.3-rc.1"},
-		{"v2", "v2"},           // no dots, unchanged
-		{"a/b", "a_b"},         // path separator flattened — never escapes the dir
-		{`a\b`, "a_b"},         // backslash too
-		{"a b", "a_b"},         // space flattened
-		{".", "_"},             // bare dot is a dir ref, neutralized
-		{"..", "__"},           // parent-dir traversal neutralized
-		{"...", "___"},         //
-		{"", "_"},              // empty never yields an empty stem
+		{"v2", "v2"},   // no dots, unchanged
+		{"a/b", "a_b"}, // path separator flattened — never escapes the dir
+		{`a\b`, "a_b"}, // backslash too
+		{"a b", "a_b"}, // space flattened
+		{".", "_"},     // bare dot is a dir ref, neutralized
+		{"..", "__"},   // parent-dir traversal neutralized
+		{"...", "___"}, //
+		{"", "_"},      // empty never yields an empty stem
 	}
 	for _, c := range cases {
 		if got := releaseFileStem(c.in); got != c.want {
@@ -188,6 +188,87 @@ func TestResolveReleaseDigests(t *testing.T) {
 
 	if _, err := resolveReleaseDigests(Release{Version: "v0", Artifacts: map[string]ReleaseArtifact{}}); err == nil {
 		t.Error("want error for a release with no shared digests, got nil")
+	}
+}
+
+// TestResolveReleaseDigests_EmptyArtifactsActionableError pins the friction
+// fix: a release cut with an EMPTY artifact map (forgot --push, no services
+// built, all external builds skipped) must fail with an ACTIONABLE message that
+// names the version, the likely causes, and `forge audit` — not the old vague
+// "carries no shared image digests to pin" that read like an internal invariant.
+func TestResolveReleaseDigests_EmptyArtifactsActionableError(t *testing.T) {
+	_, err := resolveReleaseDigests(Release{Version: "v1.4.0", Artifacts: map[string]ReleaseArtifact{}})
+	if err == nil {
+		t.Fatal("want error for a release with no artifacts, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		`"v1.4.0"`, // names the offending release
+		"no image digests",
+		"--push",      // the most common cause/remedy
+		"build_cwd",   // external-build-skip cause
+		"forge audit", // the inspect next-step
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("empty-artifacts error missing %q\n  got: %s", want, msg)
+		}
+	}
+}
+
+// TestResolveReleaseDigests_VariantOnlyError confirms a release that carries
+// artifacts but only variant-mode ones (no shared digest the MVP can pin)
+// fails with a message distinct from the empty-artifacts case, so the user
+// isn't told to re-run --push when the real situation is "variant promotion
+// isn't supported yet".
+func TestResolveReleaseDigests_VariantOnlyError(t *testing.T) {
+	_, err := resolveReleaseDigests(Release{
+		Version: "v2.0.0",
+		Artifacts: map[string]ReleaseArtifact{
+			// variant-mode: a digest keyed by an env variant, NOT sharedVariantKey,
+			// so SharedDigest() returns ("", false).
+			"control-plane": {Mode: "variant", Digests: map[string]string{"prod": sha("a")}},
+		},
+	})
+	if err == nil {
+		t.Fatal("want error for a variant-only release, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "variant") {
+		t.Errorf("variant-only error should mention variant artifacts\n  got: %s", msg)
+	}
+	if strings.Contains(msg, "--push") {
+		t.Errorf("variant-only error should NOT suggest --push (wrong remedy)\n  got: %s", msg)
+	}
+}
+
+// TestRunPromote_EmptyReleaseSurfacesActionableError proves the friction fix
+// reaches the user through the actual `forge promote` entrypoint: promoting a
+// release that was cut with no digests fails (no binding written) with the
+// actionable guidance, not a silent/confusing dead end.
+func TestRunPromote_EmptyReleaseSurfacesActionableError(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := WriteRelease(dir, Release{
+		Version:   "v3.1.0",
+		CreatedAt: nowRFC3339(),
+		Artifacts: map[string]ReleaseArtifact{}, // cut with no digests
+	}); err != nil {
+		t.Fatalf("write release: %v", err)
+	}
+
+	err := runPromote("v3.1.0", "staging")
+	if err == nil {
+		t.Fatal("want error promoting an empty release, got nil")
+	}
+	if !strings.Contains(err.Error(), "forge audit") {
+		t.Errorf("promote error should carry the actionable guidance\n  got: %s", err.Error())
+	}
+
+	// No binding should have been written for a release that pins nothing.
+	if _, bound, berr := boundReleaseForEnv(dir, "staging"); berr != nil {
+		t.Fatalf("read binding: %v", berr)
+	} else if bound {
+		t.Error("staging must NOT be bound when the release pins no digests")
 	}
 }
 

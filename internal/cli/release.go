@@ -327,7 +327,28 @@ func resolveReleaseDigests(r Release) (map[string]string, error) {
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("release %q carries no shared image digests to pin", r.Version)
+		// A release that pins nothing is a dead end for promote/deploy: the
+		// whole point is to advance content-addressed digests by reference.
+		// The single most common way to reach here is a release cut with an
+		// EMPTY artifact map — `forge build --release X` ran but captured no
+		// digests (forgot --push, no services built, external builds skipped
+		// for a missing build_cwd). The previous message ("carries no shared
+		// image digests to pin") read like an internal invariant and left the
+		// user with no next step, so distinguish the two cases and, for the
+		// empty-artifacts case, spell out exactly why a release ends up empty
+		// and what to do about it.
+		if len(r.Artifacts) == 0 {
+			return nil, fmt.Errorf(
+				"release %q was cut with no image digests. This can happen if:\n"+
+					"  (1) no docker images were built (check --env and that KCL declares services),\n"+
+					"  (2) digests were not captured (re-run the build with --push <registry>), or\n"+
+					"  (3) all external builds were skipped due to a missing build_cwd.\n"+
+					"Inspect the release file with `forge audit` to see what was recorded.",
+				r.Version)
+		}
+		// Artifacts exist but none resolved a shared digest — every artifact is
+		// variant-mode (deferred), so there is nothing the MVP can pin yet.
+		return nil, fmt.Errorf("release %q carries only variant-mode artifacts; shared image digests are required to promote/deploy (variant promotion is not yet supported)", r.Version)
 	}
 	return out, nil
 }

@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -565,6 +566,52 @@ type PreflightOpts struct {
 	// NOT be checked (e.g. local k3d / registry.localhost refs in a dev
 	// loop). A nil func checks every image (both existence AND arch).
 	SkipImageRef func(ref string) bool
+
+	// RequiredSecrets are the env's DECLARED external Secret prerequisites
+	// (forge.ExternalSecret) — out-of-band Secrets the deploy depends on but
+	// forge does NOT create. UNLIKE the secretKeyRef check above (which is
+	// driven by what the rendered manifests reference, all in opts.Namespace),
+	// a declared prereq carries its OWN namespace (cert-manager's
+	// `cloudflare-api-token` lives in the `cert-manager` namespace, not the
+	// deploy namespace), so each is checked in its declared namespace. A
+	// declared-required-but-absent Secret/key BLOCKS — this is the whole
+	// point: it converts "render green, then ACME hangs silently" into a
+	// fail-fast pre-apply block. Verified only when opts.Secrets is configured
+	// (a SecretGetter against the live target). Empty => no declared prereqs.
+	RequiredSecrets []RequiredSecret
+
+	// SecretValues, when set, resolves a Secret's full .data value bytes
+	// (base64-decoded) for the cross-secret BYTE-MATCH check: ExternalSecrets
+	// sharing a `value_group` must carry IDENTICAL bytes under their keys. A
+	// drifted copy (same group, different bytes — a half-rotated credential)
+	// is caught here before it ships. Nil => the byte-match compare is skipped
+	// (the KCL schema still enforces that a group's members declare the same
+	// KEY SET; only the live byte equality needs cluster reads).
+	SecretValues SecretValueGetter
+}
+
+// RequiredSecret is one declared external Secret prerequisite the preflight
+// verifies against the live target. It mirrors the cli ExternalSecretEntity
+// but stays a plain cluster-package struct so this package never depends on
+// the cli entity types.
+type RequiredSecret struct {
+	// Name / Namespace identify the out-of-band Secret. Namespace is the
+	// declared namespace (often NOT the deploy namespace).
+	Name      string
+	Namespace string
+	// Keys are the data keys the consumer reads; each must exist.
+	Keys []string
+	// ValueGroup ties this Secret to others that must carry identical bytes
+	// (the cross-secret byte-match group). Empty => standalone.
+	ValueGroup string
+}
+
+// SecretValueGetter resolves a Secret's decoded .data values for the
+// cross-secret byte-match check. exists=false means the Secret is absent
+// (already reported by the existence check); an error is a genuine lookup
+// failure that aborts the preflight.
+type SecretValueGetter interface {
+	GetSecretValues(ctx context.Context, kctx, namespace, name string) (values map[string][]byte, exists bool, err error)
 }
 
 // PreflightResult is the structured outcome of a preflight run — the
@@ -615,6 +662,23 @@ type PreflightResult struct {
 	// populated when a ServedKindChecker is configured (an undeclared discovery
 	// surface can't assert a kind is missing).
 	MissingCRDs []string
+	// MissingRequiredSecretKeys maps "<namespace>/<secret>" to the sorted list
+	// of declared-required keys absent on the live target (or the whole-Secret
+	// marker when the Secret itself is absent), for the DECLARED external
+	// Secret prerequisites (forge.ExternalSecret). These BLOCK — the deploy
+	// renders a consumer (e.g. cert-manager's DNS-01 ClusterIssuer) that reads
+	// the Secret out-of-band, so its absence hangs ACME/DNS silently after a
+	// green apply. Only populated when a SecretGetter is configured.
+	MissingRequiredSecretKeys map[string][]string
+	// ByteMatchMismatches is the sorted list of advisory notes for
+	// cross-secret byte-match groups whose live Secret values are NOT
+	// identical across the group (a half-rotated / drifted shared credential).
+	// These BLOCK — a value_group declares that the same logical secret is
+	// projected to N refs, so a divergence means one consumer has the stale
+	// value. Only populated when a SecretValueGetter is configured AND every
+	// member Secret exists (a missing member is reported by the existence
+	// check, not here).
+	ByteMatchMismatches []string
 }
 
 // OK reports whether nothing was found missing. Inconclusive image warnings
@@ -625,7 +689,9 @@ func (r PreflightResult) OK() bool {
 		len(r.MissingImages) == 0 &&
 		len(r.UnverifiableImages) == 0 &&
 		len(r.ArchMismatchImages) == 0 &&
-		len(r.MissingCRDs) == 0
+		len(r.MissingCRDs) == 0 &&
+		len(r.MissingRequiredSecretKeys) == 0 &&
+		len(r.ByteMatchMismatches) == 0
 }
 
 // wholeSecretMarker is the placeholder listed under a Secret that doesn't
@@ -671,8 +737,9 @@ func Preflight(ctx context.Context, opts PreflightOpts) error {
 // assert on the structured result directly.
 func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRefs) (PreflightResult, error) {
 	result := PreflightResult{
-		MissingSecretKeys:    map[string][]string{},
-		MissingConfigMapKeys: map[string][]string{},
+		MissingSecretKeys:         map[string][]string{},
+		MissingConfigMapKeys:      map[string][]string{},
+		MissingRequiredSecretKeys: map[string][]string{},
 	}
 
 	var (
@@ -889,10 +956,63 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 		}
 	}
 
+	// Declared external Secret prerequisites (forge.ExternalSecret) — each in
+	// its OWN declared namespace (often NOT opts.Namespace). One GetSecretKeys
+	// per declared Secret; a missing key/Secret BLOCKS. Verified only against a
+	// live target (a SecretGetter + a context), like the secretKeyRef check.
+	if opts.Secrets != nil && hasContext && len(opts.RequiredSecrets) > 0 {
+		for _, rs := range opts.RequiredSecrets {
+			rs := rs
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				present, exists, err := opts.Secrets.GetSecretKeys(ctx, opts.Context, rs.Namespace, rs.Name)
+				if err != nil {
+					recordErr(fmt.Errorf("preflight: read required Secret %s/%s: %w", rs.Namespace, rs.Name, err))
+					return
+				}
+				want := map[string]struct{}{}
+				for _, k := range rs.Keys {
+					want[k] = struct{}{}
+				}
+				missing := missingSecretKeys(want, present, exists)
+				if len(missing) == 0 {
+					return
+				}
+				sort.Strings(missing)
+				mu.Lock()
+				result.MissingRequiredSecretKeys[rs.Namespace+"/"+rs.Name] = missing
+				mu.Unlock()
+			}()
+		}
+	}
+
+	// Cross-secret BYTE-MATCH — for each value_group, read every member's live
+	// values and assert byte-identity under the shared keys. A divergence (a
+	// half-rotated shared credential) BLOCKS. Runs serially (groups are tiny
+	// and rare); gated on a SecretValueGetter being configured.
+	if opts.SecretValues != nil && hasContext && len(opts.RequiredSecrets) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mismatches := checkByteMatchGroups(ctx, opts.SecretValues, opts.Context, opts.RequiredSecrets, recordErr)
+			if len(mismatches) == 0 {
+				return
+			}
+			mu.Lock()
+			result.ByteMatchMismatches = mismatches
+			mu.Unlock()
+		}()
+	}
+
 	wg.Wait()
 	if firstErr != nil {
 		return PreflightResult{}, firstErr
 	}
+	for _, v := range result.MissingRequiredSecretKeys {
+		sort.Strings(v)
+	}
+	sort.Strings(result.ByteMatchMismatches)
 	sort.Strings(result.MissingImages)
 	sort.Strings(result.UnverifiableImages)
 	sort.Strings(result.ImageWarnings)
@@ -900,6 +1020,77 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	sort.Strings(result.ArchWarnings)
 	sort.Strings(result.MissingCRDs)
 	return result, nil
+}
+
+// checkByteMatchGroups reads the live values of every ExternalSecret that
+// carries a value_group and reports one line per group whose members do NOT
+// agree byte-for-byte under their shared keys. A group is checked only when
+// EVERY member Secret exists (a missing member is the existence check's job,
+// not a byte-match miss); a group whose members declare the same key set
+// (enforced at KCL load) but differ in bytes is a half-rotated shared
+// credential. Returns nil when every group is consistent (or there are no
+// groups). A lookup failure is surfaced via recordErr and the group skipped.
+func checkByteMatchGroups(
+	ctx context.Context,
+	getter SecretValueGetter,
+	kctx string,
+	required []RequiredSecret,
+	recordErr func(error),
+) []string {
+	// Bucket members by value_group.
+	groups := map[string][]RequiredSecret{}
+	for _, rs := range required {
+		if rs.ValueGroup == "" {
+			continue
+		}
+		groups[rs.ValueGroup] = append(groups[rs.ValueGroup], rs)
+	}
+	var out []string
+	for groupID, members := range groups {
+		if len(members) < 2 {
+			// A single-member group matches nothing — surfaced as an audit
+			// note, not a preflight block.
+			continue
+		}
+		// Resolve every member's values; the shared keys are the same across
+		// the group (KCL guarantees the key set matches), so compare the first
+		// member to each subsequent one under those keys.
+		type resolved struct {
+			rs     RequiredSecret
+			values map[string][]byte
+		}
+		var got []resolved
+		ok := true
+		for _, rs := range members {
+			values, exists, err := getter.GetSecretValues(ctx, kctx, rs.Namespace, rs.Name)
+			if err != nil {
+				recordErr(fmt.Errorf("preflight: read value-group Secret %s/%s: %w", rs.Namespace, rs.Name, err))
+				ok = false
+				break
+			}
+			if !exists {
+				// A missing member is reported by the existence check; skip the
+				// byte compare for this group (can't compare against absent).
+				ok = false
+				break
+			}
+			got = append(got, resolved{rs: rs, values: values})
+		}
+		if !ok || len(got) < 2 {
+			continue
+		}
+		base := got[0]
+		for _, other := range got[1:] {
+			for _, key := range base.rs.Keys {
+				if !bytes.Equal(base.values[key], other.values[key]) {
+					out = append(out, fmt.Sprintf(
+						"value-group %q: key %q differs between %s/%s and %s/%s — the same logical value is projected to both, but their live bytes don't match (a half-rotated credential)",
+						groupID, key, base.rs.Namespace, base.rs.Name, other.rs.Namespace, other.rs.Name))
+				}
+			}
+		}
+	}
+	return out
 }
 
 // missingCRDs returns one report line per DISTINCT non-core (group, kind) the
@@ -1144,6 +1335,18 @@ func FormatPreflightReport(r PreflightResult) string {
 		}
 	}
 
+	if len(r.MissingRequiredSecretKeys) > 0 {
+		b.WriteString("\n  DECLARED external Secret prerequisites missing (forge.ExternalSecret — provision out-of-band):\n")
+		writeMissingKeyBlock(&b, "Secret", r.MissingRequiredSecretKeys)
+	}
+
+	if len(r.ByteMatchMismatches) > 0 {
+		b.WriteString("\n  Cross-secret byte-match mismatches (a value_group's members carry different bytes):\n")
+		for _, m := range r.ByteMatchMismatches {
+			b.WriteString(fmt.Sprintf("    - %s\n", m))
+		}
+	}
+
 	b.WriteString("\nNothing was applied. Fix the gaps, then re-run the deploy:\n")
 	if len(r.MissingSecretKeys) > 0 {
 		b.WriteString("  - provision the missing Secret key(s) in the target cluster/namespace\n")
@@ -1169,6 +1372,15 @@ func FormatPreflightReport(r PreflightResult) string {
 		b.WriteString("  - install the CRD for the kind(s) above on the target cluster, or the\n")
 		b.WriteString("      Gateway API channel that provides them\n")
 		b.WriteString("      (e.g. kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/.../experimental-install.yaml).\n")
+	}
+	if len(r.MissingRequiredSecretKeys) > 0 {
+		b.WriteString("  - provision the DECLARED external Secret(s) above out-of-band in their\n")
+		b.WriteString("      namespace (e.g. the cert-manager `cloudflare-api-token`); forge does\n")
+		b.WriteString("      not create them, and their absence hangs the consumer (ACME/DNS) silently.\n")
+	}
+	if len(r.ByteMatchMismatches) > 0 {
+		b.WriteString("  - re-sync the value-group Secret(s) above so every ref carries identical bytes\n")
+		b.WriteString("      (a divergence means a half-rotated shared credential).\n")
 	}
 	b.WriteString("  - or pass --skip-preflight to bypass this check (you accept the risk of a crash-on-apply).")
 	return b.String()
@@ -1203,6 +1415,43 @@ type KubectlSecretGetter struct{}
 // GetSecretKeys returns the keys of the named Secret's `.data` in namespace.
 func (KubectlSecretGetter) GetSecretKeys(ctx context.Context, kctx, namespace, name string) (map[string]struct{}, bool, error) {
 	return kubectlDataKeys(ctx, kctx, namespace, "secret", name)
+}
+
+// KubectlSecretValueGetter is the live SecretValueGetter: it reads a
+// Secret's `.data` and base64-decodes each value, for the cross-secret
+// byte-match check. Same per-command --context discipline and not-found →
+// exists=false handling as KubectlSecretGetter.
+type KubectlSecretValueGetter struct{}
+
+// GetSecretValues returns the decoded `.data` values of the named Secret.
+func (KubectlSecretValueGetter) GetSecretValues(ctx context.Context, kctx, namespace, name string) (map[string][]byte, bool, error) {
+	args := []string{"get", "secret", name, "-o", "json"}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+	cmd := kubectlCmd(ctx, kctx, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "NotFound") || strings.Contains(string(out), "not found") {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("kubectl get secret: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	var parsed struct {
+		Data map[string]string `json:"data"`
+	}
+	if jerr := json.Unmarshal(out, &parsed); jerr != nil {
+		return nil, false, fmt.Errorf("parse secret json: %w", jerr)
+	}
+	values := make(map[string][]byte, len(parsed.Data))
+	for k, v := range parsed.Data {
+		dec, derr := base64.StdEncoding.DecodeString(v)
+		if derr != nil {
+			return nil, false, fmt.Errorf("decode secret key %q: %w", k, derr)
+		}
+		values[k] = dec
+	}
+	return values, true, nil
 }
 
 // KubectlConfigMapGetter is the live ConfigMapGetter: it reads a ConfigMap's

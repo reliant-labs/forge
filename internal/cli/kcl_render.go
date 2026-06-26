@@ -50,6 +50,17 @@ type KCLEntities struct {
 	// declares no provider — preserving today's no-provider behavior.
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
 
+	// RequiredSecrets are the env's declared external Secret prerequisites
+	// (forge.ExternalSecret) — out-of-band Secrets the deploy depends on but
+	// forge does NOT create. Drive the render-time checklist + the deploy
+	// preflight BLOCK on a declared-required-but-absent Secret/key. Empty =>
+	// no declared Secret prereqs (today's behavior).
+	RequiredSecrets []ExternalSecretEntity `json:"required_secrets,omitempty"`
+	// RequiredDNS are the env's declared DNS-record prerequisites
+	// (forge.DNSRecord) — surfaced as a render-time checklist note (forge
+	// can't authoritatively verify external DNS). Empty => none.
+	RequiredDNS []DNSRecordEntity `json:"required_dns,omitempty"`
+
 	// ManifestNamespace is the namespace stamped on the rendered k8s
 	// manifests (`manifests[].metadata.namespace`), recovered even when
 	// the project's main.k omits the `output = forge.render(_bundle)`
@@ -272,6 +283,39 @@ type HelmChartEntity struct {
 	// the chart itself doesn't ship. Stamped with the chart's app-label and
 	// applied AFTER its controllers; excluded from a bare app deploy.
 	Manifests []any `json:"manifests,omitempty"`
+}
+
+// ExternalSecretEntity mirrors the kcl/schema.k ExternalSecret — an
+// out-of-band Secret a deploy DEPENDS ON but forge does NOT create. forge
+// reads these to print a render-time prerequisite checklist and to drive
+// the deploy preflight (a declared-required-but-absent Secret/key BLOCKS,
+// reusing the same SecretGetter as the secretKeyRef preflight). ValueGroup,
+// when set, ties this Secret to others that must carry the SAME logical
+// value (the cross-secret byte-match group).
+type ExternalSecretEntity struct {
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	Keys      []string `json:"keys"`
+	// Reason is a short human note: why the deploy needs this Secret. Shown
+	// in the checklist so the operator knows what breaks if it's absent.
+	Reason string `json:"reason,omitempty"`
+	// ValueGroup is the shared id tying this Secret to other ExternalSecrets
+	// that must carry the same logical value (cross-secret byte-match).
+	// Empty => a standalone prereq (no byte-match group).
+	ValueGroup string `json:"value_group,omitempty"`
+}
+
+// DNSRecordEntity mirrors the kcl/schema.k DNSRecord — a DNS record a
+// deploy depends on. forge can't authoritatively verify external DNS, so
+// this is a render-time checklist entry (and a `--check` note), not a hard
+// block. Target is the expected value (LB IP / CNAME target) when known.
+type DNSRecordEntity struct {
+	Host string `json:"host"`
+	Type string `json:"type"`
+	// Target is the expected value (LB IP for A/AAAA, CNAME target). Often
+	// unknown at author time (ephemeral LB IP), so optional.
+	Target string `json:"target,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // ServiceEntity is one service from rendered KCL. The Deploy field is
@@ -636,6 +680,11 @@ type kclRenderRaw struct {
 	// SecretProvider rides alongside services in the entity output; nil
 	// when the bundle declares no provider (KCL omits the key entirely).
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+	// RequiredSecrets / RequiredDNS are the declared external prerequisites
+	// (forge.ExternalSecret / forge.DNSRecord). render() always emits these
+	// buckets (empty lists when none).
+	RequiredSecrets []ExternalSecretEntity `json:"required_secrets,omitempty"`
+	RequiredDNS     []DNSRecordEntity      `json:"required_dns,omitempty"`
 	// Manifests is the rendered k8s object stream
 	// (`manifests = forge.render_manifests(...)`). Parsed loosely so we
 	// can recover the deploy namespace from object metadata when the
@@ -769,6 +818,8 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		GRPCRoutes:        raw.GRPCRoutes,
 		HelmCharts:        raw.HelmCharts,
 		SecretProvider:    raw.SecretProvider,
+		RequiredSecrets:   raw.RequiredSecrets,
+		RequiredDNS:       raw.RequiredDNS,
 		ManifestNamespace: manifestNS,
 		ManifestImageTags: manifestImageTags,
 	}

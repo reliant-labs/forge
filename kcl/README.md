@@ -99,6 +99,83 @@ its intent (reconcile CRDs, needs cluster-scoped RBAC, no host story)
 is meaningfully different and the JSON consumer benefits from a
 typed bucket.
 
+## Extending a typed entity — `schema MyService(forge.Service)`
+
+A project can use KCL-native inheritance to add its OWN typed/required
+fields to a forge entity while forge renders the result EXACTLY like the
+base entity:
+
+```kcl
+import forge
+
+schema TenantService(forge.Service):
+    region: str               # extra REQUIRED field — enforced at parse time
+    tier: "free" | "pro" = "free"
+
+    check:
+        region, "TenantService.region is required"
+
+_svc = TenantService {
+    name = "tenant-api", image = "tenant-api", region = "us-east-1"
+    deploy = _prod.deploy | { ports = [8080] }
+}
+```
+
+This works because the render layer's lambdas are typed on the BASE
+schema (`lambda s: Service -> ...`), which accepts any subtype: the
+subtype passes through `forge.render` / `forge.render_manifests` and
+projects the same JSON contract + k8s manifests a plain `forge.Service`
+would. The app's extra fields ride on the typed value but are NOT part of
+the rendered contract (they're yours, for your own KCL logic). An extra
+field with no default — or a `check:` the value violates — fails at KCL
+load, so your domain invariants are enforced the same way forge's are.
+
+## Declared external prerequisites — `required_secrets` / `required_dns`
+
+A deploy often depends on out-of-band facts forge does NOT (and must not)
+create: the cert-manager `cloudflare-api-token` Secret, per-host DNS
+A-records, the load-bearing `*.workspaces` wildcard. Left in a docstring,
+`forge deploy` renders green and THEN ACME / DNS hangs silently. Declare
+them as first-class prerequisites on the Bundle so they're MODELED:
+
+```kcl
+_bundle = forge.Bundle {
+    # ... services / gateways / ...
+    required_secrets = [
+        forge.ExternalSecret {
+            name = "cloudflare-api-token"
+            namespace = "cert-manager"      # often NOT the deploy namespace
+            keys = ["api-token"]
+            reason = "cert-manager DNS-01 Cloudflare API token"
+        }
+    ]
+    required_dns = [
+        forge.DNSRecord {
+            host = "*.workspaces.example.com"
+            reason = "DNS-01 wildcard cert + workspace-proxy traffic"
+        }
+    ]
+}
+```
+
+What this buys (beyond a comment):
+
+- **Render-time checklist** — `forge deploy` prints the prerequisites
+  every run; `forge audit` surfaces them as the `prerequisites` category.
+- **Deploy preflight BLOCK** — a declared `ExternalSecret` that's absent
+  (or missing a declared key) on the live target FAILS the deploy before
+  the first apply, in its OWN declared namespace, reusing the same
+  SecretGetter the `secretKeyRef` preflight uses. DNS can't be verified
+  authoritatively, so `required_dns` is a checklist note, not a block.
+- **Cross-secret byte-match** — when ONE logical value is projected to N
+  refs (the same token under two names), give each `ExternalSecret` a
+  shared `value_group`. KCL rejects a group whose members declare
+  different key sets at load; the preflight byte-compares the live values
+  and BLOCKS on a divergence (a half-rotated credential).
+
+`forge` never creates these resources — the declaration drives the
+checklist + preflight only; nothing leaks into the rendered manifests.
+
 ## How projects consume this
 
 Project's `deploy/kcl/kcl.mod`:

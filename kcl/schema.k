@@ -1850,6 +1850,125 @@ schema HelmChart:
         oci or chart, "HelmChart.chart is required for a repo chart (the chart name)"
 
 # ---------------------------------------------------------------------------
+# Declared external prerequisites.
+#
+# THE PROBLEM: a deploy depends on facts forge does NOT (and must not)
+# create — an out-of-band Secret (the `cloudflare-api-token` in the
+# `cert-manager` namespace), per-host DNS A-records pointing at the
+# ingress load balancer, the load-bearing `*.workspaces` wildcard record.
+# Today these live ONLY in KCL docstrings: `forge deploy` renders
+# successfully, applies, and THEN cert-manager's ACME challenge or the
+# workspace-proxy DNS silently hangs because the prereq was never
+# satisfied. The failure surfaces minutes later, far from its cause, with
+# no signal pointing back at the unmet requirement.
+#
+# THE MODEL: declare each prerequisite as a first-class entity in
+# `Bundle.requires`. Two kinds today (a `type`-discriminated union,
+# mirroring the deploy / build unions so a new prereq kind is additive):
+#
+#   * ExternalSecret — an out-of-band k8s Secret + the keys it must carry.
+#     forge does NOT render or create it (that's the whole point — it's
+#     out-of-band); the declaration drives a RENDER-TIME checklist AND a
+#     deploy preflight that BLOCKS when the declared-required Secret/key is
+#     absent on the LIVE target (reusing the same SecretGetter the existing
+#     secretKeyRef preflight uses).
+#
+#   * DNSRecord — a DNS record (A / AAAA / CNAME / wildcard) the deploy
+#     depends on. forge cannot verify arbitrary DNS authoritatively, so
+#     this surfaces as a render-time checklist line (and a `--check`
+#     preflight note) rather than a hard block — the load-bearing
+#     `*.workspaces` wildcard is exactly the record whose omission hangs
+#     ACME+proxy silently, so MODELING it (vs a docstring) is the win.
+#
+# CROSS-SECRET BYTE-MATCH: when ONE logical secret value is projected to N
+# different Secret refs (the same Cloudflare token wanted under two names,
+# a JWT key shared across services), declare the group with a shared
+# `value_group` id on each ExternalSecret. forge's audit then asserts the
+# group is INTERNALLY consistent at render (every member names the same
+# logical value), and the preflight byte-compares the live Secret values
+# so a drifted copy (same id, different bytes) is caught BEFORE it ships a
+# half-rotated credential. An ExternalSecret with NO `value_group` is a
+# standalone prereq (the common case) — the byte-match machinery is inert.
+# ---------------------------------------------------------------------------
+
+schema ExternalSecret:
+    """An out-of-band Kubernetes Secret a deploy DEPENDS ON but forge does
+    NOT create — the declarative replacement for a "provision this Secret
+    yourself" docstring.
+
+    The motivating case: cert-manager's DNS-01 ClusterIssuer reads a
+    `cloudflare-api-token` Secret (key `api-token`) in the `cert-manager`
+    namespace to write `_acme-challenge` TXT records. forge renders the
+    ClusterIssuer that REFERENCES that Secret, but the Secret itself is
+    provisioned out-of-band; if it's absent, render + apply both succeed
+    and then every ACME challenge silently fails. Declaring it here turns
+    that into a render-time checklist line and a deploy-preflight BLOCK.
+
+    Fields:
+      * `name`        — the Secret's metadata.name.
+      * `namespace`   — the namespace it must exist in. This is OFTEN NOT
+                        the deploy's own namespace (cert-manager's Secret
+                        lives in `cert-manager`), so it's required + explicit
+                        rather than defaulted — the cross-namespace case is
+                        the norm for the prereqs this models.
+      * `keys`        — the data keys the consumer reads (e.g. ["api-token"]).
+                        At least one. The preflight verifies each exists.
+      * `reason`      — a short human note: WHY the deploy needs it (shown in
+                        the checklist so the operator knows what breaks if it's
+                        absent). e.g. "cert-manager DNS-01 Cloudflare API token".
+      * `value_group` — OPTIONAL shared id tying this Secret to OTHER
+                        ExternalSecrets that must carry the SAME logical
+                        value under (possibly) different name/key. Drives the
+                        cross-secret byte-match audit + preflight. Unset =>
+                        a standalone prereq (no byte-match group).
+    """
+    type: str = "secret"
+    name: str
+    namespace: str
+    keys: [str]
+    reason: str = ""
+    value_group: str = ""
+
+    check:
+        type == "secret", "ExternalSecret.type must be 'secret'"
+        name, "ExternalSecret.name is required"
+        namespace, "ExternalSecret.namespace is required (the namespace the out-of-band Secret must exist in — often NOT the deploy namespace, e.g. 'cert-manager')"
+        len(keys) > 0, "ExternalSecret.keys must list at least one data key the consumer reads (e.g. ['api-token'])"
+
+schema DNSRecord:
+    """A DNS record a deploy DEPENDS ON — the declarative replacement for a
+    "point DNS at the LB IP" docstring.
+
+    forge cannot authoritatively verify arbitrary external DNS at deploy
+    time (the record may not have propagated; the resolver forge runs under
+    may differ from the cluster's), so this is a render-time CHECKLIST entry
+    (and a `forge deploy --check` note), NOT a hard block. The value is
+    MODELING the requirement: the load-bearing `*.workspaces` wildcard
+    A-record — whose omission hangs both the DNS-01 wildcard cert and all
+    workspace-proxy traffic — is exactly the silent-failure prereq that
+    belongs in the bundle, not a comment.
+
+    Fields:
+      * `host`   — the record name (e.g. "api.reliantapi.com" or the
+                   wildcard "*.workspaces.reliantapi.com").
+      * `type`   — record type: "A" | "AAAA" | "CNAME". Default "A".
+      * `target` — OPTIONAL expected value: the LB IP for an A/AAAA record,
+                   or the CNAME target. Often unknown at author time (the
+                   Envoy LB takes an ephemeral IP), so optional — when set,
+                   the checklist shows the expected value; when unset, the
+                   checklist just names the record that must exist.
+      * `reason` — short human note: what breaks if the record is absent.
+    """
+    host: str
+    type: "A" | "AAAA" | "CNAME" = "A"
+    target: str = ""
+    reason: str = ""
+
+    check:
+        host, "DNSRecord.host is required (e.g. 'api.example.com' or '*.workspaces.example.com')"
+        type in ["A", "AAAA", "CNAME"], "DNSRecord.type must be 'A' | 'AAAA' | 'CNAME'"
+
+# ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
 
@@ -1927,8 +2046,36 @@ schema Bundle:
     # applies the app. cert-manager + Envoy Gateway are declared here per
     # env. See HelmChart. Empty => no platform deps (the app-only default).
     helm_charts: [HelmChart] = []
+    # Declared external PREREQUISITES — out-of-band facts the deploy depends
+    # on that forge does NOT (and must not) create: an out-of-band Secret
+    # (cert-manager's `cloudflare-api-token`), per-host DNS A-records, the
+    # load-bearing `*.workspaces` wildcard. MODELING them here (vs a docstring)
+    # makes them a render-time checklist AND a deploy preflight: an
+    # `ExternalSecret` that's declared-required but ABSENT on the live target
+    # BLOCKS the deploy (reusing the secretKeyRef preflight's SecretGetter)
+    # instead of letting ACME/DNS hang silently minutes after a green apply.
+    # `required_dns` surfaces as a checklist note (forge can't authoritatively
+    # verify external DNS). Empty => no declared prereqs (today's behavior).
+    required_secrets: [ExternalSecret] = []
+    required_dns: [DNSRecord] = []
 
     check:
+        # value_group consistency: every ExternalSecret in a byte-match group
+        # must agree on the KEY SET it projects, so the cross-secret byte
+        # comparison (preflight) compares like for like. A group whose members
+        # disagree on which keys carry the shared value is a modeling error —
+        # caught here at load, not as a confusing preflight diff. Standalone
+        # secrets (empty value_group) are exempt. The dict comprehension keys
+        # each group id to the DISTINCT key-set signatures its members declare;
+        # a consistent group collapses to exactly one signature.
+        all g, sigs in {
+            s.value_group: [
+                ",".join([k for k in sorted(s2.keys)])
+                for s2 in required_secrets if s2.value_group == s.value_group
+            ] for s in required_secrets if s.value_group
+        } {
+            len({sig: sig for sig in sigs}) == 1
+        }, "Bundle.required_secrets: ExternalSecrets sharing a value_group must declare the SAME key set (the bytes under those keys are compared across the group); a group whose members project different keys can't be byte-matched"
         # `platform` is REQUIRED on a CLOUD cluster_target whenever ANY
         # service ships a REAL external image build (a DockerBuild or a
         # non-no-op ShellBuild — see forge.builds_an_image). Those builds

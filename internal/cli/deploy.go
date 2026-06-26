@@ -455,6 +455,16 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	fmt.Printf("  Dry run:     %v\n", dryRun)
 	fmt.Println()
 
+	// Declared external-prerequisite CHECKLIST: print the out-of-band facts
+	// this env DEPENDS ON (forge.ExternalSecret / forge.DNSRecord) so the
+	// operator sees them every deploy — not just buried in a docstring. The
+	// ExternalSecret half is also ENFORCED by the preflight (a missing one
+	// BLOCKS); the DNS half can't be authoritatively verified, so the
+	// checklist is the only signal for it. Always printed (incl. dry-run /
+	// local clusters, where the preflight Secret check is skipped) so the
+	// reminder is never lost. No-op when the env declares no prereqs.
+	printPrerequisiteChecklist(entities)
+
 	// kubectl-context guard: only meaningful when at least one service
 	// in the bundle targets K8sCluster. External-only / compose-only
 	// projects don't touch kubectl, so the guard would surface a wrong-
@@ -639,15 +649,16 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// leaves the gate inert.
 		targetArch := kclFirstClusterPlatform(entities)
 		if err := runDeployPreflight(ctx, deployPreflightInput{
-			mainK:        mainK,
-			imageTag:     imageTag,
-			namespace:    namespace,
-			env:          envName,
-			envCfgKV:     envCfgKV,
-			deployCtx:    deployContext,
-			targets:      targets,
-			targetArch:   targetArch,
-			imageDigests: imageDigests,
+			mainK:           mainK,
+			imageTag:        imageTag,
+			namespace:       namespace,
+			env:             envName,
+			envCfgKV:        envCfgKV,
+			deployCtx:       deployContext,
+			targets:         targets,
+			targetArch:      targetArch,
+			imageDigests:    imageDigests,
+			requiredSecrets: requiredSecretsForPreflight(entities),
 		}); err != nil {
 			return err
 		}
@@ -1607,6 +1618,33 @@ type deployPreflightInput struct {
 	// envs that predate the platform field (incl. local e2e) aren't
 	// false-failed.
 	targetArch string
+	// requiredSecrets are the env's DECLARED external Secret prerequisites
+	// (forge.ExternalSecret) — out-of-band Secrets the deploy depends on but
+	// forge does NOT create. Threaded into PreflightOpts.RequiredSecrets so a
+	// declared-required-but-absent Secret/key BLOCKS the deploy (and a
+	// value_group byte mismatch is caught). Empty => no declared prereqs.
+	requiredSecrets []cluster.RequiredSecret
+}
+
+// requiredSecretsForPreflight projects the env's declared external Secret
+// prerequisites (forge.ExternalSecret) onto the cluster-package
+// RequiredSecret shape the preflight consumes. Keeps the cluster package
+// decoupled from the cli entity types. nil entities / no declarations =>
+// nil (the preflight check stays inert).
+func requiredSecretsForPreflight(entities *KCLEntities) []cluster.RequiredSecret {
+	if entities == nil || len(entities.RequiredSecrets) == 0 {
+		return nil
+	}
+	out := make([]cluster.RequiredSecret, 0, len(entities.RequiredSecrets))
+	for _, s := range entities.RequiredSecrets {
+		out = append(out, cluster.RequiredSecret{
+			Name:       s.Name,
+			Namespace:  s.Namespace,
+			Keys:       s.Keys,
+			ValueGroup: s.ValueGroup,
+		})
+	}
+	return out
 }
 
 // runDeployPreflight renders the env's manifest bundle and runs the
@@ -1663,6 +1701,15 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		// clusters like the Secret check — the local dev cluster's CRDs are
 		// reconciled by the same up/deploy flow.
 		opts.ServedKinds = cluster.KubectlServedKinds{}
+		// Declared external Secret prerequisites (forge.ExternalSecret): each
+		// in its OWN declared namespace, verified against the live target. A
+		// declared-required-but-absent Secret/key BLOCKS — the converse of
+		// "render green then ACME hangs silently". The byte-match group compare
+		// needs the live values, hence the value getter. Gated to remote
+		// clusters like the Secret check (a local dev cluster's out-of-band
+		// Secrets are provisioned by the same up flow).
+		opts.RequiredSecrets = in.requiredSecrets
+		opts.SecretValues = cluster.KubectlSecretValueGetter{}
 		// Verify images using the CLUSTER's pull credentials (the bundle's
 		// imagePullSecrets), not just the local docker daemon: when the local
 		// daemon lacks creds for a private registry, an auth-denied lookup is a

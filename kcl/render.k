@@ -526,6 +526,35 @@ _render_helm_chart = lambda h: HelmChart -> any {
     }
 }
 
+# Render an ExternalSecret prerequisite to its stable dict form. forge does
+# NOT create this Secret — the projection is consumed by the render-time
+# checklist + the deploy preflight (which BLOCKS when the declared-required
+# Secret/key is absent on the live target). `value_group` projects null when
+# unset (a standalone prereq, no byte-match group).
+_render_external_secret = lambda s: ExternalSecret -> any {
+    {
+        "type": "secret"
+        "name": s.name
+        "namespace": s.namespace
+        "keys": s.keys
+        "reason": s.reason if s.reason else None
+        "value_group": s.value_group if s.value_group else None
+    }
+}
+
+# Render a DNSRecord prerequisite. A render-time checklist entry (forge
+# can't authoritatively verify external DNS); `target` projects null when
+# unset (the expected value is often an ephemeral LB IP unknown at author
+# time).
+_render_dns_record = lambda r: DNSRecord -> any {
+    {
+        "host": r.host
+        "type": r.type
+        "target": r.target if r.target else None
+        "reason": r.reason if r.reason else None
+    }
+}
+
 _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
     {
         "name": k.name
@@ -623,6 +652,13 @@ render = lambda bundle: Bundle -> any {
         # `helm template --skip-crds` and folds the manifests into the apply
         # stream, selected by `--target <name>`. NOT in render_manifests.
         "helm_charts": [_render_helm_chart(h) for h in bundle.helm_charts]
+        # Declared external PREREQUISITES (out-of-band Secrets + DNS records
+        # the deploy depends on but forge does NOT create). The CLI reads
+        # these to print a render-time checklist and to drive the preflight
+        # BLOCK on a declared-required-but-absent ExternalSecret. Always
+        # emitted (empty lists when none) so the consumer sees a stable key.
+        "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets]
+        "required_dns": [_render_dns_record(r) for r in bundle.required_dns]
         # The secret PROVIDER declaration rides alongside the entities so
         # the CLI can read WHERE secret values come from. Absent when
         # unset (no null garbage). Secret VALUES never enter this output —

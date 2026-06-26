@@ -16,8 +16,36 @@ import forge
 # output projects only `output` and nothing else. The forge CLI then
 # selects `-S output` for the clean shape.
 
+# SCHEMA INHERITANCE — a project may declare `schema X(forge.Service)` to
+# add its OWN typed/required fields while forge renders the result exactly
+# like a plain forge.Service. The render layer is typed on the base schema,
+# so the subtype passes through and projects the same JSON contract; the
+# extra fields ride on the typed value but aren't part of the contract.
+schema TenantService(forge.Service):
+    # An extra REQUIRED field (no default) — enforced at parse time.
+    region: str
+    tier: "free" | "pro" = "free"
+
+    check:
+        region, "TenantService.region is required"
+
 _bundle = forge.Bundle {
     services = [
+        # An app schema inheriting forge.Service — renders identically to a
+        # plain forge.Service (Deployment + Service + RBAC), plus enforces
+        # its own required `region` at parse time.
+        TenantService {
+            name = "tenant-api"
+            image = "example"
+            region = "us-east-1"
+            tier = "pro"
+            deploy = forge.K8sCluster {
+                cluster = "k3d-example"
+                namespace = "example-dev"
+                registry = "localhost:5050"
+                ports = [8081]
+            }
+        }
         # Host-mode dev server with live-reload.
         #
         # env_vars carries reproducible per-env config (DATABASE_URL,
@@ -140,6 +168,29 @@ _bundle = forge.Bundle {
             listener = "http"
             service = "workspace-proxy"
             port = 8080
+        }
+    ]
+    # DECLARED external PREREQUISITES — out-of-band facts this env depends
+    # on that forge does NOT create. Modeling them (vs a docstring) makes
+    # them a render-time checklist + a deploy preflight (a declared-required
+    # ExternalSecret that's absent on the live target BLOCKS).
+    required_secrets = [
+        # cert-manager's DNS-01 ClusterIssuer reads this Secret out-of-band
+        # in the cert-manager namespace; its absence hangs ACME silently.
+        forge.ExternalSecret {
+            name = "cloudflare-api-token"
+            namespace = "cert-manager"
+            keys = ["api-token"]
+            reason = "cert-manager DNS-01 Cloudflare API token"
+        }
+    ]
+    required_dns = [
+        # The load-bearing wildcard — its omission hangs both the DNS-01
+        # wildcard cert and all workspace-proxy traffic. Target is an
+        # ephemeral LB IP, unknown at author time.
+        forge.DNSRecord {
+            host = "*.workspaces.example.com"
+            reason = "DNS-01 wildcard cert + workspace-proxy traffic"
         }
     ]
 }

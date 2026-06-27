@@ -1379,12 +1379,35 @@ schema DockerBuild(Build):
     as this type's behavior — a DockerBuild service is the ONLY way forge
     builds an image; there is no unconditional auto-docker step.
     dockerfile/platform/target/build_args map to the corresponding
-    `docker build` flags."""
+    `docker build` flags.
+
+    The per-service `docker` facts — `registry` (the push/tag target for
+    THIS service's image) and `build_contexts` (the named
+    `--build-context name=value` entries THIS service's Dockerfile
+    `COPY --from=`s) — live HERE because they are NOT expressible in the
+    Dockerfile itself, and KCL renders per env so they are per-service AND
+    per-env. Each is OPTIONAL and falls back to the project-level
+    forge.yaml `docker.registry` / `docker.build_contexts` when unset, so a
+    single-image project declares them once at the top level.
+
+    forge is base-image-AGNOSTIC: it does NOT discover, mirror, pin, or
+    inject base images. A Dockerfile's `FROM` lines are the whole story —
+    pin them with `FROM …@sha256:…` in the Dockerfile if reproducibility is
+    wanted."""
     type: str = "docker"
     dockerfile: str = "Dockerfile"
     platform: str = ""
     target: str = ""
     build_args: {str: str} = {}
+    # Push/tag target for THIS service's image (registry-host[/namespace]).
+    # Empty falls back to forge.yaml docker.registry (then the project name).
+    registry: str = ""
+    # Named build contexts THIS service's Dockerfile needs, each a
+    # `docker buildx --build-context name=value` entry (a sibling-checkout
+    # path the Dockerfile `COPY --from=name`s, a `docker-image://` override,
+    # …). Declare ONLY what this Dockerfile actually consumes. Empty falls
+    # back to forge.yaml docker.build_contexts.
+    build_contexts: {str: str} = {}
 
     check:
         type == "docker", "DockerBuild.type must be 'docker'"

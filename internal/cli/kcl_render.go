@@ -379,12 +379,29 @@ type GoBuild struct {
 // container image build. Reuses forge's existing docker primitives
 // (tag/registry/push/build-contexts) as behavior; these fields select
 // the dockerfile/platform/target/build_args.
+//
+// Registry + BuildContexts are the per-service `docker` facts that are NOT
+// expressible in a Dockerfile — the push target for THIS service's image and
+// the named build contexts THIS service's Dockerfile `COPY --from=`s. Each
+// falls back to the project-level forge.yaml `docker.{registry,build_contexts}`
+// when unset, so a single-image project keeps declaring them once at the top
+// level. KCL renders per env, so these are per-service AND per-env.
 type DockerBuild struct {
 	OutputName string            `json:"output_name,omitempty"`
 	Dockerfile string            `json:"dockerfile,omitempty"`
 	Platform   string            `json:"platform,omitempty"`
 	Target     string            `json:"target,omitempty"`
 	BuildArgs  map[string]string `json:"build_args,omitempty"`
+	// Registry is the push/tag target for THIS service's image
+	// (registry-host[/namespace]). Empty falls back to the project-level
+	// forge.yaml docker.registry (then the project name).
+	Registry string `json:"registry,omitempty"`
+	// BuildContexts maps a `docker buildx --build-context name=value` entry
+	// THIS service's Dockerfile needs (a sibling-checkout path the Dockerfile
+	// `COPY --from=name`s, a `docker-image://` override, …). Same value shapes
+	// as config.DockerConfig.BuildContexts. Empty falls back to the
+	// project-level forge.yaml docker.build_contexts.
+	BuildContexts map[string]string `json:"build_contexts,omitempty"`
 }
 
 // ShellBuild mirrors the kcl/schema.k ShellBuild — the SINGLE shell

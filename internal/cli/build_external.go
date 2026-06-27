@@ -30,7 +30,6 @@ import (
 	"sync"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // externalImageDigestResolver resolves the content-addressed manifest digest
@@ -108,22 +107,12 @@ func externalBuildServices(e *KCLEntities) []ServiceEntity {
 // single source of truth a subsequent `forge deploy <env>` reads to
 // pin the image tag — eliminating the build/deploy tag divergence
 // the External (deploy) provider already closes for the deploy side.
-func buildExternalServices(ctx context.Context, cfg *config.ProjectConfig, services []ServiceEntity, opts buildOptions, registry, tag, projectDir, targetArch string, entities *KCLEntities) []buildResult {
+func buildExternalServices(ctx context.Context, services []ServiceEntity, opts buildOptions, registry, tag, projectDir, targetArch string, entities *KCLEntities) []buildResult {
 	if len(services) == 0 {
 		return nil
 	}
 	runner := buildtarget.NewRunner()
 	resultCh := make(chan buildResult, len(services))
-
-	// Pinned, mirrored base images from .forge/base-images.lock.json, exposed
-	// to each external build_cmd as both ${BASE_<slug>} substitution tokens
-	// and BASE_<slug> env vars (buildtarget merges BuildEnv into both). A
-	// build_cmd that builds a Dockerfile pins its base via
-	// `docker build --build-arg BASE_<slug>=${BASE_<slug>} …` — the same
-	// single-source-of-truth override the in-forge docker paths get. Empty
-	// when no base_images are declared / no lock; the build_cmd then relies on
-	// the Dockerfile ARG defaults exactly as before.
-	baseEnv := baseImageBuildEnv(cfg, projectDir)
 
 	dispatch := func(svc ServiceEntity) {
 		// Per-service tag: honor an explicit KCL per-service pin
@@ -154,9 +143,7 @@ func buildExternalServices(ctx context.Context, cfg *config.ProjectConfig, servi
 			// ShellBuild { cmd, cwd, env }). One source, one contract.
 			BuildCmd: svc.EffectiveBuildCmd(),
 			BuildCwd: svc.EffectiveBuildCwd(),
-			// Merge the pinned base-image refs UNDER the service's own build
-			// env so an explicit per-service BuildEnv key wins on conflict.
-			BuildEnv: mergeBuildEnv(baseEnv, svc.EffectiveBuildEnv()),
+			BuildEnv: svc.EffectiveBuildEnv(),
 		}
 		fmt.Printf("[build] %s: ShellBuild (tag %s)\n", svc.Name, svcTag)
 		res := runner.Build(ctx, spec)

@@ -14,8 +14,6 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v3"
-
-	"github.com/reliant-labs/forge/internal/baseimage"
 )
 
 // ProjectKind identifies the shape of a forge project. The default,
@@ -775,14 +773,19 @@ func (d *DeployConfig) IsConcurrencyEnabled() bool {
 // Version stamping moved to a KCL GoBuild.ldflags `-X` entry. A `build:`
 // key in forge.yaml is now rejected as an unknown key.)
 
-// DockerConfig holds Docker registry configuration.
+// DockerConfig holds Docker build configuration for the PROJECT image (the
+// root `Dockerfile` built by `forge build`). Per-service DockerBuild services
+// declared in KCL carry their OWN registry + build_contexts on the KCL
+// DockerBuild block; these are the project-image defaults / fallback.
+//
+// forge is FULLY base-image-AGNOSTIC: it does NOT discover, mirror, pin, or
+// inject base images, and offers no mirror/pull-through setting. A Dockerfile's
+// `FROM` lines are the COMPLETE source of truth — pin with `FROM …@sha256:…`,
+// and route through a pull-through mirror by writing the mirror host into the
+// `FROM` ref directly (e.g. `FROM us-docker.pkg.dev/<p>/dockerhub/alpine:3.21`).
+// forge never rewrites a FROM.
 type DockerConfig struct {
 	Registry string `yaml:"registry"`
-	// BaseImages declares the public base images the project's Dockerfiles
-	// `FROM`, so forge can vendor + digest-pin them through a registry mirror.
-	// See [BaseImagesConfig]. Empty (the default) leaves builds exactly as
-	// they were — the feature is opt-in.
-	BaseImages BaseImagesConfig `yaml:"base_images,omitempty"`
 	// BuildContexts maps a build-context name to anything `docker buildx
 	// --build-context name=value` accepts:
 	//
@@ -804,43 +807,6 @@ type DockerConfig struct {
 	// `COPY --from=<name>`. Empty when not set; existing projects with no
 	// contexts see no change in build behaviour or output.
 	BuildContexts map[string]string `yaml:"build_contexts,omitempty"`
-}
-
-// BaseImagesConfig is the `docker.base_images` block: the registry mirror the
-// project's base images are pulled THROUGH, plus the list of upstream tags to
-// digest-pin. forge resolves each tag's multi-arch index digest through the
-// mirror (dodging the caller's per-IP Docker Hub rate limit) into a committed
-// lock (.forge/base-images.lock.json), and `forge build` injects the pinned
-// refs as `--build-arg BASE_<slug>=<mirror-ref>@<digest>`. Dockerfiles consume
-// a base via `ARG BASE_<slug>=<pinned-default>` + `FROM ${BASE_<slug>}` — the
-// default keeps a standalone `docker build` pinned, and forge build overrides
-// it from the lock (single source of truth). Re-pin with
-// `forge build --repin-bases`.
-//
-// The block is OPTIONAL; an empty Tags list disables the whole feature (no
-// lock, no build-arg injection, builds unchanged). See [internal/baseimage].
-type BaseImagesConfig struct {
-	// MirrorPrefix is the registry/repository the upstream images are proxied
-	// through (a pull-through cache), with no scheme and no trailing slash,
-	// e.g. "us-docker.pkg.dev/<project>/<remote-repo>". Required when Tags is
-	// non-empty.
-	MirrorPrefix string `yaml:"mirror_prefix,omitempty"`
-	// Tags is the set of upstream image references to pin, in human
-	// `name:tag` form (e.g. "alpine:3.21", "golang:1.26-alpine",
-	// "docker/dockerfile:1"). Each must carry an explicit `:tag` and must NOT
-	// be digest-pinned — forge resolves + writes the digest.
-	Tags []string `yaml:"tags,omitempty"`
-}
-
-// Declared projects the YAML block onto the resolver's input type so the
-// internal/baseimage package stays free of the config struct shape. Returns
-// the zero Declared (which Validate accepts as "feature off") when no tags
-// are set.
-func (b BaseImagesConfig) Declared() baseimage.Declared {
-	return baseimage.Declared{
-		MirrorPrefix: b.MirrorPrefix,
-		Tags:         b.Tags,
-	}
 }
 
 // Typed-access enforcement levels for [ConfigGuardConfig.EnforceTypedAccess].

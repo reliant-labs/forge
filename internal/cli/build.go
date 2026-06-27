@@ -73,8 +73,17 @@ func appendBuildContexts(dockerArgs []string, cfg *config.ProjectConfig, project
 	if len(cfg.Docker.BuildContexts) == 0 {
 		return dockerArgs
 	}
-	for _, name := range sortedKeys(cfg.Docker.BuildContexts) {
-		value := resolveBuildContext(cfg.Docker.BuildContexts[name], projectRoot)
+	return appendNamedBuildContexts(dockerArgs, cfg.Docker.BuildContexts, projectRoot)
+}
+
+// appendNamedBuildContexts is the underlying append for an explicit
+// name→value build-context map (one `--build-context name=value` per entry, in
+// deterministic order, each value resolved against projectRoot). It backs both
+// the project-level appendBuildContexts and the per-service DockerBuild
+// build_contexts, so the two share identical resolution + logging.
+func appendNamedBuildContexts(dockerArgs []string, contexts map[string]string, projectRoot string) []string {
+	for _, name := range sortedKeys(contexts) {
+		value := resolveBuildContext(contexts[name], projectRoot)
 		dockerArgs = append(dockerArgs, "--build-context", name+"="+value)
 		fmt.Printf("[build] docker build-context %s=%s\n", name, value)
 	}
@@ -141,20 +150,6 @@ type buildOptions struct {
 	// a --release build with no captured digest fails loudly rather than
 	// writing an empty ledger. Empty (the default) is today's behavior.
 	release string
-	// repinBases re-resolves every docker.base_images tag's index digest
-	// through the mirror and rewrites .forge/base-images.lock.json, then
-	// exits WITHOUT building. It's the drift-control path: declare bases once,
-	// re-pin on demand (or as part of `forge upgrade`). Resolution goes
-	// through the mirror, so it never hits the rate-limited upstream.
-	repinBases bool
-	// forceStaleBases lets a build PROCEED with a base-images lock that is
-	// out of sync with forge.yaml docker.base_images (a declared tag the lock
-	// is missing, or the mirror moved). By default that drift is a HARD error
-	// — shipping images off stale pins silently misses the security/bug-fix
-	// updates a re-pin would pull, so the build refuses rather than warns.
-	// This escape hatch is for the deliberate "I know the lock is behind and
-	// want to ship anyway" case (e.g. an air-gapped re-pin happens later).
-	forceStaleBases bool
 }
 
 func newBuildCmd() *cobra.Command {
@@ -225,8 +220,6 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set, services declared `deploy: host` in deploy/kcl/<env>/ are excluded from docker build/push (the Go binary still includes their code).")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge deploy uses the same value.")
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge build` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
-	cmd.Flags().BoolVar(&opts.repinBases, "repin-bases", false, "Re-resolve every docker.base_images tag's multi-arch index digest THROUGH the configured mirror and rewrite .forge/base-images.lock.json, then exit without building. This is the drift-control path: declare bases once in forge.yaml, re-pin on demand. Resolution goes through the mirror (a pull-through cache), so it never hits the rate-limited upstream registry.")
-	cmd.Flags().BoolVar(&opts.forceStaleBases, "force-stale-bases", false, "Proceed with the build even when .forge/base-images.lock.json is out of sync with forge.yaml docker.base_images (declared tag set changed or mirror moved). By default that drift is a hard error — stale pins silently ship images that miss base-image security/bug-fix updates. Prefer `forge build --repin-bases` to refresh the lock; this flag is the deliberate ship-anyway escape hatch.")
 	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). REQUIRES --env <env>: the release's image SET (project images plus per-env external build_cmd images like reliant/workspace-base) is discovered from deploy/kcl/<env>/main.k. The built images stay env-agnostic — pick any env that declares the full set, then promote to every env with `forge promote <version> --to <env>`. Captures each image's digest into a release ledger (.forge/releases/<version>.json); `forge deploy <env>` then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
 
 	return cmd
@@ -326,27 +319,6 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return err
 	}
 	cfg := store.Config()
-
-	// --repin-bases: resolve the declared base images through the mirror,
-	// rewrite the lock, and stop. A re-pin is a deliberate, standalone
-	// operation (it mutates a committed file and makes network reads) — never
-	// folded into an ordinary build. Runs before generate so it doesn't pay
-	// the codegen-staleness scan it doesn't need.
-	if opts.repinBases {
-		return repinBaseImages(ctx, cfg, projectDirForKCL())
-	}
-
-	// Enforce base-image lock freshness BEFORE any build work. A lock that's
-	// out of sync with forge.yaml docker.base_images (declared tag set changed
-	// or mirror moved) means the build would inject STALE pins — silently
-	// shipping images off base refs that may have pending security/bug-fix
-	// updates. That's a hard error (run `forge build --repin-bases`), not a
-	// warning the user scrolls past; --force-stale-bases is the deliberate
-	// ship-anyway escape hatch. Runs up front so the failure is immediate and
-	// deterministic rather than racing the concurrent per-docker lock reads.
-	if err := enforceBaseImagesFresh(cfg, projectDirForKCL(), opts.forceStaleBases); err != nil {
-		return err
-	}
 
 	// Ensure generated code exists / is fresh before any `go build`.
 	// Missing gen/ (gitignored, or freshly cleaned) otherwise fails with
@@ -634,7 +606,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 			}
 			externalArch := resolveExternalBuildTargetArch(cfgArchForDocker, opts.targetArch)
 			projDir := projectDirForKCL()
-			results = append(results, buildExternalServices(ctx, cfg, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch, entities)...)
+			results = append(results, buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch, entities)...)
 		}
 	}
 
@@ -1322,10 +1294,6 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 	// `docker-image://`, …). cwd is the project root by construction
 	// (forge build runs alongside forge.yaml).
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
-	// Pinned, mirrored base images from .forge/base-images.lock.json:
-	// `--build-arg BASE_<slug>=<mirror-ref>@<digest>` overrides each
-	// Dockerfile ARG default so the build pulls the centrally-pinned base.
-	dockerArgs = appendBaseImageBuildArgs(dockerArgs, cfg, "")
 	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
 
@@ -1484,9 +1452,6 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 	// dockerBuildProject — useful when the frontend Dockerfile needs
 	// to reference paths outside its own subtree.
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
-	// Pinned, mirrored base images (see dockerBuildProject) — frontend image
-	// builds get the same centrally-pinned bases.
-	dockerArgs = appendBaseImageBuildArgs(dockerArgs, cfg, "")
 	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)
 
@@ -1758,6 +1723,84 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 	return out
 }
 
+// serviceDockerBuildArgs assembles the full `docker build …` argument vector
+// (and the subset of `-t` tags that get pushed) for a per-service DockerBuild,
+// WITHOUT executing docker — so the registry + build-context resolution is
+// unit-testable. It is the per-service analogue of dockerBuildProject's arg
+// assembly.
+//
+// The two per-service `docker` facts NOT expressible in a Dockerfile resolve
+// here:
+//
+//   - registry — the push/tag target. DockerBuild.registry wins, then the
+//     project-level forge.yaml docker.registry, then the project name.
+//   - build_contexts — DockerBuild.build_contexts win when set, else the
+//     project-level forge.yaml docker.build_contexts.
+//
+// forge is base-image-AGNOSTIC: NO base-image discovery, mirror, pin, or
+// `--build-arg BASE_*` injection happens — the Dockerfile's `FROM` lines are
+// the whole story. The only `--build-arg`s are the service's explicit
+// DockerBuild.build_args.
+func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
+	registry := cfg.Docker.Registry
+	if d != nil && d.Registry != "" {
+		registry = d.Registry
+	}
+	if registry == "" {
+		registry = cfg.Name
+	}
+
+	dockerArgs = []string{"build"}
+	// platform: the DockerBuild's explicit platform wins; otherwise the
+	// env-wide cluster arch (cfgArchForDocker), cross-compiled to linux.
+	platform := ""
+	if d != nil && d.Platform != "" {
+		platform = d.Platform
+	} else if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
+		platform = "linux/" + a
+	}
+	if platform != "" {
+		dockerArgs = append(dockerArgs, "--platform="+platform)
+	}
+	if d != nil && d.Target != "" {
+		dockerArgs = append(dockerArgs, "--target", d.Target)
+	}
+	if d != nil {
+		for _, k := range sortedKeys(d.BuildArgs) {
+			dockerArgs = append(dockerArgs, "--build-arg", k+"="+d.BuildArgs[k])
+		}
+	}
+	dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:latest", registry, imageName))
+	if resolvedTag != "" {
+		dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:%s", registry, imageName, resolvedTag))
+	}
+	for i, reg := range expandPushRegistries(opts.pushRegistry) {
+		pl := fmt.Sprintf("%s/%s:latest", reg, imageName)
+		dockerArgs = append(dockerArgs, "-t", pl)
+		if i == 0 {
+			pushTags = append(pushTags, pl)
+		}
+		if resolvedTag != "" {
+			pv := fmt.Sprintf("%s/%s:%s", reg, imageName, resolvedTag)
+			dockerArgs = append(dockerArgs, "-t", pv)
+			if i == 0 {
+				pushTags = append(pushTags, pv)
+			}
+		}
+	}
+	// Build contexts: the per-service DockerBuild.build_contexts win when set,
+	// else the project-level forge.yaml docker.build_contexts. A service whose
+	// Dockerfile COPY --from=s a sibling checkout declares only the contexts it
+	// actually needs.
+	if d != nil && len(d.BuildContexts) > 0 {
+		dockerArgs = appendNamedBuildContexts(dockerArgs, d.BuildContexts, "")
+	} else {
+		dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
+	}
+	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
+	return dockerArgs, pushTags
+}
+
 // buildServiceDocker runs `docker build` for a DockerBuild service. It
 // reuses the same tag/registry/push/build-context primitives the project
 // image build uses (resolveBuildContext / appendBuildContexts /
@@ -1782,56 +1825,8 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName 
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start)}
 	}
 
-	registry := cfg.Docker.Registry
-	if registry == "" {
-		registry = cfg.Name
-	}
-
-	dockerArgs := []string{"build"}
-	// platform: the DockerBuild's explicit platform wins; otherwise the
-	// env-wide cluster arch (cfgArchForDocker), cross-compiled to linux.
-	platform := ""
-	if d != nil && d.Platform != "" {
-		platform = d.Platform
-	} else if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
-		platform = "linux/" + a
-	}
-	if platform != "" {
-		dockerArgs = append(dockerArgs, "--platform="+platform)
-	}
-	if d != nil && d.Target != "" {
-		dockerArgs = append(dockerArgs, "--target", d.Target)
-	}
-	if d != nil {
-		for _, k := range sortedKeys(d.BuildArgs) {
-			dockerArgs = append(dockerArgs, "--build-arg", k+"="+d.BuildArgs[k])
-		}
-	}
-	dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:latest", registry, imageName))
-	if resolvedTag != "" {
-		dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:%s", registry, imageName, resolvedTag))
-	}
-	var pushTags []string
-	for i, reg := range expandPushRegistries(opts.pushRegistry) {
-		pl := fmt.Sprintf("%s/%s:latest", reg, imageName)
-		dockerArgs = append(dockerArgs, "-t", pl)
-		if i == 0 {
-			pushTags = append(pushTags, pl)
-		}
-		if resolvedTag != "" {
-			pv := fmt.Sprintf("%s/%s:%s", reg, imageName, resolvedTag)
-			dockerArgs = append(dockerArgs, "-t", pv)
-			if i == 0 {
-				pushTags = append(pushTags, pv)
-			}
-		}
-	}
-	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
-	// Pinned, mirrored base images (see dockerBuildProject) — KCL DockerBuild
-	// services get the same centrally-pinned bases.
-	dockerArgs = appendBaseImageBuildArgs(dockerArgs, cfg, "")
+	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, imageName, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
 	fmt.Printf("[build] %s: docker build -f %s (%d tags)\n", svcName, dockerfile, countTags(dockerArgs))
-	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
 
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
 	cmd.Stdout = os.Stdout
@@ -1850,4 +1845,3 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName 
 	}
 	return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start)}
 }
-

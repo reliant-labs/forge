@@ -118,7 +118,7 @@ func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
 	// Thread a DIFFERENT env-wide tag (a stand-in for git-describe) to
 	// prove the per-service resolution prefers the env image_tag.
 	results := buildExternalServices(
-		context.Background(), noBaseImagesCfg(), services, opts,
+		context.Background(), services, opts,
 		"ghcr.io/reliant-labs", "e31db62-dirty", projDir, "amd64", ents,
 	)
 	if len(results) != 1 || results[0].err != nil {
@@ -157,7 +157,7 @@ func TestBuildExternalServices_PerServicePinWins(t *testing.T) {
 	services := []ServiceEntity{wsbase}
 	opts := buildOptions{env: "e2e", parallel: false}
 	results := buildExternalServices(
-		context.Background(), noBaseImagesCfg(), services, opts,
+		context.Background(), services, opts,
 		"registry.localhost:5051", "env-wide-tag", projDir, "amd64", ents,
 	)
 	if len(results) != 1 || results[0].err != nil {

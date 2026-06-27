@@ -9,13 +9,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
-	"github.com/reliant-labs/forge/internal/config"
 )
-
-// noBaseImagesCfg is the config the external-build tests pass: no
-// docker.base_images declared, so baseImageBuildEnv injects nothing and the
-// tests exercise the build_cmd path unchanged.
-func noBaseImagesCfg() *config.ProjectConfig { return &config.ProjectConfig{} }
 
 // shellSvc is a test helper building a ServiceEntity whose effective
 // build is a ShellBuild (the single shell escape hatch). cwd/env are
@@ -217,7 +211,6 @@ func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
 	opts := buildOptions{env: "dev", parallel: false}
 	results := buildExternalServices(
 		context.Background(),
-		noBaseImagesCfg(),
 		services,
 		opts,
 		"localhost:5051", // registry
@@ -265,7 +258,6 @@ func TestBuildExternalServices_FailsWhenCwdMissing(t *testing.T) {
 	opts := buildOptions{env: "dev", parallel: false}
 	results := buildExternalServices(
 		context.Background(),
-		noBaseImagesCfg(),
 		services,
 		opts,
 		"localhost:5051",
@@ -321,7 +313,7 @@ func TestBuildExternalServices_RegistryMissOverwritesPriorDigest(t *testing.T) {
 	externalImageDigestResolver = func(_ context.Context, _ string) (string, []string, error) {
 		return priorDigest, []string{"linux/amd64"}, nil
 	}
-	if r := buildExternalServices(context.Background(), noBaseImagesCfg(), services, opts,
+	if r := buildExternalServices(context.Background(), services, opts,
 		"ghcr.io/reliant-labs", "prod", projDir, "amd64", nil); len(r) != 1 || r[0].err != nil {
 		t.Fatalf("first build: %+v", r)
 	}
@@ -334,7 +326,7 @@ func TestBuildExternalServices_RegistryMissOverwritesPriorDigest(t *testing.T) {
 	externalImageDigestResolver = func(_ context.Context, ref string) (string, []string, error) {
 		return "", nil, fmt.Errorf("not in registry: %s", ref)
 	}
-	if r := buildExternalServices(context.Background(), noBaseImagesCfg(), services, opts,
+	if r := buildExternalServices(context.Background(), services, opts,
 		"ghcr.io/reliant-labs", "prod", projDir, "amd64", nil); len(r) != 1 || r[0].err != nil {
 		t.Fatalf("second build: %+v", r)
 	}
@@ -448,7 +440,7 @@ func TestBuildExternalServices_CapturesDigest(t *testing.T) {
 	}
 	opts := buildOptions{env: "staging", parallel: false}
 	results := buildExternalServices(
-		context.Background(), noBaseImagesCfg(), services, opts,
+		context.Background(), services, opts,
 		"ghcr.io/reliant-labs", "staging", projDir, "amd64", nil,
 	)
 	if len(results) != 1 || results[0].err != nil {
@@ -524,7 +516,7 @@ func TestBuildExternalServices_NoDigestSafeFallback(t *testing.T) {
 	}
 	opts := buildOptions{env: "e2e", parallel: false}
 	results := buildExternalServices(
-		context.Background(), noBaseImagesCfg(), services, opts,
+		context.Background(), services, opts,
 		"", "e2e", projDir, "amd64", nil, // empty registry → local ref
 	)
 	if len(results) != 1 || results[0].err != nil {

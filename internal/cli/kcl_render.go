@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/instance"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
@@ -763,7 +764,11 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	// seam (no external `kcl` binary). `-D env=<env>` drives the per-env
 	// conditionals in the deploy module. workDir = projectDir so the
 	// deploy-as-data main.k's `file.read("deploy/kcl/...")` resolves.
-	return kclrender.Run(projectDir, kclDir, []string{"env=" + env})
+	// instance.ActiveDArgs() pushes option("instance")/option("instance_index")
+	// when a named instance is active (nil → byte-identical default render),
+	// so the entity render sees the same instance the manifest render does.
+	dArgs := append([]string{"env=" + env}, instance.ActiveDArgs()...)
+	return kclrender.Run(projectDir, kclDir, dArgs)
 }
 
 // parseKCLEntities turns the JSON bytes into the typed entity set,

@@ -46,6 +46,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/reliant-labs/forge/internal/instance"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
@@ -597,6 +598,12 @@ func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string, im
 	for _, k := range keys {
 		dArgs = append(dArgs, k+"="+envCfgKV[k])
 	}
+	// Push the active instance into the manifest render: option("instance")
+	// + option("instance_index"). nil for the default instance, so a plain
+	// deploy renders byte-identically. The entity render (renderKCLRaw) adds
+	// the SAME bindings — both render paths see one instance, so a per-
+	// instance resolve_port / namespace can't drift between up and deploy.
+	dArgs = append(dArgs, instance.ActiveDArgs()...)
 	return dArgs
 }
 

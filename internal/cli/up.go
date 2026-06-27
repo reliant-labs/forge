@@ -45,14 +45,20 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/envutil"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
-	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/secrets"
 )
 
 // upOptions bundles flags for `forge up`.
 type upOptions struct {
-	env         string
+	env string
+	// instance names this stack for parallel multi-worktree dev. Empty
+	// (the default) resolves to the worktree basename, else the git branch,
+	// else the unnamed default stack — see internal/instance.Resolve. A
+	// named instance gets its own namespace suffix, port block, and
+	// per-instance shared-infra partition (DB/NATS subject), so N worktrees
+	// run simultaneously on shared clusters without colliding.
+	instance    string
 	noBuild     bool
 	noDeploy    bool
 	clusterOnly bool // build + deploy cluster manifests, skip host/frontend
@@ -155,6 +161,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment to bring up (e.g. dev, staging) — required")
+	cmd.Flags().StringVar(&opts.instance, "instance", "", "Name this parallel stack (multi-worktree dev). Default: the git worktree basename, else the branch, else the unnamed default stack. A named instance gets its own namespace suffix + host-port block + per-instance shared-infra partition, so N worktrees run at once on shared clusters. Pushed into KCL as option(\"instance\")/option(\"instance_index\").")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
 	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend")
@@ -225,28 +232,19 @@ func runUp(ctx context.Context, opts upOptions) error {
 	cfg := store.Config()
 	projectDir := projectDirForKCL()
 
-	// Persist resolve_port allocations per env so dev ports stay stable
-	// across `forge up` runs (reliant-web keeps its port, etc.). Only the
-	// dev-launch path opts in — read-only renders (forge ci) don't write
-	// a ports file. The store is machine-local; .forge/ports-*.json is
-	// gitignored.
-	portStorePath := filepath.Join(projectDir, ".forge", "ports-"+opts.env+".json")
-	// Snapshot the store before render: RenderKCL's resolve_port shifts +
-	// persists a port when the preferred one is busy (e.g. a second stack
-	// is already up). If the already-running guard below then refuses this
-	// run, we restore the snapshot so a rejected attempt can't drift the
-	// stable port assignments. portStoreExisted distinguishes "restore the
-	// old bytes" from "the store didn't exist; remove what render created".
-	portStoreSnapshot, portStoreErr := os.ReadFile(portStorePath)
-	portStoreExisted := portStoreErr == nil
-	restorePortStore := func() {
-		if portStoreExisted {
-			_ = os.WriteFile(portStorePath, portStoreSnapshot, 0o644)
-		} else {
-			_ = os.Remove(portStorePath)
-		}
+	// Resolve the instance identity (--instance → worktree → branch) and arm
+	// the shared render context: option("instance")/option("instance_index")
+	// pushed into KCL, and the instance-scoped resolve_port store activated.
+	// `forge deploy` arms the SAME store with the SAME instance, so up and
+	// deploy resolve identical ports — no drift. The store persists
+	// allocations per (env, instance) so dev ports stay stable across runs;
+	// it's machine-local (.forge/ports-*.json is gitignored). restorePortStore
+	// reverts the store if the already-running guard below rejects this render
+	// (a rejected attempt must not drift the stable assignments).
+	_, restorePortStore, err := activateInstance(projectDir, opts.env, opts.instance)
+	if err != nil {
+		return err
 	}
-	kclplugin.UsePortStore(portStorePath)
 
 	fmt.Printf("[up] env=%s\n", opts.env)
 	entities, err := RenderKCL(ctx, projectDir, opts.env)

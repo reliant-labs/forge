@@ -143,7 +143,32 @@ func freePort() (int, error) {
 var defaultResolver = NewPortResolver()
 
 // UsePortStore swaps the global resolver for one that persists assignments
-// to path (cross-run port stability). Call once before rendering, only on
-// the dev-launch path — not for read-only renders like `forge ci`, which
-// shouldn't write a ports file. Safe to call repeatedly.
-func UsePortStore(path string) { defaultResolver = NewPersistentPortResolver(path) }
+// to path (cross-run port stability), making that file the SINGLE SOURCE
+// OF TRUTH for resolve_port: once allocated (availability-checked), a
+// (role) -> port mapping is read back identically on every subsequent
+// render. Both `forge up` AND `forge deploy` call this with the same
+// instance-scoped path, so the two commands resolve identical ports — the
+// fix for the up-vs-deploy port drift.
+//
+// Call once before rendering, only on the dev-launch / deploy path — not
+// for read-only renders like `forge ci`, which shouldn't write a ports
+// file. Safe to call repeatedly.
+//
+// It returns a restore func that reverts the store file to its bytes at
+// call time (or removes it if it didn't exist). A render shifts + persists
+// a port when the preferred one is busy; a caller whose render is then
+// REJECTED (e.g. up's already-running guard) calls restore so the rejected
+// attempt can't drift the stable assignments. Callers that commit the
+// render ignore it.
+func UsePortStore(path string) (restore func()) {
+	snapshot, readErr := os.ReadFile(path)
+	existed := readErr == nil
+	defaultResolver = NewPersistentPortResolver(path)
+	return func() {
+		if existed {
+			_ = os.WriteFile(path, snapshot, 0o644)
+		} else {
+			_ = os.Remove(path)
+		}
+	}
+}

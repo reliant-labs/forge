@@ -51,15 +51,7 @@ import (
 
 // upOptions bundles flags for `forge up`.
 type upOptions struct {
-	env string
-	// instance names this stack for parallel multi-worktree dev. Empty
-	// (the default) resolves to the LINKED-worktree basename, else the
-	// unnamed default stack — the primary checkout is always default,
-	// regardless of branch (see internal/instance.Resolve). A named
-	// instance gets its own namespace suffix, port block, and per-instance
-	// shared-infra partition (DB/NATS subject), so N worktrees run
-	// simultaneously on shared clusters without colliding.
-	instance    string
+	env         string
 	noBuild     bool
 	noDeploy    bool
 	clusterOnly bool // build + deploy cluster manifests, skip host/frontend
@@ -162,7 +154,6 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment to bring up (e.g. dev, staging) — required")
-	cmd.Flags().StringVar(&opts.instance, "instance", "", "Name this parallel stack (multi-worktree dev). Default: the LINKED-worktree directory basename, else the unnamed default stack (the primary checkout is always default, on any branch). A named instance gets its own namespace suffix + host-port block + per-instance shared-infra partition, so N worktrees run at once on shared clusters. Pushed into KCL as option(\"instance\")/option(\"instance_index\").")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
 	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend")
@@ -233,19 +224,15 @@ func runUp(ctx context.Context, opts upOptions) error {
 	cfg := store.Config()
 	projectDir := projectDirForKCL()
 
-	// Resolve the instance identity (--instance → linked-worktree → default) and arm
-	// the shared render context: option("instance")/option("instance_index")
-	// pushed into KCL, and the instance-scoped resolve_port store activated.
-	// `forge deploy` arms the SAME store with the SAME instance, so up and
-	// deploy resolve identical ports — no drift. The store persists
-	// allocations per (env, instance) so dev ports stay stable across runs;
-	// it's machine-local (.forge/ports-*.json is gitignored). restorePortStore
-	// reverts the store if the already-running guard below rejects this render
-	// (a rejected attempt must not drift the stable assignments).
-	_, restorePortStore, err := activateInstance(projectDir, opts.env, opts.instance)
-	if err != nil {
-		return err
-	}
+	// Arm the parallel-dev-stack render context: push the raw git facts
+	// option("worktree")/option("branch") into KCL, back forge.allocate_port
+	// with the lock-guarded block registry, and activate the resolve_port
+	// store. `forge deploy` arms the SAME inputs, so up and deploy resolve
+	// identical ports — no drift. State is machine-local (.forge/blocks.json,
+	// .forge/ports-*.json are gitignored). restorePortStore reverts the
+	// resolve_port store if the already-running guard below rejects this
+	// render (a rejected attempt must not drift the stable assignments).
+	_, restorePortStore := activateDevStack(projectDir, opts.env)
 
 	fmt.Printf("[up] env=%s\n", opts.env)
 	entities, err := RenderKCL(ctx, projectDir, opts.env)

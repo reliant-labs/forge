@@ -27,7 +27,6 @@ func newDeployCmd() *cobra.Command {
 	var (
 		imageTag      string
 		tag           string
-		inst          string
 		dryRun        bool
 		namespace     string
 		explain       bool
@@ -131,7 +130,6 @@ Examples:
 			}
 			return runDeploy(cmd.Context(), args[0], deployOptions{
 				imageTag:      effectiveTag,
-				instance:      inst,
 				dryRun:        dryRun,
 				namespace:     namespace,
 				targetArch:    targetArch,
@@ -147,7 +145,6 @@ Examples:
 
 	cmd.Flags().StringVar(&imageTag, "image-tag", "", "Image tag (deprecated alias for --tag; default: build-state file, then git describe --tags --always --dirty)")
 	cmd.Flags().StringVar(&tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
-	cmd.Flags().StringVar(&inst, "instance", "", "Deploy the named parallel stack (multi-worktree dev). MUST match the `forge up --instance` value: it activates the SAME instance-scoped resolve_port store + option(\"instance\")/option(\"instance_index\") KCL bindings, so up and deploy render identical ports/namespaces. Default: the LINKED-worktree basename, else the unnamed default stack (the primary checkout is always default, on any branch).")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Override namespace from environment config")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print the declared-cluster guard decision (declared/current/verdict) and exit")
@@ -227,14 +224,7 @@ func emptyAs(s, alt string) string {
 // makes the call site self-documenting and keeps the per-flag default
 // (e.g. dryRun=false) co-located with the field declaration.
 type deployOptions struct {
-	imageTag string
-	// instance names the parallel stack this deploy targets (multi-worktree
-	// dev). Empty resolves the same way `forge up` does (linked-worktree
-	// basename, else default). It activates the SAME instance-scoped
-	// resolve_port store + the SAME option("instance")/option("instance_index")
-	// KCL bindings as up, so up and deploy render byte-identically for a
-	// given instance.
-	instance   string
+	imageTag   string
 	dryRun     bool
 	namespace  string
 	targetArch string
@@ -346,17 +336,14 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	projectDir := projectDirForKCL()
 
-	// Arm the shared render context BEFORE the first render: resolve the
-	// instance (--instance → linked-worktree → default), push
-	// option("instance")/option("instance_index") into KCL, and activate the
-	// instance-scoped resolve_port store. `forge up` arms the IDENTICAL store
-	// + instance, so up and deploy resolve the SAME ports for a given
-	// (env, instance, role) — this is the kill-the-up-vs-deploy-port-drift
-	// fix. Deploy commits its render, so the restore hook is unused (an
-	// applied render's ports are the truth).
-	if _, _, ierr := activateInstance(projectDir, envName, opts.instance); ierr != nil {
-		return ierr
-	}
+	// Arm the parallel-dev-stack render context BEFORE the first render:
+	// push the git facts option("worktree")/option("branch") into KCL, back
+	// forge.allocate_port with the lock-guarded block registry, and activate
+	// the resolve_port store. `forge up` arms the IDENTICAL inputs, so up and
+	// deploy resolve the SAME ports for a given key — this is the
+	// kill-the-up-vs-deploy-port-drift fix. Deploy commits its render, so the
+	// restore hook is unused (an applied render's ports are the truth).
+	activateDevStack(projectDir, envName)
 
 	tagSource := "rollback (state file)"
 	if !rollback {

@@ -1,6 +1,6 @@
 //go:build windows
 
-package instance
+package devstack
 
 import "os"
 

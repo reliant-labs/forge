@@ -52,7 +52,49 @@ Examples:
 	}
 	cmd.AddCommand(newDevStackPortCmd())
 	cmd.AddCommand(newDevStackKeyCmd())
+	cmd.AddCommand(newDevStackListCmd())
 	return cmd
+}
+
+// newDevStackListCmd: `forge devstack list` → the registered worktree keys,
+// one per line, sorted by block index. This is the source a DECLARATIVE
+// per-stack config generator reads to enumerate the active stacks WITHOUT
+// re-implementing worktree detection or the registry format.
+//
+// The DEFAULT stack (key "") is implicit — it is never stored in the registry
+// and is NOT printed here. A generator MUST always emit the default's config
+// itself; this command lists only the NAMED worktree stacks layered on top.
+//
+// Empty output (no named worktrees registered yet, or a missing registry) is
+// the normal primary-checkout-only case and exits 0.
+func newDevStackListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List registered worktree keys, one per line (default stack \"\" is implicit, not printed)",
+		Long: `Print the registered worktree keys (one per line, sorted by block index)
+from the lock-guarded block registry (.forge/blocks.json).
+
+This is the source a DECLARATIVE per-stack config generator reads to enumerate
+the active named stacks — e.g. the dev NATS-account generator renders one
+account per key plus the implicit default. The keys are the EXACT values
+option("worktree") renders to in KCL, so a generator's per-key derivation
+(NATS user/password, DB name, …) can be made byte-identical to the KCL's.
+
+The DEFAULT stack (the primary checkout, key "") is never stored and is NOT
+printed — a generator always emits the default's config itself. No named
+worktrees (or no registry yet) prints nothing and exits 0.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			blocks, err := devstack.List(projectDirForKCL())
+			if err != nil {
+				return fmt.Errorf("read block registry: %w", err)
+			}
+			for _, b := range blocks {
+				fmt.Fprintln(cmd.OutOrStdout(), b.Key)
+			}
+			return nil
+		},
+	}
 }
 
 // newDevStackPortCmd: `forge devstack port <base>` → base + block(key)*100,

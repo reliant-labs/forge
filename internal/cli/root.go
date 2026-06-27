@@ -170,6 +170,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newMapCmd())
 	rootCmd.AddCommand(newIntrospectCmd())
 	rootCmd.AddCommand(newClusterCmd())
+	rootCmd.AddCommand(newDevStackCmd())
 	rootCmd.AddCommand(newAPICmd())
 	rootCmd.AddCommand(newUpCmd())
 	rootCmd.AddCommand(newFeaturesCmd())

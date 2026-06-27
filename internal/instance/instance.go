@@ -71,18 +71,19 @@ func Sanitize(s string) string {
 	return s
 }
 
-// ResolveName derives the raw (pre-sanitization) instance name in priority
-// order:
+// ResolveName derives the sanitized instance name in priority order:
 //
 //  1. an explicit --instance flag value (flagName), when non-empty;
-//  2. else the git worktree directory basename, when this checkout is a
-//     LINKED worktree (a separate working dir off the main repo) — the
-//     common "one stack per worktree" case;
-//  3. else the current git branch name.
+//  2. else the git worktree directory basename, but ONLY when this checkout
+//     is a LINKED worktree (a `git worktree add`'ed working dir) — the
+//     "one stack per worktree" case.
 //
-// It returns the SANITIZED name (possibly "" → default). The git lookups
-// are best-effort: outside a repo, or on a detached HEAD with no worktree,
-// the chain simply yields "".
+// There is deliberately NO branch fallback: the PRIMARY checkout on ANY
+// branch resolves to "" (the default instance), so a plain
+// `forge up`/`deploy` is byte-identical to today regardless of which
+// feature branch you're on. The unit of parallelism is the worktree, not
+// the branch. Returns "" (default) outside a repo or on the primary
+// checkout.
 func ResolveName(projectDir, flagName string) string {
 	if s := Sanitize(flagName); s != "" {
 		return s
@@ -92,43 +93,64 @@ func ResolveName(projectDir, flagName string) string {
 			return s
 		}
 	}
-	if br := gitBranch(projectDir); br != "" {
-		if s := Sanitize(br); s != "" {
-			return s
-		}
-	}
 	return ""
 }
 
 // worktreeName returns the basename of projectDir when it is a LINKED git
-// worktree (not the primary checkout), else "". A linked worktree's top
-// level holds a `.git` FILE (a gitdir pointer) rather than a directory;
-// the primary checkout holds a `.git` directory. Keying on "is this a
-// linked worktree?" means a plain single-checkout repo doesn't silently
-// acquire an instance from its own directory name — only the deliberate
-// multi-worktree workflow does.
+// worktree (a `git worktree add`'ed checkout), else "".
+//
+// The parallelism unit is the WORKTREE, never the branch: branches change
+// constantly and the PRIMARY checkout must always render DEFAULT (so a
+// plain `forge up`/`deploy` on any feature branch is byte-identical to
+// today). We therefore key strictly on "is this a linked worktree?".
+//
+// Detection: a linked worktree's per-worktree git dir
+// (`git rev-parse --git-dir` → …/.git/worktrees/<name>) differs from the
+// repo's common dir (`--git-common-dir` → the primary's …/.git). The
+// primary checkout has them equal. This is git's own authoritative
+// distinction — far more robust than sniffing whether `.git` is a file vs
+// a directory (which submodules and some tooling also make a file).
 func worktreeName(projectDir string) string {
-	root := gitToplevel(projectDir)
-	if root == "" {
-		return ""
+	gitDir := gitOut(projectDir, "rev-parse", "--absolute-git-dir")
+	commonDir := gitOut(projectDir, "rev-parse", "--git-common-dir")
+	if gitDir == "" || commonDir == "" {
+		return "" // not a git checkout
 	}
-	info, err := os.Stat(filepath.Join(root, ".git"))
-	if err != nil || info.IsDir() {
-		return "" // primary checkout (or no .git) — not a linked worktree
+	// Normalize commonDir to absolute so the comparison is exact:
+	// --git-common-dir can come back relative (e.g. ".git"), and it is
+	// relative to the command's working dir (projectDir), NOT the process
+	// cwd — so resolve it against projectDir, not via filepath.Abs.
+	if !filepath.IsAbs(commonDir) {
+		base := projectDir
+		if base == "" {
+			if wd, err := os.Getwd(); err == nil {
+				base = wd
+			}
+		}
+		commonDir = filepath.Join(base, commonDir)
 	}
-	return filepath.Base(root)
+	if sameDir(gitDir, commonDir) {
+		return "" // primary checkout — DEFAULT instance, regardless of branch
+	}
+	// Linked worktree. Use the worktree's working-tree basename as the name.
+	if root := gitOut(projectDir, "rev-parse", "--show-toplevel"); root != "" {
+		return filepath.Base(root)
+	}
+	return ""
 }
 
-func gitToplevel(dir string) string {
-	return gitOut(dir, "rev-parse", "--show-toplevel")
-}
-
-func gitBranch(dir string) string {
-	br := gitOut(dir, "rev-parse", "--abbrev-ref", "HEAD")
-	if br == "HEAD" { // detached
-		return ""
+// sameDir reports whether two paths point at the same directory, tolerant
+// of symlinks (macOS /var vs /private/var) and trailing-slash differences.
+func sameDir(a, b string) bool {
+	if a == b {
+		return true
 	}
-	return br
+	ra, ea := filepath.EvalSymlinks(a)
+	rb, eb := filepath.EvalSymlinks(b)
+	if ea == nil && eb == nil {
+		return filepath.Clean(ra) == filepath.Clean(rb)
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 func gitOut(dir string, args ...string) string {

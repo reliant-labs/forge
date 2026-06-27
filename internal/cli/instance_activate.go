@@ -24,9 +24,9 @@ import (
 // the stable assignments. Deploy ignores the restore (it has no such
 // guard; an applied render's ports ARE the truth).
 //
-// The default instance (no --instance, no worktree/branch) keeps the
-// historical .forge/ports-<env>.json path, so a plain single-stack
-// up/deploy is byte-identical to before this primitive landed.
+// The default instance (no --instance; primary checkout, not a linked
+// worktree) keeps the historical .forge/ports-<env>.json path, so a plain
+// single-stack up/deploy is byte-identical to before this primitive landed.
 func activateInstance(projectDir, env, flagInstance string) (instance.Instance, func(), error) {
 	inst, err := instance.Resolve(projectDir, flagInstance)
 	if err != nil {

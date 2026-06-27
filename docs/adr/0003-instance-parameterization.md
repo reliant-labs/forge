@@ -43,9 +43,17 @@ option("instance")        -> str  (the sanitized name; ""  for the default)
 option("instance_index")  -> int  (a stable small int;   0   for the default)
 ```
 
-- **Resolution order:** `--instance=<name>` flag → else the git **worktree**
-  directory basename (only for a _linked_ worktree, not the primary checkout)
-  → else the current git **branch** → else `""` (the default stack).
+- **Resolution order:** `--instance=<name>` flag → else, **only for a LINKED
+  git worktree** (a `git worktree add`'ed checkout), the worktree directory
+  basename → else `""` (the default stack). There is deliberately **NO branch
+  fallback**: the unit of parallelism is the WORKTREE, not the branch — branch
+  names change constantly and the PRIMARY checkout must stay default. The
+  primary checkout on ANY branch resolves to the default instance, so a plain
+  `forge up`/`deploy` on a feature branch renders byte-identical to today.
+  Linked-vs-primary is detected via git itself —
+  `git rev-parse --absolute-git-dir` (the per-worktree git dir) differs from
+  `--git-common-dir` (the repo's shared dir) iff this is a linked worktree —
+  not by sniffing `.git` file-vs-directory (which submodules also trip).
 - **Sanitization:** lowercased, reduced to DNS-safe `[a-z0-9-]`, collapsed
   dash runs, no leading/trailing dash, bounded to 24 chars. An all-symbol
   input that sanitizes to `""` falls back to the default.
@@ -122,8 +130,8 @@ new instance needs no cluster recreate.
   identical renders.
 - **`forge up --instance=foo` and `forge deploy --instance=foo` must match.**
   They share the store + the options, so they render identically — but the
-  caller must pass the same `--instance` (or rely on the same worktree/branch
-  auto-resolution) for both.
+  caller must pass the same `--instance` (or run both from the same
+  worktree, which auto-resolves identically) for both.
 - **Files forge now owns** (all under `.forge/`, gitignored, machine-local):
   `instances.json` (index registry), `instances.lock` (global lock),
   `ports-<env>[-<instance>].json` (per-instance port store).

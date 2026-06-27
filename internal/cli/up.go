@@ -53,11 +53,12 @@ import (
 type upOptions struct {
 	env string
 	// instance names this stack for parallel multi-worktree dev. Empty
-	// (the default) resolves to the worktree basename, else the git branch,
-	// else the unnamed default stack — see internal/instance.Resolve. A
-	// named instance gets its own namespace suffix, port block, and
-	// per-instance shared-infra partition (DB/NATS subject), so N worktrees
-	// run simultaneously on shared clusters without colliding.
+	// (the default) resolves to the LINKED-worktree basename, else the
+	// unnamed default stack — the primary checkout is always default,
+	// regardless of branch (see internal/instance.Resolve). A named
+	// instance gets its own namespace suffix, port block, and per-instance
+	// shared-infra partition (DB/NATS subject), so N worktrees run
+	// simultaneously on shared clusters without colliding.
 	instance    string
 	noBuild     bool
 	noDeploy    bool
@@ -161,7 +162,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment to bring up (e.g. dev, staging) — required")
-	cmd.Flags().StringVar(&opts.instance, "instance", "", "Name this parallel stack (multi-worktree dev). Default: the git worktree basename, else the branch, else the unnamed default stack. A named instance gets its own namespace suffix + host-port block + per-instance shared-infra partition, so N worktrees run at once on shared clusters. Pushed into KCL as option(\"instance\")/option(\"instance_index\").")
+	cmd.Flags().StringVar(&opts.instance, "instance", "", "Name this parallel stack (multi-worktree dev). Default: the LINKED-worktree directory basename, else the unnamed default stack (the primary checkout is always default, on any branch). A named instance gets its own namespace suffix + host-port block + per-instance shared-infra partition, so N worktrees run at once on shared clusters. Pushed into KCL as option(\"instance\")/option(\"instance_index\").")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
 	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend")
@@ -232,7 +233,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	cfg := store.Config()
 	projectDir := projectDirForKCL()
 
-	// Resolve the instance identity (--instance → worktree → branch) and arm
+	// Resolve the instance identity (--instance → linked-worktree → default) and arm
 	// the shared render context: option("instance")/option("instance_index")
 	// pushed into KCL, and the instance-scoped resolve_port store activated.
 	// `forge deploy` arms the SAME store with the SAME instance, so up and

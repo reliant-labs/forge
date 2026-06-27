@@ -16,7 +16,7 @@ import (
 const registryRel = ".forge/instances.json"
 
 // Resolve produces the full instance identity for this command: it derives
-// the name (flag → worktree → branch → sanitize) and, for a named
+// the name (flag → linked-worktree basename, else default) and, for a named
 // instance, assigns-or-reads its stable index in the lock-guarded
 // registry. A concurrent first-`up` of two worktrees cannot race to the
 // same index — the read-modify-write of the registry happens entirely

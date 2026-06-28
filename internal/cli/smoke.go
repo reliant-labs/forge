@@ -133,8 +133,17 @@ func runSmokeWith(ctx context.Context, env string, opts smokeOptions, resolve ga
 
 	targets := extractSmokeTargets(entities)
 	if len(targets) == 0 {
-		// No host-bearing routes is not a failure — the env may be
-		// cluster-internal only. Say so plainly and exit 0.
+		// No HOST-bearing routes. Before giving up, try the PORT-based
+		// (dev) topology: dev reaches every service at localhost:<port>
+		// via a host-mapped Gateway listener per service (host-less
+		// routes), so the host-bearing path finds nothing. If the bundle
+		// exposes host-mapped listener ports (or host->infra deps), probe
+		// THOSE instead. See smoke_dev.go.
+		if hasDevPortTargets(entities) {
+			return runDevSmokeWith(ctx, env, opts, entities, probeDevPort, out)
+		}
+		// Genuinely nothing to probe — neither host-bearing routes nor
+		// host-mapped ports. The env may be cluster-internal only.
 		fmt.Fprintf(out, "smoke %s: no host-bearing ingress routes declared — nothing to probe.\n", env)
 		return nil
 	}

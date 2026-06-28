@@ -56,6 +56,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -402,4 +403,116 @@ func k3dPortHost(entry any) (int, bool) {
 		return 0, false
 	}
 	return host, true
+}
+
+// runningClusterHostPorts returns the SET of host ports the LIVE k3d
+// cluster publishes on its serverlb (loadbalancer) container. k3d maps
+// the config's ports[] onto the serverlb container at create time; those
+// published ports ARE the host-port surface, and they are FIXED for the
+// life of the cluster (k3d can't add a port map to a running cluster). So
+// this is the authoritative "what the running cluster actually maps".
+//
+// The serverlb container is named `k3d-<cluster>-serverlb`. We read its
+// published host ports via `docker port`, which prints lines like
+//
+//	28080/tcp -> 0.0.0.0:28080
+//
+// The host side (after the last colon) is the mapped host port. A cluster
+// with no serverlb (e.g. --no-lb) yields an empty set, which the drift
+// check treats as "can't verify" rather than "everything is missing".
+var runningClusterHostPortsFn = runningClusterHostPorts
+
+func runningClusterHostPorts(ctx context.Context, clusterName string) (map[int]bool, error) {
+	container := "k3d-" + clusterName + "-serverlb"
+	out, err := exec.CommandContext(ctx, "docker", "port", container).Output()
+	if err != nil {
+		// No serverlb / docker hiccup — return empty so the caller skips
+		// the drift check rather than falsely flagging every port missing.
+		return map[int]bool{}, nil
+	}
+	ports := map[int]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// "<cluster>/tcp -> 0.0.0.0:<host>" — take the field after the
+		// last colon as the host port.
+		idx := strings.LastIndex(line, ":")
+		if idx < 0 {
+			continue
+		}
+		if host, err := strconv.Atoi(strings.TrimSpace(line[idx+1:])); err == nil {
+			ports[host] = true
+		}
+	}
+	return ports, nil
+}
+
+// clusterPortDrift compares the host ports the env's RENDERED Gateway
+// listeners REQUIRE (required) against the host ports the LIVE cluster
+// actually publishes, and returns the required ports the running cluster is
+// MISSING (sorted ascending). An empty result means the live cluster maps
+// every listener the env needs — no drift.
+//
+// `required` is DERIVED from the SAME render `forge up` deploys (the env's
+// Gateway listeners — see renderedGatewayHostPorts), NOT from the static
+// deploy/k3d.yaml port block. That's the single-source-of-truth contract:
+// drift is "a listener this env renders has no host port on the running
+// cluster", nothing more. It deliberately does NOT flag the pre-mapped
+// parallel-worktree blocks a project may declare statically for FUTURE
+// stacks — those aren't routes THIS bring-up needs, so missing them is not
+// a reason to force a recreate.
+//
+// This catches the failure the derivation alone can't: k3d fixes port maps
+// at create time, so a Gateway listener ADDED after the cluster exists
+// (e.g. the dev controller listener) renders a host port the running
+// cluster never mapped — the route is silently unreachable. The caller
+// turns a non-empty result into a clear "recreate the cluster" error.
+func clusterPortDrift(ctx context.Context, clusterName string, required map[int]bool) ([]int, error) {
+	if len(required) == 0 {
+		return nil, nil
+	}
+	running, err := runningClusterHostPortsFn(ctx, clusterName)
+	if err != nil {
+		return nil, err
+	}
+	// Empty running set = couldn't read the serverlb; don't flag drift on
+	// no evidence (avoids a spurious "recreate" on a transient docker error).
+	if len(running) == 0 {
+		return nil, nil
+	}
+	var missing []int
+	for p := range required {
+		if !running[p] {
+			missing = append(missing, p)
+		}
+	}
+	sort.Ints(missing)
+	return missing, nil
+}
+
+// renderedGatewayHostPorts returns the host-port set the env's RENDERED
+// Gateway listeners require — the EXACT listeners `forge up`/`forge deploy`
+// produce (transform-added listeners like the dev `controller` included).
+// This is the single source of truth the drift check reasons about. A
+// render failure or an env with no gateways yields an empty set (the caller
+// treats that as "nothing to verify").
+func renderedGatewayHostPorts(ctx context.Context, projectDir, env string) (map[int]bool, error) {
+	entities, err := RenderKCL(ctx, projectDir, env)
+	if err != nil {
+		return nil, err
+	}
+	ports := map[int]bool{}
+	if entities == nil {
+		return ports, nil
+	}
+	for _, gw := range entities.Gateways {
+		for _, l := range gw.Listeners {
+			if l.Port > 0 {
+				ports[l.Port] = true
+			}
+		}
+	}
+	return ports, nil
 }

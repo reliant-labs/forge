@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -238,5 +239,89 @@ func TestGatewayAPICRDsURL(t *testing.T) {
 	want := "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/standard-install.yaml"
 	if got != want {
 		t.Errorf("URL = %q, want %q", got, want)
+	}
+}
+
+// TestClusterPortDrift_FlagsMissingControllerPort is the drift scenario:
+// the env's RENDERED Gateway listeners require the controller listener port
+// (28090) but the live cluster only published http/grpc (28080/29190) at
+// create time. The drift check must surface 28090 as missing so the caller
+// can tell the user to recreate — never leave the controller route silently
+// unreachable.
+func TestClusterPortDrift_FlagsMissingControllerPort(t *testing.T) {
+	orig := runningClusterHostPortsFn
+	t.Cleanup(func() { runningClusterHostPortsFn = orig })
+	// Live cluster predates the controller listener — only http/grpc mapped.
+	runningClusterHostPortsFn = func(_ context.Context, _ string) (map[int]bool, error) {
+		return map[int]bool{28080: true, 29190: true}, nil
+	}
+	// The env's rendered listeners require the controller port too.
+	required := map[int]bool{28080: true, 28090: true, 29190: true}
+
+	missing, err := clusterPortDrift(context.Background(), "control-plane", required)
+	if err != nil {
+		t.Fatalf("drift: %v", err)
+	}
+	if len(missing) != 1 || missing[0] != 28090 {
+		t.Fatalf("expected missing=[28090], got %v", missing)
+	}
+}
+
+// TestClusterPortDrift_NoDriftWhenComplete: a live cluster that maps every
+// required listener port reports no drift (extra live ports are fine).
+func TestClusterPortDrift_NoDriftWhenComplete(t *testing.T) {
+	orig := runningClusterHostPortsFn
+	t.Cleanup(func() { runningClusterHostPortsFn = orig })
+	runningClusterHostPortsFn = func(_ context.Context, _ string) (map[int]bool, error) {
+		return map[int]bool{28080: true, 28090: true, 99999: true}, nil // extra live ports are fine
+	}
+	required := map[int]bool{28080: true, 28090: true}
+	missing, err := clusterPortDrift(context.Background(), "control-plane", required)
+	if err != nil {
+		t.Fatalf("drift: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected no drift, got %v", missing)
+	}
+}
+
+// TestClusterPortDrift_OnlyRenderedListenersFlagged proves the drift check
+// reasons about the RENDERED listeners only — NOT statically pre-mapped
+// parallel-worktree blocks. A live cluster missing such a future-block port
+// (28190) but mapping every CURRENT listener reports NO drift, so a routine
+// `forge up` doesn't force a recreate for ports no current route needs.
+func TestClusterPortDrift_OnlyRenderedListenersFlagged(t *testing.T) {
+	orig := runningClusterHostPortsFn
+	t.Cleanup(func() { runningClusterHostPortsFn = orig })
+	runningClusterHostPortsFn = func(_ context.Context, _ string) (map[int]bool, error) {
+		// Live cluster maps the current listeners but not the unused
+		// worktree-block 1 ports (28180/28190/29290).
+		return map[int]bool{28080: true, 28090: true, 29190: true}, nil
+	}
+	required := map[int]bool{28080: true, 28090: true, 29190: true} // rendered listeners only
+	missing, err := clusterPortDrift(context.Background(), "control-plane", required)
+	if err != nil {
+		t.Fatalf("drift: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected no drift (future-block ports are not required), got %v", missing)
+	}
+}
+
+// TestClusterPortDrift_UnreadableServerlbIsNoOp: an empty running set
+// (serverlb unreadable) must NOT flag every port as missing.
+func TestClusterPortDrift_UnreadableServerlbIsNoOp(t *testing.T) {
+	orig := runningClusterHostPortsFn
+	t.Cleanup(func() { runningClusterHostPortsFn = orig })
+	runningClusterHostPortsFn = func(_ context.Context, _ string) (map[int]bool, error) {
+		return map[int]bool{}, nil
+	}
+	required := map[int]bool{28090: true}
+	missing, err := clusterPortDrift(context.Background(), "control-plane", required)
+	if err != nil {
+		t.Fatalf("drift: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected no-op on unreadable serverlb, got %v", missing)
 	}
 }

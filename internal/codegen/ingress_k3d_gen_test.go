@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +111,83 @@ func TestGenerateK3dPorts_Determinism(t *testing.T) {
 	if string(a) != string(b) {
 		t.Errorf("byte mismatch:\n--- a ---\n%s\n--- b ---\n%s", a, b)
 	}
+}
+
+// TestGenerateK3dPorts_DerivationCompleteness is the load-bearing
+// invariant: the host-port SET the fragment maps must equal the host-port
+// SET of the rendered Gateway listeners fed in — EVERY listener port gets a
+// mapping, and the fragment invents none. This is what guarantees there is
+// "nothing to check": if a Gateway listener renders a port (here, a dev
+// `controller` listener on 28090 alongside http 28080 / grpc 29190), the
+// k3d host-port mapping is derived from the SAME set, so it can never be
+// silently dropped the way a hand-maintained static port list can.
+func TestGenerateK3dPorts_DerivationCompleteness(t *testing.T) {
+	tmp := t.TempDir()
+	listeners := []K3dListener{
+		{GatewayName: "public", ListenerName: "http", Port: 28080},
+		{GatewayName: "public", ListenerName: "grpc", Port: 29190},
+		// The transform-added controller listener — the exact one that
+		// used to be missing from the fragment, leaving :28090 unmapped.
+		{GatewayName: "public", ListenerName: "controller", Port: 28090},
+	}
+	if err := GenerateK3dPorts(K3dPortsGenInput{
+		GenContext: GenContext{ProjectDir: tmp},
+		Listeners:  listeners,
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(tmp, "deploy", "k3d-ports.yaml"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	// The set of host ports the listeners declare...
+	want := map[int]bool{}
+	for _, l := range listeners {
+		want[l.Port] = true
+	}
+	// ...must EQUAL the set of host ports the fragment maps.
+	got := parseFragmentHostPorts(t, string(raw))
+
+	for p := range want {
+		if !got[p] {
+			t.Errorf("listener port %d rendered but NOT mapped in k3d-ports.yaml — derivation is incomplete:\n%s", p, raw)
+		}
+	}
+	for p := range got {
+		if !want[p] {
+			t.Errorf("k3d-ports.yaml maps host port %d that no listener declares — derivation invented a port:\n%s", p, raw)
+		}
+	}
+	if len(want) != len(got) {
+		t.Errorf("derived host-port set (%d) != rendered listener port set (%d)\nwant=%v got=%v\n%s",
+			len(got), len(want), want, got, raw)
+	}
+}
+
+// parseFragmentHostPorts pulls every `- port: <host>:<cluster>` host port
+// out of a rendered k3d-ports.yaml fragment.
+func parseFragmentHostPorts(t *testing.T, body string) map[int]bool {
+	t.Helper()
+	ports := map[int]bool{}
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		const prefix = "- port:"
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		spec := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		hostStr, _, ok := strings.Cut(spec, ":")
+		if !ok {
+			continue
+		}
+		var host int
+		if _, err := fmt.Sscanf(hostStr, "%d", &host); err != nil {
+			t.Fatalf("unparseable host port %q in line %q", hostStr, line)
+		}
+		ports[host] = true
+	}
+	return ports
 }
 
 // TestRemoveK3dPorts covers the stale-file cleanup path used by the

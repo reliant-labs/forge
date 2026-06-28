@@ -91,6 +91,22 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 	}
 	if exists {
 		fmt.Printf("  cluster %q already exists — no-op\n", c.Name)
+		// HOST-PORT DRIFT GUARD. k3d fixes a cluster's host-port maps at
+		// create time — a Gateway listener whose host port renders AFTER
+		// the cluster was created (e.g. a listener added to the env's KCL)
+		// is NOT mapped on the live cluster, so its route is silently
+		// unreachable (connection refused on the host port). The host-port
+		// set is DERIVED from the SAME render `forge up` deploys
+		// (deploy/k3d.yaml + the generated deploy/k3d-ports.yaml), so we
+		// can detect this: compare the declared set to what the live
+		// serverlb publishes and FAIL CLEARLY telling the user to recreate,
+		// rather than leave the route dead. Only meaningful for a
+		// config-driven cluster that maps Gateway host ports (HostPorts).
+		if c.Config != "" && c.HostPorts {
+			if err := checkClusterPortDrift(ctx, c, projectDir, env); err != nil {
+				return err
+			}
+		}
 		// Re-run the secondary-cluster node setup on warm runs too. Every
 		// step is idempotent (a guard check precedes each mutation), so a
 		// cluster whose host-gateway DNS alias or MSS clamp was lost (e.g.
@@ -195,6 +211,44 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 	// project's Gateway/HTTPRoute/GRPCRoute resources, EXACTLY like the cloud
 	// envs. One declarative model everywhere.
 	return nil
+}
+
+// checkClusterPortDrift errors when the LIVE cluster is missing host ports
+// the env's RENDERED Gateway listeners now require. The required set is
+// DERIVED from the same render `forge up` deploys (renderedGatewayHostPorts
+// → the env's Gateway listeners, transform-added ones included), so it is
+// the single source of truth — no static port list to keep in sync. k3d
+// can't add a port map to a running cluster, so the only fix is a recreate;
+// we say so explicitly rather than let the affected route fail later with an
+// opaque "connection refused". No drift (or an unreadable serverlb / render)
+// is a silent no-op.
+func checkClusterPortDrift(ctx context.Context, c ClusterEntity, projectDir, env string) error {
+	required, err := renderedGatewayHostPorts(ctx, projectDir, env)
+	if err != nil {
+		fmt.Printf("  warning: could not render Gateway listeners to verify host-port mappings for %q: %v\n", c.Name, err)
+		return nil
+	}
+	missing, err := clusterPortDrift(ctx, c.Name, required)
+	if err != nil {
+		// Best-effort: a drift-read failure must not block the warm-run
+		// fast path. Warn and continue.
+		fmt.Printf("  warning: could not verify host-port mappings for %q: %v\n", c.Name, err)
+		return nil
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	ports := make([]string, len(missing))
+	for i, p := range missing {
+		ports[i] = strconv.Itoa(p)
+	}
+	return fmt.Errorf(
+		"cluster %q is missing host-port mapping(s) %s that env %q's rendered Gateway listeners now require — "+
+			"k3d fixes port maps at cluster-create time, so a listener added after the cluster was "+
+			"created is unreachable on the live cluster. Recreate it to pick up the new mappings:\n"+
+			"    k3d cluster delete %s && forge up --env=%s\n"+
+			"(the required ports are DERIVED from the same render forge deploys — no manual port list to maintain).",
+		c.Name, strings.Join(ports, ", "), env, c.Name, env)
 }
 
 // effectiveServers defaults a zero Servers to 1 (the schema default;

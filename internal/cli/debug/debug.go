@@ -180,6 +180,21 @@ func printGoroutines(goroutines []dbgsvc.GoroutineInfo, jsonOutput bool) {
 // Shared parsing / function-name resolution helpers
 // ---------------------------------------------------------------------------
 
+// isFileLineSpec reports whether s looks like a "file:line" breakpoint
+// location (the part after the LAST colon parses as an integer line number).
+// Everything else — "main.Foo", "runtime.gopark", "(*Server).Serve", a bare
+// "handleRequest" — is treated as a function spec for Delve's location
+// parser. A Windows-style "C:\path\handler.go:42" still ends in :<int>, so the
+// last-colon rule classifies it correctly as file:line.
+func isFileLineSpec(s string) bool {
+	idx := strings.LastIndex(s, ":")
+	if idx < 0 || idx == len(s)-1 {
+		return false
+	}
+	_, err := strconv.Atoi(s[idx+1:])
+	return err == nil
+}
+
 // parseFileLine splits "file.go:42" into file and line.
 func parseFileLine(s string) (string, int, error) {
 	idx := strings.LastIndex(s, ":")

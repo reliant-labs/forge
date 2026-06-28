@@ -179,7 +179,7 @@ func TestRunDevSmokeWith(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := runDevSmokeWith(context.Background(), "dev", smokeOptions{}, e, probe, &buf)
+	err := runDevSmokeWith(context.Background(), "dev", smokeOptions{}, e, probe, nil, &buf)
 	if err == nil {
 		t.Fatalf("expected non-nil error when a target FAILs:\n%s", buf.String())
 	}
@@ -198,7 +198,7 @@ func TestRunDevSmokeWith_AllPass(t *testing.T) {
 		return smokeRouteResult{Status: smokeStatusPass, Reason: smokeReasonReached, StatusCode: 200}
 	}
 	var buf bytes.Buffer
-	if err := runDevSmokeWith(context.Background(), "dev", smokeOptions{}, e, probe, &buf); err != nil {
+	if err := runDevSmokeWith(context.Background(), "dev", smokeOptions{}, e, probe, nil, &buf); err != nil {
 		t.Fatalf("all-pass dev smoke should exit 0: %v\n%s", err, buf.String())
 	}
 	if !strings.Contains(buf.String(), "5 PASS") {
@@ -216,7 +216,7 @@ func TestRunDevSmokeWith_JSON(t *testing.T) {
 		return smokeRouteResult{Status: smokeStatusPass, Reason: smokeReasonReached, StatusCode: 200}
 	}
 	var buf bytes.Buffer
-	err := runDevSmokeWith(context.Background(), "dev", smokeOptions{jsonOut: true}, e, probe, &buf)
+	err := runDevSmokeWith(context.Background(), "dev", smokeOptions{jsonOut: true}, e, probe, nil, &buf)
 	if err == nil {
 		t.Fatalf("expected error (a FAIL) but json run returned nil:\n%s", buf.String())
 	}

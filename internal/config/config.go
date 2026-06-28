@@ -170,6 +170,11 @@ type ProjectConfig struct {
 	// skills for the user-facing split.
 	Packs         []string                `yaml:"packs,omitempty"`
 	PackOverrides map[string]PackOverride `yaml:"pack_overrides,omitempty"`
+	// Smoke declares APP-FLOW health checks that `forge smoke <env>` runs in
+	// addition to its built-in ingress route / dev-port probes. A route probe
+	// only proves listeners are up; a flow check proves the APP actually works
+	// (an end-to-end invariant only the app can express). See [SmokeConfig].
+	Smoke SmokeConfig `yaml:"smoke,omitempty"`
 }
 
 // PackOverride is a project-level override block for an installed pack,
@@ -751,6 +756,69 @@ type DeployEnvConfig struct {
 type DeployConcurrency struct {
 	Enabled          bool `yaml:"enabled"`                      // default true
 	CancelInProgress bool `yaml:"cancel_in_progress,omitempty"` // default false
+}
+
+// SmokeConfig declares APP-FLOW health checks `forge smoke <env>` probes
+// alongside its built-in ingress/dev-port probes. The built-in probes only
+// verify TRANSPORT (a listener answered); they can be GREEN while the app is
+// functionally broken. A flow check lets the app DECLARE an end-to-end
+// invariant that the OWNING SERVICE asserts INTERNALLY and exposes as an HTTP
+// flow-health endpoint (200 healthy / 503 unhealthy). smoke just CURLS that
+// endpoint and folds the status into its PASS/FAIL/exit report — so a green
+// smoke means the app actually works, not just that ports are open.
+//
+// WHY AN ENDPOINT, NOT A COMMAND. The owning service already holds the access
+// (DB creds, cluster vantage point) the assertion needs; running the check
+// inside it avoids handing smoke privileged creds. smoke needs only a URL +
+// reachability. The endpoint is STATUS-ONLY in public (200/503 + aggregate
+// counts) so it leaks nothing sensitive anonymously; per-entity DETAIL lives
+// behind auth or an internal-only port.
+//
+// The daemon-flow case that motivated this: `forge smoke dev` was GREEN while
+// the managed-daemon flow was broken, because no built-in probe could assert
+// "every Ready daemon is attached to the gateway". reliant's daemon-gateway
+// owns that state, so it exposes `/flow-health` (200/503) and smoke curls it.
+type SmokeConfig struct {
+	// FlowChecks are the declared app-flow health endpoints. Each is an HTTP
+	// endpoint smoke probes; 2xx = PASS, anything else (typically 503) = FAIL
+	// (RED), and any FAIL fails the whole smoke run (non-zero exit), exactly
+	// like a failed route probe.
+	FlowChecks []SmokeFlowCheck `yaml:"flow_checks,omitempty"`
+}
+
+// SmokeFlowCheck is one declared app-flow health endpoint `forge smoke <env>`
+// probes. The owning service asserts the invariant internally and returns 200
+// (healthy) / 503 (unhealthy) at this endpoint; smoke curls it and merges the
+// verdict into its summary + exit logic. It is the HTTP-endpoint analogue of a
+// route probe — same machinery, declared by the app.
+type SmokeFlowCheck struct {
+	// Name labels the check in the smoke table / JSON (e.g. "daemon-flow").
+	Name string `yaml:"name"`
+	// URL is the flow-health endpoint smoke GETs. It may be a per-env literal
+	// (e.g. "http://localhost:28091/flow-health" for dev) — scope it with Envs
+	// when the URL differs per env. A 2xx is PASS; any other status (or a
+	// transport failure) is FAIL.
+	URL string `yaml:"url"`
+	// Envs optionally scopes the check to specific smoke environments (by
+	// name). Empty = probe in every env. Use it when the endpoint URL is
+	// env-specific (the usual case — different host/port per env).
+	Envs []string `yaml:"envs,omitempty"`
+	// Description is an optional human note shown in the smoke detail column.
+	Description string `yaml:"description,omitempty"`
+}
+
+// RunsInEnv reports whether this flow check should be probed for the given
+// smoke environment. An empty Envs list means "every env".
+func (c SmokeFlowCheck) RunsInEnv(env string) bool {
+	if len(c.Envs) == 0 {
+		return true
+	}
+	for _, e := range c.Envs {
+		if e == env {
+			return true
+		}
+	}
+	return false
 }
 
 // EffectiveRegistry returns the deploy registry, defaulting to "ghcr".

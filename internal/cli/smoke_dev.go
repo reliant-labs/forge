@@ -208,9 +208,14 @@ func localhostPortFromURL(raw string) int {
 // print the report, and return a non-nil error on any FAIL (non-zero exit).
 // The caller (runSmokeWith) renders the bundle once and dispatches here when
 // the env has no host-bearing routes but does expose host-mapped ports.
-func runDevSmokeWith(ctx context.Context, env string, opts smokeOptions, entities *KCLEntities, probe devPortProbe, out io.Writer) error {
+func runDevSmokeWith(ctx context.Context, env string, opts smokeOptions, entities *KCLEntities, probe devPortProbe, flowResults []smokeRouteResult, out io.Writer) error {
 	targets := extractDevSmokeTargets(entities)
 	if len(targets) == 0 {
+		// No dev ports — but a declared app-flow check may still have an
+		// opinion. If any ran, report on THAT.
+		if len(flowResults) > 0 {
+			return reportFlowOnlySmoke(out, env, opts, flowResults)
+		}
 		fmt.Fprintf(out, "smoke %s: no host-mapped listener ports or host-infra deps declared — nothing to probe.\n", env)
 		return nil
 	}
@@ -222,21 +227,29 @@ func runDevSmokeWith(ctx context.Context, env string, opts smokeOptions, entitie
 		results = append(results, res)
 	}
 
-	summary := summarizeSmoke(results)
+	// Fold the app-flow checks into the overall verdict (a healthy dev port
+	// graph with a broken app-flow must still exit non-zero — the
+	// green-while-broken bug this phase closes).
+	combined := append(append([]smokeRouteResult{}, results...), flowResults...)
+	summary := summarizeSmoke(combined)
 
 	if opts.jsonOut {
 		// Reuse the cloud --json shape so consumers are uniform: each
 		// result already carries its projected smokeTarget (host =
-		// localhost:<port>, route_kind ∈ http|grpc|infra).
-		if err := writeSmokeJSON(out, env, opts.tag, results, summary); err != nil {
+		// localhost:<port>, route_kind ∈ http|grpc|infra|flow).
+		if err := writeSmokeJSON(out, env, opts.tag, combined, summary); err != nil {
 			return err
 		}
 	} else {
-		writeDevSmokeTable(out, env, targets, results, summary)
+		writeDevSmokeTable(out, env, targets, results, summarizeSmoke(results))
+		if len(flowResults) > 0 {
+			writeFlowCheckSection(out, flowResults)
+			writeSmokeOverallVerdict(out, summary, len(combined))
+		}
 	}
 
 	if summary.AnyFail {
-		return fmt.Errorf("smoke %s: %d target(s) FAILED — dev ingress/infra is not serving correctly", env, summary.Fail)
+		return fmt.Errorf("smoke %s: %d check(s) FAILED — dev ingress/infra/app-flow is not serving correctly", env, summary.Fail)
 	}
 	return nil
 }

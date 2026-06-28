@@ -163,6 +163,14 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
 	})
+	// /flow-health: the APP-FLOW assertion endpoint. Mounted only when the
+	// caller registered FlowChecks. Like /healthz + /readyz it sits IN FRONT
+	// of the edge (no CORS/auth) and is STATUS-ONLY — 200 when every check
+	// passes, 503 when any fails, plus a terse non-sensitive aggregate. This
+	// is what `forge smoke` curls to catch green-while-broken app flows.
+	if len(srv.FlowChecks) > 0 {
+		top.HandleFunc("/flow-health", flowHealthHandler(srv.FlowChecks))
+	}
 	// /metrics is mounted on the top mux (in front of the edge) so Prometheus
 	// scrapers reach it without CORS/auth/security-headers. serverkit owns it
 	// now that it owns OTel setup.

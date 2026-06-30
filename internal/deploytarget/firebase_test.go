@@ -109,11 +109,17 @@ func TestFirebaseAssembleLayout(t *testing.T) {
 	assertFileContains(t, filepath.Join(staging, "index.html"), "<spa/>")
 
 	// firebase.json + .firebaserc written next to the staging tree.
+	// fakeFirebaseFrontend declares an EXPLICIT Target, so firebase.json
+	// carries `target` (resolved via .firebaserc) and MUST NOT also carry
+	// `site` — the firebase CLI rejects a hosting config with both.
 	workdir := filepath.Dir(staging)
 	assertFileContains(t, filepath.Join(workdir, "firebase.json"), `"public": "public"`)
-	assertFileContains(t, filepath.Join(workdir, "firebase.json"), `"site": "reliant-staging"`)
+	assertFileContains(t, filepath.Join(workdir, "firebase.json"), `"target": "reliant-staging"`)
+	assertFileNotContains(t, filepath.Join(workdir, "firebase.json"), `"site"`)
 	assertFileContains(t, filepath.Join(workdir, "firebase.json"), `"destination": "/index.html"`)
 	assertFileContains(t, filepath.Join(workdir, ".firebaserc"), `"default": "reliant-nonprod-490701"`)
+	// With an explicit target, .firebaserc carries the target→site map.
+	assertFileContains(t, filepath.Join(workdir, ".firebaserc"), `"reliant-staging"`)
 
 	// The build (install + build) ran in the frontend dir with NODE_ENV
 	// + NEXT_PUBLIC_* injected, and the final exec is the firebase deploy.
@@ -199,6 +205,14 @@ func TestFirebaseTargetDefaultsToSite(t *testing.T) {
 	if !strings.Contains(last, "--only hosting:reliant-prod") {
 		t.Errorf("target should default to site id; got %q", last)
 	}
+	// No explicit target → firebase.json carries `site` (deploy by site
+	// id) and MUST NOT carry `target`; the firebase CLI rejects both.
+	// .firebaserc carries only the default project (no orphan target map).
+	workdir := filepath.Dir(staging)
+	assertFileContains(t, filepath.Join(workdir, "firebase.json"), `"site": "reliant-prod"`)
+	assertFileNotContains(t, filepath.Join(workdir, "firebase.json"), `"target"`)
+	assertFileContains(t, filepath.Join(workdir, ".firebaserc"), `"default": "reliant-labs-475814"`)
+	assertFileNotContains(t, filepath.Join(workdir, ".firebaserc"), `"targets"`)
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -219,5 +233,16 @@ func assertFileContains(t *testing.T, path, want string) {
 	}
 	if !strings.Contains(string(b), want) {
 		t.Errorf("%s does not contain %q\n---\n%s", path, want, string(b))
+	}
+}
+
+func assertFileNotContains(t *testing.T, path, unwanted string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if strings.Contains(string(b), unwanted) {
+		t.Errorf("%s unexpectedly contains %q\n---\n%s", path, unwanted, string(b))
 	}
 }

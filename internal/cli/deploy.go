@@ -35,6 +35,7 @@ func newDeployCmd() *cobra.Command {
 		rollback      bool
 		targets       []string
 		skipFrontend  bool
+		frontendsOnly bool
 		skipPreflight bool
 		noDigest      bool
 	)
@@ -128,6 +129,17 @@ Examples:
 			if rollback && effectiveTag != "" {
 				return errors.New("--rollback and --tag are mutually exclusive")
 			}
+			// --frontends-only is the inverse of --skip-frontend: ship ONLY
+			// the env's Firebase frontend(s) and nothing else. The two are
+			// mutually exclusive — one says "everything but the frontend",
+			// the other "the frontend and nothing else"; combining them
+			// would deploy nothing.
+			if frontendsOnly && skipFrontend {
+				return errors.New("--frontends-only and --skip-frontend are mutually exclusive")
+			}
+			if frontendsOnly && len(targets) > 0 {
+				return errors.New("--frontends-only and --target are mutually exclusive (--frontends-only already scopes to every frontend)")
+			}
 			return runDeploy(cmd.Context(), args[0], deployOptions{
 				imageTag:      effectiveTag,
 				dryRun:        dryRun,
@@ -137,6 +149,7 @@ Examples:
 				rollback:      rollback,
 				targets:       targets,
 				skipFrontend:  skipFrontend,
+				frontendsOnly: frontendsOnly,
 				skipPreflight: skipPreflight,
 				noDigest:      noDigest,
 			})
@@ -153,6 +166,7 @@ Examples:
 	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back the env to the last successfully deployed tag (per service, from .forge/state).")
 	cmd.Flags().StringArrayVar(&targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
 	cmd.Flags().BoolVar(&skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
+	cmd.Flags().BoolVar(&frontendsOnly, "frontends-only", false, "Deploy ONLY the env's Firebase frontend(s) — build + Firebase deploy, skipping the entire k8s apply (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
 	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
 	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
 
@@ -269,6 +283,20 @@ type deployOptions struct {
 	// covers the deploy-everything-but-the-frontend case in one flag. No
 	// effect on rollback (which never dispatches frontends).
 	skipFrontend bool
+
+	// frontendsOnly, when true, deploys EXCLUSIVELY the env's Firebase
+	// frontend(s): the entire k8s apply (Services, Operators, CronJobs,
+	// gateways, routes, helm charts) is dropped and only the frontend
+	// build+Firebase-deploy dispatch runs. It is the native inverse of
+	// skipFrontend — "ship just the frontend, touch no cluster" — and is
+	// what makes a project with backend CronJobs (which otherwise keep
+	// the frontendOnly cluster-skip guard from engaging) deployable to
+	// Firebase without a kubectl context. Implemented by narrowing the
+	// rendered entity set to its Frontends (filterEntitiesByTarget with
+	// frontendsOnly=true strips every non-frontend kind), which makes the
+	// frontendOnly guard in runDeploy engage so the empty-manifest
+	// cluster.Apply is skipped. No effect on rollback.
+	frontendsOnly bool
 
 	// skipPreflight, when true, bypasses the deploy-time deployability
 	// preflight (verify every referenced Secret key + container image exists
@@ -429,6 +457,23 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 			return err
 		}
 		entities = filterEntitiesByTarget(entities, targets)
+	}
+
+	// --frontends-only: narrow the rendered set to its Firebase frontend(s)
+	// and DROP every other kind (Services, Operators, CronJobs, gateways,
+	// routes, helm charts). This is what makes the frontendOnly cluster-skip
+	// guard below engage for a project that declares backend CronJobs — a
+	// declared forge.CronJob would otherwise leave entities.CronJobs
+	// non-empty, keep frontendOnly false, and drive an empty-manifest
+	// cluster.Apply that dies "no objects passed to apply". The flag scopes
+	// the whole deploy to "build + Firebase deploy the frontend(s), touch no
+	// cluster". Refuse fast when the env declares no Firebase frontend —
+	// otherwise the deploy would silently no-op.
+	if opts.frontendsOnly {
+		if entities == nil || !hasFirebaseFrontend(entities) {
+			return fmt.Errorf("--frontends-only: environment %q declares no Firebase Hosting frontend to deploy", envName)
+		}
+		entities = filterEntitiesToFrontendsOnly(entities)
 	}
 
 	hasK8sServices := kclEntitiesHaveK8sCluster(entities)
@@ -1057,6 +1102,40 @@ func filterEntitiesByTarget(e *KCLEntities, targets []string) *KCLEntities {
 	out.Services = svcs
 	out.Operators = ops
 	out.Frontends = fes
+	return &out
+}
+
+// filterEntitiesToFrontendsOnly returns a shallow copy of e narrowed to
+// its Frontends — EVERY frontend kept (the Firebase-deploying one PLUS
+// any `deploy = None` build-only frontends it bundles), and every other
+// entity kind dropped: Services, Operators, CronJobs, Gateways,
+// HTTP/GRPC routes, HelmCharts, Clusters, and the secret/manifest prereqs
+// that only matter to the k8s apply.
+//
+// This is the load-bearing half of `--frontends-only`. Dropping CronJobs
+// here (which filterEntitiesByTarget deliberately does NOT do — a CronJob
+// can be a --target) is what lets the frontendOnly guard in runDeploy
+// engage: that guard requires len(entities.CronJobs)==0 &&
+// len(entities.Operators)==0 && !hasK8sServices, and a project declaring a
+// forge.CronJob (e.g. a one-shot schema-migration Job) would otherwise
+// keep it non-empty, leave frontendOnly false, and drive an empty-manifest
+// cluster.Apply that errors "no objects passed to apply". With everything
+// but Frontends stripped, the cluster pipeline is skipped entirely and
+// only the Firebase dispatch runs.
+func filterEntitiesToFrontendsOnly(e *KCLEntities) *KCLEntities {
+	out := *e // shallow copy; non-frontend slices are zeroed below
+	out.Services = nil
+	out.Operators = nil
+	out.CronJobs = nil
+	out.Gateways = nil
+	out.HTTPRoutes = nil
+	out.GRPCRoutes = nil
+	out.HelmCharts = nil
+	out.Clusters = nil
+	out.KubeconfigSecrets = nil
+	out.RequiredSecrets = nil
+	// Frontends carried through unchanged — the Firebase deploy + any
+	// build-only frontends it bundles.
 	return &out
 }
 

@@ -116,14 +116,27 @@ func (p FirebaseProvider) projectDir() string {
 	return "."
 }
 
-// resolvedTarget returns the hosting target alias for `--only
-// hosting:<target>`. Defaults to the site id when unset — the common
-// case where a project has one target per site.
+// resolvedTarget returns the hosting selector for `--only hosting:<x>`.
+// When an explicit Target alias is declared it's used (resolved via the
+// generated .firebaserc target→site mapping); otherwise the bare site id
+// is used — `firebase deploy --only hosting:<site>` accepts a site id
+// directly, no target alias required.
 func (s FirebaseHostingSpec) resolvedTarget() string {
 	if s.Target != "" {
 		return s.Target
 	}
 	return s.Site
+}
+
+// hasExplicitTarget reports whether the spec declares a real hosting
+// target alias (distinct from defaulting to the site id). This is the
+// switch that keeps `site` and `target` MUTUALLY EXCLUSIVE in the
+// rendered firebase.json: the firebase CLI rejects a hosting config that
+// carries BOTH on `deploy --only hosting:<x>`. With an explicit target we
+// emit `target` (resolved via .firebaserc); without one we emit `site`
+// (and deploy by site id directly).
+func (s FirebaseHostingSpec) hasExplicitTarget() bool {
+	return s.Target != ""
 }
 
 // Deploy ships every frontend in the group to its Firebase Hosting
@@ -554,9 +567,17 @@ func cleanDestRel(dest string) string {
 func renderFirebaseJSON(stagingDir string, spec FirebaseHostingSpec) (string, error) {
 	hosting := map[string]any{
 		"public": filepath.Base(stagingDir),
-		"site":   spec.Site,
-		"target": spec.resolvedTarget(),
 		"ignore": []string{"firebase.json", "**/.*", "**/node_modules/**"},
+	}
+	// site and target are MUTUALLY EXCLUSIVE in a firebase.json hosting
+	// config — the firebase CLI errors out ("Cannot have both site and
+	// target ...") on `deploy --only hosting:<x>` when both are present.
+	// Emit `target` only when an explicit alias is declared (resolved via
+	// the .firebaserc target→site map); otherwise emit the bare `site`.
+	if spec.hasExplicitTarget() {
+		hosting["target"] = spec.Target
+	} else {
+		hosting["site"] = spec.Site
 	}
 	if len(spec.Rewrites) > 0 {
 		hosting["rewrites"] = spec.Rewrites
@@ -576,13 +597,20 @@ func renderFirebaseJSON(stagingDir string, spec FirebaseHostingSpec) (string, er
 func renderFirebaseRC(spec FirebaseHostingSpec) (string, error) {
 	doc := map[string]any{
 		"projects": map[string]any{"default": spec.Project},
-		"targets": map[string]any{
+	}
+	// The target→site mapping is only meaningful when firebase.json
+	// references a target alias. Without an explicit Target, firebase.json
+	// carries `site` directly and the deploy selects `--only
+	// hosting:<site>` by site id, so no target alias is configured (an
+	// orphan mapping whose alias nothing references is dead config).
+	if spec.hasExplicitTarget() {
+		doc["targets"] = map[string]any{
 			spec.Project: map[string]any{
 				"hosting": map[string]any{
-					spec.resolvedTarget(): []string{spec.Site},
+					spec.Target: []string{spec.Site},
 				},
 			},
-		},
+		}
 	}
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

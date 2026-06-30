@@ -351,10 +351,24 @@ func runUp(ctx context.Context, opts upOptions) error {
 				fmt.Println("\n[up] deploy phase")
 				// Cluster reconcile through the SAME named entry point
 				// `forge deploy` uses. `up`'s cluster step carries a
-				// scope-derived (zero-value) deployOptions — no surgical
-				// knobs today — instead of a blank `deployOptions{}` literal
-				// standing in for "deploy with no options."
-				if err := reconcileCluster(ctx, opts.env, deployOptions{}); err != nil {
+				// scope-derived deployOptions — instead of a blank
+				// `deployOptions{}` literal standing in for "deploy with no
+				// options."
+				//
+				// skipFrontend: true is the deploy-phase mirror of the build
+				// phase's skipFrontends (upBuildCluster). `forge up` ALWAYS
+				// dev-serves frontends in its Phase 4 (`npm run dev` =
+				// `next dev` / vite dev server) and NEVER consumes a prod
+				// frontend artifact, so the deploy phase must not run the
+				// `deploy = None` build-only path (dispatchFrontendDeploys →
+				// `npm run build` under NODE_ENV=production). Without this a
+				// bare `forge up --env=dev` would prod-`next build` every
+				// host-mode frontend (the static `output: "export"` Next.js
+				// build) right before — and pointlessly alongside — starting
+				// its `next dev` server. The build-only path exists to
+				// materialize a static frontend for a FirebaseHosting frontend
+				// to reference at DEPLOY time; it has no place in the dev loop.
+				if err := reconcileCluster(ctx, opts.env, deployOptions{skipFrontend: true}); err != nil {
 					return fmt.Errorf("deploy: %w", err)
 				}
 			}

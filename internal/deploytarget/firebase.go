@@ -282,19 +282,8 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 	runner := p.runner()
 	fmt.Printf("  [firebase] %s: building (%s) in %s...\n", plan.Name, strings.Join(plan.BuildCmd, " "), plan.FrontendDir)
 
-	// Build phase — install then build, both in the frontend dir with
-	// the build-time env layered on. NODE_ENV=production is forced so
-	// the static export path (Next.js `output: "export"` gated on
-	// NODE_ENV) and Vite's production mode both engage.
-	buildEnv := map[string]string{"NODE_ENV": "production"}
-	for k, v := range plan.BuildEnv {
-		buildEnv[k] = v
-	}
-	if err := runInDir(ctx, runner, plan.FrontendDir, buildEnv, plan.InstallCmd); err != nil {
-		return fmt.Errorf("firebase %s: install: %w", plan.Name, err)
-	}
-	if err := runInDir(ctx, runner, plan.FrontendDir, buildEnv, plan.BuildCmd); err != nil {
-		return fmt.Errorf("firebase %s: build: %w", plan.Name, err)
+	if err := runFrontendBuild(ctx, runner, plan.Name, plan.FrontendDir, plan.InstallCmd, plan.BuildCmd, plan.BuildEnv); err != nil {
+		return err
 	}
 
 	// Assemble phase — fresh staging tree, then copy public_dir + bundles.
@@ -320,6 +309,145 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 	}
 	fmt.Printf("  [firebase] %s: deployed.\n", plan.Name)
 	return nil
+}
+
+// runFrontendBuild runs the install + build phase for a frontend in
+// frontendDir with the build-time env layered on. NODE_ENV=production is
+// forced so the static export path (Next.js `output: "export"` gated on
+// NODE_ENV) and Vite's production mode both engage. Shared by the
+// Firebase deploy path (deployOne) and the build-only path (BuildOnly)
+// so the two never drift on install command, build command, or env
+// injection semantics.
+func runFrontendBuild(ctx context.Context, runner commandRunner, name, frontendDir string, installCmd, buildCmd []string, extraEnv map[string]string) error {
+	buildEnv := buildTimeEnv(extraEnv)
+	if err := runInDir(ctx, runner, frontendDir, buildEnv, installCmd); err != nil {
+		return fmt.Errorf("frontend %s: install: %w", name, err)
+	}
+	if err := runInDir(ctx, runner, frontendDir, buildEnv, buildCmd); err != nil {
+		return fmt.Errorf("frontend %s: build: %w", name, err)
+	}
+	return nil
+}
+
+// buildTimeEnv layers a frontend's inline env_vars over a forced
+// NODE_ENV=production. Extracted so the deploy path and the build-only
+// path produce byte-identical build env.
+func buildTimeEnv(extraEnv map[string]string) map[string]string {
+	env := map[string]string{"NODE_ENV": "production"}
+	for k, v := range extraEnv {
+		env[k] = v
+	}
+	return env
+}
+
+// BuildOnlyFrontend is a frontend that forge must BUILD (env-injected)
+// but NOT deploy — a `deploy = None` frontend. Its build output (e.g. a
+// Next.js static export under PublicDir) becomes available on disk so a
+// sibling FirebaseHosting frontend can assemble it into its hosting
+// bundle. Mirrors the build inputs of FirebaseFrontend minus any deploy
+// spec.
+type BuildOnlyFrontend struct {
+	// Name is the forge frontend name (logging).
+	Name string
+
+	// Path is the frontend source dir relative to the project root —
+	// where install / `npm run build` run.
+	Path string
+
+	// DevRunner is "npm" (default) | "pnpm" | "yarn"; selects the
+	// install command.
+	DevRunner string
+
+	// BuildEnv is the build-time env injected into the build process
+	// (NEXT_PUBLIC_* / VITE_*). Layered over NODE_ENV=production.
+	BuildEnv map[string]string
+
+	// PublicDir is the build-output dir the build emits (relative to
+	// Path), e.g. "out" for a Next.js static export. Used for dry-run
+	// reporting of the emitted directory.
+	PublicDir string
+}
+
+// buildOnlyPlan is the resolved, side-effect-free description of one
+// build-only frontend's build. Computed first so --dry-run can print it
+// without shelling out, and the real build executes against the same plan.
+type buildOnlyPlan struct {
+	Name        string
+	FrontendDir string // absolute frontend source dir
+	InstallCmd  []string
+	BuildCmd    []string
+	BuildEnv    map[string]string
+	EmittedDir  string // absolute build-output dir the build is expected to emit
+}
+
+// buildOnlyPlanFor resolves a BuildOnlyFrontend into its buildOnlyPlan.
+// Pure aside from path resolution (filepath.Abs).
+func (p FirebaseProvider) buildOnlyPlanFor(fe BuildOnlyFrontend) (buildOnlyPlan, error) {
+	projDir, err := filepath.Abs(p.projectDir())
+	if err != nil {
+		return buildOnlyPlan{}, fmt.Errorf("build-only %s: resolve project dir: %w", fe.Name, err)
+	}
+	frontendDir := fe.Path
+	if !filepath.IsAbs(frontendDir) {
+		frontendDir = filepath.Join(projDir, fe.Path)
+	}
+	emitted := fe.PublicDir
+	if emitted != "" && !filepath.IsAbs(emitted) {
+		emitted = filepath.Join(frontendDir, fe.PublicDir)
+	}
+	return buildOnlyPlan{
+		Name:        fe.Name,
+		FrontendDir: frontendDir,
+		InstallCmd:  firebaseInstallCmd(fe.DevRunner),
+		BuildCmd:    []string{"npm", "run", "build"},
+		BuildEnv:    buildTimeEnv(fe.BuildEnv),
+		EmittedDir:  emitted,
+	}, nil
+}
+
+// BuildOnly builds each build-only frontend (install + `npm run build`
+// with its env_vars injected) so its output exists on disk before any
+// FirebaseHosting frontend assembles a bundle that references it. dryRun
+// prints the build plan and performs no side effects, mirroring the
+// Firebase deploy dry-run.
+func (p FirebaseProvider) BuildOnly(ctx context.Context, fes []BuildOnlyFrontend, dryRun bool) error {
+	for _, fe := range fes {
+		plan, err := p.buildOnlyPlanFor(fe)
+		if err != nil {
+			return err
+		}
+		if dryRun {
+			printBuildOnlyPlan(os.Stdout, plan)
+			continue
+		}
+		fmt.Printf("  [build-only] %s: building (%s) in %s...\n", plan.Name, strings.Join(plan.BuildCmd, " "), plan.FrontendDir)
+		if err := runFrontendBuild(ctx, p.runner(), plan.Name, plan.FrontendDir, plan.InstallCmd, plan.BuildCmd, fe.BuildEnv); err != nil {
+			return err
+		}
+		fmt.Printf("  [build-only] %s: built", plan.Name)
+		if plan.EmittedDir != "" {
+			fmt.Printf(" -> %s", plan.EmittedDir)
+		}
+		fmt.Println(".")
+	}
+	return nil
+}
+
+// printBuildOnlyPlan renders the dry-run plan for one build-only
+// frontend: the install + build commands, the injected build env, and
+// the emitted output dir. Mirrors printFirebasePlan's "[DRY-RUN] would
+// exec" style.
+func printBuildOnlyPlan(w io.Writer, plan buildOnlyPlan) {
+	fmt.Fprintf(w, "  [DRY-RUN] build-only plan for frontend %q:\n", plan.Name)
+	fmt.Fprintf(w, "    build dir:    %s\n", plan.FrontendDir)
+	fmt.Fprintf(w, "    [DRY-RUN] would exec: %s\n", strings.Join(plan.InstallCmd, " "))
+	if len(plan.BuildEnv) > 0 {
+		fmt.Fprintf(w, "    build env:    %s\n", formatBuildEnv(plan.BuildEnv))
+	}
+	fmt.Fprintf(w, "    [DRY-RUN] would exec: %s (NODE_ENV=production)\n", strings.Join(plan.BuildCmd, " "))
+	if plan.EmittedDir != "" {
+		fmt.Fprintf(w, "    emits dir:    %s\n", plan.EmittedDir)
+	}
 }
 
 // runInDir runs a command in dir with an optional env overlay. The

@@ -814,12 +814,36 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 		return nil
 	}
 	var fes []deploytarget.FirebaseFrontend
+	var buildOnly []deploytarget.BuildOnlyFrontend
 	for _, f := range entities.Frontends {
-		if f.Deploy == nil || f.Deploy.Type != "firebase" || f.Deploy.Firebase == nil {
+		if f.Deploy == nil {
+			// `deploy = None`: build-only. forge builds it (env-injected)
+			// so its output exists on disk before any FirebaseHosting
+			// frontend assembles a bundle that references it. Non-firebase
+			// deploy targets remain a no-op (skipped below).
+			buildOnly = append(buildOnly, frontendToBuildOnly(f))
+			continue
+		}
+		if f.Deploy.Type != "firebase" || f.Deploy.Firebase == nil {
 			continue
 		}
 		fes = append(fes, frontendToFirebase(f))
 	}
+
+	// Build-only frontends must build FIRST so their output exists before
+	// any FirebaseHosting frontend assembles a bundle referencing it.
+	if len(buildOnly) > 0 {
+		if !dryRun {
+			fmt.Printf("\nBuilding %d build-only frontend(s) (deploy = None)...\n", len(buildOnly))
+		} else {
+			fmt.Printf("\nBuild-only frontend(s) (deploy = None): %d\n", len(buildOnly))
+		}
+		provider := deploytarget.FirebaseProvider{ProjectDir: projectDir}
+		if err := provider.BuildOnly(ctx, buildOnly, dryRun); err != nil {
+			return err
+		}
+	}
+
 	if len(fes) == 0 {
 		return nil
 	}
@@ -889,6 +913,45 @@ func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 			Bundle:    bundles,
 			Rewrites:  fb.Rewrites,
 		},
+	}
+}
+
+// frontendToBuildOnly maps a rendered FrontendEntity with NO deploy
+// block (`deploy = None`) onto the deploytarget.BuildOnlyFrontend the
+// build-only path consumes. Like frontendToFirebase, only inline Value
+// env_vars are forwarded as build-time env — secret/configmap-projected
+// vars have no host build-time value. PublicDir is inferred from the
+// frontend type (nextjs static export → "out", vite → "dist") so the
+// dry-run plan can report the emitted directory; the build itself
+// doesn't depend on it.
+func frontendToBuildOnly(f FrontendEntity) deploytarget.BuildOnlyFrontend {
+	buildEnv := map[string]string{}
+	for _, ev := range f.EnvVars {
+		if ev.Value != "" {
+			buildEnv[ev.Name] = ev.Value
+		}
+	}
+	return deploytarget.BuildOnlyFrontend{
+		Name:      f.Name,
+		Path:      f.Path,
+		DevRunner: f.DevRunner,
+		BuildEnv:  buildEnv,
+		PublicDir: inferPublicDir(f.Type),
+	}
+}
+
+// inferPublicDir returns the conventional build-output dir for a frontend
+// type: Next.js static export emits "out", Vite emits "dist". Used only
+// for build-only dry-run reporting; an unknown type yields "" (no
+// emitted-dir line).
+func inferPublicDir(frontendType string) string {
+	switch frontendType {
+	case "vite-spa":
+		return "dist"
+	case "nextjs", "":
+		return "out"
+	default:
+		return ""
 	}
 }
 

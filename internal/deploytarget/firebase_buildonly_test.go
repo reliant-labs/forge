@@ -95,19 +95,36 @@ func TestBuildOnlyThenFirebaseAssembles(t *testing.T) {
 		t.Fatalf("build-only did not emit %s: %v", emittedOut, err)
 	}
 
-	// Assert env injection: a build call carried NODE_ENV=production +
-	// the inline NEXT_PUBLIC_API_URL.
-	foundEnv := false
-	for _, env := range buildRunner.envCalls {
-		if env != nil && env["NODE_ENV"] == "production" && env["NEXT_PUBLIC_API_URL"] == "https://api.staging.example.com" {
-			foundEnv = true
+	// Assert the install/build env split (the devDependency fix): the
+	// install call must NOT force NODE_ENV=production (devDeps would be
+	// skipped) and must NOT carry build-time env_vars; the build call must
+	// carry NODE_ENV=production + the inline NEXT_PUBLIC_API_URL.
+	var installEnvSeen, buildEnvSeen map[string]string
+	for i, env := range buildRunner.envCalls {
+		switch {
+		case strings.Contains(buildRunner.calls[i], "npm install"):
+			installEnvSeen = env
+		case strings.Contains(buildRunner.calls[i], "npm run build"):
+			buildEnvSeen = env
 		}
-	}
-	if !foundEnv {
-		t.Errorf("expected a build-only call with NODE_ENV=production + NEXT_PUBLIC_API_URL injected; calls=%v envs=%v", buildRunner.calls, buildRunner.envCalls)
 	}
 	if !strings.Contains(strings.Join(buildRunner.calls, "\n"), "npm install") {
 		t.Errorf("expected an npm install call; got %v", buildRunner.calls)
+	}
+	if installEnvSeen == nil {
+		t.Fatalf("npm install did not carry an env overlay; envs=%v", buildRunner.envCalls)
+	}
+	if installEnvSeen["NODE_ENV"] == "production" {
+		t.Errorf("npm install must NOT force NODE_ENV=production (it skips devDeps); got %v", installEnvSeen)
+	}
+	if _, ok := installEnvSeen["NEXT_PUBLIC_API_URL"]; ok {
+		t.Errorf("npm install must NOT carry build-time env_vars; got %v", installEnvSeen)
+	}
+	if buildEnvSeen == nil {
+		t.Fatalf("npm run build did not carry an env overlay; envs=%v", buildRunner.envCalls)
+	}
+	if buildEnvSeen["NODE_ENV"] != "production" || buildEnvSeen["NEXT_PUBLIC_API_URL"] != "https://api.staging.example.com" {
+		t.Errorf("npm run build must carry NODE_ENV=production + NEXT_PUBLIC_API_URL; got %v", buildEnvSeen)
 	}
 
 	// 2) Now a sibling FirebaseHosting frontend bundles admin-web/out into

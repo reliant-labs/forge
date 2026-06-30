@@ -312,21 +312,43 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 }
 
 // runFrontendBuild runs the install + build phase for a frontend in
-// frontendDir with the build-time env layered on. NODE_ENV=production is
-// forced so the static export path (Next.js `output: "export"` gated on
-// NODE_ENV) and Vite's production mode both engage. Shared by the
-// Firebase deploy path (deployOne) and the build-only path (BuildOnly)
-// so the two never drift on install command, build command, or env
-// injection semantics.
+// frontendDir. The two phases get DELIBERATELY DIFFERENT env:
+//
+//   - INSTALL runs under NODE_ENV=development (installEnv) so the package
+//     manager pulls the FULL dependency set, devDependencies included.
+//     The build toolchain (typescript, bundlers, next's config loader)
+//     lives in devDependencies — under NODE_ENV=production, `npm install`
+//     SKIPS them and the subsequent build dies with "Cannot find module
+//     'typescript'" (Next.js needs typescript to load next.config.ts).
+//     The frontend's inline env_vars are NOT injected here: they're
+//     build-time values (NEXT_PUBLIC_* / VITE_*), irrelevant to install.
+//   - BUILD runs under NODE_ENV=production with the inline env_vars
+//     layered on (buildTimeEnv), so the static-export path (Next.js
+//     `output: "export"` gated on NODE_ENV) and Vite's production mode
+//     both engage and NEXT_PUBLIC_*/VITE_* are baked in.
+//
+// Shared by the Firebase deploy path (deployOne) and the build-only path
+// (BuildOnly) so the two never drift on install command, build command,
+// or env semantics.
 func runFrontendBuild(ctx context.Context, runner commandRunner, name, frontendDir string, installCmd, buildCmd []string, extraEnv map[string]string) error {
-	buildEnv := buildTimeEnv(extraEnv)
-	if err := runInDir(ctx, runner, frontendDir, buildEnv, installCmd); err != nil {
+	if err := runInDir(ctx, runner, frontendDir, installEnv(), installCmd); err != nil {
 		return fmt.Errorf("frontend %s: install: %w", name, err)
 	}
-	if err := runInDir(ctx, runner, frontendDir, buildEnv, buildCmd); err != nil {
+	if err := runInDir(ctx, runner, frontendDir, buildTimeEnv(extraEnv), buildCmd); err != nil {
 		return fmt.Errorf("frontend %s: build: %w", name, err)
 	}
 	return nil
+}
+
+// installEnv is the env overlay for the dependency-install phase. It
+// forces NODE_ENV=development so devDependencies are installed even when
+// the ambient/inherited NODE_ENV is "production" (the package manager
+// skips devDeps under production). Set explicitly rather than left empty:
+// runInDir inherits the parent process env when the overlay is empty, so
+// an inherited NODE_ENV=production would otherwise leak through and strip
+// the build toolchain (typescript, bundlers) the build phase needs.
+func installEnv() map[string]string {
+	return map[string]string{"NODE_ENV": "development"}
 }
 
 // buildTimeEnv layers a frontend's inline env_vars over a forced

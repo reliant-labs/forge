@@ -129,19 +129,45 @@ func TestFirebaseAssembleLayout(t *testing.T) {
 		t.Errorf("last call should be firebase deploy; got %q", last)
 	}
 
-	// Build env was threaded onto the install+build calls (RunWithEnv),
-	// not the firebase deploy (Run, nil env).
-	foundBuildEnv := false
+	// Install and build get DELIBERATELY DIFFERENT env (the devDependency
+	// fix): the install call must NOT force NODE_ENV=production (devDeps —
+	// typescript, bundlers — are skipped under production, breaking the
+	// build with "Cannot find module 'typescript'") and must NOT carry the
+	// inline build-time env_vars; the build call must carry
+	// NODE_ENV=production + the injected NEXT_PUBLIC_*. The firebase deploy
+	// (Run, nil env) carries neither.
+	var installEnvSeen, buildEnvSeen map[string]string
 	for i, env := range fake.envCalls {
-		if env != nil && env["NEXT_PUBLIC_API_URL"] == "https://api.staging.example.com" && env["NODE_ENV"] == "production" {
-			foundBuildEnv = true
-		}
-		if strings.Contains(fake.calls[i], "firebase deploy") && env != nil {
-			t.Errorf("firebase deploy should not carry the build env overlay")
+		switch {
+		case strings.Contains(fake.calls[i], "npm install"):
+			installEnvSeen = env
+		case strings.Contains(fake.calls[i], "npm run build"):
+			buildEnvSeen = env
+		case strings.Contains(fake.calls[i], "firebase deploy"):
+			if env != nil {
+				t.Errorf("firebase deploy should not carry an env overlay; got %v", env)
+			}
 		}
 	}
-	if !foundBuildEnv {
-		t.Errorf("expected a build call with NODE_ENV=production + NEXT_PUBLIC_API_URL injected")
+
+	if installEnvSeen == nil {
+		t.Fatalf("npm install call did not carry an env overlay; envCalls=%v", fake.envCalls)
+	}
+	if installEnvSeen["NODE_ENV"] == "production" {
+		t.Errorf("npm install must NOT force NODE_ENV=production (it skips devDeps the build needs); got %v", installEnvSeen)
+	}
+	if _, ok := installEnvSeen["NEXT_PUBLIC_API_URL"]; ok {
+		t.Errorf("npm install must NOT carry build-time env_vars; got %v", installEnvSeen)
+	}
+
+	if buildEnvSeen == nil {
+		t.Fatalf("npm run build call did not carry an env overlay; envCalls=%v", fake.envCalls)
+	}
+	if buildEnvSeen["NODE_ENV"] != "production" {
+		t.Errorf("npm run build must force NODE_ENV=production; got %v", buildEnvSeen)
+	}
+	if buildEnvSeen["NEXT_PUBLIC_API_URL"] != "https://api.staging.example.com" {
+		t.Errorf("npm run build must carry the injected NEXT_PUBLIC_API_URL; got %v", buildEnvSeen)
 	}
 }
 

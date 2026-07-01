@@ -85,7 +85,8 @@ tmp/
 # Everything else under .forge/ is per-developer state and intentionally
 # excluded by the broad `.forge/` rule below.
 .forge/
-!.forge/checksums.json
+!.forge/disowned.json
+!.forge/hashes.json
 
 # ── What NOT to ignore ──
 #

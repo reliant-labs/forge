@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jinzhu/inflection"
+
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -72,11 +73,11 @@ type CRUDMethodTemplateData struct {
 	PaginationStyle   string // "cursor" (default for now)
 	HasFilters        bool   // true if list method has filter fields
 	FilterFields      []FilterFieldData
-	HasOrderBy        bool              // true if list method has order_by field
-	HasTenant         bool              // true when the entity has a tenant key field
-	TenantGoName      string            // e.g., "OrgId", "TenantId" (PascalCase Go field name on entity)
-	TenantColumnName  string            // e.g., "org_id", "tenant_id"
-	UpdateEntityField string            // e.g., "Project" — Go field name in the update request that holds the entity
+	HasOrderBy        bool   // true if list method has order_by field
+	HasTenant         bool   // true when the entity has a tenant key field
+	TenantGoName      string // e.g., "OrgId", "TenantId" (PascalCase Go field name on entity)
+	TenantColumnName  string // e.g., "org_id", "tenant_id"
+	UpdateEntityField string // e.g., "Project" — Go field name in the update request that holds the entity
 	// UpdateMaskField is the Go field name of the update request's
 	// google.protobuf.FieldMask field (e.g. "UpdateMask"). Empty when the
 	// request carries no mask — the generated UpdateOp then omits
@@ -1003,20 +1004,20 @@ type CRUDTestTemplateData struct {
 
 // CRUDTestEntityData groups CRUD operations by entity for lifecycle tests.
 type CRUDTestEntityData struct {
-	EntityName        string // "Patient"
-	EntityLower       string // "patient"
-	PkField           string // "Id"
-	PkGoType          string // "int64"
-	HasCreate         bool
-	HasGet            bool
-	HasList           bool
-	HasUpdate         bool
-	HasDelete         bool
-	HasAllCRUD        bool   // true if all 5 operations exist
-	HasTenant         bool   // true when the entity has a tenant key field
-	TenantGoName      string // e.g., "OrgId"
-	TenantColumnName  string // e.g., "org_id"
-	HasTimestamps     bool   // entity annotation timestamps:true — created_at is asserted set
+	EntityName       string // "Patient"
+	EntityLower      string // "patient"
+	PkField          string // "Id"
+	PkGoType         string // "int64"
+	HasCreate        bool
+	HasGet           bool
+	HasList          bool
+	HasUpdate        bool
+	HasDelete        bool
+	HasAllCRUD       bool   // true if all 5 operations exist
+	HasTenant        bool   // true when the entity has a tenant key field
+	TenantGoName     string // e.g., "OrgId"
+	TenantColumnName string // e.g., "org_id"
+	HasTimestamps    bool   // entity annotation timestamps:true — created_at is asserted set
 	// MutableStringField is the Go name of the first non-PK string field
 	// (e.g. "Name") — the field the lifecycle test mutates to prove
 	// update actually writes. Empty when the entity has none.
@@ -1032,14 +1033,14 @@ type CRUDTestEntityData struct {
 	// skipped; the masked write itself is still exercised).
 	SecondStringField     string
 	SecondStringFieldPath string
-	CreateMethod       CRUDMethodTemplateData
-	GetMethod         CRUDMethodTemplateData
-	ListMethod        CRUDMethodTemplateData
-	UpdateMethod      CRUDMethodTemplateData
-	DeleteMethod      CRUDMethodTemplateData
-	Fields            []CRUDTestFieldData // entity proto message fields (minus PK, minus deleted_at)
-	CreateFields      []CRUDTestFieldData // fields from the CreateRequest message
-	UpdateEntityField string              // Go field name holding entity in UpdateRequest, e.g. "Project"
+	CreateMethod          CRUDMethodTemplateData
+	GetMethod             CRUDMethodTemplateData
+	ListMethod            CRUDMethodTemplateData
+	UpdateMethod          CRUDMethodTemplateData
+	DeleteMethod          CRUDMethodTemplateData
+	Fields                []CRUDTestFieldData // entity proto message fields (minus PK, minus deleted_at)
+	CreateFields          []CRUDTestFieldData // fields from the CreateRequest message
+	UpdateEntityField     string              // Go field name holding entity in UpdateRequest, e.g. "Project"
 }
 
 // CRUDTestFieldData holds per-field data for generating test values.

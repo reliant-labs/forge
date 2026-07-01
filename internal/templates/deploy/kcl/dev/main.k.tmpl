@@ -46,19 +46,21 @@ import deploy.kcl.dev.ingress as ing
 
 # Env-wide deploy target. Overridable via `kcl run -D registry=...`.
 # Local dev defaults to the k3d registry created by `deploy/k3d.yaml`.
-_registry = option("registry") or "localhost:5050"
+_registry = forge.registry("localhost:5050")
 _namespace = "{{.ProjectName}}-dev"
-_cluster = forge.K8sCluster {
+_cluster = forge.ClusterTarget {
     cluster = "k3d-{{.ProjectName}}"
     namespace = _namespace
     registry = _registry
-    ports = [8080]
 }
 
-# Base env every component sees (COMMON_ENV + per-env config_gen).
-_base_env = forge.COMMON_ENV + cfg.APP_ENV + [
+# Base env every component sees (COMMON_ENV + per-env config_gen), assembled
+# with forge.env_merge (name-keyed, LAST-wins) so a later layer overrides an
+# earlier one by name instead of the `+`-concat footgun (which emits duplicate
+# keys kubectl rejects).
+_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, cfg.APP_ENV), [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
-]
+])
 
 # Load the denormalized components forge emitted and overlay the dev
 # knobs. The `|` merge layers per-env config onto each loaded component;
@@ -69,7 +71,7 @@ _components = [c | {
     registry = _registry
     namespace = _namespace
     replicas = 1
-    env_vars = _base_env + [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}]
+    env_vars = forge.env_merge(_base_env, [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}])
 } for c in fc.load_components(fc.COMPONENTS_GEN)]
 
 _component_env = fc.ComponentEnv {
@@ -84,6 +86,7 @@ _component_env = fc.ComponentEnv {
 # expansion. render_support omits namespace/netpol (render_components
 # owns those).
 _support = forge.Bundle {
+    cluster_target = _cluster
     config_maps = cfg.CONFIG_MAPS
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
@@ -91,15 +94,10 @@ _support = forge.Bundle {
     grpc_routes = ing.GRPC_ROUTES
 {{- end}}
 }
-_render_env = forge.RenderEnv {
-    cluster = _cluster
-    image_tag = forge.image_tag("dev")
-    network_policies = False
-}
 
 # k8s manifests for `kubectl apply -f -`.
 manifests = fc.render_components(_components, _component_env) \
-    + forge.render_support(_support, _render_env)
+    + forge.render_support(_support)
 
 # JSON contract consumed by forge build/run/deploy. Bridges the loaded
 # components into forge.Service / CronJob / Operator entities so the
@@ -112,12 +110,13 @@ _cron_components = [c for c in _components if c.kind == "cron"]
 _op_components = [c for c in _components if c.kind == "operator"]
 
 _bundle = forge.Bundle {
+    cluster_target = _cluster
     services = [forge.Service {
         name = c.name
         image = "{{.ProjectName}}"
         command = c.command
         env_vars = c.env_vars
-        deploy = _cluster | {ports = [p.port for p in c.ports]}
+        deploy = _cluster.deploy | {ports = [p.port for p in c.ports]}
         if c.build:
             build = forge.build_of(c.build)
     } for c in _svc_components] + [forge.Service {

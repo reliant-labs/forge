@@ -25,6 +25,8 @@ Doctor checks: Docker containers running, app health endpoint, pprof endpoint, P
 
 Run `forge doctor` after `forge up --env=dev` to verify the pipeline is healthy before investigating issues.
 
+**`forge doctor` verifies the telemetry pipeline, NOT app-flow correctness.** It (like `forge smoke`) is green when containers, endpoints, and signal ingestion are healthy — it can be green while the actual app flow is broken (e.g. a cross-cluster dial failing). To prove an app-flow invariant holds, use a declarative, exit-coded app-health assertion (model: a project `doctor:<flow>` task) plus a full `forge test e2e`. Doctor tells you observability works; it does not certify the app does.
+
 ## Accessing Grafana
 
 Grafana's port is dynamically assigned. Find it with:

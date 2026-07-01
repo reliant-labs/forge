@@ -61,7 +61,9 @@ var goPackageOptionRE = regexp.MustCompile(`(?m)^option go_package = "[^"]*";$`)
 // "forge/v1/forge.proto" at init. If a project generated its OWN copy into
 // gen/forge/v1 AND linked forge/pkg/forgepb (which generates the identical
 // descriptor), both copies register the same file and every binary panics:
-//   proto: file "forge/v1/forge.proto" is already registered
+//
+//	proto: file "forge/v1/forge.proto" is already registered
+//
 // Pointing go_package at forgepb means the project's buf pipeline emits no
 // local copy (the path is excluded from Go output in buf.gen.yaml) and every
 // other generated *.pb.go blank-imports the shared forgepb — single

@@ -2,25 +2,29 @@
 // whose source lives outside the project's Go module — sibling repos,
 // third-party binaries, language runtimes forge doesn't natively build.
 // Mirrors internal/deploytarget for the BUILD side: a service declares
-// `build_cmd` on its KCL Service, and forge runs that command via
-// `sh -c` instead of the built-in Go-build pipeline.
+// `build = forge.ShellBuild { cmd, cwd, env }` on its KCL Service (the
+// SINGLE shell escape hatch), and forge runs that command via `sh -c`
+// instead of the built-in Go-build pipeline. The Spec's BuildCmd/BuildCwd/
+// BuildEnv fields below are the RESOLVED form of that ShellBuild.
 //
 // Design notes:
 //
 //   - Mirrors External (deploy provider) in shape — same `sh -c`
-//     execution, same ${X} substitution, same skip-with-warn when the
-//     source path is missing on a developer's machine. The build side
-//     and deploy side are ORTHOGONAL: a service can have `build_cmd`
-//     (build externally) AND `deploy = K8sCluster { ... }` (deploy to
-//     in-cluster) — the typical cp-forge pattern.
+//     execution, same ${X} substitution. The build side and deploy side
+//     are ORTHOGONAL: a service can have a ShellBuild (build externally)
+//     AND `deploy = K8sCluster { ... }` (deploy to in-cluster) — the
+//     typical cp-forge pattern.
+//
+//   - A missing cwd is a HARD FAILURE, not a skip. The dispatcher
+//     only constructs a Spec for services that are IN the current env, so
+//     by the time a Spec reaches Runner.Build its inputs are expected to
+//     exist; a missing source tree (e.g. an un-checked-out sibling repo)
+//     means the build that was supposed to run can't — and reporting
+//     success would let a following deploy reference an unpushed image.
 //
 //   - The user's command owns BOTH the build AND the push. Forge does
 //     NOT run `docker push` afterwards. Matches External's "user owns
 //     the command end-to-end" contract.
-//
-//   - Skip-with-warn (not error) when `build_cwd` doesn't exist on
-//     disk — local dev pattern where the sibling repo is optional, and
-//     CI without the sibling shouldn't fail.
 //
 // The runner is split from the dispatcher so unit tests can inject a
 // fake commandRunner without spawning a real shell — the External
@@ -214,10 +218,13 @@ func NewRunner() Runner {
 	return Runner{runner: execRunner{}}
 }
 
-// BuildResult is the outcome of a single Runner.Build call. Skipped
-// is true when the BuildCwd was missing on disk — the dispatcher
-// surfaces this differently than a real failure (warn-and-continue
-// rather than abort).
+// BuildResult is the outcome of a single Runner.Build call. The Skipped
+// field is retained for callers that branch on it but is no longer set
+// by Runner.Build: a missing build_cwd now sets Err (a hard failure)
+// rather than skipping, because by the time a Spec reaches Build the
+// service is known to be in the current env and its inputs are expected
+// to exist. Kept on the struct so the dispatcher's skip-branch is inert
+// (defensive) rather than removed outright.
 //
 // Tag carries the resolved tag the build actually produced so the
 // caller can persist it to the per-service state file. Duration is
@@ -233,14 +240,17 @@ type BuildResult struct {
 }
 
 // Build runs spec.BuildCmd through `sh -c` after substituting tokens
-// and merging BuildEnv onto os.Environ(). Skip-with-warn semantics:
+// and merging BuildEnv onto os.Environ(). Failure semantics:
 //
 //   - spec.BuildCwd resolves against spec.ProjectDir when relative.
 //   - If the resolved cwd is non-empty AND doesn't exist on disk,
-//     return Skipped=true with a SkipMsg the caller logs. No error.
-//     Local-dev pattern where the sibling repo is optional.
+//     return Err set (naming the missing path). This is a HARD failure,
+//     not a skip: the dispatcher only builds services that are in the
+//     current env, so a missing source tree means a build that was
+//     supposed to run can't, and reporting success would let a deploy
+//     reference an unpushed image.
 //   - Any other failure (cwd Stat error other than NotExist, exec
-//     error) returns Err set; Skipped stays false.
+//     error) returns Err set.
 //
 // The user's BuildCmd owns BOTH the build AND the push — forge does
 // not run docker push afterwards. Matches External's contract.
@@ -257,27 +267,41 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 	}
 
 	// Resolve BuildCwd: relative paths against ProjectDir, absolute
-	// passes through. Empty BuildCwd means "use ProjectDir directly"
-	// — execRunner picks up the host cwd, which equals ProjectDir for
-	// forge build invocations (cobra runs with cwd=project root).
-	cwd := spec.BuildCwd
-	if cwd != "" && !filepath.IsAbs(cwd) {
-		cwd = filepath.Join(spec.ProjectDir, cwd)
-	}
-
-	// Skip-with-warn when the resolved cwd is missing on disk. CI
-	// without the sibling repo, fresh checkouts of a project that
-	// references an optional sibling — both should surface a clear
-	// "skipped because X" message rather than failing the whole build.
-	if cwd != "" {
+	// passes through. Empty BuildCwd means "use ProjectDir directly" —
+	// resolved EXPLICITLY to spec.ProjectDir (not left empty to inherit
+	// the host cwd) so a ShellBuild with no cwd always runs from the
+	// project root regardless of where forge was invoked. This is the
+	// single documented cwd contract for the shell hatch.
+	// A user-DECLARED cwd resolves against ProjectDir and must exist on
+	// disk; an UNSET cwd resolves explicitly to ProjectDir itself (always
+	// present, so no existence check) so a ShellBuild with no cwd always
+	// runs from the project root regardless of where forge was invoked.
+	cwd := spec.ProjectDir
+	if spec.BuildCwd != "" {
+		cwd = spec.BuildCwd
+		if !filepath.IsAbs(cwd) {
+			cwd = filepath.Join(spec.ProjectDir, cwd)
+		}
+		// FAIL when the declared cwd is missing on disk. By the time a
+		// Spec reaches Runner.Build, the dispatcher has already filtered to
+		// services that are IN the current env (externalBuildServices over
+		// the rendered KCL) — so a service-not-in-this-env is skipped UPSTREAM
+		// by never constructing a Spec, and is never seen here. That leaves
+		// exactly one meaning for a missing cwd at THIS point: the build
+		// was expected to run but its required source tree (e.g. a sibling
+		// repo like ../reliant) isn't checked out. Skipping-with-warn here
+		// reported the overall build as SUCCESS while silently producing no
+		// image — so a following `forge deploy` referenced an unpushed tag →
+		// ImagePullBackOff. Failing loudly, naming the missing path, is the
+		// correct contract: the user either checks out the sibling or removes
+		// the service from this env's KCL.
 		if _, err := os.Stat(cwd); err != nil {
 			if os.IsNotExist(err) {
-				result.Skipped = true
-				result.SkipMsg = fmt.Sprintf("build_cwd %s does not exist on disk", cwd)
+				result.Err = fmt.Errorf("ShellBuild for service %q requires working directory %s, which does not exist on disk — check out the required source (e.g. the sibling repo) or remove the service from this env's KCL", spec.Service, cwd)
 				result.Duration = time.Since(start)
 				return result
 			}
-			result.Err = fmt.Errorf("stat build_cwd %s: %w", cwd, err)
+			result.Err = fmt.Errorf("stat cwd %s: %w", cwd, err)
 			result.Duration = time.Since(start)
 			return result
 		}
@@ -313,6 +337,18 @@ type State struct {
 	Tag      string `json:"tag"`
 	Registry string `json:"registry,omitempty"`
 	PushedAt string `json:"pushed_at"`
+	// Digest is the content-addressed manifest digest of the pushed image
+	// (canonical `sha256:...`, no `@` prefix, no repo), captured best-effort
+	// from the registry after the user's build_cmd builds+pushes. EMPTY when
+	// the digest couldn't be resolved (local-only ref, registry unreachable,
+	// or buildx/docker absent) — capture never fails the build. Mirrors
+	// internal/cli.BuildState.Digest so `forge deploy` pins the immutable
+	// `<image>@<digest>` reference for external builds too, instead of
+	// falling back to the mutable env tag (the stale-arch-cache footgun).
+	Digest string `json:"digest,omitempty"`
+	// Platforms is the OS/arch set the pushed manifest advertises, captured
+	// alongside Digest. Informational; empty when the lookup failed.
+	Platforms []string `json:"platforms,omitempty"`
 }
 
 // statePath returns the absolute path to the per-service build-state

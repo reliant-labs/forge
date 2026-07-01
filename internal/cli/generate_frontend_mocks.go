@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jinzhu/inflection"
+
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"

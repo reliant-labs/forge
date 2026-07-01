@@ -13,20 +13,19 @@ import forge
 # Same Bundle as main.k. We duplicate it here rather than import
 # from main.k because KCL's -S `output` selection only works against
 # a single entrypoint file.
-_k8s = forge.K8sCluster {
+_target = forge.ClusterTarget {
     cluster = "k3d-example"
     namespace = "example-dev"
     registry = "localhost:5050"
-    replicas = 1
-    ports = [8080]
 }
 
 _bundle = forge.Bundle {
+    cluster_target = _target
     services = [
         forge.Service {
             name = "workspace-proxy"
             image = "example"
-            deploy = _k8s
+            deploy = _target.deploy | {replicas = 1, ports = [8080]}
         }
     ]
     operators = [
@@ -77,10 +76,4 @@ _bundle = forge.Bundle {
     ]
 }
 
-_env = forge.RenderEnv {
-    cluster = _k8s
-    image_tag = forge.image_tag("dev")
-    network_policies = False
-}
-
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle, forge.image_tag("dev"), {}, False)

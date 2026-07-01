@@ -15,6 +15,13 @@ resources alongside the typed entities.
 GatewayClass is NOT declared here — it's cluster-scoped and installed
 by `forge cluster up` (in dev) or by the user's cloud Gateway
 controller (in prod). Gateways reference it by `gateway_class_name`.
+
+forge is OPINIONATED on Envoy Gateway: `gateway_class_name` defaults to
+`eg`, so cloud env overrides need not restate it — one controller. The
+LOCAL exception is dev: `forge cluster up` installs Traefik + the
+`traefik` GatewayClass, so the base `public` Gateway below pins
+`gateway_class_name = "traefik"` for the local loop. A cloud env override
+re-flips it to the default `eg` (drop the field, or set it explicitly).
 """
 
 import forge
@@ -24,8 +31,13 @@ import forge
 # gateways (`internal`, `webhooks`, …) here for separate-domain
 # routing. The dev k3d setup maps each listener's port from the host;
 # the prod env override flips ports and adds TLS.
+#
+# `gateway_class_name = "traefik"` pins the LOCAL dev controller (forge
+# cluster up installs Traefik). Cloud envs drop this back to the forge
+# default `eg` (Envoy Gateway) in their per-env override.
 PUBLIC = forge.Gateway {
     name = "public"
+    gateway_class_name = "traefik"
     listeners = [
         forge.GatewayListener {
             name = "http"

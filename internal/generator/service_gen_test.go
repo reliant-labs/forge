@@ -147,10 +147,10 @@ func TestGenerateServiceFilesResumeSkipsExisting(t *testing.T) {
 	// would never produce. If --resume erroneously rewrites them, this
 	// content disappears.
 	preExisting := map[string]string{
-		"internal/handlers/orders/service.go":               "// user edits to service.go\npackage orders\n",
-		"internal/handlers/orders/authorizer.go":            "// user edits to authorizer.go\npackage orders\n",
+		"internal/handlers/orders/service.go":                "// user edits to service.go\npackage orders\n",
+		"internal/handlers/orders/authorizer.go":             "// user edits to authorizer.go\npackage orders\n",
 		"internal/handlers/orders/handlers_scaffold_test.go": "// user edits to scaffold tests\npackage orders\n",
-		"proto/services/orders/v1/orders.proto":    "syntax = \"proto3\";\n// user-edited proto\n",
+		"proto/services/orders/v1/orders.proto":              "syntax = \"proto3\";\n// user-edited proto\n",
 	}
 	for rel, content := range preExisting {
 		full := filepath.Join(root, rel)

@@ -137,3 +137,72 @@ func TestFrontendNoDeployStillRenders(t *testing.T) {
 		t.Errorf("expected nil Deploy for a frontend with no deploy block, got %+v", ents.Frontends[0].Deploy)
 	}
 }
+
+// TestFrontendDeployNoneRendersBuildOnly renders a Frontend that
+// explicitly declares `deploy = None` (the build-only case) against the
+// real forge KCL module, then asserts it renders + validates and yields a
+// nil Deploy entity — i.e. dispatchFrontendDeploys will treat it as
+// build-only, not Firebase. Exercises the schema-level `deploy?:
+// FirebaseHosting` = None path end-to-end. Needs CGO for the KCL plugin.
+func TestFrontendDeployNoneRendersBuildOnly(t *testing.T) {
+	forgeKcl, err := filepath.Abs("../../kcl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(forgeKcl, "schema.k")); err != nil {
+		t.Skipf("forge kcl module not found at %s: %v", forgeKcl, err)
+	}
+
+	root := t.TempDir()
+	kclParent := filepath.Join(root, "deploy", "kcl")
+	stagingDir := filepath.Join(kclParent, "staging")
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mod := "[package]\nname = \"t\"\nedition = \"v0.11.4\"\n\n[dependencies]\nforge = { path = " +
+		strconv.Quote(forgeKcl) + " }\n"
+	if err := os.WriteFile(filepath.Join(kclParent, "kcl.mod"), []byte(mod), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	main := `import forge
+_bundle = forge.Bundle {
+    frontends = [forge.Frontend {
+        name = "admin-web"
+        type = "nextjs"
+        path = "admin-web"
+        env_vars = [forge.EnvVar { name = "NEXT_PUBLIC_API_URL", value = "https://api.staging.example.com" }]
+        deploy = None
+    }]
+}
+output = forge.render(_bundle)
+`
+	if err := os.WriteFile(filepath.Join(stagingDir, "main.k"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := renderKCLRaw(context.Background(), root, "staging")
+	if err != nil {
+		t.Fatalf("render (deploy = None should validate): %v", err)
+	}
+	ents, err := parseKCLEntities(out)
+	if err != nil {
+		t.Fatalf("parse: %v\n%s", err, out)
+	}
+	if len(ents.Frontends) != 1 {
+		t.Fatalf("want 1 frontend, got %d: %s", len(ents.Frontends), out)
+	}
+	fe := ents.Frontends[0]
+	if fe.Deploy != nil {
+		t.Fatalf("deploy = None should yield nil Deploy (build-only), got %+v", fe.Deploy)
+	}
+
+	// The CLI→build-only mapping forwards the inline env_var as build env
+	// and infers the Next.js export dir for dry-run reporting.
+	bo := frontendToBuildOnly(fe)
+	if bo.BuildEnv["NEXT_PUBLIC_API_URL"] != "https://api.staging.example.com" {
+		t.Errorf("frontendToBuildOnly build env = %+v", bo.BuildEnv)
+	}
+	if bo.PublicDir != "out" {
+		t.Errorf("frontendToBuildOnly PublicDir = %q, want out", bo.PublicDir)
+	}
+}

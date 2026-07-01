@@ -103,6 +103,53 @@ type Server struct {
 	SecurityHeadersMiddleware func(production bool) func(http.Handler) http.Handler
 	RequestIDMiddleware       func() func(http.Handler) http.Handler
 	HTTPMiddleware            func(http.Handler) http.Handler
+
+	// FlowChecks are the APP-FLOW health assertions this service exposes at
+	// GET /flow-health. They are the readiness/liveness analogue for an
+	// END-TO-END invariant only this service can assert (it holds the state
+	// internally), e.g. "every Ready managed daemon is attached to the
+	// gateway". serverkit runs every check on each /flow-health request and
+	// returns 200 when ALL pass, 503 when ANY fails, plus a STATUS-ONLY JSON
+	// aggregate (per-check name + ok + a terse count summary). It deliberately
+	// exposes NO per-entity detail anonymously, so the endpoint is safe to
+	// probe from `forge smoke` (which just curls it) without leaking anything
+	// sensitive — gate per-entity detail behind your own auth'd endpoint.
+	//
+	// Empty (the default) means no /flow-health is mounted, so existing
+	// services are unaffected. See FlowCheck + AddFlowCheck.
+	FlowChecks []FlowCheck
+}
+
+// FlowCheck is one named app-flow health assertion mounted at /flow-health.
+// Check runs the invariant internally (the service already holds the access)
+// and returns a FlowResult: ok = the invariant holds, Summary = a TERSE,
+// non-sensitive aggregate ("2 daemons, 0 unattached") safe to expose
+// anonymously. A nil error with ok=false is a clean "unhealthy"; a non-nil
+// error means the check itself couldn't run (also reported as unhealthy, with
+// the error as the summary).
+type FlowCheck struct {
+	// Name labels the check in the /flow-health JSON (e.g. "daemon-flow").
+	Name string
+	// Check runs the assertion. It must NOT include per-entity / per-user
+	// detail in the returned Summary — that's the public-status contract.
+	Check func(ctx context.Context) FlowResult
+}
+
+// FlowResult is the outcome of one FlowCheck: whether the invariant holds and
+// a terse, non-sensitive aggregate summary.
+type FlowResult struct {
+	OK      bool
+	Summary string
+}
+
+// AddFlowCheck registers an app-flow health check surfaced at /flow-health. A
+// check with a nil Check func or empty Name is ignored so a composition root
+// can pass a conditional builder's result without a guard.
+func (s *Server) AddFlowCheck(c FlowCheck) {
+	if c.Check == nil || c.Name == "" {
+		return
+	}
+	s.FlowChecks = append(s.FlowChecks, c)
 }
 
 // AddWorker appends a constructed worker to Server.Workers. It is pure

@@ -71,6 +71,35 @@ func TestCountTagsHelper(t *testing.T) {
 
 // TestBuildPushFlagRegistered confirms the --push flag is wired into
 // the build command and implies --docker at parse time.
+// TestValidateReleaseFlags_RequiresEnv pins Fix 2: `forge build --release
+// <ver>` WITHOUT --env is rejected up front with an actionable message,
+// because the release image SET (project images + per-env external
+// build_cmd images like reliant/workspace-base) is only discoverable from
+// deploy/kcl/<env>/main.k. With --env (or without --release) it passes.
+func TestValidateReleaseFlags_RequiresEnv(t *testing.T) {
+	// --release without --env: error, and the message must steer the user
+	// to --env (not just say "missing flag").
+	err := validateReleaseFlags(buildOptions{release: "v1.0.0"})
+	if err == nil {
+		t.Fatal("--release without --env must error")
+	}
+	for _, want := range []string{"--env", "--release", "build_cmd"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error message %q should mention %q", err.Error(), want)
+		}
+	}
+
+	// --release WITH --env: allowed.
+	if err := validateReleaseFlags(buildOptions{release: "v1.0.0", env: "prod"}); err != nil {
+		t.Errorf("--release with --env must be allowed, got %v", err)
+	}
+
+	// No --release: --env optional, no error.
+	if err := validateReleaseFlags(buildOptions{}); err != nil {
+		t.Errorf("a non-release build must not require --env, got %v", err)
+	}
+}
+
 func TestBuildPushFlagRegistered(t *testing.T) {
 	cmd := newBuildCmd()
 	f := cmd.Flags().Lookup("push")
@@ -276,6 +305,37 @@ func TestResolveBuildArch(t *testing.T) {
 			if got != c.want {
 				t.Errorf("resolveBuildArch(cfg=%q, flag=%q, docker=%v) = %q, want %q",
 					c.cfgArch, c.flagArch, c.dockerCtx, got, c.want)
+			}
+		})
+	}
+}
+
+// TestResolveBuildArchForImage locks the COPY-pattern image arch resolution:
+// it NEVER returns "" (the caller always pairs it with GOOS=linux), precedence
+// is flag > per-env platform > host arch, and an UNSET platform tracks the host
+// (so a local arm64 build produces a linux/arm64 image+binary, not a native
+// darwin/arm64 binary nor a silently cross-built amd64 image).
+func TestResolveBuildArchForImage(t *testing.T) {
+	host := runtime.GOARCH
+	cases := []struct {
+		name             string
+		cfgArch, flagArch string
+		want             string
+	}{
+		{"unset tracks host arch (local k3d)", "", "", host},
+		{"per-env platform wins over host", "amd64", "", "amd64"},
+		{"flag overrides per-env platform", "amd64", "arm64", "arm64"},
+		{"flag wins when platform unset", "", "arm64", "arm64"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := resolveBuildArchForImage(c.cfgArch, c.flagArch)
+			if got != c.want {
+				t.Errorf("resolveBuildArchForImage(cfg=%q, flag=%q) = %q, want %q",
+					c.cfgArch, c.flagArch, got, c.want)
+			}
+			if got == "" {
+				t.Error("resolveBuildArchForImage must never return \"\" (caller pairs it with GOOS=linux)")
 			}
 		})
 	}

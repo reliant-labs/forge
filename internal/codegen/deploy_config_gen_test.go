@@ -246,6 +246,150 @@ func TestGenerateDeployConfig_AlwaysEmitsAppEnv(t *testing.T) {
 	})
 }
 
+// TestValidateDeployConfig covers the author-time guardrail that turns a
+// missing/typo'd required config value into a `forge generate` error
+// instead of a silently-wired default that CrashLoops at deploy time.
+func TestValidateDeployConfig(t *testing.T) {
+	reqSensitive := ConfigField{Name: "internal_service_secret", EnvVar: "INTERNAL_SERVICE_SECRET", Required: true, Sensitive: true}
+	reqPlainNoDefault := ConfigField{Name: "service_url", EnvVar: "SERVICE_URL", Required: true}
+	reqPlainWithDefault := ConfigField{Name: "log_level", EnvVar: "LOG_LEVEL", Required: true, DefaultValue: "info"}
+	optional := ConfigField{Name: "pprof_addr", EnvVar: "PPROF_ADDR"}
+	plainSecret := ConfigField{Name: "stripe_key", EnvVar: "STRIPE_KEY", Sensitive: true}
+
+	cases := []struct {
+		name      string
+		fields    []ConfigField
+		env       map[string]any
+		wantErr   bool
+		wantInErr string
+	}{
+		{
+			name:      "missing required+sensitive errors",
+			fields:    []ConfigField{reqSensitive},
+			env:       map[string]any{},
+			wantErr:   true,
+			wantInErr: "required sensitive field internal_service_secret (INTERNAL_SERVICE_SECRET) is missing",
+		},
+		{
+			name:    "present required+sensitive passes",
+			fields:  []ConfigField{reqSensitive},
+			env:     map[string]any{"internal_service_secret": "${control-plane-internal#secret}"},
+			wantErr: false,
+		},
+		{
+			name:      "empty-string required value counts as missing",
+			fields:    []ConfigField{reqSensitive},
+			env:       map[string]any{"internal_service_secret": "   "},
+			wantErr:   true,
+			wantInErr: "is missing",
+		},
+		{
+			name:      "missing required non-sensitive without proto default errors",
+			fields:    []ConfigField{reqPlainNoDefault},
+			env:       map[string]any{},
+			wantErr:   true,
+			wantInErr: "required non-sensitive field service_url (SERVICE_URL) is missing",
+		},
+		{
+			name:    "missing required non-sensitive WITH proto default passes",
+			fields:  []ConfigField{reqPlainWithDefault},
+			env:     map[string]any{},
+			wantErr: false,
+		},
+		{
+			name:    "non-required absent passes",
+			fields:  []ConfigField{optional},
+			env:     map[string]any{},
+			wantErr: false,
+		},
+		{
+			name:    "non-required sensitive absent passes (default secret_ref)",
+			fields:  []ConfigField{plainSecret},
+			env:     map[string]any{},
+			wantErr: false,
+		},
+		{
+			name:      "malformed secret ref errors (empty body)",
+			fields:    []ConfigField{plainSecret},
+			env:       map[string]any{"stripe_key": "${}"},
+			wantErr:   true,
+			wantInErr: "malformed secret reference",
+		},
+		{
+			name:      "malformed secret ref errors (empty name with key)",
+			fields:    []ConfigField{plainSecret},
+			env:       map[string]any{"stripe_key": "${#key}"},
+			wantErr:   true,
+			wantInErr: "malformed secret reference",
+		},
+		{
+			name:    "well-formed secret ref passes",
+			fields:  []ConfigField{plainSecret},
+			env:     map[string]any{"stripe_key": "${my-secret#k}"},
+			wantErr: false,
+		},
+		{
+			name:    "ordinary literal value is not treated as a ref",
+			fields:  []ConfigField{{Name: "log_level", EnvVar: "LOG_LEVEL"}},
+			env:     map[string]any{"log_level": "debug"},
+			wantErr: false,
+		},
+		{
+			name:      "reports every problem at once",
+			fields:    []ConfigField{reqSensitive, reqPlainNoDefault},
+			env:       map[string]any{},
+			wantErr:   true,
+			wantInErr: "service_url",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateDeployConfig(DeployConfigGenInput{
+				ProjectName: "myapp",
+				EnvName:     "dev",
+				Fields:      c.fields,
+				EnvConfig:   c.env,
+			})
+			if c.wantErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			if c.wantInErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantInErr)) {
+				t.Fatalf("expected error containing %q, got: %v", c.wantInErr, err)
+			}
+		})
+	}
+}
+
+// TestGenerateDeployConfig_FailsOnMissingRequiredSensitive confirms the
+// validation is wired into the full generate entrypoint (not just the
+// internal helper) and that no file is written on failure.
+func TestGenerateDeployConfig_FailsOnMissingRequiredSensitive(t *testing.T) {
+	tmp := t.TempDir()
+	in := DeployConfigGenInput{
+		ProjectName: "myapp",
+		EnvName:     "dev",
+		KCLDir:      filepath.Join(tmp, "deploy", "kcl"),
+		Fields: []ConfigField{
+			{Name: "internal_service_secret", EnvVar: "INTERNAL_SERVICE_SECRET", Required: true, Sensitive: true},
+		},
+		EnvConfig: map[string]any{},
+	}
+	err := GenerateDeployConfig(in)
+	if err == nil {
+		t.Fatalf("expected GenerateDeployConfig to fail on missing required sensitive field")
+	}
+	if !strings.Contains(err.Error(), "INTERNAL_SERVICE_SECRET") {
+		t.Errorf("error should name the env var, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(in.KCLDir, "dev", "config_gen.k")); !os.IsNotExist(statErr) {
+		t.Errorf("no file should be written on validation failure; stat err=%v", statErr)
+	}
+}
+
 func TestParseSecretRef(t *testing.T) {
 	cases := []struct {
 		in       string

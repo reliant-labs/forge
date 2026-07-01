@@ -31,17 +31,23 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/reliant-labs/forge/internal/kclrender"
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/devstack"
+	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
 // ApplyOpts expresses the differences between the three existing call
@@ -55,6 +61,15 @@ type ApplyOpts struct {
 	// ImageTag is the value bound to KCL's `image_tag` -D variable.
 	// Required (callers default to gitShortSHA at the call site).
 	ImageTag string
+
+	// ImageDigests is the per-image content-addressed digest map bound to
+	// KCL's `image_digests` -D variable (image NAME → "sha256:..."). When
+	// set, each rendered service's manifest image resolves to ITS image's
+	// digest (`<image>@sha256:...`), not the env-wide ImageTag — the
+	// structural fix for a multi-image env pinning every service to one
+	// digest. May be nil/empty (the local-registry / no-digest path), in
+	// which case every image stays on ImageTag, byte-identical to before.
+	ImageDigests map[string]string
 
 	// Namespace is the value bound to KCL's `namespace` -D variable and
 	// passed to every kubectl invocation. Required.
@@ -123,17 +138,37 @@ type ApplyOpts struct {
 	// context (unchanged for single-cluster users).
 	Context string
 
-	// Targets, when non-empty, scopes the apply to the named
-	// applications (service / frontend names). The whole env bundle is
-	// still rendered (KCL renders the env as a unit), but after
-	// RenderManifests and before KubectlApply the multi-doc YAML is
-	// filtered: a workload manifest is kept when its
-	// `app.kubernetes.io/name` label is in Targets, and a shared/infra
-	// manifest (no `app.kubernetes.io/name` label — Namespace, the
-	// shared ConfigMap/Secret, RuntimeClass, etc.) is always kept so a
-	// targeted app's dependencies aren't dropped. Empty means "apply the
-	// whole bundle", the unchanged default. See FilterManifestsByApp.
+	// Targets, when non-empty, is the EXCLUSIVE set of KCL-declared service
+	// GROUPs (`app.kubernetes.io/name` values) this apply keeps. The whole
+	// env bundle is still rendered (KCL renders the env as a unit), but after
+	// RenderManifests and before KubectlApply the multi-doc YAML is filtered
+	// to EXACTLY the manifests whose group ∈ Targets — and EXACTLY the helm
+	// charts whose Name ∈ Targets are rendered. The filter is purely
+	// mechanical: it includes nothing implicitly. There is no shared-base
+	// auto-keep, and no synthetic group: the env-shared manifests (Namespace,
+	// ConfigMap, RuntimeClass, NetworkPolicy) and bundle-level
+	// `additional_manifests` carry NO group, so they apply ONLY on a bare
+	// deploy and are NEVER selected by a service Target. To make a manifest
+	// ride a service's Target, declare it on that service's `manifests`.
+	// Empty Targets means "apply EVERYTHING" — every manifest and every
+	// declared platform dep (the full declarative reconcile). See
+	// SelectManifestsByGroup and selectHelmChartsByGroup.
 	Targets []string
+
+	// HelmCharts are the env's declared platform dependencies, rendered
+	// with helm-as-a-RENDERER (helm template --skip-crds) and folded into
+	// THIS apply stream. Each is a renderable whose NAME is its GROUP — the
+	// SAME exclusive Targets filter selects it: a chart is rendered + applied
+	// iff (no Targets) OR (its Name ∈ Targets), the identical rule every other
+	// manifest obeys (each chart's manifests are stamped
+	// `app.kubernetes.io/name = Name`). There is NO chart opt-in special case
+	// — a bare `forge deploy <env>` (no Targets) reconciles every declared
+	// platform dep too. Apply renders each selected chart, stamps every
+	// manifest with its group, and applies it in CRD-first order (the chart's
+	// forge-supplied CRDs → wait Established → the chart's controllers) so the
+	// apply leaves CRDs Established + controllers Deployed. Empty => no
+	// platform deps. See helm.go.
+	HelmCharts []HelmChartSpec
 
 	// ClusterScope, when non-nil, scopes the rendered env bundle to ONE
 	// deploy group's cluster before applying — declared-cluster-only
@@ -162,6 +197,15 @@ type ApplyOpts struct {
 // workload AND on every per-service owned manifest (forge.Service.manifests).
 // See ScopeManifestsToGroup for the precise per-document keep/drop rule.
 type GroupScope struct {
+	// Cluster is THIS group's cluster name (forge.K8sCluster.cluster). It
+	// is the value a manifest's first-class `forge.dev/cluster` routing
+	// label is matched against: a manifest carrying that label lands on
+	// this group iff the label equals Cluster, and is dropped otherwise —
+	// no app-label indirection. Empty disables the first-class match (the
+	// stream is routed purely by OwnApps/OtherApps, the pre-existing
+	// behaviour). See clusterRoutingLabel and ScopeManifestsToGroup.
+	Cluster string
+
 	// OwnApps is the set of `app.kubernetes.io/name` values belonging to
 	// THIS group's services — their workloads (Deployment / Service /
 	// per-service RBAC / HPA) AND the raw manifests those services own (a
@@ -176,15 +220,38 @@ type GroupScope struct {
 	OtherApps map[string]struct{}
 }
 
-// appNameLabel is the per-service workload label forge's KCL renderer
-// stamps on every Deployment / Service / RBAC object via
-// `_managed_labels(<svc-name>)` (kcl/lib/services.k, kcl/lib/rbac.k).
-// Shared / infra manifests (Namespace, the shared ConfigMap/Secret,
-// RuntimeClass) deliberately omit it — they carry only
-// `app.kubernetes.io/managed-by` and `app.kubernetes.io/part-of`. That
-// asymmetry is what lets FilterManifestsByApp tell a targeted app's
-// workloads from another app's workloads while keeping shared deps.
+// appNameLabel is the KCL-declared GROUP key — the single `--target`
+// selector. The group is ALWAYS the SERVICE: forge's KCL renderer stamps it
+// with the service/component name on workloads / RBAC (`_managed_labels`,
+// kcl/lib/services.k, kcl/lib/rbac.k), gateways/routes, and on a service's
+// owned manifests (`Service.manifests`, which inherit THAT service's name).
+// Env-shared resources that belong to no service — Namespace, ConfigMap,
+// RuntimeClass, NetworkPolicy, and bundle-level `additional_manifests` —
+// carry NO `app.kubernetes.io/name`. There is no synthetic env/namespace
+// group.
+//
+// SelectManifestsByGroup is therefore a pure mechanical include filter —
+// keep iff group ∈ targets — with no Go-side "always keep shared infra"
+// policy. An ungrouped manifest matches no service `--target`, so it applies
+// only on a bare `forge deploy` (no `--target`). To make a manifest ride a
+// service's `--target`, declare it on that service's `manifests`.
 const appNameLabel = "app.kubernetes.io/name"
+
+// clusterRoutingLabel is the FIRST-CLASS per-manifest cluster-attribution
+// key. forge's KCL gateway/route builders stamp it
+// (`forge.dev/cluster: k3d-<name>`) when an ingress entity (Gateway /
+// HTTPRoute / GRPCRoute) declares `cluster = <forge.Cluster>` — the
+// builder denormalizes the referenced Cluster's kubectl CONTEXT
+// (`k3d-<name>`) into the label, which is exactly the value
+// GroupScope.Cluster (== forge.K8sCluster.cluster, the kubectl context)
+// is matched against. ScopeManifestsToGroup reads it directly: a manifest
+// carrying this label routes to the named cluster ONLY, no
+// `app.kubernetes.io/name` indirection. It is the
+// replacement for the older label-piggyback trick (stamping an unrelated
+// service's app label so the manifest rode that service's group routing).
+// A manifest WITHOUT this label still routes by app label exactly as
+// before, so existing consumers are unaffected.
+const clusterRoutingLabel = "forge.dev/cluster"
 
 // Apply runs the render-KCL → kubectl-apply → wait-rollouts pipeline.
 // It is the single entry point for the three call sites this package
@@ -193,7 +260,7 @@ const appNameLabel = "app.kubernetes.io/name"
 // warning messages, and ordering); per-call differences are expressed
 // through ApplyOpts fields.
 func Apply(ctx context.Context, opts ApplyOpts) error {
-	manifests, err := RenderManifests(ctx, opts.MainK, opts.ImageTag, opts.Namespace, opts.Env, opts.EnvConfigKV)
+	manifests, err := RenderManifests(ctx, opts.MainK, opts.ImageTag, opts.Namespace, opts.Env, opts.EnvConfigKV, opts.ImageDigests)
 	if err != nil {
 		// Reload's pre-extraction form used the shorter "KCL render:"
 		// wrap; the framed deploy/up path used the longer message.
@@ -203,17 +270,30 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		return fmt.Errorf("KCL manifest generation failed: %w", err)
 	}
 
-	// Application-level filter: when --target scoped the deploy to one
-	// or more named apps, drop the other apps' workload manifests while
-	// keeping every shared/infra manifest. Applied to the rendered
-	// bundle (which KCL produces as a unit) so a single targeted app
-	// still lands with its Namespace, shared ConfigMap/Secret, etc.
+	// Exclusive --target selection — ONE uniform mechanical filter over the
+	// KCL-declared service GROUP (`app.kubernetes.io/name`).
+	//
+	//   - No targets  → keep EVERYTHING (full declarative reconcile of the
+	//     whole env bundle + every declared platform dep).
+	//   - Targets set → keep EXACTLY the manifests whose group ∈ Targets, and
+	//     render EXACTLY the helm charts whose Name ∈ Targets. Nothing
+	//     implicit: no shared-base auto-kept, no chart opt-in/opt-out
+	//     asymmetry, no "no application matched" special case. The group is
+	//     always the service; env-shared manifests (Namespace, ConfigMap,
+	//     RuntimeClass, NetworkPolicy) and bundle-level additional_manifests
+	//     carry NO group, so a service Target drops them — they apply only on
+	//     a bare deploy. To make a shared resource an app needs ride that
+	//     app's Target, declare it on the service's `manifests` so it inherits
+	//     the service group (decided in KCL, never patched in by Go policy).
+	//
+	// A helm chart is helm-templated iff (no targets) OR (its Name ∈ Targets)
+	// — the SAME rule as any manifest, since each chart's manifests are
+	// stamped with the chart Name as their group. selectHelmChartsByGroup
+	// applies that rule to the chart specs; SelectManifestsByGroup applies it
+	// to the rendered env stream.
+	selectedCharts := selectHelmChartsByGroup(opts.HelmCharts, opts.Targets)
 	if len(opts.Targets) > 0 {
-		filtered, ferr := FilterManifestsByApp(manifests, opts.Targets)
-		if ferr != nil {
-			return ferr
-		}
-		manifests = filtered
+		manifests = SelectManifestsByGroup(manifests, opts.Targets)
 	}
 
 	// Multi-cluster scope: a service whose `deploy` targets a SECOND cluster
@@ -228,15 +308,103 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		manifests = ScopeManifestsToGroup(manifests, *opts.ClusterScope)
 	}
 
+	// Render the selected platform deps (helm-as-a-RENDERER). Each chart's
+	// manifests are stamped `app.kubernetes.io/name = <name>` so they read
+	// as ONE named app, and carry their forge-supplied CRDs for the
+	// CRD-first apply below. Rendered here (before dry-run) so `--dry-run`
+	// shows the chart manifests too — they flow through the SAME pipeline.
+	renderedCharts := make([]renderedChart, 0, len(selectedCharts))
+	for _, spec := range selectedCharts {
+		rendered, rerr := RenderHelmChart(ctx, spec)
+		if rerr != nil {
+			return rerr
+		}
+		// Consumer-declared raw manifests riding this chart's --target
+		// (GatewayClass / ClusterIssuers): stamp them with the chart's
+		// app-label exactly like the chart's own output, so they select +
+		// route as part of the same named platform dep.
+		var extra string
+		if strings.TrimSpace(spec.Manifests) != "" {
+			extra = stampAppLabel(spec.Manifests, spec.Name)
+		}
+		// The FULL CRD set: forge's pinned forge-supplied bundle (spec.CRDs)
+		// PLUS the chart's OWN CRDs that forge does not own (the chart's
+		// `gateway.envoyproxy.io` CRDs the envoy controller starts informers
+		// on; the main render is --skip-crds so they'd otherwise never land
+		// and the controller crashloops on cache-sync). chartOwnCRDs filters
+		// out the standard Gateway API group forge pins separately.
+		ownCRDs, cerr := chartOwnCRDs(ctx, spec)
+		if cerr != nil {
+			return cerr
+		}
+		crds := joinNonEmpty(spec.CRDs, ownCRDs)
+		renderedCharts = append(renderedCharts, renderedChart{spec: spec, manifests: rendered, crds: crds, extra: extra})
+	}
+
 	if opts.DryRun {
+		dryRunManifests := manifests
+		for _, rc := range renderedCharts {
+			dryRunManifests = joinNonEmpty(dryRunManifests, rc.crds, rc.manifests, rc.extra)
+		}
 		if opts.DryRunFramed {
 			fmt.Println("\n--- Generated Manifests (dry-run) ---")
-			fmt.Println(manifests)
+			fmt.Println(dryRunManifests)
 			fmt.Println("--- End Manifests ---")
 			fmt.Println("\nDry run complete. No changes applied.")
 		} else {
-			fmt.Println(manifests)
+			fmt.Println(dryRunManifests)
 		}
+		return nil
+	}
+
+	// Apply the platform deps FIRST: a `--target=<platform>` apply must
+	// leave the cluster with the chart's CRDs Established + controllers
+	// Deployed (so a later `forge deploy` app finds the CRDs present). Each
+	// chart applies in CRD-first order (forge-supplied CRDs → wait
+	// Established → the --skip-crds controllers). When this apply also
+	// carries app manifests (a mixed --target), the charts land before them.
+	for _, rc := range renderedCharts {
+		if !opts.Quiet {
+			fmt.Printf("Applying platform dependency %q (helm-rendered)...\n", rc.spec.Name)
+		}
+		if err := applyCRDsThenRest(ctx, opts.Context, rc.crds, rc.manifests); err != nil {
+			return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
+		}
+		// Consumer-declared manifests riding this chart's --target
+		// (GatewayClass / ClusterIssuers) — applied AFTER the chart's
+		// controllers so the controller (envoy-gateway / cert-manager) is up
+		// before the instances it reconciles. applyCRDsThenRest two-passes
+		// any CRD-then-rest within them too (harmless: these carry none).
+		if strings.TrimSpace(rc.extra) != "" {
+			// WAIT for the chart's Deployments to be Available before applying
+			// its riding manifests. cert-manager ships a ValidatingWebhook
+			// (failurePolicy: Fail) that REJECTS ClusterIssuers until the
+			// webhook Deployment is Ready + cainjector has injected the
+			// caBundle — without this gate the issuer apply fails `failed
+			// calling webhook ... no endpoints available`. A namespace with no
+			// Deployments returns immediately.
+			if rc.spec.Namespace != "" {
+				if !opts.Quiet {
+					fmt.Printf("Waiting for %q controller Deployments to be Available...\n", rc.spec.Name)
+				}
+				if err := waitChartDeploymentsAvailable(ctx, opts.Context, rc.spec.Namespace, 180*time.Second); err != nil {
+					return fmt.Errorf("platform dependency %q: wait controllers Available: %w", rc.spec.Name, err)
+				}
+			}
+			if !opts.Quiet {
+				fmt.Printf("Applying platform dependency %q owned manifests...\n", rc.spec.Name)
+			}
+			// Bounded retry: the webhook Service's endpoints can lag a few
+			// seconds after the Deployment reports Available.
+			if err := applyRidingManifestsWithRetry(ctx, opts.Context, rc.extra); err != nil {
+				return fmt.Errorf("platform dependency %q manifests: %w", rc.spec.Name, err)
+			}
+		}
+	}
+
+	// A platform-only apply (every --target named a chart) is done once the
+	// charts are applied — there are no env/app manifests to apply or wait on.
+	if strings.TrimSpace(manifests) == "" && len(renderedCharts) > 0 {
 		return nil
 	}
 
@@ -402,13 +570,25 @@ func projectRootFromMainK(mainK string) string {
 // RenderEnv.image_tag's `str` type (the forge-deploy-prod regression).
 // envCfgKV values are left unquoted: they are project config whose KCL
 // type (int/bool/str) is intentional.
-func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string) []string {
+func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) []string {
 	dArgs := []string{
 		"image_tag=" + strconv.Quote(imageTag),
 		"namespace=" + strconv.Quote(namespace),
 	}
 	if env != "" {
 		dArgs = append(dArgs, "env="+strconv.Quote(env))
+	}
+	// image_digests is the per-image name→digest map forge deploy pins so
+	// each service resolves to ITS image's digest (not one env-wide digest
+	// stamped onto every image). Passed as a QUOTED JSON string so KCL types
+	// it as `str`; `forge.image_digests()` json.decodes it. Omitted entirely
+	// when empty (the local-registry / no-digest path) so a plain `kcl run`
+	// renders byte-identically — `option("image_digests")` then yields None
+	// and the helper returns {}.
+	if len(imageDigests) > 0 {
+		if b, err := json.Marshal(imageDigests); err == nil {
+			dArgs = append(dArgs, "image_digests="+strconv.Quote(string(b)))
+		}
 	}
 	keys := make([]string, 0, len(envCfgKV))
 	for k := range envCfgKV {
@@ -418,11 +598,17 @@ func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string) []
 	for _, k := range keys {
 		dArgs = append(dArgs, k+"="+envCfgKV[k])
 	}
+	// Push the active git facts into the manifest render: option("worktree")
+	// + option("branch"). nil on the primary checkout, so a plain deploy
+	// renders byte-identically. The entity render (renderKCLRaw) adds the
+	// SAME bindings — both render paths see one set of facts, so the
+	// allocate_port'd ports / namespace can't drift between up and deploy.
+	dArgs = append(dArgs, devstack.ActiveDArgs()...)
 	return dArgs
 }
 
-func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
-	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV)
+func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) (string, error) {
+	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests)
 	// Render from the project root so the deploy-as-data main.k's
 	// `file.read("deploy/kcl/components_gen.json")` resolves. mainK is
 	// `<root>/deploy/kcl/<env>/main.k`; strip the four trailing path
@@ -553,11 +739,392 @@ func KubectlApply(ctx context.Context, kctx, manifests string) error {
 			"the target cluster is declarative (forge.K8sCluster.cluster in the env's KCL) — " +
 			"forge never falls back to the current context for a write")
 	}
+	return applyWithImmutableRecovery(
+		manifests,
+		func() (string, error) { return applyOnce(ctx, kctx, manifests) },
+		func(t immutableTarget) error { return kubectlDeleteResource(ctx, kctx, t) },
+		func(t immutableTarget) error { return kubectlWaitResourceGone(ctx, kctx, t) },
+	)
+}
+
+// immutableRecoveryAttempts bounds how many delete→wait-gone→re-apply
+// cycles the recovery runs before giving up. A warm redeploy whose only
+// conflict is the immutable migrate Job heals on the FIRST cycle; the
+// extra attempts exist purely to absorb the residual race where the
+// re-apply still observes the not-yet-finalized Job (see
+// applyWithImmutableRecovery). Two is enough in practice — the explicit
+// wait-gone poll already closes the window — but a small bound keeps a
+// genuinely stuck resource from looping forever.
+const immutableRecoveryAttempts = 3
+
+// applyWithImmutableRecovery runs apply and, on the recoverable
+// immutable-field failure only, deletes the one offending resource,
+// WAITS for it to actually disappear, then re-applies — retrying that
+// delete→wait-gone→re-apply cycle a bounded number of times if the
+// re-apply STILL hits the immutable error. The kubectl-touching steps are
+// passed as closures so the sequencing is unit-testable without a live
+// cluster; KubectlApply wires the real applyOnce / kubectlDeleteResource /
+// kubectlWaitResourceGone.
+//
+// A k8s Job's spec.template is immutable, so a warm re-deploy whose image
+// tag changed (every commit does) makes the migrate Job's apply fail
+// "is invalid: ... field is immutable" even though cold (fresh namespace)
+// works.
+//
+// Why a LOOP and an explicit wait-gone, not a single delete+re-apply:
+// `kubectl delete --wait --cascade=foreground` blocks until the API
+// reports the object deleted, but the recovery still observed a flake on
+// CLOUD where the SAME code healed to exit 0 on staging yet exited 1 on
+// prod. The cause is a finalization race — under load the Job (and its GC)
+// can still be settling when the re-apply runs, so the re-apply re-reads
+// the not-yet-gone Job and re-hits `field is immutable`. The single-shot
+// recovery then surfaced that second immutable error as the deploy's exit
+// code even though the resource WAS on its way out. Polling the resource
+// to NotFound before re-applying, and retrying the whole cycle if the
+// re-apply still races, makes a warm cloud redeploy whose only conflict is
+// the immutable Job deterministically exit 0.
+//
+// Scope is kept to the immutable-Job case: the loop only re-enters while
+// the re-apply keeps returning the SAME immutable-field error for the same
+// resource. Any failure that ISN'T the immutable-field case — a delete
+// error, a re-apply error that isn't immutable, or attempts exhausted —
+// surfaces the relevant error unchanged. Unrelated apply failures are
+// never masked.
+func applyWithImmutableRecovery(
+	manifests string,
+	apply func() (string, error),
+	del func(immutableTarget) error,
+	waitGone func(immutableTarget) error,
+) error {
+	stderr, err := apply()
+	if err == nil {
+		return nil
+	}
+	targets := immutableResources(stderr, manifests)
+	if len(targets) == 0 {
+		// Not the recoverable immutable case — surface unchanged.
+		return err
+	}
+
+	// Recovery loop: delete EVERY offending immutable resource the batch
+	// reported, wait for each to actually be gone, then re-apply the whole
+	// batch. Repeat (bounded) only while every re-apply failure is itself a
+	// (possibly different) set of recoverable immutable conflicts.
+	//
+	// Why "every" and not "the same one": forge applies the workload batch
+	// (the migrate Job + the Deployments) in a SINGLE server-side apply, so a
+	// warm redeploy can report MORE THAN ONE immutable conflict — and even
+	// when the first apply names only the migrate Job, a re-apply under load
+	// can surface a DIFFERENT immutable resource. The old loop only re-entered
+	// for the SAME Kind/Name; any other immutable resource was misclassified
+	// as "unrelated" and its non-zero status propagated to the deploy's exit
+	// code (exit 1) even though it was equally recoverable and every pod ended
+	// healthy. This is the staging-0 (1 immutable Job) / prod-1 (a second
+	// immutable conflict slipped through) split. We now recover the full
+	// immutable set each cycle, so the deploy exits 0 once — and only once —
+	// every immutable conflict has been deleted+re-applied successfully.
+	lastErr := err
+	for attempt := 1; attempt <= immutableRecoveryAttempts; attempt++ {
+		for _, res := range targets {
+			if delErr := del(res); delErr != nil {
+				// A delete failure is its own problem — surface it rather than
+				// the original immutable error so the cause is visible.
+				return fmt.Errorf("recovering immutable %s %q: delete: %w", res.Kind, res.Name, delErr)
+			}
+			// Poll the resource to NotFound so the re-apply has a real
+			// happens-before. Best-effort: a wait error (e.g. kubectl flake)
+			// shouldn't abort the recovery — the re-apply below is the real
+			// arbiter of success — so it's logged and we proceed.
+			if waitGone != nil {
+				if wErr := waitGone(res); wErr != nil {
+					fmt.Printf("[deploy]   Note: wait-for-deletion of %s %q: %v (re-applying anyway)\n", res.Kind, res.Name, wErr)
+				}
+			}
+		}
+		reStderr, reErr := apply()
+		if reErr == nil {
+			// Every immutable conflict recovered and the re-apply is clean —
+			// the overall apply is a success (exit 0), regardless of the stale
+			// non-zero status the ORIGINAL batched apply returned.
+			return nil
+		}
+		// Keep looping only while the re-apply failure is ENTIRELY composed of
+		// recoverable immutable conflicts (the same one still racing us, a
+		// different immutable resource, or both). Any failure that ISN'T fully
+		// immutable-recoverable is a genuine error and surfaces unchanged.
+		reTargets := immutableResources(reStderr, manifests)
+		if len(reTargets) == 0 {
+			return reErr
+		}
+		lastErr = reErr
+		targets = reTargets
+	}
+	// Bounded attempts exhausted and a resource is still immutable — recovery
+	// genuinely failed. Surface the last immutable error.
+	return lastErr
+}
+
+// applyOnce runs a single `kubectl [--context] apply --server-side
+// --force-conflicts -f -` over the manifest stream. Stdout is inherited
+// so the user still sees the per-resource created/configured/unchanged
+// lines; stderr is tee'd to os.Stderr (so errors stay visible) AND
+// captured so KubectlApply can inspect it for the immutable-field
+// recovery. The captured stderr is returned alongside the run error.
+func applyOnce(ctx context.Context, kctx, manifests string) (string, error) {
 	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "--force-conflicts", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifests)
 	cmd.Stdout = os.Stdout
+	var buf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err := cmd.Run()
+	return buf.String(), err
+}
+
+// immutableTarget identifies the single resource an immutable-field apply
+// failure was about, so the recovery can scope its delete to exactly that
+// object (never a wipe).
+type immutableTarget struct {
+	Kind      string
+	Name      string
+	Namespace string // empty = cluster-scoped or unknown; delete omits -n
+}
+
+// immutableResource decides whether an apply failure is the recoverable
+// immutable-field case and, if so, which resource to reset. It keys off
+// the error text k8s emits for an immutable update, in EITHER apply mode —
+//
+//	client-side: The Job "control-plane-migrate" is invalid: spec.template: … field is immutable
+//	server-side: Job.batch "control-plane-migrate" is invalid: spec.template: … field is immutable
+//
+// requiring BOTH the `is invalid:` framing and `field is immutable` so it
+// never fires on an unrelated apply error. The kind+name come from that
+// message (generic — Job is the motivating case, but any immutable kind
+// matches); parseInvalidResource normalizes the server-side GVR form
+// (`Job.batch` → `Job`) so the namespace is recovered by matching that
+// kind+name back to its source document in the applied manifests. Returns
+// ok=false when the stderr isn't an immutable-field error or the named
+// resource can't be found in the bundle.
+func immutableResource(stderr, manifests string) (immutableTarget, bool) {
+	if !strings.Contains(stderr, "is invalid:") || !strings.Contains(stderr, "field is immutable") {
+		return immutableTarget{}, false
+	}
+	kind, name, ok := parseInvalidResource(stderr)
+	if !ok {
+		return immutableTarget{}, false
+	}
+	ns := namespaceForResource(manifests, kind, name)
+	return immutableTarget{Kind: kind, Name: name, Namespace: ns}, true
+}
+
+// immutableResources is the batch-aware extractor: it returns EVERY distinct
+// recoverable immutable-field conflict reported by a single apply, not just
+// the first. forge applies the workload batch (the migrate Job + Deployments)
+// in ONE `kubectl apply --server-side`, so a warm redeploy can fail with more
+// than one immutable conflict at once — kubectl emits one
+// `<Kind> "<name>" is invalid: … field is immutable` line per offending
+// resource. Healing only the first (immutableResource) left the rest to
+// re-surface on the re-apply and propagate a non-zero exit even though every
+// conflict was independently recoverable; that was the deploy-exits-1-on-a-
+// healthy-cluster bug. This scans all `is invalid:` segments, keeps only the
+// ones whose error is `field is immutable`, parses each Kind/name, recovers
+// the namespace from the manifest bundle, and de-dupes by Kind+Name+Namespace
+// (stable order: first occurrence wins). Returns an empty slice when the
+// stderr carries NO recoverable immutable conflict — the caller treats that as
+// "not the recoverable case, surface the error unchanged."
+func immutableResources(stderr, manifests string) []immutableTarget {
+	const inv = " is invalid:"
+	var out []immutableTarget
+	seen := map[string]struct{}{}
+	rest := stderr
+	for {
+		idx := strings.Index(rest, inv)
+		if idx < 0 {
+			break
+		}
+		// The segment up to and including this `is invalid:` head holds the
+		// `<Kind> "<name>"` for THIS conflict; parseInvalidResource keys off the
+		// LAST quoted token before the framing, so feeding it the head is exact.
+		head := rest[:idx+len(inv)]
+		// Advance past this match so the next iteration finds the following one.
+		rest = rest[idx+len(inv):]
+		// Scope the "field is immutable" check to THIS resource's error body —
+		// the text between this `is invalid:` and the next `is invalid:` (or end
+		// of stderr). Avoids a later resource's immutability bleeding onto an
+		// earlier non-immutable one.
+		body := rest
+		if next := strings.Index(rest, inv); next >= 0 {
+			body = rest[:next]
+		}
+		if !strings.Contains(body, "field is immutable") {
+			continue
+		}
+		kind, name, ok := parseInvalidResource(head)
+		if !ok {
+			continue
+		}
+		ns := namespaceForResource(manifests, kind, name)
+		key := kind + "\x00" + name + "\x00" + ns
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, immutableTarget{Kind: kind, Name: name, Namespace: ns})
+	}
+	return out
+}
+
+// parseInvalidResource pulls the Kind and name out of a k8s
+// `<Kind> "<name>" is invalid:` message. It scans for the `"…"` quoted
+// name and takes the single token immediately before the opening quote as
+// the Kind. Returns ok=false if the shape doesn't match.
+//
+// kubectl emits TWO shapes for the same failure depending on the apply
+// mode, and the recovery must handle both:
+//
+//   - client-side apply:  The Job "control-plane-migrate" is invalid: …
+//   - server-side apply:  Job.batch "control-plane-migrate" is invalid: …
+//
+// forge always applies with `--server-side` (see applyOnce), so the CLOUD
+// warm-redeploy path always hits the SECOND shape, where the token before
+// the name is the GVR-style `<resource>.<group>` ("Job.batch"), not the
+// bare kind ("Job"). The `.group` suffix is stripped here so the returned
+// kind is the bare `kind:` value — which is what namespaceForResource
+// matches against the manifest documents to recover the namespace. Without
+// this normalization the SSA error parsed kind="Job.batch", matched no
+// `kind: Job` document, lost the namespace, and the recovery delete ran in
+// the wrong (default) namespace as a no-op — so the re-apply hit the still
+// immutable Job again and the deploy exited 1. (The e2e path never tripped
+// it: a cold apply into a fresh namespace has no pre-existing Job to
+// conflict with, so the recovery only ever fires on a warm cloud
+// redeploy.) `kubectl delete` accepts the bare kind too, so deleting by
+// the normalized kind is correct for both shapes.
+func parseInvalidResource(stderr string) (kind, name string, ok bool) {
+	const inv = " is invalid:"
+	idx := strings.Index(stderr, inv)
+	if idx < 0 {
+		return "", "", false
+	}
+	head := stderr[:idx] // e.g. `The Job "control-plane-migrate"` or `Job.batch "control-plane-migrate"`
+	close := strings.LastIndex(head, `"`)
+	if close < 0 {
+		return "", "", false
+	}
+	open := strings.LastIndex(head[:close], `"`)
+	if open < 0 {
+		return "", "", false
+	}
+	name = head[open+1 : close]
+	// Kind is the last whitespace-delimited token before the opening quote.
+	fields := strings.Fields(strings.TrimSpace(head[:open]))
+	if len(fields) == 0 || name == "" {
+		return "", "", false
+	}
+	kind = fields[len(fields)-1]
+	// Strip the `.group` suffix of the server-side-apply GVR form
+	// ("Job.batch" → "Job") so the kind matches the bare `kind:` value in
+	// the manifest documents (namespaceForResource) on BOTH apply modes.
+	if dot := strings.IndexByte(kind, '.'); dot > 0 {
+		kind = kind[:dot]
+	}
+	return kind, name, true
+}
+
+// namespaceForResource finds the metadata.namespace of the manifest
+// document whose kind+name match, so the recovery delete can target the
+// right namespace. Returns "" when no doc matches or the doc carries no
+// namespace (cluster-scoped, or namespace defaulted at apply time).
+func namespaceForResource(manifests, kind, name string) string {
+	for _, doc := range splitDocs(manifests) {
+		var m struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name      string `yaml:"name"`
+				Namespace string `yaml:"namespace"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+			continue
+		}
+		if m.Kind == kind && m.Metadata.Name == name {
+			return m.Metadata.Namespace
+		}
+	}
+	return ""
+}
+
+// kubectlDeleteResource issues a scoped, idempotent
+// `kubectl delete <kind> <name> [-n <ns>] --ignore-not-found=true
+// --wait=true --cascade=foreground` for the one resource an immutable
+// apply failed on. --ignore-not-found keeps it safe if the object vanished
+// between apply and delete.
+//
+// --wait + --cascade=foreground close the recovery RACE: the immutable
+// recovery deletes the offending resource and immediately re-applies it,
+// so the delete MUST finalize before the re-apply runs. For a Job the
+// dependents (its pods) matter — a default background delete returns as
+// soon as the delete is ACCEPTED, while the Job object and its pods are
+// still terminating, and the re-apply can then either re-hit the immutable
+// (the Job hasn't actually gone) or collide with the GC of the old pods.
+// Foreground cascade makes `kubectl delete` block until the Job AND its
+// dependents are gone, giving the re-apply a real happens-before. This is
+// what makes the warm CLOUD redeploy deterministic rather than racy.
+func kubectlDeleteResource(ctx context.Context, kctx string, t immutableTarget) error {
+	args := []string{
+		"delete", strings.ToLower(t.Kind), t.Name,
+		"--ignore-not-found=true",
+		"--wait=true",
+		"--cascade=foreground",
+	}
+	if t.Namespace != "" {
+		args = append(args, "-n", t.Namespace)
+	}
+	cmd := kubectlCmd(ctx, kctx, args...)
+	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// kubectlWaitResourceGone polls `kubectl get <kind> <name> [-n <ns>]`
+// until it reports NotFound (the resource is truly gone), or the timeout
+// elapses. This is the explicit happens-before the immutable recovery
+// needs BEFORE it re-applies: `kubectl delete --wait --cascade=foreground`
+// returns when the API has accepted+finalized the delete, but under cloud
+// load the recovery still observed the re-apply racing a not-yet-gone Job
+// (the staging-0 / prod-1 split). Polling get→NotFound closes that window
+// deterministically rather than trusting delete's --wait alone.
+//
+// Returns nil the instant a get fails with `NotFound` (the success
+// signal). A get that SUCCEEDS means the object still exists, so we keep
+// polling. Any other get error (transient kubectl/API flake) is treated as
+// "unknown, keep trying" until the deadline. On timeout it returns a
+// non-nil error, which the caller logs but does not treat as fatal — the
+// re-apply is the real arbiter.
+func kubectlWaitResourceGone(ctx context.Context, kctx string, t immutableTarget) error {
+	const (
+		timeout  = 30 * time.Second
+		interval = 500 * time.Millisecond
+	)
+	deadline := time.Now().Add(timeout)
+	for {
+		args := []string{"get", strings.ToLower(t.Kind), t.Name, "--ignore-not-found=true", "-o", "name"}
+		if t.Namespace != "" {
+			args = append(args, "-n", t.Namespace)
+		}
+		cmd := kubectlCmd(ctx, kctx, args...)
+		out, err := cmd.Output()
+		// --ignore-not-found makes a missing resource exit 0 with EMPTY
+		// stdout. Empty output therefore means "gone" — the success signal.
+		if err == nil && strings.TrimSpace(string(out)) == "" {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s waiting for %s %q to be deleted", timeout, t.Kind, t.Name)
+		}
+		time.Sleep(interval)
+	}
 }
 
 // EnsureNamespace idempotently creates the target namespace so resources
@@ -780,74 +1347,47 @@ func parseDoc(doc string) (parsedDoc, bool) {
 	return m, true
 }
 
-// FilterManifestsByApp filters a `---`-separated multi-doc YAML stream
-// down to the manifests belonging to the named apps, PLUS every shared
-// manifest. The rule, doc by doc:
+// SelectManifestsByGroup is the ONE uniform, mechanical, EXCLUSIVE
+// `--target` filter: it keeps a `---`-separated multi-doc YAML stream's
+// documents iff their KCL-declared service GROUP (`app.kubernetes.io/name`)
+// is in targets, and DROPS every other document. The rule, doc by doc:
 //
-//   - KEEP when the doc's `metadata.labels[app.kubernetes.io/name]`
-//     value is one of targets — that's a targeted app's workload.
-//   - KEEP when the doc has NO `app.kubernetes.io/name` label — that's
-//     a shared/infra resource (Namespace, the shared ConfigMap/Secret,
-//     RuntimeClass, CRDs) a targeted app may depend on. Dropping these
-//     would leave the app's pods unable to start.
-//   - DROP when the label is present but names a NON-targeted app.
+//   - KEEP iff `metadata.labels[app.kubernetes.io/name]` ∈ targets.
+//   - DROP otherwise — including a doc whose group is NOT targeted AND a
+//     doc with NO group label.
 //
-// Empty / whitespace-only docs are dropped. A doc that doesn't parse as
-// YAML is conservatively KEPT (better to apply an opaque doc than to
-// silently swallow it; kubectl will reject genuinely-broken YAML).
+// EXCLUSIVE means EXACTLY that: nothing is kept implicitly. The group is
+// always the service, and there is no synthetic group for shared infra:
+// the env-shared manifests (Namespace, ConfigMap, RuntimeClass,
+// NetworkPolicy) and bundle-level additional_manifests carry NO group, so a
+// service `--target` DROPS them — they apply only on a bare deploy. A shared
+// resource an app needs is kept under that app's `--target` ONLY if it was
+// declared on the service's `manifests` (so it inherits the service group)
+// in KCL. The decision of WHICH manifests a `--target` includes is thus
+// entirely KCL-declared data; this function only filters on it. Callers pass
+// targets only when non-empty — an empty/whole-env apply never calls this
+// (Apply keeps everything when Targets is empty).
 //
-// If the filter would drop every workload-labelled doc — i.e. none of
-// targets matched any app in the bundle (a typo'd --target) — it
-// returns an error listing the app names actually present, rather than
-// applying a shared-only bundle that does nothing the user asked for.
-func FilterManifestsByApp(manifests string, targets []string) (string, error) {
+// A doc that doesn't parse as YAML carries no readable group and is DROPPED
+// like any ungrouped doc: under exclusive targeting "I can't read its
+// group" means "it isn't in the target set". Empty / whitespace-only docs
+// are dropped.
+func SelectManifestsByGroup(manifests string, targets []string) string {
 	want := map[string]struct{}{}
 	for _, t := range targets {
 		want[t] = struct{}{}
 	}
-
 	var kept []string
-	present := map[string]struct{}{} // every app name seen on a labelled doc
-	matchedAny := false              // did any doc carry a targeted app label?
-
 	for _, doc := range splitDocs(manifests) {
-		app := manifestAppLabel(doc)
-		if app == "" {
-			// Shared / infra resource — always keep.
-			kept = append(kept, doc)
+		m, ok := parseDoc(doc)
+		if !ok {
 			continue
 		}
-		present[app] = struct{}{}
-		if _, ok := want[app]; ok {
+		if _, in := want[m.Metadata.Labels[appNameLabel]]; in {
 			kept = append(kept, doc)
-			matchedAny = true
 		}
 	}
-
-	if !matchedAny {
-		avail := make([]string, 0, len(present))
-		for a := range present {
-			avail = append(avail, a)
-		}
-		sort.Strings(avail)
-		return "", fmt.Errorf(
-			"no application matched --target %s; available apps in this env: %s",
-			strings.Join(targets, ", "), strings.Join(avail, ", "))
-	}
-
-	return strings.Join(kept, docDelimiter), nil
-}
-
-// manifestAppLabel reads metadata.labels["app.kubernetes.io/name"] from
-// a single YAML manifest document. Returns "" when the doc has no such
-// label (shared/infra resource) or doesn't parse — callers treat "" as
-// "shared, keep".
-func manifestAppLabel(doc string) string {
-	m, ok := parseDoc(doc)
-	if !ok {
-		return ""
-	}
-	return m.Metadata.Labels[appNameLabel]
+	return strings.Join(kept, docDelimiter)
 }
 
 // ScopeManifestsToGroup filters a `---`-separated env manifest stream down
@@ -860,6 +1400,18 @@ func manifestAppLabel(doc string) string {
 // service pins env-level resources — Namespace, Gateways, CRDs — to a
 // specific declared cluster). KCL still renders the whole env as one
 // stream; this filter routes each doc to the cluster its owner declares.
+//
+// FIRST-CLASS cluster attribution takes priority over the app-label rule
+// below: a manifest carrying the `forge.dev/cluster` label (stamped by
+// forge's gateway/route builders when an ingress entity declares
+// `cluster = "<name>"`) is routed by that label DIRECTLY — kept iff the
+// label equals scope.Cluster, dropped otherwise — with no
+// `app.kubernetes.io/name` indirection. This is the explicit replacement
+// for the old trick of piggybacking an unrelated service's app label.
+// When scope.Cluster is empty (the label-only routing path), the
+// first-class match is skipped and the doc falls through to the app-label
+// rule. A manifest WITHOUT the routing label always uses the app-label
+// rule.
 //
 // The ownership rule, document by document (by its
 // `app.kubernetes.io/name` label `a`):
@@ -900,8 +1452,21 @@ func ScopeManifestsToGroup(manifests string, scope GroupScope) string {
 	for _, doc := range splitDocs(manifests) {
 		m, parsed := parseDoc(doc)
 		app := ""
+		routeCluster := ""
 		if parsed {
 			app = m.Metadata.Labels[appNameLabel]
+			routeCluster = m.Metadata.Labels[clusterRoutingLabel]
+		}
+		// First-class cluster attribution wins over the app-label rule: a
+		// manifest stamped with `forge.dev/cluster` routes to exactly that
+		// cluster. Only engaged when this group knows its own cluster name
+		// (scope.Cluster); otherwise fall through to app-label routing.
+		if routeCluster != "" && scope.Cluster != "" {
+			if routeCluster == scope.Cluster {
+				kept = append(kept, doc)
+			}
+			// routeCluster != scope.Cluster → drop (another cluster's).
+			continue
 		}
 		switch {
 		case app != "":

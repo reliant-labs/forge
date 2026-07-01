@@ -33,11 +33,11 @@ What to log, in order of placement:
 ## Triggering the Bug
 
 - **First confirm the wire.** Before blaming the code, verify the caller can actually reach the target: is the service up, is the kubectl context current (services may live in different clusters), are credentials live? Stale connection state is a top false-cause.
-- Read the **actual** server / pod logs for the request — don't infer behavior from the client error alone.
-- curl API endpoints directly
-- Exercise via Connect client
-- Query DB state before and after the operation
-- Use `forge debug start <svc>` to attach a debugger if logging isn't enough
+- **Read the actual runtime logs.** `forge cluster logs --service <name>` tails the pod's logs (kubectl-backed) — read the server's view of the request, don't infer from the client error alone. It tails only the owner cluster; for a peer in another cluster, `kubectl --context <other> -n <ns> logs <pod>`.
+- **Localize first with `forge introspect handlers`.** It prints every RPC path the assembled binary serves. If the RPC you're triggering isn't in the list, the fault is a downstream/remote hop — stop digging in this binary.
+- **Hit the endpoint with `forge api curl <service.method>`.** Builds a copy-pasteable Connect request from the shell. It stops at the auth interceptor (no token minting), so add your own credential for an authed call.
+- Exercise via Connect client; query DB state before and after the operation.
+- **Attach Delve with `forge debug start <svc>`** if logging isn't enough. Two caveats: in a multi-binary repo `start <service>` can mis-build (it falls back to `./cmd/...`) — pass an explicit path/service; and `forge debug stop` after `--attach` kills the live process, so detach rather than `stop` when the process must keep running.
 
 ## E2E Reproduction
 
@@ -48,6 +48,15 @@ forge test e2e
 ```
 
 The test should assert on the **wrong** behavior first (red), then flip to expected after fix.
+
+## Prove the Fix — Don't Trust a Green Smoke
+
+A green `forge smoke` / `forge doctor` does NOT mean the app flow works — they check listeners, local compose, and telemetry, not app-flow invariants. The only things that **prove** an app-flow fix:
+
+1. a declarative, exit-coded app-health assertion that fails non-zero when the invariant is violated (model: a project `doctor:<flow>` task), and
+2. a full `forge test e2e`.
+
+Add or extend one of these so the fix stays proven, not just observed-once.
 
 ## Evidence Format
 

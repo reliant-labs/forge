@@ -23,7 +23,7 @@ import deploy.kcl.staging.ingress as ing
 # placeholder ("ghcr.io/OWNER") so a missing CI `-D registry=` surfaces
 # as a wrong image reference rather than silently deploying from an
 # unrelated registry.
-_registry = option("registry") or "ghcr.io/OWNER"
+_registry = forge.registry("ghcr.io/OWNER")
 _namespace = "{{.ProjectName}}-staging"
 _replicas = 2
 _resources = forge.Resources {
@@ -32,19 +32,19 @@ _resources = forge.Resources {
     cpu_limit = "1000m"
     memory_limit = "512Mi"
 }
-_cluster = forge.K8sCluster {
+_cluster = forge.ClusterTarget {
     # Set to the kubectl context name for the staging cluster.
     cluster = "{{.ProjectName}}-staging"
     namespace = _namespace
     registry = _registry
-    replicas = _replicas
-    ports = [8080]
-    resources = _resources
 }
 
-_base_env = forge.COMMON_ENV + cfg.APP_ENV + [
+# Base env every component sees, assembled with forge.env_merge (name-keyed,
+# LAST-wins) so a later layer overrides an earlier one by name instead of the
+# `+`-concat footgun (which emits duplicate keys kubectl rejects).
+_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, cfg.APP_ENV), [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
-]
+])
 
 _components = [c | {
     image = "{{.ProjectName}}"
@@ -52,7 +52,7 @@ _components = [c | {
     namespace = _namespace
     replicas = _replicas
     resources = _resources
-    env_vars = _base_env + [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}]
+    env_vars = forge.env_merge(_base_env, [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}])
 } for c in fc.load_components(fc.COMPONENTS_GEN)]
 
 _component_env = fc.ComponentEnv {
@@ -63,6 +63,7 @@ _component_env = fc.ComponentEnv {
 }
 
 _support = forge.Bundle {
+    cluster_target = _cluster
     config_maps = cfg.CONFIG_MAPS
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
@@ -70,14 +71,9 @@ _support = forge.Bundle {
     grpc_routes = ing.GRPC_ROUTES
 {{- end}}
 }
-_render_env = forge.RenderEnv {
-    cluster = _cluster
-    image_tag = forge.image_tag("staging")
-    network_policies = True
-}
 
 manifests = fc.render_components(_components, _component_env) \
-    + forge.render_support(_support, _render_env)
+    + forge.render_support(_support)
 
 _svc_components = [c for c in _components if c.kind in ["server", "worker"]]
 _bin_components = [c for c in _components if c.kind == "binary"]
@@ -85,12 +81,13 @@ _cron_components = [c for c in _components if c.kind == "cron"]
 _op_components = [c for c in _components if c.kind == "operator"]
 
 _bundle = forge.Bundle {
+    cluster_target = _cluster
     services = [forge.Service {
         name = c.name
         image = "{{.ProjectName}}"
         command = c.command
         env_vars = c.env_vars
-        deploy = _cluster | {ports = [p.port for p in c.ports]}
+        deploy = _cluster.deploy | {replicas = _replicas, resources = _resources, ports = [p.port for p in c.ports]}
         if c.build:
             build = forge.build_of(c.build)
     } for c in _svc_components] + [forge.Service {

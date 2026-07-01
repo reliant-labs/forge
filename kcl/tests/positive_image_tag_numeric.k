@@ -24,20 +24,22 @@ import forge
 # Read the tag exactly as the manifest renderer does.
 _tag = option("image_tag") or "latest"
 
-# A minimal cluster so RenderEnv's required `cluster: K8sCluster` is
-# satisfied. cluster/namespace/registry are the required fields.
-_k8s = forge.K8sCluster {
+# A minimal target so the bundle has env-wide coordinates.
+# cluster/namespace/registry are the required fields.
+_target = forge.ClusterTarget {
     cluster = "k3d-myapp"
     namespace = "myapp-prod"
     registry = "localhost:5050"
 }
 
-# Constructing this proves the `str` schema field accepts _tag without
-# an EvaluationError — the exact step that fails on a bare numeric -D.
-_env = forge.RenderEnv {
-    cluster = _k8s
-    image_tag = _tag
+# Rendering with the numeric-string tag proves `render_manifests`'
+# `image_tag: str` param accepts _tag without an EvaluationError — the
+# exact step that fails on a bare numeric -D.
+_bundle = forge.Bundle {
+    cluster_target = _target
+    services = []
 }
+manifests = forge.render_manifests(_bundle, _tag)
 
 # ── Invariants ─────────────────────────────────────────────────────
 
@@ -47,5 +49,7 @@ assert_tag_is_str = typeof(_tag) == "str"
 # The quotes are stripped — the value is the bare digits as a string.
 assert_tag_value = _tag == "3826648"
 
-# RenderEnv accepted the value into its `str` field (round-trip).
-assert_env_image_tag = _env.image_tag == "3826648"
+# render_manifests accepted the value into its `str` param (round-trip):
+# the bundle has no cluster services, so the manifest stream is just the
+# Namespace — the point is it evaluated without `image_tag: str, got int`.
+assert_rendered = len([m for m in manifests if m.kind == "Namespace"]) == 1

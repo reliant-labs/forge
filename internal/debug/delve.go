@@ -27,7 +27,8 @@ type DelveDebugger struct {
 	client *rpc2.RPCClient
 	addr   string
 	cmd    *exec.Cmd // the dlv process we started (nil if we just connected)
-	pid    int
+	pid    int       // the debugged TARGET process PID
+	dlvPID int       // the dlv server process PID forge spawned (0 if we just connected)
 }
 
 // NewDelveDebugger returns a new, unconnected DelveDebugger.
@@ -38,6 +39,14 @@ func NewDelveDebugger() *DelveDebugger {
 // Start launches dlv exec in headless mode for the given binary and connects.
 // If listenPort > 0, it is used as the debugger listen port; otherwise a free port is chosen.
 func (d *DelveDebugger) Start(ctx context.Context, binary string, args []string, listenPort int) error {
+	return d.StartWithEnv(ctx, binary, args, nil, listenPort)
+}
+
+// StartWithEnv is Start with extra environment variables layered onto the
+// debugged process's environment (os.Environ() + extraEnv, extraEnv wins).
+// Used to inject the SERVICE_NAME / PORT a forge service binary needs to
+// actually serve.
+func (d *DelveDebugger) StartWithEnv(ctx context.Context, binary string, args []string, extraEnv []string, listenPort int) error {
 	port := listenPort
 	if port <= 0 {
 		var err error
@@ -61,6 +70,11 @@ func (d *DelveDebugger) Start(ctx context.Context, binary string, args []string,
 	}
 
 	d.cmd = exec.CommandContext(ctx, "dlv", dlvArgs...)
+	// dlv exec inherits its environment to the debuggee. Layer extraEnv
+	// (SERVICE_NAME / PORT / ...) on top of the current env, last-wins.
+	if len(extraEnv) > 0 {
+		d.cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	// Start dlv in its own process group and detach IO so it survives
 	// after the parent (forge) exits.
 	d.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -82,7 +96,14 @@ func (d *DelveDebugger) Start(ctx context.Context, binary string, args []string,
 	}
 
 	d.addr = addr
-	d.pid = d.cmd.Process.Pid
+	d.dlvPID = d.cmd.Process.Pid
+	// The target is the dlv-launched debuggee; query its PID so callers can
+	// kill the right process on stop (the dlv server PID is tracked
+	// separately in d.dlvPID for reaping).
+	if c := rpc2.NewClient(addr); c != nil {
+		d.pid = c.ProcessPid()
+		_ = c.Disconnect(false)
+	}
 	// Release the process handle so the Go runtime does not kill dlv
 	// when the parent (forge) process exits.
 	_ = d.cmd.Process.Release()
@@ -107,6 +128,18 @@ func (d *DelveDebugger) StartAttach(ctx context.Context, pid int) error {
 	}
 
 	d.cmd = exec.CommandContext(ctx, "dlv", dlvArgs...)
+	// Detach IO and run dlv in its own process group so it survives after
+	// forge exits — the session is reconnected by later `forge debug`
+	// invocations, exactly like Start.
+	d.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", os.DevNull, err)
+	}
+	defer func() { _ = devNull.Close() }()
+	d.cmd.Stdin = devNull
+	d.cmd.Stdout = devNull
+	d.cmd.Stderr = devNull
 	if err := d.cmd.Start(); err != nil {
 		return fmt.Errorf("starting dlv attach: %w", err)
 	}
@@ -118,6 +151,12 @@ func (d *DelveDebugger) StartAttach(ctx context.Context, pid int) error {
 
 	d.addr = addr
 	d.pid = pid
+	d.dlvPID = d.cmd.Process.Pid
+	// Release the dlv handle so the Go runtime does not reap dlv when forge
+	// exits. dlv was launched with `attach` (no --continue), so the target
+	// is suspended; the dlv server PID is tracked for reaping on stop.
+	_ = d.cmd.Process.Release()
+	d.cmd = nil
 	return nil
 }
 
@@ -150,8 +189,13 @@ func (d *DelveDebugger) Connect(addr string) error {
 // Addr returns the listen address of the Delve server.
 func (d *DelveDebugger) Addr() string { return d.addr }
 
-// PID returns the PID of the debugged process.
+// PID returns the PID of the debugged (target) process.
 func (d *DelveDebugger) PID() int { return d.pid }
+
+// DlvPID returns the PID of the dlv server process forge spawned, or 0 when
+// this debugger merely connected to an existing dlv. Tracked so `stop` can
+// reap the dlv server even after the session has been reconnected from disk.
+func (d *DelveDebugger) DlvPID() int { return d.dlvPID }
 
 // ---------------------------------------------------------------------------
 // Breakpoints
@@ -222,6 +266,9 @@ func (d *DelveDebugger) Continue() (*StopState, error) {
 
 // StepOver advances to the next source line in the current function.
 func (d *DelveDebugger) StepOver() (*StopState, error) {
+	if err := d.ensureHalted(); err != nil {
+		return nil, err
+	}
 	state, err := d.client.Next()
 	if err != nil {
 		return nil, err
@@ -231,6 +278,9 @@ func (d *DelveDebugger) StepOver() (*StopState, error) {
 
 // StepInto steps into the call on the current line.
 func (d *DelveDebugger) StepInto() (*StopState, error) {
+	if err := d.ensureHalted(); err != nil {
+		return nil, err
+	}
 	state, err := d.client.Step()
 	if err != nil {
 		return nil, err
@@ -240,6 +290,9 @@ func (d *DelveDebugger) StepInto() (*StopState, error) {
 
 // StepOut runs until the current function returns.
 func (d *DelveDebugger) StepOut() (*StopState, error) {
+	if err := d.ensureHalted(); err != nil {
+		return nil, err
+	}
 	state, err := d.client.StepOut()
 	if err != nil {
 		return nil, err
@@ -290,6 +343,9 @@ func (d *DelveDebugger) Args() ([]Variable, error) {
 
 // Stacktrace returns up to depth stack frames for the current goroutine.
 func (d *DelveDebugger) Stacktrace(depth int) ([]StackFrame, error) {
+	if err := d.ensureHalted(); err != nil {
+		return nil, err
+	}
 	frames, err := d.client.Stacktrace(-1, depth, 0, api.StacktraceOptions(0), &defaultLoadConfig)
 	if err != nil {
 		return nil, err
@@ -309,6 +365,16 @@ func (d *DelveDebugger) Stacktrace(depth int) ([]StackFrame, error) {
 
 // Goroutines lists every goroutine known to the debugger.
 func (d *DelveDebugger) Goroutines() ([]GoroutineInfo, error) {
+	// ListGoroutines walks runtime.allgs in target memory, which is only
+	// readable when the target is HALTED. Against a running target (the normal
+	// state right after `forge debug start --attach`, before any breakpoint is
+	// hit) the call either blocks forever or fails with Delve's
+	// "could not find goroutine array" — the goroutine cache hasn't been
+	// primed because the process never stopped. Halt first, exactly as dlv's
+	// own terminal does, so the listing is always against a stopped target.
+	if err := d.ensureHalted(); err != nil {
+		return nil, err
+	}
 	goroutines, _, err := d.client.ListGoroutines(0, 0)
 	if err != nil {
 		return nil, err
@@ -360,8 +426,34 @@ func (d *DelveDebugger) Disconnect() {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// ensureHalted guarantees the target is stopped before an operation that
+// reads target memory or steps execution. Inspection (goroutines, locals,
+// stacktrace) and stepping all require a HALTED target; on a running target
+// the underlying Delve RPCs either block on the next (never-arriving) stop or
+// fail because the goroutine cache was never primed. We probe state without
+// blocking, and Halt() only when actually running so an already-stopped
+// target is untouched. Halting is idempotent and safe — it leaves an attached
+// target suspended exactly as a breakpoint hit would, and `stop` still
+// detaches without killing.
+func (d *DelveDebugger) ensureHalted() error {
+	state, err := d.client.GetStateNonBlocking()
+	if err != nil {
+		return err
+	}
+	if state == nil || !state.Running {
+		return nil
+	}
+	if _, err := d.client.Halt(); err != nil {
+		return fmt.Errorf("halting target: %w", err)
+	}
+	return nil
+}
+
 // currentScope returns an EvalScope for the currently selected goroutine.
 func (d *DelveDebugger) currentScope() (api.EvalScope, error) {
+	if err := d.ensureHalted(); err != nil {
+		return api.EvalScope{}, err
+	}
 	state, err := d.client.GetState()
 	if err != nil {
 		return api.EvalScope{}, err

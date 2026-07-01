@@ -1,5 +1,6 @@
 // Fixture: a handler file that constructs ONE connect.NewError ad-hoc
 // and never re-rolls the mapping switch. Must NOT be flagged.
+//
 //nolint:all
 package billing
 

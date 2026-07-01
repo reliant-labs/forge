@@ -62,6 +62,13 @@ Examples:
 	cmd.AddCommand(newDevClusterResetCmd())
 	cmd.AddCommand(newDevClusterReloadCmd())
 
+	// Platform dependencies (cert-manager, Envoy Gateway, …) on a cloud
+	// cluster are no longer a bespoke `forge cluster-setup` verb. They are
+	// declarative renderables — KCL forge.HelmChart in the env Bundle —
+	// applied via `forge deploy <env> --target=<platform-name>` (helm-as-a-
+	// RENDERER: helm template --skip-crds → the same apply pipeline). There
+	// is no imperative installer to register here.
+
 	// `status` is the dev_status.go implementation (a superset of the old
 	// nested `dev cluster status`): it shows cluster up/down + current
 	// kubectl context + config path + pods + ingress URLs + siblings.

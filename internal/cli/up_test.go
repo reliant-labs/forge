@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/spf13/pflag"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // TestBuildHostServiceCmd covers each runner dispatch — go-run / air /

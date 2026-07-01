@@ -50,7 +50,7 @@ func TestBuildExternalBuildDoctorChecks_CwdPresentCmdOnPath(t *testing.T) {
 	lookup := stubLookupErr{"docker": {}}.Lookup
 
 	svcs := []ServiceEntity{
-		{Name: "gw", BuildCmd: "docker build .", BuildCwd: "sibling"},
+		shellSvc("gw", "", "docker build .", "sibling", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
 	if len(results) != 1 {
@@ -66,7 +66,7 @@ func TestBuildExternalBuildDoctorChecks_CwdPresentCmdOnPath(t *testing.T) {
 	if !strings.Contains(r.Evidence, "ok: docker on PATH") {
 		t.Errorf("evidence should confirm docker on PATH; got %s", r.Evidence)
 	}
-	if !strings.Contains(r.Evidence, "info: resolved build_cmd: docker build .") {
+	if !strings.Contains(r.Evidence, "info: resolved build cmd: docker build .") {
 		t.Errorf("evidence should show resolved command; got %s", r.Evidence)
 	}
 }
@@ -80,7 +80,7 @@ func TestBuildExternalBuildDoctorChecks_MissingCwdWarns(t *testing.T) {
 	lookup := stubLookupErr{"docker": {}}.Lookup
 
 	svcs := []ServiceEntity{
-		{Name: "gw", BuildCmd: "docker build .", BuildCwd: "missing"},
+		shellSvc("gw", "", "docker build .", "missing", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
 	r := results[0]
@@ -104,7 +104,7 @@ func TestBuildExternalBuildDoctorChecks_FirstTokenMissingWarns(t *testing.T) {
 	lookup := stubLookupErr{}.Lookup      // nothing on PATH
 
 	svcs := []ServiceEntity{
-		{Name: "gw", BuildCmd: "go build ./..."},
+		shellSvc("gw", "", "go build ./...", "", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
 	r := results[0]
@@ -114,7 +114,7 @@ func TestBuildExternalBuildDoctorChecks_FirstTokenMissingWarns(t *testing.T) {
 	if !strings.Contains(r.Evidence, "warn: go not found on PATH") {
 		t.Errorf("evidence should call out missing first token; got %s", r.Evidence)
 	}
-	if !strings.Contains(r.Evidence, "info: resolved build_cmd: go build ./...") {
+	if !strings.Contains(r.Evidence, "info: resolved build cmd: go build ./...") {
 		t.Errorf("evidence should still show the resolved command; got %s", r.Evidence)
 	}
 }
@@ -129,7 +129,7 @@ func TestBuildExternalBuildDoctorChecks_FirstTokenSkippedWhenCdPrefix(t *testing
 	lookup := stubLookupErr{}.Lookup // even with empty PATH, we should not warn
 
 	svcs := []ServiceEntity{
-		{Name: "gw", BuildCmd: "cd ../sibling && docker build ."},
+		shellSvc("gw", "", "cd ../sibling && docker build .", "", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
 	r := results[0]
@@ -139,7 +139,7 @@ func TestBuildExternalBuildDoctorChecks_FirstTokenSkippedWhenCdPrefix(t *testing
 	if !strings.Contains(r.Evidence, "first-token PATH check skipped") {
 		t.Errorf("evidence should explain skipped heuristic; got %s", r.Evidence)
 	}
-	if !strings.Contains(r.Evidence, "info: resolved build_cmd: cd ../sibling && docker build .") {
+	if !strings.Contains(r.Evidence, "info: resolved build cmd: cd ../sibling && docker build .") {
 		t.Errorf("evidence should still show resolved command; got %s", r.Evidence)
 	}
 }
@@ -153,7 +153,7 @@ func TestBuildExternalBuildDoctorChecks_FirstTokenSkippedWhenEnvVar(t *testing.T
 	lookup := stubLookupErr{}.Lookup
 
 	svcs := []ServiceEntity{
-		{Name: "gw", BuildCmd: "CGO_ENABLED=0 go build ./..."},
+		shellSvc("gw", "", "CGO_ENABLED=0 go build ./...", "", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
 	r := results[0]
@@ -175,17 +175,13 @@ func TestBuildExternalBuildDoctorChecks_PreviewSubstitutesTokens(t *testing.T) {
 	lookup := stubLookupErr{"docker": {}}.Lookup
 
 	svcs := []ServiceEntity{
-		{
-			Name:     "gw",
-			Image:    "my-gw",
-			BuildCmd: `docker build -t ${REGISTRY}/${IMAGE}:${TAG} --platform=linux/${TARGETARCH} .`,
-		},
+		shellSvc("gw", "my-gw", `docker build -t ${REGISTRY}/${IMAGE}:${TAG} --platform=linux/${TARGETARCH} .`, "", nil),
 	}
 	results := buildExternalBuildDoctorChecks(svcs, projectDir, lookup, stat)
 	r := results[0]
 	// Substituted preview should carry placeholder values from
 	// buildExternalBuildDoctorChecks's synthetic Spec.
-	want := "info: resolved build_cmd: docker build -t <registry>/my-gw:<tag> --platform=linux/<arch> ."
+	want := "info: resolved build cmd: docker build -t <registry>/my-gw:<tag> --platform=linux/<arch> ."
 	if !strings.Contains(r.Evidence, want) {
 		t.Errorf("evidence missing substituted preview\n  want substring: %s\n  got: %s", want, r.Evidence)
 	}

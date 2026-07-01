@@ -474,27 +474,30 @@ func TestHooksTemplate_KeyFactory(t *testing.T) {
 // ConnectError NotFound instead of silently serving the first fixture.
 func TestMockTransport_MutableStoreAndNotFound(t *testing.T) {
 	entities := []codegen.MockTransportEntity{{
-		EntityName:         "Task",
-		EntityNamePlural:   "Tasks",
-		EntitySlug:         "tasks",
-		ServiceTypeName:    "demo.v1.TaskService",
-		ListRPC:            "ListTasks",
-		GetRPC:             "GetTask",
-		CreateRPC:          "CreateTask",
-		UpdateRPC:          "UpdateTask",
-		DeleteRPC:          "DeleteTask",
-		HasList:            true,
-		HasGet:             true,
-		HasCreate:          true,
-		HasUpdate:          true,
-		HasDelete:          true,
-		ItemsField:         "tasks",
-		ImportPath:         "services/tasks/v1/tasks_pb",
-		EntityImportPath:   "db/v1/tasks_pb",
-		SchemaImport:       "TaskSchema",
-		ListResponseType:   "ListTasksResponse",
-		GetResponseType:    "GetTaskResponse",
-		CreateResponseType: "CreateTaskResponse",
+		EntityName:             "Task",
+		EntityNamePlural:       "Tasks",
+		EntitySlug:             "tasks",
+		ServiceTypeName:        "demo.v1.TaskService",
+		ListRPC:                "ListTasks",
+		GetRPC:                 "GetTask",
+		CreateRPC:              "CreateTask",
+		UpdateRPC:              "UpdateTask",
+		DeleteRPC:              "DeleteTask",
+		HasList:                true,
+		HasGet:                 true,
+		HasCreate:              true,
+		HasUpdate:              true,
+		HasDelete:              true,
+		ItemsField:             "tasks",
+		PkFieldCamel:           "id",
+		GetEntityFieldCamel:    "task",
+		CreateEntityFieldCamel: "task",
+		ImportPath:             "services/tasks/v1/tasks_pb",
+		EntityImportPath:       "db/v1/tasks_pb",
+		SchemaImport:           "TaskSchema",
+		ListResponseType:       "ListTasksResponse",
+		GetResponseType:        "GetTaskResponse",
+		CreateResponseType:     "CreateTaskResponse",
 	}}
 
 	got := renderMockTransport(t, entities)
@@ -507,8 +510,8 @@ func TestMockTransport_MutableStoreAndNotFound(t *testing.T) {
 		"tasks: Array.from(tasksStore.values()),",
 		// get-miss is a real NotFound
 		"Code.NotFound",
-		// create inserts; delete removes
-		"tasksStore.set(String(id), created);",
+		// create inserts; delete removes — both key by the PK field (`id` here)
+		"tasksStore.set(String(pk), created);",
 		"tasksStore.delete(String(req?.id));",
 		// the entity schema import comes from the ENTITY's module
 		`from "@/gen/db/v1/tasks_pb"`,

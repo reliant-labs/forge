@@ -36,7 +36,13 @@ _explicit = forge.KubeconfigSecret {
 }
 
 _cp = forge.Cluster { name = "cp" }
+_target = forge.ClusterTarget {
+    cluster = "k3d-cp"
+    namespace = "dev"
+    registry = "localhost:5051"
+}
 _bundle = forge.Bundle {
+    cluster_target = _target
     clusters = [
         _cp
         forge.Cluster { name = "workload", owner = _cp }
@@ -47,17 +53,9 @@ _bundle = forge.Bundle {
 
 _no_kubeconfig_bundle = forge.Bundle { services = [] }
 
-_env = forge.RenderEnv {
-    cluster = forge.K8sCluster {
-        cluster = "k3d-cp"
-        namespace = "dev"
-        registry = "localhost:5051"
-    }
-}
-
 output = forge.render(_bundle)
 output_none = forge.render(_no_kubeconfig_bundle)
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle)
 
 # ── Invariants ─────────────────────────────────────────────────────
 

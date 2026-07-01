@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
@@ -40,10 +41,26 @@ type KCLEntities struct {
 	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
 	HTTPRoutes        []HTTPRouteEntity        `json:"http_routes,omitempty"`
 	GRPCRoutes        []GRPCRouteEntity        `json:"grpc_routes,omitempty"`
+	// HelmCharts are the env's declared platform deps (forge.HelmChart),
+	// each a renderable with a NAME the `--target` axis selects. forge
+	// expands them via helm-as-a-RENDERER and folds the manifests into the
+	// apply stream. Empty => no platform deps. See HelmChartEntity.
+	HelmCharts []HelmChartEntity `json:"helm_charts,omitempty"`
 	// SecretProvider is the bundle-level secret provider declaration
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider — preserving today's no-provider behavior.
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+
+	// RequiredSecrets are the env's declared external Secret prerequisites
+	// (forge.ExternalSecret) — out-of-band Secrets the deploy depends on but
+	// forge does NOT create. Drive the render-time checklist + the deploy
+	// preflight BLOCK on a declared-required-but-absent Secret/key. Empty =>
+	// no declared Secret prereqs (today's behavior).
+	RequiredSecrets []ExternalSecretEntity `json:"required_secrets,omitempty"`
+	// RequiredDNS are the env's declared DNS-record prerequisites
+	// (forge.DNSRecord) — surfaced as a render-time checklist note (forge
+	// can't authoritatively verify external DNS). Empty => none.
+	RequiredDNS []DNSRecordEntity `json:"required_dns,omitempty"`
 
 	// ManifestNamespace is the namespace stamped on the rendered k8s
 	// manifests (`manifests[].metadata.namespace`), recovered even when
@@ -57,6 +74,20 @@ type KCLEntities struct {
 	// working without forcing the user to echo `output` or pass
 	// --namespace. Empty when the render carries no namespaced manifests.
 	ManifestNamespace string `json:"-"`
+
+	// ManifestImageTags maps a (registry-less) image NAME to the tag the
+	// rendered Deployment/Statefulset/Job manifests reference for it —
+	// recovered from `manifests[].spec.template.spec.containers[].image`.
+	// This is the env's RESOLVED image_tag (the `option("image_tag") or
+	// "<default>"` value baked into the manifest image refs), the exact
+	// tag `forge deploy <env>` will pull. `forge build --env <env>` reads
+	// it back so its default build tag MATCHES the deploy tag by
+	// construction — closing the build/deploy tag-divergence footgun
+	// where build tagged from git-describe but deploy referenced the
+	// env's literal default (e.g. "staging"), pushing one tag and
+	// deploying another → ImagePullBackOff. nil/empty when the render
+	// carries no Deployment-shaped manifests.
+	ManifestImageTags map[string]string `json:"-"`
 }
 
 // SecretProviderEntity is the parsed bundle-level secret provider
@@ -118,11 +149,22 @@ type ClusterEntity struct {
 	Agents          int  `json:"agents,omitempty"`
 	APIPort         int  `json:"api_port,omitempty"`
 	// Ingress, when true, installs the Gateway API stack (pinned Gateway-API
-	// CRDs + vendored Traefik controller + the `traefik` GatewayClass) into
-	// this cluster after it's ensured. A fresh k3d cluster ships none of
+	// CRDs + the Envoy Gateway controller via helm + the `eg` GatewayClass)
+	// into this cluster after it's ensured. A fresh k3d cluster ships none of
 	// these; an env whose Gateway/HTTPRoute/GRPCRoute resources land on this
-	// cluster needs it on. Idempotent (kubectl apply + a CRD cache).
+	// cluster needs it on. Idempotent (helm upgrade --install + kubectl apply).
+	//
+	// This is the IMPERATIVE install. An env that declares its Gateway API
+	// controller DECLARATIVELY as a forge.HelmChart platform dep
+	// (Bundle.helm_charts) leaves Ingress false and sets HostPorts true.
 	Ingress bool `json:"ingress,omitempty"`
+	// HostPorts, when true, merges the generated deploy/k3d-ports.yaml Gateway
+	// listener host-port fragment into the k3d config at create time. Ingress
+	// IMPLIES this (an imperatively-installed Gateway also needs the host
+	// ports). Set HostPorts explicitly when the controller is installed
+	// declaratively (Ingress=false) but the cluster still hosts a Gateway
+	// whose listeners must be host-mapped at create time.
+	HostPorts bool `json:"host_ports,omitempty"`
 }
 
 // KubeconfigSecretEntity mirrors the kcl/schema.k KubeconfigSecret — a
@@ -211,25 +253,80 @@ type GRPCRouteEntity struct {
 	RawPolicy string `json:"raw_policy,omitempty"`
 }
 
+// HelmChartEntity is one declared platform dependency from rendered KCL
+// (the `output.helm_charts` projection of forge.HelmChart). It is the
+// declaration only — forge expands it via `helm template --skip-crds`
+// Go-side (internal/cluster.RenderHelmChart) and folds the manifests into
+// the apply stream, selected by `--target=<name>`. helm is a RENDERER,
+// not an installer: there is no release, no `helm install`.
+type HelmChartEntity struct {
+	Name string `json:"name"`
+	// Chart is the chart name for a repo chart; empty for an OCI chart.
+	Chart string `json:"chart,omitempty"`
+	// Repo is the chart-repo URL; mutually exclusive with OCI.
+	Repo string `json:"repo,omitempty"`
+	// OCI is the OCI chart ref; mutually exclusive with Repo.
+	OCI string `json:"oci,omitempty"`
+	// Version is the pinned chart version.
+	Version string `json:"version"`
+	// Namespace is the namespace the chart renders into (helm template -n).
+	Namespace string `json:"namespace"`
+	// Values is the helm values overlay, passed through verbatim.
+	Values map[string]any `json:"values,omitempty"`
+	// CRDs selects which forge-owned CRD bundle to apply FIRST
+	// (Established-gated) before the chart's controllers: "" (none),
+	// "gateway-api", or "cert-manager". The chart is rendered --skip-crds,
+	// so forge owns the CRD surface.
+	CRDs string `json:"crds,omitempty"`
+	// Manifests are consumer-declared raw k8s manifest dicts that ride this
+	// chart's `--target` (the `eg` GatewayClass, cert-manager ClusterIssuers)
+	// — the cluster-scoped instances the chart's controller reconciles but
+	// the chart itself doesn't ship. Stamped with the chart's app-label and
+	// applied AFTER its controllers; excluded from a bare app deploy.
+	Manifests []any `json:"manifests,omitempty"`
+}
+
+// ExternalSecretEntity mirrors the kcl/schema.k ExternalSecret — an
+// out-of-band Secret a deploy DEPENDS ON but forge does NOT create. forge
+// reads these to print a render-time prerequisite checklist and to drive
+// the deploy preflight (a declared-required-but-absent Secret/key BLOCKS,
+// reusing the same SecretGetter as the secretKeyRef preflight). ValueGroup,
+// when set, ties this Secret to others that must carry the SAME logical
+// value (the cross-secret byte-match group).
+type ExternalSecretEntity struct {
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	Keys      []string `json:"keys"`
+	// Reason is a short human note: why the deploy needs this Secret. Shown
+	// in the checklist so the operator knows what breaks if it's absent.
+	Reason string `json:"reason,omitempty"`
+	// ValueGroup is the shared id tying this Secret to other ExternalSecrets
+	// that must carry the same logical value (cross-secret byte-match).
+	// Empty => a standalone prereq (no byte-match group).
+	ValueGroup string `json:"value_group,omitempty"`
+}
+
+// DNSRecordEntity mirrors the kcl/schema.k DNSRecord — a DNS record a
+// deploy depends on. forge can't authoritatively verify external DNS, so
+// this is a render-time checklist entry (and a `--check` note), not a hard
+// block. Target is the expected value (LB IP / CNAME target) when known.
+type DNSRecordEntity struct {
+	Host string `json:"host"`
+	Type string `json:"type"`
+	// Target is the expected value (LB IP for A/AAAA, CNAME target). Often
+	// unknown at author time (ephemeral LB IP), so optional.
+	Target string `json:"target,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // ServiceEntity is one service from rendered KCL. The Deploy field is
 // polymorphic — exactly one of Host / Cluster / BuildOnly is populated
 // according to Deploy.Type. See [DeployConfigEntity] for the discriminator.
 //
-// Build-side fields (mirror of the External deploy provider for the
-// build step):
-//
-//   - BuildCmd, when non-empty, is the shell command `forge build`
-//     runs via `sh -c` instead of the built-in Go-build pipeline.
-//     Tokens (${IMAGE}/${TAG}/${SERVICE}/${TARGETARCH}/${REGISTRY}/
-//     ${PROJECT_DIR}/${BUILD_CWD} + keys from BuildEnv) are substituted
-//     by the build-side runner (see internal/buildtarget once Phase 2
-//     lands).
-//   - BuildCwd is the working directory the shell command runs from.
-//     Relative paths resolve against the project root. Skip-with-warn
-//     when the resolved path doesn't exist on disk.
-//   - BuildEnv carries extra env vars merged into the command's
-//     environment AND added to the substitution map (built-ins win
-//     on conflict).
+// The build side is the polymorphic Build union (Go / Docker / Shell).
+// A ShellBuild is the single shell escape hatch — its cmd / cwd / env /
+// digest contract lives on [ShellBuild], dispatched by the external-build
+// dispatcher (see internal/buildtarget).
 type ServiceEntity struct {
 	Name string `json:"name"`
 	// Image is the (registry-less) image name. ImageTag, when set, is the
@@ -246,12 +343,9 @@ type ServiceEntity struct {
 	// Deploy. When the KCL `build` block is absent (a hand-authored
 	// forge.Service that omits it) Build.Type is "" and callers
 	// synthesize the GoBuild default via [ServiceEntity.EffectiveBuild].
-	Build    BuildConfigEntity `json:"-"`
-	EnvVars  []KCLEnvVar       `json:"env_vars,omitempty"`
-	Command  []string          `json:"command,omitempty"`
-	BuildCmd string            `json:"build_cmd,omitempty"`
-	BuildCwd string            `json:"build_cwd,omitempty"`
-	BuildEnv map[string]string `json:"build_env,omitempty"`
+	Build   BuildConfigEntity `json:"-"`
+	EnvVars []KCLEnvVar       `json:"env_vars,omitempty"`
+	Command []string          `json:"command,omitempty"`
 }
 
 // BuildConfigEntity is the dispatched-by-type view of a service's build
@@ -285,19 +379,58 @@ type GoBuild struct {
 // container image build. Reuses forge's existing docker primitives
 // (tag/registry/push/build-contexts) as behavior; these fields select
 // the dockerfile/platform/target/build_args.
+//
+// Registry + BuildContexts are the per-service `docker` facts that are NOT
+// expressible in a Dockerfile — the push target for THIS service's image and
+// the named build contexts THIS service's Dockerfile `COPY --from=`s. Each
+// falls back to the project-level forge.yaml `docker.{registry,build_contexts}`
+// when unset, so a single-image project keeps declaring them once at the top
+// level. KCL renders per env, so these are per-service AND per-env.
 type DockerBuild struct {
 	OutputName string            `json:"output_name,omitempty"`
 	Dockerfile string            `json:"dockerfile,omitempty"`
 	Platform   string            `json:"platform,omitempty"`
 	Target     string            `json:"target,omitempty"`
 	BuildArgs  map[string]string `json:"build_args,omitempty"`
+	// Registry is the push/tag target for THIS service's image
+	// (registry-host[/namespace]). Empty falls back to the project-level
+	// forge.yaml docker.registry (then the project name).
+	Registry string `json:"registry,omitempty"`
+	// BuildContexts maps a `docker buildx --build-context name=value` entry
+	// THIS service's Dockerfile needs (a sibling-checkout path the Dockerfile
+	// `COPY --from=name`s, a `docker-image://` override, …). Same value shapes
+	// as config.DockerConfig.BuildContexts. Empty falls back to the
+	// project-level forge.yaml docker.build_contexts.
+	BuildContexts map[string]string `json:"build_contexts,omitempty"`
 }
 
-// ShellBuild mirrors the kcl/schema.k ShellBuild — a verbatim `sh -c`
-// build command (generalizes the old build_cmd escape hatch).
+// ShellBuild mirrors the kcl/schema.k ShellBuild — the SINGLE shell
+// escape hatch: a verbatim `sh -c` build command that owns the whole
+// build (and any push).
+//
+// Execution contract (see internal/buildtarget):
+//
+//   - cwd == Cwd resolved against the project root (relative paths join
+//     the dir holding forge.yaml; absolute pass through). Empty Cwd =>
+//     the project root, so relative paths like scripts/build-image.sh,
+//     ../sibling-repo, or docker/Dockerfile resolve as a user expects. A
+//     Cwd that doesn't exist on disk is a HARD build failure.
+//   - before exec forge substitutes the ${X} tokens ${IMAGE} ${TAG}
+//     ${CODE_VERSION} ${SERVICE} ${TARGETARCH} ${REGISTRY} ${PROJECT_DIR}
+//     ${ENV} ${BUILD_CWD}, plus any keys in Env (built-ins win on
+//     conflict), into Cmd.
+//   - Env vars are merged into the command's process environment AND the
+//     substitution map.
+//   - on success forge captures the pushed digest (best-effort) and
+//     writes the build-state file so deploy pins the same tag/digest.
+//
+// Absorbs the former flat Service.build_cmd / build_cwd / build_env trio
+// (and External.build_cmd) — one declaration surface, one contract.
 type ShellBuild struct {
-	OutputName string `json:"output_name,omitempty"`
-	Cmd        string `json:"cmd"`
+	OutputName string            `json:"output_name,omitempty"`
+	Cmd        string            `json:"cmd"`
+	Cwd        string            `json:"cwd,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
 }
 
 // DeployConfigEntity is the dispatched-by-type view of a service's
@@ -319,18 +452,11 @@ type DeployConfigEntity struct {
 // `sh -c` after substituting ${IMAGE}/${TAG}/${SERVICE}/etc. and runs
 // HealthCmd / RollbackCmd through the same path.
 type ExternalDeploy struct {
-	DeployCmd   string `json:"deploy_cmd,omitempty"`
-	RollbackCmd string `json:"rollback_cmd,omitempty"`
-	HealthCmd   string `json:"health_cmd,omitempty"`
-	// BuildCmd is the build-side mirror of DeployCmd: the shell command
-	// `forge build -t external` exec's to construct the deployable
-	// image. Optional — External targets without it build their image
-	// out-of-band and only deploy through forge. Token set matches
-	// DeployCmd (IMAGE/TAG/CODE_VERSION/PROJECT_DIR/ENV/SERVICE + Env
-	// keys). See [ServiceEntity.EffectiveBuildCmd].
-	BuildCmd string            `json:"build_cmd,omitempty"`
-	EnvFile  string            `json:"env_file,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
+	DeployCmd   string            `json:"deploy_cmd,omitempty"`
+	RollbackCmd string            `json:"rollback_cmd,omitempty"`
+	HealthCmd   string            `json:"health_cmd,omitempty"`
+	EnvFile     string            `json:"env_file,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
 }
 
 // ComposeDeploy is the deploy block for a docker-compose service.
@@ -568,9 +694,15 @@ type kclRenderRaw struct {
 	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
 	HTTPRoutes        []HTTPRouteEntity        `json:"http_routes,omitempty"`
 	GRPCRoutes        []GRPCRouteEntity        `json:"grpc_routes,omitempty"`
+	HelmCharts        []HelmChartEntity        `json:"helm_charts,omitempty"`
 	// SecretProvider rides alongside services in the entity output; nil
 	// when the bundle declares no provider (KCL omits the key entirely).
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+	// RequiredSecrets / RequiredDNS are the declared external prerequisites
+	// (forge.ExternalSecret / forge.DNSRecord). render() always emits these
+	// buckets (empty lists when none).
+	RequiredSecrets []ExternalSecretEntity `json:"required_secrets,omitempty"`
+	RequiredDNS     []DNSRecordEntity      `json:"required_dns,omitempty"`
 	// Manifests is the rendered k8s object stream
 	// (`manifests = forge.render_manifests(...)`). Parsed loosely so we
 	// can recover the deploy namespace from object metadata when the
@@ -580,24 +712,31 @@ type kclRenderRaw struct {
 }
 
 // rawManifest is a minimal view of one rendered k8s object — just enough
-// to read its namespace. The rest of the object is ignored.
+// to read its namespace and (for workload kinds) the container images
+// its pod template references. The rest of the object is ignored.
 type rawManifest struct {
 	Metadata struct {
 		Namespace string `json:"namespace,omitempty"`
 	} `json:"metadata,omitempty"`
+	Spec struct {
+		Template struct {
+			Spec struct {
+				Containers []struct {
+					Image string `json:"image,omitempty"`
+				} `json:"containers,omitempty"`
+			} `json:"spec,omitempty"`
+		} `json:"template,omitempty"`
+	} `json:"spec,omitempty"`
 }
 
 type kclServiceRaw struct {
-	Name     string            `json:"name"`
-	Image    string            `json:"image,omitempty"`
-	ImageTag string            `json:"image_tag,omitempty"`
-	Deploy   json.RawMessage   `json:"deploy"`
-	Build    json.RawMessage   `json:"build"`
-	EnvVars  []KCLEnvVar       `json:"env_vars,omitempty"`
-	Command  []string          `json:"command,omitempty"`
-	BuildCmd string            `json:"build_cmd,omitempty"`
-	BuildCwd string            `json:"build_cwd,omitempty"`
-	BuildEnv map[string]string `json:"build_env,omitempty"`
+	Name     string          `json:"name"`
+	Image    string          `json:"image,omitempty"`
+	ImageTag string          `json:"image_tag,omitempty"`
+	Deploy   json.RawMessage `json:"deploy"`
+	Build    json.RawMessage `json:"build"`
+	EnvVars  []KCLEnvVar     `json:"env_vars,omitempty"`
+	Command  []string        `json:"command,omitempty"`
 }
 
 // RenderKCL shells `kcl run deploy/kcl/<env>/ -o json`, parses the
@@ -642,7 +781,11 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	// seam (no external `kcl` binary). `-D env=<env>` drives the per-env
 	// conditionals in the deploy module. workDir = projectDir so the
 	// deploy-as-data main.k's `file.read("deploy/kcl/...")` resolves.
-	return kclrender.Run(projectDir, kclDir, []string{"env=" + env})
+	// devstack.ActiveDArgs() pushes option("worktree")/option("branch") when
+	// a parallel dev stack is active (nil → byte-identical default render),
+	// so the entity render sees the same git facts the manifest render does.
+	dArgs := append([]string{"env=" + env}, devstack.ActiveDArgs()...)
+	return kclrender.Run(projectDir, kclDir, dArgs)
 }
 
 // parseKCLEntities turns the JSON bytes into the typed entity set,
@@ -665,6 +808,10 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 	// both). We read the namespace off it from the outer bytes BEFORE we
 	// unwrap `output` — under the wrapper the manifests aren't visible.
 	manifestNS := manifestNamespaceFromOuter(data)
+	// Same OUTER-bytes-before-unwrap rule for the per-image tags: the
+	// workload manifests carry the env's resolved image_tag on their
+	// container image refs, which the `output` echo does NOT.
+	manifestImageTags := manifestImageTagsFromOuter(data)
 
 	// Peek for an "output" wrapper. If present, recurse on its bytes —
 	// the inner shape is the same kclRenderRaw shape we already parse.
@@ -691,8 +838,12 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Gateways:          raw.Gateways,
 		HTTPRoutes:        raw.HTTPRoutes,
 		GRPCRoutes:        raw.GRPCRoutes,
+		HelmCharts:        raw.HelmCharts,
 		SecretProvider:    raw.SecretProvider,
+		RequiredSecrets:   raw.RequiredSecrets,
+		RequiredDNS:       raw.RequiredDNS,
 		ManifestNamespace: manifestNS,
+		ManifestImageTags: manifestImageTags,
 	}
 	for _, s := range raw.Services {
 		deploy, err := dispatchServiceDeploy(s.Name, s.Deploy)
@@ -711,9 +862,6 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 			Build:    build,
 			EnvVars:  s.EnvVars,
 			Command:  s.Command,
-			BuildCmd: s.BuildCmd,
-			BuildCwd: s.BuildCwd,
-			BuildEnv: s.BuildEnv,
 		})
 	}
 	return out, nil
@@ -756,6 +904,86 @@ func manifestNamespaceFromOuter(outer []byte) string {
 		}
 	}
 	return best
+}
+
+// manifestImageTagsFromOuter maps each (registry-less) image NAME in the
+// rendered `manifests` stream to the tag the workload manifests reference
+// for it. It reads every container image off the pod templates
+// (Deployment/StatefulSet/Job all share spec.template.spec.containers),
+// splits "<registry>/<name>:<tag>" into name+tag, and records name→tag.
+//
+// This is the env's RESOLVED image_tag — the literal default an env's
+// `image_tag = option("image_tag") or "staging"` bakes into the image
+// refs when no `-D image_tag` override is passed (which is exactly how
+// RenderKCL renders: env only, no tag override). It is the tag
+// `forge deploy <env>` pulls, so `forge build --env <env>` defaults its
+// build tag to it (per image) and the two phases agree by construction.
+//
+// A digest-pinned image ("name@sha256:…") or an untagged image
+// ("name", implying :latest) contributes no entry — there's no tag to
+// align to. When an image name appears with conflicting tags across
+// manifests the LAST one wins; in practice every replica of a given
+// image carries the same env tag, so the map is unambiguous. Returns nil
+// when the render carries no tagged workload images.
+func manifestImageTagsFromOuter(outer []byte) map[string]string {
+	var probe struct {
+		Manifests []rawManifest `json:"manifests,omitempty"`
+	}
+	if err := json.Unmarshal(outer, &probe); err != nil {
+		return nil
+	}
+	var tags map[string]string
+	for _, m := range probe.Manifests {
+		for _, c := range m.Spec.Template.Spec.Containers {
+			name, tag, ok := splitImageNameTag(c.Image)
+			if !ok {
+				continue
+			}
+			if tags == nil {
+				tags = map[string]string{}
+			}
+			tags[name] = tag
+		}
+	}
+	return tags
+}
+
+// splitImageNameTag parses a container image ref into its registry-less
+// NAME and TAG, mirroring how KCL composes `${registry}/${image}:${tag}`.
+// "ghcr.io/reliant-labs/reliant:staging" → ("reliant", "staging", true).
+//
+// Returns ok=false for digest refs ("…@sha256:…"), tagless refs (no
+// ":"), or an empty/whitespace tag — none of which carry an env tag to
+// align a build to. The name is the final path segment (the registry +
+// org prefix is stripped) so it matches the KCL Service.image string a
+// build_cmd interpolates as ${IMAGE}.
+func splitImageNameTag(image string) (name, tag string, ok bool) {
+	image = strings.TrimSpace(image)
+	if image == "" || strings.Contains(image, "@") {
+		return "", "", false
+	}
+	// The tag is the substring after the LAST colon — but only when that
+	// colon is in the final path segment, so a registry "host:port/img"
+	// (colon before a slash) isn't mistaken for a tag.
+	lastColon := strings.LastIndex(image, ":")
+	if lastColon < 0 || strings.Contains(image[lastColon+1:], "/") {
+		return "", "", false
+	}
+	tag = strings.TrimSpace(image[lastColon+1:])
+	if tag == "" {
+		return "", "", false
+	}
+	ref := image[:lastColon]
+	// Strip the registry/org prefix: the build-side ${IMAGE} is the bare
+	// image name (the KCL Service.image), not the fully-qualified ref.
+	name = ref
+	if slash := strings.LastIndex(ref, "/"); slash >= 0 {
+		name = ref[slash+1:]
+	}
+	if name == "" {
+		return "", "", false
+	}
+	return name, tag, true
 }
 
 // dispatchServiceDeploy unmarshals the raw deploy block, reads the type
@@ -866,20 +1094,19 @@ func dispatchServiceBuild(svcName string, raw json.RawMessage) (BuildConfigEntit
 // default is deploy-type-aware: only forge-built deploy targets (host,
 // cluster, build-only) synthesize the ./cmd/<name> GoBuild. A `compose`
 // service has NO Go artifact (it's a docker-compose unit), and an
-// `external` service / one carrying a top-level `build_cmd` owns its own
-// build via the shell dispatcher — synthesizing a GoBuild for either
-// would make forge `go build ./cmd/<name>` a package that doesn't exist
-// (e.g. a sibling-repo binary or a compose aggregator). Those return the
-// zero BuildConfigEntity (Type=="") so goBuildTargetsFromKCL skips them.
+// `external` service owns its own deploy — synthesizing a GoBuild for
+// either would make forge `go build ./cmd/<name>` a package that doesn't
+// exist (e.g. a sibling-repo binary or a compose aggregator). Those
+// return the zero BuildConfigEntity (Type=="") so goBuildTargetsFromKCL
+// skips them. A service that builds via a shell command declares
+// `build = forge.ShellBuild {...}` explicitly (the single shell hatch),
+// which the first branch returns.
 func (s ServiceEntity) EffectiveBuild() BuildConfigEntity {
 	if s.Build.Type != "" {
 		return s.Build
 	}
 	switch s.Deploy.Type {
 	case "compose", "external":
-		return BuildConfigEntity{}
-	}
-	if s.BuildCmd != "" {
 		return BuildConfigEntity{}
 	}
 	return BuildConfigEntity{
@@ -889,6 +1116,20 @@ func (s ServiceEntity) EffectiveBuild() BuildConfigEntity {
 			OutputName: s.Name,
 		},
 	}
+}
+
+// effectiveShell returns this service's effective ShellBuild, or nil when
+// the service's effective build isn't a shell build. The single source of
+// truth for the shell escape hatch after the build-hatch unification:
+// EffectiveBuildCmd / EffectiveBuildCwd / EffectiveBuildEnv all read off
+// it, and the external-build dispatcher selects services for which it is
+// non-nil.
+func (s ServiceEntity) effectiveShell() *ShellBuild {
+	b := s.EffectiveBuild()
+	if b.Type == "shell" {
+		return b.Shell
+	}
+	return nil
 }
 
 // goRunCmdForService returns the `go run` target package for a host-mode
@@ -905,40 +1146,36 @@ func goRunCmdForService(s ServiceEntity) string {
 }
 
 // EffectiveBuildCmd returns the shell command the external-build
-// dispatcher should run for this service, resolving the two sources of
-// truth in precedence order:
-//
-//  1. The top-level Service.build_cmd (the generic build-side escape
-//     hatch — works for any deploy type).
-//  2. The External target's build_cmd (the build-side mirror of
-//     deploy_cmd, declared next to it on a forge.External deploy block).
-//
-// The top-level field wins when both are set so an explicit
-// Service.build_cmd override stays authoritative. Returns "" when
-// neither is declared — the dispatcher's "no build_cmd" signal.
+// dispatcher should run for this service: the effective ShellBuild's Cmd,
+// or "" when the service's effective build isn't a ShellBuild (the
+// dispatcher's "not a shell build" signal). The single shell source after
+// the build-hatch unification — there is no longer a flat Service.build_cmd
+// or an External.build_cmd to fall back to.
 func (s ServiceEntity) EffectiveBuildCmd() string {
-	if s.BuildCmd != "" {
-		return s.BuildCmd
-	}
-	if s.Deploy.External != nil {
-		return s.Deploy.External.BuildCmd
+	if sh := s.effectiveShell(); sh != nil {
+		return sh.Cmd
 	}
 	return ""
 }
 
-// EffectiveBuildEnv returns the env-var map merged into the external
-// build command's environment + substitution map. Mirrors
-// EffectiveBuildCmd's precedence: the top-level Service.build_env wins;
-// otherwise an External target's `env` map (the same map deploy_cmd
-// sees) is used so build_cmd and deploy_cmd share one config surface.
+// EffectiveBuildCwd returns the working directory the shell build runs
+// from — the effective ShellBuild's Cwd (empty => the project root). "" for
+// a non-shell build.
+func (s ServiceEntity) EffectiveBuildCwd() string {
+	if sh := s.effectiveShell(); sh != nil {
+		return sh.Cwd
+	}
+	return ""
+}
+
+// EffectiveBuildEnv returns the env-var map merged into the shell build
+// command's environment + substitution map — the effective ShellBuild's
+// Env. nil for a non-shell build.
 func (s ServiceEntity) EffectiveBuildEnv() map[string]string {
-	if s.BuildCmd != "" {
-		return s.BuildEnv
+	if sh := s.effectiveShell(); sh != nil {
+		return sh.Env
 	}
-	if s.Deploy.External != nil {
-		return s.Deploy.External.Env
-	}
-	return s.BuildEnv
+	return nil
 }
 
 // FindService returns the named service from the entity set, or nil.

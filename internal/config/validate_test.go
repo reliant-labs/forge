@@ -105,6 +105,23 @@ func TestLoadStrict_ConfigGuard_ValidValues(t *testing.T) {
 	}
 }
 
+// TestLoadStrict_DockerBaseImages_RejectedAsUnknownKey asserts the base-image
+// surface is fully GONE: forge is base-image-agnostic, so a forge.yaml that
+// still carries the old `docker.base_images` block fails the strict loader as
+// an unknown key rather than being silently accepted. (The Dockerfile's FROM
+// is the complete source of truth for bases/mirrors/pins now.)
+func TestLoadStrict_DockerBaseImages_RejectedAsUnknownKey(t *testing.T) {
+	in := strings.Replace(validBaseYAML,
+		"docker:\n  registry: ghcr.io\n",
+		"docker:\n  registry: ghcr.io\n  base_images:\n    mirror_prefix: us-docker.pkg.dev/p/dockerhub\n    tags:\n      - alpine:3.21\n",
+		1)
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
+	ve := requireValidationError(t, err)
+	if !containsAll(ve.Error(), "unknown key", "base_images") {
+		t.Errorf("expected base_images unknown-key rejection, got:\n%s", ve.Error())
+	}
+}
+
 func TestLoadStrict_ConfigGuard_AbsentDefaultsToWarn(t *testing.T) {
 	cfg, err := LoadStrict([]byte(validBaseYAML), "forge.yaml", baseComponents()...)
 	if err != nil {

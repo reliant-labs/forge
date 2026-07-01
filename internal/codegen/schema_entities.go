@@ -72,10 +72,24 @@ func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef,
 func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDef {
 	conv := schemadef.DetectConventions(table)
 
+	// ProtoFile must name the file that DECLARES the entity wire message,
+	// not necessarily the service's own proto file. When protos are split
+	// (domain entity messages in a shared file, CRUD services in per-service
+	// files) the two differ, and downstream codegen (mock data, CRUD pages)
+	// imports the entity's `*Schema` / type from this file's generated _pb
+	// module. SchemaFiles carries that provenance, keyed by FQ message name;
+	// fall back to the service file for older descriptors / same-file cases.
+	protoFile := svc.ProtoFile
+	if svc.SchemaFiles != nil {
+		if f, ok := svc.SchemaFiles[svc.Package+"."+name]; ok && f != "" {
+			protoFile = f
+		}
+	}
+
 	e := EntityDef{
 		Name:          name,
 		TableName:     table.Name,
-		ProtoFile:     svc.ProtoFile,
+		ProtoFile:     protoFile,
 		SoftDelete:    conv.SoftDelete,
 		Timestamps:    conv.Timestamps,
 		SearchColumns: conv.SearchColumns,

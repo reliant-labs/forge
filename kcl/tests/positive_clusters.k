@@ -43,16 +43,19 @@ _from_config = forge.Cluster {
     config = "deploy/k3d.workload.yaml"
 }
 
+_target = forge.ClusterTarget {
+    cluster = "k3d-cp"
+    namespace = "dev"
+    registry = "localhost:5051"
+}
+
 _bundle = forge.Bundle {
+    cluster_target = _target
     clusters = [_owner, _secondary, _from_config]
     services = [forge.Service {
         name = "api"
         image = "api:dev"
-        deploy = forge.K8sCluster {
-            cluster = "k3d-cp"
-            namespace = "dev"
-            registry = "localhost:5051"
-        }
+        deploy = _target.deploy
     }]
 }
 
@@ -60,17 +63,9 @@ _no_clusters_bundle = forge.Bundle {
     services = []
 }
 
-_env = forge.RenderEnv {
-    cluster = forge.K8sCluster {
-        cluster = "k3d-cp"
-        namespace = "dev"
-        registry = "localhost:5051"
-    }
-}
-
 output = forge.render(_bundle)
 output_none = forge.render(_no_clusters_bundle)
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle)
 
 # ── Invariants ─────────────────────────────────────────────────────
 

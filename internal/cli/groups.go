@@ -60,6 +60,7 @@ func init() {
 		// returned to the audit group as neutral audittype.Category.
 		Ingress:        auditIngress,
 		ExternalBuilds: auditExternalBuilds,
+		Prerequisites:  auditPrerequisites,
 		Friction:       auditFriction,
 		// Registration view: adapt the internal *serviceRegistry onto the
 		// narrow exported factory.ServiceRegistry (reusing the same adapter

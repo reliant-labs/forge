@@ -54,3 +54,21 @@ func resolveImageTag(ctx context.Context, _ string) (string, error) {
 	}
 	return tag, nil
 }
+
+// envImageTagFor returns the env's RESOLVED image tag for a given
+// (registry-less) image name, recovered from the rendered KCL manifests
+// (see KCLEntities.ManifestImageTags). This is the tag `forge deploy
+// <env>` references for that image, so `forge build --env <env>` defaults
+// its build tag to it — build and deploy then push/pull the SAME tag by
+// construction.
+//
+// Returns "" when entities is nil (no --env / KCL render failed), the
+// render carried no tagged workload image for that name, or the name is
+// empty — every such case falls the caller back to git-derived tagging,
+// preserving the prior behavior.
+func envImageTagFor(entities *KCLEntities, image string) string {
+	if entities == nil || image == "" {
+		return ""
+	}
+	return entities.ManifestImageTags[image]
+}

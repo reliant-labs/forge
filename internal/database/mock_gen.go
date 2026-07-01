@@ -9,6 +9,7 @@ package database
 import (
 	"context"
 	"database/sql"
+
 	"github.com/reliant-labs/forge/pkg/contractkit"
 )
 

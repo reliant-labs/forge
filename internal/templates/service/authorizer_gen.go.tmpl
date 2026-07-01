@@ -14,14 +14,32 @@ import (
 	"{{.Module}}/pkg/middleware"
 )
 
+// authzCustomSentinel is the placeholder role emitted for methods marked
+// (forge.v1.method).authz_custom = true. Such a method delegates its decision
+// to the hand-written authorizer.go (a subject/identity/resource-scoped rule
+// that isn't a role allow-list), so it carries NO declared roles. Emitting it
+// with EMPTY roles would read as "any authenticated user allowed" — a latent
+// grant. Instead we emit this sentinel: no real caller ever holds it, so on
+// this table the method FAILS CLOSED, and a reader sees plainly that the
+// decision lives elsewhere. The LIVE check is the descriptor-driven
+// RoleInterceptor + authorizer.go, never this table.
+const authzCustomSentinel = "__authz_custom__:see_authorizer.go"
+
 // methodRoles is the per-method role allow-list, empty unless authorizer.go
 // layers role policy on top. Empty slice → any authenticated user; missing
-// entry → DENY (decider fails closed). Keys are both Connect procedure paths
-// and "<action>:<resource>" aliases, carrying identical roles/auth flags.
+// entry → DENY (decider fails closed). A method delegating to a custom
+// authorizer (authz_custom) is emitted with the authzCustomSentinel role —
+// fail-closed on this table, never empty-roles=allow. Keys are both Connect
+// procedure paths and "<action>:<resource>" aliases, carrying identical
+// roles/auth flags.
 var methodRoles = map[string][]string{
 {{- range .Methods}}
 {{- if .AuthRequired}}
+{{- if .AuthzCustom}}
+	"{{.Procedure}}": {authzCustomSentinel}, // authz_custom — decision in authorizer.go; fail-closed here
+{{- else}}
 	"{{.Procedure}}": { {{- range $i, $r := .RequiredRoles}}{{if $i}}, {{end}}"{{$r}}"{{- end}} },
+{{- end}}
 {{- end}}
 {{- end}}
 }

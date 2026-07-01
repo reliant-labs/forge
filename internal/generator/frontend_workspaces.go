@@ -80,6 +80,7 @@ func NewFrontendWorkspaceLayout(projectName string) FrontendWorkspaceLayout {
 //   - all lowercase
 //   - URL-safe (no spaces, no uppercase, no @)
 //   - cannot start with . or _
+//
 // Returns "" when no valid characters remain.
 func sanitizeNpmScopeSegment(name string) string {
 	var b strings.Builder

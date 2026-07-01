@@ -83,42 +83,37 @@ func TestReconcileDeclaredClusters_EmptyIsNoop(t *testing.T) {
 	}
 }
 
-// TestReconcileDeclaredClusters_IngressInstall asserts the per-cluster
-// ingress install is invoked for EXACTLY the clusters that declare
-// `ingress = True`, and skipped for the rest. Both shell-out seams
-// (clusterExistsFn, installClusterIngressFn) are stubbed so the test is
-// hermetic — it never touches k3d or kubectl. The clusters are reported
-// as already existing (warm path) so the create branch's k3d call is
-// never reached either.
-func TestReconcileDeclaredClusters_IngressInstall(t *testing.T) {
+// TestReconcileDeclaredClusters_NoImperativeIngress guards the
+// declarative-ingress invariant: reconcile NEVER installs the Gateway API
+// stack imperatively, even for a cluster that still carries the legacy
+// `Ingress` flag. Ingress is a DECLARED forge.HelmChart applied by the
+// deploy phase (`forge deploy <env> --target=envoy-gateway`), so the
+// per-cluster ingress-install seam is gone entirely. A warm reconcile of an
+// already-existing cluster is a pure no-op beyond the secondary-node setup.
+// The clusterExists seam is stubbed so the test never touches k3d/kubectl;
+// the absence of any ingress shell-out is the assertion (the test would not
+// compile if an installClusterIngressFn seam were still referenced).
+func TestReconcileDeclaredClusters_NoImperativeIngress(t *testing.T) {
 	origExists := clusterExistsFn
-	origInstall := installClusterIngressFn
+	origSetup := setupSecondaryClusterNodeFn
 	t.Cleanup(func() {
 		clusterExistsFn = origExists
-		installClusterIngressFn = origInstall
+		setupSecondaryClusterNodeFn = origSetup
 	})
 
 	clusterExistsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
+	// A nested-secondary setup seam is the ONLY warm-path side effect that
+	// remains; an owner cluster (no derived network/inherit) triggers none.
+	setupSecondaryClusterNodeFn = func(_ context.Context, _ ClusterEntity) error { return nil }
 
-	var installed []string
-	installClusterIngressFn = func(_ context.Context, c ClusterEntity, projectDir, env string) error {
-		installed = append(installed, c.Name)
-		if projectDir != "proj" || env != "e2e" {
-			t.Errorf("install got projectDir=%q env=%q want proj/e2e", projectDir, env)
-		}
-		return nil
-	}
-
+	// `Ingress: true` is deliberately set to prove it is now inert — no
+	// install is triggered. A warm reconcile must succeed as a no-op.
 	clusters := []ClusterEntity{
-		{Name: "control-plane", Ingress: true},
+		{Name: "control-plane", Ingress: true, HostPorts: true},
 		{Name: "cp-daemon", Ingress: false},
 	}
 	if err := reconcileDeclaredClusters(t.Context(), clusters, "proj", "e2e"); err != nil {
 		t.Fatalf("reconcileDeclaredClusters: %v", err)
-	}
-
-	if len(installed) != 1 || installed[0] != "control-plane" {
-		t.Fatalf("ingress install invoked for %v; want exactly [control-plane]", installed)
 	}
 }
 

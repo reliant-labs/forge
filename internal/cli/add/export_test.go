@@ -53,6 +53,6 @@ func testFactory() *factory.Factory {
 // rejecting in unit tests that don't set up a services.go.
 type stubRegistry struct{}
 
-func (stubRegistry) Exists() bool             { return false }
-func (stubRegistry) Registered(string) bool   { return true }
-func (stubRegistry) Tombstoned(string) bool   { return false }
+func (stubRegistry) Exists() bool           { return false }
+func (stubRegistry) Registered(string) bool { return true }
+func (stubRegistry) Tombstoned(string) bool { return false }

@@ -126,11 +126,6 @@ fix.
 - **Bring the stack up, then test:** `forge up --env=<env>` builds + deploys every
   service to its declared `K8sCluster` context; `forge test e2e` runs the suite
   against the live multi-cluster stack. See the `forge/testing/e2e` skill.
-- **Find the failing pod fast:** `forge cluster status` prints each cluster's
-  context + pods + ingress URLs; `forge cluster logs --service <name>` streams one
-  service's pod. Resolve the kubectl context from the service's `deploy` block in
-  `deploy/kcl/<env>/main.k` (the `cluster` field IS the context) so your
-  `kubectl --context` calls target the right cluster.
 - **The pod is still up after a failure** — `forge up` leaves the stack running, so
   you can `kubectl exec` in without the `E2E_HOLD_ON_FAIL` dance, or
   `forge debug start` to attach Delve. The hold-on-fail flag still earns its keep
@@ -138,6 +133,50 @@ fix.
 - **Capture the friction:** if a nested-cluster gotcha cost you real time, run
   `forge friction add` so the generator can grow a guardrail (e.g. seeding the
   secondary cluster's CoreDNS or MSS clamp at `forge up`).
+
+### Forge Tooling for a Cross-Cluster App-Flow Bug
+
+Worked example: a service dials a peer's pod IP across two k3d clusters, the
+gateway logs a `write envelope: EOF` reconnect loop, and callers see
+"no <peer> connected." Use the forge tools in this order — and mind where each
+one stops short.
+
+1. **Read pod status across BOTH clusters — directly with kubectl.**
+   `forge cluster status` / `forge cluster instances` resolve a **single**
+   cluster name from config; they will never enumerate the secondary cluster's
+   pods. For a multi-cluster app, query each context yourself:
+   ```bash
+   kubectl config get-contexts -o name                  # discover both contexts
+   kubectl --context <primary>   -n <ns> get pod -o wide
+   kubectl --context <secondary> -n <ns> get pod -o wide
+   ```
+   Resolve each context from the service's `deploy` block in
+   `deploy/kcl/<env>/main.k` (the `cluster` field IS the context).
+
+2. **Pull the symptom from the gateway's own logs.**
+   `forge cluster logs --service <gateway>` is kubectl-backed (no file-grepping),
+   but it only tails the pod in the cluster whose name is in config — the
+   **owner-cluster half**. Set the right context first; for the peer half, run
+   `kubectl --context <secondary> -n <ns> logs <peer-pod>` directly.
+   ```bash
+   forge cluster logs --service <gateway> --no-follow --tail 200   # owner half
+   ```
+
+3. **Localize with `forge introspect handlers`.**
+   Prints every RPC path the assembled binary registers. If the failing RPC
+   isn't in the list, the fault is a downstream/remote hop, not this binary —
+   that alone collapses the search space to the cross-cluster edge.
+
+4. **ASSERT the app-flow invariant with a declarative, exit-coded health check.**
+   A green `forge smoke` / `forge doctor` does **NOT** mean the app flow works:
+   they check listeners, local compose, and telemetry — never app-flow
+   invariants. The same is true of `forge cluster status`, which is green when
+   every pod is `Running` regardless of whether the cross-cluster dial succeeds.
+   Prove the fix with a declarative check that fails non-zero when the invariant
+   is violated. Model to copy: a project `doctor:<flow>` task (e.g. the
+   daemon-flow pattern — "is a peer actually connected and serving?") plus a full
+   `forge test e2e`. Only those two **prove** the app-flow is healthy; the generic
+   forge tools localize, they don't certify.
 
 See also: `forge/debug/reproduce` (runtime evidence), `forge/debug/investigate`
 (hypothesis ranking), `forge/dev` (cluster lifecycle primitives).

@@ -169,6 +169,81 @@ func TestAuthorizerGen_EmitsFailClosed(t *testing.T) {
 	}
 }
 
+// TestAuthorizerGen_AuthzCustomFailsClosed pins the fail-close fix for
+// authz_custom methods: a method that delegates its decision to a
+// hand-written authorizer carries NO declared roles, so a naive emit would
+// write it into methodRoles with EMPTY roles — which on this table reads as
+// "any authenticated user allowed", a latent grant. The template must instead
+// emit it with the fail-closed sentinel role (no caller ever holds it), so the
+// generated table can never be misread as an any-authenticated grant. The LIVE
+// decision is the descriptor-driven RoleInterceptor + authorizer.go, never
+// this table.
+func TestAuthorizerGen_AuthzCustomFailsClosed(t *testing.T) {
+	data := AuthzTemplateData{
+		Package:     "svc",
+		ServiceName: "Svc",
+		Module:      "example.com/proj",
+		Methods: []AuthzMethodData{
+			{Procedure: "/svc.v1.Svc/Custom", AuthRequired: true, AuthzCustom: true},
+			{Procedure: "/svc.v1.Svc/Open", AuthRequired: true}, // ordinary any-authenticated
+		},
+	}
+
+	out, err := templates.ServiceTemplates().Render("authorizer_gen.go.tmpl", data)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	got := string(out)
+	rolesBlock := mustExtractMapBlock(t, got, "methodRoles")
+
+	// The custom method must NOT be emitted with empty roles — that is the
+	// any-authenticated-grant footgun this fix exists to kill.
+	if strings.Contains(rolesBlock, `"/svc.v1.Svc/Custom": { }`) ||
+		strings.Contains(rolesBlock, `"/svc.v1.Svc/Custom": {}`) {
+		t.Errorf("authz_custom method emitted with EMPTY roles (reads as any-authenticated grant)\n--- BLOCK ---\n%s", rolesBlock)
+	}
+	// It must be emitted fail-closed via the sentinel role.
+	if !strings.Contains(rolesBlock, `"/svc.v1.Svc/Custom": {authzCustomSentinel}`) {
+		t.Errorf("authz_custom method must be emitted with the fail-closed authzCustomSentinel role\n--- BLOCK ---\n%s", rolesBlock)
+	}
+	// The sentinel constant must be declared so the package compiles.
+	if !strings.Contains(got, "const authzCustomSentinel =") {
+		t.Errorf("authzCustomSentinel constant declaration missing\n--- RENDERED ---\n%s", got)
+	}
+	// An ORDINARY any-authenticated method (no roles, not custom) keeps its
+	// empty-roles emit — the fix must not change non-custom behaviour.
+	if !strings.Contains(rolesBlock, `"/svc.v1.Svc/Open": { }`) {
+		t.Errorf("ordinary any-authenticated method should keep empty-roles emit\n--- BLOCK ---\n%s", rolesBlock)
+	}
+}
+
+// TestBuildAuthzMethods_CarriesAuthzCustom verifies the flag is plumbed from
+// the parsed Method onto every emitted table entry — including the CRUD
+// "<action>:<resource>" alias, so a custom-authz CRUD RPC's alias is fail-
+// closed too (not just its procedure-path entry).
+func TestBuildAuthzMethods_CarriesAuthzCustom(t *testing.T) {
+	svc := ServiceDef{
+		Name:    "PatientService",
+		Package: "patients.v1",
+		Methods: []Method{
+			{Name: "CreatePatient", AuthRequired: true, AuthzCustom: true},
+		},
+	}
+	entities := []EntityDef{{Name: "Patient"}}
+
+	methods := BuildAuthzMethods(svc, entities)
+	custom := make(map[string]bool, len(methods))
+	for _, m := range methods {
+		custom[m.Procedure] = m.AuthzCustom
+	}
+	if !custom["/patients.v1.PatientService/CreatePatient"] {
+		t.Error("procedure-path entry lost AuthzCustom flag")
+	}
+	if !custom["create:patient"] {
+		t.Error("CRUD alias entry lost AuthzCustom flag — its table entry would be an empty-roles grant")
+	}
+}
+
 // TestBuildAuthzMethods_EmitsCRUDActionAliases pins the one-key-universe
 // fix: the table the authorizer generator emits must contain the
 // "<action>:<resource>" keys the generated CRUD handler bodies pass to

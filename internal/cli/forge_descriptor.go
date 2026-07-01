@@ -208,6 +208,13 @@ func applyMethodOptions(method *codegen.Method, mo *forgev1.MethodOptions) {
 	if len(mo.Errors) > 0 {
 		method.Errors = append([]string(nil), mo.Errors...)
 	}
+	// authz_custom delegates the authorization decision to a hand-written
+	// authorizer; the method carries no role allow-list. Carry the flag so the
+	// authorizer generator can emit it FAIL-CLOSED in the role table rather than
+	// with empty roles (which would read as an any-authenticated grant).
+	if mo.GetAuthzCustom() {
+		method.AuthzCustom = true
+	}
 }
 
 // extractService builds a codegen.ServiceDef from a protogen.Service.
@@ -324,9 +331,16 @@ func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
 	if sd.Schemas == nil {
 		sd.Schemas = make(map[string][]codegen.SchemaFieldDef)
 	}
+	if sd.SchemaFiles == nil {
+		sd.SchemaFiles = make(map[string]string)
+	}
 	if _, done := sd.Schemas[fq]; done {
 		return
 	}
+	// Record the file that physically declares this message so downstream
+	// codegen can import its generated `*Schema` from the right _pb module
+	// when the message lives in a different proto file than the service.
+	sd.SchemaFiles[fq] = msg.Desc.ParentFile().Path()
 	sd.Schemas[fq] = nil // recursion guard — overwritten with the real fields below
 
 	fields := make([]codegen.SchemaFieldDef, 0, len(msg.Fields))

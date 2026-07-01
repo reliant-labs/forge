@@ -45,7 +45,6 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/envutil"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
-	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/secrets"
 )
@@ -225,28 +224,15 @@ func runUp(ctx context.Context, opts upOptions) error {
 	cfg := store.Config()
 	projectDir := projectDirForKCL()
 
-	// Persist resolve_port allocations per env so dev ports stay stable
-	// across `forge up` runs (reliant-web keeps its port, etc.). Only the
-	// dev-launch path opts in — read-only renders (forge ci) don't write
-	// a ports file. The store is machine-local; .forge/ports-*.json is
-	// gitignored.
-	portStorePath := filepath.Join(projectDir, ".forge", "ports-"+opts.env+".json")
-	// Snapshot the store before render: RenderKCL's resolve_port shifts +
-	// persists a port when the preferred one is busy (e.g. a second stack
-	// is already up). If the already-running guard below then refuses this
-	// run, we restore the snapshot so a rejected attempt can't drift the
-	// stable port assignments. portStoreExisted distinguishes "restore the
-	// old bytes" from "the store didn't exist; remove what render created".
-	portStoreSnapshot, portStoreErr := os.ReadFile(portStorePath)
-	portStoreExisted := portStoreErr == nil
-	restorePortStore := func() {
-		if portStoreExisted {
-			_ = os.WriteFile(portStorePath, portStoreSnapshot, 0o644)
-		} else {
-			_ = os.Remove(portStorePath)
-		}
-	}
-	kclplugin.UsePortStore(portStorePath)
+	// Arm the parallel-dev-stack render context: push the raw git facts
+	// option("worktree")/option("branch") into KCL, back forge.allocate_port
+	// with the lock-guarded block registry, and activate the resolve_port
+	// store. `forge deploy` arms the SAME inputs, so up and deploy resolve
+	// identical ports — no drift. State is machine-local (.forge/blocks.json,
+	// .forge/ports-*.json are gitignored). restorePortStore reverts the
+	// resolve_port store if the already-running guard below rejects this
+	// render (a rejected attempt must not drift the stable assignments).
+	_, restorePortStore := activateDevStack(projectDir, opts.env)
 
 	fmt.Printf("[up] env=%s\n", opts.env)
 	entities, err := RenderKCL(ctx, projectDir, opts.env)
@@ -365,10 +351,24 @@ func runUp(ctx context.Context, opts upOptions) error {
 				fmt.Println("\n[up] deploy phase")
 				// Cluster reconcile through the SAME named entry point
 				// `forge deploy` uses. `up`'s cluster step carries a
-				// scope-derived (zero-value) deployOptions — no surgical
-				// knobs today — instead of a blank `deployOptions{}` literal
-				// standing in for "deploy with no options."
-				if err := reconcileCluster(ctx, opts.env, deployOptions{}); err != nil {
+				// scope-derived deployOptions — instead of a blank
+				// `deployOptions{}` literal standing in for "deploy with no
+				// options."
+				//
+				// skipFrontend: true is the deploy-phase mirror of the build
+				// phase's skipFrontends (upBuildCluster). `forge up` ALWAYS
+				// dev-serves frontends in its Phase 4 (`npm run dev` =
+				// `next dev` / vite dev server) and NEVER consumes a prod
+				// frontend artifact, so the deploy phase must not run the
+				// `deploy = None` build-only path (dispatchFrontendDeploys →
+				// `npm run build` under NODE_ENV=production). Without this a
+				// bare `forge up --env=dev` would prod-`next build` every
+				// host-mode frontend (the static `output: "export"` Next.js
+				// build) right before — and pointlessly alongside — starting
+				// its `next dev` server. The build-only path exists to
+				// materialize a static frontend for a FirebaseHosting frontend
+				// to reference at DEPLOY time; it has no place in the dev loop.
+				if err := reconcileCluster(ctx, opts.env, deployOptions{skipFrontend: true}); err != nil {
 					return fmt.Errorf("deploy: %w", err)
 				}
 			}

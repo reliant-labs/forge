@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -100,6 +101,14 @@ type smokeOptions struct {
 	timeout           time.Duration
 	contextOverride   string
 	namespaceOverride string
+
+	// flowChecks + flowProbe inject the app-flow check phase. Production
+	// leaves them nil and runSmoke resolves the declared checks
+	// (projectFlowChecks) + the real probe (probeFlowHealth); tests set them
+	// to drive the phase deterministically without a forge.yaml or a live HTTP
+	// server. See smoke_flow.go.
+	flowChecks []config.SmokeFlowCheck
+	flowProbe  flowProbe
 }
 
 // gatewayIPResolver resolves a gateway's live external IP. Swapped out in
@@ -116,6 +125,14 @@ func runSmoke(ctx context.Context, env string, opts smokeOptions) error {
 	if opts.timeout <= 0 {
 		opts.timeout = 10 * time.Second
 	}
+	// Resolve the declared app-flow checks + real probe once for the
+	// production path. Tests inject their own (see smokeOptions).
+	if opts.flowChecks == nil {
+		opts.flowChecks = projectFlowChecks()
+	}
+	if opts.flowProbe == nil {
+		opts.flowProbe = probeFlowHealth
+	}
 	return runSmokeWith(ctx, env, opts, resolveGatewayIP, probeRoute, os.Stdout)
 }
 
@@ -131,10 +148,32 @@ func runSmokeWith(ctx context.Context, env string, opts smokeOptions, resolve ga
 		return fmt.Errorf("smoke %s: render KCL: %w\n  fix: confirm deploy/kcl/%s/ exists and renders (try `forge deploy %s --dry-run`)", env, err, env, env)
 	}
 
+	// App-flow checks run regardless of the route topology: they assert an
+	// end-to-end invariant the route/port probes can't see, so they must
+	// still run (and can still RED the smoke) even when the env has no
+	// host-bearing routes. Resolve them once here and fold them into every
+	// path below.
+	flowResults := runSmokeFlowChecks(ctx, env, opts.flowChecks, opts.flowProbe, flowCheckTimeout(opts.timeout))
+
 	targets := extractSmokeTargets(entities)
 	if len(targets) == 0 {
-		// No host-bearing routes is not a failure — the env may be
-		// cluster-internal only. Say so plainly and exit 0.
+		// No HOST-bearing routes. Before giving up, try the PORT-based
+		// (dev) topology: dev reaches every service at localhost:<port>
+		// via a host-mapped Gateway listener per service (host-less
+		// routes), so the host-bearing path finds nothing. If the bundle
+		// exposes host-mapped listener ports (or host->infra deps), probe
+		// THOSE instead. See smoke_dev.go.
+		if hasDevPortTargets(entities) {
+			return runDevSmokeWith(ctx, env, opts, entities, probeDevPort, flowResults, out)
+		}
+		// No routes/ports — but a declared app-flow check may still have an
+		// opinion (it's the whole point: a green-while-broken env with no
+		// probeable ingress). If any flow check ran, report on THAT.
+		if len(flowResults) > 0 {
+			return reportFlowOnlySmoke(out, env, opts, flowResults)
+		}
+		// Genuinely nothing to probe — no routes, no ports, no flow checks.
+		// The env may be cluster-internal only.
 		fmt.Fprintf(out, "smoke %s: no host-bearing ingress routes declared — nothing to probe.\n", env)
 		return nil
 	}
@@ -181,20 +220,74 @@ func runSmokeWith(ctx context.Context, env string, opts smokeOptions, resolve ga
 	}
 
 	sortSmokeResults(results)
-	summary := summarizeSmoke(results)
+
+	// The overall verdict folds BOTH the route probes and the app-flow checks:
+	// a healthy ingress with a broken app-flow must still exit non-zero (the
+	// green-while-broken bug this phase closes). The route table and the
+	// flow-check section are printed separately for readability, but the
+	// summary/exit counts the union.
+	combined := append(append([]smokeRouteResult{}, results...), flowResults...)
+	summary := summarizeSmoke(combined)
 
 	if opts.jsonOut {
-		if err := writeSmokeJSON(out, env, opts.tag, results, summary); err != nil {
+		if err := writeSmokeJSON(out, env, opts.tag, combined, summary); err != nil {
 			return err
 		}
 	} else {
-		writeSmokeTable(out, env, kubeContext, namespace, gatewayIPs, results, summary)
+		writeSmokeTable(out, env, kubeContext, namespace, gatewayIPs, results, summarizeSmoke(results))
+		// Only when app-flow checks ran do we print the flow section + a
+		// combined verdict; without them the route table's own summary is the
+		// verdict (unchanged behaviour for projects that declare no checks).
+		if len(flowResults) > 0 {
+			writeFlowCheckSection(out, flowResults)
+			writeSmokeOverallVerdict(out, summary, len(combined))
+		}
 	}
 
 	if summary.AnyFail {
-		return fmt.Errorf("smoke %s: %d route(s) FAILED — ingress is not serving correctly", env, summary.Fail)
+		return fmt.Errorf("smoke %s: %d check(s) FAILED — ingress/app-flow is not serving correctly", env, summary.Fail)
 	}
 	return nil
+}
+
+// reportFlowOnlySmoke handles the case where the env exposes no probeable
+// ingress routes / dev ports but DID declare app-flow checks — the purest
+// green-while-broken scenario (nothing to TCP-probe, but the app flow may be
+// broken). It prints just the flow-check section + verdict and exits non-zero
+// on any flow FAIL.
+func reportFlowOnlySmoke(out io.Writer, env string, opts smokeOptions, flowResults []smokeRouteResult) error {
+	summary := summarizeSmoke(flowResults)
+	if opts.jsonOut {
+		if err := writeSmokeJSON(out, env, opts.tag, flowResults, summary); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(out, "forge smoke %s\n", env)
+		fmt.Fprintln(out, "  no host-bearing routes / dev ports to probe — checking declared app-flow endpoints only.")
+		writeFlowCheckSection(out, flowResults)
+		writeSmokeOverallVerdict(out, summary, len(flowResults))
+	}
+	if summary.AnyFail {
+		return fmt.Errorf("smoke %s: %d app-flow check(s) FAILED", env, summary.Fail)
+	}
+	return nil
+}
+
+// writeSmokeOverallVerdict prints the combined summary line + verdict once the
+// route table and flow-check section have been printed. It tallies the union
+// of route + flow results so a flow break is reflected in the bottom line.
+func writeSmokeOverallVerdict(out io.Writer, summary smokeSummary, total int) {
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "  summary: %d PASS, %d WARN, %d FAIL  (%d check(s))\n",
+		summary.Pass, summary.Warn, summary.Fail, total)
+	switch {
+	case summary.AnyFail:
+		fmt.Fprintf(out, "  FAILED — ingress and/or app-flow is not healthy. See reasons above.\n")
+	case summary.Warn > 0:
+		fmt.Fprintf(out, "  PASS with warnings — review WARN rows.\n")
+	default:
+		fmt.Fprintf(out, "  PASS — every route reached a backend and every app-flow check is healthy.\n")
+	}
 }
 
 func gatewayNoAddrDetail(gateway string, err error) string {

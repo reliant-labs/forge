@@ -23,27 +23,29 @@ metadata.labels created.
 
 import forge
 
-_k8s = forge.K8sCluster {
+# Primary target — render_manifests reads namespace/registry off this one.
+_target = forge.ClusterTarget {
     cluster = "k3d-control-plane"
     namespace = "control-plane-e2e"
     registry = "localhost:5051"
-    ports = [8080]
 }
 
-_daemon = forge.K8sCluster {
+# A second cluster — one service rides this one (the multi-cluster split).
+_daemon_target = forge.ClusterTarget {
     cluster = "k3d-cp-daemon"
     namespace = "control-plane-e2e"
     registry = "localhost:5051"
 }
 
 _bundle = forge.Bundle {
+    cluster_target = _target
     services = [
         # 1. Workload service that ALSO owns a CRD. The CRD carries a
         # pre-existing user label to prove the merge preserves it.
         forge.Service {
             name = "api"
             image = "example"
-            deploy = _k8s
+            deploy = _target.deploy | {ports = [8080]}
             manifests = [
                 {
                     apiVersion = "apiextensions.k8s.io/v1"
@@ -61,7 +63,7 @@ _bundle = forge.Bundle {
         # metadata block to exercise the create-metadata merge path.
         forge.Service {
             name = "cp-infra"
-            deploy = _k8s
+            deploy = _target.deploy | {ports = [8080]}
             manifests = [
                 {
                     apiVersion = "gateway.networking.k8s.io/v1"
@@ -81,18 +83,12 @@ _bundle = forge.Bundle {
         forge.Service {
             name = "workspace-proxy"
             image = "example"
-            deploy = _daemon
+            deploy = _daemon_target.deploy
         }
     ]
 }
 
-_env = forge.RenderEnv {
-    cluster = _k8s
-    image_tag = "latest"
-    network_policies = False
-}
-
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle, "latest", {}, False)
 
 # ── Helpers ────────────────────────────────────────────────────────
 _crds = [m for m in manifests if m.kind == "CustomResourceDefinition"]

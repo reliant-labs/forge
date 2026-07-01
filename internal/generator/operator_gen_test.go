@@ -100,6 +100,7 @@ func TestGenerateOperatorFilesCreatesExpectedFiles(t *testing.T) {
 		t.Error("controller_test.go should contain at least one test function")
 	}
 }
+
 // TestGenerateOperatorBinaryOnly_SkipsOnPortedShape verifies the v0
 // controller-IS-the-reconciler shape (a hand-ported controller.go that
 // already declares `Controller`/`SetupWithManager`/etc.) is detected and

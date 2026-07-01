@@ -288,17 +288,22 @@ func TestEffectiveBuild_SynthesizesGoDefault(t *testing.T) {
 	if sc.EffectiveBuild().Type != "" {
 		t.Errorf("compose service synthesized a build: %+v", sc.EffectiveBuild())
 	}
-	// An external service owns its own build via build_cmd / deploy_cmd —
-	// no synthesized GoBuild against a package that may not exist locally.
+	// An external service owns its own deploy — no synthesized GoBuild
+	// against a package that may not exist locally.
 	se := ServiceEntity{Name: "sibling", Deploy: DeployConfigEntity{Type: "external"}}
 	if se.EffectiveBuild().Type != "" {
 		t.Errorf("external service synthesized a build: %+v", se.EffectiveBuild())
 	}
-	// A top-level build_cmd (generic shell escape hatch for a non-external
-	// deploy type) also suppresses the synthesized GoBuild.
-	sb := ServiceEntity{Name: "sib2", Deploy: DeployConfigEntity{Type: "host"}, BuildCmd: "make foo"}
-	if sb.EffectiveBuild().Type != "" {
-		t.Errorf("build_cmd service synthesized a build: %+v", sb.EffectiveBuild())
+	// The shell escape hatch is an EXPLICIT ShellBuild (the single shell
+	// hatch). A host service that declares one builds via shell, suppressing
+	// the synthesized GoBuild default — and its cmd is surfaced by
+	// EffectiveBuildCmd.
+	sb := ServiceEntity{Name: "sib2", Deploy: DeployConfigEntity{Type: "host"}, Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cmd: "make foo"}}}
+	if sb.EffectiveBuild().Type != "shell" {
+		t.Errorf("explicit ShellBuild dropped: %+v", sb.EffectiveBuild())
+	}
+	if sb.EffectiveBuildCmd() != "make foo" {
+		t.Errorf("EffectiveBuildCmd: got %q, want make foo", sb.EffectiveBuildCmd())
 	}
 	// An EXPLICIT build still wins even for compose (defensive — a user can
 	// force a go build onto any deploy type).

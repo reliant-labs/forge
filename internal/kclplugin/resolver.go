@@ -2,12 +2,25 @@
 // (kcl_plugin.forge.*), letting KCL pull host-runtime values during
 // evaluation instead of forge having to pre-enumerate and inject them.
 //
-// Today it provides resolve_port — a pure-Go free-port allocator. KCL
-// declares `port = forge.resolve_port("reliant-web", 3000)` inline, by
-// any name it likes, and binds it to a variable other declarations
-// reference (the frontend's port, env-var URLs, CORS origins). One
-// declaration, referenced everywhere — forge owns the allocation, KCL
-// owns the plumbing.
+// It provides two port primitives, plus derive_jwk:
+//
+//   - resolve_port(name, preferred) — a pure-Go free-port allocator. KCL
+//     declares `port = forge.resolve_port("reliant-web", 3000)` inline, by
+//     any name it likes, and binds it to a variable other declarations
+//     reference (the frontend's port, env-var URLs, CORS origins). One
+//     declaration, referenced everywhere — forge owns the allocation, KCL
+//     owns the plumbing. The allocation is AVAILABILITY-CHECKED (it steps
+//     off busy ports), so it suits ports that may float.
+//
+//   - allocate_port(base, key) — a DETERMINISTIC, memoized keyed allocator
+//     for parallel dev stacks: returns base + block(key)*100, where forge
+//     assigns a stable small block per key (the index is internal, never
+//     surfaced in KCL) and persists it under a file lock so up and deploy
+//     agree. key "" ⇒ base unchanged. Unlike resolve_port it does NOT step
+//     off busy ports — it must match externally-fixed ports (a k3d
+//     pre-mapped host port; the host reliant's listen port). The block
+//     engine lives in internal/devstack; this package holds a settable hook
+//     (UseBlockAllocator) so the CLI wires the lock-guarded registry in.
 //
 // The plugin bridge that lets KCL call back into Go is CGO-only (see
 // register_cgo.go / register_nocgo.go). forge's distributed binaries are
@@ -142,8 +155,70 @@ func freePort() (int, error) {
 // global so ports stay stable across the renders one forge command runs.
 var defaultResolver = NewPortResolver()
 
+// blockAllocator backs the kcl_plugin.forge.allocate_port method: given
+// (base, key) it returns the deterministic, memoized port base+block*100.
+// The real implementation (internal/devstack.AllocatePort under a file
+// lock) is injected via UseBlockAllocator on the up/deploy path — keeping
+// this package free of an import cycle / filesystem concern. The default
+// (no allocator armed) returns base unchanged for ANY key, so a read-only
+// render like `forge ci` resolves allocate_port without persisting state.
+//
+// Process-global + mutex-guarded so it is safe to swap once per command and
+// read from KCL's evaluation goroutines.
+var (
+	blockAllocMu sync.Mutex
+	blockAlloc   func(base int, key string) (int, error)
+)
+
+// UseBlockAllocator arms allocate_port with fn for this process. Call once
+// before rendering, on the up/deploy path. Both `forge up` AND `forge
+// deploy` arm the SAME (lock-guarded, persistent) allocator, so the two
+// commands resolve identical ports for a given key — the up-vs-deploy fix.
+func UseBlockAllocator(fn func(base int, key string) (int, error)) {
+	blockAllocMu.Lock()
+	blockAlloc = fn
+	blockAllocMu.Unlock()
+}
+
+// allocatePort is the body the plugin calls. Falls back to base unchanged
+// (block 0) when no allocator is armed.
+func allocatePort(base int, key string) (int, error) {
+	blockAllocMu.Lock()
+	fn := blockAlloc
+	blockAllocMu.Unlock()
+	if fn == nil {
+		return base, nil
+	}
+	return fn(base, key)
+}
+
 // UsePortStore swaps the global resolver for one that persists assignments
-// to path (cross-run port stability). Call once before rendering, only on
-// the dev-launch path — not for read-only renders like `forge ci`, which
-// shouldn't write a ports file. Safe to call repeatedly.
-func UsePortStore(path string) { defaultResolver = NewPersistentPortResolver(path) }
+// to path (cross-run port stability), making that file the SINGLE SOURCE
+// OF TRUTH for resolve_port: once allocated (availability-checked), a
+// (role) -> port mapping is read back identically on every subsequent
+// render. Both `forge up` AND `forge deploy` call this with the same
+// instance-scoped path, so the two commands resolve identical ports — the
+// fix for the up-vs-deploy port drift.
+//
+// Call once before rendering, only on the dev-launch / deploy path — not
+// for read-only renders like `forge ci`, which shouldn't write a ports
+// file. Safe to call repeatedly.
+//
+// It returns a restore func that reverts the store file to its bytes at
+// call time (or removes it if it didn't exist). A render shifts + persists
+// a port when the preferred one is busy; a caller whose render is then
+// REJECTED (e.g. up's already-running guard) calls restore so the rejected
+// attempt can't drift the stable assignments. Callers that commit the
+// render ignore it.
+func UsePortStore(path string) (restore func()) {
+	snapshot, readErr := os.ReadFile(path)
+	existed := readErr == nil
+	defaultResolver = NewPersistentPortResolver(path)
+	return func() {
+		if existed {
+			_ = os.WriteFile(path, snapshot, 0o644)
+		} else {
+			_ = os.Remove(path)
+		}
+	}
+}

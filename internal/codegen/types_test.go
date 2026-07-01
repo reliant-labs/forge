@@ -101,9 +101,9 @@ func TestProtoTypeToGoType(t *testing.T) {
 		{"bool", "bool"},
 		{"float", "float32"},
 		{"double", "float64"},
-		{"message", "string"},  // unknown falls back to string
-		{"enum", "string"},     // unknown falls back to string
-		{"bytes", "string"},    // not explicitly handled, falls back
+		{"message", "string"}, // unknown falls back to string
+		{"enum", "string"},    // unknown falls back to string
+		{"bytes", "string"},   // not explicitly handled, falls back
 	}
 
 	for _, tt := range tests {

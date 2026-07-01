@@ -16,6 +16,15 @@ type AuthzMethodData struct {
 	Procedure     string   // full RPC procedure path, e.g. "/services.users.v1.UserService/CreateUser"
 	RequiredRoles []string // roles that grant access (empty = any authenticated user)
 	AuthRequired  bool     // whether auth is required for this method
+	// AuthzCustom marks a method whose authorization is delegated to a
+	// hand-written authorizer ((forge.v1.method).authz_custom). It carries no
+	// role allow-list, so the template must NOT emit it with empty roles (that
+	// reads as an any-authenticated grant). Instead the template emits it
+	// FAIL-CLOSED — a sentinel "custom — see interceptor" role that no caller
+	// holds — so the generated table can't be misread as a grant. The real
+	// decision is enforced by the descriptor-driven RoleInterceptor + the
+	// service's authorizer.go, never this table.
+	AuthzCustom bool
 	// Errors records the Connect/gRPC error codes the method may return,
 	// derived from (forge.v1.method).errors. The template emits a
 	// per-method entry in `methodErrors` so handler readers (including
@@ -55,6 +64,7 @@ func BuildAuthzMethods(svc ServiceDef, entities []EntityDef) []AuthzMethodData {
 			Procedure:     fmt.Sprintf("/%s.%s/%s", svc.Package, svc.Name, m.Name),
 			RequiredRoles: m.RequiredRoles,
 			AuthRequired:  m.AuthRequired,
+			AuthzCustom:   m.AuthzCustom,
 			Errors:        m.Errors,
 		})
 	}
@@ -75,6 +85,7 @@ func BuildAuthzMethods(svc ServiceDef, entities []EntityDef) []AuthzMethodData {
 				Procedure:     key,
 				RequiredRoles: m.RequiredRoles,
 				AuthRequired:  m.AuthRequired,
+				AuthzCustom:   m.AuthzCustom,
 			})
 			break
 		}

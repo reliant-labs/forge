@@ -73,8 +73,17 @@ func appendBuildContexts(dockerArgs []string, cfg *config.ProjectConfig, project
 	if len(cfg.Docker.BuildContexts) == 0 {
 		return dockerArgs
 	}
-	for _, name := range sortedKeys(cfg.Docker.BuildContexts) {
-		value := resolveBuildContext(cfg.Docker.BuildContexts[name], projectRoot)
+	return appendNamedBuildContexts(dockerArgs, cfg.Docker.BuildContexts, projectRoot)
+}
+
+// appendNamedBuildContexts is the underlying append for an explicit
+// name→value build-context map (one `--build-context name=value` per entry, in
+// deterministic order, each value resolved against projectRoot). It backs both
+// the project-level appendBuildContexts and the per-service DockerBuild
+// build_contexts, so the two share identical resolution + logging.
+func appendNamedBuildContexts(dockerArgs []string, contexts map[string]string, projectRoot string) []string {
+	for _, name := range sortedKeys(contexts) {
+		value := resolveBuildContext(contexts[name], projectRoot)
 		dockerArgs = append(dockerArgs, "--build-context", name+"="+value)
 		fmt.Printf("[build] docker build-context %s=%s\n", name, value)
 	}
@@ -130,6 +139,17 @@ type buildOptions struct {
 	// caller wants to skip the staleness scan (e.g. a CI lane that runs
 	// generate as its own step). See ensureGeneratedCode.
 	skipGenerate bool
+	// release, when set, is the human-readable version label (semver,
+	// "v1.4.0") for a build-once → promote release. After the build's
+	// per-image digests are captured (the existing digest-capture flow),
+	// runBuild harvests them into a Release ledger at
+	// .forge/releases/<release>.json. `forge promote <release> --to <env>`
+	// then binds an env to it and `forge deploy <env>` pins the SAME
+	// digests — build once, promote, no per-env rebuild. Implies --push
+	// in spirit (a release pins registry digests), but is enforced softly:
+	// a --release build with no captured digest fails loudly rather than
+	// writing an empty ledger. Empty (the default) is today's behavior.
+	release string
 }
 
 func newBuildCmd() *cobra.Command {
@@ -174,6 +194,18 @@ without forcing the user to add /etc/hosts entries on the host.`,
 			if opts.pushRegistry != "" {
 				opts.buildDocker = true
 			}
+			// --release pins immutable image digests, which only a docker
+			// image build produces — so a release build is always a docker
+			// build, even if the user forgot --docker/--push.
+			if opts.release != "" {
+				opts.buildDocker = true
+			}
+			// Validate the --release/--env coupling up front, before any
+			// build work, so the failure is a clear message rather than a
+			// missing-image surprise. Pure + tested in build_test.go.
+			if err := validateReleaseFlags(opts); err != nil {
+				return err
+			}
 			return runBuild(cmd.Context(), opts)
 		},
 	}
@@ -188,8 +220,28 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set, services declared `deploy: host` in deploy/kcl/<env>/ are excluded from docker build/push (the Go binary still includes their code).")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge deploy uses the same value.")
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge build` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
+	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). REQUIRES --env <env>: the release's image SET (project images plus per-env external build_cmd images like reliant/workspace-base) is discovered from deploy/kcl/<env>/main.k. The built images stay env-agnostic — pick any env that declares the full set, then promote to every env with `forge promote <version> --to <env>`. Captures each image's digest into a release ledger (.forge/releases/<version>.json); `forge deploy <env>` then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
 
 	return cmd
+}
+
+// validateReleaseFlags enforces that `forge build --release <ver>` is run
+// with --env. A release must pin the FULL image set, including the per-env
+// external build_cmd images (e.g. reliant, workspace-base) that exist ONLY
+// in deploy/kcl/<env>/main.k. Without --env, forge has no rendered KCL to
+// discover them, so it silently builds just the project's own images
+// (control-plane + frontends) — an incomplete release — and the build can
+// fail outright for want of env context. The images themselves stay
+// env-agnostic; --env only supplies the SET to build, after which the
+// release is promotable to every env. No-op when --release is unset.
+func validateReleaseFlags(opts buildOptions) error {
+	if opts.release == "" || opts.env != "" {
+		return nil
+	}
+	return fmt.Errorf("--release requires --env <env> so forge can build the full image set " +
+		"(including per-env external build_cmd images like reliant/workspace-base, which are declared " +
+		"in deploy/kcl/<env>/main.k); the images are still env-agnostic — pick any env that declares " +
+		"them, then promote the release to all envs with `forge promote <version> --to <env>`")
 }
 
 // resolveBuildArch chooses the GOARCH for `go build`. The arg-shaped
@@ -225,11 +277,40 @@ func resolveBuildArch(cfgArch, flagArch string, dockerCtx bool) string {
 	return target
 }
 
+// resolveBuildArchForImage resolves the GOARCH for a host go build whose
+// binary will be COPYed into the PROJECT image (the COPY-pattern Dockerfile,
+// no in-image `RUN go build`). Unlike resolveBuildArch it NEVER returns "" —
+// the caller always pairs the returned arch with GOOS=linux, so the produced
+// binary is a Linux ELF for the image's platform even when that arch equals
+// the host's (e.g. an arm64 image built on an arm64 Mac: GOOS=linux GOARCH=arm64,
+// NOT a native darwin/arm64 build). Precedence: --target-arch flag, then the
+// per-env deploy platform (cfgArch), then the HOST arch — matching the
+// ClusterTarget.platform schema's documented "unset => host arch" contract
+// (local k3d nodes share the host arch, so an undeclared platform should track
+// the host, not silently cross-build amd64).
+func resolveBuildArchForImage(cfgArch, flagArch string) string {
+	if flagArch != "" {
+		return flagArch
+	}
+	if cfgArch != "" {
+		return cfgArch
+	}
+	return runtime.GOARCH
+}
+
 type buildResult struct {
 	name     string
 	kind     string // "service", "frontend", or "docker"
 	duration time.Duration
 	err      error
+	// digest is the content-addressed manifest digest (`sha256:...`) of a
+	// pushed docker image, captured after `docker push` for the PROJECT
+	// image so runBuild can record it in the build state. Empty for
+	// non-docker results, non-pushed builds, and any build where the digest
+	// lookup failed (capture is best-effort). platforms is the arch set the
+	// pushed manifest advertises, captured alongside.
+	digest    string
+	platforms []string
 }
 
 func runBuild(ctx context.Context, opts buildOptions) error {
@@ -248,21 +329,58 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return err
 	}
 
+	// When --env is set, read the rendered KCL to drive the docker-skip
+	// set, the per-service platform override, the build-only variant
+	// builds, AND the default image tag (below). Missing KCL render is
+	// logged and treated as "no env filter" so projects that haven't
+	// migrated to the deploy module yet keep working unchanged. Rendered
+	// BEFORE tag resolution so the env's resolved image_tag can seed the
+	// default build tag.
+	var entities *KCLEntities
+	if opts.env != "" {
+		projectDir := projectDirForKCL()
+		ents, kerr := RenderKCL(ctx, projectDir, opts.env)
+		if kerr != nil {
+			fmt.Printf("[build]   Note: skipping KCL filter (%v)\n", kerr)
+		} else {
+			entities = ents
+		}
+	}
+
 	// Resolve the docker image tag once, up front. Both the docker
 	// build/push path below and the post-push build-state write consume
 	// this; resolving once guarantees the tag the user sees printed
 	// equals the tag that lands in .forge/state/build-<env>.json and the
-	// tag that subsequent `forge deploy` reads back. Override priority
-	// matches the deploy side: --tag flag > resolveImageTag from git.
+	// tag that subsequent `forge deploy` reads back. Override priority:
+	//
+	//  1. --tag flag (explicit; always wins).
+	//  2. With --env: the env's RESOLVED image_tag for the PROJECT image
+	//     (cfg.Name), read off the rendered manifests. This is the exact
+	//     tag `forge deploy <env>` references — so `forge build --env
+	//     <env> --push` then `forge deploy <env>` push and deploy the
+	//     SAME tag by construction, instead of build tagging from
+	//     git-describe while the manifests bake the env literal (e.g.
+	//     "staging") → ImagePullBackOff.
+	//  3. git-describe (resolveImageTag) — the standalone fallback when
+	//     no --env, or the env render carries no tag for the project
+	//     image.
 	resolvedTag := opts.tag
+	tagSource := "explicit --tag flag"
 	if resolvedTag == "" && opts.buildDocker {
-		// Only resolve when we'll actually use a tag — avoids surfacing
-		// "not a git repo" errors on a plain `forge build` (no docker).
-		t, terr := resolveImageTag(ctx, opts.env)
-		if terr != nil {
-			return fmt.Errorf("resolve image tag: %w (pass --tag to override)", terr)
+		if envTag := envImageTagFor(entities, cfg.Name); envTag != "" {
+			resolvedTag = envTag
+			tagSource = fmt.Sprintf("env %q image_tag (deploy ref)", opts.env)
+		} else {
+			// Only resolve from git when we'll actually use a tag — avoids
+			// surfacing "not a git repo" errors on a plain `forge build`
+			// (no docker), and is the no-env / no-manifest-tag fallback.
+			t, terr := resolveImageTag(ctx, opts.env)
+			if terr != nil {
+				return fmt.Errorf("resolve image tag: %w (pass --tag to override)", terr)
+			}
+			resolvedTag = t
+			tagSource = "git describe --tags --always --dirty"
 		}
-		resolvedTag = t
 	}
 
 	// Resolve the EMBEDDED build version once, up front, so every binary
@@ -284,24 +402,11 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		fmt.Printf("[build]   Env:      %s\n", opts.env)
 	}
 	if opts.buildDocker {
-		fmt.Printf("[build]   Tag:      %s\n", resolvedTag)
+		fmt.Printf("[build]   Tag:      %s (%s)\n", resolvedTag, tagSource)
 	}
 
-	// When --env is set, read the rendered KCL to drive the docker-skip
-	// set, the per-service platform override, and the build-only variant
-	// builds. Missing KCL render is logged and treated as "no env filter"
-	// so projects that haven't migrated to the deploy module yet keep
-	// working unchanged.
-	var entities *KCLEntities
-	if opts.env != "" {
-		projectDir := projectDirForKCL()
-		ents, kerr := RenderKCL(ctx, projectDir, opts.env)
-		if kerr != nil {
-			fmt.Printf("[build]   Note: skipping KCL filter (%v)\n", kerr)
-		} else {
-			entities = ents
-			summarizeKCLBuildPlan(entities)
-		}
+	if entities != nil {
+		summarizeKCLBuildPlan(entities)
 	}
 	fmt.Println()
 
@@ -501,7 +606,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 			}
 			externalArch := resolveExternalBuildTargetArch(cfgArchForDocker, opts.targetArch)
 			projDir := projectDirForKCL()
-			results = append(results, buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch)...)
+			results = append(results, buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch, entities)...)
 		}
 	}
 
@@ -525,23 +630,29 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// Dockerfile) or the docker build failed.
 	if opts.buildDocker && resolvedTag != "" && !skipProjectDocker {
 		projectDockerSucceeded := false
+		var projectDigest string
+		var projectPlatforms []string
 		for _, r := range succeeded {
 			if r.kind == "docker" && r.name == cfg.Name+" (docker)" {
 				projectDockerSucceeded = true
+				projectDigest = r.digest
+				projectPlatforms = r.platforms
 				break
 			}
 		}
 		if projectDockerSucceeded {
 			commit, gitTag, dirty := gitBuildProvenance(ctx)
 			state := BuildState{
-				Image:    cfg.Name,
-				Tag:      resolvedTag,
-				Registry: opts.pushRegistry,
-				Pushed:   opts.pushRegistry != "",
-				Commit:   commit,
-				GitTag:   gitTag,
-				Dirty:    dirty,
-				PushedAt: nowRFC3339(),
+				Image:     cfg.Name,
+				Tag:       resolvedTag,
+				Registry:  opts.pushRegistry,
+				Pushed:    opts.pushRegistry != "",
+				Commit:    commit,
+				GitTag:    gitTag,
+				Dirty:     dirty,
+				PushedAt:  nowRFC3339(),
+				Digest:    projectDigest,
+				Platforms: projectPlatforms,
 			}
 			if werr := WriteBuildState(projectDirForKCL(), opts.env, state); werr != nil {
 				// Non-fatal: the build succeeded; recording the state is
@@ -571,8 +682,58 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return fmt.Errorf("%d of %d builds failed", len(failed), len(results))
 	}
 
+	// Cut the Release ledger when --release is set. This is the build-once →
+	// promote spine: harvest the per-image digests the build just captured
+	// (the SAME build-state sources resolveDeployImageDigests reads at deploy
+	// time) into a durable .forge/releases/<version>.json. A release with no
+	// captured digest fails loudly rather than writing an empty ledger — a
+	// release that can't pin anything is useless and almost always means the
+	// user forgot --push (or built against a registry that didn't return a
+	// digest). See writeReleaseLedger.
+	if opts.release != "" {
+		if err := writeReleaseLedger(ctx, opts); err != nil {
+			return err
+		}
+	}
+
 	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
 	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
+	return nil
+}
+
+// writeReleaseLedger harvests the digests captured by the just-completed
+// build into a Release ledger keyed by opts.release. It is the durable
+// projection of the ephemeral build state: every image whose build recorded a
+// content-addressed digest becomes a "shared" artifact promotable to any env.
+//
+// Fails (does not silently no-op) when no digest was captured: a release is a
+// promise that "these exact bytes ship everywhere", and an empty promise is a
+// latent footgun (a later `forge promote`/`deploy` would resolve nothing and
+// fall back to tags — exactly the mutable-tag failure the release model exists
+// to kill). The actionable remedy is in the error: pass --push.
+func writeReleaseLedger(ctx context.Context, opts buildOptions) error {
+	projectDir := projectDirForKCL()
+	artifacts := harvestReleaseArtifacts(projectDir, opts.env)
+	if len(artifacts) == 0 {
+		return fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
+			"  A release pins immutable digests, which require a registry push — re-run with --push <registry>\n"+
+			"  (a release built without --push has only a local tag, which can't be promoted across envs).", opts.release)
+	}
+
+	commit, gitTag, dirty := gitBuildProvenance(ctx)
+	rel := Release{
+		Version:   opts.release,
+		Git:       ReleaseGit{Commit: commit, Tag: gitTag, Dirty: dirty},
+		CreatedAt: nowRFC3339(),
+		Artifacts: artifacts,
+	}
+	if err := WriteRelease(projectDir, rel); err != nil {
+		return fmt.Errorf("--release %s: write release ledger: %w", opts.release, err)
+	}
+	fmt.Printf("\n[build] Cut release %s (%d image(s)): %s\n",
+		rel.Version, len(rel.Artifacts), strings.Join(releaseImageNames(rel), ", "))
+	fmt.Printf("[build]   Ledger: %s\n", releasePath(projectDir, rel.Version))
+	fmt.Printf("[build]   Promote: forge promote %s --to <env>\n", rel.Version)
 	return nil
 }
 
@@ -584,7 +745,20 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 	)
 
 	// Build the KCL-driven go targets + frontends in parallel.
+	//
+	// When the project image will CONSUME these host-built binaries (the
+	// COPY-pattern Dockerfile: `COPY bin/<svc>` rather than an in-image
+	// `RUN go build`), they must be built for the IMAGE platform — GOOS=linux
+	// AND GOARCH=<deploy-target arch> — not the host. resolveBuildArch's plain
+	// (dockerCtx=false) path collapses "target == host GOARCH" to "" (a native
+	// build), which on a macOS host yields a Darwin/arm64 binary that the
+	// Dockerfile then COPYs into a linux image → "exec format error" CrashLoop.
+	// Resolving with the docker arch forces GOOS=linux/GOARCH=<arch> even when
+	// the arch equals the host's, so the binary matches the image it ships in.
 	goArch := resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false)
+	if opts.buildDocker && len(goTargets) > 0 && !skipProjectDocker {
+		goArch = resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
+	}
 	for _, t := range goTargets {
 		wg.Add(1)
 		go func(t goBuildTarget) {
@@ -623,12 +797,20 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 	// whenever the deploy-target arch differs from the host — even if the
 	// preceding go build above happened to use the host arch.
 	if opts.buildDocker && !hasBuildFailure {
+		// The image platform must match the arch the host go build above
+		// produced (resolveBuildArchForImage when the project image consumes
+		// those binaries), so a non-empty result here drives
+		// `docker build --platform=linux/<arch>` and the COPYed binary's ELF
+		// arch agrees with the image. Frontend docker builds (no host go
+		// binary) keep the plain resolution.
 		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
 		if len(goTargets) > 0 && !skipProjectDocker {
+			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
+			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch, resolvedTag, resolvedVersion)
+				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, resolvedVersion, guard)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -653,7 +835,13 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, goTargets []goBuildTarget, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, resolvedVersion versionInfo, opts buildOptions) []buildResult {
 	var results []buildResult
 
+	// See buildParallel: when the project image COPYs these host-built
+	// binaries, they must be built for the image platform (GOOS=linux +
+	// deploy-target GOARCH), never a native (possibly darwin) host build.
 	goArch := resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false)
+	if opts.buildDocker && len(goTargets) > 0 && !skipProjectDocker {
+		goArch = resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
+	}
 	for _, t := range goTargets {
 		r := buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion)
 		results = append(results, r)
@@ -673,7 +861,10 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, 
 	if opts.buildDocker {
 		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
 		if len(goTargets) > 0 && !skipProjectDocker {
-			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch, resolvedTag, resolvedVersion)
+			// Image platform == the arch the project binaries were built for.
+			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
+			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
+			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, projectImageArch, resolvedTag, resolvedVersion, guard)
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -974,6 +1165,30 @@ func withForcedEnv(env []string, key, value string) []string {
 	return rewritten
 }
 
+// projectImageGuard carries the inputs the build-time ELF/arch backstop
+// (assertProjectImageBinaries, called inside dockerBuildProject) needs: where
+// the host go-builds wrote their binaries, the basenames the project image
+// will COPY, and the deploy env label for the error text. Bundled into one
+// struct so the dockerBuildProject signature doesn't grow three more params.
+type projectImageGuard struct {
+	outputDir   string
+	binaryNames []string
+	envLabel    string
+}
+
+// projectImageBinaryNames returns the output basenames of the go-build
+// targets — the binaries the project image's COPY-pattern Dockerfile consumes.
+// The guard stats each in outputDir, so a target whose binary the Dockerfile
+// doesn't actually COPY simply isn't found and is skipped (see
+// assertProjectImageBinaries).
+func projectImageBinaryNames(goTargets []goBuildTarget) []string {
+	names := make([]string, 0, len(goTargets))
+	for _, t := range goTargets {
+		names = append(names, t.outputName)
+	}
+	return names
+}
+
 // dockerBuildProject builds the single project Docker image from the
 // root Dockerfile. When pushRegistry is non-empty, the image is also
 // tagged with <pushRegistry>/<name>:<tag> and pushed after a successful
@@ -984,7 +1199,7 @@ func withForcedEnv(env []string, key, value string) []string {
 // so the resulting image runs on a node whose arch matches the deploy
 // target rather than the build host. Empty means "let docker use the
 // host arch" — appropriate when host == target.
-func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch, resolvedTag string, resolvedVersion versionInfo) buildResult {
+func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch, resolvedTag string, resolvedVersion versionInfo, guard projectImageGuard) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 
@@ -995,6 +1210,25 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 			kind:     "docker",
 			duration: time.Since(start),
 			err:      nil,
+		}
+	}
+
+	// Backstop guard: the production Dockerfile stage COPYs the host-built
+	// binaries straight into a distroless/static Linux image (no in-image
+	// `RUN go build`). Assert each is a Linux ELF for the image's arch BEFORE
+	// docker build, so a native macOS Mach-O / wrong-arch binary (the class of
+	// regression where the GOOS=linux GOARCH=<arch> resolution was skipped)
+	// fails the build with an actionable error rather than shipping an image
+	// that CrashLoopBackOffs with `exec format error` on every Linux node.
+	// crossArch is the resolved image GOARCH (resolveBuildArchForImage), the
+	// exact arch the binaries above were built for. Empty crossArch (no cross
+	// resolution requested) skips the arch pin but still requires ELF.
+	if err := assertProjectImageBinaries(guard.outputDir, crossArch, guard.envLabel, guard.binaryNames); err != nil {
+		return buildResult{
+			name:     cfg.Name + " (docker)",
+			kind:     "docker",
+			duration: time.Since(start),
+			err:      err,
 		}
 	}
 
@@ -1092,11 +1326,30 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 		}
 	}
 
+	// Capture the pushed image's content-addressed digest so deploy can pin
+	// the manifest to `<image>@sha256:...` (immutable, cache-proof) instead
+	// of the mutable `:tag`. Inspect the last pushed ref — the version tag
+	// when present (most specific), else `:latest`; both resolve to the same
+	// manifest digest. Best-effort: a lookup failure logs and records no
+	// digest, leaving deploy on the unchanged tag-fallback path.
+	digest, platforms := "", []string(nil)
+	if len(pushTags) > 0 {
+		ref := pushTags[len(pushTags)-1]
+		if d, p, derr := imageRepoDigest(ctx, ref); derr == nil {
+			digest, platforms = d, p
+			fmt.Printf("[build] %s: pushed digest %s\n", cfg.Name, digest)
+		} else {
+			fmt.Printf("[build]   Note: could not capture image digest for %s (%v); deploy will use the tag\n", ref, derr)
+		}
+	}
+
 	return buildResult{
-		name:     cfg.Name + " (docker)",
-		kind:     "docker",
-		duration: time.Since(start),
-		err:      nil,
+		name:      cfg.Name + " (docker)",
+		kind:      "docker",
+		duration:  time.Since(start),
+		err:       nil,
+		digest:    digest,
+		platforms: platforms,
 	}
 }
 
@@ -1444,33 +1697,108 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 	}
 }
 
-// buildKCLDockerShell dispatches the per-service build types that are NOT
-// go-builds: DockerBuild and ShellBuild. This is where a service's
-// declared image build (docker) or verbatim build command (shell) runs.
+// buildKCLDockerShell dispatches the per-service DockerBuild type — the
+// only per-service build run here. ShellBuild services are dispatched by
+// the single external-build dispatcher (buildExternalServices) so they
+// share ONE execution + state/digest path with the rest of the shell
+// escape hatch; there is no separate shell branch here anymore.
 //
 //   - docker → `docker build` reusing forge's existing image-build
 //     primitives (tags via cfg.Docker.Registry + resolvedTag, push when
 //     --push, build-contexts) with the service's dockerfile / platform /
 //     target / build_args. A DockerBuild is the ONLY per-service image
 //     build — there is no unconditional auto-docker step for these.
-//   - shell → run the verbatim command via `sh -c` (generalizes the old
-//     build_cmd escape hatch).
 //
-// A service whose EffectiveBuild() is a GoBuild is skipped here (handled
-// by the go-build path). Failures are captured, not short-circuited, so
-// the summary shows the full set.
+// A service whose EffectiveBuild() is a GoBuild (handled by the go-build
+// path) or a ShellBuild (handled by buildExternalServices) is skipped
+// here. Failures are captured, not short-circuited, so the summary shows
+// the full set.
 func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, opts buildOptions, cfgArchForDocker, resolvedTag string) []buildResult {
 	var out []buildResult
 	for _, svc := range e.Services {
-		b := svc.EffectiveBuild()
-		switch b.Type {
-		case "docker":
-			out = append(out, buildServiceDocker(ctx, cfg, svc.Name, b.Docker, opts, cfgArchForDocker, resolvedTag))
-		case "shell":
-			out = append(out, buildServiceShell(ctx, svc.Name, b.Shell, opts))
+		if svc.EffectiveBuild().Type == "docker" {
+			out = append(out, buildServiceDocker(ctx, cfg, svc.Name, svc.EffectiveBuild().Docker, opts, cfgArchForDocker, resolvedTag))
 		}
 	}
 	return out
+}
+
+// serviceDockerBuildArgs assembles the full `docker build …` argument vector
+// (and the subset of `-t` tags that get pushed) for a per-service DockerBuild,
+// WITHOUT executing docker — so the registry + build-context resolution is
+// unit-testable. It is the per-service analogue of dockerBuildProject's arg
+// assembly.
+//
+// The two per-service `docker` facts NOT expressible in a Dockerfile resolve
+// here:
+//
+//   - registry — the push/tag target. DockerBuild.registry wins, then the
+//     project-level forge.yaml docker.registry, then the project name.
+//   - build_contexts — DockerBuild.build_contexts win when set, else the
+//     project-level forge.yaml docker.build_contexts.
+//
+// forge is base-image-AGNOSTIC: NO base-image discovery, mirror, pin, or
+// `--build-arg BASE_*` injection happens — the Dockerfile's `FROM` lines are
+// the whole story. The only `--build-arg`s are the service's explicit
+// DockerBuild.build_args.
+func serviceDockerBuildArgs(cfg *config.ProjectConfig, imageName, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
+	registry := cfg.Docker.Registry
+	if d != nil && d.Registry != "" {
+		registry = d.Registry
+	}
+	if registry == "" {
+		registry = cfg.Name
+	}
+
+	dockerArgs = []string{"build"}
+	// platform: the DockerBuild's explicit platform wins; otherwise the
+	// env-wide cluster arch (cfgArchForDocker), cross-compiled to linux.
+	platform := ""
+	if d != nil && d.Platform != "" {
+		platform = d.Platform
+	} else if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
+		platform = "linux/" + a
+	}
+	if platform != "" {
+		dockerArgs = append(dockerArgs, "--platform="+platform)
+	}
+	if d != nil && d.Target != "" {
+		dockerArgs = append(dockerArgs, "--target", d.Target)
+	}
+	if d != nil {
+		for _, k := range sortedKeys(d.BuildArgs) {
+			dockerArgs = append(dockerArgs, "--build-arg", k+"="+d.BuildArgs[k])
+		}
+	}
+	dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:latest", registry, imageName))
+	if resolvedTag != "" {
+		dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:%s", registry, imageName, resolvedTag))
+	}
+	for i, reg := range expandPushRegistries(opts.pushRegistry) {
+		pl := fmt.Sprintf("%s/%s:latest", reg, imageName)
+		dockerArgs = append(dockerArgs, "-t", pl)
+		if i == 0 {
+			pushTags = append(pushTags, pl)
+		}
+		if resolvedTag != "" {
+			pv := fmt.Sprintf("%s/%s:%s", reg, imageName, resolvedTag)
+			dockerArgs = append(dockerArgs, "-t", pv)
+			if i == 0 {
+				pushTags = append(pushTags, pv)
+			}
+		}
+	}
+	// Build contexts: the per-service DockerBuild.build_contexts win when set,
+	// else the project-level forge.yaml docker.build_contexts. A service whose
+	// Dockerfile COPY --from=s a sibling checkout declares only the contexts it
+	// actually needs.
+	if d != nil && len(d.BuildContexts) > 0 {
+		dockerArgs = appendNamedBuildContexts(dockerArgs, d.BuildContexts, "")
+	} else {
+		dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
+	}
+	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
+	return dockerArgs, pushTags
 }
 
 // buildServiceDocker runs `docker build` for a DockerBuild service. It
@@ -1497,53 +1825,8 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName 
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start)}
 	}
 
-	registry := cfg.Docker.Registry
-	if registry == "" {
-		registry = cfg.Name
-	}
-
-	dockerArgs := []string{"build"}
-	// platform: the DockerBuild's explicit platform wins; otherwise the
-	// env-wide cluster arch (cfgArchForDocker), cross-compiled to linux.
-	platform := ""
-	if d != nil && d.Platform != "" {
-		platform = d.Platform
-	} else if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
-		platform = "linux/" + a
-	}
-	if platform != "" {
-		dockerArgs = append(dockerArgs, "--platform="+platform)
-	}
-	if d != nil && d.Target != "" {
-		dockerArgs = append(dockerArgs, "--target", d.Target)
-	}
-	if d != nil {
-		for _, k := range sortedKeys(d.BuildArgs) {
-			dockerArgs = append(dockerArgs, "--build-arg", k+"="+d.BuildArgs[k])
-		}
-	}
-	dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:latest", registry, imageName))
-	if resolvedTag != "" {
-		dockerArgs = append(dockerArgs, "-t", fmt.Sprintf("%s/%s:%s", registry, imageName, resolvedTag))
-	}
-	var pushTags []string
-	for i, reg := range expandPushRegistries(opts.pushRegistry) {
-		pl := fmt.Sprintf("%s/%s:latest", reg, imageName)
-		dockerArgs = append(dockerArgs, "-t", pl)
-		if i == 0 {
-			pushTags = append(pushTags, pl)
-		}
-		if resolvedTag != "" {
-			pv := fmt.Sprintf("%s/%s:%s", reg, imageName, resolvedTag)
-			dockerArgs = append(dockerArgs, "-t", pv)
-			if i == 0 {
-				pushTags = append(pushTags, pv)
-			}
-		}
-	}
-	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
+	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, imageName, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
 	fmt.Printf("[build] %s: docker build -f %s (%d tags)\n", svcName, dockerfile, countTags(dockerArgs))
-	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
 
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
 	cmd.Stdout = os.Stdout
@@ -1561,23 +1844,4 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName 
 		}
 	}
 	return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start)}
-}
-
-// buildServiceShell runs a ShellBuild's verbatim command via `sh -c`. The
-// command owns the whole build (and any push) — forge does not wrap it.
-// Output is streamed; the produced artifact is whatever the command
-// writes (forge doesn't assume an output path for shell builds).
-func buildServiceShell(ctx context.Context, svcName string, sh *ShellBuild, opts buildOptions) buildResult {
-	start := time.Now()
-	if sh == nil || sh.Cmd == "" {
-		return buildResult{name: svcName + " (shell)", kind: "shell", duration: time.Since(start), err: fmt.Errorf("shell build: empty cmd")}
-	}
-	fmt.Printf("[build] %s: sh -c %q\n", svcName, sh.Cmd)
-	cmd := exec.CommandContext(ctx, "sh", "-c", sh.Cmd)
-	cmd.Dir = opts.outputDir
-	cmd.Env = os.Environ()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	return buildResult{name: svcName + " (shell)", kind: "shell", duration: time.Since(start), err: err}
 }

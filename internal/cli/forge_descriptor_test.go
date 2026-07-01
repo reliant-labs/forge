@@ -66,6 +66,36 @@ func TestDescriptorParsesErrors_PreservesAuthRequired(t *testing.T) {
 	}
 }
 
+// TestDescriptorParsesAuthzCustom verifies (forge.v1.method).authz_custom is
+// plumbed onto codegen.Method.AuthzCustom. The authorizer generator depends on
+// this flag to emit the method FAIL-CLOSED in the role table (a custom-authz
+// method carries no roles, so without the flag it would be emitted with empty
+// roles — an any-authenticated grant footgun).
+func TestDescriptorParsesAuthzCustom(t *testing.T) {
+	custom := true
+	method := codegen.Method{Name: "AssumeRole"}
+	mo := &forgev1.MethodOptions{AuthzCustom: custom}
+
+	applyMethodOptions(&method, mo)
+
+	if !method.AuthzCustom {
+		t.Error("AuthzCustom = false, want true (authz_custom must plumb through)")
+	}
+}
+
+// Regression: a method WITHOUT authz_custom must leave the flag false so an
+// ordinary method is never emitted as fail-closed-custom.
+func TestDescriptorParsesAuthzCustom_Unset(t *testing.T) {
+	method := codegen.Method{Name: "GetWidget"}
+	mo := &forgev1.MethodOptions{} // authz_custom unset
+
+	applyMethodOptions(&method, mo)
+
+	if method.AuthzCustom {
+		t.Error("AuthzCustom = true, want false (unset annotation must not delegate)")
+	}
+}
+
 // Regression: per-invocation fragments under gen/.descriptor.d/ must be
 // merged into a single forge_descriptor.json with all sections preserved
 // and a deterministic ordering. This is the load-bearing fix for the

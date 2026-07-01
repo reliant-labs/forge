@@ -5,6 +5,7 @@ import (
 	"unicode"
 
 	"github.com/jinzhu/inflection"
+
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -37,9 +38,9 @@ type PageTemplateData struct {
 	// `undefined`, breaking the list page, the dashboard count tile, and
 	// the mock transport's response shape all at once. Falls back to the
 	// camelCased plural for older descriptors that don't carry the field.
-	ItemsField string
-	CreateFields     []PageField // Fields for the create form
-	UpdateFields     []PageField // Fields for the edit form
+	ItemsField   string
+	CreateFields []PageField // Fields for the create form
+	UpdateFields []PageField // Fields for the edit form
 	// UpdateEntityFieldCamel is the camelCase request field wrapping the
 	// entity when the update request follows AIP-134 ("task" for
 	// `Task task = 1;`). The edit page then nests the form values under

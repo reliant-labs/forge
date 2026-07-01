@@ -5,6 +5,15 @@ Typed schemas + manifest render layer that forge projects import.
 ```kcl
 import forge
 
+# The env-wide Kubernetes facts, stated ONCE. Carried on the Bundle's
+# `cluster_target`; each service references its derived `.deploy` rather
+# than restating cluster/namespace/registry per service.
+_k8s = forge.ClusterTarget {
+    cluster = "k3d-myapp"
+    namespace = "myapp-dev"
+    registry = "localhost:5050"
+}
+
 forge.Service {
     name = "admin-server"
     image = "myapp:dev"
@@ -14,13 +23,8 @@ forge.Service {
 forge.Service {
     name = "workspace-proxy"
     image = "myapp:dev"
-    deploy = forge.K8sCluster {
-        cluster = "k3d-myapp"
-        namespace = "myapp-dev"
-        registry = "localhost:5050"
-        replicas = 1
-        ingress = forge.Ingress { host = "workspaces.localhost", tls = False }
-    }
+    # Reference the env-wide target; overlay only the per-service knobs.
+    deploy = _k8s.deploy | { replicas = 1, ports = [8080] }
 }
 
 forge.Operator {
@@ -95,6 +99,83 @@ its intent (reconcile CRDs, needs cluster-scoped RBAC, no host story)
 is meaningfully different and the JSON consumer benefits from a
 typed bucket.
 
+## Extending a typed entity — `schema MyService(forge.Service)`
+
+A project can use KCL-native inheritance to add its OWN typed/required
+fields to a forge entity while forge renders the result EXACTLY like the
+base entity:
+
+```kcl
+import forge
+
+schema TenantService(forge.Service):
+    region: str               # extra REQUIRED field — enforced at parse time
+    tier: "free" | "pro" = "free"
+
+    check:
+        region, "TenantService.region is required"
+
+_svc = TenantService {
+    name = "tenant-api", image = "tenant-api", region = "us-east-1"
+    deploy = _prod.deploy | { ports = [8080] }
+}
+```
+
+This works because the render layer's lambdas are typed on the BASE
+schema (`lambda s: Service -> ...`), which accepts any subtype: the
+subtype passes through `forge.render` / `forge.render_manifests` and
+projects the same JSON contract + k8s manifests a plain `forge.Service`
+would. The app's extra fields ride on the typed value but are NOT part of
+the rendered contract (they're yours, for your own KCL logic). An extra
+field with no default — or a `check:` the value violates — fails at KCL
+load, so your domain invariants are enforced the same way forge's are.
+
+## Declared external prerequisites — `required_secrets` / `required_dns`
+
+A deploy often depends on out-of-band facts forge does NOT (and must not)
+create: the cert-manager `cloudflare-api-token` Secret, per-host DNS
+A-records, the load-bearing `*.workspaces` wildcard. Left in a docstring,
+`forge deploy` renders green and THEN ACME / DNS hangs silently. Declare
+them as first-class prerequisites on the Bundle so they're MODELED:
+
+```kcl
+_bundle = forge.Bundle {
+    # ... services / gateways / ...
+    required_secrets = [
+        forge.ExternalSecret {
+            name = "cloudflare-api-token"
+            namespace = "cert-manager"      # often NOT the deploy namespace
+            keys = ["api-token"]
+            reason = "cert-manager DNS-01 Cloudflare API token"
+        }
+    ]
+    required_dns = [
+        forge.DNSRecord {
+            host = "*.workspaces.example.com"
+            reason = "DNS-01 wildcard cert + workspace-proxy traffic"
+        }
+    ]
+}
+```
+
+What this buys (beyond a comment):
+
+- **Render-time checklist** — `forge deploy` prints the prerequisites
+  every run; `forge audit` surfaces them as the `prerequisites` category.
+- **Deploy preflight BLOCK** — a declared `ExternalSecret` that's absent
+  (or missing a declared key) on the live target FAILS the deploy before
+  the first apply, in its OWN declared namespace, reusing the same
+  SecretGetter the `secretKeyRef` preflight uses. DNS can't be verified
+  authoritatively, so `required_dns` is a checklist note, not a block.
+- **Cross-secret byte-match** — when ONE logical value is projected to N
+  refs (the same token under two names), give each `ExternalSecret` a
+  shared `value_group`. KCL rejects a group whose members declare
+  different key sets at load; the preflight byte-compares the live values
+  and BLOCKS on a divergence (a half-rotated credential).
+
+`forge` never creates these resources — the declaration drives the
+checklist + preflight only; nothing leaks into the rendered manifests.
+
 ## How projects consume this
 
 Project's `deploy/kcl/kcl.mod`:
@@ -136,19 +217,35 @@ Then:
 kcl run deploy/kcl/dev/ -S output --format json
 ```
 
-## Per-env conditional manifests
+## Standard `-D` render options
 
-The forge CLI passes the current environment name to KCL via
-`-D env=<env_name>` on every `kcl run` invocation. Your `main.k` can
-read it through KCL's `option()` builtin and conditionally include
-`additional_manifests` (or any other field) per-env.
+The forge CLI drives every render with a standard set of top-level KCL
+bindings (`kcl run -D <key>=<value>`). They carry per-invocation facts into
+your `main.k`. Read them through the **typed `forge` accessors** (each wraps
+`option(...)` with a default + doc) rather than raw `option()` so the whole
+set is discoverable from the `forge` surface:
 
-Canonical use — skip in-cluster infra on `dev-host` envs where
-docker-compose already provides those services:
+| `-D` key        | Accessor                  | Always passed? | What it is |
+| --------------- | ------------------------- | -------------- | ---------- |
+| `env`           | `forge.env(default)`      | yes            | environment name (`dev`/`staging`/`prod`/…) |
+| `image_tag`     | `forge.image_tag(env)`    | yes            | resolved image tag (override > per-env default > `latest`) |
+| `namespace`     | `forge.namespace(default)`| yes            | k8s namespace to deploy into |
+| `image_digests` | `forge.image_digests()`   | when deploying | JSON name→digest map (pins each image to its digest) |
+| `registry`      | `forge.registry(default)` | no (override)  | image registry; the per-env literal is yours, `-D registry=` overrides it |
+
+Plus every non-sensitive per-env **config** field is passed as its own
+`-D <FIELD>=` and surfaced through the generated `config_gen.k`
+(`cfg.APP_ENV` / `cfg.CONFIG_MAPS`) — read those via `cfg.<...>`, never raw
+`option()`.
+
+### Per-env conditional manifests
+
+Use `forge.env()` to conditionally include manifests — e.g. skip in-cluster
+infra on `dev-host` envs where docker-compose already provides those
+services:
 
 ```kcl
-_env_name = option("env")
-_is_dev_host = _env_name == "dev-host"
+_is_dev_host = forge.env() == "dev-host"
 
 _bundle = forge.Bundle {
     services = [...]
@@ -158,8 +255,27 @@ _bundle = forge.Bundle {
 }
 ```
 
-The `image_tag` and `registry` options are already passed for the
-same reason — `env` is the third member of the standard set.
+## Secrets — `${NAME#KEY}` config-contract override
+
+For a SENSITIVE config field (`sensitive: true` in the config proto), forge's
+config codegen emits the `secret_ref` EnvVar for you into
+`deploy/kcl/<env>/config_gen.k`, defaulting to the `<project>-secrets` Secret
+and a `<env_var lowercased>` key. To bind a field to a DIFFERENT existing
+cluster Secret/key, set its value in the per-env `config.<env>.yaml` to a
+reference string:
+
+```yaml
+# config.prod.yaml
+#   "${NAME}"      -> secret_ref = NAME            (key = codegen default)
+#   "${NAME#KEY}"  -> secret_ref = NAME, key = KEY (override both)
+internal_service_secret: "${control-plane-internal#secret}"
+```
+
+The `#KEY` form is for cluster secrets whose keys are kebab-case (e.g.
+`"${db-credentials#database-url}"`) and don't match forge's
+lowercase-env-var default. The Secret itself is provisioned out-of-band
+(ESO / sealed-secrets / `kubectl create secret`). Same rule on a hand-written
+`forge.EnvVar` — see the `EnvVar` schema doc in `schema.k`.
 
 ## Versioning
 

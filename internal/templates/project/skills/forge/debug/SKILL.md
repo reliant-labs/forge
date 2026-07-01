@@ -57,16 +57,48 @@ On top of the generic triage above, common forge-shaped bug classes:
 ## Forge Debug Tools
 
 ```
-forge debug start              # attach Delve debugger on :2345
-forge debug start <svc>        # debug a specific service
-forge debug break              # set breakpoint in active debug session
-forge debug continue           # resume execution past breakpoint
-forge debug eval               # evaluate expression in debug context
+forge introspect handlers      # every RPC path the binary registers — localize the fault
+forge api curl <svc.method>    # build a copy-pasteable Connect curl from the shell
+forge cluster logs --service X # kubectl-backed log tail for one service (single cluster)
+forge debug start <svc>        # build + attach Delve debugger
+forge debug start --attach PID # attach Delve to a live process (don't `stop` it — see below)
+forge debug break/continue/eval# breakpoints, resume, evaluate in the debug session
+forge debug stop               # ends the session AND kills the debugged process
 forge test --service <name> -V # verbose isolated test runs
 forge test e2e                 # full-stack reproduction
 forge test --race              # run tests with race detector
 forge generate                 # regenerate code (use when stale gen is suspected)
 ```
+
+**Pick the tool for the job — and know where each stops short:**
+
+- **`forge introspect handlers` to localize.** Prints every RPC path the assembled
+  binary serves. If the failing RPC isn't there, the fault is a downstream/remote
+  hop, not this binary — that one check collapses the search space.
+- **`forge api curl <service.method>` to exercise an endpoint.** Builds and runs a
+  Connect request from the shell, but it **stops at the auth interceptor** — it
+  does not mint a token. Use it for shape/connectivity; supply your own credential
+  for an authed call.
+- **`forge cluster logs --service <name>` for the symptom.** kubectl-backed, no
+  file-grepping — but it tails only the **owner cluster** (the one cluster name in
+  config). For a multi-cluster app, set the context and run
+  `kubectl --context <other> -n <ns> logs <pod>` for the other half.
+- **`forge debug start <svc>` (Delve) — two sharp edges.** In a multi-binary repo
+  `start <service>` can mis-build (it falls back to `./cmd/...`); pass an explicit
+  path/service so it builds the binary you mean. And `forge debug stop` after
+  `--attach` **kills the live process** — detach instead of `stop` when you've
+  attached to something you need to keep running.
+
+**Smoke/doctor are NOT app-flow proofs.** A green `forge smoke` / `forge doctor`
+checks listeners, local compose, and telemetry — never app-flow invariants. They
+(and `forge cluster status`, green whenever pods are `Running`) can all be green
+while the actual flow is broken. The **only** things that prove an app-flow fix:
+
+1. a declarative, exit-coded app-health assertion (model: a project `doctor:<flow>`
+   task that fails non-zero when the invariant is violated), and
+2. a full `forge test e2e`.
+
+Generic forge tools localize and surface evidence; they do not certify the fix.
 
 Use chrome-devtools MCP tools for frontend bugs (snapshots, console, network).
 

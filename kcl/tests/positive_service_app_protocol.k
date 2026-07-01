@@ -25,31 +25,28 @@ import forge
 # K8sCluster declaring appProtocol on 8080 (h2c) but NOT 9090. Two ports
 # so the same render exercises both the with- and without-appProtocol
 # branches of the per-port comprehension.
-_k8s = forge.K8sCluster {
+_target = forge.ClusterTarget {
     cluster = "k3d-example"
     namespace = "example-dev"
     registry = "localhost:5051"
+}
+
+# Per-service deploy WITH app_protocols on 8080 (h2c) but NOT 9090. Two
+# ports so the same render exercises both the with- and
+# without-appProtocol branches of the per-port comprehension.
+_deploy_proto = _target.deploy | {
     ports = [8080, 9090]
     app_protocols = {"8080" = "kubernetes.io/h2c"}
 }
 
-# Bare K8sCluster — no app_protocols — for the no-regression baseline.
-_k8s_bare = forge.K8sCluster {
-    cluster = "k3d-example"
-    namespace = "example-dev"
-    registry = "localhost:5051"
-    ports = [8080, 9090]
-}
+# Bare per-service deploy — no app_protocols — for the no-regression baseline.
+_deploy_bare = _target.deploy | {ports = [8080, 9090]}
 
 _bundle = forge.Bundle {
-    services = [forge.Service {name = "gw", image = "gw-img", deploy = _k8s}]
+    cluster_target = _target
+    services = [forge.Service {name = "gw", image = "gw-img", deploy = _deploy_proto}]
 }
-_env = forge.RenderEnv {
-    cluster = _k8s
-    image_tag = "abc1234"
-    network_policies = False
-}
-_manifests = forge.render_manifests(_bundle, _env)
+_manifests = forge.render_manifests(_bundle, "abc1234", {}, False)
 
 _svc = [m for m in _manifests if m.kind == "Service" and m.metadata.name == "gw"][0]
 _deploy = [m for m in _manifests if m.kind == "Deployment" and m.metadata.name == "gw"][0]
@@ -76,14 +73,10 @@ assert_container_port_no_app_protocol = _cport_8080.appProtocol == Undefined
 # ── Case (a): no app_protocols => byte-identical to the old render ──
 
 _bundle_bare = forge.Bundle {
-    services = [forge.Service {name = "gw", image = "gw-img", deploy = _k8s_bare}]
+    cluster_target = _target
+    services = [forge.Service {name = "gw", image = "gw-img", deploy = _deploy_bare}]
 }
-_env_bare = forge.RenderEnv {
-    cluster = _k8s_bare
-    image_tag = "abc1234"
-    network_policies = False
-}
-_manifests_bare = forge.render_manifests(_bundle_bare, _env_bare)
+_manifests_bare = forge.render_manifests(_bundle_bare, "abc1234", {}, False)
 _svc_bare = [m for m in _manifests_bare if m.kind == "Service" and m.metadata.name == "gw"][0]
 
 # Every port renders exactly the pre-appProtocol shape — the four

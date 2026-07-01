@@ -237,6 +237,35 @@ contracts:
   exclude: ["internal/buildinfo"]
 ```
 
+## Normalize for the author, denormalize for the machine (KCL ⇄ render)
+
+The deploy layer has two shapes on purpose. They are NOT redundant — each is tuned for a different reader:
+
+- **KCL is the author surface, and it is NORMALIZED.** You declare each object once and reference it by name; KCL computes everything derived. State a fact in exactly one place, let object references carry it everywhere else (DRY, single source of truth). This is the shape a human — or an LLM — writes.
+- **The rendered contract (the JSON `forge.render(bundle)` produces, which the deploy machinery consumes) is DENORMALIZED.** The renderer flattens and expands every reference into the concrete strings, paths, and labels the machine needs, duplicating a value wherever the machine wants it inlined. This is the shape a program reads.
+
+**The principle: normalize for the human/LLM author, denormalize for the machine.** You never hand-write the denormalized form. The renderer owns the expansion, so derived values *cannot drift* — a flat string in the JSON can never disagree with the object reference it came from, because nothing typed it twice. This is *why* a KCL field takes an object reference while the JSON it produces is a flat string or label: the reference is the author's single source of truth; the flat value is the renderer's mechanical projection of it.
+
+**Worked example (object reference in → flat strings/labels out).** A secondary cluster names its owner once, by reference:
+
+```python
+# KCL — normalized: the owner edge is stated exactly once.
+db = Cluster { name = "db" }
+api = Cluster { name = "api", owner = db }   # one reference
+```
+
+That single `owner = db` reference denormalizes — without the author writing any of it — into the concrete values the deploy machinery consumes:
+
+```json
+{ "name": "api", "context": "k3d-api", "network": "k3d-db", "registry_inherit": true }
+```
+
+`network` is `k3d-db` *because* it was derived from `owner.name`; it can never name a network the owner doesn't actually have. Had the author instead hand-written the stringly pair (`network = "k3d-db"`, `registry_mirror = "inherit"`), the two could silently disagree with the real owner. The reference makes the wiring unforgeable.
+
+A richer case is a workload's cross-cluster client. One `ClusterClient { cluster, in_cluster, mount_path }` declaration denormalizes into three correlated emissions — a kubeconfig Secret, a Volume that mounts it, and a `CLUSTER_CONFIGS` JSON entry whose `kubeconfigPath` and `context` are computed from the *same* `mount_path` + key the Volume uses. Hand-correlating those three (as you would without the schema) is exactly the drift the normalized declaration eliminates.
+
+So: when a KCL field looks like it "could just be a string," ask whether the string is *derived*. If it is, take the reference and let the renderer denormalize it — that is the contract that keeps the machine-facing JSON honest.
+
 ## Database architecture
 
 **Migrations are the source of truth for schema.** Not proto, not Go structs — the SQL in `db/migrations/`. `forge generate` shadow-applies the migrations, introspects the result, and projects the entity struct (`time.Time` for timestamps, pointers for nullable columns, native slices for arrays) plus the ORM into `internal/db/<entity>_orm.go`.

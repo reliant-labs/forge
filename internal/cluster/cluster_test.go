@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -34,7 +35,7 @@ func indexOf(ss []string, s string) int {
 // unquoted — their KCL type is intentional project config.
 func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 	// Numeric tag: the regression trigger. Must come out QUOTED.
-	got := renderDArgs("3826648", "cp-forge-prod", "prod", nil)
+	got := renderDArgs("3826648", "cp-forge-prod", "prod", nil, nil)
 	for _, want := range []string{
 		`image_tag="3826648"`,
 		`namespace="cp-forge-prod"`,
@@ -46,13 +47,13 @@ func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 	}
 
 	// Non-numeric tag is also quoted (uniform handling).
-	got = renderDArgs("v1.2.3", "ns", "dev", nil)
+	got = renderDArgs("v1.2.3", "ns", "dev", nil, nil)
 	if !contains(got, `image_tag="v1.2.3"`) {
 		t.Errorf("expected image_tag=\"v1.2.3\" in dArgs, got %v", got)
 	}
 
 	// Empty env produces no env= binding.
-	got = renderDArgs("tag", "ns", "", nil)
+	got = renderDArgs("tag", "ns", "", nil, nil)
 	for _, a := range got {
 		if strings.HasPrefix(a, "env=") {
 			t.Errorf("expected no env= entry for empty env, got %v", got)
@@ -60,7 +61,7 @@ func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 	}
 
 	// envCfgKV values are appended sorted by key and UNquoted.
-	got = renderDArgs("tag", "ns", "", map[string]string{"B": "2", "A": "1"})
+	got = renderDArgs("tag", "ns", "", map[string]string{"B": "2", "A": "1"}, nil)
 	if !contains(got, "A=1") {
 		t.Errorf("expected unquoted A=1 in dArgs, got %v", got)
 	}
@@ -69,6 +70,27 @@ func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 	}
 	if ia, ib := indexOf(got, "A=1"), indexOf(got, "B=2"); ia == -1 || ib == -1 || ia > ib {
 		t.Errorf("expected A=1 before B=2 (sorted), got %v", got)
+	}
+
+	// image_digests is emitted as a QUOTED JSON string (so KCL types it as
+	// `str` and json.decodes it). encoding/json sorts object keys, so the
+	// JSON is deterministic.
+	got = renderDArgs("tag", "ns", "", nil, map[string]string{
+		"reliant":       "sha256:12ac",
+		"control-plane": "sha256:d181",
+	})
+	wantDigest := `image_digests="{\"control-plane\":\"sha256:d181\",\"reliant\":\"sha256:12ac\"}"`
+	if !contains(got, wantDigest) {
+		t.Errorf("expected %q in dArgs, got %v", wantDigest, got)
+	}
+
+	// Empty / nil image_digests produces NO image_digests binding — so a
+	// plain `kcl run` renders byte-identically (option yields None → {}).
+	got = renderDArgs("tag", "ns", "", nil, nil)
+	for _, a := range got {
+		if strings.HasPrefix(a, "image_digests=") {
+			t.Errorf("expected no image_digests entry for nil map, got %v", got)
+		}
 	}
 }
 
@@ -295,11 +317,13 @@ func TestRenderedDeploymentNames_EmptyAndMalformed(t *testing.T) {
 	}
 }
 
-// filterTestManifests is a representative env bundle: two app
-// Deployments (each carrying app.kubernetes.io/name), a shared ConfigMap
-// and a Namespace (NO app.kubernetes.io/name — the shared/infra shape
-// forge's renderer produces). It mirrors what RenderManifests emits and
-// is `\n---\n`-joined exactly like the production stream.
+// filterTestManifests is a representative env bundle as RenderManifests
+// emits it: two app Deployments (each carrying its own SERVICE group
+// `app.kubernetes.io/name`), plus a Namespace and a ConfigMap that belong
+// to NO service and therefore carry NO `app.kubernetes.io/name` group — the
+// shared/infra shape. The group is always the service; shared infra is
+// ungrouped, so a service `--target` drops it. `\n---\n`-joined exactly
+// like the production stream.
 const filterTestManifests = `apiVersion: v1
 kind: Namespace
 metadata:
@@ -338,55 +362,79 @@ metadata:
     app.kubernetes.io/managed-by: forge
 spec: {}`
 
-// TestFilterManifestsByApp_KeepsTargetAndShared is the core assertion
-// of the --target application filter: targeting one app keeps that app's
-// Deployment plus every shared resource (the ConfigMap and Namespace
-// have no app.kubernetes.io/name label) and drops the other app's
-// Deployment.
-func TestFilterManifestsByApp_KeepsTargetAndShared(t *testing.T) {
-	got, err := FilterManifestsByApp(filterTestManifests, []string{"admin-server"})
-	if err != nil {
-		t.Fatalf("FilterManifestsByApp: %v", err)
-	}
+// TestSelectManifestsByGroup_ExclusiveSingleGroup is the core assertion of
+// the exclusive --target filter: targeting ONE service group keeps EXACTLY
+// that group's manifests and drops everything else — including the ungrouped
+// env-shared Namespace and ConfigMap. This is the EXCLUSIVE behaviour: no
+// shared-base is auto-kept; a manifest is kept only when its KCL-declared
+// service group is named.
+func TestSelectManifestsByGroup_ExclusiveSingleGroup(t *testing.T) {
+	got := SelectManifestsByGroup(filterTestManifests, []string{"admin-server"})
 	if !strings.Contains(got, "name: admin-server") {
-		t.Errorf("expected targeted app admin-server to be kept, got:\n%s", got)
+		t.Errorf("expected targeted group admin-server kept, got:\n%s", got)
 	}
-	if !strings.Contains(got, "kind: Namespace") {
-		t.Errorf("expected shared Namespace (no app label) to be kept, got:\n%s", got)
+	if strings.Contains(got, "kind: Namespace") {
+		t.Errorf("EXCLUSIVE: ungrouped env-shared Namespace must be DROPPED under a service target, got:\n%s", got)
 	}
-	if !strings.Contains(got, "name: example-config") {
-		t.Errorf("expected shared ConfigMap (no app label) to be kept, got:\n%s", got)
+	if strings.Contains(got, "name: example-config") {
+		t.Errorf("EXCLUSIVE: ungrouped env-shared ConfigMap must be DROPPED under a service target, got:\n%s", got)
 	}
 	if strings.Contains(got, "name: workspace-proxy") {
-		t.Errorf("expected non-targeted app workspace-proxy to be dropped, got:\n%s", got)
+		t.Errorf("non-targeted app workspace-proxy must be dropped, got:\n%s", got)
 	}
 }
 
-// TestFilterManifestsByApp_MultipleTargets confirms the filter unions
-// multiple --target apps and still keeps shared resources.
-func TestFilterManifestsByApp_MultipleTargets(t *testing.T) {
-	got, err := FilterManifestsByApp(filterTestManifests, []string{"admin-server", "workspace-proxy"})
-	if err != nil {
-		t.Fatalf("FilterManifestsByApp: %v", err)
+// TestSelectManifestsByGroup_NoSyntheticNamespaceGroup proves there is NO
+// synthetic env/namespace group: the ungrouped shared manifests are NOT
+// reachable by naming the namespace as a --target (it is not a service
+// group). Targeting `example-dev` matches nothing, so the result is empty —
+// shared infra rides only a bare deploy, never a --target.
+func TestSelectManifestsByGroup_NoSyntheticNamespaceGroup(t *testing.T) {
+	got := SelectManifestsByGroup(filterTestManifests, []string{"example-dev"})
+	if strings.TrimSpace(got) != "" {
+		t.Errorf("namespace is NOT a group — --target=example-dev must select nothing, got:\n%s", got)
 	}
-	for _, want := range []string{"name: admin-server", "name: workspace-proxy", "kind: Namespace", "name: example-config"} {
+}
+
+// TestSelectManifestsByGroup_MultiTargetUnion confirms multi-target is the
+// UNION of ONLY the named service groups — and nothing else implicitly.
+// Targeting the two app groups keeps both Deployments and DROPS the
+// ungrouped env-shared Namespace + ConfigMap.
+func TestSelectManifestsByGroup_MultiTargetUnion(t *testing.T) {
+	got := SelectManifestsByGroup(filterTestManifests, []string{"admin-server", "workspace-proxy"})
+	for _, want := range []string{"name: admin-server", "name: workspace-proxy"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("expected %q in output, got:\n%s", want, got)
+			t.Errorf("expected %q in union output, got:\n%s", want, got)
 		}
 	}
+	if strings.Contains(got, "kind: Namespace") {
+		t.Errorf("EXCLUSIVE: ungrouped Namespace must NOT be implicitly kept, got:\n%s", got)
+	}
+	if strings.Contains(got, "name: example-config") {
+		t.Errorf("EXCLUSIVE: ungrouped ConfigMap must NOT be implicitly kept, got:\n%s", got)
+	}
 }
 
-// TestFilterManifestsByApp_UnknownTargetErrors confirms a typo'd target
-// (matching no app workload) errors with the available app names rather
-// than applying a shared-only bundle that does nothing the user wanted.
-func TestFilterManifestsByApp_UnknownTargetErrors(t *testing.T) {
-	_, err := FilterManifestsByApp(filterTestManifests, []string{"nope"})
-	if err == nil {
-		t.Fatal("expected error for unknown target, got nil")
+// TestSelectManifestsByGroup_NoTargetIsCallerEverything documents that the
+// "no --target" case is NOT this function's job — Apply keeps everything
+// and never calls SelectManifestsByGroup when Targets is empty. Passing an
+// empty target set here keeps nothing, which is exactly why Apply gates the
+// call behind len(Targets) > 0.
+func TestSelectManifestsByGroup_NoTargetIsCallerEverything(t *testing.T) {
+	got := SelectManifestsByGroup(filterTestManifests, nil)
+	if strings.TrimSpace(got) != "" {
+		t.Errorf("empty target set selects nothing (Apply handles 'everything' itself); got:\n%s", got)
 	}
-	// Available app names should be surfaced for the fix.
-	if !strings.Contains(err.Error(), "admin-server") || !strings.Contains(err.Error(), "workspace-proxy") {
-		t.Errorf("expected available app names in error, got: %v", err)
+}
+
+// TestSelectManifestsByGroup_UnknownTargetSelectsNothing confirms a typo'd
+// target simply matches no group and yields an empty stream — the friendly
+// "did you mean" guard lives in the CLI (validateDeployTargets), not in
+// this mechanical filter.
+func TestSelectManifestsByGroup_UnknownTargetSelectsNothing(t *testing.T) {
+	got := SelectManifestsByGroup(filterTestManifests, []string{"nope"})
+	if strings.TrimSpace(got) != "" {
+		t.Errorf("unknown group selects nothing, got:\n%s", got)
 	}
 }
 
@@ -394,9 +442,9 @@ func TestFilterManifestsByApp_UnknownTargetErrors(t *testing.T) {
 // a Deployment plus its cluster RBAC trio (ServiceAccount, ClusterRole,
 // ClusterRoleBinding), every doc carrying app.kubernetes.io/name =
 // <operator>. A peer service Deployment (different app label) and a
-// shared Namespace (no app label) round it out — the exact shape the
-// control-plane `workspace-controller` operator produces alongside its
-// app services.
+// shared Namespace (NO app label — ungrouped) round it out — the exact
+// shape the control-plane `workspace-controller` operator produces
+// alongside its app services.
 const operatorFilterManifests = `apiVersion: v1
 kind: Namespace
 metadata:
@@ -446,26 +494,26 @@ metadata:
     app.kubernetes.io/managed-by: forge
 spec: {}`
 
-// TestFilterManifestsByApp_Operator is the GAP-1 assertion: targeting an
-// operator name keeps that operator's Deployment AND its cluster RBAC
-// (ServiceAccount / ClusterRole / ClusterRoleBinding all carry the
-// operator's app label), keeps shared infra (the Namespace), and drops
-// the unrelated service Deployment. This is what `forge deploy prod
-// --target workspace-controller` renders.
-func TestFilterManifestsByApp_Operator(t *testing.T) {
-	got, err := FilterManifestsByApp(operatorFilterManifests, []string{"workspace-controller"})
-	if err != nil {
-		t.Fatalf("FilterManifestsByApp: %v", err)
-	}
+// TestSelectManifestsByGroup_Operator asserts an operator is a first-class
+// --target group: targeting the operator name keeps EXACTLY that operator's
+// Deployment AND its cluster RBAC (ServiceAccount / ClusterRole /
+// ClusterRoleBinding all carry the operator's group), and DROPS everything
+// else — both the unrelated service Deployment AND the ungrouped env-shared
+// Namespace. This is the EXCLUSIVE
+// `forge deploy prod --target workspace-controller`.
+func TestSelectManifestsByGroup_Operator(t *testing.T) {
+	got := SelectManifestsByGroup(operatorFilterManifests, []string{"workspace-controller"})
 	for _, want := range []string{
 		"name: workspace-controller\n",                  // Deployment + ServiceAccount
 		"name: workspace-controller-clusterrole\n",      // ClusterRole
 		"name: workspace-controller-clusterrolebinding", // ClusterRoleBinding
-		"kind: Namespace",                               // shared infra kept
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected %q in scoped output, got:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "kind: Namespace") {
+		t.Errorf("EXCLUSIVE: ungrouped env-shared Namespace must be dropped when only the operator is targeted, got:\n%s", got)
 	}
 	if strings.Contains(got, "name: admin-server") {
 		t.Errorf("expected unrelated service admin-server to be dropped, got:\n%s", got)
@@ -870,5 +918,480 @@ spec: {}`
 	})
 	if !strings.Contains(got, "name: orphan") {
 		t.Errorf("an app-labelled doc owned by no group must be kept, not silently dropped:\n%s", got)
+	}
+}
+
+// clusterPinnedManifests is a two-cluster ingress stream where the
+// Gateway carries the FIRST-CLASS `forge.dev/cluster` routing label
+// (forge's gateway builder stamps it when `cluster = "control-plane"` is
+// set) instead of riding an unrelated service's app label.
+const clusterPinnedManifests = `apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: cp-public
+  labels:
+    app.kubernetes.io/name: cp-public
+    forge.dev/cluster: control-plane
+spec: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-proxy
+  labels:
+    app.kubernetes.io/name: workspace-proxy
+spec: {}`
+
+// TestScopeManifestsToGroup_ClusterLabelKeepsOnNamedCluster asserts a
+// manifest stamped `forge.dev/cluster: control-plane` lands on the
+// control-plane group (whose GroupScope.Cluster matches) — routed by the
+// first-class label, not by any app-label membership.
+func TestScopeManifestsToGroup_ClusterLabelKeepsOnNamedCluster(t *testing.T) {
+	got := ScopeManifestsToGroup(clusterPinnedManifests, GroupScope{
+		Cluster:   "control-plane",
+		OwnApps:   map[string]struct{}{"admin-server": {}},
+		OtherApps: map[string]struct{}{"workspace-proxy": {}},
+	})
+	if !strings.Contains(got, "name: cp-public") {
+		t.Errorf("a forge.dev/cluster=control-plane manifest must land on the control-plane group:\n%s", got)
+	}
+	// The other cluster's app-labelled workload still drops via OtherApps.
+	if strings.Contains(got, "name: workspace-proxy") {
+		t.Errorf("workspace-proxy is OtherApps and must be dropped from control-plane:\n%s", got)
+	}
+}
+
+// TestScopeManifestsToGroup_ClusterLabelDroppedFromSibling is the
+// isolation half: the SAME first-class-pinned manifest is dropped from a
+// SIBLING cluster whose name doesn't match the routing label — even
+// though that cluster has no app-label opinion about the Gateway. This is
+// what makes `cluster = "control-plane"` keep the Gateway off the daemon
+// cluster without the app-label collision trick.
+func TestScopeManifestsToGroup_ClusterLabelDroppedFromSibling(t *testing.T) {
+	got := ScopeManifestsToGroup(clusterPinnedManifests, GroupScope{
+		Cluster:   "daemon",
+		OwnApps:   map[string]struct{}{"workspace-proxy": {}},
+		OtherApps: map[string]struct{}{"admin-server": {}},
+	})
+	if strings.Contains(got, "name: cp-public") {
+		t.Errorf("a forge.dev/cluster=control-plane manifest must be dropped from the daemon cluster:\n%s", got)
+	}
+	// The daemon's own service is kept.
+	if !strings.Contains(got, "name: workspace-proxy") {
+		t.Errorf("daemon's own workspace-proxy must be kept:\n%s", got)
+	}
+}
+
+// TestScopeManifestsToGroup_ClusterLabelIgnoredWhenScopeClusterUnset
+// documents the fall-through: with GroupScope.Cluster empty, the
+// first-class label is NOT consulted and the doc routes purely by its app
+// label (here cp-public is ungrouped → kept defensively). This keeps the
+// label inert for callers that haven't adopted the Cluster field.
+func TestScopeManifestsToGroup_ClusterLabelIgnoredWhenScopeClusterUnset(t *testing.T) {
+	got := ScopeManifestsToGroup(clusterPinnedManifests, GroupScope{
+		OwnApps:   map[string]struct{}{"admin-server": {}},
+		OtherApps: map[string]struct{}{"workspace-proxy": {}},
+	})
+	if !strings.Contains(got, "name: cp-public") {
+		t.Errorf("with no scope.Cluster, cp-public routes by app label (ungrouped → kept):\n%s", got)
+	}
+}
+
+// immutableJobManifests is a minimal warm-redeploy bundle: a namespaced
+// Job (the kind whose spec.template k8s treats as immutable) plus an
+// unrelated Deployment. The recovery must scope its delete to the Job and
+// nothing else.
+const immutableJobManifests = `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: control-plane-migrate
+  namespace: app
+spec:
+  template:
+    spec:
+      containers:
+        - name: migrate
+          image: repo/migrate:newtag
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: app
+spec:
+  replicas: 1`
+
+// realImmutableStderr is the kubectl error a warm `forge up` produces when
+// the migrate Job already exists with a different image tag (every commit
+// changes the tag, and a Job's spec.template is immutable). This is the
+// CLIENT-SIDE apply shape (`The <Kind> "<name>" is invalid:`).
+const realImmutableStderr = `The Job "control-plane-migrate" is invalid: spec.template: Invalid value: ...: field is immutable`
+
+// cloudImmutableStderr is the SERVER-SIDE apply shape of the very same
+// failure — the one a warm CLOUD `forge deploy` actually hits, because
+// forge always applies with `--server-side`. kubectl encodes the resource
+// as the GVR-style `<resource>.<group>` ("Job.batch") rather than the bare
+// kind ("Job"). The recovery used to parse kind="Job.batch", fail to match
+// any `kind: Job` document, lose the namespace, delete in the wrong
+// namespace as a no-op, and re-hit the immutable Job — exiting 1. The
+// kind-normalization fix in parseInvalidResource makes both shapes recover
+// the namespace identically.
+const cloudImmutableStderr = `Job.batch "control-plane-migrate" is invalid: spec.template: Invalid value: core.PodTemplateSpec{...}: field is immutable`
+
+// noopWaitGone is the wait-for-deletion closure for tests that don't
+// exercise the poll itself — the resource is considered immediately gone.
+func noopWaitGone(immutableTarget) error { return nil }
+
+// TestApplyWithImmutableRecovery_DeletesJobThenReapplies pins the warm
+// re-deploy fix: a Job whose image tag changed makes the first apply fail
+// with the immutable-field error; forge must delete THAT Job (scoped, in
+// its namespace) and re-apply once, after which the deploy succeeds. The
+// trigger keys off the immutable error + the Job kind parsed from it — it
+// is NOT hardcoded to "control-plane-migrate".
+func TestApplyWithImmutableRecovery_DeletesJobThenReapplies(t *testing.T) {
+	var applies int
+	var deleted []immutableTarget
+
+	apply := func() (string, error) {
+		applies++
+		if applies == 1 {
+			// First apply fails immutable, as a real warm re-deploy does.
+			return realImmutableStderr, errors.New("exit status 1")
+		}
+		return "", nil // re-apply after the delete succeeds
+	}
+	del := func(t immutableTarget) error {
+		deleted = append(deleted, t)
+		return nil
+	}
+
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); err != nil {
+		t.Fatalf("recovery should have healed the immutable apply, got %v", err)
+	}
+	if applies != 2 {
+		t.Fatalf("expected exactly two applies (fail then re-apply), got %d", applies)
+	}
+	if len(deleted) != 1 {
+		t.Fatalf("expected exactly one scoped delete, got %v", deleted)
+	}
+	got := deleted[0]
+	if got.Kind != "Job" || got.Name != "control-plane-migrate" || got.Namespace != "app" {
+		t.Fatalf("delete must target the failing Job in its namespace, got %+v", got)
+	}
+}
+
+// TestApplyWithImmutableRecovery_NonImmutableErrorSurfaces confirms the
+// recovery is surgical: an apply error that is NOT the immutable-field
+// case is returned unchanged, with no delete and no second apply.
+func TestApplyWithImmutableRecovery_NonImmutableErrorSurfaces(t *testing.T) {
+	var applies, deletes int
+	orig := errors.New("exit status 1")
+	apply := func() (string, error) {
+		applies++
+		return "Error from server (NotFound): namespaces \"app\" not found", orig
+	}
+	del := func(immutableTarget) error { deletes++; return nil }
+
+	err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone)
+	if !errors.Is(err, orig) {
+		t.Fatalf("a non-immutable error must surface unchanged, got %v", err)
+	}
+	if applies != 1 || deletes != 0 {
+		t.Fatalf("non-immutable failure must not delete or re-apply (applies=%d deletes=%d)", applies, deletes)
+	}
+}
+
+// TestApplyWithImmutableRecovery_ReapplyStillFailsSurfacesOriginal pins
+// the safety property: if EVERY re-apply after the delete still hits the
+// same immutable error, the recovery exhausts its bounded retries and
+// surfaces the immutable error rather than swallowing it (a genuinely
+// stuck resource must NOT silently succeed). It also verifies the loop is
+// bounded — apply runs the initial attempt plus exactly
+// immutableRecoveryAttempts retries, never unbounded.
+func TestApplyWithImmutableRecovery_ReapplyStillFailsSurfacesOriginal(t *testing.T) {
+	orig := errors.New("exit status 1")
+	var applies, deletes int
+	apply := func() (string, error) { applies++; return realImmutableStderr, orig }
+	del := func(immutableTarget) error { deletes++; return nil }
+
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); !errors.Is(err, orig) {
+		t.Fatalf("a still-failing re-apply must surface the immutable error, got %v", err)
+	}
+	if applies != 1+immutableRecoveryAttempts {
+		t.Fatalf("recovery must be bounded: expected %d applies (initial + %d retries), got %d",
+			1+immutableRecoveryAttempts, immutableRecoveryAttempts, applies)
+	}
+	if deletes != immutableRecoveryAttempts {
+		t.Fatalf("expected %d scoped deletes (one per retry), got %d", immutableRecoveryAttempts, deletes)
+	}
+}
+
+// TestImmutableResource_ParsesKindNameNamespace checks the pure detector:
+// the immutable-field error yields the Job kind+name, and the namespace is
+// recovered by matching that resource back to its manifest document.
+func TestImmutableResource_ParsesKindNameNamespace(t *testing.T) {
+	res, ok := immutableResource(realImmutableStderr, immutableJobManifests)
+	if !ok {
+		t.Fatal("an immutable-field error must be recognized as recoverable")
+	}
+	if res.Kind != "Job" || res.Name != "control-plane-migrate" || res.Namespace != "app" {
+		t.Fatalf("parsed the wrong resource: %+v", res)
+	}
+
+	// Not an immutable error → not recoverable.
+	if _, ok := immutableResource("Error from server (NotFound): ...", immutableJobManifests); ok {
+		t.Fatal("a non-immutable error must not be treated as recoverable")
+	}
+	// Immutable error naming a resource absent from the bundle still
+	// reports the kind+name (namespace just comes back empty).
+	other := `The Job "absent" is invalid: spec.template: field is immutable`
+	res, ok = immutableResource(other, immutableJobManifests)
+	if !ok || res.Name != "absent" || res.Namespace != "" {
+		t.Fatalf("unmatched resource should parse with empty namespace, got ok=%v res=%+v", ok, res)
+	}
+}
+
+// TestImmutableResource_ServerSideApplyShape is the regression test for the
+// CLOUD deploy bug: forge applies with `--server-side`, so a warm redeploy
+// of a changed migrate Job fails with the GVR-style `Job.batch "..." is
+// invalid:` shape — not the client-side `The Job "..."` shape. Before the
+// fix, kind parsed as "Job.batch", matched no `kind: Job` document, and the
+// namespace came back empty — so the recovery deleted in the wrong
+// namespace and the re-apply re-hit the immutable Job (deploy exit 1). The
+// fix normalizes the kind to the bare `Job`, recovering the namespace so
+// the delete is scoped correctly.
+func TestImmutableResource_ServerSideApplyShape(t *testing.T) {
+	res, ok := immutableResource(cloudImmutableStderr, immutableJobManifests)
+	if !ok {
+		t.Fatal("the server-side-apply immutable error must be recognized as recoverable")
+	}
+	if res.Kind != "Job" {
+		t.Fatalf("kind must be normalized from the GVR form Job.batch to the bare Job, got %q", res.Kind)
+	}
+	if res.Name != "control-plane-migrate" {
+		t.Fatalf("name must parse from the SSA shape, got %q", res.Name)
+	}
+	if res.Namespace != "app" {
+		t.Fatalf("CLOUD BUG: namespace must be recovered (matched back to the kind: Job document), got %q", res.Namespace)
+	}
+}
+
+// TestApplyWithImmutableRecovery_CloudShape_DeleteWaitReapply is the
+// end-to-end recovery test for the cloud apply path: the first apply fails
+// with the server-side (`Job.batch …`) immutable error, the recovery must
+// delete EXACTLY the failing Job in its namespace, and the re-apply must
+// then succeed (exit 0). This is the warm-cloud-redeploy scenario that
+// previously raced/failed.
+func TestApplyWithImmutableRecovery_CloudShape_DeleteWaitReapply(t *testing.T) {
+	var applies int
+	var deleted []immutableTarget
+
+	apply := func() (string, error) {
+		applies++
+		if applies == 1 {
+			// First apply: the server-side immutable failure a warm cloud
+			// redeploy produces.
+			return cloudImmutableStderr, errors.New("exit status 1")
+		}
+		// After the scoped delete the Job is gone, so the re-apply creates
+		// it cleanly — the deploy exits 0.
+		return "", nil
+	}
+	del := func(target immutableTarget) error {
+		deleted = append(deleted, target)
+		return nil
+	}
+
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); err != nil {
+		t.Fatalf("recovery should have healed the server-side immutable apply, got %v", err)
+	}
+	if applies != 2 {
+		t.Fatalf("expected fail-then-reapply (2 applies), got %d", applies)
+	}
+	if len(deleted) != 1 {
+		t.Fatalf("expected exactly one scoped delete, got %v", deleted)
+	}
+	got := deleted[0]
+	if got.Kind != "Job" || got.Name != "control-plane-migrate" || got.Namespace != "app" {
+		t.Fatalf("delete must target the failing Job in its namespace (kind normalized from Job.batch), got %+v", got)
+	}
+}
+
+// TestApplyWithImmutableRecovery_ReapplyRacesThenSucceeds is the direct
+// regression for the staging-0 / prod-1 split. On prod the FIRST re-apply
+// after the delete still raced the not-yet-finalized Job and re-hit the
+// immutable error, and the old single-shot recovery surfaced that as exit
+// 1 — even though the resource was on its way out. The new bounded
+// delete→wait-gone→re-apply loop must absorb that race: the second
+// re-apply (after another delete+wait) creates the Job cleanly, so the
+// OVERALL apply returns success (exit 0). Verifies the wait-gone poll runs
+// before each re-apply, and that the delete+reapply was retried.
+func TestApplyWithImmutableRecovery_ReapplyRacesThenSucceeds(t *testing.T) {
+	var applies, deletes, waits int
+
+	apply := func() (string, error) {
+		applies++
+		switch applies {
+		case 1:
+			// Initial apply: warm-redeploy immutable failure.
+			return cloudImmutableStderr, errors.New("exit status 1")
+		case 2:
+			// First re-apply STILL races the finalizing Job (the prod flake).
+			return cloudImmutableStderr, errors.New("exit status 1")
+		default:
+			// Second re-apply: the Job is finally gone, apply succeeds → exit 0.
+			return "", nil
+		}
+	}
+	del := func(immutableTarget) error { deletes++; return nil }
+	waitGone := func(immutableTarget) error { waits++; return nil }
+
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, waitGone); err != nil {
+		t.Fatalf("recovery must absorb the re-apply race and exit 0, got %v", err)
+	}
+	if applies != 3 {
+		t.Fatalf("expected 3 applies (initial + 2 retries, the second succeeding), got %d", applies)
+	}
+	if deletes != 2 {
+		t.Fatalf("expected 2 deletes (one per retry cycle), got %d", deletes)
+	}
+	if waits != 2 {
+		t.Fatalf("expected wait-for-deletion before each re-apply (2 waits), got %d", waits)
+	}
+}
+
+// TestApplyWithImmutableRecovery_DeleteErrorSurfaces confirms a failing
+// delete during recovery is reported (wrapped) rather than swallowed or
+// retried into a loop — a delete that can't run is a genuine recovery
+// failure, not the race the loop exists to absorb.
+func TestApplyWithImmutableRecovery_DeleteErrorSurfaces(t *testing.T) {
+	delErr := errors.New("kubectl delete: forbidden")
+	var applies, deletes int
+	apply := func() (string, error) {
+		applies++
+		return cloudImmutableStderr, errors.New("exit status 1")
+	}
+	del := func(immutableTarget) error { deletes++; return delErr }
+
+	err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone)
+	if !errors.Is(err, delErr) {
+		t.Fatalf("a delete failure must surface (wrapped), got %v", err)
+	}
+	if applies != 1 || deletes != 1 {
+		t.Fatalf("a delete failure must abort immediately (applies=%d deletes=%d)", applies, deletes)
+	}
+}
+
+// batchedImmutableStderr is the shape a warm CLOUD redeploy produces when the
+// SINGLE server-side apply of the workload batch hits MORE THAN ONE immutable
+// conflict at once — kubectl emits one `<Kind> "<name>" is invalid: … field is
+// immutable` line per offending resource. Here the migrate Job AND the api
+// Deployment both report an immutable field. (Both resources are present in
+// immutableJobManifests so their namespaces recover.)
+const batchedImmutableStderr = `Job.batch "control-plane-migrate" is invalid: spec.template: Invalid value: core.PodTemplateSpec{...}: field is immutable
+Deployment.apps "api" is invalid: spec.selector: Invalid value: ...: field is immutable`
+
+// TestImmutableResources_BatchReportsEveryConflict pins the batch-aware
+// detector: a single apply whose stderr lists TWO immutable conflicts yields
+// BOTH targets (kind/name/namespace each recovered), not just the first.
+func TestImmutableResources_BatchReportsEveryConflict(t *testing.T) {
+	got := immutableResources(batchedImmutableStderr, immutableJobManifests)
+	if len(got) != 2 {
+		t.Fatalf("a batched apply with two immutable conflicts must yield two targets, got %d: %+v", len(got), got)
+	}
+	want := map[string]string{
+		"Job/control-plane-migrate": "app",
+		"Deployment/api":            "app",
+	}
+	for _, tgt := range got {
+		key := tgt.Kind + "/" + tgt.Name
+		ns, ok := want[key]
+		if !ok {
+			t.Fatalf("unexpected target %+v", tgt)
+		}
+		if tgt.Namespace != ns {
+			t.Fatalf("target %s: namespace must recover to %q, got %q", key, ns, tgt.Namespace)
+		}
+	}
+
+	// A stderr with NO immutable conflict yields no targets — the caller
+	// surfaces such an error unchanged.
+	if got := immutableResources(`Error from server (NotFound): namespaces "app" not found`, immutableJobManifests); len(got) != 0 {
+		t.Fatalf("a non-immutable error must yield no recoverable targets, got %+v", got)
+	}
+	// A batch where one resource is immutable but a DIFFERENT one failed for an
+	// unrelated reason must recover ONLY the immutable one — the per-resource
+	// body scoping keeps the non-immutable failure from masquerading.
+	mixed := `Job.batch "control-plane-migrate" is invalid: spec.template: ...: field is immutable
+Deployment.apps "api" is invalid: spec.replicas: Invalid value: must be non-negative`
+	gotMixed := immutableResources(mixed, immutableJobManifests)
+	if len(gotMixed) != 1 || gotMixed[0].Name != "control-plane-migrate" {
+		t.Fatalf("only the immutable resource must be recoverable in a mixed batch, got %+v", gotMixed)
+	}
+}
+
+// TestApplyWithImmutableRecovery_BatchedMultiConflict_ExitsZero is the direct
+// regression for the prod `forge deploy` exit-1-on-a-healthy-cluster bug. The
+// workload batch is applied in ONE server-side apply, so a warm redeploy can
+// report MORE THAN ONE immutable conflict at once (the migrate Job AND a
+// second resource). The OLD recovery only re-entered for the SAME Kind/Name as
+// the first conflict, so the second immutable resource was misclassified as
+// "unrelated" and its non-zero status propagated to the deploy's exit code —
+// exit 1 — even though deleting+re-applying it would have healed it and every
+// pod was already running. The recovery must now delete EVERY immutable
+// resource in the batch and re-apply, after which the apply succeeds (exit 0).
+func TestApplyWithImmutableRecovery_BatchedMultiConflict_ExitsZero(t *testing.T) {
+	var applies int
+	var deleted []immutableTarget
+	gone := map[string]bool{}
+
+	apply := func() (string, error) {
+		applies++
+		// The re-apply only succeeds once BOTH offenders have actually been
+		// deleted — realistic: re-applying the whole batch while a second
+		// immutable resource is still present re-hits its immutable field.
+		// (This is what makes single-resource recovery exit 1 on prod.)
+		jobGone := gone["Job/control-plane-migrate"]
+		depGone := gone["Deployment/api"]
+		switch {
+		case jobGone && depGone:
+			return "", nil
+		case jobGone && !depGone:
+			// Job healed, Deployment still immutable.
+			return `Deployment.apps "api" is invalid: spec.selector: Invalid value: ...: field is immutable`, errors.New("exit status 1")
+		case !jobGone && depGone:
+			return `Job.batch "control-plane-migrate" is invalid: spec.template: Invalid value: ...: field is immutable`, errors.New("exit status 1")
+		default:
+			// Neither deleted yet — both immutable (the initial batched apply).
+			return batchedImmutableStderr, errors.New("exit status 1")
+		}
+	}
+	del := func(target immutableTarget) error {
+		deleted = append(deleted, target)
+		gone[target.Kind+"/"+target.Name] = true
+		return nil
+	}
+
+	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); err != nil {
+		t.Fatalf("recovery must heal EVERY immutable conflict in the batch and exit 0, got %v", err)
+	}
+	if applies != 2 {
+		t.Fatalf("expected fail-then-reapply (2 applies), got %d", applies)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("recovery must delete BOTH immutable resources, deleted %d: %+v", len(deleted), deleted)
+	}
+	// Both offenders, each scoped to its namespace.
+	gotNames := map[string]string{}
+	for _, d := range deleted {
+		gotNames[d.Kind+"/"+d.Name] = d.Namespace
+	}
+	for key, ns := range map[string]string{
+		"Job/control-plane-migrate": "app",
+		"Deployment/api":            "app",
+	} {
+		if gotNames[key] != ns {
+			t.Fatalf("delete must scope %s to namespace %q, got %q (all: %+v)", key, ns, gotNames[key], deleted)
+		}
 	}
 }

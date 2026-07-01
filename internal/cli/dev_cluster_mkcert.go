@@ -144,7 +144,7 @@ func renderTLSSecretYAML(name, namespace string, certPEM, keyPEM []byte) ([]byte
 	return yaml.Marshal(manifest)
 }
 
-// provisionMkcertSecrets is the post-installIngressBundle hook. It
+// provisionMkcertSecrets is the post-cluster-up TLS hook. It
 // renders the project's dev KCL, projects mkcert-mode Gateways into
 // the (host, secret, ns) tuple set, and provisions one TLS Secret per
 // tuple via mkcert + kubectl apply.

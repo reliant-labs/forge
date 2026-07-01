@@ -69,10 +69,14 @@ func runDebugStartAttach(ctx context.Context, pid int, jsonOutput bool) error {
 	}
 
 	session := &dbgsvc.SessionInfo{
-		Type:    "delve",
-		Addr:    d.Addr(),
-		PID:     d.PID(),
-		Binary:  fmt.Sprintf("pid:%d", pid),
+		Type:   "delve",
+		Addr:   d.Addr(),
+		PID:    d.PID(),
+		DlvPID: d.DlvPID(),
+		Binary: fmt.Sprintf("pid:%d", pid),
+		// ATTACH: forge does NOT own this process. `stop` must detach and
+		// leave it running — never kill it.
+		Owned:   false,
 		Started: time.Now(),
 	}
 	if err := debugSvc().SaveSession(".", session); err != nil {
@@ -82,7 +86,7 @@ func runDebugStartAttach(ctx context.Context, pid int, jsonOutput bool) error {
 	if jsonOutput {
 		_ = json.NewEncoder(os.Stdout).Encode(session)
 	} else {
-		fmt.Printf("Attached to PID %d\n", pid)
+		fmt.Printf("Attached to PID %d (forge does not own this process; 'stop' will detach, not kill)\n", pid)
 		fmt.Printf("Delve listening at %s\n", d.Addr())
 	}
 	return nil
@@ -103,25 +107,29 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 		if err != nil {
 			return fmt.Errorf("loading project config: %w", err)
 		}
+		var svcPath string
 		found := false
 		for _, svc := range store.Components() {
 			if svc.Name == target {
-				candidate := filepath.Join(svc.Path, "cmd", "server")
-				if _, err := os.Stat(candidate); err == nil {
-					buildPath = "./" + candidate
-				} else if _, err := os.Stat("cmd"); err == nil {
-					// Mono-service layout: top-level cmd/ directory.
-					buildPath = "./cmd/..."
-				} else {
-					buildPath = "./" + svc.Path
-				}
+				svcPath = svc.Path
 				found = true
 				break
 			}
 		}
-		if !found {
-			return fmt.Errorf("service %q not found in project config; provide a path instead", target)
+		// A shared-binary project (one cobra binary dispatching services by
+		// SERVICE_NAME) has no per-service component entry; the service name
+		// is a subcommand of the single ./cmd/<binary>. In that case the
+		// component lookup misses but the project is still debuggable — fall
+		// through to mainPackageForService, which resolves the binary's main
+		// package. Only error if we can't resolve a main package at all.
+		mainPkg, err := mainPackageForService(target, svcPath)
+		if err != nil {
+			if !found {
+				return fmt.Errorf("service %q not found in project config and no main package resolved; provide a path instead: %w", target, err)
+			}
+			return fmt.Errorf("resolving main package for service %q: %w", target, err)
 		}
+		buildPath = mainPkg
 	}
 
 	// Build with debug flags.
@@ -143,24 +151,25 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 		return fmt.Errorf("resolving binary path: %w", err)
 	}
 
-	// Determine binary args. If the binary was built from a cmd/ package
-	// that contains a cobra "server" subcommand, pass it so the app
-	// starts its HTTP listener rather than printing usage.
-	var binArgs []string
-	if _, err := os.Stat("cmd/server.go"); err == nil {
-		binArgs = []string{"server"}
-	}
+	// Determine binary args + env so the launched process actually SERVES
+	// instead of exiting 0 on a usage message. Forge's shared-binary
+	// convention (mirrored by air/deploy) is `<binary> server` with
+	// SERVICE_NAME selecting the service and PORT binding the listener.
+	binArgs, binEnv := serviceRunSpec(target, buildPath, port)
 
 	d := dbgsvc.NewDelveDebugger()
-	if err := d.Start(ctx, absBinary, binArgs, port); err != nil {
+	if err := d.StartWithEnv(ctx, absBinary, binArgs, binEnv, port); err != nil {
 		return fmt.Errorf("starting Delve: %w", err)
 	}
 
 	session := &dbgsvc.SessionInfo{
-		Type:    "delve",
-		Addr:    d.Addr(),
-		PID:     d.PID(),
-		Binary:  absBinary,
+		Type:   "delve",
+		Addr:   d.Addr(),
+		PID:    d.PID(),
+		DlvPID: d.DlvPID(),
+		Binary: absBinary,
+		// forge launched this process — `stop` may kill it.
+		Owned:   true,
 		Started: time.Now(),
 	}
 	if err := debugSvc().SaveSession(".", session); err != nil {
@@ -209,6 +218,7 @@ func runDebugStartDocker(ctx context.Context) error {
 		Type:    "delve",
 		Addr:    addr,
 		Docker:  true,
+		Owned:   true, // forge started this container — stop may tear it down.
 		Started: time.Now(),
 	}
 	if err := debugSvc().SaveSession(".", session); err != nil {
@@ -228,4 +238,191 @@ func discoverDelvePort(ctx context.Context) (string, error) {
 	// Normalize 0.0.0.0 to 127.0.0.1
 	addr = strings.Replace(addr, "0.0.0.0", "127.0.0.1", 1)
 	return addr, nil
+}
+
+// mainPackageForService resolves the importable main-package path that
+// `go build -o <file>` must compile for a service — never a wildcard.
+//
+// The historical bug: a multi-binary repo fell back to `./cmd/...`, and
+// `go build -o <file> ./cmd/...` fails with "cannot write multiple packages
+// to non-directory". This resolver always returns a single package dir.
+//
+// Resolution order (first hit wins):
+//  1. <svcPath>/cmd/server     — per-service cmd/server layout
+//  2. <svcPath>/cmd/<service>  — per-service cmd/<name> layout
+//  3. cmd/<service>            — top-level cmd/<service> (matches forge's
+//     ./cmd/<name> GoBuild default)
+//  4. the SINGLE cmd/* main package — shared-binary repos dispatch every
+//     service through one cobra binary (SERVICE_NAME selects the service),
+//     so a service name with no own main package maps to that one binary.
+//  5. <svcPath>                — last resort when svcPath is itself a main pkg
+func mainPackageForService(service, svcPath string) (string, error) {
+	candidates := []string{}
+	if svcPath != "" {
+		candidates = append(candidates,
+			filepath.Join(svcPath, "cmd", "server"),
+			filepath.Join(svcPath, "cmd", service),
+		)
+	}
+	candidates = append(candidates, filepath.Join("cmd", service))
+	for _, c := range candidates {
+		if isMainPackageDir(c) {
+			return "./" + filepath.ToSlash(c), nil
+		}
+	}
+
+	// Shared-binary fallback: find every cmd/* directory holding a main
+	// package. A unique one is unambiguous; multiple need disambiguation.
+	mains := mainPackagesUnderCmd()
+	switch len(mains) {
+	case 1:
+		return "./" + filepath.ToSlash(mains[0]), nil
+	case 0:
+		// fall through to svcPath
+	default:
+		// Several binaries. A forge service name that isn't itself a binary
+		// dir (handled above) is a SERVICE_NAME-dispatched subcommand of the
+		// multi-service binary — the one cmd/* whose tree declares a `server`
+		// cobra subcommand. Standalone binaries (a thin proxy, an operator
+		// main) have no `server` subcommand. When exactly one binary is a
+		// multi-service dispatcher, that's the answer.
+		var dispatchers []string
+		for _, m := range mains {
+			if hasServerSubcommand("./" + filepath.ToSlash(m)) {
+				dispatchers = append(dispatchers, m)
+			}
+		}
+		if len(dispatchers) == 1 {
+			return "./" + filepath.ToSlash(dispatchers[0]), nil
+		}
+		return "", fmt.Errorf(
+			"service %q maps to no single main package; cmd/ holds %d binaries (%s) — pass an explicit path (e.g. forge debug start ./%s)",
+			service, len(mains), strings.Join(mains, ", "), mains[0])
+	}
+
+	if svcPath != "" && isMainPackageDir(svcPath) {
+		return "./" + filepath.ToSlash(svcPath), nil
+	}
+	return "", fmt.Errorf("no main package found for service %q (looked under cmd/ and %q)", service, svcPath)
+}
+
+// isMainPackageDir reports whether dir contains at least one non-test .go
+// file declaring `package main`.
+func isMainPackageDir(dir string) bool {
+	files, _ := filepath.Glob(filepath.Join(dir, "*.go"))
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) == "package main" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// mainPackagesUnderCmd returns every cmd/<x> directory that is a main
+// package, sorted for determinism.
+func mainPackagesUnderCmd() []string {
+	entries, err := os.ReadDir("cmd")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join("cmd", e.Name())
+		if isMainPackageDir(dir) {
+			out = append(out, dir)
+		}
+	}
+	return out
+}
+
+// serviceRunSpec returns the args + extra env a debugged service binary
+// needs to actually SERVE rather than exit 0 on a usage message.
+//
+// Mirrors air/deploy: a binary that has a cobra `server` subcommand is
+// launched as `<binary> server`, with SERVICE_NAME selecting the service
+// (shared-binary dispatch) and PORT binding the listener. When the binary
+// has no `server` subcommand (a single-purpose main), no args are added and
+// the binary runs as-is.
+func serviceRunSpec(service, buildPath string, port int) (args []string, env []string) {
+	if !hasServerSubcommand(buildPath) {
+		return nil, nil
+	}
+	args = []string{"server"}
+	env = []string{"SERVICE_NAME=" + service, "OTEL_SERVICE_NAME=" + service}
+	if port > 0 {
+		env = append(env, fmt.Sprintf("PORT=%d", port))
+	}
+	return args, env
+}
+
+// hasServerSubcommand reports whether the binary built from buildPath
+// declares a cobra command with `Use: "server"`. It walks the binary's
+// package tree (cmd/<binary>/...) because the command tree is usually
+// assembled from sibling files / subpackages, not the main package itself.
+func hasServerSubcommand(buildPath string) bool {
+	root := strings.TrimPrefix(buildPath, "./")
+	if root == "" || root == "." {
+		root = "."
+	}
+	found := false
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || found || info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		if strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		if declaresServerUse(string(data)) {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
+// declaresServerUse reports whether src contains a cobra command whose Use
+// field is "server" (optionally followed by an arg spec, e.g.
+// `Use: "server [services...]"`). Tolerant of gofmt alignment whitespace.
+func declaresServerUse(src string) bool {
+	for _, line := range strings.Split(src, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "Use:") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(t, "Use:"))
+		if !strings.HasPrefix(rest, `"`) {
+			continue
+		}
+		// Extract the quoted value, then its first word.
+		rest = rest[1:]
+		end := strings.IndexByte(rest, '"')
+		if end < 0 {
+			continue
+		}
+		use := rest[:end]
+		first := use
+		if sp := strings.IndexAny(use, " \t"); sp >= 0 {
+			first = use[:sp]
+		}
+		if first == "server" {
+			return true
+		}
+	}
+	return false
 }

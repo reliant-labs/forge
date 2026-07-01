@@ -74,7 +74,7 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 	}
 	var entries2 []entry
 	imports := map[string]map[string]string{} // file path -> alias -> path
-	_ = imports                                // reserved for future cross-import resolution
+	_ = imports                               // reserved for future cross-import resolution
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue

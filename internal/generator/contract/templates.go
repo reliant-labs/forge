@@ -72,4 +72,3 @@ var _ {{ $iface.Name }} = (*Mock{{ $iface.Name }})(nil)
 
 {{ end -}}
 `))
-

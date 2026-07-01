@@ -5,12 +5,20 @@ import "time"
 // SessionInfo is persisted to .forge/debug-session.json so subsequent
 // debug commands can reconnect to the same debugger.
 type SessionInfo struct {
-	Type    string    `json:"type"`    // "delve"
-	Addr    string    `json:"addr"`    // e.g. "127.0.0.1:2345"
-	PID     int       `json:"pid"`     // debugged process PID
-	Binary  string    `json:"binary"`  // binary path or service name
-	TmpDir  string    `json:"tmp_dir"` // temp build directory for cleanup
-	Docker  bool      `json:"docker"`  // true if session is running in a Docker container
+	Type   string `json:"type"`    // "delve"
+	Addr   string `json:"addr"`    // e.g. "127.0.0.1:2345"
+	PID    int    `json:"pid"`     // debugged (target) process PID
+	DlvPID int    `json:"dlv_pid"` // the dlv server process PID forge spawned (0 if unknown)
+	Binary string `json:"binary"`  // binary path or service name
+	TmpDir string `json:"tmp_dir"` // temp build directory for cleanup
+	Docker bool   `json:"docker"`  // true if session is running in a Docker container
+	// Owned reports whether forge launched the target process itself
+	// (`forge debug start <service>` / `--docker`). When false the session
+	// is an ATTACH (`forge debug --attach <pid>`) onto a process forge does
+	// not own: `stop` MUST detach the debugger and leave the target alive.
+	// Killing an attached target is a data-loss-class bug — it terminated a
+	// live admin-server in the field.
+	Owned   bool      `json:"owned"`
 	Started time.Time `json:"started"`
 }
 

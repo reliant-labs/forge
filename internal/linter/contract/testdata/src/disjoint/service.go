@@ -5,7 +5,7 @@ package disjoint
 // so the analyzer should report no diagnostics.
 type svc struct{}
 
-func (s *svc) Read() string         { return "" }
+func (s *svc) Read() string          { return "" }
 func (s *svc) Write(in string) error { return nil }
 
 // Leak() is in NEITHER interface, so it should be reported as a violation

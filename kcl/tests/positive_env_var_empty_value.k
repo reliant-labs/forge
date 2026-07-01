@@ -17,17 +17,16 @@ and the K8s manifest (Deployment.spec...env[].value).
 
 import forge
 
-_k8s = forge.K8sCluster {
+_target = forge.ClusterTarget {
     cluster = "k3d-empty-value"
     namespace = "empty-value-dev"
     registry = "localhost:5050"
-    ports = [8080]
 }
 
 _svc = forge.Service {
     name = "api"
     image = "api"
-    deploy = _k8s
+    deploy = _target.deploy | {ports = [8080]}
     env_vars = [
         # The new contract: empty-string value is a legal disable
         # sentinel. Pre-fix this would fail the EnvVar check block.
@@ -41,13 +40,8 @@ _svc = forge.Service {
 }
 
 _bundle = forge.Bundle {
+    cluster_target = _target
     services = [_svc]
-}
-
-_env = forge.RenderEnv {
-    cluster = _k8s
-    image_tag = "latest"
-    network_policies = False
 }
 
 # ── JSON contract (top-level `output` shape) ───────────────────────
@@ -74,7 +68,7 @@ assert_secret_ref_name = _rendered_env[2].secret_ref == "app-secrets"
 
 # ── K8s manifests (Deployment.spec...env shape) ────────────────────
 
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle, "latest", {}, False)
 _deployments = [m for m in manifests if m.kind == "Deployment"]
 assert_deployment_count = len(_deployments) == 1
 

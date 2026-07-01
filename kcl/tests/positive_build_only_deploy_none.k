@@ -41,32 +41,25 @@ _cli = forge.Service {
 
 # A normal cluster service in the SAME bundle, to prove the build-only
 # ones don't suppress real workload manifests.
+_target = forge.ClusterTarget {
+    cluster = "k3d-cp"
+    namespace = "dev"
+    registry = "localhost:5051"
+}
+
 _api = forge.Service {
     name = "api"
     image = "api"
-    deploy = forge.K8sCluster {
-        cluster = "k3d-cp"
-        namespace = "dev"
-        registry = "localhost:5051"
-        ports = [8080]
-    }
+    deploy = _target.deploy | {ports = [8080]}
 }
 
 _bundle = forge.Bundle {
+    cluster_target = _target
     services = [_base_image, _cli, _api]
 }
 
-_env = forge.RenderEnv {
-    cluster = forge.K8sCluster {
-        cluster = "k3d-cp"
-        namespace = "dev"
-        registry = "localhost:5051"
-    }
-    network_policies = False
-}
-
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle, "latest", {}, False)
 
 # ── Invariants ─────────────────────────────────────────────────────
 

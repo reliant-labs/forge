@@ -77,14 +77,22 @@ render_owned_manifests = lambda svc: any -> [any] {
 
 # Collapse an EnvVar list to one entry per name, LAST-occurrence-wins.
 #
-# The common authoring pattern is `cfg.APP_ENV + [ ...per-service overrides ]`
-# (KCL `+` concatenates; the docs promise "KCL wins on conflict"). Without a
-# dedup the rendered container env carries BOTH entries for an overridden key,
-# and kubectl server-side apply REJECTS the Deployment: "duplicate entries for
-# key [name=...]". Keep the last occurrence so a per-service override (e.g. a
-# plain value) supersedes the base (e.g. an APP_ENV secretKeyRef) exactly the
-# way the host-mode env layering already resolves it — one consistent rule
-# across host and cluster.
+# This is the render-time SAFETY NET: it runs unconditionally on every
+# service / cronjob / operator env list regardless of how the author
+# assembled it, so a raw `base + overrides` concatenation (or any other
+# source of a duplicate name) never reaches kubectl as a duplicate key —
+# server-side apply REJECTS the Deployment: "duplicate entries for key
+# [name=...]". Keep the last occurrence so a per-service override (e.g. a
+# plain value) supersedes the base (e.g. an APP_ENV secretKeyRef) exactly
+# the way the host-mode env layering already resolves it — one consistent
+# rule across host and cluster.
+#
+# The PUBLIC, author-facing form of this same rule is `forge.env_merge(base,
+# overrides)` (kcl/base.k) — projects SHOULD assemble env lists with that
+# (explicit, discoverable, last-wins) rather than relying on this hidden
+# net. This lambda is byte-for-byte the same merge logic as env_merge, so
+# env_merge's output is already deduped and passing it through here is a
+# no-op (idempotent). Retained as defense-in-depth for hand-rolled `+`.
 _dedup_env_vars = lambda evs: [any] -> [any] {
     [
         evs[i] for i in range(len(evs))
@@ -156,14 +164,30 @@ _image_has_tag_or_digest = lambda image: str -> bool {
 #      prefixing the registry when one is set and the image has no
 #      registry host of its own. The caller-supplied tag is ignored:
 #      an explicitly-pinned image wins.
-#   2. Otherwise append `:image_tag` (the per-service pin or the
+#   2. Else, if a PER-IMAGE digest was captured for THIS image name in
+#      `image_digests` (`{<image-name>: "sha256:..."}`), pin
+#      `<registry>/<image>@sha256:…` — the immutable, content-addressed
+#      deploy reference `forge deploy` emits when the build state captured
+#      a pushed digest for this image. The map is keyed on the BARE image
+#      name (`reliant`, `control-plane`, `workspace-base`), so two services
+#      that share an image both resolve to that image's OWN digest, and a
+#      service whose image differs resolves to ITS image's digest — never a
+#      single env-wide digest stamped onto every service. A digest can't go
+#      stale and can't be re-pointed, so the node-cache / re-tag-didn't-take
+#      class of bug is impossible. Images absent from the map (vendored
+#      litellm/nats/postgres/temporal, or any build that captured no digest)
+#      fall through to the tag, unchanged.
+#   3. Otherwise append `:image_tag` (the per-service pin or the
 #      env-wide tag, resolved by the caller).
-_image_ref = lambda image: str, image_registry: str, image_tag: str -> str {
+_image_ref = lambda image: str, image_registry: str, image_tag: str, image_digests: {str:str} -> str {
     _pinned = _image_has_tag_or_digest(image)
+    _digest = image_digests[image] if (image in image_digests) else ""
     "${image_registry}/${image}" if (_pinned and image_registry) \
         else (image if _pinned \
+        else ("${image_registry}/${image}@${_digest}" if (_digest and image_registry) \
+        else ("${image}@${_digest}" if _digest \
         else ("${image_registry}/${image}:${image_tag}" if image_registry \
-        else "${image}:${image_tag}"))
+        else "${image}:${image_tag}"))))
 }
 
 # Resolve the tag to stamp onto an entity's image: the entity's pinned
@@ -272,12 +296,12 @@ _default_resources = {
 # [Deployment, Service]. Ingress is no longer rendered here — see
 # kcl/lib/gateway.k for Gateway API resources owned by the project's
 # top-level `deploy/kcl/ingress.k` file.
-render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image_tag: str -> [any] {
+render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image_tag: str, image_digests: {str:str} -> [any] {
     _name = svc.name
     _labels = _managed_labels(_name)
     _deploy = svc.deploy
     _resources = _deploy.resources if _deploy.resources else _default_resources
-    _image = _image_ref(svc.image, image_registry, _effective_image_tag(svc, image_tag))
+    _image = _image_ref(svc.image, image_registry, _effective_image_tag(svc, image_tag), image_digests)
     _ports = _deploy.ports if len(_deploy.ports) > 0 else [8080]
     # Optional per-port appProtocol map ({port: appProtocol}). Only
     # K8sCluster carries this; absent/empty => no port gets the field,
@@ -367,10 +391,10 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
 }
 
 # Render a CronJob (or one-shot Job when schedule == "").
-render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag: str -> [any] {
+render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag: str, image_digests: {str:str} -> [any] {
     _name = cj.name
     _labels = _managed_labels(_name)
-    _image = _image_ref(cj.image, image_registry, _effective_image_tag(cj, image_tag))
+    _image = _image_ref(cj.image, image_registry, _effective_image_tag(cj, image_tag), image_digests)
     _volumes = cj.volumes if cj.volumes else []
     _pod_spec = {
         # Bind the per-CronJob ServiceAccount forge generates
@@ -431,10 +455,10 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
 # Render an Operator. Same skeleton as a K8s Service Deployment but
 # with leader-election env vars and cluster-scoped RBAC (handled in
 # lib/rbac.k).
-render_operator = lambda op: any, namespace: str, image_registry: str, image_tag: str -> [any] {
+render_operator = lambda op: any, namespace: str, image_registry: str, image_tag: str, image_digests: {str:str} -> [any] {
     _name = op.name
     _labels = _managed_labels(_name)
-    _image = _image_ref(op.image, image_registry, _effective_image_tag(op, image_tag))
+    _image = _image_ref(op.image, image_registry, _effective_image_tag(op, image_tag), image_digests)
     _leader_env_dict = [
         {name = "LEADER_ELECTION", value = "true"}
     ] if op.leader_election else []

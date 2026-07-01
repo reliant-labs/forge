@@ -77,6 +77,56 @@ func TestFilterEntitiesByTarget_Operator(t *testing.T) {
 	}
 }
 
+// TestFilterEntitiesToFrontendsOnly confirms the --frontends-only narrowing
+// drops EVERY non-frontend kind — most importantly CronJobs, which
+// filterEntitiesByTarget deliberately carries through. A project declaring a
+// forge.CronJob (e.g. a one-shot schema-migration Job) would otherwise keep
+// entities.CronJobs non-empty, leave the frontendOnly cluster-skip guard
+// false, and drive an empty-manifest cluster.Apply that dies "no objects
+// passed to apply". After this filter the only surviving kind is Frontends,
+// which is exactly what makes that guard engage.
+func TestFilterEntitiesToFrontendsOnly(t *testing.T) {
+	e := &KCLEntities{
+		Services:  []ServiceEntity{{Name: "admin-server", Deploy: DeployConfigEntity{Type: "cluster"}}},
+		Operators: []OperatorEntity{{Name: "workspace-controller"}},
+		Frontends: []FrontendEntity{
+			{Name: "reliant-web", Deploy: &FrontendDeployEntity{Type: "firebase"}},
+			{Name: "admin-web"}, // deploy = None build-only; must survive
+		},
+		CronJobs:   []CronJobEntity{{Name: "control-plane-migrate", Schedule: ""}},
+		Gateways:   []GatewayEntity{{Name: "gw"}},
+		HelmCharts: []HelmChartEntity{{Name: "cert-manager"}},
+	}
+
+	got := filterEntitiesToFrontendsOnly(e)
+
+	// Every frontend survives — the Firebase one AND the build-only one it
+	// bundles.
+	if len(got.Frontends) != 2 {
+		t.Errorf("frontends should be carried through unchanged, got %+v", got.Frontends)
+	}
+	// Every other kind is dropped.
+	if len(got.Services) != 0 || len(got.Operators) != 0 || len(got.CronJobs) != 0 ||
+		len(got.Gateways) != 0 || len(got.HelmCharts) != 0 {
+		t.Errorf("non-frontend kinds should be stripped, got svcs=%+v ops=%+v cron=%+v gw=%+v helm=%+v",
+			got.Services, got.Operators, got.CronJobs, got.Gateways, got.HelmCharts)
+	}
+
+	// The exact predicate runDeploy uses to skip the cluster pipeline. With
+	// the CronJob (and everything else) stripped, it now evaluates true —
+	// the regression this fix closes.
+	frontendOnly := !kclEntitiesHaveK8sCluster(got) && hasFirebaseFrontend(got) &&
+		len(got.Operators) == 0 && len(got.CronJobs) == 0
+	if !frontendOnly {
+		t.Errorf("frontendOnly guard should engage after the filter; got false")
+	}
+
+	// The original must not be mutated (shallow copy of the struct).
+	if len(e.CronJobs) != 1 || len(e.Services) != 1 {
+		t.Errorf("input entities mutated: cron=%+v svcs=%+v", e.CronJobs, e.Services)
+	}
+}
+
 // TestValidateDeployTargets_Unknown confirms a typo'd target errors with
 // the list of available app names (services + operators + frontends),
 // and that a fully-valid target set passes.

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -147,7 +148,7 @@ func TestBuildStateRoundTrip(t *testing.T) {
 	if got == nil {
 		t.Fatal("ReadBuildState returned nil for an existing file")
 	}
-	if *got != want {
+	if !reflect.DeepEqual(*got, want) {
 		t.Errorf("round-trip mismatch:\n  want %+v\n  got  %+v", want, *got)
 	}
 }
@@ -240,7 +241,7 @@ func TestResolveDeployImageTag_FlagOverrideWins(t *testing.T) {
 	must(WriteBuildState(dir, "dev", BuildState{
 		Image: "cp-forge", Tag: "from-state", Registry: "r", PushedAt: nowRFC3339(),
 	}))
-	tag, src, err := resolveDeployImageTag(context.Background(), dir, "dev", "from-flag")
+	tag, _, src, err := resolveDeployImageTag(context.Background(), dir, "dev", "from-flag", false)
 	if err != nil {
 		t.Fatalf("resolveDeployImageTag: %v", err)
 	}
@@ -266,7 +267,7 @@ func TestResolveDeployImageTag_StateFileWinsOverFallback(t *testing.T) {
 	must(WriteBuildState(dir, "dev", BuildState{
 		Image: "cp-forge", Tag: "from-state-2d54e0c-dirty", Registry: "r", PushedAt: nowRFC3339(),
 	}))
-	tag, src, err := resolveDeployImageTag(context.Background(), dir, "dev", "")
+	tag, _, src, err := resolveDeployImageTag(context.Background(), dir, "dev", "", false)
 	if err != nil {
 		t.Fatalf("resolveDeployImageTag: %v", err)
 	}
@@ -285,7 +286,7 @@ func TestResolveDeployImageTag_StateFileWinsOverFallback(t *testing.T) {
 func TestResolveDeployImageTag_FallbackWhenStateMissing(t *testing.T) {
 	dir := newGitRepo(t)
 	withDir(t, dir, func() {
-		tag, src, err := resolveDeployImageTag(context.Background(), dir, "dev", "")
+		tag, _, src, err := resolveDeployImageTag(context.Background(), dir, "dev", "", false)
 		if err != nil {
 			t.Fatalf("resolveDeployImageTag: %v", err)
 		}
@@ -310,7 +311,7 @@ func TestResolveDeployImageTag_MalformedStateIsHardError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".forge", "state", "build-dev.json"), []byte("not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := resolveDeployImageTag(context.Background(), dir, "dev", "")
+	_, _, _, err := resolveDeployImageTag(context.Background(), dir, "dev", "", false)
 	if err == nil {
 		t.Fatal("expected error for malformed state file, got nil")
 	}

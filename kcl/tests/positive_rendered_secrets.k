@@ -16,15 +16,18 @@ ENTITY output alongside other providers, and is NEVER a rendered manifest
 
 import forge
 
+_target = forge.ClusterTarget {
+    cluster = "k3d-dev"
+    namespace = "dev"
+    registry = "localhost:5051"
+}
+
 _bundle = forge.Bundle {
+    cluster_target = _target
     services = [forge.Service {
         name = "api"
         image = "api:dev"
-        deploy = forge.K8sCluster {
-            cluster = "k3d-dev"
-            namespace = "dev"
-            registry = "localhost:5051"
-        }
+        deploy = _target.deploy
         env_vars = [forge.EnvVar {
             name = "DB_PASSWORD"
             secret_ref = "db-credentials"
@@ -50,16 +53,8 @@ _bundle = forge.Bundle {
     }
 }
 
-_env = forge.RenderEnv {
-    cluster = forge.K8sCluster {
-        cluster = "k3d-dev"
-        namespace = "dev"
-        registry = "localhost:5051"
-    }
-}
-
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, _env)
+manifests = forge.render_manifests(_bundle)
 
 # ── Invariants ─────────────────────────────────────────────────────
 

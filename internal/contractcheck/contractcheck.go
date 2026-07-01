@@ -15,7 +15,7 @@
 // what to exclude — are expressed as fields on [Options], not as
 // branches inside the engine.
 //
-// API design notes
+// # API design notes
 //
 // Findings carry the same shape as the other forge lint rules
 // ([forgeconv.Finding]) so they can be folded into the existing
@@ -24,7 +24,7 @@
 // from the old call sites — this package is a re-organization, not a
 // behavior change.
 //
-// What this package is NOT
+// # What this package is NOT
 //
 // The cmd/contractlint binary (and its supporting internal/linter/contract
 // package) performs a fundamentally different check: it runs as a

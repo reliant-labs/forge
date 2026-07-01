@@ -109,11 +109,17 @@ func TestFirebaseAssembleLayout(t *testing.T) {
 	assertFileContains(t, filepath.Join(staging, "index.html"), "<spa/>")
 
 	// firebase.json + .firebaserc written next to the staging tree.
+	// fakeFirebaseFrontend declares an EXPLICIT Target, so firebase.json
+	// carries `target` (resolved via .firebaserc) and MUST NOT also carry
+	// `site` — the firebase CLI rejects a hosting config with both.
 	workdir := filepath.Dir(staging)
 	assertFileContains(t, filepath.Join(workdir, "firebase.json"), `"public": "public"`)
-	assertFileContains(t, filepath.Join(workdir, "firebase.json"), `"site": "reliant-staging"`)
+	assertFileContains(t, filepath.Join(workdir, "firebase.json"), `"target": "reliant-staging"`)
+	assertFileNotContains(t, filepath.Join(workdir, "firebase.json"), `"site"`)
 	assertFileContains(t, filepath.Join(workdir, "firebase.json"), `"destination": "/index.html"`)
 	assertFileContains(t, filepath.Join(workdir, ".firebaserc"), `"default": "reliant-nonprod-490701"`)
+	// With an explicit target, .firebaserc carries the target→site map.
+	assertFileContains(t, filepath.Join(workdir, ".firebaserc"), `"reliant-staging"`)
 
 	// The build (install + build) ran in the frontend dir with NODE_ENV
 	// + NEXT_PUBLIC_* injected, and the final exec is the firebase deploy.
@@ -129,19 +135,45 @@ func TestFirebaseAssembleLayout(t *testing.T) {
 		t.Errorf("last call should be firebase deploy; got %q", last)
 	}
 
-	// Build env was threaded onto the install+build calls (RunWithEnv),
-	// not the firebase deploy (Run, nil env).
-	foundBuildEnv := false
+	// Install and build get DELIBERATELY DIFFERENT env (the devDependency
+	// fix): the install call must NOT force NODE_ENV=production (devDeps —
+	// typescript, bundlers — are skipped under production, breaking the
+	// build with "Cannot find module 'typescript'") and must NOT carry the
+	// inline build-time env_vars; the build call must carry
+	// NODE_ENV=production + the injected NEXT_PUBLIC_*. The firebase deploy
+	// (Run, nil env) carries neither.
+	var installEnvSeen, buildEnvSeen map[string]string
 	for i, env := range fake.envCalls {
-		if env != nil && env["NEXT_PUBLIC_API_URL"] == "https://api.staging.example.com" && env["NODE_ENV"] == "production" {
-			foundBuildEnv = true
-		}
-		if strings.Contains(fake.calls[i], "firebase deploy") && env != nil {
-			t.Errorf("firebase deploy should not carry the build env overlay")
+		switch {
+		case strings.Contains(fake.calls[i], "npm install"):
+			installEnvSeen = env
+		case strings.Contains(fake.calls[i], "npm run build"):
+			buildEnvSeen = env
+		case strings.Contains(fake.calls[i], "firebase deploy"):
+			if env != nil {
+				t.Errorf("firebase deploy should not carry an env overlay; got %v", env)
+			}
 		}
 	}
-	if !foundBuildEnv {
-		t.Errorf("expected a build call with NODE_ENV=production + NEXT_PUBLIC_API_URL injected")
+
+	if installEnvSeen == nil {
+		t.Fatalf("npm install call did not carry an env overlay; envCalls=%v", fake.envCalls)
+	}
+	if installEnvSeen["NODE_ENV"] == "production" {
+		t.Errorf("npm install must NOT force NODE_ENV=production (it skips devDeps the build needs); got %v", installEnvSeen)
+	}
+	if _, ok := installEnvSeen["NEXT_PUBLIC_API_URL"]; ok {
+		t.Errorf("npm install must NOT carry build-time env_vars; got %v", installEnvSeen)
+	}
+
+	if buildEnvSeen == nil {
+		t.Fatalf("npm run build call did not carry an env overlay; envCalls=%v", fake.envCalls)
+	}
+	if buildEnvSeen["NODE_ENV"] != "production" {
+		t.Errorf("npm run build must force NODE_ENV=production; got %v", buildEnvSeen)
+	}
+	if buildEnvSeen["NEXT_PUBLIC_API_URL"] != "https://api.staging.example.com" {
+		t.Errorf("npm run build must carry the injected NEXT_PUBLIC_API_URL; got %v", buildEnvSeen)
 	}
 }
 
@@ -173,6 +205,14 @@ func TestFirebaseTargetDefaultsToSite(t *testing.T) {
 	if !strings.Contains(last, "--only hosting:reliant-prod") {
 		t.Errorf("target should default to site id; got %q", last)
 	}
+	// No explicit target → firebase.json carries `site` (deploy by site
+	// id) and MUST NOT carry `target`; the firebase CLI rejects both.
+	// .firebaserc carries only the default project (no orphan target map).
+	workdir := filepath.Dir(staging)
+	assertFileContains(t, filepath.Join(workdir, "firebase.json"), `"site": "reliant-prod"`)
+	assertFileNotContains(t, filepath.Join(workdir, "firebase.json"), `"target"`)
+	assertFileContains(t, filepath.Join(workdir, ".firebaserc"), `"default": "reliant-labs-475814"`)
+	assertFileNotContains(t, filepath.Join(workdir, ".firebaserc"), `"targets"`)
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -193,5 +233,16 @@ func assertFileContains(t *testing.T, path, want string) {
 	}
 	if !strings.Contains(string(b), want) {
 		t.Errorf("%s does not contain %q\n---\n%s", path, want, string(b))
+	}
+}
+
+func assertFileNotContains(t *testing.T, path, unwanted string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if strings.Contains(string(b), unwanted) {
+		t.Errorf("%s unexpectedly contains %q\n---\n%s", path, unwanted, string(b))
 	}
 }

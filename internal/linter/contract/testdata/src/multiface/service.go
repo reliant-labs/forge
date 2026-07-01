@@ -10,7 +10,7 @@ func (s *svc) BadServeHelper() {} // want `exported method BadServeHelper on typ
 // repo implements Repository — only Get/Put allowed.
 type repo struct{}
 
-func (r *repo) Get(id string) (string, error) { return "", nil }
+func (r *repo) Get(id string) (string, error)   { return "", nil }
 func (r *repo) Put(id string, val string) error { return nil }
 
 func (r *repo) Flush() error { return nil } // want `exported method Flush on type repo is not declared in the Repository interface \(contract.go\)`

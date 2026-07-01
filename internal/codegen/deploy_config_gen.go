@@ -41,6 +41,7 @@
 package codegen
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,6 +80,14 @@ func GenerateDeployConfig(in DeployConfigGenInput) error {
 		return fmt.Errorf("deploy config gen: env name is required")
 	}
 
+	// Fail BEFORE rendering for config divergence the renderer would
+	// otherwise paper over with a silent default (CrashLoop at deploy
+	// time) or a silent fallback (malformed ${...} ref). This converts a
+	// deploy-time failure into an author-time `forge generate` error.
+	if err := validateDeployConfig(in); err != nil {
+		return err
+	}
+
 	body := renderDeployConfigKCL(in)
 
 	outDir := filepath.Join(in.KCLDir, in.EnvName)
@@ -101,6 +110,109 @@ func GenerateDeployConfig(in DeployConfigGenInput) error {
 		}
 	}
 	return writeUserScaffold(outPath, []byte(body))
+}
+
+// validateDeployConfig enforces, at `forge generate` time, that a
+// project's per-env config (config.<env>.yaml) actually supplies the
+// values the proto declares it MUST. Without this the renderer silently
+// wires a default `secret_ref`/`config_map_ref` for a required field the
+// env file forgot — the manifest builds clean and the pod CrashLoops at
+// deploy time on a missing/empty value. We turn that deploy-time failure
+// into an actionable author-time error.
+//
+// Three classes are caught, all keyed off the proto annotations already
+// threaded onto ConfigField:
+//
+//   - required + sensitive + absent: a default `<project>-secrets`
+//     secret_ref would be wired pointing at a key that doesn't exist.
+//   - required + non-sensitive + no proto default + absent: the binary
+//     has no value to fall back on at startup.
+//   - present but malformed ${...} ref: a value that LOOKS like a secret
+//     reference (starts with `${`, ends with `}`) but parseSecretRef
+//     rejects it would otherwise silently fall back to the default
+//     secret_ref/key — losing the author's intended override.
+//
+// Errors are joined so a single `forge generate` reports every problem in
+// the env file at once rather than one-at-a-time.
+func validateDeployConfig(in DeployConfigGenInput) error {
+	var errs []error
+	for _, f := range in.Fields {
+		// Block-reference fields (message-typed) carry no env binding of
+		// their own — validation lives on their leaf fields.
+		if f.EnvVar == "" {
+			continue
+		}
+
+		rawVal, hasVal := in.EnvConfig[f.Name]
+		present := hasVal && !isEmptyConfigValue(rawVal)
+
+		// A value that looks like a secret ref but doesn't parse is a typo
+		// the renderer would silently swallow (falling back to defaults).
+		if present {
+			if s, ok := rawVal.(string); ok && looksLikeSecretRef(s) {
+				if _, _, refOK := parseSecretRef(s); !refOK {
+					errs = append(errs, fmt.Errorf(
+						"config.%s.yaml: field %s (%s) has a malformed secret reference %q — "+
+							"use ${secret-name} or ${secret-name#key}",
+						in.EnvName, f.Name, f.EnvVar, s))
+				}
+			}
+			continue
+		}
+
+		if !f.Required {
+			continue
+		}
+		// Required + non-sensitive with a proto default is satisfiable at
+		// startup from the default — not an error.
+		if !f.Sensitive && f.DefaultValue != "" {
+			continue
+		}
+		errs = append(errs, fmt.Errorf(
+			"config.%s.yaml: required %s field %s (%s) is missing — add it, e.g. %s: %q",
+			in.EnvName, sensitivity(f.Sensitive), f.Name, f.EnvVar, f.Name, exampleConfigValue(f)))
+	}
+	return errors.Join(errs...)
+}
+
+// sensitivity renders the field class for the error message.
+func sensitivity(sensitive bool) string {
+	if sensitive {
+		return "sensitive"
+	}
+	return "non-sensitive"
+}
+
+// exampleConfigValue suggests a config.<env>.yaml value for a missing
+// required field — a secret reference for sensitive fields, an explicit
+// "<set me>" placeholder otherwise.
+func exampleConfigValue(f ConfigField) string {
+	if f.Sensitive {
+		return "${secret-name#key}"
+	}
+	return "<set me>"
+}
+
+// looksLikeSecretRef reports whether a raw string is shaped like a secret
+// reference — `${...}` — and so SHOULD parse. Used to distinguish a typo'd
+// ref (which must fail) from an ordinary literal value (which is fine).
+func looksLikeSecretRef(s string) bool {
+	s = strings.TrimSpace(s)
+	return strings.HasPrefix(s, "${") && strings.HasSuffix(s, "}")
+}
+
+// isEmptyConfigValue treats nil and the empty/whitespace string as "no
+// value provided" — a YAML key present with no value is the same footgun
+// as the key being absent.
+func isEmptyConfigValue(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(x) == ""
+	default:
+		return false
+	}
 }
 
 // renderDeployConfigKCL builds the KCL body for a single env.

@@ -116,14 +116,27 @@ func (p FirebaseProvider) projectDir() string {
 	return "."
 }
 
-// resolvedTarget returns the hosting target alias for `--only
-// hosting:<target>`. Defaults to the site id when unset — the common
-// case where a project has one target per site.
+// resolvedTarget returns the hosting selector for `--only hosting:<x>`.
+// When an explicit Target alias is declared it's used (resolved via the
+// generated .firebaserc target→site mapping); otherwise the bare site id
+// is used — `firebase deploy --only hosting:<site>` accepts a site id
+// directly, no target alias required.
 func (s FirebaseHostingSpec) resolvedTarget() string {
 	if s.Target != "" {
 		return s.Target
 	}
 	return s.Site
+}
+
+// hasExplicitTarget reports whether the spec declares a real hosting
+// target alias (distinct from defaulting to the site id). This is the
+// switch that keeps `site` and `target` MUTUALLY EXCLUSIVE in the
+// rendered firebase.json: the firebase CLI rejects a hosting config that
+// carries BOTH on `deploy --only hosting:<x>`. With an explicit target we
+// emit `target` (resolved via .firebaserc); without one we emit `site`
+// (and deploy by site id directly).
+func (s FirebaseHostingSpec) hasExplicitTarget() bool {
+	return s.Target != ""
 }
 
 // Deploy ships every frontend in the group to its Firebase Hosting
@@ -282,19 +295,8 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 	runner := p.runner()
 	fmt.Printf("  [firebase] %s: building (%s) in %s...\n", plan.Name, strings.Join(plan.BuildCmd, " "), plan.FrontendDir)
 
-	// Build phase — install then build, both in the frontend dir with
-	// the build-time env layered on. NODE_ENV=production is forced so
-	// the static export path (Next.js `output: "export"` gated on
-	// NODE_ENV) and Vite's production mode both engage.
-	buildEnv := map[string]string{"NODE_ENV": "production"}
-	for k, v := range plan.BuildEnv {
-		buildEnv[k] = v
-	}
-	if err := runInDir(ctx, runner, plan.FrontendDir, buildEnv, plan.InstallCmd); err != nil {
-		return fmt.Errorf("firebase %s: install: %w", plan.Name, err)
-	}
-	if err := runInDir(ctx, runner, plan.FrontendDir, buildEnv, plan.BuildCmd); err != nil {
-		return fmt.Errorf("firebase %s: build: %w", plan.Name, err)
+	if err := runFrontendBuild(ctx, runner, plan.Name, plan.FrontendDir, plan.InstallCmd, plan.BuildCmd, plan.BuildEnv); err != nil {
+		return err
 	}
 
 	// Assemble phase — fresh staging tree, then copy public_dir + bundles.
@@ -320,6 +322,167 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 	}
 	fmt.Printf("  [firebase] %s: deployed.\n", plan.Name)
 	return nil
+}
+
+// runFrontendBuild runs the install + build phase for a frontend in
+// frontendDir. The two phases get DELIBERATELY DIFFERENT env:
+//
+//   - INSTALL runs under NODE_ENV=development (installEnv) so the package
+//     manager pulls the FULL dependency set, devDependencies included.
+//     The build toolchain (typescript, bundlers, next's config loader)
+//     lives in devDependencies — under NODE_ENV=production, `npm install`
+//     SKIPS them and the subsequent build dies with "Cannot find module
+//     'typescript'" (Next.js needs typescript to load next.config.ts).
+//     The frontend's inline env_vars are NOT injected here: they're
+//     build-time values (NEXT_PUBLIC_* / VITE_*), irrelevant to install.
+//   - BUILD runs under NODE_ENV=production with the inline env_vars
+//     layered on (buildTimeEnv), so the static-export path (Next.js
+//     `output: "export"` gated on NODE_ENV) and Vite's production mode
+//     both engage and NEXT_PUBLIC_*/VITE_* are baked in.
+//
+// Shared by the Firebase deploy path (deployOne) and the build-only path
+// (BuildOnly) so the two never drift on install command, build command,
+// or env semantics.
+func runFrontendBuild(ctx context.Context, runner commandRunner, name, frontendDir string, installCmd, buildCmd []string, extraEnv map[string]string) error {
+	if err := runInDir(ctx, runner, frontendDir, installEnv(), installCmd); err != nil {
+		return fmt.Errorf("frontend %s: install: %w", name, err)
+	}
+	if err := runInDir(ctx, runner, frontendDir, buildTimeEnv(extraEnv), buildCmd); err != nil {
+		return fmt.Errorf("frontend %s: build: %w", name, err)
+	}
+	return nil
+}
+
+// installEnv is the env overlay for the dependency-install phase. It
+// forces NODE_ENV=development so devDependencies are installed even when
+// the ambient/inherited NODE_ENV is "production" (the package manager
+// skips devDeps under production). Set explicitly rather than left empty:
+// runInDir inherits the parent process env when the overlay is empty, so
+// an inherited NODE_ENV=production would otherwise leak through and strip
+// the build toolchain (typescript, bundlers) the build phase needs.
+func installEnv() map[string]string {
+	return map[string]string{"NODE_ENV": "development"}
+}
+
+// buildTimeEnv layers a frontend's inline env_vars over a forced
+// NODE_ENV=production. Extracted so the deploy path and the build-only
+// path produce byte-identical build env.
+func buildTimeEnv(extraEnv map[string]string) map[string]string {
+	env := map[string]string{"NODE_ENV": "production"}
+	for k, v := range extraEnv {
+		env[k] = v
+	}
+	return env
+}
+
+// BuildOnlyFrontend is a frontend that forge must BUILD (env-injected)
+// but NOT deploy — a `deploy = None` frontend. Its build output (e.g. a
+// Next.js static export under PublicDir) becomes available on disk so a
+// sibling FirebaseHosting frontend can assemble it into its hosting
+// bundle. Mirrors the build inputs of FirebaseFrontend minus any deploy
+// spec.
+type BuildOnlyFrontend struct {
+	// Name is the forge frontend name (logging).
+	Name string
+
+	// Path is the frontend source dir relative to the project root —
+	// where install / `npm run build` run.
+	Path string
+
+	// DevRunner is "npm" (default) | "pnpm" | "yarn"; selects the
+	// install command.
+	DevRunner string
+
+	// BuildEnv is the build-time env injected into the build process
+	// (NEXT_PUBLIC_* / VITE_*). Layered over NODE_ENV=production.
+	BuildEnv map[string]string
+
+	// PublicDir is the build-output dir the build emits (relative to
+	// Path), e.g. "out" for a Next.js static export. Used for dry-run
+	// reporting of the emitted directory.
+	PublicDir string
+}
+
+// buildOnlyPlan is the resolved, side-effect-free description of one
+// build-only frontend's build. Computed first so --dry-run can print it
+// without shelling out, and the real build executes against the same plan.
+type buildOnlyPlan struct {
+	Name        string
+	FrontendDir string // absolute frontend source dir
+	InstallCmd  []string
+	BuildCmd    []string
+	BuildEnv    map[string]string
+	EmittedDir  string // absolute build-output dir the build is expected to emit
+}
+
+// buildOnlyPlanFor resolves a BuildOnlyFrontend into its buildOnlyPlan.
+// Pure aside from path resolution (filepath.Abs).
+func (p FirebaseProvider) buildOnlyPlanFor(fe BuildOnlyFrontend) (buildOnlyPlan, error) {
+	projDir, err := filepath.Abs(p.projectDir())
+	if err != nil {
+		return buildOnlyPlan{}, fmt.Errorf("build-only %s: resolve project dir: %w", fe.Name, err)
+	}
+	frontendDir := fe.Path
+	if !filepath.IsAbs(frontendDir) {
+		frontendDir = filepath.Join(projDir, fe.Path)
+	}
+	emitted := fe.PublicDir
+	if emitted != "" && !filepath.IsAbs(emitted) {
+		emitted = filepath.Join(frontendDir, fe.PublicDir)
+	}
+	return buildOnlyPlan{
+		Name:        fe.Name,
+		FrontendDir: frontendDir,
+		InstallCmd:  firebaseInstallCmd(fe.DevRunner),
+		BuildCmd:    []string{"npm", "run", "build"},
+		BuildEnv:    buildTimeEnv(fe.BuildEnv),
+		EmittedDir:  emitted,
+	}, nil
+}
+
+// BuildOnly builds each build-only frontend (install + `npm run build`
+// with its env_vars injected) so its output exists on disk before any
+// FirebaseHosting frontend assembles a bundle that references it. dryRun
+// prints the build plan and performs no side effects, mirroring the
+// Firebase deploy dry-run.
+func (p FirebaseProvider) BuildOnly(ctx context.Context, fes []BuildOnlyFrontend, dryRun bool) error {
+	for _, fe := range fes {
+		plan, err := p.buildOnlyPlanFor(fe)
+		if err != nil {
+			return err
+		}
+		if dryRun {
+			printBuildOnlyPlan(os.Stdout, plan)
+			continue
+		}
+		fmt.Printf("  [build-only] %s: building (%s) in %s...\n", plan.Name, strings.Join(plan.BuildCmd, " "), plan.FrontendDir)
+		if err := runFrontendBuild(ctx, p.runner(), plan.Name, plan.FrontendDir, plan.InstallCmd, plan.BuildCmd, fe.BuildEnv); err != nil {
+			return err
+		}
+		fmt.Printf("  [build-only] %s: built", plan.Name)
+		if plan.EmittedDir != "" {
+			fmt.Printf(" -> %s", plan.EmittedDir)
+		}
+		fmt.Println(".")
+	}
+	return nil
+}
+
+// printBuildOnlyPlan renders the dry-run plan for one build-only
+// frontend: the install + build commands, the injected build env, and
+// the emitted output dir. Mirrors printFirebasePlan's "[DRY-RUN] would
+// exec" style.
+func printBuildOnlyPlan(w io.Writer, plan buildOnlyPlan) {
+	fmt.Fprintf(w, "  [DRY-RUN] build-only plan for frontend %q:\n", plan.Name)
+	fmt.Fprintf(w, "    build dir:    %s\n", plan.FrontendDir)
+	fmt.Fprintf(w, "    [DRY-RUN] would exec: %s\n", strings.Join(plan.InstallCmd, " "))
+	if len(plan.BuildEnv) > 0 {
+		fmt.Fprintf(w, "    build env:    %s\n", formatBuildEnv(plan.BuildEnv))
+	}
+	fmt.Fprintf(w, "    [DRY-RUN] would exec: %s (NODE_ENV=production)\n", strings.Join(plan.BuildCmd, " "))
+	if plan.EmittedDir != "" {
+		fmt.Fprintf(w, "    emits dir:    %s\n", plan.EmittedDir)
+	}
 }
 
 // runInDir runs a command in dir with an optional env overlay. The
@@ -404,9 +567,17 @@ func cleanDestRel(dest string) string {
 func renderFirebaseJSON(stagingDir string, spec FirebaseHostingSpec) (string, error) {
 	hosting := map[string]any{
 		"public": filepath.Base(stagingDir),
-		"site":   spec.Site,
-		"target": spec.resolvedTarget(),
 		"ignore": []string{"firebase.json", "**/.*", "**/node_modules/**"},
+	}
+	// site and target are MUTUALLY EXCLUSIVE in a firebase.json hosting
+	// config — the firebase CLI errors out ("Cannot have both site and
+	// target ...") on `deploy --only hosting:<x>` when both are present.
+	// Emit `target` only when an explicit alias is declared (resolved via
+	// the .firebaserc target→site map); otherwise emit the bare `site`.
+	if spec.hasExplicitTarget() {
+		hosting["target"] = spec.Target
+	} else {
+		hosting["site"] = spec.Site
 	}
 	if len(spec.Rewrites) > 0 {
 		hosting["rewrites"] = spec.Rewrites
@@ -426,13 +597,20 @@ func renderFirebaseJSON(stagingDir string, spec FirebaseHostingSpec) (string, er
 func renderFirebaseRC(spec FirebaseHostingSpec) (string, error) {
 	doc := map[string]any{
 		"projects": map[string]any{"default": spec.Project},
-		"targets": map[string]any{
+	}
+	// The target→site mapping is only meaningful when firebase.json
+	// references a target alias. Without an explicit Target, firebase.json
+	// carries `site` directly and the deploy selects `--only
+	// hosting:<site>` by site id, so no target alias is configured (an
+	// orphan mapping whose alias nothing references is dead config).
+	if spec.hasExplicitTarget() {
+		doc["targets"] = map[string]any{
 			spec.Project: map[string]any{
 				"hosting": map[string]any{
-					spec.resolvedTarget(): []string{spec.Site},
+					spec.Target: []string{spec.Site},
 				},
 			},
-		},
+		}
 	}
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

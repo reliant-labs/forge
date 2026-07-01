@@ -60,7 +60,7 @@ func TestAuditExternalBuilds_PresentCwdNoConflictIsOK(t *testing.T) {
 	}
 	fixture := `{
 		"services": [
-			{"name":"gw","image":"my-gw","build_cmd":"docker build .","build_cwd":"sibling",
+			{"name":"gw","image":"my-gw","build":{"type":"shell","cmd":"docker build .","cwd":"sibling"},
 			 "deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
 		]
 	}`
@@ -92,7 +92,7 @@ func TestAuditExternalBuilds_MissingCwdWarns(t *testing.T) {
 	// stat to fail.
 	fixture := `{
 		"services": [
-			{"name":"gw","image":"gw","build_cmd":"docker build .","build_cwd":"missing-sibling",
+			{"name":"gw","image":"gw","build":{"type":"shell","cmd":"docker build .","cwd":"missing-sibling"},
 			 "deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
 		]
 	}`
@@ -123,8 +123,7 @@ func TestAuditExternalBuilds_BuildEnvConflictWarns(t *testing.T) {
 	}
 	fixture := `{
 		"services": [
-			{"name":"gw","image":"gw","build_cmd":"docker build .","build_cwd":"sib",
-			 "build_env":{"IMAGE":"oops","CGO_ENABLED":"0","TAG":"v1"},
+			{"name":"gw","image":"gw","build":{"type":"shell","cmd":"docker build .","cwd":"sib","env":{"IMAGE":"oops","CGO_ENABLED":"0","TAG":"v1"}},
 			 "deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
 		]
 	}`
@@ -171,7 +170,7 @@ func TestAuditExternalBuilds_StateReadAggregatesEnvs(t *testing.T) {
 	}
 	fixture := `{
 		"services": [
-			{"name":"gw","image":"gw","build_cmd":"docker build .","build_cwd":"src",
+			{"name":"gw","image":"gw","build":{"type":"shell","cmd":"docker build .","cwd":"src"},
 			 "deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
 		]
 	}`
@@ -213,8 +212,7 @@ func TestAuditExternalBuilds_JSONShape_Golden(t *testing.T) {
 	}
 	fixture := `{
 		"services": [
-			{"name":"gw","image":"gw","build_cmd":"docker build .","build_cwd":"src",
-			 "build_env":{"CGO_ENABLED":"0"},
+			{"name":"gw","image":"gw","build":{"type":"shell","cmd":"docker build .","cwd":"src","env":{"CGO_ENABLED":"0"}},
 			 "deploy":{"type":"cluster","cluster":"c","namespace":"n","registry":"r"}}
 		]
 	}`

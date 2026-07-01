@@ -81,6 +81,33 @@ schema EnvVar:
       * `config_map_ref` + `config_map_key` — projected from a
         forge-generated ConfigMap.
 
+    Secret-override syntax (config-contract)
+    ----------------------------------------
+    You rarely hand-write `secret_ref` for a SENSITIVE config field. Mark
+    the field `sensitive: true` in the config proto and forge's config
+    codegen emits the `secret_ref`/`secret_key` EnvVar for you into
+    `deploy/kcl/<env>/config_gen.k`, defaulting to
+    `secret_ref = "<project>-secrets", secret_key = "<env_var lowercased>"`.
+
+    To point a field at a DIFFERENT existing cluster Secret / key, set the
+    field's value in the per-env `config.<env>.yaml` to a DOLLAR-BRACE
+    reference. (Written below as `D{...}` because KCL's docstring lexer reads
+    a literal dollar-brace as string interpolation — in YAML write a real `$`
+    immediately followed by the `{...}`.)
+
+        "D{SECRET_NAME}"         -> secret_ref = "SECRET_NAME"
+                                    (secret_key = codegen default)
+        "D{SECRET_NAME#KEY}"     -> secret_ref = "SECRET_NAME", secret_key = "KEY"
+
+    e.g. config.<env>.yaml line
+        internal_service_secret: "D{control-plane-internal#secret}"
+    (with D replaced by `$`) binds that field to the `secret` key of the
+    `control-plane-internal` Secret. The `#KEY` form is for cluster secrets
+    whose keys are kebab-case (e.g. `D{db-credentials#database-url}`) and
+    don't match forge's lowercase-env-var default. The Secret itself is
+    provisioned out-of-band. See kcl/README.md "Secrets" for the copy-paste
+    YAML example (with the real `$`).
+
     Empty-value rationale: callers use empty strings as "disable"
     sentinels (e.g. RUNTIME_CLASS_NAME="" to skip runtimeClassName on
     Pod spec; webhook secrets="" to disable env-gated features). KCL
@@ -388,15 +415,27 @@ schema Gateway:
     public / internal / webhooks each typically gets its own Gateway
     with its own listeners and TLS.
 
-    `gateway_class_name` names the GatewayClass installed by
-    `forge dev cluster up` (in dev) or the cloud Gateway controller
-    (in prod). Default `traefik` matches forge's dev install.
+    `gateway_class_name` names the GatewayClass the Gateway controller
+    installs. forge is OPINIONATED on Envoy Gateway as the SINGLE Gateway
+    API controller — local k3d AND cloud — so this defaults to `eg` (the
+    GatewayClass the Envoy Gateway install creates, controllerName
+    `gateway.envoyproxy.io/gatewayclass-controller`). Envoy Gateway
+    serves HTTPRoute AND GRPCRoute natively (native gRPC bidi streams),
+    so one controller covers every forge ingress shape — there is no
+    reason for an env to silently pick a second controller.
+
+    `forge cluster up` / `forge up --env=<env>` install the SAME Envoy
+    Gateway helm chart into the local k3d cluster that the cloud envs
+    run, so the default `eg` is correct EVERYWHERE — no per-env pin, no
+    local-dev exception. (Earlier forge installed Traefik for local dev,
+    which required dev/e2e envs to pin `gateway_class_name = "traefik"`;
+    that exception is gone — every env now uses the `eg` default.)
 
     `host` is the default hostname for routes on this gateway. Per-
     route `host:` overrides win. `raw_policy` is the v1 escape hatch
-    for provider-specific policy CRDs (Traefik Middleware, Envoy
-    Gateway BackendTrafficPolicy, etc.) — emitted verbatim alongside
-    the route.
+    for provider-specific policy CRDs (Envoy Gateway
+    BackendTrafficPolicy / ClientTrafficPolicy, etc.) — emitted
+    verbatim alongside the route.
 
     `addresses` pins the Gateway to specific load-balancer addresses
     (Gateway API `spec.addresses`). On GKE, reference a reserved global
@@ -404,14 +443,30 @@ schema Gateway:
     so the Gateway keeps its IP across delete/recreate (otherwise a
     recreated Gateway gets a fresh ephemeral IP and breaks DNS). Empty
     by default — the controller assigns an ephemeral address.
+
+    `cluster` pins this Gateway to ONE cluster in a multi-cluster env. It
+    is a REFERENCE to the `forge.Cluster` instance — NOT a bare name —
+    which removes the name-vs-context ambiguity that bit consumers: the
+    deploy-time scoper matches the routing label against a group's kubectl
+    CONTEXT (`k3d-<name>`), so the builder DENORMALIZES the referenced
+    Cluster's `.context` into the `forge.dev/cluster: k3d-<name>` label.
+    Passing the object (`cluster = control_plane`) means the context is
+    derived from the Cluster, never re-spelled. When set, forge's
+    deploy-time scoper (internal/cluster.ScopeManifestsToGroup) routes the
+    rendered Gateway manifest to that cluster ONLY and drops it from every
+    sibling — the first-class replacement for the older trick of stamping
+    an unrelated service's `app.kubernetes.io/name` label to piggyback its
+    routing. Unset (the common single-cluster case) leaves routing
+    unchanged.
     """
     name: str
     listeners: [GatewayListener]
-    gateway_class_name: str = "traefik"
+    gateway_class_name: str = "eg"
     host: str = ""
     tls?: GatewayTLS
     raw_policy: str = ""
     addresses: [GatewayAddress] = []
+    cluster?: Cluster
 
     check:
         name, "Gateway.name is required"
@@ -429,6 +484,12 @@ schema HTTPRoute:
     The full request path is `<listener.path_prefix>/<path>`. Empty
     `path` means the listener's prefix is the only match — useful for
     a service that owns the listener's path namespace entirely.
+
+    `cluster` pins this route to ONE cluster in a multi-cluster env (see
+    Gateway.cluster). Like Gateway.cluster it is a REFERENCE to the
+    `forge.Cluster` instance — the builder denormalizes its `.context`
+    into a `forge.dev/cluster: k3d-<name>` label that routes the rendered
+    HTTPRoute manifest to that cluster only.
     """
     name: str
     gateway: str
@@ -438,6 +499,7 @@ schema HTTPRoute:
     host: str = ""
     path: str = ""
     raw_policy: str = ""
+    cluster?: Cluster
 
     check:
         name, "HTTPRoute.name is required"
@@ -452,6 +514,12 @@ schema GRPCRoute:
     """A GRPCRoute attached to a Gateway+listener. Forwards gRPC
     traffic to a backend Service. The target listener must be H2C or
     HTTPS — gRPC over HTTP/1.1 isn't a thing.
+
+    `cluster` pins this route to ONE cluster in a multi-cluster env (see
+    Gateway.cluster). Like Gateway.cluster it is a REFERENCE to the
+    `forge.Cluster` instance — the builder denormalizes its `.context`
+    into a `forge.dev/cluster: k3d-<name>` label that routes the rendered
+    GRPCRoute manifest to that cluster only.
     """
     name: str
     gateway: str
@@ -461,6 +529,7 @@ schema GRPCRoute:
     host: str = ""
     path: str = ""
     raw_policy: str = ""
+    cluster?: Cluster
 
     check:
         name, "GRPCRoute.name is required"
@@ -529,29 +598,116 @@ schema HostDeploy:
         delve_port > 0 and delve_port < 65536, \
             "HostDeploy.delve_port must be 1..65535"
 
-schema K8sCluster:
-    """Service runs in-cluster as a Deployment + Service on a specific
-    Kubernetes cluster. Per-service deploy block that ALSO carries the
-    env-wide knobs (cluster/namespace/registry/domain), so KCL refs
-    DRY the common case across many services without an `environments[]`
-    block in forge.yaml.
+schema ClusterTarget:
+    """The env-wide Kubernetes facts, stated ONCE.
 
-    Typical project shape (one ref reused across services):
+    A `ClusterTarget` is the single source of truth for the coordinates
+    that are identical across every workload in a deploy group: the
+    kubectl `cluster` context, the `namespace`, the image `registry`, the
+    `image_pull_secrets`, the build `platform`, and the env-wide
+    `image_tag`. The `Bundle` carries it once (`Bundle.cluster_target`);
+    every service REFERENCES it for its per-service `deploy` block rather
+    than restating those facts:
 
-        _prod_k8s = forge.K8sCluster {
+        _prod = forge.ClusterTarget {
             cluster = "prod-cluster"
             namespace = "kalshi-prod"
             registry = "ghcr.io/reliant/kalshi"
             domain = "kalshi.com"
         }
 
-        forge.Service { name = "trader", deploy = _prod_k8s }
-        forge.Service { name = "admin",  deploy = _prod_k8s | { replicas = 5 } }
+        forge.Service { name = "trader", deploy = _prod.deploy }
+        forge.Service { name = "admin",  deploy = _prod.deploy | { replicas = 5 } }
+
+        forge.Bundle { cluster_target = _prod, services = [...] }
+
+    This replaces the old normalize→denormalize inversion (the env-wide
+    knobs copied into every service's `K8sCluster` block, then re-derived
+    by a Go "pull them off the first service in the group" heuristic): the
+    env-wide facts are first-class on the Bundle, and `render_manifests`
+    reads namespace/registry/tag/platform/pull_secrets straight off the
+    target. A second target (a different cluster) lets ONE service ride a
+    different group — the multi-cluster split — without the env-wide facts
+    drifting, because each service still references a single target.
+
+    `deploy` is the DERIVED per-service `K8sCluster` this target seeds:
+    its env-wide fields are pre-filled from the target, its per-service
+    knobs (replicas/resources/ports/env_vars/…) keep their defaults so a
+    service overlays only what differs (`_prod.deploy | { ports = [...] }`).
+    """
+    cluster: str
+    namespace: str
+    registry: str
+    domain?: str
+    # Env-wide build arch (GOARCH / --platform). Same node arch for every
+    # workload the env renders. Unset => the build falls through to the
+    # host arch.
+    platform?: str
+    # Names of EXISTING image-pull Secrets, applied to every workload's
+    # generated ServiceAccount. Env-wide (the registry is env-wide, so its
+    # pull secret is too). Unset => no imagePullSecrets.
+    image_pull_secrets?: [str]
+    # Env-wide image tag (the per-build override CI passes via
+    # `-D image_tag=<sha>`). A per-service `image_tag` pin still wins (a
+    # no-op sibling image pinned to the tag it WAS pushed under).
+    image_tag: str = "latest"
+    # Derived: the per-service K8sCluster deploy block this target seeds,
+    # pre-filled with the env-wide coordinates. A service references it
+    # (`target.deploy | { ports = [...] }`) instead of restating them.
+    deploy: K8sCluster = K8sCluster {
+        cluster = cluster
+        namespace = namespace
+        registry = registry
+        domain = domain if domain else Undefined
+        platform = platform if platform else Undefined
+        image_pull_secrets = image_pull_secrets if image_pull_secrets else Undefined
+    }
+
+    check:
+        cluster, "ClusterTarget.cluster is required (kubectl context name)"
+        namespace, "ClusterTarget.namespace is required"
+        # registry is a REQUIRED input — empty is a load-time failure, NOT a
+        # deploy-time ImagePullBackOff. This is the guard that bites the
+        # cloud-env footgun: a typo'd / unset `-D registry=` that resolves to
+        # "" (no consumer-side `or <default>` to mask it) is rejected HERE,
+        # at KCL load, instead of rendering manifests with an image reference
+        # missing its registry that only fails when kubelet tries to pull.
+        # The companion build-platform guard lives on Bundle (it needs the
+        # services list to see whether any external image build is declared).
+        registry, "ClusterTarget.registry is required (image registry, e.g. ghcr.io/org/proj) — a cloud env MUST state it; an unset/typo'd `-D registry=` that resolves to empty is rejected here rather than producing an ImagePullBackOff at deploy"
+
+schema K8sCluster:
+    """Service runs in-cluster as a Deployment + Service on a specific
+    Kubernetes cluster. The PER-SERVICE deploy block: it carries the
+    per-service knobs (replicas/resources/ports/env_vars/…) AND the
+    env-wide coordinates (cluster/namespace/registry/domain/platform/
+    image_pull_secrets) that route + identify it.
+
+    Don't construct this directly with the env-wide coordinates spelled
+    out per service — that's the denormalization the `ClusterTarget` split
+    removes. Instead declare a `ClusterTarget` once and reference its
+    derived `.deploy`:
+
+        _prod = forge.ClusterTarget {
+            cluster = "prod-cluster"
+            namespace = "kalshi-prod"
+            registry = "ghcr.io/reliant/kalshi"
+        }
+
+        forge.Service { name = "trader", deploy = _prod.deploy }
+        forge.Service { name = "admin",  deploy = _prod.deploy | { replicas = 5 } }
+
+    The env-wide fields remain ON this block because the rendered JSON
+    contract is per-service (the Go deploy dispatcher reads each service's
+    cluster/namespace/registry to group + route it, which is what lets ONE
+    service ride a second `ClusterTarget` — the multi-cluster split). They
+    are SOURCED from the target, not restated.
     """
     type: str = "cluster"
-    # Env-wide knobs — same value across every service in a deploy
-    # group; the cluster.Apply pipeline pulls them off the first
-    # service in the group.
+    # Env-wide coordinates — sourced from a ClusterTarget (the SSOT), NOT
+    # restated per service. Present on the per-service block because the
+    # rendered JSON contract is per-service: the deploy dispatcher routes
+    # each service by them.
     cluster: str
     namespace: str
     registry: str
@@ -637,37 +793,18 @@ schema External:
     successful deploy; failures short-circuit before the state-file
     write so the recorded last-good tag stays clean.
 
-    `build_cmd` is the build-side mirror of `deploy_cmd`. Set it so
-    `forge build -t external --env <env>` constructs the deployable
-    image via a user-supplied shell command (`docker build …`, `docker
-    buildx …`, a cross-repo build script, etc.) instead of requiring a
-    hand-run `docker build`. forge exec's it via `sh -c` after
-    substituting the SAME tokens deploy_cmd uses:
-
-      * ${IMAGE}        forge-built image name
-      * ${TAG}          current tag (build-resolved or --tag override)
-      * ${CODE_VERSION} == ${TAG}; the canonical version to stamp into
-                        the image (e.g. a build-arg or label) so the
-                        running container's reported code_version always
-                        matches the image tag.
-      * ${PROJECT_DIR}  project root
-      * ${ENV}          env name (e.g. dev, staging, prod)
-      * ${SERVICE}      Service.name
-      * Any keys declared in `env`.
-
-    The command owns BOTH the build AND any push — forge does NOT run
-    `docker push` after it (same "user owns the CLI" contract as
-    deploy_cmd). On a successful build forge persists the resolved tag
-    to `.forge/state/build-<env>.json` so a subsequent `forge deploy
-    <env>` reuses it without `--tag`. Optional: External targets that
-    omit `build_cmd` keep building their image out-of-band (the prior
-    behaviour) and only deploy through forge.
+    BUILD side: to build (and push) this service's image via a shell
+    command, declare a `build = forge.ShellBuild { cmd = ... }` on the
+    Service — build and deploy are orthogonal, so the build hatch lives on
+    `Service.build` (the polymorphic build union) regardless of deploy
+    target. (This replaces the former `External.build_cmd` deploy-block
+    mirror, which was a second shell escape hatch with the same semantics
+    as ShellBuild; there is now ONE.)
     """
     type: str = "external"
     deploy_cmd: str
     rollback_cmd?: str
     health_cmd?: str
-    build_cmd?: str
     env_file?: str
     env?: {str: str}
 
@@ -903,6 +1040,27 @@ schema Cluster:
                      idempotent (kubectl apply + a CRD-cache), so re-runs
                      no-op. Default False — a cluster with no ingress
                      resources (reached via port-forward) leaves it off.
+
+                     `ingress` is the IMPERATIVE install. An env that
+                     declares its Gateway API controller DECLARATIVELY as a
+                     `forge.HelmChart` platform dep (Bundle.helm_charts, the
+                     helm-as-a-RENDERER model the cloud envs use) leaves
+                     `ingress = False` and sets `host_ports = True` instead —
+                     the chart is applied in the deploy phase, but the k3d
+                     host-port mapping still needs to happen at CREATE time.
+      * `host_ports` — merge the generated `deploy/k3d-ports.yaml` Gateway
+                     listener host-port fragment into the k3d config at
+                     `cluster create` time. The Gateway's listeners (e.g.
+                     grpc :29190 for daemon dial-out) need host ports mapped
+                     through the k3d loadbalancer at CREATE time, or
+                     in-cluster→host→cluster traffic (host.k3d.internal:<port>)
+                     finds nothing listening. `ingress = True` IMPLIES this
+                     (an imperatively-installed Gateway also needs the ports);
+                     set `host_ports = True` EXPLICITLY when the controller is
+                     installed declaratively (ingress = False) but the cluster
+                     still hosts a Gateway whose listeners must be host-mapped.
+                     Default False. No-op when the cluster has no `config` or
+                     no deploy/k3d-ports.yaml fragment.
     """
     name: str
     owner?: Cluster
@@ -911,6 +1069,7 @@ schema Cluster:
     agents: int = 0
     api_port?: int
     ingress: bool = False
+    host_ports: bool = False
     # Derived: kubectl context (k3d-<name>). Computed from `name` so
     # consumers reference `<cluster>.context` rather than re-spelling the
     # `k3d-` prefix. Always present.
@@ -1027,12 +1186,42 @@ schema ClusterClient:
     drift. The `id` is the stable handle the workload keys on (the
     CLUSTER_CONFIGS entry `id` AND the kubeconfig context name).
 
+    Two provisioning modes
+    ======================
+
+    `external` selects WHERE the kubeconfig Secret comes from:
+
+      * `external = False` (default, the dev/e2e k3d case) — forge MINTS
+        the Secret via `k3d kubeconfig get <cluster>` at the cluster→deploy
+        boundary. `.secret` is the KubeconfigSecret to emit in the Bundle's
+        `kubeconfig_secrets`; `.volume` sources that minted Secret.
+
+      * `external = True` — the kubeconfig Secret is provided OUT-OF-BAND
+        (a bootstrap script writes it in dev; GKE / a real cluster supplies
+        it in prod, where `reachability = "endpoint"`). forge does NOT mint:
+        `.secret` is None (Undefined — nothing lands in `kubeconfig_secrets`,
+        so the Go mint step has nothing to do) and `.volume` sources the
+        pre-existing Secret named by `volume_name`. There is no in-network
+        IP rewrite and no k3d mint in this mode.
+
+    `volume_name` decouples the Secret/Volume name from the `<id>-kubeconfig`
+    derivation. In minting mode it defaults to `<id>-kubeconfig` (the minted
+    Secret's name) so `.volume` sources exactly what `.secret` mints —
+    render-equivalent to before. In external mode set it to the NAME of the
+    pre-existing kubeconfig Secret (and pod volume) — this is what lets a
+    dev/prod consumer that already mounts a hand-named Secret migrate to
+    ClusterClient render-EQUIVALENTLY (the emitted volume keeps its existing
+    name + source). `.config_json` / `.config_entry` derive from `mount_path`
+    + `key` in BOTH modes, unchanged.
+
     Fields:
       * `id`          — stable client id. Used as the CLUSTER_CONFIGS
                         entry id, the minted kubeconfig context name, and
-                        the Secret/Volume base name (`<id>-kubeconfig`).
+                        (when `volume_name` is unset) the Secret/Volume base
+                        name (`<id>-kubeconfig`).
       * `cluster`     — reference to the Cluster the workload REACHES
-                        (kubeconfig is minted FOR this cluster).
+                        (kubeconfig is minted FOR this cluster; ignored for
+                        the Secret in external mode, still used for context).
       * `in_cluster`  — reference to the Cluster the workload RUNS in
                         (the Secret/Volume land here).
       * `mount_path`  — absolute dir the kubeconfig Secret mounts at; the
@@ -1042,7 +1231,19 @@ schema ClusterClient:
       * `namespace`   — namespace for the minted Secret in `in_cluster`
                         (default: the env's namespace, resolved Go-side).
       * `reachability`— passed through to the minted KubeconfigSecret
-                        ("in-network" dev/e2e IP rewrite, "endpoint" prod).
+                        ("in-network" dev/e2e IP rewrite, "endpoint" prod /
+                        external where the endpoint is reachable verbatim).
+      * `external`    — reference a pre-existing Secret instead of minting
+                        (default False — keep minting).
+      * `volume_name` — name of the pod volume the `.volume` declares.
+                        Default `<id>-kubeconfig`. Pin an EXISTING name here to
+                        migrate render-equivalently.
+      * `secret_name` — name of the kubeconfig Secret the `.volume` SOURCES (and
+                        the minted Secret's name). Default `volume_name`. Set it
+                        when the existing pod volume NAME differs from the
+                        sourced Secret NAME (e.g. dev/prod, where the volume is
+                        `daemon-cluster-kubeconfig` but the out-of-band Secret is
+                        `cp-daemon-kubeconfig`).
     """
     id: str
     cluster: Cluster
@@ -1051,11 +1252,29 @@ schema ClusterClient:
     key: str = "kubeconfig"
     namespace?: str
     reachability: str = "in-network"
-    # Derived names/paths — the single source the three emitted things share.
-    _secret_name: str = id + "-kubeconfig"
+    # external = True references a pre-existing Secret (no k3d mint); the
+    # default keeps the minting behaviour the e2e path relies on.
+    external: bool = False
+    # The pod volume name. Defaults to the <id>-kubeconfig derivation; override
+    # to pin an existing volume name (render-equivalent migration).
+    volume_name?: str
+    # The kubeconfig Secret name the volume sources (and the minted Secret's
+    # name). Defaults to volume_name; set it when the existing volume name and
+    # the sourced/minted Secret name differ (dev/prod external Secrets).
+    secret_name?: str
+    # Derived names/paths — the single source the emitted things share.
+    # The pod VOLUME's name: default `<id>-kubeconfig`, overridable via volume_name.
+    _volume_name: str = volume_name if volume_name else id + "-kubeconfig"
+    # The SECRET name the volume sources / the mint targets: defaults to the
+    # volume name (minting mode stays self-consistent), overridable via secret_name.
+    _secret_name: str = secret_name if secret_name else _volume_name
     _kubeconfig_path: str = mount_path + "/" + key
     # The minted cross-cluster kubeconfig Secret (in_cluster -> cluster).
-    secret: KubeconfigSecret = KubeconfigSecret {
+    # Named `_secret_name` so the minted Secret and `.volume`'s source ALWAYS
+    # agree (the volume sources exactly what's minted). Undefined in external
+    # mode — forge mints NOTHING, the Secret is provided out-of-band; `.secret`
+    # projects to null and contributes no entry to the Bundle's kubeconfig_secrets.
+    secret?: KubeconfigSecret = KubeconfigSecret {
         name = _secret_name
         in_cluster = in_cluster.context
         target_cluster = cluster.name
@@ -1063,10 +1282,13 @@ schema ClusterClient:
         key = key
         namespace = namespace
         reachability = reachability
-    }
-    # The Volume the consuming workload mounts to read the kubeconfig.
+    } if not external else Undefined
+    # The Volume the consuming workload mounts to read the kubeconfig. Its NAME
+    # is `_volume_name`; it SOURCES the Secret `_secret_name` (the minted Secret
+    # in minting mode, the pre-existing Secret in external mode). The two default
+    # equal, so unset secret_name keeps name == source render-equivalent to before.
     volume: Volume = Volume {
-        name = _secret_name
+        name = _volume_name
         mount_path = mount_path
         type = "secret"
         source = _secret_name
@@ -1157,24 +1379,91 @@ schema DockerBuild(Build):
     as this type's behavior — a DockerBuild service is the ONLY way forge
     builds an image; there is no unconditional auto-docker step.
     dockerfile/platform/target/build_args map to the corresponding
-    `docker build` flags."""
+    `docker build` flags.
+
+    The per-service `docker` facts — `registry` (the push/tag target for
+    THIS service's image) and `build_contexts` (the named
+    `--build-context name=value` entries THIS service's Dockerfile
+    `COPY --from=`s) — live HERE because they are NOT expressible in the
+    Dockerfile itself, and KCL renders per env so they are per-service AND
+    per-env. Each is OPTIONAL and falls back to the project-level
+    forge.yaml `docker.registry` / `docker.build_contexts` when unset, so a
+    single-image project declares them once at the top level.
+
+    forge is base-image-AGNOSTIC: it does NOT discover, mirror, pin, or
+    inject base images. A Dockerfile's `FROM` lines are the whole story —
+    pin them with `FROM …@sha256:…` in the Dockerfile if reproducibility is
+    wanted."""
     type: str = "docker"
     dockerfile: str = "Dockerfile"
     platform: str = ""
     target: str = ""
     build_args: {str: str} = {}
+    # Push/tag target for THIS service's image (registry-host[/namespace]).
+    # Empty falls back to forge.yaml docker.registry (then the project name).
+    registry: str = ""
+    # Named build contexts THIS service's Dockerfile needs, each a
+    # `docker buildx --build-context name=value` entry (a sibling-checkout
+    # path the Dockerfile `COPY --from=name`s, a `docker-image://` override,
+    # …). Declare ONLY what this Dockerfile actually consumes. Empty falls
+    # back to forge.yaml docker.build_contexts.
+    build_contexts: {str: str} = {}
 
     check:
         type == "docker", "DockerBuild.type must be 'docker'"
         dockerfile, "DockerBuild.dockerfile is required"
 
 schema ShellBuild(Build):
-    """Build the service by running `cmd` verbatim via `sh -c`. The
-    general escape hatch (generalizes the old build_cmd / EffectiveBuildCmd
-    path): cross-repo builds, language runtimes forge doesn't natively
-    build, pre-built image re-pushes. The command owns the whole build."""
+    """Build the service by running `cmd` verbatim via `sh -c`. The ONE
+    shell escape hatch — cross-repo builds, language runtimes forge
+    doesn't natively build, pre-built image re-pushes, sibling-repo
+    binaries. The command owns the WHOLE build AND any push (forge does
+    NOT run `docker push` afterwards).
+
+    This is the single way to declare "run this shell command to produce
+    (and push) this artifact." It replaces the former second hatch — the
+    flat `Service.build_cmd` / `build_cwd` / `build_env` trio (and the
+    `External.build_cmd` deploy-block mirror) — which had the same
+    execution semantics but a different, surprising declaration surface.
+    Build and deploy are orthogonal: a service can carry a `ShellBuild`
+    (built externally) AND a `deploy = forge.External {...}` /
+    `forge.K8sCluster {...}` (deployed however) at the same time.
+
+    Execution contract (ONE documented contract):
+
+      * cwd — `cwd` resolved against the project root (relative paths join
+        the dir holding forge.yaml; absolute pass through). Unset => the
+        project root itself. Set it to a sibling-repo path (e.g.
+        `cwd = "../reliant"`) for a cross-repo build whose relative paths
+        resolve there. A `cwd` that doesn't exist on disk is a HARD build
+        failure (naming the missing path) — a build that was supposed to
+        run can't, and a following deploy would reference an unpushed
+        image.
+      * substitution — before exec forge substitutes these ${X} tokens
+        into `cmd`: ${IMAGE} ${TAG} ${CODE_VERSION} ${SERVICE}
+        ${TARGETARCH} ${REGISTRY} ${PROJECT_DIR} ${ENV} ${BUILD_CWD}, plus
+        any keys declared in `env` (the built-in tokens win on conflict).
+      * env — extra env vars merged into the command's PROCESS environment
+        AND added to the ${X} substitution map (built-ins win on conflict).
+      * state/digest — on success forge captures the pushed image's
+        content-addressed digest (best-effort) and writes the build-state
+        file so a subsequent `forge deploy <env>` pins the same
+        tag/digest, exactly as the project docker build does.
+
+    A no-op ShellBuild (`cmd = "true"`) is the idiomatic way to suppress
+    forge's default `./cmd/<name>` Go build for a service whose artifact
+    is built out-of-band (e.g. a sibling-repo binary pulled as a prebuilt
+    image): it pushes nothing, so the digest lookup finds nothing and
+    deploy falls through to the env tag, unchanged."""
     type: str = "shell"
     cmd: str
+    # Working directory the command runs from. Relative paths resolve
+    # against the project root; absolute pass through. Unset => the
+    # project root. A missing-on-disk cwd is a hard build failure.
+    cwd: str = ""
+    # Extra env vars merged into the command's process environment AND the
+    # ${X} substitution map (built-in tokens win on conflict).
+    env: {str: str} = {}
 
     check:
         type == "shell", "ShellBuild.type must be 'shell'"
@@ -1203,7 +1492,7 @@ schema FirebaseBundleDir:
                  (relative paths resolve against the project root). It is
                  NOT built by forge; the caller is expected to have run
                  the sibling build already (or to wire it via a separate
-                 forge.Service build_cmd).
+                 forge.Service `build = forge.ShellBuild {...}`).
       * `dest` — sub-path under the hosting site's public root to copy
                  `src` into. Empty (the default) means the site root.
                  A leading "/" is tolerated and stripped.
@@ -1296,38 +1585,16 @@ schema Service:
     deploy phase ENTIRELY; an image-less cluster service still
     participates in the deploy phase to pin its owned manifests.
 
-    Build side — `build_cmd` (mirror of `External` for the build step):
+    Build side — `build` (the polymorphic build union):
 
-      Set `build_cmd` to delegate image construction for this service
-      to a user-supplied shell command. `forge build` runs it via
-      `sh -c` after substituting the documented ${X} tokens (IMAGE,
-      TAG, SERVICE, TARGETARCH, REGISTRY, PROJECT_DIR, plus any keys
-      from `build_env`). The user's command is expected to own both
-      the build and the push — forge does NOT run `docker push` after
-      it. Mirrors the External deploy provider's "run THIS CLI command"
-      shape so the build side has the same escape hatch the deploy
-      side already has.
-
-      Use cases: sibling-repo binaries forge doesn't compile itself
-      (cross-repo `go build` then `docker build`), third-party
-      pre-built images re-pushed under your registry, language
-      runtimes forge doesn't natively build (Rust, Python wheels).
-
-      Mutually exclusive with the Go-build path: when `build_cmd` is
-      set, forge's built-in `path:` Go-build pipeline is skipped. The
-      forge.yaml `services[].path` field stays the source of truth
-      for the Go-build path; KCL `build_cmd` is the override.
-
-      `build_cwd` declares the working directory the shell command runs
-      from (typically a sibling repo path). Relative paths resolve
-      against the project root. If `build_cwd` points to a path that
-      doesn't exist on disk forge warns and skips the build rather
-      than failing — local dev pattern where the sibling repo is
-      optional, and CI without the sibling shouldn't fail.
-
-      `build_env` declares extra env vars merged into the command's
-      environment AND added to the ${X} substitution map (built-in
-      tokens win on conflict — same precedence External uses).
+      `build` declares HOW this service's artifact is produced — one of
+      GoBuild (the default: `go build ./cmd/<name>`), DockerBuild (an
+      image via `docker build`), or ShellBuild (a verbatim `sh -c`
+      command that owns the whole build + push). ShellBuild is the SINGLE
+      shell escape hatch for sibling-repo binaries forge doesn't compile,
+      third-party pre-built images re-pushed under your registry, and
+      language runtimes forge doesn't natively build — see ShellBuild for
+      its cwd / substitution / env / digest contract.
     """
     name: str
     image?: str
@@ -1357,9 +1624,6 @@ schema Service:
     # service never has to spell it out, while a hand-authored
     # forge.Service may set it explicitly.
     build?: GoBuild | DockerBuild | ShellBuild
-    build_cmd?: str
-    build_cwd?: str
-    build_env: {str: str} = {}
     # Extra namespaced RBAC rules appended to this Service's forge-
     # generated Role (lib/rbac.k always grants configmaps/secrets read;
     # these rules add to that). Use it when a Service runs a controller-
@@ -1406,10 +1670,6 @@ schema Service:
 
     check:
         name, "Service.name is required"
-        build_cwd == Undefined or build_cmd, \
-            "Service.build_cwd is only meaningful when build_cmd is set"
-        len(build_env) == 0 or build_cmd, \
-            "Service.build_env is only meaningful when build_cmd is set"
 
 schema Operator:
     """A cluster-scoped controller that reconciles CRDs.
@@ -1516,6 +1776,222 @@ schema CronJob:
             "CronJob.schedule must be '' (one-shot Job), a named expression ('@hourly', ...), or a 5-field cron expression"
 
 # ---------------------------------------------------------------------------
+# Platform dependency — a helm chart rendered (NOT installed) by forge.
+# ---------------------------------------------------------------------------
+
+schema HelmChart:
+    """A platform dependency rendered from a helm chart.
+
+    THE MODEL: helm is a RENDERER, not an installer. forge runs
+    `helm template <chart> --version <version> --values <vals>
+    -n <namespace> --skip-crds` to expand the chart to a manifest list,
+    then folds those manifests into the SAME render → kubectl-apply →
+    wait pipeline every other forge entity flows through. There is no
+    `helm install`, no helm-managed release, no imperative installer — a
+    platform dep is just another renderable.
+
+    SELECTION IS `--target`. A HelmChart is a renderable with a NAME, in
+    the SAME env Bundle as the app — it differs from the app only in which
+    `--target` you pick. forge stamps `app.kubernetes.io/name = <name>` on
+    every manifest the chart renders, so the EXISTING `--target` /
+    FilterManifestsByApp axis selects it:
+
+        forge deploy <env> --target <name>   # apply ONLY this platform dep
+        forge deploy <env>                   # apply the app (no platform target)
+
+    cert-manager and Envoy Gateway are declared as two such HelmCharts the
+    consumer lists per env; applying them with `--target` leaves the
+    cluster with their CRDs Established + controllers Deployed, so a
+    subsequent `forge deploy <env>` (the app) finds the CRDs present.
+
+    DECLARATIVE UPGRADES are allowed: bump `version` (or edit `values`)
+    and re-apply via `--target`; the render → apply reconciles it. There
+    is no never-upgrade guardrail.
+
+    APPLY ORDERING. The chart's own CRDs are deliberately EXCLUDED from
+    the render (`--skip-crds`) — letting a chart's bundled (often older /
+    experimental-channel) CRDs hit the cluster makes the Gateway-API
+    `safe-upgrades` ValidatingAdmissionPolicy self-deny. forge instead
+    supplies the correct CRDs itself (the pinned standard Gateway API CRDs
+    + cert-manager's CRDs at the matching chart version) and applies them
+    FIRST, waiting until Established before the chart's controller
+    manifests. `crds` selects which forge-owned CRD bundle to supply.
+
+    Fields:
+      * `name`      — the platform dep's NAME; the `--target` selector and
+                      the `app.kubernetes.io/name` stamped on every
+                      rendered manifest.
+      * `chart`     — chart name (repo charts: the chart name, e.g.
+                      "cert-manager"; OCI charts: ignored, `oci` carries
+                      the full ref).
+      * `repo`      — chart repository URL (e.g. "https://charts.jetstack.io").
+                      Mutually exclusive with `oci`.
+      * `oci`       — OCI chart ref (e.g.
+                      "oci://docker.io/envoyproxy/gateway-helm"). Mutually
+                      exclusive with `repo`.
+      * `version`   — pinned chart version (e.g. "v1.20.1"). REQUIRED — a
+                      platform dep is always version-pinned.
+      * `namespace` — namespace to render the chart into (`helm template
+                      -n <namespace>`). The chart's namespaced resources
+                      land here.
+      * `values`    — helm values (the `--values` overlay), a raw dict
+                      passed through verbatim. Empty => chart defaults.
+      * `crds`      — which forge-owned CRD bundle to apply FIRST (before
+                      the chart's controllers), Established-gated:
+                        "" (default) — none; the chart needs no forge CRDs.
+                        "gateway-api" — the pinned standard-channel Gateway
+                          API CRDs (Envoy Gateway).
+                        "cert-manager" — cert-manager's CRDs at `version`.
+    """
+    name: str
+    chart: str = ""
+    repo: str = ""
+    oci: str = ""
+    version: str
+    namespace: str
+    values: {str: any} = {}
+    crds: "" | "gateway-api" | "cert-manager" = ""
+    # Raw k8s manifests that ride WITH this platform dep: applied (and
+    # excluded from a bare `forge deploy <env>`) on the SAME `--target=<name>`
+    # axis as the chart, stamped with the chart's `app.kubernetes.io/name` and
+    # applied AFTER the chart's controllers (so a controller is Deployed
+    # before its instances). The natural home for the small cluster-scoped
+    # instances a chart's controller reconciles but the chart itself does not
+    # ship — e.g. the `eg` GatewayClass for envoy-gateway, or cert-manager
+    # ClusterIssuers. UNLIKE Bundle.additional_manifests (which renders into
+    # the env's main stream and so DOES apply on a bare app deploy), these are
+    # platform-only: a bare `forge deploy <env>` renders none of them. Each
+    # entry is a raw manifest dict. Empty => none.
+    manifests: [any] = []
+
+    check:
+        name, "HelmChart.name is required (the --target selector)"
+        version, "HelmChart.version is required (a platform dep is always version-pinned)"
+        namespace, "HelmChart.namespace is required (helm template -n <namespace>)"
+        repo or oci, "HelmChart must set `repo` (a chart-repo URL) or `oci` (an OCI chart ref)"
+        not (repo and oci), "HelmChart.repo and HelmChart.oci are mutually exclusive"
+        oci or chart, "HelmChart.chart is required for a repo chart (the chart name)"
+
+# ---------------------------------------------------------------------------
+# Declared external prerequisites.
+#
+# THE PROBLEM: a deploy depends on facts forge does NOT (and must not)
+# create — an out-of-band Secret (the `cloudflare-api-token` in the
+# `cert-manager` namespace), per-host DNS A-records pointing at the
+# ingress load balancer, the load-bearing `*.workspaces` wildcard record.
+# Today these live ONLY in KCL docstrings: `forge deploy` renders
+# successfully, applies, and THEN cert-manager's ACME challenge or the
+# workspace-proxy DNS silently hangs because the prereq was never
+# satisfied. The failure surfaces minutes later, far from its cause, with
+# no signal pointing back at the unmet requirement.
+#
+# THE MODEL: declare each prerequisite as a first-class entity in
+# `Bundle.requires`. Two kinds today (a `type`-discriminated union,
+# mirroring the deploy / build unions so a new prereq kind is additive):
+#
+#   * ExternalSecret — an out-of-band k8s Secret + the keys it must carry.
+#     forge does NOT render or create it (that's the whole point — it's
+#     out-of-band); the declaration drives a RENDER-TIME checklist AND a
+#     deploy preflight that BLOCKS when the declared-required Secret/key is
+#     absent on the LIVE target (reusing the same SecretGetter the existing
+#     secretKeyRef preflight uses).
+#
+#   * DNSRecord — a DNS record (A / AAAA / CNAME / wildcard) the deploy
+#     depends on. forge cannot verify arbitrary DNS authoritatively, so
+#     this surfaces as a render-time checklist line (and a `--check`
+#     preflight note) rather than a hard block — the load-bearing
+#     `*.workspaces` wildcard is exactly the record whose omission hangs
+#     ACME+proxy silently, so MODELING it (vs a docstring) is the win.
+#
+# CROSS-SECRET BYTE-MATCH: when ONE logical secret value is projected to N
+# different Secret refs (the same Cloudflare token wanted under two names,
+# a JWT key shared across services), declare the group with a shared
+# `value_group` id on each ExternalSecret. forge's audit then asserts the
+# group is INTERNALLY consistent at render (every member names the same
+# logical value), and the preflight byte-compares the live Secret values
+# so a drifted copy (same id, different bytes) is caught BEFORE it ships a
+# half-rotated credential. An ExternalSecret with NO `value_group` is a
+# standalone prereq (the common case) — the byte-match machinery is inert.
+# ---------------------------------------------------------------------------
+
+schema ExternalSecret:
+    """An out-of-band Kubernetes Secret a deploy DEPENDS ON but forge does
+    NOT create — the declarative replacement for a "provision this Secret
+    yourself" docstring.
+
+    The motivating case: cert-manager's DNS-01 ClusterIssuer reads a
+    `cloudflare-api-token` Secret (key `api-token`) in the `cert-manager`
+    namespace to write `_acme-challenge` TXT records. forge renders the
+    ClusterIssuer that REFERENCES that Secret, but the Secret itself is
+    provisioned out-of-band; if it's absent, render + apply both succeed
+    and then every ACME challenge silently fails. Declaring it here turns
+    that into a render-time checklist line and a deploy-preflight BLOCK.
+
+    Fields:
+      * `name`        — the Secret's metadata.name.
+      * `namespace`   — the namespace it must exist in. This is OFTEN NOT
+                        the deploy's own namespace (cert-manager's Secret
+                        lives in `cert-manager`), so it's required + explicit
+                        rather than defaulted — the cross-namespace case is
+                        the norm for the prereqs this models.
+      * `keys`        — the data keys the consumer reads (e.g. ["api-token"]).
+                        At least one. The preflight verifies each exists.
+      * `reason`      — a short human note: WHY the deploy needs it (shown in
+                        the checklist so the operator knows what breaks if it's
+                        absent). e.g. "cert-manager DNS-01 Cloudflare API token".
+      * `value_group` — OPTIONAL shared id tying this Secret to OTHER
+                        ExternalSecrets that must carry the SAME logical
+                        value under (possibly) different name/key. Drives the
+                        cross-secret byte-match audit + preflight. Unset =>
+                        a standalone prereq (no byte-match group).
+    """
+    type: str = "secret"
+    name: str
+    namespace: str
+    keys: [str]
+    reason: str = ""
+    value_group: str = ""
+
+    check:
+        type == "secret", "ExternalSecret.type must be 'secret'"
+        name, "ExternalSecret.name is required"
+        namespace, "ExternalSecret.namespace is required (the namespace the out-of-band Secret must exist in — often NOT the deploy namespace, e.g. 'cert-manager')"
+        len(keys) > 0, "ExternalSecret.keys must list at least one data key the consumer reads (e.g. ['api-token'])"
+
+schema DNSRecord:
+    """A DNS record a deploy DEPENDS ON — the declarative replacement for a
+    "point DNS at the LB IP" docstring.
+
+    forge cannot authoritatively verify arbitrary external DNS at deploy
+    time (the record may not have propagated; the resolver forge runs under
+    may differ from the cluster's), so this is a render-time CHECKLIST entry
+    (and a `forge deploy --check` note), NOT a hard block. The value is
+    MODELING the requirement: the load-bearing `*.workspaces` wildcard
+    A-record — whose omission hangs both the DNS-01 wildcard cert and all
+    workspace-proxy traffic — is exactly the silent-failure prereq that
+    belongs in the bundle, not a comment.
+
+    Fields:
+      * `host`   — the record name (e.g. "api.reliantapi.com" or the
+                   wildcard "*.workspaces.reliantapi.com").
+      * `type`   — record type: "A" | "AAAA" | "CNAME". Default "A".
+      * `target` — OPTIONAL expected value: the LB IP for an A/AAAA record,
+                   or the CNAME target. Often unknown at author time (the
+                   Envoy LB takes an ephemeral IP), so optional — when set,
+                   the checklist shows the expected value; when unset, the
+                   checklist just names the record that must exist.
+      * `reason` — short human note: what breaks if the record is absent.
+    """
+    host: str
+    type: "A" | "AAAA" | "CNAME" = "A"
+    target: str = ""
+    reason: str = ""
+
+    check:
+        host, "DNSRecord.host is required (e.g. 'api.example.com' or '*.workspaces.example.com')"
+        type in ["A", "AAAA", "CNAME"], "DNSRecord.type must be 'A' | 'AAAA' | 'CNAME'"
+
+# ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
 
@@ -1536,6 +2012,15 @@ schema Bundle:
     # the joined network + registry-inherit from it — there is no
     # "primary" cluster.
     clusters: [Cluster] = []
+    # The env-wide Kubernetes facts, stated ONCE (cluster context /
+    # namespace / registry / image_pull_secrets / platform / image_tag).
+    # `render_manifests` reads namespace/registry/platform/pull_secrets off
+    # this target instead of the old "pull them off the first cluster
+    # service" heuristic, and each service references `cluster_target.deploy`
+    # for its per-service deploy block. Optional so a manifests-free /
+    # host-only / External-only Bundle (no in-cluster workloads) need not
+    # declare one; `render_manifests` requires it.
+    cluster_target?: ClusterTarget
     # Cross-cluster kubeconfigs minted FRESH each `forge up` and stored
     # as k8s Secrets (so a workload in one cluster can reach another's
     # API server without a committed, IP-drifting kubeconfig). Minted at
@@ -1576,3 +2061,65 @@ schema Bundle:
     # handler so Pods stay schedulable when the real runtime isn't
     # installed. See RuntimeClass docstring for the full rationale.
     runtime_classes: [RuntimeClass] = []
+    # Platform dependencies rendered from helm charts (helm-as-a-RENDERER:
+    # `helm template --skip-crds` → manifests folded into the normal apply
+    # pipeline; NO `helm install`). Each is a renderable with a NAME the
+    # EXISTING `--target` axis selects: `forge deploy <env> --target <name>`
+    # applies that platform dep; `forge deploy <env>` (no platform target)
+    # applies the app. cert-manager + Envoy Gateway are declared here per
+    # env. See HelmChart. Empty => no platform deps (the app-only default).
+    helm_charts: [HelmChart] = []
+    # Declared external PREREQUISITES — out-of-band facts the deploy depends
+    # on that forge does NOT (and must not) create: an out-of-band Secret
+    # (cert-manager's `cloudflare-api-token`), per-host DNS A-records, the
+    # load-bearing `*.workspaces` wildcard. MODELING them here (vs a docstring)
+    # makes them a render-time checklist AND a deploy preflight: an
+    # `ExternalSecret` that's declared-required but ABSENT on the live target
+    # BLOCKS the deploy (reusing the secretKeyRef preflight's SecretGetter)
+    # instead of letting ACME/DNS hang silently minutes after a green apply.
+    # `required_dns` surfaces as a checklist note (forge can't authoritatively
+    # verify external DNS). Empty => no declared prereqs (today's behavior).
+    required_secrets: [ExternalSecret] = []
+    required_dns: [DNSRecord] = []
+
+    check:
+        # value_group consistency: every ExternalSecret in a byte-match group
+        # must agree on the KEY SET it projects, so the cross-secret byte
+        # comparison (preflight) compares like for like. A group whose members
+        # disagree on which keys carry the shared value is a modeling error —
+        # caught here at load, not as a confusing preflight diff. Standalone
+        # secrets (empty value_group) are exempt. The dict comprehension keys
+        # each group id to the DISTINCT key-set signatures its members declare;
+        # a consistent group collapses to exactly one signature.
+        all g, sigs in {
+            s.value_group: [
+                ",".join([k for k in sorted(s2.keys)])
+                for s2 in required_secrets if s2.value_group == s.value_group
+            ] for s in required_secrets if s.value_group
+        } {
+            len({sig: sig for sig in sigs}) == 1
+        }, "Bundle.required_secrets: ExternalSecrets sharing a value_group must declare the SAME key set (the bytes under those keys are compared across the group); a group whose members project different keys can't be byte-matched"
+        # `platform` is REQUIRED on a CLOUD cluster_target whenever ANY
+        # service ships a REAL external image build (a DockerBuild or a
+        # non-no-op ShellBuild — see forge.builds_an_image). Those builds
+        # interpolate the env's `platform` as ${TARGETARCH} / the docker
+        # `--platform`; WITHOUT it the build pipeline falls through to the
+        # dev HOST's arch (resolveExternalBuildTargetArch → runtime.GOARCH),
+        # so a `forge build` from an arm64 Mac pushes arm64 images that
+        # exec-format-error / ImagePullBackOff on amd64 cloud nodes — the
+        # class that broke prod. Making it a LOAD-time failure (naming the
+        # field) converts that silent deploy-time break into an author-time
+        # one.
+        #
+        # The registry is the authoritative local-vs-cloud signal: a LOCAL
+        # k3d target rides a host-local registry (localhost:/registry.localhost:)
+        # whose nodes share the dev-host arch, so an omitted platform
+        # correctly tracks the host — the dev/e2e path that legitimately omits
+        # it stays exempt. A CLOUD target (any real remote registry) whose
+        # nodes have a FIXED arch must state it. Using the registry (not the
+        # cluster name) keeps the signal reliable: a localhost registry can
+        # only be served to the host's own cluster, period.
+        not cluster_target or cluster_target.platform \
+            or is_local_registry(cluster_target.registry) \
+            or all s in services { not builds_an_image(s) }, \
+            "Bundle.cluster_target.platform is required: this env deploys to a cloud target (a non-local registry) AND declares a service with a real external image build (DockerBuild / non-no-op ShellBuild), but states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so external builds cross-compile for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."

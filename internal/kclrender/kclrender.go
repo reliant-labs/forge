@@ -14,8 +14,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/reliant-labs/forge/internal/kclplugin"
 	"kcl-lang.io/kpm/pkg/client"
+
+	"github.com/reliant-labs/forge/internal/kclplugin"
 )
 
 // Run renders the KCL at source — a package directory or a single .k

@@ -320,22 +320,21 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		}
 	}
 
-	// Install the ingress bundle (Gateway API CRDs + Traefik +
-	// GatewayClass) when the project has features.ingress enabled.
-	// Runs AFTER the kubectl context is pinned so applies hit the
-	// right cluster.
+	// The Gateway API stack (Gateway API CRDs + Envoy Gateway controller +
+	// the `eg` GatewayClass) is NOT installed imperatively here. It is a
+	// DECLARED platform dependency — a forge.HelmChart in the env Bundle's
+	// `helm_charts` — rendered + applied by the deploy phase
+	// (`forge deploy <env> --target=envoy-gateway`, CRD-first) EXACTLY like
+	// the cloud envs. `forge cluster up` only creates the bare k3d cluster
+	// with the host-port mapping the merged k3d config carries; the
+	// controller arrives with the deploy. One declarative model everywhere.
+	//
+	// Still provision mkcert TLS Secrets for any dev Gateway that opted in
+	// via tls.mode == "mkcert": those are project-owned Secrets the declared
+	// Gateway references, independent of the controller install. No-op when
+	// no mkcert gateways are declared (or no dev KCL).
 	if ingressOn {
 		projectDir, _ := os.Getwd()
-		// kctx="" — the dev path pins the context via pinKubectlContext
-		// above, so the install inherits it. env="dev" drives the Traefik
-		// entrypoints off the dev env's Gateway listeners.
-		if err := installIngressBundle(ctx, "", projectDir, "dev"); err != nil {
-			return fmt.Errorf("install ingress: %w", err)
-		}
-		// Provision mkcert TLS Secrets for any dev Gateway that
-		// opted in via tls.mode == "mkcert". Runs AFTER the ingress
-		// bundle so the GatewayClass is ready when the Secret lands;
-		// no-op when no mkcert gateways are declared.
 		if err := provisionMkcertSecrets(ctx, projectDir); err != nil {
 			return fmt.Errorf("provision mkcert TLS: %w", err)
 		}

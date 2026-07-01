@@ -127,9 +127,13 @@ func evaluateExternalBuildCheck(svc ServiceEntity, projectDir string, lookup bin
 	var evidence []string
 	hasWarn := false
 
-	// CWD existence. Empty BuildCwd → check projectDir itself so the
+	buildCmd := svc.EffectiveBuildCmd()
+	buildCwd := svc.EffectiveBuildCwd()
+	buildEnv := svc.EffectiveBuildEnv()
+
+	// CWD existence. Empty cwd → check projectDir itself so the
 	// user gets a clear hit when forge is invoked from a wonky cwd.
-	resolved := svc.BuildCwd
+	resolved := buildCwd
 	switch {
 	case resolved == "":
 		resolved = projectDir
@@ -156,16 +160,16 @@ func evaluateExternalBuildCheck(svc ServiceEntity, projectDir string, lookup bin
 	// a `KEY=value` env-var assignment in the first token (Make-style
 	// `CGO_ENABLED=0 go build ...`). Both need a real parse pass and
 	// the brief explicitly defers that to a future revision.
-	cmdToken, skipReason := firstCommandToken(svc.BuildCmd)
+	cmdToken, skipReason := firstCommandToken(buildCmd)
 	switch {
 	case skipReason != "":
 		evidence = append(evidence, fmt.Sprintf("info: first-token PATH check skipped (%s)", skipReason))
 	case cmdToken == "":
-		evidence = append(evidence, "info: build_cmd has no resolvable first token")
+		evidence = append(evidence, "info: build cmd has no resolvable first token")
 	default:
 		if _, err := lookup(cmdToken); err != nil {
 			hasWarn = true
-			evidence = append(evidence, fmt.Sprintf("warn: %s not found on PATH (first token of build_cmd)", cmdToken))
+			evidence = append(evidence, fmt.Sprintf("warn: %s not found on PATH (first token of the build cmd)", cmdToken))
 		} else {
 			evidence = append(evidence, fmt.Sprintf("ok: %s on PATH", cmdToken))
 		}
@@ -184,12 +188,12 @@ func evaluateExternalBuildCheck(svc ServiceEntity, projectDir string, lookup bin
 		TargetArch: "<arch>",
 		Registry:   "<registry>",
 		ProjectDir: projectDir,
-		BuildCwd:   svc.BuildCwd,
-		BuildCmd:   svc.BuildCmd,
-		BuildEnv:   svc.BuildEnv,
+		BuildCwd:   buildCwd,
+		BuildCmd:   buildCmd,
+		BuildEnv:   buildEnv,
 	}
-	preview := buildtarget.Expand(svc.BuildCmd, syntheticSpec)
-	evidence = append(evidence, "info: resolved build_cmd: "+preview)
+	preview := buildtarget.Expand(buildCmd, syntheticSpec)
+	evidence = append(evidence, "info: resolved build cmd: "+preview)
 
 	if hasWarn {
 		result.Status = doctor.StatusWarn

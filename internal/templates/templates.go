@@ -109,11 +109,12 @@ func FrontendTemplates() TemplateCategory { return TemplateCategory{basePath: "f
 func DeployTemplates() TemplateCategory { return TemplateCategory{basePath: "deploy"} }
 
 // IngressTemplates returns the embedded Gateway API install assets
-// (vendored Traefik install, GatewayClass) keyed under
-// `internal/templates/ingress/<provider>/`. The Gateway API CRDs
-// themselves are fetched from the upstream GitHub release at
-// `forge cluster up` time and cached under ~/.cache/forge/ —
-// see internal/cli/dev_cluster_ingress.go for the download path.
+// (the Envoy Gateway VERSION pins + the vendored `eg` GatewayClass)
+// keyed under `internal/templates/ingress/<provider>/`. The Envoy
+// Gateway controller is installed via `helm` from the pinned
+// gateway-helm chart, and the Gateway API CRDs are fetched from the
+// upstream GitHub release at `forge cluster up` time and cached under
+// ~/.cache/forge/ — see internal/cli/dev_cluster_ingress.go.
 func IngressTemplates() TemplateCategory { return TemplateCategory{basePath: "ingress"} }
 
 // TestTemplates returns the category for test-scaffold templates.

@@ -213,7 +213,6 @@ message NotAnEntity {
 // those four rule files were consolidated under a unified Inspect engine.
 // See internal/contractcheck/*_test.go.
 
-
 // TestMethodAuthAnnotation_FiresOnUnannotatedRPC verifies the analyzer
 // flags every RPC that declares no `(forge.v1.method)` annotation
 // (auth-by-omission) and leaves annotated RPCs alone. The fixture has

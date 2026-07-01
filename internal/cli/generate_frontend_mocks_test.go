@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"text/template"
@@ -349,6 +350,162 @@ func TestMockTransport_DistinctModules_KeepsImportsSeparate(t *testing.T) {
 	}
 	if !strings.Contains(got, `from "@/gen/services/control/v1/control_pb"`) {
 		t.Errorf("expected separate control_pb import line. Got:\n%s", got)
+	}
+}
+
+// TestMockTransport_SurrogatePk_KeyAndLookupsUseSameField is the regression
+// test for the half-applied PK generalization (commit 329dc78): the store KEY
+// was generalized to `e.{{ .PkFieldCamel }}`, but the Get/Update/Delete/Create
+// handler LOOKUPS still hardcoded `id`. For an entity whose wire PK is a
+// surrogate domain key (`usage_event_id` → `usageEventId`, NOT `id`), the store
+// keyed on `usageEventId` while lookups read `String(req?.id)` ===
+// `"undefined"`, so every Get/Update/Delete missed at runtime. It passed tsc
+// and the daemon fixture (whose PK *is* `id`), staying green in CI while broken
+// in the mock UI.
+//
+// This asserts the store-key field and ALL four handler lookups reference the
+// SAME camelCase field for a non-`id` PK entity.
+func TestMockTransport_SurrogatePk_KeyAndLookupsUseSameField(t *testing.T) {
+	const pk = "usageEventId"
+	entities := []codegen.MockTransportEntity{
+		{
+			EntityName:             "UsageEvent",
+			EntityNamePlural:       "UsageEvents",
+			EntitySlug:             "usage-events",
+			ServiceName:            "BillingService",
+			ServiceTypeName:        "controlplane.v1.BillingService",
+			ListRPC:                "ListUsageEvents",
+			GetRPC:                 "GetUsageEvent",
+			CreateRPC:              "CreateUsageEvent",
+			UpdateRPC:              "UpdateUsageEvent",
+			DeleteRPC:              "DeleteUsageEvent",
+			HasList:                true,
+			HasGet:                 true,
+			HasCreate:              true,
+			HasUpdate:              true,
+			HasDelete:              true,
+			ItemsField:             "usageEvents",
+			PkFieldCamel:           pk,
+			GetEntityFieldCamel:    "usageEvent",
+			CreateEntityFieldCamel: "usageEvent",
+			ImportPath:             "services/billing/v1/billing_pb",
+			EntityImportPath:       "controlplane/v1/shared_pb",
+			TypeImport:             "UsageEvent",
+			SchemaImport:           "UsageEventSchema",
+			ListResponseType:       "ListUsageEventsResponse",
+			GetResponseType:        "GetUsageEventResponse",
+			CreateResponseType:     "CreateUsageEventResponse",
+		},
+	}
+
+	got := renderMockTransport(t, entities)
+
+	// 1) The store must key on the surrogate PK.
+	if !strings.Contains(got, "usageEventsStore = new Map(") {
+		t.Fatalf("expected usageEventsStore map in output. Got:\n%s", got)
+	}
+	if !strings.Contains(got, "[String(e."+pk+"), e]") {
+		t.Errorf("store should key by `e.%s`. Got:\n%s", pk, got)
+	}
+
+	// 2) NO handler may read a hardcoded `id` field off the request. Before the
+	//    fix the Get/Delete handlers read `req?.id`, Update read `patch.id ??
+	//    req.id`, and Create minted `init.id` — all of which key a different
+	//    field than the store, so the round-trip silently misses.
+	for _, bad := range []string{
+		"String(req?.id)",
+		"req as { id?: unknown }",
+		"patch.id ?? req.id",
+		"init.id ===",
+		"...init, id }",
+	} {
+		if strings.Contains(got, bad) {
+			t.Errorf("surrogate-PK transport must not reference hardcoded `id` lookup %q (store keys by %s). Got:\n%s", bad, pk, got)
+		}
+	}
+
+	// 3) Every handler must look up / write the SAME field the store keys by.
+	for _, want := range []string{
+		"input as { " + pk + "?: unknown }",     // Get + Delete request shape
+		"Store.get(String(req?." + pk + "))",    // Get lookup
+		"Store.delete(String(req?." + pk + "))", // Delete
+		"patch." + pk + " ?? req." + pk,         // Update key resolution
+		"init." + pk + " ===",                   // Create PK detection
+		"...init, " + pk + ": pk }",             // Create writes PK field
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected surrogate-PK handler to reference %q. Got:\n%s", want, got)
+		}
+	}
+
+	// 4) Cross-check: extract the field referenced by the store key and assert
+	//    each handler references the literal SAME field — proving key/lookup
+	//    agreement structurally, not by enumerated string.
+	keyRe := regexp.MustCompile(`\[String\(e\.([A-Za-z0-9_]+)\), e\]`)
+	m := keyRe.FindStringSubmatch(got)
+	if m == nil {
+		t.Fatalf("could not locate store-key field in output:\n%s", got)
+	}
+	storeKeyField := m[1]
+	if storeKeyField != pk {
+		t.Fatalf("store-key field = %q, want %q", storeKeyField, pk)
+	}
+	if !strings.Contains(got, "req?."+storeKeyField) {
+		t.Errorf("Get/Delete must look up the store-key field %q (req?.%s). Got:\n%s", storeKeyField, storeKeyField, got)
+	}
+}
+
+// TestMockTransport_ResponseEntityField_WrapsOnDescriptorField pins that the
+// Get/Create/Update response builders set the entity on the field NAMED BY THE
+// RESPONSE DESCRIPTOR (GetEntityFieldCamel / CreateEntityFieldCamel), not the
+// camelCased entity name. A proto is free to name the wrapper anything
+// (`GetLLMKeyResponse { LLMKey key = 1; }` → `key`), and writing
+// `{ camelCase(EntityName): record }` instead fails tsc with "object literal
+// may only specify known properties". This is the previously-uncovered
+// `responseEntityField` path (root cause #3 of commit 329dc78).
+func TestMockTransport_ResponseEntityField_WrapsOnDescriptorField(t *testing.T) {
+	entities := []codegen.MockTransportEntity{
+		{
+			EntityName:       "LLMKey",
+			EntityNamePlural: "LLMKeys",
+			EntitySlug:       "llm-keys",
+			ServiceName:      "LLMKeyService",
+			ServiceTypeName:  "controlplane.v1.LLMKeyService",
+			GetRPC:           "GetLLMKey",
+			CreateRPC:        "CreateLLMKey",
+			UpdateRPC:        "UpdateLLMKey",
+			HasGet:           true,
+			HasCreate:        true,
+			HasUpdate:        true,
+			PkFieldCamel:     "id",
+			// The freely-named wrapper field: `key`, NOT `lLMKey`.
+			GetEntityFieldCamel:    "key",
+			CreateEntityFieldCamel: "key",
+			ImportPath:             "services/llmkey/v1/llmkey_pb",
+			EntityImportPath:       "services/llmkey/v1/llmkey_pb",
+			TypeImport:             "LLMKey",
+			SchemaImport:           "LLMKeySchema",
+			GetResponseType:        "GetLLMKeyResponse",
+			CreateResponseType:     "CreateLLMKeyResponse",
+		},
+	}
+
+	got := renderMockTransport(t, entities)
+
+	// The response builders must set the descriptor-named field.
+	for _, want := range []string{
+		"create(GetLLMKeyResponseSchema, {\n            key: found,",
+		"create(CreateLLMKeyResponseSchema, {\n            key: created,",
+		"create(CreateLLMKeyResponseSchema, {\n            key: updated,",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected response builder to wrap entity on descriptor field. Missing:\n%q\nGot:\n%s", want, got)
+		}
+	}
+
+	// And must NOT fall back to the naive camelCased entity name.
+	if strings.Contains(got, "lLMKey: found") || strings.Contains(got, "lLMKey: created") {
+		t.Errorf("response builder must not use camelCase(EntityName) `lLMKey` wrapper. Got:\n%s", got)
 	}
 }
 

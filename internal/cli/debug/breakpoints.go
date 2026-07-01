@@ -20,12 +20,20 @@ func newBreakCmd(_ *factory.Factory) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "break <file:line>",
+		Use:   "break <file:line | function>",
 		Short: "Set a breakpoint",
-		Long: `Set a breakpoint at a file:line location or on a function name.
+		Long: `Set a breakpoint at a file:line location or on a function by name.
+
+The positional argument is auto-detected: a "file.go:42" spec sets a
+source-line breakpoint, while anything else (e.g. "main.handleRequest",
+"runtime.gopark", "(*Server).Serve") is resolved as a function breakpoint
+via Delve's location parser. The --func flag forces function resolution.
 
 Examples:
   forge debug break handler.go:42
+  forge debug break main.handleRequest
+  forge debug break runtime.gopark
+  forge debug break '(*Server).Serve'
   forge debug break --func main.handleRequest
   forge debug break handler.go:42 --cond "id > 5"`,
 		Args: cobra.MaximumNArgs(1),
@@ -42,38 +50,54 @@ Examples:
 }
 
 func runDebugBreak(args []string, funcName, condition string, jsonOutput bool) error {
+	// The --func flag and the positional argument are two spellings of the
+	// same intent. Decide which kind of breakpoint to set BEFORE connecting:
+	//   - explicit --func        => function breakpoint
+	//   - positional "file.go:42" => source-line breakpoint
+	//   - any other positional    => function breakpoint (main.Foo,
+	//                                 runtime.gopark, (*T).Method, ...)
+	// Delve natively resolves function specs via its location parser; the
+	// wrapper used to reject everything that wasn't file:line, which made
+	// `forge debug break runtime.gopark` impossible.
+	spec := funcName
+	asFunc := funcName != ""
+	if spec == "" {
+		if len(args) == 0 {
+			return fmt.Errorf("provide a file:line or function argument, or use --func")
+		}
+		spec = args[0]
+		asFunc = !isFileLineSpec(spec)
+	}
+
 	dbg, err := connectToSession()
 	if err != nil {
 		return err
 	}
 
-	if funcName != "" {
-		// If the user passed a short name (e.g. "Create" without module path),
-		// try to resolve it to a fully-qualified function name for Docker sessions.
-		if !strings.Contains(funcName, "/") && !strings.Contains(funcName, ".") {
+	if asFunc {
+		// If the user passed a short name (e.g. "Create" without a package
+		// qualifier), try to resolve it to a fully-qualified Delve function
+		// name from the project's handler packages.
+		if !strings.Contains(spec, "/") && !strings.Contains(spec, ".") {
 			modPath := readModulePath(".")
 			if modPath != "" {
-				if resolved := resolveShortFuncName(modPath, funcName); resolved != "" {
-					funcName = resolved
+				if resolved := resolveShortFuncName(modPath, spec); resolved != "" {
+					spec = resolved
 				}
 			}
 		}
-		bp, err := dbg.SetFunctionBreakpoint(funcName, condition)
+		bp, err := dbg.SetFunctionBreakpoint(spec, condition)
 		if err != nil {
-			return fmt.Errorf("setting function breakpoint: %w", err)
+			return fmt.Errorf("setting function breakpoint %q: %w", spec, err)
 		}
 		printBreakpoint(*bp, jsonOutput)
 		return nil
 	}
 
-	if len(args) == 0 {
-		return fmt.Errorf("provide a file:line argument or use --func")
-	}
-	file, line, err := parseFileLine(args[0])
+	file, line, err := parseFileLine(spec)
 	if err != nil {
 		return err
 	}
-
 	bp, err := dbg.SetBreakpoint(file, line, condition)
 	if err != nil {
 		return fmt.Errorf("setting breakpoint: %w", err)

@@ -273,11 +273,15 @@ func TestBuild_ExpandsAndExecs(t *testing.T) {
 	}
 }
 
-// TestBuild_SkipsWhenCwdMissing locks in the local-dev contract: a
-// missing build_cwd is a warn-skip (Skipped=true, no Err) rather than
-// a hard failure. CI without the sibling repo, fresh checkouts of an
-// optional sibling — both must surface as a clean skip.
-func TestBuild_SkipsWhenCwdMissing(t *testing.T) {
+// TestBuild_FailsWhenCwdMissing locks in the corrected contract: a
+// missing build_cwd is a HARD FAILURE (Err set, naming the missing path
+// and the service), not a warn-skip. A Spec only reaches Build for a
+// service that is IN the current env, so a missing source tree means a
+// build that was supposed to run can't — and reporting success would let
+// a following deploy reference an unpushed image (the gotcha-B outage).
+// The runner is NEVER invoked (no shell spawned for a doomed build), and
+// the error must name the missing path so the user can act on it.
+func TestBuild_FailsWhenCwdMissing(t *testing.T) {
 	projDir := t.TempDir()
 	fake := &fakeRunner{}
 	r := Runner{runner: fake}
@@ -290,24 +294,36 @@ func TestBuild_SkipsWhenCwdMissing(t *testing.T) {
 		BuildCmd:   "docker build .",
 	}
 	res := r.Build(context.Background(), spec)
-	if res.Err != nil {
-		t.Fatalf("Build: unexpected err on missing cwd: %v", res.Err)
+	if res.Err == nil {
+		t.Fatal("Build: want Err set when build_cwd missing, got nil (skip-masquerading-as-success regression)")
 	}
-	if !res.Skipped {
-		t.Fatal("Build: want Skipped=true when build_cwd missing")
+	if res.Skipped {
+		t.Error("Build: missing build_cwd must NOT be a skip")
 	}
-	if !strings.Contains(res.SkipMsg, "does not exist") {
-		t.Errorf("SkipMsg: got %q, want a 'does not exist' message", res.SkipMsg)
+	if !strings.Contains(res.Err.Error(), "does not exist") {
+		t.Errorf("Err: got %q, want a 'does not exist' message", res.Err.Error())
+	}
+	// The error must name the missing path so the user knows what to
+	// check out.
+	wantPath := filepath.Join(projDir, "does-not-exist")
+	if !strings.Contains(res.Err.Error(), wantPath) {
+		t.Errorf("Err: got %q, want it to name the missing path %q", res.Err.Error(), wantPath)
+	}
+	// And name the service so the error is actionable in a multi-service
+	// build.
+	if !strings.Contains(res.Err.Error(), "edge") {
+		t.Errorf("Err: got %q, want it to name the service %q", res.Err.Error(), "edge")
 	}
 	if _, ok := fake.last(); ok {
-		t.Error("runner should not have been invoked for a skipped build")
+		t.Error("runner should not have been invoked for a doomed build")
 	}
 }
 
-// TestBuild_NoCwd confirms an empty BuildCwd runs the command without
-// the `cd <abs> && ` prefix. The execRunner inherits the current
-// process cwd (set to the project root by forge build), so omitting
-// the prefix is the right shape.
+// TestBuild_NoCwd confirms an UNSET BuildCwd resolves explicitly to the
+// project root (spec.ProjectDir) — the single documented cwd contract for
+// the shell hatch — rather than inheriting the host cwd. The command is
+// passed via cmd.Dir (not a `cd <abs> && ` shell prefix). ProjectDir is
+// trusted to exist, so no existence check fires for the no-cwd case.
 func TestBuild_NoCwd(t *testing.T) {
 	fake := &fakeRunner{}
 	r := Runner{runner: fake}
@@ -323,8 +339,8 @@ func TestBuild_NoCwd(t *testing.T) {
 		t.Fatalf("Build: unexpected err: %v", res.Err)
 	}
 	call, _ := fake.last()
-	if call.dir != "" {
-		t.Errorf("no BuildCwd should leave runner dir empty; got %q", call.dir)
+	if call.dir != "/proj" {
+		t.Errorf("no BuildCwd should resolve to ProjectDir; got %q, want /proj", call.dir)
 	}
 	if strings.HasPrefix(call.args[1], "cd ") {
 		t.Errorf("no BuildCwd should not produce a `cd …` prefix; got %q", call.args[1])

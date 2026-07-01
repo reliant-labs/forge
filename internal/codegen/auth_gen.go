@@ -12,7 +12,7 @@ import (
 
 // AuthTemplateData holds the data shape expected by the auth middleware templates.
 type AuthTemplateData struct {
-	Provider    string           // "jwt", "api_key", "both"
+	Provider    string // "jwt", "api_key", "both"
 	JWT         config.JWTConfig
 	APIKey      config.APIKeyConfig
 	Module      string

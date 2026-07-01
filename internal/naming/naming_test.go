@@ -222,10 +222,10 @@ func TestProtoPackageVersion(t *testing.T) {
 		{"billing", ""},
 		{"", ""},
 		{"v1", "v1"},
-		{"acme.beta", ""},     // "beta" is not a version segment
-		{"acme.v", ""},        // bare "v" is not a version
-		{"acme.v1alpha", ""},  // channel without a number is malformed
-		{"acme.version", ""},  // "version" must not match
+		{"acme.beta", ""},    // "beta" is not a version segment
+		{"acme.v", ""},       // bare "v" is not a version
+		{"acme.v1alpha", ""}, // channel without a number is malformed
+		{"acme.version", ""}, // "version" must not match
 	}
 	for _, tt := range tests {
 		if got := ProtoPackageVersion(tt.in); got != tt.want {

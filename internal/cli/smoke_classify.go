@@ -28,6 +28,12 @@ const (
 	smokeReasonReached  = "reached-backend" // PASS: structured response from a backend
 	smokeReasonCORS     = "cors-missing"    // FAIL: API route the frontend calls lacks ACAO
 	smokeReasonNoAddr   = "gateway-no-address"
+	// smokeReasonUnreachable is the dev (port-based) transport FAIL: a
+	// localhost:<port> dial that didn't connect (connection refused /
+	// timeout / EOF). Distinct from smokeReasonTLS because the dev path is
+	// PLAINTEXT — there is no TLS handshake to blame, so "tls-transport"
+	// would mislead. The recurring dead :28090 controller route lands here.
+	smokeReasonUnreachable = "port-unreachable"
 )
 
 // smokeTarget is one probe the smoke command will issue: a route's

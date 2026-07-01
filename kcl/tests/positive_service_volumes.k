@@ -25,11 +25,10 @@ This test pins:
 
 import forge
 
-_k8s = forge.K8sCluster {
+_target = forge.ClusterTarget {
     cluster = "k3d-example"
     namespace = "example-dev"
     registry = "localhost:5051"
-    ports = [8080]
 }
 
 # The exact shape a consumer writes — empty_dir at /data (writable
@@ -37,7 +36,7 @@ _k8s = forge.K8sCluster {
 _svc = forge.Service {
     name = "certwriter"
     image = "certwriter-img"
-    deploy = _k8s
+    deploy = _target.deploy | {ports = [8080]}
     volumes = [
         forge.Volume {
             name = "data"
@@ -55,16 +54,11 @@ _svc = forge.Service {
 }
 
 _bundle = forge.Bundle {
+    cluster_target = _target
     services = [_svc]
 }
 
-_env = forge.RenderEnv {
-    cluster = _k8s
-    image_tag = "abc1234"
-    network_policies = False
-}
-
-_manifests = forge.render_manifests(_bundle, _env)
+_manifests = forge.render_manifests(_bundle, "abc1234", {}, False)
 
 # Pull the certwriter Deployment's pod spec + container.
 _dep = [m for m in _manifests if m.kind == "Deployment" and m.metadata.name == "certwriter"][0]

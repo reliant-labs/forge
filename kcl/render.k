@@ -128,11 +128,8 @@ _render_external = lambda d: External -> any {
         "deploy_cmd": d.deploy_cmd
         "rollback_cmd": d.rollback_cmd if d.rollback_cmd else None
         "health_cmd": d.health_cmd if d.health_cmd else None
-        # build_cmd is the build-side mirror of deploy_cmd; the Go-side
-        # parser (ExternalDeploy.BuildCmd) reads it for `forge build -t
-        # external`. None when unset so existing External targets that
-        # only deploy through forge stay unchanged.
-        "build_cmd": d.build_cmd if d.build_cmd else None
+        # Build is declared on Service.build (forge.ShellBuild) — the single
+        # shell hatch — NOT on the deploy block. No build_cmd is projected here.
         "env_file": d.env_file if d.env_file else None
         "env": d.env if d.env else {}
     }
@@ -216,6 +213,8 @@ _build_shell = lambda b: {str:any} -> ShellBuild {
     ShellBuild {
         output_name = b.output_name if "output_name" in b else ""
         cmd = b.cmd
+        cwd = b.cwd if "cwd" in b else ""
+        env = b.env if "env" in b else {}
     }
 }
 
@@ -259,6 +258,8 @@ _render_shell_build = lambda b: ShellBuild -> any {
         "type": "shell"
         "output_name": b.output_name if b.output_name else None
         "cmd": b.cmd
+        "cwd": b.cwd if b.cwd else None
+        "env": b.env if b.env else {}
     }
 }
 
@@ -285,9 +286,6 @@ _render_service = lambda s: Service -> any {
         "env_vars": [_render_env_var(e) for e in s.env_vars]
         "deploy": _render_deploy(s.deploy)
         "build": _render_build(s.build)
-        "build_cmd": s.build_cmd if s.build_cmd else None
-        "build_cwd": s.build_cwd if s.build_cwd else None
-        "build_env": s.build_env if s.build_env else {}
         "namespaced_rbac": s.namespaced_rbac if s.namespaced_rbac else None
         # Owned raw manifests project into the JSON contract too (null when
         # empty) so a consumer that reads `output` sees the same stable
@@ -384,6 +382,10 @@ _render_gateway = lambda g: Gateway -> any {
         "listeners": [_render_gateway_listener(l) for l in g.listeners]
         "raw_policy": g.raw_policy if g.raw_policy else None
         "addresses": [_render_gateway_address(a) for a in g.addresses] if g.addresses else None
+        # cluster is a forge.Cluster REFERENCE; the machine-facing JSON
+        # carries the DENORMALIZED kubectl context (k3d-<name>) the scoper
+        # matches against — never the bare name.
+        "cluster": g.cluster.context if g.cluster else None
     }
 }
 
@@ -397,6 +399,8 @@ _render_http_route = lambda r: HTTPRoute -> any {
         "host": r.host if r.host else None
         "path": r.path if r.path else None
         "raw_policy": r.raw_policy if r.raw_policy else None
+        # forge.Cluster reference -> denormalized kubectl context.
+        "cluster": r.cluster.context if r.cluster else None
     }
 }
 
@@ -410,6 +414,8 @@ _render_grpc_route = lambda r: GRPCRoute -> any {
         "host": r.host if r.host else None
         "path": r.path if r.path else None
         "raw_policy": r.raw_policy if r.raw_policy else None
+        # forge.Cluster reference -> denormalized kubectl context.
+        "cluster": r.cluster.context if r.cluster else None
     }
 }
 
@@ -448,6 +454,23 @@ _render_runtime_class = lambda rc: RuntimeClass -> any {
     }
 }
 
+# Render a ClusterTarget to its stable dict form. The env-wide facts,
+# stated once. Optional fields project as null (not omitted) so the
+# consumer sees stable keys. `deploy` is NOT re-projected here — it's the
+# derived per-service seed, and every cluster service already carries its
+# own flattened K8sCluster projection.
+_render_cluster_target = lambda ct: ClusterTarget -> any {
+    {
+        "cluster": ct.cluster
+        "namespace": ct.namespace
+        "registry": ct.registry
+        "domain": ct.domain if ct.domain else None
+        "platform": ct.platform if ct.platform else None
+        "image_pull_secrets": ct.image_pull_secrets if ct.image_pull_secrets else None
+        "image_tag": ct.image_tag
+    }
+}
+
 # Render a Cluster to its stable dict form. Optional fields project as
 # null (not omitted) so the Go consumer (ClusterEntity) sees stable
 # keys; servers/agents always carry their (defaulted) int.
@@ -469,6 +492,7 @@ _render_cluster = lambda c: Cluster -> any {
         "agents": c.agents
         "api_port": c.api_port if c.api_port else None
         "ingress": c.ingress if c.ingress else None
+        "host_ports": c.host_ports if c.host_ports else None
     }
 }
 
@@ -476,6 +500,61 @@ _render_cluster = lambda c: Cluster -> any {
 # kubeconfig + applies the Secret Go-side (the IP is resolved fresh, never
 # in KCL); this projection only carries the DECLARATION. Never appears in
 # render_manifests — the Secret has a runtime-minted value, not a static one.
+# Render a HelmChart (platform dependency) to its stable dict form. The
+# CLI reads this list and runs `helm template <chart|oci> --version
+# <version> --values <values> -n <namespace> --skip-crds` Go-side, stamps
+# `app.kubernetes.io/name = name` on every rendered manifest, and folds
+# them into the apply stream — so `--target <name>` selects them via the
+# existing FilterManifestsByApp axis. `values` passes through verbatim.
+# NEVER appears in render_manifests — the expansion is a Go-side shell-out
+# (helm), not a KCL render.
+_render_helm_chart = lambda h: HelmChart -> any {
+    {
+        "name": h.name
+        "chart": h.chart if h.chart else None
+        "repo": h.repo if h.repo else None
+        "oci": h.oci if h.oci else None
+        "version": h.version
+        "namespace": h.namespace
+        "values": h.values
+        "crds": h.crds if h.crds else None
+        # Raw manifests that ride the chart's --target (GatewayClass,
+        # ClusterIssuers): applied with the chart, excluded from a bare
+        # app deploy. The CLI stamps the chart's app-label and applies
+        # them after the chart's controllers.
+        "manifests": h.manifests if h.manifests else None
+    }
+}
+
+# Render an ExternalSecret prerequisite to its stable dict form. forge does
+# NOT create this Secret — the projection is consumed by the render-time
+# checklist + the deploy preflight (which BLOCKS when the declared-required
+# Secret/key is absent on the live target). `value_group` projects null when
+# unset (a standalone prereq, no byte-match group).
+_render_external_secret = lambda s: ExternalSecret -> any {
+    {
+        "type": "secret"
+        "name": s.name
+        "namespace": s.namespace
+        "keys": s.keys
+        "reason": s.reason if s.reason else None
+        "value_group": s.value_group if s.value_group else None
+    }
+}
+
+# Render a DNSRecord prerequisite. A render-time checklist entry (forge
+# can't authoritatively verify external DNS); `target` projects null when
+# unset (the expected value is often an ephemeral LB IP unknown at author
+# time).
+_render_dns_record = lambda r: DNSRecord -> any {
+    {
+        "host": r.host
+        "type": r.type
+        "target": r.target if r.target else None
+        "reason": r.reason if r.reason else None
+    }
+}
+
 _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
     {
         "name": k.name
@@ -509,10 +588,56 @@ test_jwks_manifests = lambda j: TestJWKS, namespace: str, public_jwk: any -> [an
     jwks_lib.test_jwks_manifests(j, namespace, public_jwk)
 }
 
+# render_gateway / render_certificate / render_http_route /
+# render_grpc_route — top-level re-exports of the lib/gateway builders so
+# a consumer can emit a Gateway API manifest on a SPECIFIC cluster
+# without hand-reimplementing the ~90 lines of builder logic as raw
+# dicts. Same pattern as test_jwks_manifests above: a one-line shim onto
+# the internal lib function, exposed on the public `forge` namespace.
+#
+# Pin the manifest to one cluster in a multi-cluster env by setting
+# `cluster` on the entity to the forge.Cluster INSTANCE — the builder
+# denormalizes its `.context` and stamps `forge.dev/cluster: k3d-<name>`,
+# which forge's deploy-time scoper routes to that cluster only:
+#
+#     import forge
+#     _cp = forge.Cluster { name = "control-plane" }
+#     _gw = forge.Gateway {
+#         name = "cp-public", cluster = _cp
+#         listeners = [forge.GatewayListener { name = "http", port = 80, protocol = "HTTP" }]
+#     }
+#     manifests = forge.render_gateway(_gw, "my-ns")
+#
+# render_http_route / render_grpc_route take the route plus the list of
+# gateways (so the builder can resolve the parent listener + host) and
+# the namespace, matching the internal signatures.
+render_gateway = lambda gw: Gateway, namespace: str -> [any] {
+    gw_lib.render_gateway(gw, namespace)
+}
+
+render_certificate = lambda gw: Gateway, namespace: str -> [any] {
+    gw_lib.render_certificate(gw, namespace)
+}
+
+render_http_route = lambda route: HTTPRoute, gateways: [Gateway], namespace: str -> [any] {
+    gw_lib.render_http_route(route, gateways, namespace)
+}
+
+render_grpc_route = lambda route: GRPCRoute, gateways: [Gateway], namespace: str -> [any] {
+    gw_lib.render_grpc_route(route, gateways, namespace)
+}
+
 # Project a Bundle to the stable JSON contract. Consumed by forge CLI.
 render = lambda bundle: Bundle -> any {
     {
         "clusters": [_render_cluster(c) for c in bundle.clusters]
+        # The env-wide ClusterTarget (namespace/registry/tag/platform/
+        # pull_secrets), stated once. Absent when the Bundle declares none
+        # (host-only / External-only envs). The per-service deploy blocks
+        # carry the flattened coordinates the Go dispatcher groups by; this
+        # is the single-source echo the manifest renderer reads.
+        if bundle.cluster_target:
+            "cluster_target": _render_cluster_target(bundle.cluster_target)
         "kubeconfig_secrets": [_render_kubeconfig_secret(k) for k in bundle.kubeconfig_secrets]
         "services": [_render_service(s) for s in bundle.services]
         "operators": [_render_operator(o) for o in bundle.operators]
@@ -523,6 +648,17 @@ render = lambda bundle: Bundle -> any {
         "http_routes": [_render_http_route(r) for r in bundle.http_routes]
         "grpc_routes": [_render_grpc_route(r) for r in bundle.grpc_routes]
         "runtime_classes": [_render_runtime_class(rc) for rc in bundle.runtime_classes]
+        # Platform deps (helm-as-RENDERER). The CLI expands each via
+        # `helm template --skip-crds` and folds the manifests into the apply
+        # stream, selected by `--target <name>`. NOT in render_manifests.
+        "helm_charts": [_render_helm_chart(h) for h in bundle.helm_charts]
+        # Declared external PREREQUISITES (out-of-band Secrets + DNS records
+        # the deploy depends on but forge does NOT create). The CLI reads
+        # these to print a render-time checklist and to drive the preflight
+        # BLOCK on a declared-required-but-absent ExternalSecret. Always
+        # emitted (empty lists when none) so the consumer sees a stable key.
+        "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets]
+        "required_dns": [_render_dns_record(r) for r in bundle.required_dns]
         # The secret PROVIDER declaration rides alongside the entities so
         # the CLI can read WHERE secret values come from. Absent when
         # unset (no null garbage). Secret VALUES never enter this output —
@@ -540,42 +676,23 @@ render = lambda bundle: Bundle -> any {
 # the cluster manifest boundary.
 # ---------------------------------------------------------------------------
 
-schema RenderEnv:
-    """The environment-level knobs the manifest renderer needs.
+# The manifest renderer reads its env-wide coordinates (namespace /
+# registry / image_pull_secrets) straight off `bundle.cluster_target` —
+# the single source of truth — rather than the old "pull them off the
+# first cluster service" heuristic. The three deploy-time knobs that are
+# NOT env-wide facts — `image_tag` (the per-build override CI passes via
+# `-D image_tag=<sha>`), `image_digests` (the per-image content-addressed
+# pin map from `-D image_digests=<json>`), and `network_policies` (the
+# generic-netpol toggle) — are direct params on `render_manifests` /
+# `render_support`. No `RenderEnv` schema, no `cluster=` restatement at the
+# call site.
 
-    `cluster` is the single source of truth for namespace + registry —
-    the same K8sCluster ref a project's services use as their `deploy`
-    block, re-passed here so the manifest renderer reads env-wide
-    knobs from one place. Project code looks like:
-
-        _dev_k8s = forge.K8sCluster {
-            cluster   = "k3d-myapp"
-            namespace = "myapp-dev"
-            registry  = "localhost:5050"
-            ports     = [8080]
-        }
-
-        _bundle = forge.Bundle { services = [ forge.Service { ..., deploy = _dev_k8s } ] }
-
-        _env = forge.RenderEnv {
-            cluster   = _dev_k8s
-            image_tag = forge.image_tag("dev")
-        }
-
-    namespace/registry are read from `env.cluster.{namespace,registry}`
-    internally. image_tag stays on RenderEnv because it's the per-build
-    override (CI passes `-D image_tag=<sha>` per build).
-    """
-    cluster: K8sCluster
-    image_tag: str = "latest"
-    network_policies: bool = True
-
-_render_namespace = lambda env: RenderEnv -> any {
+_render_namespace = lambda namespace: str -> any {
     {
         apiVersion = "v1"
         kind = "Namespace"
         metadata = {
-            name = env.cluster.namespace
+            name = namespace
             labels = {
                 "app.kubernetes.io/managed-by" = "forge"
                 "pod-security.kubernetes.io/enforce" = "restricted"
@@ -586,31 +703,24 @@ _render_namespace = lambda env: RenderEnv -> any {
     }
 }
 
-# Env-wide image-pull Secrets (private registry). Declared once on the
-# K8sCluster ref and applied to every workload's generated
-# ServiceAccount. Defaults to [] (field omitted on the SA) when unset.
-_pull_secrets = lambda env: RenderEnv -> [str] {
-    env.cluster.image_pull_secrets if env.cluster.image_pull_secrets else []
-}
-
-_render_cluster_service = lambda s: Service, env: RenderEnv -> [any] {
-    svc_lib.render_k8s_service(s, env.cluster.namespace, env.cluster.registry, env.image_tag) \
+_render_cluster_service = lambda s: Service, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
+    svc_lib.render_k8s_service(s, namespace, registry, image_tag, image_digests) \
         + rbac_lib.render_namespaced_rbac(
             s.name,
-            env.cluster.namespace,
+            namespace,
             s.namespaced_rbac if s.namespaced_rbac else [],
-            _pull_secrets(env),
+            pull_secrets,
         )
 }
 
-_render_operator_manifests = lambda o: Operator, env: RenderEnv -> [any] {
-    svc_lib.render_operator(o, env.cluster.namespace, env.cluster.registry, env.image_tag) \
-        + rbac_lib.render_cluster_rbac(o.name, env.cluster.namespace, o.cluster_rbac, _pull_secrets(env))
+_render_operator_manifests = lambda o: Operator, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
+    svc_lib.render_operator(o, namespace, registry, image_tag, image_digests) \
+        + rbac_lib.render_cluster_rbac(o.name, namespace, o.cluster_rbac, pull_secrets)
 }
 
-_render_cronjob_manifests = lambda c: CronJob, env: RenderEnv -> [any] {
-    svc_lib.render_cronjob(c, env.cluster.namespace, env.cluster.registry, env.image_tag) \
-        + rbac_lib.render_namespaced_rbac(c.name, env.cluster.namespace, [], _pull_secrets(env))
+_render_cronjob_manifests = lambda c: CronJob, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
+    svc_lib.render_cronjob(c, namespace, registry, image_tag, image_digests) \
+        + rbac_lib.render_namespaced_rbac(c.name, namespace, [], pull_secrets)
 }
 
 # Render a RuntimeClass as a node.k8s.io/v1 manifest. Cluster-scoped
@@ -619,7 +729,7 @@ _render_cronjob_manifests = lambda c: CronJob, env: RenderEnv -> [any] {
 # app.kubernetes.io/managed-by=forge` is the canonical "what did
 # forge create" query and the manifest-driven sweep can prune ones the
 # Bundle no longer declares.
-_render_runtime_class_manifest = lambda rc: RuntimeClass, env: RenderEnv -> any {
+_render_runtime_class_manifest = lambda rc: RuntimeClass, namespace: str -> any {
     {
         apiVersion = "node.k8s.io/v1"
         kind = "RuntimeClass"
@@ -627,7 +737,7 @@ _render_runtime_class_manifest = lambda rc: RuntimeClass, env: RenderEnv -> any 
             name = rc.name
             labels = {
                 "app.kubernetes.io/managed-by" = "forge"
-                "app.kubernetes.io/part-of" = env.cluster.namespace
+                "app.kubernetes.io/part-of" = namespace
             }
         }
         handler = rc.handler
@@ -639,18 +749,18 @@ _render_runtime_class_manifest = lambda rc: RuntimeClass, env: RenderEnv -> any 
 }
 
 # Render a ConfigMap as a k8s manifest. The metadata.namespace
-# defaults to env.cluster.namespace when the caller hasn't pinned one
+# defaults to the env-wide namespace when the caller hasn't pinned one
 # explicitly on the schema.
-_render_config_map_manifest = lambda cm: ConfigMap, env: RenderEnv -> any {
+_render_config_map_manifest = lambda cm: ConfigMap, namespace: str -> any {
     {
         apiVersion = "v1"
         kind = "ConfigMap"
         metadata = {
             name = cm.name
-            namespace = cm.namespace if cm.namespace else env.cluster.namespace
+            namespace = cm.namespace if cm.namespace else namespace
             labels = {
                 "app.kubernetes.io/managed-by" = "forge"
-                "app.kubernetes.io/part-of" = env.cluster.namespace
+                "app.kubernetes.io/part-of" = namespace
             } | cm.labels
             if cm.annotations:
                 annotations = cm.annotations
@@ -659,7 +769,25 @@ _render_config_map_manifest = lambda cm: ConfigMap, env: RenderEnv -> any {
     }
 }
 
-# Emit the full Kubernetes manifest list for a Bundle in a given env.
+# Emit the full Kubernetes manifest list for a Bundle.
+#
+# Env-wide coordinates (namespace / registry / image_pull_secrets) are
+# read off `bundle.cluster_target`. `image_tag` / `image_digests` /
+# `network_policies` are the deploy-time params.
+#
+# `--target` GROUP model: the group is ALWAYS the SERVICE
+# (`app.kubernetes.io/name`). Workload / operator / cronjob / gateway /
+# route manifests carry their own service/component name (stamped by their
+# builders); per-service owned manifests (`Service.manifests`, via
+# render_owned_manifests) inherit THEIR service's name. The env-shared
+# resources (Namespace, RuntimeClass, ConfigMap, NetworkPolicy) and
+# bundle-level `additional_manifests` belong to NO service, so they carry
+# NO `app.kubernetes.io/name` — they apply on a bare `forge deploy` (no
+# `--target`) and are NEVER selected by a service `--target`. There is no
+# synthetic env/namespace group and no Go "keep shared infra" policy: a
+# manifest that needs to ride a service's `--target` is declared on that
+# service's `manifests` (or on a near-bare image-less infra service the
+# author creates to hold it), exactly like `HelmChart.manifests`.
 #
 # RuntimeClasses come first so they exist in the cluster before any
 # workload that references one (a Pod spec'ing `runtimeClassName =
@@ -667,7 +795,11 @@ _render_config_map_manifest = lambda cm: ConfigMap, env: RenderEnv -> any {
 # kube-apiserver applies the rest of the bundle). They're
 # cluster-scoped (no namespace) so they survive namespace deletes —
 # `forge deploy <env>` is the right owner.
-render_manifests = lambda bundle: Bundle, env: RenderEnv -> [any] {
+render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_digests: {str:str} = {}, network_policies: bool = True -> [any] {
+    _ct = bundle.cluster_target
+    _ns = _ct.namespace
+    _registry = _ct.registry
+    _pull_secrets = _ct.image_pull_secrets if _ct.image_pull_secrets else []
     _cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"]
     # Only a service with an `image` renders a workload (Deployment +
     # Service + RBAC). An image-less cluster service is an INFRA service:
@@ -675,19 +807,23 @@ render_manifests = lambda bundle: Bundle, env: RenderEnv -> [any] {
     # Deployment. This split is the declared-cluster-only model's no-build
     # infra-service shape — explicit (no image) rather than inferred.
     _workload_services = [s for s in _cluster_services if s.image]
-    [_render_runtime_class_manifest(rc, env) for rc in bundle.runtime_classes] \
-        + [_render_namespace(env)] \
-        + [_render_config_map_manifest(cm, env) for cm in bundle.config_maps] \
+    # Env-shared manifests + bundle-level additional_manifests carry NO
+    # service group: they belong to no service, so they apply only on a bare
+    # deploy and are never picked by a service --target. To ride a service's
+    # --target, declare a manifest on that service's `manifests` instead.
+    [_render_runtime_class_manifest(rc, _ns) for rc in bundle.runtime_classes] \
+        + [_render_namespace(_ns)] \
+        + [_render_config_map_manifest(cm, _ns) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
-        + [item for s in _workload_services for item in _render_cluster_service(s, env)] \
+        + [item for s in _workload_services for item in _render_cluster_service(s, _ns, _registry, image_tag, image_digests, _pull_secrets)] \
         + [item for s in _cluster_services for item in svc_lib.render_owned_manifests(s)] \
-        + [item for o in bundle.operators for item in _render_operator_manifests(o, env)] \
-        + [item for c in bundle.cronjobs for item in _render_cronjob_manifests(c, env)] \
-        + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, env.cluster.namespace)] \
-        + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, env.cluster.namespace)] \
-        + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, env.cluster.namespace)] \
-        + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, env.cluster.namespace)] \
-        + (netpol_lib.render_network_policies(env.cluster.namespace) if env.network_policies else [])
+        + [item for o in bundle.operators for item in _render_operator_manifests(o, _ns, _registry, image_tag, image_digests, _pull_secrets)] \
+        + [item for c in bundle.cronjobs for item in _render_cronjob_manifests(c, _ns, _registry, image_tag, image_digests, _pull_secrets)] \
+        + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, _ns)] \
+        + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, _ns)] \
+        + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, _ns)] \
+        + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, _ns)] \
+        + (netpol_lib.render_network_policies(_ns) if network_policies else [])
 }
 
 # Emit ONLY the non-workload manifests of a Bundle: ConfigMaps,
@@ -702,18 +838,22 @@ render_manifests = lambda bundle: Bundle, env: RenderEnv -> [any] {
 # config_gen.k file projects, plus the project's ingress topology).
 # Namespace + network policies are owned by render_components, so they
 # are deliberately omitted here to avoid duplication.
-render_support = lambda bundle: Bundle, env: RenderEnv -> [any] {
+render_support = lambda bundle: Bundle -> [any] {
+    _ns = bundle.cluster_target.namespace
     # Owned manifests of any cluster services declared on the support
     # Bundle (the deploy-as-data path's home for image-less infra
     # services that pin env-level resources to a specific cluster). Stamped
     # with the owning service's app label so the deploy layer routes them.
     _support_cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"]
-    [_render_runtime_class_manifest(rc, env) for rc in bundle.runtime_classes] \
-        + [_render_config_map_manifest(cm, env) for cm in bundle.config_maps] \
+    # Env-shared support manifests + bundle-level additional_manifests carry
+    # NO service group (apply on a bare deploy, never on a service --target);
+    # per-service owned manifests inherit their service name below.
+    [_render_runtime_class_manifest(rc, _ns) for rc in bundle.runtime_classes] \
+        + [_render_config_map_manifest(cm, _ns) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
         + [item for s in _support_cluster_services for item in svc_lib.render_owned_manifests(s)] \
-        + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, env.cluster.namespace)] \
-        + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, env.cluster.namespace)] \
-        + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, env.cluster.namespace)] \
-        + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, env.cluster.namespace)]
+        + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, _ns)] \
+        + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, _ns)] \
+        + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, _ns)] \
+        + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, _ns)]
 }

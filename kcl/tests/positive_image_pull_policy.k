@@ -26,21 +26,21 @@ invariants asserted on those too.
 
 import forge
 
-_k8s = forge.K8sCluster {
+_target = forge.ClusterTarget {
     cluster = "k3d-example"
     namespace = "example-dev"
     registry = "localhost:5051"
-    ports = [8080]
 }
 
 # Same bundle rendered four times under four different image_tags.
 _bundle_for_tag = lambda tag: str -> any {
     forge.Bundle {
+        cluster_target = _target
         services = [
             forge.Service {
                 name = "api"
                 image = "example"
-                deploy = _k8s
+                deploy = _target.deploy | {ports = [8080]}
             }
         ]
         operators = [
@@ -64,14 +64,6 @@ _bundle_for_tag = lambda tag: str -> any {
     }
 }
 
-_env_for_tag = lambda tag: str -> any {
-    forge.RenderEnv {
-        cluster = _k8s
-        image_tag = tag
-        network_policies = False
-    }
-}
-
 # Pull the CronJob container's imagePullPolicy out — different nesting
 # than Service/Operator (jobTemplate.spec.template.spec instead of
 # template.spec). Service/Operator share kind="Deployment" so the
@@ -80,11 +72,11 @@ _cron_pull_policy = lambda manifests: [any] -> str {
     [m for m in manifests if m.kind == "CronJob"][0].spec.jobTemplate.spec.template.spec.containers[0].imagePullPolicy
 }
 
-_dirty_manifests = forge.render_manifests(_bundle_for_tag("1ad9cf1-dirty"), _env_for_tag("1ad9cf1-dirty"))
-_latest_manifests = forge.render_manifests(_bundle_for_tag("latest"), _env_for_tag("latest"))
-_clean_manifests = forge.render_manifests(_bundle_for_tag("abc1234"), _env_for_tag("abc1234"))
+_dirty_manifests = forge.render_manifests(_bundle_for_tag("1ad9cf1-dirty"), "1ad9cf1-dirty", {}, False)
+_latest_manifests = forge.render_manifests(_bundle_for_tag("latest"), "latest", {}, False)
+_clean_manifests = forge.render_manifests(_bundle_for_tag("abc1234"), "abc1234", {}, False)
 # Tag where "dirty" appears in the middle — must NOT trip the suffix check.
-_middir_manifests = forge.render_manifests(_bundle_for_tag("dirty-feature-v1"), _env_for_tag("dirty-feature-v1"))
+_middir_manifests = forge.render_manifests(_bundle_for_tag("dirty-feature-v1"), "dirty-feature-v1", {}, False)
 
 # ── Invariants ─────────────────────────────────────────────────────
 

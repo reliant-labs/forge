@@ -27,31 +27,30 @@ Role with ONLY the default rule and an SA with NO imagePullSecrets.
 
 import forge
 
-# K8sCluster WITH image_pull_secrets declared (env-wide).
-_k8s = forge.K8sCluster {
+# ClusterTarget WITH image_pull_secrets declared (env-wide).
+_target = forge.ClusterTarget {
     cluster = "k3d-example"
     namespace = "example-dev"
     registry = "ghcr.io/reliant/private"
-    ports = [8080]
     image_pull_secrets = ["ghcr-creds", "extra-creds"]
 }
 
-# Bare K8sCluster — no pull secrets — for the no-op assertions.
-_k8s_bare = forge.K8sCluster {
+# Bare target — no pull secrets — for the no-op assertions.
+_target_bare = forge.ClusterTarget {
     cluster = "k3d-example"
     namespace = "example-dev"
     registry = "localhost:5051"
-    ports = [8080]
 }
 
 _bundle = forge.Bundle {
+    cluster_target = _target
     services = [
         # Service WITH extra namespaced RBAC (controller-runtime manager
         # needs leader-election leases + to read its own pods).
         forge.Service {
             name = "api"
             image = "api-img"
-            deploy = _k8s
+            deploy = _target.deploy | {ports = [8080]}
             namespaced_rbac = [
                 {
                     apiGroups = ["coordination.k8s.io"]
@@ -70,7 +69,7 @@ _bundle = forge.Bundle {
         forge.Service {
             name = "plain"
             image = "plain-img"
-            deploy = _k8s_bare
+            deploy = _target_bare.deploy | {ports = [8080]}
         }
     ]
     operators = [
@@ -104,14 +103,8 @@ _bundle = forge.Bundle {
     ]
 }
 
-# Render the bundle WITH pull secrets (the `api` service uses _k8s).
-_env = forge.RenderEnv {
-    cluster = _k8s
-    image_tag = "abc1234"
-    network_policies = False
-}
-
-_manifests = forge.render_manifests(_bundle, _env)
+# Render the bundle WITH pull secrets (read off cluster_target = _target).
+_manifests = forge.render_manifests(_bundle, "abc1234", {}, False)
 
 # ── Manifest selectors ─────────────────────────────────────────────
 
@@ -180,16 +173,12 @@ assert_plain_role_default_only = _plain_role.rules == [{
 _plain_deploy = [m for m in _manifests if m.kind == "Deployment" and m.metadata.name == "plain"][0]
 assert_plain_binds_sa = _plain_deploy.spec.template.spec.serviceAccountName == "plain"
 
-# Render a SECOND time on the bare cluster (no pull secrets) to pin the
+# Render a SECOND time on the bare target (no pull secrets) to pin the
 # imagePullSecrets no-op: the SA must omit the field entirely.
-_env_bare = forge.RenderEnv {
-    cluster = _k8s_bare
-    image_tag = "abc1234"
-    network_policies = False
-}
 _bundle_bare = forge.Bundle {
-    services = [forge.Service {name = "plain", image = "plain-img", deploy = _k8s_bare}]
+    cluster_target = _target_bare
+    services = [forge.Service {name = "plain", image = "plain-img", deploy = _target_bare.deploy | {ports = [8080]}}]
 }
-_manifests_bare = forge.render_manifests(_bundle_bare, _env_bare)
+_manifests_bare = forge.render_manifests(_bundle_bare, "abc1234", {}, False)
 _plain_sa_bare = [m for m in _manifests_bare if m.kind == "ServiceAccount" and m.metadata.name == "plain"][0]
 assert_no_pull_secrets_when_unset = _plain_sa_bare.imagePullSecrets == Undefined

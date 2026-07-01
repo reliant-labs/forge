@@ -36,11 +36,15 @@ import (
 // today's behavior (`forge up --env=e2e` ensures nothing; the legacy
 // single dev cluster is bootstrapped by ensureDevCluster on the deploy
 // path).
-// projectDir + env are threaded through for the per-cluster ingress
-// install: a cluster that declares `ingress = True` gets the Gateway API
-// stack installed into it after ensure, with entrypoints derived from the
-// env's Gateway listeners. Both are empty-tolerant — a cluster with
-// ingress off ignores them entirely.
+// projectDir + env are retained for caller signature stability (the deploy
+// phase that follows reconcile reads the same render). Ingress is NO LONGER
+// installed imperatively per cluster: the Gateway API controller (Envoy
+// Gateway) + CRDs + the `eg` GatewayClass come from the env's DECLARED
+// `helm_charts` (a forge.HelmChart), rendered and applied by the deploy phase
+// (`forge deploy <env> --target=envoy-gateway`) EXACTLY like the cloud envs —
+// one declarative model everywhere. This phase only ensures the bare k3d
+// clusters exist (create-if-absent) with their host-port mappings and any
+// nested-secondary node setup.
 func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, projectDir, env string) error {
 	if len(clusters) == 0 {
 		return nil
@@ -59,14 +63,13 @@ func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, pr
 // fresh create of a cluster with RegistryInherit (an `owner` reference),
 // it mirrors the owner cluster's registries.yaml onto the new node and
 // restarts it to reload.
-// clusterExistsFn / installClusterIngressFn are indirection seams so the
+// clusterExistsFn / setupSecondaryClusterNodeFn are indirection seams so the
 // reconcile decision logic is unit-testable without shelling out to k3d /
-// kubectl. Production wires them to the real implementations; tests stub
-// them to assert the ingress install is invoked exactly when (and only
-// when) a cluster declares `ingress = True`.
+// kubectl / docker. Production wires them to the real implementations; tests
+// stub them to assert (e.g.) the secondary-node setup runs exactly for the
+// nested-secondary clusters.
 var (
 	clusterExistsFn             = clusterExists
-	installClusterIngressFn     = installClusterIngress
 	setupSecondaryClusterNodeFn = setupSecondaryClusterNode
 )
 
@@ -88,12 +91,19 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 	}
 	if exists {
 		fmt.Printf("  cluster %q already exists — no-op\n", c.Name)
-		// Re-run the ingress install on a warm cluster too: it's
-		// idempotent (kubectl apply + CRD cache), and a cluster that was
-		// created before `ingress` was declared — or had its Traefik
-		// deleted — heals on the next `forge up`.
-		if c.Ingress {
-			if err := installClusterIngressFn(ctx, c, projectDir, env); err != nil {
+		// HOST-PORT DRIFT GUARD. k3d fixes a cluster's host-port maps at
+		// create time — a Gateway listener whose host port renders AFTER
+		// the cluster was created (e.g. a listener added to the env's KCL)
+		// is NOT mapped on the live cluster, so its route is silently
+		// unreachable (connection refused on the host port). The host-port
+		// set is DERIVED from the SAME render `forge up` deploys
+		// (deploy/k3d.yaml + the generated deploy/k3d-ports.yaml), so we
+		// can detect this: compare the declared set to what the live
+		// serverlb publishes and FAIL CLEARLY telling the user to recreate,
+		// rather than leave the route dead. Only meaningful for a
+		// config-driven cluster that maps Gateway host ports (HostPorts).
+		if c.Config != "" && c.HostPorts {
+			if err := checkClusterPortDrift(ctx, c, projectDir, env); err != nil {
 				return err
 			}
 		}
@@ -117,15 +127,28 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		// positionally (k3d merges it with metadata.name) so clusterExists
 		// can find it by the declared name afterward.
 		//
-		// When this cluster hosts the ingress Gateway (c.Ingress), merge the
-		// generated deploy/k3d-ports.yaml listener host-port fragment into the
-		// config the SAME way the dev `forge cluster up` path does. The
+		// When this cluster hosts a Gateway — declared as a forge.HelmChart
+		// platform dep with `host_ports = True` — merge the generated
+		// deploy/k3d-ports.yaml listener host-port fragment into the config the
+		// SAME way the dev `forge cluster up` path does. The
 		// Gateway's listeners (e.g. grpc :29190 for daemon dial-out) need host
 		// ports mapped through the k3d loadbalancer at CREATE time, or
 		// in-cluster→host→cluster traffic (host.k3d.internal:<port>) finds
 		// nothing listening. k3d.yaml deliberately carries no `ports:` block —
 		// the ports live in the generated fragment, merged here.
-		cfgPath, cleanup, err := mergeK3dConfig(c.Config, c.Ingress)
+		// Ensure any standalone registry the config references via
+		// `registries.use` exists BEFORE create — a `use` reference fails the
+		// create if the registry container isn't already up. A standalone
+		// registry is owned by no cluster, so it (and its pushed images)
+		// survives a later `cluster delete`; the next cold create re-references
+		// the SAME registry and image pushes are cache hits. Idempotent: a
+		// present registry is a `k3d registry list` no-op. Reads the un-merged
+		// user config (the ports merge below doesn't touch `registries`).
+		if err := ensureConfigRegistries(ctx, c.Config); err != nil {
+			return fmt.Errorf("ensure standalone registry for cluster %q: %w", c.Name, err)
+		}
+
+		cfgPath, cleanup, err := mergeK3dConfig(c.Config, c.HostPorts)
 		if err != nil {
 			return fmt.Errorf("merge k3d ports for cluster %q: %w", c.Name, err)
 		}
@@ -180,32 +203,52 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		}
 	}
 
-	// Install the Gateway API stack into the freshly-created cluster when
-	// it declares `ingress = True`. A fresh `k3d cluster create` ships no
-	// Gateway API CRDs / no Gateway controller, so a cluster that hosts
-	// the env's Gateway/HTTPRoute/GRPCRoute resources needs the stack
-	// installed before the deploy phase applies them.
-	if c.Ingress {
-		if err := installClusterIngressFn(ctx, c, projectDir, env); err != nil {
-			return err
-		}
-	}
+	// The Gateway API stack (controller + CRDs + `eg` GatewayClass) is NOT
+	// installed here. A fresh `k3d cluster create` ships none of it, but the
+	// env declares Envoy Gateway as a forge.HelmChart platform dependency —
+	// the deploy phase that follows reconcile renders + applies it
+	// (`forge deploy <env> --target=envoy-gateway`, CRD-first) BEFORE the
+	// project's Gateway/HTTPRoute/GRPCRoute resources, EXACTLY like the cloud
+	// envs. One declarative model everywhere.
 	return nil
 }
 
-// installClusterIngress installs the Gateway API stack (pinned
-// Gateway-API CRDs + the vendored Traefik controller + the `traefik`
-// GatewayClass) into the named declared cluster, targeting its
-// `k3d-<name>` kubectl context explicitly so it lands on THAT cluster
-// regardless of the active context. Reuses the same installIngressBundle
-// the dev `forge cluster up` path uses; idempotent on warm clusters.
-func installClusterIngress(ctx context.Context, c ClusterEntity, projectDir, env string) error {
-	kctx := "k3d-" + c.Name
-	fmt.Printf("  installing Gateway API + Traefik ingress into cluster %q (context %s)...\n", c.Name, kctx)
-	if err := installIngressBundle(ctx, kctx, projectDir, env); err != nil {
-		return fmt.Errorf("install ingress on cluster %q: %w", c.Name, err)
+// checkClusterPortDrift errors when the LIVE cluster is missing host ports
+// the env's RENDERED Gateway listeners now require. The required set is
+// DERIVED from the same render `forge up` deploys (renderedGatewayHostPorts
+// → the env's Gateway listeners, transform-added ones included), so it is
+// the single source of truth — no static port list to keep in sync. k3d
+// can't add a port map to a running cluster, so the only fix is a recreate;
+// we say so explicitly rather than let the affected route fail later with an
+// opaque "connection refused". No drift (or an unreadable serverlb / render)
+// is a silent no-op.
+func checkClusterPortDrift(ctx context.Context, c ClusterEntity, projectDir, env string) error {
+	required, err := renderedGatewayHostPorts(ctx, projectDir, env)
+	if err != nil {
+		fmt.Printf("  warning: could not render Gateway listeners to verify host-port mappings for %q: %v\n", c.Name, err)
+		return nil
 	}
-	return nil
+	missing, err := clusterPortDrift(ctx, c.Name, required)
+	if err != nil {
+		// Best-effort: a drift-read failure must not block the warm-run
+		// fast path. Warn and continue.
+		fmt.Printf("  warning: could not verify host-port mappings for %q: %v\n", c.Name, err)
+		return nil
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	ports := make([]string, len(missing))
+	for i, p := range missing {
+		ports[i] = strconv.Itoa(p)
+	}
+	return fmt.Errorf(
+		"cluster %q is missing host-port mapping(s) %s that env %q's rendered Gateway listeners now require — "+
+			"k3d fixes port maps at cluster-create time, so a listener added after the cluster was "+
+			"created is unreachable on the live cluster. Recreate it to pick up the new mappings:\n"+
+			"    k3d cluster delete %s && forge up --env=%s\n"+
+			"(the required ports are DERIVED from the same render forge deploys — no manual port list to maintain).",
+		c.Name, strings.Join(ports, ", "), env, c.Name, env)
 }
 
 // effectiveServers defaults a zero Servers to 1 (the schema default;

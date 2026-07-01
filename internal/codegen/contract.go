@@ -8,7 +8,7 @@
 //   - Service     — the file-emission orchestrator (every Generate*).
 //   - Parser      — descriptor / proto / go.mod parsing (no I/O writes).
 //   - Inspector   — Go AST source inspection (fallible-constructor and
-//                   Deps-DB-field detection on user packages).
+//     Deps-DB-field detection on user packages).
 //
 // Data carriers (ServiceDef, EntityDef, FieldKind, ConfigField, the
 // *TemplateData and *MethodData structs, MissingHandlerResult) remain as

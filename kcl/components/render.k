@@ -128,6 +128,12 @@ _render_namespace = lambda env: ComponentEnv -> any {
 # Normalize a list of typed components into the k8s manifest list for
 # an environment. The Namespace comes first; each component expands per
 # its kind; network policies (when on) close it out.
+#
+# `--target` group model: each component's own manifests carry their
+# component (service) name (stamped in expand.k). The Namespace + network
+# policies are env-shared and belong to no service, so they carry NO
+# `app.kubernetes.io/name` — they apply on a bare deploy and are never
+# selected by a service `--target`. No synthetic env/namespace group.
 render_components = lambda components: [any], env: ComponentEnv -> [any] {
     [_render_namespace(env)] \
         + [item for c in components for item in comp_lib.render_component(c, env.namespace, env.registry, env.image_tag)] \

@@ -91,6 +91,12 @@ type AuditAPI struct {
 	// conflicts / recorded build state.
 	ExternalBuilds func(cfg *config.ProjectConfig, projectDir string) audittype.Category
 
+	// Prerequisites computes the declared-external-prerequisites category:
+	// renders dev-env KCL, enumerates forge.ExternalSecret / forge.DNSRecord
+	// declarations, and surfaces the checklist + the cross-secret byte-match
+	// group consistency.
+	Prerequisites func(cfg *config.ProjectConfig, projectDir string) audittype.Category
+
 	// Friction computes the friction category (auditFriction lives in
 	// internal/cli/friction.go alongside the `forge friction` command).
 	Friction func(projectDir string) audittype.Category

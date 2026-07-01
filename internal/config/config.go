@@ -131,13 +131,7 @@ type ProjectConfig struct {
 	// as an unknown key by the strict loader (walkUnknownKeys) rather than
 	// silently ignored — version stamping moves to a KCL GoBuild.ldflags
 	// `-X` entry.
-	Deploy DeployConfig `yaml:"deploy,omitempty"`
-	// Test holds per-env test recipes for `forge test --env=<env>` — the
-	// port-forward + env-var + test-command block that turns a multi-cluster
-	// e2e run into the two-command loop `forge up --env=e2e && forge test
-	// --env=e2e`. See [TestConfig]. Absent when a project drives tests by
-	// hand; a present block is read verbatim (no codegen).
-	Test      TestConfig      `yaml:"test,omitempty"`
+	Deploy    DeployConfig    `yaml:"deploy,omitempty"`
 	Docker    DockerConfig    `yaml:"docker,omitempty"`
 	K8s       K8sConfig       `yaml:"k8s,omitempty"`
 	Lint      LintConfig      `yaml:"lint,omitempty"`
@@ -176,6 +170,11 @@ type ProjectConfig struct {
 	// skills for the user-facing split.
 	Packs         []string                `yaml:"packs,omitempty"`
 	PackOverrides map[string]PackOverride `yaml:"pack_overrides,omitempty"`
+	// Smoke declares APP-FLOW health checks that `forge smoke <env>` runs in
+	// addition to its built-in ingress route / dev-port probes. A route probe
+	// only proves listeners are up; a flow check proves the APP actually works
+	// (an end-to-end invariant only the app can express). See [SmokeConfig].
+	Smoke SmokeConfig `yaml:"smoke,omitempty"`
 }
 
 // PackOverride is a project-level override block for an installed pack,
@@ -759,61 +758,67 @@ type DeployConcurrency struct {
 	CancelInProgress bool `yaml:"cancel_in_progress,omitempty"` // default false
 }
 
-// TestConfig is the `test:` section of forge.yaml: a map from environment
-// name (the `--env` selector value, e.g. "e2e") to its test recipe. It backs
-// `forge test --env=<env>`, the second half of the two-command e2e loop
-// (`forge up --env=<env>` then `forge test --env=<env>`). The key is matched
-// exactly against `--env`; no env name is special-cased. Each entry is a
-// fully-declared, self-contained recipe for reaching an env's in-cluster
-// services from the test process and running its suite:
+// SmokeConfig declares APP-FLOW health checks `forge smoke <env>` probes
+// alongside its built-in ingress/dev-port probes. The built-in probes only
+// verify TRANSPORT (a listener answered); they can be GREEN while the app is
+// functionally broken. A flow check lets the app DECLARE an end-to-end
+// invariant that the OWNING SERVICE asserts INTERNALLY and exposes as an HTTP
+// flow-health endpoint (200 healthy / 503 unhealthy). smoke just CURLS that
+// endpoint and folds the status into its PASS/FAIL/exit report — so a green
+// smoke means the app actually works, not just that ports are open.
 //
-//   - `forwards` lists the in-cluster services to kubectl-port-forward to a
-//     local port before the suite runs (and tear down after). Each forward
-//     names its own kube-context, so a multi-cluster env (e.g. control-plane
-//   - cp-daemon) forwards each service against the right cluster.
-//   - `env` is a literal env-var map exported into the test process.
-//   - `command` is the test command run with both the forward URLs (per
-//     forward `url_env`) and `env` set.
+// WHY AN ENDPOINT, NOT A COMMAND. The owning service already holds the access
+// (DB creds, cluster vantage point) the assertion needs; running the check
+// inside it avoids handing smoke privileged creds. smoke needs only a URL +
+// reachability. The endpoint is STATUS-ONLY in public (200/503 + aggregate
+// counts) so it leaks nothing sensitive anonymously; per-entity DETAIL lives
+// behind auth or an internal-only port.
 //
-// There is intentionally NO codegen, no schema derivation, and no in-process
-// harness: the block is read verbatim and executed. A project that wires this
-// up shrinks its Taskfile `e2e` target to `forge up --env=e2e && forge test
-// --env=e2e`.
-type TestConfig map[string]TestEnvConfig
-
-// TestEnvConfig is one environment's test recipe under `test:`.
-type TestEnvConfig struct {
-	// Command is the test command (argv form), run after the forwards bind.
-	// Streamed to stdout/stderr; its exit code is propagated. Required.
-	Command []string `yaml:"command"`
-	// Env is a literal env-var map exported into the test command's
-	// environment, on top of the per-forward url_env entries.
-	Env map[string]string `yaml:"env,omitempty"`
-	// Forwards lists the in-cluster services to port-forward before the
-	// command runs and tear down on exit (success, failure, or signal).
-	Forwards []TestForward `yaml:"forwards,omitempty"`
+// The daemon-flow case that motivated this: `forge smoke dev` was GREEN while
+// the managed-daemon flow was broken, because no built-in probe could assert
+// "every Ready daemon is attached to the gateway". reliant's daemon-gateway
+// owns that state, so it exposes `/flow-health` (200/503) and smoke curls it.
+type SmokeConfig struct {
+	// FlowChecks are the declared app-flow health endpoints. Each is an HTTP
+	// endpoint smoke probes; 2xx = PASS, anything else (typically 503) = FAIL
+	// (RED), and any FAIL fails the whole smoke run (non-zero exit), exactly
+	// like a failed route probe.
+	FlowChecks []SmokeFlowCheck `yaml:"flow_checks,omitempty"`
 }
 
-// TestForward declares one `kubectl port-forward` for a test env: which
-// in-cluster service to forward, in which cluster (Context) and Namespace,
-// from RemotePort to LocalPort, exporting http://127.0.0.1:<LocalPort> as
-// URLEnv into the test command.
-type TestForward struct {
-	// Service is the in-cluster Service name (svc/<Service>). Required.
-	Service string `yaml:"service"`
-	// Context is the kube-context the Service lives in (e.g.
-	// "k3d-control-plane"). Required for multi-cluster envs; when empty the
-	// current kube-context is used.
-	Context string `yaml:"context,omitempty"`
-	// Namespace is the Service's namespace. Required.
-	Namespace string `yaml:"namespace"`
-	// RemotePort is the Service port to forward from. Required.
-	RemotePort int `yaml:"remote_port"`
-	// LocalPort is the local port the forward binds. Required.
-	LocalPort int `yaml:"local_port"`
-	// URLEnv, when set, is the env-var name exported into the test command
-	// as "http://127.0.0.1:<LocalPort>".
-	URLEnv string `yaml:"url_env,omitempty"`
+// SmokeFlowCheck is one declared app-flow health endpoint `forge smoke <env>`
+// probes. The owning service asserts the invariant internally and returns 200
+// (healthy) / 503 (unhealthy) at this endpoint; smoke curls it and merges the
+// verdict into its summary + exit logic. It is the HTTP-endpoint analogue of a
+// route probe — same machinery, declared by the app.
+type SmokeFlowCheck struct {
+	// Name labels the check in the smoke table / JSON (e.g. "daemon-flow").
+	Name string `yaml:"name"`
+	// URL is the flow-health endpoint smoke GETs. It may be a per-env literal
+	// (e.g. "http://localhost:28091/flow-health" for dev) — scope it with Envs
+	// when the URL differs per env. A 2xx is PASS; any other status (or a
+	// transport failure) is FAIL.
+	URL string `yaml:"url"`
+	// Envs optionally scopes the check to specific smoke environments (by
+	// name). Empty = probe in every env. Use it when the endpoint URL is
+	// env-specific (the usual case — different host/port per env).
+	Envs []string `yaml:"envs,omitempty"`
+	// Description is an optional human note shown in the smoke detail column.
+	Description string `yaml:"description,omitempty"`
+}
+
+// RunsInEnv reports whether this flow check should be probed for the given
+// smoke environment. An empty Envs list means "every env".
+func (c SmokeFlowCheck) RunsInEnv(env string) bool {
+	if len(c.Envs) == 0 {
+		return true
+	}
+	for _, e := range c.Envs {
+		if e == env {
+			return true
+		}
+	}
+	return false
 }
 
 // EffectiveRegistry returns the deploy registry, defaulting to "ghcr".
@@ -836,10 +841,19 @@ func (d *DeployConfig) IsConcurrencyEnabled() bool {
 // Version stamping moved to a KCL GoBuild.ldflags `-X` entry. A `build:`
 // key in forge.yaml is now rejected as an unknown key.)
 
-// DockerConfig holds Docker registry configuration.
+// DockerConfig holds Docker build configuration for the PROJECT image (the
+// root `Dockerfile` built by `forge build`). Per-service DockerBuild services
+// declared in KCL carry their OWN registry + build_contexts on the KCL
+// DockerBuild block; these are the project-image defaults / fallback.
+//
+// forge is FULLY base-image-AGNOSTIC: it does NOT discover, mirror, pin, or
+// inject base images, and offers no mirror/pull-through setting. A Dockerfile's
+// `FROM` lines are the COMPLETE source of truth — pin with `FROM …@sha256:…`,
+// and route through a pull-through mirror by writing the mirror host into the
+// `FROM` ref directly (e.g. `FROM us-docker.pkg.dev/<p>/dockerhub/alpine:3.21`).
+// forge never rewrites a FROM.
 type DockerConfig struct {
-	Registry   string            `yaml:"registry"`
-	BaseImages map[string]string `yaml:"base_images,omitempty"`
+	Registry string `yaml:"registry"`
 	// BuildContexts maps a build-context name to anything `docker buildx
 	// --build-context name=value` accepts:
 	//
@@ -1166,7 +1180,7 @@ func (f FeaturesConfig) IsZero() bool {
 		f.Docs == nil && f.Frontend == nil && f.Observability == nil &&
 		f.HotReload == nil && f.Packs == nil &&
 		f.Deploy == nil &&
-		f.Diagnostics == nil && f.Experimental == (ExperimentalConfig{})
+		f.Diagnostics == nil && f.Experimental.IsZero()
 }
 
 // ExperimentalConfig gates features that are not yet promised. Fields
@@ -1175,8 +1189,8 @@ func (f FeaturesConfig) IsZero() bool {
 //
 // What lives here today:
 //
-//   - Ingress:        Gateway API codegen + cert-manager + Traefik
-//     wiring. Provider matrix is fragile and not yet
+//   - Ingress:        Gateway API codegen + cert-manager + Envoy
+//     Gateway wiring. Provider matrix is fragile and not yet
 //     proven across real cloud providers.
 //   - ExternalBuilds: RETIRED gate (kept as an accepted, inert key for
 //     back-compat). `Service.build_cmd` is the build-side
@@ -1201,6 +1215,11 @@ type ExperimentalConfig struct {
 	ExternalBuilds bool `yaml:"external_builds,omitempty"`
 	Operators      bool `yaml:"operators,omitempty"`
 	StrictWiring   bool `yaml:"strict_wiring,omitempty"`
+}
+
+// IsZero reports whether the experimental block carries nothing explicit.
+func (e ExperimentalConfig) IsZero() bool {
+	return !e.Ingress && !e.ExternalBuilds && !e.Operators && !e.StrictWiring
 }
 
 // resolve resolves a stable feature flag by name: an explicit value wins;
@@ -1304,8 +1323,8 @@ func (f FeaturesConfig) PacksEnabled() bool { return f.resolve(FeaturePacks) }
 // IngressEnabled reports whether Gateway API ingress is wired
 // (default: OFF — opt-in under `features.experimental.ingress: true`).
 // When off, forge skips ingress codegen, `forge cluster up` skips
-// the Traefik + GatewayClass install, `forge cluster urls` returns nothing,
-// and the audit ingress category is suppressed.
+// the Envoy Gateway + GatewayClass install, `forge cluster urls` returns
+// nothing, and the audit ingress category is suppressed.
 func (f FeaturesConfig) IngressEnabled() bool { return f.Experimental.Ingress }
 
 // ExternalBuildsEnabled reports the raw value of the RETIRED

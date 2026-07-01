@@ -25,6 +25,19 @@ type ServiceDef struct {
 	// can't alias two different messages.
 	Schemas map[string][]SchemaFieldDef `json:",omitempty"`
 
+	// SchemaFiles maps a fully-qualified message name (the same keys used
+	// in Schemas) to the proto file that physically DECLARES that message.
+	// For a message declared in the service's own proto file this equals
+	// ProtoFile; for a message pulled in from another file (e.g. a shared
+	// `shared.proto` holding the domain entity messages while the CRUD
+	// service lives in `services/<svc>/v1/<svc>.proto`) it differs. Codegen
+	// that emits a `*Schema` / type import for a message must resolve the
+	// import path from the message's DEFINING file, not the service file —
+	// otherwise it imports a symbol from a `_pb.ts` module that doesn't
+	// export it. Empty/nil on descriptors produced by forge versions before
+	// this field existed; consumers must fall back to the service ProtoFile.
+	SchemaFiles map[string]string `json:",omitempty"`
+
 	// Enums maps fully-qualified enum name → declared value names, in
 	// proto declaration order, for every enum reachable through
 	// Schemas. protojson encodes enums as their value-name strings, so
@@ -47,6 +60,17 @@ type Method struct {
 	// roles if a non-proto source ever supplies them; today it is always
 	// empty in parsed descriptors.
 	RequiredRoles []string
+	// AuthzCustom records (forge.v1.method).authz_custom = true — the method
+	// delegates its authorization decision to a hand-written per-service
+	// authorizer (a subject/identity/resource-scoped rule not expressible as a
+	// role allow-list). Such a method carries NO RequiredRoles (the proto can't
+	// express its rule), so a naive role-table emit would write it with EMPTY
+	// roles — which on a role table reads as "any authenticated user allowed".
+	// The flag lets the authorizer generator emit it FAIL-CLOSED instead, so the
+	// generated table can never be misread as an any-authenticated grant. The
+	// LIVE decision is enforced by the descriptor-driven RoleInterceptor +
+	// the hand-written authorizer.go, not this table.
+	AuthzCustom bool
 	// Errors records the Connect/gRPC error codes this method may return,
 	// derived from (forge.v1.method).errors. Values match connect.Code
 	// names (e.g. "NotFound", "PermissionDenied"). Surfaced through

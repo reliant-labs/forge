@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -218,13 +216,14 @@ func TestSpliceK3dPorts_BothEmpty(t *testing.T) {
 }
 
 // TestIngressPinnedVersions parses the embedded VERSION file and
-// asserts both keys are present + look like vX.Y.Z tags.
+// asserts both keys (envoy_gateway, gateway_api) are present + look
+// like vX.Y.Z tags.
 func TestIngressPinnedVersions(t *testing.T) {
-	traefikVer, gatewayAPIVer, err := ingressPinnedVersions()
+	envoyVer, gatewayAPIVer, err := ingressPinnedVersions()
 	if err != nil {
 		t.Fatalf("read versions: %v", err)
 	}
-	for _, ver := range []string{traefikVer, gatewayAPIVer} {
+	for _, ver := range []string{envoyVer, gatewayAPIVer} {
 		if !strings.HasPrefix(ver, "v") || strings.Count(ver, ".") < 2 {
 			t.Errorf("version %q doesn't look like a vX.Y.Z tag", ver)
 		}
@@ -236,219 +235,93 @@ func TestIngressPinnedVersions(t *testing.T) {
 // cluster up. Catching the URL drift in tests gives us a flag
 // instead of a runtime 404.
 func TestGatewayAPICRDsURL(t *testing.T) {
-	got := gatewayAPICRDsURL("v1.2.0")
-	want := "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml"
+	got := gatewayAPICRDsURL("v1.5.1")
+	want := "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/standard-install.yaml"
 	if got != want {
 		t.Errorf("URL = %q, want %q", got, want)
 	}
 }
 
-// setupTraefikEntrypointFixture writes deploy/kcl/dev (just enough
-// for the stat-check in collectTraefikEntrypoints) and a JSON
-// RenderKCL fixture under FORGE_KCL_RENDER_FIXTURE that decodes to
-// the given gateways/listeners shape.
-func setupTraefikEntrypointFixture(t *testing.T, renderJSON string) string {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "deploy", "kcl", "dev"), 0o755); err != nil {
-		t.Fatalf("mkdir dev kcl: %v", err)
+// TestClusterPortDrift_FlagsMissingControllerPort is the drift scenario:
+// the env's RENDERED Gateway listeners require the controller listener port
+// (28090) but the live cluster only published http/grpc (28080/29190) at
+// create time. The drift check must surface 28090 as missing so the caller
+// can tell the user to recreate — never leave the controller route silently
+// unreachable.
+func TestClusterPortDrift_FlagsMissingControllerPort(t *testing.T) {
+	orig := runningClusterHostPortsFn
+	t.Cleanup(func() { runningClusterHostPortsFn = orig })
+	// Live cluster predates the controller listener — only http/grpc mapped.
+	runningClusterHostPortsFn = func(_ context.Context, _ string) (map[int]bool, error) {
+		return map[int]bool{28080: true, 29190: true}, nil
 	}
-	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, renderJSON))
-	return dir
-}
+	// The env's rendered listeners require the controller port too.
+	required := map[int]bool{28080: true, 28090: true, 29190: true}
 
-// TestCollectTraefikEntrypoints_ProjectsListeners is the happy path —
-// two gateways, one listener each, emits two entrypoints in
-// (port-ascending) order with the listener's name carried through.
-func TestCollectTraefikEntrypoints_ProjectsListeners(t *testing.T) {
-	dir := setupTraefikEntrypointFixture(t, `{
-		"gateways": [
-			{"name": "public",  "listeners": [{"name": "http", "port": 18080, "protocol": "HTTP"}]},
-			{"name": "private", "listeners": [{"name": "grpc", "port": 19190, "protocol": "H2C"}]}
-		]
-	}`)
-	got, err := collectTraefikEntrypoints(context.Background(), dir, "dev")
+	missing, err := clusterPortDrift(context.Background(), "control-plane", required)
 	if err != nil {
-		t.Fatalf("collect: %v", err)
+		t.Fatalf("drift: %v", err)
 	}
-	want := []traefikEntrypoint{
-		{Name: "http", Port: 18080, Protocol: "HTTP"},
-		{Name: "grpc", Port: 19190, Protocol: "H2C"},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("len = %d, want %d (got %+v)", len(got), len(want), got)
-	}
-	for i, e := range got {
-		if e != want[i] {
-			t.Errorf("entrypoint[%d] = %+v, want %+v", i, e, want[i])
-		}
+	if len(missing) != 1 || missing[0] != 28090 {
+		t.Fatalf("expected missing=[28090], got %v", missing)
 	}
 }
 
-// TestCollectTraefikEntrypoints_PortDedupe — two gateways collide on a
-// port. Lower-sorted (port, gateway, name) wins; the duplicate is
-// dropped. Mirrors the k3d-ports generator's first-wins policy so the
-// two outputs stay in lockstep.
-func TestCollectTraefikEntrypoints_PortDedupe(t *testing.T) {
-	dir := setupTraefikEntrypointFixture(t, `{
-		"gateways": [
-			{"name": "b-gw", "listeners": [{"name": "http", "port": 18080, "protocol": "HTTP"}]},
-			{"name": "a-gw", "listeners": [{"name": "http", "port": 18080, "protocol": "HTTP"}]}
-		]
-	}`)
-	got, err := collectTraefikEntrypoints(context.Background(), dir, "dev")
+// TestClusterPortDrift_NoDriftWhenComplete: a live cluster that maps every
+// required listener port reports no drift (extra live ports are fine).
+func TestClusterPortDrift_NoDriftWhenComplete(t *testing.T) {
+	orig := runningClusterHostPortsFn
+	t.Cleanup(func() { runningClusterHostPortsFn = orig })
+	runningClusterHostPortsFn = func(_ context.Context, _ string) (map[int]bool, error) {
+		return map[int]bool{28080: true, 28090: true, 99999: true}, nil // extra live ports are fine
+	}
+	required := map[int]bool{28080: true, 28090: true}
+	missing, err := clusterPortDrift(context.Background(), "control-plane", required)
 	if err != nil {
-		t.Fatalf("collect: %v", err)
+		t.Fatalf("drift: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("expected exactly 1 entrypoint after dedupe, got %d (%+v)", len(got), got)
-	}
-	if got[0].Port != 18080 || got[0].Name != "http" {
-		t.Errorf("expected http:18080, got %+v", got[0])
+	if len(missing) != 0 {
+		t.Fatalf("expected no drift, got %v", missing)
 	}
 }
 
-// TestCollectTraefikEntrypoints_NameCollisionDistinctPorts — two
-// gateways both name a listener "http" on different ports. Traefik
-// requires entrypoint names to be unique, so the second one gets a
-// "-2" suffix. The lowest port keeps the bare name.
-func TestCollectTraefikEntrypoints_NameCollisionDistinctPorts(t *testing.T) {
-	dir := setupTraefikEntrypointFixture(t, `{
-		"gateways": [
-			{"name": "public",  "listeners": [{"name": "http", "port": 18080, "protocol": "HTTP"}]},
-			{"name": "private", "listeners": [{"name": "http", "port": 18081, "protocol": "HTTP"}]}
-		]
-	}`)
-	got, err := collectTraefikEntrypoints(context.Background(), dir, "dev")
+// TestClusterPortDrift_OnlyRenderedListenersFlagged proves the drift check
+// reasons about the RENDERED listeners only — NOT statically pre-mapped
+// parallel-worktree blocks. A live cluster missing such a future-block port
+// (28190) but mapping every CURRENT listener reports NO drift, so a routine
+// `forge up` doesn't force a recreate for ports no current route needs.
+func TestClusterPortDrift_OnlyRenderedListenersFlagged(t *testing.T) {
+	orig := runningClusterHostPortsFn
+	t.Cleanup(func() { runningClusterHostPortsFn = orig })
+	runningClusterHostPortsFn = func(_ context.Context, _ string) (map[int]bool, error) {
+		// Live cluster maps the current listeners but not the unused
+		// worktree-block 1 ports (28180/28190/29290).
+		return map[int]bool{28080: true, 28090: true, 29190: true}, nil
+	}
+	required := map[int]bool{28080: true, 28090: true, 29190: true} // rendered listeners only
+	missing, err := clusterPortDrift(context.Background(), "control-plane", required)
 	if err != nil {
-		t.Fatalf("collect: %v", err)
+		t.Fatalf("drift: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 entrypoints, got %d (%+v)", len(got), got)
-	}
-	if got[0].Name != "http" || got[0].Port != 18080 {
-		t.Errorf("entrypoint[0] = %+v, want http:18080", got[0])
-	}
-	if got[1].Name != "http-2" || got[1].Port != 18081 {
-		t.Errorf("entrypoint[1] = %+v, want http-2:18081", got[1])
+	if len(missing) != 0 {
+		t.Fatalf("expected no drift (future-block ports are not required), got %v", missing)
 	}
 }
 
-// TestCollectTraefikEntrypoints_NoDevKCL — a project with no
-// deploy/kcl/dev directory (e.g. just-scaffolded, features.ingress
-// still off) returns nil/nil. Cluster-up must still succeed.
-func TestCollectTraefikEntrypoints_NoDevKCL(t *testing.T) {
-	dir := t.TempDir() // intentionally no deploy/kcl/dev
-	got, err := collectTraefikEntrypoints(context.Background(), dir, "dev")
+// TestClusterPortDrift_UnreadableServerlbIsNoOp: an empty running set
+// (serverlb unreadable) must NOT flag every port as missing.
+func TestClusterPortDrift_UnreadableServerlbIsNoOp(t *testing.T) {
+	orig := runningClusterHostPortsFn
+	t.Cleanup(func() { runningClusterHostPortsFn = orig })
+	runningClusterHostPortsFn = func(_ context.Context, _ string) (map[int]bool, error) {
+		return map[int]bool{}, nil
+	}
+	required := map[int]bool{28090: true}
+	missing, err := clusterPortDrift(context.Background(), "control-plane", required)
 	if err != nil {
-		t.Fatalf("collect: %v", err)
+		t.Fatalf("drift: %v", err)
 	}
-	if got != nil {
-		t.Errorf("expected nil entrypoints, got %+v", got)
-	}
-}
-
-// TestCollectTraefikEntrypoints_NoGateways — dev KCL is present but
-// the project hasn't authored any gateways. Returns nil/nil so the
-// install applies with only the default ping entrypoint.
-func TestCollectTraefikEntrypoints_NoGateways(t *testing.T) {
-	dir := setupTraefikEntrypointFixture(t, `{"gateways": []}`)
-	got, err := collectTraefikEntrypoints(context.Background(), dir, "dev")
-	if err != nil {
-		t.Fatalf("collect: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("expected 0 entrypoints, got %+v", got)
-	}
-}
-
-// TestCollectTraefikEntrypoints_RawManifestGateways — an env that
-// renders its Gateway as a RAW k8s manifest (kind: Gateway) in the
-// `manifests` stream, with the bundle-level `gateways` echo EMPTY (the
-// multi-cluster e2e shape). The entrypoints must still be derived from
-// the manifest's spec.listeners, or a fresh cluster's Traefik comes up
-// without the listener ports bound.
-func TestCollectTraefikEntrypoints_RawManifestGateways(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "deploy", "kcl", "e2e"), 0o755); err != nil {
-		t.Fatalf("mkdir e2e kcl: %v", err)
-	}
-	// gateways echo empty; the Gateway lives in the manifests stream
-	// under an `output` wrapper (the forge.render(...) shape).
-	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, `{
-		"output": {
-			"gateways": [],
-			"manifests": [
-				{
-					"apiVersion": "gateway.networking.k8s.io/v1",
-					"kind": "Gateway",
-					"metadata": {"name": "public", "namespace": "control-plane-e2e"},
-					"spec": {"listeners": [
-						{"name": "http", "port": 28080, "protocol": "HTTP"},
-						{"name": "grpc", "port": 29190, "protocol": "HTTP"}
-					]}
-				},
-				{"apiVersion": "v1", "kind": "Service", "metadata": {"name": "admin-server"}}
-			]
-		}
-	}`))
-	got, err := collectTraefikEntrypoints(context.Background(), dir, "e2e")
-	if err != nil {
-		t.Fatalf("collect: %v", err)
-	}
-	want := []traefikEntrypoint{
-		{Name: "http", Port: 28080, Protocol: "HTTP"},
-		{Name: "grpc", Port: 29190, Protocol: "HTTP"},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("len = %d, want %d (got %+v)", len(got), len(want), got)
-	}
-	for i, e := range got {
-		if e != want[i] {
-			t.Errorf("entrypoint[%d] = %+v, want %+v", i, e, want[i])
-		}
-	}
-}
-
-// TestRenderTraefikInstall_NoEntrypoints — passing nil entrypoints
-// must still produce parseable YAML with the static defaults.
-func TestRenderTraefikInstall_NoEntrypoints(t *testing.T) {
-	out, err := renderTraefikInstall(nil)
-	if err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	if !strings.Contains(string(out), "--providers.kubernetesgateway=true") {
-		t.Error("expected providers.kubernetesgateway arg in rendered output")
-	}
-	// The template's header comment mentions `--entrypoints.<name>.address`;
-	// look for the rendered arg form (- --entrypoints.) to avoid matching it.
-	if strings.Contains(string(out), "- --entrypoints.") {
-		t.Error("expected no --entrypoints args when entrypoints is nil")
-	}
-}
-
-// TestRenderTraefikInstall_EmitsEntrypointArgs — given two entrypoints
-// the rendered output carries the matching --entrypoints.<name>.address
-// args, the container ports, and the Service ports.
-func TestRenderTraefikInstall_EmitsEntrypointArgs(t *testing.T) {
-	out, err := renderTraefikInstall([]traefikEntrypoint{
-		{Name: "http", Port: 18080, Protocol: "HTTP"},
-		{Name: "grpc", Port: 19190, Protocol: "H2C"},
-	})
-	if err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	s := string(out)
-	for _, want := range []string{
-		"--entrypoints.http.address=:18080",
-		"--entrypoints.grpc.address=:19190",
-		"containerPort: 18080",
-		"containerPort: 19190",
-		"port: 18080",
-		"port: 19190",
-	} {
-		if !strings.Contains(s, want) {
-			t.Errorf("rendered output missing %q", want)
-		}
+	if len(missing) != 0 {
+		t.Fatalf("expected no-op on unreadable serverlb, got %v", missing)
 	}
 }

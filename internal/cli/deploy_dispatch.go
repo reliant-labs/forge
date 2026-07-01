@@ -250,16 +250,39 @@ func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) er
 // declares no cluster (host-only / compose), Context stays empty — and the
 // cluster.KubectlApply chokepoint refuses an empty context rather than
 // falling back to the active one.
-func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string, groups []deploytarget.ServiceGroup, entities *KCLEntities) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
+func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string, groups []deploytarget.ServiceGroup, entities *KCLEntities, imageDigests map[string]string, helmCharts []cluster.HelmChartSpec) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
 	scopeFor := clusterScopeForGroups(groups, entities)
+	// Platform deps (helm-as-a-RENDERER) are env-level, not per-group. To
+	// apply each selected chart EXACTLY ONCE across a multi-group dispatch,
+	// attach the chart specs only to the FIRST k8s group processed —
+	// identified by its context. The charts carry their own target
+	// namespace (helm template -n), so a single apply against any one of the
+	// env's group contexts is correct for the cloud single-cluster case;
+	// the once-only guard avoids re-applying cert-manager per service group.
+	primaryHelmContext := ""
+	if len(helmCharts) > 0 {
+		for _, g := range groups {
+			if c := resolveGroupContext(g); c != "" {
+				primaryHelmContext = c
+				break
+			}
+		}
+	}
 	return func(group deploytarget.ServiceGroup) cluster.ApplyOpts {
 		ns := group.Namespace
 		if ns == "" {
 			ns = fallbackNamespace
 		}
+		// Emit the platform-dep specs only on the primary context's group so
+		// each chart applies once. Other groups get no charts.
+		var charts []cluster.HelmChartSpec
+		if len(helmCharts) > 0 && resolveGroupContext(group) == primaryHelmContext {
+			charts = helmCharts
+		}
 		return cluster.ApplyOpts{
 			MainK:        mainK,
 			ImageTag:     imageTag,
+			ImageDigests: imageDigests,
 			Namespace:    ns,
 			Env:          env,
 			Context:      resolveGroupContext(group),
@@ -271,6 +294,7 @@ func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string,
 			OneShotJobs:  oneShotJobs,
 			Targets:      targets,
 			ClusterScope: scopeFor(group),
+			HelmCharts:   charts,
 		}
 	}
 }
@@ -367,6 +391,7 @@ func clusterScopeForGroups(groups []deploytarget.ServiceGroup, entities *KCLEnti
 			}
 		}
 		return &cluster.GroupScope{
+			Cluster:   group.Cluster,
 			OwnApps:   own,
 			OtherApps: other,
 		}

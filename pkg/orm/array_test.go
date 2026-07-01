@@ -56,9 +56,9 @@ func TestStringArray_ScanBothEncodings(t *testing.T) {
 // both postgres text and legacy JSON integer arrays.
 func TestInt64Array_ScanBothEncodings(t *testing.T) {
 	cases := map[string][]int64{
-		`{1,2,3}`:  {1, 2, 3},
-		`[4,5]`:    {4, 5},
-		`{}`:       nil,
+		`{1,2,3}`: {1, 2, 3},
+		`[4,5]`:   {4, 5},
+		`{}`:      nil,
 	}
 	for src, want := range cases {
 		var out Int64Array

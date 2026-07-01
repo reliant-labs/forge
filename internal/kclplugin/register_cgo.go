@@ -35,6 +35,21 @@ func Register() {
 						return &plugin.MethodResult{V: p}, nil
 					},
 				},
+				// allocate_port(base, key) -> int. Deterministic, memoized
+				// keyed port for parallel dev stacks: base + block(key)*100,
+				// where forge assigns + persists a stable block per key (the
+				// index is internal, never surfaced here). key "" -> base.
+				"allocate_port": {
+					Body: func(args *plugin.MethodArgs) (*plugin.MethodResult, error) {
+						base := int(args.IntArg(0))
+						key := args.StrArg(1)
+						p, err := allocatePort(base, key)
+						if err != nil {
+							return nil, err
+						}
+						return &plugin.MethodResult{V: p}, nil
+					},
+				},
 				// derive_jwk(private_key_pem, kid, alg) -> JWK dict. Derives
 				// the PUBLIC JWK from an ES256 private-key PEM at render time
 				// so a forge.TestJWKS publishes the public half of the EXACT

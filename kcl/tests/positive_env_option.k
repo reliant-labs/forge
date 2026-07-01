@@ -44,19 +44,20 @@ _svc = forge.Service {
     deploy = forge.HostDeploy {runner = "go-run"}
 }
 
-_bundle = forge.Bundle {
-    services = [_svc]
-    additional_manifests = _nats_manifests
-}
-
-_k8s = forge.K8sCluster {
+_target = forge.ClusterTarget {
     cluster = "k3d-myapp"
     namespace = "myapp-" + _env_name
     registry = "localhost:5050"
 }
 
+_bundle = forge.Bundle {
+    cluster_target = _target
+    services = [_svc]
+    additional_manifests = _nats_manifests
+}
+
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, forge.RenderEnv {cluster = _k8s})
+manifests = forge.render_manifests(_bundle)
 
 # ── Invariants ─────────────────────────────────────────────────────
 

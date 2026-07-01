@@ -1,28 +1,42 @@
 // Package cli — `forge cluster up` ingress install plumbing.
 //
+// forge is OPINIONATED on ONE Gateway API controller everywhere: Envoy
+// Gateway (controllerName gateway.envoyproxy.io/gatewayclass-controller,
+// GatewayClass `eg`). The local k3d bring-up installs the SAME helm chart
+// the cloud envs (staging/preprod/prod) run, so a Gateway that renders
+// `gatewayClassName: eg` behaves identically on a laptop and in the cloud.
+// Envoy Gateway serves HTTPRoute AND GRPCRoute natively, so one controller
+// covers every forge route shape — no second controller for gRPC.
+//
 // Three pieces, run in order after the k3d cluster is created and
 // kubectl context pinned:
 //
-//  1. Fetch + apply the upstream Gateway API CRDs (version pinned via
-//     internal/templates/ingress/traefik/VERSION). Cached under
-//     ~/.cache/forge/ingress/ so subsequent cluster-up runs are
-//     offline-capable.
-//  2. Render the vendored Traefik controller install template
-//     (internal/templates/ingress/traefik/traefik.yaml.tmpl) with
-//     one --entrypoints.<name>.address arg, one containerPort, and
-//     one Service port per dev Gateway listener; apply the result.
-//     Traefik v3.2's kubernetesgateway provider does NOT dynamically
-//     create listener sockets from Gateway.spec.listeners[*].port —
-//     each port needs a matching static entrypoint declared at
-//     install time. Re-run `forge cluster up` after adding or
-//     removing a listener to install the new entrypoints
-//     (idempotent — the rendered Deployment restarts on apply).
-//  3. Apply the vendored `traefik` GatewayClass.
+//  1. Fetch + apply the upstream Gateway API standard-channel CRDs
+//     (version pinned via internal/templates/ingress/envoy/VERSION).
+//     Cached under ~/.cache/forge/ingress/ so subsequent cluster-up runs
+//     are offline-capable. The gateway-helm chart bundles the CRDs it
+//     needs, but we apply the pinned standard channel explicitly first
+//     (server-side) so the CRD surface matches the cloud install and so
+//     `kubectl wait` on Established gates the GatewayClass apply.
+//  2. `helm upgrade --install --skip-crds` the Envoy Gateway controller
+//     from the pinned gateway-helm chart version into envoy-gateway-system,
+//     the SAME release the cloud envs run. `--skip-crds` is required: the
+//     chart bundles an OLDER, experimental-channel copy of the Gateway API
+//     CRDs that the safe-upgrades ValidatingAdmissionPolicy (shipped by the
+//     standard CRDs applied in step 1) would DENY — see helmInstallEnvoyGateway.
+//     Envoy Gateway provisions a managed
+//     Envoy proxy per Gateway with listener sockets derived dynamically
+//     from Gateway.spec.listeners — no static per-listener entrypoint
+//     config to template (unlike the old Traefik install). The proxy's
+//     LoadBalancer Service ports follow the Gateway listeners; on k3d the
+//     bundled klipper servicelb binds those node ports and the k3d
+//     serverlb forwards the host ports mapped from deploy/k3d-ports.yaml.
+//  3. Apply the vendored `eg` GatewayClass (idempotent).
 //
-// Idempotency comes from `kubectl apply` semantics — re-running these
-// steps against a cluster that already has them noops at the API
-// server level. We do block on CRD establishment between (1) and (3)
-// so the GatewayClass apply doesn't race the CRD install.
+// Idempotency comes from `helm upgrade --install` + `kubectl apply`
+// semantics — re-running against a cluster that already has them noops.
+// We block on CRD establishment between (1) and (3) so the GatewayClass
+// apply doesn't race the CRD install.
 //
 // Also: k3d config merging — `forge generate` writes
 // `deploy/k3d-ports.yaml` derived from the dev env's KCL gateway
@@ -34,9 +48,7 @@
 package cli
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -54,13 +66,13 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// ingressPinnedVersions reads internal/templates/ingress/traefik/VERSION
-// and returns (traefikVersion, gatewayAPIVersion). Format:
+// ingressPinnedVersions reads internal/templates/ingress/envoy/VERSION
+// and returns (envoyGatewayChartVersion, gatewayAPIVersion). Format:
 //
-//	traefik=v3.2.1
-//	gateway_api=v1.2.0
-func ingressPinnedVersions() (traefikVer, gatewayAPIVer string, err error) {
-	b, err := templates.IngressTemplates().Get("traefik/VERSION")
+//	envoy_gateway=v1.7.2
+//	gateway_api=v1.5.1
+func ingressPinnedVersions() (envoyGatewayVer, gatewayAPIVer string, err error) {
+	b, err := templates.IngressTemplates().Get("envoy/VERSION")
 	if err != nil {
 		return "", "", fmt.Errorf("read pinned VERSION: %w", err)
 	}
@@ -74,16 +86,16 @@ func ingressPinnedVersions() (traefikVer, gatewayAPIVer string, err error) {
 			continue
 		}
 		switch strings.TrimSpace(k) {
-		case "traefik":
-			traefikVer = strings.TrimSpace(v)
+		case "envoy_gateway":
+			envoyGatewayVer = strings.TrimSpace(v)
 		case "gateway_api":
 			gatewayAPIVer = strings.TrimSpace(v)
 		}
 	}
-	if traefikVer == "" || gatewayAPIVer == "" {
-		return "", "", fmt.Errorf("VERSION missing one of traefik=/gateway_api= keys")
+	if envoyGatewayVer == "" || gatewayAPIVer == "" {
+		return "", "", fmt.Errorf("VERSION missing one of envoy_gateway=/gateway_api= keys")
 	}
-	return traefikVer, gatewayAPIVer, nil
+	return envoyGatewayVer, gatewayAPIVer, nil
 }
 
 // gatewayAPICRDsURL builds the upstream release URL for the standard
@@ -109,6 +121,34 @@ func ingressCacheDir() (string, error) {
 // (a forge upgrade changes the VERSION file, the new release URL
 // hashes to a different filename, the old cache file stays around).
 func fetchGatewayAPICRDs(ctx context.Context, version string) (string, error) {
+	return fetchCachedCRDYAML(ctx, "gateway-api-crds-"+version+".yaml",
+		gatewayAPICRDsURL(version), fmt.Sprintf("Gateway API CRDs %s", version))
+}
+
+// certManagerCRDsURL builds the upstream release URL for cert-manager's
+// CRDs at a chart version (the chart and its CRDs move in lockstep, so the
+// CRD bundle is fetched at the chart's own version).
+func certManagerCRDsURL(version string) string {
+	return "https://github.com/cert-manager/cert-manager/releases/download/" + version + "/cert-manager.crds.yaml"
+}
+
+// fetchCertManagerCRDs ensures cert-manager's CRD YAML for the chart
+// version is on disk and returns the path. Version-pinned cache filename,
+// same scheme as fetchGatewayAPICRDs. Used by the helm-as-a-RENDERER apply
+// path (deploy_helm.go) so a `--target=cert-manager` apply lands the CRDs
+// (Established-gated) before the chart's --skip-crds controllers.
+func fetchCertManagerCRDs(ctx context.Context, version string) (string, error) {
+	return fetchCachedCRDYAML(ctx, "cert-manager-crds-"+version+".yaml",
+		certManagerCRDsURL(version), fmt.Sprintf("cert-manager CRDs %s", version))
+}
+
+// fetchCachedCRDYAML downloads a CRD YAML bundle from url into the ingress
+// cache under cacheName, returning the on-disk path. A present cache file
+// is a no-op (the version-pinned filename is the cache key). label is the
+// human name printed on a cold fetch. The atomic temp-write-then-rename
+// keeps a concurrent reader from seeing a half-written file. Shared by the
+// Gateway API + cert-manager CRD fetchers.
+func fetchCachedCRDYAML(ctx context.Context, cacheName, url, label string) (string, error) {
 	dir, err := ingressCacheDir()
 	if err != nil {
 		return "", err
@@ -116,13 +156,12 @@ func fetchGatewayAPICRDs(ctx context.Context, version string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create cache dir: %w", err)
 	}
-	cachePath := filepath.Join(dir, "gateway-api-crds-"+version+".yaml")
+	cachePath := filepath.Join(dir, cacheName)
 	if _, err := os.Stat(cachePath); err == nil {
 		return cachePath, nil
 	}
 
-	url := gatewayAPICRDsURL(version)
-	fmt.Printf("Fetching Gateway API CRDs %s from upstream...\n", version)
+	fmt.Printf("Fetching %s from upstream...\n", label)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
@@ -136,7 +175,7 @@ func fetchGatewayAPICRDs(ctx context.Context, version string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
 	}
-	tmp, err := os.CreateTemp(dir, "gateway-api-crds-*.yaml.tmp")
+	tmp, err := os.CreateTemp(dir, cacheName+".*.tmp")
 	if err != nil {
 		return "", err
 	}
@@ -183,343 +222,25 @@ func kubectlApplyBytes(ctx context.Context, kctx string, yamlBytes []byte) error
 	return nil
 }
 
-// kubectlApplyFile runs `kubectl apply -f <path>`. kctx targets a
-// specific context when non-empty; "" uses the pinned context.
-func kubectlApplyFile(ctx context.Context, kctx, path string) error {
-	args := append(kubeContextArgs(kctx), "apply", "-f", path)
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("kubectl apply -f %s: %w", path, err)
-	}
-	return nil
-}
+// NOTE: the Gateway API controller (Envoy Gateway) is no longer installed
+// imperatively. Like cert-manager (below), it is a DECLARATIVE platform
+// dependency — a forge.HelmChart in the env Bundle's `helm_charts`, rendered
+// (`helm template --skip-crds`) with forge-supplied pinned standard-channel
+// Gateway API CRDs (crds="gateway-api") and the `eg` GatewayClass riding the
+// chart's `manifests`, applied CRD-first via `forge deploy <env>
+// --target=envoy-gateway` (helm-as-a-RENDERER, internal/cluster). The pinned
+// CRD bundle is still fetched here (fetchGatewayAPICRDs, reused by
+// deploy_helm.go's fetchHelmChartCRDs). The former imperative
+// installIngressBundle / helmInstallEnvoyGateway machinery — and the vendored
+// `eg` GatewayClass — were removed: dev/e2e now bring up ingress the SAME
+// declarative way the cloud envs do. ONE model everywhere.
 
-// waitForCRDs blocks until the named Gateway API CRDs report
-// Established=True, or times out. Run between CRD apply and
-// GatewayClass apply so the latter doesn't race the controller's
-// CRD reconciler. kctx targets a specific context when non-empty.
-func waitForCRDs(ctx context.Context, kctx string, crds []string, timeout time.Duration) error {
-	args := append(kubeContextArgs(kctx), "wait", "--for=condition=Established", "--timeout="+timeout.String())
-	for _, c := range crds {
-		args = append(args, "crd/"+c)
-	}
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-// traefikEntrypoint is one Gateway listener projected into the shape
-// the Traefik install template consumes. Name is the listener's KCL
-// name (e.g. "http", "grpc") — used as the entrypoint label and as
-// the containerPort/Service-port name. Traefik's kubernetesgateway
-// provider matches listeners to entrypoints by port number, not name;
-// the name is just a label for log diagnosis. Protocol is carried
-// alongside in case future Traefik versions key off it, but the
-// current entrypoint-arg shape doesn't use it.
-type traefikEntrypoint struct {
-	Name     string
-	Port     int
-	Protocol string
-}
-
-// collectTraefikEntrypoints renders the given env's KCL and projects
-// its Gateway listeners into the entrypoint shape the Traefik template
-// expects. Dedupes by port — a port can have only one entrypoint, so
-// the first listener (sorted by port, then gateway, then name) wins
-// on collisions.
-//
-// Gateways are sourced from the rendered `manifests` stream (every
-// `kind: Gateway` object), NOT the typed `entities.Gateways` echo.
-// That's deliberate: an env may render its Gateways as RAW manifests
-// (e.g. a multi-cluster env that stamps each Gateway with an owning-app
-// label to pin it to one cluster, leaving the bundle-level `gateways`
-// list empty) — those don't appear in the typed echo but DO appear in
-// the manifest stream. Reading the stream covers both shapes.
-//
-// env is the env being brought up (`forge cluster up` passes "dev"; the
-// declared-cluster path passes the active `forge up --env=<env>`). A
-// missing KCL dir or a render with no gateways returns (nil, nil): a
-// normal state for a project with features.ingress on but no routes yet
-// (Traefik installs with the default `ping` entrypoint; listeners are
-// added on a later re-run).
-func collectTraefikEntrypoints(ctx context.Context, projectDir, env string) ([]traefikEntrypoint, error) {
-	if projectDir == "" {
-		return nil, nil
-	}
-	if env == "" {
-		env = "dev"
-	}
-	envKCL := filepath.Join(projectDir, "deploy", "kcl", env)
-	if _, err := os.Stat(envKCL); err != nil {
-		return nil, nil //nolint:nilerr // missing env KCL is a normal first-scaffold state
-	}
-	rawJSON, err := renderKCLRaw(ctx, projectDir, env)
-	if err != nil {
-		return nil, err
-	}
-
-	type candidate struct {
-		gw    string
-		name  string
-		port  int
-		proto string
-	}
-	var raw []candidate
-	for _, gw := range gatewayListenersFromRender(rawJSON) {
-		for _, l := range gw.listeners {
-			raw = append(raw, candidate{gw: gw.name, name: l.name, port: l.port, proto: l.proto})
-		}
-	}
-	// Stable sort: port, then gateway, then listener. Deterministic
-	// output across re-runs and matches the k3d-ports generator's
-	// dedupe order so the two stays in lockstep.
-	sort.SliceStable(raw, func(i, j int) bool {
-		if raw[i].port != raw[j].port {
-			return raw[i].port < raw[j].port
-		}
-		if raw[i].gw != raw[j].gw {
-			return raw[i].gw < raw[j].gw
-		}
-		return raw[i].name < raw[j].name
-	})
-
-	seenPort := map[int]bool{}
-	seenName := map[string]bool{}
-	var out []traefikEntrypoint
-	for _, c := range raw {
-		if seenPort[c.port] {
-			continue
-		}
-		seenPort[c.port] = true
-		// Disambiguate name collisions across gateways. Two gateways
-		// may both name a listener `http`; Traefik requires
-		// entrypoint names to be unique. Suffix `-2`, `-3`, … on
-		// collision. Port-based ordering ensures the lowest port
-		// keeps the bare name.
-		name := c.name
-		for i := 2; seenName[name]; i++ {
-			name = fmt.Sprintf("%s-%d", c.name, i)
-		}
-		seenName[name] = true
-		out = append(out, traefikEntrypoint{Name: name, Port: c.port, Protocol: c.proto})
-	}
-	return out, nil
-}
-
-// renderGateway is one Gateway object recovered from the rendered
-// manifest stream — just the bits collectTraefikEntrypoints needs.
-type renderGateway struct {
-	name      string
-	listeners []renderGatewayListener
-}
-
-type renderGatewayListener struct {
-	name  string
-	port  int
-	proto string
-}
-
-// gatewayListenersFromRender extracts every Gateway's listeners from a
-// forge KCL render's JSON, from BOTH shapes a render can carry:
-//
-//   - the typed `gateways` ENTITY echo (`output.gateways[*]` or top-level
-//     `gateways[*]`), where each gateway is `{name, listeners:[{name,
-//     port, protocol}]}`. This is the bundle-level `gateways` field —
-//     what the dev `forge cluster up` path consumes.
-//   - the rendered `manifests` STREAM (`output.manifests[*]` or top-level
-//     `manifests[*]`), matching `kind: Gateway` in any
-//     gateway.networking.k8s.io apiVersion. This covers an env that
-//     renders its Gateways as RAW manifests (e.g. a multi-cluster env that
-//     stamps each with an owning-app label to pin it to one cluster,
-//     leaving the bundle-level `gateways` list empty) — those never appear
-//     in the typed echo but DO appear here.
-//
-// Reading both means the entrypoint collection works whether an env wires
-// its Gateway through the typed field or as a raw manifest. Best-effort:
-// malformed JSON or a render with no Gateways yields nil. A Gateway seen
-// in more than one shape (by name) is emitted once.
-func gatewayListenersFromRender(data []byte) []renderGateway {
-	if len(bytes.TrimSpace(data)) == 0 {
-		return nil
-	}
-	type listenerJSON struct {
-		Name     string `json:"name"`
-		Port     int    `json:"port"`
-		Protocol string `json:"protocol"`
-	}
-	// Typed entity echo: gateways[*].listeners[*].
-	type gatewayEntityJSON struct {
-		Name      string         `json:"name"`
-		Listeners []listenerJSON `json:"listeners"`
-	}
-	// Raw k8s manifest: kind Gateway, spec.listeners[*].
-	type gatewayManifestJSON struct {
-		APIVersion string `json:"apiVersion"`
-		Kind       string `json:"kind"`
-		Metadata   struct {
-			Name string `json:"name"`
-		} `json:"metadata"`
-		Spec struct {
-			Listeners []listenerJSON `json:"listeners"`
-		} `json:"spec"`
-	}
-	var doc struct {
-		Gateways  []gatewayEntityJSON `json:"gateways"`
-		Manifests []json.RawMessage   `json:"manifests"`
-		Output    struct {
-			Gateways  []gatewayEntityJSON `json:"gateways"`
-			Manifests []json.RawMessage   `json:"manifests"`
-		} `json:"output"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil
-	}
-
-	var out []renderGateway
-	seen := map[string]bool{} // dedupe a Gateway that appears in more than one shape
-
-	add := func(name string, listeners []listenerJSON) {
-		if seen[name] {
-			return
-		}
-		seen[name] = true
-		rg := renderGateway{name: name}
-		for _, l := range listeners {
-			rg.listeners = append(rg.listeners, renderGatewayListener{name: l.Name, port: l.Port, proto: l.Protocol})
-		}
-		out = append(out, rg)
-	}
-
-	// Typed entity echo first (the bundle-level `gateways` field).
-	for _, ge := range append(append([]gatewayEntityJSON{}, doc.Gateways...), doc.Output.Gateways...) {
-		add(ge.Name, ge.Listeners)
-	}
-	// Then the raw manifest stream (kind: Gateway).
-	for _, stream := range [][]json.RawMessage{doc.Manifests, doc.Output.Manifests} {
-		for _, rawM := range stream {
-			var g gatewayManifestJSON
-			if err := json.Unmarshal(rawM, &g); err != nil {
-				continue
-			}
-			if g.Kind != "Gateway" || !strings.HasPrefix(g.APIVersion, "gateway.networking.k8s.io") {
-				continue
-			}
-			add(g.Metadata.Name, g.Spec.Listeners)
-		}
-	}
-	return out
-}
-
-// renderTraefikInstall executes the vendored Traefik install template
-// against the given entrypoints and returns the rendered YAML bytes.
-// Empty entrypoints are valid — the bundle still installs (Traefik
-// runs with the default `ping` entrypoint) and the user can re-run
-// `forge cluster up` after adding listeners.
-func renderTraefikInstall(entrypoints []traefikEntrypoint) ([]byte, error) {
-	return templates.IngressTemplates().Render("traefik/traefik.yaml.tmpl", struct {
-		Entrypoints []traefikEntrypoint
-	}{Entrypoints: entrypoints})
-}
-
-// installIngressBundle is the post-cluster-up wiring entrypoint.
-// Called from runDevClusterUp when features.ingress is on.
-//
-// Order matters:
-//  1. Apply Gateway API CRDs (fetched if not cached).
-//  2. Wait for CRDs Established.
-//  3. Render the Traefik install with one entrypoint per dev Gateway
-//     listener and apply it.
-//  4. Apply the `traefik` GatewayClass (depends on CRDs being live).
-//
-// projectDir is used to evaluate the dev env's KCL gateways for step
-// 3 — same data the k3d-ports generator uses. Adding or removing a
-// listener requires re-running `forge cluster up` to install the
-// new entrypoints (idempotent — re-applying the rendered Deployment
-// restarts the pod with the new args).
-//
-// Failure anywhere short-circuits — the cluster is up but ingress
-// isn't, so subsequent `forge deploy dev` will fail apply on the
-// project's Gateway resources. The error message is what the user
-// acts on; we don't try to clean up the partial install.
-// kctx pins the kubectl context the install targets. "" means "use the
-// caller-pinned current context" (the dev `forge cluster up` path, which
-// pins via pinKubectlContext first). The declared-cluster path passes an
-// explicit `k3d-<name>` so the install lands on THAT cluster regardless
-// of the active context. env is the env whose Gateway listeners drive
-// the Traefik entrypoints (collectTraefikEntrypoints).
-func installIngressBundle(ctx context.Context, kctx, projectDir, env string) error {
-	_, gatewayAPIVer, err := ingressPinnedVersions()
-	if err != nil {
-		return err
-	}
-
-	crdPath, err := fetchGatewayAPICRDs(ctx, gatewayAPIVer)
-	if err != nil {
-		return err
-	}
-	fmt.Println("Applying Gateway API CRDs...")
-	if err := kubectlApplyFile(ctx, kctx, crdPath); err != nil {
-		return err
-	}
-
-	// The names below are the Gateway API standard-channel CRDs we
-	// actually consume. We skip ReferenceGrant + the experimental-
-	// channel TCPRoute/TLSRoute/UDPRoute because forge doesn't render
-	// them in v1; including them in the wait list would only delay
-	// happy-path cluster-up if upstream renames or splits them.
-	fmt.Println("Waiting for Gateway API CRDs to be Established...")
-	if err := waitForCRDs(ctx, kctx, []string{
-		"gatewayclasses.gateway.networking.k8s.io",
-		"gateways.gateway.networking.k8s.io",
-		"httproutes.gateway.networking.k8s.io",
-		"grpcroutes.gateway.networking.k8s.io",
-	}, 60*time.Second); err != nil {
-		return fmt.Errorf("wait for Gateway API CRDs: %w", err)
-	}
-
-	entrypoints, err := collectTraefikEntrypoints(ctx, projectDir, env)
-	if err != nil {
-		// Intentional soft warning: KCL render failures here are
-		// non-fatal — the project may not have this env's KCL yet, or kcl
-		// may not be installed locally. Install the bundle with no
-		// extra entrypoints and let the user re-run once their KCL is
-		// ready. There's no --strict equivalent because the install is a
-		// developer-loop helper, not a CI gate.
-		fmt.Fprintf(os.Stderr, "Warning: could not evaluate %s gateways for Traefik entrypoints; installing without listener-derived entrypoints: %v\n", env, err)
-		entrypoints = nil
-	}
-	if len(entrypoints) > 0 {
-		labels := make([]string, len(entrypoints))
-		for i, e := range entrypoints {
-			labels[i] = fmt.Sprintf("%s:%d", e.Name, e.Port)
-		}
-		fmt.Printf("Installing Traefik controller (traefik-system namespace) with entrypoints: %s\n", strings.Join(labels, ", "))
-	} else {
-		fmt.Println("Installing Traefik controller (traefik-system namespace)...")
-	}
-	traefikYAML, err := renderTraefikInstall(entrypoints)
-	if err != nil {
-		return fmt.Errorf("render vendored Traefik install: %w", err)
-	}
-	if err := kubectlApplyBytes(ctx, kctx, traefikYAML); err != nil {
-		return err
-	}
-
-	gcYAML, err := templates.IngressTemplates().Get("traefik/gatewayclass.yaml")
-	if err != nil {
-		return fmt.Errorf("load vendored GatewayClass: %w", err)
-	}
-	fmt.Println("Applying traefik GatewayClass...")
-	if err := kubectlApplyBytes(ctx, kctx, gcYAML); err != nil {
-		return err
-	}
-
-	fmt.Println("Ingress install complete.")
-	return nil
-}
+// NOTE: cert-manager is no longer installed imperatively here. It is a
+// declarative platform dependency — a forge.HelmChart in the env Bundle,
+// rendered (`helm template --skip-crds`) and applied via `forge deploy
+// <env> --target=cert-manager` (helm-as-a-RENDERER, internal/cluster).
+// The former `helm upgrade --install` cert-manager machinery (chart
+// coordinates, repo-add, install fn) was removed with `forge cluster-setup`.
 
 // k3dConfigPath holds the path to the (possibly merged) k3d config
 // passed to `k3d cluster create`. Callers that don't need the merge
@@ -682,4 +403,116 @@ func k3dPortHost(entry any) (int, bool) {
 		return 0, false
 	}
 	return host, true
+}
+
+// runningClusterHostPorts returns the SET of host ports the LIVE k3d
+// cluster publishes on its serverlb (loadbalancer) container. k3d maps
+// the config's ports[] onto the serverlb container at create time; those
+// published ports ARE the host-port surface, and they are FIXED for the
+// life of the cluster (k3d can't add a port map to a running cluster). So
+// this is the authoritative "what the running cluster actually maps".
+//
+// The serverlb container is named `k3d-<cluster>-serverlb`. We read its
+// published host ports via `docker port`, which prints lines like
+//
+//	28080/tcp -> 0.0.0.0:28080
+//
+// The host side (after the last colon) is the mapped host port. A cluster
+// with no serverlb (e.g. --no-lb) yields an empty set, which the drift
+// check treats as "can't verify" rather than "everything is missing".
+var runningClusterHostPortsFn = runningClusterHostPorts
+
+func runningClusterHostPorts(ctx context.Context, clusterName string) (map[int]bool, error) {
+	container := "k3d-" + clusterName + "-serverlb"
+	out, err := exec.CommandContext(ctx, "docker", "port", container).Output()
+	if err != nil {
+		// No serverlb / docker hiccup — return empty so the caller skips
+		// the drift check rather than falsely flagging every port missing.
+		return map[int]bool{}, nil
+	}
+	ports := map[int]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// "<cluster>/tcp -> 0.0.0.0:<host>" — take the field after the
+		// last colon as the host port.
+		idx := strings.LastIndex(line, ":")
+		if idx < 0 {
+			continue
+		}
+		if host, err := strconv.Atoi(strings.TrimSpace(line[idx+1:])); err == nil {
+			ports[host] = true
+		}
+	}
+	return ports, nil
+}
+
+// clusterPortDrift compares the host ports the env's RENDERED Gateway
+// listeners REQUIRE (required) against the host ports the LIVE cluster
+// actually publishes, and returns the required ports the running cluster is
+// MISSING (sorted ascending). An empty result means the live cluster maps
+// every listener the env needs — no drift.
+//
+// `required` is DERIVED from the SAME render `forge up` deploys (the env's
+// Gateway listeners — see renderedGatewayHostPorts), NOT from the static
+// deploy/k3d.yaml port block. That's the single-source-of-truth contract:
+// drift is "a listener this env renders has no host port on the running
+// cluster", nothing more. It deliberately does NOT flag the pre-mapped
+// parallel-worktree blocks a project may declare statically for FUTURE
+// stacks — those aren't routes THIS bring-up needs, so missing them is not
+// a reason to force a recreate.
+//
+// This catches the failure the derivation alone can't: k3d fixes port maps
+// at create time, so a Gateway listener ADDED after the cluster exists
+// (e.g. the dev controller listener) renders a host port the running
+// cluster never mapped — the route is silently unreachable. The caller
+// turns a non-empty result into a clear "recreate the cluster" error.
+func clusterPortDrift(ctx context.Context, clusterName string, required map[int]bool) ([]int, error) {
+	if len(required) == 0 {
+		return nil, nil
+	}
+	running, err := runningClusterHostPortsFn(ctx, clusterName)
+	if err != nil {
+		return nil, err
+	}
+	// Empty running set = couldn't read the serverlb; don't flag drift on
+	// no evidence (avoids a spurious "recreate" on a transient docker error).
+	if len(running) == 0 {
+		return nil, nil
+	}
+	var missing []int
+	for p := range required {
+		if !running[p] {
+			missing = append(missing, p)
+		}
+	}
+	sort.Ints(missing)
+	return missing, nil
+}
+
+// renderedGatewayHostPorts returns the host-port set the env's RENDERED
+// Gateway listeners require — the EXACT listeners `forge up`/`forge deploy`
+// produce (transform-added listeners like the dev `controller` included).
+// This is the single source of truth the drift check reasons about. A
+// render failure or an env with no gateways yields an empty set (the caller
+// treats that as "nothing to verify").
+func renderedGatewayHostPorts(ctx context.Context, projectDir, env string) (map[int]bool, error) {
+	entities, err := RenderKCL(ctx, projectDir, env)
+	if err != nil {
+		return nil, err
+	}
+	ports := map[int]bool{}
+	if entities == nil {
+		return ports, nil
+	}
+	for _, gw := range entities.Gateways {
+		for _, l := range gw.Listeners {
+			if l.Port > 0 {
+				ports[l.Port] = true
+			}
+		}
+	}
+	return ports, nil
 }

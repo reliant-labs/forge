@@ -6,7 +6,7 @@
 // The behavioural surface is split into two narrow Services:
 //
 //   - Service       — the file-emission orchestrator (every file the
-//                     scaffolder writes into the user project).
+//     scaffolder writes into the user project).
 //   - ConfigService — read / write / mutate forge.yaml on disk.
 //
 // Data carriers (FileChecksums, Harness, ProjectGenerator,

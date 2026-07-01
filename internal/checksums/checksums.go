@@ -34,7 +34,7 @@
 // ── What little persistent state remains under .forge/ ───────────────
 //
 //   - .forge/disowned.json — the one-way ownership door. Path + reason
-//     + timestamp per `forge disown`. Generate skips these paths while
+//   - timestamp per `forge disown`. Generate skips these paths while
 //     the file exists; deleting the file re-adopts it. Committed.
 //   - .forge/hashes.json — the scoped fallback for the few Tier-1
 //     output formats that cannot carry comments (JSON). path → body

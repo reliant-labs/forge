@@ -11,8 +11,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/reliant-labs/forge/pkg/auth"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/reliant-labs/forge/pkg/auth"
 )
 
 // fakeSink is a test AuditSink that records every event it receives.

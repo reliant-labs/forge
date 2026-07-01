@@ -1,5 +1,6 @@
 // Fixture mirroring the cpnext duplication this lint targets.
 // DO NOT auto-format / clean up — the shape IS the test.
+//
 //nolint:all
 package billing
 
@@ -13,10 +14,10 @@ import (
 // Local sentinels stand in for internal/svcerr.Err* — the real
 // duplication shape didn't import svcerr from forge/pkg either.
 var (
-	ErrNotFound          = errors.New("not found")
-	ErrAlreadyExists     = errors.New("already exists")
-	ErrPermissionDenied  = errors.New("permission denied")
-	ErrInvalidArgument   = errors.New("invalid argument")
+	ErrNotFound         = errors.New("not found")
+	ErrAlreadyExists    = errors.New("already exists")
+	ErrPermissionDenied = errors.New("permission denied")
+	ErrInvalidArgument  = errors.New("invalid argument")
 )
 
 // Sentinel name AND body shape: this is the canonical duplication.

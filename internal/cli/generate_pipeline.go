@@ -445,16 +445,16 @@ func generateSteps() []GenStep {
 // unrelated files per call.
 var stepPresetAllowlist = map[string]map[string]bool{
 	"bootstrap-only": {
-		"load project config":                    true,
-		"load checksums":                         true,
-		"check Tier-1 file-stomp guard":          true,
-		"snapshot Tier-1 exports":                true,
-		"sync forge/pkg dev replace":             true,
-		"announce project":                       true,
-		"detect proto directories":               true,
-		"ensure gen/go.mod":                      true,
-		"parse services + module path":           true,
-		"internal/app composition (hybrid DI)":   true,
+		"load project config":                  true,
+		"load checksums":                       true,
+		"check Tier-1 file-stomp guard":        true,
+		"snapshot Tier-1 exports":              true,
+		"sync forge/pkg dev replace":           true,
+		"announce project":                     true,
+		"detect proto directories":             true,
+		"ensure gen/go.mod":                    true,
+		"parse services + module path":         true,
+		"internal/app composition (hybrid DI)": true,
 		// cmd-group anchors moved out of the composition step into their own
 		// step (so a flat→nested migration anchors them AFTER infra creates
 		// serve.go). `forge add worker` runs on an already-nested project
@@ -463,17 +463,17 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		// preset previously got for free from the composition step.
 		"cmd command groups (services/workers/operators)": true,
 		"go mod tidy (pre-wiring)":                        true,
-		"cmd/commands.go (user extension point)": true,
-		"pkg/app/testing.go":                     true,
-		"pkg/app/migrate.go":                     true,
-		"go mod tidy (gen/)":                     true,
-		"go mod tidy (root)":                     true,
-		"goimports on generated Go":              true,
-		"rehash tracked files":                   true,
-		"post-gen validation":                    true,
-		"detect renamed Tier-1 exports":          true,
-		"check disowned-sibling dangling refs":   true,
-		"go build (validate generated code)":     true,
+		"cmd/commands.go (user extension point)":          true,
+		"pkg/app/testing.go":                              true,
+		"pkg/app/migrate.go":                              true,
+		"go mod tidy (gen/)":                              true,
+		"go mod tidy (root)":                              true,
+		"goimports on generated Go":                       true,
+		"rehash tracked files":                            true,
+		"post-gen validation":                             true,
+		"detect renamed Tier-1 exports":                   true,
+		"check disowned-sibling dangling refs":            true,
+		"go build (validate generated code)":              true,
 	},
 	// The "mocks" step preset covers the fast-path "I just edited
 	// contract.go, regenerate mock_gen.go" workflow. Mocks live behind a
@@ -598,8 +598,8 @@ var templatesOnlyStepAllow = map[string]bool{
 	// exists, which infra regen provides.
 	"cmd command groups (services/workers/operators)": true,
 	"per-env deploy config":                           true,
-	"Grafana dashboards":                     true,
-	"frontend mocks + transport":             true,
+	"Grafana dashboards":                              true,
+	"frontend mocks + transport":                      true,
 }
 
 // knownStepPresetNames returns a comma-joined string of every

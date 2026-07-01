@@ -396,7 +396,6 @@ type Service interface { Do() error }
 	}
 }
 
-
 // TestInternalContracts_StrategyDirectiveSkipped verifies the
 // `//forge:strategy` directive opts a strategy-registry package out of
 // the canonical Service/Deps/New enforcement.

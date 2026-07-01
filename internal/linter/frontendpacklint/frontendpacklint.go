@@ -31,8 +31,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/linter/finding"
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
 // Severity and Finding now live in the shared internal/linter/finding

@@ -52,4 +52,3 @@ var MigrationsFS embed.FS
 
 	return nil
 }
-

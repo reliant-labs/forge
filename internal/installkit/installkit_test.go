@@ -73,13 +73,13 @@ func TestValidSlug(t *testing.T) {
 func TestIsProtoFile(t *testing.T) {
 	t.Parallel()
 	cases := map[string]bool{
-		"proto/audit/v1/audit.proto":         true,
-		"audit.proto":                        true,
-		"pkg/middleware/auth/handler.go":     false,
-		"proto/audit/v1/audit.proto.tmpl":    false, // .tmpl suffix wins
-		"frontends/web/pages/page.tsx":       false,
-		"":                                   false,
-		"db/migrations/00001_init.up.sql":    false,
+		"proto/audit/v1/audit.proto":      true,
+		"audit.proto":                     true,
+		"pkg/middleware/auth/handler.go":  false,
+		"proto/audit/v1/audit.proto.tmpl": false, // .tmpl suffix wins
+		"frontends/web/pages/page.tsx":    false,
+		"":                                false,
+		"db/migrations/00001_init.up.sql": false,
 	}
 	for in, want := range cases {
 		in := in
@@ -131,12 +131,12 @@ func TestRenderAndWriteOverwritePolicies(t *testing.T) {
 	}
 
 	cases := []struct {
-		name       string
-		policy     OverwritePolicy
-		preExist   bool
-		wantWrote  bool
-		wantSkip   bool
-		wantBody   string
+		name      string
+		policy    OverwritePolicy
+		preExist  bool
+		wantWrote bool
+		wantSkip  bool
+		wantBody  string
 	}{
 		{"always_no_existing_writes", Always, false, true, false, "hello world\n"},
 		{"always_overwrites_existing", Always, true, true, false, "hello world\n"},

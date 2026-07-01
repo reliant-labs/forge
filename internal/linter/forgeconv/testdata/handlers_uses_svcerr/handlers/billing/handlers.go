@@ -1,5 +1,6 @@
 // Fixture: importing forge/pkg/svcerr suppresses the rule for this
 // file. Migration in flight should not trip the warning.
+//
 //nolint:all
 package billing
 

@@ -70,7 +70,6 @@ func requireNoComponentNamed(cfg *config.ProjectConfig, name, ctxLabel string) e
 	return nil
 }
 
-
 func newCmd(f *factory.Factory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",

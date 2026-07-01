@@ -512,9 +512,9 @@ var (
 	// reRPC matches `rpc MethodName(` at the start of an RPC declaration.
 	// The remainder (request/response/options block) is handled by the
 	// brace/annotation scanner so multi-line RPC bodies are supported.
-	reRPC      = regexp.MustCompile(`^\s*rpc\s+(\w+)\s*\(`)
-	reMethodOpt = regexp.MustCompile(`\(forge\.v1\.method\)`)
-	rePKTrue    = regexp.MustCompile(`\bpk\s*:\s*true\b`)
+	reRPC            = regexp.MustCompile(`^\s*rpc\s+(\w+)\s*\(`)
+	reMethodOpt      = regexp.MustCompile(`\(forge\.v1\.method\)`)
+	rePKTrue         = regexp.MustCompile(`\bpk\s*:\s*true\b`)
 	reTenantTrue     = regexp.MustCompile(`\btenant\s*:\s*true\b`)
 	reTimestampTrue  = regexp.MustCompile(`\btimestamp\s*:\s*true\b`)
 	reTimestampsTrue = regexp.MustCompile(`\btimestamps\s*:\s*true\b`)
@@ -564,8 +564,8 @@ func parseProtoFile(path, content string) parsedProto {
 		// multiple lines (`rpc X(..) returns (..) { option (...) = {..}; }`).
 		// We keep accumulating annotation presence until the RPC body
 		// closes (or, for single-line `rpc X(..) returns (..);`, immediately).
-		pendingRPC       *protoMethod
-		rpcBodyDepth     int
+		pendingRPC   *protoMethod
+		rpcBodyDepth int
 		// pendingField holds a field-in-progress when the field's annotation
 		// (the [...] part) spans multiple lines.
 		pendingField        *protoField

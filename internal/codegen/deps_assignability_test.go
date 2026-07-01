@@ -341,7 +341,6 @@ type App struct {
 	}
 }
 
-
 // TestMatchedAppField_UnavailableWiresNameMatch pins Matcher A's side
 // of the deterministic fail-loud policy: when assignability is
 // unprovable (here: no loadable pkg/app at all), a name match WIRES so

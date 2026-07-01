@@ -41,8 +41,8 @@ var _ execer = orm.Context(nil)
 // scalars (string/number/bool/null) and passed as bind parameters, so the
 // database driver does the type coercion against the real column types.
 type Fixture struct {
-	Name        string                       `json:"name"`
-	Description string                       `json:"description"`
+	Name        string                      `json:"name"`
+	Description string                      `json:"description"`
 	Tables      map[string][]map[string]any `json:"tables"`
 }
 

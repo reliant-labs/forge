@@ -21,6 +21,7 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/frontendpacklint"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 	"github.com/reliant-labs/forge/internal/linter/scaffolds"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // lintFlags holds the flag values for the lint command.
@@ -137,13 +138,9 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 	// When a specific flag is set, run only that linter (preserving current behavior).
 	if flags.suggestExcludes {
-		store, err := loadProjectStore()
-		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
-			return fmt.Errorf("failed to load project config: %w", err)
-		}
-		var cfg *config.ProjectConfig
-		if store != nil {
-			cfg = store.Config()
+		_, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
 		}
 		return runSuggestExcludes(cfg)
 	}
@@ -151,13 +148,9 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		return runSuggestBufExcepts(ctx)
 	}
 	if flags.contract {
-		store, err := loadProjectStore()
-		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
-			return fmt.Errorf("failed to load project config: %w", err)
-		}
-		var cfg *config.ProjectConfig
-		if store != nil {
-			cfg = store.Config()
+		store, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
 		}
 		if store != nil && !store.Features().ContractsEnabled() {
 			fmt.Println("contracts feature is disabled in forge.yaml")
@@ -166,24 +159,16 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
 	}
 	if flags.exportedVars {
-		store, err := loadProjectStore()
-		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
-			return fmt.Errorf("failed to load project config: %w", err)
-		}
-		var cfg *config.ProjectConfig
-		if store != nil {
-			cfg = store.Config()
+		_, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
 		}
 		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
 	}
 	if flags.migrationSafety {
-		store, err := loadProjectStore()
-		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
-			return fmt.Errorf("failed to load project config: %w", err)
-		}
-		var cfg *config.ProjectConfig
-		if store != nil {
-			cfg = store.Config()
+		store, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
 		}
 		if store != nil && !store.Features().MigrationsEnabled() {
 			fmt.Println("migrations feature is disabled in forge.yaml")
@@ -210,55 +195,59 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		return runBannersLint()
 	}
 	if flags.wireCoverage {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getwd: %w", err)
-		}
-		return runWireCoverageLint(cwd)
+		return runWithCwd(runWireCoverageLint)
 	}
 	if flags.bootstrapCoverage {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getwd: %w", err)
-		}
-		return runBootstrapDepsCoverageLint(cwd)
+		return runWithCwd(runBootstrapDepsCoverageLint)
 	}
 	if flags.checkWorkarounds {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getwd: %w", err)
-		}
-		return runCheckWorkaroundsLint(cwd)
+		return runWithCwd(runCheckWorkaroundsLint)
 	}
 	if flags.optionalDepsGuard {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getwd: %w", err)
-		}
-		return runOptionalDepsGuardLint(cwd)
+		return runWithCwd(runOptionalDepsGuardLint)
 	}
 	if flags.configDeps {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getwd: %w", err)
-		}
-		return runConfigDepsLint(cwd)
+		return runWithCwd(runConfigDepsLint)
 	}
 
 	// Load project config for lint defaults. A missing config file is fine
 	// (we fall back to defaults), but a parse/read error should fail hard so
 	// users don't silently lint with the wrong configuration.
+	_, cfg, err := loadLintConfig()
+	if err != nil {
+		return err
+	}
+
+	// No flags set — run ALL linters, each skipping gracefully if tool not available.
+	return runAllLinters(ctx, flags.fix, flags.strict, paths, cfg)
+}
+
+// loadLintConfig loads the project store and its config for the lint
+// command. A missing forge.yaml is fine (returns a nil store and nil cfg);
+// a parse/read error fails hard with the shared "failed to load project
+// config" message so users don't silently lint with the wrong
+// configuration. Callers that only need the config discard the store.
+func loadLintConfig() (*projectstore.Store, *config.ProjectConfig, error) {
 	store, err := loadProjectStore()
 	if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
-		return fmt.Errorf("failed to load project config: %w", err)
+		return nil, nil, fmt.Errorf("failed to load project config: %w", err)
 	}
 	var cfg *config.ProjectConfig
 	if store != nil {
 		cfg = store.Config()
 	}
+	return store, cfg, nil
+}
 
-	// No flags set — run ALL linters, each skipping gracefully if tool not available.
-	return runAllLinters(ctx, flags.fix, flags.strict, paths, cfg)
+// runWithCwd resolves the current working directory (failing with the shared
+// "getwd" error) and invokes run with it. Factors out the getwd boilerplate
+// the cwd-rooted targeted linters all share.
+func runWithCwd(run func(cwd string) error) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getwd: %w", err)
+	}
+	return run(cwd)
 }
 
 // contractExcludesFromConfig returns the contracts.exclude list from the

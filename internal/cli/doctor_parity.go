@@ -736,24 +736,24 @@ func extractKCLEnvVars(entities *KCLEntities, serviceName string) (hostKCL, clus
 // The check/warning marks are ASCII (no emoji) to keep terminal
 // width predictable and copy-paste friendly.
 func printParityReport(w io.Writer, report parityReport) {
-	fmt.Fprintf(w, "\nforge doctor parity - service %q, env %q\n\n", report.Service, report.Env)
+	_, _ = fmt.Fprintf(w, "\nforge doctor parity - service %q, env %q\n\n", report.Service, report.Env)
 
 	if len(report.Divergences) == 0 {
-		fmt.Fprintf(w, "  OK: both modes agree on %d keys.\n\n", len(report.Agree))
+		_, _ = fmt.Fprintf(w, "  OK: both modes agree on %d keys.\n\n", len(report.Agree))
 		return
 	}
-	fmt.Fprintf(w, "  Both modes agree on %d keys.\n\n", len(report.Agree))
+	_, _ = fmt.Fprintf(w, "  Both modes agree on %d keys.\n\n", len(report.Agree))
 
 	bug := report.bugDivergences()
 	expected := len(report.Divergences) - len(bug)
 	if len(bug) > 0 {
-		fmt.Fprintf(w, "  %d bug-class divergence(s):\n\n", len(bug))
+		_, _ = fmt.Fprintf(w, "  %d bug-class divergence(s):\n\n", len(bug))
 	}
 	for _, d := range bug {
 		printDivergenceRow(w, d)
 	}
 	if expected > 0 {
-		fmt.Fprintf(w, "  %d expected (secret-channel) divergence(s):\n\n", expected)
+		_, _ = fmt.Fprintf(w, "  %d expected (secret-channel) divergence(s):\n\n", expected)
 		for _, d := range report.Divergences {
 			if d.Kind != paritySecretChannelDiverg {
 				continue
@@ -762,18 +762,18 @@ func printParityReport(w io.Writer, report parityReport) {
 		}
 	}
 
-	fmt.Fprintln(w, "Fix:")
+	_, _ = fmt.Fprintln(w, "Fix:")
 	for _, d := range report.Divergences {
-		fmt.Fprintf(w, "  - %s: %s\n", d.Key.Name, d.Fix)
+		_, _ = fmt.Fprintf(w, "  - %s: %s\n", d.Key.Name, d.Fix)
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 }
 
 // printDivergenceRow renders a single divergence under the report.
 func printDivergenceRow(w io.Writer, d parityDivergence) {
-	fmt.Fprintf(w, "  %s\n", d.Key.Name)
-	fmt.Fprintf(w, "    host:    %s    (source: %s)\n", displayValue(d.Key.Host), d.Key.Host.SourceLabel)
-	fmt.Fprintf(w, "    cluster: %s    (source: %s)\n\n", displayValue(d.Key.Cluster), d.Key.Cluster.SourceLabel)
+	_, _ = fmt.Fprintf(w, "  %s\n", d.Key.Name)
+	_, _ = fmt.Fprintf(w, "    host:    %s    (source: %s)\n", displayValue(d.Key.Host), d.Key.Host.SourceLabel)
+	_, _ = fmt.Fprintf(w, "    cluster: %s    (source: %s)\n\n", displayValue(d.Key.Cluster), d.Key.Cluster.SourceLabel)
 }
 
 // displayValue picks the right surface-form for a parityValue in the

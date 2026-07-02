@@ -36,6 +36,11 @@
 // HostDeploy and BuildOnly aren't providers — `forge run` / `forge up`
 // own the host story, and BuildOnly is consumed by `forge build`.
 // The dispatcher skips both rather than routing them through a Provider.
+//
+// forge:exclude-contract
+// deploytarget is an outbound deploy-dispatch adapter (per-service deploy
+// providers: k8s cluster / external / compose), not a contract-shaped service.
+// Opt out of the require-contract rule.
 package deploytarget
 
 import (
@@ -421,9 +426,9 @@ func groupTarget(g ServiceGroup) string {
 // flags). Truncates with an ellipsis after 60 chars — enough to see
 // the CLI binary and the first flag, which is what users grep for.
 func truncForSummary(s string) string {
-	const max = 60
-	if len(s) <= max {
+	const maxLen = 60
+	if len(s) <= maxLen {
 		return s
 	}
-	return s[:max] + "…"
+	return s[:maxLen] + "…"
 }

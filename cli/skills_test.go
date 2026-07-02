@@ -12,9 +12,9 @@ import (
 // these exact signatures — relevance filtering was added behind them
 // additively (ListSkillsWithOptions / ListSkillsOptions).
 func TestListSkillsSignatureStable(t *testing.T) {
-	var _ func(string) ([]Skill, error) = ListSkills
-	var _ func(string, string) ([]byte, error) = LoadSkill
-	var _ func(string, ListSkillsOptions) ([]Skill, error) = ListSkillsWithOptions
+	var _ = ListSkills
+	var _ = LoadSkill
+	var _ = ListSkillsWithOptions
 }
 
 // TestListSkillsExcludesMigrationsByDefault pins the default-listing

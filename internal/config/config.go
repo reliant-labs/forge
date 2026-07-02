@@ -7,6 +7,20 @@
 // max-public-structs revive rule is therefore suppressed at the
 // package-doc line below.
 
+// forge:exclude-contract
+//
+// internal/config is a pure schema/data/constants package: it declares the
+// canonical forge.yaml types plus package-level lookup tables (e.g.
+// ExperimentalFeatureNames — the stable display order shared by `forge audit`,
+// the startup warning, and `forge features`). It has no Service seam and no
+// contract.go, so it is not a contract-shaped package. The directive opts it
+// out of the contract lint rules — specifically the exported-vars rule, which
+// would otherwise demand ExperimentalFeatureNames become a getter. A getter is
+// the ideal fix but its call sites reach into internal/cli (an ordered slice
+// spread as `config.ExperimentalFeatureNames...`); converting it there is a
+// cross-package change outside this pass. This is the accepted suppression for
+// a genuine data/catalogue package.
+//
 //nolint:revive // max-public-structs: see package doc above.
 package config
 

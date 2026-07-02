@@ -47,10 +47,11 @@ func WriteGeneratedFileTier1(root, relPath string, content []byte, cs *FileCheck
 	return checksums.WriteGeneratedFileTier1(root, relPath, content, cs, force)
 }
 
-// WriteGeneratedFileTier2 writes a Tier-2 (scaffold-once, user-owned)
-// file. See checksums.WriteGeneratedFileTier2.
-func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
-	return checksums.WriteGeneratedFileTier2(root, relPath, content, cs, force)
+// WriteScaffoldIfMissing writes a scaffold ("yours", user-owned) file
+// only when it does not already exist; once on disk forge never
+// overwrites it. See checksums.WriteScaffoldIfMissing.
+func WriteScaffoldIfMissing(root, relPath string, content []byte) (bool, error) {
+	return checksums.WriteScaffoldIfMissing(root, relPath, content)
 }
 
 // Tier1DriftEntry is re-exported as a type alias from internal/checksums.

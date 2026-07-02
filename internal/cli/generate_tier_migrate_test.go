@@ -138,7 +138,9 @@ func TestTier2ManagedPathsContents(t *testing.T) {
 		"internal/cli/version.go",
 		"buf.yaml",
 		"deploy/alloy-config.alloy",
-		// Re-rendered by the generate-time CI step when enabled.
+		// Write-once scaffolds ("yours"): the CI step emits them via
+		// WriteScaffoldIfMissing with NO forge:hash marker, so they are
+		// neither Tier-1 nor Tier-2-managed — never drift-flagged.
 		".github/workflows/e2e.yml",
 		".github/dependabot.yml",
 		".github/workflows/ci.yml",
@@ -149,16 +151,11 @@ func TestTier2ManagedPathsContents(t *testing.T) {
 	}
 }
 
-// TestEmitTier2OnceIfMissing_DisownedSurvivesResetTier2: disown is
-// stickier than every overwrite path. A disowned page.tsx (full user
-// rewrite) must survive even an approving `--reset-tier2` hook — the
-// user said "stop touching this file" permanently, and re-adoption is
-// by deletion only. (--force never reaches Tier-2 scaffolds at all:
-// it is scoped to the Tier-1 files the stomp guard flagged.)
-func TestEmitTier2OnceIfMissing_DisownedSurvivesResetTier2(t *testing.T) {
-	checksums.ResetTier2State()
-	t.Cleanup(checksums.ResetTier2State)
-
+// TestEmitScaffoldOnceIfMissing_ExistingFileNeverTouched: a scaffold
+// page that already exists on disk is preserved verbatim on every run —
+// there is one scaffold tier now, and forge never overwrites an existing
+// file (no flag). Refresh is delete-then-regenerate.
+func TestEmitScaffoldOnceIfMissing_ExistingFileNeverTouched(t *testing.T) {
 	dir := t.TempDir()
 	rel := "frontends/web/src/app/page.tsx"
 	full := filepath.Join(dir, rel)
@@ -170,36 +167,29 @@ func TestEmitTier2OnceIfMissing_DisownedSurvivesResetTier2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cs := &generator.FileChecksums{Disowned: map[string]checksums.DisownedEntry{
-		rel: {Reason: "test", DisownedAt: "2026-06-01T00:00:00Z"},
-	}}
-
-	// Even an unconditionally-approving --reset-tier2 hook must not
-	// touch a disowned file.
-	checksums.Tier2OverwriteFn = func(string) bool { return true }
-	if err := emitTier2OnceIfMissing(dir, rel, "nextjs/src/app/page.tsx.tmpl",
-		templates.FrontendTemplateData{FrontendName: "web", ProjectName: "demo"}, cs); err != nil {
-		t.Fatalf("emitTier2OnceIfMissing: %v", err)
+	if err := emitScaffoldOnceIfMissing(dir, rel, "nextjs/src/app/page.tsx.tmpl",
+		templates.FrontendTemplateData{FrontendName: "web", ProjectName: "demo"}); err != nil {
+		t.Fatalf("emitScaffoldOnceIfMissing: %v", err)
 	}
-
 	got, err := os.ReadFile(full)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(got) != userContent {
-		t.Errorf("disowned Tier-2 file was clobbered under --reset-tier2:\n%s", got)
+		t.Errorf("existing scaffold file was clobbered:\n%s", got)
 	}
 
-	// Sanity: a NON-disowned existing file IS re-scaffolded once the
-	// --reset-tier2 hook approves.
-	delete(cs.Disowned, rel)
-	if err := emitTier2OnceIfMissing(dir, rel, "nextjs/src/app/page.tsx.tmpl",
-		templates.FrontendTemplateData{FrontendName: "web", ProjectName: "demo"}, cs); err != nil {
-		t.Fatalf("emitTier2OnceIfMissing (non-disowned): %v", err)
+	// Delete-then-regenerate refreshes it from the template.
+	if err := os.Remove(full); err != nil {
+		t.Fatal(err)
+	}
+	if err := emitScaffoldOnceIfMissing(dir, rel, "nextjs/src/app/page.tsx.tmpl",
+		templates.FrontendTemplateData{FrontendName: "web", ProjectName: "demo"}); err != nil {
+		t.Fatalf("emitScaffoldOnceIfMissing (after delete): %v", err)
 	}
 	got, _ = os.ReadFile(full)
 	if string(got) == userContent {
-		t.Error("non-disowned Tier-2 file should be re-scaffolded under an approving --reset-tier2 hook")
+		t.Error("deleted scaffold should be re-rendered from the template")
 	}
 }
 

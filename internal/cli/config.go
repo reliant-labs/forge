@@ -57,12 +57,13 @@ func loadProjectConfig() (*config.ProjectConfig, error) {
 	return loadProjectConfigFrom(path)
 }
 
-// loadProjectStore reads forge.yaml (walking up from cwd) and returns a
-// projectstore.ProjectStore — the single read+mutate surface consumers
+// loadProjectStore reads forge.yaml (walking up from cwd) and returns the
+// concrete *projectstore.Store — the single read+mutate surface consumers
 // route through. It is the store-returning sibling of loadProjectConfig;
 // new code should prefer it so nothing outside the store impl holds a
-// *config.ProjectConfig.
-func loadProjectStore() (projectstore.ProjectStore, error) {
+// *config.ProjectConfig. Consumers that take the store as a dependency
+// depend on their own narrow interface, not on *Store's full method set.
+func loadProjectStore() (*projectstore.Store, error) {
 	cfg, err := loadProjectConfig()
 	if err != nil {
 		return nil, err
@@ -71,8 +72,8 @@ func loadProjectStore() (projectstore.ProjectStore, error) {
 }
 
 // loadProjectStoreFrom reads and wraps a project config at the given path
-// in a ProjectStore. Sibling of loadProjectConfigFrom.
-func loadProjectStoreFrom(path string) (projectstore.ProjectStore, error) {
+// in a *Store. Sibling of loadProjectConfigFrom.
+func loadProjectStoreFrom(path string) (*projectstore.Store, error) {
 	cfg, err := loadProjectConfigFrom(path)
 	if err != nil {
 		return nil, err

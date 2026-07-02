@@ -194,7 +194,15 @@ func newUpStopCmd() *cobra.Command {
 // namespace, then the manifests-only fallback (ManifestNamespace), then
 // `<project>-<env>` (forge's namespace convention). Reads the entities
 // already in hand rather than re-rendering KCL.
-func upDeployNamespace(entities *KCLEntities, store projectstore.ProjectStore, env string) string {
+// metaReader is the one-method slice of the project store this namespace
+// resolver needs — declared at the consumer so the helper depends on
+// `Meta()` alone, not the store's full surface. *projectstore.Store
+// satisfies it.
+type metaReader interface {
+	Meta() projectstore.ProjectMeta
+}
+
+func upDeployNamespace(entities *KCLEntities, store metaReader, env string) string {
 	if entities != nil {
 		for i := range entities.Services {
 			s := &entities.Services[i]
@@ -282,96 +290,11 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// in feature_gate.go for the strict-gate shape used by the cobra
 	// RunE for those commands.
 	if scope.cluster {
-		// Cluster phase — ensure every declared k3d cluster exists BEFORE
-		// anything builds or deploys (image pushes target a cluster's
-		// registry; the deploy mounts Secrets into a cluster that must
-		// already be up). Idempotent on warm runs (existing clusters are a
-		// no-op). An env that declares no clusters (Bundle.clusters empty)
-		// is a no-op here, preserving today's behavior. Skipped on
-		// --no-deploy: with nothing to deploy there's no need to stand a
-		// cluster up. Declared-cluster ensure is the multi-cluster
-		// generalization of the dev-only ensureDevCluster on the deploy
-		// path — ownership is a reference (Cluster.owner drives the derived
-		// network / registry-inherit), no "primary" cluster.
-		if !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:clusters") {
-			if err := reconcileDeclaredClusters(ctx, entities.Clusters, projectDir, opts.env); err != nil {
-				return fmt.Errorf("clusters: %w", err)
-			}
-			// Mint cross-cluster kubeconfigs at the cluster→deploy
-			// boundary: the clusters exist now (so `k3d kubeconfig get` +
-			// the serverlb container are available), and the deploy phase
-			// below hasn't rolled out the workloads that mount the Secret.
-			// The in-network IP is resolved FRESH here and never persisted,
-			// killing the IP-drift that a committed kubeconfig suffers when
-			// a k3d cluster is recreated. No-op when none are declared.
-			ownerNetwork := ownerNetworkFromClusters(entities.Clusters)
-			deployNS := upDeployNamespace(entities, store, opts.env)
-			if err := mintKubeconfigSecrets(ctx, entities.KubeconfigSecrets, ownerNetwork, deployNS); err != nil {
-				return fmt.Errorf("kubeconfig secrets: %w", err)
-			}
-		}
-		// Kick off the docker-compose infra (postgres/nats/temporal/...)
-		// NOW, concurrent with the build phase. Image pulls + container
-		// health warmup are the long pole on a warm `up` and are wholly
-		// independent of the project image build, so overlapping the two
-		// shaves that wall-clock off every run. The deploy phase below
-		// re-dispatches the same compose group as an idempotent no-op once
-		// warm (pull is current; `up -d` sees the containers already
-		// running) and stays the authoritative health barrier before the
-		// k8s rollout — so a best-effort failure here is non-fatal. Skipped
-		// when the deploy phase won't run (--no-deploy): nothing would
-		// consume the infra and nothing later barriers on it.
-		var infraWarm chan error
-		if scope.composeInfra && !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:infra") {
-			infraWarm = make(chan error, 1)
-			go func() {
-				fmt.Println("\n[up] infra phase (compose — concurrent with build)")
-				infraWarm <- prewarmComposeInfra(ctx, opts.env, entities)
-			}()
-		}
-		if !opts.noBuild {
-			if !skipFeature(store, config.FeatureBuild, "up:build") {
-				fmt.Println("\n[up] build phase")
-				if err := upBuildCluster(ctx, cfg, opts.env, opts.noGenerate); err != nil {
-					return fmt.Errorf("build: %w", err)
-				}
-			}
-		}
-		// Barrier: the k8s pods the deploy phase rolls out connect to the
-		// compose infra, so join the pre-warm before deploying. Joining here
-		// (rather than letting the deploy phase's own compose-up race the
-		// goroutine) also keeps a single docker-compose writer at a time.
-		if infraWarm != nil {
-			if err := <-infraWarm; err != nil {
-				fmt.Printf("[up] infra pre-warm: %v (deploy phase will retry)\n", err)
-			}
-		}
-		if !opts.noDeploy {
-			if !skipFeature(store, config.FeatureDeploy, "up:deploy") {
-				fmt.Println("\n[up] deploy phase")
-				// Cluster reconcile through the SAME named entry point
-				// `forge deploy` uses. `up`'s cluster step carries a
-				// scope-derived deployOptions — instead of a blank
-				// `deployOptions{}` literal standing in for "deploy with no
-				// options."
-				//
-				// skipFrontend: true is the deploy-phase mirror of the build
-				// phase's skipFrontends (upBuildCluster). `forge up` ALWAYS
-				// dev-serves frontends in its Phase 4 (`npm run dev` =
-				// `next dev` / vite dev server) and NEVER consumes a prod
-				// frontend artifact, so the deploy phase must not run the
-				// `deploy = None` build-only path (dispatchFrontendDeploys →
-				// `npm run build` under NODE_ENV=production). Without this a
-				// bare `forge up --env=dev` would prod-`next build` every
-				// host-mode frontend (the static `output: "export"` Next.js
-				// build) right before — and pointlessly alongside — starting
-				// its `next dev` server. The build-only path exists to
-				// materialize a static frontend for a FirebaseHosting frontend
-				// to reference at DEPLOY time; it has no place in the dev loop.
-				if err := reconcileCluster(ctx, opts.env, deployOptions{skipFrontend: true}); err != nil {
-					return fmt.Errorf("deploy: %w", err)
-				}
-			}
+		if err := upClusterBringup(ctx, upClusterInput{
+			store: store, cfg: cfg, entities: entities, projectDir: projectDir,
+			opts: opts, scope: scope,
+		}); err != nil {
+			return err
 		}
 	}
 
@@ -422,16 +345,16 @@ func runUp(ctx context.Context, opts upOptions) error {
 		if len(conflicts) > 0 {
 			var b strings.Builder
 			if ours && !opts.restart {
-				fmt.Fprintf(&b, "[up] a forge stack is already running for env=%s:\n", opts.env)
+				_, _ = fmt.Fprintf(&b, "[up] a forge stack is already running for env=%s:\n", opts.env)
 				for _, c := range conflicts {
-					fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
+					_, _ = fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
 				}
-				fmt.Fprintf(&b, "     stop it:     forge up stop --env=%s\n", opts.env)
-				fmt.Fprintf(&b, "     or refresh:  forge up --env=%s --restart", opts.env)
+				_, _ = fmt.Fprintf(&b, "     stop it:     forge up stop --env=%s\n", opts.env)
+				_, _ = fmt.Fprintf(&b, "     or refresh:  forge up --env=%s --restart", opts.env)
 			} else {
-				fmt.Fprintf(&b, "[up] these ports are held by a process forge doesn't manage (env=%s):\n", opts.env)
+				_, _ = fmt.Fprintf(&b, "[up] these ports are held by a process forge doesn't manage (env=%s):\n", opts.env)
 				for _, c := range conflicts {
-					fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
+					_, _ = fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
 				}
 				b.WriteString("     free them (lsof -i :<port>, kill the PID) or use --target to start a different service")
 			}
@@ -508,6 +431,121 @@ func runUp(ctx context.Context, opts upOptions) error {
 	<-sigCh
 	fmt.Println("\n[up] shutting down...")
 	procs.shutdown()
+	return nil
+}
+
+// upClusterInput carries the inputs upClusterBringup needs for the cluster
+// phase (cluster ensure + kubeconfig secrets + concurrent compose infra +
+// build + deploy).
+type upClusterInput struct {
+	store      *projectstore.Store
+	cfg        *config.ProjectConfig
+	entities   *KCLEntities
+	projectDir string
+	opts       upOptions
+	scope      reconcileScope
+}
+
+// upClusterBringup runs `forge up`'s cluster phases: ensure every declared k3d
+// cluster exists (and mint cross-cluster kubeconfig secrets) BEFORE anything
+// builds or deploys, kick off the docker-compose infra concurrently with the
+// build, run the build phase, barrier on the infra pre-warm, then run the
+// deploy phase. Both build and deploy are feature-gated (features.build /
+// features.deploy off → skip with a one-line log). All cluster-ensure/deploy
+// work is skipped on --no-deploy; the build phase is skipped on --no-build.
+func upClusterBringup(ctx context.Context, in upClusterInput) error {
+	store, cfg, entities, opts, scope := in.store, in.cfg, in.entities, in.opts, in.scope
+	// Cluster phase — ensure every declared k3d cluster exists BEFORE
+	// anything builds or deploys (image pushes target a cluster's
+	// registry; the deploy mounts Secrets into a cluster that must
+	// already be up). Idempotent on warm runs (existing clusters are a
+	// no-op). An env that declares no clusters (Bundle.clusters empty)
+	// is a no-op here, preserving today's behavior. Skipped on
+	// --no-deploy: with nothing to deploy there's no need to stand a
+	// cluster up. Declared-cluster ensure is the multi-cluster
+	// generalization of the dev-only ensureDevCluster on the deploy
+	// path — ownership is a reference (Cluster.owner drives the derived
+	// network / registry-inherit), no "primary" cluster.
+	if !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:clusters") {
+		if err := reconcileDeclaredClusters(ctx, entities.Clusters, in.projectDir, opts.env); err != nil {
+			return fmt.Errorf("clusters: %w", err)
+		}
+		// Mint cross-cluster kubeconfigs at the cluster→deploy
+		// boundary: the clusters exist now (so `k3d kubeconfig get` +
+		// the serverlb container are available), and the deploy phase
+		// below hasn't rolled out the workloads that mount the Secret.
+		// The in-network IP is resolved FRESH here and never persisted,
+		// killing the IP-drift that a committed kubeconfig suffers when
+		// a k3d cluster is recreated. No-op when none are declared.
+		ownerNetwork := ownerNetworkFromClusters(entities.Clusters)
+		deployNS := upDeployNamespace(entities, store, opts.env)
+		if err := mintKubeconfigSecrets(ctx, entities.KubeconfigSecrets, ownerNetwork, deployNS); err != nil {
+			return fmt.Errorf("kubeconfig secrets: %w", err)
+		}
+	}
+	// Kick off the docker-compose infra (postgres/nats/temporal/...)
+	// NOW, concurrent with the build phase. Image pulls + container
+	// health warmup are the long pole on a warm `up` and are wholly
+	// independent of the project image build, so overlapping the two
+	// shaves that wall-clock off every run. The deploy phase below
+	// re-dispatches the same compose group as an idempotent no-op once
+	// warm (pull is current; `up -d` sees the containers already
+	// running) and stays the authoritative health barrier before the
+	// k8s rollout — so a best-effort failure here is non-fatal. Skipped
+	// when the deploy phase won't run (--no-deploy): nothing would
+	// consume the infra and nothing later barriers on it.
+	var infraWarm chan error
+	if scope.composeInfra && !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:infra") {
+		infraWarm = make(chan error, 1)
+		go func() {
+			fmt.Println("\n[up] infra phase (compose — concurrent with build)")
+			infraWarm <- prewarmComposeInfra(ctx, opts.env, entities)
+		}()
+	}
+	if !opts.noBuild {
+		if !skipFeature(store, config.FeatureBuild, "up:build") {
+			fmt.Println("\n[up] build phase")
+			if err := upBuildCluster(ctx, cfg, opts.env, opts.noGenerate); err != nil {
+				return fmt.Errorf("build: %w", err)
+			}
+		}
+	}
+	// Barrier: the k8s pods the deploy phase rolls out connect to the
+	// compose infra, so join the pre-warm before deploying. Joining here
+	// (rather than letting the deploy phase's own compose-up race the
+	// goroutine) also keeps a single docker-compose writer at a time.
+	if infraWarm != nil {
+		if err := <-infraWarm; err != nil {
+			fmt.Printf("[up] infra pre-warm: %v (deploy phase will retry)\n", err)
+		}
+	}
+	if !opts.noDeploy {
+		if !skipFeature(store, config.FeatureDeploy, "up:deploy") {
+			fmt.Println("\n[up] deploy phase")
+			// Cluster reconcile through the SAME named entry point
+			// `forge deploy` uses. `up`'s cluster step carries a
+			// scope-derived deployOptions — instead of a blank
+			// `deployOptions{}` literal standing in for "deploy with no
+			// options."
+			//
+			// skipFrontend: true is the deploy-phase mirror of the build
+			// phase's skipFrontends (upBuildCluster). `forge up` ALWAYS
+			// dev-serves frontends in its Phase 4 (`npm run dev` =
+			// `next dev` / vite dev server) and NEVER consumes a prod
+			// frontend artifact, so the deploy phase must not run the
+			// `deploy = None` build-only path (dispatchFrontendDeploys →
+			// `npm run build` under NODE_ENV=production). Without this a
+			// bare `forge up --env=dev` would prod-`next build` every
+			// host-mode frontend (the static `output: "export"` Next.js
+			// build) right before — and pointlessly alongside — starting
+			// its `next dev` server. The build-only path exists to
+			// materialize a static frontend for a FirebaseHosting frontend
+			// to reference at DEPLOY time; it has no place in the dev loop.
+			if err := reconcileCluster(ctx, opts.env, deployOptions{skipFrontend: true}); err != nil {
+				return fmt.Errorf("deploy: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -640,7 +678,8 @@ type portConflict struct {
 // free-port case) returns false. Used by the `forge up` pre-flight guard
 // to refuse a colliding second stack before any process starts.
 func portInUse(port int) bool {
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), 300*time.Millisecond)
+	dialer := net.Dialer{Timeout: 300 * time.Millisecond}
+	conn, err := dialer.DialContext(context.Background(), "tcp", "127.0.0.1:"+strconv.Itoa(port))
 	if err != nil {
 		return false
 	}
@@ -853,12 +892,12 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 	// (warn-and-continue); parse / permission errors are fatal because
 	// they signal a broken KCL pin rather than a developer who hasn't
 	// created the file yet.
-	secrets := secretsLayer
-	if len(secrets) == 0 {
+	secretVals := secretsLayer
+	if len(secretVals) == 0 {
 		loaded, lerr := hostlaunch.LoadSecretsFile(host.SecretsFile)
 		switch {
 		case lerr == nil:
-			secrets = loaded
+			secretVals = loaded
 		case errors.Is(lerr, os.ErrNotExist):
 			fmt.Printf("[up] host %s: warning: secrets file %s missing; continuing without it\n", svc.Name, host.SecretsFile)
 		default:
@@ -874,7 +913,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 	if cfg != nil && env != "" {
 		projectConfigEnv = loadProjectConfigEnv(cfg, env)
 	}
-	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, secrets, envVars)
+	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, secretVals, envVars)
 
 	return cmd, svc.Name, nil
 }
@@ -1134,7 +1173,7 @@ func streamUpOutput(prefix string, r io.Reader, logSink io.Writer) {
 		line := scanner.Text()
 		fmt.Print(prefix + line + "\n")
 		if logSink != nil {
-			fmt.Fprintln(logSink, line)
+			_, _ = fmt.Fprintln(logSink, line)
 		}
 	}
 }
@@ -1191,7 +1230,7 @@ func (p *procRegistry) persist() {
 		if pid <= 0 {
 			continue
 		}
-		fmt.Fprintf(&b, "%s\t%d\n", mp.name, pid)
+		_, _ = fmt.Fprintf(&b, "%s\t%d\n", mp.name, pid)
 	}
 	p.mu.Unlock()
 	if err := os.WriteFile(statePath, []byte(b.String()), 0o644); err != nil {
@@ -1279,12 +1318,6 @@ func (p *procRegistry) shutdown() {
 // is the contract with `forge up stop`.
 func (p *procRegistry) shutdownOnExit() {
 	if p.persisted {
-		return
-	}
-	p.mu.Lock()
-	hasProcs := len(p.processes) > 0
-	p.mu.Unlock()
-	if !hasProcs {
 		return
 	}
 	// Already torn down by the Ctrl-C handler in runUp — no-op.

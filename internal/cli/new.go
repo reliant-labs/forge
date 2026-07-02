@@ -198,68 +198,9 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		return err
 	}
 
-	var targetPath string
-
-	if inPlace {
-		// In-place mode: scaffold into the current (or --path) directory directly
-		var err error
-		targetPath, err = filepath.Abs(projectPath)
-		if err != nil {
-			return fmt.Errorf("failed to resolve path: %w", err)
-		}
-
-		// Derive project name from directory if not provided
-		if projectName == "" {
-			projectName = filepath.Base(targetPath)
-		}
-
-		// Validate project name (hyphens allowed for directory/module paths)
-		if err := validateProjectName(projectName); err != nil {
-			return fmt.Errorf("invalid project name %q: %w", projectName, err)
-		}
-
-		// Check that we're not scaffolding over an existing project
-		if _, err := os.Stat(filepath.Join(targetPath, defaultProjectConfigFile)); err == nil {
-			if !force {
-				return cliutil.UserErr("forge new --in-place",
-					fmt.Sprintf("%s already exists in %s; this directory already contains a Forge project", defaultProjectConfigFile, targetPath),
-					"",
-					"pass --force to overwrite, or scaffold into a fresh directory")
-			}
-			fmt.Printf("  --force: overwriting existing %s\n", defaultProjectConfigFile)
-		}
-	} else {
-		if projectName == "" {
-			return cliutil.UserErr("forge new",
-				"project name is required",
-				"",
-				"pass a project name as the first positional arg, or use --in-place to scaffold in the current directory")
-		}
-
-		targetPath = filepath.Join(projectPath, projectName)
-
-		// Validate project name (hyphens allowed for directory/module paths)
-		if err := validateProjectName(projectName); err != nil {
-			return cliutil.WrapUserErr("forge new",
-				fmt.Sprintf("invalid project name %q", projectName),
-				"",
-				"use a name starting with a letter, containing only letters/digits/_/-",
-				err)
-		}
-
-		// Check if directory already exists
-		if _, err := os.Stat(targetPath); err == nil {
-			return cliutil.UserErr("forge new",
-				fmt.Sprintf("directory %s already exists", targetPath),
-				"",
-				"pick a different project name, or use --in-place --force to overwrite")
-		} else if !os.IsNotExist(err) {
-			return cliutil.WrapUserErr("forge new",
-				fmt.Sprintf("failed to stat %s", targetPath),
-				"",
-				"check filesystem permissions on the parent directory",
-				err)
-		}
+	targetPath, projectName, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
+	if err != nil {
+		return err
 	}
 
 	// Validate service names
@@ -326,46 +267,20 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		return fmt.Errorf("failed to write scaffold marker: %w", err)
 	}
 
-	// Create project generator
-	gen := generator.NewProjectGenerator(projectName, targetPath, modulePath)
-	gen.Kind = kindNormalized
-	gen.Binary = binaryNormalized
-	gen.AdditionalServices = nil
-	if len(serviceNames) > 0 {
-		gen.ServiceName = serviceNames[0]
-		// Pass the rest so binary=shared can emit one cobra subcommand per
-		// service at scaffold time. Per-service mode ignores this and
-		// continues to add additional services post-scaffold via
-		// GenerateServiceFiles + AppendServiceToConfig (below).
-		if len(serviceNames) > 1 {
-			gen.AdditionalServices = append([]string(nil), serviceNames[1:]...)
-		}
-	}
-	gen.GoVersionOverride = goVersion
-	if len(frontendNames) > 0 {
-		gen.FrontendName = frontendNames[0]
-	}
-	gen.FrontendWorkspaces = frontendWorkspaces
-
-	// Apply harness
-	h, err := generator.ParseHarness(harness)
+	gen, err := configureProjectGenerator(newGeneratorConfig{
+		projectName:        projectName,
+		targetPath:         targetPath,
+		modulePath:         modulePath,
+		kind:               kindNormalized,
+		binary:             binaryNormalized,
+		serviceNames:       serviceNames,
+		frontendNames:      frontendNames,
+		goVersion:          goVersion,
+		frontendWorkspaces: frontendWorkspaces,
+		harness:            harness,
+		disableFeatures:    disableFeatures,
+	})
 	if err != nil {
-		return err
-	}
-	gen.Harness = h
-
-	// Apply kind-aware feature defaults BEFORE --disable so an
-	// explicit --disable always wins. Service is the default and
-	// leaves every feature enabled (today's behavior). CLI and
-	// library kinds turn off the server-shaped features so the
-	// scaffolded forge.yaml accurately describes the project shape
-	// — `forge new --kind cli` should not have working deploy
-	// commands by default. See ApplyKindFeatureDefaults for the
-	// per-kind matrix.
-	gen.ApplyKindFeatureDefaults(kindNormalized)
-
-	// Apply feature disabling
-	if err := applyDisableFlags(gen, disableFeatures); err != nil {
 		return err
 	}
 
@@ -379,27 +294,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		return fmt.Errorf("failed to write LICENSE: %w", err)
 	}
 
-	// Emit forge skills to disk for harnesses that have a native skills
-	// concept (e.g. claude → .claude/skills/). Reliant skips this — the
-	// reliant CLI auto-discovers forge skills via the project's
-	// forge.yaml, so no on-disk emission is needed. Copilot / codex
-	// skip too — no native skills mechanism.
-	if dir := gen.Harness.SkillsDir(); dir != "" {
-		style, ok := skillStyleForHarness(gen.Harness)
-		if ok {
-			skillsDir := filepath.Join(targetPath, dir)
-			// SkillAudienceAll means "all" — a new forge project always
-			// has forge.yaml, so the harness gets both general
-			// methodology and framework skills with full bodies (no
-			// @forge-only stripping).
-			n, err := WriteSkills(skillsDir, style, SkillAudienceAll)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to write forge skills to %s: %v\n", skillsDir, err)
-			} else {
-				fmt.Printf("📚 Wrote %d forge skills to %s\n", n, dir)
-			}
-		}
-	}
+	emitHarnessSkills(gen, targetPath)
 
 	// Generate additional services beyond the first (if any).
 	//
@@ -411,27 +306,225 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	// into forge.yaml during writeProjectConfig (so the bootstrap.go
 	// generator could see the full set up-front), and skipping the
 	// append step here prevents duplicates.
-	if len(serviceNames) > 1 {
-		for i, svcName := range serviceNames[1:] {
-			port := gen.ServicePort + i + 1
-			fmt.Printf("\n🔧 Adding additional service '%s' (port %d)...\n", svcName, port)
-			if err := generator.GenerateServiceFiles(targetPath, modulePath, svcName, projectName, port); err != nil {
-				return fmt.Errorf("failed to generate service %s: %w", svcName, err)
-			}
-			if binaryNormalized != config.ProjectBinaryShared {
-				// Update project config with additional service
-				if err := generator.AppendServiceToConfig(targetPath, svcName, port); err != nil {
-					return fmt.Errorf("failed to update config for service %s: %w", svcName, err)
-				}
-			}
-		}
+	if err := generateAdditionalServices(targetPath, modulePath, projectName, serviceNames, binaryNormalized, gen.ServicePort); err != nil {
+		return err
 	}
 
 	// Generate additional frontends beyond the first
+	if err := generateAdditionalFrontends(targetPath, modulePath, projectName, frontendNames, gen.ServicePort, gen.FrontendPort, frontendWorkspaces); err != nil {
+		return err
+	}
+
+	// Apply the --buf-plugins=remote opt-in BEFORE bootstrapGeneratedCode
+	// runs, since the bootstrap invokes `buf generate` which reads
+	// buf.gen.yaml. The default ('local') is already what the template
+	// emits, so only act on 'remote'.
+	if bufPluginsNormalized == "remote" {
+		applyRemoteBufPlugins(targetPath, frontendNames)
+	}
+
+	finalizeNewProject(ctx, newFinalizeInput{
+		targetPath:    targetPath,
+		kind:          kindNormalized,
+		binary:        binaryNormalized,
+		bufPlugins:    bufPluginsNormalized,
+		skipTools:     skipTools,
+		frontendNames: frontendNames,
+		markerPath:    markerPath,
+	})
+
+	success = true
+	fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
+	printNewNextSteps(projectName, inPlace, kindNormalized, serviceNames)
+
+	return nil
+}
+
+// resolveNewTargetPath resolves the scaffold target directory and the effective
+// project name from the CLI args, validating the name and refusing to scaffold
+// over an existing project. In --in-place mode the project name defaults to the
+// target directory's base name and an existing forge.yaml is only tolerated
+// with --force. In fresh-directory mode a name is required and the target must
+// not already exist. Returns (targetPath, resolvedName).
+func resolveNewTargetPath(projectName, projectPath string, inPlace, force bool) (string, string, error) {
+	if inPlace {
+		// In-place mode: scaffold into the current (or --path) directory directly
+		targetPath, err := filepath.Abs(projectPath)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to resolve path: %w", err)
+		}
+		// Derive project name from directory if not provided
+		if projectName == "" {
+			projectName = filepath.Base(targetPath)
+		}
+		// Validate project name (hyphens allowed for directory/module paths)
+		if err := validateProjectName(projectName); err != nil {
+			return "", "", fmt.Errorf("invalid project name %q: %w", projectName, err)
+		}
+		// Check that we're not scaffolding over an existing project
+		if _, err := os.Stat(filepath.Join(targetPath, defaultProjectConfigFile)); err == nil {
+			if !force {
+				return "", "", cliutil.UserErr("forge new --in-place",
+					fmt.Sprintf("%s already exists in %s; this directory already contains a Forge project", defaultProjectConfigFile, targetPath),
+					"",
+					"pass --force to overwrite, or scaffold into a fresh directory")
+			}
+			fmt.Printf("  --force: overwriting existing %s\n", defaultProjectConfigFile)
+		}
+		return targetPath, projectName, nil
+	}
+
+	if projectName == "" {
+		return "", "", cliutil.UserErr("forge new",
+			"project name is required",
+			"",
+			"pass a project name as the first positional arg, or use --in-place to scaffold in the current directory")
+	}
+
+	targetPath := filepath.Join(projectPath, projectName)
+
+	// Validate project name (hyphens allowed for directory/module paths)
+	if err := validateProjectName(projectName); err != nil {
+		return "", "", cliutil.WrapUserErr("forge new",
+			fmt.Sprintf("invalid project name %q", projectName),
+			"",
+			"use a name starting with a letter, containing only letters/digits/_/-",
+			err)
+	}
+
+	// Check if directory already exists
+	if _, err := os.Stat(targetPath); err == nil {
+		return "", "", cliutil.UserErr("forge new",
+			fmt.Sprintf("directory %s already exists", targetPath),
+			"",
+			"pick a different project name, or use --in-place --force to overwrite")
+	} else if !os.IsNotExist(err) {
+		return "", "", cliutil.WrapUserErr("forge new",
+			fmt.Sprintf("failed to stat %s", targetPath),
+			"",
+			"check filesystem permissions on the parent directory",
+			err)
+	}
+	return targetPath, projectName, nil
+}
+
+// newGeneratorConfig carries the inputs configureProjectGenerator projects onto
+// a generator.ProjectGenerator.
+type newGeneratorConfig struct {
+	projectName        string
+	targetPath         string
+	modulePath         string
+	kind               string
+	binary             string
+	serviceNames       []string
+	frontendNames      []string
+	goVersion          string
+	frontendWorkspaces bool
+	harness            string
+	disableFeatures    []string
+}
+
+// configureProjectGenerator builds and configures the project generator from
+// the CLI flags: the first service/frontend seed the primary names (additional
+// services are passed through so binary=shared can emit one cobra subcommand
+// per service at scaffold time), the harness is parsed, and kind-aware feature
+// defaults are applied BEFORE --disable so an explicit --disable always wins.
+func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerator, error) {
+	gen := generator.NewProjectGenerator(c.projectName, c.targetPath, c.modulePath)
+	gen.Kind = c.kind
+	gen.Binary = c.binary
+	gen.AdditionalServices = nil
+	if len(c.serviceNames) > 0 {
+		gen.ServiceName = c.serviceNames[0]
+		// Pass the rest so binary=shared can emit one cobra subcommand per
+		// service at scaffold time. Per-service mode ignores this and
+		// continues to add additional services post-scaffold via
+		// GenerateServiceFiles + AppendServiceToConfig.
+		if len(c.serviceNames) > 1 {
+			gen.AdditionalServices = append([]string(nil), c.serviceNames[1:]...)
+		}
+	}
+	gen.GoVersionOverride = c.goVersion
+	if len(c.frontendNames) > 0 {
+		gen.FrontendName = c.frontendNames[0]
+	}
+	gen.FrontendWorkspaces = c.frontendWorkspaces
+
+	h, err := generator.ParseHarness(c.harness)
+	if err != nil {
+		return nil, err
+	}
+	gen.Harness = h
+
+	// Kind-aware feature defaults BEFORE --disable. Service is the default and
+	// leaves every feature enabled; CLI and library kinds turn off the
+	// server-shaped features so the scaffolded forge.yaml accurately describes
+	// the project shape. See ApplyKindFeatureDefaults for the per-kind matrix.
+	gen.ApplyKindFeatureDefaults(c.kind)
+
+	if err := applyDisableFlags(gen, c.disableFeatures); err != nil {
+		return nil, err
+	}
+	return gen, nil
+}
+
+// emitHarnessSkills writes forge skills to disk for harnesses that have a
+// native skills concept (e.g. claude → .claude/skills/). Reliant/copilot/codex
+// skip this (no native skills mechanism, or auto-discovery via forge.yaml).
+// Skill-write failures are warned, not fatal.
+func emitHarnessSkills(gen *generator.ProjectGenerator, targetPath string) {
+	dir := gen.Harness.SkillsDir()
+	if dir == "" {
+		return
+	}
+	style, ok := skillStyleForHarness(gen.Harness)
+	if !ok {
+		return
+	}
+	skillsDir := filepath.Join(targetPath, dir)
+	// SkillAudienceAll: a new forge project always has forge.yaml, so the
+	// harness gets both general methodology and framework skills with full
+	// bodies (no @forge-only stripping).
+	n, err := WriteSkills(skillsDir, style, SkillAudienceAll)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to write forge skills to %s: %v\n", skillsDir, err)
+	} else {
+		fmt.Printf("📚 Wrote %d forge skills to %s\n", n, dir)
+	}
+}
+
+// generateAdditionalServices scaffolds every service beyond the first. Both
+// binary modes call GenerateServiceFiles for the handler/proto skeleton; the
+// forge.yaml services list is populated differently: binary=per-service appends
+// each service post-scaffold (the historical additive path), while binary=shared
+// already wrote ALL services during writeProjectConfig, so the append is skipped
+// to avoid duplicates. Ports are assigned as basePort+i+1.
+func generateAdditionalServices(targetPath, modulePath, projectName string, serviceNames []string, binary string, basePort int) error {
+	if len(serviceNames) <= 1 {
+		return nil
+	}
+	for i, svcName := range serviceNames[1:] {
+		port := basePort + i + 1
+		fmt.Printf("\n🔧 Adding additional service '%s' (port %d)...\n", svcName, port)
+		if err := generator.GenerateServiceFiles(targetPath, modulePath, svcName, projectName, port); err != nil {
+			return fmt.Errorf("failed to generate service %s: %w", svcName, err)
+		}
+		if binary != config.ProjectBinaryShared {
+			if err := generator.AppendServiceToConfig(targetPath, svcName, port); err != nil {
+				return fmt.Errorf("failed to update config for service %s: %w", svcName, err)
+			}
+		}
+	}
+	return nil
+}
+
+// generateAdditionalFrontends scaffolds every frontend beyond the first,
+// appending each to forge.yaml. Ports are assigned as baseFrontendPort+i+1.
+func generateAdditionalFrontends(targetPath, modulePath, projectName string, frontendNames []string, servicePort, baseFrontendPort int, frontendWorkspaces bool) error {
 	for i, feName := range frontendNames[min(1, len(frontendNames)):] {
-		fePort := gen.FrontendPort + i + 1
+		fePort := baseFrontendPort + i + 1
 		fmt.Printf("\n🔧 Adding additional frontend '%s' (port %d)...\n", feName, fePort)
-		if err := generator.GenerateFrontendFilesWithOptions(targetPath, modulePath, projectName, feName, gen.ServicePort, "", generator.FrontendGenOptions{
+		if err := generator.GenerateFrontendFilesWithOptions(targetPath, modulePath, projectName, feName, servicePort, "", generator.FrontendGenOptions{
 			Workspaces: frontendWorkspaces,
 		}); err != nil {
 			return fmt.Errorf("failed to generate frontend %s: %w", feName, err)
@@ -440,36 +533,53 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 			return fmt.Errorf("failed to update config for frontend %s: %w", feName, err)
 		}
 	}
+	return nil
+}
 
-	// Apply the --buf-plugins=remote opt-in BEFORE bootstrapGeneratedCode
-	// runs, since the bootstrap invokes `buf generate` which reads
-	// buf.gen.yaml. The default ('local') is already what the template
-	// emits, so only act on 'remote'.
-	if bufPluginsNormalized == "remote" {
-		if err := rewriteBufGenYamlToRemote(targetPath); err != nil {
-			fmt.Fprintf(os.Stderr, "\n⚠️  Failed to switch buf.gen.yaml to remote plugins: %v\n", err)
-		} else {
-			fmt.Println("\n🔧 Switched buf.gen.yaml to BSR-hosted (remote:) plugins per --buf-plugins=remote")
-			fmt.Println("    Note: anonymous users may hit BSR rate limits; run 'buf registry login' if needed.")
-		}
-		// Also rewrite each frontend's buf.gen.yaml to use remote: bufbuild/es
-		// rather than the local protoc-gen-es plugin. Mirrors the Go-side
-		// switch so --buf-plugins=remote is a single coherent opt-in.
-		for _, feName := range frontendNames {
-			feBufGen := filepath.Join(targetPath, "frontends", feName, "buf.gen.yaml")
-			if err := rewriteFrontendBufGenYamlToRemote(feBufGen, feName); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠️  Failed to switch frontends/%s/buf.gen.yaml to remote plugin: %v\n", feName, err)
-			}
+// applyRemoteBufPlugins switches the scaffolded Go and per-frontend buf.gen.yaml
+// files from local: plugins to BSR-hosted remote: plugins, the coherent
+// --buf-plugins=remote opt-in. Failures are warned, not fatal.
+func applyRemoteBufPlugins(targetPath string, frontendNames []string) {
+	if err := rewriteBufGenYamlToRemote(targetPath); err != nil {
+		fmt.Fprintf(os.Stderr, "\n⚠️  Failed to switch buf.gen.yaml to remote plugins: %v\n", err)
+	} else {
+		fmt.Println("\n🔧 Switched buf.gen.yaml to BSR-hosted (remote:) plugins per --buf-plugins=remote")
+		fmt.Println("    Note: anonymous users may hit BSR rate limits; run 'buf registry login' if needed.")
+	}
+	// Also rewrite each frontend's buf.gen.yaml to use remote: bufbuild/es
+	// rather than the local protoc-gen-es plugin. Mirrors the Go-side switch.
+	for _, feName := range frontendNames {
+		feBufGen := filepath.Join(targetPath, "frontends", feName, "buf.gen.yaml")
+		if err := rewriteFrontendBufGenYamlToRemote(feBufGen, feName); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Failed to switch frontends/%s/buf.gen.yaml to remote plugin: %v\n", feName, err)
 		}
 	}
+}
 
+// newFinalizeInput carries the inputs finalizeNewProject needs for the
+// post-generation phase.
+type newFinalizeInput struct {
+	targetPath    string
+	kind          string
+	binary        string
+	bufPlugins    string
+	skipTools     bool
+	frontendNames []string
+	markerPath    string
+}
+
+// finalizeNewProject runs the post-generation phase: install proto codegen
+// plugins (local-plugin service kind only), install frontend deps BEFORE
+// bootstrap (the scaffolded buf.gen.yaml's local: es plugin needs node_modules),
+// bootstrap proto/Connect codegen (service kind only), re-record frozen-file
+// checksums (bootstrap's goimports -w reformats pkg/* and would otherwise show
+// as user-modified), init git, run go mod tidy, and remove the in-progress
+// marker. Every step is best-effort — failures are warned, never fatal.
+func finalizeNewProject(ctx context.Context, in newFinalizeInput) {
 	// Auto-install required proto plugins for the default local-plugin
-	// workflow. This makes 'forge new' → 'forge generate' work on a fresh
-	// machine without manual go install. Skip when:
-	//   - user opted out (--skip-tools)
-	//   - user switched to remote plugins (no local binaries needed)
-	//   - go is not on PATH (we'll surface a clearer error from generate later)
-	if !skipTools && bufPluginsNormalized == "local" && kindNormalized == config.ProjectKindService {
+	// workflow. Skipped for --skip-tools, remote plugins (no local binaries),
+	// and non-service kinds.
+	if !in.skipTools && in.bufPlugins == "local" && in.kind == config.ProjectKindService {
 		fmt.Println("\n🔧 Ensuring proto codegen plugins are installed (use --skip-tools to skip)...")
 		if err := runToolsInstall(ctx, "latest", false); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Plugin install incomplete: %v\n", err)
@@ -479,12 +589,10 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 
 	// Frontend dependencies must be installed BEFORE bootstrapGeneratedCode
 	// runs, because the scaffolded buf.gen.yaml uses a `local:` plugin path
-	// pointing at frontends/<name>/node_modules/.bin/protoc-gen-es. Without
-	// node_modules in place, the first `buf generate` for TS stubs fails.
-	// (Go-side codegen has no such dependency; the order swap is safe.)
-	if len(frontendNames) > 0 {
+	// pointing at frontends/<name>/node_modules/.bin/protoc-gen-es.
+	if len(in.frontendNames) > 0 {
 		fmt.Println("🔧 Installing frontend dependencies (this generates package-lock.json)...")
-		if err := runNpmInstall(ctx, targetPath, frontendNames); err != nil {
+		if err := runNpmInstall(ctx, in.targetPath, in.frontendNames); err != nil {
 			fmt.Printf("Warning: npm install failed: %v\n", err)
 			fmt.Println("    @bufbuild/protoc-gen-es will be missing — run 'npm install' in each frontends/<name>/ before 'forge generate'.")
 			fmt.Println("    CI also requires package-lock.json to exist.")
@@ -492,52 +600,41 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	}
 
 	// Service projects bootstrap proto/Connect codegen immediately so the
-	// scaffold compiles. CLI/library kinds have no proto/services, so the
-	// pipeline would fail with "no proto files found" — skip it cleanly.
-	if kindNormalized == config.ProjectKindService {
+	// scaffold compiles. CLI/library kinds have no proto/services.
+	if in.kind == config.ProjectKindService {
 		fmt.Println("\n🔧 Bootstrapping generated proto code...")
-		if err := bootstrapGeneratedCode(targetPath); err != nil {
+		if err := bootstrapGeneratedCode(in.targetPath); err != nil {
 			fmt.Fprintf(os.Stderr, "\n⚠️  Project scaffolded but initial code generation failed: %v\n", err)
 			fmt.Fprintf(os.Stderr, "    Run '%s generate && %s build' to retry.\n", Name(), Name())
 		}
 	}
 
-	// Re-record frozen-file checksums after bootstrap. bootstrapGeneratedCode
-	// invokes goimports -w on pkg/* which (under Go 1.19+) normalizes godoc
-	// comment list markers, drifting Tier-2 middleware files from their
-	// embedded-template bytes. Without this, `forge upgrade --dry-run` on a
-	// fresh scaffold would flag every reformatted file as user-modified.
+	// Re-record frozen-file checksums after bootstrap (goimports -w reformats
+	// pkg/* godoc list markers, which would otherwise show as user-modified).
 	postBootstrapBinary := config.ProjectBinaryPerService
-	if binaryNormalized != "" {
-		postBootstrapBinary = binaryNormalized
+	if in.binary != "" {
+		postBootstrapBinary = in.binary
 	}
-	if err := generator.RecordFrozenChecksums(targetPath, postBootstrapBinary, kindNormalized); err != nil {
+	if err := generator.RecordFrozenChecksums(in.targetPath, postBootstrapBinary, in.kind); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to re-record frozen checksums: %v\n", err)
 	}
 
-	// Initialize git repository
 	fmt.Println("\n🔧 Initializing git repository...")
-	if err := initGitRepository(ctx, targetPath); err != nil {
+	if err := initGitRepository(ctx, in.targetPath); err != nil {
 		fmt.Printf("Warning: failed to initialize git repository: %v\n", err)
 	}
 
 	fmt.Println("🔧 Running go mod tidy...")
-	if err := runGoModTidy(ctx, targetPath); err != nil {
+	if err := runGoModTidy(ctx, in.targetPath); err != nil {
 		fmt.Printf("Warning: go mod tidy failed: %v\n", err)
 		fmt.Println("You can run 'go mod tidy' manually later")
 	}
 
 	// Scaffold finished — remove the in-progress marker so a later failure
 	// (if any were ever added) wouldn't delete a completed project.
-	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(in.markerPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "warning: failed to remove scaffold marker: %v\n", err)
 	}
-
-	success = true
-	fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
-	printNewNextSteps(projectName, inPlace, kindNormalized, serviceNames)
-
-	return nil
 }
 
 // printNewNextSteps prints the post-scaffold guidance block. The
@@ -641,13 +738,30 @@ func initGitRepository(ctx context.Context, path string) error {
 		return fmt.Errorf("git init failed: %s", string(output))
 	}
 
+	// Activate forge's committed git hooks (.githooks/pre-commit runs
+	// `forge lint` + `forge audit` on each commit). core.hooksPath is set
+	// RELATIVE so it resolves against each worktree's own checkout — one
+	// setting in the shared .git/config makes the hook fire in every
+	// linked worktree. Set here, before the initial commit, so the repo
+	// ships activated; fresh clones self-heal via ensureGitHooksActivated.
+	cmd = exec.CommandContext(ctx, "git", "config", "--local", "core.hooksPath", ".githooks")
+	cmd.Dir = path
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git config core.hooksPath failed: %s", string(output))
+	}
+
 	cmd = exec.CommandContext(ctx, "git", "add", ".")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git add failed: %s", string(output))
 	}
 
-	cmd = exec.CommandContext(ctx, "git", "commit", "-m", "Initial commit from forge")
+	// --no-verify: the initial commit is forge-authored, known-good
+	// scaffolding. Gating it through the hook we just activated would slow
+	// `forge new` and make it depend on a green lint/audit mid-scaffold
+	// (and on `forge` being re-invokable as a subprocess). Skip it; the
+	// hook governs the user's commits from here on.
+	cmd = exec.CommandContext(ctx, "git", "commit", "--no-verify", "-m", "Initial commit from forge")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git commit failed: %s", string(output))

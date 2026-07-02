@@ -38,7 +38,7 @@ _target = forge.ClusterTarget {
 }
 
 # control-plane image — resolves to ITS digest.
-_cp_svc = forge.Service {
+_cp_svc = forge.K8sWorkload {
     name = "control-plane"
     image = "control-plane"
     deploy = _target.deploy
@@ -47,26 +47,26 @@ _cp_svc = forge.Service {
 # reliant-api-server + reliant-worker SHARE the `reliant` image — both
 # resolve to the reliant digest (NOT control-plane's). This is the exact
 # regression: distinct image, distinct digest.
-_reliant_api_svc = forge.Service {
+_reliant_api_svc = forge.K8sWorkload {
     name = "reliant-api-server"
     image = "reliant"
     deploy = _target.deploy
 }
-_reliant_worker_svc = forge.Service {
+_reliant_worker_svc = forge.K8sWorkload {
     name = "reliant-temporal-worker"
     image = "reliant"
     deploy = _target.deploy
 }
 
 # An image with NO digest entry — falls back to the env tag.
-_nodigest_svc = forge.Service {
+_nodigest_svc = forge.K8sWorkload {
     name = "no-digest"
     image = "no-digest"
     deploy = _target.deploy
 }
 
 # Per-service plain pin — wins (image absent from digest map anyway).
-_pinned_svc = forge.Service {
+_pinned_svc = forge.K8sWorkload {
     name = "sidecar"
     image = "sidecar"
     image_tag = "v9.9.9"
@@ -74,7 +74,7 @@ _pinned_svc = forge.Service {
 }
 
 # Third-party image with its own :tag — digest map ignored.
-_vendor_svc = forge.Service {
+_vendor_svc = forge.K8sWorkload {
     name = "litellm"
     image = "ghcr.io/berriai/litellm:main-v1.0"
     deploy = _target.deploy

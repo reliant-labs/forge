@@ -227,6 +227,7 @@ For unauthenticated RPCs (health checks, public reads), skip step 2.
 - **Cross-service orchestration.** "Create a thing AND send an email AND update the audit log" belongs in one service method, not split across the handler.
 - **Logging beyond the unknown-error path.** Structured logging happens in middleware (request log) and in the service's tracing wrapper. Handlers stay quiet.
 - **Retries, transactions, idempotency.** All service concerns.
+- **A server for an RPC another repo owns.** If the RPC is owned by another service/repo and you're only a *client* of it, import the upstream proto and generate a client — don't hand-copy the proto and scaffold a handler. A handler package where every method returns `CodeUnimplemented` and `Deps` carries only `Logger`/`Config` (no domain collaborators) is the tell: you meant to import, not to serve. See the `proto` skill.
 
 ## Testing handlers
 

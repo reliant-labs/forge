@@ -45,8 +45,7 @@ func collectCRUDMethodNames(services []codegen.ServiceDef, projectDir string) ma
 //     from collectCRUDMethodNames does NOT contain the RPC name).
 //
 // When both hold, GenerateMissingHandlerStubs treats the proto's RPCs
-// as logically-absent: handlers_gen.go is empty and the stale stubs
-// are removed.
+// as logically-absent: no stubs are scaffolded into handlers.go.
 //
 // The return is keyed by the service's Go name (svc.Name) — the same
 // key used elsewhere in the stub-generation pass.
@@ -158,8 +157,8 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 
 		// Build the per-service skip set: anything CRUD-shaped that
 		// matched an entity (already there from crudMethodNames) PLUS
-		// every RPC of a webhook-only service. handlers_gen.go's filter
-		// drops exactly the methods listed here.
+		// every RPC of a webhook-only service. The stub scaffolder's
+		// filter drops exactly the methods listed here.
 		skipNames := crudMethodNames
 		if webhookOnly[svc.Name] {
 			skipNames = make(map[string]bool, len(crudMethodNames)+len(svc.Methods))
@@ -172,9 +171,9 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 		}
 
 		if dirExists(absServiceDir) {
-			// Incremental: generate stubs only for missing RPC methods.
-			// Threading cs ensures the rendered handlers_gen.go is recorded
-			// so it doesn't show up as an orphan in `forge audit`.
+			// Incremental: scaffold stubs only for missing RPC methods,
+			// appended to the user-owned handlers.go (no forge-owned gen
+			// file). cs is threaded for signature stability only.
 			result, err := codegen.GenerateMissingHandlerStubs(svc, projectDir, absServiceDir, skipNames, cs)
 			if err != nil {
 				return fmt.Errorf("failed to generate missing stubs for %s: %w", svc.Name, err)
@@ -186,7 +185,7 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 					fmt.Printf("  ⏭️  Skipped %s/ (all handlers up to date)\n", relServiceDir)
 				}
 			} else {
-				fmt.Printf("  ✅ Generated %d new handler stub(s) in %s/handlers_gen.go: %s\n",
+				fmt.Printf("  ✅ Appended %d new handler stub(s) to %s/handlers.go (yours to edit): %s\n",
 					len(result.NewMethods), relServiceDir, strings.Join(result.NewMethods, ", "))
 				hasNewStubs = true
 			}

@@ -23,7 +23,7 @@ _target = forge.ClusterTarget {
 _bundle = forge.Bundle {
     cluster_target = _target
     services = [
-        forge.Service {
+        forge.K8sWorkload {
             name = "api"
             image = "api"
             deploy = _target.deploy | {ports = [8080]}

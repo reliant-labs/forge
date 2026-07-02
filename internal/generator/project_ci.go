@@ -200,9 +200,14 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		if err != nil {
 			return fmt.Errorf("render CI template %s: %w", f.templateName, err)
 		}
-		// Use WriteGeneratedFile to record the checksum. force=true since
-		// this is initial project creation — there's nothing to preserve.
-		if _, err := WriteGeneratedFile(g.Path, f.dest, content, cs, true); err != nil {
+		// Scaffold-once ("yours"): CI workflows are the canonical
+		// hand-edited policy file (add jobs, secrets, custom steps), so
+		// they are user-owned from birth — NO forge:hash marker, never
+		// re-emitted while present. Certifying them Tier-1 mis-flagged
+		// every sanctioned edit as `user_edited_gen_files` drift and
+		// pushed users to `forge disown`. This mirrors the PR template /
+		// CODEOWNERS starters written just below.
+		if _, err := checksums.WriteScaffoldIfMissing(g.Path, f.dest, content); err != nil {
 			return fmt.Errorf("write %s: %w", f.dest, err)
 		}
 	}
@@ -220,12 +225,13 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		if err != nil {
 			return fmt.Errorf("read CI template %s: %w", f.templateName, err)
 		}
-		// Tier-2: the PR template is a one-shot starter the user owns
-		// after creation — `forge generate` never re-emits it, so a
-		// Tier-1/legacy record would put the user's own edits under the
-		// stomp guard (FRICTION 2026-06-05, cp-forge: users hand-flipped
-		// `forked: true` to escape exactly that misclassification).
-		if _, err := checksums.WriteGeneratedFileTier2(g.Path, f.dest, content, cs, true); err != nil {
+		// Scaffold-once ("yours"): the PR template is a one-shot starter
+		// the user owns after creation — `forge generate` never re-emits
+		// it, so a Tier-1/legacy record would put the user's own edits
+		// under the stomp guard (FRICTION 2026-06-05, cp-forge: users
+		// hand-flipped `forked: true` to escape exactly that
+		// misclassification).
+		if _, err := checksums.WriteScaffoldIfMissing(g.Path, f.dest, content); err != nil {
 			return fmt.Errorf("write %s: %w", f.dest, err)
 		}
 	}
@@ -241,10 +247,11 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		if err != nil {
 			return fmt.Errorf("render CODEOWNERS: %w", err)
 		}
-		// Tier-2: CODEOWNERS carries the `yours: scaffolded once ... —
-		// starter` banner — review policy is the user's to evolve, and
-		// edits must not trip the Tier-1 stomp guard.
-		if _, err := checksums.WriteGeneratedFileTier2(g.Path, ".github/CODEOWNERS", content, cs, true); err != nil {
+		// Scaffold-once ("yours"): CODEOWNERS carries the `yours:
+		// scaffolded once ... — starter` banner — review policy is the
+		// user's to evolve, and edits must not trip the Tier-1 stomp
+		// guard.
+		if _, err := checksums.WriteScaffoldIfMissing(g.Path, ".github/CODEOWNERS", content); err != nil {
 			return fmt.Errorf("write CODEOWNERS: %w", err)
 		}
 	}

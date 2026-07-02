@@ -109,6 +109,15 @@ interface pattern throughout the entire stack.`,
 			// buries the real error under 40 lines of flag help.
 			cmd.SilenceUsage = true
 
+			// Self-heal git-hook activation (idempotent, best-effort).
+			// Placed before the experimental-warning early-returns so
+			// --silence-experimental doesn't also silence it. No-op unless
+			// we're in a forge project that ships .githooks/ (see
+			// ensureGitHooksActivated).
+			if root, err := cmdutil.FindProjectRoot(); err == nil && root != "" {
+				ensureGitHooksActivated(root)
+			}
+
 			if silenceExperimental || os.Getenv("FORGE_SILENCE_EXPERIMENTAL") != "" {
 				return
 			}

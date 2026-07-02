@@ -81,7 +81,7 @@ func flushConfigWarnings(label string, warns []validationIssue) {
 		if w.fix != "" {
 			fmt.Fprintf(&b, " Fix: %s", w.fix)
 		}
-		fmt.Fprintln(configWarningSink, b.String())
+		_, _ = fmt.Fprintln(configWarningSink, b.String())
 	}
 }
 

@@ -38,7 +38,7 @@ func init() { factory.Register(newCmd) }
 // loader package-level (rather than threading a Factory through ~80
 // signatures) keeps the relocation behavior-preserving. It is the same
 // loader the rest of the CLI uses.
-func loadProjectStore() (projectstore.ProjectStore, error) {
+func loadProjectStore() (*projectstore.Store, error) {
 	return factory.LoadProjectStore()
 }
 

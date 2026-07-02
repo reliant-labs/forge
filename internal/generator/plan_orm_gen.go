@@ -88,9 +88,10 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 		// The custom-query seam: a scaffold-once, user-owned sibling file
 		// documenting where hand-written / raw-SQL queries for this entity
 		// go. It reuses the generated <entity>Repo, the package-level
-		// delegates, and db handle. Routed through the Tier-2 writer so
-		// it's NEVER overwritten after first scaffold (sibling files in
-		// package db survive the *_orm.go regen sweep above).
+		// delegates, and db handle. Routed through the write-if-absent
+		// scaffold writer so it's NEVER overwritten after first scaffold
+		// (sibling files in package db survive the *_orm.go regen sweep
+		// above).
 		if err := writeRepoExtSeam(root, ent, cs); err != nil {
 			return fmt.Errorf("scaffold repo-ext seam for entity %s: %w", ent.Name, err)
 		}
@@ -100,13 +101,13 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 
 // writeRepoExtSeam scaffolds internal/db/<entity>_repo_ext.go ONCE: a
 // discoverable, empty-but-documented home for hand-written queries that
-// reuse the generated CRUD machinery. Tier-2 (scaffold-once) — once on
+// reuse the generated CRUD machinery. Scaffold-once ("yours") — once on
 // disk forge never touches it, so the user's custom methods are safe
 // across every future `forge generate`.
-func writeRepoExtSeam(root string, ent config.PlanEntity, cs *FileChecksums) error {
+func writeRepoExtSeam(root string, ent config.PlanEntity, _ *FileChecksums) error {
 	name := naming.ToSnakeCase(ent.Name) + "_repo_ext.go"
 	rel := filepath.Join("internal", "db", name)
-	_, err := WriteGeneratedFileTier2(root, rel, renderRepoExtSeam(ent), cs, false)
+	_, err := WriteScaffoldIfMissing(root, rel, renderRepoExtSeam(ent))
 	return err
 }
 

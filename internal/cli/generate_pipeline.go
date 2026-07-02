@@ -190,10 +190,10 @@ type pipelineContext struct {
 	// don't each have to reach through the store; nil whenever Store is nil.
 	Cfg *config.ProjectConfig
 
-	// Store is the ProjectStore wrapping the loaded project, or nil on the
-	// directory-scan fallback path. Steps reading project/component/feature
-	// state should prefer it; Cfg remains for the config-typed step helpers.
-	Store projectstore.ProjectStore
+	// Store wraps the loaded project, or nil on the directory-scan fallback
+	// path. Steps reading project/component/feature state should prefer it;
+	// Cfg remains for the config-typed step helpers.
+	Store *projectstore.Store
 
 	// Checksums is loaded once at step 0b and saved on pipeline exit
 	// by the caller. Steps mutate this in-place via WriteGeneratedFile
@@ -2068,7 +2068,7 @@ func stepCIWorkflows(ctx *pipelineContext) error {
 // handlers, audit-log middleware glue). Non-fatal so a single
 // misbehaving pack doesn't brick the whole pipeline.
 func stepPackGenerateHooks(ctx *pipelineContext) error {
-	if err := runPackGenerateHooks(ctx.ProjectDir, ctx.Cfg); err != nil {
+	if err := runPackGenerateHooks(ctx.ProjectDir, ctx.Cfg, ctx.Checksums); err != nil {
 		fmt.Fprintf(os.Stderr, "  ⚠️  Pack generate hooks warning: %v\n", err)
 	}
 	return nil

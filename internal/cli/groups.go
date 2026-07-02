@@ -14,6 +14,8 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/generator"
 
+	// Blank imports: each group's init() self-registers its command factory
+	// with internal/cli/factory (see the file-level comment above).
 	_ "github.com/reliant-labs/forge/internal/cli/add"
 	_ "github.com/reliant-labs/forge/internal/cli/audit"
 	_ "github.com/reliant-labs/forge/internal/cli/backlog"

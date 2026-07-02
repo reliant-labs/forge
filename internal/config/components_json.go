@@ -150,19 +150,14 @@ func (c componentJSON) toConfig() ComponentConfig {
 	if len(c.Ports) > 0 {
 		out.Ports = make(map[string]PortSpec, len(c.Ports))
 		for name, p := range c.Ports {
-			out.Ports[name] = PortSpec{Port: p.Port, Protocol: p.Protocol, Expose: p.Expose}
+			out.Ports[name] = PortSpec(p)
 		}
 	}
 	for _, w := range c.Webhooks {
-		out.Webhooks = append(out.Webhooks, WebhookConfig{Name: w.Name})
+		out.Webhooks = append(out.Webhooks, WebhookConfig(w))
 	}
 	for _, crd := range c.CRDs {
-		out.CRDs = append(out.CRDs, CRDConfig{
-			Name:    crd.Name,
-			Group:   crd.Group,
-			Version: crd.Version,
-			Shape:   crd.Shape,
-		})
+		out.CRDs = append(out.CRDs, CRDConfig(crd))
 	}
 	return out
 }
@@ -180,19 +175,14 @@ func componentToJSON(c ComponentConfig) componentJSON {
 	if len(c.Ports) > 0 {
 		out.Ports = make(map[string]portSpecJSON, len(c.Ports))
 		for name, p := range c.Ports {
-			out.Ports[name] = portSpecJSON{Port: p.Port, Protocol: p.Protocol, Expose: p.Expose}
+			out.Ports[name] = portSpecJSON(p)
 		}
 	}
 	for _, w := range c.Webhooks {
-		out.Webhooks = append(out.Webhooks, webhookJSON{Name: w.Name})
+		out.Webhooks = append(out.Webhooks, webhookJSON(w))
 	}
 	for _, crd := range c.CRDs {
-		out.CRDs = append(out.CRDs, crdJSON{
-			Name:    crd.Name,
-			Group:   crd.Group,
-			Version: crd.Version,
-			Shape:   crd.Shape,
-		})
+		out.CRDs = append(out.CRDs, crdJSON(crd))
 	}
 	return out
 }

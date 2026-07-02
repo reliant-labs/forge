@@ -102,7 +102,7 @@ func testFactory(cfg auditAPIConfig) *factory.Factory {
 // the audit-package tests: read forge.yaml (+ components.json sibling) from
 // an explicit path, mapping a missing file to cmdutil.ErrProjectConfigNotFound
 // so buildAuditReport's not-a-project branch fires.
-func loadProjectStoreFromTest(path string) (projectstore.ProjectStore, error) {
+func loadProjectStoreFromTest(path string) (*projectstore.Store, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, cmdutil.ErrProjectConfigNotFound
 	}

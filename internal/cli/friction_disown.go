@@ -85,17 +85,17 @@ func recordDisownFriction(projectRoot, source, reason string, relPaths []string,
 		// not a defect — it must never trip a p-level triage filter.
 		entry := newFrictionEntry("note", frictionAreaDisown, source, []string{rel}, text)
 		if err := appendFrictionEntry(path, entry); err != nil {
-			fmt.Fprintf(w, "⚠️  could not record disown friction entry for %s: %v\n", rel, err)
+			_, _ = fmt.Fprintf(w, "⚠️  could not record disown friction entry for %s: %v\n", rel, err)
 			continue
 		}
 		written++
 	}
 	if written > 0 {
-		fmt.Fprintf(w, "📝 recorded %d disown friction entr%s -> %s (view: forge friction list --area disown)\n",
+		_, _ = fmt.Fprintf(w, "📝 recorded %d disown friction entr%s -> %s (view: forge friction list --area disown)\n",
 			written, pluralIES(written), frictionFileRelPath)
 	}
 	if reason == "" {
-		fmt.Fprintln(w, disownReasonNudge)
+		_, _ = fmt.Fprintln(w, disownReasonNudge)
 	}
 }
 

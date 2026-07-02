@@ -100,6 +100,8 @@ type ForeignKey struct {
 // MapDeclaredType.
 type CanonicalType string
 
+// The Type* constants enumerate every CanonicalType the generators
+// recognise.
 const (
 	TypeString CanonicalType = "string"
 	TypeInt    CanonicalType = "int64"
@@ -246,10 +248,10 @@ func applyMigration(db *sql.DB, sqlText string) error {
 			// Non-schema statement (data movement, functions, triggers,
 			// comments, extensions): failure cannot change the
 			// table/column model — best-effort apply, skip on error.
-			_, _ = db.Exec(stmt)
+			_, _ = db.ExecContext(context.Background(), stmt)
 			continue
 		}
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.ExecContext(context.Background(), stmt); err != nil {
 			return fmt.Errorf("%w\nstatement:\n%s", err, strings.TrimSpace(stmt))
 		}
 	}
@@ -403,7 +405,7 @@ func isWordBoundary(s string, i int) bool {
 		return true
 	}
 	p := s[i-1]
-	return !(p >= 'a' && p <= 'z' || p >= 'A' && p <= 'Z' || p >= '0' && p <= '9' || p == '_')
+	return (p < 'a' || p > 'z') && (p < 'A' || p > 'Z') && (p < '0' || p > '9') && p != '_'
 }
 
 func hasWordAt(s string, i int, word string) bool {
@@ -418,7 +420,7 @@ func hasWordAt(s string, i int, word string) bool {
 		return true
 	}
 	n := s[j]
-	return !(n >= 'a' && n <= 'z' || n >= 'A' && n <= 'Z' || n >= '0' && n <= '9' || n == '_')
+	return (n < 'a' || n > 'z') && (n < 'A' || n > 'Z') && (n < '0' || n > '9') && n != '_'
 }
 
 // dollarQuoteEnd returns the index just past a postgres dollar-quoted

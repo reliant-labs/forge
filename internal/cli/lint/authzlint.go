@@ -51,7 +51,7 @@ func buildProjectDescriptorSet(ctx context.Context, projectDir string) (*descrip
 	}
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	cmd := exec.CommandContext(ctx, "buf", "build",
 		"--as-file-descriptor-set", "-o", tmpPath)

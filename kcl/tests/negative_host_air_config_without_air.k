@@ -5,7 +5,7 @@ Negative test — HostDeploy.air_config is only valid when runner =
 
 import forge
 
-_svc = forge.Service {
+_svc = forge.K8sWorkload {
     name = "bad-air"
     image = "x"
     deploy = forge.HostDeploy {

@@ -34,6 +34,11 @@
 // is NOT in AUTH_DEV_MODE runs the auth interceptor, so without a token
 // every tools/call returns a clean Connect "unauthenticated" error — which
 // itself proves the transport wiring. With a token, real calls succeed.
+//
+// forge:exclude-contract
+// mcpbridge is an MCP stdio-server glue package (bridges gen/mcp/manifest.json
+// to a live MCP server over stdio/HTTP), not a bootstrap-wired Connect service.
+// Opt out of the require-contract rule.
 package mcpbridge
 
 import (
@@ -56,8 +61,12 @@ const (
 	// Inspector negotiate; its Tool.inputSchema is an open object, which
 	// is why $defs/$ref schemas pass through unmodified.
 	ProtocolVersion = "2024-11-05"
-	ServerName      = "forge-mcp"
-	ServerVersion   = "0.1.0"
+	// ServerName is the identity this bridge reports in the MCP
+	// initialize handshake.
+	ServerName = "forge-mcp"
+	// ServerVersion is this bridge implementation's own version, distinct
+	// from the negotiated ProtocolVersion.
+	ServerVersion = "0.1.0"
 )
 
 // Manifest mirrors the gen/mcp/manifest.json shape forge writes. We keep
@@ -407,7 +416,7 @@ func (s *Server) dispatchConnect(ctx context.Context, t *Tool, args map[string]a
 	if err != nil {
 		return nil, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

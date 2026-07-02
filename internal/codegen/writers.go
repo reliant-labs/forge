@@ -40,3 +40,21 @@ func writeForgeOwned(root, relPath string, content []byte, cs *checksums.FileChe
 func writeUserScaffold(path string, content []byte) error {
 	return os.WriteFile(path, content, 0o644)
 }
+
+// writeUserScaffoldIfAbsent writes a one-time user-scaffold file ONLY when it
+// does not already exist. Once forge has scaffolded it, the user owns the
+// contents and a later `forge generate` must never clobber their edits — so an
+// existing file is left untouched (returns false, nil). Returns true when it
+// wrote a fresh file. Like writeUserScaffold, it is deliberately not
+// checksum-tracked.
+func writeUserScaffoldIfAbsent(path string, content []byte) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return false, nil // already present — user owns it, leave it be
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
+}

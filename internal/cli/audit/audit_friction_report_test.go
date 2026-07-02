@@ -44,7 +44,7 @@ forge_version: dev
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var decoded AuditReport
+	var decoded Report
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

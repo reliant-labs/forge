@@ -547,7 +547,7 @@ func TestInTargetSet(t *testing.T) {
 // best-effort (ephemeral reuse can be racy) — we assert the true case
 // against a held listener and the false case against a never-bound port.
 func TestPortInUse(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -559,7 +559,7 @@ func TestPortInUse(t *testing.T) {
 	}
 
 	// Find a port that is (almost certainly) free: bind, capture, release.
-	free, err := net.Listen("tcp", "127.0.0.1:0")
+	free, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen free: %v", err)
 	}

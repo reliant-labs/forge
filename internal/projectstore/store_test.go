@@ -48,28 +48,30 @@ func TestMetaMirrorsConfig(t *testing.T) {
 	}
 }
 
-func TestComponentKindFilters(t *testing.T) {
+func TestComponentViewKinds(t *testing.T) {
 	s := New(sampleConfig())
-	if len(s.Components()) != 5 {
-		t.Fatalf("want 5 components, got %d", len(s.Components()))
+	comps := s.Components()
+	if len(comps) != 5 {
+		t.Fatalf("want 5 components, got %d", len(comps))
 	}
-	if len(s.Servers()) != 1 || !s.Servers()[0].IsServer() {
-		t.Fatalf("servers filter wrong")
+	byName := map[string]Component{}
+	for _, c := range comps {
+		byName[c.Name] = c
 	}
-	if len(s.Workers()) != 1 || !s.Workers()[0].IsWorker() {
-		t.Fatalf("workers filter wrong")
+	if !byName["api"].IsServer() || byName["api"].PrimaryPort() != 8080 {
+		t.Fatalf("server view wrong: %+v", byName["api"])
 	}
-	if len(s.Crons()) != 1 || s.Crons()[0].Schedule != "0 0 * * *" {
-		t.Fatalf("crons filter wrong")
+	if !byName["sweeper"].IsWorker() {
+		t.Fatalf("worker view wrong")
 	}
-	if len(s.Operators()) != 1 || !s.Operators()[0].IsOperator() {
-		t.Fatalf("operators filter wrong")
+	if !byName["nightly"].IsCron() || byName["nightly"].Schedule != "0 0 * * *" {
+		t.Fatalf("cron view wrong")
 	}
-	if len(s.BinaryComponents()) != 1 || !s.BinaryComponents()[0].IsBinary() {
-		t.Fatalf("binary filter wrong")
+	if !byName["ctrl"].IsOperator() {
+		t.Fatalf("operator view wrong")
 	}
-	if s.Servers()[0].PrimaryPort() != 8080 {
-		t.Fatalf("primary port wrong")
+	if !byName["tool"].IsBinary() {
+		t.Fatalf("binary view wrong")
 	}
 }
 
@@ -112,15 +114,6 @@ func TestAppendWebhook(t *testing.T) {
 	}
 	if len(cfg.Components[0].Webhooks) != 1 {
 		t.Fatalf("webhook not appended to underlying config")
-	}
-}
-
-func TestSetPacks(t *testing.T) {
-	cfg := sampleConfig()
-	s := New(cfg)
-	s.SetPacks([]string{"a", "b"})
-	if len(cfg.Packs) != 2 {
-		t.Fatalf("SetPacks did not reach config")
 	}
 }
 

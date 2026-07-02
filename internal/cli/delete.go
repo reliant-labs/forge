@@ -104,7 +104,6 @@ Example:
 // deleteServicePlan is the resolved set of mutations runDeleteService will
 // apply — computed once so dry-run and the real run share one description.
 type deleteServicePlan struct {
-	name           string
 	handlerDir     string // project-relative; "" when no scaffold dir on disk
 	inComponents   bool
 	registryState  serviceRegistration
@@ -165,7 +164,6 @@ func runDeleteService(name string, dryRun, assumeYes, keepTypes bool, in io.Read
 	}
 
 	plan := deleteServicePlan{
-		name:           name,
 		handlerDir:     handlerDirRel,
 		inComponents:   idx >= 0,
 		registryState:  regState,

@@ -282,7 +282,7 @@ tasks:
             echo "psql not installed — install postgresql-client" >&2
             exit 1
           fi
-          : "${DATABASE_URL:?DATABASE_URL must be set (see .env.example)}"
+          : "${DATABASE_URL:?DATABASE_URL must be set (in your shell env or config.<env>.yaml)}"
           shopt -s nullglob
           for f in db/seeds/*.sql; do
             echo "applying $f"

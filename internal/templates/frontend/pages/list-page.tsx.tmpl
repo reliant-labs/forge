@@ -57,9 +57,9 @@ import type { {{.EntityName}} } from "{{.EntityTypeImportPath}}";
 import type { ReactNode } from "react";
 
 // ---- Typed columns ----
-// One entry per renderable proto field. Adding/removing a field in the
-// proto and re-running `forge generate --reset-tier2` regenerates
-// this list; hand-edit freely otherwise (the file is yours).
+// One entry per renderable proto field. This file is yours — hand-edit
+// freely. To regenerate it from the current proto, delete the file and
+// re-run `forge generate` (forge never overwrites an existing scaffold).
 type Column = {
   key: keyof {{.EntityName}} & string;
   header: string;

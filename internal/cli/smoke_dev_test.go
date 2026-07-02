@@ -129,7 +129,7 @@ func TestProbeDevHTTP_ReachesBackend(t *testing.T) {
 
 // TestProbeDevTCP_Connects asserts a TCP probe against a live listener PASSes.
 func TestProbeDevTCP_Connects(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestProbeDevTCP_Connects(t *testing.T) {
 // is the recurring dead :28090 controller breakage.
 func TestProbeDevPort_Unreachable_Fail(t *testing.T) {
 	// Grab a port, then close the listener so the dial is refused.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

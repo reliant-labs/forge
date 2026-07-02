@@ -162,7 +162,7 @@ func fetchCachedCRDYAML(ctx context.Context, cacheName, url, label string) (stri
 	}
 
 	fmt.Printf("Fetching %s from upstream...\n", label)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, http.NoBody)
 	if err != nil {
 		return "", err
 	}
@@ -171,7 +171,7 @@ func fetchCachedCRDYAML(ctx context.Context, cacheName, url, label string) (stri
 	if err != nil {
 		return "", fmt.Errorf("download %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
 	}
@@ -179,7 +179,7 @@ func fetchCachedCRDYAML(ctx context.Context, cacheName, url, label string) (stri
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(tmp.Name()) // best-effort cleanup if rename below fails
+	defer func() { _ = os.Remove(tmp.Name()) }() // best-effort cleanup if rename below fails
 	if _, err := io.Copy(tmp, resp.Body); err != nil {
 		_ = tmp.Close()
 		return "", fmt.Errorf("write cache: %w", err)

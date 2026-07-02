@@ -43,8 +43,12 @@ import (
 // the severity string) and in the `forge lint --json` output (which
 // always emitted "warning" thanks to the now-deleted normalize shim).
 type (
+	// Severity is the shared finding severity vocabulary, re-exported
+	// under this package's historical spelling.
 	Severity = finding.Severity
-	Finding  = finding.Finding
+	// Finding is the shared linter finding shape, re-exported under this
+	// package's historical spelling.
+	Finding = finding.Finding
 )
 
 // Severity enum values. frontendpacklint only ever emits warnings — it

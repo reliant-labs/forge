@@ -138,7 +138,7 @@ var styleByExt = map[string]commentStyle{
 	".tf":       {prefix: "# "},
 	".py":       {prefix: "# "},
 	".env":      {prefix: "# "},
-	".example":  {prefix: "# "}, // .env.example
+	".example":  {prefix: "# "}, // *.example files (e.g. config.example)
 	".sql":      {prefix: "-- "},
 	".md":       {prefix: "<!-- ", suffix: " -->"},
 	".markdown": {prefix: "<!-- ", suffix: " -->"},
@@ -239,20 +239,50 @@ func BodyHash(content []byte) string {
 // closer.
 func ExtractMarker(content []byte) (string, bool) {
 	norm := normalizeNewlines(content)
-	i := bytes.Index(norm, []byte(markerKey))
-	if i < 0 {
-		return "", false
-	}
-	rest := norm[i+len(markerKey):]
-	end := 0
-	for end < len(rest) {
-		c := rest[end]
-		if c == '\n' || c == ' ' || c == '\t' || c == '\r' {
-			break
+	key := []byte(markerKey)
+	// Scan for the FIRST occurrence whose value is a real certification
+	// hash. Source and docs that merely MENTION the marker key (e.g. this
+	// package's own doc comment `forge:hash=<sha256>`, or a template string
+	// literal) carry a non-hash value and must not be mistaken for a
+	// forge-generated file — that produced phantom "modified"/"drift"
+	// findings against forge's own source.
+	search := norm
+	for {
+		i := bytes.Index(search, key)
+		if i < 0 {
+			return "", false
 		}
-		end++
+		rest := search[i+len(key):]
+		end := 0
+		for end < len(rest) {
+			c := rest[end]
+			if c == '\n' || c == ' ' || c == '\t' || c == '\r' {
+				break
+			}
+			end++
+		}
+		if val := string(rest[:end]); isHashValue(val) || val == UnverifiedMarkerValue {
+			// A real certification hash, or the legacy "unverified" sentinel
+			// (deliberately non-hash so Verify always answers Modified).
+			return val, true
+		}
+		search = rest // advance past this (non-hash) mention and keep looking
 	}
-	return string(rest[:end]), true
+}
+
+// isHashValue reports whether s is a forge certification hash: a run of
+// lowercase hex digits (hex.EncodeToString output). Excludes placeholders
+// like `<sha256>` and empty values that appear in prose/fixtures.
+func isHashValue(s string) bool {
+	if len(s) < 16 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // StripMarker removes every marker line from content (preserving the

@@ -216,6 +216,12 @@ func isSkippedTemplate(noTmpl string) bool {
 		// appended into the user-owned handlers_crud.go — it is not a
 		// standalone file and carries no file header of its own.
 		"handlers_crud_shim_method.go",
+		// handlers_methods.go.tmpl is likewise a method FRAGMENT: forge
+		// renders one handler stub per RPC and appends them into the
+		// user-owned handlers.go scaffold. It carries per-method
+		// FORGE_SCAFFOLD markers but no file header of its own, so it is
+		// neither a regenerated `_gen` file nor a standalone `_scaffold`.
+		"handlers_methods.go",
 		// Tool manifests / infra config without a natural banner slot.
 		"buf.yaml",
 		"traefik.yaml",
@@ -234,7 +240,6 @@ func isSkippedTemplate(noTmpl string) bool {
 		"app.json",
 		"buf.gen.yaml",
 		".env.local",
-		"env.example",
 		"mcp.json",
 		"mcp.json.example",
 		"vscode-launch.json",
@@ -302,16 +307,10 @@ func isKnownTier1(rel, noTmpl string) bool {
 		"alloy-config.alloy":
 		return true
 	}
-	// CI workflows: regenerated wholesale. CODEOWNERS is intentionally
-	// not in this list — it's a one-shot scaffold (starter content) and
-	// classified as Tier 2 elsewhere.
-	if strings.HasPrefix(rel, "internal/templates/ci/") {
-		switch noTmpl {
-		case "ci.yml", "deploy.yml", "build-images.yml", "e2e.yml",
-			"proto-breaking.yml", "dependabot.yml":
-			return true
-		}
-	}
+	// NB: CI workflows (ci.yml, deploy.yml, build-images.yml, e2e.yml,
+	// proto-breaking.yml, dependabot.yml) are NOT Tier-1 — they are
+	// write-once scaffolds the user owns (see isKnownTier2). Certifying
+	// them Tier-1 mis-flagged sanctioned hand-edits as drift.
 	return false
 }
 
@@ -382,10 +381,18 @@ func isKnownTier2(rel, noTmpl string) bool {
 		"handlers_crud.go":
 		return true
 	}
-	// CI starter files that ship a default that the user is expected to
-	// review and own.
-	if strings.HasPrefix(rel, "internal/templates/ci/") && noTmpl == "CODEOWNERS" {
-		return true
+	// CI starter files that ship a default the user is expected to review
+	// and own: CODEOWNERS, plus the GitHub Actions workflows + dependabot.
+	// Forge writes these once (WriteScaffoldIfMissing) and never stomps
+	// edits — they carry the "yours: scaffolded once" banner, not a
+	// forge:hash marker, so hand-edits are sanctioned, not drift.
+	if strings.HasPrefix(rel, "internal/templates/ci/") {
+		switch noTmpl {
+		case "CODEOWNERS",
+			"ci.yml", "deploy.yml", "build-images.yml", "e2e.yml",
+			"proto-breaking.yml", "dependabot.yml":
+			return true
+		}
 	}
 	return false
 }

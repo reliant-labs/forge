@@ -15,7 +15,7 @@ import forge
 # config; secrets_file points at a gitignored dotenv with API keys etc.
 # working_dir pins the cross-repo case — a sibling repo whose Air
 # config resolves build paths relative to ITS own root.
-_svc_host = forge.Service {
+_svc_host = forge.K8sWorkload {
     name = "admin-server"
     image = "myapp:dev"
     deploy = forge.HostDeploy {
@@ -31,7 +31,7 @@ _svc_host = forge.Service {
 
 # A Service with K8sCluster. Ingress is owned by the Gateway/HTTPRoute
 # blocks on the Bundle, not the service's deploy block.
-_svc_cluster = forge.Service {
+_svc_cluster = forge.K8sWorkload {
     name = "workspace-proxy"
     image = "myapp:dev"
     deploy = forge.K8sCluster {
@@ -44,7 +44,7 @@ _svc_cluster = forge.Service {
 }
 
 # A Service with BuildOnly + variants.
-_svc_build = forge.Service {
+_svc_build = forge.K8sWorkload {
     name = "reliant-daemon"
     deploy = forge.BuildOnly {
         build_variants = [

@@ -58,7 +58,7 @@ func emitExperimentalWarning(w io.Writer, names []config.FeatureName) {
 	}
 	// One short grep-friendly line. Stays "warning:" so log scrapers and
 	// agents matching on that prefix keep working.
-	fmt.Fprintf(w, "warning: experimental: %s (--silence-experimental to hide)\n",
+	_, _ = fmt.Fprintf(w, "warning: experimental: %s (--silence-experimental to hide)\n",
 		strings.Join(names, ", "))
 }
 
@@ -94,13 +94,21 @@ var featureChecks = map[string]featureCheck{
 	config.FeatureStrictWiring:   func(f config.FeaturesConfig) bool { return f.StrictWiringEnabled() },
 }
 
+// featureReader is the narrow slice of the project store the feature-gate
+// helpers depend on — declared here, at the consumer, rather than importing
+// the store's whole method set. Anything that resolves the feature set
+// (the concrete *projectstore.Store, or a test double) satisfies it.
+type featureReader interface {
+	Features() projectstore.FeatureSet
+}
+
 // isFeatureEnabled reports whether a named feature is enabled in cfg.
 // A nil cfg (project missing) is treated as "enabled" so callers that
 // don't bother loading config get the historical permissive default.
 // An unknown feature name returns true with no error — keeps adding a
 // new gate site backwards-compatible across forge versions that
 // haven't yet registered the constant in featureChecks.
-func isFeatureEnabled(store projectstore.ProjectStore, name string) bool {
+func isFeatureEnabled(store featureReader, name string) bool {
 	if store == nil {
 		return true
 	}
@@ -120,7 +128,7 @@ func isFeatureEnabled(store projectstore.ProjectStore, name string) bool {
 // fallback (e.g. `forge deploy` against a project with
 // features.deploy: false). Don't use from orchestrators — see
 // skipFeature for the orchestrator shape.
-func requireFeature(name string) (projectstore.ProjectStore, error) {
+func requireFeature(name string) (*projectstore.Store, error) {
 	store, err := loadProjectStore()
 	if err != nil {
 		return nil, err
@@ -145,7 +153,7 @@ func requireFeature(name string) (projectstore.ProjectStore, error) {
 // "disabled in forge.yaml" wording implies the user opted out, which
 // is misleading for default-off opt-in features the user never
 // touched.
-func skipFeature(store projectstore.ProjectStore, name, phase string) bool {
+func skipFeature(store featureReader, name, phase string) bool {
 	if isFeatureEnabled(store, name) {
 		return false
 	}

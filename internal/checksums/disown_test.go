@@ -143,11 +143,11 @@ func TestWriteGeneratedFile_DisownedSkipsEvenWithForce(t *testing.T) {
 	if err != nil || wrote {
 		t.Errorf("Tier-1 wrapper: wrote=%v err=%v, want skip", wrote, err)
 	}
-	// The Tier-2 writer skips too (disowned content is the USER's; the
-	// Tier-2 preserve-existing check alone would not record the intent).
-	wrote, err = WriteGeneratedFileTier2(root, rel, []byte("package app // fresh render\n"), cs, false)
+	// The scaffold writer also leaves a disowned file alone — the file
+	// exists, so write-if-absent is a no-op regardless of ownership.
+	wrote, err = WriteScaffoldIfMissing(root, rel, []byte("package app // fresh render\n"))
 	if err != nil || wrote {
-		t.Errorf("Tier-2 writer: wrote=%v err=%v, want skip", wrote, err)
+		t.Errorf("scaffold writer: wrote=%v err=%v, want skip", wrote, err)
 	}
 
 	onDisk, _ := os.ReadFile(filepath.Join(root, rel))
@@ -233,35 +233,37 @@ func TestScanTier1Drift_IgnoresDisowned(t *testing.T) {
 	}
 }
 
-func TestWriteGeneratedFileTier2_ReScaffoldClearsDisownedMarker(t *testing.T) {
+// TestWriteScaffoldIfMissing_ReScaffoldsDeletedFile: a scaffold path
+// whose file has been deleted is re-written on the next run (write-if-
+// absent), carrying no marker — user-owned from birth again.
+func TestWriteScaffoldIfMissing_ReScaffoldsDeletedFile(t *testing.T) {
 	ResetSkipWrite()
 	defer ResetPerRunState()
 
 	root := t.TempDir()
-	cs := &FileChecksums{}
 	const rel = "internal/svc/service.go"
-	writeDisownFixture(t, root, rel, []byte("package svc // user\n"))
-	if err := cs.DisownPaths(root, []string{rel}, "user-owned"); err != nil {
+
+	scaffold := []byte("package svc // scaffold\n")
+	if wrote, err := WriteScaffoldIfMissing(root, rel, scaffold); err != nil || !wrote {
+		t.Fatalf("initial scaffold: wrote=%v err=%v", wrote, err)
+	}
+	// User edits, then deletes to trigger a refresh.
+	if err := os.WriteFile(filepath.Join(root, rel), []byte("package svc // user\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(root, rel)); err != nil {
 		t.Fatal(err)
 	}
 
-	scaffold := []byte("package svc // scaffold\n")
-	wrote, err := WriteGeneratedFileTier2(root, rel, scaffold, cs, false)
+	wrote, err := WriteScaffoldIfMissing(root, rel, scaffold)
 	if err != nil || !wrote {
-		t.Fatalf("Tier-2 re-scaffold of a deleted disowned file: wrote=%v err=%v", wrote, err)
+		t.Fatalf("re-scaffold of a deleted file: wrote=%v err=%v", wrote, err)
 	}
-	if cs.IsDisowned(rel) {
-		t.Errorf("disowned record not cleared by the Tier-2 re-scaffold: %+v", cs.Disowned[rel])
-	}
-	// Tier-2 scaffolds are user-owned from birth: no marker.
 	got, _ := os.ReadFile(filepath.Join(root, rel))
 	if string(got) != string(scaffold) {
 		t.Errorf("re-scaffold content = %q, want %q", got, scaffold)
 	}
 	if _, found := ExtractMarker(got); found {
-		t.Errorf("Tier-2 scaffold must not carry a forge:hash marker:\n%s", got)
+		t.Errorf("scaffold must not carry a forge:hash marker:\n%s", got)
 	}
 }

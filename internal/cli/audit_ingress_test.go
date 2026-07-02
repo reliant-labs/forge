@@ -212,6 +212,65 @@ func TestCrossCheckIngress_UnknownNonBackend(t *testing.T) {
 	}
 }
 
+// TestCrossCheckIngress_RenderedManifestBackend asserts that a route
+// targeting a Service that exists ONLY as a KCL-rendered manifest — not
+// as a forge.yaml component/frontend/webhook — resolves as a known
+// backend and does NOT error. This is the operator-fronting case:
+// forge.Operator emits no Service, so a hand-authored raw k8s Service
+// manifest (surfaced via KCLEntities.ManifestServiceNames, unioned into
+// `backends` by auditIngress) is the only place its name appears.
+func TestCrossCheckIngress_RenderedManifestBackend(t *testing.T) {
+	// No forge.yaml components at all — the backend is purely a rendered
+	// Service (as auditIngress would union in from
+	// entities.ManifestServiceNames / entities.Services).
+	services := []config.ComponentConfig{}
+	backends := []string{"workspace-controller"}
+	routes := []HTTPRouteEntity{
+		{Name: "wc-route", Service: "workspace-controller", Port: 9191},
+	}
+	grpc := []GRPCRouteEntity{
+		{Name: "wc-grpc", Service: "workspace-controller", Port: 9191},
+	}
+	cat := crossCheckIngress(services, backends, nil, routes, grpc)
+	if cat.Status != audittype.StatusOK {
+		t.Fatalf("status = %q, want ok (rendered Service is a valid backend)", cat.Status)
+	}
+	if findings, ok := cat.Details["findings"].([]string); ok {
+		for _, f := range findings {
+			if strings.HasPrefix(f, "error: ") {
+				t.Errorf("unexpected error finding for rendered-manifest backend: %q", f)
+			}
+		}
+	}
+}
+
+// TestManifestServiceNamesFromOuter covers the render-layer extraction of
+// raw k8s Service names from the outer `manifests` stream — the seam that
+// carries operator-fronting / hand-authored Services (which have no typed
+// forge entity) into the ingress known-backend set. Only kind=="Service"
+// objects contribute; other kinds and unnamed objects are ignored.
+func TestManifestServiceNamesFromOuter(t *testing.T) {
+	outer := []byte(`{
+		"manifests": [
+			{"kind": "Deployment", "metadata": {"name": "workspace-controller"}},
+			{"kind": "Service", "metadata": {"name": "workspace-controller"}},
+			{"kind": "Service", "metadata": {"name": "admin-server"}},
+			{"kind": "Service", "metadata": {"name": ""}},
+			{"kind": "ConfigMap", "metadata": {"name": "cfg"}}
+		]
+	}`)
+	got := manifestServiceNamesFromOuter(outer)
+	want := map[string]bool{"workspace-controller": true, "admin-server": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %d names %v, want %d", len(got), got, len(want))
+	}
+	for _, n := range got {
+		if !want[n] {
+			t.Errorf("unexpected Service name %q in %v", n, got)
+		}
+	}
+}
+
 // TestIngressBackendNames covers the union built in auditIngress —
 // services, per-service webhook handlers, and frontends all surface in
 // the resulting set. Order doesn't matter, just membership.

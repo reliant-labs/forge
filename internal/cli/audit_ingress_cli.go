@@ -52,6 +52,19 @@ func auditIngress(cfg *config.ProjectConfig, projectDir string) audittype.Catego
 		}
 	}
 	backends := ingressBackendNames(cfg)
+	// A route may legally target any Service in the env namespace — not
+	// just the ones a forge.yaml block scaffolds. Union the KCL-RENDERED
+	// Service names so hand-authored Services resolve as known backends:
+	//   - entities.Services — typed forge.Service objects.
+	//   - entities.ManifestServiceNames — raw k8s Service manifests injected
+	//     via `additional_manifests` (e.g. the Service fronting a
+	//     forge.Operator, which forge itself emits no Service for).
+	// Without this the cross-check false-errors "route X references unknown
+	// service X" for any operator-fronting or hand-authored Service.
+	for _, s := range entities.Services {
+		backends = append(backends, s.Name)
+	}
+	backends = append(backends, entities.ManifestServiceNames...)
 	return crossCheckIngress(cfg.Components, backends, entities.Gateways, entities.HTTPRoutes, entities.GRPCRoutes)
 }
 
@@ -78,9 +91,10 @@ func ingressBackendNames(cfg *config.ProjectConfig) []string {
 // the resolved services / known-backend set / gateways / routes and
 // returns the audittype.Category. Split out so unit tests can exercise
 // the cross-check without shelling kcl. `backends` is the union of names
-// (services + frontends + webhook handlers) any route may legally
-// point at; `services` is kept separate because only it drives the
-// "port declared but no route" info finding.
+// (forge.yaml services + frontends + webhook handlers, PLUS the
+// KCL-rendered Service objects — typed forge.Service and raw k8s Service
+// manifests) any route may legally point at; `services` is kept separate
+// because only it drives the "port declared but no route" info finding.
 func crossCheckIngress(services []config.ComponentConfig, backends []string, gateways []GatewayEntity, httpRoutes []HTTPRouteEntity, grpcRoutes []GRPCRouteEntity) audittype.Category {
 	knownBackend := make(map[string]struct{}, len(backends))
 	for _, b := range backends {

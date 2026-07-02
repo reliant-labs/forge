@@ -442,10 +442,23 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	}
 	kclDirAbs := filepath.Join(projectDir, kclDir)
 
+	// KCL-native config (ADDITIVE, alongside the legacy config_gen.k): emit
+	// the two project-level, forge-owned files (config_schema.k +
+	// config_projection.k) ONCE — the config TYPE + the projection BEHAVIOR.
+	// A project opts into the KCL-native path by importing these + a per-env
+	// config.k in its main.k (see the control-plane deploy/kcl/<env>/main.k);
+	// projects still importing config_gen keep working unchanged. Full
+	// retirement of config_gen.k + the Go projector is gated on migrating the
+	// scaffold main.k templates too (they still import config_gen).
+	if err := codegen.GenerateConfigNativeShared(fields, cfg.Name, projectDir, kclDirAbs, cs); err != nil {
+		return fmt.Errorf("emit KCL-native shared config: %w", err)
+	}
+
 	envs, lerr := ListEnvs(projectDir)
 	if lerr != nil {
 		return fmt.Errorf("list envs: %w", lerr)
 	}
+	scaffolded := 0
 	for _, envName := range envs {
 		envCfg, err := config.LoadEnvironmentConfig(projectDir, envName)
 		if err != nil {
@@ -464,7 +477,17 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 		}); err != nil {
 			return fmt.Errorf("emit %s config_gen.k: %w", envName, err)
 		}
+		// Scaffold the per-env user-owned config.k (write-if-absent) — the
+		// one-time migration of config.<env>.yaml into a typed AppConfig
+		// instance. Never clobbers an existing (user-edited) file.
+		wrote, cerr := codegen.GenerateConfigKScaffold(fields, envCfg, cfg.Name, kclDirAbs, envName)
+		if cerr != nil {
+			return fmt.Errorf("scaffold %s config.k: %w", envName, cerr)
+		}
+		if wrote {
+			scaffolded++
+		}
 	}
-	fmt.Printf("  ✅ Generated deploy/kcl/<env>/config_gen.k for %d environments\n", len(envs))
+	fmt.Printf("  ✅ Generated deploy/kcl/config_schema.k + config_projection.k and config_gen.k for %d environments (scaffolded %d new config.k)\n", len(envs), scaffolded)
 	return nil
 }

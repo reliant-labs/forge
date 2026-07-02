@@ -179,43 +179,87 @@ func lintInternalContracts(rootDir string, excludes []string) (forgeconv.Result,
 // contract surfaces all three at once (Service / Deps / New) rather
 // than drip-feeding one violation per re-run.
 func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Finding, error) {
+	facts, err := scanPackageContractShape(pkgDir)
+	if err != nil {
+		return nil, err
+	}
+
+	if shouldSkipContractShapeCheck(facts) {
+		return nil, nil
+	}
+
+	// Findings are reported against contract.go (canonical anchor)
+	// even when the actually-missing declaration would live in
+	// service.go — the user reads contract.go to understand the
+	// package boundary, so that's where we point them.
+	relPath := relContractPath
+
+	var findings []forgeconv.Finding
+	if !facts.hasServiceInterface {
+		findings = append(findings, missingServiceFinding(relPath, facts))
+	}
+	if !facts.hasDepsStruct {
+		findings = append(findings, missingDepsFinding(relPath, facts))
+	}
+	if !facts.hasNewFunc {
+		findings = append(findings, missingNewFinding(relPath, facts))
+	}
+
+	return findings, nil
+}
+
+// contractShapeFacts captures everything the canonical-names check needs
+// to know about a package: which of the three canonical declarations are
+// present, opt-out signals (strategy directive, interface count), and the
+// first non-canonical interface/struct/constructor found (so findings can
+// name what the user actually wrote instead).
+type contractShapeFacts struct {
+	hasServiceInterface bool
+	hasDepsStruct       bool
+	hasNewFunc          bool
+	// hasStrategyDirective is set when any non-test, non-gen file
+	// in the package carries the `//forge:strategy` marker. The
+	// directive is an explicit opt-out from the canonical
+	// Service/Deps/New shape — strategy registries (pluggable
+	// backends behind a single interface, each impl with its own
+	// constructor and Deps shape) don't have a single `Service` or
+	// `New(Deps)` to bind. See contracts.SKILL.md for the canonical
+	// pattern.
+	hasStrategyDirective bool
+	// interfaceCount counts every interface declaration anywhere in
+	// the package. When >= 2 AND no Deps struct AND no New func, the
+	// package is recognized as an "interface-catalogue" shape — a
+	// collection of narrow interfaces consumed elsewhere, not a
+	// Service-shape package the bootstrap template binds to. We
+	// skip the canonical-names check in that case so the user
+	// doesn't have to add the package to contracts.exclude just to
+	// silence false-positive Service/Deps/New findings.
+	// FRICTION 2026-06-02: cp-forge layer-3 natsio, layer-4 daemonstate.
+	interfaceCount int
+	// Capture the first non-canonical interface and struct names so
+	// the error message can be specific ("found 'Sender'/'Config'/'NewSender'").
+	firstIfaceName  string
+	firstIfacePos   token.Position
+	firstStructName string
+	firstStructPos  token.Position
+	firstCtorName   string
+	firstCtorPos    token.Position
+}
+
+// scanPackageContractShape walks every non-test, non-gen .go file in
+// pkgDir and records which canonical declarations (Service / Deps / New)
+// are present, plus the opt-out signals and first non-canonical names.
+// Parse errors are surfaced to the caller so the user sees the syntax
+// problem rather than a spurious contract-shape finding.
+func scanPackageContractShape(pkgDir string) (contractShapeFacts, error) {
+	var facts contractShapeFacts
+
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", pkgDir, err)
+		return facts, fmt.Errorf("read %s: %w", pkgDir, err)
 	}
 
 	fset := token.NewFileSet()
-	var (
-		findings            []forgeconv.Finding
-		hasServiceInterface bool
-		hasDepsStruct       bool
-		hasNewFunc          bool
-		// hasStrategyDirective is set when any non-test, non-gen file
-		// in the package carries the `//forge:strategy` marker. The
-		// directive is an explicit opt-out from the canonical
-		// Service/Deps/New shape — strategy registries (pluggable
-		// backends behind a single interface, each impl with its own
-		// constructor and Deps shape) don't have a single `Service` or
-		// `New(Deps)` to bind. See contracts.SKILL.md for the canonical
-		// pattern.
-		hasStrategyDirective bool
-		// interfaceCount counts every interface declaration anywhere in
-		// the package. When >= 2 AND no Deps struct AND no New func, the
-		// package is recognized as an "interface-catalogue" shape — a
-		// collection of narrow interfaces consumed elsewhere, not a
-		// Service-shape package the bootstrap template binds to. We
-		// skip the canonical-names check in that case so the user
-		// doesn't have to add the package to contracts.exclude just to
-		// silence false-positive Service/Deps/New findings.
-		// FRICTION 2026-06-02: cp-forge layer-3 natsio, layer-4 daemonstate.
-		interfaceCount int
-		// Capture the first non-canonical interface and struct names so
-		// the error message can be specific ("found 'Sender'/'Config'/'NewSender'").
-		firstIfaceName, firstIfacePos   = "", token.Position{}
-		firstStructName, firstStructPos = "", token.Position{}
-		firstCtorName, firstCtorPos     = "", token.Position{}
-	)
-
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
@@ -235,58 +279,72 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 		if parseErr != nil {
 			// Surface the parse error, but continue scanning other
 			// files in the package so the user sees the full picture.
-			return nil, parseErr
+			return facts, parseErr
 		}
 
-		if !hasStrategyDirective && fileHasStrategyDirective(file) {
-			hasStrategyDirective = true
+		if !facts.hasStrategyDirective && fileHasStrategyDirective(file) {
+			facts.hasStrategyDirective = true
 		}
 
 		for _, decl := range file.Decls {
-			switch d := decl.(type) {
-			case *ast.GenDecl:
-				if d.Tok != token.TYPE {
-					continue
-				}
-				for _, spec := range d.Specs {
-					ts, ok := spec.(*ast.TypeSpec)
-					if !ok {
-						continue
-					}
-					switch ts.Type.(type) {
-					case *ast.InterfaceType:
-						interfaceCount++
-						if ts.Name.Name == "Service" {
-							hasServiceInterface = true
-						} else if firstIfaceName == "" {
-							firstIfaceName = ts.Name.Name
-							firstIfacePos = fset.Position(ts.Pos())
-						}
-					case *ast.StructType:
-						if ts.Name.Name == "Deps" {
-							hasDepsStruct = true
-						} else if firstStructName == "" {
-							firstStructName = ts.Name.Name
-							firstStructPos = fset.Position(ts.Pos())
-						}
-					}
-				}
-			case *ast.FuncDecl:
-				// Only top-level (no receiver) functions count as the
-				// constructor candidate; methods on the impl struct are fine.
-				if d.Recv != nil {
-					continue
-				}
-				if d.Name.Name == "New" && isNewDepsServiceSignature(d.Type) {
-					hasNewFunc = true
-				} else if firstCtorName == "" && strings.HasPrefix(d.Name.Name, "New") {
-					firstCtorName = d.Name.Name
-					firstCtorPos = fset.Position(d.Name.NamePos)
-				}
-			}
+			scanContractDecl(decl, fset, &facts)
 		}
 	}
 
+	return facts, nil
+}
+
+// scanContractDecl folds a single top-level declaration into facts:
+// canonical Service/Deps hits, the New(Deps) Service constructor, and the
+// first non-canonical interface/struct/New-prefixed constructor seen.
+func scanContractDecl(decl ast.Decl, fset *token.FileSet, facts *contractShapeFacts) {
+	switch d := decl.(type) {
+	case *ast.GenDecl:
+		if d.Tok != token.TYPE {
+			return
+		}
+		for _, spec := range d.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			switch ts.Type.(type) {
+			case *ast.InterfaceType:
+				facts.interfaceCount++
+				if ts.Name.Name == "Service" {
+					facts.hasServiceInterface = true
+				} else if facts.firstIfaceName == "" {
+					facts.firstIfaceName = ts.Name.Name
+					facts.firstIfacePos = fset.Position(ts.Pos())
+				}
+			case *ast.StructType:
+				if ts.Name.Name == "Deps" {
+					facts.hasDepsStruct = true
+				} else if facts.firstStructName == "" {
+					facts.firstStructName = ts.Name.Name
+					facts.firstStructPos = fset.Position(ts.Pos())
+				}
+			}
+		}
+	case *ast.FuncDecl:
+		// Only top-level (no receiver) functions count as the
+		// constructor candidate; methods on the impl struct are fine.
+		if d.Recv != nil {
+			return
+		}
+		if d.Name.Name == "New" && isNewDepsServiceSignature(d.Type) {
+			facts.hasNewFunc = true
+		} else if facts.firstCtorName == "" && strings.HasPrefix(d.Name.Name, "New") {
+			facts.firstCtorName = d.Name.Name
+			facts.firstCtorPos = fset.Position(d.Name.NamePos)
+		}
+	}
+}
+
+// shouldSkipContractShapeCheck reports whether the package opts out of the
+// canonical Service/Deps/New shape entirely, via one of three recognized
+// non-Service shapes.
+func shouldSkipContractShapeCheck(facts contractShapeFacts) bool {
 	// Strategy-pattern early-out: explicit opt-out via the
 	// `//forge:strategy` directive on any file in the package. Strategy
 	// registries (one Strategy interface + multiple impl structs each
@@ -299,8 +357,8 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 	// FRICTION 2026-06-03: kalshi `internal/algos` shipped as a
 	// strategy registry and required a contracts.exclude entry. The
 	// `//forge:strategy` directive makes that opt-in instead of opt-out.
-	if hasStrategyDirective {
-		return nil, nil
+	if facts.hasStrategyDirective {
+		return true
 	}
 
 	// Utility-package early-out: when the package declares ZERO
@@ -315,8 +373,8 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 	// as constants-and-structs utility packages with no interface
 	// surface. Each required a contracts.exclude entry that this
 	// early-out makes unnecessary.
-	if isUtilityPackage(interfaceCount) {
-		return nil, nil
+	if isUtilityPackage(facts.interfaceCount) {
+		return true
 	}
 
 	// Interface-catalogue early-out: when the package declares >= 2
@@ -336,89 +394,84 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 	// by design) and layer-4 daemonstate (1 data interface + 1 lifecycle
 	// runner) both required `contracts.exclude` entries that this
 	// early-out makes unnecessary.
-	if interfaceCount >= 2 && !hasDepsStruct && !hasNewFunc {
-		return nil, nil
+	if facts.interfaceCount >= 2 && !facts.hasDepsStruct && !facts.hasNewFunc {
+		return true
 	}
 
-	// Findings are reported against contract.go (canonical anchor)
-	// even when the actually-missing declaration would live in
-	// service.go — the user reads contract.go to understand the
-	// package boundary, so that's where we point them.
-	relPath := relContractPath
+	return false
+}
 
-	// Synthesize a canonical actionable error message per missing piece.
-	// Keep the wording uniform so users can grep the codebase for it.
-	const canonical = "internal-package contracts must declare 'type Service interface', " +
-		"'type Deps struct', and 'func New(Deps) Service'"
+// canonicalContractMessage is the shared prefix for every
+// contract-shape finding. Keep the wording uniform so users can grep the
+// codebase for it.
+const canonicalContractMessage = "internal-package contracts must declare 'type Service interface', " +
+	"'type Deps struct', and 'func New(Deps) Service'"
 
-	if !hasServiceInterface {
-		var line int
-		var found string
-		if firstIfaceName != "" {
-			line = firstIfacePos.Line
-			found = fmt.Sprintf("'%s'", firstIfaceName)
-		} else {
-			line = 1
-			found = "no interface"
-		}
-		findings = append(findings, forgeconv.Finding{
-			Rule:     string(RuleInternalPackageContractNames),
-			Severity: forgeconv.SeverityError,
-			File:     relPath,
-			Line:     line,
-			Message: fmt.Sprintf(
-				"forge convention: %s. Found %s — rename to 'Service' (or move out of contract.go) so the bootstrap template can wire it. See skill: contracts.",
-				canonical, found),
-			Remediation: "rename the interface declaration to `type Service interface { ... }`, " +
-				"or move it to a non-contract.go file if it's not the package's primary behavioral surface",
-		})
+// missingServiceFinding builds the finding emitted when the package has no
+// `type Service interface`, naming the first non-canonical interface found
+// (or "no interface" when the package declares none).
+func missingServiceFinding(relPath string, facts contractShapeFacts) forgeconv.Finding {
+	line := 1
+	found := "no interface"
+	if facts.firstIfaceName != "" {
+		line = facts.firstIfacePos.Line
+		found = fmt.Sprintf("'%s'", facts.firstIfaceName)
 	}
-
-	if !hasDepsStruct {
-		var line int
-		var found string
-		if firstStructName != "" {
-			line = firstStructPos.Line
-			found = fmt.Sprintf("'%s'", firstStructName)
-		} else {
-			line = 1
-			found = "no struct"
-		}
-		findings = append(findings, forgeconv.Finding{
-			Rule:     string(RuleInternalPackageContractNames),
-			Severity: forgeconv.SeverityError,
-			File:     relPath,
-			Line:     line,
-			Message: fmt.Sprintf(
-				"forge convention: %s. Found %s — rename to 'Deps' (or move out of contract.go) so the bootstrap template can wire it. See skill: contracts.",
-				canonical, found),
-			Remediation: "rename the dependency-set struct to `type Deps struct { ... }` (use `struct{}` if no deps yet)",
-		})
+	return forgeconv.Finding{
+		Rule:     string(RuleInternalPackageContractNames),
+		Severity: forgeconv.SeverityError,
+		File:     relPath,
+		Line:     line,
+		Message: fmt.Sprintf(
+			"forge convention: %s. Found %s — rename to 'Service' (or move out of contract.go) so the bootstrap template can wire it. See skill: contracts.",
+			canonicalContractMessage, found),
+		Remediation: "rename the interface declaration to `type Service interface { ... }`, " +
+			"or move it to a non-contract.go file if it's not the package's primary behavioral surface",
 	}
+}
 
-	if !hasNewFunc {
-		var line int
-		var found string
-		if firstCtorName != "" {
-			line = firstCtorPos.Line
-			found = fmt.Sprintf("'%s'", firstCtorName)
-		} else {
-			line = 1
-			found = "no constructor"
-		}
-		findings = append(findings, forgeconv.Finding{
-			Rule:     string(RuleInternalPackageContractNames),
-			Severity: forgeconv.SeverityError,
-			File:     relPath,
-			Line:     line,
-			Message: fmt.Sprintf(
-				"forge convention: %s. Found %s — rename to 'New' with signature `func New(Deps) Service` so the bootstrap template can wire it. See skill: contracts.",
-				canonical, found),
-			Remediation: "rename the constructor to `func New(Deps) Service` (the bootstrap template emits `<pkg>.New(<pkg>.Deps{...})`)",
-		})
+// missingDepsFinding builds the finding emitted when the package has no
+// `type Deps struct`, naming the first non-canonical struct found (or
+// "no struct" when the package declares none).
+func missingDepsFinding(relPath string, facts contractShapeFacts) forgeconv.Finding {
+	line := 1
+	found := "no struct"
+	if facts.firstStructName != "" {
+		line = facts.firstStructPos.Line
+		found = fmt.Sprintf("'%s'", facts.firstStructName)
 	}
+	return forgeconv.Finding{
+		Rule:     string(RuleInternalPackageContractNames),
+		Severity: forgeconv.SeverityError,
+		File:     relPath,
+		Line:     line,
+		Message: fmt.Sprintf(
+			"forge convention: %s. Found %s — rename to 'Deps' (or move out of contract.go) so the bootstrap template can wire it. See skill: contracts.",
+			canonicalContractMessage, found),
+		Remediation: "rename the dependency-set struct to `type Deps struct { ... }` (use `struct{}` if no deps yet)",
+	}
+}
 
-	return findings, nil
+// missingNewFinding builds the finding emitted when the package has no
+// `func New(Deps) Service`, naming the first non-canonical New-prefixed
+// constructor found (or "no constructor" when the package declares none).
+func missingNewFinding(relPath string, facts contractShapeFacts) forgeconv.Finding {
+	line := 1
+	found := "no constructor"
+	if facts.firstCtorName != "" {
+		line = facts.firstCtorPos.Line
+		found = fmt.Sprintf("'%s'", facts.firstCtorName)
+	}
+	return forgeconv.Finding{
+		Rule:     string(RuleInternalPackageContractNames),
+		Severity: forgeconv.SeverityError,
+		File:     relPath,
+		Line:     line,
+		Message: fmt.Sprintf(
+			"forge convention: %s. Found %s — rename to 'New' with signature `func New(Deps) Service` so the bootstrap template can wire it. See skill: contracts.",
+			canonicalContractMessage, found),
+		Remediation: "rename the constructor to `func New(Deps) Service` (the bootstrap template emits `<pkg>.New(<pkg>.Deps{...})`)",
+	}
 }
 
 // isNewDepsServiceSignature reports whether ft has either of the canonical

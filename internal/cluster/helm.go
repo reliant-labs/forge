@@ -180,7 +180,7 @@ func helmTemplate(ctx context.Context, spec HelmChartSpec) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("helm chart %q: write values: %w", spec.Name, err)
 		}
-		defer os.Remove(f)
+		defer func() { _ = os.Remove(f) }()
 		valuesFile = f
 		args = append(args, "--values", valuesFile)
 	}
@@ -431,7 +431,7 @@ func helmTemplateIncludeCRDs(ctx context.Context, spec HelmChartSpec) (string, e
 		if err != nil {
 			return "", fmt.Errorf("helm chart %q: write values: %w", spec.Name, err)
 		}
-		defer os.Remove(f)
+		defer func() { _ = os.Remove(f) }()
 		args = append(args, "--values", f)
 	}
 	args = append(args, chartRef)

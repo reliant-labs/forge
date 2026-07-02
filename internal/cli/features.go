@@ -99,7 +99,7 @@ func printFeatureGraph(cmd *cobra.Command, cfg *config.ProjectConfig) error {
 	sort.Strings(leftover)
 	order = append(order, leftover...)
 
-	fmt.Fprintln(out, "Feature graph (resolved):")
+	_, _ = fmt.Fprintln(out, "Feature graph (resolved):")
 	for _, name := range order {
 		on := resolved[name]
 		marker := "[ ]"
@@ -114,7 +114,7 @@ func printFeatureGraph(cmd *cobra.Command, cfg *config.ProjectConfig) error {
 		if deps := config.FeatureDependencies(name); len(deps) > 0 {
 			line += fmt.Sprintf("  →  requires: %s", strings.Join(deps, ", "))
 		}
-		fmt.Fprintln(out, line)
+		_, _ = fmt.Fprintln(out, line)
 	}
 	return nil
 }

@@ -53,7 +53,7 @@ type Factory struct {
 	// importing internal/cli (which would cycle: internal/cli blank-imports
 	// the groups). internal/cli wires this in factory.New's caller via
 	// SetProjectStoreLoader.
-	LoadProjectStore func() (projectstore.ProjectStore, error)
+	LoadProjectStore func() (*projectstore.Store, error)
 
 	// Gen is the clean, narrow surface over the generate pipeline + service
 	// registry that the dir-nested `add` group calls. The heavy
@@ -126,7 +126,7 @@ type AuditAPI struct {
 
 	// LoadProjectStoreFrom loads a ProjectStore from an explicit forge.yaml
 	// path (audit resolves the path itself rather than walking up).
-	LoadProjectStoreFrom func(path string) (projectstore.ProjectStore, error)
+	LoadProjectStoreFrom func(path string) (*projectstore.Store, error)
 }
 
 // auditAPI is the AuditAPI internal/cli registers. Injected (not imported)
@@ -207,11 +207,11 @@ func SetGenAPI(g GenAPI) { genAPI = g }
 // projectStoreLoader is the loader internal/cli registers so New can populate
 // every Factory it builds. Injected (rather than imported) to keep the
 // factory package a leaf that the command groups can depend on.
-var projectStoreLoader func() (projectstore.ProjectStore, error)
+var projectStoreLoader func() (*projectstore.Store, error)
 
 // SetProjectStoreLoader registers the project-store loader. internal/cli calls
 // this from an init() so the loader is set before any Factory is built.
-func SetProjectStoreLoader(load func() (projectstore.ProjectStore, error)) {
+func SetProjectStoreLoader(load func() (*projectstore.Store, error)) {
 	projectStoreLoader = load
 }
 
@@ -221,7 +221,7 @@ func SetProjectStoreLoader(load func() (projectstore.ProjectStore, error)) {
 // config without a Factory in scope; this package-level entry lets them
 // reach the one registered loader without threading a Factory through every
 // signature. It is the same loader SetProjectStoreLoader installs.
-func LoadProjectStore() (projectstore.ProjectStore, error) {
+func LoadProjectStore() (*projectstore.Store, error) {
 	return projectStoreLoader()
 }
 

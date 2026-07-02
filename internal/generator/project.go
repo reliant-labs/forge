@@ -491,13 +491,6 @@ func (g *ProjectGenerator) Generate() error {
 		}
 	}
 
-	// Generate .env.example with common environment variables (services only)
-	if g.isService() {
-		if err := g.generateEnvExample(); err != nil {
-			return fmt.Errorf("failed to generate .env.example: %w", err)
-		}
-	}
-
 	if err := g.generateGolangciLint(); err != nil {
 		return fmt.Errorf("failed to generate .golangci.yml: %w", err)
 	}

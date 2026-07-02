@@ -12,8 +12,8 @@ import (
 // explicit --watch / --background flags override the TTY default, with
 // --background the documented winner when both are somehow set.
 //
-// Mirrors resetTier2WouldHangWithoutTTY's test style: inject isTTY and the
-// two flags, assert the resolved lifecycle, no real stdin manipulation.
+// Pure-decision test style: inject isTTY and the two flags, assert the
+// resolved lifecycle, no real stdin manipulation.
 func TestResolveUpLifecycle(t *testing.T) {
 	cases := []struct {
 		name       string

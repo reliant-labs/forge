@@ -41,9 +41,12 @@
 //     hash of the last render. Deliberately minimal: this exception
 //     must not regrow the global manifest. Committed.
 //
-// Tier-2 (scaffold-once) files carry NO marker and are user-owned from
-// birth: if the file exists, forge never overwrites it (the explicit
-// `--reset-tier2` hook is the only exception).
+// Scaffold ("yours") files carry NO marker and are user-owned from
+// birth: forge writes each one exactly once, keyed on the file's own
+// absence (WriteScaffoldIfMissing). Once the file exists forge NEVER
+// overwrites it — no flag, no exception. To refresh one, delete it and
+// regenerate. This is the single non-Tier-1 tier: there is no separate
+// "scaffold reset" machinery (deleting the file IS the reset).
 package checksums
 
 import (
@@ -88,11 +91,11 @@ func ResetSkipWrite() {
 // forge WOULD have regenerated it but for the disown, so it IS in
 // Tier1TargetSet. That distinction is exactly what obsolete-disown
 // retirement needs: a disown is still VALID iff its path is a current
-// Tier-1 target (in this set); it is OBSOLETE (the path became Tier-2
-// scaffold-once, or forge no longer emits it at all) iff it is NOT in
-// this set.
+// Tier-1 target (in this set); it is OBSOLETE (the path became a
+// scaffold-once "yours" file, or forge no longer emits it at all) iff it
+// is NOT in this set.
 //
-// Tier-2 (scaffold-once) writes do NOT record here — those paths are
+// Scaffold-once ("yours") writes do NOT record here — those paths are
 // user-owned write-if-absent, never Tier-1 targets.
 var Tier1TargetSet = map[string]bool{}
 
@@ -237,6 +240,20 @@ var NoHealSkipFn = func(relPath string) {
 // user needs one notice per file, not one per write.
 var healNoticed = map[string]bool{}
 
+// noticeHealOnce fires NoHealSkipFn at most once per file per run for a
+// non-destructive skip of a pristine-but-stale render (the default when
+// neither AutoHeal nor this file's --force scope applies). Dedupes via
+// healNoticed so multiple emitters writing the same path yield one notice.
+func noticeHealOnce(relPath string) {
+	if healNoticed[relPath] {
+		return
+	}
+	healNoticed[relPath] = true
+	if NoHealSkipFn != nil {
+		NoHealSkipFn(relPath)
+	}
+}
+
 // pendingHeals defers the heal notice until after post-write formatters
 // (goimports) have run: path → body hash of the pristine on-disk
 // content that the write replaced. If the FINAL on-disk body hash ends
@@ -268,32 +285,6 @@ func FlushHealNotices(root string) {
 		}
 	}
 	pendingHeals = map[string]string{}
-}
-
-// Tier2OverwriteFn is the per-file hook the Tier-2 writer consults when
-// it has found existing user-owned content that differs from the fresh
-// scaffold render. Returning true clobbers the user's file with the
-// fresh render; returning false (or leaving the hook nil) preserves it
-// — the safe default that Tier-2's "scaffold once, never overwrite"
-// contract promises.
-//
-// `forge generate --reset-tier2` installs a hook here that prompts the
-// user (y/N) per file. `--reset-tier2 --yes` installs a hook that
-// returns true without prompting.
-var Tier2OverwriteFn func(relPath string) bool
-
-// Tier2PreservedCount counts how many Tier-2 writes WriteGeneratedFileTier2
-// skipped because existing user-owned content differed from the fresh
-// render during the current pipeline run. The pipeline reads this at
-// exit to print the "--force preserved N hand-edited Tier-2 file(s)"
-// summary line.
-var Tier2PreservedCount int
-
-// ResetTier2State clears the Tier-2 hook + preserved counter. Called at
-// the start of each pipeline run.
-func ResetTier2State() {
-	Tier2OverwriteFn = nil
-	Tier2PreservedCount = 0
 }
 
 // DisownedEntry is the per-path record in .forge/disowned.json: the
@@ -491,12 +482,7 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 				// Healing (overwrite) requires explicit opt-in — AutoHeal
 				// (--heal) for the whole tree, or this file's --force scope.
 				if !AutoHeal && !forceApplies(relPath, force) {
-					if !healNoticed[relPath] {
-						healNoticed[relPath] = true
-						if NoHealSkipFn != nil {
-							NoHealSkipFn(relPath)
-						}
-					}
+					noticeHealOnce(relPath)
 					return false, nil
 				}
 				if _, pending := pendingHeals[relPath]; !pending {
@@ -562,12 +548,7 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 			// (same fr-2c1c2328c7 rationale as the stamped path).
 			if onDiskBody != newBody {
 				if !AutoHeal && !forceApplies(relPath, force) {
-					if !healNoticed[relPath] {
-						healNoticed[relPath] = true
-						if NoHealSkipFn != nil {
-							NoHealSkipFn(relPath)
-						}
-					}
+					noticeHealOnce(relPath)
 					return false, nil
 				}
 				if _, pending := pendingHeals[relPath]; !pending {
@@ -605,69 +586,23 @@ func WriteGeneratedFileTier1(root, relPath string, content []byte, cs *FileCheck
 	return WriteGeneratedFile(root, relPath, content, cs, force)
 }
 
-// WriteGeneratedFileTier2 writes a Tier-2 (scaffold-once) file. Tier-2
-// content carries NO marker and is user-owned from birth: if the file
-// exists, forge does not overwrite it. The explicit `--reset-tier2`
-// hook (Tier2OverwriteFn) is the only overwrite path, and `force=true`
-// is deliberately ignored — --force is Tier-1 "discard my hand-edits"
-// semantics, and applying it here would break the scaffold-once
-// contract.
+// WriteScaffoldIfMissing writes a scaffold ("yours") file only when the
+// destination does not already exist. Scaffold content carries NO marker
+// and is user-owned from birth: forge writes it once, then NEVER touches
+// it again — no flag, no exception. To refresh, delete the file and
+// regenerate (the write-if-absent gate re-emits the pristine scaffold).
 //
-// Two special cases:
-//
-//   - disowned paths: skipped while the file exists; a deleted disowned
-//     file falls through and is re-scaffolded (re-adoption parity with
-//     the Tier-1 writer), clearing the disowned record.
-//   - a VERIFYING forge:hash marker in the existing file means the
-//     template was reclassified Tier-1 → Tier-2 while the user never
-//     edited it: still a pristine forge render, so regenerate it once
-//     as an unmarked Tier-2 scaffold (loud heal semantics apply).
-func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
-	_ = force // intentionally ignored — see doc above.
-
-	reAdopting := false
-	if cs.IsDisowned(relPath) {
-		if _, statErr := os.Stat(filepath.Join(root, relPath)); statErr == nil {
-			return false, nil
-		} else if !os.IsNotExist(statErr) {
-			return false, statErr
-		}
-		reAdopting = true
-	}
-
-	onDisk, readErr := os.ReadFile(filepath.Join(root, relPath))
-	switch {
-	case readErr == nil:
-		if Verify(onDisk) == Pristine {
-			// Reclassified Tier-1 → Tier-2: certified forge bytes, not
-			// user content. Replace with the fresh scaffold (dropping
-			// the marker — the user owns it from here).
-			if BodyHash(onDisk) != BodyHash(content) {
-				if _, pending := pendingHeals[relPath]; !pending {
-					pendingHeals[relPath] = BodyHash(onDisk)
-				}
-			}
-			break // fall through to the write below
-		}
-		// User-owned content (no marker, or marker broken by edits —
-		// either way the bytes are theirs now). Preserve unless the
-		// explicit reset hook approves an overwrite.
-		if string(onDisk) == string(content) {
-			return false, nil // already identical; nothing to do
-		}
-		overwrite := false
-		if Tier2OverwriteFn != nil {
-			overwrite = Tier2OverwriteFn(relPath)
-		}
-		if !overwrite {
-			Tier2PreservedCount++
-			return false, nil
-		}
-	case !os.IsNotExist(readErr):
-		return false, readErr
-	}
-
+// Returns true when the file was written (it was absent). A file already
+// on disk — whether pristine, hand-edited, or fully rewritten — is left
+// exactly as-is and returns (false, nil). Parent directories are created
+// as needed.
+func WriteScaffoldIfMissing(root, relPath string, content []byte) (bool, error) {
 	fullPath := filepath.Join(root, relPath)
+	if _, statErr := os.Stat(fullPath); statErr == nil {
+		return false, nil // exists — forge never overwrites a scaffold
+	} else if !os.IsNotExist(statErr) {
+		return false, statErr
+	}
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
 	}
@@ -676,9 +611,6 @@ func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileCheck
 		return false, err
 	}
 	WrittenThisRun[relPath] = true
-	if reAdopting && cs != nil {
-		delete(cs.Disowned, relPath)
-	}
 	return true, nil
 }
 
@@ -758,6 +690,12 @@ var scanSkipDirs = map[string]bool{
 	".next":        true,
 	"dist":         true,
 	"build":        true,
+	// `.scratch/` is a gitignored throwaway workspace (smoke renders) and
+	// `testdata/` holds analyzer fixtures that intentionally carry markers.
+	// Neither is real project output; scanning them produces phantom
+	// "orphan"/"modified" findings against forge's own repo.
+	".scratch": true,
+	"testdata": true,
 }
 
 // markerProbeBytes bounds the head-read used to detect a marker before
@@ -822,7 +760,7 @@ func headContainsMarker(path string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	buf := make([]byte, markerProbeBytes)
 	n, _ := f.Read(buf)
 	return n > 0 && bytes.Contains(buf[:n], []byte(markerKey))
@@ -849,10 +787,10 @@ func RestampWritten(root string, cs *FileChecksums) {
 			continue
 		}
 		if _, found := ExtractMarker(content); !found {
-			continue // Tier-2 writes carry no marker
+			continue // scaffold ("yours") writes carry no marker
 		}
 		restamped, ok := Stamp(relPath, content)
-		if !ok || string(restamped) == string(content) {
+		if !ok || bytes.Equal(restamped, content) {
 			continue
 		}
 		_ = os.WriteFile(full, restamped, 0o644)
@@ -896,7 +834,7 @@ func (cs *FileChecksums) DisownPaths(root string, relPaths []string, reason stri
 
 // RetireNoticeFn is invoked once per auto-retired obsolete disown. A
 // disown is OBSOLETE when forge no longer Tier-1-owns its path: the path
-// became a Tier-2 scaffold-once file (write-if-absent, never
+// became a scaffold-once "yours" file (write-if-absent, never
 // overwritten), or forge stopped emitting it entirely. Such a disown is
 // dead weight — it protects against an overwrite that can no longer
 // happen — and misleads users into thinking `forge disown` is routine.
@@ -919,8 +857,8 @@ var RetireNoticeFn = func(relPath string) {
 //
 //   - a path IN Tier1TargetSet is one forge WOULD regenerate but for the
 //     disown → the disown is doing its job → KEPT.
-//   - a path NOT in Tier1TargetSet became scaffold-once (Tier-2) or is no
-//     longer emitted → the disown can never prevent an overwrite →
+//   - a path NOT in Tier1TargetSet became scaffold-once ("yours") or is
+//     no longer emitted → the disown can never prevent an overwrite →
 //     RETIRED.
 //
 // The guard against false retirement: callers must only invoke this when

@@ -59,7 +59,7 @@ _target = forge.ClusterTarget {
     namespace = "env-merge-dev"
     registry = "localhost:5050"
 }
-_svc = forge.Service {
+_svc = forge.K8sWorkload {
     name = "api"
     image = "api"
     deploy = _target.deploy | {ports = [8080]}

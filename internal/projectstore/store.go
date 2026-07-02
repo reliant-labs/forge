@@ -1,110 +1,33 @@
 // Package projectstore is the single read+mutate surface for a forge
 // project's state. Every consumer outside the config loader reads project
-// metadata, components, and feature flags through a [ProjectStore] rather
-// than touching *config.ProjectConfig directly.
+// metadata, components, and feature flags through a [Store] rather than
+// touching *config.ProjectConfig directly.
 //
 // Why the indirection: the project + component + feature state is the part
 // of forge.yaml that a future revision (the "Phase 2" source swap) wants to
 // relocate — out of the hand-edited forge.yaml and into a denormalized,
-// generated backing store. Routing every consumer through this interface
-// localizes that swap to one implementation ([yamlStore]); nothing else in
-// the tree assumes the state lives in a *config.ProjectConfig.
+// generated backing store. Routing every consumer through this one type
+// localizes that swap to one implementation; nothing else in the tree
+// assumes the state lives in a *config.ProjectConfig.
 //
-// The other ~40 forge.yaml sections (deploy, ci, docker, k8s, lint,
-// contracts, auth, docs, stack, api, database, packages, frontends, packs)
-// are NOT swap targets — they stay hand-edited config. The store exposes
-// them via section accessors that return the existing config sub-types, so
-// consumers can read them without holding the top-level *config.ProjectConfig.
+// Interfaces at the consumer, not here. [New] returns a concrete *[Store]
+// (accept interfaces, return structs). Callers that take the store as a
+// dependency declare the narrow interface they actually use next to
+// themselves — e.g. `type featureReader interface { Features() FeatureSet }`
+// for the feature-gate helpers, `type metaReader interface { Meta()
+// ProjectMeta }` for the namespace resolvers. A wide interface declared here
+// that each caller used a slice of was interface bloat: 16 of its 29 methods
+// had zero callers. The store therefore exposes only the accessors that are
+// actually read; add a method when a consumer needs it, not before.
+//
+// forge:exclude-contract
+// projectstore is the project-state persistence store (a concrete *Store
+// over a *config.ProjectConfig), not a bootstrap-wired Connect service. It
+// has no Service/Deps/New contract shape, so opt out of the require-contract
+// rule.
 package projectstore
 
 import "github.com/reliant-labs/forge/internal/config"
-
-// ProjectStore is the handle a loaded forge project is read and mutated
-// through. The yamlStore implementation wraps today's
-// LoadStrict/ProjectConfig/ApplyDerivedDefaults machinery; a Phase-2
-// implementation can back the project/component/feature surface with a
-// generated store while leaving the section accessors reading forge.yaml.
-//
-// Method groups:
-//
-//   - Project metadata: [ProjectStore.Meta] — name, module path, kind,
-//     binary mode, versions, hot-reload. The derived/effective forms
-//     (EffectiveKind etc.) live on the returned [ProjectMeta].
-//   - Components: [ProjectStore.Components] plus the kind filters
-//     ([ProjectStore.Servers] … [ProjectStore.BinaryComponents]). These
-//     return the [Component] view type, not config.ComponentConfig, so a
-//     Phase-2 backing can synthesize them.
-//   - Features: [ProjectStore.Features] returns a [FeatureSet] — the
-//     resolved (derived + explicit) enabled/disabled state.
-//   - Mutation: [ProjectStore.AppendComponent], [ProjectStore.AppendWebhook],
-//     [ProjectStore.SetPacks] — the `forge add` / pack write paths, kept
-//     explicit so raw component appends don't scatter through the tree.
-//   - Section access: [ProjectStore.Database] … [ProjectStore.PackOverrides]
-//     expose the non-swap forge.yaml sections by their existing config types.
-//   - [ProjectStore.Config] is the escape hatch returning the underlying
-//     *config.ProjectConfig for the write/marshal path and the handful of
-//     whole-config consumers (generate pipeline context, docs builder,
-//     NormalizeForWrite). It is the ONE seam Phase 2 must reconcile; every
-//     other consumer reads through the typed accessors above.
-type ProjectStore interface {
-	// Meta returns project-level metadata (name, module, kind, versions).
-	Meta() ProjectMeta
-
-	// Components returns every component in declaration order.
-	Components() []Component
-	// Servers returns the server-kind components.
-	Servers() []Component
-	// Workers returns the worker-kind components.
-	Workers() []Component
-	// Crons returns the cron-kind components.
-	Crons() []Component
-	// Operators returns the operator-kind components.
-	Operators() []Component
-	// BinaryComponents returns the binary-kind components.
-	BinaryComponents() []Component
-
-	// Features returns the resolved feature set.
-	Features() FeatureSet
-
-	// AppendComponent appends a component to the project (the `forge add`
-	// server/worker/cron/operator/binary write path).
-	AppendComponent(c config.ComponentConfig)
-	// AppendWebhook appends a webhook to the named component (the
-	// `forge add webhook` write path). Returns false if no component with
-	// that name exists.
-	AppendWebhook(componentName string, w config.WebhookConfig) bool
-	// SetPacks replaces the installed-packs list (the pack install/remove
-	// write path).
-	SetPacks(packs []string)
-
-	// Section accessors — the non-swap forge.yaml sections, by their
-	// existing config types.
-	Packages() []config.PackageConfig
-	Frontends() []config.FrontendConfig
-	FrontendProject() config.FrontendProjectConfig
-	Database() config.DatabaseConfig
-	CI() config.CIConfig
-	Deploy() config.DeployConfig
-	Docker() config.DockerConfig
-	K8s() config.K8sConfig
-	Lint() config.LintConfig
-	Contracts() config.ContractsConfig
-	// ConfigGuard returns the `config:` section — the typed-access
-	// guardrail (enforce_typed_access / loader_package).
-	ConfigGuard() config.ConfigGuardConfig
-	Auth() config.AuthConfig
-	Docs() config.DocsConfig
-	Stack() config.StackConfig
-	API() config.APIConfig
-	Packs() []string
-	PackOverrides() map[string]config.PackOverride
-
-	// Config returns the underlying project config. This is the
-	// implementation seam — only the write/marshal path and the few
-	// whole-config consumers reach for it; Phase 2 reconciles exactly this
-	// method.
-	Config() *config.ProjectConfig
-}
 
 // ProjectMeta is the project-level metadata view: identity, kind, binary
 // mode, and the pinned versions. The Effective*/Is* accessors mirror the

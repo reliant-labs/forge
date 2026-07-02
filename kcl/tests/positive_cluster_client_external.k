@@ -43,7 +43,7 @@ _target = forge.ClusterTarget {
     registry = "ghcr.io/reliant/control-plane"
 }
 
-_consumer = forge.Service {
+_consumer = forge.K8sWorkload {
     name = "workspace-controller"
     image = "control-plane"
     deploy = _target.deploy | {

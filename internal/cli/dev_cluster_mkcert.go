@@ -196,7 +196,7 @@ func provisionMkcertSecrets(ctx context.Context, projectDir string) error {
 	if err != nil {
 		return fmt.Errorf("create mkcert tmp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpRoot)
+	defer func() { _ = os.RemoveAll(tmpRoot) }()
 
 	for _, spec := range specs {
 		fmt.Printf("Provisioning mkcert TLS Secret %q (%s) for host %s...\n",

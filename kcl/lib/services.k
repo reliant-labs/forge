@@ -127,6 +127,20 @@ _env_source = lambda ev: any -> any {
     }
 }
 
+# Project one EnvFromSource onto a k8s container `envFrom[]` entry —
+# `secretRef`/`configMapRef` + optional `prefix`. The EnvFromSource check
+# guarantees exactly one of secret_ref/config_map_ref is set.
+_env_from_source = lambda ef: any -> any {
+    {
+        if ef.secret_ref:
+            secretRef = {name = ef.secret_ref}
+        if ef.config_map_ref:
+            configMapRef = {name = ef.config_map_ref}
+        if ef.prefix:
+            prefix = ef.prefix
+    }
+}
+
 # Forge's secure baseline pod-level securityContext.
 _default_pod_security_context = {
     runAsNonRoot = True
@@ -242,7 +256,8 @@ _pull_policy = lambda image_ref: str -> str {
 
 # Build the pod-level `spec.volumes[*]` entry for one forge.Volume.
 # empty_dir => `{name, emptyDir: {}}`; config_map / secret =>
-# `{name, configMap|secret: {<name-key>: source}}`. The container-side
+# `{name, configMap|secret: {<name-key>: source}}`; pvc =>
+# `{name, persistentVolumeClaim: {claimName: source}}`. The container-side
 # mount is built separately by `_volume_mount`.
 _volume_source = lambda v: any -> any {
     {
@@ -253,6 +268,8 @@ _volume_source = lambda v: any -> any {
             configMap = {name = v.source}
         if v.type == "secret":
             secret = {secretName = v.source}
+        if v.type == "pvc":
+            persistentVolumeClaim = {claimName = v.source}
     }
 }
 
@@ -311,6 +328,14 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
     # Optional writable / projected volumes (the readOnlyRootFilesystem
     # escape hatch). `svc.volumes` is None/Undefined when unset.
     _volumes = svc.volumes if svc.volumes else []
+    # Pod-spec escape-hatch knobs (projected from Service.k8s / settable on
+    # K8sWorkload). Each is absent-by-default so a workload setting none
+    # renders byte-identically. `service_account` overrides the default
+    # per-service SA name; the rest are conditionally emitted.
+    _sa = svc.service_account if svc.service_account else _name
+    _pod_annotations = svc.pod_annotations if svc.pod_annotations else {}
+    _node_selector = svc.node_selector if svc.node_selector else {}
+    _tolerations = svc.tolerations if svc.tolerations else []
 
     _deployment = {
         apiVersion = "apps/v1"
@@ -324,14 +349,30 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
             replicas = _deploy.replicas
             selector = {matchLabels = {"app.kubernetes.io/name" = _name}}
             template = {
-                metadata = {labels = _labels}
+                metadata = {
+                    labels = _labels
+                    # Pod annotations (GKE/mesh/prometheus hints) — omitted
+                    # entirely when unset so the render stays minimal.
+                    if _pod_annotations:
+                        annotations = _pod_annotations
+                }
                 spec = {
-                    # Bind the per-Service ServiceAccount forge generates
-                    # (render_namespaced_rbac). Without this the pod runs
-                    # as `default` and the generated Role/RoleBinding —
+                    # Bind the ServiceAccount: the per-Service SA forge
+                    # generates (render_namespaced_rbac) by default, or an
+                    # explicit `service_account` override (an existing
+                    # out-of-band SA, e.g. one carrying a cloud
+                    # workload-identity annotation). Without an SA the pod
+                    # runs as `default` and the generated Role/RoleBinding —
                     # plus any imagePullSecrets on the SA — grant it
                     # nothing. Mirrors render_operator (~line 280).
-                    serviceAccountName = _name
+                    serviceAccountName = _sa
+                    # Node-pool pinning (the control-plane kata daemon-pool
+                    # case) — nodeSelector + tolerations, each omitted when
+                    # unset.
+                    if _node_selector:
+                        nodeSelector = _node_selector
+                    if _tolerations:
+                        tolerations = _tolerations
                     securityContext = _default_pod_security_context
                     containers = [
                         {
@@ -347,6 +388,11 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
                             resources = _resource_block(_resources)
                             if svc.env_vars:
                                 env = [_env_source(e) for e in _dedup_env_vars(svc.env_vars)]
+                            # Whole Secret/ConfigMap bulk-imports (k8s
+                            # envFrom). Emitted only when set, so services
+                            # without env_from render byte-identically.
+                            if svc.env_from:
+                                envFrom = [_env_from_source(ef) for ef in svc.env_from]
                             securityContext = _default_container_security_context
                             if _volumes:
                                 volumeMounts = [_volume_mount(v) for v in _volumes]

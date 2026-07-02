@@ -5,7 +5,19 @@ package codegen
 // config.<env>.yaml, renders BOTH the typed KCL path (schema + projection +
 // migrated config.k, executed via the `kcl` binary) and the current Go
 // projector (renderDeployConfigKCL, also executed via `kcl`), then compares
-// the two [EnvVar]+ConfigMap outputs field-by-field.
+// the two across every real environment.
+//
+// NOTE — the typed projection now lowers NON-sensitive config INLINE
+// (`{value = ...}`), NOT through a ConfigMap object + reference. So this is
+// no longer a byte-for-byte channel-parity proof: it is an intentional
+// divergence (the Go projector still uses ConfigMaps). The proof is narrowed
+// accordingly, and remains meaningful:
+//   - SENSITIVE fields — the from_secret path is UNCHANGED, so the typed
+//     secretKeyRef must still match the Go projector's secretKeyRef exactly
+//     (secret_ref + secret_key), across all envs.
+//   - NON-sensitive fields — the typed inline `value` must equal the value the
+//     Go projector placed in the ConfigMap `data` for that env var. Same value,
+//     different channel: this is what proves the inline lowering is correct.
 //
 // It is guarded by RUN_PARITY=1 so it never runs in the normal suite (it
 // shells to kcl and reads a sibling repo by absolute path). Run with:
@@ -170,10 +182,6 @@ func TestParityControlPlane(t *testing.T) {
 		t.Skip("set RUN_PARITY=1 to run the non-hermetic control-plane parity proof")
 	}
 	fields := controlPlaneFields()
-	defaults := map[string]ConfigField{}
-	for _, f := range fields {
-		defaults[f.EnvVar] = f
-	}
 
 	schema, err := GenerateConfigSchemaKCL(fields, cpProject)
 	if err != nil {
@@ -190,7 +198,6 @@ func TestParityControlPlane(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load config.%s.yaml: %v", env, err)
 			}
-			cmName := cpProject + "-" + env + "-config"
 
 			// --- typed path ---
 			typedDir := t.TempDir()
@@ -204,16 +211,14 @@ func TestParityControlPlane(t *testing.T) {
 			writeK(t, typedDir, "config_schema.k", schema)
 			writeK(t, typedDir, "projection.k", proj)
 			writeK(t, typedDir, "config.k", configK)
-			// The projection now lowers to the agnostic env MAP; project it to
-			// [forge.EnvVar] via env_project for the list-shaped Go-projector
-			// parity comparison.
+			// The projection now lowers to the agnostic env MAP with NON-secret
+			// values INLINE; project it to [forge.EnvVar] via env_project for the
+			// list-shaped comparison. There is no typed ConfigMap anymore.
 			mainK := "import forge\n" +
-				"envvars: [forge.EnvVar] = forge.env_project(appConfigEnvMap(app_config, \"" + cmName + "\"))\n" +
-				"configmap: forge.ConfigMap = appConfigConfigMap(app_config, \"" + cmName + "\")\n"
+				"envvars: [forge.EnvVar] = forge.env_project(appConfigEnvMap(app_config))\n"
 			writeK(t, typedDir, "main.k", mainK)
 			var typed struct {
-				EnvVars   []envVarJSON  `json:"envvars"`
-				ConfigMap configMapJSON `json:"configmap"`
+				EnvVars []envVarJSON `json:"envvars"`
 			}
 			kclRun(t, typedDir, &typed)
 
@@ -232,7 +237,7 @@ func TestParityControlPlane(t *testing.T) {
 			}
 			kclRun(t, goDir, &goOut)
 
-			compareEnv(t, env, typed.EnvVars, typed.ConfigMap, goOut.EnvVars, goOut.ConfigMap, defaults)
+			compareEnv(t, env, typed.EnvVars, goOut.EnvVars, goOut.ConfigMap)
 		})
 	}
 }
@@ -244,8 +249,15 @@ func writeK(t *testing.T, dir, name, body string) {
 	}
 }
 
-// compareEnv applies the Phase-3 parity rules and logs a full report.
-func compareEnv(t *testing.T, env string, tEnv []envVarJSON, tCM configMapJSON, gEnv []envVarJSON, gCM []configMapJSON, defaults map[string]ConfigField) {
+// compareEnv applies the (narrowed) parity rules for the inline-value
+// projection and logs a full report. The typed path now lowers NON-secret
+// config INLINE, so channel-parity is INTENTIONALLY gone; instead we assert:
+//   - SENSITIVE fields: the typed secretKeyRef matches the Go secretKeyRef
+//     exactly (the from_secret path is unchanged).
+//   - NON-sensitive fields: the typed inline value equals the value the Go
+//     projector placed in the ConfigMap data for that env var — same value,
+//     different channel.
+func compareEnv(t *testing.T, env string, tEnv []envVarJSON, gEnv []envVarJSON, gCM []configMapJSON) {
 	typedByName := map[string]envVarJSON{}
 	for _, e := range tEnv {
 		typedByName[e.Name] = e
@@ -254,10 +266,14 @@ func compareEnv(t *testing.T, env string, tEnv []envVarJSON, tCM configMapJSON, 
 	for _, e := range gEnv {
 		goByName[e.Name] = e
 	}
+	goData := map[string]string{}
+	if len(gCM) > 0 {
+		goData = gCM[0].Data
+	}
 
-	var mismatches, extras, overlaps []string
+	var mismatches, extras, secretsOK, valuesOK []string
 
-	// Every Go-projector entry must appear identically in the typed output.
+	// Every Go-projector entry must have the correct typed counterpart.
 	goNames := make([]string, 0, len(goByName))
 	for n := range goByName {
 		goNames = append(goNames, n)
@@ -270,15 +286,30 @@ func compareEnv(t *testing.T, env string, tEnv []envVarJSON, tCM configMapJSON, 
 			mismatches = append(mismatches, "MISSING in typed: "+n+" (go had "+describe(g)+")")
 			continue
 		}
-		if g.SecretRef != tv.SecretRef || g.SecretKey != tv.SecretKey ||
-			g.ConfigMapRef != tv.ConfigMapRef || g.ConfigMapKey != tv.ConfigMapKey {
-			mismatches = append(mismatches, "DIFF "+n+": go="+describe(g)+" typed="+describe(tv))
+		if g.SecretRef != "" {
+			// SENSITIVE — the from_secret path is unchanged: exact secretKeyRef parity.
+			if tv.SecretRef != g.SecretRef || tv.SecretKey != g.SecretKey {
+				mismatches = append(mismatches, "SECRET DIFF "+n+": go="+describe(g)+" typed="+describe(tv))
+				continue
+			}
+			secretsOK = append(secretsOK, n)
 			continue
 		}
-		overlaps = append(overlaps, n+" -> "+describe(g))
+		// NON-sensitive — Go referenced a ConfigMap key; the typed value must be
+		// INLINE and equal to the Go ConfigMap data value for that key.
+		if tv.SecretRef != "" || tv.ConfigMapRef != "" {
+			mismatches = append(mismatches, "EXPECTED inline value for "+n+", typed="+describe(tv))
+			continue
+		}
+		want := goData[g.ConfigMapKey]
+		if tv.Value != want {
+			mismatches = append(mismatches, "VALUE DIFF "+n+": goConfigMap="+strconv.Quote(want)+" typedInline="+strconv.Quote(tv.Value))
+			continue
+		}
+		valuesOK = append(valuesOK, n)
 	}
 
-	// Every typed-only entry must be a NON-sensitive (config_map) field.
+	// Every typed-only entry must be a NON-secret (inline value) field.
 	typedNames := make([]string, 0, len(typedByName))
 	for n := range typedByName {
 		typedNames = append(typedNames, n)
@@ -296,67 +327,21 @@ func compareEnv(t *testing.T, env string, tEnv []envVarJSON, tCM configMapJSON, 
 		extras = append(extras, n)
 	}
 
-	// ConfigMap overlap: every Go data key must match the typed value.
-	goData := map[string]string{}
-	if len(gCM) > 0 {
-		goData = gCM[0].Data
-	}
-	goDataKeys := make([]string, 0, len(goData))
-	for k := range goData {
-		goDataKeys = append(goDataKeys, k)
-	}
-	sort.Strings(goDataKeys)
-	for _, k := range goDataKeys {
-		tvVal, ok := tCM.Data[k]
-		if !ok {
-			mismatches = append(mismatches, "ConfigMap key MISSING in typed: "+k)
-			continue
-		}
-		if tvVal != goData[k] {
-			mismatches = append(mismatches, "ConfigMap value DIFF "+k+": go="+strconv.Quote(goData[k])+" typed="+strconv.Quote(tvVal))
-		}
-	}
-
-	// ConfigMap extras: typed-only keys must equal the field's proto default
-	// (bool compared case-insensitively — KCL str(bool) capitalizes).
-	var cmExtraNote []string
-	for k, v := range tCM.Data {
-		if _, ok := goData[k]; ok {
-			continue
-		}
-		f := defaults[k]
-		want := f.DefaultValue
-		if want == "" {
-			want = typeZero(f)
-		}
-		got := v
-		if f.ProtoType == "bool" {
-			got, want = strings.ToLower(got), strings.ToLower(want)
-		}
-		if got != want {
-			cmExtraNote = append(cmExtraNote, k+": typed="+strconv.Quote(v)+" protoDefault="+strconv.Quote(f.DefaultValue))
-		}
-	}
-
 	t.Logf("=== ENV %s ===", env)
-	t.Logf("overlap entries (identical in both): %d", len(overlaps))
-	for _, o := range overlaps {
-		t.Logf("  OVERLAP %s", o)
+	t.Logf("SENSITIVE secretKeyRef parity (typed==go): %d", len(secretsOK))
+	for _, s := range secretsOK {
+		t.Logf("  SECRET %s", s)
 	}
-	t.Logf("typed-only EXTRA non-sensitive env vars (allowed superset): %d", len(extras))
+	t.Logf("NON-sensitive inline value == go ConfigMap value: %d", len(valuesOK))
+	t.Logf("typed-only EXTRA non-secret env vars (allowed superset): %d", len(extras))
 	t.Logf("  %s", strings.Join(extras, ", "))
-	if len(cmExtraNote) > 0 {
-		t.Logf("EXTRA configmap values NOT equal to proto default (investigate):")
-		for _, n := range cmExtraNote {
-			t.Logf("  %s", n)
-		}
-	}
 	if len(mismatches) > 0 {
 		for _, m := range mismatches {
 			t.Errorf("[%s] MISMATCH: %s", env, m)
 		}
 	} else {
-		t.Logf("PARITY OK for %s: all %d Go-projector entries matched; %d typed extras all non-sensitive", env, len(overlaps), len(extras))
+		t.Logf("PARITY OK for %s: %d secrets matched exactly, %d inline values matched the go ConfigMap, %d typed extras all non-secret",
+			env, len(secretsOK), len(valuesOK), len(extras))
 	}
 }
 
@@ -364,18 +349,8 @@ func describe(e envVarJSON) string {
 	if e.SecretRef != "" {
 		return "secret_ref=" + e.SecretRef + " secret_key=" + e.SecretKey
 	}
-	return "config_map_ref=" + e.ConfigMapRef + " config_map_key=" + e.ConfigMapKey
-}
-
-func typeZero(f ConfigField) string {
-	switch kclTypeForProtoConfig(f) {
-	case "int":
-		return "0"
-	case "float":
-		return "0"
-	case "bool":
-		return "false"
-	default:
-		return ""
+	if e.ConfigMapRef != "" {
+		return "config_map_ref=" + e.ConfigMapRef + " config_map_key=" + e.ConfigMapKey
 	}
+	return "value=" + strconv.Quote(e.Value)
 }

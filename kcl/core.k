@@ -421,6 +421,14 @@ schema Service:
                      service key.
       * `image`    — container image (bare name or fully-qualified ref); the
                      adapter resolves registry/tag.
+      * `image_tag` — override the global deploy tag for THIS service's image
+                     — e.g. an out-of-band-built image pinned to a specific
+                     tag, not the env-wide deploy tag (`RenderEnv.image_tag`,
+                     typically `git describe`). The adapter threads it onto
+                     the existing per-workload tag pin, so the SAME tag
+                     resolution applies. Unset => the env-wide tag
+                     (byte-identical to before). Ignored when `image` already
+                     carries its own `:tag`/`@sha256:`.
       * `command`  — the entrypoint argv. Omit to use the image's entrypoint.
       * `args`     — arguments appended after `command`. Kept SEPARATE in the
                      core (command = what to run, args = how); the k8s adapter
@@ -484,6 +492,7 @@ schema Service:
     """
     name: str
     image: str
+    image_tag?: str
     command?: [str]
     args?: [str]
     env: {str: EnvSource} = {}
@@ -532,6 +541,8 @@ _project_container = lambda c: Container -> {str: any} {
 # K8sCluster deploy block that flows through the UNCHANGED renderer.
 #
 #   Service.image      -> K8sWorkload.image        (renderer resolves reg/tag)
+#   Service.image_tag  -> K8sWorkload.image_tag    (per-workload tag pin;
+#                                                   unset => env-wide tag)
 #   Service.command \
 #   Service.args        -> K8sWorkload.command      (folded: command + args)
 #   Service.env (map)   -> K8sWorkload.env_vars     via env_project (map->[EnvVar])
@@ -594,6 +605,11 @@ _service_to_k8s = lambda svc: Service, target: ClusterTarget -> K8sWorkload {
     _K8sWorkloadForAdapter {
         name = svc.name
         image = svc.image
+        # Per-service image-tag override -> the existing K8sWorkload tag pin.
+        # The renderer resolves it via _effective_image_tag (this tag when
+        # set, env-wide tag when unset — byte-identical to before).
+        if svc.image_tag:
+            image_tag = svc.image_tag
         command = _command
         env_vars = env_project(svc.env)
         env_from = _env_from
@@ -668,6 +684,8 @@ _service_to_k8s = lambda svc: Service, target: ClusterTarget -> K8sWorkload {
 #
 # Field projection (the same agnostic Service, projected for compose):
 #   Service.image           -> compose `image`  (registry/image:tag)
+#   Service.image_tag       -> overrides the env-wide `tag` in that image ref
+#                              (unset => env-wide tag; mirrors the k8s adapter)
 #   Service.command+args    -> compose `command` (folded argv, list form)
 #   Service.env (map)       -> compose `environment` (a MAP — no dedup pass;
 #                              the map key already guarantees uniqueness)
@@ -746,8 +764,12 @@ _service_to_compose = lambda svc: Service, registry: str, tag: str, secrets_dir:
         for v in svc.volumes
     ] if svc.volumes else []
 
+    # Per-service image-tag override wins over the env-wide `tag` (mirrors the
+    # k8s adapter's _effective_image_tag: this tag when set, env-wide when not).
+    _tag = svc.image_tag if svc.image_tag else tag
+
     {
-        "image" = registry + "/" + svc.image + ":" + tag
+        "image" = registry + "/" + svc.image + ":" + _tag
         if _command:
             "command" = _command
         if _environment:

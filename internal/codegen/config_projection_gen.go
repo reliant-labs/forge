@@ -3,39 +3,48 @@
 //
 // Where config_schema_gen.go projects the SHAPE (`schema AppConfig`), this
 // emitter projects the BEHAVIOR: two generated KCL functions that turn a
-// typed `AppConfig` value into the exact same env output the current Go
-// projector (deploy_config_gen.go's renderEnvVarEntry / renderDeployConfigKCL)
-// produces today —
+// typed `AppConfig` value into the agnostic-core env model an agnostic
+// `forge.Service` consumes —
 //
-//   - appConfigEnvVars(c, secretName, configMapName) -> [forge.EnvVar]
-//     one entry per config field with a non-empty env_var, using the same
-//     sensitive/non-sensitive branch as renderEnvVarEntry:
-//       * non-sensitive -> config_map_ref / config_map_key
-//       * sensitive     -> secret_ref / secret_key (lower(ENV_VAR))
+//   - appConfigEnvMap(c, configMapName) -> {str: forge.EnvSource}
+//     the agnostic-core env MAP (kcl/core.k), keyed by ENV_VAR name, one
+//     entry per config field with a non-empty env_var:
+//       * non-sensitive -> {from_config = {name = configMapName, key = ENV_VAR}}
+//                          (references the sibling ConfigMap below)
+//       * sensitive     -> {from_secret = {name = c.<field>.name,
+//                                          key  = c.<field>.key}}
+//                          (reads the typed ConfigSecretRef off the value)
 //   - appConfigConfigMap(c, configMapName) -> forge.ConfigMap
 //     the `data` map for the NON-sensitive fields only.
 //
+// This REPLACES the old `appConfigEnvVars(...) -> [forge.EnvVar]` list
+// projection. The env MAP is the idiomatic authoring shape: a service
+// consumes config the native way —
+//
+//	env = appConfigEnvMap(app_config, configMapName) | { <service extras> }
+//
+// — composing config-first with native KCL map-merge `|` (last-wins), so a
+// service extra of the same env-var NAME overrides the config entry, and
+// duplicate keys are structurally impossible (no `env_merge`). The k8s
+// adapter then projects the map to `[EnvVar]` via `env_project` (core.k).
+//
 // The per-field metadata (env-var name, sensitive flag, value expression)
 // is BAKED into the generated code from the proto — the functions are
-// generated, not generic — so the emitted KCL is a straight-line list/dict
+// generated, not generic — so the emitted KCL is a straight-line map/dict
 // literal with no runtime reflection.
 //
-// This is Phase 2 and is ADDITIVE: like Phase 1 it is a standalone emitter
-// + test, NOT wired into the generate pipeline, and it does NOT touch
-// deploy_config_gen.go (the current Go projector). A future migration can
-// swap the Go projector for these functions with behavior parity, leaving
-// the runtime Go loader (pkg/config/loader.go, which binds env by each
-// field's env_var) unchanged.
+// This is ADDITIVE: a standalone emitter + test, NOT wired into the generate
+// pipeline, and it does NOT touch deploy_config_gen.go (the current Go
+// projector). The runtime Go loader (pkg/config/loader.go, which binds env by
+// each field's env_var) is unchanged.
 //
-// Phase 3 note: the sensitive branch reads the typed ConfigSecretRef off the
-// AppConfig value (secret_ref = c.<field>.name, secret_key = c.<field>.key).
-// The default backend (secret_ref = "<project>-secrets", secret_key =
-// lower(env_var)) is supplied by the AppConfig field's SCHEMA DEFAULT (see
-// config_schema_gen.go), and the per-env "${SECRET_NAME}" /
-// "${SECRET_NAME#KEY}" override that renderEnvVarEntry supports flows through
-// as a ConfigSecretRef the migration (config_k_gen.go) writes into config.k —
-// so these functions now reach full parity with the Go projector INCLUDING
-// override-using envs.
+// The sensitive branch reads the typed ConfigSecretRef off the AppConfig value
+// (from_secret.name = c.<field>.name, key = c.<field>.key). The default backend
+// (name = "<project>-secrets", key = lower(env_var)) is supplied by the
+// AppConfig field's SCHEMA DEFAULT (see config_schema_gen.go), and a per-env
+// override flows through as a ConfigSecretRef the migration (config_k_gen.go)
+// writes into config.k — so an author who overrides the backing Secret/key
+// gets that here unchanged.
 package codegen
 
 import (
@@ -44,12 +53,12 @@ import (
 )
 
 // GenerateConfigProjectionKCL emits a KCL file declaring the two config
-// projection functions (appConfigEnvVars / appConfigConfigMap) as top-level
+// projection functions (appConfigEnvMap / appConfigConfigMap) as top-level
 // lambdas — the idiomatic forge-KCL function form (see kcl/base.k).
 //
 // The functions reference the `AppConfig` schema emitted by
 // GenerateConfigSchemaKCL (co-located in the same KCL package) and the
-// `forge.EnvVar` / `forge.ConfigMap` schemas from the forge module, so the
+// `forge.EnvSource` / `forge.ConfigMap` schemas from the forge module, so the
 // file carries its own `import forge`.
 //
 // Fields are visited in proto order. A field with an empty env_var (a
@@ -62,29 +71,36 @@ func GenerateConfigProjectionKCL(fields []ConfigField) (string, error) {
 	// 2-line generated-file header, matching the Phase-1 emitter's stamp
 	// convention (see config_schema_gen.go).
 	b.WriteString("# Code generated by forge. DO NOT EDIT.\n")
-	b.WriteString("# Config projection functions (typed AppConfig -> [forge.EnvVar] + forge.ConfigMap) projected from proto/config/v1/config.proto — add or change fields in the PROTO, never here.\n\n")
+	b.WriteString("# Config projection functions (typed AppConfig -> {str: forge.EnvSource} + forge.ConfigMap) projected from proto/config/v1/config.proto — add or change fields in the PROTO, never here.\n\n")
 
-	// The functions reference forge.EnvVar / forge.ConfigMap AND the AppConfig
+	// The functions reference forge.EnvSource / forge.ConfigMap AND the AppConfig
 	// schema from the sibling config_schema.k module. KCL does not share
 	// top-level symbols across separately-imported modules, so AppConfig is
 	// imported + qualified as config_schema.AppConfig (see ConfigSchemaModule).
 	b.WriteString("import forge\n")
 	b.WriteString(fmt.Sprintf("import %s\n\n", ConfigSchemaModule))
 
-	b.WriteString(renderAppConfigEnvVars(fields))
+	b.WriteString(renderAppConfigEnvMap(fields))
 	b.WriteString("\n")
 	b.WriteString(renderAppConfigConfigMap(fields))
 
 	return b.String(), nil
 }
 
-// renderAppConfigEnvVars emits the appConfigEnvVars lambda: one
-// forge.EnvVar per field with a non-empty env_var, sensitive fields routed
-// to secret_ref/secret_key and non-sensitive fields to
-// config_map_ref/config_map_key — the same split as
-// deploy_config_gen.go:renderEnvVarEntry.
-func renderAppConfigEnvVars(fields []ConfigField) string {
-	var entries []string
+// renderAppConfigEnvMap emits the appConfigEnvMap lambda: the agnostic-core
+// env MAP `{str: forge.EnvSource}` (kcl/core.k) keyed by ENV_VAR name, one
+// entry per field with a non-empty env_var. Sensitive fields route to the
+// `from_secret` channel (reading the typed ConfigSecretRef off the value),
+// non-sensitive fields to the `from_config` channel (referencing the sibling
+// ConfigMap by the SAME uppercase ENV_VAR key appConfigConfigMap emits).
+//
+// A service consumes this the idiomatic way — config first, service extras
+// merged/overriding via native map-merge:
+//
+//	env = appConfigEnvMap(app_config, configMapName) | { "EXTRA" = {value = "x"} }
+func renderAppConfigEnvMap(fields []ConfigField) string {
+	type kv struct{ key, expr string }
+	var entries []kv
 	for _, f := range fields {
 		// Empty env_var == no env binding (block-reference messages and any
 		// unbound field). Matches the runtime loader and renderEnvVarEntry.
@@ -93,38 +109,38 @@ func renderAppConfigEnvVars(fields []ConfigField) string {
 		}
 		if f.Sensitive {
 			// Read the typed ConfigSecretRef off the AppConfig value: its
-			// name/key ARE the secret_ref/secret_key. This supersedes the
-			// Phase-2 default-backend-only form — the AppConfig field's
-			// SCHEMA DEFAULT already supplies the default backend
-			// (<project>-secrets / lower(env_var)), and an author who set a
-			// ConfigSecretRef override (the ${NAME#KEY} case) flows through
-			// here unchanged. The `secretName` parameter is retained for
-			// signature stability but no longer consulted by sensitive fields.
-			entries = append(entries, fmt.Sprintf(
-				`    forge.EnvVar { name = %q, secret_ref = c.%s.name, secret_key = c.%s.key }`,
-				f.EnvVar, f.Name, f.Name))
+			// name/key ARE the from_secret name/key. The AppConfig field's
+			// SCHEMA DEFAULT supplies the default backend (<project>-secrets /
+			// lower(env_var)); an author who set a ConfigSecretRef override
+			// (the ${NAME#KEY} case) flows through here unchanged.
+			entries = append(entries, kv{
+				key:  f.EnvVar,
+				expr: fmt.Sprintf(`{from_secret = {name = c.%s.name, key = c.%s.key}}`, f.Name, f.Name),
+			})
 			continue
 		}
-		entries = append(entries, fmt.Sprintf(
-			`    forge.EnvVar { name = %q, config_map_ref = configMapName, config_map_key = %q }`,
-			f.EnvVar, f.EnvVar))
+		// Non-sensitive -> from_config channel. The key is the UPPERCASE
+		// ENV_VAR, matching the ConfigMap data key appConfigConfigMap emits,
+		// so the reference resolves (parity with the old config_map_key).
+		entries = append(entries, kv{
+			key:  f.EnvVar,
+			expr: fmt.Sprintf(`{from_config = {name = configMapName, key = %q}}`, f.EnvVar),
+		})
 	}
 
 	var b strings.Builder
-	b.WriteString("# appConfigEnvVars projects a typed AppConfig into the deployment's\n")
-	b.WriteString("# env_vars — one forge.EnvVar per field that declares an env_var.\n")
-	b.WriteString(fmt.Sprintf("appConfigEnvVars = lambda c: %s.AppConfig, secretName: str, configMapName: str -> [forge.EnvVar] {\n", ConfigSchemaModule))
+	b.WriteString("# appConfigEnvMap projects a typed AppConfig into the agnostic-core env\n")
+	b.WriteString("# MAP — one forge.EnvSource per field that declares an env_var, keyed by\n")
+	b.WriteString("# ENV_VAR name. A service merges it with `|`: `appConfigEnvMap(cfg, cm) | {…}`.\n")
+	b.WriteString(fmt.Sprintf("appConfigEnvMap = lambda c: %s.AppConfig, configMapName: str -> {str: forge.EnvSource} {\n", ConfigSchemaModule))
 	if len(entries) == 0 {
-		b.WriteString("    []\n")
+		b.WriteString("    {}\n")
 	} else {
-		b.WriteString("    [\n")
+		b.WriteString("    {\n")
 		for _, e := range entries {
-			// Nest the entry lines one level deeper (inside the list literal).
-			b.WriteString("    ")
-			b.WriteString(e)
-			b.WriteString("\n")
+			b.WriteString(fmt.Sprintf("        %q = %s\n", e.key, e.expr))
 		}
-		b.WriteString("    ]\n")
+		b.WriteString("    }\n")
 	}
 	b.WriteString("}\n")
 	return b.String()
@@ -147,7 +163,7 @@ func renderAppConfigConfigMap(fields []ConfigField) string {
 
 	var b strings.Builder
 	b.WriteString("# appConfigConfigMap projects the NON-sensitive fields of a typed\n")
-	b.WriteString("# AppConfig into the per-env ConfigMap the EnvVars above reference.\n")
+	b.WriteString("# AppConfig into the per-env ConfigMap the env map above references.\n")
 	b.WriteString(fmt.Sprintf("appConfigConfigMap = lambda c: %s.AppConfig, configMapName: str -> forge.ConfigMap {\n", ConfigSchemaModule))
 	b.WriteString("    forge.ConfigMap {\n")
 	b.WriteString("        name = configMapName\n")

@@ -190,7 +190,6 @@ func TestParityControlPlane(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load config.%s.yaml: %v", env, err)
 			}
-			secretName := cpProject + "-secrets"
 			cmName := cpProject + "-" + env + "-config"
 
 			// --- typed path ---
@@ -200,11 +199,16 @@ func TestParityControlPlane(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			writeK(t, typedDir, "schema.k", schema)
+			// The schema module MUST be named config_schema.k — projection.k
+			// and config.k `import config_schema` by that stem.
+			writeK(t, typedDir, "config_schema.k", schema)
 			writeK(t, typedDir, "projection.k", proj)
 			writeK(t, typedDir, "config.k", configK)
+			// The projection now lowers to the agnostic env MAP; project it to
+			// [forge.EnvVar] via env_project for the list-shaped Go-projector
+			// parity comparison.
 			mainK := "import forge\n" +
-				"envvars: [forge.EnvVar] = appConfigEnvVars(app_config, \"" + secretName + "\", \"" + cmName + "\")\n" +
+				"envvars: [forge.EnvVar] = forge.env_project(appConfigEnvMap(app_config, \"" + cmName + "\"))\n" +
 				"configmap: forge.ConfigMap = appConfigConfigMap(app_config, \"" + cmName + "\")\n"
 			writeK(t, typedDir, "main.k", mainK)
 			var typed struct {

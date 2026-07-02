@@ -119,6 +119,11 @@ func TestTier2ManagedPathsContents(t *testing.T) {
 		".golangci.yml",
 		".gitignore",
 		"pkg/middleware/middleware.go",
+		// buf.yaml is Tier-2: a pristine copy tracks the api.rest-derived
+		// googleapis dep, but its `lint.except` block is a sanctioned
+		// hand-edit home (`forge lint --suggest-buf-excepts` prints a snippet
+		// to paste in), so user edits must be respected, not stomped.
+		"buf.yaml",
 		// One-shot .github scaffolds written only at `forge new` time.
 		".github/CODEOWNERS",
 		".github/pull_request_template.md",
@@ -136,7 +141,6 @@ func TestTier2ManagedPathsContents(t *testing.T) {
 		"cmd/main.go",
 		"internal/cli/db.go",
 		"internal/cli/version.go",
-		"buf.yaml",
 		"deploy/alloy-config.alloy",
 		// Write-once scaffolds ("yours"): the CI step emits them via
 		// WriteScaffoldIfMissing with NO forge:hash marker, so they are

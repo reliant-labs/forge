@@ -211,13 +211,20 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		{templateName: "cmd-tree-db.go.tmpl", destPath: cmdTreePath(binName, "db.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
 		{templateName: "cmd-tree-version.go.tmpl", destPath: cmdTreePath(binName, "version.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
 
-		// buf.yaml is templated against `api.rest` so the googleapis BSR
-		// dep is added/removed in lockstep with the runtime vanguard wrap.
-		// Tier 1 (regenerated) because the dep choice is fully derived from
-		// forge.yaml and users shouldn't be hand-editing it.
-		{templateName: "buf.yaml.tmpl", destPath: "buf.yaml", templated: true, tier: Tier1},
-
 		// ── Tier 2: Checksum-protected, committed to git ──
+
+		// buf.yaml is templated against `api.rest` so a PRISTINE copy keeps
+		// the googleapis BSR dep in lockstep with the runtime vanguard wrap:
+		// `forge upgrade` auto-updates it as long as the user hasn't touched
+		// it. But buf.yaml is ALSO the only home for a project's buf `lint`
+		// config — the template body itself documents uncommenting STANDARD
+		// exceptions for migrated protos, and `forge lint --suggest-buf-excepts`
+		// prints an `except:` snippet for the user to paste in. That hand-edit
+		// is SANCTIONED, so buf.yaml is Tier-2 (respect user edits, never
+		// stomp), not Tier-1. A pristine buf.yaml still tracks the derived dep;
+		// a customized one is left alone (the Tier-2 stomp-guard exemption in
+		// generate_tier_migrate.go keeps `forge generate` from aborting on it).
+		{templateName: "buf.yaml.tmpl", destPath: "buf.yaml", templated: true, tier: Tier2},
 
 		// Templated config files
 		{templateName: taskfileTmpl, destPath: "Taskfile.yml", templated: true, tier: Tier2},

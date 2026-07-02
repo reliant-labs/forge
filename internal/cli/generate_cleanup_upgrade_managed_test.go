@@ -96,8 +96,8 @@ func TestUpgradeManagedPaths_CoversReportedFiles(t *testing.T) {
 		"cmd/cmd/serve.go",
 		"cmd/cmd/server.go",
 		"cmd/cmd/root.go",
-		"buf.yaml",
 		// Tier-2 scaffolds also upgrade-managed.
+		"buf.yaml",
 		"Taskfile.yml",
 		"Dockerfile",
 		"docker-compose.yml",

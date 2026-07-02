@@ -128,6 +128,16 @@ _env_source = lambda ev: any -> any {
                     key = ev.config_map_key if ev.config_map_key else ev.name
                 }
             }
+        # Downward API: a field path ("metadata.name", "status.podIP",
+        # "spec.nodeName") -> valueFrom.fieldRef.fieldPath. `field_ref`
+        # defaults "" so this is emitted only when the EnvSource used the
+        # from_field channel.
+        if ev.field_ref:
+            valueFrom = {
+                fieldRef = {
+                    fieldPath = ev.field_ref
+                }
+            }
     }
 }
 
@@ -161,6 +171,91 @@ _default_container_security_context = {
     readOnlyRootFilesystem = True
     allowPrivilegeEscalation = False
     capabilities = {drop = ["ALL"]}
+}
+
+# Pod-level securityContext with the agnostic SecurityOverrides
+# (K8sWorkload.security_override) applied OVER the restricted-PSA default.
+# `sec` is None/Undefined when the workload set no `security` block, in which
+# case the default is returned UNCHANGED (byte-identical to before). Each set
+# field overrides via dict-merge (`|`, right-wins). fsGroup is pod-ONLY (k8s
+# has no container fsGroup). Body is raw-dict ops only — legal in a lambda.
+_pod_security_context = lambda sec: any -> any {
+    _default_pod_security_context | ({
+        if sec.run_as_non_root != Undefined:
+            runAsNonRoot = sec.run_as_non_root
+        if sec.run_as_user != Undefined:
+            runAsUser = sec.run_as_user
+        if sec.run_as_group != Undefined:
+            runAsGroup = sec.run_as_group
+        if sec.fs_group != Undefined:
+            fsGroup = sec.fs_group
+    } if sec else {})
+}
+
+# Container-level securityContext with SecurityOverrides applied OVER the
+# restricted-PSA default (see _pod_security_context). run_as_user /
+# run_as_group are set here too (the container value WINS over the pod value
+# in k8s, so a NATS UID-1000 override must land at the container level to take
+# effect). read_only_root_fs and privileged are container-only knobs.
+_container_security_context = lambda sec: any -> any {
+    _default_container_security_context | ({
+        if sec.run_as_non_root != Undefined:
+            runAsNonRoot = sec.run_as_non_root
+        if sec.run_as_user != Undefined:
+            runAsUser = sec.run_as_user
+        if sec.run_as_group != Undefined:
+            runAsGroup = sec.run_as_group
+        if sec.read_only_root_fs != Undefined:
+            readOnlyRootFilesystem = sec.read_only_root_fs
+        if sec.privileged != Undefined:
+            privileged = sec.privileged
+    } if sec else {})
+}
+
+# Build one k8s probe dict from an agnostic HealthProbe. `http_path` wins ->
+# httpGet; else `tcp` -> tcpSocket. `default_port` (the service's first port)
+# is used when the probe pins no port. The SAME dict is used for BOTH
+# livenessProbe and readinessProbe (the 80/20 shape). Raw-dict body only —
+# legal in a lambda.
+_probe = lambda p: any, default_port: int -> any {
+    _pt = p.port if p.port else default_port
+    {
+        if p.http_path != Undefined:
+            httpGet = {path = p.http_path, port = _pt}
+        if p.http_path == Undefined and p.tcp:
+            tcpSocket = {port = _pt}
+        initialDelaySeconds = p.initial_delay_seconds
+        periodSeconds = p.period_seconds
+        timeoutSeconds = p.timeout_seconds
+        failureThreshold = p.failure_threshold
+    }
+}
+
+# Render one projected sidecar / init Container (the neutral dict
+# `_project_container` emits: {name, image, command, env_vars, ports}) into a
+# full k8s container. Mirrors the primary container's own treatment: image
+# ref resolution (registry/tag/digest), pull policy, containerPorts, env via
+# _env_source (deduped), and the restricted-PSA container securityContext.
+# Sidecars/init do NOT take the workload's `security_override` — that governs
+# the primary/pod posture; extra containers keep the secure default (override
+# per-sidecar is out of scope for the 80/20 shape).
+_render_extra_container = lambda c: any, image_registry: str, image_tag: str, image_digests: {str:str} -> any {
+    _img = _image_ref(c.image, image_registry, image_tag, image_digests)
+    {
+        name = c.name
+        image = _img
+        imagePullPolicy = _pull_policy(_img)
+        if c.command:
+            command = c.command
+        if c.ports:
+            ports = [
+                {containerPort = p, protocol = "TCP", name = "port-${p}"}
+                for p in c.ports
+            ]
+        if c.env_vars:
+            env = [_env_source(e) for e in _dedup_env_vars(c.env_vars)]
+        securityContext = _default_container_security_context
+    }
 }
 
 # Does `image` already carry its OWN tag or digest — `name:tag` or
@@ -343,6 +438,18 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
     _pod_annotations = svc.pod_annotations if svc.pod_annotations else {}
     _node_selector = svc.node_selector if svc.node_selector else {}
     _tolerations = svc.tolerations if svc.tolerations else []
+    # securityContext override (agnostic Service.security -> K8sWorkload
+    # .security_override). None when unset => the helpers return the restricted
+    # -PSA default UNCHANGED, so a workload with no `security` is byte-identical.
+    _sec = svc.security_override if svc.security_override else Undefined
+    # Sidecar + init containers (projected [Container] dicts). Empty when
+    # unset => the containers list is [primary] and no initContainers key is
+    # emitted — a single-container workload renders byte-identically.
+    _sidecars = svc.sidecars if svc.sidecars else []
+    _init_containers = svc.init_containers if svc.init_containers else []
+    # Health probe (agnostic Service.health -> K8sWorkload.health_probe). None
+    # when unset => NO liveness/readiness emitted, byte-identical to before.
+    _health = svc.health_probe if svc.health_probe else Undefined
 
     _deployment = {
         apiVersion = "apps/v1"
@@ -380,7 +487,14 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
                         nodeSelector = _node_selector
                     if _tolerations:
                         tolerations = _tolerations
-                    securityContext = _default_pod_security_context
+                    securityContext = _pod_security_context(_sec)
+                    # Init containers run to completion before the primary
+                    # starts. Emitted only when set, so single-container
+                    # workloads render byte-identically (no initContainers key).
+                    if _init_containers:
+                        initContainers = [_render_extra_container(c, image_registry, _effective_image_tag(svc, image_tag), image_digests) for c in _init_containers]
+                    # Primary container FIRST, then any sidecars appended. With
+                    # no sidecars the list is [primary] — byte-identical.
                     containers = [
                         {
                             name = _name
@@ -400,11 +514,17 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
                             # without env_from render byte-identically.
                             if svc.env_from:
                                 envFrom = [_env_from_source(ef) for ef in svc.env_from]
-                            securityContext = _default_container_security_context
+                            # Health probe -> BOTH liveness + readiness (same
+                            # config). Emitted only when `health` is set, so a
+                            # workload without it renders probe-free as before.
+                            if _health:
+                                livenessProbe = _probe(_health, _ports[0])
+                                readinessProbe = _probe(_health, _ports[0])
+                            securityContext = _container_security_context(_sec)
                             if _volumes:
                                 volumeMounts = [_volume_mount(v) for v in _volumes]
                         }
-                    ]
+                    ] + [_render_extra_container(c, image_registry, _effective_image_tag(svc, image_tag), image_digests) for c in _sidecars]
                     if _volumes:
                         volumes = [_volume_source(v) for v in _volumes]
                 }

@@ -55,6 +55,16 @@ schema EnvSource:
                                ConfigMap name, `key` the key within it.
                                Projects to EnvVar.config_map_ref /
                                config_map_key (k8s configMapKeyRef).
+      * `from_field = "..."`  — the DOWNWARD API: read a field of the running
+                               pod/container. The string is a k8s field path
+                               ("metadata.name", "metadata.namespace",
+                               "status.podIP", "spec.nodeName"). Projects to
+                               EnvVar.field_ref (k8s valueFrom.fieldRef.
+                               fieldPath). This is the channel controllers /
+                               OTel resource-detection / pod-aware logging
+                               need (POD_NAME, POD_NAMESPACE, POD_IP,
+                               NODE_NAME). Compose has no analogue — the
+                               compose adapter SKIPS from_field vars.
 
     EXACTLY ONE channel must be set — a malformed source (zero channels, or
     two) is a render-time CHECK FAILURE, not a silently-dropped var. This is
@@ -63,13 +73,14 @@ schema EnvSource:
     value?: str
     from_secret?: {str: str}
     from_config?: {str: str}
+    from_field?: str
 
     check:
         # EXACTLY ONE channel. `value != Undefined` (not `value`) so an
         # explicit empty-string value counts as the value channel being set
         # — same empty-value semantics as EnvVar.
-        len([_c for _c in [value != Undefined, from_secret != Undefined, from_config != Undefined] if _c]) == 1, \
-            "EnvSource must set EXACTLY ONE channel: value (empty string OK) | from_secret | from_config"
+        len([_c for _c in [value != Undefined, from_secret != Undefined, from_config != Undefined, from_field != Undefined] if _c]) == 1, \
+            "EnvSource must set EXACTLY ONE channel: value (empty string OK) | from_secret | from_config | from_field"
         from_secret == Undefined or ("name" in from_secret and "key" in from_secret), \
             "EnvSource.from_secret must carry both 'name' and 'key' (e.g. {name = \"my-secret\", key = \"password\"})"
         from_config == Undefined or ("name" in from_config and "key" in from_config), \
@@ -84,20 +95,28 @@ _EnvVarForProject = EnvVar
 # consumes (kcl/lib/services.k `_env_source`, kcl/render.k `_render_env_var`).
 #
 # This is the ONLY place a list is produced from the core env map, and it is
-# where list-shaped concerns (deterministic ORDER, the map->list flattening)
-# legitimately live — an adapter concern. It SUBSUMES `env_merge`'s last-wins
-# dedup: the map key is the var name, so uniqueness is already guaranteed and
-# no dedup pass is needed (the output is dedup-free by construction).
+# where list-shaped concerns (the map->list flattening) legitimately live —
+# an adapter concern. It SUBSUMES `env_merge`'s last-wins dedup: the map key
+# is the var name, so uniqueness is already guaranteed and no dedup pass is
+# needed (the output is dedup-free by construction).
 #
-# ORDER is deterministic — sorted by key (env-var NAME) — so the rendered
-# container `env:` block is stable across renders regardless of KCL's map
-# iteration order. (k8s env order is not semantically meaningful; a stable
-# order keeps diffs clean.)
+# ORDER is INSERTION order — the author's authoring order, preserved. KCL
+# dicts (`{str: EnvSource}`) iterate in insertion order, and native `|`
+# map-merge keeps base-key positions and appends new keys (verified
+# empirically). This is LOAD-BEARING: k8s `env` supports dependent expansion
+# — `VALUE: "$(EARLIER_VAR)/x"` resolves ONLY against entries appearing
+# EARLIER in the list. A previous revision sorted by key here, which silently
+# broke `$(VAR)` interpolation (a key `A = "$(Z)"` sorted before `Z` left
+# `$(Z)` literal at runtime) AND was a regression vs `env_merge` (which keeps
+# author order). Iterating in insertion order restores author control of
+# ordering so `$(VAR)` works. Authors who want cross-referencing env just
+# declare the referenced var EARLIER in the map literal.
 #
 # Channel mapping (mirrors _env_source's k8s projection exactly):
 #   value       -> EnvVar.value
 #   from_secret -> EnvVar.secret_ref (name) + secret_key (key)  [secretKeyRef]
 #   from_config -> EnvVar.config_map_ref (name) + config_map_key (key)  [configMapKeyRef]
+#   from_field  -> EnvVar.field_ref (k8s field path)            [fieldRef]
 #
 # Native map-merge is how authors COMPOSE before projecting:
 #   _env = _base_env | { "LOG_LEVEL" = {value = "debug"} }   # last-wins, no helper
@@ -114,8 +133,10 @@ env_project = lambda m: {str: EnvSource} -> [EnvVar] {
             if m[_k].from_config != Undefined:
                 config_map_ref = m[_k].from_config.name
                 config_map_key = m[_k].from_config.key
+            if m[_k].from_field != Undefined:
+                field_ref = m[_k].from_field
         }
-        for _k in sorted([_key for _key in m])
+        for _k in m
     ]
 }
 
@@ -219,6 +240,113 @@ schema K8sOverrides:
     tolerations?: [{str: any}]
     raw_manifests?: [any]
 
+schema SecurityOverrides:
+    """Agnostic securityContext DELTAS on a `Service` (`svc.security`).
+
+    The k8s adapter applies a restricted-PSA securityContext by DEFAULT
+    (runAsNonRoot, runAsUser=65532, readOnlyRootFilesystem, drop:[ALL],
+    RuntimeDefault seccomp) — see lib/services.k `_default_*_security_context`.
+    That baseline is correct for a forge-built Go service but BLOCKS
+    third-party infra images that need a different posture: NATS needs
+    `fs_group` to write its JetStream store, temporal-auto-setup needs to run
+    as root, litellm needs a writable root filesystem. Those workloads are
+    raw Deployments TODAY only because the model had no securityContext knob.
+
+    Every field is OPTIONAL: a field left unset keeps the restricted-PSA
+    default, so a Service with NO `security` block renders BYTE-IDENTICALLY to
+    before, and a Service that sets ONE field overrides only that field.
+
+    The adapter applies each at the k8s level(s) where it is valid:
+      * `run_as_user`     — pod + container `runAsUser` (a NATS UID 1000, a
+                            root 0). Set at both so the container-level value
+                            (which wins in k8s) actually takes effect.
+      * `run_as_group`    — pod + container `runAsGroup`.
+      * `fs_group`        — pod `fsGroup` ONLY (k8s has no container fsGroup) —
+                            the volume-ownership knob JetStream needs.
+      * `run_as_non_root` — pod + container `runAsNonRoot` (set False for a
+                            root workload like temporal-auto-setup).
+      * `read_only_root_fs` — container `readOnlyRootFilesystem` (set False
+                            for litellm's prisma-generate write path).
+      * `privileged`      — container `privileged` (container-only in k8s).
+    """
+    run_as_user?: int
+    run_as_group?: int
+    fs_group?: int
+    run_as_non_root?: bool
+    read_only_root_fs?: bool
+    privileged?: bool
+
+schema HealthProbe:
+    """A MINIMAL agnostic health probe on a `Service` (`svc.health`).
+
+    Closes the red-team's "every forge Deployment ships with NO probes" gap
+    for the agnostic path — deliberately 80/20, NOT the full k8s probe matrix.
+    ONE probe config renders as BOTH livenessProbe AND readinessProbe (the
+    common case: most services use a single check for both). Separate
+    liveness/readiness/startup knobs and exec/grpc handlers are OUT of scope —
+    that is the `k8s.raw_manifests` escape hatch's job.
+
+    Handler (pick one):
+      * `http_path = "/healthz"` — an HTTP GET probe (k8s httpGet). Takes
+                                   precedence if both are set.
+      * `tcp = True`            — a TCP socket open probe (k8s tcpSocket) —
+                                   for non-HTTP servers.
+      * `port`                  — the port to probe. Defaults to the service's
+                                   FIRST declared port when omitted.
+
+    Timing (k8s defaults; tune only when needed):
+      * `initial_delay_seconds` (0) / `period_seconds` (10) /
+        `timeout_seconds` (1) / `failure_threshold` (3).
+
+    Adapter: k8s emits liveness + readiness on the primary container; compose
+    emits a `healthcheck`. A Service with no `health` renders NO probes (byte-
+    identical to before).
+    """
+    http_path?: str
+    tcp?: bool
+    port?: int
+    initial_delay_seconds: int = 0
+    period_seconds: int = 10
+    timeout_seconds: int = 1
+    failure_threshold: int = 3
+
+    check:
+        http_path != Undefined or (tcp != Undefined and tcp), \
+            "HealthProbe must set http_path (an HTTP GET path) or tcp = True"
+
+schema Container:
+    """A MINIMAL agnostic container — the shape of a `Service` sidecar or init
+    container. Deliberately a subset of `Service`: the single `image` on a
+    Service is THE primary-container happy path, and sidecars/init are the
+    80/20 extension for the recurring multi-container needs (service-mesh /
+    OTel-collector / cloud-sql-proxy sidecars; schema-migration / wait-for-dep
+    init containers) WITHOUT complicating the single-container case.
+
+    Fields (target-agnostic, mirroring the Service subset):
+      * `name`    — container name (unique within the pod).
+      * `image`   — container image (bare or fully-qualified); the adapter
+                    resolves registry/tag exactly as it does the primary image.
+      * `command` — entrypoint argv. Omit to use the image's entrypoint.
+      * `args`    — args appended after command (folded into one argv, same as
+                    the primary container).
+      * `env`     — the container's env as a MAP keyed by var NAME
+                    (`{str: EnvSource}`), projected via env_project like the
+                    primary. Omit for none.
+      * `ports`   — TCP ports the container listens on. Omit for none. (These
+                    are containerPorts only — sidecars are not auto-exposed as
+                    a k8s Service; declare Service.ports for that.)
+    """
+    name: str
+    image: str
+    command?: [str]
+    args?: [str]
+    env: {str: EnvSource} = {}
+    ports?: [int]
+
+    check:
+        name, "Container.name is required"
+        image, "Container.image is required (a container image name or ref)"
+
 schema Service:
     """The ONE user-facing workload spec — TARGET-AGNOSTIC.
 
@@ -262,6 +390,29 @@ schema Service:
                      volumeMount. The empty_dir case is also the writable
                      escape for the restricted-PSA readOnlyRootFilesystem
                      baseline. Omit for none.
+      * `health`    — a MINIMAL health probe (HealthProbe): one http_path/tcp
+                     check rendered as BOTH liveness + readiness (the 80%
+                     case). Closes the "no probes on any forge Deployment" gap
+                     for the agnostic path. Omit for no probes (byte-identical
+                     to before); the raw escape hatch covers exotic probe
+                     shapes (startup, exec, grpc, distinct liveness/readiness).
+      * `security`  — agnostic securityContext DELTAS (SecurityOverrides).
+                     Every field optional; unset keeps forge's restricted-PSA
+                     default (so a Service with no `security` renders
+                     byte-identically). Overriding fs_group / run_as_user /
+                     run_as_non_root / read_only_root_fs / privileged is what
+                     lets third-party infra (NATS, temporal, litellm) fold
+                     into the model instead of being raw Deployments. Omit for
+                     the restricted default.
+      * `sidecars`  — extra containers ([Container]) that run ALONGSIDE the
+                     primary in the same pod (service-mesh / OTel-collector /
+                     cloud-sql-proxy). The primary `image` stays THE happy
+                     path; sidecars are the 80/20 add-on. Adapter: appended to
+                     the pod's `containers` AFTER the primary. Omit for the
+                     single-container case (renders exactly as before).
+      * `init`      — init containers ([Container]) that run to completion
+                     BEFORE the primary starts (schema migrations, wait-for-
+                     dependency). Adapter: k8s `initContainers`. Omit for none.
       * `k8s`      — the k8s adapter ESCAPE HATCH (K8sOverrides): a
                      target-namespaced, TIERED block of k8s-only knobs
                      (service_account / namespaced_rbac / annotations /
@@ -282,6 +433,10 @@ schema Service:
     resources?: Resources
     build?: GoBuild | DockerBuild | ShellBuild
     volumes?: [Volume]
+    health?: HealthProbe
+    security?: SecurityOverrides
+    sidecars?: [Container]
+    init?: [Container]
     k8s?: K8sOverrides
 
     check:
@@ -293,6 +448,22 @@ schema Service:
 # header). `_service_to_k8s` instantiates these inside its lambda body.
 _K8sWorkloadForAdapter = K8sWorkload
 _EnvFromSourceForAdapter = EnvFromSource
+
+# _project_container — project one agnostic `Container` (a Service sidecar /
+# init container) into the neutral dict render_k8s_service consumes: name,
+# image, folded command+args argv, env projected to [EnvVar], and ports.
+# Returns a RAW dict (no schema literal) so it is legal inside a lambda body.
+# render_k8s_service (`_render_extra_container`) resolves the image ref, pull
+# policy, and the restricted-PSA container securityContext from this.
+_project_container = lambda c: Container -> {str: any} {
+    {
+        name = c.name
+        image = c.image
+        command = (c.command if c.command else []) + (c.args if c.args else [])
+        env_vars = env_project(c.env)
+        ports = c.ports if c.ports else []
+    }
+}
 
 # _service_to_k8s — the k8s ADAPTER, run INSIDE the render pipeline (never by
 # the user). Projects one agnostic `Service` onto the demoted k8s-shaped
@@ -310,6 +481,10 @@ _EnvFromSourceForAdapter = EnvFromSource
 #   Service.resources   -> K8sCluster.resources     (same forge.Resources type)
 #   Service.build       -> K8sWorkload.build         (same build union, pass-through)
 #   Service.volumes     -> K8sWorkload.volumes       (same forge.Volume type)
+#   Service.health      -> K8sWorkload.health_probe    (liveness + readiness)
+#   Service.security    -> K8sWorkload.security_override (PSA-default overrides)
+#   Service.sidecars    -> K8sWorkload.sidecars      (projected [Container])
+#   Service.init        -> K8sWorkload.init_containers (projected [Container])
 #
 # The k8s escape hatch (`Service.k8s` : K8sOverrides) is applied HERE, by
 # the adapter — NOT as a post-render merge. Each typed knob projects onto a
@@ -350,6 +525,9 @@ _service_to_k8s = lambda svc: Service, target: ClusterTarget -> K8sWorkload {
 
     _k8s = svc.k8s
 
+    _sidecars = [_project_container(c) for c in svc.sidecars] if svc.sidecars else []
+    _init = [_project_container(c) for c in svc.init] if svc.init else []
+
     _K8sWorkloadForAdapter {
         name = svc.name
         image = svc.image
@@ -361,6 +539,23 @@ _service_to_k8s = lambda svc: Service, target: ClusterTarget -> K8sWorkload {
             build = svc.build
         if svc.volumes:
             volumes = svc.volumes
+        # Health probe — the adapter reads this in render_k8s_service to emit
+        # liveness + readiness on the primary container. Unset => no probes
+        # (byte-identical to before).
+        if svc.health:
+            health_probe = svc.health
+        # securityContext deltas — the adapter reads these in
+        # render_k8s_service to override the restricted-PSA default. Unset =>
+        # field absent => byte-identical restricted default.
+        if svc.security:
+            security_override = svc.security
+        # Extra pod containers — projected to the neutral shape
+        # render_k8s_service renders (image ref + PSA container SC). Empty =>
+        # fields absent => single-container render is byte-identical.
+        if _sidecars:
+            sidecars = _sidecars
+        if _init:
+            init_containers = _init
         # k8s escape hatch — applied by the adapter, namespaced under `k8s`.
         if _k8s:
             if _k8s.service_account:
@@ -437,6 +632,11 @@ _service_to_compose = lambda svc: Service, registry: str, tag: str, secrets_dir:
     # env MAP -> compose `environment` MAP. The map STAYS a map — no
     # env_project, no list, no dedup. `value` -> inline; `from_config` ->
     # `${VAR}` interpolation (keyed by the env-var NAME).
+    # `from_field` (the k8s DOWNWARD API) has NO compose analogue — there is
+    # no pod/container to read metadata.name/status.podIP from — so the
+    # compose adapter SKIPS those vars entirely (they simply don't appear in
+    # `environment`). This is the honest "a target that can't express a
+    # channel drops it" case, made explicit here.
     _env_inline = {_k: svc.env[_k].value for _k in svc.env if svc.env[_k].value != Undefined}
     _env_config = {_k: "$" + "{" + _k + "}" for _k in svc.env if svc.env[_k].from_config != Undefined}
     _environment = _env_inline | _env_config
@@ -473,6 +673,36 @@ _service_to_compose = lambda svc: Service, registry: str, tag: str, secrets_dir:
             "ports" = _ports
         if _volumes:
             "volumes" = _volumes
+        # health probe -> compose `healthcheck`. http_path lowers to an HTTP
+        # GET via wget; tcp lowers to an `nc -z` port-open check. Timing maps
+        # 1:1 (period->interval, timeout, failure_threshold->retries,
+        # initial_delay->start_period). Same abstract probe, per-target encoding.
+        if svc.health:
+            _probe_port = svc.health.port if svc.health.port else (svc.ports[0] if svc.ports else 8080)
+            "healthcheck" = {
+                if svc.health.http_path != Undefined:
+                    "test" = ["CMD", "wget", "--spider", "-q", "http://localhost:" + str(_probe_port) + svc.health.http_path]
+                else:
+                    "test" = ["CMD-SHELL", "nc -z localhost " + str(_probe_port) + " || exit 1"]
+                "interval" = str(svc.health.period_seconds) + "s"
+                "timeout" = str(svc.health.timeout_seconds) + "s"
+                "retries" = svc.health.failure_threshold
+                "start_period" = str(svc.health.initial_delay_seconds) + "s"
+            }
+        # securityContext -> the compose knobs that have a sensible analogue:
+        # run_as_user -> `user` ("uid[:gid]"), privileged -> `privileged`. The
+        # rest (fs_group / run_as_non_root / read_only_root_fs) have no compose
+        # equivalent and are skipped — this is the honest per-target lowering.
+        if svc.security:
+            if svc.security.run_as_user != Undefined:
+                "user" = str(svc.security.run_as_user) + (":" + str(svc.security.run_as_group) if svc.security.run_as_group != Undefined else "")
+            if svc.security.privileged != Undefined:
+                "privileged" = svc.security.privileged
+        # NOTE: sidecars / init have no in-service compose analogue — a
+        # compose sidecar is a SEPARATE top-level compose service, and compose
+        # has no init-container concept (use `depends_on` + a one-shot service).
+        # This single-service sketch SKIPS them; a real compose adapter would
+        # emit sidecars as sibling services keyed by `svc.name + "-" + c.name`.
         "deploy" = {
             "replicas" = svc.replicas
             if svc.resources:

@@ -87,7 +87,7 @@ assert_image = _container.image == "ghcr.io/reliant-labs/control-plane:latest"
 assert_container_port = _container.ports[0].containerPort == 8080
 assert_replicas = _deploys["workspace-proxy"].spec.replicas == 1
 
-# All three env keys render (sorted by name by env_project).
+# All three env keys render (in author insertion order via env_project).
 _env_by_name = {e.name: e for e in _container.env}
 assert_env_count = len(_container.env) == 3
 assert_env_app_url = _env_by_name["APP_URL"].value == "https://app.reliantlabs.io"

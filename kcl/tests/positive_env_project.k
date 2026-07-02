@@ -4,10 +4,13 @@ adapter projection `forge.env_project`. ADDITIVE alongside EnvVar/env_merge.
 
 Pins the load-bearing claims of FORGE_KCL_IDIOMS.md §3:
 
-  1. ALL THREE CHANNELS project to the correct EnvVar shape
+  1. ALL FOUR CHANNELS project to the correct EnvVar shape
      (value / from_secret->secret_ref+secret_key /
-      from_config->config_map_ref+config_map_key).
-  2. DETERMINISTIC ORDER — output is sorted by key (env-var name).
+      from_config->config_map_ref+config_map_key /
+      from_field->field_ref [Downward API]).
+  2. INSERTION ORDER preserved — the projection follows the author's
+     map-literal order verbatim, so k8s `$(VAR)` dependent expansion works
+     (referenced var declared earlier). (Was sorted-by-key — a regression.)
   3. NATIVE MAP-MERGE (`base | overrides`) overrides last-wins with NO
      helper — the map makes the dedup footgun structurally impossible.
   4. EMPTY-STRING value is a legal channel (mirrors EnvVar).
@@ -27,9 +30,11 @@ _env = {
 
 _projected = forge.env_project(_env)
 
-# sorted by key: APP_MODE, DATABASE_URL, LOG_LEVEL
+# INSERTION order preserved (authoring order): LOG_LEVEL, DATABASE_URL,
+# APP_MODE — NOT alphabetical. This is the fix for the sort-by-key regression
+# that silently broke k8s `$(VAR)` interpolation.
 assert_count = len(_projected) == 3
-assert_order = [e.name for e in _projected] == ["APP_MODE", "DATABASE_URL", "LOG_LEVEL"]
+assert_order = [e.name for e in _projected] == ["LOG_LEVEL", "DATABASE_URL", "APP_MODE"]
 
 _by_name = {e.name: e for e in _projected}
 
@@ -50,13 +55,61 @@ assert_config_no_value = _by_name["APP_MODE"].value == Undefined
 # The projected entries are genuine EnvVar instances (pass EnvVar's own check).
 assert_is_envvar = typeof(_projected[0]) == "EnvVar"
 
-# ── (2) deterministic order regardless of authoring order ──────────
+# ── (2) INSERTION order preserved — authors control ordering ───────
+# KCL dicts iterate in insertion order (verified empirically), so the
+# projected [EnvVar] follows the author's map-literal order EXACTLY — the
+# projection does NOT reorder. This is what makes k8s `$(VAR)` dependent
+# expansion authorable: a var can reference an EARLIER-declared var.
 _scrambled = {
     "ZULU" = {value = "z"}
     "ALPHA" = {value = "a"}
     "MIKE" = {value = "m"}
 }
-assert_sorted = [e.name for e in forge.env_project(_scrambled)] == ["ALPHA", "MIKE", "ZULU"]
+assert_insertion_order = [e.name for e in forge.env_project(_scrambled)] == ["ZULU", "ALPHA", "MIKE"]
+
+# ── (2b) $(VAR) dependent-expansion ordering ───────────────────────
+# The load-bearing case: HOST + PORT declared BEFORE URL, so URL's
+# `$(HOST):$(PORT)` reference resolves against entries that appear EARLIER in
+# the rendered list — k8s expands them. A sort-by-key projection would have
+# put URL before HOST (U < ...no; but PORT<URL yes, HOST<URL) — here we prove
+# the author's dependency order survives verbatim.
+_dependent = {
+    "HOST" = {value = "db.internal"}
+    "PORT" = {value = "5432"}
+    "DATABASE_URL" = {value = "postgres://$(HOST):$(PORT)/app"}
+}
+_dep_projected = forge.env_project(_dependent)
+assert_dependent_order = [e.name for e in _dep_projected] == ["HOST", "PORT", "DATABASE_URL"]
+# The two referenced vars precede the referrer (indices 0,1 < 2).
+assert_dependent_refs_earlier = _dep_projected[2].value == "postgres://$(HOST):$(PORT)/app"
+
+# ── (2c) Downward API — from_field -> k8s valueFrom.fieldRef ───────
+_downward = {
+    "POD_NAME" = {from_field = "metadata.name"}
+    "POD_IP" = {from_field = "status.podIP"}
+    "NODE_NAME" = {from_field = "spec.nodeName"}
+}
+_dw = forge.env_project(_downward)
+_dw_by_name = {e.name: e for e in _dw}
+assert_field_ref_set = _dw_by_name["POD_NAME"].field_ref == "metadata.name"
+assert_field_ref_no_value = _dw_by_name["POD_NAME"].value == Undefined
+# Render through the k8s adapter and assert the fieldRef shape.
+_dw_target = forge.ClusterTarget {
+    cluster = "k3d-downward"
+    namespace = "downward-dev"
+    registry = "localhost:5050"
+}
+_dw_svc = forge.K8sWorkload {
+    name = "downward"
+    image = "api"
+    deploy = _dw_target.deploy | {ports = [8080]}
+    env_vars = _dw
+}
+_dw_manifests = forge.render_manifests(forge.Bundle {cluster_target = _dw_target, services = [_dw_svc]}, "latest", {}, False)
+_dw_dep = [m for m in _dw_manifests if m.kind == "Deployment"][0]
+_dw_env = {e.name: e for e in _dw_dep.spec.template.spec.containers[0].env}
+assert_render_field_ref = _dw_env["POD_IP"].valueFrom.fieldRef == {fieldPath = "status.podIP"}
+assert_render_field_no_value = "value" not in _dw_env["NODE_NAME"]
 
 # ── (3) native map-merge, last-wins, no helper ─────────────────────
 _base_env = {
@@ -89,11 +142,12 @@ _target = forge.ClusterTarget {
     registry = "localhost:5050"
 }
 
-# The hand-written list, in the SAME sorted order env_project emits.
+# The hand-written list, in the SAME insertion order env_project emits
+# (matching the _env map literal above: LOG_LEVEL, DATABASE_URL, APP_MODE).
 _handwritten = [
-    forge.EnvVar {name = "APP_MODE", config_map_ref = "app-config", config_map_key = "mode"}
-    forge.EnvVar {name = "DATABASE_URL", secret_ref = "db", secret_key = "url"}
     forge.EnvVar {name = "LOG_LEVEL", value = "info"}
+    forge.EnvVar {name = "DATABASE_URL", secret_ref = "db", secret_key = "url"}
+    forge.EnvVar {name = "APP_MODE", config_map_ref = "app-config", config_map_key = "mode"}
 ]
 
 _svc_map = forge.K8sWorkload {

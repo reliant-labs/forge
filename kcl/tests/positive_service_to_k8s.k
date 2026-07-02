@@ -87,8 +87,9 @@ assert_env_value2 = _env_by_name["APP_URL"].value == "https://app.reliantlabs.io
 assert_env_secret = _env_by_name["NATS_PASSWORD"].valueFrom.secretKeyRef == {name = "control-plane-nats", key = "password"}
 # from_config -> configMapKeyRef
 assert_env_config = _env_by_name["LOG_LEVEL"].valueFrom.configMapKeyRef == {name = "control-plane-config", key = "log-level"}
-# env is deterministically ordered by name (env_project sorts).
-assert_env_order = [e.name for e in _container.env] == ["APP_URL", "LOG_LEVEL", "NATS_PASSWORD", "OTEL_SERVICE_NAME"]
+# env follows the author's map-literal INSERTION order (not sorted) — so
+# `$(VAR)` dependent expansion is authorable.
+assert_env_order = [e.name for e in _container.env] == ["OTEL_SERVICE_NAME", "APP_URL", "NATS_PASSWORD", "LOG_LEVEL"]
 
 # ── Deployment: env_from -> envFrom (whole-secret bulk import) ──────
 assert_env_from = _container.envFrom == [{secretRef = {name = "control-plane-shared"}}]

@@ -122,11 +122,16 @@ schema EnvVar:
     secret_key: str = ""
     config_map_ref: str = ""
     config_map_key: str = ""
+    # Downward-API channel: a k8s pod/container field path
+    # ("metadata.name", "status.podIP", "spec.nodeName") projected to
+    # `valueFrom.fieldRef.fieldPath`. Empty => not a fieldRef var. This is
+    # the k8s-adapter target of the agnostic `EnvSource.from_field`.
+    field_ref: str = ""
 
     check:
         name, "EnvVar.name is required"
-        value != Undefined or secret_ref or config_map_ref, \
-            "EnvVar must set value (empty string is OK), secret_ref, or config_map_ref"
+        value != Undefined or secret_ref or config_map_ref or field_ref, \
+            "EnvVar must set value (empty string is OK), secret_ref, config_map_ref, or field_ref"
 
 schema EnvFromSource:
     """A whole Secret / ConfigMap imported into a container's env — the k8s
@@ -1778,6 +1783,31 @@ schema K8sWorkload:
     # Each entry is a raw manifest dict (same shape as
     # Bundle.additional_manifests). Unset => no owned manifests.
     manifests: [any] = []
+    # ── securityContext override (projection target of Service.security) ──
+    # A SecurityOverrides (kcl/core.k) carrying OPTIONAL pod/container
+    # securityContext deltas. render_k8s_service merges each set field over
+    # the restricted-PSA default; unset => the hardcoded default is emitted
+    # UNCHANGED (byte-identical to before). The single knob that lets NATS
+    # (fsGroup), temporal (root), and litellm (writable rootfs) fold into the
+    # agnostic model instead of being raw Deployments.
+    security_override?: SecurityOverrides
+    # ── health probe (projection target of Service.health) ──
+    # A HealthProbe (kcl/core.k) rendered by render_k8s_service as BOTH
+    # livenessProbe and readinessProbe on the primary container. Unset =>
+    # NO probes emitted (byte-identical to before — closes the red-team's
+    # dead-HealthCheck / zero-probe gap for the agnostic path).
+    health_probe?: HealthProbe
+    # ── sidecar / init containers (projection targets of Service.sidecars /
+    # Service.init) ──
+    # Each entry is the neutral dict `_project_container` emits: {name, image,
+    # command (folded argv), env_vars: [EnvVar], ports: [int]}.
+    # render_k8s_service (`_render_extra_container`) resolves each image ref +
+    # pull policy + the restricted-PSA container securityContext, appends
+    # `sidecars` to the pod's `containers` AFTER the primary, and emits `init`
+    # as `initContainers`. Both default empty => a single-container workload
+    # renders BYTE-IDENTICALLY (containers == [primary], no initContainers).
+    sidecars: [any] = []
+    init_containers: [any] = []
 
     check:
         name, "K8sWorkload.name is required"

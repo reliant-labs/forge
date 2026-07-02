@@ -25,10 +25,10 @@ _registry = forge.registry("ghcr.io/OWNER")
 _namespace = "{{.ProjectName}}-prod"
 _replicas = 3
 _resources = forge.Resources {
-    cpu_request = "500m"
-    memory_request = "512Mi"
-    cpu_limit = "2000m"
-    memory_limit = "1Gi"
+    cpu_request_millicores = forge.cpu(0.5)    # 500m
+    memory_request_bytes = forge.mib(512)      # 512Mi
+    cpu_limit_millicores = forge.cpu(2)        # 2000m
+    memory_limit_bytes = forge.gib(1)          # 1Gi
 }
 _cluster = forge.ClusterTarget {
     # Set to the kubectl context name for the prod cluster.

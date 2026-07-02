@@ -33,6 +33,8 @@ NOTE (ADDITIVE): control-plane and other consumers keep authoring
 + `env_project` separately. Both shapes coexist on the `forge` surface.
 """
 
+import .lib.quantity as qty_lib
+
 schema EnvSource:
     """A target-neutral, single-channel env value — the MAP value in the
     agnostic core's `env: {str: EnvSource}`.
@@ -474,14 +476,14 @@ _service_to_compose = lambda svc: Service, registry: str, tag: str, secrets_dir:
         "deploy" = {
             "replicas" = svc.replicas
             if svc.resources:
-                # NOTE (leak): forge.Resources carries K8S quantity strings
-                # ("250m" cpu, "512Mi" memory). Compose wants "0.25" cpus and
-                # "512M" memory. Passed through verbatim here (a sketch); the
-                # honest fix is for Resources to hold NEUTRAL quantities each
-                # adapter formats. See the fixture's verdict comment.
+                # Resources holds NEUTRAL quantities (millicores + bytes); the
+                # compose ADAPTER formats them for compose — millicores ->
+                # decimal cores ("250" -> "0.25"), bytes -> raw byte int (a
+                # valid compose deploy.resources memory value). No k8s dialect
+                # leaks through (the leak the compose proof flagged is fixed).
                 "resources" = {
-                    "limits" = {"cpus" = svc.resources.cpu_limit, "memory" = svc.resources.memory_limit}
-                    "reservations" = {"cpus" = svc.resources.cpu_request, "memory" = svc.resources.memory_request}
+                    "limits" = {"cpus" = qty_lib.fmt_compose_cpu(svc.resources.cpu_limit_millicores), "memory" = qty_lib.fmt_compose_mem(svc.resources.memory_limit_bytes)}
+                    "reservations" = {"cpus" = qty_lib.fmt_compose_cpu(svc.resources.cpu_request_millicores), "memory" = qty_lib.fmt_compose_mem(svc.resources.memory_request_bytes)}
                 }
         }
         # svc.k8s is DELIBERATELY unreferenced — see header.

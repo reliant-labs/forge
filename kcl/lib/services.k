@@ -18,6 +18,10 @@ this lib subdir consume them, we type the lambda parameters as
 already-validated entities; field access here is dynamic.
 """
 
+# Sibling module in this same lib package — the shared neutral-quantity
+# formatters (Resources holds millicores + bytes; the k8s adapter formats).
+import .quantity as qty_lib
+
 _managed_labels = lambda name: str -> {str: str} {
     {
         "app.kubernetes.io/name" = name
@@ -287,26 +291,29 @@ _volume_mount = lambda v: any -> any {
     }
 }
 
+# k8s ADAPTER: neutral Resources (millicores + bytes) -> the container
+# resources block's k8s quantity strings. Formatters shared via quantity.k
+# (same package) so every k8s call site emits identical dialect.
 _resource_block = lambda r: any -> any {
     {
         requests = {
-            cpu = r.cpu_request
-            memory = r.memory_request
+            cpu = qty_lib.fmt_k8s_cpu(r.cpu_request_millicores)
+            memory = qty_lib.fmt_k8s_mem(r.memory_request_bytes)
         }
         limits = {
-            cpu = r.cpu_limit
-            memory = r.memory_limit
+            cpu = qty_lib.fmt_k8s_cpu(r.cpu_limit_millicores)
+            memory = qty_lib.fmt_k8s_mem(r.memory_limit_bytes)
         }
     }
 }
 
-# Default resources when Service.deploy.resources is unset. Mirrors
-# the forge.Resources schema defaults.
+# Default resources (neutral units) when Service.deploy.resources is unset.
+# Mirrors the forge.Resources schema defaults: 100m/500m, 128Mi/512Mi.
 _default_resources = {
-    cpu_request = "100m"
-    cpu_limit = "500m"
-    memory_request = "128Mi"
-    memory_limit = "512Mi"
+    cpu_request_millicores = 100
+    cpu_limit_millicores = 500
+    memory_request_bytes = 134217728    # 128Mi
+    memory_limit_bytes = 536870912      # 512Mi
 }
 
 # Render a Service whose deploy is K8sCluster. Returns

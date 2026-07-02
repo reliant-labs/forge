@@ -32,10 +32,10 @@ _workspace_proxy = forge.Service {
     ports = [8080]
     replicas = 2
     resources = forge.Resources {
-        cpu_request = "250m"
-        cpu_limit = "1"
-        memory_request = "256Mi"
-        memory_limit = "512Mi"
+        cpu_request_millicores = forge.cpu(0.25)   # 250m
+        cpu_limit_millicores = forge.cpu(1)        # 1
+        memory_request_bytes = forge.mib(256)      # 256Mi
+        memory_limit_bytes = forge.mib(512)        # 512Mi
     }
     env = {
         "OTEL_SERVICE_NAME" = {value = "workspace-proxy"}

@@ -209,11 +209,49 @@ schema Volume:
             "Volume.source must be unset when type is 'empty_dir'"
 
 schema Resources:
-    """CPU / memory requests + limits."""
-    cpu_request: str = "100m"
-    cpu_limit: str = "500m"
-    memory_request: str = "128Mi"
-    memory_limit: str = "512Mi"
+    """CPU / memory requests + limits in TARGET-NEUTRAL units.
+
+    CPU is MILLICORES (int); memory is BYTES (int). Neither carries a target
+    dialect — k8s milli-cpu + Mi/Gi binary suffixes and compose decimal cores
+    are BOTH adapter concerns, so each adapter FORMATS these neutral values
+    for its target (lib/quantity.k), exactly as env is a neutral map each
+    adapter projects. Bytes is the unambiguous neutral memory unit (Mi is
+    k8s-binary, M is compose-decimal); storing bytes lets each adapter choose.
+
+    Author with the helpers rather than raw millicores / bytes:
+        resources = forge.Resources {
+            cpu_request_millicores = forge.cpu(0.25)   # 250
+            cpu_limit_millicores   = forge.cpu(1)      # 1000
+            memory_request_bytes   = forge.mib(256)    # 268435456
+            memory_limit_bytes     = forge.gib(1)      # 1073741824
+        }
+
+    Defaults are 100m / 500m CPU and 128Mi / 512Mi memory expressed neutrally.
+    """
+    cpu_request_millicores: int = 100
+    cpu_limit_millicores: int = 500
+    memory_request_bytes: int = 134217728   # 128 * 1024 * 1024  (128Mi)
+    memory_limit_bytes: int = 536870912     # 512 * 1024 * 1024  (512Mi)
+
+# Author-facing helpers that PRODUCE Resources' neutral values, so nobody
+# writes raw millicores / bytes. Surfaced top-level as forge.cpu / forge.mcpu
+# / forge.mib / forge.gib. The adapter-facing inverse (neutral -> target
+# string) is lib/quantity.k's formatters.
+#
+#   cpu(0.25) = 250 millicores   mcpu(250) = 250 (millicores passthrough)
+#   mib(256)  = 268435456 bytes  gib(1)    = 1073741824 bytes
+cpu = lambda cores: float -> int {
+    int(cores * 1000 + 0.5)   # cores -> millicores (rounded)
+}
+mcpu = lambda millicores: int -> int {
+    millicores               # already millicores
+}
+mib = lambda n: int -> int {
+    n * 1024 * 1024          # mebibytes -> bytes
+}
+gib = lambda n: int -> int {
+    n * 1024 * 1024 * 1024   # gibibytes -> bytes
+}
 
 schema RuntimeClass:
     """A node.k8s.io/v1 RuntimeClass declaration.

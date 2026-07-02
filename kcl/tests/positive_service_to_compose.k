@@ -38,10 +38,10 @@ svc = forge.Service {
     ports = [8080]
     replicas = 2
     resources = forge.Resources {
-        cpu_request = "250m"
-        cpu_limit = "1"
-        memory_request = "256Mi"
-        memory_limit = "512Mi"
+        cpu_request_millicores = forge.cpu(0.25)   # 250m k8s / 0.25 compose
+        cpu_limit_millicores = forge.cpu(1)        # 1
+        memory_request_bytes = forge.mib(256)      # 256Mi k8s / bytes compose
+        memory_limit_bytes = forge.mib(512)        # 512Mi
     }
     env = {
         # value channel
@@ -125,10 +125,12 @@ assert_compose_env_file = compose.env_file == ["./secrets/control-plane-internal
 # ═══════════════════════════════════════════════════════════════════════════
 assert_compose_ports = compose.ports == ["8080:8080"]
 assert_compose_replicas = compose.deploy.replicas == 2
-# resources -> deploy.resources limits/reservations. (Quantities are passed
-# through verbatim — see the LEAK note in the verdict.)
-assert_compose_res_limits = compose.deploy.resources.limits == {cpus = "1", memory = "512Mi"}
-assert_compose_res_reservations = compose.deploy.resources.reservations == {cpus = "250m", memory = "256Mi"}
+# resources -> deploy.resources limits/reservations. The compose adapter
+# FORMATS the neutral quantities for compose: millicores -> decimal cores
+# ("250" -> "0.25", "1000" -> "1"), bytes -> raw byte int. NO k8s dialect
+# ("250m"/"256Mi") leaks through — the leak the earlier proof flagged is fixed.
+assert_compose_res_limits = compose.deploy.resources.limits == {cpus = "1", memory = 536870912}
+assert_compose_res_reservations = compose.deploy.resources.reservations == {cpus = "0.25", memory = 268435456}
 # volumes -> "source:target:ro" (the mounted Secret, read-only).
 assert_compose_volumes = compose.volumes == ["cp-daemon-kubeconfig:/etc/daemon-cluster:ro"]
 
@@ -170,14 +172,13 @@ assert_compose_keys = sorted(_compose_keys) == sorted(["image", "command", "envi
 #   * k8s escape hatch — target-NAMESPACED, so it vanished cleanly. Proof the
 #     non-portable tail cannot leak into a non-k8s target.
 #
-# What RESISTED (a k8s assumption baked into the core — flag loudly):
-#   * forge.Resources holds K8S-SHAPED quantity strings: cpu "250m"/"1" and
-#     memory "256Mi"/"512Mi". Kubernetes milli-cpu and Mi/Gi binary suffixes
-#     are k8s vocabulary. Compose wants cpus "0.25"/"1.0" and memory "256M".
-#     The sketch passes them through verbatim, producing a compose file that
-#     is STRUCTURALLY right but whose resource VALUES are k8s dialect. This is
-#     the one field where the "agnostic" core is secretly k8s-shaped. The
-#     honest fix: Resources should carry NEUTRAL quantities (e.g. millicpu int
-#     + bytes int, or a parsed quantity) that each adapter FORMATS for its
-#     target — exactly as env is a neutral map each adapter projects.
+# Resources — the ONE field that once RESISTED, now FIXED. forge.Resources
+#     formerly held k8s-shaped quantity STRINGS ("250m" cpu, "256Mi" memory),
+#     which the compose adapter passed through verbatim — a k8s dialect leak.
+#     It now holds NEUTRAL quantities (cpu millicores int, memory bytes int)
+#     and each adapter FORMATS for its target (lib/quantity.k): the k8s
+#     adapter reproduces "250m"/"256Mi", the compose adapter emits "0.25" cores
+#     and raw bytes. Same neutral core, two encodings — exactly as env is a
+#     neutral map each adapter projects. The core is now honestly agnostic in
+#     EVERY field. Authors write forge.cpu(0.25) / forge.mib(256).
 # ═══════════════════════════════════════════════════════════════════════════

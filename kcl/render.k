@@ -38,6 +38,7 @@ import .lib.rbac as rbac_lib
 import .lib.netpol as netpol_lib
 import .lib.gateway as gw_lib
 import .lib.jwks as jwks_lib
+import .lib.quantity as qty_lib
 
 # ---------------------------------------------------------------------------
 # JSON contract render — typed Bundle -> stable dict shape.
@@ -59,12 +60,16 @@ _render_env_var = lambda ev: EnvVar -> any {
     }
 }
 
+# k8s ADAPTER projection: neutral Resources -> the k8s-dialect quantity
+# strings the JSON contract has always exposed. qty_lib formats millicores
+# -> "<n>m"/"<n>" and bytes -> "<n>Mi"/"<n>Gi", so the output is byte-stable
+# with the pre-neutral shape (100 -> "100m", 134217728 -> "128Mi").
 _render_resources = lambda r: Resources -> any {
     {
-        "cpu_request": r.cpu_request
-        "cpu_limit": r.cpu_limit
-        "memory_request": r.memory_request
-        "memory_limit": r.memory_limit
+        "cpu_request": qty_lib.fmt_k8s_cpu(r.cpu_request_millicores)
+        "cpu_limit": qty_lib.fmt_k8s_cpu(r.cpu_limit_millicores)
+        "memory_request": qty_lib.fmt_k8s_mem(r.memory_request_bytes)
+        "memory_limit": qty_lib.fmt_k8s_mem(r.memory_limit_bytes)
     }
 }
 

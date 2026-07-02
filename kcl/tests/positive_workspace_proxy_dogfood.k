@@ -56,10 +56,10 @@ schema WorkspaceProxy(forge.Service):
 workspace_base = WorkspaceProxy {
     replicas = 1
     resources = forge.Resources {
-        cpu_request = "100m"
-        cpu_limit = "500m"
-        memory_request = "128Mi"
-        memory_limit = "256Mi"
+        cpu_request_millicores = forge.cpu(0.1)    # 100m
+        cpu_limit_millicores = forge.cpu(0.5)      # 500m
+        memory_request_bytes = forge.mib(128)      # 128Mi
+        memory_limit_bytes = forge.mib(256)        # 256Mi
     }
 }
 
@@ -79,10 +79,10 @@ _healthcheck_policy = {
 workspace_proxy_prod = workspace_base | {
     replicas = 2
     resources = forge.Resources {
-        cpu_request = "250m"
-        cpu_limit = "1"
-        memory_request = "256Mi"
-        memory_limit = "512Mi"
+        cpu_request_millicores = forge.cpu(0.25)   # 250m
+        cpu_limit_millicores = forge.cpu(1)        # 1
+        memory_request_bytes = forge.mib(256)      # 256Mi
+        memory_limit_bytes = forge.mib(512)        # 512Mi
     }
     # Native map-merge: keep the base channels, add the prod-only deltas.
     env = workspace_base.env | {

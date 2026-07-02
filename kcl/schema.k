@@ -1732,6 +1732,23 @@ schema K8sWorkload:
     # Only valid for a K8sCluster (cluster) deploy — ignored otherwise.
     # Unset => no extra rules (Role keeps just the default config-read).
     namespaced_rbac?: [{str: any}]
+    # ── OPERATOR tail (projection targets of Service.k8s.operator) ───────
+    # The k8s adapter (`_service_to_k8s`) projects an agnostic
+    # `Service.k8s.operator` (OperatorSpec, kcl/core.k) onto these two
+    # fields. Their PRESENCE marks this workload a Kubernetes OPERATOR:
+    # `_render_cluster_service` (render.k) branches on `operator_cluster_rbac`
+    # and emits a cluster-scoped ClusterRole + ClusterRoleBinding (via
+    # render_cluster_rbac, named `${name}-clusterrole`) INSTEAD OF the
+    # namespaced Role a plain Service gets. `operator_cluster_rbac` are
+    # CLUSTER-scoped PolicyRule dicts (same `{apiGroups, resources, verbs}`
+    # shape as namespaced_rbac). `operator_crds` are the CRD *kind names*
+    # this operator owns — a NAME LIST that rides the deploy-as-data JSON
+    # (_render_service) as the codegen (AddToScheme/SetupWithManager)
+    # bridge; the CRD manifest itself keeps riding `manifests`/raw. Both
+    # unset => a plain Service (namespaced RBAC, byte-identical to before).
+    # Only meaningful for a K8sCluster (cluster) deploy.
+    operator_cluster_rbac?: [{str: any}]
+    operator_crds?: [str]
     # ── k8s pod-spec escape-hatch knobs ─────────────────────────────────
     # These are the projection targets of the agnostic `Service.k8s`
     # (K8sOverrides) block — the k8s adapter (`_service_to_k8s`) maps the

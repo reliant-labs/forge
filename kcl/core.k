@@ -189,6 +189,52 @@ schema EnvFrom:
         len([_c for _c in [secret != Undefined, config != Undefined] if _c]) == 1, \
             "EnvFrom must set EXACTLY ONE of: secret | config (a whole Secret or ConfigMap name)"
 
+schema OperatorSpec:
+    """The cluster-scoped OPERATOR tail of the k8s escape hatch
+    (`svc.k8s.operator`) — see OPERATOR_AGNOSTIC.md.
+
+    Setting this sub-block is what MARKS an agnostic `Service` as a
+    Kubernetes OPERATOR (a controller-runtime manager that watches the API
+    server): it is cluster-scoped, k8s-ONLY, and has NO compose analogue
+    (the compose adapter SKIPS a Service that declares it — §5). It is the
+    typed, first-class "this is a controller" predicate (`svc.k8s.operator
+    != Undefined`) that lets forge keep ONE authoring surface
+    (`forge.Service`) instead of forking a parallel top-level
+    `forge.Operator` type — the portable 90% (image / ports / env /
+    replicas / volumes) stays on the Service, and ONLY the k8s-bound tail
+    lives here.
+
+      * `cluster_rbac` — CLUSTER-scoped PolicyRule dicts, the SAME
+                         `{apiGroups, resources, verbs}` shape as
+                         `K8sOverrides.namespaced_rbac` (and the legacy
+                         `Operator.cluster_rbac.rules`). The k8s adapter
+                         routes these into a `ClusterRole` +
+                         `ClusterRoleBinding` (via `render_cluster_rbac`),
+                         named `<service>-clusterrole` — NOT the
+                         namespaced `Role` a plain Service gets. Forge
+                         still auto-adds the default config-read rule, so
+                         authors supply only the CRD / lease / coordination
+                         rules. Setting this is what flips the render path
+                         from namespaced RBAC to cluster RBAC.
+      * `crds`        — the CRD *kind names* this operator owns / serves
+                        (e.g. `["Workspace"]`). This is a NAME LIST — the
+                        bridge to `forge add crd` / the Go
+                        `AddToScheme`/`SetupWithManager` wiring — NOT the
+                        CRD manifest. The `CustomResourceDefinition` object
+                        itself keeps riding `k8s.raw_manifests` (or the
+                        bundle's `additional_manifests`), exactly as
+                        control-plane already supplies its full kubebuilder
+                        CRD; forge does NOT synthesize a CRD manifest from
+                        this list.
+
+    Leader election is deliberately NOT a field here: the pod's Lease is a
+    pure-runtime concern (`operatorkit.Run`), driven by a normal
+    `LEADER_ELECTION_ID` env entry plus a `coordination.k8s.io/leases` rule
+    inside `cluster_rbac`.
+    """
+    cluster_rbac?: [{str: any}]
+    crds?: [str]
+
 schema K8sOverrides:
     """The k8s ADAPTER's escape hatch — a target-NAMESPACED block on an
     agnostic `Service` (`svc.k8s`) carrying the narrow tail of k8s-only
@@ -223,6 +269,19 @@ schema K8sOverrides:
       * `tolerations`     — tolerate the matching node-pool taint
                             (`reliant.dev/runtime=kata:NoSchedule`).
 
+      * `operator`        — the cluster-scoped OPERATOR sub-block
+                            (OperatorSpec: cluster_rbac + crds). Setting it
+                            MARKS this Service as a Kubernetes operator: the
+                            adapter emits a cluster-scoped `ClusterRole` +
+                            `ClusterRoleBinding` (not the namespaced `Role` a
+                            plain Service gets), and the compose adapter
+                            SKIPS the whole Service (an operator has no
+                            docker-compose meaning). This is how a
+                            controller-runtime workload joins the ONE
+                            agnostic `Service` surface instead of forking a
+                            parallel `forge.Operator` type — see OperatorSpec
+                            and OPERATOR_AGNOSTIC.md.
+
     Tier 2 — the ULTIMATE floor, reached only for the genuinely exotic:
       * `raw_manifests`   — arbitrary k8s manifests OWNED by this service,
                             rendered verbatim and stamped with the service's
@@ -235,6 +294,7 @@ schema K8sOverrides:
     """
     service_account?: str
     namespaced_rbac?: [{str: any}]
+    operator?: OperatorSpec
     annotations?: {str: str}
     node_selector?: {str: str}
     tolerations?: [{str: any}]
@@ -493,6 +553,9 @@ _project_container = lambda c: Container -> {str: any} {
 # splice, and a Service with no `k8s` block projects byte-identically:
 #   svc.k8s.service_account -> K8sWorkload.service_account
 #   svc.k8s.namespaced_rbac -> K8sWorkload.namespaced_rbac
+#   svc.k8s.operator        -> K8sWorkload.operator_cluster_rbac + operator_crds
+#                              (marks this workload an OPERATOR: the renderer
+#                              emits cluster RBAC instead of namespaced RBAC)
 #   svc.k8s.annotations     -> K8sWorkload.pod_annotations
 #   svc.k8s.node_selector   -> K8sWorkload.node_selector
 #   svc.k8s.tolerations     -> K8sWorkload.tolerations
@@ -562,6 +625,16 @@ _service_to_k8s = lambda svc: Service, target: ClusterTarget -> K8sWorkload {
                 service_account = _k8s.service_account
             if _k8s.namespaced_rbac:
                 namespaced_rbac = _k8s.namespaced_rbac
+            # Operator tail — presence of `operator_cluster_rbac` is the
+            # renderer's "this is an operator" predicate: _render_cluster_service
+            # then emits a ClusterRole/ClusterRoleBinding instead of the
+            # namespaced Role. `operator_crds` rides the deploy-as-data JSON as
+            # the codegen (AddToScheme/SetupWithManager) bridge.
+            if _k8s.operator:
+                if _k8s.operator.cluster_rbac:
+                    operator_cluster_rbac = _k8s.operator.cluster_rbac
+                if _k8s.operator.crds:
+                    operator_crds = _k8s.operator.crds
             if _k8s.annotations:
                 pod_annotations = _k8s.annotations
             if _k8s.node_selector:
@@ -610,6 +683,18 @@ _service_to_k8s = lambda svc: Service, target: ClusterTarget -> K8sWorkload {
 #                              portable — the k8s-only tail cannot bleed into
 #                              a non-k8s target because the adapter simply
 #                              doesn't look at another target's namespace.
+#
+# !!! OPERATOR SKIP (OPERATOR_AGNOSTIC.md §5) !!! A Service whose `k8s` block
+# sets `operator` (svc.k8s.operator != Undefined) is a Kubernetes OPERATOR — a
+# controller-runtime manager that watches the API server. It has NO
+# docker-compose meaning (no API server, no Lease, no ClusterRole, no CRD): a
+# compose "operator" that starts but reconciles nothing is worse than a clear
+# absence. A real compose adapter's SERVICE-LIST builder therefore OMITS such a
+# workload from the compose stack ENTIRELY (skip, NOT a hard error — a mixed
+# stack still brings up its compose-able half), and `forge audit` surfaces a
+# finding for it. The predicate is `svc.k8s.operator != Undefined`. This
+# single-service sketch has no list level to skip from, but it never errors and
+# never renders the operator tail (svc.k8s is unreferenced below).
 #
 # The THREE env channels lower THREE different ways — this is the whole point:
 # the core names WHAT (an inline value / a secret ref / a config ref); the

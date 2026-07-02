@@ -292,6 +292,12 @@ _render_service = lambda s: K8sWorkload -> any {
         "deploy": _render_deploy(s.deploy)
         "build": _render_build(s.build)
         "namespaced_rbac": s.namespaced_rbac if s.namespaced_rbac else None
+        # Operator CRD kind names (projected from Service.k8s.operator.crds).
+        # Null for a non-operator service. This is the codegen bridge — the
+        # Go consumer reads it to drive AddToScheme/SetupWithManager wiring;
+        # the CRD MANIFEST itself is NOT synthesized here (it rides
+        # `manifests`/additional_manifests). Additive: absent => null.
+        "operator_crds": s.operator_crds if s.operator_crds else None
         # Owned raw manifests project into the JSON contract too (null when
         # empty) so a consumer that reads `output` sees the same stable
         # key shape; the cluster manifest stream stamps + routes them.
@@ -715,14 +721,35 @@ _render_namespace = lambda namespace: str -> any {
     }
 }
 
+# A cluster Service renders its Deployment/Service (render_k8s_service) plus
+# its RBAC. The RBAC tier is chosen by the OPERATOR predicate: a workload
+# carrying `operator_cluster_rbac` (projected from Service.k8s.operator) is a
+# Kubernetes operator, so it gets CLUSTER-scoped RBAC — a ClusterRole +
+# ClusterRoleBinding named `${name}-clusterrole`/`-clusterrolebinding` (via
+# render_cluster_rbac, which ALSO emits the ServiceAccount) — INSTEAD OF the
+# namespaced Role a plain Service gets. This is the fix OPERATOR_AGNOSTIC.md Q3
+# flags: previously ONLY _render_operator_manifests could emit a ClusterRole, so
+# an agnostic Service could not; now an operator authored as a `forge.Service`
+# with `k8s.operator` produces the same cluster RBAC an `Operator` did, with the
+# SAME ClusterRole name — which control-plane's admin-server rebind
+# (lib/rbac.k) assumes (`workspace-controller-clusterrole`). The cluster RBAC
+# path subsumes the config-read the namespaced Role would grant (the default
+# rule is cluster-scoped there too) and emits a single ServiceAccount, so the
+# two tiers are mutually exclusive — no duplicate SA.
 _render_cluster_service = lambda s: K8sWorkload, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
+    _is_operator = s.operator_cluster_rbac != Undefined
     svc_lib.render_k8s_service(s, namespace, registry, image_tag, image_digests) \
-        + rbac_lib.render_namespaced_rbac(
+        + (rbac_lib.render_cluster_rbac(
+            s.name,
+            namespace,
+            {rules = s.operator_cluster_rbac},
+            pull_secrets,
+        ) if _is_operator else rbac_lib.render_namespaced_rbac(
             s.name,
             namespace,
             s.namespaced_rbac if s.namespaced_rbac else [],
             pull_secrets,
-        )
+        ))
 }
 
 _render_operator_manifests = lambda o: Operator, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {

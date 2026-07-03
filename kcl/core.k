@@ -576,6 +576,8 @@ schema Service:
         replicas > 0, "Service.replicas must be positive"
         not (k8s != Undefined and k8s.operator != Undefined and host != Undefined), \
             "Service cannot be BOTH a k8s operator (k8s.operator) and host-targeted (host) — pick one target"
+        host == Undefined or (volumes == Undefined and health == Undefined and security == Undefined and sidecars == Undefined and init == Undefined and k8s == Undefined), \
+            "host-targeted Service (host set) cannot set k8s-only fields (volumes/health/security/sidecars/init/k8s) — the host adapter silently drops them; remove them or drop the host block"
 
 # Aliases for lambda-body schema instantiation (KCL v0.11 — see schema.k
 # header). `_service_to_k8s` instantiates these inside its lambda body.

@@ -857,6 +857,12 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
     # (Projected agnostic workloads always carry an image, so they are all
     # workload services.)
     _workload_services = [s for s in _cluster_services if s.image]
+    # Each workload renders in ITS OWN deploy block's namespace/registry/
+    # pull_secrets — NOT the bundle-wide ones — so a per-service cluster
+    # override (Service.k8s.cluster) lands its Deployment/Service in the
+    # OTHER cluster's namespace with the OTHER registry. For the common case
+    # (deploy seeded from bundle.cluster_target) these EQUAL the bundle-wide
+    # values, so the render is byte-identical.
     # Env-shared manifests + bundle-level additional_manifests carry NO
     # service group: they belong to no service, so they apply only on a bare
     # deploy and are never picked by a service --target. To ride a service's
@@ -865,7 +871,7 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
         + [_render_namespace(_ns)] \
         + [_render_config_map_manifest(cm, _ns) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
-        + [item for s in _workload_services for item in _render_cluster_service(s, _ns, _registry, image_tag, image_digests, _pull_secrets)] \
+        + [item for s in _workload_services for item in _render_cluster_service(s, s.deploy.namespace, s.deploy.registry, image_tag, image_digests, s.deploy.image_pull_secrets if s.deploy.image_pull_secrets else _pull_secrets)] \
         + [item for s in _cluster_services for item in svc_lib.render_owned_manifests(s)] \
         + [item for o in bundle.operators for item in _render_operator_manifests(o, _ns, _registry, image_tag, image_digests, _pull_secrets)] \
         + [item for c in bundle.cronjobs for item in _render_cronjob_manifests(c, _ns, _registry, image_tag, image_digests, _pull_secrets)] \

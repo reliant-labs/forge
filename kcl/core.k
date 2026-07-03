@@ -140,6 +140,43 @@ env_project = lambda m: {str: EnvSource} -> [EnvVar] {
     ]
 }
 
+# env_override(base, overrides) — layer per-service env `overrides` over the
+# config projection `base`, REPLACING each key WHOLE (last-wins), NOT
+# deep-merging it. This is the CORRECT way to compose service overrides on top
+# of `appConfigEnvMap(cfg)` (or any base env map).
+#
+# Why a helper and not bare `|`
+# =============================
+# Composing env maps with bare `|` is a footgun because whether an existing key
+# is REPLACED or its channels are FUSED depends on the UNION operator KCL uses
+# under the hood. When the override merges INTO a key that already exists in the
+# base with a DIFFERENT channel — the `:`/union form KCL takes for a nested
+# schema value — the two EnvSources are DEEP-MERGED into ONE instance carrying
+# BOTH `from_config` AND `from_secret`, which trips EnvSource's exactly-one-
+# channel check and aborts the render (see negative_env_override_fuse.k). Bare
+# `|` is only reliably safe for ADDING NEW keys (keys absent from the base):
+# there is nothing to fuse. The moment an override RE-CHANNELS an existing
+# config key (from_config -> from_secret, value -> from_config, …) you MUST use
+# `env_override`, which sidesteps the operator subtlety entirely by REPLACING
+# each overridden key's WHOLE EnvSource.
+#
+# The contract: for every key present in `overrides`, the result carries the
+# override's WHOLE EnvSource (the base value is discarded, not merged); keys
+# only in `base` are untouched; keys only in `overrides` are appended. Base key
+# ORDER is preserved (base keys first, in base insertion order, then new
+# override keys) — the same insertion-order contract `env_project` relies on
+# for `$(VAR)` interpolation. The trailing `|` is safe because the two
+# comprehensions share NO keys (base keys vs override-only keys), so no value
+# is ever fused — it is the ADD-only use `|` is legitimate for.
+#
+#   env = env_override(appConfigEnvMap(cfg), {
+#       "LITELLM_MASTER_KEY" = {from_secret = {name = "cp-litellm", key = "master-key"}}
+#   })
+env_override = lambda base: {str: EnvSource}, overrides: {str: EnvSource} -> {str: EnvSource} {
+    {_k: (overrides[_k] if _k in overrides else base[_k]) for _k in base} \
+        | {_k: overrides[_k] for _k in overrides if _k not in base}
+}
+
 # ===========================================================================
 # The ONE user-facing workload schema — target-AGNOSTIC (FORGE_KCL_IDIOMS.md).
 # ===========================================================================
@@ -269,6 +306,22 @@ schema K8sOverrides:
       * `tolerations`     — tolerate the matching node-pool taint
                             (`reliant.dev/runtime=kata:NoSchedule`).
 
+      * `cluster`         — target a DIFFERENT `ClusterTarget` than the
+                            Bundle's `cluster_target` for THIS service only —
+                            the per-service multi-cluster split (control-plane's
+                            workspace-proxy landing in a SEPARATE `cp-daemon`
+                            cluster). When set, the k8s adapter projects this
+                            workload onto the override target's coordinates
+                            (namespace / registry / cluster context /
+                            image_pull_secrets) instead of the Bundle's — the
+                            first-class replacement for the old per-service
+                            `deploy = forge.K8sCluster{...}` group attribution.
+                            Unset (the common case) => the Bundle's
+                            `cluster_target`, byte-identical to before. The
+                            deploy-time scoper routes the rendered manifest to
+                            that cluster's context (== `<other>.deploy.cluster`)
+                            so it lands ONLY there.
+
       * `operator`        — the cluster-scoped OPERATOR sub-block
                             (OperatorSpec: cluster_rbac + crds). Setting it
                             MARKS this Service as a Kubernetes operator: the
@@ -298,6 +351,7 @@ schema K8sOverrides:
     annotations?: {str: str}
     node_selector?: {str: str}
     tolerations?: [{str: any}]
+    cluster?: ClusterTarget
     raw_manifests?: [any]
 
 schema HostOverrides:
@@ -813,9 +867,18 @@ _service_to_host = lambda svc: Service -> RenderedWorkload {
 # workload resolves to k8s — so a purely-host Bundle needs no cluster_target.
 # Compose is intentionally NOT dispatched here (dev-infra stays a legacy
 # compose dep; see FORGE_TARGET_POLYMORPHISM.md §3).
+# The k8s branch targets `svc.k8s.cluster` when the service declares a
+# per-service cluster override (the multi-cluster split — a workload landing in
+# a DIFFERENT cluster than the Bundle's), else the Bundle's `cluster_target`.
+# The override's coordinates (namespace / registry / cluster context /
+# image_pull_secrets) then flow through the SAME `_service_to_k8s` adapter and
+# out onto the RenderedWorkload's `deploy` block, so both the JSON contract and
+# the manifest render pick them up per-service.
 _project_workload = lambda svc: Service, bundle: Bundle -> RenderedWorkload {
     _service_to_host(svc) if svc.host != Undefined \
-        else _service_to_k8s(svc, bundle.cluster_target)
+        else _service_to_k8s(svc, \
+            svc.k8s.cluster if (svc.k8s != Undefined and svc.k8s.cluster != Undefined) \
+                else bundle.cluster_target)
 }
 
 # ===========================================================================

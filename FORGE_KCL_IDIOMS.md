@@ -180,6 +180,33 @@ core is a **map**: `env: {str: EnvSource}`. A map:
 _env = _shared_env | { "LOG_LEVEL" = {value = "debug"} }
 ```
 
+#### Layering overrides over a config projection — use `env_override`, not bare `|`
+
+Bare `|` is safe for **adding new keys**. But composing an override over a config projection
+(`env = appConfigEnvMap(cfg) | { …overrides… }`) hits a real footgun the moment an override
+**re-channels an existing key** — e.g. a key the config projected as `{from_config = …}` that
+a service overrides to `{from_secret = …}`. Depending on the union operator KCL takes for the
+nested schema value, `|` **deep-merges (fuses)** the two `EnvSource`s into ONE instance
+carrying *both* `from_config` **and** `from_secret`, which trips `EnvSource`'s
+exactly-one-channel check and aborts the render (proven in
+`kcl/tests/negative_env_override_fuse.k`).
+
+`forge.env_override(base, overrides)` is the CORRECT way to layer service overrides over the
+projection: it **replaces each overridden key's WHOLE `EnvSource`** (last-wins), never merges
+channels, and preserves base-key order (base keys first, then appended override-only keys):
+
+```kcl
+# CORRECT — re-channel a config key without fusing; add a new secret key:
+env = forge.env_override(appConfigEnvMap(cfg), {
+    "APP_URL"            = {from_secret = {name = "app-secrets", key = "app-url"}}  # was from_config
+    "LITELLM_MASTER_KEY" = {from_secret = {name = "cp-litellm", key = "master-key"}}
+})
+```
+
+Rule of thumb: **bare `|` only for ADDING new keys; `env_override` whenever an override touches
+a key the base already sets.** (Proof: `kcl/tests/positive_env_override.k` — a from_config key
+re-channelled to from_secret yields a single-channel from_secret, not a two-channel source.)
+
 ### The directive: MOVE `env_merge` out of `kcl/`, into the k8s adapter
 
 `env_merge` and `_dedup_env_vars` are **k8s-adapter internals**: the map→`[]EnvVar`

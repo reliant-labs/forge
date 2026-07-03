@@ -282,7 +282,7 @@ _render_build = lambda b: any -> any {
     _render_build_populated(b) if b else None
 }
 
-_render_service = lambda s: K8sWorkload -> any {
+_render_service = lambda s: RenderedWorkload -> any {
     {
         "name": s.name
         "image": s.image if s.image else None
@@ -650,14 +650,14 @@ render = lambda bundle: Bundle -> any {
         if bundle.cluster_target:
             "cluster_target": _render_cluster_target(bundle.cluster_target)
         "kubeconfig_secrets": [_render_kubeconfig_secret(k) for k in bundle.kubeconfig_secrets]
-        # Agnostic `workloads` are projected onto the K8sWorkload shape
+        # Agnostic `workloads` are projected onto the RenderedWorkload shape
         # INTERNALLY (via the k8s adapter) and folded into the same `services`
         # bucket, so the Go consumer sees ONE stable shape whether a service
-        # was authored as an agnostic `forge.Service` or a raw `K8sWorkload`.
+        # was authored as an agnostic `forge.Service` or a raw `RenderedWorkload`.
         # Projection needs the env-wide `cluster_target`; a Bundle carrying
         # `workloads` therefore must declare one.
         "services": [_render_service(s) for s in bundle.services] \
-            + [_render_service(_service_to_k8s(w, bundle.cluster_target)) for w in bundle.workloads]
+            + [_render_service(_project_workload(w, bundle)) for w in bundle.workloads]
         "operators": [_render_operator(o) for o in bundle.operators]
         "frontends": [_render_frontend(f) for f in bundle.frontends]
         "cronjobs": [_render_cronjob(c) for c in bundle.cronjobs]
@@ -736,7 +736,7 @@ _render_namespace = lambda namespace: str -> any {
 # path subsumes the config-read the namespaced Role would grant (the default
 # rule is cluster-scoped there too) and emits a single ServiceAccount, so the
 # two tiers are mutually exclusive — no duplicate SA.
-_render_cluster_service = lambda s: K8sWorkload, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
+_render_cluster_service = lambda s: RenderedWorkload, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
     _is_operator = s.operator_cluster_rbac != Undefined
     svc_lib.render_k8s_service(s, namespace, registry, image_tag, image_digests) \
         + (rbac_lib.render_cluster_rbac(
@@ -839,12 +839,16 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
     _ns = _ct.namespace
     _registry = _ct.registry
     _pull_secrets = _ct.image_pull_secrets if _ct.image_pull_secrets else []
-    # AGNOSTIC workloads are projected onto K8sWorkloads INTERNALLY here —
-    # the k8s adapter runs INSIDE the render pipeline, so the user never
-    # calls it. Each agnostic `forge.Service` in `bundle.workloads` becomes a
-    # cluster K8sWorkload seeded from the env-wide `cluster_target`.
-    _projected = [_service_to_k8s(w, _ct) for w in bundle.workloads]
-    _cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"] + _projected
+    # AGNOSTIC workloads are projected onto RenderedWorkloads INTERNALLY here —
+    # the adapter runs INSIDE the render pipeline, so the user never calls it.
+    # `_project_workload` picks the adapter PER WORKLOAD off the presence of
+    # `svc.host`: a host-targeted workload projects to a `HostDeploy` (and is
+    # filtered OUT of the k8s manifest stream below, exactly like a legacy
+    # `deploy.type == "host"` service); every other workload projects to a
+    # cluster RenderedWorkload seeded from the env-wide `cluster_target`.
+    _projected = [_project_workload(w, bundle) for w in bundle.workloads]
+    _cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"] \
+        + [w for w in _projected if w.deploy.type == "cluster"]
     # Only a service with an `image` renders a workload (Deployment +
     # Service + RBAC). An image-less cluster service is an INFRA service:
     # it contributes ONLY its owned `manifests` (below), no phantom

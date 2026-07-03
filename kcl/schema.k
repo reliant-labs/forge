@@ -1628,7 +1628,7 @@ schema FirebaseHosting:
 # Typed entities — each captures ONE orchestration shape.
 # ---------------------------------------------------------------------------
 
-schema K8sWorkload:
+schema RenderedWorkload:
     """DEMOTED / ADAPTER-INTERNAL — the k8s-shaped projection target.
 
     This is the OLD user-facing `forge.Service` shape, renamed and demoted
@@ -1636,8 +1636,8 @@ schema K8sWorkload:
     a user authors: the ONE user-facing workload schema is now the
     target-agnostic `forge.Service` (kcl/core.k). This schema is the k8s
     ADAPTER's projection target — `forge._service_to_k8s` (kcl/core.k)
-    projects an agnostic `forge.Service` onto a `K8sWorkload`, and the render
-    pipeline (render_manifests / render) consumes `K8sWorkload` unchanged.
+    projects an agnostic `forge.Service` onto a `RenderedWorkload`, and the render
+    pipeline (render_manifests / render) consumes `RenderedWorkload` unchanged.
 
     It stays EXPORTED (not `_`-prefixed) because it is still the carrier of
     the full deploy/build machinery the JSON contract + Go CLI depend on
@@ -1754,7 +1754,7 @@ schema K8sWorkload:
     # (K8sOverrides) block — the k8s adapter (`_service_to_k8s`) maps the
     # typed overrides onto these fields; render_k8s_service threads them
     # into the Deployment pod spec. They are ALSO settable directly on a
-    # hand-authored K8sWorkload. All default to "absent" so a workload that
+    # hand-authored RenderedWorkload. All default to "absent" so a workload that
     # sets none renders byte-identically to before.
     #
     # `service_account` overrides the pod's serviceAccountName (default:
@@ -1827,7 +1827,7 @@ schema K8sWorkload:
     init_containers: [any] = []
 
     check:
-        name, "K8sWorkload.name is required"
+        name, "RenderedWorkload.name is required"
 
 schema Operator:
     """A cluster-scoped controller that reconciles CRDs.
@@ -2185,7 +2185,7 @@ schema Bundle:
     # the cluster→deploy boundary. Empty => none. See KubeconfigSecret.
     kubeconfig_secrets: [KubeconfigSecret] = []
     # AGNOSTIC user-facing workloads (the ONE user Service — kcl/core.k). The
-    # render layer projects each onto a `K8sWorkload` INTERNALLY via
+    # render layer projects each onto a `RenderedWorkload` INTERNALLY via
     # `forge._service_to_k8s(w, cluster_target)` before emitting manifests /
     # the JSON contract, so the user NEVER calls the adapter. This is the
     # authoring entry a project uses now.
@@ -2193,9 +2193,9 @@ schema Bundle:
     # DEMOTED / adapter-internal: the k8s-shaped projection carrier (host /
     # external / compose / build-only deploy modes + build machinery the
     # agnostic Service doesn't model). `_service_to_k8s` emits these from
-    # `workloads`; a project may still place pre-projected `K8sWorkload`s here
+    # `workloads`; a project may still place pre-projected `RenderedWorkload`s here
     # for the non-cluster deploy modes until those are folded into the core.
-    services: [K8sWorkload] = []
+    services: [RenderedWorkload] = []
     operators: [Operator] = []
     frontends: [Frontend] = []
     cronjobs: [CronJob] = []
@@ -2252,15 +2252,17 @@ schema Bundle:
     required_dns: [DNSRecord] = []
 
     check:
-        # Agnostic `workloads` are cluster-only today: `_service_to_k8s`
-        # projects each onto a K8sWorkload seeded from `cluster_target`, so a
-        # workload without a target dereferences an Undefined `target.deploy`
-        # and fails with a confusing projection error deep in the adapter.
-        # Reject it at load with a clear message instead. (Host / external /
-        # compose workloads still go in `services` as pre-projected
-        # K8sWorkloads until those deploy modes are folded into the core.)
-        len(workloads) == 0 or cluster_target, \
-            "Bundle.workloads require a cluster_target: agnostic workloads are cluster-only today and are projected onto the env-wide ClusterTarget. Declare Bundle.cluster_target, or use Bundle.services for host/external/compose (pre-projected K8sWorkload) workloads."
+        # A cluster_target is required iff at least one workload resolves to
+        # the k8s target — i.e. any workload WITHOUT a `host` block (target
+        # polymorphism, FORGE_TARGET_POLYMORPHISM.md §1.4). The k8s adapter
+        # (`_service_to_k8s`) seeds each such workload's RenderedWorkload from
+        # `cluster_target`, so a workload without a target would dereference
+        # an Undefined `target.deploy` and fail deep in the adapter; reject it
+        # at load with a clear message instead. A host-targeted workload
+        # (`svc.host` present) projects via `_service_to_host`, which never
+        # touches `cluster_target` — so a purely-host Bundle needs none.
+        len([w for w in workloads if w.host == Undefined]) == 0 or cluster_target, \
+            "Bundle.workloads that render to k8s require a cluster_target: an agnostic workload with no `host` block is projected onto the env-wide ClusterTarget. Declare Bundle.cluster_target, attach a `host` block to make it host-targeted, or use Bundle.services for pre-projected RenderedWorkload workloads."
         # value_group consistency: every ExternalSecret in a byte-match group
         # must agree on the KEY SET it projects, so the cross-secret byte
         # comparison (preflight) compares like for like. A group whose members

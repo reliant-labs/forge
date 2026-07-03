@@ -1,8 +1,8 @@
 """
-Negative test — an app schema that inherits forge.K8sWorkload can add its OWN
+Negative test — an app schema that inherits forge.RenderedWorkload can add its OWN
 required fields, enforced at PARSE time.
 
-TenantService(forge.K8sWorkload) declares `region` with a `check:` that rejects
+TenantService(forge.RenderedWorkload) declares `region` with a `check:` that rejects
 an empty value. Constructing it with `region = ""` must fail the check
 block — proving the app's extra required-field semantics are enforced when
 the value is loaded, exactly like forge's own checks. (A fully-OMITTED
@@ -12,7 +12,7 @@ but we drive the CHECK here so the harness's "Check failed" signal fires.)
 
 import forge
 
-schema TenantService(forge.K8sWorkload):
+schema TenantService(forge.RenderedWorkload):
     region: str
     tier: "free" | "pro" = "free"
 

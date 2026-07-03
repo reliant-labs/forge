@@ -1,7 +1,7 @@
 """
 Positive test — the agnostic-core collapse: ONE user-facing agnostic
 `forge.Service` placed in `Bundle.workloads`, projected onto the demoted
-k8s-shaped `forge.K8sWorkload` INSIDE `forge.render_manifests` (the k8s
+k8s-shaped `forge.RenderedWorkload` INSIDE `forge.render_manifests` (the k8s
 adapter runs in the render pipeline; the user NEVER calls it), producing a
 correct Deployment + Service.
 

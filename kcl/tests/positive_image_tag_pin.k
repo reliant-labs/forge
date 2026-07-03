@@ -27,26 +27,26 @@ _target = forge.ClusterTarget {
     registry = "localhost:5050"
 }
 
-_pinned_svc = forge.K8sWorkload {
+_pinned_svc = forge.RenderedWorkload {
     name = "reliant"
     image = "reliant"
     image_tag = "v1.4.2"
     deploy = _target.deploy
 }
 
-_env_tag_svc = forge.K8sWorkload {
+_env_tag_svc = forge.RenderedWorkload {
     name = "api"
     image = "api"
     deploy = _target.deploy
 }
 
-_explicit_tag_svc = forge.K8sWorkload {
+_explicit_tag_svc = forge.RenderedWorkload {
     name = "vendor"
     image = "ghcr.io/acme/vendor:3.0.0"
     deploy = _target.deploy
 }
 
-_digest_svc = forge.K8sWorkload {
+_digest_svc = forge.RenderedWorkload {
     name = "pinned-digest"
     image = "ghcr.io/acme/db@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
     deploy = _target.deploy

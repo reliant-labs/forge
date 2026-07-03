@@ -16,7 +16,7 @@ which USED to be raw Deployments fold into the model:
      tcp->tcpSocket, port defaults to the first declared port.
   3. HAPPY PATH UNCHANGED — a plain single-container Service with NO security /
      sidecars / init / health renders BYTE-IDENTICALLY to a hand-authored
-     K8sWorkload baseline (containers == [primary], no initContainers, no
+     RenderedWorkload baseline (containers == [primary], no initContainers, no
      probes, default SC).
 """
 
@@ -173,7 +173,7 @@ assert_compose_hc_retries = _probed_compose.healthcheck.retries == 5
 
 # ── (3) HAPPY PATH UNCHANGED — no security/sidecars/init/health == identical ─
 # The SAME plain service authored as an agnostic Service vs a hand-authored
-# K8sWorkload baseline must render an IDENTICAL Deployment.
+# RenderedWorkload baseline must render an IDENTICAL Deployment.
 _plain = forge.Service {
     name = "plain"
     image = "control-plane"
@@ -181,7 +181,7 @@ _plain = forge.Service {
     ports = [8080]
     env = {"PORT" = {value = "8080"}}
 }
-_baseline = forge.K8sWorkload {
+_baseline = forge.RenderedWorkload {
     name = "plain"
     image = "control-plane"
     command = ["/app/control-plane"]

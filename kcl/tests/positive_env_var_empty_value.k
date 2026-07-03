@@ -23,7 +23,7 @@ _target = forge.ClusterTarget {
     registry = "localhost:5050"
 }
 
-_svc = forge.K8sWorkload {
+_svc = forge.RenderedWorkload {
     name = "api"
     image = "api"
     deploy = _target.deploy | {ports = [8080]}

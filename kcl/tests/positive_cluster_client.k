@@ -55,7 +55,7 @@ _target = forge.ClusterTarget {
 
 # A consuming service references link.volume + link.config_json; the
 # derived secret is emitted in the Bundle's kubeconfig_secrets.
-_consumer = forge.K8sWorkload {
+_consumer = forge.RenderedWorkload {
     name = "workspace-controller"
     image = "control-plane"
     deploy = _target.deploy | {

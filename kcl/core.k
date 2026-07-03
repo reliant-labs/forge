@@ -147,12 +147,12 @@ env_project = lambda m: {str: EnvSource} -> [EnvVar] {
 # description of a workload with ZERO Kubernetes vocabulary (no Deployment,
 # no `env:` list, no `secretKeyRef`, no FQDN, no `containerPort`, no deploy
 # union). Kubernetes is not *the* output — it is the FIRST adapter: the render
-# pipeline projects this onto the demoted, k8s-shaped `K8sWorkload`
+# pipeline projects this onto the demoted, k8s-shaped `RenderedWorkload`
 # (kcl/schema.k) via `_service_to_k8s` INTERNALLY, so the user never touches
 # the adapter. A compose / Nomad / ECS adapter would project the SAME core
 # differently.
 #
-# The old k8s-shaped `forge.Service` was renamed `forge.K8sWorkload` and
+# The old k8s-shaped `forge.Service` was renamed `forge.RenderedWorkload` and
 # demoted to adapter-internal plumbing; this schema takes over the
 # `forge.Service` name as the single authoring surface.
 
@@ -239,13 +239,13 @@ schema K8sOverrides:
     """The k8s ADAPTER's escape hatch — a target-NAMESPACED block on an
     agnostic `Service` (`svc.k8s`) carrying the narrow tail of k8s-only
     knobs the portable core deliberately does NOT model (leader election,
-    cluster RBAC, CRDs stay on the k8s-native Operator/K8sWorkload; those
+    cluster RBAC, CRDs stay on the k8s-native Operator/RenderedWorkload; those
     don't port to compose). A Service with NO `k8s` block is fully
     portable; the block is where non-portability is made EXPLICIT and
     lintable (FORGE_KCL_IDIOMS.md §9).
 
     Applied BY the adapter (`_service_to_k8s`), NOT as a post-render merge:
-    the adapter projects each field onto the demoted `K8sWorkload` it emits
+    the adapter projects each field onto the demoted `RenderedWorkload` it emits
     (which render_k8s_service then threads into the Deployment), so the
     override is a structural, by-name splice — never blind list-surgery on
     an already-rendered manifest.
@@ -299,6 +299,57 @@ schema K8sOverrides:
     node_selector?: {str: str}
     tolerations?: [{str: any}]
     raw_manifests?: [any]
+
+schema HostOverrides:
+    """The HOST adapter's escape hatch — a target-NAMESPACED block on an
+    agnostic `Service` (`svc.host`) carrying the narrow tail of host-run
+    knobs the portable core deliberately does NOT model (a live-reload
+    runner, an Air config, a sibling-repo working directory, an optional
+    host-only command override).
+
+    PRESENCE of this block selects the HOST adapter for this Service — the
+    same presence-predicate idiom `svc.k8s.operator != Undefined` uses to
+    mark an operator. A Service with NO `host` block renders through the k8s
+    adapter (the default). This is what lets ONE pure-agnostic `Service`
+    builder (authored once, e.g. control-plane's `admin_server_base()`)
+    render to a host `HostDeploy` when an env attaches a `host` block (dev's
+    fast edit→air-rebuild loop) AND to a k8s Deployment when it does not
+    (cluster) — the target is chosen OFF the builder, never baked into it.
+
+    Applied BY the adapter (`_service_to_host`), NEVER as a post-render
+    merge: the adapter projects each field onto the demoted
+    `RenderedWorkload{deploy = HostDeploy}` carrier, so the override is a
+    structural, by-name splice.
+
+      * `runner`          — the host launch runner (== HostDeploy.runner):
+                            `go-run` (`go run ./cmd/...`), `air` (live-reload
+                            via `air -c <air_config>`), `binary` (pre-built),
+                            `delve` (headless debugger). k8s/compose have no
+                            live-reload runner concept.
+      * `air_config`      — the Air config file, only when `runner == "air"`.
+      * `working_dir`     — cross-repo source root for the launched process
+                            (the sibling-repo binaries `go run` from `../x`);
+                            no analogue in a container image.
+      * `command_override` — a host-only command that REPLACES the agnostic
+                            `command`+`args` (e.g. `["go","run","./cmd/reliant",
+                            "server","api"]` where the container command is
+                            `["reliant","server","api"]`). Unset => reuse the
+                            agnostic `command`+`args`.
+
+    Secrets are NOT a field here: on the host they come from the
+    `Bundle.secret_provider` (DotenvSecrets), injected by the CLI — the model
+    dev already uses — so the adapter sets no `secrets_file`.
+    """
+    runner: str = "go-run"
+    air_config?: str
+    working_dir?: str
+    command_override?: [str]
+
+    check:
+        runner in ["go-run", "air", "binary", "delve"], \
+            "HostOverrides.runner must be go-run | air | binary | delve"
+        air_config == Undefined or runner == "air", \
+            "HostOverrides.air_config is only valid when runner = 'air'"
 
 schema SecurityOverrides:
     """Agnostic securityContext DELTAS on a `Service` (`svc.security`).
@@ -414,7 +465,7 @@ schema Service:
     workload; how each is realized (a k8s Deployment+Service, a compose
     service, …) is the ADAPTER's job (`_service_to_k8s`, run inside the render
     pipeline). Place these in `Bundle.workloads`; render_manifests / render
-    project them onto `K8sWorkload` for you.
+    project them onto `RenderedWorkload` for you.
 
     Fields (all target-agnostic):
       * `name`     — workload identity. Adapter: k8s object name / compose
@@ -489,6 +540,16 @@ schema Service:
                      portable; the block is applied BY the adapter, so
                      non-portability is explicit and localized. Omit for a
                      fully-agnostic service.
+      * `host`     — the HOST adapter TARGET SELECTOR + escape hatch
+                     (HostOverrides). Its PRESENCE marks this workload
+                     host-targeted (mirrors `k8s.operator != Undefined`
+                     marking an operator): the render layer projects it
+                     through `_service_to_host` onto a `HostDeploy` instead of
+                     the default k8s adapter, and carries the host-only knobs
+                     (runner / air_config / working_dir / command_override).
+                     Omit => this Service renders to k8s (the default). This
+                     is how ONE agnostic builder serves both the host env
+                     (dev) and the cluster envs from a single definition.
     """
     name: str
     image: str
@@ -507,16 +568,22 @@ schema Service:
     sidecars?: [Container]
     init?: [Container]
     k8s?: K8sOverrides
+    host?: HostOverrides
 
     check:
         name, "Service.name is required"
         image, "Service.image is required (a container image name or ref)"
         replicas > 0, "Service.replicas must be positive"
+        not (k8s != Undefined and k8s.operator != Undefined and host != Undefined), \
+            "Service cannot be BOTH a k8s operator (k8s.operator) and host-targeted (host) — pick one target"
 
 # Aliases for lambda-body schema instantiation (KCL v0.11 — see schema.k
 # header). `_service_to_k8s` instantiates these inside its lambda body.
-_K8sWorkloadForAdapter = K8sWorkload
+_RenderedWorkloadForAdapter = RenderedWorkload
 _EnvFromSourceForAdapter = EnvFromSource
+# The HOST adapter (`_service_to_host`) instantiates a HostDeploy in its
+# lambda body — same alias trick.
+_HostDeployForAdapter = HostDeploy
 
 # _project_container — project one agnostic `Container` (a Service sidecar /
 # init container) into the neutral dict render_k8s_service consumes: name,
@@ -536,41 +603,41 @@ _project_container = lambda c: Container -> {str: any} {
 
 # _service_to_k8s — the k8s ADAPTER, run INSIDE the render pipeline (never by
 # the user). Projects one agnostic `Service` onto the demoted k8s-shaped
-# `K8sWorkload`, targeting the env-wide `ClusterTarget` (the SSOT for
-# cluster/namespace/registry/…). The result is a valid K8sWorkload with a
+# `RenderedWorkload`, targeting the env-wide `ClusterTarget` (the SSOT for
+# cluster/namespace/registry/…). The result is a valid RenderedWorkload with a
 # K8sCluster deploy block that flows through the UNCHANGED renderer.
 #
-#   Service.image      -> K8sWorkload.image        (renderer resolves reg/tag)
-#   Service.image_tag  -> K8sWorkload.image_tag    (per-workload tag pin;
+#   Service.image      -> RenderedWorkload.image        (renderer resolves reg/tag)
+#   Service.image_tag  -> RenderedWorkload.image_tag    (per-workload tag pin;
 #                                                   unset => env-wide tag)
 #   Service.command \
-#   Service.args        -> K8sWorkload.command      (folded: command + args)
-#   Service.env (map)   -> K8sWorkload.env_vars     via env_project (map->[EnvVar])
-#   Service.env_from    -> K8sWorkload.env_from     (core EnvFrom -> EnvFromSource)
+#   Service.args        -> RenderedWorkload.command      (folded: command + args)
+#   Service.env (map)   -> RenderedWorkload.env_vars     via env_project (map->[EnvVar])
+#   Service.env_from    -> RenderedWorkload.env_from     (core EnvFrom -> EnvFromSource)
 #   Service.ports       -> K8sCluster.ports
 #   Service.replicas    -> K8sCluster.replicas
 #   Service.resources   -> K8sCluster.resources     (same forge.Resources type)
-#   Service.build       -> K8sWorkload.build         (same build union, pass-through)
-#   Service.volumes     -> K8sWorkload.volumes       (same forge.Volume type)
-#   Service.health      -> K8sWorkload.health_probe    (liveness + readiness)
-#   Service.security    -> K8sWorkload.security_override (PSA-default overrides)
-#   Service.sidecars    -> K8sWorkload.sidecars      (projected [Container])
-#   Service.init        -> K8sWorkload.init_containers (projected [Container])
+#   Service.build       -> RenderedWorkload.build         (same build union, pass-through)
+#   Service.volumes     -> RenderedWorkload.volumes       (same forge.Volume type)
+#   Service.health      -> RenderedWorkload.health_probe    (liveness + readiness)
+#   Service.security    -> RenderedWorkload.security_override (PSA-default overrides)
+#   Service.sidecars    -> RenderedWorkload.sidecars      (projected [Container])
+#   Service.init        -> RenderedWorkload.init_containers (projected [Container])
 #
 # The k8s escape hatch (`Service.k8s` : K8sOverrides) is applied HERE, by
 # the adapter — NOT as a post-render merge. Each typed knob projects onto a
-# K8sWorkload field (which render_k8s_service threads into the Deployment /
+# RenderedWorkload field (which render_k8s_service threads into the Deployment /
 # RBAC / owned-manifest stream), so the override is a structural by-name
 # splice, and a Service with no `k8s` block projects byte-identically:
-#   svc.k8s.service_account -> K8sWorkload.service_account
-#   svc.k8s.namespaced_rbac -> K8sWorkload.namespaced_rbac
-#   svc.k8s.operator        -> K8sWorkload.operator_cluster_rbac + operator_crds
+#   svc.k8s.service_account -> RenderedWorkload.service_account
+#   svc.k8s.namespaced_rbac -> RenderedWorkload.namespaced_rbac
+#   svc.k8s.operator        -> RenderedWorkload.operator_cluster_rbac + operator_crds
 #                              (marks this workload an OPERATOR: the renderer
 #                              emits cluster RBAC instead of namespaced RBAC)
-#   svc.k8s.annotations     -> K8sWorkload.pod_annotations
-#   svc.k8s.node_selector   -> K8sWorkload.node_selector
-#   svc.k8s.tolerations     -> K8sWorkload.tolerations
-#   svc.k8s.raw_manifests   -> K8sWorkload.manifests  (owned + label-stamped)
+#   svc.k8s.annotations     -> RenderedWorkload.pod_annotations
+#   svc.k8s.node_selector   -> RenderedWorkload.node_selector
+#   svc.k8s.tolerations     -> RenderedWorkload.tolerations
+#   svc.k8s.raw_manifests   -> RenderedWorkload.manifests  (owned + label-stamped)
 #
 # `target.deploy` is the ClusterTarget's derived per-service K8sCluster seed
 # (pre-filled with cluster/namespace/registry/…); we `|`-overlay ONLY the
@@ -578,7 +645,7 @@ _project_container = lambda c: Container -> {str: any} {
 # the core sets it, so an unset core `resources` leaves the renderer's own
 # default in place. Explicit `env` wins over `env_from` on a name collision
 # (native k8s precedence — the renderer emits both untouched).
-_service_to_k8s = lambda svc: Service, target: ClusterTarget -> K8sWorkload {
+_service_to_k8s = lambda svc: Service, target: ClusterTarget -> RenderedWorkload {
     _command = (svc.command if svc.command else []) + (svc.args if svc.args else [])
 
     _deploy = target.deploy | {
@@ -602,10 +669,10 @@ _service_to_k8s = lambda svc: Service, target: ClusterTarget -> K8sWorkload {
     _sidecars = [_project_container(c) for c in svc.sidecars] if svc.sidecars else []
     _init = [_project_container(c) for c in svc.init] if svc.init else []
 
-    _K8sWorkloadForAdapter {
+    _RenderedWorkloadForAdapter {
         name = svc.name
         image = svc.image
-        # Per-service image-tag override -> the existing K8sWorkload tag pin.
+        # Per-service image-tag override -> the existing RenderedWorkload tag pin.
         # The renderer resolves it via _effective_image_tag (this tag when
         # set, env-wide tag when unset — byte-identical to before).
         if svc.image_tag:
@@ -660,6 +727,93 @@ _service_to_k8s = lambda svc: Service, target: ClusterTarget -> K8sWorkload {
             if _k8s.raw_manifests:
                 manifests = _k8s.raw_manifests
     }
+}
+
+# ===========================================================================
+# _service_to_host — the HOST adapter, run INSIDE the render pipeline (never
+# by the user). Projects one agnostic `Service` onto the demoted, k8s-shaped
+# `RenderedWorkload{deploy = HostDeploy}` carrier — the SAME carrier + deploy-mode
+# machine the legacy path and the Go `forge up`/`run` host loop already handle
+# (render.k `_render_host_deploy`, internal/cli/run.go `hostEnvVarsToMap`). It
+# is selected by the PRESENCE of `svc.host` (see `_project_workload`), and it
+# reuses `env_project` verbatim — the SAME map->[EnvVar] projection the k8s
+# adapter uses — so there is zero new env machinery.
+#
+#   Service.name        -> RenderedWorkload.name
+#   Service.image       -> RenderedWorkload.image      (inert for go-run/air, which
+#                                                  build from source; kept for
+#                                                  runner = "binary")
+#   host.command_override                         host command WINS, else the
+#     OR Service.command+args -> command          agnostic container command
+#                                                  (folded, same as k8s).
+#   Service.env (map)   -> HostDeploy.env_vars     via env_project (map->[EnvVar])
+#   Service.build       -> RenderedWorkload.build       (the no-op ShellBuild/GoBuild
+#                                                  rides through unchanged)
+#   host.runner         -> HostDeploy.runner
+#   host.air_config     -> HostDeploy.air_config   (only when runner == "air")
+#   host.working_dir    -> HostDeploy.working_dir
+#
+# CRITICAL — env lives in the HostDeploy BLOCK, not (only) the RenderedWorkload
+# top-level: the Go host runner reads env off `HostDeploy.EnvVars`
+# (internal/cli/run.go `hostEnvVarsToMap(host *HostDeploy)`), and the JSON
+# contract's host renderer (`_render_host_deploy`) reads `d.env_vars`. Putting
+# the projected map there is what makes a host workload actually receive its
+# env — mirroring how a legacy `RenderedWorkload{deploy=HostDeploy{env_vars=…}}`
+# carried it. No `secrets_file` is set: host secrets come from the
+# `Bundle.secret_provider` (DotenvSecrets), injected by the CLI.
+#
+# Host mode has no Service object, no RBAC, no k8s volumes, no securityContext,
+# so the portable core's k8s tail (`svc.k8s`, health, security, sidecars, …)
+# is simply not consulted — this adapter is deliberately smaller than
+# `_service_to_k8s`.
+_service_to_host = lambda svc: Service -> RenderedWorkload {
+    _h = svc.host
+    # Host command override wins (e.g. `go run ./cmd/reliant server api`) else
+    # the agnostic container command+args, folded into one argv like k8s.
+    _command = _h.command_override if _h.command_override else \
+        ((svc.command if svc.command else []) + (svc.args if svc.args else []))
+    _RenderedWorkloadForAdapter {
+        name = svc.name
+        image = svc.image
+        command = _command
+        # `build` rides through so `forge up` can build the host binary.
+        if svc.build:
+            build = svc.build
+        deploy = _HostDeployForAdapter {
+            runner = _h.runner
+            # env MAP -> [EnvVar] on the HostDeploy block, where the host
+            # runner + JSON contract read it (see header). Same projection the
+            # k8s adapter uses.
+            env_vars = env_project(svc.env)
+            if _h.air_config:
+                air_config = _h.air_config
+            if _h.working_dir:
+                working_dir = _h.working_dir
+        }
+    }
+}
+
+# _project_workload — the ONE per-workload target resolver the render layer
+# calls in place of the old hardcoded `_service_to_k8s`. It dispatches on the
+# PRESENCE of the target-namespaced `svc.host` block (§target-polymorphism):
+#
+#   svc.host != Undefined  -> the HOST adapter (`_service_to_host`)
+#   otherwise              -> the k8s adapter (`_service_to_k8s`, DEFAULT —
+#                             a workload with no `host` block renders EXACTLY
+#                             as before, byte-identical)
+#
+# Both adapters return the SAME `RenderedWorkload` carrier, so nothing downstream
+# changes: the JSON contract and Go CLI already dispatch a `RenderedWorkload` on
+# its `deploy.type`. This lets a MIXED Bundle (dev: some host, some k8s
+# workloads) render correctly from ONE `Bundle.workloads` list. The k8s branch
+# reads `bundle.cluster_target`; it is only evaluated for a non-host workload,
+# and the Bundle check guarantees `cluster_target` is present whenever any
+# workload resolves to k8s — so a purely-host Bundle needs no cluster_target.
+# Compose is intentionally NOT dispatched here (dev-infra stays a legacy
+# compose dep; see FORGE_TARGET_POLYMORPHISM.md §3).
+_project_workload = lambda svc: Service, bundle: Bundle -> RenderedWorkload {
+    _service_to_host(svc) if svc.host != Undefined \
+        else _service_to_k8s(svc, bundle.cluster_target)
 }
 
 # ===========================================================================

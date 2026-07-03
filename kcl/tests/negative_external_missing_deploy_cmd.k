@@ -5,7 +5,7 @@ KCL's check block (External.deploy_cmd is required).
 
 import forge
 
-_svc = forge.K8sWorkload {
+_svc = forge.RenderedWorkload {
     name = "bad"
     deploy = forge.External {
         # deploy_cmd intentionally missing — should fail the check.

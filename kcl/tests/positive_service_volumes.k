@@ -33,7 +33,7 @@ _target = forge.ClusterTarget {
 
 # The exact shape a consumer writes — empty_dir at /data (writable
 # escape) + a read-only config_map projection at /etc/app.
-_svc = forge.K8sWorkload {
+_svc = forge.RenderedWorkload {
     name = "certwriter"
     image = "certwriter-img"
     deploy = _target.deploy | {ports = [8080]}

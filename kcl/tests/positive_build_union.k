@@ -8,7 +8,7 @@ import forge
 
 # GoBuild — the dominant case. cmd is the build target; flags/goarch are
 # the per-env knobs an e2e/prod overlay tunes.
-_go = forge.K8sWorkload {
+_go = forge.RenderedWorkload {
     name = "trader"
     build = forge.GoBuild {
         cmd = "./cmd/trader"
@@ -26,7 +26,7 @@ _go = forge.K8sWorkload {
 
 # DockerBuild — image is produced via docker build with this dockerfile
 # + platform + target.
-_docker = forge.K8sWorkload {
+_docker = forge.RenderedWorkload {
     name = "gateway"
     build = forge.DockerBuild {
         dockerfile = "Dockerfile.gateway"
@@ -42,7 +42,7 @@ _docker = forge.K8sWorkload {
 }
 
 # ShellBuild — verbatim command escape hatch.
-_shell = forge.K8sWorkload {
+_shell = forge.RenderedWorkload {
     name = "sidecar"
     build = forge.ShellBuild { cmd = "echo hi > out.txt" }
     deploy = forge.BuildOnly {}
@@ -67,7 +67,7 @@ assert_shell_cmd = output.services[2].build.cmd == "echo hi > out.txt"
 
 # A service that omits `build` projects null — the Go side synthesizes
 # the GoBuild { cmd = "./cmd/<name>" } default.
-_plain = forge.K8sWorkload {
+_plain = forge.RenderedWorkload {
     name = "plain"
     deploy = forge.BuildOnly {}
 }
@@ -79,10 +79,10 @@ assert_plain_build_null = _plain_out.services[0].build == None
 # to the right typed Build subtype by discriminator — the bridge path.
 # This is the case that bare-dict union coercion gets wrong (a shell dict
 # also satisfies GoBuild's required cmd), so it must route through build_of.
-_bo_go = forge.K8sWorkload { name = "bog", deploy = forge.BuildOnly {}, build = forge.build_of({"type" = "go", "cmd" = "./cmd/bog"}) }
-_bo_docker = forge.K8sWorkload { name = "bod", deploy = forge.BuildOnly {}, build = forge.build_of({"type" = "docker", "dockerfile" = "Dockerfile.x"}) }
-_bo_shell = forge.K8sWorkload { name = "bos", deploy = forge.BuildOnly {}, build = forge.build_of({"type" = "shell", "cmd" = "make"}) }
-_bo_empty = forge.K8sWorkload { name = "boe", deploy = forge.BuildOnly {}, build = forge.build_of({}) }
+_bo_go = forge.RenderedWorkload { name = "bog", deploy = forge.BuildOnly {}, build = forge.build_of({"type" = "go", "cmd" = "./cmd/bog"}) }
+_bo_docker = forge.RenderedWorkload { name = "bod", deploy = forge.BuildOnly {}, build = forge.build_of({"type" = "docker", "dockerfile" = "Dockerfile.x"}) }
+_bo_shell = forge.RenderedWorkload { name = "bos", deploy = forge.BuildOnly {}, build = forge.build_of({"type" = "shell", "cmd" = "make"}) }
+_bo_empty = forge.RenderedWorkload { name = "boe", deploy = forge.BuildOnly {}, build = forge.build_of({}) }
 _bo_out = forge.render(forge.Bundle { services = [_bo_go, _bo_docker, _bo_shell, _bo_empty] })
 assert_bo_go = _bo_out.services[0].build.type == "go" and _bo_out.services[0].build.cmd == "./cmd/bog"
 assert_bo_docker = _bo_out.services[1].build.type == "docker" and _bo_out.services[1].build.dockerfile == "Dockerfile.x"

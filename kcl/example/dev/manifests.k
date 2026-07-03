@@ -22,7 +22,7 @@ _target = forge.ClusterTarget {
 _bundle = forge.Bundle {
     cluster_target = _target
     services = [
-        forge.K8sWorkload {
+        forge.RenderedWorkload {
             name = "workspace-proxy"
             image = "example"
             deploy = _target.deploy | {replicas = 1, ports = [8080]}

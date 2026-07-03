@@ -1,5 +1,5 @@
 """
-Positive test — three forge.K8sWorkload rendering gaps the cp-forge launch
+Positive test — three forge.RenderedWorkload rendering gaps the cp-forge launch
 exposed, closed together:
 
   GAP 1 — serviceAccountName on the Service Deployment pod spec.
@@ -47,7 +47,7 @@ _bundle = forge.Bundle {
     services = [
         # Service WITH extra namespaced RBAC (controller-runtime manager
         # needs leader-election leases + to read its own pods).
-        forge.K8sWorkload {
+        forge.RenderedWorkload {
             name = "api"
             image = "api-img"
             deploy = _target.deploy | {ports = [8080]}
@@ -66,7 +66,7 @@ _bundle = forge.Bundle {
         }
         # Service WITHOUT namespaced_rbac, on a cluster WITHOUT pull
         # secrets — the no-op baseline.
-        forge.K8sWorkload {
+        forge.RenderedWorkload {
             name = "plain"
             image = "plain-img"
             deploy = _target_bare.deploy | {ports = [8080]}
@@ -177,7 +177,7 @@ assert_plain_binds_sa = _plain_deploy.spec.template.spec.serviceAccountName == "
 # imagePullSecrets no-op: the SA must omit the field entirely.
 _bundle_bare = forge.Bundle {
     cluster_target = _target_bare
-    services = [forge.K8sWorkload {name = "plain", image = "plain-img", deploy = _target_bare.deploy | {ports = [8080]}}]
+    services = [forge.RenderedWorkload {name = "plain", image = "plain-img", deploy = _target_bare.deploy | {ports = [8080]}}]
 }
 _manifests_bare = forge.render_manifests(_bundle_bare, "abc1234", {}, False)
 _plain_sa_bare = [m for m in _manifests_bare if m.kind == "ServiceAccount" and m.metadata.name == "plain"][0]

@@ -1,7 +1,7 @@
 """
 Positive test — `deploy = None` is the explicit BUILD-ONLY mode.
 
-A forge.K8sWorkload with a `build` and an explicit `deploy = None` (or an
+A forge.RenderedWorkload with a `build` and an explicit `deploy = None` (or an
 omitted deploy) builds + pushes its image but renders NO Deployment /
 Service / RBAC / owned manifests. Use it for a base image other
 workloads reference at runtime.
@@ -24,7 +24,7 @@ import forge
 
 # A base image: built + pushed, never orchestrated. deploy = None is
 # explicit build-only.
-_base_image = forge.K8sWorkload {
+_base_image = forge.RenderedWorkload {
     name = "workspace-base"
     image = "workspace-base"
     deploy = None
@@ -34,7 +34,7 @@ _base_image = forge.K8sWorkload {
 }
 
 # The omitted-deploy equivalent — same projection as deploy = None.
-_cli = forge.K8sWorkload {
+_cli = forge.RenderedWorkload {
     name = "reliant-cli"
     build = forge.GoBuild { cmd = "./cmd/reliant" }
 }
@@ -47,7 +47,7 @@ _target = forge.ClusterTarget {
     registry = "localhost:5051"
 }
 
-_api = forge.K8sWorkload {
+_api = forge.RenderedWorkload {
     name = "api"
     image = "api"
     deploy = _target.deploy | {ports = [8080]}

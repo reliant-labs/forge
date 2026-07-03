@@ -99,7 +99,7 @@ _dw_target = forge.ClusterTarget {
     namespace = "downward-dev"
     registry = "localhost:5050"
 }
-_dw_svc = forge.K8sWorkload {
+_dw_svc = forge.RenderedWorkload {
     name = "downward"
     image = "api"
     deploy = _dw_target.deploy | {ports = [8080]}
@@ -150,13 +150,13 @@ _handwritten = [
     forge.EnvVar {name = "APP_MODE", config_map_ref = "app-config", config_map_key = "mode"}
 ]
 
-_svc_map = forge.K8sWorkload {
+_svc_map = forge.RenderedWorkload {
     name = "api-map"
     image = "api"
     deploy = _target.deploy | {ports = [8080]}
     env_vars = forge.env_project(_env)
 }
-_svc_list = forge.K8sWorkload {
+_svc_list = forge.RenderedWorkload {
     name = "api-list"
     image = "api"
     deploy = _target.deploy | {ports = [8080]}

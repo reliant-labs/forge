@@ -24,7 +24,7 @@ _target = forge.ClusterTarget {
 
 _bundle = forge.Bundle {
     cluster_target = _target
-    services = [forge.K8sWorkload {
+    services = [forge.RenderedWorkload {
         name = "api"
         image = "api:dev"
         deploy = _target.deploy

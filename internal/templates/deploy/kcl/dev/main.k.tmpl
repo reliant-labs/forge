@@ -111,7 +111,7 @@ _op_components = [c for c in _components if c.kind == "operator"]
 
 _bundle = forge.Bundle {
     cluster_target = _cluster
-    services = [forge.K8sWorkload {
+    services = [forge.RenderedWorkload {
         name = c.name
         image = "{{.ProjectName}}"
         command = c.command
@@ -119,7 +119,7 @@ _bundle = forge.Bundle {
         deploy = _cluster.deploy | {ports = [p.port for p in c.ports]}
         if c.build:
             build = forge.build_of(c.build)
-    } for c in _svc_components] + [forge.K8sWorkload {
+    } for c in _svc_components] + [forge.RenderedWorkload {
         name = c.name
         image = "{{.ProjectName}}"
         command = c.command

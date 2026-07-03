@@ -174,7 +174,7 @@ _default_container_security_context = {
 }
 
 # Pod-level securityContext with the agnostic SecurityOverrides
-# (K8sWorkload.security_override) applied OVER the restricted-PSA default.
+# (RenderedWorkload.security_override) applied OVER the restricted-PSA default.
 # `sec` is None/Undefined when the workload set no `security` block, in which
 # case the default is returned UNCHANGED (byte-identical to before). Each set
 # field overrides via dict-merge (`|`, right-wins). fsGroup is pod-ONLY (k8s
@@ -431,14 +431,14 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
     # escape hatch). `svc.volumes` is None/Undefined when unset.
     _volumes = svc.volumes if svc.volumes else []
     # Pod-spec escape-hatch knobs (projected from Service.k8s / settable on
-    # K8sWorkload). Each is absent-by-default so a workload setting none
+    # RenderedWorkload). Each is absent-by-default so a workload setting none
     # renders byte-identically. `service_account` overrides the default
     # per-service SA name; the rest are conditionally emitted.
     _sa = svc.service_account if svc.service_account else _name
     _pod_annotations = svc.pod_annotations if svc.pod_annotations else {}
     _node_selector = svc.node_selector if svc.node_selector else {}
     _tolerations = svc.tolerations if svc.tolerations else []
-    # securityContext override (agnostic Service.security -> K8sWorkload
+    # securityContext override (agnostic Service.security -> RenderedWorkload
     # .security_override). None when unset => the helpers return the restricted
     # -PSA default UNCHANGED, so a workload with no `security` is byte-identical.
     _sec = svc.security_override if svc.security_override else Undefined
@@ -447,7 +447,7 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
     # emitted — a single-container workload renders byte-identically.
     _sidecars = svc.sidecars if svc.sidecars else []
     _init_containers = svc.init_containers if svc.init_containers else []
-    # Health probe (agnostic Service.health -> K8sWorkload.health_probe). None
+    # Health probe (agnostic Service.health -> RenderedWorkload.health_probe). None
     # when unset => NO liveness/readiness emitted, byte-identical to before.
     _health = svc.health_probe if svc.health_probe else Undefined
 

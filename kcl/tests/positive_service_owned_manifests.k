@@ -1,5 +1,5 @@
 """
-Positive test — per-service owned manifests (forge.K8sWorkload.manifests) for
+Positive test — per-service owned manifests (forge.RenderedWorkload.manifests) for
 DECLARED-CLUSTER-ONLY routing.
 
 Each manifest attached to a Service is rendered tagged with the owning
@@ -42,7 +42,7 @@ _bundle = forge.Bundle {
     services = [
         # 1. Workload service that ALSO owns a CRD. The CRD carries a
         # pre-existing user label to prove the merge preserves it.
-        forge.K8sWorkload {
+        forge.RenderedWorkload {
             name = "api"
             image = "example"
             deploy = _target.deploy | {ports = [8080]}
@@ -61,7 +61,7 @@ _bundle = forge.Bundle {
         # 2. Image-less infra service: owns env-level resources pinned to
         # the control-plane cluster. One manifest deliberately has NO
         # metadata block to exercise the create-metadata merge path.
-        forge.K8sWorkload {
+        forge.RenderedWorkload {
             name = "cp-infra"
             deploy = _target.deploy | {ports = [8080]}
             manifests = [
@@ -80,7 +80,7 @@ _bundle = forge.Bundle {
         }
         # 3. A workload service on the OTHER cluster — proves the per-service
         # manifests mechanism is orthogonal to which cluster a service uses.
-        forge.K8sWorkload {
+        forge.RenderedWorkload {
             name = "workspace-proxy"
             image = "example"
             deploy = _daemon_target.deploy

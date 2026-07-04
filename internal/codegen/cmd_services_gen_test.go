@@ -103,7 +103,7 @@ func TestGenerateCmdGroups(t *testing.T) {
 			t.Fatalf("read %s: %v", tc.file, err)
 		}
 		content := string(raw)
-		for _, want := range []string{tc.ctor, tc.use, tc.reg, "package workers", "cmd.MountNone", `WorkerNames:   []string{"reaper"}`} {
+		for _, want := range []string{tc.ctor, tc.use, tc.reg, "package workers", "cmd.MountNone", "cmd.ServeSpec{", `[]serverkit.Worker{c.WorkerReaper()}`} {
 			if !strings.Contains(content, want) {
 				t.Errorf("%s missing %q\n%s", tc.file, want, content)
 			}
@@ -119,7 +119,7 @@ func TestGenerateCmdGroups(t *testing.T) {
 			t.Fatalf("read %s: %v", file, err)
 		}
 		content := string(raw)
-		for _, want := range []string{"func NewTenantCmd(deps cmd.Deps)", `Use:   "tenant",`, "cmd.RegisterOperatorCmd(", "package operators", "cmd.MountNone", `OperatorNames: []string{"tenant"}`} {
+		for _, want := range []string{"func NewTenantCmd(deps cmd.Deps)", `Use:   "tenant",`, "cmd.RegisterOperatorCmd(", "package operators", "cmd.MountNone", "cmd.ServeSpec{", `[]app.OperatorEntry{c.OperatorTenant()}`} {
 			if !strings.Contains(content, want) {
 				t.Errorf("%s missing %q\n%s", file, want, content)
 			}

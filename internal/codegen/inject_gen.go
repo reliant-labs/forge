@@ -153,8 +153,8 @@ type InjectGenData struct {
 // assignable field.
 //
 // This is the live composition path: cmd-server composes OpenInfra →
-// NewComponents → mount via the typed Mount<Svc> methods + WorkerList /
-// OperatorList. There is no by-type injector and no *Services god-struct.
+// NewComponents → mount via the typed Mount<Svc> methods + AllWorkers /
+// AllOperators. There is no by-type injector and no *Services god-struct.
 func GenerateCompose(in InjectGenInput) error {
 	comps, err := assembleBuildComponents(in)
 	if err != nil {
@@ -489,8 +489,9 @@ func GenerateProviders(modulePath, databaseDriver string, ormEnabled bool, proje
 }
 
 // GenerateLifecycle emits internal/app/lifecycle.go: the supervised-
-// component surface (WorkerList / OperatorList / HasOperators / RunOperators)
-// over the constructed *Components. Where mounts_services.go is the HTTP
+// component surface (typed Worker<X>()/Operator<X>() accessors + AllWorkers /
+// AllOperators / HasOperators / RunOperators) over the constructed *Components.
+// Where mounts_services.go is the HTTP
 // surface, this is the worker/operator surface the cmd layer registers onto
 // serverkit.Server. Always written (no len==0 early-return) so cmd/server.go's
 // references resolve even with zero supervised components.
@@ -500,10 +501,11 @@ func GenerateLifecycle(in InjectGenInput) error {
 		return err
 	}
 	comps = filterExternalComponents(in.ProjectDir, comps)
-	// No len(comps)==0 early-return: cmd/server.go reads app.WorkerList /
-	// app.OperatorList / app.RunOperators over *Components, so lifecycle.go
+	// No len(comps)==0 early-return: cmd/server.go reads app.AllWorkers /
+	// app.AllOperators / app.RunOperators over *Components, so lifecycle.go
 	// must exist even with zero supervised components (the template emits
-	// valid no-op WorkerList/OperatorList/RunOperators in that case).
+	// valid nil-returning AllWorkers/AllOperators and a generic RunOperators in
+	// that case).
 
 	type lifeComp struct {
 		Name       string

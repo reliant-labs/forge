@@ -33,8 +33,9 @@ func New{{.FieldName}}Cmd(deps cmd.Deps) *cobra.Command {
 		Long:  "Run only the {{.Name}} service: the canonical server pipeline (config, OTel, listener, graceful shutdown) with this service mounted via its TYPED mount method (no string selection). Sibling services are still constructed (cross-service reads stay nil-safe) but their routes are not registered, and this process runs no workers/operators.",
 		RunE: func(c *cobra.Command, args []string) error {
 			deps.Cmd = c
-			// TYPED mount: the method expression, passed DIRECTLY to Serve.
-			return cmd.Serve(c.Context(), deps, (*app.Components).Mount{{.MountFieldName}}, cmd.ServeOptions{})
+			// TYPED mount: the method expression, named DIRECTLY in the ServeSpec.
+			// No workers/operators — a single service is an HTTP-only process.
+			return cmd.Serve(c.Context(), deps, cmd.ServeSpec{Mount: (*app.Components).Mount{{.MountFieldName}}})
 		},
 	}
 	config.RegisterFlags(c)

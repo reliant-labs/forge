@@ -25,9 +25,16 @@ func newServerCmd(deps Deps) *cobra.Command {
 		Long:  "Start the HTTP/Connect server: every service is mounted and all workers/operators run. To run a single service, use its typed subcommand.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			deps.Cmd = cmd
-			// All services: the typed MountAll method expression. MountAll turns
-			// on the boot-time completeness gate.
-			return Serve(cmd.Context(), deps, (*app.Components).MountAll, ServeOptions{RunSupervised: true, MountAll: true})
+			// The all-services process composes ITSELF: the typed MountAll method
+			// expression, AllWorkers + AllOperators naming every supervised
+			// component directly, and RequireComplete turning on the boot-time
+			// mount-completeness gate.
+			return Serve(cmd.Context(), deps, ServeSpec{
+				Mount:           (*app.Components).MountAll,
+				Workers:         (*app.Components).AllWorkers,
+				Operators:       (*app.Components).AllOperators,
+				RequireComplete: true,
+			})
 		},
 	}
 	config.RegisterFlags(cmd)

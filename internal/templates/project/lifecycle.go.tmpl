@@ -6,35 +6,72 @@
 // surface (which Connect services to mount), this file is the workers and
 // operators serverkit runs over the constructed *Components.
 //
+// Every worker/operator has ONE typed 1:1 accessor (Worker<Field>() /
+// Operator<Name>()) that welds its stable label to its typed field — the label
+// appears exactly ONCE, as a log annotation, never as a selection key. A
+// command composes its OWN supervised set by naming those accessors DIRECTLY in
+// its ServeSpec; there is no string-keyed re-selection anywhere on the run path.
+//
 // THIN DATA + DISPATCH: all the uniform machinery (the WrapWorker runtime
 // type-switch, the operator/controller-manager bridge) lives in
-// forge/pkg/lifecyclekit. This file is per-app DATA only — explicit
-// lifecyclekit.WrapWorker rows and one Controller row per operator —
-// dispatching into the lib. To customize (a late-bound worker cross-edge),
-// `forge disown internal/app/lifecycle.go` and own the bytes.
+// forge/pkg/lifecyclekit. This file is per-app DATA only — one accessor per
+// component plus the aggregate All* lists — dispatching into the lib. To
+// customize (a late-bound worker cross-edge), `forge disown
+// internal/app/lifecycle.go` and own the bytes.
 package app
 
 import (
 	"context"
 	"log/slog"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
+
 	"github.com/reliant-labs/forge/pkg/lifecyclekit"
+	"github.com/reliant-labs/forge/pkg/serverkit"
 {{- range .Operators}}
 	{{.Alias}} "{{$.Module}}/{{.ImportPath}}"
 {{- end}}
 )
 
-// WorkerList adapts every constructed worker on c to a lifecyclekit.Worker.
-// Each row goes through lifecyclekit.WrapWorker — a runtime type-switch that
-// gives ctx-aware workers (those implementing RunContext) per-worker
-// cancel-on-shutdown and leaves legacy Start/Stop workers on the legacy
-// path. The cmd layer selects which of these to run per subcommand and
-// registers them onto the serverkit.Server.
-func WorkerList(c *Components) []lifecyclekit.Worker {
+// OperatorEntry is one operator's supervised wiring: its stable label plus the
+// two controller-manager hooks (CRD scheme install + controller setup). It
+// UNIFIES the AddOperator marker set and the RunOperators controller set into a
+// single value, so the markers and the controllers can never disagree. A
+// command names its typed Operator<Name>() accessor directly; Serve derives BOTH
+// the serverkit marker (via Marker) AND the lifecyclekit controller row
+// (AddToScheme + SetupWithManager) from the same entry.
+type OperatorEntry struct {
+	Name             string
+	AddToScheme      func(*runtime.Scheme) error
+	SetupWithManager func(ctrl.Manager) error
+}
+
+// operatorMarker is the serverkit.Operator (Name-only) view of an OperatorEntry
+// — what srv.AddOperator records so serverkit knows an operator is supervised
+// and starts the controller manager.
+type operatorMarker struct{ name string }
+
+func (m operatorMarker) Name() string { return m.name }
+
+// Marker returns the serverkit.Operator view of this entry (Name only).
+func (e OperatorEntry) Marker() serverkit.Operator { return operatorMarker{name: e.Name} }
+{{range .Workers}}
+// Worker{{.FieldName}} adapts the constructed {{.Name}} worker. Each accessor
+// welds the worker's stable label to its typed field via lifecyclekit.WrapWorker
+// (a runtime type-switch that gives ctx-aware workers per-worker
+// cancel-on-shutdown and leaves legacy Start/Stop workers on the legacy path).
+func (c *Components) Worker{{.FieldName}}() serverkit.Worker {
+	return lifecyclekit.WrapWorker("{{.Name}}", c.{{.FieldName}})
+}
+{{end}}
+// AllWorkers returns every worker, in declaration order. The all-services
+// `server` command names it directly (ServeSpec.Workers).
+func (c *Components) AllWorkers() []serverkit.Worker {
 {{- if .Workers}}
-	return []lifecyclekit.Worker{
+	return []serverkit.Worker{
 {{- range .Workers}}
-		lifecyclekit.WrapWorker("{{.Name}}", c.{{.FieldName}}),
+		c.Worker{{.FieldName}}(),
 {{- end}}
 	}
 {{- else}}
@@ -42,16 +79,25 @@ func WorkerList(c *Components) []lifecyclekit.Worker {
 	return nil
 {{- end}}
 }
-
-// OperatorList adapts every constructed operator on c to a
-// lifecyclekit.Operator (Name only — the controller-manager hookup is in
-// RunOperators). Emitted unconditionally so the cmd layer compiles even
-// with no operators.
-func OperatorList(c *Components) []lifecyclekit.Operator {
+{{range .Operators}}
+// Operator{{.FieldName}} adapts the constructed {{.Name}} controller: its CRD
+// scheme installer ({{.Alias}}.AddToScheme) and the controller's manager hookup
+// (c.{{.FieldName}}.SetupWithManager).
+func (c *Components) Operator{{.FieldName}}() OperatorEntry {
+	return OperatorEntry{
+		Name:             "{{.Name}}",
+		AddToScheme:      {{.Alias}}.AddToScheme,
+		SetupWithManager: c.{{.FieldName}}.SetupWithManager,
+	}
+}
+{{end}}
+// AllOperators returns every operator. The all-services `server` command names
+// it directly (ServeSpec.Operators).
+func (c *Components) AllOperators() []OperatorEntry {
 {{- if .Operators}}
-	return []lifecyclekit.Operator{
+	return []OperatorEntry{
 {{- range .Operators}}
-		operatorRow{{.FieldName}}{name: "{{.Name}}", inst: c.{{.FieldName}}},
+		c.Operator{{.FieldName}}(),
 {{- end}}
 	}
 {{- else}}
@@ -61,42 +107,25 @@ func OperatorList(c *Components) []lifecyclekit.Operator {
 }
 
 // HasOperators reports whether the project has any operators configured.
-func HasOperators(c *Components) bool { return lifecyclekit.HasOperators(OperatorList(c)) }
+func HasOperators(c *Components) bool { return len(c.AllOperators()) > 0 }
 
-{{- if .Operators}}
-{{range .Operators}}
-// operatorRow{{.FieldName}} satisfies lifecyclekit.Operator over the
-// constructed {{.Name}} controller.
-type operatorRow{{.FieldName}} struct {
-	name string
-	inst {{.FieldType}}
-}
-
-func (o operatorRow{{.FieldName}}) Name() string { return o.name }
-{{end}}
-// RunOperators starts the controller manager with one row per operator,
-// reading each constructed controller off c. Manager behavior (kubeconfig
-// resolution with graceful no-cluster degrade, leader election, scheme /
-// controller registration) lives in lifecyclekit.Run (over operatorkit).
-// Blocks until ctx cancels — the caller (serverkit) runs it in a goroutine.
-// healthProbeAddr is forwarded from serverkit.Config.OperatorHealthProbeAddr.
-func RunOperators(c *Components, ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
+// RunOperators starts the controller manager with one row per supplied operator
+// entry. Manager behavior (kubeconfig resolution with graceful no-cluster
+// degrade, leader election, scheme / controller registration) lives in
+// lifecyclekit.Run (over operatorkit). Blocks until ctx cancels — the caller
+// (serverkit, via the Server.RunOperators closure Serve wires from the same
+// entries) runs it in a goroutine.
+func RunOperators(ctx context.Context, logger *slog.Logger, healthProbeAddr string, ops []OperatorEntry) error {
+	controllers := make([]lifecyclekit.Controller, 0, len(ops))
+	for _, op := range ops {
+		controllers = append(controllers, lifecyclekit.Controller{
+			Name:             op.Name,
+			AddToScheme:      op.AddToScheme,
+			SetupWithManager: op.SetupWithManager,
+		})
+	}
 	return lifecyclekit.Run(ctx, logger, lifecyclekit.Options{
 		LeaderElectionID:       "{{.LeaderElectionID}}",
 		HealthProbeBindAddress: healthProbeAddr,
-	}, []lifecyclekit.Controller{
-{{- range .Operators}}
-		{Name: "{{.Name}}", AddToScheme: {{.Alias}}.AddToScheme, SetupWithManager: c.{{.FieldName}}.SetupWithManager},
-{{- end}}
-	})
+	}, controllers)
 }
-{{- else}}
-
-// RunOperators is a no-op when no operators are configured. Signature
-// matches serverkit.Server.RunOperators so the cmd layer passes it through
-// unconditionally.
-func RunOperators(c *Components, ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
-	_ = c
-	return nil
-}
-{{- end}}

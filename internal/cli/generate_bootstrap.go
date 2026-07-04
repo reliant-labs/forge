@@ -92,8 +92,8 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 // import resolves) even with ZERO items.
 //
 // Driven by the SAME `services`/`workers`/`operators` rows the composition
-// layer is, so each subcommand lines up with a typed mount / WorkerList /
-// OperatorList entry.
+// layer is, so each subcommand lines up with a typed mount / Worker<X>()
+// / Operator<X>() accessor.
 //
 // Emitted only when the primary binary's cmd/<bin>/cmd/serve.go exists —
 // CLI/library kinds and codegen-less trees have no serve pipeline to delegate

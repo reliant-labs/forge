@@ -37,7 +37,7 @@ type CmdGroupItem struct {
 
 	// Name is the runtime kebab-case component name — the cobra Use value and
 	// the <name>.go filename stem. Identical derivation to the app inventory
-	// row Name and the typed Mount<Svc> / WorkerList / OperatorList rows.
+	// row Name and the typed Mount<Svc> / Worker<X>() / Operator<X>() accessors.
 	Name string
 
 	// FieldName is the exported PascalCase suffix used in the generated
@@ -124,7 +124,7 @@ func cmdServiceItemsFromNames(module, bin string, names []string, mountOverride 
 // CmdServiceGroupInput drives GenerateCmdGroups: the primary binary name plus
 // the service / worker / operator rows (the SAME rows the app composition
 // layer is generated from, so every subcommand lines up with a typed mount /
-// WorkerList / OperatorList entry).
+// Worker<X>() / Operator<X>() accessor).
 type CmdServiceGroupInput struct {
 	Bin       string
 	Services  []string                // raw service-name spellings

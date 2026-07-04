@@ -9,9 +9,9 @@
 //     `(*Components).Mount<Svc>(mux, opts...) []string` that mounts EXACTLY
 //     that service over the constructed *Components and returns its Connect
 //     path. The cli layer hands one of these METHOD VALUES to Serve —
-//     selection is compile-time typed, never a string lookup over the
-//     inventory. `MountByName` is the typed map the `server [names...]`
-//     convenience selector composes.
+//     selection is compile-time typed, never a string lookup. To run a single
+//     service, its typed subcommand names the Mount<Svc> method DIRECTLY; there
+//     is no name->func map.
 //
 //   - DATA-ONLY INVENTORY — introspection ONLY. `Inventory` is a pure
 //     descriptor (names, connect-paths, kind, version) that `forge map` /
@@ -80,17 +80,6 @@ func (c *Components) Mount{{.FieldName}}(mux *http.ServeMux, cfg *config.Config,
 	return []string{ {{.ConnectPkg}}.{{.ProtoServiceName}}Name }
 }
 {{end -}}
-
-// MountByName maps a service's runtime name to its TYPED mount func (the
-// method expression (*Components).Mount<Svc>), used ONLY by the optional
-// `server [names...]` convenience selector. Each entry is a TYPED FUNCTION
-// VALUE, not a string lookup over data. Prefer the dedicated
-// `<bin> <service>` subcommands; this exists for `server a b c`.
-var MountByName = map[string]MountFunc{
-{{- range .Services}}
-	"{{.Name}}": (*Components).Mount{{.FieldName}},
-{{- end}}
-}
 
 // MountAll mounts every service on mux via the typed per-service Mount
 // methods — explicit, compile-time calls, NOT a loop over the data-only

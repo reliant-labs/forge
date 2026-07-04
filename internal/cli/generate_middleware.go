@@ -459,23 +459,31 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 		return fmt.Errorf("list envs: %w", lerr)
 	}
 	scaffolded := 0
+	legacyEmitted := 0
 	for _, envName := range envs {
 		envCfg, err := config.LoadEnvironmentConfig(projectDir, envName)
-		if err != nil {
-			// An env with no sibling file is fine — just emit the file
-			// with secret-only fields and skip non-sensitive ones (no
-			// values to inline).
+		// The legacy config.<env>.yaml is the ONLY reason to emit config_gen.k.
+		// Its absence means the env has migrated to the KCL-native path
+		// (config.k -> config_projection.appConfigEnvMap, imported by main.k),
+		// where config_gen.k is dead output nothing reads. Retiring it per-env
+		// is as simple as deleting config.<env>.yaml: we must NOT re-emit a
+		// stub, or the deleted file reappears on every `forge generate`.
+		hasLegacyYaml := err == nil
+		if !hasLegacyYaml {
 			envCfg = map[string]any{}
 		}
-		if err := codegen.GenerateDeployConfig(codegen.DeployConfigGenInput{
-			GenContext:  codegen.GenContext{ProjectDir: projectDir, Checksums: cs},
-			ProjectName: cfg.Name,
-			EnvName:     envName,
-			KCLDir:      kclDirAbs,
-			Fields:      fields,
-			EnvConfig:   envCfg,
-		}); err != nil {
-			return fmt.Errorf("emit %s config_gen.k: %w", envName, err)
+		if hasLegacyYaml {
+			if err := codegen.GenerateDeployConfig(codegen.DeployConfigGenInput{
+				GenContext:  codegen.GenContext{ProjectDir: projectDir, Checksums: cs},
+				ProjectName: cfg.Name,
+				EnvName:     envName,
+				KCLDir:      kclDirAbs,
+				Fields:      fields,
+				EnvConfig:   envCfg,
+			}); err != nil {
+				return fmt.Errorf("emit %s config_gen.k: %w", envName, err)
+			}
+			legacyEmitted++
 		}
 		// Scaffold the per-env user-owned config.k (write-if-absent) — the
 		// one-time migration of config.<env>.yaml into a typed AppConfig
@@ -488,6 +496,6 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 			scaffolded++
 		}
 	}
-	fmt.Printf("  ✅ Generated deploy/kcl/config_schema.k + config_projection.k and config_gen.k for %d environments (scaffolded %d new config.k)\n", len(envs), scaffolded)
+	fmt.Printf("  ✅ Generated deploy/kcl/config_schema.k + config_projection.k (legacy config_gen.k for %d env(s); scaffolded %d new config.k)\n", legacyEmitted, scaffolded)
 	return nil
 }

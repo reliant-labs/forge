@@ -10,8 +10,9 @@
 // components are still CONSTRUCTED by the DI graph (cross-component reads stay
 // nil-safe); only this worker is supervised.
 //
-// The command self-registers onto the root via init() — main.go blank-imports
-// this package so the registration runs.
+// main.go names this command's exported New…Cmd constructor explicitly and
+// passes it to cmd.Execute — the tree is assembled in the composition root,
+// not via init() self-registration.
 package workers
 
 import (
@@ -23,8 +24,6 @@ import (
 	"{{.Module}}/internal/app"
 	"{{.Module}}/pkg/config"
 )
-
-func init() { cmd.RegisterWorkerCmd(New{{.FieldName}}Cmd) }
 
 // New{{.FieldName}}Cmd is the cobra subcommand that runs only the {{.Name}} worker.
 func New{{.FieldName}}Cmd(deps cmd.Deps) *cobra.Command {

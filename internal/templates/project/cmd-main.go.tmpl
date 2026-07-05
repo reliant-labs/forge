@@ -2,30 +2,53 @@
 // forge-owned: regenerated every run — do not edit (forge disown to take ownership)
 // Source: internal/templates/project/cmd-main.go.tmpl.
 //
-// Thin entrypoint (devspace idiom): all command logic lives under
-// cmd/{{.Name}}/cmd (package cmd — root.go assembles the tree) and its
-// command-group SUBPACKAGES (services/, workers/, operators/). This main is
-// a thin cmd.Execute(); the blank imports below run each group's init() so
-// its commands self-register onto the root.
+// The COMPOSITION ROOT (devspace idiom): all command logic lives under
+// cmd/{{.Bin}}/cmd (package cmd — root.go assembles the tree) and its
+// command-group SUBPACKAGES (services/, workers/, operators/). This main names
+// EVERY group constructor explicitly and passes them to cmd.Execute, which
+// builds the root command tree. The tree is therefore READABLE HERE — no init()
+// self-registration and no dynamic registry. Because main.go (not package cmd)
+// imports the group subpackages, and the groups import cmd only for the shared
+// Deps/Serve helpers, there is no cmd↔group import cycle.
 //
-// binary=shared only changes the DEPLOY story (one image serving many
-// services via cobra subcommands); the command tree itself is identical to
-// per-service mode. To run a specific service: `{{.Name}} <service>`. To
-// list services: `{{.Name}} --help`.
+// binary=shared only changes the DEPLOY story (one image serving many services
+// via cobra subcommands); the command tree itself is identical to per-service
+// mode. To run a specific service: `{{.Bin}} <service>`. To list services:
+// `{{.Bin}} --help`.
 package main
 
 import (
-	"{{.Module}}/cmd/{{.Name}}/cmd"
-
-	// Group subpackages self-register their commands via init(). Blank-
-	// imported here (not in package cmd) so cmd → groups → cmd is not a
-	// cycle: groups import cmd for the shared Deps/Serve helpers, and the
-	// root tree is populated from the registry cmd owns.
-	_ "{{.Module}}/cmd/{{.Name}}/cmd/operators"
-	_ "{{.Module}}/cmd/{{.Name}}/cmd/services"
-	_ "{{.Module}}/cmd/{{.Name}}/cmd/workers"
+	"{{.Module}}/cmd/{{.Bin}}/cmd"
+{{- if .Operators}}
+	"{{.Module}}/cmd/{{.Bin}}/cmd/operators"
+{{- end}}
+{{- if .Services}}
+	"{{.Module}}/cmd/{{.Bin}}/cmd/services"
+{{- end}}
+{{- if .Workers}}
+	"{{.Module}}/cmd/{{.Bin}}/cmd/workers"
+{{- end}}
 )
 
 func main() {
-	cmd.Execute()
+	cmd.Execute(
+{{- if .Services}}
+		// services
+{{- range .Services}}
+		services.{{.Ctor}},
+{{- end}}
+{{- end}}
+{{- if .Workers}}
+		// workers
+{{- range .Workers}}
+		workers.{{.Ctor}},
+{{- end}}
+{{- end}}
+{{- if .Operators}}
+		// operators
+{{- range .Operators}}
+		operators.{{.Ctor}},
+{{- end}}
+{{- end}}
+	)
 }

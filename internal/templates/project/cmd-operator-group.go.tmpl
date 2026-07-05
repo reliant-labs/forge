@@ -15,8 +15,9 @@
 // cmd.MountNone with (*app.Components).Mount<Svc> — until the capability model
 // lands. (`forge disown` this file to own that edit across regenerations.)
 //
-// The command self-registers onto the root via init() — main.go blank-imports
-// this package so the registration runs.
+// main.go names this command's exported New…Cmd constructor explicitly and
+// passes it to cmd.Execute — the tree is assembled in the composition root,
+// not via init() self-registration.
 package operators
 
 import (
@@ -26,8 +27,6 @@ import (
 	"{{.Module}}/internal/app"
 	"{{.Module}}/pkg/config"
 )
-
-func init() { cmd.RegisterOperatorCmd(New{{.FieldName}}Cmd) }
 
 // New{{.FieldName}}Cmd is the cobra subcommand that runs only the {{.Name}} operator.
 func New{{.FieldName}}Cmd(deps cmd.Deps) *cobra.Command {

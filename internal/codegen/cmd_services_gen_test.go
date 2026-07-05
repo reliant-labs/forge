@@ -46,11 +46,12 @@ func TestCmdServiceItemsFromNames(t *testing.T) {
 }
 
 // TestGenerateCmdGroups renders the per-service / per-worker / per-operator
-// command-group files and the group anchors, pinning the load-bearing parts:
-// ONE FILE PER ITEM under cmd/<bin>/cmd/<group>/, the New<X>Cmd constructor,
-// the TYPED mount method expression on the cmd.Serve() call (selection by
-// compile-time type, not a string), init()-based self-registration, and that
-// everything parses as Go.
+// command-group files, the group anchors, and the composition-root main.go,
+// pinning the load-bearing parts: ONE FILE PER ITEM under cmd/<bin>/cmd/<group>/,
+// the New<X>Cmd constructor, the TYPED mount method expression on the
+// cmd.Serve() call (selection by compile-time type, not a string), the ABSENCE
+// of init()-based self-registration, the explicit cmd.Execute(...) constructor
+// list in main.go, and that everything parses as Go.
 func TestGenerateCmdGroups(t *testing.T) {
 	dir := t.TempDir()
 	writeTestGoMod(t, dir, "github.com/example/proj")
@@ -80,10 +81,15 @@ func TestGenerateCmdGroups(t *testing.T) {
 			t.Fatalf("read %s: %v", tc.file, err)
 		}
 		content := string(raw)
-		for _, want := range []string{tc.ctor, tc.mountExpr, tc.use, "package services", "cmd.RegisterServiceCmd("} {
+		for _, want := range []string{tc.ctor, tc.mountExpr, tc.use, "package services"} {
 			if !strings.Contains(content, want) {
 				t.Errorf("%s missing %q\n%s", tc.file, want, content)
 			}
+		}
+		// No init() self-registration — the registry is gone; main.go wires
+		// the tree explicitly.
+		if strings.Contains(content, "func init()") || strings.Contains(content, "cmd.RegisterServiceCmd") {
+			t.Errorf("%s must not self-register via init()\n%s", tc.file, content)
 		}
 		// Selection must be typed — no string positional selection.
 		if strings.Contains(content, `(*app.Components).MountByName`) {
@@ -94,19 +100,22 @@ func TestGenerateCmdGroups(t *testing.T) {
 
 	// Workers: one file per worker, cmd.MountNone + named supervised subset.
 	for _, tc := range []struct {
-		file, ctor, use, reg string
+		file, ctor, use string
 	}{
-		{filepath.Join("workers", "reaper.go"), "func NewReaperCmd(deps cmd.Deps)", `Use:   "reaper",`, "cmd.RegisterWorkerCmd("},
+		{filepath.Join("workers", "reaper.go"), "func NewReaperCmd(deps cmd.Deps)", `Use:   "reaper",`},
 	} {
 		raw, err := os.ReadFile(filepath.Join(base, tc.file))
 		if err != nil {
 			t.Fatalf("read %s: %v", tc.file, err)
 		}
 		content := string(raw)
-		for _, want := range []string{tc.ctor, tc.use, tc.reg, "package workers", "cmd.MountNone", "cmd.ServeSpec{", `[]serverkit.Worker{c.WorkerReaper()}`} {
+		for _, want := range []string{tc.ctor, tc.use, "package workers", "cmd.MountNone", "cmd.ServeSpec{", `[]serverkit.Worker{c.WorkerReaper()}`} {
 			if !strings.Contains(content, want) {
 				t.Errorf("%s missing %q\n%s", tc.file, want, content)
 			}
+		}
+		if strings.Contains(content, "func init()") || strings.Contains(content, "cmd.RegisterWorkerCmd") {
+			t.Errorf("%s must not self-register via init()\n%s", tc.file, content)
 		}
 		assertParses(t, tc.file, content)
 	}
@@ -119,16 +128,52 @@ func TestGenerateCmdGroups(t *testing.T) {
 			t.Fatalf("read %s: %v", file, err)
 		}
 		content := string(raw)
-		for _, want := range []string{"func NewTenantCmd(deps cmd.Deps)", `Use:   "tenant",`, "cmd.RegisterOperatorCmd(", "package operators", "cmd.MountNone", "cmd.ServeSpec{", `[]app.OperatorEntry{c.OperatorTenant()}`} {
+		for _, want := range []string{"func NewTenantCmd(deps cmd.Deps)", `Use:   "tenant",`, "package operators", "cmd.MountNone", "cmd.ServeSpec{", `[]app.OperatorEntry{c.OperatorTenant()}`} {
 			if !strings.Contains(content, want) {
 				t.Errorf("%s missing %q\n%s", file, want, content)
 			}
 		}
+		if strings.Contains(content, "func init()") || strings.Contains(content, "cmd.RegisterOperatorCmd") {
+			t.Errorf("%s must not self-register via init()\n%s", file, content)
+		}
 		assertParses(t, file, content)
 	}
 
-	// Group anchors exist and parse (so main.go's blank imports resolve even
-	// with zero items).
+	// Composition root: main.go names every group constructor explicitly and
+	// passes them to cmd.Execute — no init() registry, no blank imports.
+	{
+		mainPath := filepath.Join(dir, "cmd", "proj", "main.go")
+		raw, err := os.ReadFile(mainPath)
+		if err != nil {
+			t.Fatalf("read cmd/proj/main.go: %v", err)
+		}
+		content := string(raw)
+		for _, want := range []string{
+			"package main",
+			"cmd.Execute(",
+			"services.NewAdminServerCmd",
+			"services.NewBillingCmd",
+			"workers.NewReaperCmd",
+			"operators.NewTenantCmd",
+			`"github.com/example/proj/cmd/proj/cmd/services"`,
+			`"github.com/example/proj/cmd/proj/cmd/workers"`,
+			`"github.com/example/proj/cmd/proj/cmd/operators"`,
+		} {
+			if !strings.Contains(content, want) {
+				t.Errorf("cmd/proj/main.go missing %q\n%s", want, content)
+			}
+		}
+		// The registry is gone: no self-registration hooks, no blank imports.
+		for _, forbidden := range []string{"func init()", "RegisterServiceCmd", `_ "`} {
+			if strings.Contains(content, forbidden) {
+				t.Errorf("cmd/proj/main.go must not contain %q\n%s", forbidden, content)
+			}
+		}
+		assertParses(t, "main.go", content)
+	}
+
+	// Group anchors exist and parse (so the group packages compile even with
+	// zero items).
 	for _, anchor := range []struct{ file, pkg string }{
 		{filepath.Join("services", "register_gen.go"), "package services"},
 		{filepath.Join("workers", "register_gen.go"), "package workers"},
@@ -174,8 +219,9 @@ func TestGenerateCmdGroups_Reserved(t *testing.T) {
 }
 
 // TestGenerateCmdGroups_ZeroComponents: a binary with no services/workers/
-// operators still gets the (anchor-only) files so each group package compiles
-// (main.go's blank imports resolve). They must parse.
+// operators still gets the (anchor-only) group files so each group package
+// compiles, plus a composition-root main.go with a bare cmd.Execute() (no group
+// imports — an unused import would not compile). Everything must parse.
 func TestGenerateCmdGroups_ZeroComponents(t *testing.T) {
 	dir := t.TempDir()
 	writeTestGoMod(t, dir, "github.com/example/proj")
@@ -194,6 +240,20 @@ func TestGenerateCmdGroups_ZeroComponents(t *testing.T) {
 		}
 		assertParses(t, anchor, string(raw))
 	}
+
+	// main.go: bare cmd.Execute(), no group subpackage imports.
+	raw, err := os.ReadFile(filepath.Join(dir, "cmd", "proj", "main.go"))
+	if err != nil {
+		t.Fatalf("read cmd/proj/main.go: %v", err)
+	}
+	content := string(raw)
+	if !strings.Contains(content, "cmd.Execute()") {
+		t.Errorf("zero-component main.go should be a bare cmd.Execute():\n%s", content)
+	}
+	if strings.Contains(content, "/cmd/services") || strings.Contains(content, "/cmd/workers") || strings.Contains(content, "/cmd/operators") {
+		t.Errorf("zero-component main.go must not import empty group packages (unused import):\n%s", content)
+	}
+	assertParses(t, "main.go", content)
 }
 
 // TestGenerateCmdGroups_MountNameCollision is the regression for the

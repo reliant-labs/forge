@@ -8,16 +8,20 @@
 //
 //   - ServiceName — this binary's app identity (semconv service.name).
 //   - Deps        — the dependency set threaded through the tree.
-//   - the command REGISTRY — RegisterServiceCmd / RegisterWorkerCmd /
-//     RegisterOperatorCmd. The group SUBPACKAGES (services/, workers/,
-//     operators/) self-register their commands via init(); newRootCmd
-//     ranges the registry. This indirection is what lets the groups import
-//     THIS package for Deps/Serve without a cmd↔group import cycle.
+//   - CmdFactory  — the constructor shape every group command exports
+//     (func(Deps) *cobra.Command).
+//
+// The command tree is assembled EXPLICITLY in the composition root
+// (cmd/{{.Name}}/main.go): main names every group constructor and passes them to
+// Execute, which forwards them to newRootCmd. There is no dynamic registry and
+// no init() self-registration — the whole tree is readable in main.go. Because
+// the groups only depend on THIS package for Deps/Serve (and main.go — not this
+// package — imports the groups), there is no cmd↔group import cycle.
 //
 // The command tree:
 //
-//   - cmd/{{.Name}}/main.go        — thin: cmd.Execute() + blank group imports.
-//   - cmd/{{.Name}}/cmd/root.go    — this file (root + Deps + registry).
+//   - cmd/{{.Name}}/main.go        — composition root: cmd.Execute(<every group ctor>).
+//   - cmd/{{.Name}}/cmd/root.go    — this file (root + Deps + CmdFactory).
 //   - cmd/{{.Name}}/cmd/serve.go   — the shared serve() pipeline (typed mount).
 //   - cmd/{{.Name}}/cmd/server.go  — `{{.Name}} server [services...]` (all svc).
 //   - cmd/{{.Name}}/cmd/version.go — `{{.Name}} version`.
@@ -56,33 +60,16 @@ type Deps struct {
 	Err *os.File
 }
 
-// CmdFactory builds one subcommand from deps. Group subpackages register a
-// factory per command (a method value over Deps), and newRootCmd ranges the
-// registry to assemble the tree.
+// CmdFactory builds one subcommand from deps. Every group command (services/,
+// workers/, operators/) exports a constructor of this shape; main.go names them
+// explicitly and hands them to Execute.
 type CmdFactory func(deps Deps) *cobra.Command
 
-var (
-	serviceCmdFactories  []CmdFactory
-	workerCmdFactories   []CmdFactory
-	operatorCmdFactories []CmdFactory
-)
-
-// RegisterServiceCmd registers a per-service subcommand factory. Called from
-// the services/ subpackage's init(). Selection stays TYPED: each factory's
-// RunE passes a (*app.Components).Mount<Svc> method expression to Serve.
-func RegisterServiceCmd(f CmdFactory) { serviceCmdFactories = append(serviceCmdFactories, f) }
-
-// RegisterWorkerCmd registers a per-worker subcommand factory (workers/ init()).
-func RegisterWorkerCmd(f CmdFactory) { workerCmdFactories = append(workerCmdFactories, f) }
-
-// RegisterOperatorCmd registers a per-operator subcommand factory (operators/ init()).
-func RegisterOperatorCmd(f CmdFactory) { operatorCmdFactories = append(operatorCmdFactories, f) }
-
-// newRootCmd assembles the full command tree from deps. Kept separate from
-// Execute so tests can drive the tree without going through os.Exit. The
-// per-group commands come from the registry the group subpackages populated
-// at init() — main.go blank-imports them so their init() runs.
-func newRootCmd(deps Deps) *cobra.Command {
+// newRootCmd assembles the full command tree from deps plus the explicit set of
+// group-command factories main.go passes in. Kept separate from Execute so
+// tests can drive the tree without going through os.Exit. There is no registry:
+// the group commands are exactly the ones main.go named.
+func newRootCmd(deps Deps, groupCmds ...CmdFactory) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "{{.Name}}",
 		Short: "{{.Name}} service",
@@ -93,13 +80,7 @@ func newRootCmd(deps Deps) *cobra.Command {
 {{- if index .ConfigFields "AutoMigrate"}}
 	root.AddCommand(newDBCmd(deps))
 {{- end}}
-	for _, f := range serviceCmdFactories {
-		root.AddCommand(f(deps))
-	}
-	for _, f := range workerCmdFactories {
-		root.AddCommand(f(deps))
-	}
-	for _, f := range operatorCmdFactories {
+	for _, f := range groupCmds {
 		root.AddCommand(f(deps))
 	}
 
@@ -111,10 +92,12 @@ func newRootCmd(deps Deps) *cobra.Command {
 	return root
 }
 
-// Execute is the program entry point cmd/{{.Name}}/main.go calls.
-func Execute() {
+// Execute is the program entry point cmd/{{.Name}}/main.go calls. main.go passes
+// every service/worker/operator constructor explicitly (the tree is assembled
+// in the composition root, not a dynamic registry).
+func Execute(groupCmds ...CmdFactory) {
 	deps := Deps{Out: os.Stdout, Err: os.Stderr}
-	root := newRootCmd(deps)
+	root := newRootCmd(deps, groupCmds...)
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

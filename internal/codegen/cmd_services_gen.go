@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"go/format"
 	"path/filepath"
 	"strings"
 
@@ -66,6 +67,28 @@ type CmdGroupItem struct {
 // anchor + collision NOTEs).
 type CmdServicesTemplateData struct {
 	Skipped []string // runtime names skipped for colliding with built-ins
+}
+
+// CmdCtorRef is one group-command constructor reference for the composition
+// root — the exported New<X>Cmd func name the main.go template qualifies with
+// its group package (services./workers./operators.).
+type CmdCtorRef struct {
+	Ctor string // e.g. "NewAuditLogCmd"
+}
+
+// CmdMainTemplateData feeds cmd-main.go.tmpl — the composition root. main.go is
+// no longer a thin blank-import + cmd.Execute(); it names EVERY group
+// constructor explicitly and passes them to cmd.Execute. That makes main.go
+// inventory-dependent (like the per-component group files), so it is rendered
+// here from the SAME service/worker/operator rows the group files are — not
+// from the project-level scaffold data — which is why GenerateCmdGroups owns it
+// and the upgrade managed-file list does not.
+type CmdMainTemplateData struct {
+	Module    string
+	Bin       string
+	Services  []CmdCtorRef
+	Workers   []CmdCtorRef
+	Operators []CmdCtorRef
 }
 
 // cmdSvcFieldName derives the no-collision exported FieldName for a raw
@@ -139,11 +162,17 @@ type CmdServiceGroupInput struct {
 // RunE calls cmd.Serve() with a TYPED selection (the (*app.Components).Mount<Svc>
 // method expression for services; cmd.MountNone + a named supervised subset
 // for workers/operators). Each group also gets a register_gen.go anchor so
-// the package compiles (and main.go's blank import resolves) with zero items;
-// the services anchor additionally carries the built-in collision NOTEs.
-// Selection is compile-time typed — no string positional arg, no
-// string→inventory lookup. service rows must be the same set the app
-// Inventory is generated from so each name lines up with a typed mount.
+// the package compiles with zero items; the services anchor additionally
+// carries the built-in collision NOTEs. Selection is compile-time typed — no
+// string positional arg, no string→inventory lookup. service rows must be the
+// same set the app Inventory is generated from so each name lines up with a
+// typed mount.
+//
+// It ALSO renders cmd/<bin>/main.go — the composition root — from the SAME
+// rows: main.go names every group constructor explicitly and passes them to
+// cmd.Execute (no init() self-registration, no dynamic registry). main.go is
+// inventory-dependent, so it lives here rather than in the project-level
+// scaffold / upgrade managed-file set.
 //
 // cs is the project's checksum tracker — passing it keeps the files out of
 // `forge audit`'s orphan list. A nil cs is tolerated.
@@ -234,6 +263,62 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 		return fmt.Errorf("write operators/register_gen.go: %w", err)
 	}
 
+	// cmd/<bin>/main.go — the COMPOSITION ROOT. It names every group
+	// constructor explicitly and passes them to cmd.Execute (no init()
+	// self-registration, no dynamic registry). Because that list is a
+	// projection of the SAME service/worker/operator rows the group files are
+	// generated from, main.go is emitted HERE (where the inventory is known),
+	// not from the project-level scaffold data. The constructor names mirror
+	// the group files: services skip reserved/collision names (svcItems already
+	// filtered them); workers/operators use their plain FieldName.
+	if err := generateCmdMain(targetDir, modulePath, in.Bin, svcItems, in.Workers, in.Operators, cs); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// GenerateCmdMainRoot renders ONLY cmd/<bin>/main.go — the composition root —
+// as a bare cmd.Execute() with no component constructors. The generate pipeline
+// emits main.go via GenerateCmdGroups (which knows the full inventory); this
+// exported entry lets the scaffold drop a composition root for a service
+// project that has no proto pipeline (features.codegen=false), preserving the
+// pre-refactor contract that main.go is always scaffolded for service kind.
+func GenerateCmdMainRoot(targetDir, bin string, cs *checksums.FileChecksums) error {
+	modulePath, err := GetModulePath(targetDir)
+	if err != nil {
+		return fmt.Errorf("read module path: %w", err)
+	}
+	return generateCmdMain(targetDir, modulePath, bin, nil, nil, nil, cs)
+}
+
+// generateCmdMain renders cmd/<bin>/main.go from the resolved component rows.
+// The output is gofmt-canonicalized before writing so the arg list collapses
+// cleanly (an empty component set yields a bare `cmd.Execute()`), independent of
+// the later goimports pass.
+func generateCmdMain(targetDir, modulePath, bin string, svcItems []CmdGroupItem, workers []BootstrapWorkerData, operators []BootstrapOperatorData, cs *checksums.FileChecksums) error {
+	data := CmdMainTemplateData{Module: modulePath, Bin: bin}
+	for _, item := range svcItems {
+		data.Services = append(data.Services, CmdCtorRef{Ctor: "New" + item.FieldName + "Cmd"})
+	}
+	for _, w := range workers {
+		data.Workers = append(data.Workers, CmdCtorRef{Ctor: "New" + w.FieldName + "Cmd"})
+	}
+	for _, op := range operators {
+		data.Operators = append(data.Operators, CmdCtorRef{Ctor: "New" + op.FieldName + "Cmd"})
+	}
+
+	rendered, err := templates.ProjectTemplates().Render("cmd-main.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render cmd-main.go.tmpl: %w", err)
+	}
+	formatted, err := format.Source(rendered)
+	if err != nil {
+		return fmt.Errorf("gofmt cmd/%s/main.go: %w\n%s", bin, err, rendered)
+	}
+	if err := writeForgeOwned(targetDir, filepath.Join("cmd", bin, "main.go"), formatted, cs); err != nil {
+		return fmt.Errorf("write cmd/%s/main.go: %w", bin, err)
+	}
 	return nil
 }
 

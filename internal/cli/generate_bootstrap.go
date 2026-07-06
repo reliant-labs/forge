@@ -15,7 +15,7 @@ import (
 // (PASS 1, additive). Scaffold-once owned files (providers.go, post_build.go)
 // are written before the generated injector so its Infra-field resolution
 // sees the Infra struct on the first pass too.
-func generateHybridComposition(services []codegen.ServiceDef, packages []codegen.BootstrapPackageData, workers []codegen.BootstrapWorkerData, operators []codegen.BootstrapOperatorData, modulePath, databaseDriver string, ormEnabled bool, projectDir string, webhookServices map[string]bool, cs *checksums.FileChecksums) error {
+func generateHybridComposition(services []codegen.ServiceDef, packages []codegen.BootstrapPackageData, modulePath, databaseDriver string, ormEnabled bool, projectDir string, webhookServices map[string]bool, cs *checksums.FileChecksums) error {
 	// NO len()==0 early-return: the generated cmd/server.go imports
 	// internal/app unconditionally (OpenInfra → Build → PostBuild → mount via
 	// Inventory → serverkit.Run), so internal/app must be a non-empty,
@@ -23,6 +23,12 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	// trees with no parseable proto service / no descriptor). The generators
 	// + templates below emit valid empty Build/Inventory/Services/lifecycle so
 	// `go mod tidy` resolves internal/app LOCALLY instead of 404ing.
+	//
+	// NO worker/operator inputs: compose.go + lifecycle.go are SCAFFOLD-ONCE
+	// owned code; generate performs ZERO worker/operator discovery. The initial
+	// scaffold wires only the services/packages known at first emit; workers and
+	// operators are hand-added (via `forge add worker/operator`, which appends to
+	// the owned files). An existing compose.go/lifecycle.go is left untouched.
 
 	// Owned, scaffold-once (never overwritten after first emit).
 	if err := codegen.GenerateProviders(modulePath, databaseDriver, ormEnabled, projectDir); err != nil {
@@ -30,38 +36,34 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	}
 
 	// Explicit per-binary component construction site (compose.go: Components +
-	// NewComponents), regenerated every run from the discovered component set.
-	// A MissingProvider here is a LOUD generate-time error naming the type +
-	// component + field the user must add to Infra. This REPLACES the retired
-	// by-type injector (inject_gen.go + app_services_gen.go).
+	// NewComponents), SCAFFOLD-ONCE owned code. A MissingProvider here is a LOUD
+	// first-emit error naming the type + component + field the user must add to
+	// Infra.
 	if err := codegen.GenerateCompose(codegen.InjectGenInput{
 		GenContext: codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
 		Services:   services,
 		Packages:   packages,
-		Workers:    workers,
-		Operators:  operators,
 	}); err != nil {
 		return fmt.Errorf("failed to generate internal/app/compose.go: %w", err)
 	}
 
-	// Supervised-component surface (workers/operators) over *Components.
+	// Supervised-component surface (workers/operators) over *Components —
+	// SCAFFOLD-ONCE owned code. Initial emit has empty AllWorkers/AllOperators.
 	if err := codegen.GenerateLifecycle(codegen.InjectGenInput{
 		GenContext: codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
 		Services:   services,
 		Packages:   packages,
-		Workers:    workers,
-		Operators:  operators,
 	}); err != nil {
 		return fmt.Errorf("failed to generate internal/app/lifecycle.go: %w", err)
 	}
 
 	// Typed per-service mount surface + data-only inventory (mounts_services.go).
+	// PROTO-DERIVED: regenerates every run from the service set (no
+	// worker/operator input — workers/operators never appear in the mount surface).
 	if err := codegen.GenerateInventory(codegen.InventoryGenInput{
 		GenContext:      codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
 		Services:        services,
 		Packages:        packages,
-		Workers:         workers,
-		Operators:       operators,
 		WebhookServices: webhookServices,
 	}); err != nil {
 		return fmt.Errorf("failed to generate internal/app/mounts_services.go: %w", err)
@@ -102,7 +104,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 // regen creates it — the group subpackages still get anchored before any
 // `go mod tidy` / build-validate that imports them. Idempotent: re-running on
 // an already-nested project rewrites byte-identical content.
-func generateCmdGroups(services []codegen.ServiceDef, workers []codegen.BootstrapWorkerData, operators []codegen.BootstrapOperatorData, projectDir string, cs *checksums.FileChecksums) error {
+func generateCmdGroups(services []codegen.ServiceDef, projectDir string, cs *checksums.FileChecksums) error {
 	bin := bootstrapBinaryName(projectDir)
 	if _, statErr := os.Stat(filepath.Join(projectDir, "cmd", bin, "cmd", "serve.go")); statErr != nil {
 		return nil
@@ -120,12 +122,13 @@ func generateCmdGroups(services []codegen.ServiceDef, workers []codegen.Bootstra
 	if pkgErr != nil {
 		packages = nil
 	}
+	// No Workers/Operators: cmd groups emit only proto-derived service
+	// subcommands + the anchor files + the scaffold-once main.go. Per-worker /
+	// per-operator subcommands are OWNED code scaffolded once by `forge add`.
 	if err := codegen.GenerateCmdGroups(codegen.CmdServiceGroupInput{
-		Bin:       bin,
-		Services:  names,
-		Packages:  packages,
-		Workers:   workers,
-		Operators: operators,
+		Bin:      bin,
+		Services: names,
+		Packages: packages,
 	}, projectDir, cs); err != nil {
 		return fmt.Errorf("failed to generate cmd/%s command-group subcommands: %w", bin, err)
 	}
@@ -136,24 +139,18 @@ func generateCmdGroups(services []codegen.ServiceDef, workers []codegen.Bootstra
 func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, multiTenantEnabled bool, projectDir string, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating pkg/app/testing.go...")
 
-	workers, err := discoverWorkers(projectDir)
-	if err != nil {
-		return err
-	}
-	operators, err := discoverOperators(projectDir)
-	if err != nil {
-		return err
-	}
-
-	if len(services) == 0 && len(workers) == 0 && len(operators) == 0 {
-		return nil
-	}
-
 	packages, err := discoverPackages(projectDir)
 	if err != nil {
 		return fmt.Errorf("discover internal packages: %w", err)
 	}
 
+	if len(services) == 0 && len(packages) == 0 {
+		return nil
+	}
+
+	// No worker/operator inputs: testing.go is service+package scoped (it never
+	// reads Workers/Operators), and generate performs zero worker/operator
+	// discovery.
 	if err := codegen.GenerateBootstrapTesting(codegen.BootstrapTestingGenInput{
 		GenContext: codegen.GenContext{
 			ProjectDir: projectDir,
@@ -162,8 +159,6 @@ func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, 
 		},
 		Services:           services,
 		Packages:           packages,
-		Workers:            workers,
-		Operators:          operators,
 		MultiTenantEnabled: multiTenantEnabled,
 	}); err != nil {
 		return fmt.Errorf("failed to generate bootstrap testing: %w", err)
@@ -282,31 +277,26 @@ func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error)
 	return codegen.PackageDataFromNames(names, projectDir)
 }
 
-// discoverWorkers returns BootstrapWorkerData for all worker-type services in
-// the project config. Passes each service's explicit `path:` field through so
-// snake_case dir layouts (e.g. workers/climatology_refresh) produce the
-// correct import line — without `path:`, the legacy compaction would emit
-// workers/climatologyrefresh and the generated bootstrap would fail to
-// compile. The returned error is a disk-first resolution failure (worker dir
-// exists but its package clause is unparseable/conflicting) — see
-// codegen.ResolveComponentDir.
-func discoverWorkers(projectDir string) ([]codegen.BootstrapWorkerData, error) {
-	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
-	store, err := loadProjectStoreFrom(cfgPath)
-	if err != nil || store == nil {
-		return nil, nil
+// hasComponentDir reports whether roleRoot (e.g. "internal/workers") exists and
+// holds at least one immediate subdirectory — a cheap BOOLEAN presence gate for
+// the pipeline (HasWorkers / HasOperators), NOT an enumeration of the component
+// SET. `forge generate` deliberately never enumerates the worker/operator set:
+// the command tree + wiring are scaffold-once OWNED code, so generate needs to
+// know only *whether* the bootstrap family of steps applies, never *which*
+// workers/operators exist. (Introspection — forge map/graph — walks disk
+// read-only, entirely separate from this generate path.)
+func hasComponentDir(projectDir, roleRoot string) bool {
+	rootDir := filepath.Join(projectDir, filepath.FromSlash(roleRoot))
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		return false
 	}
-
-	var specs []codegen.WorkerSpec
-	for _, comp := range store.Components() {
-		// Both long-running workers and scheduled crons register a
-		// Worker bootstrap row (cron-ness lives in the scaffolded
-		// worker.go body, not the bootstrap wiring).
-		if comp.IsWorker() || comp.IsCron() {
-			specs = append(specs, codegen.WorkerSpec{Name: comp.Name, Path: comp.Path})
+	for _, e := range entries {
+		if e.IsDir() && e.Name() != "testdata" {
+			return true
 		}
 	}
-	return codegen.WorkerDataFromSpecs(specs, projectDir)
+	return false
 }
 
 // discoverWebhookServices returns a set of snake-case service package
@@ -353,23 +343,4 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 		return nil
 	}
 	return out
-}
-
-// discoverOperators returns BootstrapOperatorData for all operator-type
-// services in the project config. Honors the `path:` field for the same
-// reason as discoverWorkers; error semantics match discoverWorkers.
-func discoverOperators(projectDir string) ([]codegen.BootstrapOperatorData, error) {
-	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
-	store, err := loadProjectStoreFrom(cfgPath)
-	if err != nil || store == nil {
-		return nil, nil
-	}
-
-	var specs []codegen.OperatorSpec
-	for _, comp := range store.Components() {
-		if comp.IsOperator() {
-			specs = append(specs, codegen.OperatorSpec{Name: comp.Name, Path: comp.Path})
-		}
-	}
-	return codegen.OperatorDataFromSpecs(specs, projectDir)
 }

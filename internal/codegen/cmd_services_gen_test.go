@@ -45,21 +45,19 @@ func TestCmdServiceItemsFromNames(t *testing.T) {
 	}
 }
 
-// TestGenerateCmdGroups renders the per-service / per-worker / per-operator
-// command-group files, the group anchors, and the composition-root main.go,
-// pinning the load-bearing parts: ONE FILE PER ITEM under cmd/<bin>/cmd/<group>/,
-// the New<X>Cmd constructor, the TYPED mount method expression on the
-// cmd.Serve() call (selection by compile-time type, not a string), the ABSENCE
-// of init()-based self-registration, the explicit cmd.Execute(...) constructor
-// list in main.go, and that everything parses as Go.
+// TestGenerateCmdGroups renders the per-SERVICE command-group files, the three
+// group anchors, and the SCAFFOLD-ONCE composition-root main.go. Post
+// zero-generate-time-worker/operator-discovery: GenerateCmdGroups emits ONLY
+// services + anchors + a main.go carrying ONLY services (workers/operators are
+// scaffold-once OWNED code written by ScaffoldWorkerCmd/ScaffoldOperatorCmd, and
+// hand-wired into main.go). It pins the typed mount method expression, the
+// ABSENCE of init()-based self-registration, and that everything parses as Go.
 func TestGenerateCmdGroups(t *testing.T) {
 	dir := t.TempDir()
 	writeTestGoMod(t, dir, "github.com/example/proj")
 	if err := GenerateCmdGroups(CmdServiceGroupInput{
-		Bin:       "proj",
-		Services:  []string{"AdminServerService", "billing"},
-		Workers:   []BootstrapWorkerData{{Name: "reaper", FieldName: "Reaper"}},
-		Operators: []BootstrapOperatorData{{Name: "tenant", FieldName: "Tenant"}},
+		Bin:      "proj",
+		Services: []string{"AdminServerService", "billing"},
 	}, dir, nil); err != nil {
 		t.Fatalf("GenerateCmdGroups: %v", err)
 	}
@@ -98,49 +96,21 @@ func TestGenerateCmdGroups(t *testing.T) {
 		assertParses(t, tc.file, content)
 	}
 
-	// Workers: one file per worker, cmd.MountNone + named supervised subset.
-	for _, tc := range []struct {
-		file, ctor, use string
-	}{
-		{filepath.Join("workers", "reaper.go"), "func NewReaperCmd(deps cmd.Deps)", `Use:   "reaper",`},
+	// GenerateCmdGroups must NOT emit any per-worker / per-operator subcommand
+	// file — generate does zero worker/operator discovery; those are scaffold-
+	// once OWNED code (ScaffoldWorkerCmd/ScaffoldOperatorCmd).
+	for _, absent := range []string{
+		filepath.Join("workers", "reaper.go"),
+		filepath.Join("operators", "tenant.go"),
 	} {
-		raw, err := os.ReadFile(filepath.Join(base, tc.file))
-		if err != nil {
-			t.Fatalf("read %s: %v", tc.file, err)
+		if _, err := os.Stat(filepath.Join(base, absent)); err == nil {
+			t.Errorf("GenerateCmdGroups emitted %s — worker/operator subcommands must be scaffold-once, not generated", absent)
 		}
-		content := string(raw)
-		for _, want := range []string{tc.ctor, tc.use, "package workers", "cmd.MountNone", "cmd.ServeSpec{", `[]serverkit.Worker{c.WorkerReaper()}`} {
-			if !strings.Contains(content, want) {
-				t.Errorf("%s missing %q\n%s", tc.file, want, content)
-			}
-		}
-		if strings.Contains(content, "func init()") || strings.Contains(content, "cmd.RegisterWorkerCmd") {
-			t.Errorf("%s must not self-register via init()\n%s", tc.file, content)
-		}
-		assertParses(t, tc.file, content)
 	}
 
-	// Operators: one file per operator.
-	{
-		file := filepath.Join("operators", "tenant.go")
-		raw, err := os.ReadFile(filepath.Join(base, file))
-		if err != nil {
-			t.Fatalf("read %s: %v", file, err)
-		}
-		content := string(raw)
-		for _, want := range []string{"func NewTenantCmd(deps cmd.Deps)", `Use:   "tenant",`, "package operators", "cmd.MountNone", "cmd.ServeSpec{", `[]app.OperatorEntry{c.OperatorTenant()}`} {
-			if !strings.Contains(content, want) {
-				t.Errorf("%s missing %q\n%s", file, want, content)
-			}
-		}
-		if strings.Contains(content, "func init()") || strings.Contains(content, "cmd.RegisterOperatorCmd") {
-			t.Errorf("%s must not self-register via init()\n%s", file, content)
-		}
-		assertParses(t, file, content)
-	}
-
-	// Composition root: main.go names every group constructor explicitly and
-	// passes them to cmd.Execute — no init() registry, no blank imports.
+	// Composition root: SCAFFOLD-ONCE main.go names the SERVICE constructors
+	// explicitly and passes them to cmd.Execute. It carries NO worker/operator
+	// refs or imports on the initial emit (no init() registry, no blank imports).
 	{
 		mainPath := filepath.Join(dir, "cmd", "proj", "main.go")
 		raw, err := os.ReadFile(mainPath)
@@ -153,18 +123,22 @@ func TestGenerateCmdGroups(t *testing.T) {
 			"cmd.Execute(",
 			"services.NewAdminServerCmd",
 			"services.NewBillingCmd",
-			"workers.NewReaperCmd",
-			"operators.NewTenantCmd",
 			`"github.com/example/proj/cmd/proj/cmd/services"`,
-			`"github.com/example/proj/cmd/proj/cmd/workers"`,
-			`"github.com/example/proj/cmd/proj/cmd/operators"`,
 		} {
 			if !strings.Contains(content, want) {
 				t.Errorf("cmd/proj/main.go missing %q\n%s", want, content)
 			}
 		}
-		// The registry is gone: no self-registration hooks, no blank imports.
-		for _, forbidden := range []string{"func init()", "RegisterServiceCmd", `_ "`} {
+		// Owned/scaffold-once: no generated banner, no worker/operator refs on
+		// the initial emit, no self-registration hooks, no blank imports.
+		for _, forbidden := range []string{
+			"DO NOT EDIT",
+			"workers.NewReaperCmd",
+			"operators.NewTenantCmd",
+			"func init()",
+			"RegisterServiceCmd",
+			`_ "`,
+		} {
 			if strings.Contains(content, forbidden) {
 				t.Errorf("cmd/proj/main.go must not contain %q\n%s", forbidden, content)
 			}
@@ -173,7 +147,9 @@ func TestGenerateCmdGroups(t *testing.T) {
 	}
 
 	// Group anchors exist and parse (so the group packages compile even with
-	// zero items).
+	// zero items). All three groups are anchored even though workers/operators
+	// have no per-component files yet — main.go's (future) blank/named imports
+	// of those subpackages must resolve.
 	for _, anchor := range []struct{ file, pkg string }{
 		{filepath.Join("services", "register_gen.go"), "package services"},
 		{filepath.Join("workers", "register_gen.go"), "package workers"},
@@ -189,6 +165,108 @@ func TestGenerateCmdGroups(t *testing.T) {
 		}
 		assertParses(t, anchor.file, content)
 	}
+}
+
+// TestGenerateCmdGroups_MainScaffoldOnce pins that main.go is write-if-absent:
+// a second GenerateCmdGroups run (or any run where main.go already exists) does
+// NOT overwrite the owned file, even as the service set changes.
+func TestGenerateCmdGroups_MainScaffoldOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeTestGoMod(t, dir, "github.com/example/proj")
+	mainPath := filepath.Join(dir, "cmd", "proj", "main.go")
+
+	if err := GenerateCmdGroups(CmdServiceGroupInput{Bin: "proj", Services: []string{"billing"}}, dir, nil); err != nil {
+		t.Fatalf("first GenerateCmdGroups: %v", err)
+	}
+	// Hand-edit the owned main.go.
+	sentinel := "// HAND-OWNED SENTINEL — must survive regenerate\n"
+	orig, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	if err := os.WriteFile(mainPath, append([]byte(sentinel), orig...), 0o644); err != nil {
+		t.Fatalf("hand-edit main.go: %v", err)
+	}
+	// Re-run with a DIFFERENT service set — main.go must be untouched.
+	if err := GenerateCmdGroups(CmdServiceGroupInput{Bin: "proj", Services: []string{"billing", "orders"}}, dir, nil); err != nil {
+		t.Fatalf("second GenerateCmdGroups: %v", err)
+	}
+	after, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatalf("re-read main.go: %v", err)
+	}
+	if !strings.Contains(string(after), sentinel) {
+		t.Errorf("scaffold-once main.go was overwritten — hand edit lost:\n%s", after)
+	}
+}
+
+// TestScaffoldWorkerCmd / TestScaffoldOperatorCmd pin the scaffold-once per-
+// component subcommand files `forge add worker/operator` writes (the work the
+// retired generate-time cmd-groups loop used to do). One file per component,
+// write-if-absent, typed self-composed supervised subset, no init() registry.
+func TestScaffoldWorkerCmd(t *testing.T) {
+	dir := t.TempDir()
+	writeTestGoMod(t, dir, "github.com/example/proj")
+
+	wrote, err := ScaffoldWorkerCmd(dir, "proj", "reaper")
+	if err != nil {
+		t.Fatalf("ScaffoldWorkerCmd: %v", err)
+	}
+	if !wrote {
+		t.Fatalf("expected a fresh worker subcommand file to be written")
+	}
+	path := filepath.Join(dir, "cmd", "proj", "cmd", "workers", "reaper.go")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read reaper.go: %v", err)
+	}
+	content := string(raw)
+	for _, want := range []string{"func NewReaperCmd(deps cmd.Deps)", `Use:   "reaper",`, "package workers", "cmd.MountNone", "cmd.ServeSpec{", `[]serverkit.Worker{c.WorkerReaper()}`} {
+		if !strings.Contains(content, want) {
+			t.Errorf("reaper.go missing %q\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "DO NOT EDIT") || strings.Contains(content, "func init()") {
+		t.Errorf("scaffold-once worker subcommand must not carry generated banner / init():\n%s", content)
+	}
+	assertParses(t, "reaper.go", content)
+
+	// Write-if-absent: a second call must NOT overwrite a hand-edited file.
+	if err := os.WriteFile(path, []byte("// SENTINEL\n"+content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wrote2, err := ScaffoldWorkerCmd(dir, "proj", "reaper")
+	if err != nil {
+		t.Fatalf("second ScaffoldWorkerCmd: %v", err)
+	}
+	if wrote2 {
+		t.Errorf("ScaffoldWorkerCmd overwrote an existing owned file")
+	}
+	after, _ := os.ReadFile(path)
+	if !strings.Contains(string(after), "// SENTINEL") {
+		t.Errorf("owned worker subcommand was overwritten")
+	}
+}
+
+func TestScaffoldOperatorCmd(t *testing.T) {
+	dir := t.TempDir()
+	writeTestGoMod(t, dir, "github.com/example/proj")
+
+	if _, err := ScaffoldOperatorCmd(dir, "proj", "tenant"); err != nil {
+		t.Fatalf("ScaffoldOperatorCmd: %v", err)
+	}
+	path := filepath.Join(dir, "cmd", "proj", "cmd", "operators", "tenant.go")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read tenant.go: %v", err)
+	}
+	content := string(raw)
+	for _, want := range []string{"func NewTenantCmd(deps cmd.Deps)", `Use:   "tenant",`, "package operators", "cmd.MountNone", "cmd.ServeSpec{", `[]app.OperatorEntry{c.OperatorTenant()}`} {
+		if !strings.Contains(content, want) {
+			t.Errorf("tenant.go missing %q\n%s", want, content)
+		}
+	}
+	assertParses(t, "tenant.go", content)
 }
 
 // TestGenerateCmdGroups_Reserved: a service whose runtime name collides with

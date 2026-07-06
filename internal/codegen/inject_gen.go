@@ -276,7 +276,12 @@ func GenerateCompose(in InjectGenInput) error {
 	if err != nil {
 		return fmt.Errorf("render compose.go.tmpl: %w", err)
 	}
-	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "compose.go"), content, in.Checksums); err != nil {
+	// SCAFFOLD-ONCE: compose.go is the OWNED component-construction site. Forge
+	// emits it once (the initial services/packages wiring) and never regenerates
+	// it — adding a component is a hand-edit here (or a `forge add` append), not
+	// a re-derivation from a discovered set. A project that already has a
+	// compose.go (every existing project) is left untouched.
+	if _, err := writeForgeScaffoldOnce(in.ProjectDir, filepath.Join("internal", "app", "compose.go"), content); err != nil {
 		return fmt.Errorf("write internal/app/compose.go: %w", err)
 	}
 	return nil
@@ -543,7 +548,11 @@ func GenerateLifecycle(in InjectGenInput) error {
 	if err != nil {
 		return fmt.Errorf("render lifecycle.go.tmpl: %w", err)
 	}
-	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "lifecycle.go"), content, in.Checksums); err != nil {
+	// SCAFFOLD-ONCE: lifecycle.go is the OWNED supervised-surface (AllWorkers /
+	// AllOperators + the per-component accessors). Forge emits it once and never
+	// regenerates it; `forge add worker/operator` appends the accessor. An
+	// existing lifecycle.go is left untouched.
+	if _, err := writeForgeScaffoldOnce(in.ProjectDir, filepath.Join("internal", "app", "lifecycle.go"), content); err != nil {
 		return fmt.Errorf("write internal/app/lifecycle.go: %w", err)
 	}
 	return nil

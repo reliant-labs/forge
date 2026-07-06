@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 )
@@ -39,6 +40,23 @@ func writeForgeOwned(root, relPath string, content []byte, cs *checksums.FileChe
 // checksum-tracked: forge writes it once and leaves later edits to the user.
 func writeUserScaffold(path string, content []byte) error {
 	return os.WriteFile(path, content, 0o644)
+}
+
+// writeForgeScaffoldOnce writes a scaffold-once, USER-OWNED file addressed by
+// (root, relPath): forge emits it exactly ONCE, when it does not yet exist, and
+// then never regenerates or overwrites it. This is the write tier for the
+// command tree + component WIRING (cmd/<bin>/main.go, internal/app/compose.go,
+// internal/app/lifecycle.go, and the per-worker/operator subcommands): once
+// scaffolded, the file is owned code the user hand-maintains (adding a component
+// is a hand-edit / `forge add` append, never a re-derivation). It creates parent
+// dirs, is deliberately NOT checksum-tracked, and returns true when it wrote a
+// fresh file (false when one already existed).
+func writeForgeScaffoldOnce(root, relPath string, content []byte) (bool, error) {
+	abs := filepath.Join(root, relPath)
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return false, err
+	}
+	return writeUserScaffoldIfAbsent(abs, content)
 }
 
 // writeUserScaffoldIfAbsent writes a one-time user-scaffold file ONLY when it

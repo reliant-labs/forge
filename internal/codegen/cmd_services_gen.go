@@ -145,37 +145,34 @@ func cmdServiceItemsFromNames(module, bin string, names []string, mountOverride 
 }
 
 // CmdServiceGroupInput drives GenerateCmdGroups: the primary binary name plus
-// the service / worker / operator rows (the SAME rows the app composition
-// layer is generated from, so every subcommand lines up with a typed mount /
-// Worker<X>() / Operator<X>() accessor).
+// the SERVICE rows (the SAME proto-derived rows the app mount surface is
+// generated from, so every service subcommand lines up with a typed
+// (*app.Components).Mount<Svc>). Workers/operators are deliberately absent —
+// generate performs no worker/operator discovery; their subcommands are
+// scaffold-once OWNED code written by `forge add worker/operator`.
 type CmdServiceGroupInput struct {
-	Bin       string
-	Services  []string                // raw service-name spellings
-	Packages  []BootstrapPackageData  // internal packages — for cross-role collision counts
-	Workers   []BootstrapWorkerData   // Name + FieldName
-	Operators []BootstrapOperatorData // Name + FieldName
+	Bin      string
+	Services []string               // raw service-name spellings
+	Packages []BootstrapPackageData // internal packages — for cross-role collision counts
 }
 
 // GenerateCmdGroups renders the dir-nested command groups under
-// cmd/<bin>/cmd (devspace idiom): ONE FILE PER ITEM in the services/,
-// workers/, and operators/ SUBPACKAGES, each `New<X>Cmd(cmd.Deps)` whose
-// RunE calls cmd.Serve() with a TYPED selection (the (*app.Components).Mount<Svc>
-// method expression for services; cmd.MountNone + a named supervised subset
-// for workers/operators). Each group also gets a register_gen.go anchor so
-// the package compiles with zero items; the services anchor additionally
-// carries the built-in collision NOTEs. Selection is compile-time typed — no
-// string positional arg, no string→inventory lookup. service rows must be the
-// same set the app Inventory is generated from so each name lines up with a
-// typed mount.
+// cmd/<bin>/cmd (devspace idiom): ONE FILE PER SERVICE in the services/
+// SUBPACKAGE, each `New<X>Cmd(cmd.Deps)` whose RunE calls cmd.Serve() with a
+// TYPED (*app.Components).Mount<Svc> selection. Each of the services/, workers/,
+// and operators/ groups gets a register_gen.go anchor so the package compiles
+// with zero items; the services anchor additionally carries the built-in
+// collision NOTEs. Selection is compile-time typed — no string positional arg,
+// no string→inventory lookup.
 //
-// It ALSO renders cmd/<bin>/main.go — the composition root — from the SAME
-// rows: main.go names every group constructor explicitly and passes them to
-// cmd.Execute (no init() self-registration, no dynamic registry). main.go is
-// inventory-dependent, so it lives here rather than in the project-level
-// scaffold / upgrade managed-file set.
+// It ALSO scaffolds cmd/<bin>/main.go — the composition root — ONCE
+// (write-if-absent) from the service rows. main.go is OWNED code thereafter:
+// `forge add worker/operator` appends the constructor ref by hand. The
+// per-worker/operator subcommand files are NOT emitted here — they are
+// scaffold-once OWNED code (ScaffoldWorkerCmd / ScaffoldOperatorCmd).
 //
-// cs is the project's checksum tracker — passing it keeps the files out of
-// `forge audit`'s orphan list. A nil cs is tolerated.
+// cs is the project's checksum tracker — passing it keeps the (proto-derived)
+// service files out of `forge audit`'s orphan list. A nil cs is tolerated.
 func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.FileChecksums) error {
 	modulePath, err := GetModulePath(targetDir)
 	if err != nil {
@@ -224,17 +221,12 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 	}
 
 	// workers/ — one file per worker + the anchor.
-	for _, w := range in.Workers {
-		item := CmdGroupItem{Module: modulePath, Bin: in.Bin, Name: w.Name, FieldName: w.FieldName, MountFieldName: w.FieldName}
-		content, rerr := templates.ProjectTemplates().Render("cmd-worker-group.go.tmpl", item)
-		if rerr != nil {
-			return fmt.Errorf("render cmd-worker-group.go.tmpl (%s): %w", item.Name, rerr)
-		}
-		dest := filepath.Join(groupDir("workers"), item.Name+".go")
-		if werr := writeForgeOwned(targetDir, dest, content, cs); werr != nil {
-			return fmt.Errorf("write %s: %w", dest, werr)
-		}
-	}
+	// NOTE: the per-worker subcommand files (workers/<name>.go) are NOT emitted
+	// here. Each is scaffold-once OWNED code the `forge add worker` scaffold
+	// writes exactly once (ScaffoldWorkerCmd) and then hand-wires into the owned
+	// main.go / lifecycle.go. `forge generate` performs ZERO worker discovery, so
+	// this pass only (re)writes the anchor that keeps the workers/ subpackage
+	// compilable (and main.go's blank import resolvable) with zero workers.
 	workerAnchor, err := templates.ProjectTemplates().Render("cmd-worker-register.go.tmpl", struct{}{})
 	if err != nil {
 		return fmt.Errorf("render cmd-worker-register.go.tmpl: %w", err)
@@ -243,18 +235,9 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 		return fmt.Errorf("write workers/register_gen.go: %w", err)
 	}
 
-	// operators/ — one file per operator + the anchor.
-	for _, op := range in.Operators {
-		item := CmdGroupItem{Module: modulePath, Bin: in.Bin, Name: op.Name, FieldName: op.FieldName, MountFieldName: op.FieldName}
-		content, rerr := templates.ProjectTemplates().Render("cmd-operator-group.go.tmpl", item)
-		if rerr != nil {
-			return fmt.Errorf("render cmd-operator-group.go.tmpl (%s): %w", item.Name, rerr)
-		}
-		dest := filepath.Join(groupDir("operators"), item.Name+".go")
-		if werr := writeForgeOwned(targetDir, dest, content, cs); werr != nil {
-			return fmt.Errorf("write %s: %w", dest, werr)
-		}
-	}
+	// operators/ — anchor only (see the workers/ note above). Per-operator
+	// subcommand files are scaffold-once OWNED code written by `forge add
+	// operator` (ScaffoldOperatorCmd), never by `forge generate`.
 	opAnchor, err := templates.ProjectTemplates().Render("cmd-operator-register.go.tmpl", struct{}{})
 	if err != nil {
 		return fmt.Errorf("render cmd-operator-register.go.tmpl: %w", err)
@@ -263,19 +246,49 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 		return fmt.Errorf("write operators/register_gen.go: %w", err)
 	}
 
-	// cmd/<bin>/main.go — the COMPOSITION ROOT. It names every group
-	// constructor explicitly and passes them to cmd.Execute (no init()
-	// self-registration, no dynamic registry). Because that list is a
-	// projection of the SAME service/worker/operator rows the group files are
-	// generated from, main.go is emitted HERE (where the inventory is known),
-	// not from the project-level scaffold data. The constructor names mirror
-	// the group files: services skip reserved/collision names (svcItems already
-	// filtered them); workers/operators use their plain FieldName.
-	if err := generateCmdMain(targetDir, modulePath, in.Bin, svcItems, in.Workers, in.Operators, cs); err != nil {
+	// cmd/<bin>/main.go — the COMPOSITION ROOT, SCAFFOLD-ONCE owned code. It names
+	// every group constructor explicitly and passes them to cmd.Execute (no
+	// init() self-registration, no dynamic registry). Forge emits it ONCE with
+	// the services known at scaffold time; thereafter it is hand-maintained
+	// (`forge add worker/operator` appends the constructor ref). It carries NO
+	// worker/operator refs on the initial emit — generate does no worker/operator
+	// discovery — and an existing main.go is left untouched.
+	if err := generateCmdMain(targetDir, modulePath, in.Bin, svcItems); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+// ScaffoldWorkerCmd writes the scaffold-once per-worker subcommand file
+// cmd/<bin>/cmd/workers/<name>.go for a SINGLE worker, write-if-absent. This is
+// the `forge add worker` counterpart to the retired generate-time worker loop:
+// one new component, known by name, scaffolded once as OWNED code (the dev then
+// hand-wires it into main.go / lifecycle.go / compose.go). Returns true when it
+// wrote a fresh file (false when one already existed).
+func ScaffoldWorkerCmd(targetDir, bin, name string) (bool, error) {
+	return scaffoldComponentCmd(targetDir, bin, name, "workers", "cmd-worker-group.go.tmpl")
+}
+
+// ScaffoldOperatorCmd is the operator-side analog of ScaffoldWorkerCmd — writes
+// cmd/<bin>/cmd/operators/<name>.go once for a single operator.
+func ScaffoldOperatorCmd(targetDir, bin, name string) (bool, error) {
+	return scaffoldComponentCmd(targetDir, bin, name, "operators", "cmd-operator-group.go.tmpl")
+}
+
+func scaffoldComponentCmd(targetDir, bin, name, group, tmpl string) (bool, error) {
+	modulePath, err := GetModulePath(targetDir)
+	if err != nil {
+		return false, fmt.Errorf("read module path: %w", err)
+	}
+	fieldName := naming.ToPascalCase(name)
+	item := CmdGroupItem{Module: modulePath, Bin: bin, Name: name, FieldName: fieldName, MountFieldName: fieldName}
+	content, err := templates.ProjectTemplates().Render(tmpl, item)
+	if err != nil {
+		return false, fmt.Errorf("render %s (%s): %w", tmpl, name, err)
+	}
+	dest := filepath.Join("cmd", bin, "cmd", group, name+".go")
+	return writeForgeScaffoldOnce(targetDir, dest, content)
 }
 
 // GenerateCmdMainRoot renders ONLY cmd/<bin>/main.go — the composition root —
@@ -289,23 +302,19 @@ func GenerateCmdMainRoot(targetDir, bin string, cs *checksums.FileChecksums) err
 	if err != nil {
 		return fmt.Errorf("read module path: %w", err)
 	}
-	return generateCmdMain(targetDir, modulePath, bin, nil, nil, nil, cs)
+	return generateCmdMain(targetDir, modulePath, bin, nil)
 }
 
-// generateCmdMain renders cmd/<bin>/main.go from the resolved component rows.
-// The output is gofmt-canonicalized before writing so the arg list collapses
-// cleanly (an empty component set yields a bare `cmd.Execute()`), independent of
-// the later goimports pass.
-func generateCmdMain(targetDir, modulePath, bin string, svcItems []CmdGroupItem, workers []BootstrapWorkerData, operators []BootstrapOperatorData, cs *checksums.FileChecksums) error {
+// generateCmdMain renders cmd/<bin>/main.go (the SCAFFOLD-ONCE composition root)
+// from the resolved service rows. It carries NO worker/operator refs — generate
+// performs zero worker/operator discovery; those are hand-wired by `forge add`.
+// The output is gofmt-canonicalized so the arg list collapses cleanly (an empty
+// component set yields a bare `cmd.Execute()`). Written write-if-absent: forge
+// emits it once, then never overwrites the owned file.
+func generateCmdMain(targetDir, modulePath, bin string, svcItems []CmdGroupItem) error {
 	data := CmdMainTemplateData{Module: modulePath, Bin: bin}
 	for _, item := range svcItems {
 		data.Services = append(data.Services, CmdCtorRef{Ctor: "New" + item.FieldName + "Cmd"})
-	}
-	for _, w := range workers {
-		data.Workers = append(data.Workers, CmdCtorRef{Ctor: "New" + w.FieldName + "Cmd"})
-	}
-	for _, op := range operators {
-		data.Operators = append(data.Operators, CmdCtorRef{Ctor: "New" + op.FieldName + "Cmd"})
 	}
 
 	rendered, err := templates.ProjectTemplates().Render("cmd-main.go.tmpl", data)
@@ -316,7 +325,7 @@ func generateCmdMain(targetDir, modulePath, bin string, svcItems []CmdGroupItem,
 	if err != nil {
 		return fmt.Errorf("gofmt cmd/%s/main.go: %w\n%s", bin, err, rendered)
 	}
-	if err := writeForgeOwned(targetDir, filepath.Join("cmd", bin, "main.go"), formatted, cs); err != nil {
+	if _, err := writeForgeScaffoldOnce(targetDir, filepath.Join("cmd", bin, "main.go"), formatted); err != nil {
 		return fmt.Errorf("write cmd/%s/main.go: %w", bin, err)
 	}
 	return nil
@@ -354,7 +363,11 @@ func cmdServiceMountOverrides(targetDir string, in CmdServiceGroupInput) map[str
 		svcComponents = append(svcComponents, BootstrapServiceData{Package: res.PackageName})
 	}
 
-	counts := CollisionCounts(svcComponents, in.Packages, in.Workers, in.Operators)
+	// Workers/operators are not counted: they carry no Mount<Svc> method, so
+	// they never collide with a service's mount name — and GenerateInventory
+	// (the source of the actual Mount methods) likewise no longer counts them,
+	// so both stay consistent.
+	counts := CollisionCounts(svcComponents, in.Packages, nil, nil)
 
 	overrides := map[string]string{}
 	for _, rs := range resolved {

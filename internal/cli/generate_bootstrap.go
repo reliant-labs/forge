@@ -331,7 +331,14 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 
 	out := map[string]bool{}
 	for _, comp := range cfg.Components {
-		if len(comp.Webhooks) == 0 {
+		// Webhooks are discovered from the webhook_<name>.go files on disk,
+		// not a declared config list.
+		res, resErr := codegen.ResolveServiceComponent(projectDir, comp.Name)
+		if resErr != nil || !res.FromDisk {
+			continue
+		}
+		handlerDir := filepath.Join(projectDir, "internal", "handlers", filepath.FromSlash(res.ImportLeaf))
+		if !codegen.ServiceHasWebhooks(handlerDir) {
 			continue
 		}
 		if isConnectServiceConfig(comp) && !reg.registered(comp.Name) {

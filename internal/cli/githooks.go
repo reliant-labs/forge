@@ -62,5 +62,5 @@ func ensureGitHooksActivated(root string) {
 		return
 	}
 	fmt.Fprintln(os.Stderr,
-		"forge: activated git hooks (.githooks) — commits now run 'forge lint' + 'forge audit'. Disable with FORGE_NO_HOOKS=1.")
+		"forge: activated git hooks (.githooks) — 'git push' now runs 'forge lint' + 'forge audit'. Disable with FORGE_NO_HOOKS=1.")
 }

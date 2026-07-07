@@ -406,7 +406,7 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 		// proto_integrity) — additive field, may be absent.
 		RPCs []rpcInfo `json:"rpcs,omitempty"`
 	}
-	var services, workers, crons, operators, binaries []svcInfo
+	var services []svcInfo
 	var frontends []map[string]string
 
 	// Parse RPC counts when proto/services exists. We still emit the
@@ -463,7 +463,13 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 		reg = servedAllRegistry{}
 	}
 
-	for _, s := range cfg.Components {
+	// Services are enumerated from the proto descriptor (the authoritative,
+	// non-brittle source), not the removed components.json manifest — see
+	// codegen.IntrospectComponents. Workers/operators are owned code with no
+	// proto contract; forge does not inventory them (the app names them in
+	// its own wiring and enumerates them at runtime), so the shape reports
+	// services only.
+	for _, s := range codegen.IntrospectComponents(projectDir) {
 		served := !f.Audit.IsConnectServiceConfig(s) || reg.Registered(s.Name)
 		info := svcInfo{Name: s.Name, Type: s.EffectiveKind(), Served: served}
 		// match by ProtoService name suffix (Echo → EchoService)
@@ -493,18 +499,7 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 			}
 			info.RPCs = rpcs
 		}
-		switch s.EffectiveKind() {
-		case config.ComponentKindWorker:
-			workers = append(workers, info)
-		case config.ComponentKindCron:
-			crons = append(crons, info)
-		case config.ComponentKindOperator:
-			operators = append(operators, info)
-		case config.ComponentKindBinary:
-			binaries = append(binaries, info)
-		default:
-			services = append(services, info)
-		}
+		services = append(services, info)
 	}
 	for _, fe := range cfg.Frontends {
 		frontends = append(frontends, map[string]string{"name": fe.Name, "type": fe.Type})
@@ -512,10 +507,6 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 
 	details := map[string]any{
 		"services":  services,
-		"workers":   workers,
-		"crons":     crons,
-		"operators": operators,
-		"binaries":  binaries,
 		"frontends": frontends,
 		"packs":     cfg.Packs,
 		"packages":  packageNames(cfg.Packages),
@@ -526,8 +517,8 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 	// error to report — under the additive-extension contract, the
 	// field being absent IS the "all good" signal.
 	status := audittype.StatusOK
-	summary := fmt.Sprintf("kind=%s, %d server(s), %d worker(s), %d cron(s), %d operator(s), %d binary(ies), %d frontend(s), %d pack(s)",
-		cfg.EffectiveKind(), len(services), len(workers), len(crons), len(operators), len(binaries), len(frontends), len(cfg.Packs))
+	summary := fmt.Sprintf("kind=%s, %d service(s), %d frontend(s), %d pack(s) (workers/operators are owned code — not inventoried by forge)",
+		cfg.EffectiveKind(), len(services), len(frontends), len(cfg.Packs))
 	if protoParseErr != "" {
 		details["proto_integrity"] = map[string]any{
 			"status": "warn",
@@ -884,7 +875,7 @@ func unregisteredServiceFindings(f *factory.Factory, cfg *config.ProjectConfig, 
 	}
 	registryRelPath := f.Audit.ServiceRegistryRelPath
 	var out []auditUnregisteredService
-	for _, s := range cfg.Components {
+	for _, s := range codegen.IntrospectComponents(projectDir) {
 		if !f.Audit.IsConnectServiceConfig(s) {
 			continue
 		}

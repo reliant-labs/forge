@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/codegen"
 	dbgsvc "github.com/reliant-labs/forge/internal/debug"
 )
 
@@ -101,15 +102,16 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 	}
 	serviceName = filepath.Base(serviceName)
 
-	// If the target doesn't look like a path, resolve it from project config.
+	// If the target doesn't look like a path, resolve it from the project's
+	// component inventory. The inventory is enumerated from the REAL
+	// sources (proto descriptor + owned worker/operator files + cmd/
+	// binaries), not the removed components.json — see
+	// codegen.IntrospectComponents. Debug commands run at the project root,
+	// consistent with mainPackageForService's relative-path resolution.
 	if !strings.Contains(target, "/") && !strings.Contains(target, ".") {
-		store, err := f.LoadProjectStore()
-		if err != nil {
-			return fmt.Errorf("loading project config: %w", err)
-		}
 		var svcPath string
 		found := false
-		for _, svc := range store.Components() {
+		for _, svc := range codegen.IntrospectComponents(".") {
 			if svc.Name == target {
 				svcPath = svc.Path
 				found = true

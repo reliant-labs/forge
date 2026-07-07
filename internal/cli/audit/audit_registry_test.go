@@ -131,10 +131,24 @@ module_path: github.com/example/demo
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
-	writeComponentsJSONTest(t, dir,
-		config.ComponentConfig{Name: "project", Kind: "server", Path: "internal/handlers/project"},
-		config.ComponentConfig{Name: "ledger", Kind: "server", Path: "internal/handlers/ledger"},
-	)
+	// The component inventory is enumerated from the proto descriptor now
+	// (codegen.IntrospectComponents), not components.json. "ProjectService"
+	// / "LedgerService" map to components project / ledger.
+	descriptor := `{
+  "services": [
+    {"Name": "ProjectService", "Package": "reliant.v1"},
+    {"Name": "LedgerService", "Package": "reliant.v1"}
+  ]
+}`
+	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
+		t.Fatalf("mkdir gen: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), []byte(descriptor), 0o644); err != nil {
+		t.Fatalf("write descriptor: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/example/demo\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
 	// Pre-existing scaffolds: the dirs need a parsable package clause
 	// for the disk-first resolver to report FromDisk.
 	for _, svc := range []string{"project", "ledger"} {

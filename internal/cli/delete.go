@@ -36,8 +36,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -210,21 +208,9 @@ func runDeleteService(name string, dryRun, assumeYes, keepTypes bool, in io.Read
 		}
 	}
 
-	// 1. components.json — write the filtered list back.
-	if plan.inComponents {
-		remaining := make([]config.ComponentConfig, 0, len(cfg.Components)-1)
-		for i, c := range cfg.Components {
-			if i == idx {
-				continue
-			}
-			remaining = append(remaining, c)
-		}
-		if err := generator.WriteComponentsFile(root, remaining); err != nil {
-			return cliutil.WrapUserErr(ctxLabel, "failed to update components.json", "",
-				"check write permissions on components.json", err)
-		}
-		fmt.Printf("✓ removed %q from components.json\n", name)
-	}
+	// forge no longer maintains a components.json manifest — `forge delete`
+	// removes the code (handlers / proto / owned files); the component simply
+	// stops being discovered from the real sources on the next load.
 
 	// 2. services.go — rewrite the serviceRow line into a tombstone (or
 	//    remove it entirely under --keep-types=false). User-owned file, so

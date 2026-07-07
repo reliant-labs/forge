@@ -337,9 +337,12 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 		}
 	}
 
-	// Binaries (kind=binary components).
+	// Binaries (kind=binary components), enumerated from cmd/ entrypoints.
 	if cfg != nil {
-		for _, b := range cfg.BinaryComponents() {
+		for _, b := range codegen.IntrospectComponents(projectDir) {
+			if !b.IsBinary() {
+				continue
+			}
 			doc.Binaries = append(doc.Binaries, graphBinary{Name: b.Name})
 		}
 	}
@@ -380,7 +383,10 @@ func graphAppendServices(doc *graphDoc, cfg *config.ProjectConfig, projectDir st
 	if regErr != nil {
 		reg = &serviceRegistry{Exists: false}
 	}
-	for _, s := range cfg.Components {
+	// Inventory is enumerated from the REAL sources (proto descriptor +
+	// owned worker/operator files + cmd/ binaries), not the removed
+	// components.json manifest — see codegen.IntrospectComponents.
+	for _, s := range codegen.IntrospectComponents(projectDir) {
 		// Binary components are inventoried in the Binaries section, not
 		// as graph services.
 		if s.IsBinary() {

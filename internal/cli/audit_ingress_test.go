@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -275,9 +277,21 @@ func TestManifestServiceNamesFromOuter(t *testing.T) {
 // services, per-service webhook handlers, and frontends all surface in
 // the resulting set. Order doesn't matter, just membership.
 func TestIngressBackendNames(t *testing.T) {
+	dir := t.TempDir()
+	// Webhooks are discovered from the webhook_<name>.go files on disk, not a
+	// declared config list.
+	apiDir := filepath.Join(dir, "internal", "handlers", "api")
+	if err := os.MkdirAll(apiDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, wh := range []string{"stripe", "github"} {
+		if err := os.WriteFile(filepath.Join(apiDir, "webhook_"+wh+".go"), []byte("package api\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cfg := &config.ProjectConfig{
 		Components: []config.ComponentConfig{
-			{Name: "api", Webhooks: []config.WebhookConfig{{Name: "stripe"}, {Name: "github"}}},
+			{Name: "api"},
 			{Name: "worker"},
 		},
 		Frontends: []config.FrontendConfig{
@@ -285,7 +299,7 @@ func TestIngressBackendNames(t *testing.T) {
 			{Name: "admin"},
 		},
 	}
-	got := ingressBackendNames(cfg)
+	got := ingressBackendNames(cfg, dir)
 	want := map[string]bool{"api": true, "worker": true, "stripe": true, "github": true, "web": true, "admin": true}
 	seen := map[string]bool{}
 	for _, n := range got {

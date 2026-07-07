@@ -114,13 +114,14 @@ type ProjectConfig struct {
 	// controller-runtime operators, and standalone binaries. The Kind field
 	// on each entry is THE discriminator (server|worker|cron|operator|binary).
 	//
-	// As of the ProjectStore Phase-2 per-service data move, components are
-	// AUTHORED in the project-root components.json file (see
-	// [ComponentsFileName]) — NOT in forge.yaml. The yaml tag is therefore
-	// "-": forge.yaml can no longer carry a `components:` block (a stale one
-	// is rejected with a migration hint — see removedSchemaKeys). The loader
-	// reads components.json and populates this field, so every consumer that
-	// reads cfg.Components (and the ProjectStore wrapping it) is unchanged.
+	// Components are DERIVED from the project's real sources (proto
+	// descriptor, the pkg/app service registry, the deploy/kcl tree,
+	// internal/handlers, and cmd/ binaries) — NOT authored in forge.yaml.
+	// The yaml tag is therefore "-": forge.yaml can no longer carry a
+	// `components:` block (a stale one is rejected with a migration hint —
+	// see removedSchemaKeys). The loader introspects the real sources and
+	// populates this field, so every consumer that reads cfg.Components (and
+	// the ProjectStore wrapping it) is unchanged.
 	Components []ComponentConfig `yaml:"-"`
 	Packages   []PackageConfig   `yaml:"packages,omitempty"`
 	Frontends  []FrontendConfig  `yaml:"frontends,omitempty"`
@@ -250,7 +251,6 @@ type ComponentConfig struct {
 	Ports         map[string]PortSpec `yaml:"ports,omitempty"`
 	Schedule      string              `yaml:"schedule,omitempty"` // cron expression for kind=cron
 	ProtoPackages []string            `yaml:"proto_packages,omitempty"`
-	Webhooks      []WebhookConfig     `yaml:"webhooks,omitempty"`
 	// Group is the API group for kind=operator components. e.g.
 	// "reliant.dev". Set when scaffolded via `forge add operator`.
 	Group string `yaml:"group,omitempty"`
@@ -405,11 +405,6 @@ type CRDConfig struct {
 	// no state), "composite" (manages sub-resources). Drives which
 	// template is rendered for the controller shim.
 	Shape string `yaml:"shape,omitempty"`
-}
-
-// WebhookConfig represents a webhook endpoint within a service.
-type WebhookConfig struct {
-	Name string `yaml:"name"` // e.g. "stripe", "github"
 }
 
 // PackageConfig represents an internal package with a Go interface contract.

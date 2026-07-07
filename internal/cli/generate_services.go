@@ -49,30 +49,15 @@ func collectCRUDMethodNames(services []codegen.ServiceDef, projectDir string) ma
 //
 // The return is keyed by the service's Go name (svc.Name) — the same
 // key used elsewhere in the stub-generation pass.
-func webhookOnlyServiceNames(cfg *config.ProjectConfig, services []codegen.ServiceDef, crudMethodNames map[string]bool) map[string]bool {
-	if cfg == nil {
-		return nil
-	}
-	// Index forge.yaml service entries by their kebab/snake -> Go name
-	// equivalence. forge.yaml uses kebab ("admin-server"); svc.Name is
-	// PascalCase ("AdminServerService"). We pascalCase the yaml name
-	// and append "Service" to match.
-	webhookByGoName := make(map[string]bool, len(cfg.Components))
-	for _, ysvc := range cfg.Components {
-		if len(ysvc.Webhooks) == 0 {
-			continue
-		}
-		// "admin-server" + service-suffix → "AdminServerService".
-		goName := naming.ToPascalCase(ysvc.Name) + "Service"
-		webhookByGoName[goName] = true
-	}
-	if len(webhookByGoName) == 0 {
-		return nil
-	}
-
+func webhookOnlyServiceNames(services []codegen.ServiceDef, projectDir string, crudMethodNames map[string]bool) map[string]bool {
 	out := make(map[string]bool)
 	for _, svc := range services {
-		if !webhookByGoName[svc.Name] {
+		// Webhooks are discovered from the webhook_<name>.go files in the
+		// service's handler dir (naming.ServicePackage(svc.Name) is the dir
+		// leaf), not a declared config list. No webhook files → not a
+		// webhook-only service.
+		handlerDir := filepath.Join(projectDir, "internal", "handlers", naming.ServicePackage(svc.Name))
+		if !codegen.ServiceHasWebhooks(handlerDir) {
 			continue
 		}
 		// Every RPC must be a CRUD-shaped scaffold with no entity.
@@ -136,7 +121,7 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 		return nil
 	}
 
-	webhookOnly := webhookOnlyServiceNames(cfg, services, crudMethodNames)
+	webhookOnly := webhookOnlyServiceNames(services, projectDir, crudMethodNames)
 
 	hasNewStubs := false
 	for _, svc := range services {

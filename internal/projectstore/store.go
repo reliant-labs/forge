@@ -80,7 +80,6 @@ type Component struct {
 	Ports         map[string]config.PortSpec
 	Schedule      string
 	ProtoPackages []string
-	Webhooks      []config.WebhookConfig
 	Group         string
 	Version       string
 	CRDs          []config.CRDConfig

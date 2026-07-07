@@ -32,7 +32,6 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
-	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 func init() { factory.Register(newCmd) }
@@ -110,32 +109,6 @@ Subcommands:
 	return cmd
 }
 
-// snapshotComponentsFile reads the components.json at path for rollback.
-// It returns the bytes, whether the file existed (a fresh service shell may
-// have no components.json yet), and any non-not-exist read error.
-func snapshotComponentsFile(path string) ([]byte, bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, false, nil
-		}
-		return nil, false, err
-	}
-	return data, true, nil
-}
-
-// restoreComponentsFile rolls components.json back to its pre-add state:
-// rewrites the original bytes, or removes the file if it didn't exist before.
-func restoreComponentsFile(path string, original []byte, existed bool) error {
-	if !existed {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
-	return os.WriteFile(path, original, 0o644)
-}
-
 // requireServiceKind reads forge.yaml at root and returns an error if the
 // project's kind is not "service". `forge add service/operator/worker/webhook`
 // only makes sense for server-shaped projects — CLI and library kinds have
@@ -205,32 +178,19 @@ type componentAddSpec struct {
 	// "generate <kind> files: %w" wrapping.
 	scaffold func(cfg *config.ProjectConfig, root string) error
 
-	// component builds the config.ComponentConfig to append. When it returns
-	// (_, false) the append+write is skipped (service --resume/--force, where
-	// the entry already exists). port-bearing kinds read the resolved port
-	// off the spec via the preflight hook's closure.
-	component func(cfg *config.ProjectConfig) (config.ComponentConfig, bool)
-
-	// postScaffold runs after the component is appended and written. It owns
-	// the post-scaffold generate step and the success print, which diverge
-	// the most across kinds (full pipeline + rollback + E2E for service;
-	// no-generate branch + bootstrap-only for worker; no pipeline for
-	// binary). componentsPath/originalComponentsBytes/hadComponentsFile carry
-	// the rollback snapshot taken before the append. appended reports whether
-	// component appended this invocation (false under service resume/force).
+	// postScaffold runs after the scaffold files are written. It owns the
+	// post-scaffold generate step and the success print, which diverge the
+	// most across kinds (full pipeline + E2E for service; no-generate branch
+	// + bootstrap-only for worker; no pipeline for binary).
 	postScaffold func(p postScaffoldParams) error
 }
 
 // postScaffoldParams bundles the state addComponent threads into the
 // postScaffold hook so each kind can run its own generate-and-print tail.
 type postScaffoldParams struct {
-	cfg                     *config.ProjectConfig
-	root                    string
-	name                    string
-	componentsPath          string
-	originalComponentsBytes []byte
-	hadComponentsFile       bool
-	appended                bool
+	cfg  *config.ProjectConfig
+	root string
+	name string
 }
 
 // addComponent owns the spine shared by every component-appending
@@ -283,32 +243,14 @@ func addComponent(spec componentAddSpec) error {
 		return err
 	}
 
-	// Snapshot components.json before mutating it so postScaffold can roll
-	// back to the pre-add state if a generation pipeline fails — otherwise
-	// the on-disk source would claim a component with no generated wiring.
-	componentsPath := filepath.Join(root, config.ComponentsFileName)
-	originalComponentsBytes, hadComponentsFile, err := snapshotComponentsFile(componentsPath)
-	if err != nil {
-		return fmt.Errorf("read components.json for rollback snapshot: %w", err)
-	}
-
-	appended := false
-	if comp, ok := spec.component(cfg); ok {
-		projectstore.New(cfg).AppendComponent(comp)
-		if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
-			return fmt.Errorf("update components.json: %w", err)
-		}
-		appended = true
-	}
-
+	// forge no longer persists a components.json manifest; the component is
+	// discovered from the code the scaffold step wrote (proto for services;
+	// owned cmd files for workers/operators/binaries). The post-scaffold
+	// generate step turns those sources into wiring.
 	return spec.postScaffold(postScaffoldParams{
-		cfg:                     cfg,
-		root:                    root,
-		name:                    spec.name,
-		componentsPath:          componentsPath,
-		originalComponentsBytes: originalComponentsBytes,
-		hadComponentsFile:       hadComponentsFile,
-		appended:                appended,
+		cfg:  cfg,
+		root: root,
+		name: spec.name,
 	})
 }
 
@@ -608,36 +550,12 @@ func runAddService(f *factory.Factory, name string, port int, resume, force bool
 			}
 			return nil
 		},
-		component: func(cfg *config.ProjectConfig) (config.ComponentConfig, bool) {
-			// The Path uses the snake_case Go-package form so it matches the
-			// directory the scaffolder actually creates ("admin-server" ->
-			// handlers/admin_server). Under --resume / --force the service
-			// entry may already exist; only append when this is a fresh add.
-			if existingIdx >= 0 {
-				return config.ComponentConfig{}, false
-			}
-			return config.ComponentConfig{
-				Name:  name,
-				Kind:  config.ComponentKindServer,
-				Path:  fmt.Sprintf("internal/handlers/%s", naming.ServicePackage(name)),
-				Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
-			}, true
-		},
 		postScaffold: func(p postScaffoldParams) error {
 			// Run the full generation pipeline: buf generate, service stubs,
 			// mocks, bootstrap.go, testing.go, go mod tidy, etc.
 			fmt.Println("\n🔧 Running generation pipeline...")
 			err := f.Gen.RunPipeline(p.root)
 			if err != nil {
-				// Only restore the source when we actually appended to it this
-				// invocation; otherwise --resume would clobber a valid config
-				// after a transient pipeline failure.
-				if existingIdx < 0 {
-					if restoreErr := restoreComponentsFile(p.componentsPath, p.originalComponentsBytes, p.hadComponentsFile); restoreErr != nil {
-						fmt.Fprintf(os.Stderr, "warning: failed to restore original components.json after pipeline failure: %v\n", restoreErr)
-					}
-					return fmt.Errorf("generation pipeline failed for service %q (components.json restored): %w", name, err)
-				}
 				return fmt.Errorf("generation pipeline failed for service %q: %w", name, err)
 			}
 
@@ -809,23 +727,6 @@ func runAddWorker(f *factory.Factory, name, kind, schedule string, noGenerate bo
 			}
 			return nil
 		},
-		component: func(cfg *config.ProjectConfig) (config.ComponentConfig, bool) {
-			// Path uses the Go-package form so it matches the directory the
-			// scaffolder creates ("email-sender" -> workers/email_sender).
-			// kind=cron is first-class now; a plain worker has kind=worker. The
-			// scaffolded worker.go body (worker vs worker-cron template) still
-			// encodes the schedule loop; the component just records the kind.
-			componentKind := config.ComponentKindWorker
-			if kind == "cron" {
-				componentKind = config.ComponentKindCron
-			}
-			return config.ComponentConfig{
-				Name:     name,
-				Kind:     componentKind,
-				Path:     fmt.Sprintf("internal/workers/%s", naming.ServicePackage(name)),
-				Schedule: schedule,
-			}, true
-		},
 		postScaffold: func(p postScaffoldParams) error {
 			if err := runPostScaffoldGenerate(f, p.root, p.name, noGenerate); err != nil {
 				return err
@@ -932,18 +833,6 @@ func runAddOperator(f *factory.Factory, name, group, version, apiPackage, crdTyp
 				}
 			}
 			return nil
-		},
-		component: func(cfg *config.ProjectConfig) (config.ComponentConfig, bool) {
-			// Path uses the Go-package form so it matches the directory the
-			// scaffolder creates. Group/Version are persisted so
-			// `forge add crd` can default from them.
-			return config.ComponentConfig{
-				Name:    name,
-				Kind:    config.ComponentKindOperator,
-				Path:    fmt.Sprintf("internal/operators/%s", naming.ServicePackage(name)),
-				Group:   group,
-				Version: version,
-			}, true
 		},
 		postScaffold: func(p postScaffoldParams) error {
 			// Run the generation pipeline to update bootstrap.go and cmd-server.go
@@ -1124,9 +1013,6 @@ func runAddCRD(name, group, version, shape, operator string) error {
 		Version: version,
 		Shape:   string(crdShape),
 	})
-	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
-		return fmt.Errorf("update components.json: %w", err)
-	}
 
 	fmt.Printf("\n✅ CRD '%s' added to operator '%s'!\n", name, operator)
 	return nil
@@ -1488,28 +1374,23 @@ func runAddWebhook(f *factory.Factory, name, serviceName string) error {
 			fmt.Sprintf("add `%s(app, cfg, logger, opts...),` to RegisteredServices there first, or add the webhook to the binary that serves it", codegen.ServiceRowFuncName(serviceName)))
 	}
 
-	// Check for duplicate webhook.
-	for _, wh := range cfg.Components[svcIdx].Webhooks {
-		if wh.Name == name {
-			return cliutil.UserErr(ctxLabel,
-				fmt.Sprintf("webhook %q already exists in service %q", name, serviceName), "",
-				"pick a different webhook name, or remove the existing one first")
-		}
+	// Duplicate check against the REAL source: the webhook_<name>.go handler
+	// file. Webhooks aren't a declared config list — the file IS the
+	// declaration, so a webhook "exists" iff its handler file does.
+	handlerDir := filepath.Join(root, "internal", "handlers", naming.ServicePackage(serviceName))
+	if _, statErr := os.Stat(filepath.Join(handlerDir, "webhook_"+name+".go")); statErr == nil {
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("webhook %q already exists in service %q", name, serviceName), "",
+			"pick a different webhook name, or remove the existing webhook_"+name+".go first")
 	}
 
 	fmt.Printf("Adding webhook '%s' to service '%s'...\n", name, serviceName)
 
-	// Generate webhook files.
+	// Generate the webhook handler files. These files ARE the webhook's
+	// source of truth — `forge generate` discovers webhooks by scanning for
+	// webhook_<name>.go, so nothing is written back to forge.yaml.
 	if err := generator.GenerateWebhookFiles(root, cfg.ModulePath, serviceName, name); err != nil {
 		return fmt.Errorf("generate webhook files: %w", err)
-	}
-
-	// Update forge.yaml.
-	projectstore.New(cfg).AppendWebhook(serviceName, config.WebhookConfig{
-		Name: name,
-	})
-	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
-		return fmt.Errorf("update components.json: %w", err)
 	}
 
 	fmt.Printf("\n✅ Webhook '%s' added to service '%s'!\n", name, serviceName)
@@ -1608,15 +1489,6 @@ func runAddBinary(name string) error {
 				return fmt.Errorf("generate binary files: %w", err)
 			}
 			return nil
-		},
-		component: func(cfg *config.ProjectConfig) (config.ComponentConfig, bool) {
-			// Path uses the Go-package form so it matches the directory the
-			// scaffolder creates ("workspace-proxy" -> cmd/workspace_proxy.go).
-			return config.ComponentConfig{
-				Name: name,
-				Kind: config.ComponentKindBinary,
-				Path: fmt.Sprintf("cmd/%s.go", naming.ServicePackage(name)),
-			}, true
 		},
 		postScaffold: func(p postScaffoldParams) error {
 			pkg := naming.ServicePackage(name)

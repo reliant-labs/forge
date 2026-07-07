@@ -43,6 +43,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -465,16 +466,11 @@ Examples:
 func runDoctorParity(ctx context.Context, serviceName, env string, jsonOutput bool, stdout, stderr io.Writer) error {
 	const ctxLabel = "forge doctor parity"
 
-	store, err := loadProjectStore()
-	if err != nil {
+	// Gate: this must run inside a forge project. We no longer need the
+	// parsed config here (the component inventory comes from
+	// codegen.IntrospectComponents), so we only assert loadability.
+	if _, err := loadProjectStore(); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "load forge.yaml", "", "run from inside a forge project (forge.yaml must be present)", err)
-	}
-	cfg := store.Config()
-	if !serviceDeclared(cfg, serviceName) {
-		return cliutil.UserErr(ctxLabel,
-			fmt.Sprintf("service %q not found in forge.yaml; available: %s", serviceName, strings.Join(declaredServiceNames(cfg), ", ")),
-			"",
-			fmt.Sprintf("check the spelling, or add the service with `forge add service %s`", serviceName))
 	}
 
 	projectPath, err := findProjectConfigFile()
@@ -482,6 +478,17 @@ func runDoctorParity(ctx context.Context, serviceName, env string, jsonOutput bo
 		return cliutil.WrapUserErr(ctxLabel, "locate forge.yaml", "", "", err)
 	}
 	projectDir := filepath.Dir(projectPath)
+
+	// Inventory is enumerated from the REAL sources (proto descriptor +
+	// owned worker/operator files + cmd/ binaries), not the removed
+	// components.json manifest — see codegen.IntrospectComponents.
+	comps := codegen.IntrospectComponents(projectDir)
+	if !serviceDeclared(comps, serviceName) {
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("service %q not found; available: %s", serviceName, strings.Join(declaredServiceNames(comps), ", ")),
+			"",
+			fmt.Sprintf("check the spelling, or add the service with `forge add service %s`", serviceName))
+	}
 
 	// forge.yaml environments[<env>].config — both modes consult this.
 	envCfg, err := config.LoadEnvironmentConfig(projectDir, env)
@@ -549,10 +556,12 @@ func runDoctorParity(ctx context.Context, serviceName, env string, jsonOutput bo
 // AND the process exits 1.
 var errParityDivergent = fmt.Errorf("doctor parity reported divergences; see report above")
 
-// serviceDeclared reports whether a component with the given name is
-// declared in forge.yaml components[].
-func serviceDeclared(cfg *config.ProjectConfig, name string) bool {
-	for _, c := range cfg.Components {
+// serviceDeclared reports whether a component with the given name exists
+// in the enumerated inventory (proto descriptor + owned worker/operator
+// files + cmd/ binaries — see codegen.IntrospectComponents), not the
+// removed components.json.
+func serviceDeclared(comps []config.ComponentConfig, name string) bool {
+	for _, c := range comps {
 		if c.Name == name {
 			return true
 		}

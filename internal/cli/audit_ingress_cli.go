@@ -12,10 +12,13 @@ package cli
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 
 	"github.com/reliant-labs/forge/internal/cli/audittype"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // auditIngress cross-checks forge.yaml backends against the dev-env
@@ -51,7 +54,7 @@ func auditIngress(cfg *config.ProjectConfig, projectDir string) audittype.Catego
 			Summary: fmt.Sprintf("could not evaluate dev KCL: %v", err),
 		}
 	}
-	backends := ingressBackendNames(cfg)
+	backends := ingressBackendNames(cfg, projectDir)
 	// A route may legally target any Service in the env namespace — not
 	// just the ones a forge.yaml block scaffolds. Union the KCL-RENDERED
 	// Service names so hand-authored Services resolve as known backends:
@@ -73,13 +76,14 @@ func auditIngress(cfg *config.ProjectConfig, projectDir string) audittype.Catego
 // frontends, and per-service webhook handlers. K8s only sees a Service
 // in the env namespace by that name — the forge.yaml block that
 // scaffolded it is irrelevant at route-resolution time.
-func ingressBackendNames(cfg *config.ProjectConfig) []string {
+func ingressBackendNames(cfg *config.ProjectConfig, projectDir string) []string {
 	names := make([]string, 0, len(cfg.Components)+len(cfg.Frontends))
 	for _, s := range cfg.Components {
 		names = append(names, s.Name)
-		for _, w := range s.Webhooks {
-			names = append(names, w.Name)
-		}
+		// Webhook backends are discovered from the webhook_<name>.go files in
+		// the service's handler dir, not a declared config list.
+		handlerDir := filepath.Join(projectDir, "internal", "handlers", naming.ServicePackage(s.Name))
+		names = append(names, codegen.WebhookNamesForService(handlerDir)...)
 	}
 	for _, f := range cfg.Frontends {
 		names = append(names, f.Name)

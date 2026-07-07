@@ -56,18 +56,6 @@ func (s *Store) AppendComponent(c config.ComponentConfig) {
 	s.cfg.Components = append(s.cfg.Components, c)
 }
 
-// AppendWebhook appends a webhook to the named component (the `forge add
-// webhook` write path). Returns false if no component with that name exists.
-func (s *Store) AppendWebhook(componentName string, w config.WebhookConfig) bool {
-	for i := range s.cfg.Components {
-		if s.cfg.Components[i].Name == componentName {
-			s.cfg.Components[i].Webhooks = append(s.cfg.Components[i].Webhooks, w)
-			return true
-		}
-	}
-	return false
-}
-
 // Frontends returns the declared frontend configs.
 func (s *Store) Frontends() []config.FrontendConfig { return s.cfg.Frontends }
 
@@ -102,7 +90,6 @@ func toComponent(c config.ComponentConfig) Component {
 		Ports:         c.Ports,
 		Schedule:      c.Schedule,
 		ProtoPackages: c.ProtoPackages,
-		Webhooks:      c.Webhooks,
 		Group:         c.Group,
 		Version:       c.Version,
 		CRDs:          c.CRDs,

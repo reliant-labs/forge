@@ -103,20 +103,6 @@ func TestAppendComponent(t *testing.T) {
 	}
 }
 
-func TestAppendWebhook(t *testing.T) {
-	cfg := sampleConfig()
-	s := New(cfg)
-	if !s.AppendWebhook("api", config.WebhookConfig{Name: "stripe"}) {
-		t.Fatalf("expected webhook append to succeed")
-	}
-	if s.AppendWebhook("nope", config.WebhookConfig{Name: "x"}) {
-		t.Fatalf("expected false for missing component")
-	}
-	if len(cfg.Components[0].Webhooks) != 1 {
-		t.Fatalf("webhook not appended to underlying config")
-	}
-}
-
 func TestSectionAccessors(t *testing.T) {
 	cfg := sampleConfig()
 	s := New(cfg)

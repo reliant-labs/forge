@@ -738,10 +738,10 @@ func initGitRepository(ctx context.Context, path string) error {
 		return fmt.Errorf("git init failed: %s", string(output))
 	}
 
-	// Activate forge's committed git hooks (.githooks/pre-commit runs
-	// `forge lint` + `forge audit` on each commit). core.hooksPath is set
-	// RELATIVE so it resolves against each worktree's own checkout — one
-	// setting in the shared .git/config makes the hook fire in every
+	// Activate forge's committed git hooks (.githooks/pre-push runs
+	// `forge lint` + `forge audit`; pre-commit stays fast). core.hooksPath
+	// is set RELATIVE so it resolves against each worktree's own checkout —
+	// one setting in the shared .git/config makes the hooks fire in every
 	// linked worktree. Set here, before the initial commit, so the repo
 	// ships activated; fresh clones self-heal via ensureGitHooksActivated.
 	cmd = exec.CommandContext(ctx, "git", "config", "--local", "core.hooksPath", ".githooks")
@@ -757,10 +757,10 @@ func initGitRepository(ctx context.Context, path string) error {
 	}
 
 	// --no-verify: the initial commit is forge-authored, known-good
-	// scaffolding. Gating it through the hook we just activated would slow
-	// `forge new` and make it depend on a green lint/audit mid-scaffold
-	// (and on `forge` being re-invokable as a subprocess). Skip it; the
-	// hook governs the user's commits from here on.
+	// scaffolding — skip the pre-commit framework chain (gofmt/gitleaks/…)
+	// on it. The heavy gate (forge lint + audit) is on pre-push, which this
+	// commit doesn't trigger anyway; the hooks govern the user's work from
+	// here on.
 	cmd = exec.CommandContext(ctx, "git", "commit", "--no-verify", "-m", "Initial commit from forge")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {

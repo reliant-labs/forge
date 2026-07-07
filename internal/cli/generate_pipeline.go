@@ -1771,7 +1771,7 @@ func stepWebhookRoutes(ctx *pipelineContext) error {
 	if err != nil {
 		return err
 	}
-	if err := generateWebhookRoutes(ctx.Cfg, reg, ctx.ProjectDir, ctx.Checksums); err != nil {
+	if err := generateWebhookRoutes(reg, ctx.ProjectDir, ctx.Checksums); err != nil {
 		return fmt.Errorf("webhook route generation failed: %w", err)
 	}
 	return nil

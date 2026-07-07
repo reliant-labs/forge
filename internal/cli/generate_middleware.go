@@ -77,36 +77,48 @@ func generateTenantMiddleware(cfg *config.ProjectConfig, projectDir string, cs *
 // service this binary does not register is a hard generate-time error
 // naming the registration file — the declaration could never take
 // effect, and skipping it silently would hide a real misconfiguration.
-func generateWebhookRoutes(cfg *config.ProjectConfig, reg *serviceRegistry, projectDir string, cs *generator.FileChecksums) error {
-	for _, svc := range cfg.Components {
-		if len(svc.Webhooks) == 0 {
+func generateWebhookRoutes(reg *serviceRegistry, projectDir string, cs *generator.FileChecksums) error {
+	// Webhooks are discovered from the real source — the webhook_<name>.go
+	// files under each internal/handlers/<svc>/ dir — not a declared config
+	// list. Every dir under internal/handlers/ is a Connect service handler
+	// (workers/operators live elsewhere), so scanning it directly needs no
+	// components manifest.
+	handlersRoot := filepath.Join(projectDir, "internal", "handlers")
+	dirs, err := os.ReadDir(handlersRoot)
+	if err != nil {
+		return nil // no handlers dir → no services → no webhooks
+	}
+	for _, d := range dirs {
+		if !d.IsDir() {
 			continue
 		}
-		if isConnectServiceConfig(svc) && !reg.registered(svc.Name) {
-			return fmt.Errorf("service %q declares webhooks in forge.yaml but is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, opts...),` to RegisteredServices there, or move the webhooks to the binary that serves the service",
-				svc.Name, serviceRegistryRelPath, codegen.ServiceRowFuncName(svc.Name))
+		svcDirLeaf := d.Name()
+		handlerDir := filepath.Join(handlersRoot, svcDirLeaf)
+		webhookNames := codegen.WebhookNamesForService(handlerDir)
+		if len(webhookNames) == 0 {
+			continue
+		}
+		// Webhook routes mount on the serving binary's mux, so a service with
+		// webhook handlers that this binary does not register is a hard
+		// generate-time error naming the registration file — the routes could
+		// never mount, and skipping silently would hide a misconfiguration.
+		if !reg.registered(svcDirLeaf) {
+			return fmt.Errorf("service %q has webhooks (%s) but is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, opts...),` to RegisteredServices there, or move the webhooks to the binary that serves the service",
+				svcDirLeaf, strings.Join(webhookNames, ", "), serviceRegistryRelPath, codegen.ServiceRowFuncName(svcDirLeaf))
 		}
 
-		// Disk-first: webhook_routes_gen.go lands inside the EXISTING
-		// handler dir and must declare that dir's real package clause —
-		// the dir spelling and the clause can both legally differ from
-		// what naming.ServicePackage would synthesize from the forge.yaml
-		// name. See codegen.ResolveComponentDir for the bug class.
-		res, err := codegen.ResolveServiceComponent(projectDir, svc.Name)
-		if err != nil {
-			return err
+		// Resolve the dir's real Go package clause (disk-first; the spelling
+		// can legally differ from naming.ServicePackage synthesis).
+		svcPkg := svcDirLeaf
+		if res, resErr := codegen.ResolveServiceComponent(projectDir, svcDirLeaf); resErr == nil && res.FromDisk {
+			svcPkg = res.PackageName
 		}
-		if !res.FromDisk {
-			continue // service directory doesn't exist yet
-		}
-		svcPkg := res.PackageName
-		svcDirLeaf := filepath.FromSlash(res.ImportLeaf)
 
 		var entries []templates.WebhookRouteEntryData
-		for _, wh := range svc.Webhooks {
+		for _, name := range webhookNames {
 			entries = append(entries, templates.WebhookRouteEntryData{
-				Name:       strings.ReplaceAll(wh.Name, "_", "-"),
-				PascalName: naming.ToPascalCase(wh.Name),
+				Name:       strings.ReplaceAll(name, "_", "-"),
+				PascalName: naming.ToPascalCase(name),
 			})
 		}
 
@@ -117,17 +129,13 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, reg *serviceRegistry, proj
 
 		content, err := templates.WebhookTemplates().Render("webhook_routes_gen.go.tmpl", data)
 		if err != nil {
-			return fmt.Errorf("render webhook routes for %s: %w", svc.Name, err)
+			return fmt.Errorf("render webhook routes for %s: %w", svcDirLeaf, err)
 		}
 
 		relPath := filepath.Join("internal", "handlers", svcDirLeaf, "webhook_routes_gen.go")
 		if _, err := generator.WriteGeneratedFile(projectDir, relPath, content, cs, true); err != nil {
-			return fmt.Errorf("write webhook routes for %s: %w", svc.Name, err)
+			return fmt.Errorf("write webhook routes for %s: %w", svcDirLeaf, err)
 		}
-
-		// Print the actual landing path (snake-case package dir), not svc.Name
-		// (which can be kebab-case). Pre-fix: kebab/snake mismatch made the
-		// log line untrustworthy when a service name contained hyphens.
 		fmt.Printf("  ✅ Generated %s\n", relPath)
 	}
 

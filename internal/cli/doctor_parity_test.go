@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // fyVal is a tiny helper to construct a forge.yaml-sourced
@@ -294,11 +292,9 @@ func TestDoctorParity_UnknownService(t *testing.T) {
 	writeForgeYAML(t, dir, `name: demo
 module_path: github.com/example/demo
 `)
-	writeComponentsJSON(t, dir,
-		config.ComponentConfig{Name: "alpha"},
-		config.ComponentConfig{Name: "bravo"},
-		config.ComponentConfig{Name: "charlie"},
-	)
+	// Inventory is enumerated from the proto descriptor now, not
+	// components.json — see codegen.IntrospectComponents.
+	writeForgeDescriptor(t, dir, "AlphaService", "BravoService", "CharlieService")
 	prev, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(prev) })
 	if err := os.Chdir(dir); err != nil {
@@ -330,7 +326,8 @@ func TestDoctorParity_JSONShape(t *testing.T) {
 	writeForgeYAML(t, dir, `name: demo
 module_path: github.com/example/demo
 `)
-	writeComponentsJSON(t, dir, config.ComponentConfig{Name: "tasks"})
+	// Inventory is enumerated from the proto descriptor now, not components.json.
+	writeForgeDescriptor(t, dir, "TasksService")
 	prev, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(prev) })
 	if err := os.Chdir(dir); err != nil {
@@ -395,7 +392,8 @@ func TestDoctorParity_AgreementExitsZero(t *testing.T) {
 	writeForgeYAML(t, dir, `name: demo
 module_path: github.com/example/demo
 `)
-	writeComponentsJSON(t, dir, config.ComponentConfig{Name: "tasks"})
+	// Inventory is enumerated from the proto descriptor now, not components.json.
+	writeForgeDescriptor(t, dir, "TasksService")
 	prev, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(prev) })
 	if err := os.Chdir(dir); err != nil {

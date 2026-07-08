@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -36,8 +35,6 @@ func newGenerateCmd() *cobra.Command {
 		skipValidate    bool
 		skipPreChecks   bool
 		skipConfigCheck bool
-		resetTier2      bool
-		assumeYes       bool
 		checkOnly       bool
 		forceCleanup    bool
 		templatesOnly   bool
@@ -91,8 +88,6 @@ forensics, parallel-lane and migration escape hatches); run
 					SkipValidate:    skipValidate,
 					SkipPreChecks:   skipPreChecks,
 					SkipConfigCheck: skipConfigCheck,
-					ResetTier2:      resetTier2,
-					AssumeYes:       assumeYes,
 					ForceCleanup:    forceCleanup,
 					TemplatesOnly:   templatesOnly,
 					Strict:          strict,
@@ -170,8 +165,6 @@ forensics, parallel-lane and migration escape hatches); run
 				SkipValidate:    skipValidate,
 				SkipPreChecks:   skipPreChecks,
 				SkipConfigCheck: skipConfigCheck,
-				ResetTier2:      resetTier2,
-				AssumeYes:       assumeYes,
 				ForceCleanup:    forceCleanup,
 				TemplatesOnly:   templatesOnly,
 				Strict:          strict,
@@ -219,8 +212,6 @@ forensics, parallel-lane and migration escape hatches); run
 	cmd.Flags().BoolVar(&explainDrift, "explain-drift", false, "On Tier-1 drift, run the pipeline with drifted files redirected to .forge/render/ side renders, print a bounded diff of on-disk vs fresh render per file, then fail with the drift report (explains; never overwrites or approves)")
 	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final 'go build ./...' validate step (useful during multi-lane migrations when the tree is in a partial-build state)")
 	cmd.Flags().BoolVar(&skipPreChecks, "skip-pre-checks", false, "Bypass the pre-codegen contract-shape check (useful when a parallel lane's contract violation would otherwise block regen of this lane)")
-	cmd.Flags().BoolVar(&resetTier2, "reset-tier2", false, "Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (service.go, handlers.go, …) — prompts per file unless --yes is also passed")
-	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Auto-confirm interactive prompts (currently consumed by --reset-tier2)")
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
 	cmd.Flags().BoolVar(&forceCleanup, "force-cleanup", false, "Actually delete stale generated files. Default is report-only: print which files WOULD be deleted and leave them in place.")
 	cmd.Flags().BoolVar(&templatesOnly, "templates-only", false, "Re-render template-driven files only. Skips cleanup sweep, drift-guard, and validation. Use when a template change needs to propagate to a project that has uncommitted WIP and can't tolerate a full regen.")
@@ -260,8 +251,6 @@ forensics, parallel-lane and migration escape hatches); run
 		"explain-drift",     // drift forensics (debugging the drift guard)
 		"skip-validate",     // multi-lane migration escape hatch
 		"skip-pre-checks",   // parallel-lane escape hatch
-		"reset-tier2",       // destructive scaffold reset (rare, guided)
-		"yes",               // prompt auto-confirm for --reset-tier2
 		"force-cleanup",     // destructive cleanup of stale generated files
 		"templates-only",    // forge-template-development fast path
 		"steps",             // pipeline narrowing (internal/agent fast paths)
@@ -340,16 +329,6 @@ type pipelineFlags struct {
 	// a bounded on-disk-vs-fresh-render diff per file, and then still
 	// fails with the drift report. See generate_explain_drift.go.
 	ExplainDrift bool
-	// ResetTier2 explicitly opts in to overwriting hand-edited Tier-2
-	// scaffolds (service.go, handlers.go, …). The default for Tier-2 is
-	// "preserve hand-edits even when --force is set" — the scaffold-once
-	// contract is broken by the historic --force semantics. When this
-	// flag is set, the user is prompted per file (with a diff preview)
-	// unless AssumeYes is also true. See item 15 of FORGE_BACKLOG.md.
-	ResetTier2 bool
-	// AssumeYes auto-confirms y/N prompts. Currently only consumed by
-	// the per-file Tier-2 overwrite prompt under --reset-tier2.
-	AssumeYes bool
 	// Steps names a step preset that narrows the set of pipeline steps
 	// the runner executes. The empty string runs the full pipeline (the
 	// historical default). The "bootstrap-only" value runs JUST the
@@ -439,16 +418,6 @@ type pipelineFlags struct {
 // runGeneratePipelineOpts (+ skipValidate) call through here. New flags
 // land on pipelineFlags.
 func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
-	// --reset-tier2 without --yes prompts per file before overwriting
-	// hand-edited Tier-2 scaffolds. Forge is driven by agents/CI (no TTY)
-	// far more often than by a human at a terminal, and this prompt gates
-	// a destructive, irreversible action. Refuse to prompt without a TTY
-	// and fail fast naming the flag that proceeds non-interactively. Done
-	// before any lock/context setup so the refusal is cheap and immediate.
-	if err := guardResetTier2NeedsTTY(flags); err != nil {
-		return err
-	}
-
 	// Cross-process file lock (complements the in-process generateMu).
 	// Held for the lifetime of the pipeline so a parallel `forge add`
 	// can't race a long `forge generate`.
@@ -470,12 +439,6 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		fmt.Println("⚠️  pre-codegen contract check skipped via --skip-pre-checks")
 	}
 
-	// --reset-tier2 wires a per-file Tier-2 overwrite hook. The hook
-	// drives WriteGeneratedFileTier2's "user-edited Tier-2 detected;
-	// overwrite y/N?" decision. Without the hook the writer preserves
-	// hand-edits — the historic safe default. With --reset-tier2 --yes,
-	// the hook auto-approves; without --yes it prompts per file.
-	checksums.ResetTier2State()
 	// Per-run side-render redirect tracking (--explain-drift), the
 	// heal-notice dedupe set, and the heal opt-in start empty/off on
 	// every invocation (AutoHeal defaults OFF — the non-destructive
@@ -484,10 +447,6 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	if flags.Heal {
 		fmt.Println("♻️  --heal: on-disk content matching a PRIOR forge render will be overwritten with the current template")
 		checksums.AutoHeal = true
-	}
-	if flags.ResetTier2 {
-		fmt.Println("⚠️  --reset-tier2: hand-edited Tier-2 scaffolds will be overwritten (prompts per file unless --yes is set)")
-		checksums.Tier2OverwriteFn = makeTier2OverwriteHook(ctx.AbsPath, ctx.Checksums, flags.AssumeYes)
 	}
 
 	// Arm the stage-then-validate rollback journal (fr-40f7ec9bd9). From
@@ -515,16 +474,6 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		}
 		if saveErr := generator.SaveChecksums(ctx.AbsPath, ctx.Checksums); saveErr != nil {
 			log.Printf("Warning: failed to save checksums: %v", saveErr)
-		}
-	}()
-
-	// Tier-2 preservation summary fires only when --force is set: that's
-	// the legacy user expectation we just changed. Users who run plain
-	// `forge generate` already expect Tier-2 to be untouched and don't
-	// need the nag line.
-	defer func() {
-		if flags.Force && checksums.Tier2PreservedCount > 0 {
-			fmt.Fprintf(os.Stderr, "ℹ️  --force preserved %d hand-edited Tier-2 file(s); pass --reset-tier2 to overwrite explicitly.\n", checksums.Tier2PreservedCount)
 		}
 	}()
 
@@ -655,74 +604,6 @@ func rollbackGeneratedTree(absPath string) bool {
 	}
 	fmt.Fprintln(os.Stderr, "   Fix the codegen error above (the generated code did not build), then re-run `forge generate`.")
 	return true
-}
-
-// guardResetTier2NeedsTTY refuses to start a `--reset-tier2` run that
-// would block on the per-file overwrite prompt when there is no TTY to
-// answer it. The prompt only fires for --reset-tier2 without --yes; with
-// a TTY a human can answer it, and with --yes there is no prompt at all.
-// In every other case (no TTY, no --yes) forge would hang waiting for
-// input it can never receive, so we fail fast with the exact flag fix.
-func guardResetTier2NeedsTTY(flags pipelineFlags) error {
-	if resetTier2WouldHangWithoutTTY(flags.ResetTier2, flags.AssumeYes, cliutil.StdinIsTTY()) {
-		return cliutil.UserErr(
-			"forge generate (--reset-tier2)",
-			"refusing to prompt for per-file Tier-2 overwrite confirmation without a TTY",
-			"",
-			"re-run with `forge generate --reset-tier2 --yes` to overwrite hand-edited scaffolds non-interactively, or drop --reset-tier2 to preserve them",
-		)
-	}
-	return nil
-}
-
-// resetTier2WouldHangWithoutTTY is the pure decision behind
-// guardResetTier2NeedsTTY, split out so it can be unit-tested without
-// manipulating the process's real stdin. It returns true exactly when the
-// run would otherwise block on the interactive overwrite prompt: the user
-// opted into --reset-tier2, did NOT pass --yes, and stdin is not a TTY.
-func resetTier2WouldHangWithoutTTY(resetTier2, assumeYes, stdinIsTTY bool) bool {
-	return resetTier2 && !assumeYes && !stdinIsTTY
-}
-
-// makeTier2OverwriteHook returns the checksums.Tier2OverwriteFn the
-// pipeline installs when the user passes `--reset-tier2`. The hook
-// fires once per modified Tier-2 file as WriteGeneratedFileTier2
-// encounters it; returning true clobbers the user's edits, false
-// preserves them.
-//
-// When assumeYes is set the hook unconditionally approves the
-// overwrite (`--reset-tier2 --yes`). Otherwise it prints a short
-// preview ("modified Tier-2 file <path>, overwrite? y/N") on stderr
-// and reads from stdin. Any answer other than `y` / `Y` / `yes` is
-// treated as "preserve", matching standard y/N convention.
-//
-// The hook is intentionally simple — we don't print a full unified
-// diff because users running --reset-tier2 already have git available
-// for that ("git diff HEAD -- <path>" before re-running is the
-// expected workflow). The prompt's job is the explicit per-file
-// confirmation gate.
-func makeTier2OverwriteHook(root string, cs *generator.FileChecksums, assumeYes bool) func(string) bool {
-	reader := bufio.NewReader(os.Stdin)
-	return func(relPath string) bool {
-		if assumeYes {
-			fmt.Fprintf(os.Stderr, "  ↻ --reset-tier2 --yes: overwriting %s\n", relPath)
-			return true
-		}
-		_ = cs
-		current := ""
-		if data, err := os.ReadFile(filepath.Join(root, relPath)); err == nil {
-			current = short(generator.HashContent(data))
-		}
-		fmt.Fprintf(os.Stderr, "\nTier-2 file differs from the fresh scaffold: %s\n", relPath)
-		fmt.Fprintf(os.Stderr, "  on-disk hash: %s\n", current)
-		fmt.Fprintf(os.Stderr, "Overwrite with newly rendered template? [y/N]: ")
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return false
-		}
-		ans := strings.ToLower(strings.TrimSpace(line))
-		return ans == "y" || ans == "yes"
-	}
 }
 
 // runGoBuildValidate is the body of stepGoBuildValidate (was Step 9 in

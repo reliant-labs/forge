@@ -16,8 +16,8 @@
 // (`<Component>Config <component> = <tag>;`), and take the generated
 // block as ONE typed Deps field (`Cfg config.<Component>Config`).
 // wire_gen resolves the field from the loaded Config by TYPE, env
-// binding / .env.example / per-env config.<env>.yaml → ConfigMap
-// projection all flow from the same proto annotations, and validateDeps
+// binding / per-env config.<env>.yaml → ConfigMap projection all flow
+// from the same proto annotations, and validateDeps
 // stops seeing phantom nil scalars.
 //
 // What it flags
@@ -91,7 +91,7 @@ func configDepsFixHint(f configDepsFinding) string {
 	block := naming.ToPascalCase(f.Package) + "Config"
 	protoField := naming.ToSnakeCase(f.Field)
 	return fmt.Sprintf(
-		"scalar Deps fields are configuration — declare a config block in proto/config/v1/config.proto: `message %s { %s %s = 1 [(forge.v1.config) = {env_var: \"%s\", description: \"...\"}]; }`, compose it on AppConfig (`%s %s = <next tag>;`), run `forge generate`, and replace `%s %s` with `Cfg config.%s` (wire_gen resolves it from cfg by type; per-env values go in config.<env>.yaml as `%s: <value>`)",
+		"scalar Deps fields are configuration — declare a config block in proto/config/v1/config.proto: `message %s { %s %s = 1 [(forge.v1.config) = {env_var: %q, description: \"...\"}]; }`, compose it on AppConfig (`%s %s = <next tag>;`), run `forge generate`, and replace `%s %s` with `Cfg config.%s` (wire_gen resolves it from cfg by type; per-env values go in config.<env>.yaml as `%s: <value>`)",
 		block, protoScalarType(f.Type), protoField,
 		strings.ToUpper(naming.ToSnakeCase(f.Package))+"_"+strings.ToUpper(protoField),
 		block, naming.ToSnakeCase(f.Package),

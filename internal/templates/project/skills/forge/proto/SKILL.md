@@ -184,6 +184,22 @@ enum TaskStatus {
 - All values **must** be prefixed with the enum name in UPPER_SNAKE_CASE.
 - Proto fields stay `snake_case` (`created_at`, `org_id`); proto messages / RPCs / services stay `PascalCase`. For the full Go ↔ proto ↔ TS ↔ `forge.yaml` casing table, see **Naming conventions** in `architecture`.
 
+## RPCs owned by another service/repo — import, don't re-scaffold
+
+The protos above are the ones **your** service owns. For an RPC owned by
+*another* service or repo (you're a client of it, not its implementer), the
+remote proto is the single source of truth — **import it and generate only a
+CLIENT.** Pull it in via a pinned `task protos` copy or a buf BSR dependency;
+regenerate the client when the upstream version bumps.
+
+Never hand-copy the remote `.proto` into your `proto/services/` and let forge
+scaffold a server for it. That produces a dead handler package: every method
+is `CodeUnimplemented`, `Deps` holds only `Logger`/`Config` with no domain
+collaborators, and the wiring boots a service nobody calls. If you find
+yourself staring at that shape — an all-`Unimplemented` handler for RPCs you
+never meant to serve — you meant to *import the upstream proto and generate a
+client*, not own the server.
+
 ## Common Mistakes
 
 1. **Missing forge import** — Every proto using `(forge.v1.method)` / `(forge.v1.service)` needs `import "forge/v1/forge.proto";`.
@@ -202,6 +218,7 @@ enum TaskStatus {
 - Filter fields on List requests are always `optional`.
 - Removed fields become `reserved`. Never reuse a number.
 - Cross-service shared messages live in `proto/shared/v1/types.proto`.
+- RPCs owned by another repo: **import the upstream proto and generate a client** — never hand-copy it and scaffold a server you won't implement.
 - Run `forge generate && forge lint` after every proto edit.
 - Fix issues in proto, not in `gen/` — generated code is overwritten.
 

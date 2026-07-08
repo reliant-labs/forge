@@ -33,14 +33,14 @@ import (
 //
 // Pass a nil store to use slog-only mode (same behaviour as the base
 // AuditInterceptor, with the extra trace_id attribute).
-func Interceptor(logger *slog.Logger, store audit.AuditStore) connect.Interceptor {
+func Interceptor(logger *slog.Logger, store audit.Store) connect.Interceptor {
 	auditLogger := logger.With("log_type", "audit")
 	return &interceptor{logger: auditLogger, store: store}
 }
 
 type interceptor struct {
 	logger *slog.Logger
-	store  audit.AuditStore
+	store  audit.Store
 }
 
 func (a *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -87,7 +87,7 @@ func (a *interceptor) recordAudit(ctx context.Context, procedure, peerAddr strin
 	}
 
 	// Build audit entry for DB persistence
-	entry := audit.AuditEntry{
+	entry := audit.Entry{
 		Timestamp:   start,
 		Procedure:   procedure,
 		PeerAddress: peerAddr,

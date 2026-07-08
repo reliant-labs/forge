@@ -39,6 +39,19 @@ Rules that pay off immediately:
 - **Domain types, not wire types.** No transport-layer types here; no storage-row types either. The service is the seam between wire and storage.
 - **Plain language-native types.** Plain `time.Time`, plain `string` IDs. Wrap in wire-specific types (`*timestamppb.Timestamp`) at the handler boundary; convert to storage-specific types (`pgtype.UUID`) at the storage boundary.
 - **One canonical name** for single-implementation services. (Go convention: `Service`.) Use suffixed names (`Storer`, `Authenticator`) only for multi-implementation strategies where the suffix carries meaning.
+- **Declare interfaces at the CONSUMER, not the implementation.** Accept interfaces (flexibility in), return concrete structs out (no speculative abstraction). Forge's `New(Deps) Service` returning the `Service` interface is the deliberate exception — that interface is the real mock/test seam, not speculation. But collaborators in `Deps` follow the rule: each is a *narrow* interface naming only the methods this service calls, declared here at the consumer. A wide interface that each caller only uses a slice of is a smell — split it per-consumer.
+
+```go
+// Smell: a 20-method Repository, of which this service calls three.
+// Better: depend on the slice you use, declared next to the service.
+type Deps struct {
+    Things thingReader // narrow, consumer-declared — not the whole ORM surface
+}
+type thingReader interface {
+    GetThing(ctx context.Context, id string) (Thing, error)
+    InsertThing(ctx context.Context, t Thing) error
+}
+```
 
 ## The implementation
 

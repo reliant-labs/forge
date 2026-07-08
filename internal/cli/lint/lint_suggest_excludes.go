@@ -257,76 +257,12 @@ func scanPackageFiles(pkgDir string) (pkgEntries, bool, bool, error) {
 			// still counted toward FileNames.
 			continue
 		}
-		// Build a third-party-import set so we can classify each struct
-		// embed as stdlib vs third-party. Stdlib imports don't have a
-		// "/" or domain dot in the early segments, but this is fragile;
-		// we approximate "third-party" as any import whose path contains
-		// a "." (covers github.com/..., k8s.io/..., google.golang.org/...).
-		thirdPartyImports := map[string]bool{}
-		for _, imp := range file.Imports {
-			pathLit := strings.Trim(imp.Path.Value, `"`)
-			if strings.Contains(pathLit, ".") {
-				// Last-segment alias is the import name unless aliased.
-				ident := filepath.Base(pathLit)
-				if imp.Name != nil && imp.Name.Name != "_" && imp.Name.Name != "." {
-					ident = imp.Name.Name
-				}
-				thirdPartyImports[ident] = true
-			}
-		}
-
-		// Classify struct types: does any embedded field reference a
-		// third-party package?
-		for _, decl := range file.Decls {
-			switch d := decl.(type) {
-			case *ast.GenDecl:
-				if d.Tok != token.TYPE {
-					continue
-				}
-				for _, spec := range d.Specs {
-					ts, ok := spec.(*ast.TypeSpec)
-					if !ok {
-						continue
-					}
-					st, ok := ts.Type.(*ast.StructType)
-					if !ok || st.Fields == nil {
-						continue
-					}
-					for _, f := range st.Fields.List {
-						// Embedded field — no Names, just a Type.
-						if len(f.Names) != 0 {
-							continue
-						}
-						// Type is *ast.Ident (same package), *ast.SelectorExpr (pkg.Type),
-						// or *ast.StarExpr wrapping one of those.
-						sel := unwrapSelector(f.Type)
-						if sel == nil {
-							continue
-						}
-						if pkgIdent, ok := sel.X.(*ast.Ident); ok {
-							if thirdPartyImports[pkgIdent.Name] {
-								embedFlags[ts.Name.Name] = true
-							}
-						}
-					}
-				}
-			case *ast.FuncDecl:
-				if d.Recv == nil || len(d.Recv.List) == 0 {
-					continue
-				}
-				if !d.Name.IsExported() {
-					continue
-				}
-				// Receiver may be `T` or `*T`.
-				recvType := d.Recv.List[0].Type
-				if star, ok := recvType.(*ast.StarExpr); ok {
-					recvType = star.X
-				}
-				if id, ok := recvType.(*ast.Ident); ok {
-					hasExportedMethods = true
-					exportedOn[id.Name] = true
-				}
-			}
+		thirdPartyImports := collectThirdPartyImports(file)
+		// Classify struct types (embeds) and record exported-method
+		// receivers for this file. hasExportedMethods is OR-accumulated
+		// across every file in the package.
+		if scanExcludeFileDecls(file, thirdPartyImports, embedFlags, exportedOn) {
+			hasExportedMethods = true
 		}
 	}
 	if !hasAnyGoFile {
@@ -348,6 +284,108 @@ func scanPackageFiles(pkgDir string) (pkgEntries, bool, bool, error) {
 	}
 
 	return ent, hasContract, hasExportedMethods, nil
+}
+
+// collectThirdPartyImports builds the set of import identifiers that refer
+// to a third-party package, so struct embeds can be classified stdlib vs
+// third-party. Stdlib imports don't have a "/" or domain dot in the early
+// segments, but this is fragile; we approximate "third-party" as any import
+// whose path contains a "." (covers github.com/..., k8s.io/...,
+// google.golang.org/...). The identifier is the import's last path segment
+// unless an explicit alias overrides it.
+func collectThirdPartyImports(file *ast.File) map[string]bool {
+	thirdPartyImports := map[string]bool{}
+	for _, imp := range file.Imports {
+		pathLit := strings.Trim(imp.Path.Value, `"`)
+		if strings.Contains(pathLit, ".") {
+			// Last-segment alias is the import name unless aliased.
+			ident := filepath.Base(pathLit)
+			if imp.Name != nil && imp.Name.Name != "_" && imp.Name.Name != "." {
+				ident = imp.Name.Name
+			}
+			thirdPartyImports[ident] = true
+		}
+	}
+	return thirdPartyImports
+}
+
+// scanExcludeFileDecls classifies one parsed file's top-level declarations:
+// struct types embedding a third-party package are flagged into embedFlags,
+// and receiver types carrying an exported method are flagged into
+// exportedOn. It returns whether the file declared any exported method (the
+// same trigger the require-contract analyzer uses).
+func scanExcludeFileDecls(file *ast.File, thirdPartyImports, embedFlags, exportedOn map[string]bool) bool {
+	hasExportedMethods := false
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.GenDecl:
+			classifyStructEmbeds(d, thirdPartyImports, embedFlags)
+		case *ast.FuncDecl:
+			if recordExportedMethodReceiver(d, exportedOn) {
+				hasExportedMethods = true
+			}
+		}
+	}
+	return hasExportedMethods
+}
+
+// classifyStructEmbeds flags every struct type in the declaration that
+// embeds a field from a third-party package (per thirdPartyImports) into
+// embedFlags, keyed by the type name.
+func classifyStructEmbeds(d *ast.GenDecl, thirdPartyImports, embedFlags map[string]bool) {
+	if d.Tok != token.TYPE {
+		return
+	}
+	for _, spec := range d.Specs {
+		ts, ok := spec.(*ast.TypeSpec)
+		if !ok {
+			continue
+		}
+		st, ok := ts.Type.(*ast.StructType)
+		if !ok || st.Fields == nil {
+			continue
+		}
+		for _, f := range st.Fields.List {
+			// Embedded field — no Names, just a Type.
+			if len(f.Names) != 0 {
+				continue
+			}
+			// Type is *ast.Ident (same package), *ast.SelectorExpr (pkg.Type),
+			// or *ast.StarExpr wrapping one of those.
+			sel := unwrapSelector(f.Type)
+			if sel == nil {
+				continue
+			}
+			if pkgIdent, ok := sel.X.(*ast.Ident); ok {
+				if thirdPartyImports[pkgIdent.Name] {
+					embedFlags[ts.Name.Name] = true
+				}
+			}
+		}
+	}
+}
+
+// recordExportedMethodReceiver records the receiver type of an exported
+// method into exportedOn and reports whether it did so. Only plain-ident
+// receivers (`T` or `*T`) count — matching the require-contract analyzer's
+// exported-method trigger.
+func recordExportedMethodReceiver(d *ast.FuncDecl, exportedOn map[string]bool) bool {
+	if d.Recv == nil || len(d.Recv.List) == 0 {
+		return false
+	}
+	if !d.Name.IsExported() {
+		return false
+	}
+	// Receiver may be `T` or `*T`.
+	recvType := d.Recv.List[0].Type
+	if star, ok := recvType.(*ast.StarExpr); ok {
+		recvType = star.X
+	}
+	if id, ok := recvType.(*ast.Ident); ok {
+		exportedOn[id.Name] = true
+		return true
+	}
+	return false
 }
 
 // unwrapSelector returns the underlying *ast.SelectorExpr from an embed

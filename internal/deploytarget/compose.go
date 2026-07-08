@@ -274,7 +274,7 @@ func (p ComposeProvider) rollbackOne(ctx context.Context, runner commandRunner, 
 	if err != nil {
 		return fmt.Errorf("write override: %w", err)
 	}
-	defer os.Remove(overridePath)
+	defer func() { _ = os.Remove(overridePath) }()
 
 	upArgs := []string{"compose", "-f", file, "-f", overridePath}
 	if spec.EnvFile != "" {

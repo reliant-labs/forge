@@ -38,10 +38,10 @@ import (
 // ManifestGVK is the GroupVersionKind of a rendered manifest document — the
 // (apiVersion, kind) pair `kubectl apply` keys a resource on — paired with the
 // document's name so the preflight report can point at WHICH manifest needs a
-// missing CRD. ApiVersion is the raw `apiVersion:` value ("apps/v1", "v1",
+// missing CRD. APIVersion is the raw `apiVersion:` value ("apps/v1", "v1",
 // "gateway.networking.k8s.io/v1"); Kind is the raw `kind:` value.
 type ManifestGVK struct {
-	ApiVersion string
+	APIVersion string
 	Kind       string
 	// Name is metadata.name of the document (best-effort, "" when absent) —
 	// used only to make the missing-CRD report actionable.
@@ -53,7 +53,7 @@ type ManifestGVK struct {
 // whether a kind is a CORE kind (group "") that every cluster serves, so the
 // CRD gate never false-positives on Deployment/Service/ConfigMap/etc.
 func (g ManifestGVK) group() string {
-	grp, _, found := strings.Cut(g.ApiVersion, "/")
+	grp, _, found := strings.Cut(g.APIVersion, "/")
 	if !found {
 		// No "/" → core group (apiVersion is a bare version like "v1").
 		return ""
@@ -132,7 +132,7 @@ func CollectManifestGVKs(manifests string) []ManifestGVK {
 	var out []ManifestGVK
 	for _, doc := range splitDocs(manifests) {
 		var head struct {
-			ApiVersion string `yaml:"apiVersion"`
+			APIVersion string `yaml:"apiVersion"`
 			Kind       string `yaml:"kind"`
 			Metadata   struct {
 				Name string `yaml:"name"`
@@ -141,12 +141,12 @@ func CollectManifestGVKs(manifests string) []ManifestGVK {
 		if err := yaml.Unmarshal([]byte(doc), &head); err != nil {
 			continue
 		}
-		av := strings.TrimSpace(head.ApiVersion)
+		av := strings.TrimSpace(head.APIVersion)
 		kind := strings.TrimSpace(head.Kind)
 		if av == "" || kind == "" {
 			continue
 		}
-		out = append(out, ManifestGVK{ApiVersion: av, Kind: kind, Name: strings.TrimSpace(head.Metadata.Name)})
+		out = append(out, ManifestGVK{APIVersion: av, Kind: kind, Name: strings.TrimSpace(head.Metadata.Name)})
 	}
 	return out
 }
@@ -782,7 +782,7 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	// cluster-provided Secret the bundle deliberately doesn't render). Gating it
 	// to the no-cluster path keeps the two checks non-overlapping: live check
 	// when a cluster is present, render-time back-prop when it isn't.
-	if !(opts.Secrets != nil && hasContext) {
+	if opts.Secrets == nil || !hasContext {
 		if misses := CheckSecretSupply(opts.Manifests, opts.SecretSupply); len(misses) > 0 {
 			result.UndeclaredSecretMounts = misses
 		}
@@ -800,25 +800,34 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 		}
 		mu.Unlock()
 	}
+	// sink is the shared write side every fanned-out check records into (result
+	// under mu, plus the first-error sink), mirroring keyedResourceCheck's
+	// bundled coordination primitives so the extracted per-check helpers stay
+	// under the argument limit.
+	sink := preflightSink{mu: &mu, result: &result, recordErr: recordErr}
 
 	// Secret checks — one lookup per distinct Secret, only when a getter
 	// and a target context are configured.
 	if opts.Secrets != nil && hasContext {
-		checkKeyedResources(ctx, &wg, refs.Secrets, "Secret", opts.Namespace,
-			func(ctx context.Context, name string) (map[string]struct{}, bool, error) {
+		checkKeyedResources(ctx, keyedResourceCheck{
+			wg: &wg, refs: refs.Secrets, kind: "Secret", namespace: opts.Namespace,
+			getKeys: func(ctx context.Context, name string) (map[string]struct{}, bool, error) {
 				return opts.Secrets.GetSecretKeys(ctx, opts.Context, opts.Namespace, name)
 			},
-			result.MissingSecretKeys, &mu, recordErr)
+			out: result.MissingSecretKeys, mu: &mu, recordErr: recordErr,
+		})
 	}
 
 	// ConfigMap checks — symmetric with Secrets. A missing ConfigMap key
 	// fails a pod identically (CreateContainerConfigError).
 	if opts.ConfigMaps != nil && hasContext {
-		checkKeyedResources(ctx, &wg, refs.ConfigMaps, "ConfigMap", opts.Namespace,
-			func(ctx context.Context, name string) (map[string]struct{}, bool, error) {
+		checkKeyedResources(ctx, keyedResourceCheck{
+			wg: &wg, refs: refs.ConfigMaps, kind: "ConfigMap", namespace: opts.Namespace,
+			getKeys: func(ctx context.Context, name string) (map[string]struct{}, bool, error) {
 				return opts.ConfigMaps.GetConfigMapKeys(ctx, opts.Context, opts.Namespace, name)
 			},
-			result.MissingConfigMapKeys, &mu, recordErr)
+			out: result.MissingConfigMapKeys, mu: &mu, recordErr: recordErr,
+		})
 	}
 
 	// CRD / served-kind check — ONE discovery lookup against the target
@@ -831,23 +840,7 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	// discovery FAILURE aborts the preflight (the served set is unknown — we
 	// can't assert a kind is missing) rather than blocking on every kind.
 	if opts.ServedKinds != nil && hasContext {
-		gvks := CollectManifestGVKs(opts.Manifests)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			served, derr := opts.ServedKinds.ServedKinds(ctx, opts.Context)
-			if derr != nil {
-				recordErr(fmt.Errorf("preflight: discover served resource kinds on %q: %w", opts.Context, derr))
-				return
-			}
-			missing := missingCRDs(gvks, served)
-			if len(missing) == 0 {
-				return
-			}
-			mu.Lock()
-			result.MissingCRDs = missing
-			mu.Unlock()
-		}()
+		checkServedKinds(ctx, opts, &wg, sink)
 	}
 
 	// Cluster-credentialed image checker — resolve the bundle's
@@ -880,68 +873,7 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	// Image checks — one lookup per distinct image, skipping refs the
 	// caller marks (local registries) when an image checker is configured.
 	if opts.Images != nil {
-		for ref := range refs.Images {
-			ref := ref
-			if opts.SkipImageRef != nil && opts.SkipImageRef(ref) {
-				continue
-			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				exists, err := opts.Images.ImageExists(ctx, ref)
-				if err != nil {
-					// An auth-denied lookup did reach the registry but
-					// wouldn't say whether the image is present — and on a
-					// private registry a MISSING image looks exactly like
-					// this. Before blocking, RETRY with the CLUSTER's pull
-					// creds: the local daemon may simply lack creds the
-					// cluster has, so an auth-denied here is a FALSE negative
-					// for an image the cluster can pull. A credentialed retry
-					// that resolves the lookup is AUTHORITATIVE (the cluster's
-					// view): a present image passes, a confirmed miss blocks.
-					if errors.Is(err, ErrImageCheckAuthDenied) {
-						if credExists, retried := recheckExistsWithCreds(ref); retried {
-							if credExists {
-								return // cluster can pull it — TRUE existence verdict
-							}
-							mu.Lock()
-							result.MissingImages = append(result.MissingImages, ref)
-							mu.Unlock()
-							return
-						}
-						// No cluster creds to retry with (or still denied with
-						// them): keep the conservative block — the gate must
-						// not silently pass an image it can't confirm (the
-						// operator can --skip-preflight after a 5-second check).
-						mu.Lock()
-						result.UnverifiableImages = append(result.UnverifiableImages,
-							fmt.Sprintf("%s (%v)", ref, err))
-						mu.Unlock()
-						return
-					}
-					// A transport-class inconclusive check (DNS / connection
-					// refused / timeout for a registry the CLUSTER may still
-					// pull) says nothing about the image — warn and proceed.
-					// Any other checker error is a genuine failure that
-					// aborts the preflight.
-					if errors.Is(err, ErrImageCheckInconclusive) {
-						mu.Lock()
-						result.ImageWarnings = append(result.ImageWarnings,
-							fmt.Sprintf("couldn't verify image %q: %v; proceeding", ref, err))
-						mu.Unlock()
-						return
-					}
-					recordErr(fmt.Errorf("preflight: check image %q: %w", ref, err))
-					return
-				}
-				if exists {
-					return
-				}
-				mu.Lock()
-				result.MissingImages = append(result.MissingImages, ref)
-				mu.Unlock()
-			}()
-		}
+		checkImages(ctx, opts, refs, &wg, sink, recheckExistsWithCreds)
 	}
 
 	// Arch gate — one manifest-inspect per distinct image, comparing the
@@ -953,51 +885,7 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	// registry refs as the existence check.
 	target := strings.TrimSpace(opts.TargetArch)
 	if opts.ImageArch != nil && target != "" {
-		for ref := range refs.Images {
-			ref := ref
-			if opts.SkipImageRef != nil && opts.SkipImageRef(ref) {
-				continue
-			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				archs, aerr := opts.ImageArch.ImageArchitectures(ctx, ref)
-				if aerr != nil {
-					// Couldn't read the arch (transport / image-absent —
-					// already reported by the existence check / daemon down /
-					// auth-denied on a private registry the LOCAL daemon lacks
-					// creds for). Before warning, RETRY with the CLUSTER's pull
-					// creds: a private image's manifest the local daemon can't
-					// read is exactly the false-negative this fix targets, and
-					// a credentialed read lets the arch gate actually enforce
-					// on private images instead of silently skipping them.
-					if errors.Is(aerr, ErrImageCheckInconclusive) {
-						if credArch != nil {
-							if credArchs, cerr := credArch.ImageArchitectures(ctx, ref); cerr == nil {
-								archs = credArchs
-								goto haveArchs
-							}
-						}
-						mu.Lock()
-						result.ArchWarnings = append(result.ArchWarnings,
-							fmt.Sprintf("couldn't read architecture of image %q: %v; skipping arch gate for it", ref, aerr))
-						mu.Unlock()
-						return
-					}
-					recordErr(fmt.Errorf("preflight: read image arch %q: %w", ref, aerr))
-					return
-				}
-			haveArchs:
-				if archMatchesTarget(archs, target) {
-					return
-				}
-				mu.Lock()
-				result.ArchMismatchImages = append(result.ArchMismatchImages,
-					fmt.Sprintf("%s: image is %s, cluster nodes are %s — rebuild for the target platform (exec-format-error class)",
-						ref, archList(archs), target))
-				mu.Unlock()
-			}()
-		}
+		checkImageArchs(ctx, opts, refs, &wg, sink, credArch, target)
 	}
 
 	// Declared external Secret prerequisites (forge.ExternalSecret) — each in
@@ -1005,30 +893,7 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	// per declared Secret; a missing key/Secret BLOCKS. Verified only against a
 	// live target (a SecretGetter + a context), like the secretKeyRef check.
 	if opts.Secrets != nil && hasContext && len(opts.RequiredSecrets) > 0 {
-		for _, rs := range opts.RequiredSecrets {
-			rs := rs
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				present, exists, err := opts.Secrets.GetSecretKeys(ctx, opts.Context, rs.Namespace, rs.Name)
-				if err != nil {
-					recordErr(fmt.Errorf("preflight: read required Secret %s/%s: %w", rs.Namespace, rs.Name, err))
-					return
-				}
-				want := map[string]struct{}{}
-				for _, k := range rs.Keys {
-					want[k] = struct{}{}
-				}
-				missing := missingSecretKeys(want, present, exists)
-				if len(missing) == 0 {
-					return
-				}
-				sort.Strings(missing)
-				mu.Lock()
-				result.MissingRequiredSecretKeys[rs.Namespace+"/"+rs.Name] = missing
-				mu.Unlock()
-			}()
-		}
+		checkRequiredSecrets(ctx, opts, &wg, sink)
 	}
 
 	// Cross-secret BYTE-MATCH — for each value_group, read every member's live
@@ -1036,17 +901,7 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	// half-rotated shared credential) BLOCKS. Runs serially (groups are tiny
 	// and rare); gated on a SecretValueGetter being configured.
 	if opts.SecretValues != nil && hasContext && len(opts.RequiredSecrets) > 0 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			mismatches := checkByteMatchGroups(ctx, opts.SecretValues, opts.Context, opts.RequiredSecrets, recordErr)
-			if len(mismatches) == 0 {
-				return
-			}
-			mu.Lock()
-			result.ByteMatchMismatches = mismatches
-			mu.Unlock()
-		}()
+		checkByteMatchGroupsAsync(ctx, opts, &wg, sink)
 	}
 
 	wg.Wait()
@@ -1064,6 +919,266 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	sort.Strings(result.ArchWarnings)
 	sort.Strings(result.MissingCRDs)
 	return result, nil
+}
+
+// preflightSink is the shared WRITE side of a preflight run: the mutex guarding
+// result, the result being assembled under it, and the first-error sink. Every
+// fanned-out check records into it, mirroring keyedResourceCheck's bundled
+// coordination primitives so the extracted per-check helpers stay small and
+// under the argument limit. It is passed by value; the pointers inside are
+// shared, so a goroutine writing through sink.result mutates the one result.
+type preflightSink struct {
+	mu        *sync.Mutex
+	result    *PreflightResult
+	recordErr func(error)
+}
+
+// checkImages fans out one existence lookup per distinct image, skipping refs
+// the caller marks (local registries). Each goroutine records its outcome into
+// the sink under the mutex; a genuine checker failure aborts via sink.recordErr.
+// Mirrors the checkKeyedResources fan-out (wg.Add per goroutine).
+func checkImages(
+	ctx context.Context,
+	opts PreflightOpts,
+	refs ManifestRefs,
+	wg *sync.WaitGroup,
+	sink preflightSink,
+	recheckExistsWithCreds func(ref string) (exists bool, retried bool),
+) {
+	for ref := range refs.Images {
+		ref := ref
+		if opts.SkipImageRef != nil && opts.SkipImageRef(ref) {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			checkOneImage(ctx, opts.Images, ref, recheckExistsWithCreds, sink)
+		}()
+	}
+}
+
+// checkOneImage runs one image existence lookup and records its outcome into the
+// sink, early-returning on each terminal case so the branching stays flat:
+//
+//   - present → nothing to record.
+//   - confirmed absent (exists=false, no error) → MissingImages (block).
+//   - auth-denied → RETRY with the CLUSTER's pull creds
+//     (recheckExistsWithCreds): the local daemon may simply lack creds the
+//     cluster has, so an auth-denied here is a FALSE negative for an image the
+//     cluster can pull. A credentialed retry that resolves the lookup is
+//     AUTHORITATIVE — present passes, confirmed miss blocks. No creds to retry
+//     with (or still denied) → UnverifiableImages (conservative block; the gate
+//     must not silently pass an image it can't confirm).
+//   - inconclusive transport failure → ImageWarnings (warn and proceed; the
+//     CLUSTER may still pull fine).
+//   - any other error → recordErr (aborts the preflight).
+func checkOneImage(
+	ctx context.Context,
+	checker ImageChecker,
+	ref string,
+	recheckExistsWithCreds func(ref string) (exists bool, retried bool),
+	sink preflightSink,
+) {
+	exists, err := checker.ImageExists(ctx, ref)
+	switch {
+	case err == nil && exists:
+		return
+	case err == nil:
+		sink.mu.Lock()
+		sink.result.MissingImages = append(sink.result.MissingImages, ref)
+		sink.mu.Unlock()
+	case errors.Is(err, ErrImageCheckAuthDenied):
+		credExists, retried := recheckExistsWithCreds(ref)
+		if !retried {
+			sink.mu.Lock()
+			sink.result.UnverifiableImages = append(sink.result.UnverifiableImages,
+				fmt.Sprintf("%s (%v)", ref, err))
+			sink.mu.Unlock()
+			return
+		}
+		if credExists {
+			return // cluster can pull it — TRUE existence verdict
+		}
+		sink.mu.Lock()
+		sink.result.MissingImages = append(sink.result.MissingImages, ref)
+		sink.mu.Unlock()
+	case errors.Is(err, ErrImageCheckInconclusive):
+		sink.mu.Lock()
+		sink.result.ImageWarnings = append(sink.result.ImageWarnings,
+			fmt.Sprintf("couldn't verify image %q: %v; proceeding", ref, err))
+		sink.mu.Unlock()
+	default:
+		sink.recordErr(fmt.Errorf("preflight: check image %q: %w", ref, err))
+	}
+}
+
+// checkServedKinds runs ONE discovery lookup against the target cluster, then
+// BLOCKS on every NON-CORE kind the bundle renders whose CRD / Gateway API
+// channel the cluster doesn't serve (the GRPCRoute footgun) instead of failing
+// `no matches for kind` mid-rollout. A discovery FAILURE aborts the preflight
+// (the served set is unknown — a missing kind can't be asserted) via
+// sink.recordErr. Only called when a checker and a target context are set.
+func checkServedKinds(ctx context.Context, opts PreflightOpts, wg *sync.WaitGroup, sink preflightSink) {
+	gvks := CollectManifestGVKs(opts.Manifests)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		served, derr := opts.ServedKinds.ServedKinds(ctx, opts.Context)
+		if derr != nil {
+			sink.recordErr(fmt.Errorf("preflight: discover served resource kinds on %q: %w", opts.Context, derr))
+			return
+		}
+		missing := missingCRDs(gvks, served)
+		if len(missing) == 0 {
+			return
+		}
+		sink.mu.Lock()
+		sink.result.MissingCRDs = missing
+		sink.mu.Unlock()
+	}()
+}
+
+// checkRequiredSecrets verifies each DECLARED external Secret prerequisite
+// (forge.ExternalSecret) against the live target in its OWN declared namespace
+// (often NOT opts.Namespace). One GetSecretKeys per declared Secret; a missing
+// key/Secret BLOCKS via MissingRequiredSecretKeys. Only called when a
+// SecretGetter and a target context are set and prerequisites are declared.
+func checkRequiredSecrets(ctx context.Context, opts PreflightOpts, wg *sync.WaitGroup, sink preflightSink) {
+	for _, rs := range opts.RequiredSecrets {
+		rs := rs
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			present, exists, err := opts.Secrets.GetSecretKeys(ctx, opts.Context, rs.Namespace, rs.Name)
+			if err != nil {
+				sink.recordErr(fmt.Errorf("preflight: read required Secret %s/%s: %w", rs.Namespace, rs.Name, err))
+				return
+			}
+			want := map[string]struct{}{}
+			for _, k := range rs.Keys {
+				want[k] = struct{}{}
+			}
+			missing := missingSecretKeys(want, present, exists)
+			if len(missing) == 0 {
+				return
+			}
+			sort.Strings(missing)
+			sink.mu.Lock()
+			sink.result.MissingRequiredSecretKeys[rs.Namespace+"/"+rs.Name] = missing
+			sink.mu.Unlock()
+		}()
+	}
+}
+
+// checkByteMatchGroupsAsync runs the cross-secret BYTE-MATCH check on its own
+// goroutine (the compare itself is serial — groups are tiny and rare) and
+// records any divergence (a half-rotated shared credential) into the sink as a
+// BLOCK. Only called when a SecretValueGetter and a target context are set and
+// prerequisites are declared.
+func checkByteMatchGroupsAsync(ctx context.Context, opts PreflightOpts, wg *sync.WaitGroup, sink preflightSink) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mismatches := checkByteMatchGroups(ctx, opts.SecretValues, opts.Context, opts.RequiredSecrets, sink.recordErr)
+		if len(mismatches) == 0 {
+			return
+		}
+		sink.mu.Lock()
+		sink.result.ByteMatchMismatches = mismatches
+		sink.mu.Unlock()
+	}()
+}
+
+// checkImageArchs fans out one manifest-inspect per distinct image, comparing
+// the image's advertised architecture(s) to the TARGET cluster's declared arch
+// and recording a mismatch (BLOCK) into the sink. Skips the same local-registry
+// refs as the existence check. Only called when an arch checker AND a declared
+// target arch are configured.
+func checkImageArchs(
+	ctx context.Context,
+	opts PreflightOpts,
+	refs ManifestRefs,
+	wg *sync.WaitGroup,
+	sink preflightSink,
+	credArch ImageArchChecker,
+	target string,
+) {
+	for ref := range refs.Images {
+		ref := ref
+		if opts.SkipImageRef != nil && opts.SkipImageRef(ref) {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			checkOneImageArch(ctx, opts.ImageArch, credArch, ref, target, sink)
+		}()
+	}
+}
+
+// checkOneImageArch resolves one image's architecture(s) and BLOCKS when they
+// don't include the target cluster's arch (the exec-format-error gate). An
+// unreadable arch is a non-blocking warning / genuine error, both handled by
+// resolveImageArchs — so when it reports the gate should be skipped, this
+// returns without comparing.
+func checkOneImageArch(
+	ctx context.Context,
+	checker ImageArchChecker,
+	credArch ImageArchChecker,
+	ref, target string,
+	sink preflightSink,
+) {
+	archs, ok := resolveImageArchs(ctx, checker, credArch, ref, sink)
+	if !ok {
+		return
+	}
+	if archMatchesTarget(archs, target) {
+		return
+	}
+	sink.mu.Lock()
+	sink.result.ArchMismatchImages = append(sink.result.ArchMismatchImages,
+		fmt.Sprintf("%s: image is %s, cluster nodes are %s — rebuild for the target platform (exec-format-error class)",
+			ref, archList(archs), target))
+	sink.mu.Unlock()
+}
+
+// resolveImageArchs reads an image's advertised architectures for the arch gate.
+// It returns (archs, true) when the arch is KNOWN and the gate should compare;
+// (nil, false) when the gate must be SKIPPED for this ref — either an
+// inconclusive read (transport / image-absent / daemon down / auth-denied on a
+// private registry the LOCAL daemon lacks creds for), recorded as a non-blocking
+// ArchWarning, or a genuine checker failure surfaced via sink.recordErr.
+//
+// An inconclusive read is RETRIED with the CLUSTER's pull creds before warning:
+// a private image's manifest the local daemon can't read is exactly the
+// false-negative the credentialed path targets, letting the arch gate enforce on
+// private images instead of silently skipping them.
+func resolveImageArchs(
+	ctx context.Context,
+	checker ImageArchChecker,
+	credArch ImageArchChecker,
+	ref string,
+	sink preflightSink,
+) ([]string, bool) {
+	archs, aerr := checker.ImageArchitectures(ctx, ref)
+	if aerr == nil {
+		return archs, true
+	}
+	if !errors.Is(aerr, ErrImageCheckInconclusive) {
+		sink.recordErr(fmt.Errorf("preflight: read image arch %q: %w", ref, aerr))
+		return nil, false
+	}
+	if credArch != nil {
+		if credArchs, cerr := credArch.ImageArchitectures(ctx, ref); cerr == nil {
+			return credArchs, true
+		}
+	}
+	sink.mu.Lock()
+	sink.result.ArchWarnings = append(sink.result.ArchWarnings,
+		fmt.Sprintf("couldn't read architecture of image %q: %v; skipping arch gate for it", ref, aerr))
+	sink.mu.Unlock()
+	return nil, false
 }
 
 // checkByteMatchGroups reads the live values of every ExternalSecret that
@@ -1169,7 +1284,7 @@ func missingCRDs(gvks []ManifestGVK, served map[string]struct{}) []string {
 			continue
 		}
 		seen[key] = struct{}{}
-		misses = append(misses, miss{apiVersion: g.ApiVersion, kind: g.Kind, name: g.Name})
+		misses = append(misses, miss{apiVersion: g.APIVersion, kind: g.Kind, name: g.Name})
 	}
 	if len(misses) == 0 {
 		return nil
@@ -1283,29 +1398,35 @@ func archList(archs []string) string {
 	}
 }
 
+// keyedResourceCheck carries the inputs for one keyed-resource preflight
+// fan-out: the references to verify, the resource kind/namespace they live
+// in, the getter that reads present keys, and the shared coordination
+// primitives (WaitGroup / Mutex / error sink) the goroutines report into.
+type keyedResourceCheck struct {
+	wg        *sync.WaitGroup
+	refs      map[string]map[string]struct{}
+	kind      string
+	namespace string
+	getKeys   func(ctx context.Context, name string) (map[string]struct{}, bool, error)
+	out       map[string][]string
+	mu        *sync.Mutex
+	recordErr func(error)
+}
+
 // checkKeyedResources fans out one existence/key lookup per distinct named
-// resource (Secret or ConfigMap) and records the missing keys into out under
-// "<namespace>/<name>". getKeys returns (presentKeys, exists, err); a lookup
-// error aborts the preflight via recordErr. Shared by the Secret and
+// resource (Secret or ConfigMap) and records the missing keys into c.out under
+// "<namespace>/<name>". c.getKeys returns (presentKeys, exists, err); a lookup
+// error aborts the preflight via c.recordErr. Shared by the Secret and
 // ConfigMap checks so both behave identically.
-func checkKeyedResources(
-	ctx context.Context,
-	wg *sync.WaitGroup,
-	refs map[string]map[string]struct{},
-	kind, namespace string,
-	getKeys func(ctx context.Context, name string) (map[string]struct{}, bool, error),
-	out map[string][]string,
-	mu *sync.Mutex,
-	recordErr func(error),
-) {
-	for name, keys := range refs {
+func checkKeyedResources(ctx context.Context, c keyedResourceCheck) {
+	for name, keys := range c.refs {
 		name, keys := name, keys
-		wg.Add(1)
+		c.wg.Add(1)
 		go func() {
-			defer wg.Done()
-			present, exists, err := getKeys(ctx, name)
+			defer c.wg.Done()
+			present, exists, err := c.getKeys(ctx, name)
 			if err != nil {
-				recordErr(fmt.Errorf("preflight: read %s %s/%s: %w", kind, namespace, name, err))
+				c.recordErr(fmt.Errorf("preflight: read %s %s/%s: %w", c.kind, c.namespace, name, err))
 				return
 			}
 			missing := missingSecretKeys(keys, present, exists)
@@ -1313,9 +1434,9 @@ func checkKeyedResources(
 				return
 			}
 			sort.Strings(missing)
-			mu.Lock()
-			out[namespace+"/"+name] = missing
-			mu.Unlock()
+			c.mu.Lock()
+			c.out[c.namespace+"/"+name] = missing
+			c.mu.Unlock()
 		}()
 	}
 }
@@ -1354,28 +1475,28 @@ func FormatPreflightReport(r PreflightResult) string {
 	if len(r.MissingImages) > 0 {
 		b.WriteString("\n  Images not found:\n")
 		for _, img := range r.MissingImages {
-			b.WriteString(fmt.Sprintf("    - %s\n", img))
+			fmt.Fprintf(&b, "    - %s\n", img)
 		}
 	}
 
 	if len(r.UnverifiableImages) > 0 {
 		b.WriteString("\n  Images that could not be confirmed (registry denied the lookup):\n")
 		for _, img := range r.UnverifiableImages {
-			b.WriteString(fmt.Sprintf("    - %s\n", img))
+			fmt.Fprintf(&b, "    - %s\n", img)
 		}
 	}
 
 	if len(r.ArchMismatchImages) > 0 {
 		b.WriteString("\n  Images built for the WRONG architecture (would crash with exec format error):\n")
 		for _, img := range r.ArchMismatchImages {
-			b.WriteString(fmt.Sprintf("    - %s\n", img))
+			fmt.Fprintf(&b, "    - %s\n", img)
 		}
 	}
 
 	if len(r.MissingCRDs) > 0 {
 		b.WriteString("\n  Resource kinds the cluster does NOT serve (missing CRD / Gateway API channel):\n")
 		for _, c := range r.MissingCRDs {
-			b.WriteString(fmt.Sprintf("    - %s\n", c))
+			fmt.Fprintf(&b, "    - %s\n", c)
 		}
 	}
 
@@ -1387,7 +1508,7 @@ func FormatPreflightReport(r PreflightResult) string {
 	if len(r.ByteMatchMismatches) > 0 {
 		b.WriteString("\n  Cross-secret byte-match mismatches (a value_group's members carry different bytes):\n")
 		for _, m := range r.ByteMatchMismatches {
-			b.WriteString(fmt.Sprintf("    - %s\n", m))
+			fmt.Fprintf(&b, "    - %s\n", m)
 		}
 	}
 
@@ -1398,7 +1519,7 @@ func FormatPreflightReport(r PreflightResult) string {
 			if len(m.Workloads) > 0 {
 				who = quoteJoin(m.Workloads)
 			}
-			b.WriteString(fmt.Sprintf("    - Secret %q mounted by %s — no rendered Secret, KubeconfigSecret, or ExternalSecret declares it\n", m.Secret, who))
+			fmt.Fprintf(&b, "    - Secret %q mounted by %s — no rendered Secret, KubeconfigSecret, or ExternalSecret declares it\n", m.Secret, who)
 		}
 	}
 
@@ -1459,8 +1580,8 @@ func writeMissingKeyBlock(b *strings.Builder, kind string, missing map[string][]
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		b.WriteString(fmt.Sprintf("  %s %s missing keys: [%s]\n",
-			kind, name, strings.Join(missing[name], ", ")))
+		fmt.Fprintf(b, "  %s %s missing keys: [%s]\n",
+			kind, name, strings.Join(missing[name], ", "))
 	}
 }
 
@@ -1926,7 +2047,8 @@ func withDockerConfig(cmd *exec.Cmd, dir string) {
 		}
 		filtered = append(filtered, kv)
 	}
-	cmd.Env = append(filtered, "DOCKER_CONFIG="+dir)
+	filtered = append(filtered, "DOCKER_CONFIG="+dir)
+	cmd.Env = filtered
 }
 
 // KubectlPullCredsResolver is the live PullCredsResolver: it reads the

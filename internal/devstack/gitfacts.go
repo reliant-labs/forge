@@ -23,6 +23,7 @@
 package devstack
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,7 +132,7 @@ func sameDir(a, b string) bool {
 }
 
 func gitOut(dir string, args ...string) string {
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(context.Background(), "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

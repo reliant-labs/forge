@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // graph_test.go — exercises buildGraphDoc end-to-end against a fixture
@@ -53,7 +51,11 @@ docs: {}
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
-	writeComponentsJSON(t, dir, config.ComponentConfig{Name: "tasks", Kind: "server", Path: "internal/handlers/tasks"})
+	// The service inventory is enumerated from the proto descriptor now
+	// (codegen.IntrospectComponents), not components.json. "TasksService"
+	// maps to component "tasks" with Path internal/handlers/tasks — the dir
+	// writeTasksContract populates with the Repo dep.
+	writeForgeDescriptor(t, dir, "TasksService")
 }
 
 // writeTasksContract writes a contract.go for the tasks service whose

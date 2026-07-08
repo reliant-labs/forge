@@ -75,6 +75,23 @@ const config = [
       "max-lines": "off",
       "max-depth": "off",
       "max-params": "off",
+      // Honour the universal underscore-prefix stub idiom. A leading `_`
+      // is the cross-ecosystem signal for "intentionally unused" — unused
+      // function args (`_ctx`), placeholder bindings (`_eventName`), and
+      // swallowed catch clauses (`catch (_err)`). typescript-eslint's
+      // recommended preset enables no-unused-vars with NO ignore patterns,
+      // so without this the idiom warns in every scaffolded file. Turn off
+      // the base `no-unused-vars` (superseded by the typed rule) to avoid
+      // double-reporting.
+      "no-unused-vars": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
       "react/forbid-dom-props": [
         "warn",
         {
@@ -146,6 +163,24 @@ const config = [
     ],
     rules: {
       "import/no-default-export": "off",
+    },
+  },
+  {
+    // The forge component library under src/components/ui/** is
+    // shadcn-derived: installed via the shadcn CLI and OWNED by the
+    // library, not hand-authored per project, so forge can't rewrite it to
+    // satisfy the project-wide nudges. Two patterns it legitimately uses:
+    //   - react/forbid-dom-props: primitives like progress/chart/resizable
+    //     set inline `style` for RUNTIME-computed values (widths, transforms)
+    //     that cannot be expressed as static Tailwind utilities.
+    //   - @next/next/no-img-element: the avatar primitive renders a raw
+    //     <img> fallback (Radix Avatar), which is correct — next/image
+    //     would fight its intrinsic sizing.
+    // Scope the exemptions to the library dir so app code still gets nudged.
+    files: ["src/components/ui/**/*.{ts,tsx}"],
+    rules: {
+      "react/forbid-dom-props": "off",
+      "@next/next/no-img-element": "off",
     },
   },
 ];

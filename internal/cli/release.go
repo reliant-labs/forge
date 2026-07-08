@@ -343,7 +343,7 @@ func resolveReleaseDigests(r Release) (map[string]string, error) {
 					"  (1) no docker images were built (check --env and that KCL declares services),\n"+
 					"  (2) digests were not captured (re-run the build with --push <registry>), or\n"+
 					"  (3) all external builds were skipped due to a missing build_cwd.\n"+
-					"Inspect the release file with `forge audit` to see what was recorded.",
+					"Inspect the release file with `forge audit` to see what was recorded",
 				r.Version)
 		}
 		// Artifacts exist but none resolved a shared digest — every artifact is

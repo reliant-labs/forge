@@ -30,6 +30,7 @@
 package kclplugin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -67,6 +68,8 @@ type PortResolver struct {
 // falling back to an OS-assigned port.
 const scanWindow = 64
 
+// NewPortResolver returns an in-memory PortResolver that allocates ports
+// for the current run only, without persisting assignments across runs.
 func NewPortResolver() *PortResolver {
 	return &PortResolver{byName: map[string]int{}, claimed: map[int]bool{}, persisted: map[string]int{}}
 }
@@ -134,7 +137,8 @@ func (r *PortResolver) assign(name string, port int) int {
 }
 
 func portFree(p int) bool {
-	ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", p))
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("localhost:%d", p))
 	if err != nil {
 		return false
 	}
@@ -143,11 +147,12 @@ func portFree(p int) bool {
 }
 
 func freePort() (int, error) {
-	ln, err := net.Listen("tcp", "localhost:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "localhost:0")
 	if err != nil {
 		return 0, err
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 

@@ -322,17 +322,6 @@ type deployOptions struct {
 }
 
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
-	// imageTag is the env-wide mutable tag bound to KCL's `image_tag` (the
-	// per-image fallback for vendored / no-digest images and the
-	// External/Compose ${TAG} source). plainTag is the same mutable tag.
-	// imageDigests is the PER-IMAGE name→digest map: each forge-built image
-	// resolves to ITS OWN captured digest, so the KCL render pins
-	// `<image>@<digest>` per service rather than stamping one env-wide digest
-	// onto every image (the multi-image correctness fix). Empty on the
-	// no-digest / local-registry path → every image stays on imageTag.
-	imageTag := opts.imageTag
-	plainTag := opts.imageTag
-	var imageDigests map[string]string
 	dryRun := opts.dryRun
 	namespace := opts.namespace
 	targetArchFlag := opts.targetArch
@@ -373,50 +362,22 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// restore hook is unused (an applied render's ports are the truth).
 	activateDevStack(projectDir, envName)
 
-	tagSource := "rollback (state file)"
-	if !rollback {
-		// Resolve image tag via the three-tier precedence chain. Split
-		// into its own helper so the precedence logic is testable
-		// without stubbing the whole deploy pipeline. Rollback never
-		// consults this chain — it reads the per-service state file
-		// inside dispatchDeployGroups instead.
-		ref, pt, src, terr := resolveDeployImageTag(ctx, projectDir, envName, imageTag, opts.noDigest)
-		if terr != nil {
-			return terr
-		}
-		imageTag = ref
-		plainTag = pt
-		tagSource = src
-		// Resolve the PER-IMAGE digest map (image name → sha256). Threaded
-		// into every manifest render below so each service pins ITS image's
-		// digest.
-		//
-		// Resolution precedence (highest first):
-		//   1. A bound RELEASE (env promoted to a release via `forge promote`).
-		//      Pins the digests the release captured — so every env on the same
-		//      release deploys byte-identical images (build once, promote). This
-		//      is the new layer; it wins because a deliberate promotion is a
-		//      stronger signal than whatever the per-env build state happens to
-		//      hold.
-		//   2. The per-env build state (today's flow): the aggregate +
-		//      per-service build-<env>.json digests `forge build --push` wrote.
-		//   3. The mutable :tag (resolveDeployImageTag, above) for any image
-		//      with no captured digest.
-		//
-		// FULL BACKWARD COMPAT: when the env has NO release binding, this is
-		// byte-identical to before — resolveDeployImageDigests alone. The
-		// current cloud + e2e flow binds no release, so it is unaffected.
-		// --no-digest disables both digest paths (the tag-only escape hatch).
-		digests, boundRel, derr := resolveDeployDigests(projectDir, envName, opts.noDigest)
-		if derr != nil {
-			return derr
-		}
-		imageDigests = digests
-		if boundRel != "" {
-			tagSource = fmt.Sprintf("release %s (promoted; .forge/env-releases.json)", boundRel)
-			fmt.Printf("  Release:     %s  (env %q is promoted to it — pinning its digests)\n", boundRel, envName)
-		}
+	// imageTag is the env-wide mutable tag bound to KCL's `image_tag` (the
+	// per-image fallback for vendored / no-digest images and the
+	// External/Compose ${TAG} source). plainTag is the same mutable tag.
+	// imageDigests is the PER-IMAGE name→digest map: each forge-built image
+	// resolves to ITS OWN captured digest, so the KCL render pins
+	// `<image>@<digest>` per service rather than stamping one env-wide digest
+	// onto every image (the multi-image correctness fix). Empty on the
+	// no-digest / local-registry path → every image stays on imageTag.
+	tagRes, err := resolveDeployTags(ctx, projectDir, envName, opts, rollback)
+	if err != nil {
+		return err
 	}
+	imageTag := tagRes.imageTag
+	plainTag := tagRes.plainTag
+	imageDigests := tagRes.imageDigests
+	tagSource := tagRes.tagSource
 
 	// Resolve namespace.
 	if namespace == "" {
@@ -427,53 +388,9 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		}
 	}
 
-	// Read rendered KCL once — used for the deploy-time orchestration
-	// AND the "any cluster-shaped service?" check that gates the
-	// kubectl-context guard, the namespace banner, and the dev-cluster
-	// bootstrap. Missing KCL render is logged and treated as
-	// "no filter" (every Deployment in the namespace is awaited),
-	// preserving the pre-orchestration behaviour for projects that
-	// haven't migrated to the deploy module yet.
-	//
-	// Note: the warning prints earlier in the deploy sequence than it
-	// did pre-extraction (before "Generating manifests..." rather than
-	// after "Applying manifests..."). Strictly informational, and only
-	// fires on an edge case (kcl JSON parse fails after the YAML render
-	// succeeds).
-	entities, kerr := RenderKCL(ctx, projectDir, envName)
-	if kerr != nil {
-		fmt.Printf("Note: KCL entity read skipped (%v) — waiting on every Deployment in namespace.\n", kerr)
-	}
-
-	// --target scoping (application-level filter). Filter the rendered
-	// Services / Frontends down to the named apps BEFORE everything that
-	// derives from the entity set: buildDeployGroups (External/Compose
-	// bucketing), the rollout-wait / host-skip / one-shot-Job sets, and
-	// the cluster banners. An empty filter is a no-op (every app), the
-	// unchanged default. A typo'd target is caught here with the list of
-	// available app names rather than producing a silent no-op deploy.
-	if len(targets) > 0 && entities != nil {
-		if err := validateDeployTargets(entities, targets); err != nil {
-			return err
-		}
-		entities = filterEntitiesByTarget(entities, targets)
-	}
-
-	// --frontends-only: narrow the rendered set to its Firebase frontend(s)
-	// and DROP every other kind (Services, Operators, CronJobs, gateways,
-	// routes, helm charts). This is what makes the frontendOnly cluster-skip
-	// guard below engage for a project that declares backend CronJobs — a
-	// declared forge.CronJob would otherwise leave entities.CronJobs
-	// non-empty, keep frontendOnly false, and drive an empty-manifest
-	// cluster.Apply that dies "no objects passed to apply". The flag scopes
-	// the whole deploy to "build + Firebase deploy the frontend(s), touch no
-	// cluster". Refuse fast when the env declares no Firebase frontend —
-	// otherwise the deploy would silently no-op.
-	if opts.frontendsOnly {
-		if entities == nil || !hasFirebaseFrontend(entities) {
-			return fmt.Errorf("--frontends-only: environment %q declares no Firebase Hosting frontend to deploy", envName)
-		}
-		entities = filterEntitiesToFrontendsOnly(entities)
+	entities, err := renderAndScopeEntities(ctx, projectDir, envName, targets, opts.frontendsOnly)
+	if err != nil {
+		return err
 	}
 
 	hasK8sServices := kclEntitiesHaveK8sCluster(entities)
@@ -493,22 +410,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		}
 	}
 
-	fmt.Printf("Deploying project: %s\n", store.Meta().Name)
-	fmt.Printf("  Environment: %s\n", envName)
-	if rollback {
-		fmt.Printf("  Mode:        rollback\n")
-	} else {
-		fmt.Printf("  Image tag:   %s  (source: %s)\n", imageTag, tagSource)
-	}
-	// Namespace and kubectl-context belong to the K8sCluster pipeline;
-	// suppress both banners for external-only / compose-only projects
-	// so the deploy output isn't cluttered with cluster artifacts that
-	// don't apply.
-	if hasK8sServices {
-		fmt.Printf("  Namespace:   %s\n", namespace)
-	}
-	fmt.Printf("  Dry run:     %v\n", dryRun)
-	fmt.Println()
+	printDeployBanner(store.Meta().Name, envName, imageTag, tagSource, namespace, rollback, dryRun, hasK8sServices)
 
 	// Declared external-prerequisite CHECKLIST: print the out-of-band facts
 	// this env DEPENDS ON (forge.ExternalSecret / forge.DNSRecord) so the
@@ -536,137 +438,38 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	start := time.Now()
 
-	// Cluster bootstrap. Declarative first: when the env's Bundle declares
-	// `clusters = [...]`, reconcile each (create-if-absent, no-op if
-	// present) — the multi-cluster generalization of the dev-only ensure
-	// below, ownership a reference via Cluster.owner (derived network /
-	// registry-inherit). A
-	// declared-cluster env works in ANY env name (not just "dev"), so a
-	// multi-cluster e2e/preview env stands up its clusters here. When the
-	// env declares NO clusters, fall back to the legacy dev-only
-	// ensureDevCluster (single cluster from deploy/k3d.yaml) so existing
-	// single-cluster dev envs are byte-identical.
-	//
-	// Skipped under --dry-run (renders only; never touches a cluster /
-	// registry), on rollback (reuses the tag already in the cluster), and
-	// when the env has no K8sCluster services (external-only env needs no
-	// k3d cluster).
-	if !dryRun && !rollback && hasK8sServices {
-		if entities != nil && len(entities.Clusters) > 0 {
-			if err := reconcileDeclaredClusters(ctx, entities.Clusters, projectDir, envName); err != nil {
-				return err
-			}
-		} else if envName == "dev" {
-			if err := ensureDevCluster(ctx); err != nil {
-				return err
-			}
-		}
+	if err := prepareDeployCluster(ctx, deployClusterInput{
+		cfg: cfg, entities: entities, projectDir: projectDir, envName: envName,
+		imageTag: imageTag, targetArchFlag: targetArchFlag,
+		dryRun: dryRun, rollback: rollback, hasK8sServices: hasK8sServices,
+	}); err != nil {
+		return err
 	}
 
-	// Local image build+push: dev only (the local registry path). Remote
-	// envs build/push out-of-band (CI). Independent of the cluster
-	// bootstrap above so a multi-cluster dev env still pushes to its
-	// owner cluster's registry.
-	if envName == "dev" && !dryRun && !rollback && hasK8sServices {
-		if err := buildAndPushLocal(ctx, cfg, imageTag, targetArchFlag); err != nil {
-			return err
-		}
-	}
-
-	// Resolve per-env config. Non-sensitive scalars are passed to KCL via
-	// `-D key=value` so they bind to top-level identifiers in main.k.
-	// Sensitive fields are emitted as secret refs by the deploy gen
-	// pipeline (deploy/kcl/<env>/config_gen.k) and aren't piped through
-	// here. Missing per-env config is non-fatal.
-	envCfgKV := map[string]string{}
-	if envConfig, lerr := config.LoadEnvironmentConfig(projectDir, envName); lerr == nil {
-		for k, v := range envConfig {
-			if s, ok := v.(string); ok && strings.HasPrefix(strings.TrimSpace(s), "${") {
-				continue // secret refs handled by config_gen.k
-			}
-			envCfgKV[k] = fmt.Sprint(v)
-		}
-	}
+	envCfgKV := loadDeployEnvConfigKV(projectDir, envName)
 
 	fmt.Printf("Generating manifests from %s...\n", mainK)
 
-	// Build deploy groups from the rendered entities. Services bucket
-	// by deploy target type: K8sCluster groups by (cluster, ns,
-	// registry); External by deploy_cmd; Compose by compose_file.
-	// Host / build-only services are skipped (those are forge run /
-	// forge build territory).
-	groups, gerr := buildDeployGroupsWithOpts(envName, entities, namespace, dryRun)
+	// Build the deploy groups (bucketed by target type) and propagate the
+	// resolved image tag to each. See buildDeployGroupsForEnv.
+	groups, gerr := buildDeployGroupsForEnv(envName, entities, namespace, plainTag, dryRun)
 	if gerr != nil {
-		return fmt.Errorf("group services for deploy: %w", gerr)
-	}
-	// Propagate the resolved image tag to every group. The cluster
-	// path uses ImageTag implicitly via cluster.Apply, but the
-	// external/compose providers read group.ImageTag for ${TAG}
-	// substitution — without this, External deploy_cmd sees an empty
-	// tag and downstream scripts (vultr-deploy.sh) error out. Use the
-	// PLAIN tag here, never the digest form: a `${IMAGE}:${TAG}` with
-	// `${TAG}=@sha256:...` would render a broken `image:@sha256:...`
-	// ref. (The K8sCluster manifest render gets the digest via imageTag
-	// below; group.ImageTag is the External/Compose ${TAG} only.)
-	for i := range groups {
-		if groups[i].ImageTag == "" {
-			groups[i].ImageTag = plainTag
-		}
+		return gerr
 	}
 
-	// Declarative kubectl context: the deploy target is read from the
-	// rendered KCL's `forge.K8sCluster.cluster` (== the kubectl context
-	// name), which every K8sCluster group carries on group.Cluster. The
-	// per-group dispatch builds its context per group (resolveGroupContext)
-	// so a multi-cluster env lands each group on ITS OWN declared cluster.
-	// For the env-wide consumers that don't iterate groups — the secrets
-	// pre-apply, the empty-groups direct cluster.Apply, and the rollback
-	// provider — we use the first declared cluster as the env's context.
-	// The context is purely declarative; there is no CLI override.
-	//
-	// Fail fast FIRST: if a declared cluster has no matching kubectl
-	// context, refuse here with the list of available contexts rather than
-	// silently applying to whatever's active. This is the guard that makes
-	// a wrong-cluster deploy impossible — it always runs (dry-run is for
-	// surfacing mistakes, not papering over them). Host-only / compose envs
-	// declare no cluster and are skipped.
-	if hasK8sServices {
-		if err := verifyDeclaredContextsExist(ctx, groups); err != nil {
-			return err
-		}
-	}
-	deployContext := declaredEnvContext(groups)
-	// declaredEnvContext only sees SERVICE-derived groups, so an operator- or
-	// cronjob-only --target (no service groups) leaves it empty. The apply
-	// chokepoint (cluster.KubectlApply) HARD-REJECTS an empty context
-	// instead of silently using kubectl's current one — the footgun where a
-	// flipped current-context lands a deploy in the wrong cluster. A declared
-	// cluster is a property of the ENV (forge.K8sCluster.cluster), not of any
-	// one service, so resolve it directly here — the same source --explain
-	// uses.
-	if deployContext == "" {
-		deployContext = expectedClusterForEnv(ctx, cfg, envName)
+	// Env-wide kubectl context for the consumers that don't iterate groups
+	// (secrets pre-apply, empty-groups direct apply, rollback). Fails fast on
+	// a declared cluster with no matching context. See resolveDeployKubectlContext.
+	deployContext, err := resolveDeployKubectlContext(ctx, cfg, envName, groups, hasK8sServices)
+	if err != nil {
+		return err
 	}
 
-	// Resolve the env's declared platform deps (forge.HelmChart) THIS apply
-	// renders into cluster.HelmChartSpec values (helm-as-a-RENDERER). The
-	// uniform exclusive --target rule (selectedHelmChartEntities, mirroring
-	// cluster.selectHelmChartsByGroup): EVERY declared chart on a bare
-	// `forge deploy <env>` (no --target — the full declarative reconcile),
-	// or EXACTLY the charts whose Name ∈ --target. cluster.Apply renders
-	// each selected chart (helm template --skip-crds), stamps
-	// app.kubernetes.io/name, and applies CRDs-first/Established-gated before
-	// the chart's controllers. The CRD-bundle network fetch only runs for the
-	// charts actually selected here.
-	var helmSpecs []cluster.HelmChartSpec
-	if entities != nil {
-		selected := selectedHelmChartEntities(entities.HelmCharts, targets)
-		if len(selected) > 0 {
-			helmSpecs, err = helmChartSpecsFromEntities(ctx, selected)
-			if err != nil {
-				return err
-			}
-		}
+	// Env's declared platform deps (forge.HelmChart) rendered into
+	// cluster.HelmChartSpec values. See resolveDeployHelmSpecs.
+	helmSpecs, err := resolveDeployHelmSpecs(ctx, entities, targets)
+	if err != nil {
+		return err
 	}
 
 	// Platform dependencies (cert-manager, Envoy Gateway, …) are NOT
@@ -693,28 +496,10 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// registry the checker can't reach). Runs under --dry-run too (pure
 	// read-only check). --skip-preflight bypasses it.
 	if hasK8sServices && !rollback && !opts.skipPreflight {
-		// Resolve the target cluster's declared node arch for the preflight
-		// arch gate from the env's KCL deploy.Cluster.platform — the explicit
-		// per-env SSOT the cloud envs set to "amd64". We deliberately do NOT
-		// fall back to forge.yaml deploy.target_arch here: that field carries
-		// an implicit "amd64" default, and seeding the gate from a value the
-		// author never declared would risk false-failing an env that simply
-		// hasn't opted into platform pinning yet (the WARN-don't-block
-		// contract). Empty (no platform declared — e.g. the local e2e env)
-		// leaves the gate inert.
-		targetArch := kclFirstClusterPlatform(entities)
-		if err := runDeployPreflight(ctx, deployPreflightInput{
-			mainK:           mainK,
-			imageTag:        imageTag,
-			namespace:       namespace,
-			env:             envName,
-			envCfgKV:        envCfgKV,
-			deployCtx:       deployContext,
-			targets:         targets,
-			targetArch:      targetArch,
-			imageDigests:    imageDigests,
-			requiredSecrets: requiredSecretsForPreflight(entities),
-			secretSupply:    secretSupplyForPreflight(entities),
+		if err := runDeployPreflightForEnv(ctx, deployPreflightEnvInput{
+			entities: entities, mainK: mainK, imageTag: imageTag, namespace: namespace,
+			envName: envName, envCfgKV: envCfgKV, deployContext: deployContext,
+			targets: targets, imageDigests: imageDigests,
 		}); err != nil {
 			return err
 		}
@@ -732,33 +517,12 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	}
 
 	if rollback {
-		// Rollback path: dispatch each group to its provider's
-		// Rollback. The dispatcher reads per-service state files for
-		// external/compose providers and surfaces a clear error when
-		// a service has no previous deploy on record.
-		hostSkip := hostDeploymentSkipSetFromKCL(cfg, entities)
-		oneShotJobs := oneShotJobNamesFromKCL(entities)
-		// Rollback's K8sCluster provider doesn't drive cluster.Apply
-		// (kubectl rollout undo lives in the provider's Rollback) so
-		// the builder is unused for rollback groups, but the registry
-		// still needs the provider registered. We reuse the deploy-
-		// shaped builder for symmetry with the deploy path.
-		// Rollback reuses the tag already in the cluster, so imageDigests is
-		// nil here (the digest-map resolution is gated behind `if !rollback`);
-		// the builder threads it through unused for symmetry. Rollback
-		// applies no platform deps (it reverts workloads to the last tag),
-		// so helmSpecs is nil here.
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities, imageDigests, nil)
-		registry := deploytarget.NewRegistry()
-		// Rollback's per-group context is resolved by the provider purely
-		// from each group's declared cluster (forge.K8sCluster.cluster) —
-		// no override, no current-context fallback.
-		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
-		if err := rollbackDeployGroups(ctx, registry, groups, projectDir); err != nil {
-			return err
-		}
-		fmt.Printf("\nRollback completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
-		return nil
+		return runDeployRollback(ctx, deployRollbackInput{
+			mainK: mainK, imageTag: imageTag, namespace: namespace, envName: envName,
+			envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, targets: targets,
+			groups: groups, entities: entities, imageDigests: imageDigests,
+			cfg: cfg, projectDir: projectDir, start: start,
+		})
 	}
 
 	// When no K8sCluster groups are present, the rendered set carries
@@ -771,44 +535,14 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// pipeline to apply. Skip the empty-groups cluster.Apply below so
 	// such projects don't need kubectl configured at all — the frontend
 	// dispatch further down does the real work.
-	frontendOnly := len(groups) == 0 && !hasK8sServices && hasFirebaseFrontend(entities) &&
-		entities != nil && len(entities.Operators) == 0 && len(entities.CronJobs) == 0
-	if len(groups) == 0 && !frontendOnly {
-		// Nothing to dispatch — historical behaviour was to still run
-		// cluster.Apply against the env's main.k in case host-only
-		// entities still produced manifests (CronJobs etc.). Preserve
-		// that with one direct call.
-		if err := cluster.Apply(ctx, cluster.ApplyOpts{
-			MainK:        mainK,
-			ImageTag:     imageTag,
-			ImageDigests: imageDigests,
-			Namespace:    namespace,
-			Env:          envName,
-			Context:      deployContext,
-			EnvConfigKV:  envCfgKV,
-			DryRun:       dryRun,
-			DryRunFramed: true,
-			Prune:        prune,
-			HostSkip:     hostDeploymentSkipSetFromKCL(cfg, entities),
-			OneShotJobs:  oneShotJobNamesFromKCL(entities),
-			Targets:      targets,
-			HelmCharts:   helmSpecs,
-		}); err != nil {
-			return err
-		}
-	} else if len(groups) > 0 {
-		// Dispatch each group through its provider. The K8sCluster
-		// provider wraps cluster.Apply via the builder closure so the
-		// per-call envelope (mainK / image tag / env config / dry-run
-		// / prune / host-skip / one-shot jobs) flows through verbatim.
-		hostSkip := hostDeploymentSkipSetFromKCL(cfg, entities)
-		oneShotJobs := oneShotJobNamesFromKCL(entities)
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets, groups, entities, imageDigests, helmSpecs)
-		registry := deploytarget.NewRegistry()
-		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
-		if err := dispatchDeployGroups(ctx, registry, groups, ""); err != nil {
-			return err
-		}
+	if err := applyDeployGroups(ctx, deployApplyInput{
+		groups: groups, entities: entities, hasK8sServices: hasK8sServices,
+		mainK: mainK, imageTag: imageTag, imageDigests: imageDigests,
+		namespace: namespace, envName: envName, deployContext: deployContext,
+		envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
+		targets: targets, helmSpecs: helmSpecs,
+	}); err != nil {
+		return err
 	}
 
 	// Frontend deploy dispatch — frontends declaring a first-class deploy
@@ -839,6 +573,404 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	fmt.Printf("\nDeploy completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
 	return nil
+}
+
+// deployTagResolution is the resolved image-reference set runDeploy threads
+// through the render + apply pipeline: the (possibly digest-pinned) imageTag,
+// the always-plain plainTag (the External/Compose ${TAG} source), the
+// per-image name→digest map, and a human-readable tagSource for the banner.
+type deployTagResolution struct {
+	imageTag     string
+	plainTag     string
+	tagSource    string
+	imageDigests map[string]string
+}
+
+// resolveDeployTags resolves the image tag (three-tier precedence chain) and
+// the per-image digest map for a deploy. Split out of runDeploy so the
+// precedence logic is testable without stubbing the whole pipeline. Rollback
+// never consults this chain — it reads the per-service state file inside
+// dispatchDeployGroups instead — so the rollback case returns the plain
+// opts.imageTag with a "rollback (state file)" source and no digests.
+//
+// Digest resolution precedence (highest first):
+//  1. A bound RELEASE (env promoted via `forge promote`): pins the digests the
+//     release captured so every env on the same release deploys byte-identical
+//     images. Wins because a deliberate promotion is a stronger signal than the
+//     per-env build state.
+//  2. The per-env build state: the aggregate + per-service build-<env>.json
+//     digests `forge build --push` wrote.
+//  3. The mutable :tag (resolveDeployImageTag) for any image with no captured
+//     digest.
+//
+// FULL BACKWARD COMPAT: with no release binding this is byte-identical to
+// resolveDeployImageDigests alone. --no-digest disables both digest paths.
+func resolveDeployTags(ctx context.Context, projectDir, envName string, opts deployOptions, rollback bool) (deployTagResolution, error) {
+	res := deployTagResolution{
+		imageTag:  opts.imageTag,
+		plainTag:  opts.imageTag,
+		tagSource: "rollback (state file)",
+	}
+	if rollback {
+		return res, nil
+	}
+	ref, pt, src, terr := resolveDeployImageTag(ctx, projectDir, envName, opts.imageTag, opts.noDigest)
+	if terr != nil {
+		return deployTagResolution{}, terr
+	}
+	res.imageTag = ref
+	res.plainTag = pt
+	res.tagSource = src
+	digests, boundRel, derr := resolveDeployDigests(projectDir, envName, opts.noDigest)
+	if derr != nil {
+		return deployTagResolution{}, derr
+	}
+	res.imageDigests = digests
+	if boundRel != "" {
+		res.tagSource = fmt.Sprintf("release %s (promoted; .forge/env-releases.json)", boundRel)
+		fmt.Printf("  Release:     %s  (env %q is promoted to it — pinning its digests)\n", boundRel, envName)
+	}
+	return res, nil
+}
+
+// deployRollbackInput carries the resolved deploy envelope runDeployRollback
+// needs to revert each group to the tag already in the cluster.
+type deployRollbackInput struct {
+	mainK        string
+	imageTag     string
+	namespace    string
+	envName      string
+	envCfgKV     map[string]string
+	dryRun       bool
+	prune        bool
+	targets      []string
+	groups       []deploytarget.ServiceGroup
+	entities     *KCLEntities
+	imageDigests map[string]string
+	cfg          *config.ProjectConfig
+	projectDir   string
+	start        time.Time
+}
+
+// runDeployRollback dispatches each group to its provider's Rollback. The
+// dispatcher reads per-service state files for external/compose providers and
+// surfaces a clear error when a service has no previous deploy on record.
+//
+// Rollback's K8sCluster provider doesn't drive cluster.Apply (kubectl rollout
+// undo lives in the provider's Rollback), so the builder is unused for rollback
+// groups, but the registry still needs the provider registered; we reuse the
+// deploy-shaped builder for symmetry with the deploy path. Rollback reuses the
+// tag already in the cluster (imageDigests threads through unused) and applies
+// no platform deps (helmSpecs is nil).
+func runDeployRollback(ctx context.Context, in deployRollbackInput) error {
+	hostSkip := hostDeploymentSkipSetFromKCL(in.cfg, in.entities)
+	oneShotJobs := oneShotJobNamesFromKCL(in.entities)
+	builder := applyOptsBuilderFromContext(applyOptsContext{
+		MainK: in.mainK, ImageTag: in.imageTag, FallbackNamespace: in.namespace, Env: in.envName,
+		EnvCfgKV: in.envCfgKV, DryRun: in.dryRun, Prune: in.prune, HostSkip: hostSkip,
+		OneShotJobs: oneShotJobs, Targets: in.targets, Groups: in.groups, Entities: in.entities,
+		ImageDigests: in.imageDigests, HelmCharts: nil,
+	})
+	registry := deploytarget.NewRegistry()
+	// Rollback's per-group context is resolved by the provider purely from each
+	// group's declared cluster (forge.K8sCluster.cluster) — no override, no
+	// current-context fallback.
+	registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
+	if err := rollbackDeployGroups(ctx, registry, in.groups, in.projectDir); err != nil {
+		return err
+	}
+	fmt.Printf("\nRollback completed in %s.\n", time.Since(in.start).Truncate(time.Millisecond))
+	return nil
+}
+
+// deployApplyInput carries everything applyDeployGroups needs to route the
+// rendered groups to the cluster (or the empty-groups direct apply).
+type deployApplyInput struct {
+	groups         []deploytarget.ServiceGroup
+	entities       *KCLEntities
+	hasK8sServices bool
+	mainK          string
+	imageTag       string
+	imageDigests   map[string]string
+	namespace      string
+	envName        string
+	deployContext  string
+	envCfgKV       map[string]string
+	dryRun         bool
+	prune          bool
+	cfg            *config.ProjectConfig
+	targets        []string
+	helmSpecs      []cluster.HelmChartSpec
+}
+
+// applyDeployGroups applies the rendered deploy groups. With no groups (and not
+// a frontend-only env) it falls back to one direct cluster.Apply against the
+// env's main.k — historical behaviour that still catches host-only entities
+// that produce manifests (CronJobs etc.). With groups present it dispatches
+// each through its provider (the K8sCluster provider wraps cluster.Apply via
+// the builder closure). A frontend-only env has nothing for the cluster
+// pipeline, so both branches are skipped and the frontend dispatch does the
+// real work.
+func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
+	frontendOnly := len(in.groups) == 0 && !in.hasK8sServices && hasFirebaseFrontend(in.entities) &&
+		in.entities != nil && len(in.entities.Operators) == 0 && len(in.entities.CronJobs) == 0
+	if len(in.groups) == 0 && !frontendOnly {
+		return cluster.Apply(ctx, cluster.ApplyOpts{
+			MainK:        in.mainK,
+			ImageTag:     in.imageTag,
+			ImageDigests: in.imageDigests,
+			Namespace:    in.namespace,
+			Env:          in.envName,
+			Context:      in.deployContext,
+			EnvConfigKV:  in.envCfgKV,
+			DryRun:       in.dryRun,
+			DryRunFramed: true,
+			Prune:        in.prune,
+			HostSkip:     hostDeploymentSkipSetFromKCL(in.cfg, in.entities),
+			OneShotJobs:  oneShotJobNamesFromKCL(in.entities),
+			Targets:      in.targets,
+			HelmCharts:   in.helmSpecs,
+		})
+	}
+	if len(in.groups) > 0 {
+		hostSkip := hostDeploymentSkipSetFromKCL(in.cfg, in.entities)
+		oneShotJobs := oneShotJobNamesFromKCL(in.entities)
+		builder := applyOptsBuilderFromContext(applyOptsContext{
+			MainK: in.mainK, ImageTag: in.imageTag, FallbackNamespace: in.namespace, Env: in.envName,
+			EnvCfgKV: in.envCfgKV, DryRun: in.dryRun, Prune: in.prune, HostSkip: hostSkip,
+			OneShotJobs: oneShotJobs, Targets: in.targets, Groups: in.groups, Entities: in.entities,
+			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
+		})
+		registry := deploytarget.NewRegistry()
+		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
+		return dispatchDeployGroups(ctx, registry, in.groups, "")
+	}
+	return nil
+}
+
+// buildDeployGroupsForEnv builds the deploy groups from the rendered entities
+// and propagates the resolved plain image tag to every group. Services bucket
+// by deploy target type: K8sCluster groups by (cluster, ns, registry); External
+// by deploy_cmd; Compose by compose_file. Host / build-only services are
+// skipped (forge run / forge build territory).
+//
+// The tag propagation uses the PLAIN tag, never the digest form: the cluster
+// path consumes ImageTag implicitly via cluster.Apply, but the external/compose
+// providers read group.ImageTag for ${TAG} substitution — a `${IMAGE}:${TAG}`
+// with `${TAG}=@sha256:...` would render a broken `image:@sha256:...` ref.
+func buildDeployGroupsForEnv(envName string, entities *KCLEntities, namespace, plainTag string, dryRun bool) ([]deploytarget.ServiceGroup, error) {
+	groups, gerr := buildDeployGroupsWithOpts(envName, entities, namespace, dryRun)
+	if gerr != nil {
+		return nil, fmt.Errorf("group services for deploy: %w", gerr)
+	}
+	for i := range groups {
+		if groups[i].ImageTag == "" {
+			groups[i].ImageTag = plainTag
+		}
+	}
+	return groups, nil
+}
+
+// renderAndScopeEntities reads the rendered KCL once and applies the
+// application-level scoping filters (--target, --frontends-only) BEFORE
+// everything that derives from the entity set (deploy-group bucketing, the
+// rollout-wait / host-skip / one-shot-Job sets, the cluster banners). Missing
+// KCL render is logged and treated as "no filter" (every Deployment in the
+// namespace is awaited), preserving the pre-orchestration behaviour for
+// projects that haven't migrated to the deploy module yet.
+//
+// --target: an empty filter is a no-op (every app). A typo'd target is caught
+// here (with the list of available app names) rather than producing a silent
+// no-op deploy. --frontends-only: narrow the set to its Firebase frontend(s)
+// and DROP every other kind, so the frontend-only cluster-skip guard engages
+// even for a project that declares backend CronJobs; refuse fast when the env
+// declares no Firebase frontend rather than silently no-op'ing.
+func renderAndScopeEntities(ctx context.Context, projectDir, envName string, targets []string, frontendsOnly bool) (*KCLEntities, error) {
+	entities, kerr := RenderKCL(ctx, projectDir, envName)
+	if kerr != nil {
+		fmt.Printf("Note: KCL entity read skipped (%v) — waiting on every Deployment in namespace.\n", kerr)
+	}
+	if len(targets) > 0 && entities != nil {
+		if err := validateDeployTargets(entities, targets); err != nil {
+			return nil, err
+		}
+		entities = filterEntitiesByTarget(entities, targets)
+	}
+	if frontendsOnly {
+		if entities == nil || !hasFirebaseFrontend(entities) {
+			return nil, fmt.Errorf("--frontends-only: environment %q declares no Firebase Hosting frontend to deploy", envName)
+		}
+		entities = filterEntitiesToFrontendsOnly(entities)
+	}
+	return entities, nil
+}
+
+// printDeployBanner prints the pre-deploy summary. Namespace belongs to the
+// K8sCluster pipeline, so it is suppressed for external-only / compose-only
+// projects to keep the output uncluttered.
+func printDeployBanner(projectName, envName, imageTag, tagSource, namespace string, rollback, dryRun, hasK8sServices bool) {
+	fmt.Printf("Deploying project: %s\n", projectName)
+	fmt.Printf("  Environment: %s\n", envName)
+	if rollback {
+		fmt.Printf("  Mode:        rollback\n")
+	} else {
+		fmt.Printf("  Image tag:   %s  (source: %s)\n", imageTag, tagSource)
+	}
+	if hasK8sServices {
+		fmt.Printf("  Namespace:   %s\n", namespace)
+	}
+	fmt.Printf("  Dry run:     %v\n", dryRun)
+	fmt.Println()
+}
+
+// loadDeployEnvConfigKV resolves the per-env config into the `-D key=value`
+// scalars passed to KCL (they bind to top-level identifiers in main.k).
+// Sensitive fields are emitted as secret refs by the deploy gen pipeline
+// (deploy/kcl/<env>/config_gen.k) and are skipped here. Missing per-env config
+// is non-fatal (returns an empty, non-nil map).
+func loadDeployEnvConfigKV(projectDir, envName string) map[string]string {
+	envCfgKV := map[string]string{}
+	if envConfig, lerr := config.LoadEnvironmentConfig(projectDir, envName); lerr == nil {
+		for k, v := range envConfig {
+			if s, ok := v.(string); ok && strings.HasPrefix(strings.TrimSpace(s), "${") {
+				continue // secret refs handled by config_gen.k
+			}
+			envCfgKV[k] = fmt.Sprint(v)
+		}
+	}
+	return envCfgKV
+}
+
+// deployClusterInput carries the inputs prepareDeployCluster needs to stand up
+// the local cluster and push local images before the manifests apply.
+type deployClusterInput struct {
+	cfg            *config.ProjectConfig
+	entities       *KCLEntities
+	projectDir     string
+	envName        string
+	imageTag       string
+	targetArchFlag string
+	dryRun         bool
+	rollback       bool
+	hasK8sServices bool
+}
+
+// prepareDeployCluster reconciles the env's declared clusters (or the legacy
+// dev-only ensureDevCluster) and, for the dev env, builds + pushes images to
+// the local registry. All of this is skipped under --dry-run (renders only), on
+// rollback (reuses the tag already in the cluster), and when the env has no
+// K8sCluster services (external-only env needs no k3d cluster).
+//
+// Declarative first: when the env's Bundle declares `clusters = [...]`,
+// reconcile each (create-if-absent, no-op if present) — the multi-cluster
+// generalization of the dev-only ensure. A declared-cluster env works in ANY
+// env name (not just "dev"). When the env declares NO clusters, fall back to
+// the legacy dev-only ensureDevCluster so existing single-cluster dev envs are
+// byte-identical. The local build+push is independent of the cluster bootstrap
+// so a multi-cluster dev env still pushes to its owner cluster's registry.
+func prepareDeployCluster(ctx context.Context, in deployClusterInput) error {
+	if in.dryRun || in.rollback || !in.hasK8sServices {
+		return nil
+	}
+	if in.entities != nil && len(in.entities.Clusters) > 0 {
+		if err := reconcileDeclaredClusters(ctx, in.entities.Clusters, in.projectDir, in.envName); err != nil {
+			return err
+		}
+	} else if in.envName == "dev" {
+		if err := ensureDevCluster(ctx); err != nil {
+			return err
+		}
+	}
+	// Local image build+push: dev only (the local registry path). Remote
+	// envs build/push out-of-band (CI).
+	if in.envName == "dev" {
+		if err := buildAndPushLocal(ctx, in.cfg, in.imageTag, in.targetArchFlag); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveDeployKubectlContext resolves the env-wide kubectl context for the
+// consumers that don't iterate groups (the secrets pre-apply, the empty-groups
+// direct cluster.Apply, and the rollback provider). It fails fast when a
+// declared cluster has no matching kubectl context (with the list of available
+// contexts) rather than silently applying to whatever's active.
+//
+// declaredEnvContext only sees SERVICE-derived groups, so an operator- or
+// cronjob-only --target (no service groups) leaves it empty; the apply
+// chokepoint HARD-REJECTS an empty context, so we resolve it directly from the
+// env (forge.K8sCluster.cluster) — the same source --explain uses. Host-only /
+// compose envs declare no cluster and are skipped.
+func resolveDeployKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envName string, groups []deploytarget.ServiceGroup, hasK8sServices bool) (string, error) {
+	if hasK8sServices {
+		if err := verifyDeclaredContextsExist(ctx, groups); err != nil {
+			return "", err
+		}
+	}
+	deployContext := declaredEnvContext(groups)
+	if deployContext == "" {
+		deployContext = expectedClusterForEnv(ctx, cfg, envName)
+	}
+	return deployContext, nil
+}
+
+// resolveDeployHelmSpecs resolves the env's declared platform deps
+// (forge.HelmChart) into cluster.HelmChartSpec values (helm-as-a-RENDERER).
+// The uniform exclusive --target rule: EVERY declared chart on a bare `forge
+// deploy <env>` (no --target — the full declarative reconcile), or EXACTLY the
+// charts whose Name ∈ targets. Returns nil when the env declares no charts (or
+// none are selected). The CRD-bundle network fetch only runs for the charts
+// actually selected here.
+func resolveDeployHelmSpecs(ctx context.Context, entities *KCLEntities, targets []string) ([]cluster.HelmChartSpec, error) {
+	if entities == nil {
+		return nil, nil
+	}
+	selected := selectedHelmChartEntities(entities.HelmCharts, targets)
+	if len(selected) == 0 {
+		return nil, nil
+	}
+	return helmChartSpecsFromEntities(ctx, selected)
+}
+
+// deployPreflightEnvInput carries the env-derived inputs runDeployPreflightForEnv
+// needs; the remaining preflight fields (required secrets, secret supply,
+// target arch) are derived from entities inside the helper.
+type deployPreflightEnvInput struct {
+	entities      *KCLEntities
+	mainK         string
+	imageTag      string
+	namespace     string
+	envName       string
+	envCfgKV      map[string]string
+	deployContext string
+	targets       []string
+	imageDigests  map[string]string
+}
+
+// runDeployPreflightForEnv runs the deployability preflight against the live
+// target. The preflight arch gate reads the target cluster's declared node arch
+// from the env's KCL deploy.Cluster.platform — the explicit per-env SSOT the
+// cloud envs set to "amd64". We deliberately do NOT fall back to forge.yaml
+// deploy.target_arch here: that field carries an implicit "amd64" default, and
+// seeding the gate from a value the author never declared would risk
+// false-failing an env that simply hasn't opted into platform pinning yet (the
+// WARN-don't-block contract). Empty (no platform declared) leaves the gate inert.
+func runDeployPreflightForEnv(ctx context.Context, in deployPreflightEnvInput) error {
+	targetArch := kclFirstClusterPlatform(in.entities)
+	return runDeployPreflight(ctx, deployPreflightInput{
+		mainK:           in.mainK,
+		imageTag:        in.imageTag,
+		namespace:       in.namespace,
+		env:             in.envName,
+		envCfgKV:        in.envCfgKV,
+		deployCtx:       in.deployContext,
+		targets:         in.targets,
+		targetArch:      targetArch,
+		imageDigests:    in.imageDigests,
+		requiredSecrets: requiredSecretsForPreflight(in.entities),
+		secretSupply:    secretSupplyForPreflight(in.entities),
+	})
 }
 
 // dispatchFrontendDeploys ships every frontend declaring a first-class
@@ -1474,7 +1606,7 @@ func checkBuildStateFreshness(ctx context.Context, projectDir string, st *BuildS
 	return fmt.Errorf(
 		"refusing to deploy stale image: tag %q was built from %s, but HEAD is %s.\n"+
 			"  The recorded build predates your current commit — deploying it would ship old code.\n"+
-			"  Fix: rebuild from HEAD (forge build --docker ...), then deploy; or pass --tag %s to deploy the recorded image anyway.",
+			"  Fix: rebuild from HEAD (forge build --docker ...), then deploy; or pass --tag %s to deploy the recorded image anyway",
 		st.Tag, shortSHA(st.Commit), shortSHA(head), st.Tag)
 }
 
@@ -1954,8 +2086,8 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 // a request context. Failures fall through to the dev default / empty
 // — the env-cluster guard is a recommendation, not a hard dependency.
 func expectedClusterForEnv(ctx context.Context, cfg *config.ProjectConfig, envName string) string {
-	if cluster := firstK8sClusterField(ctx, envName, "cluster"); cluster != "" {
-		return cluster
+	if clusterName := firstK8sClusterField(ctx, envName, "cluster"); clusterName != "" {
+		return clusterName
 	}
 	if envName == "dev" && cfg != nil {
 		// Dev's default is the k3d cluster forge deploy dev creates.
@@ -2206,7 +2338,7 @@ func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, gro
 		if !isLocalCluster(g.Cluster) {
 			return fmt.Errorf(
 				"secret_provider 'dotenv' renders plaintext Secrets and is for LOCAL clusters only; target cluster %q is not local. "+
-					"Use secret_provider = forge.ExternalSecrets {} (Secrets provisioned out-of-band) for remote clusters.",
+					"Use secret_provider = forge.ExternalSecrets {} (Secrets provisioned out-of-band) for remote clusters",
 				g.Cluster)
 		}
 	}
@@ -2286,7 +2418,7 @@ func applyRenderedSecretsPerGroup(ctx context.Context, entities *KCLEntities, gr
 		if !isLocalCluster(g.Cluster) {
 			return fmt.Errorf(
 				"secret_provider 'rendered' renders plaintext Secrets and is for LOCAL clusters only; target cluster %q is not local. "+
-					"Use secret_provider = forge.ExternalSecrets {} for remote clusters.",
+					"Use secret_provider = forge.ExternalSecrets {} for remote clusters",
 				g.Cluster)
 		}
 

@@ -205,7 +205,7 @@ type Deps struct {
 
 - emits `type TraderConfig struct {...}` + `Trader TraderConfig` on
   `Config` in `internal/config/config.go`, with env/flag/default loading
-  for every leaf and the `.env.example` entries;
+  for every leaf;
 - `NewComponents` (in the generated `internal/app/compose.go`) passes the
   block to the component **by type** — `trader.New(trader.Deps{Cfg: cfg.Trader})`.
   Resolution is structural/compile-time: the typed field either matches
@@ -236,6 +236,35 @@ contracts:
   strict: true
   exclude: ["internal/buildinfo"]
 ```
+
+## Interfaces at the consumer, structs out
+
+Declare interfaces at the **consumer**, not next to the implementation.
+Accept interfaces (flexibility in), return concrete structs (no speculative
+abstraction out). A wide interface declared next to its impl that each caller
+only uses a slice of is a smell — split it into per-consumer interfaces.
+
+```go
+// Smell: one wide interface next to the impl; each caller uses 1–2 methods.
+type Store interface { // 29 methods; 16 had zero callers
+    Meta() Meta; Features() Features; Database() DBConfig; /* …26 more… */
+}
+func New(cfg Cfg) Store { ... }
+
+// Better: return the concrete type; each consumer declares the narrow
+// interface it actually needs, right next to itself.
+func New(cfg Cfg) *Store { ... } // accept interfaces, return structs
+
+// in the feature-gate package (the consumer):
+type featureReader interface{ Features() Features }
+func gate(s featureReader) { ... }
+```
+
+Forge's `New(Deps) Service` contract is the deliberate exception to "return
+structs": that Service interface is a *real* seam (the generated mock/test
+target and the DI boundary), not a speculative abstraction. The smell is a
+god-interface no single consumer uses whole — for that, let each consumer own
+its slice (the role-interface pattern in the `api` skill is the same move).
 
 ## Normalize for the author, denormalize for the machine (KCL ⇄ render)
 

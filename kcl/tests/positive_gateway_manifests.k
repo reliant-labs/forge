@@ -18,7 +18,7 @@ _target = forge.ClusterTarget {
 _bundle = forge.Bundle {
     cluster_target = _target
     services = [
-        forge.Service {
+        forge.RenderedWorkload {
             name = "api"
             image = "example"
             deploy = _target.deploy | {ports = [8080]}

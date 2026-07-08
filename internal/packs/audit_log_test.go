@@ -2,10 +2,14 @@ package packs
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"text/template"
 
+	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -199,13 +203,13 @@ func TestAuditStoreTemplateContent(t *testing.T) {
 	content := string(tmplContent)
 	checks := []string{
 		"package audit",
-		"AuditStore",
-		"AuditEntry",
-		"AuditFilter",
+		"type Store interface",
+		"type Entry struct",
+		"type Filter struct",
 		"DBAuditStore",
 		"NewDBAuditStore",
-		"Log(ctx context.Context, entry AuditEntry) error",
-		"Query(ctx context.Context, filter AuditFilter) ([]AuditEntry, error)",
+		"Log(ctx context.Context, entry Entry) error",
+		"Query(ctx context.Context, filter Filter) ([]Entry, error)",
 		"INSERT INTO audit_log",
 		"SELECT",
 		"database/sql",
@@ -231,7 +235,7 @@ func TestAuditInterceptorGenTemplateContent(t *testing.T) {
 		// live in pkg/middleware/audit/auditlog/, with package decl 'auditlog'.
 		"package auditlog",
 		"func Interceptor(",
-		"audit.AuditStore",
+		"audit.Store",
 		"middleware.ClaimsFromContext",
 		"slog.LevelWarn",
 		"slog.LevelInfo",
@@ -290,7 +294,7 @@ func TestAuditLogHandlerScopePredicate(t *testing.T) {
 		"connect.CodePermissionDenied",
 		// NewHandler stays variadic-compatible with the old one-arg shape
 		// AND defaults to the safe policy.
-		"func NewHandler(store audit.AuditStore, opts ...Option) *Handler",
+		"func NewHandler(store audit.Store, opts ...Option) *Handler",
 		"scope: SelfOrAdminScope",
 		// The handler actually consults the predicate before querying.
 		"if err := h.scope(ctx, req.Msg); err != nil",
@@ -299,5 +303,75 @@ func TestAuditLogHandlerScopePredicate(t *testing.T) {
 		if !strings.Contains(content, check) {
 			t.Errorf("audit_log_handler.go.tmpl should contain %q", check)
 		}
+	}
+}
+
+// TestRenderGenerateFilesStampsAndTracks proves the FIX for pack-emitted
+// _gen.go files showing up as permanent audit orphans: a pack's
+// generate-hook output is Tier-1 (banner says "regenerated every run"), so
+// RenderGenerateFiles must write it through the checksum-tracked writer.
+// The result is a self-certifying file — it carries a forge:hash marker
+// (Verify == Pristine) and is recorded in WrittenThisRun — exactly like
+// core codegen, which is what keeps it out of findOrphanGenFiles.
+func TestRenderGenerateFilesStampsAndTracks(t *testing.T) {
+	p, err := LoadPack("audit-log")
+	if err != nil {
+		t.Fatalf("LoadPack(audit-log) error: %v", err)
+	}
+
+	projectDir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name:       "myapp",
+		ModulePath: "github.com/example/myapp",
+	}
+
+	cs := &checksums.FileChecksums{}
+	// Isolate the global written-this-run set for a deterministic assertion.
+	checksums.WrittenThisRun = map[string]bool{}
+
+	if err := p.RenderGenerateFiles(projectDir, cfg, cs); err != nil {
+		t.Fatalf("RenderGenerateFiles error: %v", err)
+	}
+
+	rel := p.Generate[0].Output // pkg/middleware/audit/auditlog/interceptor_gen.go
+	out := filepath.Join(projectDir, rel)
+	content, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("generate-hook output not written: %v", err)
+	}
+
+	// Self-certifying: carries a forge:hash marker whose value matches the
+	// body (Pristine), so the audit's orphan detector treats it as owned.
+	if got := checksums.Verify(content); got != checksums.Pristine {
+		t.Errorf("generate-hook output Verify = %v, want Pristine (forge:hash marker must match body)", got)
+	}
+	if !strings.Contains(string(content), "forge:hash=") {
+		t.Errorf("generate-hook output must carry a forge:hash marker:\n%s", content)
+	}
+
+	// Tracked: recorded as written-this-run so RestampWritten re-certifies
+	// it after goimports and the stale-cleanup sweep leaves it alone.
+	if !checksums.WrittenThisRun[rel] {
+		t.Errorf("generate-hook output %q not recorded in WrittenThisRun", rel)
+	}
+}
+
+// TestRenderGenerateFilesNilChecksumsFallback proves the degraded path:
+// with no checksum ledger (a caller outside the generate pipeline), the
+// file is still rendered — just via the plain untracked write.
+func TestRenderGenerateFilesNilChecksumsFallback(t *testing.T) {
+	p, err := LoadPack("audit-log")
+	if err != nil {
+		t.Fatalf("LoadPack(audit-log) error: %v", err)
+	}
+	projectDir := t.TempDir()
+	cfg := &config.ProjectConfig{Name: "myapp", ModulePath: "github.com/example/myapp"}
+
+	if err := p.RenderGenerateFiles(projectDir, cfg, nil); err != nil {
+		t.Fatalf("RenderGenerateFiles(nil cs) error: %v", err)
+	}
+	out := filepath.Join(projectDir, p.Generate[0].Output)
+	if _, err := os.ReadFile(out); err != nil {
+		t.Fatalf("generate-hook output not written on nil-cs fallback: %v", err)
 	}
 }

@@ -86,9 +86,9 @@ type ConfigTemplateBlockField struct {
 // ConfigTemplateData is the top-level data passed to the config.go template.
 type ConfigTemplateData struct {
 	// Fields is every leaf field — root fields plus component config-block
-	// leaves — in declaration order, with GoPath set. Drives RegisterFlags,
-	// Load, and .env.example so block leaves get the exact same env/flag/
-	// default treatment as root fields.
+	// leaves — in declaration order, with GoPath set. Drives RegisterFlags
+	// and Load so block leaves get the exact same env/flag/default
+	// treatment as root fields.
 	Fields []ConfigTemplateField
 	// RootFields are the leaves declared directly on Config (struct decl).
 	RootFields []ConfigTemplateField
@@ -108,7 +108,7 @@ type ConfigTemplateData struct {
 	// Module is the project's Go module path, used by config.go.tmpl to
 	// import the generated proto config package (gen/config/v1). Set by
 	// GenerateConfigLoader; left empty by callers that only need the
-	// field partition (e.g. ConfigBlocksFromMessages, .env.example).
+	// field partition (e.g. ConfigBlocksFromMessages).
 	Module string
 }
 
@@ -146,8 +146,8 @@ func ConfigBlocksFromMessages(messages []ConfigMessage) []ConfigBlockRef {
 //
 // Block leaves keep their own env_var/flag/default annotations and join
 // the flat Fields list with a qualified GoPath, so env binding, flag
-// registration, .env.example, and per-env deploy projection all reuse
-// the existing flat plumbing unchanged.
+// registration, and per-env deploy projection all reuse the existing
+// flat plumbing unchanged.
 //
 // One nesting level is supported: message-typed fields ON a block
 // message are ignored. References to messages that aren't in the set
@@ -187,7 +187,7 @@ func BuildConfigTemplateData(messages []ConfigMessage) ConfigTemplateData {
 					// google.protobuf.Duration leaf (pre_stop_delay,
 					// shutdown_timeout, db_conn_max_*). It binds to a single
 					// env var / flag like any scalar, so it MUST flow into
-					// .env.example and the per-env KCL projection. Emit it as
+					// the per-env KCL projection. Emit it as
 					// a leaf (NOT a struct field — the config object is the
 					// proto type now, so there is no generated struct). Skip
 					// only un-annotated message fields (genuinely nothing to
@@ -470,9 +470,8 @@ func primaryCmdServePath(targetDir string) string {
 // GenerateConfigLoader generates pkg/config/config.go from parsed config messages.
 //
 // cs is the project's checksum tracker. Passing it ensures the generated
-// pkg/config/config.go and .env.example are recorded so `forge audit`
-// doesn't flag them as orphans. A nil cs is tolerated (file is still
-// written).
+// pkg/config/config.go is recorded so `forge audit` doesn't flag it as an
+// orphan. A nil cs is tolerated (file is still written).
 func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {
 	// Partition messages into root fields + component config blocks.
 	// Most projects have a single flat AppConfig; projects with block
@@ -499,15 +498,6 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 
 	if err := writeForgeOwned(targetDir, filepath.Join("pkg", "config", "config.go"), content, cs); err != nil {
 		return fmt.Errorf("write pkg/config/config.go: %w", err)
-	}
-
-	// Generate .env.example at the project root
-	envContent, err := templates.ProjectTemplates().Render("env.example.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render env.example.tmpl: %w", err)
-	}
-	if err := writeForgeOwned(targetDir, ".env.example", envContent, cs); err != nil {
-		return fmt.Errorf("write .env.example: %w", err)
 	}
 	return nil
 }

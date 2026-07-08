@@ -494,164 +494,41 @@ func (w *optionalGuardWalker) walkStmts(stmts []ast.Stmt, guarded map[string]boo
 }
 
 func (w *optionalGuardWalker) walkStmt(s ast.Stmt, guarded map[string]bool) {
+	// Each non-trivial statement kind delegates to a dedicated walker so
+	// the per-kind flow analysis stays readable; trivial one-liners are
+	// handled inline. Traversal order and the guard-map mutation contract
+	// (only walkIfStmt's early-return accrual mutates the caller-owned
+	// `guarded`) are unchanged from the original single-function switch.
 	switch v := s.(type) {
 	case *ast.IfStmt:
-		if v.Init != nil {
-			w.walkStmt(v.Init, guarded)
-		}
-		// The condition itself can deref (`if s.deps.X.Enabled()`) —
-		// scan it BEFORE applying the guards the condition establishes.
-		w.scanExpr(v.Cond, guarded)
-		neq := w.nilCheckKeys(v.Cond, true) // top-level && terms `X != nil`
-		eq := w.nilCheckKeys(v.Cond, false) // top-level || terms `X == nil`
-		w.walkStmts(v.Body.List, copyGuards(guarded, neq))
-		if v.Else != nil {
-			// All `== nil` terms false on the else path → fields non-nil.
-			elseGuards := copyGuards(guarded, eq)
-			switch e := v.Else.(type) {
-			case *ast.BlockStmt:
-				w.walkStmts(e.List, elseGuards)
-			default: // else-if chain
-				w.walkStmt(e, elseGuards)
-			}
-		}
-		// Early-return accrual: when the then-branch always exits, an
-		// `X == nil` condition guarantees X != nil for the remainder of
-		// the CURRENT block. Mutating guarded (owned by our caller's
-		// walkStmts loop) is exactly that scope.
-		if blockAlwaysExits(v.Body) {
-			for k := range eq {
-				guarded[k] = true
-			}
-		}
-
+		w.walkIfStmt(v, guarded)
 	case *ast.AssignStmt:
-		for _, rhs := range v.Rhs {
-			w.scanExpr(rhs, guarded)
-		}
-		for _, lhs := range v.Lhs {
-			// LHS derefs count too: `s.deps.X.Field = v` derefs X.
-			// Plain `s.deps.X = v` does not (the field itself is the
-			// target) — scanExpr's parent-node rule handles both.
-			w.scanExpr(lhs, guarded)
-		}
-		w.recordAliases(v.Lhs, v.Rhs)
-
+		w.walkAssignStmt(v, guarded)
 	case *ast.DeclStmt:
-		if gd, ok := v.Decl.(*ast.GenDecl); ok {
-			for _, spec := range gd.Specs {
-				vs, ok := spec.(*ast.ValueSpec)
-				if !ok {
-					continue
-				}
-				for _, val := range vs.Values {
-					w.scanExpr(val, guarded)
-				}
-				// `var x = s.deps.X` aliases like := does.
-				if len(vs.Names) == len(vs.Values) {
-					for i, n := range vs.Names {
-						if k, ok := w.fieldKey(vs.Values[i]); ok {
-							w.aliases[n.Name] = k
-						} else {
-							delete(w.aliases, n.Name)
-						}
-					}
-				}
-			}
-		}
-
+		w.walkDeclStmt(v, guarded)
 	case *ast.ExprStmt:
 		w.scanExpr(v.X, guarded)
-
 	case *ast.ReturnStmt:
 		for _, r := range v.Results {
 			w.scanExpr(r, guarded)
 		}
-
 	case *ast.BlockStmt:
 		// Bare nested block shares the parent's guard scope — guards
 		// accrued inside it dominate only its own remainder, which the
 		// copy keeps sound (the block may not be where the early return
 		// lives, so nothing leaks out).
 		w.walkStmts(v.List, copyGuards(guarded, nil))
-
 	case *ast.ForStmt:
-		if v.Init != nil {
-			w.walkStmt(v.Init, guarded)
-		}
-		if v.Cond != nil {
-			w.scanExpr(v.Cond, guarded)
-		}
-		if v.Post != nil {
-			w.walkStmt(v.Post, guarded)
-		}
-		// Loop body gets a COPY: guards established inside one
-		// iteration re-establish themselves each iteration before any
-		// deref they dominate, and must not leak past the loop (the
-		// body may never run).
-		w.walkStmts(v.Body.List, copyGuards(guarded, nil))
-
+		w.walkForStmt(v, guarded)
 	case *ast.RangeStmt:
 		w.scanExpr(v.X, guarded)
 		w.walkStmts(v.Body.List, copyGuards(guarded, nil))
-
 	case *ast.SwitchStmt:
-		if v.Init != nil {
-			w.walkStmt(v.Init, guarded)
-		}
-		if v.Tag != nil {
-			w.scanExpr(v.Tag, guarded)
-		}
-		// Tagless switch clauses are exclusive conditions evaluated in
-		// order: clause i runs only when every earlier clause condition
-		// was false, so an earlier `case X == nil:` guarantees X != nil
-		// in later clauses (including default).
-		priorEq := map[string]bool{}
-		for _, cs := range v.Body.List {
-			cc, ok := cs.(*ast.CaseClause)
-			if !ok {
-				continue
-			}
-			clauseGuards := copyGuards(guarded, priorEq)
-			var clauseNeq map[string]bool
-			for _, cond := range cc.List {
-				w.scanExpr(cond, clauseGuards)
-				if v.Tag == nil {
-					clauseNeq = mergeKeys(clauseNeq, w.nilCheckKeys(cond, true))
-					for k := range w.nilCheckKeys(cond, false) {
-						priorEq[k] = true
-					}
-				}
-			}
-			// A multi-expr case is an OR of conditions — a `!= nil`
-			// term only guards when it's the sole condition.
-			if len(cc.List) != 1 {
-				clauseNeq = nil
-			}
-			w.walkStmts(cc.Body, copyGuards(clauseGuards, clauseNeq))
-		}
-
+		w.walkSwitchStmt(v, guarded)
 	case *ast.TypeSwitchStmt:
-		if v.Init != nil {
-			w.walkStmt(v.Init, guarded)
-		}
-		w.walkStmt(v.Assign, guarded)
-		for _, cs := range v.Body.List {
-			if cc, ok := cs.(*ast.CaseClause); ok {
-				w.walkStmts(cc.Body, copyGuards(guarded, nil))
-			}
-		}
-
+		w.walkTypeSwitchStmt(v, guarded)
 	case *ast.SelectStmt:
-		for _, cs := range v.Body.List {
-			if cc, ok := cs.(*ast.CommClause); ok {
-				if cc.Comm != nil {
-					w.walkStmt(cc.Comm, copyGuards(guarded, nil))
-				}
-				w.walkStmts(cc.Body, copyGuards(guarded, nil))
-			}
-		}
-
+		w.walkSelectStmt(v, guarded)
 	case *ast.DeferStmt:
 		w.scanExpr(v.Call, guarded)
 	case *ast.GoStmt:
@@ -663,6 +540,168 @@ func (w *optionalGuardWalker) walkStmt(s ast.Stmt, guarded map[string]bool) {
 		w.scanExpr(v.X, guarded)
 	case *ast.LabeledStmt:
 		w.walkStmt(v.Stmt, guarded)
+	}
+}
+
+// walkIfStmt handles `if`/`else` flow: it scans the condition, walks each
+// branch with the guards that branch establishes, and accrues an
+// early-return guard into the caller-owned `guarded` map.
+func (w *optionalGuardWalker) walkIfStmt(v *ast.IfStmt, guarded map[string]bool) {
+	if v.Init != nil {
+		w.walkStmt(v.Init, guarded)
+	}
+	// The condition itself can deref (`if s.deps.X.Enabled()`) —
+	// scan it BEFORE applying the guards the condition establishes.
+	w.scanExpr(v.Cond, guarded)
+	neq := w.nilCheckKeys(v.Cond, true) // top-level && terms `X != nil`
+	eq := w.nilCheckKeys(v.Cond, false) // top-level || terms `X == nil`
+	w.walkStmts(v.Body.List, copyGuards(guarded, neq))
+	if v.Else != nil {
+		// All `== nil` terms false on the else path → fields non-nil.
+		elseGuards := copyGuards(guarded, eq)
+		switch e := v.Else.(type) {
+		case *ast.BlockStmt:
+			w.walkStmts(e.List, elseGuards)
+		default: // else-if chain
+			w.walkStmt(e, elseGuards)
+		}
+	}
+	// Early-return accrual: when the then-branch always exits, an
+	// `X == nil` condition guarantees X != nil for the remainder of
+	// the CURRENT block. Mutating guarded (owned by our caller's
+	// walkStmts loop) is exactly that scope.
+	if blockAlwaysExits(v.Body) {
+		for k := range eq {
+			guarded[k] = true
+		}
+	}
+}
+
+// walkAssignStmt scans both sides of an assignment for derefs and records
+// any alias the assignment establishes.
+func (w *optionalGuardWalker) walkAssignStmt(v *ast.AssignStmt, guarded map[string]bool) {
+	for _, rhs := range v.Rhs {
+		w.scanExpr(rhs, guarded)
+	}
+	for _, lhs := range v.Lhs {
+		// LHS derefs count too: `s.deps.X.Field = v` derefs X.
+		// Plain `s.deps.X = v` does not (the field itself is the
+		// target) — scanExpr's parent-node rule handles both.
+		w.scanExpr(lhs, guarded)
+	}
+	w.recordAliases(v.Lhs, v.Rhs)
+}
+
+// walkDeclStmt scans `var` value expressions and records `var x = s.deps.X`
+// aliases the same way an `:=` assignment would.
+func (w *optionalGuardWalker) walkDeclStmt(v *ast.DeclStmt, guarded map[string]bool) {
+	gd, ok := v.Decl.(*ast.GenDecl)
+	if !ok {
+		return
+	}
+	for _, spec := range gd.Specs {
+		vs, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		for _, val := range vs.Values {
+			w.scanExpr(val, guarded)
+		}
+		// `var x = s.deps.X` aliases like := does.
+		if len(vs.Names) == len(vs.Values) {
+			for i, n := range vs.Names {
+				if k, ok := w.fieldKey(vs.Values[i]); ok {
+					w.aliases[n.Name] = k
+				} else {
+					delete(w.aliases, n.Name)
+				}
+			}
+		}
+	}
+}
+
+// walkForStmt walks a classic for loop; the body gets a guard COPY so
+// guards it establishes don't leak past the loop (the body may never run).
+func (w *optionalGuardWalker) walkForStmt(v *ast.ForStmt, guarded map[string]bool) {
+	if v.Init != nil {
+		w.walkStmt(v.Init, guarded)
+	}
+	if v.Cond != nil {
+		w.scanExpr(v.Cond, guarded)
+	}
+	if v.Post != nil {
+		w.walkStmt(v.Post, guarded)
+	}
+	// Loop body gets a COPY: guards established inside one
+	// iteration re-establish themselves each iteration before any
+	// deref they dominate, and must not leak past the loop (the
+	// body may never run).
+	w.walkStmts(v.Body.List, copyGuards(guarded, nil))
+}
+
+// walkSwitchStmt handles an expression/tagless switch. Tagless clauses are
+// exclusive, so an earlier `case X == nil:` guards X in later clauses.
+func (w *optionalGuardWalker) walkSwitchStmt(v *ast.SwitchStmt, guarded map[string]bool) {
+	if v.Init != nil {
+		w.walkStmt(v.Init, guarded)
+	}
+	if v.Tag != nil {
+		w.scanExpr(v.Tag, guarded)
+	}
+	// Tagless switch clauses are exclusive conditions evaluated in
+	// order: clause i runs only when every earlier clause condition
+	// was false, so an earlier `case X == nil:` guarantees X != nil
+	// in later clauses (including default).
+	priorEq := map[string]bool{}
+	for _, cs := range v.Body.List {
+		cc, ok := cs.(*ast.CaseClause)
+		if !ok {
+			continue
+		}
+		clauseGuards := copyGuards(guarded, priorEq)
+		var clauseNeq map[string]bool
+		for _, cond := range cc.List {
+			w.scanExpr(cond, clauseGuards)
+			if v.Tag == nil {
+				clauseNeq = mergeKeys(clauseNeq, w.nilCheckKeys(cond, true))
+				for k := range w.nilCheckKeys(cond, false) {
+					priorEq[k] = true
+				}
+			}
+		}
+		// A multi-expr case is an OR of conditions — a `!= nil`
+		// term only guards when it's the sole condition.
+		if len(cc.List) != 1 {
+			clauseNeq = nil
+		}
+		w.walkStmts(cc.Body, copyGuards(clauseGuards, clauseNeq))
+	}
+}
+
+// walkTypeSwitchStmt walks a type switch; each clause body gets a fresh
+// guard copy (the type assertion establishes no nil guard).
+func (w *optionalGuardWalker) walkTypeSwitchStmt(v *ast.TypeSwitchStmt, guarded map[string]bool) {
+	if v.Init != nil {
+		w.walkStmt(v.Init, guarded)
+	}
+	w.walkStmt(v.Assign, guarded)
+	for _, cs := range v.Body.List {
+		if cc, ok := cs.(*ast.CaseClause); ok {
+			w.walkStmts(cc.Body, copyGuards(guarded, nil))
+		}
+	}
+}
+
+// walkSelectStmt walks each comm clause's guard statement and body with a
+// fresh guard copy.
+func (w *optionalGuardWalker) walkSelectStmt(v *ast.SelectStmt, guarded map[string]bool) {
+	for _, cs := range v.Body.List {
+		if cc, ok := cs.(*ast.CommClause); ok {
+			if cc.Comm != nil {
+				w.walkStmt(cc.Comm, copyGuards(guarded, nil))
+			}
+			w.walkStmts(cc.Body, copyGuards(guarded, nil))
+		}
 	}
 }
 

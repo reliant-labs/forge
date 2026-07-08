@@ -28,7 +28,7 @@ func withLock(projectDir string, fn func() error) error {
 	if err != nil {
 		return fmt.Errorf("open block lock %s: %w", p, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if err := lockFD(f); err != nil {
 		return fmt.Errorf("acquire block lock %s: %w", p, err)

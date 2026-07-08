@@ -82,12 +82,6 @@ Examples:
 	return cmd
 }
 
-// placeholderToken is the sentinel prefix new-env stamps in place of every
-// dangerous knob value. It is intentionally NOT a valid cluster/registry/etc.
-// value so a forgotten one is loud — and it is the exact string the --check
-// gate (and any CI guard wired around it) greps for.
-const placeholderToken = "REPLACE_ME"
-
 // placeholderRe matches a stamped placeholder anywhere in a line.
 var placeholderRe = regexp.MustCompile(`REPLACE_ME[A-Z_]*`)
 
@@ -339,7 +333,7 @@ func transformLine(line, template, name, tIdent, nIdent string) []string {
 			// image_tag defaults to the env NAME in most forge envs; that's a
 			// safe, non-dangerous default (it's just a tag string), so we set
 			// it to the new env name rather than forcing a placeholder.
-			return []string{fmt.Sprintf(`%s_image_tag = option("image_tag") or "%s"`, indent, name)}
+			return []string{fmt.Sprintf(`%s_image_tag = option("image_tag") or %q`, indent, name)}
 		case "registry":
 			return knobLines(indent, "_registry", `option("registry") or "REPLACE_ME_REGISTRY"`,
 				"the image registry forge PUSHES to and the deploy PULLS from",

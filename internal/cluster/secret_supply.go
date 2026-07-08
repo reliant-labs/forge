@@ -269,9 +269,8 @@ func FormatUndeclaredSecretMounts(misses []UndeclaredSecretMount) string {
 		if len(m.Workloads) > 0 {
 			who = fmt.Sprintf("%s %s", pluralWorkloadNoun(m.Workloads), quoteJoin(m.Workloads))
 		}
-		b.WriteString(fmt.Sprintf(
-			"\n  %s mounts Secret %q but nothing declares it (no rendered Secret, KubeconfigSecret, or ExternalSecret) — it will FailedMount.\n",
-			who, m.Secret))
+		fmt.Fprintf(&b, "\n  %s mounts Secret %q but nothing declares it (no rendered Secret, KubeconfigSecret, or ExternalSecret) — it will FailedMount.\n",
+			who, m.Secret)
 	}
 	b.WriteString("\nFix one of:\n")
 	b.WriteString("  - declare a forge.KubeconfigSecret to MINT the Secret (cross-cluster kubeconfig), or\n")

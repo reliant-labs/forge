@@ -57,12 +57,13 @@ func loadProjectConfig() (*config.ProjectConfig, error) {
 	return loadProjectConfigFrom(path)
 }
 
-// loadProjectStore reads forge.yaml (walking up from cwd) and returns a
-// projectstore.ProjectStore — the single read+mutate surface consumers
+// loadProjectStore reads forge.yaml (walking up from cwd) and returns the
+// concrete *projectstore.Store — the single read+mutate surface consumers
 // route through. It is the store-returning sibling of loadProjectConfig;
 // new code should prefer it so nothing outside the store impl holds a
-// *config.ProjectConfig.
-func loadProjectStore() (projectstore.ProjectStore, error) {
+// *config.ProjectConfig. Consumers that take the store as a dependency
+// depend on their own narrow interface, not on *Store's full method set.
+func loadProjectStore() (*projectstore.Store, error) {
 	cfg, err := loadProjectConfig()
 	if err != nil {
 		return nil, err
@@ -71,8 +72,8 @@ func loadProjectStore() (projectstore.ProjectStore, error) {
 }
 
 // loadProjectStoreFrom reads and wraps a project config at the given path
-// in a ProjectStore. Sibling of loadProjectConfigFrom.
-func loadProjectStoreFrom(path string) (projectstore.ProjectStore, error) {
+// in a *Store. Sibling of loadProjectConfigFrom.
+func loadProjectStoreFrom(path string) (*projectstore.Store, error) {
 	cfg, err := loadProjectConfigFrom(path)
 	if err != nil {
 		return nil, err
@@ -91,15 +92,12 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 		return nil, fmt.Errorf("failed to read project config: %w", err)
 	}
 
-	// Per-component entities live in the project-root components.json
-	// sibling of forge.yaml (forge.yaml is global-only). Read it if
-	// present; absent is valid (a project with no components is a library).
-	componentsJSON, err := readComponentsJSONFile(filepath.Dir(path))
-	if err != nil {
-		return nil, err
-	}
-
-	parsed, err := config.LoadProject(data, componentsJSON, path)
+	// forge no longer reads a components.json manifest: the component
+	// inventory is derived from the real sources (proto descriptor for
+	// services via codegen.IntrospectComponents; workers/operators are owned
+	// code). Pass nil so LoadProject derives kind/features from forge.yaml's
+	// project-global blocks (k8s / frontends / database / packs).
+	parsed, err := config.LoadProject(data, path)
 	if err != nil {
 		return nil, err
 	}
@@ -142,21 +140,6 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 	}
 
 	return &cfg, nil
-}
-
-// readComponentsJSONFile reads the project-root components.json from dir
-// (the directory holding forge.yaml). A missing file is not an error — it
-// returns nil bytes, which config.LoadProject treats as "no components"
-// (a pure library, or a fresh service before its first `forge add`).
-func readComponentsJSONFile(dir string) ([]byte, error) {
-	data, err := os.ReadFile(filepath.Join(dir, config.ComponentsFileName))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read %s: %w", config.ComponentsFileName, err)
-	}
-	return data, nil
 }
 
 // normalizeEnum canonicalizes an enum-like YAML string value to lowercase

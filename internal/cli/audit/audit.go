@@ -88,9 +88,9 @@ func (servedAllRegistry) Exists() bool           { return false }
 func (servedAllRegistry) Registered(string) bool { return true }
 func (servedAllRegistry) Tombstoned(string) bool { return false }
 
-// AuditReport is the top-level JSON structure emitted by `forge audit --json`.
+// Report is the top-level JSON structure emitted by `forge audit --json`.
 // Field order is stable so diffing two audits is human-readable.
-type AuditReport struct {
+type Report struct {
 	ProjectName   string                        `json:"project_name"`
 	ProjectKind   string                        `json:"project_kind"`
 	BinaryVersion string                        `json:"binary_version"`
@@ -167,7 +167,7 @@ func runAudit(f *factory.Factory, jsonOut bool) error {
 // overall status. Errors in individual category collectors are folded
 // into a "warn" status for that category — we never bail the whole audit
 // because a single grep failed; partial information beats nothing.
-func buildAuditReport(f *factory.Factory, projectDir string) (*AuditReport, error) {
+func buildAuditReport(f *factory.Factory, projectDir string) (*Report, error) {
 	abs, err := filepath.Abs(projectDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project dir: %w", err)
@@ -182,7 +182,7 @@ func buildAuditReport(f *factory.Factory, projectDir string) (*AuditReport, erro
 		cfg = store.Config()
 	}
 
-	report := &AuditReport{
+	report := &Report{
 		BinaryVersion: buildinfo.Version(),
 		GeneratedAt:   time.Now().UTC(),
 		Categories:    make(map[string]audittype.Category),
@@ -311,6 +311,16 @@ func auditVersion(cfg *config.ProjectConfig, projectDir string) audittype.Catego
 		summaries = append(summaries,
 			fmt.Sprintf("no forge_version declared in forge.yaml (binary is %s) — run `%s upgrade` to set a baseline", binv, cmdutil.Name()))
 		details["hint"] = fmt.Sprintf("run `%s upgrade` to set + align the pin", cmdutil.Name())
+	case strings.TrimSpace(cfg.ForgeVersion) == "0.0.0":
+		// 0.0.0 is the DELIBERATE sentinel for forge-as-its-own-first-user
+		// (see the comment in forge.yaml): the repo builds itself and pins
+		// 0.0.0 so `forge upgrade` always surfaces the migration skills. It
+		// is intentionally never equal to the pseudo-version binary, so a
+		// "does NOT match binary" warning here would be pure noise. Treat
+		// the explicit 0.0.0 pin as ✓ / informational, not a stale pin.
+		details["intentional"] = "0.0.0 is the deliberate forge-as-its-own-first-user sentinel"
+		summaries = append(summaries,
+			fmt.Sprintf("forge_version pinned to 0.0.0 (deliberate first-user sentinel; binary is %s) — not a stale pin", binv))
 	case pinned == binv:
 		summaries = append(summaries, fmt.Sprintf("forge_version %s matches binary", pinned))
 	default:
@@ -396,7 +406,7 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 		// proto_integrity) — additive field, may be absent.
 		RPCs []rpcInfo `json:"rpcs,omitempty"`
 	}
-	var services, workers, crons, operators, binaries []svcInfo
+	var services []svcInfo
 	var frontends []map[string]string
 
 	// Parse RPC counts when proto/services exists. We still emit the
@@ -453,7 +463,13 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 		reg = servedAllRegistry{}
 	}
 
-	for _, s := range cfg.Components {
+	// Services are enumerated from the proto descriptor (the authoritative,
+	// non-brittle source), not the removed components.json manifest — see
+	// codegen.IntrospectComponents. Workers/operators are owned code with no
+	// proto contract; forge does not inventory them (the app names them in
+	// its own wiring and enumerates them at runtime), so the shape reports
+	// services only.
+	for _, s := range codegen.IntrospectComponents(projectDir) {
 		served := !f.Audit.IsConnectServiceConfig(s) || reg.Registered(s.Name)
 		info := svcInfo{Name: s.Name, Type: s.EffectiveKind(), Served: served}
 		// match by ProtoService name suffix (Echo → EchoService)
@@ -483,18 +499,7 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 			}
 			info.RPCs = rpcs
 		}
-		switch s.EffectiveKind() {
-		case config.ComponentKindWorker:
-			workers = append(workers, info)
-		case config.ComponentKindCron:
-			crons = append(crons, info)
-		case config.ComponentKindOperator:
-			operators = append(operators, info)
-		case config.ComponentKindBinary:
-			binaries = append(binaries, info)
-		default:
-			services = append(services, info)
-		}
+		services = append(services, info)
 	}
 	for _, fe := range cfg.Frontends {
 		frontends = append(frontends, map[string]string{"name": fe.Name, "type": fe.Type})
@@ -502,10 +507,6 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 
 	details := map[string]any{
 		"services":  services,
-		"workers":   workers,
-		"crons":     crons,
-		"operators": operators,
-		"binaries":  binaries,
 		"frontends": frontends,
 		"packs":     cfg.Packs,
 		"packages":  packageNames(cfg.Packages),
@@ -516,8 +517,8 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 	// error to report — under the additive-extension contract, the
 	// field being absent IS the "all good" signal.
 	status := audittype.StatusOK
-	summary := fmt.Sprintf("kind=%s, %d server(s), %d worker(s), %d cron(s), %d operator(s), %d binary(ies), %d frontend(s), %d pack(s)",
-		cfg.EffectiveKind(), len(services), len(workers), len(crons), len(operators), len(binaries), len(frontends), len(cfg.Packs))
+	summary := fmt.Sprintf("kind=%s, %d service(s), %d frontend(s), %d pack(s) (workers/operators are owned code — not inventoried by forge)",
+		cfg.EffectiveKind(), len(services), len(frontends), len(cfg.Packs))
 	if protoParseErr != "" {
 		details["proto_integrity"] = map[string]any{
 			"status": "warn",
@@ -874,7 +875,7 @@ func unregisteredServiceFindings(f *factory.Factory, cfg *config.ProjectConfig, 
 	}
 	registryRelPath := f.Audit.ServiceRegistryRelPath
 	var out []auditUnregisteredService
-	for _, s := range cfg.Components {
+	for _, s := range codegen.IntrospectComponents(projectDir) {
 		if !f.Audit.IsConnectServiceConfig(s) {
 			continue
 		}
@@ -912,6 +913,11 @@ func findOrphanGenFiles(projectDir string, markers map[string]checksums.MarkerIn
 	var orphans []string
 	skip := map[string]struct{}{
 		"vendor": {}, ".git": {}, "node_modules": {}, "gen": {}, ".forge": {},
+		// .scratch: throwaway smoke/scratch trees (e.g. .scratch/smoke)
+		// carry generated *_gen.go copies that aren't part of this project's
+		// certified output. testdata: linter/generator fixtures deliberately
+		// hold _gen.go files. Neither is an orphan in *this* tree.
+		".scratch": {}, "testdata": {},
 	}
 	_ = filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -962,7 +968,7 @@ func isForgeGeneratedBanner(path string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	buf := make([]byte, 256)
 	n, _ := f.Read(buf)
 	head := string(buf[:n])
@@ -1032,6 +1038,10 @@ func auditScaffoldMarkers(projectDir string) audittype.Category {
 		// testdata: linter fixtures intentionally hold markers so the
 		// analyzer suite can assert it fires on them.
 		"testdata": {},
+		// .scratch: throwaway smoke/scratch trees (e.g. .scratch/smoke)
+		// carry scaffold markers from generated fixtures — not unfilled
+		// placeholders in *this* tree.
+		".scratch": {},
 		// templates/: forge's own scaffold templates contain the
 		// markers as their literal output — they're not unfilled
 		// placeholders in *this* tree.
@@ -1697,14 +1707,16 @@ var auditFileSizeWalkSkip = map[string]struct{}{
 // auditFileSizes flags oversized Go files and god-object types (receiver
 // types with a high method count) — the LLM-navigation hazard from
 // FORGE_SHAPE_REDESIGN §6d. App-specific to fix (splitting is the user's
-// call), so warn-level and informational; the value is surfacing the
-// hazard in one place an agent can branch on
-// (`.file_sizes.status == "warn"`).
+// call), so it is purely ADVISORY: the category always reports status ok
+// and NEVER gates Overall. It surfaces the hazard in one place an agent
+// can branch on (`.file_sizes.details.oversized_files`), without turning a
+// "could be tidier" hint into a build-blocking warn.
 //
 // Counts physical lines per file and methods per receiver type (via a
-// cheap AST parse). _test.go and _gen.go files are scanned for line count
-// but excluded from the method-count god-object check (generated method
-// tables and table-driven tests legitimately carry many funcs).
+// cheap AST parse). _gen.go files are scanned for line count; _test.go
+// files are excluded from BOTH metrics (table-driven test files are
+// legitimately large and carry many funcs), and _gen.go is additionally
+// excluded from the method-count god-object check.
 func auditFileSizes(projectDir string) audittype.Category {
 	type bigFile struct {
 		Path  string `json:"path"`
@@ -1739,7 +1751,11 @@ func auditFileSizes(projectDir string) audittype.Category {
 		rel = filepath.ToSlash(rel)
 
 		lines := 1 + strings.Count(string(data), "\n")
-		if lines >= auditFileLineWarn {
+		// Exclude _test.go from the oversized metric: table-driven test
+		// files are legitimately large (they encode many cases, not tangled
+		// logic), and the metric is a hand-navigation hint for production
+		// code. Counting them just trains the reader to ignore the category.
+		if lines >= auditFileLineWarn && !strings.HasSuffix(d.Name(), "_test.go") {
 			bigFiles = append(bigFiles, bigFile{Path: rel, Lines: lines})
 		}
 
@@ -1758,21 +1774,26 @@ func auditFileSizes(projectDir string) audittype.Category {
 	sort.Slice(bigFiles, func(i, j int) bool { return bigFiles[i].Lines > bigFiles[j].Lines })
 	sort.Slice(bigTypes, func(i, j int) bool { return bigTypes[i].Methods > bigTypes[j].Methods })
 
-	status := audittype.StatusOK
+	// Advisory only: splitting a big file aids navigation but is not a
+	// defect, so this category NEVER gates Overall — it stays ok and simply
+	// prints the list. (Contrast crud_stubs / scaffold_markers, which flag
+	// runtime-incorrect state and legitimately warn.) The status stays OK
+	// even when files are listed; consumers that want the hint read
+	// `.file_sizes.details.oversized_files` directly.
 	summary := fmt.Sprintf("no files over %d lines or types over %d methods", auditFileLineWarn, auditTypeMethodWarn)
 	if len(bigFiles) > 0 || len(bigTypes) > 0 {
-		status = audittype.StatusWarn
-		summary = fmt.Sprintf("%d oversized file(s) (>%d lines), %d god-object type(s) (>%d methods) — splitting aids LLM navigation",
+		summary = fmt.Sprintf("%d oversized file(s) (>%d lines), %d god-object type(s) (>%d methods) — advisory: splitting aids LLM navigation (non-gating)",
 			len(bigFiles), auditFileLineWarn, len(bigTypes), auditTypeMethodWarn)
 	}
 	return audittype.Category{
-		Status:  status,
+		Status:  audittype.StatusOK,
 		Summary: summary,
 		Details: map[string]any{
 			"line_threshold":   auditFileLineWarn,
 			"method_threshold": auditTypeMethodWarn,
 			"oversized_files":  bigFiles,
 			"god_object_types": bigTypes,
+			"advisory":         true,
 		},
 	}
 }
@@ -2008,7 +2029,7 @@ func markerPrecedesMethod(src []byte, name string) bool {
 // printAuditReport renders the human-readable audit. Layout: one line
 // header, then one block per category in auditCategoryOrder, then a
 // trailing overall verdict.
-func printAuditReport(w *os.File, r *AuditReport) {
+func printAuditReport(w *os.File, r *Report) {
 	_, _ = fmt.Fprintf(w, "Forge audit — %s (kind=%s, binary=%s)\n", r.ProjectName, r.ProjectKind, r.BinaryVersion)
 	_, _ = fmt.Fprintf(w, "Generated at %s\n\n", r.GeneratedAt.Format(time.RFC3339))
 

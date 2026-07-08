@@ -43,12 +43,12 @@ func fileExists(path string) bool {
 // backlogFileName is the canonical backlog file at the forge repo root.
 const backlogFileName = "FORGE_BACKLOG.md"
 
-// BacklogItem is one entry in FORGE_BACKLOG.md.
+// Item is one entry in FORGE_BACKLOG.md.
 //
 // Items may have a yaml frontmatter block right under the section header;
 // items without one are treated as legacy "untracked" entries (status: open,
 // severity/area unknown). The Title is everything after the leading "## ".
-type BacklogItem struct {
+type Item struct {
 	ID       string `yaml:"id" json:"id,omitempty"`
 	Severity string `yaml:"severity" json:"severity,omitempty"`
 	Area     string `yaml:"area" json:"area,omitempty"`
@@ -149,7 +149,7 @@ func backlogFilePath() (string, error) {
 
 // loadBacklog parses FORGE_BACKLOG.md into structured items. Sections without
 // frontmatter become "open" with unknown severity/area — never an error.
-func loadBacklog() ([]BacklogItem, error) {
+func loadBacklog() ([]Item, error) {
 	file, err := backlogFilePath()
 	if err != nil {
 		return nil, err
@@ -167,9 +167,9 @@ func loadBacklog() ([]BacklogItem, error) {
 // parseBacklog walks the markdown line-by-line, slicing it on "## " headings,
 // then attempts to extract a yaml frontmatter block at the top of each
 // section. Robust to absent frontmatter — that's the legacy shape.
-func parseBacklog(content string) []BacklogItem {
+func parseBacklog(content string) []Item {
 	lines := strings.Split(content, "\n")
-	var items []BacklogItem
+	var items []Item
 
 	// Find all h2 starts.
 	var sectionStarts []int
@@ -197,7 +197,7 @@ func parseBacklog(content string) []BacklogItem {
 		header := lines[start]
 		title := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(header), "##"))
 
-		item := BacklogItem{
+		item := Item{
 			Title:     title,
 			startLine: start + 1, // convert to 1-indexed
 			endLine:   end + 1,
@@ -258,7 +258,7 @@ func findFrontmatter(lines []string, from, to int) (int, int) {
 // parseYAMLFrontmatter unmarshals the yaml block into the item. Any fields
 // the user set on top of the canonical ones are preserved by the loader, but
 // only the canonical fields are written back by `close` / `open`.
-func parseYAMLFrontmatter(yamlBody string, item *BacklogItem) {
+func parseYAMLFrontmatter(yamlBody string, item *Item) {
 	type frontmatter struct {
 		ID       string `yaml:"id"`
 		Severity string `yaml:"severity"`
@@ -280,8 +280,8 @@ func parseYAMLFrontmatter(yamlBody string, item *BacklogItem) {
 }
 
 // filterBacklog applies area / status filters. Empty filter means "any".
-func filterBacklog(items []BacklogItem, area, status string) []BacklogItem {
-	var out []BacklogItem
+func filterBacklog(items []Item, area, status string) []Item {
+	var out []Item
 	for _, it := range items {
 		if area != "" && !strings.EqualFold(it.Area, area) {
 			continue
@@ -295,7 +295,7 @@ func filterBacklog(items []BacklogItem, area, status string) []BacklogItem {
 }
 
 // writeBacklogTable emits a tab-separated, human-friendly view.
-func writeBacklogTable(w io.Writer, items []BacklogItem) error {
+func writeBacklogTable(w io.Writer, items []Item) error {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "ID\tSTATUS\tSEVERITY\tAREA\tTITLE")
 	for _, it := range items {
@@ -316,7 +316,7 @@ func writeBacklogTable(w io.Writer, items []BacklogItem) error {
 	return tw.Flush()
 }
 
-func writeBacklogJSON(w io.Writer, items []BacklogItem) error {
+func writeBacklogJSON(w io.Writer, items []Item) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(items)
@@ -324,7 +324,7 @@ func writeBacklogJSON(w io.Writer, items []BacklogItem) error {
 
 // nextBacklogID returns the next unused "forge-N" id by scanning existing
 // items for the maximum numeric suffix.
-func nextBacklogID(items []BacklogItem) string {
+func nextBacklogID(items []Item) string {
 	highest := 0
 	idRe := regexp.MustCompile(`^forge-(\d+)$`)
 	for _, it := range items {
@@ -389,7 +389,7 @@ func setBacklogStatus(id, newStatus, fixedAt string, out io.Writer) error {
 		return fmt.Errorf("read %s: %w", file, err)
 	}
 	items := parseBacklog(string(data))
-	var target *BacklogItem
+	var target *Item
 	for i := range items {
 		if items[i].ID == id {
 			target = &items[i]
@@ -417,7 +417,7 @@ func setBacklogStatus(id, newStatus, fixedAt string, out io.Writer) error {
 // rewriteItem replaces the yaml frontmatter block in `content` for the given
 // item, returning the modified file content. If the item has no frontmatter,
 // one is inserted immediately after the section header.
-func rewriteItem(content string, item BacklogItem) (string, error) {
+func rewriteItem(content string, item Item) (string, error) {
 	lines := strings.Split(content, "\n")
 	yamlBlock := renderFrontmatterFor(item)
 
@@ -449,7 +449,7 @@ func rewriteItem(content string, item BacklogItem) (string, error) {
 // renderFrontmatterFor produces the canonical ```yaml block for the item.
 // Empty fields are omitted so we don't write `area:` or `severity:` for
 // migrated legacy items where the value is unknown.
-func renderFrontmatterFor(item BacklogItem) string {
+func renderFrontmatterFor(item Item) string {
 	var b strings.Builder
 	b.WriteString("```yaml\n")
 	if item.ID != "" {
@@ -495,7 +495,7 @@ func migrateBacklog() (int, error) {
 	items := parseBacklog(content)
 
 	// Items without frontmatter, in document order.
-	var legacy []*BacklogItem
+	var legacy []*Item
 	for i := range items {
 		if !items[i].hasFrontmatter {
 			legacy = append(legacy, &items[i])
@@ -571,7 +571,7 @@ func inferStatus(sections []categorySection, line int) string {
 	return "open"
 }
 
-func largestForgeN(items []BacklogItem) int {
+func largestForgeN(items []Item) int {
 	highest := 0
 	idRe := regexp.MustCompile(`^forge-(\d+)$`)
 	for _, it := range items {

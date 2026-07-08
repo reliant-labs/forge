@@ -23,7 +23,7 @@ _cloud = forge.ClusterTarget {
     registry = "ghcr.io/org/app"
     platform = "amd64"
 }
-_real_build_svc = forge.Service {
+_real_build_svc = forge.RenderedWorkload {
     name = "sibling"
     image = "sibling"
     build = forge.ShellBuild {
@@ -50,7 +50,7 @@ _local_out = forge.render(forge.Bundle {
 assert_local_renders = _local_out.cluster_target.platform == None
 
 # ── shape 3: cloud + no platform but only a NO-OP ShellBuild (exempt) ──────
-_noop_svc = forge.Service {
+_noop_svc = forge.RenderedWorkload {
     name = "prebuilt"
     image = "prebuilt"
     build = forge.ShellBuild { cmd = "true" }

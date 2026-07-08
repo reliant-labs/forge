@@ -441,7 +441,7 @@ spec: {}`
 	if restApplyIdx == -1 {
 		t.Fatalf("expected a second apply for the rest; kubectl log:\n%s", string(data))
 	}
-	if !(crdApplyIdx < waitIdx && waitIdx < restApplyIdx) {
+	if crdApplyIdx >= waitIdx || waitIdx >= restApplyIdx {
 		t.Errorf("apply order must be CRDs → wait Established → rest; got crdApply=%d wait=%d restApply=%d\nlog:\n%s",
 			crdApplyIdx, waitIdx, restApplyIdx, string(data))
 	}

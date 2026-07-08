@@ -82,7 +82,7 @@ func newGitRepo(t *testing.T) string {
 	dir := t.TempDir()
 	runGit := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(context.Background(), "git", args...)
 		cmd.Dir = dir
 		// Pin author so commit hashes are stable enough across test
 		// runs to debug failures; not used for the assertions.

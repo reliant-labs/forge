@@ -16,12 +16,12 @@ import forge
 # output projects only `output` and nothing else. The forge CLI then
 # selects `-S output` for the clean shape.
 
-# SCHEMA INHERITANCE — a project may declare `schema X(forge.Service)` to
+# SCHEMA INHERITANCE — a project may declare `schema X(forge.RenderedWorkload)` to
 # add its OWN typed/required fields while forge renders the result exactly
-# like a plain forge.Service. The render layer is typed on the base schema,
+# like a plain forge.RenderedWorkload. The render layer is typed on the base schema,
 # so the subtype passes through and projects the same JSON contract; the
 # extra fields ride on the typed value but aren't part of the contract.
-schema TenantService(forge.Service):
+schema TenantService(forge.RenderedWorkload):
     # An extra REQUIRED field (no default) — enforced at parse time.
     region: str
     tier: "free" | "pro" = "free"
@@ -31,8 +31,8 @@ schema TenantService(forge.Service):
 
 _bundle = forge.Bundle {
     services = [
-        # An app schema inheriting forge.Service — renders identically to a
-        # plain forge.Service (Deployment + Service + RBAC), plus enforces
+        # An app schema inheriting forge.RenderedWorkload — renders identically to a
+        # plain forge.RenderedWorkload (Deployment + Service + RBAC), plus enforces
         # its own required `region` at parse time.
         TenantService {
             name = "tenant-api"
@@ -52,7 +52,7 @@ _bundle = forge.Bundle {
         # LOG_LEVEL, …). secrets_file points at a gitignored dotenv
         # for STRIPE_*, JWT_*, etc. forge run / forge up load
         # secrets_file first, then layer env_vars on top so KCL wins.
-        forge.Service {
+        forge.RenderedWorkload {
             name = "admin-server"
             image = "example"
             deploy = forge.HostDeploy {
@@ -67,7 +67,7 @@ _bundle = forge.Bundle {
         }
         # Cluster-deployed proxy. Routed via Gateway API — see the
         # `gateways` and `http_routes` blocks below.
-        forge.Service {
+        forge.RenderedWorkload {
             name = "workspace-proxy"
             image = "example"
             deploy = forge.K8sCluster {
@@ -79,7 +79,7 @@ _bundle = forge.Bundle {
             }
         }
         # Build-only CLI with two ldflag variants.
-        forge.Service {
+        forge.RenderedWorkload {
             name = "reliant-daemon"
             deploy = forge.BuildOnly {
                 build_variants = [
@@ -97,7 +97,7 @@ _bundle = forge.Bundle {
         # Build-only IMAGE via `deploy = None`: forge builds + pushes the
         # image but renders no Deployment/Service. Use it for a base image
         # other workloads reference at runtime (e.g. per-user pods pull it).
-        forge.Service {
+        forge.RenderedWorkload {
             name = "workspace-base"
             image = "workspace-base"
             deploy = None

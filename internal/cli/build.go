@@ -423,6 +423,148 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// to the single project binary at ./cmd/<project> — NOT the legacy
 	// ./cmd hardcode. The --target flag still filters frontends and can
 	// drop the binary build entirely (frontend-only / external targets).
+	targets, err := resolveBuildTargetSet(cfg, entities, opts)
+	if err != nil {
+		return err
+	}
+	frontends := targets.frontends
+	dockerFrontends := targets.dockerFrontends
+	goTargets := targets.goTargets
+	skipProjectDocker := targets.skipProjectDocker
+	cfgArchForDocker := targets.cfgArchForDocker
+
+	start := time.Now()
+	var results []buildResult
+
+	plan := buildPlan{
+		cfg:               cfg,
+		frontends:         frontends,
+		dockerFrontends:   dockerFrontends,
+		goTargets:         goTargets,
+		skipProjectDocker: skipProjectDocker,
+		cfgArchForDocker:  cfgArchForDocker,
+		resolvedTag:       resolvedTag,
+		resolvedVersion:   resolvedVersion,
+		opts:              opts,
+	}
+	if opts.parallel {
+		results = buildParallel(ctx, plan)
+	} else {
+		results = buildSequential(ctx, plan)
+	}
+
+	// KCL DockerBuild / ShellBuild dispatch: services whose build.type is
+	// docker or shell are built by their declared mechanism rather than
+	// the go-build path. These run after the go-builds (a failing go-build
+	// shouldn't waste time on an orthogonal docker/shell build) and are
+	// the new home for per-service image builds. See buildKCLDockerShell.
+	if entities != nil {
+		results = append(results, buildKCLDockerShell(ctx, cfg, entities, opts, cfgArchForDocker, resolvedTag)...)
+	}
+
+	// Build-only variants from KCL: each declared variant produces one
+	// `bin/<service>-<variant>` binary with the variant's ldflags + build
+	// tags. No docker build; this is the lane for sidecar binaries
+	// shipped in a release artifact, not container images.
+	if entities != nil {
+		results = append(results, buildKCLBuildOnlyVariants(ctx, entities, opts.outputDir)...)
+	}
+
+	// External-build dispatcher: services whose KCL declares
+	// `build_cmd` get their image constructed by a user-supplied shell
+	// command rather than forge's built-in Go-build + docker-build
+	// pipeline. Mirrors the deploytarget/External provider on the build
+	// side. Runs after Go/docker/variant builds so a failing project
+	// build doesn't waste time on the (likely orthogonal) external
+	// services — but does NOT short-circuit on docker failures because
+	// the external builds may target a different registry / pipeline.
+	//
+	// Skip-with-warn semantics live in the runner: a missing build_cwd
+	// produces a "skipped: …" log line and an external-skip result that
+	// the summary surfaces but doesn't count as a failure.
+	externalResults, err := buildExternalServiceResults(ctx, entities, cfg, opts, cfgArchForDocker, resolvedTag)
+	if err != nil {
+		return err
+	}
+	results = append(results, externalResults...)
+
+	// Check for errors
+	var failed []buildResult
+	var succeeded []buildResult
+	for _, r := range results {
+		if r.err != nil {
+			failed = append(failed, r)
+		} else {
+			succeeded = append(succeeded, r)
+		}
+	}
+
+	// Persist build state on ANY successful project docker build — not
+	// just --push. The state file is the build→deploy tag handoff, which
+	// every transport needs (scp/compose deploy a local image just as much
+	// as a registry deploy). Pushing only adds the registry coordinates;
+	// it is not what makes the handoff worth recording. Skipped only when
+	// no docker image was built (host-only env / no --docker / no
+	// Dockerfile) or the docker build failed.
+	if opts.buildDocker && resolvedTag != "" && !skipProjectDocker {
+		persistProjectBuildState(ctx, cfg, opts, resolvedTag, succeeded)
+	}
+
+	// Print summary
+	fmt.Println()
+	fmt.Println(strings.Repeat("-", 50))
+	fmt.Printf("[build] Summary (%s)\n", time.Since(start).Truncate(time.Millisecond))
+	fmt.Println(strings.Repeat("-", 50))
+
+	for _, r := range succeeded {
+		fmt.Printf("  OK   %-20s %-8s (%s)\n", r.name, r.kind, r.duration.Truncate(time.Millisecond))
+	}
+	for _, r := range failed {
+		fmt.Printf("  FAIL %-20s %-8s %v\n", r.name, r.kind, r.err)
+	}
+
+	if len(failed) > 0 {
+		return fmt.Errorf("%d of %d builds failed", len(failed), len(results))
+	}
+
+	// Cut the Release ledger when --release is set. This is the build-once →
+	// promote spine: harvest the per-image digests the build just captured
+	// (the SAME build-state sources resolveDeployImageDigests reads at deploy
+	// time) into a durable .forge/releases/<version>.json. A release with no
+	// captured digest fails loudly rather than writing an empty ledger — a
+	// release that can't pin anything is useless and almost always means the
+	// user forgot --push (or built against a registry that didn't return a
+	// digest). See writeReleaseLedger.
+	if opts.release != "" {
+		if err := writeReleaseLedger(ctx, opts); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
+	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
+	return nil
+}
+
+// buildTargetSet is the resolved set of build inputs runBuild derives from the
+// project config, the rendered KCL (when --env is set), and the --target /
+// --skip-frontends flags: which frontends to prod-build, which of those need a
+// docker image, the deduped Go-build targets, whether to skip the project
+// docker build, and the docker target arch.
+type buildTargetSet struct {
+	frontends         []config.FrontendConfig
+	dockerFrontends   []config.FrontendConfig
+	goTargets         []goBuildTarget
+	skipProjectDocker bool
+	cfgArchForDocker  string
+}
+
+// resolveBuildTargetSet applies the framework/--target/--skip-frontends filters
+// and the KCL-driven docker/platform overrides to produce the concrete build
+// set. Extracted from runBuild so the filtering logic (and its early-return
+// validation for `--target external`) is a single cohesive unit. opts is taken
+// by value; its skipFrontends field is only consumed within this function.
+func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opts buildOptions) (buildTargetSet, error) {
 	frontends := cfg.Frontends
 	buildBinary := true
 
@@ -458,17 +600,17 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		// one. The config key is still accepted (back-compat) but no longer
 		// governs whether build_cmd runs.
 		if opts.env == "" {
-			return fmt.Errorf("--target external requires --env to know which KCL services to build")
+			return buildTargetSet{}, fmt.Errorf("--target external requires --env to know which KCL services to build")
 		}
 		if !kclHasExternalBuildService(entities) {
-			return fmt.Errorf("--target external: no service declares build_cmd in env %q.\n"+
+			return buildTargetSet{}, fmt.Errorf("--target external: no service declares build_cmd in env %q.\n"+
 				"  Declare a `build_cmd` on your forge.External target (the build-side mirror of deploy_cmd) so\n"+
 				"  `forge build -t external` constructs the image, e.g.:\n"+
 				"      deploy = forge.External {\n"+
 				"          deploy_cmd = r\"...\"\n"+
 				"          build_cmd  = r\"docker build --platform linux/${TARGETARCH} -t ${IMAGE}:${TAG} ${PROJECT_DIR}\"\n"+
 				"      }\n"+
-				"  (a top-level Service.build_cmd also works for non-External deploy types).", opts.env)
+				"  (a top-level Service.build_cmd also works for non-External deploy types)", opts.env)
 		}
 		// Skip everything else — only the external dispatcher runs.
 		frontends = nil
@@ -479,7 +621,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		if len(frontends) == 0 {
 			// Not a frontend name — check if it matches the project name (binary)
 			if opts.buildTarget != cfg.Name {
-				return fmt.Errorf("target %q not found in project config", opts.buildTarget)
+				return buildTargetSet{}, fmt.Errorf("target %q not found in project config", opts.buildTarget)
 			}
 		} else {
 			// Target is a frontend, skip binary build
@@ -542,163 +684,95 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 
 	goTargets := resolveGoTargets(buildBinary, entities, cfg)
 
-	start := time.Now()
-	var results []buildResult
+	return buildTargetSet{
+		frontends:         frontends,
+		dockerFrontends:   dockerFrontends,
+		goTargets:         goTargets,
+		skipProjectDocker: skipProjectDocker,
+		cfgArchForDocker:  cfgArchForDocker,
+	}, nil
+}
 
-	if opts.parallel {
-		results = buildParallel(ctx, cfg, frontends, dockerFrontends, goTargets, skipProjectDocker, cfgArchForDocker, resolvedTag, resolvedVersion, opts)
-	} else {
-		results = buildSequential(ctx, cfg, frontends, dockerFrontends, goTargets, skipProjectDocker, cfgArchForDocker, resolvedTag, resolvedVersion, opts)
+// buildExternalServiceResults runs the external-build dispatcher for services
+// whose KCL declares `build_cmd`, returning their build results. Mirrors the
+// deploytarget/External provider on the build side. Returns (nil, nil) when
+// there is no rendered KCL or no service opts into external builds.
+//
+// No experimental gate: build_cmd is the build-side mirror of External's
+// deploy_cmd (which needs no opt-in), so a service that declares build_cmd just
+// builds. See the --target external branch in runBuild for the rationale
+// (fr-da9a6614fb).
+func buildExternalServiceResults(ctx context.Context, entities *KCLEntities, cfg *config.ProjectConfig, opts buildOptions, cfgArchForDocker, resolvedTag string) ([]buildResult, error) {
+	if entities == nil {
+		return nil, nil
 	}
-
-	// KCL DockerBuild / ShellBuild dispatch: services whose build.type is
-	// docker or shell are built by their declared mechanism rather than
-	// the go-build path. These run after the go-builds (a failing go-build
-	// shouldn't waste time on an orthogonal docker/shell build) and are
-	// the new home for per-service image builds. See buildKCLDockerShell.
-	if entities != nil {
-		results = append(results, buildKCLDockerShell(ctx, cfg, entities, opts, cfgArchForDocker, resolvedTag)...)
+	externalSvcs := externalBuildServices(entities)
+	if len(externalSvcs) == 0 {
+		return nil, nil
 	}
-
-	// Build-only variants from KCL: each declared variant produces one
-	// `bin/<service>-<variant>` binary with the variant's ldflags + build
-	// tags. No docker build; this is the lane for sidecar binaries
-	// shipped in a release artifact, not container images.
-	if entities != nil {
-		results = append(results, buildKCLBuildOnlyVariants(ctx, entities, opts.outputDir)...)
+	externalRegistry := opts.pushRegistry
+	if externalRegistry == "" {
+		externalRegistry = cfg.Docker.Registry
 	}
-
-	// External-build dispatcher: services whose KCL declares
-	// `build_cmd` get their image constructed by a user-supplied shell
-	// command rather than forge's built-in Go-build + docker-build
-	// pipeline. Mirrors the deploytarget/External provider on the build
-	// side. Runs after Go/docker/variant builds so a failing project
-	// build doesn't waste time on the (likely orthogonal) external
-	// services — but does NOT short-circuit on docker failures because
-	// the external builds may target a different registry / pipeline.
-	//
-	// Skip-with-warn semantics live in the runner: a missing build_cwd
-	// produces a "skipped: …" log line and an external-skip result that
-	// the summary surfaces but doesn't count as a failure.
-	if entities != nil {
-		externalSvcs := externalBuildServices(entities)
-		// No experimental gate: build_cmd is the build-side mirror of
-		// External's deploy_cmd (which needs no opt-in), so a service that
-		// declares build_cmd just builds. See the --target external branch
-		// above for the rationale (fr-da9a6614fb).
-		if len(externalSvcs) > 0 {
-			externalRegistry := opts.pushRegistry
-			if externalRegistry == "" {
-				externalRegistry = cfg.Docker.Registry
-			}
-			externalTag := resolvedTag
-			if externalTag == "" {
-				// External-build dispatchers need a stable tag even when the
-				// caller didn't pass --tag (the user's command interpolates
-				// ${TAG} into `docker push <reg>/<img>:${TAG}` and an empty
-				// tag would push :latest accidentally). Resolve the same
-				// git-describe tag the docker path would have used.
-				t, terr := resolveImageTag(ctx, opts.env)
-				if terr != nil {
-					return fmt.Errorf("external build: resolve image tag: %w (pass --tag to override)", terr)
-				}
-				externalTag = t
-			}
-			externalArch := resolveExternalBuildTargetArch(cfgArchForDocker, opts.targetArch)
-			projDir := projectDirForKCL()
-			results = append(results, buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch, entities)...)
+	externalTag := resolvedTag
+	if externalTag == "" {
+		// External-build dispatchers need a stable tag even when the
+		// caller didn't pass --tag (the user's command interpolates
+		// ${TAG} into `docker push <reg>/<img>:${TAG}` and an empty
+		// tag would push :latest accidentally). Resolve the same
+		// git-describe tag the docker path would have used.
+		t, terr := resolveImageTag(ctx, opts.env)
+		if terr != nil {
+			return nil, fmt.Errorf("external build: resolve image tag: %w (pass --tag to override)", terr)
 		}
+		externalTag = t
 	}
+	externalArch := resolveExternalBuildTargetArch(cfgArchForDocker, opts.targetArch)
+	projDir := projectDirForKCL()
+	return buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch, entities), nil
+}
 
-	// Check for errors
-	var failed []buildResult
-	var succeeded []buildResult
-	for _, r := range results {
-		if r.err != nil {
-			failed = append(failed, r)
-		} else {
-			succeeded = append(succeeded, r)
-		}
-	}
-
-	// Persist build state on ANY successful project docker build — not
-	// just --push. The state file is the build→deploy tag handoff, which
-	// every transport needs (scp/compose deploy a local image just as much
-	// as a registry deploy). Pushing only adds the registry coordinates;
-	// it is not what makes the handoff worth recording. Skipped only when
-	// no docker image was built (host-only env / no --docker / no
-	// Dockerfile) or the docker build failed.
-	if opts.buildDocker && resolvedTag != "" && !skipProjectDocker {
-		projectDockerSucceeded := false
-		var projectDigest string
-		var projectPlatforms []string
-		for _, r := range succeeded {
-			if r.kind == "docker" && r.name == cfg.Name+" (docker)" {
-				projectDockerSucceeded = true
-				projectDigest = r.digest
-				projectPlatforms = r.platforms
-				break
-			}
-		}
-		if projectDockerSucceeded {
-			commit, gitTag, dirty := gitBuildProvenance(ctx)
-			state := BuildState{
-				Image:     cfg.Name,
-				Tag:       resolvedTag,
-				Registry:  opts.pushRegistry,
-				Pushed:    opts.pushRegistry != "",
-				Commit:    commit,
-				GitTag:    gitTag,
-				Dirty:     dirty,
-				PushedAt:  nowRFC3339(),
-				Digest:    projectDigest,
-				Platforms: projectPlatforms,
-			}
-			if werr := WriteBuildState(projectDirForKCL(), opts.env, state); werr != nil {
-				// Non-fatal: the build succeeded; recording the state is
-				// a convenience for the downstream deploy. Print a
-				// warning so the user knows deploy may fall back to git.
-				fmt.Printf("[build]   Warning: failed to write build-state file: %v\n", werr)
-			} else {
-				fmt.Printf("[build]   Wrote build state: %s\n", buildStatePath(projectDirForKCL(), opts.env))
-			}
-		}
-	}
-
-	// Print summary
-	fmt.Println()
-	fmt.Println(strings.Repeat("-", 50))
-	fmt.Printf("[build] Summary (%s)\n", time.Since(start).Truncate(time.Millisecond))
-	fmt.Println(strings.Repeat("-", 50))
-
+// persistProjectBuildState records the build→deploy tag handoff for a
+// successful project docker build. It scans the succeeded results for the
+// project image, and on a hit writes .forge/state/build-<env>.json. Failure to
+// write is non-fatal (warned): the build already succeeded and deploy can fall
+// back to git provenance.
+func persistProjectBuildState(ctx context.Context, cfg *config.ProjectConfig, opts buildOptions, resolvedTag string, succeeded []buildResult) {
+	projectDockerSucceeded := false
+	var projectDigest string
+	var projectPlatforms []string
 	for _, r := range succeeded {
-		fmt.Printf("  OK   %-20s %-8s (%s)\n", r.name, r.kind, r.duration.Truncate(time.Millisecond))
-	}
-	for _, r := range failed {
-		fmt.Printf("  FAIL %-20s %-8s %v\n", r.name, r.kind, r.err)
-	}
-
-	if len(failed) > 0 {
-		return fmt.Errorf("%d of %d builds failed", len(failed), len(results))
-	}
-
-	// Cut the Release ledger when --release is set. This is the build-once →
-	// promote spine: harvest the per-image digests the build just captured
-	// (the SAME build-state sources resolveDeployImageDigests reads at deploy
-	// time) into a durable .forge/releases/<version>.json. A release with no
-	// captured digest fails loudly rather than writing an empty ledger — a
-	// release that can't pin anything is useless and almost always means the
-	// user forgot --push (or built against a registry that didn't return a
-	// digest). See writeReleaseLedger.
-	if opts.release != "" {
-		if err := writeReleaseLedger(ctx, opts); err != nil {
-			return err
+		if r.kind == "docker" && r.name == cfg.Name+" (docker)" {
+			projectDockerSucceeded = true
+			projectDigest = r.digest
+			projectPlatforms = r.platforms
+			break
 		}
 	}
-
-	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
-	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
-	return nil
+	if !projectDockerSucceeded {
+		return
+	}
+	commit, gitTag, dirty := gitBuildProvenance(ctx)
+	state := BuildState{
+		Image:     cfg.Name,
+		Tag:       resolvedTag,
+		Registry:  opts.pushRegistry,
+		Pushed:    opts.pushRegistry != "",
+		Commit:    commit,
+		GitTag:    gitTag,
+		Dirty:     dirty,
+		PushedAt:  nowRFC3339(),
+		Digest:    projectDigest,
+		Platforms: projectPlatforms,
+	}
+	if werr := WriteBuildState(projectDirForKCL(), opts.env, state); werr != nil {
+		// Non-fatal: the build succeeded; recording the state is
+		// a convenience for the downstream deploy. Print a
+		// warning so the user knows deploy may fall back to git.
+		fmt.Printf("[build]   Warning: failed to write build-state file: %v\n", werr)
+	} else {
+		fmt.Printf("[build]   Wrote build state: %s\n", buildStatePath(projectDirForKCL(), opts.env))
+	}
 }
 
 // writeReleaseLedger harvests the digests captured by the just-completed
@@ -717,7 +791,7 @@ func writeReleaseLedger(ctx context.Context, opts buildOptions) error {
 	if len(artifacts) == 0 {
 		return fmt.Errorf("--release %s: no image digest was captured to record in the release ledger.\n"+
 			"  A release pins immutable digests, which require a registry push — re-run with --push <registry>\n"+
-			"  (a release built without --push has only a local tag, which can't be promoted across envs).", opts.release)
+			"  (a release built without --push has only a local tag, which can't be promoted across envs)", opts.release)
 	}
 
 	commit, gitTag, dirty := gitBuildProvenance(ctx)
@@ -737,7 +811,31 @@ func writeReleaseLedger(ctx context.Context, opts buildOptions) error {
 	return nil
 }
 
-func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, goTargets []goBuildTarget, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, resolvedVersion versionInfo, opts buildOptions) []buildResult {
+// buildPlan carries the resolved inputs shared by buildParallel and
+// buildSequential: the config, the frontend/go target sets, the
+// docker-arch inputs, and the run's buildOptions. Grouping these keeps
+// both dispatch functions to a single declarative parameter alongside ctx.
+type buildPlan struct {
+	cfg               *config.ProjectConfig
+	frontends         []config.FrontendConfig
+	dockerFrontends   []config.FrontendConfig
+	goTargets         []goBuildTarget
+	skipProjectDocker bool
+	cfgArchForDocker  string
+	resolvedTag       string
+	resolvedVersion   versionInfo
+	opts              buildOptions
+}
+
+func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
+	cfg := plan.cfg
+	frontends, dockerFrontends := plan.frontends, plan.dockerFrontends
+	goTargets := plan.goTargets
+	skipProjectDocker := plan.skipProjectDocker
+	cfgArchForDocker, resolvedTag := plan.cfgArchForDocker, plan.resolvedTag
+	resolvedVersion := plan.resolvedVersion
+	opts := plan.opts
+
 	var (
 		mu      sync.Mutex
 		wg      sync.WaitGroup
@@ -832,7 +930,15 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 	return results
 }
 
-func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, goTargets []goBuildTarget, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, resolvedVersion versionInfo, opts buildOptions) []buildResult {
+func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
+	cfg := plan.cfg
+	frontends, dockerFrontends := plan.frontends, plan.dockerFrontends
+	goTargets := plan.goTargets
+	skipProjectDocker := plan.skipProjectDocker
+	cfgArchForDocker, resolvedTag := plan.cfgArchForDocker, plan.resolvedTag
+	resolvedVersion := plan.resolvedVersion
+	opts := plan.opts
+
 	var results []buildResult
 
 	// See buildParallel: when the project image COPYs these host-built

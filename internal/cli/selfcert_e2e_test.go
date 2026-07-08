@@ -244,8 +244,10 @@ func TestE2ESelfCertLegacyManifestMigration(t *testing.T) {
 	const corruptRel = "pkg/app/app_gen.go"
 	corruptManifestEntry(t, manifestPath, corruptRel)
 
-	// Corruption 2: a real hand-edit the manifest never saw.
-	const editedRel = ".github/workflows/ci.yml"
+	// Corruption 2: a real hand-edit the manifest never saw. buf.yaml is
+	// a stampable Tier-1 infra file (CI workflows are now write-once
+	// scaffolds, so they are no longer a valid drift-guard subject).
+	const editedRel = "buf.yaml"
 	editedPath := filepath.Join(projectDir, editedRel)
 	ciBytes, err := os.ReadFile(editedPath)
 	if err != nil {

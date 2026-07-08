@@ -135,44 +135,34 @@ func TestStepCheckTier1Drift_ForceWithNoDriftInstallsEmptyScope(t *testing.T) {
 	}
 }
 
-// TestEmitTier2OnceIfMissing_NeverClobbersWithoutResetTier2 pins the
-// Tier-2 half of the journey: nav.tsx / page.tsx re-scaffolds are
-// gated on the --reset-tier2 hook, not on --force. An existing file is
-// preserved unless the hook approves.
-func TestEmitTier2OnceIfMissing_NeverClobbersWithoutResetTier2(t *testing.T) {
-	checksums.ResetTier2State()
-	t.Cleanup(checksums.ResetTier2State)
-
+// TestEmitScaffoldOnceIfMissing_NeverClobbersExisting pins the scaffold
+// contract: an existing nav.tsx / page.tsx is preserved verbatim on every
+// run — forge writes the scaffold once and never overwrites it (no flag,
+// no exception). The only refresh is delete-then-regenerate.
+func TestEmitScaffoldOnceIfMissing_NeverClobbersExisting(t *testing.T) {
 	dir := t.TempDir()
 	rel := filepath.Join("frontends", "web", "src", "components", "nav.tsx")
 	const userNav = "// fully user-curated nav\n"
 	mustWriteScopeFile(t, filepath.Join(dir, rel), userNav)
 
-	cs := &checksums.FileChecksums{}
-
-	// No hook installed (plain run, or plain --force run): preserved.
-	if err := emitTier2OnceIfMissing(dir, rel, "nextjs/src/components/nav.tsx.tmpl", navTemplateData(), cs); err != nil {
-		t.Fatalf("emitTier2OnceIfMissing: %v", err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(dir, rel)); string(got) != userNav {
-		t.Fatalf("existing Tier-2 file overwritten without --reset-tier2; got:\n%s", got)
-	}
-
-	// Hook denies: still preserved.
-	checksums.Tier2OverwriteFn = func(string) bool { return false }
-	if err := emitTier2OnceIfMissing(dir, rel, "nextjs/src/components/nav.tsx.tmpl", navTemplateData(), cs); err != nil {
-		t.Fatalf("emitTier2OnceIfMissing (hook denies): %v", err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(dir, rel)); string(got) != userNav {
-		t.Fatalf("Tier-2 file overwritten despite hook denial; got:\n%s", got)
+	// Every subsequent generate leaves the existing file alone.
+	for i := 0; i < 3; i++ {
+		if err := emitScaffoldOnceIfMissing(dir, rel, "nextjs/src/components/nav.tsx.tmpl", navTemplateData()); err != nil {
+			t.Fatalf("emitScaffoldOnceIfMissing (run %d): %v", i, err)
+		}
+		if got, _ := os.ReadFile(filepath.Join(dir, rel)); string(got) != userNav {
+			t.Fatalf("existing scaffold overwritten (run %d); got:\n%s", i, got)
+		}
 	}
 
-	// Hook approves (--reset-tier2 --yes shape): re-scaffolded.
-	checksums.Tier2OverwriteFn = func(string) bool { return true }
-	if err := emitTier2OnceIfMissing(dir, rel, "nextjs/src/components/nav.tsx.tmpl", navTemplateData(), cs); err != nil {
-		t.Fatalf("emitTier2OnceIfMissing (hook approves): %v", err)
+	// Delete-then-regenerate refreshes it from the template.
+	if err := os.Remove(filepath.Join(dir, rel)); err != nil {
+		t.Fatal(err)
+	}
+	if err := emitScaffoldOnceIfMissing(dir, rel, "nextjs/src/components/nav.tsx.tmpl", navTemplateData()); err != nil {
+		t.Fatalf("emitScaffoldOnceIfMissing (after delete): %v", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dir, rel)); string(got) == userNav {
-		t.Fatal("--reset-tier2 approval did not re-scaffold the Tier-2 file")
+		t.Fatal("deleted scaffold was not re-rendered from the template")
 	}
 }

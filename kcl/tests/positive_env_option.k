@@ -38,7 +38,7 @@ _nats_manifests = [] if _is_dev_host else [
 
 # A Service so the bundle isn't empty (forge.Bundle requires nothing
 # but the renderer's downstream consumers do).
-_svc = forge.Service {
+_svc = forge.RenderedWorkload {
     name = "api"
     image = "myapp:dev"
     deploy = forge.HostDeploy {runner = "go-run"}

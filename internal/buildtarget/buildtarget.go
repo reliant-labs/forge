@@ -33,6 +33,11 @@
 // Phase 1 landed the schema + token helper. Phase 2 (this commit)
 // wires Runner.Build into internal/cli/build.go and persists per-
 // service state. Phase 3 adds audit + doctor surfaces.
+//
+// forge:exclude-contract
+// buildtarget is an outbound build-dispatch adapter (the `sh -c` shell-build
+// escape hatch for out-of-module sources), not a contract-shaped service. Opt
+// out of the require-contract rule.
 package buildtarget
 
 import (

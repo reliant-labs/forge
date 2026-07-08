@@ -5,25 +5,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/generator"
 )
 
 // withDeleteProjectRoot builds a synthetic project with one service:
-// forge.yaml, a components.json entry, a handlers/<svc>/ scaffold dir, and
-// a pkg/app/services.go registering the service. Chdirs in and returns root.
+// forge.yaml, a handlers/<svc>/ scaffold dir, and a pkg/app/services.go
+// registering the service. The service is DISCOVERED from these real sources
+// (handler impl + registry) — forge no longer authors a components.json
+// manifest. Chdirs in and returns root.
 func withDeleteProjectRoot(t *testing.T, svc string) string {
 	t.Helper()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte("name: x\nmodule_path: example.com/x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := generator.WriteComponentsFile(root, []config.ComponentConfig{{
-		Name: svc,
-		Kind: config.ComponentKindServer,
-		Path: "handlers/" + svc,
-	}}); err != nil {
 		t.Fatal(err)
 	}
 	// Handler scaffold dir with a file inside.
@@ -56,9 +48,11 @@ func pascal(s string) string {
 }
 
 // TestDeleteService_RemovesDirAndTombstones verifies the full default
-// path: components.json entry gone, handler dir gone, services.go
-// serviceRow line replaced by a types-only tombstone comment that the
-// registry classifies as TOMBSTONED.
+// path: handler dir gone and the services.go serviceRow line replaced by a
+// types-only tombstone comment that the registry classifies as TOMBSTONED.
+// forge no longer maintains a components.json manifest (the inventory is
+// introspected from the real sources), so delete removes the CODE; the
+// service simply stops being discovered on the next load.
 func TestDeleteService_RemovesDirAndTombstones(t *testing.T) {
 	root := withDeleteProjectRoot(t, "reporting")
 
@@ -66,14 +60,9 @@ func TestDeleteService_RemovesDirAndTombstones(t *testing.T) {
 		t.Fatalf("runDeleteService: %v", err)
 	}
 
-	// components.json no longer lists the service.
-	data, err := os.ReadFile(filepath.Join(root, config.ComponentsFileName))
-	if err != nil {
-		t.Fatalf("read components.json: %v", err)
-	}
-	if strings.Contains(string(data), "reporting") {
-		t.Errorf("components.json should not mention reporting:\n%s", data)
-	}
+	// delete does NOT rewrite components.json — it's no longer a manifest
+	// forge owns. The removed handler dir + services.go tombstone (below) are
+	// what make the service stop being discovered.
 
 	// handler dir removed.
 	if _, err := os.Stat(filepath.Join(root, "internal", "handlers", "reporting")); !os.IsNotExist(err) {
@@ -114,9 +103,14 @@ func TestDeleteService_DryRunChangesNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "internal", "handlers", "reporting")); err != nil {
 		t.Errorf("dry-run must NOT remove handlers/reporting: %v", err)
 	}
-	data, _ := os.ReadFile(filepath.Join(root, config.ComponentsFileName))
-	if !strings.Contains(string(data), "reporting") {
-		t.Errorf("dry-run must NOT touch components.json")
+	// dry-run must leave the service registration intact: services.go still
+	// carries the serviceRow line (the source the service is discovered from).
+	sg, err := os.ReadFile(filepath.Join(root, "pkg", "app", "services.go"))
+	if err != nil {
+		t.Fatalf("read services.go: %v", err)
+	}
+	if !strings.Contains(string(sg), "serviceRowReporting(") {
+		t.Errorf("dry-run must NOT touch services.go registration:\n%s", sg)
 	}
 }
 

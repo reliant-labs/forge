@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cli/audittype"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // crossCheckPrereqs / byteMatchGroups stay in package cli (audit_prereqs_cli.go)
@@ -69,6 +70,22 @@ func TestCrossCheckPrereqs_Empty(t *testing.T) {
 	}
 	if cat.Details["external_secrets"].(int) != 0 || cat.Details["dns_records"].(int) != 0 {
 		t.Errorf("expected zero counts, got %v", cat.Details)
+	}
+}
+
+// TestAuditPrerequisites_CLIKindSkipped asserts a project with no deploy
+// surface (kind=cli / library) reports ✓ n/a instead of warning that it
+// could not evaluate a non-existent dev KCL.
+func TestAuditPrerequisites_CLIKindSkipped(t *testing.T) {
+	for _, kind := range []string{"cli", "library"} {
+		cfg := &config.ProjectConfig{Kind: kind}
+		cat := auditPrerequisites(cfg, t.TempDir())
+		if cat.Status != audittype.StatusOK {
+			t.Errorf("kind=%s: status = %q, want ok (n/a)", kind, cat.Status)
+		}
+		if !strings.Contains(cat.Summary, "n/a") {
+			t.Errorf("kind=%s: summary should say n/a, got %q", kind, cat.Summary)
+		}
 	}
 }
 

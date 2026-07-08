@@ -9,8 +9,32 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
+// writeCIScaffold writes a generated CI workflow as a scaffold ("yours"):
+// write-once when absent, user-owned from birth, NO forge:hash marker,
+// and never re-emitted while the file exists. CI workflows are the
+// canonical hand-edited policy file (add jobs, secrets, custom steps),
+// so certifying them Tier-1 mis-flagged every sanctioned edit as
+// `user_edited_gen_files` drift and pushed users toward `forge disown`.
+// The derived jobs (frontend lint, KCL-env matrix, verify-generated) are
+// a convenience starting point, not a correctness requirement — a stale
+// workflow still runs, unlike buf.yaml whose derived dep gates the build
+// — so write-once is the right lifecycle. To refresh, delete and re-run.
+func writeCIScaffold(root, relPath string, content []byte) error {
+	written, err := generator.WriteScaffoldIfMissing(root, relPath, content)
+	if err != nil {
+		return fmt.Errorf("write %s: %w", relPath, err)
+	}
+	if written {
+		fmt.Printf("  ✅ Generated %s\n", relPath)
+	} else {
+		fmt.Printf("  ⏭️  %s exists — yours to edit, leaving it untouched\n", relPath)
+	}
+	return nil
+}
+
 // generateCIWorkflows generates GitHub Actions workflow files from the project config.
-// It uses the checksum system to detect user modifications and skip overwriting them.
+// They are emitted as write-once scaffolds (see writeCIScaffold): the
+// user owns them after the first write and forge never stomps edits.
 //
 // Kind branching mirrors `forge new`'s project_ci.go: service kinds get
 // the full set (build-images + deploy + e2e + proto-breaking), while
@@ -38,14 +62,8 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 	if err != nil {
 		return fmt.Errorf("render ci.yml: %w", err)
 	}
-	written, err := generator.WriteGeneratedFile(root, ".github/workflows/ci.yml", ciContent, cs, force)
-	if err != nil {
-		return fmt.Errorf("write ci.yml: %w", err)
-	}
-	if written {
-		fmt.Println("  ✅ Generated .github/workflows/ci.yml")
-	} else {
-		fmt.Println("  ⚠️  .github/workflows/ci.yml has local modifications, skipping (use --force to overwrite)")
+	if err := writeCIScaffold(root, ".github/workflows/ci.yml", ciContent); err != nil {
+		return err
 	}
 
 	if isService {
@@ -57,14 +75,8 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 		if err != nil {
 			return fmt.Errorf("render build-images.yml: %w", err)
 		}
-		written, err = generator.WriteGeneratedFile(root, ".github/workflows/build-images.yml", buildContent, cs, force)
-		if err != nil {
-			return fmt.Errorf("write build-images.yml: %w", err)
-		}
-		if written {
-			fmt.Println("  ✅ Generated .github/workflows/build-images.yml")
-		} else {
-			fmt.Println("  ⚠️  .github/workflows/build-images.yml has local modifications, skipping (use --force to overwrite)")
+		if err := writeCIScaffold(root, ".github/workflows/build-images.yml", buildContent); err != nil {
+			return err
 		}
 
 		// ── deploy.yml ──
@@ -72,14 +84,8 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 		if err != nil {
 			return fmt.Errorf("render deploy.yml: %w", err)
 		}
-		written, err = generator.WriteGeneratedFile(root, ".github/workflows/deploy.yml", deployContent, cs, force)
-		if err != nil {
-			return fmt.Errorf("write deploy.yml: %w", err)
-		}
-		if written {
-			fmt.Println("  ✅ Generated .github/workflows/deploy.yml")
-		} else {
-			fmt.Println("  ⚠️  .github/workflows/deploy.yml has local modifications, skipping (use --force to overwrite)")
+		if err := writeCIScaffold(root, ".github/workflows/deploy.yml", deployContent); err != nil {
+			return err
 		}
 	}
 
@@ -90,14 +96,8 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 		if err != nil {
 			return fmt.Errorf("render e2e.yml: %w", err)
 		}
-		written, err = generator.WriteGeneratedFile(root, ".github/workflows/e2e.yml", e2eContent, cs, force)
-		if err != nil {
-			return fmt.Errorf("write e2e.yml: %w", err)
-		}
-		if written {
-			fmt.Println("  ✅ Generated .github/workflows/e2e.yml")
-		} else {
-			fmt.Println("  ⚠️  .github/workflows/e2e.yml has local modifications, skipping (use --force to overwrite)")
+		if err := writeCIScaffold(root, ".github/workflows/e2e.yml", e2eContent); err != nil {
+			return err
 		}
 	}
 
@@ -107,14 +107,8 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 		if err != nil {
 			return fmt.Errorf("render proto-breaking.yml: %w", err)
 		}
-		written, err = generator.WriteGeneratedFile(root, ".github/workflows/proto-breaking.yml", breakingContent, cs, force)
-		if err != nil {
-			return fmt.Errorf("write proto-breaking.yml: %w", err)
-		}
-		if written {
-			fmt.Println("  ✅ Generated .github/workflows/proto-breaking.yml")
-		} else {
-			fmt.Println("  ⚠️  .github/workflows/proto-breaking.yml has local modifications, skipping (use --force to overwrite)")
+		if err := writeCIScaffold(root, ".github/workflows/proto-breaking.yml", breakingContent); err != nil {
+			return err
 		}
 	}
 
@@ -124,14 +118,8 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 	if err != nil {
 		return fmt.Errorf("render dependabot.yml: %w", err)
 	}
-	written, err = generator.WriteGeneratedFile(root, ".github/dependabot.yml", depContent, cs, force)
-	if err != nil {
-		return fmt.Errorf("write dependabot.yml: %w", err)
-	}
-	if written {
-		fmt.Println("  ✅ Generated .github/dependabot.yml")
-	} else {
-		fmt.Println("  ⚠️  .github/dependabot.yml has local modifications, skipping (use --force to overwrite)")
+	if err := writeCIScaffold(root, ".github/dependabot.yml", depContent); err != nil {
+		return err
 	}
 
 	return nil

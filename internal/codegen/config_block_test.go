@@ -17,10 +17,9 @@
 //	    }
 //
 // These tests cover the chain end-to-end at the codegen layer:
-// descriptor-shaped messages → pkg/config nested struct + env/flag/
-// .env.example → wire_gen type-based resolution (value + pointer +
-// ambiguity error) → per-env deploy projection of a block leaf →
-// regenerate idempotency.
+// descriptor-shaped messages → pkg/config nested struct + env/flag →
+// wire_gen type-based resolution (value + pointer + ambiguity error) →
+// per-env deploy projection of a block leaf → regenerate idempotency.
 package codegen
 
 import (
@@ -138,8 +137,7 @@ func TestBuildConfigTemplateData_FlatStaysFlat(t *testing.T) {
 
 // TestGenerateConfigLoader_ComponentBlock: with a config block in the proto,
 // the generated config.go stays the THIN ALIAS shim (the block struct lives
-// in the gen proto package as a nested message — NOT re-declared here), and
-// the block's leaf still flows into .env.example like any root field.
+// in the gen proto package as a nested message — NOT re-declared here).
 func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/proj\n\ngo 1.24\n"), 0o644); err != nil {
@@ -170,15 +168,6 @@ func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 	fset := token.NewFileSet()
 	if _, err := parser.ParseFile(fset, "config.go", data, 0); err != nil {
 		t.Fatalf("generated config.go does not parse: %v\n--- content ---\n%s", err, content)
-	}
-
-	// Block leaves flow into .env.example like any other field.
-	env, err := os.ReadFile(filepath.Join(dir, ".env.example"))
-	if err != nil {
-		t.Fatalf("read .env.example: %v", err)
-	}
-	if !strings.Contains(string(env), "TRADER_MAX_PER_TICK=10") {
-		t.Errorf(".env.example missing TRADER_MAX_PER_TICK=10:\n%s", env)
 	}
 }
 

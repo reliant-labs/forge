@@ -452,13 +452,14 @@ func TestGeneratePlanProtoFile_RESTEnabled_CRUDAnnotations(t *testing.T) {
 	}
 }
 
-// TestRegenerateInfraFiles_BufYAML_RESTToggle verifies that buf.yaml
-// switches between the bare default and the googleapis-dep block based
-// on `api.rest`. This exercises the upgrade flow: a project regenerates
-// buf.yaml from forge.yaml on every `forge upgrade` / `forge generate
-// --regen-infra`, so the dep must be added when REST flips on and
-// removed when it flips off.
-func TestRegenerateInfraFiles_BufYAML_RESTToggle(t *testing.T) {
+// TestUpgradeBufYAML_RESTToggle verifies that buf.yaml switches between the
+// bare default and the googleapis-dep block based on `api.rest`. buf.yaml is
+// a Tier-2 managed file, so it is (re)rendered by `forge upgrade` (Upgrade),
+// not by the Tier-1-only RegenerateInfraFiles. force=true re-renders it
+// regardless of the pristine/edited check, isolating the api.rest→dep linkage
+// this test cares about: the dep must appear when REST flips on and vanish
+// when it flips off.
+func TestUpgradeBufYAML_RESTToggle(t *testing.T) {
 	root := t.TempDir()
 	g := NewProjectGenerator("buf-toggle", filepath.Join(root, "app"), "example.com/buf-toggle")
 	g.ServiceName = "api"
@@ -472,8 +473,8 @@ func TestRegenerateInfraFiles_BufYAML_RESTToggle(t *testing.T) {
 	}
 
 	// REST off → bare deps comment block.
-	if err := RegenerateInfraFiles(g.Path, cfg); err != nil {
-		t.Fatalf("RegenerateInfraFiles(off) error = %v", err)
+	if _, err := Upgrade(g.Path, cfg, true, false); err != nil {
+		t.Fatalf("Upgrade(rest=off) error = %v", err)
 	}
 	buf, err := os.ReadFile(filepath.Join(g.Path, "buf.yaml"))
 	if err != nil {
@@ -485,8 +486,8 @@ func TestRegenerateInfraFiles_BufYAML_RESTToggle(t *testing.T) {
 
 	// Flip REST on → re-render — googleapis dep appears.
 	cfg.API.REST = true
-	if err := RegenerateInfraFiles(g.Path, cfg); err != nil {
-		t.Fatalf("RegenerateInfraFiles(on) error = %v", err)
+	if _, err := Upgrade(g.Path, cfg, true, false); err != nil {
+		t.Fatalf("Upgrade(rest=on) error = %v", err)
 	}
 	buf, err = os.ReadFile(filepath.Join(g.Path, "buf.yaml"))
 	if err != nil {
@@ -498,8 +499,8 @@ func TestRegenerateInfraFiles_BufYAML_RESTToggle(t *testing.T) {
 
 	// Flip REST back off → re-render — dep disappears (no on-disk drift).
 	cfg.API.REST = false
-	if err := RegenerateInfraFiles(g.Path, cfg); err != nil {
-		t.Fatalf("RegenerateInfraFiles(off again) error = %v", err)
+	if _, err := Upgrade(g.Path, cfg, true, false); err != nil {
+		t.Fatalf("Upgrade(rest=off again) error = %v", err)
 	}
 	buf, err = os.ReadFile(filepath.Join(g.Path, "buf.yaml"))
 	if err != nil {

@@ -22,6 +22,8 @@
 package config
 
 import (
+	"bytes"
+
 	"go.yaml.in/yaml/v3"
 )
 
@@ -318,5 +320,5 @@ func sectionsEquivalent[T any](a, b T) bool {
 	if errA != nil || errB != nil {
 		return false
 	}
-	return string(ab) == string(bb)
+	return bytes.Equal(ab, bb)
 }

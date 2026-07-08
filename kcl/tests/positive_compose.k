@@ -5,7 +5,7 @@ the Go-side dispatch ships as a stub in this release.
 
 import forge
 
-_svc = forge.Service {
+_svc = forge.RenderedWorkload {
     name = "worker"
     deploy = forge.Compose {
         compose_file = "deploy/docker-compose.prod.yml"
@@ -23,7 +23,7 @@ assert_service = output.services[0].deploy.service == "worker-prod"
 assert_env_file = output.services[0].deploy.env_file == ".env.prod"
 
 # Default compose_file when unset.
-_default = forge.Service {
+_default = forge.RenderedWorkload {
     name = "alt"
     deploy = forge.Compose {}
 }

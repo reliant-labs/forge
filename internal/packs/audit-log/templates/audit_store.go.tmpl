@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// AuditEntry represents a single audit log record.
-type AuditEntry struct {
+// Entry represents a single audit log record.
+type Entry struct {
 	ID           string            `json:"id" db:"id"`
 	Timestamp    time.Time         `json:"timestamp" db:"timestamp"`
 	UserID       string            `json:"user_id" db:"user_id"`
@@ -26,8 +26,8 @@ type AuditEntry struct {
 	CreatedAt    time.Time         `json:"created_at" db:"created_at"`
 }
 
-// AuditFilter defines query parameters for searching audit log entries.
-type AuditFilter struct {
+// Filter defines query parameters for searching audit log entries.
+type Filter struct {
 	UserID    string
 	Procedure string
 	Since     time.Time
@@ -36,15 +36,15 @@ type AuditFilter struct {
 	Offset    int
 }
 
-// AuditStore defines the interface for audit log persistence.
-type AuditStore interface {
+// Store defines the interface for audit log persistence.
+type Store interface {
 	// Log persists a single audit entry.
-	Log(ctx context.Context, entry AuditEntry) error
+	Log(ctx context.Context, entry Entry) error
 	// Query retrieves audit entries matching the given filter.
-	Query(ctx context.Context, filter AuditFilter) ([]AuditEntry, error)
+	Query(ctx context.Context, filter Filter) ([]Entry, error)
 }
 
-// DBAuditStore implements AuditStore using a *sql.DB connection.
+// DBAuditStore implements Store using a *sql.DB connection.
 type DBAuditStore struct {
 	db *sql.DB
 }
@@ -55,7 +55,7 @@ func NewDBAuditStore(db *sql.DB) *DBAuditStore {
 }
 
 // Log inserts an audit entry into the audit_log table.
-func (s *DBAuditStore) Log(ctx context.Context, entry AuditEntry) error {
+func (s *DBAuditStore) Log(ctx context.Context, entry Entry) error {
 	metadataJSON, err := json.Marshal(entry.Metadata)
 	if err != nil {
 		metadataJSON = []byte("{}")
@@ -82,7 +82,7 @@ func (s *DBAuditStore) Log(ctx context.Context, entry AuditEntry) error {
 }
 
 // Query retrieves audit log entries matching the given filter.
-func (s *DBAuditStore) Query(ctx context.Context, filter AuditFilter) ([]AuditEntry, error) {
+func (s *DBAuditStore) Query(ctx context.Context, filter Filter) ([]Entry, error) {
 	query := `SELECT id, timestamp, user_id, email, procedure, peer_address, duration_ms, status, error_code, error_message, metadata, created_at FROM audit_log WHERE 1=1`
 	args := []any{}
 	argIdx := 1
@@ -129,9 +129,9 @@ func (s *DBAuditStore) Query(ctx context.Context, filter AuditFilter) ([]AuditEn
 	}
 	defer rows.Close()
 
-	var entries []AuditEntry
+	var entries []Entry
 	for rows.Next() {
-		var e AuditEntry
+		var e Entry
 		var errorCode, errorMessage sql.NullString
 		var metadataJSON []byte
 

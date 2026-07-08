@@ -9,19 +9,17 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// writeComponentsJSON drops a components.json at dir holding the given
-// components. A copy of internal/cli's api_test.go helper, duplicated here
-// because the `add` group is its own package and the cli test helper does
-// not cross the package boundary. Passing zero components still writes
-// `{"components":[]}` so the project derives to service kind.
-func writeComponentsJSON(t *testing.T, dir string, comps ...config.ComponentConfig) {
+// markServiceProject makes dir derive to the "service" kind by stamping a
+// real service artifact — the pkg/app composition root — since forge derives
+// kind from the project's real sources (KCL tree, service registry, handler
+// impls, protos), not a components.json manifest. The variadic components are
+// ignored: the inventory is introspected from real sources at load, not
+// authored. Named after its effect; the comps parameter is retained so the
+// many call sites don't churn.
+func writeComponentsJSON(t *testing.T, dir string, _ ...config.ComponentConfig) {
 	t.Helper()
-	data, err := config.MarshalComponentsJSON(comps)
-	if err != nil {
-		t.Fatalf("marshal components.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, config.ComponentsFileName), data, 0o644); err != nil {
-		t.Fatalf("write components.json: %v", err)
+	if err := os.MkdirAll(filepath.Join(dir, "pkg", "app"), 0o755); err != nil {
+		t.Fatalf("mark service project (mkdir pkg/app): %v", err)
 	}
 }
 

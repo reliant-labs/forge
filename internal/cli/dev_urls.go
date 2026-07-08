@@ -228,24 +228,24 @@ func renderIngressURLs(w io.Writer, entities *KCLEntities, urls []IngressURL) {
 
 	for gi, gw := range gateways {
 		if gi > 0 {
-			fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w)
 		}
-		fmt.Fprintln(w, gw.Name)
+		_, _ = fmt.Fprintln(w, gw.Name)
 		listeners := append([]GatewayListenerEntity(nil), gw.Listeners...)
 		sort.SliceStable(listeners, func(i, j int) bool { return listeners[i].Port < listeners[j].Port })
 		for _, l := range listeners {
-			fmt.Fprintf(w, "  %s (port %d, %s)\n", l.Name, l.Port, l.Protocol)
+			_, _ = fmt.Fprintf(w, "  %s (port %d, %s)\n", l.Name, l.Port, l.Protocol)
 			rows := byKey[gw.Name+"\x00"+l.Name]
 			if len(rows) == 0 {
-				fmt.Fprintln(w, "    (no routes)")
+				_, _ = fmt.Fprintln(w, "    (no routes)")
 				continue
 			}
 			for _, r := range rows {
 				if r.Warning != "" {
-					fmt.Fprintf(w, "    %-22s WARNING: %s\n", r.Route, r.Warning)
+					_, _ = fmt.Fprintf(w, "    %-22s WARNING: %s\n", r.Route, r.Warning)
 					continue
 				}
-				fmt.Fprintf(w, "    %-22s %-40s -> %s:%d\n", r.Route, r.URL, r.Service, r.Port)
+				_, _ = fmt.Fprintf(w, "    %-22s %-40s -> %s:%d\n", r.Route, r.URL, r.Service, r.Port)
 			}
 		}
 	}
@@ -262,10 +262,10 @@ func renderIngressURLs(w io.Writer, entities *KCLEntities, urls []IngressURL) {
 		}
 	}
 	if len(orphans) > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Unresolved routes:")
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "Unresolved routes:")
 		for _, u := range orphans {
-			fmt.Fprintf(w, "  %-22s WARNING: %s\n", u.Route, u.Warning)
+			_, _ = fmt.Fprintf(w, "  %-22s WARNING: %s\n", u.Route, u.Warning)
 		}
 	}
 }

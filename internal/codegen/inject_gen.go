@@ -153,8 +153,8 @@ type InjectGenData struct {
 // assignable field.
 //
 // This is the live composition path: cmd-server composes OpenInfra →
-// NewComponents → mount via the typed Mount<Svc> methods + WorkerList /
-// OperatorList. There is no by-type injector and no *Services god-struct.
+// NewComponents → mount via the typed Mount<Svc> methods + AllWorkers /
+// AllOperators. There is no by-type injector and no *Services god-struct.
 func GenerateCompose(in InjectGenInput) error {
 	comps, err := assembleBuildComponents(in)
 	if err != nil {
@@ -276,7 +276,12 @@ func GenerateCompose(in InjectGenInput) error {
 	if err != nil {
 		return fmt.Errorf("render compose.go.tmpl: %w", err)
 	}
-	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "compose.go"), content, in.Checksums); err != nil {
+	// SCAFFOLD-ONCE: compose.go is the OWNED component-construction site. Forge
+	// emits it once (the initial services/packages wiring) and never regenerates
+	// it — adding a component is a hand-edit here (or a `forge add` append), not
+	// a re-derivation from a discovered set. A project that already has a
+	// compose.go (every existing project) is left untouched.
+	if _, err := writeForgeScaffoldOnce(in.ProjectDir, filepath.Join("internal", "app", "compose.go"), content); err != nil {
 		return fmt.Errorf("write internal/app/compose.go: %w", err)
 	}
 	return nil
@@ -489,8 +494,9 @@ func GenerateProviders(modulePath, databaseDriver string, ormEnabled bool, proje
 }
 
 // GenerateLifecycle emits internal/app/lifecycle.go: the supervised-
-// component surface (WorkerList / OperatorList / HasOperators / RunOperators)
-// over the constructed *Components. Where mounts_services.go is the HTTP
+// component surface (typed Worker<X>()/Operator<X>() accessors + AllWorkers /
+// AllOperators / HasOperators / RunOperators) over the constructed *Components.
+// Where mounts_services.go is the HTTP
 // surface, this is the worker/operator surface the cmd layer registers onto
 // serverkit.Server. Always written (no len==0 early-return) so cmd/server.go's
 // references resolve even with zero supervised components.
@@ -500,10 +506,11 @@ func GenerateLifecycle(in InjectGenInput) error {
 		return err
 	}
 	comps = filterExternalComponents(in.ProjectDir, comps)
-	// No len(comps)==0 early-return: cmd/server.go reads app.WorkerList /
-	// app.OperatorList / app.RunOperators over *Components, so lifecycle.go
+	// No len(comps)==0 early-return: cmd/server.go reads app.AllWorkers /
+	// app.AllOperators / app.RunOperators over *Components, so lifecycle.go
 	// must exist even with zero supervised components (the template emits
-	// valid no-op WorkerList/OperatorList/RunOperators in that case).
+	// valid nil-returning AllWorkers/AllOperators and a generic RunOperators in
+	// that case).
 
 	type lifeComp struct {
 		Name       string
@@ -541,7 +548,11 @@ func GenerateLifecycle(in InjectGenInput) error {
 	if err != nil {
 		return fmt.Errorf("render lifecycle.go.tmpl: %w", err)
 	}
-	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "lifecycle.go"), content, in.Checksums); err != nil {
+	// SCAFFOLD-ONCE: lifecycle.go is the OWNED supervised-surface (AllWorkers /
+	// AllOperators + the per-component accessors). Forge emits it once and never
+	// regenerates it; `forge add worker/operator` appends the accessor. An
+	// existing lifecycle.go is left untouched.
+	if _, err := writeForgeScaffoldOnce(in.ProjectDir, filepath.Join("internal", "app", "lifecycle.go"), content); err != nil {
 		return fmt.Errorf("write internal/app/lifecycle.go: %w", err)
 	}
 	return nil

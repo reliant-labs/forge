@@ -30,7 +30,7 @@ import (
 //	mux.Handle(auditv1connect.NewAuditLogServiceHandler(auditlog.NewHandler(store)))
 type Handler struct {
 	auditv1connect.UnimplementedAuditLogServiceHandler
-	store audit.AuditStore
+	store audit.Store
 	scope ScopePredicate
 }
 
@@ -106,7 +106,7 @@ func SelfOrAdminScope(ctx context.Context, req *auditv1.ListAuditEventsRequest) 
 // Pass the same store the Interceptor was constructed with so reads see
 // the writes. The default scoping policy is [SelfOrAdminScope]; override
 // with [WithScopePredicate].
-func NewHandler(store audit.AuditStore, opts ...Option) *Handler {
+func NewHandler(store audit.Store, opts ...Option) *Handler {
 	h := &Handler{store: store, scope: SelfOrAdminScope}
 	for _, opt := range opts {
 		opt(h)
@@ -126,7 +126,7 @@ func (h *Handler) ListAuditEvents(ctx context.Context, req *connect.Request[audi
 		}
 	}
 
-	filter := audit.AuditFilter{
+	filter := audit.Filter{
 		UserID:    req.Msg.GetUserId(),
 		Procedure: req.Msg.GetProcedure(),
 		Limit:     int(req.Msg.GetLimit()),

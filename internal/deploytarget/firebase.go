@@ -473,15 +473,15 @@ func (p FirebaseProvider) BuildOnly(ctx context.Context, fes []BuildOnlyFrontend
 // the emitted output dir. Mirrors printFirebasePlan's "[DRY-RUN] would
 // exec" style.
 func printBuildOnlyPlan(w io.Writer, plan buildOnlyPlan) {
-	fmt.Fprintf(w, "  [DRY-RUN] build-only plan for frontend %q:\n", plan.Name)
-	fmt.Fprintf(w, "    build dir:    %s\n", plan.FrontendDir)
-	fmt.Fprintf(w, "    [DRY-RUN] would exec: %s\n", strings.Join(plan.InstallCmd, " "))
+	_, _ = fmt.Fprintf(w, "  [DRY-RUN] build-only plan for frontend %q:\n", plan.Name)
+	_, _ = fmt.Fprintf(w, "    build dir:    %s\n", plan.FrontendDir)
+	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec: %s\n", strings.Join(plan.InstallCmd, " "))
 	if len(plan.BuildEnv) > 0 {
-		fmt.Fprintf(w, "    build env:    %s\n", formatBuildEnv(plan.BuildEnv))
+		_, _ = fmt.Fprintf(w, "    build env:    %s\n", formatBuildEnv(plan.BuildEnv))
 	}
-	fmt.Fprintf(w, "    [DRY-RUN] would exec: %s (NODE_ENV=production)\n", strings.Join(plan.BuildCmd, " "))
+	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec: %s (NODE_ENV=production)\n", strings.Join(plan.BuildCmd, " "))
 	if plan.EmittedDir != "" {
-		fmt.Fprintf(w, "    emits dir:    %s\n", plan.EmittedDir)
+		_, _ = fmt.Fprintf(w, "    emits dir:    %s\n", plan.EmittedDir)
 	}
 }
 
@@ -690,26 +690,26 @@ func copyFile(src, dst string, mode os.FileMode) error {
 // per copy, with the destination mount), and the exact firebase deploy
 // command. Mirrors the External provider's "[DRY-RUN] would exec" style.
 func printFirebasePlan(w io.Writer, plan firebasePlan) {
-	fmt.Fprintf(w, "  [DRY-RUN] firebase deploy plan for frontend %q:\n", plan.Name)
-	fmt.Fprintf(w, "    build dir:    %s\n", plan.FrontendDir)
-	fmt.Fprintf(w, "    [DRY-RUN] would exec: %s\n", strings.Join(plan.InstallCmd, " "))
+	_, _ = fmt.Fprintf(w, "  [DRY-RUN] firebase deploy plan for frontend %q:\n", plan.Name)
+	_, _ = fmt.Fprintf(w, "    build dir:    %s\n", plan.FrontendDir)
+	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec: %s\n", strings.Join(plan.InstallCmd, " "))
 	if len(plan.BuildEnv) > 0 {
-		fmt.Fprintf(w, "    build env:    %s\n", formatBuildEnv(plan.BuildEnv))
+		_, _ = fmt.Fprintf(w, "    build env:    %s\n", formatBuildEnv(plan.BuildEnv))
 	}
-	fmt.Fprintf(w, "    [DRY-RUN] would exec: %s (NODE_ENV=production)\n", strings.Join(plan.BuildCmd, " "))
-	fmt.Fprintf(w, "    assemble into %s:\n", plan.StagingDir)
+	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec: %s (NODE_ENV=production)\n", strings.Join(plan.BuildCmd, " "))
+	_, _ = fmt.Fprintf(w, "    assemble into %s:\n", plan.StagingDir)
 	for _, c := range plan.Copies {
 		mount := "/"
 		if c.DestRel != "." {
 			mount = "/" + c.DestRel
 		}
-		fmt.Fprintf(w, "      %-18s -> %s   (%s)\n", c.Src, mount, c.Label)
+		_, _ = fmt.Fprintf(w, "      %-18s -> %s   (%s)\n", c.Src, mount, c.Label)
 	}
-	fmt.Fprintf(w, "    firebase.json (hosting.public=%s):\n", filepath.Base(plan.StagingDir))
+	_, _ = fmt.Fprintf(w, "    firebase.json (hosting.public=%s):\n", filepath.Base(plan.StagingDir))
 	for _, line := range strings.Split(strings.TrimRight(plan.FirebaseJSON, "\n"), "\n") {
-		fmt.Fprintf(w, "      %s\n", line)
+		_, _ = fmt.Fprintf(w, "      %s\n", line)
 	}
-	fmt.Fprintf(w, "    [DRY-RUN] would exec (cwd %s): %s\n",
+	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec (cwd %s): %s\n",
 		plan.DeployWorkdir, strings.Join(plan.DeployCmd, " "))
 }
 

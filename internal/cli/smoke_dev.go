@@ -216,7 +216,7 @@ func runDevSmokeWith(ctx context.Context, env string, opts smokeOptions, entitie
 		if len(flowResults) > 0 {
 			return reportFlowOnlySmoke(out, env, opts, flowResults)
 		}
-		fmt.Fprintf(out, "smoke %s: no host-mapped listener ports or host-infra deps declared — nothing to probe.\n", env)
+		_, _ = fmt.Fprintf(out, "smoke %s: no host-mapped listener ports or host-infra deps declared — nothing to probe.\n", env)
 		return nil
 	}
 
@@ -287,14 +287,14 @@ func probeDevPort(ctx context.Context, target devSmokeTarget, timeout time.Durat
 
 func probeDevHTTP(ctx context.Context, target devSmokeTarget, timeout time.Duration) smokeRouteResult {
 	addr := fmt.Sprintf("localhost:%d", target.Port)
-	url := "http://" + addr + target.Path
+	reqURL := "http://" + addr + target.Path
 	client := &http.Client{
 		Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, http.NoBody)
 	if err != nil {
 		return classifyDevTransportError(err)
 	}
@@ -303,7 +303,7 @@ func probeDevHTTP(ctx context.Context, target devSmokeTarget, timeout time.Durat
 	if err != nil {
 		return classifyDevTransportError(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := make([]byte, 4096)
 	n, _ := resp.Body.Read(body)
 	return classifyResponseForPath(resp.StatusCode, resp.Header.Get("Content-Type"), string(body[:n]), target.Path)
@@ -345,9 +345,9 @@ func classifyDevTransportError(err error) smokeRouteResult {
 // --- output -------------------------------------------------------------
 
 func writeDevSmokeTable(out io.Writer, env string, targets []devSmokeTarget, results []smokeRouteResult, summary smokeSummary) {
-	fmt.Fprintf(out, "forge smoke %s (dev / port-based)\n", env)
-	fmt.Fprintln(out, "  probing host-mapped listener ports + host->infra deps on localhost")
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "forge smoke %s (dev / port-based)\n", env)
+	_, _ = fmt.Fprintln(out, "  probing host-mapped listener ports + host->infra deps on localhost")
+	_, _ = fmt.Fprintln(out)
 
 	nameW, addrW, probeW := len("TARGET"), len("ADDRESS"), len("PROBE")
 	for i, r := range results {
@@ -355,9 +355,9 @@ func writeDevSmokeTable(out io.Writer, env string, targets []devSmokeTarget, res
 		addrW = maxInt(addrW, len(r.Target.Host))
 		probeW = maxInt(probeW, len(targets[i].Probe))
 	}
-	fmt.Fprintf(out, "  %-6s  %-*s  %-*s  %-*s  %s\n", "RESULT", nameW, "TARGET", addrW, "ADDRESS", probeW, "PROBE", "REASON")
+	_, _ = fmt.Fprintf(out, "  %-6s  %-*s  %-*s  %-*s  %s\n", "RESULT", nameW, "TARGET", addrW, "ADDRESS", probeW, "PROBE", "REASON")
 	for i, r := range results {
-		fmt.Fprintf(out, "  %-6s  %-*s  %-*s  %-*s  %s\n",
+		_, _ = fmt.Fprintf(out, "  %-6s  %-*s  %-*s  %-*s  %s\n",
 			string(r.Status),
 			nameW, r.Target.RouteName,
 			addrW, r.Target.Host,
@@ -365,14 +365,14 @@ func writeDevSmokeTable(out io.Writer, env string, targets []devSmokeTarget, res
 			smokeReasonLine(r))
 	}
 
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  summary: %d PASS, %d WARN, %d FAIL  (%d target(s))\n",
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "  summary: %d PASS, %d WARN, %d FAIL  (%d target(s))\n",
 		summary.Pass, summary.Warn, summary.Fail, len(results))
 	if summary.AnyFail {
-		fmt.Fprintf(out, "  FAILED — a dev route/infra port is not serving. See reasons above.\n")
+		_, _ = fmt.Fprintf(out, "  FAILED — a dev route/infra port is not serving. See reasons above.\n")
 	} else if summary.Warn > 0 {
-		fmt.Fprintf(out, "  PASS with warnings — review WARN targets.\n")
+		_, _ = fmt.Fprintf(out, "  PASS with warnings — review WARN targets.\n")
 	} else {
-		fmt.Fprintf(out, "  PASS — every dev port reached a backend.\n")
+		_, _ = fmt.Fprintf(out, "  PASS — every dev port reached a backend.\n")
 	}
 }

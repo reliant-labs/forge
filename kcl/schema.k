@@ -122,11 +122,43 @@ schema EnvVar:
     secret_key: str = ""
     config_map_ref: str = ""
     config_map_key: str = ""
+    # Downward-API channel: a k8s pod/container field path
+    # ("metadata.name", "status.podIP", "spec.nodeName") projected to
+    # `valueFrom.fieldRef.fieldPath`. Empty => not a fieldRef var. This is
+    # the k8s-adapter target of the agnostic `EnvSource.from_field`.
+    field_ref: str = ""
 
     check:
         name, "EnvVar.name is required"
-        value != Undefined or secret_ref or config_map_ref, \
-            "EnvVar must set value (empty string is OK), secret_ref, or config_map_ref"
+        value != Undefined or secret_ref or config_map_ref or field_ref, \
+            "EnvVar must set value (empty string is OK), secret_ref, config_map_ref, or field_ref"
+
+schema EnvFromSource:
+    """A whole Secret / ConfigMap imported into a container's env — the k8s
+    `envFrom[]` entry shape.
+
+    Where `EnvVar` names ONE variable (from a literal, or one KEY of a
+    secret/configmap), `EnvFromSource` bulk-imports EVERY key of a whole
+    Secret or ConfigMap as env vars. It is the k8s-adapter target of the
+    agnostic-core `core.EnvFrom` (kcl/core/service.k).
+
+      * `secret_ref`     — a Secret NAME; projects to `envFrom.secretRef`.
+      * `config_map_ref` — a ConfigMap NAME; projects to
+                           `envFrom.configMapRef`.
+      * `prefix`         — optional string prepended to every imported key
+                           (k8s `envFrom[].prefix`). Empty => no prefix.
+
+    EXACTLY ONE of secret_ref / config_map_ref must be set. Precedence:
+    container `env` (env_vars) overrides an `envFrom` value of the same
+    name — native k8s semantics, so the renderer emits both untouched.
+    """
+    secret_ref: str = ""
+    config_map_ref: str = ""
+    prefix: str = ""
+
+    check:
+        len([_c for _c in [secret_ref, config_map_ref] if _c]) == 1, \
+            "EnvFromSource must set EXACTLY ONE of: secret_ref | config_map_ref"
 
 schema Volume:
     """A pod volume + its single container mount.
@@ -157,9 +189,11 @@ schema Volume:
                        (the writable-scratch case), but config_map /
                        secret mounts are conventionally read-only — set
                        it True for those.
-      * `type`       — "empty_dir" (default) | "config_map" | "secret".
-      * `source`     — ConfigMap / Secret NAME to project. Required when
-                       type != "empty_dir"; must be empty for empty_dir.
+      * `type`       — "empty_dir" (default) | "config_map" | "secret" |
+                       "pvc" (an existing PersistentVolumeClaim, for
+                       durable per-workload storage).
+      * `source`     — ConfigMap / Secret / PVC NAME to project. Required
+                       when type != "empty_dir"; must be empty for empty_dir.
     """
     name: str
     mount_path: str
@@ -172,19 +206,57 @@ schema Volume:
         name, "Volume.name is required"
         mount_path, "Volume.mount_path is required"
         mount_path.startswith("/"), "Volume.mount_path must be absolute (start with '/')"
-        type in ["empty_dir", "config_map", "secret"], \
-            "Volume.type must be 'empty_dir' | 'config_map' | 'secret'"
+        type in ["empty_dir", "config_map", "secret", "pvc"], \
+            "Volume.type must be 'empty_dir' | 'config_map' | 'secret' | 'pvc'"
         type == "empty_dir" or source, \
-            "Volume.source (ConfigMap/Secret name) is required when type is 'config_map' or 'secret'"
+            "Volume.source (ConfigMap/Secret/PVC name) is required when type is 'config_map', 'secret', or 'pvc'"
         type != "empty_dir" or source == Undefined, \
             "Volume.source must be unset when type is 'empty_dir'"
 
 schema Resources:
-    """CPU / memory requests + limits."""
-    cpu_request: str = "100m"
-    cpu_limit: str = "500m"
-    memory_request: str = "128Mi"
-    memory_limit: str = "512Mi"
+    """CPU / memory requests + limits in TARGET-NEUTRAL units.
+
+    CPU is MILLICORES (int); memory is BYTES (int). Neither carries a target
+    dialect — k8s milli-cpu + Mi/Gi binary suffixes and compose decimal cores
+    are BOTH adapter concerns, so each adapter FORMATS these neutral values
+    for its target (lib/quantity.k), exactly as env is a neutral map each
+    adapter projects. Bytes is the unambiguous neutral memory unit (Mi is
+    k8s-binary, M is compose-decimal); storing bytes lets each adapter choose.
+
+    Author with the helpers rather than raw millicores / bytes:
+        resources = forge.Resources {
+            cpu_request_millicores = forge.cpu(0.25)   # 250
+            cpu_limit_millicores   = forge.cpu(1)      # 1000
+            memory_request_bytes   = forge.mib(256)    # 268435456
+            memory_limit_bytes     = forge.gib(1)      # 1073741824
+        }
+
+    Defaults are 100m / 500m CPU and 128Mi / 512Mi memory expressed neutrally.
+    """
+    cpu_request_millicores: int = 100
+    cpu_limit_millicores: int = 500
+    memory_request_bytes: int = 134217728   # 128 * 1024 * 1024  (128Mi)
+    memory_limit_bytes: int = 536870912     # 512 * 1024 * 1024  (512Mi)
+
+# Author-facing helpers that PRODUCE Resources' neutral values, so nobody
+# writes raw millicores / bytes. Surfaced top-level as forge.cpu / forge.mcpu
+# / forge.mib / forge.gib. The adapter-facing inverse (neutral -> target
+# string) is lib/quantity.k's formatters.
+#
+#   cpu(0.25) = 250 millicores   mcpu(250) = 250 (millicores passthrough)
+#   mib(256)  = 268435456 bytes  gib(1)    = 1073741824 bytes
+cpu = lambda cores: float -> int {
+    int(cores * 1000 + 0.5)   # cores -> millicores (rounded)
+}
+mcpu = lambda millicores: int -> int {
+    millicores               # already millicores
+}
+mib = lambda n: int -> int {
+    n * 1024 * 1024          # mebibytes -> bytes
+}
+gib = lambda n: int -> int {
+    n * 1024 * 1024 * 1024   # gibibytes -> bytes
+}
 
 schema RuntimeClass:
     """A node.k8s.io/v1 RuntimeClass declaration.
@@ -1556,8 +1628,26 @@ schema FirebaseHosting:
 # Typed entities — each captures ONE orchestration shape.
 # ---------------------------------------------------------------------------
 
-schema Service:
-    """A long-running server (RPC / HTTP / gRPC) or a buildable CLI.
+schema RenderedWorkload:
+    """DEMOTED / ADAPTER-INTERNAL — the k8s-shaped projection target.
+
+    This is the OLD user-facing `forge.Service` shape, renamed and demoted
+    by the agnostic-core collapse (FORGE_KCL_IDIOMS.md). It is NO LONGER what
+    a user authors: the ONE user-facing workload schema is now the
+    target-agnostic `forge.Service` (kcl/core.k). This schema is the k8s
+    ADAPTER's projection target — `forge._service_to_k8s` (kcl/core.k)
+    projects an agnostic `forge.Service` onto a `RenderedWorkload`, and the render
+    pipeline (render_manifests / render) consumes `RenderedWorkload` unchanged.
+
+    It stays EXPORTED (not `_`-prefixed) because it is still the carrier of
+    the full deploy/build machinery the JSON contract + Go CLI depend on
+    (host / external / compose / build-only deploy modes, the polymorphic
+    `build`, `image_tag`, `namespaced_rbac`, `volumes`, owned `manifests`) —
+    machinery the agnostic Service deliberately does NOT model. A KCL
+    `_`-private schema is not importable cross-package, which would break
+    forge's own example/fixtures and any hand-authored Bundle. Treat it as
+    plumbing: author agnostic `forge.Service`s (into `Bundle.workloads`); the
+    render layer projects them here for you.
 
     The `deploy` field's runtime type decides intent:
       * HostDeploy  — forge launches it on the host.
@@ -1612,6 +1702,12 @@ schema Service:
     image_tag?: str
     command: [str] = []
     env_vars: [EnvVar] = []
+    # Whole Secrets / ConfigMaps bulk-imported into the container env (k8s
+    # `envFrom`). Additive: default empty => the container renders exactly
+    # as before (no `envFrom` key). Each entry imports EVERY key of one
+    # Secret/ConfigMap; per-var `env_vars` entries override same-named keys
+    # (native k8s precedence). Only meaningful for a K8sCluster deploy.
+    env_from: [EnvFromSource] = []
     deploy?: HostDeploy | K8sCluster | External | Compose | BuildOnly
     # Polymorphic build declaration — HOW this service's artifact is
     # produced. One of GoBuild | DockerBuild | ShellBuild, discriminated
@@ -1636,6 +1732,43 @@ schema Service:
     # Only valid for a K8sCluster (cluster) deploy — ignored otherwise.
     # Unset => no extra rules (Role keeps just the default config-read).
     namespaced_rbac?: [{str: any}]
+    # ── OPERATOR tail (projection targets of Service.k8s.operator) ───────
+    # The k8s adapter (`_service_to_k8s`) projects an agnostic
+    # `Service.k8s.operator` (OperatorSpec, kcl/core.k) onto these two
+    # fields. Their PRESENCE marks this workload a Kubernetes OPERATOR:
+    # `_render_cluster_service` (render.k) branches on `operator_cluster_rbac`
+    # and emits a cluster-scoped ClusterRole + ClusterRoleBinding (via
+    # render_cluster_rbac, named `${name}-clusterrole`) INSTEAD OF the
+    # namespaced Role a plain Service gets. `operator_cluster_rbac` are
+    # CLUSTER-scoped PolicyRule dicts (same `{apiGroups, resources, verbs}`
+    # shape as namespaced_rbac). `operator_crds` are the CRD *kind names*
+    # this operator owns — a NAME LIST that rides the deploy-as-data JSON
+    # (_render_service) as the codegen (AddToScheme/SetupWithManager)
+    # bridge; the CRD manifest itself keeps riding `manifests`/raw. Both
+    # unset => a plain Service (namespaced RBAC, byte-identical to before).
+    # Only meaningful for a K8sCluster (cluster) deploy.
+    operator_cluster_rbac?: [{str: any}]
+    operator_crds?: [str]
+    # ── k8s pod-spec escape-hatch knobs ─────────────────────────────────
+    # These are the projection targets of the agnostic `Service.k8s`
+    # (K8sOverrides) block — the k8s adapter (`_service_to_k8s`) maps the
+    # typed overrides onto these fields; render_k8s_service threads them
+    # into the Deployment pod spec. They are ALSO settable directly on a
+    # hand-authored RenderedWorkload. All default to "absent" so a workload that
+    # sets none renders byte-identically to before.
+    #
+    # `service_account` overrides the pod's serviceAccountName (default:
+    # the workload name — the forge-generated per-service SA). Use it to
+    # bind an EXISTING out-of-band SA (e.g. one with a cloud IAM
+    # workload-identity annotation). `pod_annotations` are stamped on the
+    # pod template metadata (GKE / mesh / prometheus hints).
+    # `node_selector` + `tolerations` pin the pod to a node pool (the
+    # control-plane kata daemon-pool pinning case). Only meaningful for a
+    # K8sCluster deploy.
+    service_account?: str
+    pod_annotations: {str: str} = {}
+    node_selector: {str: str} = {}
+    tolerations: [{str: any}] = []
     # Pod volumes + their container mounts (see Volume). The escape
     # hatch for the restricted-PSA `readOnlyRootFilesystem = true`
     # baseline: declare an empty_dir volume at the writable path the
@@ -1667,9 +1800,34 @@ schema Service:
     # Each entry is a raw manifest dict (same shape as
     # Bundle.additional_manifests). Unset => no owned manifests.
     manifests: [any] = []
+    # ── securityContext override (projection target of Service.security) ──
+    # A SecurityOverrides (kcl/core.k) carrying OPTIONAL pod/container
+    # securityContext deltas. render_k8s_service merges each set field over
+    # the restricted-PSA default; unset => the hardcoded default is emitted
+    # UNCHANGED (byte-identical to before). The single knob that lets NATS
+    # (fsGroup), temporal (root), and litellm (writable rootfs) fold into the
+    # agnostic model instead of being raw Deployments.
+    security_override?: SecurityOverrides
+    # ── health probe (projection target of Service.health) ──
+    # A HealthProbe (kcl/core.k) rendered by render_k8s_service as BOTH
+    # livenessProbe and readinessProbe on the primary container. Unset =>
+    # NO probes emitted (byte-identical to before — closes the red-team's
+    # dead-HealthCheck / zero-probe gap for the agnostic path).
+    health_probe?: HealthProbe
+    # ── sidecar / init containers (projection targets of Service.sidecars /
+    # Service.init) ──
+    # Each entry is the neutral dict `_project_container` emits: {name, image,
+    # command (folded argv), env_vars: [EnvVar], ports: [int]}.
+    # render_k8s_service (`_render_extra_container`) resolves each image ref +
+    # pull policy + the restricted-PSA container securityContext, appends
+    # `sidecars` to the pod's `containers` AFTER the primary, and emits `init`
+    # as `initContainers`. Both default empty => a single-container workload
+    # renders BYTE-IDENTICALLY (containers == [primary], no initContainers).
+    sidecars: [any] = []
+    init_containers: [any] = []
 
     check:
-        name, "Service.name is required"
+        name, "RenderedWorkload.name is required"
 
 schema Operator:
     """A cluster-scoped controller that reconciles CRDs.
@@ -2026,7 +2184,18 @@ schema Bundle:
     # API server without a committed, IP-drifting kubeconfig). Minted at
     # the cluster→deploy boundary. Empty => none. See KubeconfigSecret.
     kubeconfig_secrets: [KubeconfigSecret] = []
-    services: [Service] = []
+    # AGNOSTIC user-facing workloads (the ONE user Service — kcl/core.k). The
+    # render layer projects each onto a `RenderedWorkload` INTERNALLY via
+    # `forge._service_to_k8s(w, cluster_target)` before emitting manifests /
+    # the JSON contract, so the user NEVER calls the adapter. This is the
+    # authoring entry a project uses now.
+    workloads: [Service] = []
+    # DEMOTED / adapter-internal: the k8s-shaped projection carrier (host /
+    # external / compose / build-only deploy modes + build machinery the
+    # agnostic Service doesn't model). `_service_to_k8s` emits these from
+    # `workloads`; a project may still place pre-projected `RenderedWorkload`s here
+    # for the non-cluster deploy modes until those are folded into the core.
+    services: [RenderedWorkload] = []
     operators: [Operator] = []
     frontends: [Frontend] = []
     cronjobs: [CronJob] = []
@@ -2083,6 +2252,17 @@ schema Bundle:
     required_dns: [DNSRecord] = []
 
     check:
+        # A cluster_target is required iff at least one workload resolves to
+        # the k8s target — i.e. any workload WITHOUT a `host` block (target
+        # polymorphism, FORGE_TARGET_POLYMORPHISM.md §1.4). The k8s adapter
+        # (`_service_to_k8s`) seeds each such workload's RenderedWorkload from
+        # `cluster_target`, so a workload without a target would dereference
+        # an Undefined `target.deploy` and fail deep in the adapter; reject it
+        # at load with a clear message instead. A host-targeted workload
+        # (`svc.host` present) projects via `_service_to_host`, which never
+        # touches `cluster_target` — so a purely-host Bundle needs none.
+        len([w for w in workloads if w.host == Undefined]) == 0 or cluster_target, \
+            "Bundle.workloads that render to k8s require a cluster_target: an agnostic workload with no `host` block is projected onto the env-wide ClusterTarget. Declare Bundle.cluster_target, attach a `host` block to make it host-targeted, or use Bundle.services for pre-projected RenderedWorkload workloads."
         # value_group consistency: every ExternalSecret in a byte-match group
         # must agree on the KEY SET it projects, so the cross-secret byte
         # comparison (preflight) compares like for like. A group whose members

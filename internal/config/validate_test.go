@@ -509,8 +509,8 @@ func TestLoadStrict_RemovedSchemaKey_ServicesBlock(t *testing.T) {
 		t.Fatalf("removed top-level `services:` block must WARN, not fail; got: %v", err)
 	}
 	got := sink.String()
-	if !containsAll(got, `"services" was removed in`, "components") {
-		t.Errorf("expected services→components migration warning, got:\n%s", got)
+	if !containsAll(got, `"services" was removed in`, "forge add service") {
+		t.Errorf("expected services→real-source migration warning, got:\n%s", got)
 	}
 }
 
@@ -560,19 +560,19 @@ func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
 			wantWarn: true,
 			wantSubstr: []string{
 				`"services" was removed in`,
-				"components",
+				"forge add service",
 			},
 			notSubstr: []string{"did you mean"},
 		},
 		{
-			name: "removed top-level key binaries warns with components migration hint",
+			name: "removed top-level key binaries warns with real-source migration hint",
 			mutate: func(in string) string {
 				return in + "binaries:\n  - name: proxy\n    path: cmd/proxy.go\n"
 			},
 			wantWarn: true,
 			wantSubstr: []string{
 				`"binaries" was removed in`,
-				"kind: binary",
+				"forge add binary",
 			},
 			notSubstr: []string{"did you mean"},
 		},

@@ -7,7 +7,6 @@ import (
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
-	"golang.org/x/tools/go/ast/inspector"
 )
 
 // RequireContractAnalyzer checks that internal packages with exported methods
@@ -41,6 +40,21 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
+	// Skip proto-service handler packages (internal/handlers/<svc>). By forge
+	// convention these are thin-translation Connect handlers: the package's
+	// exported methods are the proto-defined RPC methods (GetCurrentUser, ...)
+	// plus framework glue (Name/Register/RegisterHTTP), and the package
+	// IMPLEMENTS the generated Connect handler interface
+	// (<svc>v1connect.<Svc>ServiceHandler). Their contract is the proto service,
+	// not a hand-written Go contract.go — business logic lives in a separate
+	// domain package (internal/<svc>), which this rule still covers. Requiring a
+	// contract.go here would duplicate the proto boundary. See the api-handlers
+	// skill. (When a handler package DOES declare a contract.go the single-seam
+	// Analyzer still enforces it; this only removes the *requirement*.)
+	if isHandlerPackage(pkgPath) {
+		return nil, nil
+	}
+
 	// Honor forge.yaml's contracts.exclude AND the per-package
 	// //forge:exclude-contract header — these packages are intentionally kept
 	// contract-free (utility packages with no behavioral interface), opted out
@@ -49,23 +63,43 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
-	// Check if any struct has exported methods.
-	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	// Check if any struct has exported methods — but ONLY in hand-written
+	// files. Forge-generated files (e.g. authorizer_gen.go's Can/CanAccess/
+	// NewGeneratedAuthorizer, *_mock.go's mock methods) are the codegen OUTPUT
+	// of a contract, not a hand-authored behavioral surface, so they must not
+	// force a contract.go. A handler package whose only exported methods come
+	// from authorizer_gen.go is contract-defined by its proto service, not by a
+	// Go contract.go. Skipping generated files here keeps the rule pointed at
+	// genuine hand-written service packages.
+	//
+	// "Generated" is detected two ways (union): the canonical
+	// `// Code generated ... DO NOT EDIT.` header (ast.IsGenerated), which
+	// covers files like handlers/mocks/*_mock.go that don't use the _gen.go
+	// suffix, AND the `*_gen.go` filename convention as a belt-and-suspenders
+	// fallback.
 	hasExportedMethods := false
-
-	nodeFilter := []ast.Node{(*ast.FuncDecl)(nil)}
-	insp.Preorder(nodeFilter, func(n ast.Node) {
+	for _, file := range pass.Files {
 		if hasExportedMethods {
-			return
+			break
 		}
-		funcDecl := n.(*ast.FuncDecl)
-		if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
-			return
+		filename := pass.Fset.Position(file.Pos()).Filename
+		if strings.HasSuffix(filename, "_gen.go") || ast.IsGenerated(file) {
+			continue
 		}
-		if funcDecl.Name.IsExported() {
-			hasExportedMethods = true
+		for _, decl := range file.Decls {
+			funcDecl, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+				continue
+			}
+			if funcDecl.Name.IsExported() {
+				hasExportedMethods = true
+				break
+			}
 		}
-	})
+	}
 
 	if !hasExportedMethods {
 		return nil, nil
@@ -98,4 +132,13 @@ func isInternalPackage(pkgPath string) bool {
 	return strings.Contains(pkgPath, "/internal/") ||
 		strings.HasPrefix(pkgPath, "internal/") ||
 		pkgPath == "internal"
+}
+
+// isHandlerPackage returns true for proto-service handler packages, which by
+// forge convention live under an `internal/handlers/` directory. Their contract
+// is the proto service (the package implements the generated Connect handler
+// interface), so they are exempt from the require-contract.go rule.
+func isHandlerPackage(pkgPath string) bool {
+	return strings.Contains(pkgPath, "/internal/handlers/") ||
+		strings.HasPrefix(pkgPath, "internal/handlers/")
 }

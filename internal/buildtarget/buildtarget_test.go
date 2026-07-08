@@ -28,7 +28,7 @@ type fakeCall struct {
 }
 
 func (f *fakeRunner) Run(_ context.Context, name string, args ...string) error {
-	return f.RunWithEnv(nil, nil, name, args...)
+	return f.RunWithEnv(context.TODO(), nil, name, args...)
 }
 
 func (f *fakeRunner) RunWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error {

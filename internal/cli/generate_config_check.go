@@ -53,8 +53,6 @@ func validateConfigVsFilesystem(projectDir string, cfg *config.ProjectConfig) er
 	}
 	var findings []string
 
-	findings = append(findings, checkDeclaredServices(projectDir, cfg)...)
-	findings = append(findings, checkUndeclaredProtoServices(projectDir, cfg)...)
 	findings = append(findings, checkDeclaredFrontends(projectDir, cfg)...)
 	findings = append(findings, checkDeclaredPackages(projectDir, cfg)...)
 
@@ -74,75 +72,6 @@ func validateConfigVsFilesystem(projectDir string, cfg *config.ProjectConfig) er
 		"fix the mismatches above, or pass --skip-config-check to bypass for parallel-lane / mid-migration scenarios")
 }
 
-// checkDeclaredServices walks cfg.Components and verifies each entry has
-// either an on-disk path (handlers/<svc>, workers/<svc>, operators/<svc>,
-// cmd/<bin>.go) OR a matching proto/services/<svc>/ directory. We accept
-// either side being present because a freshly-scaffolded server may have
-// only the proto declared (handlers dir generated on this run) and an
-// internal-only component may have no proto dir.
-//
-// For non-server kinds (worker / cron / operator / binary) we don't
-// require a proto dir at all — they have no Connect RPCs, so the proto
-// tree is irrelevant. The Path must exist (or be the kind-default).
-func checkDeclaredServices(projectDir string, cfg *config.ProjectConfig) []string {
-	var out []string
-	for _, c := range cfg.Components {
-		path := c.Path
-		if path == "" {
-			path = defaultServicePath(c)
-		}
-		fullPath := filepath.Join(projectDir, path)
-
-		// Each binary gets its own cmd/<bin>/ tree (devspace idiom); the
-		// entry point is cmd/<pkg>/main.go. Accept either the canonical
-		// cmd/<pkg>/main.go (current layout) OR the recorded Path (which may
-		// be a pre-move flat cmd/<pkg>.go on older trees) so the check passes
-		// across the layout transition.
-		if c.IsBinary() {
-			canonicalMain := filepath.Join(projectDir, "cmd", naming.ServicePackage(c.Name), "main.go")
-			if _, err := os.Stat(canonicalMain); err == nil {
-				continue
-			}
-			if _, err := os.Stat(fullPath); err != nil {
-				out = append(out, fmt.Sprintf(
-					"components[name=%s] (kind=binary) declared in forge.yaml but cobra source missing (expected at %s) — run 'forge add binary %s' to scaffold it",
-					c.Name, canonicalMain, c.Name))
-			}
-			continue
-		}
-
-		pathExists := dirExists(fullPath)
-
-		// For non-Connect kinds (workers, crons, operators), the only
-		// on-disk requirement is the path. No proto dir is expected.
-		if !c.IsServer() {
-			if !pathExists {
-				out = append(out, fmt.Sprintf(
-					"components[name=%s] (kind=%s) declared in forge.yaml but path %q does not exist (expected at %s)",
-					c.Name, c.EffectiveKind(), path, fullPath))
-			}
-			continue
-		}
-
-		// For server components, accept either the handlers dir OR a
-		// matching proto dir as evidence the declaration is real. Both
-		// missing → batched error.
-		protoDir := filepath.Join(projectDir, "proto", "services", naming.ServicePackage(c.Name))
-		if !pathExists && !dirExists(protoDir) {
-			// Some projects name proto dirs with the literal Name rather than
-			// the ServicePackage normalization (e.g. dash vs underscore).
-			// Try the raw-name fallback before declaring this missing.
-			rawProto := filepath.Join(projectDir, "proto", "services", c.Name)
-			if !dirExists(rawProto) {
-				out = append(out, fmt.Sprintf(
-					"components[name=%s] declared in forge.yaml but neither handlers dir %q nor proto dir %q exists",
-					c.Name, path, protoDir))
-			}
-		}
-	}
-	return out
-}
-
 // defaultServicePath returns the conventional on-disk path for a
 // component entry whose `path:` field was omitted. Mirrors the defaulting
 // in loadProjectConfigFrom but expands the rule to cover every kind so
@@ -159,46 +88,6 @@ func defaultServicePath(c config.ComponentConfig) string {
 	default:
 		return "internal/handlers/" + c.Name
 	}
-}
-
-// checkUndeclaredProtoServices scans proto/services/<svc>/ directories
-// and reports any that don't have a corresponding services[] entry in
-// forge.yaml. The match is fuzzy (try ServicePackage normalization both
-// ways) to tolerate dash vs underscore divergence.
-//
-// Returns nil when proto/services/ is absent (no asymmetry possible).
-func checkUndeclaredProtoServices(projectDir string, cfg *config.ProjectConfig) []string {
-	protoServices := filepath.Join(projectDir, "proto", "services")
-	entries, err := os.ReadDir(protoServices)
-	if err != nil {
-		// proto/services/ missing entirely → no proto-side declarations.
-		return nil
-	}
-	declared := make(map[string]bool, len(cfg.Components))
-	for _, c := range cfg.Components {
-		declared[naming.ServicePackage(c.Name)] = true
-		declared[c.Name] = true
-	}
-	var out []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		// Only flag dirs that actually contain .proto files — empty
-		// scaffold dirs are noise.
-		has, _ := hasProtoFilesInDir(filepath.Join(protoServices, name))
-		if !has {
-			continue
-		}
-		if declared[name] || declared[naming.ServicePackage(name)] {
-			continue
-		}
-		out = append(out, fmt.Sprintf(
-			"proto/services/%s/ exists on disk but no components[] entry in forge.yaml — did you mean to declare it? (add a components[] entry with name=%s, kind=server to forge.yaml)",
-			name, name))
-	}
-	return out
 }
 
 // checkDeclaredFrontends walks cfg.Frontends and verifies each entry has
@@ -256,7 +145,3 @@ func checkDeclaredPackages(projectDir string, cfg *config.ProjectConfig) []strin
 	}
 	return out
 }
-
-// Binary cobra-source existence is checked inline in
-// checkDeclaredServices now that binaries are components with
-// kind=binary; there is no separate binaries: block to walk.

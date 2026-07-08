@@ -9,10 +9,12 @@ package cli
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -62,7 +64,16 @@ func runDevInfo(configPath string) error {
 	fmt.Printf("k3d config:                 %s\n", configPath)
 	fmt.Println()
 	fmt.Println("Declared component ports:")
-	printServicePorts(store.Config().Components)
+	// Component inventory comes from the REAL sources (proto descriptor +
+	// owned worker/operator files + cmd/ binaries), not the removed
+	// components.json — see codegen.IntrospectComponents. Ports are a
+	// deploy fact (KCL), so introspected components carry none and the
+	// listing prints names without ports.
+	projectDir := "."
+	if p, ferr := findProjectConfigFile(); ferr == nil {
+		projectDir = filepath.Dir(p)
+	}
+	printServicePorts(codegen.IntrospectComponents(projectDir))
 	if len(store.Frontends()) > 0 {
 		fmt.Println()
 		fmt.Println("Declared frontend ports:")

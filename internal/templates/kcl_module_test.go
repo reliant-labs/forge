@@ -40,7 +40,7 @@ func runKCL(t *testing.T, entry string, args ...string) ([]byte, error) {
 	root := kclModuleRoot(t)
 	all := append([]string{"run", "-E", "forge=" + root, "--format", "json"}, args...)
 	all = append(all, entry)
-	cmd := exec.Command("kcl", all...)
+	cmd := exec.CommandContext(t.Context(), "kcl", all...)
 	return cmd.CombinedOutput()
 }
 

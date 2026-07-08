@@ -18,8 +18,12 @@ import (
 // spelling (previously this package spelled it "warn" — the only
 // migration-visible change is that FormatText now renders "warning").
 type (
+	// Severity is the shared finding severity vocabulary, re-exported
+	// under this package's historical spelling.
 	Severity = finding.Severity
-	Finding  = finding.Finding
+	// Finding is the shared linter finding shape, re-exported under this
+	// package's historical spelling.
+	Finding = finding.Finding
 )
 
 // Severity enum values (aliases onto the canonical single-spelling set).

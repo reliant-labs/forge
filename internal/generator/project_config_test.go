@@ -218,6 +218,16 @@ func TestWriteProjectConfig_CLIKindFeaturesDeriveOnLoad(t *testing.T) {
 	if err := g.writeProjectConfig(); err != nil {
 		t.Fatalf("writeProjectConfig: %v", err)
 	}
+	// Kind derives from real sources on reload. This test only writes
+	// forge.yaml (not a full scaffold), so stamp the cli's real artifact — a
+	// cmd/<name>/main.go binary with no service sources — so ReadProjectConfig
+	// derives kind=cli (and the cli feature matrix) rather than library.
+	if err := os.MkdirAll(filepath.Join(tmp, "cmd", "cli-feat"), 0o755); err != nil {
+		t.Fatalf("mkdir cmd/cli-feat: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "cmd", "cli-feat", "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write cmd/cli-feat/main.go: %v", err)
+	}
 	data, err := os.ReadFile(filepath.Join(tmp, "forge.yaml"))
 	if err != nil {
 		t.Fatalf("read forge.yaml: %v", err)

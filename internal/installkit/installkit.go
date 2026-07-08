@@ -73,6 +73,18 @@ type WriteOpts struct {
 	// FileMode is the permission bits used when the file is written.
 	// Defaults to 0o644 when zero.
 	FileMode os.FileMode
+
+	// WriteFunc, when non-nil, performs the actual on-disk write in place
+	// of the default os.WriteFile. It receives the resolved project-
+	// relative path and the rendered content, and reports whether it wrote
+	// (a tracked writer may skip an unchanged / hand-edited file). This is
+	// the seam packs use to route generate-hook output through the
+	// checksum-tracked Tier-1 writer so those files are self-certifying
+	// (carry a forge:hash marker) rather than permanent audit orphans.
+	// Starters and one-time pack installs leave it nil and get the plain
+	// user-owned os.WriteFile copy. When set, WriteFunc owns parent-dir
+	// creation (installkit does not MkdirAll on this path).
+	WriteFunc func(relPath string, content []byte) (wrote bool, err error)
 }
 
 // Outcome reports what RenderAndWrite did. Callers use it to increment
@@ -160,6 +172,22 @@ func RenderAndWrite(
 	content, err := templates.RenderFromFS(fsys, basePath, tmpl, data)
 	if err != nil {
 		return out, fmt.Errorf("render template %s: %w", tmpl, err)
+	}
+
+	// Delegated write: a caller-supplied tracked writer (e.g. the
+	// checksum-stamping Tier-1 writer for pack generate hooks) owns the
+	// write AND its own parent-dir creation. It may legitimately not write
+	// (unchanged pristine / protected hand-edit), so honour its report.
+	if opts.WriteFunc != nil {
+		wrote, werr := opts.WriteFunc(resolved, content)
+		if werr != nil {
+			return out, fmt.Errorf("write %s: %w", resolved, werr)
+		}
+		out.Wrote = wrote
+		if wrote && opts.LogFunc != nil {
+			opts.LogFunc("  Created: %s\n", resolved)
+		}
+		return out, nil
 	}
 
 	dirMode := opts.DirMode

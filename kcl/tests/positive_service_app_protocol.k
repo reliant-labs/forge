@@ -44,7 +44,7 @@ _deploy_bare = _target.deploy | {ports = [8080, 9090]}
 
 _bundle = forge.Bundle {
     cluster_target = _target
-    services = [forge.Service {name = "gw", image = "gw-img", deploy = _deploy_proto}]
+    services = [forge.RenderedWorkload {name = "gw", image = "gw-img", deploy = _deploy_proto}]
 }
 _manifests = forge.render_manifests(_bundle, "abc1234", {}, False)
 
@@ -74,7 +74,7 @@ assert_container_port_no_app_protocol = _cport_8080.appProtocol == Undefined
 
 _bundle_bare = forge.Bundle {
     cluster_target = _target
-    services = [forge.Service {name = "gw", image = "gw-img", deploy = _deploy_bare}]
+    services = [forge.RenderedWorkload {name = "gw", image = "gw-img", deploy = _deploy_bare}]
 }
 _manifests_bare = forge.render_manifests(_bundle_bare, "abc1234", {}, False)
 _svc_bare = [m for m in _manifests_bare if m.kind == "Service" and m.metadata.name == "gw"][0]

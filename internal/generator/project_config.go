@@ -142,16 +142,10 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		return err
 	}
 
-	// Write the per-component source of truth, components.json. Library
-	// projects (no components) deliberately get NO file: its absence is the
-	// "library" kind signal on reload. Service shells write an empty
-	// `{"components": []}` (file present, zero entries) so the project still
-	// derives to "service"; cli/service-with-components write their entries.
-	if !g.isLibrary() {
-		if err := WriteComponentsFile(g.Path, cfg.Components); err != nil {
-			return fmt.Errorf("write %s: %w", config.ComponentsFileName, err)
-		}
-	}
+	// forge no longer writes a components.json manifest: the component
+	// inventory derives from the real sources (proto for services;
+	// workers/operators are owned code) and the kind derives from forge.yaml's
+	// project-global blocks on reload.
 	return nil
 }
 
@@ -179,52 +173,9 @@ func ReadProjectConfig(path string) (*config.ProjectConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read project config: %w", err)
 	}
-	componentsJSON, err := readComponentsJSON(filepath.Dir(path))
-	if err != nil {
-		return nil, err
-	}
-	return config.LoadProject(data, componentsJSON, path)
-}
-
-// readComponentsJSON reads the project-root components.json from dir (the
-// directory holding forge.yaml). A missing file is not an error: it returns
-// nil bytes, treated by config.LoadProject as "no components".
-func readComponentsJSON(dir string) ([]byte, error) {
-	data, err := os.ReadFile(filepath.Join(dir, config.ComponentsFileName))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read %s: %w", config.ComponentsFileName, err)
-	}
-	return data, nil
-}
-
-// WriteComponentsFile writes the project's components to the project-root
-// components.json (the authored per-service source of truth). Components are
-// sorted by name for a stable, diff-friendly file. This is the write path
-// for `forge add service|worker|cron|operator|binary` and `forge new`.
-func WriteComponentsFile(projectRoot string, components []config.ComponentConfig) error {
-	data, err := config.MarshalComponentsJSON(config.SortComponentsForWrite(components))
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(projectRoot, config.ComponentsFileName), data, 0o644)
-}
-
-// AppendComponentToFile reads components.json at projectRoot, appends the
-// entry, and writes it back. Used by the `forge add` write paths so a new
-// component lands in components.json (NOT forge.yaml, which is global-only).
-func AppendComponentToFile(projectRoot string, entry config.ComponentConfig) error {
-	data, err := readComponentsJSON(projectRoot)
-	if err != nil {
-		return err
-	}
-	existing, err := config.ParseComponentsJSON(data)
-	if err != nil {
-		return err
-	}
-	return WriteComponentsFile(projectRoot, append(existing, entry))
+	// forge no longer reads a components.json manifest — pass nil; the kind
+	// derives from forge.yaml's project-global blocks (see config.LoadProject).
+	return config.LoadProject(data, path)
 }
 
 // WriteProjectConfig writes a config.ProjectConfig to the given path.
@@ -241,17 +192,12 @@ func WriteProjectConfigFile(cfg *config.ProjectConfig, path string) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// AppendServiceToConfig appends a new server component to the project-root
-// components.json (the authored per-service source of truth). Components
-// moved out of forge.yaml in the ProjectStore per-service data move, so this
-// no longer touches forge.yaml.
+// AppendServiceToConfig is RETIRED: forge no longer writes a components.json
+// manifest — services are discovered from the proto descriptor. It stays as a
+// no-op because it is part of the ConfigService contract (interface + mock);
+// callers in the add/new flow may still invoke it, but it never touches disk.
 func AppendServiceToConfig(projectRoot, serviceName string, port int) error {
-	return AppendComponentToFile(projectRoot, config.ComponentConfig{
-		Name:  serviceName,
-		Kind:  config.ComponentKindServer,
-		Path:  fmt.Sprintf("internal/handlers/%s", naming.ServicePackage(serviceName)),
-		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
-	})
+	return nil
 }
 
 // AppendFrontendToConfig reads the project config at the given project root,

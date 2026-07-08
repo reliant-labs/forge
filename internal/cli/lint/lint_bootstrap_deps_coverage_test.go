@@ -352,24 +352,11 @@ func runAndCollect(t *testing.T, projectDir string) []bootstrapCoverageFinding {
 	return findings
 }
 
-// readAppFields / readDeps wrap the codegen parsers and project the
-// (name, type) pairs the lint actually keys on. Kept narrow so the
-// table-style helpers above don't have to know about DepsField /
-// AppField specifics.
+// readAppFields wraps the codegen parser and projects the (name, type)
+// pairs the lint actually keys on. Kept narrow so the table-style helpers
+// above don't have to know about AppField specifics.
 func readAppFields(appDir string) (map[string]string, error) {
 	fields, err := codegen.ParseAppFields(appDir)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	for _, f := range fields {
-		out[f.Name] = f.Type
-	}
-	return out, nil
-}
-
-func readDeps(pkgDir string) (map[string]string, error) {
-	fields, err := codegen.ParseServiceDeps(pkgDir)
 	if err != nil {
 		return nil, err
 	}

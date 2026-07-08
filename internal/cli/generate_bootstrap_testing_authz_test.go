@@ -14,7 +14,7 @@ import (
 // TestPipelineBootstrapTesting_AuthzAware guards the PIPELINE's testing.go
 // emission — the exact code path `stepBootstrapTesting` exercises
 // (generateBootstrapTesting -> codegen.GenerateBootstrapTesting, including the
-// CLI-side discoverPackages / discoverWorkers / discoverOperators helpers the
+// CLI-side discoverPackages helper the
 // codegen-package unit tests bypass).
 //
 // Regression context (fr-0ec014eb92): control-plane ran a FULL `forge generate`
@@ -74,8 +74,9 @@ func (s *Service) Register(mux interface{ Handle(string, interface{}) }, opts ..
 	}
 
 	// Drive the SAME CLI-side wrapper stepBootstrapTesting calls — NOT the
-	// exported codegen function directly. This exercises discoverPackages /
-	// discoverWorkers / discoverOperators on the way to GenerateBootstrapTesting.
+	// exported codegen function directly. This exercises discoverPackages on the
+	// way to GenerateBootstrapTesting (generate does no worker/operator
+	// discovery — testing.go is service+package scoped).
 	if err := generateBootstrapTesting(services, "example.com/proj", false, projectDir, nil); err != nil {
 		t.Fatalf("generateBootstrapTesting (pipeline path): %v", err)
 	}

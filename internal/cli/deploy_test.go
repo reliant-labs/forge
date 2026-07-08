@@ -271,11 +271,10 @@ func TestResolveGroupContext_NoClusterEmpty(t *testing.T) {
 func TestApplyOptsBuilder_ContextFromDeclaredCluster(t *testing.T) {
 	const declared = "gke_reliant-labs-475814_us-central1_prod"
 	group := k8sGroup(declared, "cp-forge-prod")
-	builder := applyOptsBuilderFromContext(
-		"deploy/kcl/prod/main.k", "v1.2.3", "fallback-ns", "prod",
-		nil, false, false, nil, nil, nil,
-		[]deploytarget.ServiceGroup{group}, nil, nil, nil,
-	)
+	builder := applyOptsBuilderFromContext(applyOptsContext{
+		MainK: "deploy/kcl/prod/main.k", ImageTag: "v1.2.3", FallbackNamespace: "fallback-ns", Env: "prod",
+		Groups: []deploytarget.ServiceGroup{group},
+	})
 	opts := builder(group)
 	if opts.Context != declared {
 		t.Errorf("ApplyOpts.Context should be the declared cluster: want %q, got %q", declared, opts.Context)

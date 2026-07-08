@@ -1,6 +1,10 @@
 package docs
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/reliant-labs/forge/internal/codegen"
+)
 
 // ArchitectureGenerator produces architecture overview documentation with Mermaid diagrams.
 type ArchitectureGenerator struct{}
@@ -22,9 +26,15 @@ func (g *ArchitectureGenerator) Generate(ctx *Context) ([]GeneratedDoc, error) {
 	}
 
 	data := map[string]any{
-		"Format":       ctx.Format,
-		"ProjectName":  cfg.Name,
-		"Components":   cfg.Components,
+		"Format":      ctx.Format,
+		"ProjectName": cfg.Name,
+		// Component inventory is enumerated from the REAL sources (proto
+		// descriptor + owned worker/operator files + cmd/ binaries), not
+		// the removed components.json manifest — see
+		// codegen.IntrospectComponents. The synthesized ComponentConfigs
+		// carry the Name/Kind/Path the template's EffectiveKind/IsServer/
+		// PrimaryPort calls need (ports are a deploy fact, so absent).
+		"Components":   codegen.IntrospectComponents(ctx.ProjectDir),
 		"Frontends":    cfg.Frontends,
 		"Packages":     cfg.Packages,
 		"Database":     cfg.Database,

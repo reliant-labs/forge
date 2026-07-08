@@ -4,7 +4,7 @@
 //
 //   - forge-owned (Tier-1): regenerated on every `forge generate`;
 //     hand-edits are a hard drift error.
-//   - user-owned (Tier-2): never touched after emission.
+//   - user-owned ("yours"): never touched after emission.
 //   - `forge disown` is the one-way door from the first to the second.
 //
 // There is deliberately NO fork limbo (forked-but-maybe-reconciled-
@@ -142,7 +142,7 @@ func runDisown(args []string, reason string, dryRun bool) error {
 		return cliutil.UserErr("forge disown",
 			fmt.Sprintf("%d path(s) carry no forge certification (no embedded forge:hash marker): %s", len(unknown), strings.Join(unknown, ", ")),
 			"",
-			"only forge-certified (Tier-1) files can be disowned; scaffold-once Tier-2 files are yours from birth — there is nothing to disown. If this is a pre-migration project, run `forge generate` once to migrate off .forge/checksums.json first")
+			"only forge-certified (Tier-1) files can be disowned; scaffold-once files are yours from birth — there is nothing to disown. If this is a pre-migration project, run `forge generate` once to migrate off .forge/checksums.json first")
 	}
 
 	sort.Strings(targets)

@@ -343,6 +343,9 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 		"app.Build(", "app.PostBuild(", "*app.Services", "(*app.Services)",
 		"app.BootstrapOnly(", "app.Bootstrap(", "serverkit.Hooks",
 		"observe.DefaultMiddlewares(", "setupOTel(", "otelShutdown",
+		// self-composition: the string-selection apparatus is retired.
+		"ServeOptions", "SelectOperators(", "SelectWorkers(",
+		"OperatorNames", "WorkerNames",
 	} {
 		if strings.Contains(rendered, gone) {
 			t.Errorf("cmd-tree-serve.go.tmpl must NOT reference the retired %q; rendered output:\n%s", gone, rendered)
@@ -350,11 +353,18 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 	}
 	// TYPED mount: serve takes a typed mount FUNCTION (method expression),
 	// not a string. The function value is applied to the constructed graph.
-	if !strings.Contains(rendered, "mount(components, srv.Mux, cfg, logger, opts...)") {
-		t.Errorf("cmd-tree-serve.go.tmpl must apply the typed mount func to the constructed *Components; rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "spec.Mount(components, srv.Mux, cfg, logger, opts...)") {
+		t.Errorf("cmd-tree-serve.go.tmpl must apply the typed ServeSpec.Mount func to the constructed *Components; rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "mount MountFunc") {
-		t.Errorf("cmd-tree-serve.go.tmpl Serve() must take a typed mount MountFunc; rendered output:\n%s", rendered)
+	// Self-composition: Serve takes a typed ServeSpec; each command names its
+	// own mount + workers + operators via typed accessors — no string filter.
+	for _, want := range []string{
+		"spec ServeSpec", "Mount MountFunc",
+		"spec.Operators(components)", "srv.AddOperator(op.Marker())",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("cmd-tree-serve.go.tmpl must self-compose via %q; rendered output:\n%s", want, rendered)
+		}
 	}
 	// serverkit owns OTel — serve projects OTLPEndpoint + ServiceName.
 	if !strings.Contains(rendered, "ServiceName: ServiceName") {
@@ -364,8 +374,8 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 		t.Errorf("cmd-tree-serve.go.tmpl must project cfg.OtlpEndpoint onto skCfg; rendered output:\n%s", rendered)
 	}
 	// RunOperators wired over the constructed components.
-	if !strings.Contains(rendered, "app.RunOperators(components, ctx, logger, healthProbeAddr)") {
-		t.Errorf("cmd-tree-serve.go.tmpl must pass app.RunOperators(components, ...) into Server; rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "app.RunOperators(ctx, logger, healthProbeAddr, ops)") {
+		t.Errorf("cmd-tree-serve.go.tmpl must derive RunOperators from the ServeSpec.Operators slice (ops); rendered output:\n%s", rendered)
 	}
 
 	// Verify it still parses as valid Go.

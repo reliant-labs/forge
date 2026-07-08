@@ -22,7 +22,10 @@ var defaultLoadConfig = api.LoadConfig{
 	MaxStructFields:    -1,
 }
 
-// DelveDebugger implements the Debugger interface using Delve's rpc2 client.
+// DelveDebugger drives a running Delve server via its rpc2 client. It is the
+// package's concrete debugger control surface (breakpoints, execution control,
+// inspection, lifecycle); one implementation today, so callers hold the
+// concrete *DelveDebugger rather than a single-impl interface.
 type DelveDebugger struct {
 	client *rpc2.RPCClient
 	addr   string

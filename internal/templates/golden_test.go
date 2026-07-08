@@ -131,11 +131,12 @@ func TestGoldenSnapshots(t *testing.T) {
 		},
 
 		{
-			name: "handlers_gen.go",
+			name: "handlers_methods.go",
 			render: func(t *testing.T) []byte {
 				// A minimal, deterministic service with one unary and
 				// one server-streaming method so the snapshot exercises
-				// both code paths in the template.
+				// both code paths in the method-fragment template
+				// (appended into the user-owned handlers.go).
 				data := map[string]any{
 					"ServiceName":         "api",
 					"ServicePackage":      "api",
@@ -164,7 +165,7 @@ func TestGoldenSnapshots(t *testing.T) {
 						},
 					},
 				}
-				return renderService(t, "handlers_gen.go.tmpl", data)
+				return renderService(t, "handlers_methods.go.tmpl", data)
 			},
 		},
 		{

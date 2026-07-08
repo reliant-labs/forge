@@ -51,15 +51,15 @@ import (
 // else commented as `TODO` is left for golangci-lint's `godox` linter.
 var reWireTODO = regexp.MustCompile(`//\s*TODO:\s*wire\s+(\S+)`)
 
+// WireCoverageFinding is the exported alias consumed by the
+// internal/cli/audit group's auditWireCoverage roll-up. A type alias (not a
+// new type) so audit's field access (.Function/.Field) is unchanged from
+// when both commands lived in package cli. The underlying
 // wireCoverageFinding mirrors forgeconv.Finding for the report shape
 // without forcing a cross-package dependency. Wire coverage is its
 // own thing — the user reads "1 unresolved field on service X" and
 // goes to fix it; they don't need the full forgeconv-style remediation
 // sentence.
-// WireCoverageFinding is the exported alias consumed by the
-// internal/cli/audit group's auditWireCoverage roll-up. A type alias (not a
-// new type) so audit's field access (.Function/.Field) is unchanged from
-// when both commands lived in package cli.
 type WireCoverageFinding = wireCoverageFinding
 
 // ScanWireGen is the exported entry the audit group calls to build the

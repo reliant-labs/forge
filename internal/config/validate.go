@@ -81,7 +81,7 @@ func flushConfigWarnings(label string, warns []validationIssue) {
 		if w.fix != "" {
 			fmt.Fprintf(&b, " Fix: %s", w.fix)
 		}
-		fmt.Fprintln(configWarningSink, b.String())
+		_, _ = fmt.Fprintln(configWarningSink, b.String())
 	}
 }
 
@@ -163,14 +163,24 @@ func loadStrict(data []byte, path string, components []ComponentConfig, hasCompo
 		}
 	}
 
-	// Inject the components.json entities and derive the project kind from
-	// them BEFORE shape-derived defaults run (feature derivation reads
-	// kind). Components carry no YAML position, so their validation issues
-	// fall back to the file root.
+	// Inject any component entities and derive the project kind BEFORE
+	// shape-derived defaults run (feature derivation reads kind). Components
+	// carry no YAML position, so their validation issues fall back to the
+	// file root.
 	if len(components) > 0 {
 		cfg.Components = components
 	}
-	cfg.Kind = DeriveProjectKind(cfg.Components, hasComponentsFile)
+	// Kind derives from the project's REAL sources — the KCL deploy tree, the
+	// service registry (pkg/app), and the cmd/ binary — read relative to the
+	// forge.yaml directory. There is no components.json manifest and no
+	// authored `kind:`/`services:` bit. When there is no on-disk project to
+	// read (byte-only test loads with a synthetic path), fall back to the
+	// component list alone.
+	if dir := sourceProjectDir(path); dir != "" {
+		cfg.Kind = deriveProjectKindFromSources(dir, cfg.Components)
+	} else {
+		cfg.Kind = DeriveProjectKind(cfg.Components, hasComponentsFile)
+	}
 
 	// Phase 3: required-field validation. The yaml root is threaded
 	// through so issues can carry the line:col of the *parent* mapping
@@ -216,24 +226,18 @@ func loadStrict(data []byte, path string, components []ComponentConfig, hasCompo
 }
 
 // LoadProject is the canonical project loader: it parses the global
-// forge.yaml bytes and the per-component components.json bytes, then runs
-// the full LoadStrict validation + kind derivation + shape-derived defaults
-// over the combined config. componentsJSON may be empty (no components.json
-// on disk → a pure library, or a service whose components are added later).
+// forge.yaml bytes, then runs the full LoadStrict validation + kind
+// derivation + shape-derived defaults. There is no components.json manifest —
+// the component inventory and project kind derive from the project's real
+// sources (proto descriptor, service registry, KCL deploy tree, cmd/
+// binaries) read relative to `path` (see deriveProjectKindFromSources). When
+// `path` points at no on-disk project (byte-only test loads), the kind falls
+// back to library.
 //
 // This is the entry point both the CLI loader and the generator's
-// ReadProjectConfig route through, so forge.yaml-is-global / components-are-
-// json lives in exactly one place.
-func LoadProject(forgeYAML, componentsJSON []byte, path string) (*ProjectConfig, error) {
-	components, err := ParseComponentsJSON(componentsJSON)
-	if err != nil {
-		return nil, err
-	}
-	// A nil componentsJSON means "no components.json on disk" → the project
-	// is a library. A present-but-empty file (`{"components": []}`) is the
-	// canonical empty service shell → service. DeriveProjectKind needs this
-	// presence bit, which the slice alone can't carry.
-	return loadStrict(forgeYAML, path, components, componentsJSON != nil)
+// ReadProjectConfig route through, so the load rules live in one place.
+func LoadProject(forgeYAML []byte, path string) (*ProjectConfig, error) {
+	return loadStrict(forgeYAML, path, nil, false)
 }
 
 // ValidationError aggregates all forge.yaml validation issues into a
@@ -360,34 +364,31 @@ var removedSchemaKeys = map[string]removedKeyHint{
 		replacement: "delete the key — the CI provider is set via `ci.provider` (github is the " +
 			"default); `deploy.provider` was never read.",
 	},
-	// kind: moved off forge.yaml in the ProjectStore per-service data move.
-	// Project kind now DERIVES from the components in components.json (a
-	// server-shaped component → service, binary-only → cli, none → library).
+	// kind: never lived in forge.yaml. Project kind DERIVES from the
+	// project's real sources — the KCL deploy tree, the service registry, the
+	// service handlers, and cmd/ binaries. There is no manifest.
 	"kind": {
-		removedIn: "the ProjectStore per-service data move (kind derives from components)",
-		replacement: "delete the key — project kind is now derived from the components in " +
-			"components.json (server-shaped → service, binary-only → cli, no components → library).",
+		removedIn: "the move to real-source derivation (kind is not authored)",
+		replacement: "delete the key — project kind derives from the real sources: the KCL deploy " +
+			"tree (deploy/kcl/), the service registry (pkg/app/services.go), the service handlers " +
+			"(internal/handlers/), or a cmd/ binary.",
 	},
-	// components: moved OUT of forge.yaml entirely (ProjectStore Phase-2
-	// per-service data move). forge.yaml is now GLOBAL-only; the per-service
-	// component entities are authored in the project-root components.json
-	// file. services:/binaries: (the pre-unification blocks) point at the
-	// same migration.
+	// components/services/binaries: forge.yaml is GLOBAL-only. Per-service
+	// components are DISCOVERED from real sources (proto descriptor for
+	// services, owned code for workers/operators/binaries), never a manifest.
 	"components": {
-		removedIn: "the ProjectStore per-service data move (forge.yaml is global-only)",
-		replacement: "move the `components:` entries to a project-root `components.json` file " +
-			"(`{\"components\": [{\"name\": ..., \"kind\": ..., \"ports\": {\"http\": 8080}}]}`); " +
-			"forge.yaml keeps only global project state. Project kind now derives from the " +
-			"components, so delete any `kind:` field too.",
+		removedIn: "the move to real-source derivation (forge.yaml is global-only)",
+		replacement: "delete the key — components are discovered from the real sources (proto " +
+			"services, internal/handlers/, cmd/ binaries), not authored in forge.yaml or a manifest.",
 	},
 	"services": {
-		removedIn: "the ProjectStore per-service data move (forge.yaml is global-only)",
-		replacement: "move per-service entities to a project-root `components.json` file with " +
-			"`kind: server` and a `ports: {http: 8080}` map (go_service → server); forge.yaml is global-only.",
+		removedIn: "the move to real-source derivation (forge.yaml is global-only)",
+		replacement: "delete the key — services are discovered from the proto descriptor + " +
+			"internal/handlers/; add one with `forge add service <name>`.",
 	},
 	"binaries": {
-		removedIn:   "the ProjectStore per-service data move (forge.yaml is global-only)",
-		replacement: "move each `binaries:` entry into the project-root `components.json` with `kind: binary`.",
+		removedIn:   "the move to real-source derivation (forge.yaml is global-only)",
+		replacement: "delete the key — binaries are discovered from their cmd/<name>/main.go; add one with `forge add binary <name>`.",
 	},
 	// test: backed the orphaned `forge test --env=<env>` port-forward flow,
 	// superseded by the `forge up --env=<env> && go test` two-command loop.

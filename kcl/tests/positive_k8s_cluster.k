@@ -21,14 +21,14 @@ _prod_k8s = forge.K8sCluster {
     domain = "kalshi.com"
 }
 
-_svc_a = forge.Service {
+_svc_a = forge.RenderedWorkload {
     name = "trader"
     deploy = _prod_k8s
 }
 
 # Per-service override via KCL's `|` merge — replicas bumped to 5,
 # everything else stays from _prod_k8s.
-_svc_b = forge.Service {
+_svc_b = forge.RenderedWorkload {
     name = "admin"
     deploy = _prod_k8s | {replicas = 5}
 }

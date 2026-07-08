@@ -46,7 +46,7 @@ func probeAgainstServer(t *testing.T, srv *httptest.Server, host, path, origin s
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 
-	req, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+host+path, nil)
 	req.Host = host
 	if origin != "" {
 		req.Header.Set("Origin", origin)
@@ -111,7 +111,7 @@ func TestProbe_TLSHandshakeFailure_Fail(t *testing.T) {
 		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, u.Host)
 	}
 
-	req, _ := http.NewRequest(http.MethodGet, "https://preprod.reliantapi.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://preprod.reliantapi.com/", nil)
 	resp, err := client.Do(req)
 	if err == nil {
 		resp.Body.Close()

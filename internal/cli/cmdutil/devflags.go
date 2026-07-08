@@ -54,7 +54,7 @@ func HideDevFlags(cmd *cobra.Command, names ...string) {
 // --help-dev is the one complete inventory of the off-menu surface.
 func printDevFlags(cmd *cobra.Command) {
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "Maintainer/debug flags for \"forge %s\" (hidden from --help, fully functional):\n\n", cmd.Name())
+	_, _ = fmt.Fprintf(out, "Maintainer/debug flags for \"forge %s\" (hidden from --help, fully functional):\n\n", cmd.Name())
 	cmd.Flags().VisitAll(func(f *pflag.Flag) {
 		if !f.Hidden {
 			return
@@ -64,9 +64,9 @@ func printDevFlags(cmd *cobra.Command) {
 			usage += " (DEPRECATED: " + f.Deprecated + ")"
 		}
 		if f.Value.Type() == "bool" {
-			fmt.Fprintf(out, "      --%s\n          %s\n", f.Name, usage)
+			_, _ = fmt.Fprintf(out, "      --%s\n          %s\n", f.Name, usage)
 		} else {
-			fmt.Fprintf(out, "      --%s %s\n          %s\n", f.Name, f.Value.Type(), usage)
+			_, _ = fmt.Fprintf(out, "      --%s %s\n          %s\n", f.Name, f.Value.Type(), usage)
 		}
 	})
 }

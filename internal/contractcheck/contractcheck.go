@@ -76,11 +76,15 @@ const (
 )
 
 // AllRules is the canonical "run everything" list. Callers that pass
-// Options.Rules == nil get this set.
-var AllRules = []Rule{
-	RuleInternalPackageContractNames,
-	RuleInteractorDepsAreInterfaces,
-	RuleAdapterNoRPC,
+// Options.Rules == nil get this set. It is a getter (not an exported package
+// var) so the returned slice can't be mutated by callers and so it satisfies
+// the exported-vars contract rule (no mutable exported package state).
+func AllRules() []Rule {
+	return []Rule{
+		RuleInternalPackageContractNames,
+		RuleInteractorDepsAreInterfaces,
+		RuleAdapterNoRPC,
+	}
 }
 
 // Options controls a single [Inspect] run.
@@ -114,7 +118,7 @@ type Options struct {
 func Inspect(ctx context.Context, rootDir string, opts Options) ([]forgeconv.Finding, error) {
 	rules := opts.Rules
 	if len(rules) == 0 {
-		rules = AllRules
+		rules = AllRules()
 	}
 
 	var findings []forgeconv.Finding

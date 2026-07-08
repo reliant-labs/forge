@@ -160,7 +160,7 @@ func resolveInNetworkAPIServerIP(ctx context.Context, target, ownerNetwork strin
 			"cannot resolve in-network IP for %q: no owner network "+
 				"(the clusters must share a docker network — declare Cluster.network)", target)
 	}
-	format := fmt.Sprintf(`{{(index .NetworkSettings.Networks "%s").IPAddress}}`, ownerNetwork)
+	format := fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, ownerNetwork)
 	// serverlb first.
 	if ip := dockerInspectIP(ctx, "k3d-"+target+"-serverlb", format); ip != "" {
 		return ip, nil

@@ -146,7 +146,7 @@ const (
 //     interactive behaviour); no terminal → once (return after start).
 //
 // Split out from runUp so the decision is unit-tested by injecting isTTY
-// and the two flags, mirroring resetTier2WouldHangWithoutTTY.
+// and the two flags.
 func resolveUpLifecycle(isTTY, watch, background bool) reconcileLifecycle {
 	switch {
 	case background:

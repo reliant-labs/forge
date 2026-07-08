@@ -38,8 +38,13 @@ import (
 // single-sourced. forgeconv findings populate
 // Rule/Severity/File/Line/Message/Remediation.
 type (
+	// Severity is the shared finding severity vocabulary, re-exported
+	// under the historical forgeconv spelling.
 	Severity = finding.Severity
-	Finding  = finding.Finding
+	// Finding is the shared linter finding shape, re-exported under the
+	// historical forgeconv spelling. forgeconv findings populate
+	// Rule/Severity/File/Line/Message/Remediation.
+	Finding = finding.Finding
 )
 
 // Severity enum values (aliases onto the canonical single-spelling set).
@@ -540,40 +545,51 @@ var (
 // `fieldAnnoDepth` (inside a field's `[ ... ]` annotation). A field's
 // annotation block can contain nested braces (`{ pk: true }`), so we
 // follow `[` / `]` to know when we leave it.
+// protoScanState holds the mutable state threaded through the line-based
+// proto scanner. The scanning logic used to live in one large function;
+// it is now split across focused per-construct helpers that operate on
+// this state. Behavior (parse results, ordering of emitted entities, and
+// every edge case) is identical to the original single-function form.
+type protoScanState struct {
+	pf parsedProto
+
+	lineNum    int
+	braceDepth int
+
+	// Message-block tracking.
+	inMessage         bool
+	currentMessage    *protoMessage
+	messageBraceDepth int
+	inEntityOpts      bool
+	entityOptsDepth   int
+
+	// Service-block tracking: when inside a `service Foo { ... }` block
+	// we scan for `rpc` declarations and per-RPC `(forge.v1.method)`
+	// annotations so the method-auth rule can flag auth-by-omission.
+	inService         bool
+	currentService    *protoService
+	serviceBraceDepth int
+	// pendingRPC holds an RPC-in-progress whose options block may span
+	// multiple lines (`rpc X(..) returns (..) { option (...) = {..}; }`).
+	// We keep accumulating annotation presence until the RPC body
+	// closes (or, for single-line `rpc X(..) returns (..);`, immediately).
+	pendingRPC   *protoMethod
+	rpcBodyDepth int
+
+	// pendingField holds a field-in-progress when the field's annotation
+	// (the [...] part) spans multiple lines.
+	pendingField        *protoField
+	pendingBracketDepth int
+}
+
 func parseProtoFile(path, content string) parsedProto {
-	pf := parsedProto{Path: path}
+	s := &protoScanState{pf: parsedProto{Path: path}}
 
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
-	var (
-		lineNum           int
-		braceDepth        int
-		inMessage         bool
-		currentMessage    *protoMessage
-		messageBraceDepth int
-		inEntityOpts      bool
-		entityOptsDepth   int
-		// Service-block tracking: when inside a `service Foo { ... }` block
-		// we scan for `rpc` declarations and per-RPC `(forge.v1.method)`
-		// annotations so the method-auth rule can flag auth-by-omission.
-		inService         bool
-		currentService    *protoService
-		serviceBraceDepth int
-		// pendingRPC holds an RPC-in-progress whose options block may span
-		// multiple lines (`rpc X(..) returns (..) { option (...) = {..}; }`).
-		// We keep accumulating annotation presence until the RPC body
-		// closes (or, for single-line `rpc X(..) returns (..);`, immediately).
-		pendingRPC   *protoMethod
-		rpcBodyDepth int
-		// pendingField holds a field-in-progress when the field's annotation
-		// (the [...] part) spans multiple lines.
-		pendingField        *protoField
-		pendingBracketDepth int
-	)
-
 	for scanner.Scan() {
-		lineNum++
+		s.lineNum++
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "//") || trimmed == "" {
@@ -592,194 +608,253 @@ func parseProtoFile(path, content string) parsedProto {
 			}
 		}
 
-		// Detect service blocks at top level. Multiple service decls on
-		// one line (`service Foo {} service Bar {}`) are rare in
-		// practice but a common bad-fixture shape, and the smoke test
-		// in `forge lint`'s docs explicitly does this. Use FindAll so
-		// each service is recorded.
-		if !inMessage && !inService && braceDepth == 0 {
-			matches := reService.FindAllStringSubmatch(trimmed, -1)
-			if len(matches) > 0 {
-				for _, m := range matches {
-					pf.Services = append(pf.Services, protoService{Name: m[1], Line: lineNum})
-				}
-				netBraces := strings.Count(line, "{") - strings.Count(line, "}")
-				// A single-line `service Foo {}` opens and closes on the
-				// same line — don't enter the block. Only the canonical
-				// multi-line form (net brace depth > 0) becomes the active
-				// service we scan RPCs inside; multi-service-per-line is a
-				// rule-1 violation anyway, so scan only the first.
-				if netBraces > 0 && len(matches) == 1 {
-					inService = true
-					currentService = &pf.Services[len(pf.Services)-1]
-					serviceBraceDepth = netBraces
-				} else {
-					braceDepth += netBraces
-				}
-				continue
-			}
-		}
-
-		// Inside a service block: scan for RPC declarations and per-RPC
-		// (forge.v1.method) annotations. RPC bodies may be single-line
-		// (`rpc X(..) returns (..);`) or span multiple lines with an
-		// `{ option (forge.v1.method) = {..}; }` body.
-		if inService {
-			netBraces := strings.Count(line, "{") - strings.Count(line, "}")
-			serviceBraceDepth += netBraces
-			// Continue accumulating an open RPC body's annotation presence.
-			if pendingRPC != nil {
-				if reMethodOpt.MatchString(line) {
-					pendingRPC.HasMethodAnnotation = true
-				}
-				rpcBodyDepth += netBraces
-				if rpcBodyDepth <= 0 {
-					currentService.Methods = append(currentService.Methods, *pendingRPC)
-					pendingRPC = nil
-					rpcBodyDepth = 0
-				}
-			} else if m := reRPC.FindStringSubmatch(trimmed); m != nil {
-				method := protoMethod{Name: m[1], Line: lineNum}
-				if reMethodOpt.MatchString(line) {
-					method.HasMethodAnnotation = true
-				}
-				// Count only braces that open the RPC body `{ ... }`, not
-				// the `( ... )` request/response parens. If the line has a
-				// net-positive brace depth the body is open across lines.
-				if netBraces > 0 {
-					pendingRPC = &method
-					rpcBodyDepth = netBraces
-				} else {
-					currentService.Methods = append(currentService.Methods, method)
-				}
-			}
-			// Leaving the service block.
-			if serviceBraceDepth <= 0 {
-				if pendingRPC != nil {
-					currentService.Methods = append(currentService.Methods, *pendingRPC)
-					pendingRPC = nil
-				}
-				inService = false
-				currentService = nil
-				serviceBraceDepth = 0
-				rpcBodyDepth = 0
-			}
+		if s.maybeStartService(line, trimmed) {
 			continue
 		}
-
-		// Detect message blocks (top-level only — nested messages don't
-		// participate in entity annotations in practice).
-		if !inMessage && braceDepth == 0 {
-			if m := reMessage.FindStringSubmatch(trimmed); m != nil {
-				newMsg := protoMessage{Name: m[1], Line: lineNum}
-				pf.Messages = append(pf.Messages, newMsg)
-				currentMessage = &pf.Messages[len(pf.Messages)-1]
-				inMessage = true
-				messageBraceDepth = 1
-				continue
-			}
-			// Track top-level braces (e.g. enum blocks) so we don't
-			// accidentally pick up fields inside non-message decls.
-			braceDepth += strings.Count(line, "{")
-			braceDepth -= strings.Count(line, "}")
+		if s.inService {
+			s.scanServiceLine(line, trimmed)
 			continue
 		}
-
-		if !inMessage {
-			braceDepth += strings.Count(line, "{")
-			braceDepth -= strings.Count(line, "}")
+		if s.handleOutsideMessage(line, trimmed) {
 			continue
 		}
-
-		// We're inside a message block. Update brace depth.
-		opens := strings.Count(line, "{")
-		closes := strings.Count(line, "}")
-		messageBraceDepth += opens - closes
-
-		// Detect (and remain inside) entity options blocks.
-		if reEntityOpt.MatchString(line) {
-			currentMessage.HasEntityAnnotation = true
-			inEntityOpts = true
-			entityOptsDepth = 0
-		}
-		if inEntityOpts {
-			entityOptsDepth += opens - closes
-			if reTimestampsTrue.MatchString(line) {
-				currentMessage.HasTimestampsTrue = true
-			}
-			if reSoftDeleteTrue.MatchString(line) {
-				currentMessage.HasSoftDeleteTrue = true
-			}
-			// Exit the options block once we've returned to message-
-			// surface depth. Use `<= 0` because the same line may both
-			// open and close the options block in single-line forms.
-			if entityOptsDepth <= 0 && (strings.Contains(line, "}") || strings.Contains(line, ";")) {
-				inEntityOpts = false
-			}
-		}
-
-		// Continue accumulating multi-line field annotations.
-		if pendingField != nil {
-			pendingBracketDepth += strings.Count(line, "[") - strings.Count(line, "]")
-			if rePKTrue.MatchString(line) {
-				pendingField.HasPKTrue = true
-			}
-			if reTenantTrue.MatchString(line) {
-				pendingField.HasTenantTrue = true
-			}
-			if reTimestampTrue.MatchString(line) {
-				pendingField.HasTimestampTrue = true
-			}
-			if pendingBracketDepth <= 0 {
-				// Done — flush.
-				if pendingField.HasPKTrue && currentMessage.PKField == "" {
-					currentMessage.PKField = pendingField.Name
-				}
-				currentMessage.Fields = append(currentMessage.Fields, *pendingField)
-				pendingField = nil
-				pendingBracketDepth = 0
-			}
-			// Whether we closed it or not, we've consumed this line as
-			// part of the field's annotation. Skip the close-message
-			// check for this line (the field's `];` doesn't close the
-			// message).
-			if messageBraceDepth <= 0 {
-				inMessage = false
-				currentMessage = nil
-			}
-			continue
-		}
-
-		// Try to detect a new field declaration.
-		if messageBraceDepth >= 1 && !inEntityOpts {
-			if m := reField.FindStringSubmatch(trimmed); m != nil && !isProtoOptionLine(trimmed) {
-				field := parseProtoFieldLine(m, line, lineNum)
-
-				// Multi-line annotation: opens `[` without closing `]`.
-				openBrackets := strings.Count(line, "[")
-				closeBrackets := strings.Count(line, "]")
-				if openBrackets > closeBrackets {
-					pendingField = &field
-					pendingBracketDepth = openBrackets - closeBrackets
-				} else {
-					if field.HasPKTrue && currentMessage.PKField == "" {
-						currentMessage.PKField = field.Name
-					}
-					currentMessage.Fields = append(currentMessage.Fields, field)
-				}
-			}
-		}
-
-		if messageBraceDepth <= 0 {
-			inMessage = false
-			currentMessage = nil
-			messageBraceDepth = 0
-			inEntityOpts = false
-			entityOptsDepth = 0
-		}
+		s.scanMessageBodyLine(line, trimmed)
 	}
 
-	return pf
+	return s.pf
+}
+
+// maybeStartService handles a top-level `service Foo { ... }` opener and
+// reports whether the line was fully consumed (caller should `continue`).
+//
+// Multiple service decls on one line (`service Foo {} service Bar {}`)
+// are rare in practice but a common bad-fixture shape, and the smoke
+// test in `forge lint`'s docs explicitly does this. Use FindAll so each
+// service is recorded.
+func (s *protoScanState) maybeStartService(line, trimmed string) bool {
+	if s.inMessage || s.inService || s.braceDepth != 0 {
+		return false
+	}
+	matches := reService.FindAllStringSubmatch(trimmed, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	for _, m := range matches {
+		s.pf.Services = append(s.pf.Services, protoService{Name: m[1], Line: s.lineNum})
+	}
+	netBraces := strings.Count(line, "{") - strings.Count(line, "}")
+	// A single-line `service Foo {}` opens and closes on the same line —
+	// don't enter the block. Only the canonical multi-line form (net
+	// brace depth > 0) becomes the active service we scan RPCs inside;
+	// multi-service-per-line is a rule-1 violation anyway, so scan only
+	// the first.
+	if netBraces > 0 && len(matches) == 1 {
+		s.inService = true
+		s.currentService = &s.pf.Services[len(s.pf.Services)-1]
+		s.serviceBraceDepth = netBraces
+	} else {
+		s.braceDepth += netBraces
+	}
+	return true
+}
+
+// scanServiceLine scans one line inside an open service block, tracking
+// RPC declarations and per-RPC (forge.v1.method) annotations. RPC bodies
+// may be single-line (`rpc X(..) returns (..);`) or span multiple lines
+// with an `{ option (forge.v1.method) = {..}; }` body.
+func (s *protoScanState) scanServiceLine(line, trimmed string) {
+	netBraces := strings.Count(line, "{") - strings.Count(line, "}")
+	s.serviceBraceDepth += netBraces
+	if s.pendingRPC != nil {
+		s.advancePendingRPC(line, netBraces)
+	} else if m := reRPC.FindStringSubmatch(trimmed); m != nil {
+		s.startRPC(line, m, netBraces)
+	}
+	// Leaving the service block.
+	if s.serviceBraceDepth <= 0 {
+		if s.pendingRPC != nil {
+			s.currentService.Methods = append(s.currentService.Methods, *s.pendingRPC)
+			s.pendingRPC = nil
+		}
+		s.inService = false
+		s.currentService = nil
+		s.serviceBraceDepth = 0
+		s.rpcBodyDepth = 0
+	}
+}
+
+// advancePendingRPC continues accumulating an open RPC body's annotation
+// presence and flushes the RPC once its body closes.
+func (s *protoScanState) advancePendingRPC(line string, netBraces int) {
+	if reMethodOpt.MatchString(line) {
+		s.pendingRPC.HasMethodAnnotation = true
+	}
+	s.rpcBodyDepth += netBraces
+	if s.rpcBodyDepth <= 0 {
+		s.currentService.Methods = append(s.currentService.Methods, *s.pendingRPC)
+		s.pendingRPC = nil
+		s.rpcBodyDepth = 0
+	}
+}
+
+// startRPC records a newly-detected RPC declaration, either flushing it
+// immediately (single-line form) or holding it open (multi-line body).
+func (s *protoScanState) startRPC(line string, m []string, netBraces int) {
+	method := protoMethod{Name: m[1], Line: s.lineNum}
+	if reMethodOpt.MatchString(line) {
+		method.HasMethodAnnotation = true
+	}
+	// Count only braces that open the RPC body `{ ... }`, not the
+	// `( ... )` request/response parens. If the line has a net-positive
+	// brace depth the body is open across lines.
+	if netBraces > 0 {
+		s.pendingRPC = &method
+		s.rpcBodyDepth = netBraces
+	} else {
+		s.currentService.Methods = append(s.currentService.Methods, method)
+	}
+}
+
+// handleOutsideMessage handles lines seen while not inside a message
+// block: it opens a new top-level message or tracks brace depth for
+// non-message decls (e.g. enum blocks) so we don't pick up their fields.
+// It reports whether the line was consumed (caller should `continue`);
+// it returns false only when we are inside a message and the line needs
+// field-level scanning.
+func (s *protoScanState) handleOutsideMessage(line, trimmed string) bool {
+	// Detect message blocks (top-level only — nested messages don't
+	// participate in entity annotations in practice).
+	if !s.inMessage && s.braceDepth == 0 {
+		if m := reMessage.FindStringSubmatch(trimmed); m != nil {
+			s.pf.Messages = append(s.pf.Messages, protoMessage{Name: m[1], Line: s.lineNum})
+			s.currentMessage = &s.pf.Messages[len(s.pf.Messages)-1]
+			s.inMessage = true
+			s.messageBraceDepth = 1
+			return true
+		}
+		s.braceDepth += strings.Count(line, "{")
+		s.braceDepth -= strings.Count(line, "}")
+		return true
+	}
+	if !s.inMessage {
+		s.braceDepth += strings.Count(line, "{")
+		s.braceDepth -= strings.Count(line, "}")
+		return true
+	}
+	return false
+}
+
+// scanMessageBodyLine scans one line inside an open message block: it
+// updates brace depth, tracks entity option blocks, accumulates multi-
+// line field annotations, and detects new field declarations, closing
+// the message when its brace depth returns to zero.
+func (s *protoScanState) scanMessageBodyLine(line, trimmed string) {
+	// We're inside a message block. Update brace depth.
+	opens := strings.Count(line, "{")
+	closes := strings.Count(line, "}")
+	s.messageBraceDepth += opens - closes
+
+	s.trackEntityOpts(line, opens, closes)
+
+	// Continue accumulating multi-line field annotations.
+	if s.pendingField != nil {
+		s.advancePendingField(line)
+		return
+	}
+
+	s.maybeDetectField(line, trimmed)
+
+	if s.messageBraceDepth <= 0 {
+		s.inMessage = false
+		s.currentMessage = nil
+		s.messageBraceDepth = 0
+		s.inEntityOpts = false
+		s.entityOptsDepth = 0
+	}
+}
+
+// trackEntityOpts detects and remains inside `option (forge.v1.entity)`
+// blocks, recording the entity-level flags they carry.
+func (s *protoScanState) trackEntityOpts(line string, opens, closes int) {
+	if reEntityOpt.MatchString(line) {
+		s.currentMessage.HasEntityAnnotation = true
+		s.inEntityOpts = true
+		s.entityOptsDepth = 0
+	}
+	if !s.inEntityOpts {
+		return
+	}
+	s.entityOptsDepth += opens - closes
+	if reTimestampsTrue.MatchString(line) {
+		s.currentMessage.HasTimestampsTrue = true
+	}
+	if reSoftDeleteTrue.MatchString(line) {
+		s.currentMessage.HasSoftDeleteTrue = true
+	}
+	// Exit the options block once we've returned to message-surface
+	// depth. Use `<= 0` because the same line may both open and close the
+	// options block in single-line forms.
+	if s.entityOptsDepth <= 0 && (strings.Contains(line, "}") || strings.Contains(line, ";")) {
+		s.inEntityOpts = false
+	}
+}
+
+// advancePendingField accumulates a field's multi-line `[ ... ]`
+// annotation and flushes the field once the annotation closes. The line
+// is consumed as part of the field annotation, so the field's `];` does
+// not itself close the message — but we still honor a message that
+// closed on the same line.
+func (s *protoScanState) advancePendingField(line string) {
+	s.pendingBracketDepth += strings.Count(line, "[") - strings.Count(line, "]")
+	if rePKTrue.MatchString(line) {
+		s.pendingField.HasPKTrue = true
+	}
+	if reTenantTrue.MatchString(line) {
+		s.pendingField.HasTenantTrue = true
+	}
+	if reTimestampTrue.MatchString(line) {
+		s.pendingField.HasTimestampTrue = true
+	}
+	if s.pendingBracketDepth <= 0 {
+		// Done — flush.
+		if s.pendingField.HasPKTrue && s.currentMessage.PKField == "" {
+			s.currentMessage.PKField = s.pendingField.Name
+		}
+		s.currentMessage.Fields = append(s.currentMessage.Fields, *s.pendingField)
+		s.pendingField = nil
+		s.pendingBracketDepth = 0
+	}
+	if s.messageBraceDepth <= 0 {
+		s.inMessage = false
+		s.currentMessage = nil
+	}
+}
+
+// maybeDetectField tries to detect a new field declaration on this line,
+// either flushing it immediately or holding it open when its annotation
+// spans multiple lines (opens `[` without closing `]`).
+func (s *protoScanState) maybeDetectField(line, trimmed string) {
+	if s.messageBraceDepth < 1 || s.inEntityOpts {
+		return
+	}
+	m := reField.FindStringSubmatch(trimmed)
+	if m == nil || isProtoOptionLine(trimmed) {
+		return
+	}
+	field := parseProtoFieldLine(m, line, s.lineNum)
+
+	// Multi-line annotation: opens `[` without closing `]`.
+	openBrackets := strings.Count(line, "[")
+	closeBrackets := strings.Count(line, "]")
+	if openBrackets > closeBrackets {
+		s.pendingField = &field
+		s.pendingBracketDepth = openBrackets - closeBrackets
+		return
+	}
+	if field.HasPKTrue && s.currentMessage.PKField == "" {
+		s.currentMessage.PKField = field.Name
+	}
+	s.currentMessage.Fields = append(s.currentMessage.Fields, field)
 }
 
 // isProtoOptionLine reports whether a trimmed proto line is an option

@@ -22,8 +22,9 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/devstack"
 )
 
 // newDevStackCmd builds the `forge devstack` parent command — the host-side
@@ -90,7 +91,7 @@ worktrees (or no registry yet) prints nothing and exits 0.`,
 				return fmt.Errorf("read block registry: %w", err)
 			}
 			for _, b := range blocks {
-				fmt.Fprintln(cmd.OutOrStdout(), b.Key)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), b.Key)
 			}
 			return nil
 		},
@@ -127,7 +128,7 @@ exact port the in-cluster workspace-controller will dial.`,
 			if err != nil {
 				return fmt.Errorf("allocate port for worktree %q: %w", key, err)
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), port)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), port)
 			return nil
 		},
 	}
@@ -142,7 +143,7 @@ func newDevStackKeyCmd() *cobra.Command {
 		Short: "Print the current worktree key (\"\" on the primary checkout)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), devstack.Worktree(projectDirForKCL()))
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), devstack.Worktree(projectDirForKCL()))
 			return nil
 		},
 	}

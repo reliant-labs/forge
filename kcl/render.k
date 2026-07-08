@@ -38,6 +38,7 @@ import .lib.rbac as rbac_lib
 import .lib.netpol as netpol_lib
 import .lib.gateway as gw_lib
 import .lib.jwks as jwks_lib
+import .lib.quantity as qty_lib
 
 # ---------------------------------------------------------------------------
 # JSON contract render — typed Bundle -> stable dict shape.
@@ -59,12 +60,16 @@ _render_env_var = lambda ev: EnvVar -> any {
     }
 }
 
+# k8s ADAPTER projection: neutral Resources -> the k8s-dialect quantity
+# strings the JSON contract has always exposed. qty_lib formats millicores
+# -> "<n>m"/"<n>" and bytes -> "<n>Mi"/"<n>Gi", so the output is byte-stable
+# with the pre-neutral shape (100 -> "100m", 134217728 -> "128Mi").
 _render_resources = lambda r: Resources -> any {
     {
-        "cpu_request": r.cpu_request
-        "cpu_limit": r.cpu_limit
-        "memory_request": r.memory_request
-        "memory_limit": r.memory_limit
+        "cpu_request": qty_lib.fmt_k8s_cpu(r.cpu_request_millicores)
+        "cpu_limit": qty_lib.fmt_k8s_cpu(r.cpu_limit_millicores)
+        "memory_request": qty_lib.fmt_k8s_mem(r.memory_request_bytes)
+        "memory_limit": qty_lib.fmt_k8s_mem(r.memory_limit_bytes)
     }
 }
 
@@ -277,7 +282,7 @@ _render_build = lambda b: any -> any {
     _render_build_populated(b) if b else None
 }
 
-_render_service = lambda s: Service -> any {
+_render_service = lambda s: RenderedWorkload -> any {
     {
         "name": s.name
         "image": s.image if s.image else None
@@ -287,6 +292,12 @@ _render_service = lambda s: Service -> any {
         "deploy": _render_deploy(s.deploy)
         "build": _render_build(s.build)
         "namespaced_rbac": s.namespaced_rbac if s.namespaced_rbac else None
+        # Operator CRD kind names (projected from Service.k8s.operator.crds).
+        # Null for a non-operator service. This is the codegen bridge — the
+        # Go consumer reads it to drive AddToScheme/SetupWithManager wiring;
+        # the CRD MANIFEST itself is NOT synthesized here (it rides
+        # `manifests`/additional_manifests). Additive: absent => null.
+        "operator_crds": s.operator_crds if s.operator_crds else None
         # Owned raw manifests project into the JSON contract too (null when
         # empty) so a consumer that reads `output` sees the same stable
         # key shape; the cluster manifest stream stamps + routes them.
@@ -639,7 +650,14 @@ render = lambda bundle: Bundle -> any {
         if bundle.cluster_target:
             "cluster_target": _render_cluster_target(bundle.cluster_target)
         "kubeconfig_secrets": [_render_kubeconfig_secret(k) for k in bundle.kubeconfig_secrets]
-        "services": [_render_service(s) for s in bundle.services]
+        # Agnostic `workloads` are projected onto the RenderedWorkload shape
+        # INTERNALLY (via the k8s adapter) and folded into the same `services`
+        # bucket, so the Go consumer sees ONE stable shape whether a service
+        # was authored as an agnostic `forge.Service` or a raw `RenderedWorkload`.
+        # Projection needs the env-wide `cluster_target`; a Bundle carrying
+        # `workloads` therefore must declare one.
+        "services": [_render_service(s) for s in bundle.services] \
+            + [_render_service(_project_workload(w, bundle)) for w in bundle.workloads]
         "operators": [_render_operator(o) for o in bundle.operators]
         "frontends": [_render_frontend(f) for f in bundle.frontends]
         "cronjobs": [_render_cronjob(c) for c in bundle.cronjobs]
@@ -703,14 +721,35 @@ _render_namespace = lambda namespace: str -> any {
     }
 }
 
-_render_cluster_service = lambda s: Service, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
+# A cluster Service renders its Deployment/Service (render_k8s_service) plus
+# its RBAC. The RBAC tier is chosen by the OPERATOR predicate: a workload
+# carrying `operator_cluster_rbac` (projected from Service.k8s.operator) is a
+# Kubernetes operator, so it gets CLUSTER-scoped RBAC — a ClusterRole +
+# ClusterRoleBinding named `${name}-clusterrole`/`-clusterrolebinding` (via
+# render_cluster_rbac, which ALSO emits the ServiceAccount) — INSTEAD OF the
+# namespaced Role a plain Service gets. This is the fix OPERATOR_AGNOSTIC.md Q3
+# flags: previously ONLY _render_operator_manifests could emit a ClusterRole, so
+# an agnostic Service could not; now an operator authored as a `forge.Service`
+# with `k8s.operator` produces the same cluster RBAC an `Operator` did, with the
+# SAME ClusterRole name — which control-plane's admin-server rebind
+# (lib/rbac.k) assumes (`workspace-controller-clusterrole`). The cluster RBAC
+# path subsumes the config-read the namespaced Role would grant (the default
+# rule is cluster-scoped there too) and emits a single ServiceAccount, so the
+# two tiers are mutually exclusive — no duplicate SA.
+_render_cluster_service = lambda s: RenderedWorkload, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
+    _is_operator = s.operator_cluster_rbac != Undefined
     svc_lib.render_k8s_service(s, namespace, registry, image_tag, image_digests) \
-        + rbac_lib.render_namespaced_rbac(
+        + (rbac_lib.render_cluster_rbac(
+            s.name,
+            namespace,
+            {rules = s.operator_cluster_rbac},
+            pull_secrets,
+        ) if _is_operator else rbac_lib.render_namespaced_rbac(
             s.name,
             namespace,
             s.namespaced_rbac if s.namespaced_rbac else [],
             pull_secrets,
-        )
+        ))
 }
 
 _render_operator_manifests = lambda o: Operator, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
@@ -800,13 +839,30 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
     _ns = _ct.namespace
     _registry = _ct.registry
     _pull_secrets = _ct.image_pull_secrets if _ct.image_pull_secrets else []
-    _cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"]
+    # AGNOSTIC workloads are projected onto RenderedWorkloads INTERNALLY here —
+    # the adapter runs INSIDE the render pipeline, so the user never calls it.
+    # `_project_workload` picks the adapter PER WORKLOAD off the presence of
+    # `svc.host`: a host-targeted workload projects to a `HostDeploy` (and is
+    # filtered OUT of the k8s manifest stream below, exactly like a legacy
+    # `deploy.type == "host"` service); every other workload projects to a
+    # cluster RenderedWorkload seeded from the env-wide `cluster_target`.
+    _projected = [_project_workload(w, bundle) for w in bundle.workloads]
+    _cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"] \
+        + [w for w in _projected if w.deploy.type == "cluster"]
     # Only a service with an `image` renders a workload (Deployment +
     # Service + RBAC). An image-less cluster service is an INFRA service:
     # it contributes ONLY its owned `manifests` (below), no phantom
     # Deployment. This split is the declared-cluster-only model's no-build
     # infra-service shape — explicit (no image) rather than inferred.
+    # (Projected agnostic workloads always carry an image, so they are all
+    # workload services.)
     _workload_services = [s for s in _cluster_services if s.image]
+    # Each workload renders in ITS OWN deploy block's namespace/registry/
+    # pull_secrets — NOT the bundle-wide ones — so a per-service cluster
+    # override (Service.k8s.cluster) lands its Deployment/Service in the
+    # OTHER cluster's namespace with the OTHER registry. For the common case
+    # (deploy seeded from bundle.cluster_target) these EQUAL the bundle-wide
+    # values, so the render is byte-identical.
     # Env-shared manifests + bundle-level additional_manifests carry NO
     # service group: they belong to no service, so they apply only on a bare
     # deploy and are never picked by a service --target. To ride a service's
@@ -815,7 +871,7 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
         + [_render_namespace(_ns)] \
         + [_render_config_map_manifest(cm, _ns) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
-        + [item for s in _workload_services for item in _render_cluster_service(s, _ns, _registry, image_tag, image_digests, _pull_secrets)] \
+        + [item for s in _workload_services for item in _render_cluster_service(s, s.deploy.namespace, s.deploy.registry, image_tag, image_digests, s.deploy.image_pull_secrets if s.deploy.image_pull_secrets else _pull_secrets)] \
         + [item for s in _cluster_services for item in svc_lib.render_owned_manifests(s)] \
         + [item for o in bundle.operators for item in _render_operator_manifests(o, _ns, _registry, image_tag, image_digests, _pull_secrets)] \
         + [item for c in bundle.cronjobs for item in _render_cronjob_manifests(c, _ns, _registry, image_tag, image_digests, _pull_secrets)] \

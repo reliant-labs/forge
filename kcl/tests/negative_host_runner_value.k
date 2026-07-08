@@ -8,7 +8,7 @@ when run with `kcl run`.
 
 import forge
 
-_svc = forge.Service {
+_svc = forge.RenderedWorkload {
     name = "bad-runner"
     image = "x"
     deploy = forge.HostDeploy {

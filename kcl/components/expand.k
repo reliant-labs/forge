@@ -20,6 +20,7 @@ field access here.
 """
 
 import ..lib.rbac as rbac_lib
+import ..lib.quantity as qty_lib
 
 _managed_labels = lambda name: str -> {str: str} {
     {
@@ -46,10 +47,10 @@ _default_container_security_context = {
 }
 
 _default_resources = {
-    cpu_request = "100m"
-    cpu_limit = "500m"
-    memory_request = "128Mi"
-    memory_limit = "512Mi"
+    cpu_request_millicores = 100
+    cpu_limit_millicores = 500
+    memory_request_bytes = 134217728    # 128Mi
+    memory_limit_bytes = 536870912      # 512Mi
 }
 
 _image_ref = lambda image: str, image_registry: str, image_tag: str -> str {
@@ -65,10 +66,12 @@ _pull_policy = lambda image_ref: str -> str {
     "Always" if _tag.endswith("-dirty") or _tag == "latest" else "IfNotPresent"
 }
 
+# k8s ADAPTER: neutral Resources (millicores + bytes) -> k8s quantity
+# strings, via the shared quantity.k formatters.
 _resource_block = lambda r: any -> any {
     {
-        requests = {cpu = r.cpu_request, memory = r.memory_request}
-        limits = {cpu = r.cpu_limit, memory = r.memory_limit}
+        requests = {cpu = qty_lib.fmt_k8s_cpu(r.cpu_request_millicores), memory = qty_lib.fmt_k8s_mem(r.memory_request_bytes)}
+        limits = {cpu = qty_lib.fmt_k8s_cpu(r.cpu_limit_millicores), memory = qty_lib.fmt_k8s_mem(r.memory_limit_bytes)}
     }
 }
 

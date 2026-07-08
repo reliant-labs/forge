@@ -196,19 +196,34 @@ func TestAPIGeneratorHugoFormat(t *testing.T) {
 }
 
 func TestArchitectureGeneratorProducesMermaid(t *testing.T) {
+	// The component inventory is enumerated from the proto descriptor now
+	// (codegen.IntrospectComponents), not ProjectConfig.Components — so the
+	// generator reads ctx.ProjectDir. "GatewayService"/"UserService" map to
+	// server components gateway/user.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
+		t.Fatalf("mkdir gen: %v", err)
+	}
+	descriptor := `{
+  "services": [
+    {"Name": "GatewayService", "Package": "gateway.v1"},
+    {"Name": "UserService", "Package": "user.v1"}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), []byte(descriptor), 0o644); err != nil {
+		t.Fatalf("write descriptor: %v", err)
+	}
+
 	ctx := &Context{
 		ProjectConfig: &config.ProjectConfig{
 			Name: "test-project",
-			Components: []config.ComponentConfig{
-				{Name: "api-gateway", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}},
-				{Name: "user-service", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8081}}},
-			},
 			Frontends: []config.FrontendConfig{
 				{Name: "web", Type: "nextjs", Port: 3000},
 			},
 			Database: config.DatabaseConfig{Driver: "postgres"},
 		},
-		Format: "markdown",
+		Format:     "markdown",
+		ProjectDir: dir,
 	}
 
 	g := &ArchitectureGenerator{}
@@ -225,7 +240,7 @@ func TestArchitectureGeneratorProducesMermaid(t *testing.T) {
 	if !strings.Contains(content, "mermaid") {
 		t.Error("expected Mermaid diagram block")
 	}
-	if !strings.Contains(content, "api-gateway") {
+	if !strings.Contains(content, "gateway") {
 		t.Error("expected service in diagram")
 	}
 	if !strings.Contains(content, "web") {

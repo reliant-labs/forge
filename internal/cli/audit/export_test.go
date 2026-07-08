@@ -102,7 +102,7 @@ func testFactory(cfg auditAPIConfig) *factory.Factory {
 // the audit-package tests: read forge.yaml (+ components.json sibling) from
 // an explicit path, mapping a missing file to cmdutil.ErrProjectConfigNotFound
 // so buildAuditReport's not-a-project branch fires.
-func loadProjectStoreFromTest(path string) (projectstore.ProjectStore, error) {
+func loadProjectStoreFromTest(path string) (*projectstore.Store, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, cmdutil.ErrProjectConfigNotFound
 	}
@@ -113,17 +113,15 @@ func loadProjectStoreFromTest(path string) (projectstore.ProjectStore, error) {
 	return projectstore.New(cfg), nil
 }
 
-// writeComponentsJSONTest drops a components.json at dir holding the given
-// components (duplicated from the cli api_test helper; the audit package
-// can't import cli test code).
-func writeComponentsJSONTest(t *testing.T, dir string, comps ...config.ComponentConfig) {
+// writeComponentsJSONTest makes dir derive to the "service" kind by stamping
+// the pkg/app composition root — forge derives kind + inventory from real
+// sources (proto descriptor, service registry, KCL tree, handler impls), not a
+// components.json manifest. The variadic comps are ignored; the parameter is
+// retained so the call sites don't churn.
+func writeComponentsJSONTest(t *testing.T, dir string, _ ...config.ComponentConfig) {
 	t.Helper()
-	data, err := config.MarshalComponentsJSON(comps)
-	if err != nil {
-		t.Fatalf("marshal components.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, config.ComponentsFileName), data, 0o644); err != nil {
-		t.Fatalf("write components.json: %v", err)
+	if err := os.MkdirAll(filepath.Join(dir, "pkg", "app"), 0o755); err != nil {
+		t.Fatalf("mark service project (mkdir pkg/app): %v", err)
 	}
 }
 

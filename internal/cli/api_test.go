@@ -34,15 +34,14 @@ func writeProjectWithDescriptor(t *testing.T, services []config.ComponentConfig,
 		t.Fatalf("write forge.yaml: %v", err)
 	}
 
-	// Per-component entities now live in a sibling components.json (forge.yaml
-	// is global-only). An empty slice still writes `{"components":[]}` so the
-	// project derives to service kind rather than library.
-	compData, err := config.MarshalComponentsJSON(services)
-	if err != nil {
-		t.Fatalf("marshal components.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, config.ComponentsFileName), compData, 0o644); err != nil {
-		t.Fatalf("write components.json: %v", err)
+	// forge derives the project kind + component inventory from real sources
+	// (the gen/ descriptor below provides the services), not an authored
+	// manifest. Stamp the pkg/app composition root so the project derives to
+	// service kind rather than library. The services slice is accepted for
+	// call-site compatibility but the inventory comes from the descriptor.
+	_ = services
+	if err := os.MkdirAll(filepath.Join(dir, "pkg", "app"), 0o755); err != nil {
+		t.Fatalf("mark service project (mkdir pkg/app): %v", err)
 	}
 
 	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
@@ -58,19 +57,40 @@ func writeProjectWithDescriptor(t *testing.T, services []config.ComponentConfig,
 	return dir
 }
 
-// writeComponentsJSON drops a components.json at dir holding the given
-// components. forge.yaml is global-only now, so the per-component entities
-// (and the project kind they derive) live in this sibling file. Passing zero
-// components still writes `{"components":[]}` so the project derives to
-// service kind (the empty-service shell) rather than library.
-func writeComponentsJSON(t *testing.T, dir string, comps ...config.ComponentConfig) {
+// writeForgeDescriptor lays down a minimal gen/forge_descriptor.json whose
+// services carry the given proto service NAMES (e.g. "TasksService"). The
+// introspection consumers (audit / graph / api / doctor) source their service
+// inventory from this descriptor via codegen.IntrospectComponents — NOT the
+// removed components.json — so a test that needs a named server present must
+// write one here. naming.ServicePackage maps "TasksService" → component
+// "tasks".
+func writeForgeDescriptor(t *testing.T, dir string, protoServiceNames ...string) {
 	t.Helper()
-	data, err := config.MarshalComponentsJSON(comps)
-	if err != nil {
-		t.Fatalf("marshal components.json: %v", err)
+	svcs := make([]codegen.ServiceDef, 0, len(protoServiceNames))
+	for _, n := range protoServiceNames {
+		svcs = append(svcs, codegen.ServiceDef{Name: n, Package: "test.v1"})
 	}
-	if err := os.WriteFile(filepath.Join(dir, config.ComponentsFileName), data, 0o644); err != nil {
-		t.Fatalf("write components.json: %v", err)
+	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
+		t.Fatalf("mkdir gen: %v", err)
+	}
+	data, err := json.MarshalIndent(ForgeDescriptor{Services: svcs}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal descriptor: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), data, 0o644); err != nil {
+		t.Fatalf("write descriptor: %v", err)
+	}
+}
+
+// writeComponentsJSON makes dir derive to the "service" kind by stamping a
+// real service artifact — the pkg/app composition root — since forge derives
+// kind + inventory from real sources (proto descriptor, service registry, KCL
+// tree, handler impls), not a components.json manifest. The variadic comps are
+// ignored; the parameter is retained so the many call sites don't churn.
+func writeComponentsJSON(t *testing.T, dir string, _ ...config.ComponentConfig) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "pkg", "app"), 0o755); err != nil {
+		t.Fatalf("mark service project (mkdir pkg/app): %v", err)
 	}
 }
 
@@ -334,7 +354,14 @@ func TestMatchServicePort(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := matchServicePort(tc.cfg, svc)
+			// matchServicePort now takes the component slice directly (the
+			// inventory is sourced from codegen.IntrospectComponents, not a
+			// *ProjectConfig). The nil-config case maps to a nil slice.
+			var comps []config.ComponentConfig
+			if tc.cfg != nil {
+				comps = tc.cfg.Components
+			}
+			got := matchServicePort(comps, svc)
 			if got != tc.want {
 				t.Errorf("matchServicePort = %d, want %d", got, tc.want)
 			}
@@ -366,11 +393,15 @@ func TestBuildCurlCommand_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildCurlCommand: %v", err)
 	}
+	// Port is now the sane default (8080): the service inventory is
+	// enumerated from the proto descriptor (codegen.IntrospectComponents),
+	// and ports are a DEPLOY fact (KCL) no longer carried on the component,
+	// so components.json's 8123 is not consulted. `--port` overrides it.
 	wantSubs := []string{
 		"curl -X POST",
 		"-H 'Content-Type: application/json'",
 		`-d '{"id":""}'`,
-		"http://localhost:8123/users.v1.UserService/GetUser",
+		"http://localhost:8080/users.v1.UserService/GetUser",
 	}
 	for _, s := range wantSubs {
 		if !strings.Contains(out, s) {

@@ -21,7 +21,7 @@ _prod = forge.ClusterTarget {
 
 # A service whose image is produced by a REAL external build (cross-compile +
 # docker build + push) — its ${TARGETARCH} comes from the env platform.
-_sibling = forge.Service {
+_sibling = forge.RenderedWorkload {
     name = "sibling"
     image = "sibling"
     build = forge.ShellBuild {

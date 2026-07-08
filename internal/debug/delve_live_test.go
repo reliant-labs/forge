@@ -63,7 +63,7 @@ func buildFixture(t *testing.T) (binary, source string) {
 		t.Fatalf("write go.mod: %v", err)
 	}
 	binary = filepath.Join(dir, "fixture")
-	build := exec.Command("go", "build", "-gcflags=all=-N -l", "-o", binary, ".")
+	build := exec.CommandContext(context.Background(), "go", "build", "-gcflags=all=-N -l", "-o", binary, ".")
 	build.Dir = dir
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building fixture: %v\n%s", err, out)

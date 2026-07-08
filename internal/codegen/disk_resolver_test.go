@@ -461,7 +461,7 @@ func TestWorkerDataFromNames_ConflictingClausesError(t *testing.T) {
 }
 
 // TestGenerateMissingHandlerStubs_DiskFirstPackageClause asserts the
-// incremental stub generator stamps handlers_gen.go with the EXISTING
+// incremental stub scaffolder stamps handlers.go with the EXISTING
 // directory's package clause rather than the synthesized compact form —
 // pre-fix it would write `package engineshadow` into a dir declaring
 // `package engine_shadow`, breaking the build with a mixed-package dir.
@@ -490,16 +490,16 @@ func TestGenerateMissingHandlerStubs_DiskFirstPackageClause(t *testing.T) {
 		t.Fatal("expected Echo stub to be generated")
 	}
 
-	data, err := os.ReadFile(filepath.Join(targetDir, "handlers_gen.go"))
+	data, err := os.ReadFile(filepath.Join(targetDir, "handlers.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustParseGo(t, "handlers_gen.go", data)
+	mustParseGo(t, "handlers.go", data)
 	if !strings.Contains(string(data), "package engine_shadow\n") {
-		t.Errorf("handlers_gen.go must declare the dir's real clause:\n%s", data)
+		t.Errorf("handlers.go must declare the dir's real clause:\n%s", data)
 	}
 	if strings.Contains(string(data), "package engineshadow") {
-		t.Errorf("handlers_gen.go still declares the synthesized clause:\n%s", data)
+		t.Errorf("handlers.go still declares the synthesized clause:\n%s", data)
 	}
 }
 

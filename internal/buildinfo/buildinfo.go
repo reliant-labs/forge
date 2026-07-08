@@ -14,7 +14,6 @@ import (
 var (
 	mu        sync.RWMutex
 	version   string = "dev"
-	buildDate string = "unknown"
 	gitCommit string = "unknown"
 
 	// pkgVersion is the published version of the companion
@@ -43,12 +42,12 @@ var (
 var pkgVersionRE = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`)
 
 // Set records the forge binary's version metadata. It is intended to be
-// called exactly once, from the main entrypoint.
-func Set(v, date, commit string) {
+// called exactly once, from the main entrypoint. The date argument is
+// accepted for call-site compatibility but is not currently retained.
+func Set(v, _, commit string) {
 	mu.Lock()
 	defer mu.Unlock()
 	version = v
-	buildDate = date
 	gitCommit = commit
 }
 

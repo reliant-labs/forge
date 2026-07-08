@@ -67,11 +67,11 @@ func TestCollectManifestGVKs(t *testing.T) {
 		t.Fatalf("expected 2 top-level GVKs, got %d: %+v", len(gvks), gvks)
 	}
 	// Document order is preserved.
-	if gvks[0].Kind != "Service" || gvks[0].ApiVersion != "v1" || gvks[0].Name != "daemon-gateway" {
+	if gvks[0].Kind != "Service" || gvks[0].APIVersion != "v1" || gvks[0].Name != "daemon-gateway" {
 		t.Errorf("doc[0]: got %+v", gvks[0])
 	}
 	if gvks[1].Kind != "GRPCRoute" ||
-		gvks[1].ApiVersion != "gateway.networking.k8s.io/v1" ||
+		gvks[1].APIVersion != "gateway.networking.k8s.io/v1" ||
 		gvks[1].Name != "daemon-gateway-route" {
 		t.Errorf("doc[1]: got %+v", gvks[1])
 	}

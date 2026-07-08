@@ -28,6 +28,12 @@
 // expressing the differences between call sites, plus a single Apply
 // entry point and the kubectl/KCL helpers exported for callers that
 // need them piecewise.
+//
+// forge:exclude-contract
+// cluster is CLI-internal deploy-pipeline glue (render KCL → kubectl apply →
+// wait rollouts), not a contract-shaped service the bootstrap wires. Its
+// exported methods are the pipeline's own API, so opt out of the
+// require-contract rule.
 package cluster
 
 import (
@@ -607,6 +613,10 @@ func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string, im
 	return dArgs
 }
 
+// RenderManifests renders the project's KCL for env into a Kubernetes
+// manifest document, applying the given image tag, namespace, per-env
+// config overrides, and image digest pins. It runs from the project root
+// so deploy-as-data file reads resolve.
 func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) (string, error) {
 	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests)
 	// Render from the project root so the deploy-as-data main.k's
@@ -1005,15 +1015,15 @@ func parseInvalidResource(stderr string) (kind, name string, ok bool) {
 		return "", "", false
 	}
 	head := stderr[:idx] // e.g. `The Job "control-plane-migrate"` or `Job.batch "control-plane-migrate"`
-	close := strings.LastIndex(head, `"`)
-	if close < 0 {
+	closeIdx := strings.LastIndex(head, `"`)
+	if closeIdx < 0 {
 		return "", "", false
 	}
-	open := strings.LastIndex(head[:close], `"`)
+	open := strings.LastIndex(head[:closeIdx], `"`)
 	if open < 0 {
 		return "", "", false
 	}
-	name = head[open+1 : close]
+	name = head[open+1 : closeIdx]
 	// Kind is the last whitespace-delimited token before the opening quote.
 	fields := strings.Fields(strings.TrimSpace(head[:open]))
 	if len(fields) == 0 || name == "" {

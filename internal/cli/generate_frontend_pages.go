@@ -63,18 +63,16 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) erro
 // services whose List/Get/Create RPCs don't follow the entity-name-as-field
 // convention.
 //
-// Tier-2 (scaffold-once) lifecycle: every page template carries a
+// Scaffold-once ("yours") lifecycle: every page template carries a
 //
 //	`// yours: scaffolded once, never touched again — forge will not overwrite this file`
 //
 // banner promising the user that hand-edits will survive subsequent
 // `forge generate` runs. Honor that promise by skipping the write when
-// the target file already exists on disk, mirroring the
-// `emitTier2OnceIfMissing` pattern that `generateFrontendNav` already
-// uses for nav.tsx / page.tsx. Re-scaffolding is gated on the
-// `--reset-tier2` hook (checksums.Tier2OverwriteFn) — NOT on --force,
-// which is scoped to the Tier-1 files the stomp guard flagged
-// (journey fr-a04f8c0609).
+// the target file already exists on disk (write-if-absent), mirroring
+// the `emitScaffoldOnceIfMissing` pattern that `generateFrontendNav`
+// already uses for nav.tsx / page.tsx. Once a page exists forge NEVER
+// overwrites it — no flag; to refresh one, delete it and regenerate.
 //
 // Per-kind dispatch:
 //   - nextjs:   pages/ templates → src/app/<slug>/[id]/{,edit/}page.tsx
@@ -138,7 +136,7 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 						continue
 					}
 					relPath := filepath.Join(feDir, k.rel)
-					wrote, err := renderPageToFileTier2(k.tmpl, entity, projectDir, relPath, cs)
+					wrote, err := renderPageScaffoldIfMissing(k.tmpl, entity, projectDir, relPath)
 					if err != nil {
 						return fmt.Errorf("render %s page for %s: %w", k.kind, entity.EntityName, err)
 					}
@@ -155,7 +153,7 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 			fmt.Printf("  ✅ Generated %d CRUD page(s) for frontend %s\n", pageCount, fe.Name)
 		}
 		if skipCount > 0 {
-			fmt.Printf("  ⏭️  Preserved %d existing CRUD page(s) for frontend %s (pass --reset-tier2 to re-scaffold)\n", skipCount, fe.Name)
+			fmt.Printf("  ⏭️  Preserved %d existing CRUD page(s) for frontend %s (delete a file and regenerate to re-scaffold it)\n", skipCount, fe.Name)
 		}
 	}
 
@@ -255,44 +253,30 @@ func loadPageTemplate(dir, name string) (*template.Template, error) {
 	return tmpl, nil
 }
 
-// renderPageToFileTier2 renders a page template to disk under
+// renderPageScaffoldIfMissing renders a page template to disk under
 // scaffold-once ("yours:" banner) semantics: the file is written once at
-// scaffold time and never overwritten on subsequent `forge generate`
-// runs, matching the leading banner comment every page template
-// carries. Re-scaffolding an existing page requires the `--reset-tier2`
-// hook (checksums.Tier2OverwriteFn): when the hook is installed the
-// write proceeds to WriteGeneratedFileTier2, which prompts per
-// hand-edited file. `--force` deliberately has no effect here — it is
-// scoped to the Tier-1 files the stomp guard flagged (journey
-// fr-a04f8c0609 lost user pages to a --force recovery from an
-// unrelated Tier-1 trip).
+// scaffold time and NEVER overwritten on subsequent `forge generate`
+// runs, matching the leading banner comment every page template carries.
+// Once the page exists on disk forge leaves it alone — no flag, no
+// exception. To refresh one, delete it and regenerate.
 //
 // Returns (wrote, err) — wrote=false when the destination already
 // existed and was preserved, so the caller can distinguish freshly-
 // scaffolded pages from preserved ones in the summary log.
 //
-// The checksums hand-off (`checksums.WriteGeneratedFileTier2`) tags the
-// emit as Tier-2 (no certification marker), which the stomp-guard
-// reader uses to *skip* the file in CheckTier1Drift — Tier-2 files are
-// expected to drift from forge's recorded render, that's the whole
-// point.
-func renderPageToFileTier2(tmpl *template.Template, data codegen.PageTemplateData, projectDir, relPath string, cs *checksums.FileChecksums) (bool, error) {
+// Scaffold pages carry no certification marker, which is why the
+// stomp-guard reader *skips* them in the Tier-1 drift scan — they are
+// expected to drift from any prior render, that's the whole point.
+func renderPageScaffoldIfMissing(tmpl *template.Template, data codegen.PageTemplateData, projectDir, relPath string) (bool, error) {
 	fullPath := filepath.Join(projectDir, relPath)
 
-	// Scaffold-once: if the user already has this file on disk, leave
-	// it alone unless the --reset-tier2 hook is installed (the hook
-	// itself still adjudicates hand-edited files per file inside
-	// WriteGeneratedFileTier2).
-	if checksums.Tier2OverwriteFn == nil {
-		if _, err := os.Stat(fullPath); err == nil {
-			return false, nil
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return false, fmt.Errorf("stat %s: %w", relPath, err)
-		}
-	}
-
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		return false, fmt.Errorf("create directory for %s: %w", relPath, err)
+	// Scaffold-once: if the user already has this file on disk, leave it
+	// alone (the WriteScaffoldIfMissing gate enforces this too, but the
+	// early return avoids rendering the template needlessly).
+	if _, err := os.Stat(fullPath); err == nil {
+		return false, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("stat %s: %w", relPath, err)
 	}
 
 	var buf bytes.Buffer
@@ -300,9 +284,5 @@ func renderPageToFileTier2(tmpl *template.Template, data codegen.PageTemplateDat
 		return false, err
 	}
 
-	wrote, err := checksums.WriteGeneratedFileTier2(projectDir, relPath, buf.Bytes(), cs, false)
-	if err != nil {
-		return false, err
-	}
-	return wrote, nil
+	return checksums.WriteScaffoldIfMissing(projectDir, relPath, buf.Bytes())
 }

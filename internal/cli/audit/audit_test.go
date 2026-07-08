@@ -55,6 +55,24 @@ func TestAuditVersion_RealComparison(t *testing.T) {
 			t.Errorf("missing pin must WARN, got %q", cat.Status)
 		}
 	})
+
+	t.Run("deliberate 0.0.0 sentinel is OK, not a stale-pin warn", func(t *testing.T) {
+		// forge-as-its-own-first-user pins 0.0.0 (see forge.yaml); it is
+		// intentionally never equal to the pseudo-version binary and must
+		// not warn.
+		buildinfo.Set("v0.0.0-20260612070344-a3e3b883c97c", "unknown", "unknown")
+		cfg := &config.ProjectConfig{ForgeVersion: "0.0.0"}
+		cat := auditVersion(cfg, t.TempDir())
+		if cat.Status != audittype.StatusOK {
+			t.Errorf("0.0.0 sentinel must be OK, got %q (summary=%q)", cat.Status, cat.Summary)
+		}
+		if strings.Contains(cat.Summary, "does NOT match") {
+			t.Errorf("0.0.0 sentinel must not be reported as a mismatch: %q", cat.Summary)
+		}
+		if !strings.Contains(cat.Summary, "0.0.0") {
+			t.Errorf("summary should explain the 0.0.0 sentinel: %q", cat.Summary)
+		}
+	})
 }
 
 // TestAuditVersion_DivergentPins pins the second half of fr-82b717f521:
@@ -150,7 +168,7 @@ docs: {}
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var decoded AuditReport
+	var decoded Report
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

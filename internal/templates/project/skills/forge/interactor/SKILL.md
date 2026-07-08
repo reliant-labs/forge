@@ -81,6 +81,16 @@ func (s *service) ChargeAndAudit(ctx context.Context, in ChargeAndAuditInput) er
 
 The interactor is unaware that `Charger` is Stripe (or Adyen, or a test fake) — that's the point.
 
+This is the general idiom, not an interactor quirk: **declare interfaces at the CONSUMER, not the implementation.** Accept interfaces (flexibility in), return concrete structs (no speculative abstraction out). Each dep interface is *narrow* — it names only the methods this interactor calls. If a collaborator exposes a wide interface and every caller uses a different slice of it, that's a smell: split it into per-consumer interfaces like the `Charger`/`Auditor` pair above, rather than importing one god-interface everywhere.
+
+```go
+// Smell: one wide interface each caller uses a slice of.
+type Payments interface { Charge(...); Refund(...); ListDisputes(...); /* …12 more… */ }
+
+// Better: this interactor declares only what it calls.
+type Charger interface { Charge(ctx context.Context, userID string, amount int64) (string, error) }
+```
+
 ## Late-bound dependencies: construct-then-inject in `NewComponents`
 
 Sometimes collaborator B needs a value that only exists *after* collaborator A is constructed (worker A produces a snapshot saver that worker B consumes; service X exposes a registry that interactor Y registers handlers into). Putting that value in B's `Deps` creates a construction-order cycle — `New(Deps)` resolves its dep closure once and has no slot for "set this later".

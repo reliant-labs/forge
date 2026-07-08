@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -421,7 +422,7 @@ func runDetection(projectRoot, script string) bool {
 	if strings.TrimSpace(script) == "" {
 		return true
 	}
-	cmd := exec.Command("sh", "-c", script)
+	cmd := exec.CommandContext(context.Background(), "sh", "-c", script)
 	cmd.Dir = projectRoot
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard

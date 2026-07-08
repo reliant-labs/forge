@@ -247,7 +247,7 @@ func checkClusterPortDrift(ctx context.Context, c ClusterEntity, projectDir, env
 			"k3d fixes port maps at cluster-create time, so a listener added after the cluster was "+
 			"created is unreachable on the live cluster. Recreate it to pick up the new mappings:\n"+
 			"    k3d cluster delete %s && forge up --env=%s\n"+
-			"(the required ports are DERIVED from the same render forge deploys — no manual port list to maintain).",
+			"(the required ports are DERIVED from the same render forge deploys — no manual port list to maintain)",
 		c.Name, strings.Join(ports, ", "), env, c.Name, env)
 }
 

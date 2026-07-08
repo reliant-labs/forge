@@ -75,6 +75,18 @@ type KCLEntities struct {
 	// --namespace. Empty when the render carries no namespaced manifests.
 	ManifestNamespace string `json:"-"`
 
+	// ManifestServiceNames are the metadata.name of every k8s Service in
+	// the rendered `manifests` stream — the raw Service objects a project
+	// injects via KCL (e.g. `additional_manifests`) that carry no typed
+	// forge entity. forge emits no Service for a forge.Operator, so an
+	// operator that ALSO fronts a Connect handler is exposed by a
+	// hand-authored k8s Service manifest; its name lives ONLY here, not in
+	// Services (typed forge.Service) or forge.yaml. The ingress audit
+	// unions these into the known-backend set so a route targeting such a
+	// Service resolves instead of false-erroring "unknown service". Empty
+	// when the render carries no raw Service manifests.
+	ManifestServiceNames []string `json:"-"`
+
 	// ManifestImageTags maps a (registry-less) image NAME to the tag the
 	// rendered Deployment/Statefulset/Job manifests reference for it —
 	// recovered from `manifests[].spec.template.spec.containers[].image`.
@@ -712,10 +724,12 @@ type kclRenderRaw struct {
 }
 
 // rawManifest is a minimal view of one rendered k8s object — just enough
-// to read its namespace and (for workload kinds) the container images
-// its pod template references. The rest of the object is ignored.
+// to read its kind/name/namespace and (for workload kinds) the container
+// images its pod template references. The rest of the object is ignored.
 type rawManifest struct {
+	Kind     string `json:"kind,omitempty"`
 	Metadata struct {
+		Name      string `json:"name,omitempty"`
 		Namespace string `json:"namespace,omitempty"`
 	} `json:"metadata,omitempty"`
 	Spec struct {
@@ -812,6 +826,10 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 	// workload manifests carry the env's resolved image_tag on their
 	// container image refs, which the `output` echo does NOT.
 	manifestImageTags := manifestImageTagsFromOuter(data)
+	// Raw k8s Service names live at the OUTER level too (same reason as
+	// namespace/image-tags: they're in the `manifests` stream, not the
+	// `output` entity echo). Read before unwrapping `output`.
+	manifestServiceNames := manifestServiceNamesFromOuter(data)
 
 	// Peek for an "output" wrapper. If present, recurse on its bytes —
 	// the inner shape is the same kclRenderRaw shape we already parse.
@@ -830,20 +848,21 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		return nil, fmt.Errorf("parse kcl json: %w", err)
 	}
 	out := &KCLEntities{
-		Clusters:          raw.Clusters,
-		KubeconfigSecrets: raw.KubeconfigSecrets,
-		Operators:         raw.Operators,
-		Frontends:         raw.Frontends,
-		CronJobs:          raw.CronJobs,
-		Gateways:          raw.Gateways,
-		HTTPRoutes:        raw.HTTPRoutes,
-		GRPCRoutes:        raw.GRPCRoutes,
-		HelmCharts:        raw.HelmCharts,
-		SecretProvider:    raw.SecretProvider,
-		RequiredSecrets:   raw.RequiredSecrets,
-		RequiredDNS:       raw.RequiredDNS,
-		ManifestNamespace: manifestNS,
-		ManifestImageTags: manifestImageTags,
+		Clusters:             raw.Clusters,
+		KubeconfigSecrets:    raw.KubeconfigSecrets,
+		Operators:            raw.Operators,
+		Frontends:            raw.Frontends,
+		CronJobs:             raw.CronJobs,
+		Gateways:             raw.Gateways,
+		HTTPRoutes:           raw.HTTPRoutes,
+		GRPCRoutes:           raw.GRPCRoutes,
+		HelmCharts:           raw.HelmCharts,
+		SecretProvider:       raw.SecretProvider,
+		RequiredSecrets:      raw.RequiredSecrets,
+		RequiredDNS:          raw.RequiredDNS,
+		ManifestNamespace:    manifestNS,
+		ManifestImageTags:    manifestImageTags,
+		ManifestServiceNames: manifestServiceNames,
 	}
 	for _, s := range raw.Services {
 		deploy, err := dispatchServiceDeploy(s.Name, s.Deploy)
@@ -946,6 +965,38 @@ func manifestImageTagsFromOuter(outer []byte) map[string]string {
 		}
 	}
 	return tags
+}
+
+// manifestServiceNamesFromOuter collects the metadata.name of every k8s
+// Service (kind == "Service") in the rendered `manifests` stream. These
+// are the RAW Service objects a project injects directly (e.g. via
+// `additional_manifests`) — Services that have no typed forge entity
+// (forge.Service) and no forge.yaml component/webhook/frontend behind
+// them. The canonical case is a forge.Operator that also fronts a Connect
+// handler: forge emits no Service for an Operator, so the project supplies
+// a hand-authored k8s Service manifest to expose it, and that Service's
+// name exists nowhere in the forge.yaml-derived backend set.
+//
+// The ingress cross-check unions these into the known-backend set so an
+// HTTPRoute/GRPCRoute targeting such a Service resolves instead of
+// false-erroring. Returns nil when the render carries no Service manifests.
+func manifestServiceNamesFromOuter(outer []byte) []string {
+	var probe struct {
+		Manifests []rawManifest `json:"manifests,omitempty"`
+	}
+	if err := json.Unmarshal(outer, &probe); err != nil {
+		return nil
+	}
+	var names []string
+	for _, m := range probe.Manifests {
+		if m.Kind != "Service" {
+			continue
+		}
+		if n := strings.TrimSpace(m.Metadata.Name); n != "" {
+			names = append(names, n)
+		}
+	}
+	return names
 }
 
 // splitImageNameTag parses a container image ref into its registry-less

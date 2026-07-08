@@ -61,6 +61,16 @@ type CreateChargeResult struct {
 
 Same shape in any language: a narrow interface in domain types, hiding the vendor's wire format.
 
+**Declare interfaces at the consumer, not the implementation.** The adapter's exported `Service` interface is a legitimate seam — it's the mock/test target and the DI boundary (accept interfaces, return concrete structs is honoured by forge's `New(Deps) Service`). But keep it narrow: one method per use case the domain actually needs. If two different consumers each use a different slice of a wide adapter interface, that's a smell — let each consumer declare the 1–2 method interface it needs at its own site (see the role-interface pattern in the `api` skill), so widening the adapter never breaks a consumer that didn't ask for the new method.
+
+```go
+// Adapter exposes a narrow, domain-worded Service (the mock seam).
+type Service interface { CreateCharge(ctx context.Context, in CreateChargeInput) (CreateChargeResult, error) }
+
+// A consumer that only needs one method declares its own view, next to itself:
+type charger interface { CreateCharge(ctx context.Context, in CreateChargeInput) (CreateChargeResult, error) }
+```
+
 ## How to test
 
 Adapter tests use an in-process HTTP test server (or the SDK's record-and-replay equivalent) to stand in for the vendor. The point is to exercise the *adapter's* translation logic — request construction, header injection, response parsing, error mapping — against a controlled downstream.

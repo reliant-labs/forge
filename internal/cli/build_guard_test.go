@@ -112,13 +112,15 @@ func TestReleasePathBuildsLinuxBinary(t *testing.T) {
 	// No Dockerfile in the temp dir → dockerBuildProject skips the docker
 	// build (and thus the guard) gracefully; we assert the BINARY arch, which
 	// is what the COPY would ship.
-	results := buildSequential(
-		context.Background(), cfg,
-		nil, nil, goTargets,
-		false, // skipProjectDocker
-		cfgArchForDocker, "vTEST", versionInfo{version: "vTEST", commit: "none", date: "now"},
-		opts,
-	)
+	results := buildSequential(context.Background(), buildPlan{
+		cfg:               cfg,
+		goTargets:         goTargets,
+		skipProjectDocker: false,
+		cfgArchForDocker:  cfgArchForDocker,
+		resolvedTag:       "vTEST",
+		resolvedVersion:   versionInfo{version: "vTEST", commit: "none", date: "now"},
+		opts:              opts,
+	})
 	for _, r := range results {
 		if r.err != nil {
 			t.Fatalf("build %s failed: %v", r.name, r.err)
@@ -176,7 +178,7 @@ func writeTinyGoModule(t *testing.T, dir string) {
 
 func runGo(t *testing.T, dir string, env []string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("go", args...)
+	cmd := exec.CommandContext(context.Background(), "go", args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {

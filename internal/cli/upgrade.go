@@ -11,6 +11,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
@@ -135,18 +136,7 @@ func runUpgrade(check, force bool, toVersion string) error {
 	// Surface any per-version migration skills relevant to this jump
 	// before doing destructive work, so the user (or LLM) can decide
 	// whether to halt and load them first.
-	if skills := relevantMigrationSkills(from, target); len(skills) > 0 {
-		fmt.Println("📚 Per-version migration skills relevant to this upgrade:")
-		for _, s := range skills {
-			fmt.Printf("    - %s\n      %s\n      Load with: %s skill load %s\n",
-				s.Path, s.Description, Name(), s.Path)
-		}
-		fmt.Println()
-		fmt.Println("    The deterministic steps (regen, build) run automatically below.")
-		fmt.Println("    Load each skill above and follow its 'Migration (manual part)' section")
-		fmt.Println("    for any user-code adjustments needed for the version bump.")
-		fmt.Println()
-	}
+	printRelevantMigrationSkills(from, target)
 
 	// Run the per-version codemod chain (deterministic AST rewrites)
 	// BEFORE the template-update upgrade pass. Codemods rewrite
@@ -156,22 +146,11 @@ func runUpgrade(check, force bool, toVersion string) error {
 	// before template files get touched.
 	var codemodReport CodemodReport
 	if !check {
-		report, err := runCodemodChain(projectDir, from, target)
+		report, err := runUpgradeCodemods(projectDir, from, target)
 		if err != nil {
-			return cliutil.WrapUserErr(
-				fmt.Sprintf("forge upgrade --to %s", target),
-				"codemod chain failed",
-				"",
-				"inspect UPGRADE_NOTES.md (when written) and the codemod log; fix the offending file then re-run upgrade",
-				err)
+			return err
 		}
 		codemodReport = report
-		if len(report.Auto) > 0 || len(report.Manual) > 0 {
-			fmt.Printf("🔧 Applied %d codemod rewrites; %d items need LLM/manual review.\n",
-				len(report.Auto), len(report.Manual))
-			fmt.Println("    Detail in UPGRADE_NOTES.md (written at the end).")
-			fmt.Println()
-		}
 	}
 
 	// One-time legacy .forge/checksums.json migration (same conversion
@@ -181,21 +160,8 @@ func runUpgrade(check, force bool, toVersion string) error {
 	// the next generate's guard names them with the standard remedies.
 	// Skipped under --check/--dry-run (read-only contract).
 	if !check {
-		if mcs, lerr := generator.LoadChecksums(projectDir); lerr == nil {
-			outcome, merr := checksums.MigrateLegacyManifest(projectDir, mcs, legacyMigrationStampable)
-			if merr != nil {
-				return fmt.Errorf("legacy checksums migration: %w", merr)
-			}
-			if outcome != nil {
-				fmt.Printf("\U0001F4DC Migrated off the legacy .forge/checksums.json (%d entries) — generated files are self-certifying now.\n", outcome.Total())
-				for _, p := range outcome.Unverified {
-					checksums.StampUnverified(projectDir, p)
-					fmt.Fprintf(os.Stderr, "   ? %s — matches nothing the legacy manifest recorded; the next `forge generate` will name it (resolve with --force or `forge disown`)\n", p)
-				}
-				if serr := generator.SaveChecksums(projectDir, mcs); serr != nil {
-					return fmt.Errorf("save .forge ownership state: %w", serr)
-				}
-			}
+		if err := migrateLegacyChecksums(projectDir); err != nil {
+			return err
 		}
 	}
 
@@ -204,64 +170,11 @@ func runUpgrade(check, force bool, toVersion string) error {
 		return err
 	}
 
-	var updated, userModified, upToDate, skipped int
-	for _, r := range results {
-		switch r.Status {
-		case generator.UpgradeUpToDate:
-			upToDate++
-			_, _ = fmt.Fprintf(os.Stdout, "  %-35s up to date\n", r.Path)
-		case generator.UpgradeUpdated:
-			updated++
-			if check {
-				_, _ = fmt.Fprintf(os.Stdout, "  %-35s would update\n", r.Path)
-			} else {
-				_, _ = fmt.Fprintf(os.Stdout, "  %-35s updated\n", r.Path)
-			}
-		case generator.UpgradeUserModified:
-			userModified++
-			_, _ = fmt.Fprintf(os.Stdout, "  %-35s user-modified (skipped)\n", r.Path)
-			if r.Diff != "" {
-				// Indent the diff for readability
-				for _, line := range splitLines(r.Diff) {
-					_, _ = fmt.Fprintf(os.Stdout, "    %s\n", line)
-				}
-			}
-		case generator.UpgradeSkipped:
-			skipped++
-			_, _ = fmt.Fprintf(os.Stdout, "  %-35s skipped\n", r.Path)
-		}
-	}
+	counts := tallyAndPrintUpgradeResults(results, check)
 
 	fmt.Println()
 
-	// Summary
-	parts := []string{}
-	if updated > 0 {
-		verb := "Updated"
-		if check {
-			verb = "Would update"
-		}
-		parts = append(parts, fmt.Sprintf("%s %d file(s)", verb, updated))
-	}
-	if userModified > 0 {
-		parts = append(parts, fmt.Sprintf("%d user-modified (use --force to overwrite)", userModified))
-	}
-	if upToDate > 0 {
-		parts = append(parts, fmt.Sprintf("%d up to date", upToDate))
-	}
-	if skipped > 0 {
-		parts = append(parts, fmt.Sprintf("%d skipped", skipped))
-	}
-
-	if len(parts) > 0 {
-		for i, p := range parts {
-			if i > 0 {
-				fmt.Print(", ")
-			}
-			fmt.Print(p)
-		}
-		fmt.Println()
-	}
+	printUpgradeSummary(counts, check)
 
 	// Bump the project's forge_version after a successful, non-dry-run
 	// upgrade. We do this last so a partial failure above leaves the
@@ -270,14 +183,8 @@ func runUpgrade(check, force bool, toVersion string) error {
 	// Hard error: silently failing to bump leaves the project pinned to
 	// the old version, so the next `forge generate` runs the wrong
 	// template set against an already-migrated tree.
-	if !check && target != "" && target != "dev" && target != "(devel)" {
-		if cfg.ForgeVersion != target {
-			cfg.ForgeVersion = target
-			if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-				return fmt.Errorf("bump forge_version in forge.yaml: %w", err)
-			}
-			fmt.Printf("\nforge_version → %s (forge.yaml updated)\n", target)
-		}
+	if err := bumpForgeVersion(cfg, configPath, target, check); err != nil {
+		return err
 	}
 
 	// Write the UPGRADE_NOTES.md at the project root so the user (or an
@@ -298,6 +205,174 @@ func runUpgrade(check, force bool, toVersion string) error {
 		fmt.Println("    Review it for items needing LLM/manual attention, then delete the file once the upgrade lands.")
 	}
 
+	return nil
+}
+
+// printRelevantMigrationSkills surfaces any per-version migration skills
+// relevant to this from→target jump BEFORE the destructive work, so the user
+// (or LLM) can decide whether to halt and load them first. No-op when the jump
+// has no associated skills.
+func printRelevantMigrationSkills(from, target string) {
+	skills := relevantMigrationSkills(from, target)
+	if len(skills) == 0 {
+		return
+	}
+	fmt.Println("📚 Per-version migration skills relevant to this upgrade:")
+	for _, s := range skills {
+		fmt.Printf("    - %s\n      %s\n      Load with: %s skill load %s\n",
+			s.Path, s.Description, Name(), s.Path)
+	}
+	fmt.Println()
+	fmt.Println("    The deterministic steps (regen, build) run automatically below.")
+	fmt.Println("    Load each skill above and follow its 'Migration (manual part)' section")
+	fmt.Println("    for any user-code adjustments needed for the version bump.")
+	fmt.Println()
+}
+
+// runUpgradeCodemods runs the per-version codemod chain (deterministic AST
+// rewrites) and reports how many rewrites applied / need manual review. A
+// codemod failure is wrapped as an actionable user error. Run BEFORE the
+// template-update pass so a codemod failure aborts before template files get
+// touched.
+func runUpgradeCodemods(projectDir, from, target string) (CodemodReport, error) {
+	report, err := runCodemodChain(projectDir, from, target)
+	if err != nil {
+		return CodemodReport{}, cliutil.WrapUserErr(
+			fmt.Sprintf("forge upgrade --to %s", target),
+			"codemod chain failed",
+			"",
+			"inspect UPGRADE_NOTES.md (when written) and the codemod log; fix the offending file then re-run upgrade",
+			err)
+	}
+	if len(report.Auto) > 0 || len(report.Manual) > 0 {
+		fmt.Printf("🔧 Applied %d codemod rewrites; %d items need LLM/manual review.\n",
+			len(report.Auto), len(report.Manual))
+		fmt.Println("    Detail in UPGRADE_NOTES.md (written at the end).")
+		fmt.Println()
+	}
+	return report, nil
+}
+
+// migrateLegacyChecksums performs the one-time legacy .forge/checksums.json
+// migration (the same conversion `forge generate` performs). Unlike the
+// pipeline, upgrade has no emitters to side-render against, so unverifiable
+// entries get the unverified-legacy sentinel directly — the next generate's
+// guard names them with the standard remedies. A missing/unreadable manifest is
+// a no-op (nothing to migrate).
+func migrateLegacyChecksums(projectDir string) error {
+	mcs, lerr := generator.LoadChecksums(projectDir)
+	if lerr != nil {
+		return nil
+	}
+	outcome, merr := checksums.MigrateLegacyManifest(projectDir, mcs, legacyMigrationStampable)
+	if merr != nil {
+		return fmt.Errorf("legacy checksums migration: %w", merr)
+	}
+	if outcome == nil {
+		return nil
+	}
+	fmt.Printf("\U0001F4DC Migrated off the legacy .forge/checksums.json (%d entries) — generated files are self-certifying now.\n", outcome.Total())
+	for _, p := range outcome.Unverified {
+		checksums.StampUnverified(projectDir, p)
+		fmt.Fprintf(os.Stderr, "   ? %s — matches nothing the legacy manifest recorded; the next `forge generate` will name it (resolve with --force or `forge disown`)\n", p)
+	}
+	if serr := generator.SaveChecksums(projectDir, mcs); serr != nil {
+		return fmt.Errorf("save .forge ownership state: %w", serr)
+	}
+	return nil
+}
+
+// upgradeCounts tallies the per-file outcomes of a template-upgrade pass.
+type upgradeCounts struct {
+	updated      int
+	userModified int
+	upToDate     int
+	skipped      int
+}
+
+// tallyAndPrintUpgradeResults prints one line per upgraded file (and the
+// indented diff for user-modified files) and returns the aggregate counts.
+func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check bool) upgradeCounts {
+	var c upgradeCounts
+	for _, r := range results {
+		switch r.Status {
+		case generator.UpgradeUpToDate:
+			c.upToDate++
+			_, _ = fmt.Fprintf(os.Stdout, "  %-35s up to date\n", r.Path)
+		case generator.UpgradeUpdated:
+			c.updated++
+			if check {
+				_, _ = fmt.Fprintf(os.Stdout, "  %-35s would update\n", r.Path)
+			} else {
+				_, _ = fmt.Fprintf(os.Stdout, "  %-35s updated\n", r.Path)
+			}
+		case generator.UpgradeUserModified:
+			c.userModified++
+			_, _ = fmt.Fprintf(os.Stdout, "  %-35s user-modified (skipped)\n", r.Path)
+			if r.Diff != "" {
+				// Indent the diff for readability
+				for _, line := range splitLines(r.Diff) {
+					_, _ = fmt.Fprintf(os.Stdout, "    %s\n", line)
+				}
+			}
+		case generator.UpgradeSkipped:
+			c.skipped++
+			_, _ = fmt.Fprintf(os.Stdout, "  %-35s skipped\n", r.Path)
+		}
+	}
+	return c
+}
+
+// printUpgradeSummary prints the one-line, comma-joined summary of the upgrade
+// counts. No-op when nothing was updated/skipped/etc.
+func printUpgradeSummary(c upgradeCounts, check bool) {
+	parts := []string{}
+	if c.updated > 0 {
+		verb := "Updated"
+		if check {
+			verb = "Would update"
+		}
+		parts = append(parts, fmt.Sprintf("%s %d file(s)", verb, c.updated))
+	}
+	if c.userModified > 0 {
+		parts = append(parts, fmt.Sprintf("%d user-modified (use --force to overwrite)", c.userModified))
+	}
+	if c.upToDate > 0 {
+		parts = append(parts, fmt.Sprintf("%d up to date", c.upToDate))
+	}
+	if c.skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped", c.skipped))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	for i, p := range parts {
+		if i > 0 {
+			fmt.Print(", ")
+		}
+		fmt.Print(p)
+	}
+	fmt.Println()
+}
+
+// bumpForgeVersion pins the project's forge_version after a successful,
+// non-dry-run upgrade. Done last so a partial failure upstream leaves the
+// existing pin in place rather than silently advancing it. Skipped under
+// --check and for the dev/(devel)/empty sentinel targets. A write failure is a
+// hard error — a silent no-bump strands the project pinned to the old version,
+// so the next `forge generate` runs the wrong template set.
+func bumpForgeVersion(cfg *config.ProjectConfig, configPath, target string, check bool) error {
+	if check || target == "" || target == "dev" || target == "(devel)" {
+		return nil
+	}
+	if cfg.ForgeVersion == target {
+		return nil
+	}
+	cfg.ForgeVersion = target
+	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
+		return fmt.Errorf("bump forge_version in forge.yaml: %w", err)
+	}
+	fmt.Printf("\nforge_version → %s (forge.yaml updated)\n", target)
 	return nil
 }
 

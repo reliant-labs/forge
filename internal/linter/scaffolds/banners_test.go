@@ -47,7 +47,11 @@ func TestClassifyTemplate(t *testing.T) {
 		{"internal/templates/service/handlers_gen.go.tmpl", tier1Generated},
 		{"internal/templates/middleware/auth_gen.go.tmpl", tier1Generated},
 		{"internal/templates/frontend/hooks.ts.tmpl", tier1Generated},
-		{"internal/templates/ci/github/ci.yml.tmpl", tier1Generated},
+		// CI workflows are write-once scaffolds the user owns (no
+		// forge:hash marker), not Tier-1 regenerated files.
+		{"internal/templates/ci/github/ci.yml.tmpl", tier2Scaffold},
+		{"internal/templates/ci/github/deploy.yml.tmpl", tier2Scaffold},
+		{"internal/templates/ci/github/dependabot.yml.tmpl", tier2Scaffold},
 		{"internal/templates/internal-package/contract.go.tmpl", tier2Scaffold},
 		{"internal/templates/frontend/pages/list-page.tsx.tmpl", tier2Scaffold},
 		{"internal/packs/jwt-auth/templates/jwt_validator.go.tmpl", tier2Scaffold},
@@ -57,6 +61,10 @@ func TestClassifyTemplate(t *testing.T) {
 		{"internal/templates/project/Makefile.tmpl", tierSkip},
 		{"internal/templates/project/go.mod.tmpl", tierSkip},
 		{"internal/templates/project/Dockerfile.tmpl", tierSkip},
+		// Method-body FRAGMENTS appended into user-owned scaffolds carry no
+		// file header of their own and are skip-listed, not unclassified.
+		{"internal/templates/service/handlers_methods.go.tmpl", tierSkip},
+		{"internal/templates/service/handlers_crud_shim_method.go.tmpl", tierSkip},
 	}
 	for _, c := range cases {
 		got := classifyTemplate(c.rel)

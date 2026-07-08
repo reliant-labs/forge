@@ -199,100 +199,21 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		Module:     cfg.ModulePath,
 	}
 
-	// --type=adapter|interactor renders an entire scaffold tree from a
-	// dedicated subdir under internal-package/. The shape mirrors --kind
-	// (full set of files), but routed by --type so users get the
-	// hexagonal-architecture vocabulary rather than the codegen-internal
-	// "kind" language. See packageTypeHelp above.
-	if pkgType == "adapter" || pkgType == "interactor" {
-		tmplFiles, err := templates.InternalPkgKindTemplates(pkgType).ListFlat("")
-		if err != nil {
-			return fmt.Errorf("list %s templates: %w", pkgType, err)
+	// Render the scaffold. --type=adapter|interactor and --kind both render a
+	// full template tree from a dedicated subdir under internal-package/; the
+	// default renders the generic contract/service/test set + a stub mock.
+	switch {
+	case pkgType == "adapter" || pkgType == "interactor":
+		if err := renderPackageKindTree(pkgDir, pkgType, data, true); err != nil {
+			return err
 		}
-		if len(tmplFiles) == 0 {
-			return fmt.Errorf("no templates found for --type=%s (this is a forge bug — please report)", pkgType)
+	case kind != "":
+		if err := renderPackageKindTree(pkgDir, kind, data, false); err != nil {
+			return err
 		}
-
-		for _, tmplFile := range tmplFiles {
-			content, err := templates.InternalPkgKindTemplates(pkgType).Render(tmplFile, data)
-			if err != nil {
-				return fmt.Errorf("render %s: %w", tmplFile, err)
-			}
-			outName := strings.TrimSuffix(tmplFile, ".tmpl")
-			if err := os.WriteFile(filepath.Join(pkgDir, outName), content, 0o644); err != nil {
-				return fmt.Errorf("write %s: %w", outName, err)
-			}
-		}
-	} else if kind != "" {
-		// Kind-specific: discover and render all templates from the kind subdirectory.
-		tmplFiles, err := templates.InternalPkgKindTemplates(kind).ListFlat("")
-		if err != nil {
-			return fmt.Errorf("list %s templates: %w", kind, err)
-		}
-
-		for _, tmplFile := range tmplFiles {
-			content, err := templates.InternalPkgKindTemplates(kind).Render(tmplFile, data)
-			if err != nil {
-				return fmt.Errorf("render %s: %w", tmplFile, err)
-			}
-
-			// Strip .tmpl suffix for the output filename.
-			outName := strings.TrimSuffix(tmplFile, ".tmpl")
-			if err := os.WriteFile(filepath.Join(pkgDir, outName), content, 0o644); err != nil {
-				return fmt.Errorf("write %s: %w", outName, err)
-			}
-		}
-	} else {
-		// Default: render the generic contract.go and service.go templates.
-		contractContent, err := templates.InternalPkgTemplates().Render("contract.go.tmpl", data)
-		if err != nil {
-			return fmt.Errorf("render contract.go: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), contractContent, 0o644); err != nil {
-			return fmt.Errorf("write contract.go: %w", err)
-		}
-
-		serviceContent, err := templates.InternalPkgTemplates().Render("service.go.tmpl", data)
-		if err != nil {
-			return fmt.Errorf("render service.go: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(pkgDir, "service.go"), serviceContent, 0o644); err != nil {
-			return fmt.Errorf("write service.go: %w", err)
-		}
-
-		// Scaffold contract_test.go using tdd.TableContract. Once-only:
-		// the user owns this file after the first scaffold. We render
-		// only on package creation; subsequent forge generate runs do
-		// not touch it.
-		contractTestContent, err := templates.InternalPkgTemplates().Render("contract_test.go.tmpl", data)
-		if err != nil {
-			return fmt.Errorf("render contract_test.go: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(pkgDir, "contract_test.go"), contractTestContent, 0o644); err != nil {
-			return fmt.Errorf("write contract_test.go: %w", err)
-		}
-
-		// Emit a stub mock_gen.go right now off the (empty) Service
-		// interface in the freshly-written contract.go. The codegen
-		// pipeline will overwrite this file on the next `forge generate`
-		// (unconditionally — it's a _gen.go file), but emitting it on
-		// add gives downstream consumers a real `<pkg>.MockService`
-		// symbol to import immediately. Without this step the package
-		// "exists" in forge.yaml but the mock is missing until the user
-		// runs the full generator, which is too coarse-grained for
-		// incremental package adds in a multi-agent migration where
-		// other generated files (wire_gen.go, app_gen.go, etc.) may be
-		// concurrently edited and not safe to rewrite.
-		//
-		// We tolerate Generate failures here as a soft warning rather
-		// than a hard error: the canonical fix for any generator bug is
-		// to run `forge generate` once the project is in a quiescent
-		// state, and a broken stub shouldn't block package creation
-		// itself.
-		contractPath := filepath.Join(pkgDir, "contract.go")
-		if err := contract.Generate(contractPath); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not emit stub mock_gen.go for %s: %v\n", name, err)
-			fmt.Fprintln(os.Stderr, "         run `forge generate` to retry.")
+	default:
+		if err := renderDefaultPackageScaffold(pkgDir, name, data); err != nil {
+			return err
 		}
 	}
 
@@ -319,5 +240,75 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	// Service, `forge generate` regenerates mock_gen.go to match.
 	fmt.Printf("   Next: edit internal/%s/contract.go to declare the Service interface, then run `forge generate` to refresh mock_gen.go to match.\n", name)
 
+	return nil
+}
+
+// renderPackageKindTree renders every template in the internal-package
+// kindOrType subdir (used for both --type=adapter|interactor and --kind, which
+// share the full-tree shape) into pkgDir, stripping the .tmpl suffix. When
+// requireNonEmpty is set, an empty template set is a hard error (the
+// adapter/interactor path — an empty set there is a forge bug).
+func renderPackageKindTree(pkgDir, kindOrType string, data any, requireNonEmpty bool) error {
+	tmplFiles, err := templates.InternalPkgKindTemplates(kindOrType).ListFlat("")
+	if err != nil {
+		return fmt.Errorf("list %s templates: %w", kindOrType, err)
+	}
+	if requireNonEmpty && len(tmplFiles) == 0 {
+		return fmt.Errorf("no templates found for --type=%s (this is a forge bug — please report)", kindOrType)
+	}
+	for _, tmplFile := range tmplFiles {
+		content, err := templates.InternalPkgKindTemplates(kindOrType).Render(tmplFile, data)
+		if err != nil {
+			return fmt.Errorf("render %s: %w", tmplFile, err)
+		}
+		// Strip .tmpl suffix for the output filename.
+		outName := strings.TrimSuffix(tmplFile, ".tmpl")
+		if err := os.WriteFile(filepath.Join(pkgDir, outName), content, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", outName, err)
+		}
+	}
+	return nil
+}
+
+// renderDefaultPackageScaffold renders the default internal-package set:
+// contract.go, service.go, a once-only contract_test.go (owned by the user
+// after the first scaffold), and a stub mock_gen.go emitted off the empty
+// Service interface so downstream consumers can import `<pkg>.MockService`
+// immediately (the next `forge generate` unconditionally overwrites it).
+//
+// The stub-mock emission is tolerated as a soft warning rather than a hard
+// error: the canonical fix for any generator bug is to run `forge generate`
+// once the project is quiescent, and a broken stub shouldn't block package
+// creation itself.
+func renderDefaultPackageScaffold(pkgDir, name string, data any) error {
+	contractContent, err := templates.InternalPkgTemplates().Render("contract.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render contract.go: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), contractContent, 0o644); err != nil {
+		return fmt.Errorf("write contract.go: %w", err)
+	}
+
+	serviceContent, err := templates.InternalPkgTemplates().Render("service.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render service.go: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "service.go"), serviceContent, 0o644); err != nil {
+		return fmt.Errorf("write service.go: %w", err)
+	}
+
+	contractTestContent, err := templates.InternalPkgTemplates().Render("contract_test.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render contract_test.go: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "contract_test.go"), contractTestContent, 0o644); err != nil {
+		return fmt.Errorf("write contract_test.go: %w", err)
+	}
+
+	contractPath := filepath.Join(pkgDir, "contract.go")
+	if err := contract.Generate(contractPath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not emit stub mock_gen.go for %s: %v\n", name, err)
+		fmt.Fprintln(os.Stderr, "         run `forge generate` to retry.")
+	}
 	return nil
 }

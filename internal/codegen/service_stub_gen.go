@@ -1,13 +1,17 @@
 package codegen
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/tools/go/ast/astutil"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -122,19 +126,32 @@ type MissingHandlerResult struct {
 }
 
 // GenerateMissingHandlerStubs scans the existing service directory for implemented
-// methods on *Service, compares against the proto ServiceDef, and generates stubs
-// only for missing methods into handlers_gen.go.
+// methods on *Service, compares against the proto ServiceDef, and scaffolds stubs
+// only for missing (non-CRUD, not-yet-implemented) methods directly into the
+// USER-OWNED handlers.go — "scaffold and forget", not a forge-owned holding pen.
 // If all methods are already implemented, it returns AllUpToDate=true.
-// If handlers_gen.go already exists, it is overwritten (it's generated code).
+//
+// Append semantics:
+//   - handlers.go absent: render the full handlers.go.tmpl for the missing
+//     methods and write it via writeUserScaffold (same as the initial scaffold).
+//   - handlers.go present: render a method-only fragment for the missing methods,
+//     append it to the file, then re-parse + ensure the required imports
+//     (context, fmt, connect, pb) are present and gofmt the whole file. The
+//     appended stubs land on *Service, so the next `forge generate` sees them as
+//     implemented (scanExistingMethods) and won't re-stub them.
+//
+// If the user deletes handlers.go, forge re-scaffolding the missing stubs on the
+// next run is acceptable/desired. There is no more handlers_gen.go — ever.
+//
 // crudMethodNames optionally lists method names that CRUD gen will implement;
 // stubs are skipped for these even if they don't exist yet in the package.
 //
-// cs is the project's checksum tracker. Passing it ensures the generated
-// handlers_gen.go is recorded so it doesn't show up as an orphan in `forge
-// audit`. The placeholder-replacement of integration_test.go /
-// handlers_scaffold_test.go does not record a checksum: those files become
-// user-owned after the placeholder is filled in. The canonical
-// handlers_test.go filename is reserved for the user. A nil cs is tolerated.
+// cs (the project checksum tracker) is retained for signature stability; the
+// user-owned handlers.go is deliberately NOT checksum-tracked. The
+// placeholder-replacement of handlers_scaffold_test.go likewise records no
+// checksum: it becomes user-owned once the placeholder is filled in. The
+// canonical handlers_test.go filename is reserved for the user. A nil cs is
+// tolerated.
 func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, crudMethodNames map[string]bool, cs *checksums.FileChecksums) (*MissingHandlerResult, error) {
 	existing, err := scanExistingMethods(targetDir, false)
 	if err != nil {
@@ -164,11 +181,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 		}
 	}
 
-	handlersGenPath := filepath.Join(targetDir, "handlers_gen.go")
 	if len(missing) == 0 {
-		if err := os.Remove(handlersGenPath); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("remove stale handlers_gen.go: %w", err)
-		}
 		return &MissingHandlerResult{AllUpToDate: true}, nil
 	}
 
@@ -177,17 +190,16 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	missingSvc.Methods = missing
 	data := mapServiceDefToTemplateData(missingSvc, projectDir)
 
-	// Disk-first: handlers_gen.go lands inside the EXISTING targetDir and
-	// MUST declare the same package as the files already there — the
-	// synthesized clause from mapServiceDefToTemplateData only holds for
-	// fresh scaffolds. Parsing the live clause here keeps a snake_case
-	// handler dir (or one whose clause differs from its dir name) from
-	// getting a conflicting `package x` stamped into it on regenerate.
-	// The import-path leaf for the *_test scaffolds likewise comes from
-	// the real directory name.
+	// Disk-first: the scaffold lands inside the EXISTING targetDir and MUST
+	// declare the same package as the files already there — the synthesized
+	// clause from mapServiceDefToTemplateData only holds for fresh scaffolds.
+	// Parsing the live clause here keeps a snake_case handler dir (or one whose
+	// clause differs from its dir name) from getting a conflicting `package x`
+	// stamped into it on regenerate. The import-path leaf for the *_test
+	// scaffolds likewise comes from the real directory name.
 	diskPkg, perr := ParsePackageClause(targetDir)
 	if perr != nil {
-		return nil, fmt.Errorf("generating handlers_gen.go: %w", perr)
+		return nil, fmt.Errorf("resolving handlers.go package clause: %w", perr)
 	}
 	applyDiskIdentity := func(d *ServiceTemplateData) {
 		d.ServicePackage = diskPkg
@@ -196,16 +208,8 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	}
 	applyDiskIdentity(&data)
 
-	content, err := templates.ServiceTemplates().Render("handlers_gen.go.tmpl", data)
-	if err != nil {
-		return nil, fmt.Errorf("render handlers_gen.go.tmpl: %w", err)
-	}
-
-	relHandlersGen, err := filepath.Rel(projectDir, handlersGenPath)
-	if err != nil {
-		return nil, fmt.Errorf("compute relative path for handlers_gen.go: %w", err)
-	}
-	if err := writeForgeOwned(projectDir, relHandlersGen, content, cs); err != nil {
+	handlersPath := filepath.Join(targetDir, "handlers.go")
+	if err := scaffoldHandlerStubs(handlersPath, data); err != nil {
 		return nil, err
 	}
 
@@ -255,6 +259,78 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	}
 
 	return &MissingHandlerResult{NewMethods: names}, nil
+}
+
+// scaffoldHandlerStubs writes stubs for the (already-filtered) missing methods
+// in data.Methods into the user-owned handlers.go at handlersPath.
+//
+//   - When handlers.go does NOT exist, it renders the full handlers.go.tmpl
+//     (package clause + imports + methods) and writes it, exactly like the
+//     initial GenerateServiceStub scaffold path.
+//   - When handlers.go EXISTS, it renders a method-only fragment and APPENDS it,
+//     then re-parses the combined file and ensures the imports the stubs need
+//     (context, fmt, connectrpc.com/connect, and the aliased proto pkg `pb`) are
+//     present before gofmt-ing the whole file. Every stub body references all
+//     four, so none is left unused. Using go/ast + astutil (rather than a
+//     filesystem-scanning goimports pass) keeps the import fix deterministic and
+//     handles the one import goimports cannot infer from an alias: `pb`.
+//
+// The result is written via writeUserScaffold (raw os.WriteFile, NOT
+// checksum-tracked): forge scaffolds it once per missing method and then leaves
+// it to the user.
+func scaffoldHandlerStubs(handlersPath string, data ServiceTemplateData) error {
+	if _, statErr := os.Stat(handlersPath); os.IsNotExist(statErr) {
+		content, err := templates.ServiceTemplates().Render("handlers.go.tmpl", data)
+		if err != nil {
+			return fmt.Errorf("render handlers.go.tmpl: %w", err)
+		}
+		if err := writeUserScaffold(handlersPath, content); err != nil {
+			return fmt.Errorf("write handlers.go: %w", err)
+		}
+		return nil
+	}
+
+	fragment, err := templates.ServiceTemplates().Render("handlers_methods.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render handlers_methods.go.tmpl: %w", err)
+	}
+
+	existing, err := os.ReadFile(handlersPath)
+	if err != nil {
+		return fmt.Errorf("read handlers.go for append: %w", err)
+	}
+
+	// Concatenate existing file + a blank-line separator + the new methods, then
+	// re-parse so we can normalize imports and gofmt the whole thing.
+	combined := make([]byte, 0, len(existing)+len(fragment)+1)
+	combined = append(combined, existing...)
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		combined = append(combined, '\n')
+	}
+	combined = append(combined, fragment...)
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, handlersPath, combined, parser.ParseComments)
+	if err != nil {
+		return fmt.Errorf("parse appended handlers.go: %w", err)
+	}
+
+	// Ensure the stubs' imports exist. AddImport / AddNamedImport are no-ops
+	// when the import (by path, and by name for the alias) is already present —
+	// which it is for any handlers.go that already declares handler methods.
+	astutil.AddImport(fset, file, "context")
+	astutil.AddImport(fset, file, "fmt")
+	astutil.AddImport(fset, file, "connectrpc.com/connect")
+	astutil.AddNamedImport(fset, file, "pb", data.Module+"/gen/"+data.ProtoPackage+"/v1")
+
+	var buf bytes.Buffer
+	if err := format.Node(&buf, fset, file); err != nil {
+		return fmt.Errorf("format appended handlers.go: %w", err)
+	}
+	if err := writeUserScaffold(handlersPath, buf.Bytes()); err != nil {
+		return fmt.Errorf("write handlers.go: %w", err)
+	}
+	return nil
 }
 
 // isPlaceholderUnitTest checks if handlers_scaffold_test.go is still the auto-generated

@@ -5,7 +5,7 @@ Missing any of them should fail KCL's check block.
 
 import forge
 
-_svc = forge.Service {
+_svc = forge.RenderedWorkload {
     name = "bad"
     deploy = forge.K8sCluster {
         # cluster, namespace, registry all missing

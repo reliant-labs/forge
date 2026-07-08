@@ -10,9 +10,9 @@
 // stay nil-safe); only their routes are not registered, and this single-
 // service process runs no workers/operators.
 //
-// The command self-registers onto the root via init() — main.go blank-imports
-// this package so the registration runs. This keeps the group → cmd import
-// one-directional (no cmd ↔ group cycle).
+// main.go names this command's exported New…Cmd constructor explicitly and
+// passes it to cmd.Execute — the tree is assembled in the composition root,
+// not via init() self-registration.
 package services
 
 import (
@@ -23,8 +23,6 @@ import (
 	"{{.Module}}/pkg/config"
 )
 
-func init() { cmd.RegisterServiceCmd(New{{.FieldName}}Cmd) }
-
 // New{{.FieldName}}Cmd is the REAL cobra subcommand for the {{.Name}} service.
 func New{{.FieldName}}Cmd(deps cmd.Deps) *cobra.Command {
 	c := &cobra.Command{
@@ -33,8 +31,9 @@ func New{{.FieldName}}Cmd(deps cmd.Deps) *cobra.Command {
 		Long:  "Run only the {{.Name}} service: the canonical server pipeline (config, OTel, listener, graceful shutdown) with this service mounted via its TYPED mount method (no string selection). Sibling services are still constructed (cross-service reads stay nil-safe) but their routes are not registered, and this process runs no workers/operators.",
 		RunE: func(c *cobra.Command, args []string) error {
 			deps.Cmd = c
-			// TYPED mount: the method expression, passed DIRECTLY to Serve.
-			return cmd.Serve(c.Context(), deps, (*app.Components).Mount{{.MountFieldName}}, cmd.ServeOptions{})
+			// TYPED mount: the method expression, named DIRECTLY in the ServeSpec.
+			// No workers/operators — a single service is an HTTP-only process.
+			return cmd.Serve(c.Context(), deps, cmd.ServeSpec{Mount: (*app.Components).Mount{{.MountFieldName}}})
 		},
 	}
 	config.RegisterFlags(c)

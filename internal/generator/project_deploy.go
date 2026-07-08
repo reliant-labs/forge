@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -165,39 +164,6 @@ func (g *ProjectGenerator) generateDevConfig() error {
 		return err
 	}
 	return os.WriteFile(destPath, content, 0644)
-}
-
-func (g *ProjectGenerator) generateEnvExample() error {
-	var sb strings.Builder
-	sb.WriteString("# Database\n")
-	sb.WriteString(fmt.Sprintf("DATABASE_URL=postgres://user:pass@localhost:5432/%s?sslmode=disable\n", g.Name))
-	sb.WriteString("\n# Server\n")
-	sb.WriteString(fmt.Sprintf("PORT=%d\n", g.ServicePort))
-	if g.FrontendName != "" {
-		sb.WriteString(fmt.Sprintf("CORS_ORIGINS=http://localhost:%d\n", g.FrontendPort))
-	} else {
-		sb.WriteString("CORS_ORIGINS=http://localhost:3000\n")
-	}
-	sb.WriteString("\n# Environment: \"production\" (fail-closed defaults) or \"development\"\n")
-	sb.WriteString("# (permissive defaults like authz allow-all). Never set to development in production.\n")
-	sb.WriteString("ENVIRONMENT=development\n")
-	sb.WriteString("\n# Run DB migrations on startup (rarely useful in production)\n")
-	sb.WriteString("AUTO_MIGRATE=false\n")
-	sb.WriteString("\n# OpenTelemetry\n")
-	sb.WriteString("# OTEL_EXPORTER_OTLP_ENDPOINT is optional: set it to a running OTLP\n")
-	sb.WriteString("# collector (e.g. http://localhost:4317) to enable trace/metric export.\n")
-	sb.WriteString("# When unset, OpenTelemetry is a no-op.\n")
-	sb.WriteString("# OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317\n")
-	sb.WriteString("# OTEL_SERVICE_NAME is the advertised `service.name` resource attribute\n")
-	sb.WriteString("# on every exported span/metric. Default matches the project name.\n")
-	sb.WriteString("OTEL_SERVICE_NAME=" + g.Name + "\n")
-	if g.FrontendName != "" {
-		sb.WriteString(fmt.Sprintf("\n# Frontend (set in frontends/%s/.env.local)\n", g.FrontendName))
-		sb.WriteString(fmt.Sprintf("# NEXT_PUBLIC_API_URL=http://localhost:%d\n", g.ServicePort))
-	}
-
-	destPath := filepath.Join(g.Path, ".env.example")
-	return os.WriteFile(destPath, []byte(sb.String()), 0644)
 }
 
 func (g *ProjectGenerator) generateAlloyConfig() error {

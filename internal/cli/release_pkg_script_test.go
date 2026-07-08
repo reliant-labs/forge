@@ -12,6 +12,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,7 +69,7 @@ func newPkgFixtureRepo(t *testing.T, module string) string {
 		{"add", "."},
 		{"commit", "-q", "-m", "fixture"},
 	} {
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(context.Background(), "git", args...)
 		cmd.Dir = root
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -83,7 +84,7 @@ func runReleaseScript(t *testing.T, repo string, args ...string) (string, error)
 	t.Helper()
 	script := releasePkgScriptPath(t)
 	full := append([]string{script, "--repo", repo}, args...)
-	cmd := exec.Command("bash", full...)
+	cmd := exec.CommandContext(context.Background(), "bash", full...)
 	// The standalone-build step runs `go build` in the fixture module;
 	// inherit the environment so GOPATH/GOCACHE resolution works.
 	cmd.Env = os.Environ()
@@ -107,7 +108,7 @@ func TestReleasePkgScript_DryRunHappyPath(t *testing.T) {
 		}
 	}
 	// Dry run must not create the tag.
-	cmd := exec.Command("git", "tag", "-l", "pkg/v0.1.0")
+	cmd := exec.CommandContext(context.Background(), "git", "tag", "-l", "pkg/v0.1.0")
 	cmd.Dir = repo
 	tags, _ := cmd.Output()
 	if strings.TrimSpace(string(tags)) != "" {
@@ -156,7 +157,7 @@ func TestReleasePkgScript_RejectsDirtyPkgTree(t *testing.T) {
 
 func TestReleasePkgScript_RejectsExistingTag(t *testing.T) {
 	repo := newPkgFixtureRepo(t, "github.com/reliant-labs/forge/pkg")
-	cmd := exec.Command("git", "tag", "pkg/v0.1.0")
+	cmd := exec.CommandContext(context.Background(), "git", "tag", "pkg/v0.1.0")
 	cmd.Dir = repo
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git tag: %v\n%s", err, out)
@@ -178,7 +179,7 @@ func TestReleasePkgScript_RejectsBrokenStandaloneBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"add", "."}, {"commit", "-q", "-m", "break build"}} {
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(context.Background(), "git", args...)
 		cmd.Dir = repo
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)

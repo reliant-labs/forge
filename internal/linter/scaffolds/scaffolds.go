@@ -37,8 +37,14 @@ import (
 // Rule/Severity/Path/Message (Path, not File — scaffold rules are
 // whole-file, not line-scoped).
 type (
+	// Severity is the shared finding severity vocabulary, re-exported
+	// under this package's historical spelling.
 	Severity = finding.Severity
-	Finding  = finding.Finding
+	// Finding is the shared linter finding shape, re-exported under this
+	// package's historical spelling. scaffold findings populate
+	// Rule/Severity/Path/Message (Path, not File — scaffold rules are
+	// whole-file, not line-scoped).
+	Finding = finding.Finding
 )
 
 // Severity enum values (aliases onto the canonical single-spelling set).
@@ -144,7 +150,11 @@ func LintRoot(root string) (Result, error) {
 
 func shouldSkipDir(name string) bool {
 	switch name {
-	case ".git", "node_modules", "gen", "vendor", "bin", "dist", ".forge", ".next", ".next-prod":
+	case ".git", "node_modules", "gen", "vendor", "bin", "dist", ".forge", ".next", ".next-prod", ".scratch":
+		// `.scratch/` is forge's gitignored throwaway workspace (smoke-test
+		// scaffolds, fixture renders). It is never committed source, so the
+		// scaffold linters must not replay FORGE_SCAFFOLD/banner findings
+		// against it — doing so made `forge lint` fail on forge's own repo.
 		return true
 	case "testdata":
 		// `testdata/` is the canonical home for analyzer fixtures and

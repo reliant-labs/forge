@@ -16,7 +16,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
@@ -320,21 +319,21 @@ module_path: github.com/example/demo
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
-	writeComponentsJSON(t, dir, config.ComponentConfig{
-		Name:     "project",
-		Kind:     "server",
-		Path:     "handlers/project",
-		Webhooks: []config.WebhookConfig{{Name: "stripe"}},
-	})
-	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
-	if err != nil {
-		t.Fatalf("load config: %v", err)
+	// Webhooks are discovered from the real source: a webhook_<name>.go file
+	// in the service's handler dir. "project" is tombstoned (types-only) in
+	// the registry, so a webhook handler there must be a hard error.
+	handlerDir := filepath.Join(dir, "internal", "handlers", "project")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatalf("mkdir handler dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(handlerDir, "webhook_stripe.go"), []byte("package project\n"), 0o644); err != nil {
+		t.Fatalf("write webhook handler: %v", err)
 	}
 	reg, err := loadServiceRegistry(dir)
 	if err != nil {
 		t.Fatalf("load registry: %v", err)
 	}
-	err = generateWebhookRoutes(cfg, reg, dir, nil)
+	err = generateWebhookRoutes(reg, dir, nil)
 	if err == nil {
 		t.Fatalf("webhooks on an unregistered service must be a hard error")
 	}

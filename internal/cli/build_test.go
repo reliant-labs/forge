@@ -318,9 +318,9 @@ func TestResolveBuildArch(t *testing.T) {
 func TestResolveBuildArchForImage(t *testing.T) {
 	host := runtime.GOARCH
 	cases := []struct {
-		name             string
+		name              string
 		cfgArch, flagArch string
-		want             string
+		want              string
 	}{
 		{"unset tracks host arch (local k3d)", "", "", host},
 		{"per-env platform wins over host", "amd64", "", "amd64"},

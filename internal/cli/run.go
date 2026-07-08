@@ -198,12 +198,14 @@ func hostEnvVarsToMap(host *HostDeploy) map[string]string {
 	return out
 }
 
-// declaredServiceNames returns the names of every service in forge.yaml,
+// declaredServiceNames returns the names of every declared component,
 // used by error paths that point users at the right spelling when they
-// typo a service name.
-func declaredServiceNames(cfg *config.ProjectConfig) []string {
-	out := make([]string, 0, len(cfg.Components))
-	for _, s := range cfg.Components {
+// typo a service name. The inventory is enumerated from the REAL sources
+// (proto descriptor + owned worker/operator files + cmd/ binaries), not
+// the removed components.json — callers pass codegen.IntrospectComponents.
+func declaredServiceNames(comps []config.ComponentConfig) []string {
+	out := make([]string, 0, len(comps))
+	for _, s := range comps {
 		out = append(out, s.Name)
 	}
 	return out

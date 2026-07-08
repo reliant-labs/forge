@@ -147,7 +147,7 @@ func probeFlowHealth(ctx context.Context, url string, timeout time.Duration) (in
 			return http.ErrUseLastResponse
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return 0, "", err
 	}
@@ -156,7 +156,7 @@ func probeFlowHealth(ctx context.Context, url string, timeout time.Duration) (in
 	if err != nil {
 		return 0, "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	buf := make([]byte, 2048)
 	n, _ := resp.Body.Read(buf)
 	return resp.StatusCode, string(buf[:n]), nil
@@ -174,9 +174,9 @@ func flowBodySummary(body string) string {
 	if i := strings.IndexByte(body, '\n'); i >= 0 {
 		body = strings.TrimSpace(body[:i])
 	}
-	const max = 160
-	if len(body) > max {
-		body = body[:max] + "…"
+	const maxLen = 160
+	if len(body) > maxLen {
+		body = body[:maxLen] + "…"
 	}
 	return body
 }
@@ -236,14 +236,14 @@ func writeFlowCheckSection(out io.Writer, flowResults []smokeRouteResult) {
 	if len(flowResults) == 0 {
 		return
 	}
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "  app-flow checks (curl the owning service's flow-health endpoint):")
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "  app-flow checks (curl the owning service's flow-health endpoint):")
 	nameW := len("CHECK")
 	for _, r := range flowResults {
 		nameW = maxInt(nameW, len(r.Target.RouteName))
 	}
-	fmt.Fprintf(out, "    %-6s  %-*s  %s\n", "RESULT", nameW, "CHECK", "DETAIL")
+	_, _ = fmt.Fprintf(out, "    %-6s  %-*s  %s\n", "RESULT", nameW, "CHECK", "DETAIL")
 	for _, r := range flowResults {
-		fmt.Fprintf(out, "    %-6s  %-*s  %s\n", string(r.Status), nameW, r.Target.RouteName, smokeReasonLine(r))
+		_, _ = fmt.Fprintf(out, "    %-6s  %-*s  %s\n", string(r.Status), nameW, r.Target.RouteName, smokeReasonLine(r))
 	}
 }

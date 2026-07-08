@@ -210,26 +210,46 @@ func buildDevStatusIngressURLs(entities *KCLEntities) []ingressURLEntry {
 	}
 	var out []ingressURLEntry
 	for _, r := range entities.HTTPRoutes {
-		if e, ok := buildRouteURL("HTTPRoute", r.Name, r.Gateway, r.Listener, r.Service, r.Port, r.Host, r.Path, gwByName); ok {
+		if e, ok := buildRouteURL(routeSpec{
+			kind: "HTTPRoute", name: r.Name, gateway: r.Gateway, listener: r.Listener,
+			service: r.Service, port: r.Port, host: r.Host, path: r.Path,
+		}, gwByName); ok {
 			out = append(out, e)
 		}
 	}
 	for _, r := range entities.GRPCRoutes {
-		if e, ok := buildRouteURL("GRPCRoute", r.Name, r.Gateway, r.Listener, r.Service, r.Port, r.Host, r.Path, gwByName); ok {
+		if e, ok := buildRouteURL(routeSpec{
+			kind: "GRPCRoute", name: r.Name, gateway: r.Gateway, listener: r.Listener,
+			service: r.Service, port: r.Port, host: r.Host, path: r.Path,
+		}, gwByName); ok {
 			out = append(out, e)
 		}
 	}
 	return out
 }
 
-func buildRouteURL(kind, name, gateway, listener, service string, port int, routeHost, routePath string, gwByName map[string]*GatewayEntity) (ingressURLEntry, bool) {
-	gw, ok := gwByName[gateway]
+// routeSpec is the subset of an HTTPRoute/GRPCRoute entity that
+// buildRouteURL needs to resolve a concrete ingress URL. The kind field
+// selects the Gateway API resource kind (and thus the URL scheme).
+type routeSpec struct {
+	kind     string
+	name     string
+	gateway  string
+	listener string
+	service  string
+	port     int
+	host     string
+	path     string
+}
+
+func buildRouteURL(r routeSpec, gwByName map[string]*GatewayEntity) (ingressURLEntry, bool) {
+	gw, ok := gwByName[r.gateway]
 	if !ok {
 		return ingressURLEntry{}, false
 	}
 	var l *GatewayListenerEntity
 	for i := range gw.Listeners {
-		if gw.Listeners[i].Name == listener {
+		if gw.Listeners[i].Name == r.listener {
 			l = &gw.Listeners[i]
 			break
 		}
@@ -238,31 +258,31 @@ func buildRouteURL(kind, name, gateway, listener, service string, port int, rout
 		return ingressURLEntry{}, false
 	}
 	scheme := "http"
-	if kind == "GRPCRoute" {
+	if r.kind == "GRPCRoute" {
 		scheme = "grpc"
 	} else if strings.EqualFold(l.Protocol, "HTTPS") {
 		scheme = "https"
 	}
-	host := routeHost
+	host := r.host
 	if host == "" {
 		host = gw.Host
 	}
 	if host == "" {
 		host = "localhost"
 	}
-	path := collapseSlashes(l.PathPrefix + routePath)
+	path := collapseSlashes(l.PathPrefix + r.path)
 	if path == "" {
 		path = "/"
 	}
 	url := fmt.Sprintf("%s://%s:%d%s", scheme, host, l.Port, path)
 	return ingressURLEntry{
 		URL:      url,
-		Kind:     kind,
-		Route:    name,
-		Gateway:  gateway,
-		Listener: listener,
-		Service:  service,
-		Port:     port,
+		Kind:     r.kind,
+		Route:    r.name,
+		Gateway:  r.gateway,
+		Listener: r.listener,
+		Service:  r.service,
+		Port:     r.port,
 	}, true
 }
 
@@ -270,16 +290,16 @@ func buildRouteURL(kind, name, gateway, listener, service string, port int, rout
 // section. Factored out so tests can drive the three states (disabled /
 // empty / populated) against a buffer without needing a live cluster.
 func writeIngressURLsSection(w io.Writer, urls []ingressURLEntry, ingressEnabled bool) {
-	fmt.Fprintln(w, "Ingress URLs:")
+	_, _ = fmt.Fprintln(w, "Ingress URLs:")
 	switch {
 	case !ingressEnabled:
-		fmt.Fprintln(w, "  (ingress feature disabled)")
+		_, _ = fmt.Fprintln(w, "  (ingress feature disabled)")
 	case len(urls) == 0:
-		fmt.Fprintln(w, "  (none — see deploy/kcl/dev/ingress.k)")
+		_, _ = fmt.Fprintln(w, "  (none — see deploy/kcl/dev/ingress.k)")
 	default:
-		fmt.Fprintf(w, "  %-10s %-20s %-15s %s\n", "KIND", "ROUTE", "SERVICE", "URL")
+		_, _ = fmt.Fprintf(w, "  %-10s %-20s %-15s %s\n", "KIND", "ROUTE", "SERVICE", "URL")
 		for _, u := range urls {
-			fmt.Fprintf(w, "  %-10s %-20s %-15s %s\n", u.Kind, u.Route, u.Service, u.URL)
+			_, _ = fmt.Fprintf(w, "  %-10s %-20s %-15s %s\n", u.Kind, u.Route, u.Service, u.URL)
 		}
 	}
 }

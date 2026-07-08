@@ -46,8 +46,9 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 		}
 	}
 
-	// TYPED MOUNTS — the run path. One typed method per service + MountAll +
-	// the typed MountByName map of method expressions (no string lookup).
+	// TYPED MOUNTS — the run path. One typed method per service + MountAll.
+	// No string->func map: single-service selection is a typed subcommand
+	// naming the Mount<Svc> method directly.
 	for _, want := range []string{
 		`func (c *Components) MountBilling(mux *http.ServeMux`,
 		`func (c *Components) MountUser(mux *http.ServeMux`,
@@ -55,13 +56,16 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 		`c.Billing.Register(`,
 		`c.User.Register(`,
 		`c.Billing.RegisterHTTP(`,
-		`var MountByName = map[string]MountFunc{`,
-		`"billing": (*Components).MountBilling,`,
-		`"user": (*Components).MountUser,`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("typed mounts missing %q:\n%s", want, out)
 		}
+	}
+
+	// No string-keyed mount registry — the run path must not reconstruct a
+	// name->func lookup table.
+	if strings.Contains(out, "MountByName") {
+		t.Fatalf("mount surface must not emit a string-keyed MountByName map:\n%s", out)
 	}
 
 	// The descriptor row must NOT carry a Mount closure anymore.

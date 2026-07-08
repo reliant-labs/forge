@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/assets"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/packs"
@@ -303,7 +304,7 @@ func runGoimportsOnGenerated(projectDir, modulePath string) error {
 // another pack's generated output — without the topo sort, hook order
 // is whatever cfg.Packs happens to list and the dependent hook can run
 // against stale (or absent) producer output.
-func runPackGenerateHooks(projectDir string, cfg *config.ProjectConfig) error {
+func runPackGenerateHooks(projectDir string, cfg *config.ProjectConfig, cs *checksums.FileChecksums) error {
 	// Topo-sort first; fall back to cfg.Packs order on any sort error
 	// (a cycle or missing manifest is rare and we don't want to block
 	// generate on it — the dep is still likely to render fine).
@@ -323,7 +324,10 @@ func runPackGenerateHooks(projectDir string, cfg *config.ProjectConfig) error {
 			continue
 		}
 		fmt.Printf("\n🔌 Running generate hooks for pack '%s'...\n", p.Name)
-		if err := p.RenderGenerateFiles(projectDir, cfg); err != nil {
+		// cs threads the checksum ledger so generate-hook output is written
+		// as self-certifying Tier-1 code (forge:hash marker + tracked),
+		// keeping pack-emitted _gen.go files out of the audit orphan bucket.
+		if err := p.RenderGenerateFiles(projectDir, cfg, cs); err != nil {
 			return fmt.Errorf("pack %s generate hooks: %w", p.Name, err)
 		}
 	}

@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -75,7 +76,7 @@ func killProcessTree(pid int, sig syscall.Signal) {
 // (pid, ppid) table from `ps` so it works on macOS and Linux alike without
 // depending on /proc.
 func descendantPIDs(root int) []int {
-	out, err := exec.Command("ps", "-axo", "pid=,ppid=").Output()
+	out, err := exec.CommandContext(context.Background(), "ps", "-axo", "pid=,ppid=").Output()
 	if err != nil {
 		return nil
 	}

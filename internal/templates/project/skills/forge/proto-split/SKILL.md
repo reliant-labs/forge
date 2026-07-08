@@ -135,6 +135,17 @@ Test for whether a type belongs in shared:
 
 Shared types are passive value types. Service-specific concerns stay in the owning service.
 
+## A service you don't own isn't a split target — it's an import
+
+Splitting is for services *your* repo owns and implements. If, while
+inventorying, you find RPCs owned by **another service/repo** (you're a client
+of them), they don't become one of your split files. Import that repo's proto
+as the single source of truth — a pinned `task protos` pull or a buf BSR
+dependency — and generate only a **client**. Never hand-copy the remote proto
+into your `proto/services/` and let forge scaffold a server: that yields a dead
+all-`CodeUnimplemented` handler package with `Logger`/`Config`-only `Deps` and
+no domain. That shape means you meant to import, not to split-and-own.
+
 ## Gotchas
 
 1. **Never sed-rewrite compiled `*.pb.go` (or equivalent generated descriptor binaries).** A blanket `sed -i 's|old.v1|new.v1|g'` rewrites the package string inside the rawDesc bytes but does NOT update the varint length prefix encoding it. Result: runtime panic when the descriptor unmarshals. Always regenerate from your codegen pipeline.

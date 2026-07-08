@@ -86,12 +86,13 @@ func TestManagedFiles(t *testing.T) {
 		t.Fatal("managedFiles() returned empty list")
 	}
 
-	// Check that expected files are in the list
+	// Check that expected files are in the list. NOTE: cmd/main.go is
+	// intentionally NOT managed here — it is the composition root, owned by the
+	// generate pipeline (GenerateCmdGroups), which has the component inventory.
 	expected := map[string]bool{
 		"cmd/cmd/serve.go":   true,
 		"cmd/cmd/server.go":  true,
 		"cmd/cmd/root.go":    true,
-		"cmd/main.go":        true,
 		"cmd/cmd/version.go": true,
 		"Taskfile.yml":       true,
 		"Dockerfile":         true,
@@ -113,6 +114,11 @@ func TestManagedFiles(t *testing.T) {
 		if !found[path] {
 			t.Errorf("managedFiles() missing %q", path)
 		}
+	}
+
+	// cmd/main.go moved out of the upgrade lane into the generate pipeline.
+	if found["cmd/main.go"] {
+		t.Error("managedFiles() must NOT include cmd/main.go — it is owned by GenerateCmdGroups")
 	}
 }
 

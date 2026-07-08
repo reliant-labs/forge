@@ -26,7 +26,7 @@ _target = forge.ClusterTarget {
 
 _dotenv_bundle = forge.Bundle {
     cluster_target = _target
-    services = [forge.Service {
+    services = [forge.RenderedWorkload {
         name = "api"
         image = "api:dev"
         deploy = _target.deploy

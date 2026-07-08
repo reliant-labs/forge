@@ -19,11 +19,14 @@
 //   - Apply a TYPED MOUNT FUNCTION (an (*app.Components).Mount<Svc> method
 //     value, or MountAll) onto srv.Mux — selection is compile-time typed,
 //     NEVER a string→inventory lookup on the run path — then srv.AddWorker /
-//     srv.AddOperator the selected supervised set and srv.RequireMounted the
+//     srv.AddOperator the SELF-COMPOSED supervised set (the typed accessor
+//     closures the command names in its ServeSpec) and srv.RequireMounted the
 //     project's own declared proto services before serverkit.Run.
 //
-// Serve / ServeOptions / SelectWorkers / SelectOperators are EXPORTED so the
-// command-group subpackages (services/, workers/, operators/) consume them.
+// Serve / ServeSpec are EXPORTED so the command-group subpackages (services/,
+// workers/, operators/) consume them. A command composes ITSELF by naming its
+// typed Mount + Worker<X>()/Operator<X>() accessors in the ServeSpec — there is
+// no string name filter and no re-selection anywhere on the run path.
 //
 // Customizations should land in internal/app/providers.go (infra), or by
 // `forge disown`-ing this file / internal/app/compose.go to own the bytes.
@@ -82,34 +85,38 @@ func MountNone(c *app.Components, mux *http.ServeMux, cfg *config.Config, logger
 	return nil
 }
 
-// ServeOptions tunes Serve for the all-vs-one shapes. The per-service
-// subcommands run only their own service (no workers/operators); the
-// all-services `server` command runs everything. The optional
-// `server [names...]` convenience overrides the worker/operator selection.
-type ServeOptions struct {
-	// RunSupervised, when true, registers the project's workers/operators
-	// onto the serverkit.Server. Per-service subcommands leave it false (a
-	// single service is an HTTP-only process); the `server` command sets it true.
-	RunSupervised bool
-	// MountAll, when true, tells Serve this is the all-services path: the
-	// completeness gate (every declared proto service must be mounted) runs.
-	// The `server` command sets it; per-service subcommands and the
-	// `server [names...]` subset selector leave it false.
-	MountAll bool
-	// WorkerNames/OperatorNames, when non-nil, restrict the supervised
-	// set to the named subset — used by the `server [names...]` convenience
-	// selector AND by the per-worker / per-operator subcommands (which name
-	// exactly themselves). nil means "all" (when RunSupervised).
-	WorkerNames   []string
-	OperatorNames []string
+// ServeSpec is how a command composes ITSELF onto the shared Serve pipeline: it
+// names, by TYPED accessor, exactly the mount + workers + operators this process
+// runs. There is no name filter and no re-selection — a per-worker command hands
+// a one-element Workers closure, the `server` command hands AllWorkers /
+// AllOperators, a per-service command hands only its Mount.
+type ServeSpec struct {
+	// Mount registers this process's Connect services onto the mux — a typed
+	// (*app.Components).Mount<Svc> / MountAll method value, or MountNone for a
+	// worker/operator-only supervisor. Never a string→inventory lookup.
+	Mount MountFunc
+	// Workers, when non-nil, returns the workers this process supervises. nil =>
+	// no workers. A per-worker command returns a one-element slice naming its
+	// typed accessor; `server` returns (*app.Components).AllWorkers.
+	Workers func(*app.Components) []serverkit.Worker
+	// Operators, when non-nil, returns the operators this process supervises.
+	// nil => no operators. Serve derives BOTH the AddOperator markers AND the
+	// RunOperators controller rows from the returned slice, so the supervised set
+	// and the run set can never diverge.
+	Operators func(*app.Components) []app.OperatorEntry
+	// RequireComplete runs the boot-time completeness gate (every declared proto
+	// service must be mounted) — the all-services `server` path sets it; a subset
+	// mount leaves it false.
+	RequireComplete bool
 }
 
 // Serve is the canonical server pipeline shared by every server-shaped
 // subcommand. It loads + validates config, builds the logger, runs OTel-
 // owning serverkit, opens infra, constructs the explicit component graph,
 // builds the explicit interceptor chain, applies the TYPED mount func onto
-// a serverkit.Server, verifies completeness, and calls serverkit.Run.
-func Serve(ctx context.Context, deps Deps, mount MountFunc, sopts ServeOptions) error {
+// a serverkit.Server, registers the SELF-COMPOSED supervised set, verifies
+// completeness, and calls serverkit.Run.
+func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// Load config from env vars and flags, then run cross-field validation.
 	cfg, err := config.Load(deps.Cmd)
 	if err != nil {
@@ -233,13 +240,13 @@ func Serve(ctx context.Context, deps Deps, mount MountFunc, sopts ServeOptions) 
 	}
 
 	// serverkit.Server with explicit Mux + HandlerOpts. Components mount onto it.
+	// RunOperators is wired in the supervised block below, from the SAME operator
+	// entries that produce the AddOperator markers — a process with no operators
+	// leaves it nil (serverkit tolerates nil when Operators is empty).
 	srv := serverkit.Server{
 		Mux:         mux,
 		HandlerOpts: opts,
 		Logger:      logger,
-		RunOperators: func(ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
-			return app.RunOperators(components, ctx, logger, healthProbeAddr)
-		},
 {{- if index .ConfigFields "CorsOrigins"}}
 		CORSMiddleware: func(origins []string, allowCredentials bool) func(http.Handler) http.Handler {
 			return fmw.CORSMiddleware(origins, allowCredentials)
@@ -256,10 +263,10 @@ func Serve(ctx context.Context, deps Deps, mount MountFunc, sopts ServeOptions) 
 		RequestIDMiddleware: fmw.RequestIDMiddleware,
 	}
 
-	// TYPED MOUNT. mount is a method value over *app.Components — no string
+	// TYPED MOUNT. spec.Mount is a method value over *app.Components — no string
 	// selection, no inventory lookup. Each Mount<Svc> returns its Connect
 	// path(s); we record them on the server for the completeness gate.
-	mounted := mount(components, srv.Mux, cfg, logger, opts...)
+	mounted := spec.Mount(components, srv.Mux, cfg, logger, opts...)
 	for _, path := range mounted {
 		srv.Mounted(path)
 	}
@@ -272,18 +279,23 @@ func Serve(ctx context.Context, deps Deps, mount MountFunc, sopts ServeOptions) 
 	}
 {{- end}}
 
-	// Worker/operator registration. The TYPED run path: a per-service
-	// subcommand runs NO supervised components (sopts.RunSupervised false);
-	// the all-services `server` command runs the full typed lists. String
-	// name-filtering happens ONLY in the `server [names...]` convenience AND
-	// the per-worker / per-operator subcommands (SelectWorkers /
-	// SelectOperators), never on the typed mount path.
-	if sopts.RunSupervised {
-		for _, w := range SelectWorkers(app.WorkerList(components), sopts.WorkerNames) {
+	// SELF-COMPOSED SUPERVISION. Each command names, by typed accessor, exactly
+	// the workers/operators it runs — no name filter, no re-selection. For
+	// operators we build ONE slice and derive BOTH the AddOperator markers AND
+	// the RunOperators controller rows from it (via the wired closure below), so
+	// the supervised set and the run set can never diverge.
+	if spec.Workers != nil {
+		for _, w := range spec.Workers(components) {
 			srv.AddWorker(w)
 		}
-		for _, op := range SelectOperators(app.OperatorList(components), sopts.OperatorNames) {
-			srv.AddOperator(op)
+	}
+	if spec.Operators != nil {
+		ops := spec.Operators(components)
+		for _, op := range ops {
+			srv.AddOperator(op.Marker())
+		}
+		srv.RunOperators = func(ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
+			return app.RunOperators(ctx, logger, healthProbeAddr, ops)
 		}
 	}
 
@@ -295,8 +307,8 @@ func Serve(ctx context.Context, deps Deps, mount MountFunc, sopts ServeOptions) 
 	// framework / transitively-imported proto files this binary does not serve
 	// (grpc.health.v1.Health — serverkit mounts it itself — and the OTel
 	// collector services pulled in by the SDK). A per-service subcommand
-	// intentionally mounts a subset, so the gate runs only when mounting all.
-	if sopts.MountAll {
+	// intentionally mounts a subset, so the gate runs only when the command asks.
+	if spec.RequireComplete {
 		projectFiles, sErr := projectServiceFiles()
 		if sErr != nil {
 			return fmt.Errorf("server completeness check: scoping project descriptors: %w", sErr)
@@ -356,51 +368,6 @@ func restHandler(mux *http.ServeMux, connectPaths []string) http.Handler {
 	return transcoder
 }
 {{- end}}
-
-// SelectWorkers returns the subset of workers whose Name is in names. A NIL
-// names slice returns all workers; a non-nil slice (including empty) returns
-// exactly the named set (empty → none). This nil-vs-empty distinction is
-// what lets a worker-only subcommand run exactly itself and ZERO operators.
-// Used by the `server [names...]` convenience selector and the per-worker /
-// per-operator subcommands — never on the typed mount path.
-func SelectWorkers(all []serverkit.Worker, names []string) []serverkit.Worker {
-	if names == nil {
-		return all
-	}
-	want := make(map[string]bool, len(names))
-	for _, n := range names {
-		want[n] = true
-	}
-	out := make([]serverkit.Worker, 0, len(all))
-	for _, w := range all {
-		if want[w.Name()] {
-			out = append(out, w)
-		}
-	}
-	return out
-}
-
-// SelectOperators returns the subset of operators whose Name is in names. A
-// NIL names slice returns all operators; a non-nil slice (including empty)
-// returns exactly the named set (empty → none). See SelectWorkers for the
-// nil-vs-empty rationale. Used by the `server [names...]` convenience
-// selector and the per-operator subcommands — never on the typed mount path.
-func SelectOperators(all []serverkit.Operator, names []string) []serverkit.Operator {
-	if names == nil {
-		return all
-	}
-	want := make(map[string]bool, len(names))
-	for _, n := range names {
-		want[n] = true
-	}
-	out := make([]serverkit.Operator, 0, len(all))
-	for _, op := range all {
-		if want[op.Name()] {
-			out = append(out, op)
-		}
-	}
-	return out
-}
 
 // projectServerkitConfig projects the project's typed *config.Config onto
 // the vendor-neutral serverkit.Config so serverkit has no compile-time

@@ -14,7 +14,7 @@ import (
 // the live HEAD.
 func gitHeadSHA(t *testing.T, dir string) string {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd := exec.CommandContext(context.Background(), "git", "rev-parse", "HEAD")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -34,7 +34,7 @@ func gitignoreForgeState(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(context.Background(), "git", args...)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=t@e.x",
@@ -55,7 +55,7 @@ func gitignoreForgeState(t *testing.T, dir string) {
 func gitCommitEmpty(t *testing.T, dir, msg string) {
 	t.Helper()
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(context.Background(), "git", args...)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=t@e.x",

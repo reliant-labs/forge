@@ -12,7 +12,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 )
@@ -27,7 +26,7 @@ func Name() string {
 	if base == "forge" {
 		return "forge"
 	}
-	return strings.Join([]string{base, "forge"}, " ")
+	return base + " " + "forge"
 }
 
 // ErrProjectConfigNotFound is returned when forge.yaml does not exist. The

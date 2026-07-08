@@ -68,7 +68,6 @@ func TestGenerateHelpSurface(t *testing.T) {
 		"force-cleanup",
 		"plan",
 		"reason",
-		"reset-tier2",
 		"scope", // deprecated alias for --steps; hidden via MarkDeprecated
 		"skip-config-check",
 		"skip-pre-checks",
@@ -76,7 +75,6 @@ func TestGenerateHelpSurface(t *testing.T) {
 		"steps",
 		"strict",
 		"templates-only",
-		"yes",
 	})
 
 	usage := cmd.UsageString()

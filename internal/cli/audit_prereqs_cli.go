@@ -43,6 +43,17 @@ func auditPrerequisites(cfg *config.ProjectConfig, projectDir string) audittype.
 	if cfg == nil {
 		return audittype.Category{Status: audittype.StatusError, Summary: "no forge.yaml"}
 	}
+	// External prerequisites (ExternalSecret / DNSRecord) are a DEPLOY-time
+	// concern — they hang off rendered KCL bundles. A project with no deploy
+	// surface (kind=cli or library has no deploy/kcl/) has nothing to render,
+	// so the dev-KCL prereq is n/a, not a warning. Reporting ✓ n/a here keeps
+	// `forge audit` green for the CLI/library shapes that never deploy.
+	if cfg.IsCLIKind() || cfg.IsLibraryKind() {
+		return audittype.Category{
+			Status:  audittype.StatusOK,
+			Summary: fmt.Sprintf("n/a — kind=%s has no deploy; external prerequisites are a deploy-time concern", cfg.EffectiveKind()),
+		}
+	}
 	ctx := context.Background()
 	entities, err := RenderKCL(ctx, projectDir, "dev")
 	if err != nil {

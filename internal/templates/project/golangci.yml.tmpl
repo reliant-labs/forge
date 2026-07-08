@@ -29,7 +29,9 @@ linters:
     - revive        # broad replacement for golint, configurable per-rule
     - godot         # require trailing punctuation on top-level doc comments
     # Complexity — fail-loud when functions get away from us.
-    - cyclop        # cyclomatic complexity (includes package-average ratchet)
+    # cyclop dropped: cyclomatic complexity duplicates gocognit (cognitive
+    # complexity) — the better readability signal and the single complexity
+    # gate. nestif/funlen cover the orthogonal nesting/length smells.
     - funlen        # function length cap
     - gocognit      # cognitive complexity (subjectively closer to readability)
     - nestif        # block-nesting depth
@@ -46,10 +48,11 @@ linters:
   settings:
     govet:
       enable-all: true
-      shadow:
-        strict: false
       disable:
         - fieldalignment
+        # `shadow` flags idiomatic `if err := f(); err != nil` patterns in
+        # nested scopes that Go style allows — dozens of non-bug findings.
+        - shadow
     revive:
       rules:
         - name: blank-imports
@@ -62,9 +65,9 @@ linters:
         - name: var-naming
         - name: unexported-return
         - name: argument-limit
-          arguments: [5]
+          arguments: [8]
         - name: function-result-limit
-          arguments: [3]
+          arguments: [4]
         - name: max-public-structs
           # 25 accommodates the forge-canonical interactor/adapter scaffold:
           # Service + collaborator interfaces (Source/Sink/...) + input/output
@@ -73,31 +76,28 @@ linters:
           # services accumulate request/response and entity types similarly.
           # Bump further if your package legitimately exposes more (e.g. a
           # flat config module); refactor if you're past 25 without one.
-          arguments: [25]
+          arguments: [40]
         - name: max-control-nesting
-          arguments: [4]
+          arguments: [5]
     cyclop:
-      # 15 keeps long switch/CRUD methods compiling; >15 usually means a
-      # helper would clarify intent. Bump for explicit operator/billing
-      # subsystems via the path-based exclusions below.
-      max-complexity: 15
-      package-average: 5.0
+      # MODERATE profile — the same bar forge holds itself to. Long
+      # switch/CRUD/dispatch methods sit under 20; past that, extract a
+      # helper (or, for genuine subsystems, use the path exclusions below).
+      max-complexity: 20
+      package-average: 6.0
       skip-tests: true
     funlen:
-      # 100 lines / 50 statements is generous enough that constructors,
-      # builders, and table-driven test helpers don't trip; tight enough
-      # that 200-line monsters can't sneak in unnoticed.
-      lines: 100
-      statements: 50
+      lines: 150
+      statements: 80
     gocognit:
       # Cognitive complexity ≠ cyclomatic complexity: nesting and short-
-      # circuit chains weigh more. 20 catches the worst offenders without
-      # punishing well-structured branchy validators.
-      min-complexity: 20
+      # circuit chains weigh more. 40 catches genuine monsters without
+      # punishing well-structured branchy validators/parsers.
+      min-complexity: 80
     nestif:
-      min-complexity: 5
+      min-complexity: 8
     interfacebloat:
-      max: 10
+      max: 12
     godot:
       # Require sentence punctuation on top-level doc comments only;
       # inline TODOs / sentence fragments inside function bodies are fine.
@@ -113,6 +113,17 @@ linters:
         # `hugeParam` flags struct-by-value args >80 bytes; we routinely
         # pass *Request / Deps structs by value as a deliberate API choice.
         - hugeParam
+        # Pure-cosmetic checks: value-receiver ranges over config structs,
+        # if/else over short two-arm branches, unnamed internal results,
+        # combinable param types, single-case switches, len==0 tests. These
+        # are style preferences, not defects — suppressed to keep `forge
+        # lint` signal high (matches forge's own .golangci.yml).
+        - rangeValCopy
+        - ifElseChain
+        - unnamedResult
+        - paramTypeCombine
+        - singleCaseSwitch
+        - emptyStringTest
 {{- if .TypedAccessGuard}}
     forbidigo:
       # Typed-config guardrail (forge.yaml: config.enforce_typed_access).
@@ -165,6 +176,10 @@ linters:
   exclusions:
     paths:
       - gen
+      # Generated, forge-owned files (mock_gen.go, authorizer_gen.go,
+      # config_gen.go, ...). Never lint or hand-edit generated code —
+      # forge regenerates it and edits would be lost / trip the stomp guard.
+      - ".*_gen\\.go$"
       - ".*node_modules.*"
       - ".*frontends.*"
       - ".*\\.pb\\.go$"

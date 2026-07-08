@@ -1,3 +1,7 @@
+// forge:exclude-contract
+// kclplugin is KCL-plugin framework glue (registers a jwk resolver plugin with
+// the KCL runtime), not a contract-shaped service. Opt out of the
+// require-contract rule.
 package kclplugin
 
 import (
@@ -28,14 +32,22 @@ func DeriveES256JWK(privateKeyPEM, kid, alg string) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("derive_jwk: parse EC private key: %w", err)
 	}
-	pub := &key.PublicKey
-	// P-256 field elements are 32 bytes; FillBytes left-pads so a
-	// leading-zero coordinate still encodes to the fixed width.
+	// Derive the fixed-width coordinates via crypto/ecdh, whose Bytes()
+	// returns the uncompressed SEC1 point encoding (0x04 || X || Y) with
+	// each 32-byte P-256 field element left-padded — so a leading-zero
+	// coordinate still encodes to the fixed width. This replaces the
+	// deprecated ecdsa.PublicKey.X/Y big.Int coordinates.
 	const coordLen = 32
-	xBytes := make([]byte, coordLen)
-	yBytes := make([]byte, coordLen)
-	pub.X.FillBytes(xBytes)
-	pub.Y.FillBytes(yBytes)
+	ecdhPub, err := key.PublicKey.ECDH()
+	if err != nil {
+		return nil, fmt.Errorf("derive_jwk: convert public key to ECDH: %w", err)
+	}
+	point := ecdhPub.Bytes() // 0x04 || X(32) || Y(32)
+	if len(point) != 1+2*coordLen {
+		return nil, fmt.Errorf("derive_jwk: unexpected point length %d", len(point))
+	}
+	xBytes := point[1 : 1+coordLen]
+	yBytes := point[1+coordLen : 1+2*coordLen]
 	if alg == "" {
 		alg = "ES256"
 	}

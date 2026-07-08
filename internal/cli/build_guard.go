@@ -68,7 +68,7 @@ func assertLinuxELFBinary(path, expectedArch, envLabel string) error {
 				"  if you invoked `go build` directly, re-run the build through `forge build` so the cross-compile env is applied",
 			path, err, envLabel, expectedArch, expectedArch)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// GOOS=linux Go binaries are ELFCLASS64/32 with OSABI NONE (SysV) — but the
 	// ELF format itself is the OS-portable container, so the strongest portable

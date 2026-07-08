@@ -54,7 +54,7 @@ is_local_registry = lambda registry: str -> bool {
 # state the node arch, or the build silently falls through to the dev host's
 # arch (the arm64-image-on-amd64-node class that ImagePull/exec-format-errors
 # in prod).
-builds_an_image = lambda svc: Service -> bool {
+builds_an_image = lambda svc: RenderedWorkload -> bool {
     _b = svc.build
     True if _b and _b.type == "docker" else \
     (True if _b and _b.type == "shell" and _b.cmd != "true" else False)

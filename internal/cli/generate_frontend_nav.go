@@ -22,12 +22,12 @@ import (
 //
 //   - components/nav_gen.tsx (Tier-1, banner): pure-data RouteSpec[]
 //     export, regenerated every run from forge.yaml's services.
-//   - components/nav.tsx (Tier-2, scaffold-once): user-owned
+//   - components/nav.tsx (scaffold-once "yours"): user-owned
 //     presentation that imports ALL_ROUTES from nav_gen and renders the
 //     curated subset.
 //   - app/dashboard_gen.tsx (Tier-1, banner): EntityTiles + QuickActions
 //     React components, regenerated every run.
-//   - app/page.tsx (Tier-2, scaffold-once): user-owned dashboard root
+//   - app/page.tsx (scaffold-once "yours"): user-owned dashboard root
 //     that composes the generated tile/action components.
 //
 // The split lets users hand-edit nav.tsx + page.tsx (icon palette, route
@@ -37,11 +37,9 @@ import (
 // zero user action: nav_gen.tsx picks them up automatically and the
 // user's nav.tsx maps over ALL_ROUTES so they appear in the sidebar.
 //
-// Re-scaffolding the Tier-2 files (nav.tsx / page.tsx) is gated on the
-// `--reset-tier2` hook (checksums.Tier2OverwriteFn) — deliberately NOT
-// on `--force`, which is scoped to the Tier-1 files the stomp guard
-// flagged. Journey fr-a04f8c0609: a --force recovery from an unrelated
-// Tier-1 trip re-scaffolded these files with "(your edits discarded)".
+// The scaffold files (nav.tsx / page.tsx) are write-if-absent: once on
+// disk forge NEVER overwrites them (no flag). To refresh one, delete it
+// and regenerate.
 func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, entities []codegen.EntityDef, cs *checksums.FileChecksums) error {
 	// CRITICAL: nav/dashboard routes derive from the SAME entity set that
 	// gates CRUD page emission (generateFrontendPages skips RPC-name-derived
@@ -145,20 +143,19 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 			return fmt.Errorf("write dashboard_gen.tsx: %w", err)
 		}
 
-		// ── Tier-2: nav.tsx (user-owned, scaffold-once) ──
+		// ── Scaffold ("yours"): nav.tsx (user-owned, scaffold-once) ──
 		// Only emit when the file is missing — once the user has it on
-		// disk, we never overwrite (--force included) unless the
-		// --reset-tier2 hook approves, because the user may have
-		// hand-curated it. The Tier-1 guard separately catches stomps
+		// disk, forge never overwrites it (no flag), because the user may
+		// have hand-curated it. The Tier-1 guard separately catches stomps
 		// on nav_gen.tsx.
 		navRel := filepath.Join(feDir, "src", "components", "nav.tsx")
-		if err := emitTier2OnceIfMissing(projectDir, navRel, "nextjs/src/components/nav.tsx.tmpl", data, cs); err != nil {
+		if err := emitScaffoldOnceIfMissing(projectDir, navRel, "nextjs/src/components/nav.tsx.tmpl", data); err != nil {
 			return err
 		}
 
-		// ── Tier-2: page.tsx (user-owned, scaffold-once) ──
+		// ── Scaffold ("yours"): page.tsx (user-owned, scaffold-once) ──
 		pageRel := filepath.Join(feDir, "src", "app", "page.tsx")
-		if err := emitTier2OnceIfMissing(projectDir, pageRel, "nextjs/src/app/page.tsx.tmpl", data, cs); err != nil {
+		if err := emitScaffoldOnceIfMissing(projectDir, pageRel, "nextjs/src/app/page.tsx.tmpl", data); err != nil {
 			return err
 		}
 
@@ -194,33 +191,17 @@ func warnIfNextConfigIgnoresBasePath(projectDir, feDir, feName, basePath string)
 		feName, basePath, basePath, basePath)
 }
 
-// emitTier2OnceIfMissing writes a Tier-2 (scaffold-once, "yours:" banner)
-// template only when the destination file does not yet exist on disk.
-// Tier-2 files are user-owned: forge writes them once at scaffold time
-// and never overwrites (the user may have hand-curated them).
-//
-// Re-scaffolding an EXISTING file requires the `--reset-tier2` hook
-// (checksums.Tier2OverwriteFn) to approve, per file. `--force` does
-// NOT reach this path: --force is scoped to the Tier-1 files the
-// stomp guard flagged, and applying it to Tier-2 scaffolds destroyed
-// user-curated nav.tsx / page.tsx during an unrelated Tier-1 recovery
-// (journey fr-a04f8c0609).
-//
-// Exception: a DISOWNED checksum entry survives even --reset-tier2.
-// The user said "stop touching this file" permanently; re-adoption is
-// by deletion only. (Legacy `forked: true` entries get the same
-// protection until the pipeline migration converts them.)
-func emitTier2OnceIfMissing(projectDir, relPath, tmplPath string, data templates.FrontendTemplateData, cs *checksums.FileChecksums) error {
+// emitScaffoldOnceIfMissing writes a scaffold ("yours:" banner) template
+// only when the destination file does not yet exist on disk. Scaffold
+// files are user-owned from birth: forge writes them once at scaffold
+// time and NEVER overwrites an existing file — no flag, no exception.
+// To refresh one, delete it and regenerate.
+func emitScaffoldOnceIfMissing(projectDir, relPath, tmplPath string, data templates.FrontendTemplateData) error {
 	full := filepath.Join(projectDir, relPath)
-	_, statErr := os.Stat(full)
-	exists := statErr == nil
-	if exists {
-		if cs.IsDisowned(filepath.ToSlash(relPath)) {
-			return nil
-		}
-		if checksums.Tier2OverwriteFn == nil || !checksums.Tier2OverwriteFn(relPath) {
-			return nil
-		}
+	if _, statErr := os.Stat(full); statErr == nil {
+		return nil // exists — forge never overwrites a scaffold
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("stat %s: %w", relPath, statErr)
 	}
 	content, err := templates.FrontendTemplates().Render(tmplPath, data)
 	if err != nil {
@@ -232,11 +213,7 @@ func emitTier2OnceIfMissing(projectDir, relPath, tmplPath string, data templates
 	if err := os.WriteFile(full, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", relPath, err)
 	}
-	if !exists {
-		fmt.Printf("  ✅ Scaffolded Tier-2 file: %s (yours to edit)\n", relPath)
-	} else {
-		fmt.Printf("  ↻ --reset-tier2: re-scaffolded Tier-2 file: %s\n", relPath)
-	}
+	fmt.Printf("  ✅ Scaffolded %s (yours to edit)\n", relPath)
 	return nil
 }
 

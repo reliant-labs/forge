@@ -339,8 +339,12 @@ func (g *ProjectGenerator) Generate() error {
 		bin := g.binaryName()
 		cmdDir := filepath.Join("cmd", bin)
 		treeDir := filepath.Join(cmdDir, "cmd")
+		// NOTE: cmd/<bin>/main.go (the composition root) is NOT rendered here.
+		// It names every group constructor explicitly, so it is inventory-
+		// dependent and owned by the codegen pipeline (GenerateCmdGroups below),
+		// exactly like the per-component group files — not the project-level
+		// scaffold data, which has no service list yet.
 		files = append(files,
-			struct{ template, dest string }{"cmd-main.go.tmpl", filepath.Join(cmdDir, "main.go")},
 			struct{ template, dest string }{"cmd-tree-root.go.tmpl", filepath.Join(treeDir, "root.go")},
 			struct{ template, dest string }{"cmd-tree-version.go.tmpl", filepath.Join(treeDir, "version.go")},
 		)
@@ -399,6 +403,18 @@ func (g *ProjectGenerator) Generate() error {
 		}
 	}
 
+	// cmd/<bin>/main.go — the composition root. Always scaffolded for service
+	// kind, even features.codegen=false (which skips the codegen block below):
+	// a bare cmd.Execute() so the initial tree exists. The codegen pipeline
+	// (GenerateCmdGroups) re-renders it with the full service/worker/operator
+	// constructor list once proto is compiled. Requires go.mod, written in the
+	// file loop above.
+	if g.isService() {
+		if err := codegen.GenerateCmdMainRoot(g.Path, g.binaryName(), nil); err != nil {
+			return fmt.Errorf("failed to scaffold cmd/<bin>/main.go: %w", err)
+		}
+	}
+
 	// cmd/commands.go — the user-owned cobra extension point the
 	// generated cmd/main.go consumes (userCommands()). Scaffolded once so
 	// the initial build compiles. The REAL per-service subcommands
@@ -412,11 +428,12 @@ func (g *ProjectGenerator) Generate() error {
 			return fmt.Errorf("failed to scaffold cmd/<bin>/cmd/commands.go: %w", err)
 		}
 		// Emit the command-group anchors (services/workers/operators
-		// register_gen.go) with ZERO items so the group subpackages exist
-		// from the first scaffold — cmd/<bin>/main.go blank-imports them, so
-		// an empty (Go-file-less) group dir would make `go mod tidy` 404 the
-		// local import. The post-scaffold composition step re-emits these
-		// alongside the per-item files once proto is compiled.
+		// register_gen.go) with ZERO items so the group subpackages exist from
+		// the first scaffold — an empty (Go-file-less) group dir would make
+		// `go mod tidy` 404 a local import. GenerateCmdGroups also (re)writes
+		// cmd/<bin>/main.go — a bare cmd.Execute() at scaffold, then the full
+		// constructor list once proto is compiled and the composition step
+		// re-emits these alongside the per-item files.
 		if err := codegen.GenerateCmdGroups(codegen.CmdServiceGroupInput{Bin: g.binaryName()}, g.Path, nil); err != nil {
 			return fmt.Errorf("failed to scaffold cmd/<bin>/cmd group anchors: %w", err)
 		}
@@ -488,13 +505,6 @@ func (g *ProjectGenerator) Generate() error {
 	if g.isService() && g.Features.ObservabilityEnabled() {
 		if err := g.generateAlloyConfig(); err != nil {
 			return fmt.Errorf("failed to generate alloy config: %w", err)
-		}
-	}
-
-	// Generate .env.example with common environment variables (services only)
-	if g.isService() {
-		if err := g.generateEnvExample(); err != nil {
-			return fmt.Errorf("failed to generate .env.example: %w", err)
 		}
 	}
 

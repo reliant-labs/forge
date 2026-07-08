@@ -1,6 +1,7 @@
 package kclplugin
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -60,7 +61,8 @@ func TestPortResolver_ScansNearPreferredWhenBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", base))
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("localhost:%d", base))
 	if err != nil {
 		t.Skipf("could not occupy base port %d: %v", base, err)
 	}

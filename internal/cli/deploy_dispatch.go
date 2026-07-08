@@ -231,6 +231,27 @@ func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) er
 	return nil
 }
 
+// applyOptsContext carries the deploy-wide envelope that
+// applyOptsBuilderFromContext captures once and threads into every
+// per-group cluster.ApplyOpts it emits. Grouping these into one struct
+// keeps the builder's signature to a single declarative parameter.
+type applyOptsContext struct {
+	MainK             string
+	ImageTag          string
+	FallbackNamespace string
+	Env               string
+	EnvCfgKV          map[string]string
+	DryRun            bool
+	Prune             bool
+	HostSkip          map[string]struct{}
+	OneShotJobs       []string
+	Targets           []string
+	Groups            []deploytarget.ServiceGroup
+	Entities          *KCLEntities
+	ImageDigests      map[string]string
+	HelmCharts        []cluster.HelmChartSpec
+}
+
 // applyOptsBuilderFromContext returns an ApplyOptsBuilder closure
 // that captures the deploy-wide opts (mainK, image tag, env config,
 // dry-run, prune, host-skip, one-shot jobs, kube-context) and emits a
@@ -250,8 +271,8 @@ func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) er
 // declares no cluster (host-only / compose), Context stays empty — and the
 // cluster.KubectlApply chokepoint refuses an empty context rather than
 // falling back to the active one.
-func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string, groups []deploytarget.ServiceGroup, entities *KCLEntities, imageDigests map[string]string, helmCharts []cluster.HelmChartSpec) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
-	scopeFor := clusterScopeForGroups(groups, entities)
+func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
+	scopeFor := clusterScopeForGroups(p.Groups, p.Entities)
 	// Platform deps (helm-as-a-RENDERER) are env-level, not per-group. To
 	// apply each selected chart EXACTLY ONCE across a multi-group dispatch,
 	// attach the chart specs only to the FIRST k8s group processed —
@@ -260,8 +281,8 @@ func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string,
 	// env's group contexts is correct for the cloud single-cluster case;
 	// the once-only guard avoids re-applying cert-manager per service group.
 	primaryHelmContext := ""
-	if len(helmCharts) > 0 {
-		for _, g := range groups {
+	if len(p.HelmCharts) > 0 {
+		for _, g := range p.Groups {
 			if c := resolveGroupContext(g); c != "" {
 				primaryHelmContext = c
 				break
@@ -271,28 +292,28 @@ func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string,
 	return func(group deploytarget.ServiceGroup) cluster.ApplyOpts {
 		ns := group.Namespace
 		if ns == "" {
-			ns = fallbackNamespace
+			ns = p.FallbackNamespace
 		}
 		// Emit the platform-dep specs only on the primary context's group so
 		// each chart applies once. Other groups get no charts.
 		var charts []cluster.HelmChartSpec
-		if len(helmCharts) > 0 && resolveGroupContext(group) == primaryHelmContext {
-			charts = helmCharts
+		if len(p.HelmCharts) > 0 && resolveGroupContext(group) == primaryHelmContext {
+			charts = p.HelmCharts
 		}
 		return cluster.ApplyOpts{
-			MainK:        mainK,
-			ImageTag:     imageTag,
-			ImageDigests: imageDigests,
+			MainK:        p.MainK,
+			ImageTag:     p.ImageTag,
+			ImageDigests: p.ImageDigests,
 			Namespace:    ns,
-			Env:          env,
+			Env:          p.Env,
 			Context:      resolveGroupContext(group),
-			EnvConfigKV:  envCfgKV,
-			DryRun:       dryRun,
+			EnvConfigKV:  p.EnvCfgKV,
+			DryRun:       p.DryRun,
 			DryRunFramed: true,
-			Prune:        prune,
-			HostSkip:     hostSkip,
-			OneShotJobs:  oneShotJobs,
-			Targets:      targets,
+			Prune:        p.Prune,
+			HostSkip:     p.HostSkip,
+			OneShotJobs:  p.OneShotJobs,
+			Targets:      p.Targets,
 			ClusterScope: scopeFor(group),
 			HelmCharts:   charts,
 		}

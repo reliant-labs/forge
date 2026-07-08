@@ -9,7 +9,7 @@
 // in a state the user has to hand-repair.
 //
 // The fix is a write journal recorded at the SINGLE chokepoint every
-// forge write flows through (WriteGeneratedFile / WriteGeneratedFileTier2
+// forge write flows through (WriteGeneratedFile / WriteScaffoldIfMissing
 // / writeUnstampable, plus the in-place restamp and disown marker-strip).
 // Before any of those mutate a path on disk, the journal captures the
 // path's EXACT pre-run bytes (or records that it did not exist). On a
@@ -22,7 +22,7 @@
 // Scope — deliberately bounded to forge-WRITTEN files:
 //
 //   - The journal restores exactly the files forge's writers touched
-//     this run (Tier-1 codegen, Tier-2 scaffolds, comment-incapable
+//     this run (Tier-1 codegen, scaffold-once "yours" files, comment-incapable
 //     outputs, restamps, disown marker strips). That is the "mid-regen
 //     broken tree" the friction names.
 //   - It does NOT snapshot the whole working tree. External-tool churn

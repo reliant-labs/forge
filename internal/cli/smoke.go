@@ -14,8 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // newSmokeCmd builds `forge smoke <env>` — a post-deploy ingress
@@ -174,7 +175,7 @@ func runSmokeWith(ctx context.Context, env string, opts smokeOptions, resolve ga
 		}
 		// Genuinely nothing to probe — no routes, no ports, no flow checks.
 		// The env may be cluster-internal only.
-		fmt.Fprintf(out, "smoke %s: no host-bearing ingress routes declared — nothing to probe.\n", env)
+		_, _ = fmt.Fprintf(out, "smoke %s: no host-bearing ingress routes declared — nothing to probe.\n", env)
 		return nil
 	}
 
@@ -262,8 +263,8 @@ func reportFlowOnlySmoke(out io.Writer, env string, opts smokeOptions, flowResul
 			return err
 		}
 	} else {
-		fmt.Fprintf(out, "forge smoke %s\n", env)
-		fmt.Fprintln(out, "  no host-bearing routes / dev ports to probe — checking declared app-flow endpoints only.")
+		_, _ = fmt.Fprintf(out, "forge smoke %s\n", env)
+		_, _ = fmt.Fprintln(out, "  no host-bearing routes / dev ports to probe — checking declared app-flow endpoints only.")
 		writeFlowCheckSection(out, flowResults)
 		writeSmokeOverallVerdict(out, summary, len(flowResults))
 	}
@@ -277,16 +278,16 @@ func reportFlowOnlySmoke(out io.Writer, env string, opts smokeOptions, flowResul
 // route table and flow-check section have been printed. It tallies the union
 // of route + flow results so a flow break is reflected in the bottom line.
 func writeSmokeOverallVerdict(out io.Writer, summary smokeSummary, total int) {
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  summary: %d PASS, %d WARN, %d FAIL  (%d check(s))\n",
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "  summary: %d PASS, %d WARN, %d FAIL  (%d check(s))\n",
 		summary.Pass, summary.Warn, summary.Fail, total)
 	switch {
 	case summary.AnyFail:
-		fmt.Fprintf(out, "  FAILED — ingress and/or app-flow is not healthy. See reasons above.\n")
+		_, _ = fmt.Fprintf(out, "  FAILED — ingress and/or app-flow is not healthy. See reasons above.\n")
 	case summary.Warn > 0:
-		fmt.Fprintf(out, "  PASS with warnings — review WARN rows.\n")
+		_, _ = fmt.Fprintf(out, "  PASS with warnings — review WARN rows.\n")
 	default:
-		fmt.Fprintf(out, "  PASS — every route reached a backend and every app-flow check is healthy.\n")
+		_, _ = fmt.Fprintf(out, "  PASS — every route reached a backend and every app-flow check is healthy.\n")
 	}
 }
 
@@ -378,7 +379,7 @@ func probeRoute(ctx context.Context, target smokeTarget, gatewayIP string, timeo
 	client := smokeHTTPClient(probeHost, gatewayIP, timeout)
 
 	url := "https://" + probeHost + target.Path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return classifyTransportError(err)
 	}
@@ -394,7 +395,7 @@ func probeRoute(ctx context.Context, target smokeTarget, gatewayIP string, timeo
 	if err != nil {
 		return classifyTransportError(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Read a bounded prefix of the body — enough to detect the
 	// "404 page not found" sentinel without slurping a large payload.
@@ -443,9 +444,9 @@ func smokeHTTPClient(host, gatewayIP string, timeout time.Duration) *http.Client
 // --- output -------------------------------------------------------------
 
 func writeSmokeTable(out io.Writer, env, kubeContext, namespace string, gatewayIPs map[string]string, results []smokeRouteResult, summary smokeSummary) {
-	fmt.Fprintf(out, "forge smoke %s\n", env)
+	_, _ = fmt.Fprintf(out, "forge smoke %s\n", env)
 	if kubeContext != "" {
-		fmt.Fprintf(out, "  context: %s   namespace: %s\n", kubeContext, emptyAs(namespace, "(default)"))
+		_, _ = fmt.Fprintf(out, "  context: %s   namespace: %s\n", kubeContext, emptyAs(namespace, "(default)"))
 	}
 	// Gateway IP inventory (sorted) so a stuck gateway is visible above
 	// the route table.
@@ -455,12 +456,12 @@ func writeSmokeTable(out io.Writer, env, kubeContext, namespace string, gatewayI
 			gws = append(gws, g)
 		}
 		sort.Strings(gws)
-		fmt.Fprintln(out, "  gateways:")
+		_, _ = fmt.Fprintln(out, "  gateways:")
 		for _, g := range gws {
-			fmt.Fprintf(out, "    %s -> %s\n", g, gatewayIPs[g])
+			_, _ = fmt.Fprintf(out, "    %s -> %s\n", g, gatewayIPs[g])
 		}
 	}
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 
 	// Column widths.
 	const (
@@ -472,9 +473,9 @@ func writeSmokeTable(out io.Writer, env, kubeContext, namespace string, gatewayI
 		pathW = maxInt(pathW, len(r.Target.Path))
 		routeW = maxInt(routeW, len(r.Target.RouteName))
 	}
-	fmt.Fprintf(out, "  %-*s  %-*s  %-*s  %-*s  %s\n", wResult, "RESULT", routeW, "ROUTE", hostW, "HOST", pathW, "PATH", "REASON")
+	_, _ = fmt.Fprintf(out, "  %-*s  %-*s  %-*s  %-*s  %s\n", wResult, "RESULT", routeW, "ROUTE", hostW, "HOST", pathW, "PATH", "REASON")
 	for _, r := range results {
-		fmt.Fprintf(out, "  %-*s  %-*s  %-*s  %-*s  %s\n",
+		_, _ = fmt.Fprintf(out, "  %-*s  %-*s  %-*s  %-*s  %s\n",
 			wResult, string(r.Status),
 			routeW, r.Target.RouteName,
 			hostW, r.Target.Host,
@@ -482,15 +483,15 @@ func writeSmokeTable(out io.Writer, env, kubeContext, namespace string, gatewayI
 			smokeReasonLine(r))
 	}
 
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  summary: %d PASS, %d WARN, %d FAIL  (%d route(s))\n",
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "  summary: %d PASS, %d WARN, %d FAIL  (%d route(s))\n",
 		summary.Pass, summary.Warn, summary.Fail, len(results))
 	if summary.AnyFail {
-		fmt.Fprintf(out, "  FAILED — ingress is not serving every declared route. See reasons above.\n")
+		_, _ = fmt.Fprintf(out, "  FAILED — ingress is not serving every declared route. See reasons above.\n")
 	} else if summary.Warn > 0 {
-		fmt.Fprintf(out, "  PASS with warnings — review WARN routes (likely misroutes).\n")
+		_, _ = fmt.Fprintf(out, "  PASS with warnings — review WARN routes (likely misroutes).\n")
 	} else {
-		fmt.Fprintf(out, "  PASS — every declared route reached a backend.\n")
+		_, _ = fmt.Fprintf(out, "  PASS — every declared route reached a backend.\n")
 	}
 }
 

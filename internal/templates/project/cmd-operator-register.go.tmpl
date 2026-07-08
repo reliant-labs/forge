@@ -2,8 +2,9 @@
 // forge-owned: regenerated every run — do not edit (forge disown to take ownership)
 // Source: operators/* — the per-operator command-group anchor.
 //
-// Each operator's subcommand lives in its own <name>.go in this package and
-// self-registers via init() (cmd.RegisterOperatorCmd). This file is the group
-// ANCHOR: it guarantees the package compiles even with zero operators so
-// main.go's blank import resolves.
+// Each operator's subcommand lives in its own <name>.go in this package as an
+// exported New<Operator>Cmd constructor; main.go names them explicitly and
+// passes them to cmd.Execute (the tree is assembled in the composition root,
+// not via init() self-registration). This file is the group ANCHOR: it
+// guarantees the package compiles even with zero operators.
 package operators

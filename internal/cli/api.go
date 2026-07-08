@@ -19,7 +19,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -283,11 +282,12 @@ func availableServicesHint(services []codegen.ServiceDef) string {
 // project may not have forge.yaml yet, in which case the default port +
 // --port override are sufficient.
 func lookupServicePort(projectDir string, svc codegen.ServiceDef) int {
-	store, err := loadProjectStoreFrom(filepath.Join(projectDir, defaultProjectConfigFile))
-	if err != nil {
-		return 0
-	}
-	return matchServicePort(store.Config(), svc)
+	// Service inventory comes from the REAL sources (proto descriptor +
+	// owned files), not the removed components.json — see
+	// codegen.IntrospectComponents. Ports are a deploy fact (KCL), so the
+	// introspected components carry none; matchServicePort returns 0 and
+	// the caller falls back to the default port + --port override.
+	return matchServicePort(codegen.IntrospectComponents(projectDir), svc)
 }
 
 // matchServicePort picks the most likely services[] entry for svc. We try
@@ -304,14 +304,10 @@ func lookupServicePort(projectDir string, svc codegen.ServiceDef) int {
 //
 // Returns 0 when no service entry has a Port set (rare — `forge add service`
 // always assigns one). Callers fall back to the default port.
-func matchServicePort(cfg *config.ProjectConfig, svc codegen.ServiceDef) int {
-	if cfg == nil {
-		return 0
-	}
-
+func matchServicePort(comps []config.ComponentConfig, svc codegen.ServiceDef) int {
 	candidates := serviceNameCandidates(svc)
 	for _, name := range candidates {
-		for _, s := range cfg.Components {
+		for _, s := range comps {
 			if !s.IsServer() {
 				continue
 			}
@@ -322,7 +318,7 @@ func matchServicePort(cfg *config.ProjectConfig, svc codegen.ServiceDef) int {
 	}
 
 	// Fallback: first server component.
-	for _, s := range cfg.Components {
+	for _, s := range comps {
 		if s.IsServer() {
 			return s.PrimaryPort()
 		}

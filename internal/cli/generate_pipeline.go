@@ -190,10 +190,10 @@ type pipelineContext struct {
 	// don't each have to reach through the store; nil whenever Store is nil.
 	Cfg *config.ProjectConfig
 
-	// Store is the ProjectStore wrapping the loaded project, or nil on the
-	// directory-scan fallback path. Steps reading project/component/feature
-	// state should prefer it; Cfg remains for the config-typed step helpers.
-	Store projectstore.ProjectStore
+	// Store wraps the loaded project, or nil on the directory-scan fallback
+	// path. Steps reading project/component/feature state should prefer it;
+	// Cfg remains for the config-typed step helpers.
+	Store *projectstore.Store
 
 	// Checksums is loaded once at step 0b and saved on pipeline exit
 	// by the caller. Steps mutate this in-place via WriteGeneratedFile
@@ -1171,16 +1171,19 @@ func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
 	ctx.HasAPI = dirExists(filepath.Join(ctx.ProjectDir, "proto/api"))
 	ctx.HasDB = dirExists(filepath.Join(ctx.ProjectDir, "proto/db"))
 	ctx.HasConfig = dirExists(filepath.Join(ctx.ProjectDir, "proto/config"))
-	workers, _ := discoverWorkers(ctx.ProjectDir)
-	ctx.HasWorkers = len(workers) > 0
+	// HasWorkers / HasOperators are BOOLEAN presence gates (does the project
+	// have any worker/operator at all), NOT an enumeration of the set — generate
+	// does zero worker/operator discovery. They gate the bootstrap family of
+	// steps (hasAnyEntrypoint) exactly like HasDB/HasConfig gate on proto dir
+	// existence.
+	ctx.HasWorkers = hasComponentDir(ctx.ProjectDir, "internal/workers")
 	// Operators are experimental — when the feature isn't opted in we
 	// suppress the codegen path entirely. We still detect on-disk
 	// operator dirs so stepDetectProtoDirs can print a one-line skip
 	// message; the pipeline gate functions branch on ctx.HasOperators
 	// so flipping it to false elides every operator step at the same
 	// point.
-	operators, _ := discoverOperators(ctx.ProjectDir)
-	rawHasOperators = len(operators) > 0
+	rawHasOperators = hasComponentDir(ctx.ProjectDir, "internal/operators")
 	if rawHasOperators && ctx.Cfg != nil && !ctx.Cfg.Features.OperatorsEnabled() {
 		ctx.HasOperators = false
 	} else {
@@ -1768,7 +1771,7 @@ func stepWebhookRoutes(ctx *pipelineContext) error {
 	if err != nil {
 		return err
 	}
-	if err := generateWebhookRoutes(ctx.Cfg, reg, ctx.ProjectDir, ctx.Checksums); err != nil {
+	if err := generateWebhookRoutes(reg, ctx.ProjectDir, ctx.Checksums); err != nil {
 		return fmt.Errorf("webhook route generation failed: %w", err)
 	}
 	return nil
@@ -1865,14 +1868,6 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 	if err != nil {
 		return err
 	}
-	workers, err := discoverWorkers(ctx.ProjectDir)
-	if err != nil {
-		return err
-	}
-	operators, err := discoverOperators(ctx.ProjectDir)
-	if err != nil {
-		return err
-	}
 	packages, err := discoverPackages(ctx.ProjectDir)
 	if err != nil {
 		return fmt.Errorf("discover internal packages: %w", err)
@@ -1899,7 +1894,7 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 		return err
 	}
 
-	if err := generateHybridComposition(rows, packages, workers, operators, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums); err != nil {
+	if err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums); err != nil {
 		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}
 	return nil
@@ -1933,15 +1928,12 @@ func stepCmdGroups(ctx *pipelineContext) error {
 	if err != nil {
 		return err
 	}
-	workers, err := discoverWorkers(ctx.ProjectDir)
-	if err != nil {
-		return err
-	}
-	operators, err := discoverOperators(ctx.ProjectDir)
-	if err != nil {
-		return err
-	}
-	return generateCmdGroups(rows, workers, operators, ctx.ProjectDir, ctx.Checksums)
+	// No worker/operator discovery: cmd groups only (re)write the proto-derived
+	// service subcommands + the anchor files. The per-worker/operator subcommand
+	// files are scaffold-once OWNED code written by `forge add worker/operator`,
+	// and main.go is scaffold-once. Generate learns nothing about the
+	// worker/operator set.
+	return generateCmdGroups(rows, ctx.ProjectDir, ctx.Checksums)
 }
 
 // stepCmdCommands ensures the user-owned cmd/<bin>/cmd/commands.go extension
@@ -2068,7 +2060,7 @@ func stepCIWorkflows(ctx *pipelineContext) error {
 // handlers, audit-log middleware glue). Non-fatal so a single
 // misbehaving pack doesn't brick the whole pipeline.
 func stepPackGenerateHooks(ctx *pipelineContext) error {
-	if err := runPackGenerateHooks(ctx.ProjectDir, ctx.Cfg); err != nil {
+	if err := runPackGenerateHooks(ctx.ProjectDir, ctx.Cfg, ctx.Checksums); err != nil {
 		fmt.Fprintf(os.Stderr, "  ⚠️  Pack generate hooks warning: %v\n", err)
 	}
 	return nil

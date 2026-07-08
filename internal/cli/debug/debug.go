@@ -72,7 +72,7 @@ func debugSvc() dbgsvc.Service { return dbgsvc.New(dbgsvc.Deps{}) }
 // Session reconnection
 // ---------------------------------------------------------------------------
 
-func connectToSession() (dbgsvc.Debugger, error) {
+func connectToSession() (*dbgsvc.DelveDebugger, error) {
 	session, err := debugSvc().LoadSession(".")
 	if err != nil {
 		return nil, fmt.Errorf("loading debug session: %w", err)

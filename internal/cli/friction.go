@@ -217,7 +217,7 @@ func newFrictionEntry(severity, area, source string, contexts []string, text str
 // already-recorded lines.
 func frictionID(e FrictionEntry) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%d|%s|%s|%s|%s|%s", e.RecordedAt.UnixNano(), e.Severity, e.Area, e.Source, strings.Join(e.Context, ","), e.Text)
+	_, _ = fmt.Fprintf(h, "%d|%s|%s|%s|%s|%s", e.RecordedAt.UnixNano(), e.Severity, e.Area, e.Source, strings.Join(e.Context, ","), e.Text)
 	return "fr-" + hex.EncodeToString(h.Sum(nil))[:10]
 }
 
@@ -397,13 +397,13 @@ func writeFrictionTable(w io.Writer, entries []FrictionEntry) error {
 
 // truncateFrictionText flattens newlines and clips long prose for the
 // table view; full text is always available via --json / export.
-func truncateFrictionText(s string, max int) string {
+func truncateFrictionText(s string, maxLen int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	r := []rune(s)
-	if len(r) <= max {
+	if len(r) <= maxLen {
 		return s
 	}
-	return string(r[:max-1]) + "…"
+	return string(r[:maxLen-1]) + "…"
 }
 
 // ─── export ─────────────────────────────────────────────────────────────

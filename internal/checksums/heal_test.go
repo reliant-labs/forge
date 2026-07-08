@@ -216,60 +216,27 @@ func TestWriteGeneratedFile_HealNoticeDedupedPerRun(t *testing.T) {
 	}
 }
 
-// TestWriteGeneratedFileTier2_HealIsLoud — Tier-2 writes carry no
-// marker, so the legacy "Tier-2 historical match" heal exists in
-// exactly one shape now: an existing file whose VERIFYING marker
-// certifies it as forge bytes (a template reclassified Tier-1 → Tier-2
-// that the user never edited). That file is regenerated once as an
-// unmarked scaffold — loudly.
-func TestWriteGeneratedFileTier2_HealIsLoud(t *testing.T) {
+// TestWriteScaffoldIfMissing_PreservesExistingSilently — scaffold writes
+// carry no marker and never heal: an existing file (even a pristine prior
+// forge render) is left untouched, silently, with no heal notice. The
+// only refresh is delete-then-regenerate.
+func TestWriteScaffoldIfMissing_PreservesExistingSilently(t *testing.T) {
 	got := captureHealNotices(t)
-	ResetTier2State()
-	defer ResetTier2State()
 	ResetSkipWrite()
 	root := t.TempDir()
-	cs := &FileChecksums{}
+
+	// A file already on disk (whatever its provenance).
 	const rel = "svc.go"
-
-	// A pristine Tier-1 render on disk (the pre-reclassification state).
-	stampedV1, _ := Stamp(rel, []byte("// scaffold v1\n"))
-	if err := os.WriteFile(filepath.Join(root, rel), stampedV1, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, rel), []byte("// user code\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	scaffoldV3 := []byte("// scaffold v3\n")
-	wrote, err := WriteGeneratedFileTier2(root, rel, scaffoldV3, cs, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !wrote {
-		t.Fatal("Tier-2 write over a VERIFYING marker should proceed (reclassification heal)")
-	}
-	after, _ := os.ReadFile(filepath.Join(root, rel))
-	if string(after) != string(scaffoldV3) {
-		t.Errorf("on-disk = %q, want the fresh unmarked scaffold", after)
-	}
-	if _, found := ExtractMarker(after); found {
-		t.Error("reclassified Tier-2 file must lose its marker")
-	}
-	FlushHealNotices(root)
-	if len(*got) != 1 || (*got)[0] != rel {
-		t.Errorf("Tier-2 reclassification heal must be loud; notices = %v", *got)
-	}
-
-	// An ordinary user-owned Tier-2 file (no marker) is preserved
-	// silently — the scaffold-once contract, not a heal.
-	const rel2 = "svc2.go"
-	if err := os.WriteFile(filepath.Join(root, rel2), []byte("// user code\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	wrote, err = WriteGeneratedFileTier2(root, rel2, []byte("// new template\n"), cs, false)
+	wrote, err := WriteScaffoldIfMissing(root, rel, []byte("// new template\n"))
 	if err != nil || wrote {
-		t.Errorf("user-owned Tier-2 file overwritten: wrote=%v err=%v", wrote, err)
+		t.Errorf("existing file overwritten by scaffold write: wrote=%v err=%v", wrote, err)
 	}
 	FlushHealNotices(root)
-	if len(*got) != 1 {
-		t.Errorf("preserving a user-owned Tier-2 file must not notice; got %v", *got)
+	if len(*got) != 0 {
+		t.Errorf("preserving an existing scaffold file must not fire a heal notice; got %v", *got)
 	}
 }
 

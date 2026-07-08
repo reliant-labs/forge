@@ -79,14 +79,14 @@ type AuditEvent struct {
 // A thin adapter satisfies AuditSink over any richer store. For
 // example, control-plane's audit store has the signature:
 //
-//	// pkg/audit.AuditStore
-//	Log(ctx context.Context, entry AuditEntry) error
+//	// pkg/audit.Store
+//	Log(ctx context.Context, entry Entry) error
 //
 // which an adapter wraps directly:
 //
-//	type storeSink struct{ store pkgaudit.AuditStore; log *slog.Logger }
+//	type storeSink struct{ store pkgaudit.Store; log *slog.Logger }
 //	func (s storeSink) Record(ctx context.Context, e middleware.AuditEvent) {
-//	    entry := pkgaudit.AuditEntry{
+//	    entry := pkgaudit.Entry{
 //	        Timestamp:    e.Timestamp,
 //	        Procedure:    e.Procedure,
 //	        PeerAddress:  e.PeerAddress,

@@ -313,67 +313,7 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 	// Emit services. The forge.yaml services slice is the canonical
 	// inventory; KCL fills in deploy type + env vars; descriptor fills
 	// in RPCs; contract.go fills in Deps.
-	if cfg != nil {
-		// Registration view (pkg/app/services.go). Best-effort: a parse
-		// failure falls open to "everything served" — graph is a
-		// read-only inspection surface and must not die mid-migration.
-		reg, regErr := loadServiceRegistry(projectDir)
-		if regErr != nil {
-			reg = &serviceRegistry{Exists: false}
-		}
-		for _, s := range cfg.Components {
-			// Binary components are inventoried in the Binaries section
-			// below, not as graph services.
-			if s.IsBinary() {
-				continue
-			}
-			gs := graphService{
-				Name:    s.Name,
-				Package: servicePackageDir(s),
-			}
-			if isConnectServiceConfig(s) && !reg.registered(s.Name) {
-				notServed := false
-				gs.Served = &notServed
-			}
-			if k, ok := kclSvcByName[s.Name]; ok {
-				gs.DeployType = k.Deploy.Type
-				for _, ev := range k.EnvVars {
-					gs.EnvVars = append(gs.EnvVars, graphEnvVar{
-						Name:   ev.Name,
-						Source: "kcl",
-					})
-				}
-			}
-			// Match RPCs by proto-service-name suffix. "TasksService"
-			// matches forge.yaml's "tasks"; "tasks" matches as-is.
-			if rpcs, ok := matchRPCs(rpcsByService, s.Name); ok {
-				gs.RPCs = rpcs
-			}
-
-			// Parse Deps from the service's package directory.
-			pkgDir := filepath.Join(projectDir, s.Path)
-			deps, depsErr := codegen.ParseServiceDeps(pkgDir)
-			if depsErr != nil && !errors.Is(depsErr, fs.ErrNotExist) {
-				doc.Warnings = append(doc.Warnings, fmt.Sprintf("parse deps for service %s: %v", s.Name, depsErr))
-			}
-			for _, d := range deps {
-				pkgName := resolveDepsPackage(d.Type, pkgByName)
-				gs.Deps = append(gs.Deps, graphDepsField{
-					Field:   d.Name,
-					Type:    d.Type,
-					Package: pkgName,
-				})
-				if pkgName != "" {
-					doc.Edges = append(doc.Edges, graphEdge{
-						From: "service:" + s.Name,
-						To:   "package:" + pkgName,
-						Kind: "deps",
-					})
-				}
-			}
-			doc.Services = append(doc.Services, gs)
-		}
-	}
+	graphAppendServices(&doc, cfg, projectDir, kclSvcByName, rpcsByService, pkgByName)
 
 	// Frontends: forge.yaml is the inventory; KCL contributes nothing
 	// new today beyond what forge.yaml already declares (port + type).
@@ -397,78 +337,19 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 		}
 	}
 
-	// Binaries (kind=binary components).
+	// Binaries (kind=binary components), enumerated from cmd/ entrypoints.
 	if cfg != nil {
-		for _, b := range cfg.BinaryComponents() {
+		for _, b := range codegen.IntrospectComponents(projectDir) {
+			if !b.IsBinary() {
+				continue
+			}
 			doc.Binaries = append(doc.Binaries, graphBinary{Name: b.Name})
 		}
 	}
 
 	// Gateways + routes from KCL. Routes always produce a route→service
 	// edge so the model can answer "what's the request path to <svc>?".
-	if kcl != nil {
-		for _, g := range kcl.Gateways {
-			gg := graphGateway{
-				Name: g.Name,
-				Host: g.Host,
-			}
-			for _, l := range g.Listeners {
-				gg.Listeners = append(gg.Listeners, graphGatewayListener{
-					Port:     l.Port,
-					Protocol: l.Protocol,
-				})
-			}
-			doc.Gateways = append(doc.Gateways, gg)
-		}
-		for _, r := range kcl.HTTPRoutes {
-			doc.Routes = append(doc.Routes, graphRoute{
-				Name:    r.Name,
-				Kind:    "http",
-				Gateway: r.Gateway,
-				Service: r.Service,
-				Host:    r.Host,
-				Path:    r.Path,
-			})
-			if r.Service != "" {
-				doc.Edges = append(doc.Edges, graphEdge{
-					From: "route:" + r.Name,
-					To:   "service:" + r.Service,
-					Kind: "routes-to",
-				})
-			}
-			if r.Gateway != "" {
-				doc.Edges = append(doc.Edges, graphEdge{
-					From: "route:" + r.Name,
-					To:   "gateway:" + r.Gateway,
-					Kind: "attached-to",
-				})
-			}
-		}
-		for _, r := range kcl.GRPCRoutes {
-			doc.Routes = append(doc.Routes, graphRoute{
-				Name:    r.Name,
-				Kind:    "grpc",
-				Gateway: r.Gateway,
-				Service: r.Service,
-				Host:    r.Host,
-				Path:    r.Path,
-			})
-			if r.Service != "" {
-				doc.Edges = append(doc.Edges, graphEdge{
-					From: "route:" + r.Name,
-					To:   "service:" + r.Service,
-					Kind: "routes-to",
-				})
-			}
-			if r.Gateway != "" {
-				doc.Edges = append(doc.Edges, graphEdge{
-					From: "route:" + r.Name,
-					To:   "gateway:" + r.Gateway,
-					Kind: "attached-to",
-				})
-			}
-		}
-	}
+	graphAppendGatewaysAndRoutes(&doc, kcl)
 
 	// Deterministic edge order so test fixtures (and diff-based review
 	// of the JSON output) are stable.
@@ -483,6 +364,138 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 	})
 
 	return doc
+}
+
+// graphAppendServices emits the graph's services (and their deps edges) from
+// the forge.yaml component inventory, enriched with KCL deploy type + env vars,
+// descriptor RPCs, and contract.go Deps. Best-effort throughout: a service
+// registry parse failure falls open to "everything served" (graph is a
+// read-only inspection surface and must not die mid-migration), and a Deps
+// parse error is recorded as a warning rather than aborting. No-op when cfg is
+// nil.
+func graphAppendServices(doc *graphDoc, cfg *config.ProjectConfig, projectDir string, kclSvcByName map[string]*ServiceEntity, rpcsByService map[string][]graphRPC, pkgByName map[string]graphPackage) {
+	if cfg == nil {
+		return
+	}
+	// Registration view (pkg/app/services.go). Best-effort: a parse
+	// failure falls open to "everything served".
+	reg, regErr := loadServiceRegistry(projectDir)
+	if regErr != nil {
+		reg = &serviceRegistry{Exists: false}
+	}
+	// Inventory is enumerated from the REAL sources (proto descriptor +
+	// owned worker/operator files + cmd/ binaries), not the removed
+	// components.json manifest — see codegen.IntrospectComponents.
+	for _, s := range codegen.IntrospectComponents(projectDir) {
+		// Binary components are inventoried in the Binaries section, not
+		// as graph services.
+		if s.IsBinary() {
+			continue
+		}
+		gs := graphService{
+			Name:    s.Name,
+			Package: servicePackageDir(s),
+		}
+		if isConnectServiceConfig(s) && !reg.registered(s.Name) {
+			notServed := false
+			gs.Served = &notServed
+		}
+		if k, ok := kclSvcByName[s.Name]; ok {
+			gs.DeployType = k.Deploy.Type
+			for _, ev := range k.EnvVars {
+				gs.EnvVars = append(gs.EnvVars, graphEnvVar{
+					Name:   ev.Name,
+					Source: "kcl",
+				})
+			}
+		}
+		// Match RPCs by proto-service-name suffix. "TasksService"
+		// matches forge.yaml's "tasks"; "tasks" matches as-is.
+		if rpcs, ok := matchRPCs(rpcsByService, s.Name); ok {
+			gs.RPCs = rpcs
+		}
+
+		// Parse Deps from the service's package directory.
+		pkgDir := filepath.Join(projectDir, s.Path)
+		deps, depsErr := codegen.ParseServiceDeps(pkgDir)
+		if depsErr != nil && !errors.Is(depsErr, fs.ErrNotExist) {
+			doc.Warnings = append(doc.Warnings, fmt.Sprintf("parse deps for service %s: %v", s.Name, depsErr))
+		}
+		for _, d := range deps {
+			pkgName := resolveDepsPackage(d.Type, pkgByName)
+			gs.Deps = append(gs.Deps, graphDepsField{
+				Field:   d.Name,
+				Type:    d.Type,
+				Package: pkgName,
+			})
+			if pkgName != "" {
+				doc.Edges = append(doc.Edges, graphEdge{
+					From: "service:" + s.Name,
+					To:   "package:" + pkgName,
+					Kind: "deps",
+				})
+			}
+		}
+		doc.Services = append(doc.Services, gs)
+	}
+}
+
+// graphAppendGatewaysAndRoutes emits the KCL gateways and HTTP/gRPC routes.
+// Every route with a service produces a route→service edge (and, with a
+// gateway, a route→gateway edge) so the model can answer "what's the request
+// path to <svc>?". No-op when kcl is nil.
+func graphAppendGatewaysAndRoutes(doc *graphDoc, kcl *KCLEntities) {
+	if kcl == nil {
+		return
+	}
+	for _, g := range kcl.Gateways {
+		gg := graphGateway{
+			Name: g.Name,
+			Host: g.Host,
+		}
+		for _, l := range g.Listeners {
+			gg.Listeners = append(gg.Listeners, graphGatewayListener{
+				Port:     l.Port,
+				Protocol: l.Protocol,
+			})
+		}
+		doc.Gateways = append(doc.Gateways, gg)
+	}
+	for _, r := range kcl.HTTPRoutes {
+		graphAppendRoute(doc, r.Name, "http", r.Gateway, r.Service, r.Host, r.Path)
+	}
+	for _, r := range kcl.GRPCRoutes {
+		graphAppendRoute(doc, r.Name, "grpc", r.Gateway, r.Service, r.Host, r.Path)
+	}
+}
+
+// graphAppendRoute appends one route (of the given kind) plus its route→service
+// and route→gateway edges. The HTTP and gRPC route entities are distinct named
+// types with an identical Name/Gateway/Service/Host/Path shape, so both kinds
+// flow through here as scalar fields.
+func graphAppendRoute(doc *graphDoc, name, kind, gateway, service, host, path string) {
+	doc.Routes = append(doc.Routes, graphRoute{
+		Name:    name,
+		Kind:    kind,
+		Gateway: gateway,
+		Service: service,
+		Host:    host,
+		Path:    path,
+	})
+	if service != "" {
+		doc.Edges = append(doc.Edges, graphEdge{
+			From: "route:" + name,
+			To:   "service:" + service,
+			Kind: "routes-to",
+		})
+	}
+	if gateway != "" {
+		doc.Edges = append(doc.Edges, graphEdge{
+			From: "route:" + name,
+			To:   "gateway:" + gateway,
+			Kind: "attached-to",
+		})
+	}
 }
 
 // effectivePackageType returns the PackageConfig.Type with the

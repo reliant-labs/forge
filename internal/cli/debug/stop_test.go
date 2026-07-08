@@ -76,7 +76,7 @@ func TestAttachStopLeavesTargetAlive(t *testing.T) {
 	// Launch a long-running target we own (a `sleep`). It stands in for the
 	// live admin-server — forge did NOT launch it under dlv, so an attach
 	// session onto it must never be killed by stop.
-	target := exec.Command("sleep", "120")
+	target := exec.CommandContext(context.Background(), "sleep", "120")
 	if err := target.Start(); err != nil {
 		t.Fatalf("starting target: %v", err)
 	}
@@ -169,7 +169,7 @@ func processAlive(pid int) bool {
 		return false // ESRCH: gone.
 	}
 	// Exists in the kernel — but a zombie is effectively dead. Check state.
-	out, err := exec.Command("ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output()
+	out, err := exec.CommandContext(context.Background(), "ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		// ps failed/unavailable: fall back to the signal-0 result (alive).
 		return true

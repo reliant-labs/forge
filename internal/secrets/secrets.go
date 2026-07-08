@@ -30,6 +30,11 @@
 // import cycle (cli depends on secrets, not the reverse). It reuses
 // internal/hostlaunch's dotenv reader, which only imports the stdlib —
 // no cycle risk.
+//
+// forge:exclude-contract
+// secrets is a secret-reference→value resolution utility (per-env dotenv /
+// external providers), not a contract-shaped service. Opt out of the
+// require-contract rule.
 package secrets
 
 import (

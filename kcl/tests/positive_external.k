@@ -9,7 +9,7 @@ import forge
 # A flyctl-style external deploy. Raw-string literals (r"...") keep
 # KCL from interpreting ${X} as KCL interpolation — the tokens land in
 # the rendered JSON verbatim so the Go-side runner can expand them.
-_svc = forge.Service {
+_svc = forge.RenderedWorkload {
     name = "edge-proxy"
     image = "ghcr.io/x/edge"
     deploy = forge.External {
@@ -32,7 +32,7 @@ assert_env_file = output.services[0].deploy.env_file == ".env.prod"
 assert_env_map = output.services[0].deploy.env["FLY_APP"] == "edge-prod"
 
 # Minimal shape — only deploy_cmd is required.
-_min = forge.Service {
+_min = forge.RenderedWorkload {
     name = "minimal"
     deploy = forge.External { deploy_cmd = "echo deploy" }
 }

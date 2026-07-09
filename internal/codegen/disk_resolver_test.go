@@ -28,9 +28,16 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// authzFieldRe matches the testConfig authz field declaration regardless
+// of column alignment: the Tier-1 write chokepoint canonical-formats Go
+// output (gofmt), so the field's padding depends on its sibling fields'
+// lengths and is not this test's business.
+var authzFieldRe = regexp.MustCompile(`authz\s+middleware\.Authorizer`)
 
 // scaffoldComponentDir writes <projectDir>/<roleRoot>/<dir>/<file> with a
 // minimal Deps + New shape under the given package clause.
@@ -318,10 +325,13 @@ func (s *Service) Register(mux interface{ Handle(string, interface{}) }, opts ..
 		t.Errorf("authed service must wire deps.Authorizer:\n%s", content)
 	}
 	// And the file still declares the shared authz scaffolding.
-	for _, want := range []string{"func WithAuthorizer(", "authz  middleware.Authorizer", "testkit.PermissiveAuthorizer{}"} {
+	for _, want := range []string{"func WithAuthorizer(", "testkit.PermissiveAuthorizer{}"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("testing.go missing %q (an authed service is present):\n%s", want, content)
 		}
+	}
+	if !authzFieldRe.MatchString(content) {
+		t.Errorf("testing.go missing the authz middleware.Authorizer field (an authed service is present):\n%s", content)
 	}
 
 	// The carve service's factory body must NOT wire deps.Authorizer (the
@@ -390,7 +400,6 @@ func (s *Service) Register(mux interface{ Handle(string, interface{}) }, opts ..
 	// Shared authz scaffolding stays (the test seam needs it).
 	for _, want := range []string{
 		"func WithAuthorizer(",
-		"authz  middleware.Authorizer",
 		"testkit.PermissiveAuthorizer{}",
 		`"connectrpc.com/connect"`,
 		"middleware.AuthzInterceptor(cfg.authz)",
@@ -398,6 +407,9 @@ func (s *Service) Register(mux interface{ Handle(string, interface{}) }, opts ..
 		if !strings.Contains(content, want) {
 			t.Errorf("all-carve-out project: testing.go must still contain %q:\n%s", want, content)
 		}
+	}
+	if !authzFieldRe.MatchString(content) {
+		t.Errorf("all-carve-out project: testing.go must still declare the authz middleware.Authorizer field:\n%s", content)
 	}
 	// But no service's factory wires deps.Authorizer (the compile fix). Scope
 	// the check to the code bodies, not the doc comments that mention the field.

@@ -55,7 +55,7 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 	isService := kind == config.ProjectKindService
 
 	// Build template data from config
-	ciData := buildCIWorkflowData(cfg)
+	ciData := buildCIWorkflowData(cfg, root)
 
 	// ── ci.yml ──
 	ciContent, err := templates.CITemplates(provider).Render("ci.yml.tmpl", ciData)
@@ -126,10 +126,15 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 }
 
 // buildCIWorkflowData maps a ProjectConfig to the CI workflow template data.
-func buildCIWorkflowData(cfg *config.ProjectConfig) templates.CIWorkflowData {
+func buildCIWorkflowData(cfg *config.ProjectConfig, root string) templates.CIWorkflowData {
 	goVersion := cfg.CI.EffectiveGoVersion()
 	hasFrontends := len(cfg.Frontends) > 0
-	hasServices := len(cfg.Servers()) > 0
+	// Services are declared either in forge.yaml components or proto-first
+	// (proto/ service declarations with no components entry). CI workflows
+	// must see the same shape the generate pipeline sees, so consult proto
+	// truth too — otherwise proto-first projects scaffold ci.yml without buf
+	// steps and never get proto-breaking.yml.
+	hasServices := len(cfg.Servers()) > 0 || projectDefinesConnectServices(root)
 
 	var frontends []templates.FrontendCIConfig
 	for _, fe := range cfg.Frontends {

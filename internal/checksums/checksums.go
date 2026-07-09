@@ -413,6 +413,9 @@ func Hash(content []byte) string {
 // WriteGeneratedFile writes a Tier-1 (forge-owned, regenerated every
 // run) file through the certification chokepoint:
 //
+//   - .go renders are CANONICAL-FORMATTED first (goformat.go: gofmt +
+//     goimports grouping, module path as local prefix) so the stamped
+//     bytes are a fixed point of the formatter a user's tooling runs;
 //   - the rendered content is STAMPED with its embedded forge:hash
 //     marker (comment-incapable formats fall back to the scoped
 //     .forge/hashes.json entry);
@@ -453,6 +456,14 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 		reAdopting = true
 	}
 
+	// Canonical-format Go BEFORE stamping (see goformat.go): the embedded
+	// hash must certify bytes that are a fixed point of the canonical
+	// formatter (gofmt + goimports grouping with the module path as the
+	// local prefix). Stamping a non-canonical render would let the first
+	// formatter pass over the tree turn a pristine file into byte drift
+	// that the stomp guard misreads as a hand-edit.
+	content = canonicalizeGoForWrite(root, relPath, content)
+
 	stamped, stampable := Stamp(relPath, content)
 	if !stampable {
 		return writeUnstampable(root, relPath, content, cs, force)
@@ -490,9 +501,32 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 				}
 			}
 		case Modified:
-			// Hand-edited after forge stamped it: the stomp guard's
-			// territory. Skip unless this run's --force scope covers it.
-			if !forceApplies(relPath, force) {
+			// Byte drift is not always semantic drift: a formatter pass
+			// (goimports regrouping imports, gofmt realigning whitespace)
+			// rewrites bytes without touching meaning. Normalize-on-compare
+			// before treating the mismatch as a hand-edit (goformat.go).
+			embedded, _ := ExtractMarker(onDisk)
+			canonBody, canonOK := canonicalGoBody(root, relPath, onDisk)
+			switch {
+			case canonOK && canonBody == BodyHash(stamped):
+				// Formatter-equivalent to the CURRENT render: overwriting
+				// loses nothing user-authored and heals both the formatting
+				// and the stale stamp. Fall through to the write.
+			case canonOK && canonBody == embedded && embedded != UnverifiedMarkerValue:
+				// Formatter-equivalent to the certified OLDER render — the
+				// clean-file analogue of Pristine-but-stale, so the same
+				// non-destructive default applies: skip loudly unless the
+				// user opted in via --heal or this file's --force scope.
+				if !AutoHeal && !forceApplies(relPath, force) {
+					noticeHealOnce(relPath)
+					return false, nil
+				}
+				if _, pending := pendingHeals[relPath]; !pending {
+					pendingHeals[relPath] = embedded
+				}
+			case !forceApplies(relPath, force):
+				// Hand-edited after forge stamped it: the stomp guard's
+				// territory. Skip unless this run's --force scope covers it.
 				return false, nil
 			}
 		case NoMarker:
@@ -742,9 +776,18 @@ func ScanMarkers(root string) map[string]MarkerInfo {
 			return nil
 		}
 		mi := MarkerInfo{Embedded: embedded, Body: BodyHash(content)}
-		if embedded == mi.Body {
+		switch {
+		case embedded == mi.Body:
 			mi.Status = Pristine
-		} else {
+		case goFormatterEquivalent(root, rel, content, embedded):
+			// Formatter-only drift on a .go file: the bytes re-hash to the
+			// certified render after canonical formatting (goformat.go), so
+			// a goimports/gofmt pass — not a hand — produced the mismatch.
+			// The file is clean; the next successful Tier-1 write restores
+			// canonical bytes and a fresh stamp. Non-Go formats keep
+			// exact-byte semantics.
+			mi.Status = Pristine
+		default:
 			mi.Status = Modified
 		}
 		out[rel] = mi

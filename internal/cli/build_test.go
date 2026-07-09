@@ -496,3 +496,53 @@ func TestFrontendsSkippedByFramework(t *testing.T) {
 		})
 	}
 }
+
+// TestProjectGoBuildTarget_RawProjectName verifies the env-less fallback
+// target points at cmd/<raw project name> — the directory the scaffold
+// actually writes — for hyphenated, snake, and plain names alike. The
+// regression this guards: naming.ServicePackage mangled hyphens to
+// underscores ("control-plane" → "./cmd/control_plane"), so env-less
+// `forge build` failed with "directory not found" on any hyphenated
+// project even though `forge build --env=...` (KCL ./cmd/<name> default)
+// worked fine.
+func TestProjectGoBuildTarget_RawProjectName(t *testing.T) {
+	cases := []struct {
+		name    string
+		project string
+		wantCmd string
+		wantBin string
+	}{
+		{"hyphenated", "control-plane", "./cmd/control-plane", "control-plane"},
+		{"snake", "workspace_proxy", "./cmd/workspace_proxy", "workspace_proxy"},
+		{"plain", "trader", "./cmd/trader", "trader"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := projectGoBuildTarget(&config.ProjectConfig{Name: c.project})
+			if got.cmd != c.wantCmd {
+				t.Errorf("cmd = %q, want %q", got.cmd, c.wantCmd)
+			}
+			if got.outputName != c.wantBin {
+				t.Errorf("outputName = %q, want %q", got.outputName, c.wantBin)
+			}
+		})
+	}
+}
+
+// TestResolveGoTargets_EnvLessHyphenatedProject pins the full env-less
+// resolution path (entities == nil): one target, at the raw hyphenated
+// cmd dir — consistent with what the KCL EffectiveBuild default would
+// produce for the same name under --env.
+func TestResolveGoTargets_EnvLessHyphenatedProject(t *testing.T) {
+	cfg := &config.ProjectConfig{Name: "control-plane"}
+	targets := resolveGoTargets(true, nil, cfg)
+	if len(targets) != 1 {
+		t.Fatalf("resolveGoTargets returned %d targets, want 1", len(targets))
+	}
+	if targets[0].cmd != "./cmd/control-plane" {
+		t.Errorf("cmd = %q, want %q", targets[0].cmd, "./cmd/control-plane")
+	}
+	if targets[0].outputName != "control-plane" {
+		t.Errorf("outputName = %q, want %q", targets[0].outputName, "control-plane")
+	}
+}

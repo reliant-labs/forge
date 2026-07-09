@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // sortedKeys returns map keys in deterministic order. Used so docker
@@ -1154,11 +1153,19 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 // `./cmd` hardcode — it points at the real cmd/<project> package the
 // scaffold writes. With --env set the KCL service set drives the builds
 // and this is unused.
+//
+// The cmd/<bin>/ leaf is the RAW forge.yaml project name — the same
+// convention every other resolver uses (bootstrapBinaryName, add's
+// binaryName, the generator's binaryName, and the KCL EffectiveBuild
+// default of ./cmd/<name>). It must NOT go through
+// naming.ServicePackage: that mangles hyphens to underscores
+// ("control-plane" → "./cmd/control_plane"), pointing the env-less
+// build at a directory the scaffold never wrote.
 func projectGoBuildTarget(cfg *config.ProjectConfig) goBuildTarget {
-	pkg := naming.ServicePackage(cfg.Name)
+	name := cfg.Name
 	return goBuildTarget{
-		cmd:        "./cmd/" + pkg,
-		outputName: pkg,
+		cmd:        "./cmd/" + name,
+		outputName: name,
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"go/format"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -936,7 +937,9 @@ func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 	}
 	content := string(data)
 
-	if !strings.Contains(content, `db:     testkit.NewPostgresDB(t)`) {
+	// Alignment-insensitive: the write chokepoint canonical-formats Go
+	// output, so the composite-literal key padding is gofmt's call.
+	if !regexp.MustCompile(`db:\s+testkit\.NewPostgresDB\(t\)`).MatchString(content) {
 		t.Error("default test DB must be the BARE real-postgres DB (migrations are opt-in)")
 	}
 	if !strings.Contains(content, `func NewMigratedTestDB(t *testing.T) orm.Context`) {

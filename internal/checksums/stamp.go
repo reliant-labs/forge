@@ -33,6 +33,15 @@
 // Anything else — including trailing whitespace inside lines — is
 // hashed verbatim: it IS content.
 //
+// Go files get one additional accommodation, OUTSIDE the hash spec: the
+// Tier-1 writer canonical-formats .go renders (gofmt + goimports import
+// grouping, module path as the local prefix) BEFORE stamping, and the
+// verification sites re-hash mismatching .go bytes after the same
+// canonical formatting before concluding "hand-edited" — formatter-only
+// byte drift is not semantic drift. See goformat.go. Verify itself
+// stays exact-byte; the tolerance lives at the path-aware call sites
+// (ScanMarkers, WriteGeneratedFile).
+//
 // ── Marker line syntax per format ─────────────────────────────────────
 //
 //	//  forge:hash=…   .go .ts .tsx .js .jsx .mjs .cjs .proto .alloy .kt .rs

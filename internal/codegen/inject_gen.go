@@ -51,11 +51,14 @@
 package codegen
 
 import (
+	"bytes"
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"text/template"
 
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -276,15 +279,316 @@ func GenerateCompose(in InjectGenInput) error {
 	if err != nil {
 		return fmt.Errorf("render compose.go.tmpl: %w", err)
 	}
-	// SCAFFOLD-ONCE: compose.go is the OWNED component-construction site. Forge
-	// emits it once (the initial services/packages wiring) and never regenerates
-	// it — adding a component is a hand-edit here (or a `forge add` append), not
-	// a re-derivation from a discovered set. A project that already has a
-	// compose.go (every existing project) is left untouched.
-	if _, err := writeForgeScaffoldOnce(in.ProjectDir, filepath.Join("internal", "app", "compose.go"), content); err != nil {
-		return fmt.Errorf("write internal/app/compose.go: %w", err)
+	// SCAFFOLD-ONCE for the INITIAL emit; ADDITIVELY RECONCILED afterwards.
+	// compose.go is the OWNED component-construction site: forge never
+	// re-renders it wholesale (that would clobber user edits). But a service
+	// added AFTER the initial scaffold is missing from the Components bag,
+	// while the regenerated mounts_services.go references c.<FieldName> for it
+	// → `c.X undefined` build break. So when compose.go already exists we
+	// reconcile ADDITIVELY: inject only the missing components' import + field
+	// + construction, and only when (a) the file is still in forge shape and
+	// (b) the injected result gofmt-parses as valid Go. Anything else leaves
+	// the file byte-for-byte untouched (the historical write-once behavior).
+	composeRel := filepath.Join("internal", "app", "compose.go")
+	composeAbs := filepath.Join(in.ProjectDir, composeRel)
+	existing, rerr := os.ReadFile(composeAbs)
+	switch {
+	case rerr == nil:
+		reconciled, changed := reconcileComposeAddComponents(string(existing), data)
+		if changed {
+			if werr := writeUserScaffold(composeAbs, []byte(reconciled)); werr != nil {
+				return fmt.Errorf("update internal/app/compose.go: %w", werr)
+			}
+		}
+		return nil
+	case os.IsNotExist(rerr):
+		if _, werr := writeForgeScaffoldOnce(in.ProjectDir, composeRel, content); werr != nil {
+			return fmt.Errorf("write internal/app/compose.go: %w", werr)
+		}
+		return nil
+	default:
+		return fmt.Errorf("read internal/app/compose.go: %w", rerr)
 	}
-	return nil
+}
+
+// composeComponentBlock renders exactly ONE component's construction block for
+// injection into an existing compose.go — the authz-var preamble (when the
+// component declares an Authorizer), then the New(Deps{...}) call (fallible or
+// not) and the `c.<FieldName> = …` assignment. It mirrors compose.go.tmpl's
+// per-component range body byte-for-byte; the shared gofmt pass in
+// reconcileComposeAddComponents normalizes the whitespace, so the two stay in
+// lockstep on output even if the raw indentation drifts.
+var composeComponentBlock = template.Must(template.New("composeComponentBlock").Parse(
+	`{{if .NeedsAuthzVar}}var {{.VarName}}Authz middleware.Authorizer = {{.Alias}}.NewAuthorizer()
+if config.DevAuthBypass(infra.Cfg) {
+{{.VarName}}Authz = middleware.DevAuthorizer{}
+}
+{{end}}{{if .Fallible}}{{.LocalVar}}, err := {{.Alias}}.New({{.Alias}}.Deps{
+{{range .Assignments}}{{.Field}}: {{.Expr}},{{if .Comment}} // {{.Comment}}{{end}}
+{{end}}})
+if err != nil {
+return nil, fmt.Errorf("{{.FieldName}}: %w", err)
+}
+c.{{.FieldName}} = {{.LocalVar}}
+{{else}}c.{{.FieldName}} = {{.Alias}}.New({{.Alias}}.Deps{
+{{range .Assignments}}{{.Field}}: {{.Expr}},{{if .Comment}} // {{.Comment}}{{end}}
+{{end}}})
+{{end}}`))
+
+// reconcileComposeAddComponents keeps an existing compose.go in sync with the
+// discovered component set in two ADDITIVE ways:
+//
+//   - a component in `data` ABSENT from the file gets its import + Components
+//     field + NewComponents construction injected (F3: `forge add service`);
+//   - a component ALREADY in the file that has GAINED a Deps assignment (e.g.
+//     the `DB orm.Context` field the first entity adds, resolved by type to
+//     `infra.ORM`) gets that assignment injected into its New(Deps{…}) literal
+//     (F4: a stale compose.go must not block the by-type wiring).
+//
+// It returns the updated source and whether anything changed. It is
+// deliberately conservative: it only edits a file still in recognizable forge
+// shape, never rewrites a component that is already fully wired, never
+// duplicates an assignment the construction already sets, and ABORTS (returns
+// the input unchanged) if the result does not gofmt-parse as valid Go. That
+// last guard is the safety net — a bad anchor can only ever no-op, never emit
+// broken Go.
+func reconcileComposeAddComponents(existing string, data InjectGenData) (string, bool) {
+	// Guard: recognizable forge shape only. A disowned / hand-rewritten
+	// compose.go (no Components struct, no NewComponents return anchor) is left
+	// to the user — the loud `c.X undefined` is the correct signal there.
+	structOpen := strings.Index(existing, "type Components struct {")
+	if structOpen < 0 || !strings.Contains(existing, "func NewComponents(infra *Infra)") {
+		return existing, false
+	}
+	// A dependency cycle turns the emit into a two-phase setter shape that is
+	// too bespoke to append into safely; leave it for the user.
+	if data.HasCycle {
+		return existing, false
+	}
+	// The struct's closing brace: the first line that is exactly "}" after the
+	// struct opener.
+	structClose := indexClosingBrace(existing, structOpen)
+	if structClose < 0 {
+		return existing, false
+	}
+	// NewComponents' terminal `return c, nil`.
+	retIdx := strings.Index(existing, "\treturn c, nil")
+	if retIdx < 0 {
+		retIdx = strings.Index(existing, "return c, nil")
+	}
+	if retIdx < 0 {
+		return existing, false
+	}
+
+	fieldTypeByName := make(map[string]string, len(data.Fields))
+	for _, f := range data.Fields {
+		fieldTypeByName[f.FieldName] = f.FieldType
+	}
+
+	var (
+		fieldLines []string // Components struct rows to add
+		ctorBlocks []string // NewComponents construction blocks to add
+		imports    []string // component import lines to add
+		anyAuthz   bool
+		anyFmt     bool
+	)
+	for _, c := range data.Order {
+		// Already wired? The `c.<FieldName> =` assignment is unique to this
+		// component in compose.go (the space+`=` disambiguates prefixes).
+		if strings.Contains(existing, "c."+c.FieldName+" =") {
+			continue
+		}
+		ft := fieldTypeByName[c.FieldName]
+		if ft == "" {
+			ft = "*" + c.Alias + ".Service"
+		}
+		fieldLines = append(fieldLines, "\t"+c.FieldName+" "+ft)
+
+		var buf bytes.Buffer
+		if err := composeComponentBlock.Execute(&buf, c); err != nil {
+			return existing, false
+		}
+		ctorBlocks = append(ctorBlocks, buf.String())
+		if c.NeedsAuthzVar {
+			anyAuthz = true
+		}
+		if c.Fallible {
+			anyFmt = true
+		}
+
+		imp := c.Alias + ` "` + data.Module + "/" + c.ImportPath + `"`
+		if !strings.Contains(existing, `"`+data.Module+"/"+c.ImportPath+`"`) {
+			imports = append(imports, "\t"+imp)
+		}
+	}
+	out := existing
+	changed := false
+
+	// ── Pass A: inject entirely-missing components ────────────────────────
+	if len(fieldLines) > 0 {
+		// 1. Component import lines (+ any std/pkg imports the new blocks need).
+		var importAdds []string
+		importAdds = append(importAdds, imports...)
+		if anyFmt && !importsContain(out, `"fmt"`) {
+			importAdds = append(importAdds, "\t\"fmt\"")
+		}
+		if anyAuthz {
+			if !importsContain(out, data.Module+"/pkg/config") {
+				importAdds = append(importAdds, "\t\""+data.Module+"/pkg/config\"")
+			}
+			if !importsContain(out, data.Module+"/pkg/middleware") {
+				importAdds = append(importAdds, "\t\""+data.Module+"/pkg/middleware\"")
+			}
+		}
+		if len(importAdds) > 0 {
+			out = injectBeforeImportClose(out, strings.Join(importAdds, "\n"))
+		}
+
+		// Recompute anchors on the mutated string.
+		structOpen = strings.Index(out, "type Components struct {")
+		structClose = indexClosingBrace(out, structOpen)
+		if structClose < 0 {
+			return existing, false
+		}
+		// 2. Components struct fields — before the struct's closing brace.
+		out = out[:structClose] + strings.Join(fieldLines, "\n") + "\n" + out[structClose:]
+
+		// 3. Construction blocks — before `return c, nil`.
+		retIdx = strings.Index(out, "\treturn c, nil")
+		if retIdx < 0 {
+			retIdx = strings.Index(out, "return c, nil")
+		}
+		if retIdx < 0 {
+			return existing, false
+		}
+		out = out[:retIdx] + strings.Join(ctorBlocks, "\n") + "\n" + out[retIdx:]
+		changed = true
+	}
+
+	// ── Pass B: inject assignments a PRESENT component has gained ─────────
+	// (the DB dep the first entity adds is the motivating case). A component
+	// injected in Pass A already carries every assignment, so it is skipped.
+	for _, c := range data.Order {
+		if strings.Contains(existing, "c."+c.FieldName+" =") { // present before this run
+			if updated, did := composeInjectMissingAssignments(out, c); did {
+				out = updated
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return existing, false
+	}
+
+	// Safety net: only accept the edit if it gofmt-parses as valid Go. A bad
+	// anchor can then only no-op, never write broken source.
+	formatted, err := format.Source([]byte(out))
+	if err != nil {
+		return existing, false
+	}
+	return string(formatted), true
+}
+
+// composeInjectMissingAssignments injects into component c's existing
+// New(<alias>.Deps{ … }) literal any assignment from c.Assignments whose field
+// key is not already set there. Used to retrofit a Deps field a component
+// gained after compose.go was first scaffolded (the DB dep the first entity
+// adds). Returns the updated source and whether it injected anything. No-ops
+// (returns input, false) when the component's construction can't be located or
+// its Deps literal is unbalanced.
+func composeInjectMissingAssignments(content string, c InjectComponentData) (string, bool) {
+	assignStart := strings.Index(content, "c."+c.FieldName+" =")
+	if assignStart < 0 {
+		return content, false
+	}
+	marker := c.Alias + ".Deps{"
+	di := strings.Index(content[assignStart:], marker)
+	if di < 0 {
+		return content, false
+	}
+	depsOpen := assignStart + di + len(marker) // byte just after the '{'
+	// Find the matching close brace of the Deps literal.
+	depth := 1
+	i := depsOpen
+	for ; i < len(content) && depth > 0; i++ {
+		switch content[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+		}
+	}
+	if depth != 0 {
+		return content, false
+	}
+	block := content[depsOpen : i-1] // between the braces
+
+	// Which field keys are already set? Compare against each line's trimmed
+	// `Field:` prefix so "DB" never matches "DBPool".
+	setKey := func(field string) bool {
+		for _, line := range strings.Split(block, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), field+":") {
+				return true
+			}
+		}
+		return false
+	}
+	var adds []string
+	for _, a := range c.Assignments {
+		if setKey(a.Field) {
+			continue
+		}
+		line := "\t\t" + a.Field + ": " + a.Expr + ","
+		if a.Comment != "" {
+			line += " // " + a.Comment
+		}
+		adds = append(adds, line)
+	}
+	if len(adds) == 0 {
+		return content, false
+	}
+	ins := "\n" + strings.Join(adds, "\n")
+	return content[:depsOpen] + ins + content[depsOpen:], true
+}
+
+// indexClosingBrace returns the byte index of the first line consisting solely
+// of "}" at or after `open` (a `type X struct {` position). Returns -1 when the
+// struct is unterminated. Used to locate a struct's closing brace for field
+// injection without a full AST parse.
+func indexClosingBrace(content string, open int) int {
+	if open < 0 {
+		return -1
+	}
+	rest := content[open:]
+	if i := strings.Index(rest, "\n}"); i >= 0 {
+		return open + i + 1 // point at the '}' byte
+	}
+	return -1
+}
+
+// importsContain reports whether the compose.go import block already imports
+// `needle` (a quoted path, or an unquoted path fragment). A plain substring
+// test is sufficient here: the import block is small and forge-emitted, and a
+// false positive only means we skip re-adding an import that is already there.
+func importsContain(content, needle string) bool {
+	return strings.Contains(content, needle)
+}
+
+// injectBeforeImportClose inserts `lines` just before the closing paren of the
+// first `import (` block. No-ops (returns input) when there is no parenthesized
+// import block.
+func injectBeforeImportClose(content, lines string) string {
+	impOpen := strings.Index(content, "import (")
+	if impOpen < 0 {
+		return content
+	}
+	closeRel := strings.Index(content[impOpen:], "\n)")
+	if closeRel < 0 {
+		return content
+	}
+	pos := impOpen + closeRel // index of the '\n' before ')'
+	return content[:pos] + "\n" + lines + content[pos:]
 }
 
 // resolveInjectField resolves one Deps field to the Go expression Build
@@ -476,6 +780,19 @@ func GenerateProviders(modulePath, databaseDriver string, ormEnabled bool, proje
 	appDir := filepath.Join(projectDir, "internal", "app")
 	path := filepath.Join(appDir, "providers.go")
 	if _, err := os.Stat(path); err == nil {
+		// Scaffold-once file present. One ADDITIVE retrofit: a project
+		// scaffolded before its first entity has a providers.go with a
+		// `DB *sql.DB` pool but NO `*orm.Client`. When the first entity turns
+		// on the ORM (ormEnabled), the service's `DB orm.Context` dep has no
+		// assignable Infra field (*sql.DB is not orm.Context) → build break.
+		// Inject the ORM field + its OpenInfra construction so the by-type
+		// wiring resolves. Guarded + gofmt-checked; any other shape is left
+		// untouched (the historical write-once behavior).
+		if ormEnabled {
+			if err := ensureProvidersORMField(path); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
@@ -491,6 +808,64 @@ func GenerateProviders(modulePath, databaseDriver string, ormEnabled bool, proje
 		return fmt.Errorf("render providers.go.tmpl: %w", err)
 	}
 	return writeUserScaffold(path, content)
+}
+
+// ensureProvidersORMField retrofits the `ORM *orm.Client` field + its OpenInfra
+// construction into an existing (scaffold-once) providers.go that has a
+// `DB *sql.DB` pool but no ORM client — the state of a project scaffolded
+// before its first entity. It is a no-op unless the file is in recognizable
+// forge shape (has the `DB *sql.DB` field, the `infra.DB = db` assignment, and
+// the orm-client factory is genuinely absent), and it ABORTS (leaves the file
+// byte-for-byte unchanged) if the injected result does not gofmt-parse. The
+// orm client satisfies the orm.Context Deps field the generated CRUD needs.
+func ensureProvidersORMField(path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	content := string(raw)
+
+	// Already has the ORM client, or isn't the DB-bearing forge shape → leave.
+	if strings.Contains(content, "ORM *orm.Client") || strings.Contains(content, "orm.NewClientWithDB") {
+		return nil
+	}
+	if !strings.Contains(content, "DB *sql.DB") || !strings.Contains(content, "infra.DB = db") {
+		return nil
+	}
+
+	out := content
+	// 1. Struct field: after the `DB *sql.DB` line.
+	out = strings.Replace(out, "\tDB *sql.DB\n", "\tDB  *sql.DB\n\tORM *orm.Client\n", 1)
+
+	// 2. OpenInfra construction: after `infra.DB = db`.
+	ormBlock := "\n\tif db != nil {\n" +
+		"\t\tormClient, err := orm.NewClientWithDB(db, \"postgres\")\n" +
+		"\t\tif err != nil {\n" +
+		"\t\t\treturn nil, fmt.Errorf(\"create ORM client: %w\", err)\n" +
+		"\t\t}\n" +
+		"\t\tinfra.ORM = ormClient\n" +
+		"\t}"
+	out = strings.Replace(out, "\tinfra.DB = db", "\tinfra.DB = db\n"+ormBlock, 1)
+
+	// 3. orm import, if absent.
+	if !strings.Contains(out, `"github.com/reliant-labs/forge/pkg/orm"`) {
+		if impOpen := strings.Index(out, "import ("); impOpen >= 0 {
+			if closeRel := strings.Index(out[impOpen:], "\n)"); closeRel >= 0 {
+				pos := impOpen + closeRel
+				out = out[:pos] + "\n\n\t\"github.com/reliant-labs/forge/pkg/orm\"" + out[pos:]
+			}
+		}
+	}
+
+	if out == content {
+		return nil
+	}
+	formatted, ferr := format.Source([]byte(out))
+	if ferr != nil {
+		// Injection produced invalid Go — abort quietly, leave the file as-is.
+		return nil
+	}
+	return writeUserScaffold(path, formatted)
 }
 
 // GenerateLifecycle emits internal/app/lifecycle.go: the supervised-

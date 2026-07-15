@@ -51,7 +51,10 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 )
 
@@ -121,6 +124,31 @@ type Options struct {
 	// manager without a probe listener (the default — vanilla forge
 	// projects don't bind one).
 	HealthProbeBindAddress string
+
+	// ByObjectNamespaces scopes the manager cache PER OBJECT TYPE: each entry
+	// maps an object example (e.g. &v1alpha1.Workspace{}) to the ONLY
+	// namespaces the manager's informers watch/list for that type
+	// (controller-runtime cache.ByObject.Namespaces). Types WITHOUT an entry
+	// keep the default cluster-wide watch, so a controller can confine its own
+	// CRD to the namespace its stack deploys into while still watching
+	// cross-namespace workload objects (Pods/PVCs in per-user namespaces)
+	// everywhere.
+	//
+	// Motivation: co-located stacks on one shared cluster (e.g. dev + e2e on
+	// one k3d node) each run their own copy of the same operator. With a
+	// cluster-wide CR watch, each copy also reconciles the OTHER stack's CRs —
+	// a derelict controller from one stack can then stamp its own config
+	// (image, env) onto a sibling stack's workloads. Scoping the CR watch to
+	// the stack's own namespace makes cross-stack reconciliation structurally
+	// impossible.
+	//
+	// Entries with no namespaces (or only empty strings) are dropped — that
+	// type stays cluster-wide, preserving the legacy behavior when the
+	// deployment namespace is unknown. The scoped types' GVKs are resolved
+	// against the manager scheme at manager construction, so every scoped
+	// type MUST be registered by one of the controllers' AddToScheme hooks
+	// (Run registers them all before creating the manager).
+	ByObjectNamespaces map[client.Object][]string
 }
 
 // Run creates a controller manager, registers every controller's
@@ -184,7 +212,29 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 	renewDeadline := envDuration("OPERATOR_RENEW_DEADLINE", defaultRenewDeadline)
 	retryPeriod := envDuration("OPERATOR_RETRY_PERIOD", defaultRetryPeriod)
 
+	// Build the manager scheme BEFORE NewManager: client-go's stock types plus
+	// every controller's CRD types. Registration must precede manager creation
+	// because the manager constructs its cache eagerly, and a per-object cache
+	// scope (Options.ByObjectNamespaces) resolves each scoped object's GVK
+	// against this scheme at construction time. A fresh scheme — rather than
+	// mutating client-go's global scheme.Scheme, which is what leaving
+	// ctrl.Options.Scheme nil did — keeps registrations process-local; the
+	// per-controller error string is unchanged.
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return fmt.Errorf("adding client-go scheme: %w", err)
+	}
+	for _, c := range controllers {
+		if c.AddToScheme == nil {
+			continue
+		}
+		if err := c.AddToScheme(scheme); err != nil {
+			return fmt.Errorf("adding %s scheme: %w", c.Name, err)
+		}
+	}
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:           scheme,
 		LeaderElection:   true,
 		LeaderElectionID: leaderID,
 		// Empty in-cluster — controller-runtime infers the namespace from
@@ -197,6 +247,9 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 		RenewDeadline:          &renewDeadline,
 		RetryPeriod:            &retryPeriod,
 		HealthProbeBindAddress: probeAddr,
+		// Per-object namespace scoping (nil ByObject leaves every informer
+		// cluster-wide — the legacy shape). See Options.ByObjectNamespaces.
+		Cache: cache.Options{ByObject: cacheByObject(opts.ByObjectNamespaces)},
 	})
 	if err != nil {
 		return fmt.Errorf("creating controller manager: %w", err)
@@ -216,17 +269,9 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 		}
 	}
 
-	// Register CRD schemes first, then controllers — a controller's
-	// SetupWithManager may depend on a sibling operator's types.
-	for _, c := range controllers {
-		if c.AddToScheme == nil {
-			continue
-		}
-		if err := c.AddToScheme(mgr.GetScheme()); err != nil {
-			return fmt.Errorf("adding %s scheme: %w", c.Name, err)
-		}
-	}
-
+	// CRD schemes were registered on the manager scheme before NewManager
+	// (see above) — every controller's SetupWithManager can rely on a sibling
+	// operator's types already being present.
 	for _, c := range controllers {
 		if err := c.SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up controller %q: %w", c.Name, err)
@@ -236,6 +281,36 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 
 	logger.Info("starting controller manager")
 	return mgr.Start(ctx)
+}
+
+// cacheByObject converts Options.ByObjectNamespaces (object type → namespace
+// list) into controller-runtime cache.ByObject rows. Entries with no usable
+// namespace (empty list, or only empty strings) are dropped — that type keeps
+// the default cluster-wide watch. Returns nil when nothing is scoped so Run
+// hands the manager a zero-value cache.Options (byte-identical to the
+// pre-scoping behavior).
+func cacheByObject(scopes map[client.Object][]string) map[client.Object]cache.ByObject {
+	if len(scopes) == 0 {
+		return nil
+	}
+	byObject := make(map[client.Object]cache.ByObject, len(scopes))
+	for obj, namespaces := range scopes {
+		cfgs := make(map[string]cache.Config, len(namespaces))
+		for _, ns := range namespaces {
+			if ns == "" {
+				continue
+			}
+			cfgs[ns] = cache.Config{}
+		}
+		if len(cfgs) == 0 {
+			continue
+		}
+		byObject[obj] = cache.ByObject{Namespaces: cfgs}
+	}
+	if len(byObject) == 0 {
+		return nil
+	}
+	return byObject
 }
 
 // resolveLeaderElectionID applies the lease-name precedence:

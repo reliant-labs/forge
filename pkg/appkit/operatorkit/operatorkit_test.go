@@ -3,6 +3,9 @@ package operatorkit
 import (
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // TestResolveLeaderElectionID asserts the LEADER_ELECTION_ID env override
@@ -35,6 +38,89 @@ func TestResolveLeaderElectionID(t *testing.T) {
 			t.Setenv("LEADER_ELECTION_ID", tc.envID)
 			if got := resolveLeaderElectionID(tc.optsID); got != tc.want {
 				t.Fatalf("resolveLeaderElectionID(%q) = %q, want %q", tc.optsID, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCacheByObject asserts the per-object namespace-scoping conversion:
+// scoped types get a cache.ByObject row with exactly the usable namespaces;
+// unscopable entries (empty list, empty-string namespaces) are dropped so the
+// type keeps the cluster-wide default; and a fully-empty input returns nil so
+// the manager receives a zero-value cache.Options (the legacy shape).
+func TestCacheByObject(t *testing.T) {
+	pod := &corev1.Pod{}
+	cm := &corev1.ConfigMap{}
+
+	tests := []struct {
+		name   string
+		scopes map[client.Object][]string
+		// wantNamespaces maps each object expected in the result to the
+		// namespace set its ByObject row must carry. Objects absent from this
+		// map must be absent from the result.
+		wantNamespaces map[client.Object][]string
+		wantNil        bool
+	}{
+		{
+			name:    "nil input returns nil",
+			scopes:  nil,
+			wantNil: true,
+		},
+		{
+			name:    "empty input returns nil",
+			scopes:  map[client.Object][]string{},
+			wantNil: true,
+		},
+		{
+			name:    "entry with no namespaces is dropped",
+			scopes:  map[client.Object][]string{pod: {}},
+			wantNil: true,
+		},
+		{
+			name:    "entry with only empty-string namespaces is dropped",
+			scopes:  map[client.Object][]string{pod: {"", ""}},
+			wantNil: true,
+		},
+		{
+			name:           "scoped entry carries its namespaces",
+			scopes:         map[client.Object][]string{pod: {"stack-dev"}},
+			wantNamespaces: map[client.Object][]string{pod: {"stack-dev"}},
+		},
+		{
+			name: "mixed: scoped entry kept, unscopable sibling dropped, empty strings filtered",
+			scopes: map[client.Object][]string{
+				pod: {"", "stack-dev", "stack-dev-wt1"},
+				cm:  {""},
+			},
+			wantNamespaces: map[client.Object][]string{pod: {"stack-dev", "stack-dev-wt1"}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cacheByObject(tc.scopes)
+			if tc.wantNil {
+				if got != nil {
+					t.Fatalf("cacheByObject() = %v, want nil", got)
+				}
+				return
+			}
+			if len(got) != len(tc.wantNamespaces) {
+				t.Fatalf("cacheByObject() has %d entries, want %d: %v", len(got), len(tc.wantNamespaces), got)
+			}
+			for obj, wantNS := range tc.wantNamespaces {
+				row, ok := got[obj]
+				if !ok {
+					t.Fatalf("cacheByObject() missing entry for %T", obj)
+				}
+				if len(row.Namespaces) != len(wantNS) {
+					t.Fatalf("entry for %T has namespaces %v, want %v", obj, row.Namespaces, wantNS)
+				}
+				for _, ns := range wantNS {
+					if _, ok := row.Namespaces[ns]; !ok {
+						t.Errorf("entry for %T missing namespace %q (got %v)", obj, ns, row.Namespaces)
+					}
+				}
 			}
 		})
 	}

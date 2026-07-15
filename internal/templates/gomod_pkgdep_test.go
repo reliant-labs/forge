@@ -77,6 +77,65 @@ func TestGoModTemplate_ForgePkgDevNoSibling(t *testing.T) {
 	}
 }
 
+// --- gen/go.mod (the separate gen submodule) --------------------------------
+
+type genGoModPkgDepData struct {
+	Module             string
+	GoVersion          string
+	ForgePkgVersion    string
+	ForgePkgGenReplace string
+}
+
+func renderGenGoMod(t *testing.T, data genGoModPkgDepData) string {
+	t.Helper()
+	out, err := ProjectTemplates().Render("gen-go.mod.tmpl", data)
+	if err != nil {
+		t.Fatalf("render gen-go.mod.tmpl: %v", err)
+	}
+	return string(out)
+}
+
+// Concrete pin (release tag or the pseudo-version this forge binary was
+// built against): gen/ pins the same version, no replace.
+func TestGenGoModTemplate_ForgePkgConcretePin(t *testing.T) {
+	got := renderGenGoMod(t, genGoModPkgDepData{
+		Module: "github.com/example/demo", GoVersion: "1.26",
+		ForgePkgVersion: "v0.0.0-20260624040937-ce5dfbd929ed",
+	})
+	if !strings.Contains(got, "github.com/reliant-labs/forge/pkg v0.0.0-20260624040937-ce5dfbd929ed") {
+		t.Errorf("gen concrete pin: missing pinned require, got:\n%s", got)
+	}
+	if strings.Contains(got, "replace github.com/reliant-labs/forge/pkg") {
+		t.Errorf("gen concrete pin: must not emit a replace, got:\n%s", got)
+	}
+}
+
+// Dev-sibling flow: placeholder require + rebased replace.
+func TestGenGoModTemplate_ForgePkgDevReplace(t *testing.T) {
+	got := renderGenGoMod(t, genGoModPkgDepData{
+		Module: "github.com/example/demo", GoVersion: "1.26",
+		ForgePkgGenReplace: "../../forge/pkg",
+	})
+	if !strings.Contains(got, "github.com/reliant-labs/forge/pkg v0.0.0") {
+		t.Errorf("gen dev mode: missing placeholder require, got:\n%s", got)
+	}
+	if !strings.Contains(got, "replace github.com/reliant-labs/forge/pkg => ../../forge/pkg") {
+		t.Errorf("gen dev mode: missing rebased replace, got:\n%s", got)
+	}
+}
+
+// Local go.work build with no sibling and no build-info version: gen/ omits
+// forge/pkg entirely (no unresolvable v0.0.0) so `go mod tidy` resolves it —
+// this is the regression the old template hard-coding `v0.0.0` broke.
+func TestGenGoModTemplate_ForgePkgNoVersionNoReplace(t *testing.T) {
+	got := renderGenGoMod(t, genGoModPkgDepData{
+		Module: "github.com/example/demo", GoVersion: "1.26",
+	})
+	if strings.Contains(got, "reliant-labs/forge/pkg") {
+		t.Errorf("gen no-version no-replace: must not mention forge/pkg (never emit unresolvable v0.0.0), got:\n%s", got)
+	}
+}
+
 // TestGoModTemplate_ModesAreMutuallyExclusive documents that a caller
 // bug supplying BOTH fields resolves in favor of the release pin — the
 // template's {{if}} chain checks ForgePkgVersion first — so a stamped

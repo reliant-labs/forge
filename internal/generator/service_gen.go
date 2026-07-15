@@ -165,18 +165,42 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 	// hand-written RPC definitions). ScaffoldForce overrides that guard for
 	// users who explicitly asked to re-stamp the scaffold.
 	protoPath := filepath.Join(root, "proto", "services", servicePackage, "v1", fmt.Sprintf("%s.proto", servicePackage))
+	// The stub carries the (forge.v1.service) option block WITH default_roles
+	// from birth. Two reasons this must be here, not deferred:
+	//   1. authz completeness — every RPC needs an explicit authz decision
+	//      (per-method required_roles / authz_public / authz_custom) OR a
+	//      service-wide default_roles floor. RPCs scaffolded later by `forge
+	//      add entity` carry auth_required but no required_roles, so without
+	//      this floor the authz lint fails the very next generate.
+	//   2. the forge/v1/forge.proto import is load-bearing for the option
+	//      extension; emitting it now (rather than letting `forge add entity`
+	//      back-fill it) keeps a fresh service buf-valid on its own.
+	// default_roles: ["member"] makes the service fail-closed by default —
+	// a forgotten annotation inherits this floor rather than going open.
 	protoContent := fmt.Sprintf(`syntax = "proto3";
 
 package services.%s.v1;
+
+import "forge/v1/forge.proto";
 
 option go_package = "%s/gen/services/%s/v1;%sv1";
 
 // %sService defines the %s service RPCs.
 service %sService {
+  option (forge.v1.service) = {
+    name: "%sService"
+    version: "1.0.0"
+    description: "%s service"
+
+    // Service-wide default authorization floor: every method that declares
+    // no required_roles of its own requires "member". Fail-closed by default.
+    default_roles: ["member"]
+  };
+
   // TODO: Add your RPC methods here.
 }
 `, servicePackage, modulePath, servicePackage, servicePackage,
-		handlerName, serviceName, handlerName)
+		handlerName, serviceName, handlerName, handlerName, serviceName)
 	if err := writeBytesWithMode(protoPath, []byte(protoContent), mode, progress); err != nil {
 		return err
 	}

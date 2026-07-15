@@ -5,7 +5,7 @@ k8s-shaped `forge.RenderedWorkload` INSIDE `forge.render_manifests` (the k8s
 adapter runs in the render pipeline; the user NEVER calls it), producing a
 correct Deployment + Service.
 
-Pins the load-bearing claims of the collapse (FORGE_KCL_IDIOMS.md §2 / §7):
+Pins the load-bearing claims of the collapse (docs/design/FORGE_KCL_IDIOMS.md §2 / §7):
 
   1. ONE realistic agnostic Service (modeled on control-plane prod
      `workspace-proxy`: image, port 8080, env across ALL THREE EnvSource

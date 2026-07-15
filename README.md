@@ -1,97 +1,112 @@
-# forge
+# Forge
 
-A Cobra-based CLI built with [Forge](https://github.com/reliant-labs/forge).
+Forge is a code-generation framework and CLI for building production Go +
+Next.js applications where everything communicates over
+[Connect RPC](https://connectrpc.com). You describe your API once in protobuf;
+Forge generates the handlers, ORM, database wiring, frontend hooks, and the
+deploy manifests around it — and keeps regenerating them without clobbering
+your business logic.
+
+It is purpose-built for LLM-driven development: a single, consistent interface
+pattern runs through the whole stack, so services are trivial to mock, wrap in
+middleware, and swap out.
+
+## What Forge gives you
+
+- **Proto is the single source of truth.** API contracts, ORM models, and
+  typed frontend hooks all derive from your `.proto` files via `forge generate`.
+- **Generated vs. hand-written code stay separated.** Generated output lives in
+  `gen/` and `*_gen.go`; your logic lives in handler files and `pkg/app/`.
+  Regeneration never overwrites the code you own.
+- **Migrations own the schema.** The database schema comes from SQL migrations;
+  proto drives the ORM layer above them.
+- **Deploy is target-agnostic.** Workloads are authored once as a KCL
+  `forge.Service` and projected onto Kubernetes today (compose / host / others
+  via adapters). See [`docs/design/`](docs/design/) for the design records.
+- **Batteries for agents.** A rich skill catalog (`forge skill list`) encodes
+  the project conventions that `forge lint` enforces.
+
+## Install
+
+```bash
+# Build the binary into ./bin/forge
+task build
+
+# Or install onto $PATH (into $GOBIN)
+task install
+forge version
+
+# Run straight from source without installing
+go run ./cmd/forge version
+```
 
 ## Quick start
 
 ```bash
-# Install dependencies
-task deps
+# Scaffold a new project (service / CLI / library)
+forge new my-app
+cd my-app
 
-# Build the binary into ./bin/forge
-task build
+# Add a service, then regenerate the stack from proto
+forge add service billing
+forge generate
 
-# Run from source
-go run ./cmd/forge version
+# The triple gate before you call a change done:
+forge generate && forge lint && go build ./... && go test ./...
 
-# Or install onto $PATH
-task install
-forge version
+# Bring the whole local dev loop up (build + deploy + host + frontend)
+forge up
 ```
 
-## Adding a subcommand
+Run `forge --help` for the full command surface (`add`, `generate`, `db`,
+`deploy`, `migrate`, `pack`, `mcp`, and more), or `forge <command> --help` for
+any one of them.
 
-Each subcommand lives in its own file under `cmd/forge/`. The pattern
-mirrors `version.go`:
+## Conventions & skills
 
-```go
-// cmd/forge/hello.go
-package main
+Forge ships an extensive skill catalog covering architecture, proto, db, api,
+services, testing, frontend, deploy, and debugging. The conventions they
+describe are enforced by `forge lint`, so prefer loading a skill before
+guessing:
 
-import (
-	"fmt"
-
-	"github.com/spf13/cobra"
-)
-
-var helloCmd = &cobra.Command{
-	Use:   "hello [name]",
-	Short: "Print a greeting",
-	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		name := "world"
-		if len(args) > 0 {
-			name = args[0]
-		}
-		fmt.Printf("hello, %s\n", name)
-	},
-}
-
-func init() {
-	rootCmd.AddCommand(helloCmd)
-}
+```bash
+forge skill list            # discover what's available
+forge skill load <name>     # read one
 ```
 
-For larger commands, factor logic into `internal/<package>/` and call it
-from the cobra `Run` function. `forge add package <name>` scaffolds an
-internal package with a contract interface and tests.
+`reliant.md` at the repo root captures the critical rules and testing tiers in
+brief.
 
-## Task commands
-
-| Command | Description |
-|---|---|
-| `task build` | Build the CLI binary into `./bin/forge` |
-| `task install` | Install the CLI into `$GOBIN` |
-| `task test` | Run `go test ./...` |
-| `task lint` | Run `golangci-lint` |
-| `task fmt` | Run `goimports -w` and `go mod tidy` |
-| `task vet` | Run `go vet ./...` |
-| `task clean` | Remove `./bin` and coverage outputs |
-
-Run `task --list` (or just `task`) for the full set.
-
-## Project structure
+## Repository layout
 
 ```
 forge/
-├── cmd/forge/    # Cobra root + subcommands (each in its own file)
-├── internal/         # Application packages (forge add package <name>)
-├── pkg/config/       # Configuration types (extend as needed)
-├── .reliant/         # Forge conventions, skills, project metadata
-├── docs/adr/         # Architecture Decision Records
-├── forge.yaml        # Forge project manifest (kind: cli)
-├── go.mod
-├── README.md
-└── Taskfile.yml
+├── cmd/forge/     # CLI entrypoint (package main)
+├── internal/      # CLI implementation, generators, packs, templates
+├── kcl/           # KCL module: typed schemas + manifest render layer
+├── pkg/           # Reusable libraries projects import (serverkit, etc.)
+├── proto/         # Forge's own proto annotations (forge/v1)
+├── components/    # UI component library shipped to scaffolded frontends
+├── docs/          # ADRs (docs/adr) and design records (docs/design)
+├── examples/      # Runnable examples
+├── forge.yaml     # Project manifest
+└── Taskfile.yml   # Automation entrypoints
 ```
 
-## Build flags
-
-Stamp the binary's version, commit, and date at build time so
-`forge version` reports a real release rather than `dev`:
+## Development
 
 ```bash
-go build -trimpath -buildvcs=true \
-  -ldflags="-X main.version=v1.0.0 -X main.commit=$(git rev-parse HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  -o bin/forge ./cmd/forge
+task deps           # install Go (and frontend) dependencies
+task test:short     # inner-loop tests: whole repo in seconds
+task test           # full unit suite with -race
+task lint           # golangci-lint + buf
+task fmt            # goimports + go mod tidy
 ```
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full dev loop, pre-commit
+hooks, and PR process, and [`reliant.md`](reliant.md) for the testing tiers and
+project conventions.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

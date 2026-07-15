@@ -149,6 +149,21 @@ func ComponentsToJSON(projectName string, components []config.ComponentConfig) (
 		// its behavior via a cobra subcommand at runtime. forge always
 		// emits a GoBuild default here; a project or env overlay can
 		// replace it with a DockerBuild / ShellBuild in KCL.
+		//
+		// The path forms differ by kind on purpose (F5):
+		//   - SECONDARY binary → cmd/<ServicePackage(name)> (hyphens →
+		//     underscores): a secondary binary is named after a Go
+		//     component, and `forge add binary` scaffolds the sanitized dir.
+		//   - PRIMARY (server/worker/cron/operator) → cmd/<project> VERBATIM
+		//     (hyphens preserved): the primary binary is named after the
+		//     project, and `forge new`'s scaffold + the generated Dockerfile
+		//     both write/build the raw `./cmd/<project>` path. Sanitizing the
+		//     project name here (the historical default) produced a build
+		//     target that pointed at cmd/<project_underscored> while the tree
+		//     on disk was cmd/<project-hyphenated> — the exact mismatch that
+		//     forced every hyphenated project to hand-override GoBuild.cmd in
+		//     KCL. `go build ./cmd/<hyphen>` is valid (a directory path, not a
+		//     package identifier), so the raw form is correct.
 		if cj.Kind == config.ComponentKindBinary {
 			binPkg := naming.ServicePackage(c.Name)
 			cj.Build = componentBuildJSON{
@@ -157,11 +172,10 @@ func ComponentsToJSON(projectName string, components []config.ComponentConfig) (
 				OutputName: binPkg,
 			}
 		} else {
-			projPkg := naming.ServicePackage(projectName)
 			cj.Build = componentBuildJSON{
 				Type:       "go",
-				Cmd:        "./cmd/" + projPkg,
-				OutputName: projPkg,
+				Cmd:        "./cmd/" + projectName,
+				OutputName: projectName,
 			}
 		}
 

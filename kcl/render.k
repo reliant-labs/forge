@@ -727,7 +727,7 @@ _render_namespace = lambda namespace: str -> any {
 # Kubernetes operator, so it gets CLUSTER-scoped RBAC — a ClusterRole +
 # ClusterRoleBinding named `${name}-clusterrole`/`-clusterrolebinding` (via
 # render_cluster_rbac, which ALSO emits the ServiceAccount) — INSTEAD OF the
-# namespaced Role a plain Service gets. This is the fix OPERATOR_AGNOSTIC.md Q3
+# namespaced Role a plain Service gets. This is the fix docs/design/OPERATOR_AGNOSTIC.md Q3
 # flags: previously ONLY _render_operator_manifests could emit a ClusterRole, so
 # an agnostic Service could not; now an operator authored as a `forge.Service`
 # with `k8s.operator` produces the same cluster RBAC an `Operator` did, with the

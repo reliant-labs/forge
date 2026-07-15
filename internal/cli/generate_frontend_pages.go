@@ -87,6 +87,13 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 		entityByName[strings.ToLower(e.Name)] = e
 	}
 
+	// The slug set the page generator considers LIVE this run — every entity
+	// with a real proto definition behind its CRUD RPCs. A route dir under a
+	// slug not in this set is an orphan of a renamed/removed entity (F7). We
+	// collect it once here (it's frontend-independent) and hand it to the
+	// per-frontend orphan reporter below.
+	liveSlugs := liveEntitySlugs(services, entityByName)
+
 	for _, fe := range cfg.Frontends {
 		feType := strings.ToLower(strings.TrimSpace(fe.Type))
 		if feType != "nextjs" && feType != "vite-spa" {
@@ -155,9 +162,109 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 		if skipCount > 0 {
 			fmt.Printf("  ⏭️  Preserved %d existing CRUD page(s) for frontend %s (delete a file and regenerate to re-scaffold it)\n", skipCount, fe.Name)
 		}
+
+		reportStaleFrontendRouteDirs(feType, filepath.Join(projectDir, feDir), fe.Name, liveSlugs)
 	}
 
 	return nil
+}
+
+// liveEntitySlugs returns the set of route slugs the page generator emits
+// this run — the EntitySlug of every CRUD entity that has a real proto entity
+// behind it (the same gate generateFrontendPages applies before writing a
+// page). Used to spot orphaned route dirs left behind by a rename/removal.
+func liveEntitySlugs(services []codegen.ServiceDef, entityByName map[string]codegen.EntityDef) map[string]bool {
+	live := map[string]bool{}
+	for _, svc := range services {
+		for _, entity := range codegen.ExtractCRUDEntities(svc) {
+			if _, ok := entityByName[strings.ToLower(entity.EntityName)]; !ok {
+				continue
+			}
+			if entity.EntitySlug != "" {
+				live[entity.EntitySlug] = true
+			}
+		}
+	}
+	return live
+}
+
+// reportStaleFrontendRouteDirs warns (report-only, never deletes) about
+// per-entity CRUD route directories whose slug is no longer a live entity —
+// the classic residue of renaming or removing an entity (F7). It is
+// deliberately NON-destructive: generated pages are scaffold-once and
+// USER-OWNED (they carry no certification marker and the user may have
+// hand-edited them), so forge must not delete them. Naming them, with the
+// exact `rm` and the reason, is the safe half forge can own.
+//
+// False positives are avoided by keying on the DISTINCTIVE generated-CRUD
+// shape rather than "any directory whose name isn't a live slug":
+//
+//   - nextjs:   a `<slug>/[id]/` dynamic-detail subdir (forge emits
+//     `<slug>/[id]/page.tsx` + `<slug>/[id]/edit/page.tsx`). A hand-authored
+//     route almost never reproduces the `[id]` App-Router segment by
+//     coincidence, so an unmatched slug with an `[id]` child is a strong
+//     orphan signal.
+//   - vite-spa: a `<slug>/` dir containing BOTH `List.tsx` and `Detail.tsx`
+//     (the generated pair).
+func reportStaleFrontendRouteDirs(feType, frontendAbsDir, feName string, liveSlugs map[string]bool) {
+	var routesRoot string
+	switch feType {
+	case "nextjs":
+		routesRoot = filepath.Join(frontendAbsDir, "src", "app")
+	case "vite-spa":
+		routesRoot = filepath.Join(frontendAbsDir, "src", "pages")
+	default:
+		return
+	}
+
+	entries, err := os.ReadDir(routesRoot)
+	if err != nil {
+		return // no routes dir yet (or unreadable) — nothing to report
+	}
+
+	var stale []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		slug := e.Name()
+		if liveSlugs[slug] {
+			continue
+		}
+		if looksLikeGeneratedCRUDRouteDir(feType, filepath.Join(routesRoot, slug)) {
+			rel := filepath.Join(routesRoot, slug)
+			stale = append(stale, rel)
+		}
+	}
+	if len(stale) == 0 {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\n⚠️  frontend %s: %d generated CRUD route dir(s) no longer match a live entity (renamed or removed). "+
+		"forge won't delete them (they're yours to edit); remove any that are dead:\n", feName, len(stale))
+	for _, p := range stale {
+		fmt.Fprintf(os.Stderr, "  - %s/  (rm -rf once you've confirmed it's dead)\n", p)
+	}
+}
+
+// looksLikeGeneratedCRUDRouteDir reports whether dir has the shape forge's
+// CRUD page generator emits, used to keep reportStaleFrontendRouteDirs from
+// flagging a user's hand-authored routes.
+func looksLikeGeneratedCRUDRouteDir(feType, dir string) bool {
+	switch feType {
+	case "nextjs":
+		// The dynamic detail route `<slug>/[id]/page.tsx` is the fingerprint.
+		if _, err := os.Stat(filepath.Join(dir, "[id]", "page.tsx")); err == nil {
+			return true
+		}
+		return false
+	case "vite-spa":
+		_, listErr := os.Stat(filepath.Join(dir, "List.tsx"))
+		_, detailErr := os.Stat(filepath.Join(dir, "Detail.tsx"))
+		return listErr == nil && detailErr == nil
+	default:
+		return false
+	}
 }
 
 // pageLayout bundles parsed templates with the per-kind output-path policy

@@ -438,6 +438,9 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
     _pod_annotations = svc.pod_annotations if svc.pod_annotations else {}
     _node_selector = svc.node_selector if svc.node_selector else {}
     _tolerations = svc.tolerations if svc.tolerations else []
+    # terminationGracePeriodSeconds override — omitted when unset (k8s
+    # default 30s), for workloads whose graceful drain needs longer.
+    _tgps = svc.termination_grace_period_seconds if svc.termination_grace_period_seconds else Undefined
     # securityContext override (agnostic Service.security -> RenderedWorkload
     # .security_override). None when unset => the helpers return the restricted
     # -PSA default UNCHANGED, so a workload with no `security` is byte-identical.
@@ -487,6 +490,9 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
                         nodeSelector = _node_selector
                     if _tolerations:
                         tolerations = _tolerations
+                    # Extended drain window — omitted when unset (k8s 30s).
+                    if _tgps:
+                        terminationGracePeriodSeconds = _tgps
                     securityContext = _pod_security_context(_sec)
                     # Init containers run to completion before the primary
                     # starts. Emitted only when set, so single-container

@@ -2,7 +2,7 @@
 Positive test — the agnostic-core env MAP (`{str: EnvSource}`) + the k8s
 adapter projection `forge.env_project`. ADDITIVE alongside EnvVar/env_merge.
 
-Pins the load-bearing claims of FORGE_KCL_IDIOMS.md §3:
+Pins the load-bearing claims of docs/design/FORGE_KCL_IDIOMS.md §3:
 
   1. ALL FOUR CHANNELS project to the correct EnvVar shape
      (value / from_secret->secret_ref+secret_key /

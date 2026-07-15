@@ -64,7 +64,7 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 			Pages:          pages,
 			NavHookImports: buildNavHookImports(pages),
 			BasePath:       strings.TrimSpace(fe.BasePath),
-			ApiUrl:         devAPIURL(cfg),
+			ApiUrl:         devAPIURL(cfg, projectDir),
 		}
 
 		if err := os.MkdirAll(filepath.Join(projectDir, feDir, "src", "components"), 0o755); err != nil {
@@ -303,13 +303,54 @@ func buildNavHookImports(pages []templates.NavPageData) []templates.NavHookImpor
 	return out
 }
 
-// devAPIURL derives the dev-mode API base URL from forge.yaml's first
-// server component's http port. Empty when the project has no servers
-// yet — connect.ts then refuses to guess and fails loud in non-mock dev.
-func devAPIURL(cfg *config.ProjectConfig) string {
-	servers := cfg.Servers()
-	if len(servers) == 0 || servers[0].PrimaryPort() == 0 {
+// defaultDevAPIPort is the canonical dev-mode HTTP port the runtime server
+// binds (see config-dev.yaml's `port: 8080`) and the same fallback
+// `forge api` uses. Service ports moved out of forge.yaml into KCL (a
+// deploy fact), so neither the configured nor the descriptor-discovered
+// server components carry a port — the dev fallback URL is derived from
+// this default instead.
+const defaultDevAPIPort = 8080
+
+// devAPIURL derives the dev-mode API base URL that connect.ts targets when
+// NEXT_PUBLIC_API_URL is unset. Empty only when the project has no backend
+// at all (CLI/library kind with a stray frontend) — connect.ts then refuses
+// to guess and fails loud in non-mock dev.
+func devAPIURL(cfg *config.ProjectConfig, projectDir string) string {
+	port := resolveDevAPIPort(cfg, projectDir)
+	if port == 0 {
 		return ""
 	}
-	return fmt.Sprintf("http://localhost:%d", servers[0].PrimaryPort())
+	return fmt.Sprintf("http://localhost:%d", port)
+}
+
+// resolveDevAPIPort resolves the dev-mode API port the same way the server /
+// `forge api` do: from the SAME proto-descriptor discovery
+// (codegen.IntrospectComponents), NOT from a forge.yaml services block —
+// which no longer exists (services are descriptor-discovered; ports live in
+// KCL). Precedence:
+//
+//  1. An explicit port on a configured or discovered server component (rare —
+//     forge.yaml no longer carries ports, but honor one if ever set).
+//  2. The canonical dev port (defaultDevAPIPort) when a backend exists: the
+//     proto descriptor exposes a Connect service, OR the project is
+//     service-kind (its dev server binds :8080 and serves /healthz even
+//     before the first service is added). This is what `forge run` actually
+//     listens on, so the baked fallback can't drift from the backend.
+//  3. Otherwise 0 → devAPIURL returns "" and connect.ts fails loud.
+func resolveDevAPIPort(cfg *config.ProjectConfig, projectDir string) int {
+	for _, s := range cfg.Servers() {
+		if p := s.PrimaryPort(); p != 0 {
+			return p
+		}
+	}
+	discovered := codegen.IntrospectComponents(projectDir)
+	for _, s := range discovered {
+		if p := s.PrimaryPort(); p != 0 {
+			return p
+		}
+	}
+	if len(discovered) > 0 || cfg.IsServiceKind() {
+		return defaultDevAPIPort
+	}
+	return 0
 }

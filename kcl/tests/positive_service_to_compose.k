@@ -1,7 +1,7 @@
 """
 PROOF — the SAME agnostic `forge.Service` renders to BOTH targets.
 
-This is the acid test of the target-agnostic core (§7 FORGE_KCL_IDIOMS.md).
+This is the acid test of the target-agnostic core (§7 docs/design/FORGE_KCL_IDIOMS.md).
 We take ONE agnostic Service — modeled on the prod workspace-proxy dogfood
 (positive_workspace_proxy_dogfood.k) — and render it TWO ways from the ONE
 authored spec:

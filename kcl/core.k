@@ -1,5 +1,5 @@
 """
-Forge KCL — agnostic-core env primitives (ADDITIVE; see FORGE_KCL_IDIOMS.md §3).
+Forge KCL — agnostic-core env primitives (ADDITIVE; see docs/design/FORGE_KCL_IDIOMS.md §3).
 
 This file introduces the target-agnostic core's model of a workload's
 environment: a MAP keyed by variable name (`{str: EnvSource}`), plus the
@@ -178,7 +178,7 @@ env_override = lambda base: {str: EnvSource}, overrides: {str: EnvSource} -> {st
 }
 
 # ===========================================================================
-# The ONE user-facing workload schema — target-AGNOSTIC (FORGE_KCL_IDIOMS.md).
+# The ONE user-facing workload schema — target-AGNOSTIC (docs/design/FORGE_KCL_IDIOMS.md).
 # ===========================================================================
 # `forge.Service` is what a project author writes: a target-agnostic
 # description of a workload with ZERO Kubernetes vocabulary (no Deployment,
@@ -228,7 +228,7 @@ schema EnvFrom:
 
 schema OperatorSpec:
     """The cluster-scoped OPERATOR tail of the k8s escape hatch
-    (`svc.k8s.operator`) — see OPERATOR_AGNOSTIC.md.
+    (`svc.k8s.operator`) — see docs/design/OPERATOR_AGNOSTIC.md.
 
     Setting this sub-block is what MARKS an agnostic `Service` as a
     Kubernetes OPERATOR (a controller-runtime manager that watches the API
@@ -279,7 +279,7 @@ schema K8sOverrides:
     cluster RBAC, CRDs stay on the k8s-native Operator/RenderedWorkload; those
     don't port to compose). A Service with NO `k8s` block is fully
     portable; the block is where non-portability is made EXPLICIT and
-    lintable (FORGE_KCL_IDIOMS.md §9).
+    lintable (docs/design/FORGE_KCL_IDIOMS.md §9).
 
     Applied BY the adapter (`_service_to_k8s`), NOT as a post-render merge:
     the adapter projects each field onto the demoted `RenderedWorkload` it emits
@@ -305,6 +305,15 @@ schema K8sOverrides:
                             kata daemon-pool `reliant.dev/runtime=kata` case).
       * `tolerations`     — tolerate the matching node-pool taint
                             (`reliant.dev/runtime=kata:NoSchedule`).
+
+      * `termination_grace_period_seconds`
+                          — pod terminationGracePeriodSeconds override for a
+                            workload whose graceful drain exceeds the k8s 30s
+                            default (control-plane's reliant temporal worker:
+                            SIGTERM → Temporal Worker.Stop() releasing
+                            in-flight activities so the server re-dispatches
+                            them immediately). Unset => k8s default (30s),
+                            byte-identical render.
 
       * `cluster`         — target a DIFFERENT `ClusterTarget` than the
                             Bundle's `cluster_target` for THIS service only —
@@ -333,7 +342,7 @@ schema K8sOverrides:
                             controller-runtime workload joins the ONE
                             agnostic `Service` surface instead of forking a
                             parallel `forge.Operator` type — see OperatorSpec
-                            and OPERATOR_AGNOSTIC.md.
+                            and docs/design/OPERATOR_AGNOSTIC.md.
 
     Tier 2 — the ULTIMATE floor, reached only for the genuinely exotic:
       * `raw_manifests`   — arbitrary k8s manifests OWNED by this service,
@@ -351,8 +360,13 @@ schema K8sOverrides:
     annotations?: {str: str}
     node_selector?: {str: str}
     tolerations?: [{str: any}]
+    termination_grace_period_seconds?: int
     cluster?: ClusterTarget
     raw_manifests?: [any]
+
+    check:
+        termination_grace_period_seconds == Undefined or termination_grace_period_seconds > 0, \
+            "K8sOverrides.termination_grace_period_seconds must be positive"
 
 schema HostOverrides:
     """The HOST adapter's escape hatch — a target-NAMESPACED block on an
@@ -780,6 +794,8 @@ _service_to_k8s = lambda svc: Service, target: ClusterTarget -> RenderedWorkload
                 node_selector = _k8s.node_selector
             if _k8s.tolerations:
                 tolerations = _k8s.tolerations
+            if _k8s.termination_grace_period_seconds:
+                termination_grace_period_seconds = _k8s.termination_grace_period_seconds
             if _k8s.raw_manifests:
                 manifests = _k8s.raw_manifests
     }
@@ -866,7 +882,7 @@ _service_to_host = lambda svc: Service -> RenderedWorkload {
 # and the Bundle check guarantees `cluster_target` is present whenever any
 # workload resolves to k8s — so a purely-host Bundle needs no cluster_target.
 # Compose is intentionally NOT dispatched here (dev-infra stays a legacy
-# compose dep; see FORGE_TARGET_POLYMORPHISM.md §3).
+# compose dep; see docs/design/FORGE_TARGET_POLYMORPHISM.md §3).
 # The k8s branch targets `svc.k8s.cluster` when the service declares a
 # per-service cluster override (the multi-cluster split — a workload landing in
 # a DIFFERENT cluster than the Bundle's), else the Bundle's `cluster_target`.
@@ -921,7 +937,7 @@ _project_workload = lambda svc: Service, bundle: Bundle -> RenderedWorkload {
 #                              a non-k8s target because the adapter simply
 #                              doesn't look at another target's namespace.
 #
-# !!! OPERATOR SKIP (OPERATOR_AGNOSTIC.md §5) !!! A Service whose `k8s` block
+# !!! OPERATOR SKIP (docs/design/OPERATOR_AGNOSTIC.md §5) !!! A Service whose `k8s` block
 # sets `operator` (svc.k8s.operator != Undefined) is a Kubernetes OPERATOR — a
 # controller-runtime manager that watches the API server. It has NO
 # docker-compose meaning (no API server, no Lease, no ClusterRole, no CRD): a

@@ -42,6 +42,7 @@ func newGenerateCmd() *cobra.Command {
 		verbose         bool
 		planOnly        bool
 		heal            bool
+		noRevert        bool
 		steps           string
 		deprecatedScope string // hidden alias for --steps, kept for one release
 	)
@@ -170,6 +171,7 @@ forensics, parallel-lane and migration escape hatches); run
 				Strict:          strict,
 				Verbose:         verbose,
 				Heal:            heal,
+				NoRevert:        noRevert,
 				Steps:           steps,
 			})
 			generateMu.Unlock()
@@ -227,6 +229,7 @@ forensics, parallel-lane and migration escape hatches); run
 	cmd.Flags().BoolVar(&planOnly, "plan", false, "Print the pipeline plan ([RUN]/[SKIP] annotation per step + gate reason) and exit 0 without running any step. Honors --steps and --templates-only.")
 	cmd.Flags().BoolVar(&skipConfigCheck, "skip-config-check", false, "Bypass the forge.yaml ↔ filesystem cross-check (declared services/frontends/packages must have on-disk backing). Use for parallel-lane / mid-migration scenarios.")
 	cmd.Flags().BoolVar(&heal, "heal", false, "Overwrite on-disk content that matches a PRIOR forge render (an older vintage) with the current template. OFF by default: such content is byte-indistinguishable from a deliberate edit, so forge leaves it untouched and tells you how to proceed rather than silently reverting your work. Pass --heal to advance every such file to the current templates.")
+	cmd.Flags().BoolVar(&noRevert, "no-revert", false, "Diagnostic mode: on a post-write step failure (most often the final 'go build' validate), leave the generated files ON DISK instead of rewinding the tree, so you can inspect the codegen output that failed to build. Default (off) reverts to the clean pre-run tree.")
 	// Deprecated alias for --steps. The flag previously called --scope
 	// was renamed in this release to free up the word "scope" for the
 	// file-ownership concept (see internal/checksums/inspector.go).
@@ -257,6 +260,7 @@ forensics, parallel-lane and migration escape hatches); run
 		"strict",            // pipeline-hardening mode for forge CI/dev
 		"plan",              // pipeline introspection (debugging gates)
 		"skip-config-check", // parallel-lane / mid-migration escape hatch
+		"no-revert",         // codegen forensics (inspect the output that failed to build)
 	)
 
 	// (`forge generate unfork`, the legacy-fork migration tool, was
@@ -398,6 +402,19 @@ type pipelineFlags struct {
 	// for "why didn't generate touch X?" questions without requiring
 	// --plan.
 	Verbose bool
+
+	// NoRevert (--no-revert) is a codegen-forensics escape hatch. By default
+	// a post-write step failure — most importantly the final `go build`
+	// validate — rewinds the tree to its clean pre-run state (the rollback
+	// journal armed by BeginRollbackJournal), so the user is never left with a
+	// mid-regen tree to `git checkout`. That same rewind, though, DELETES the
+	// generated output that failed to build — exactly what a forge/codegen
+	// developer needs to read to diagnose the bug. With NoRevert set, the
+	// journal is dropped (CommitRollback) instead of restored on failure, so
+	// the generated artifacts stay on disk for inspection; the run still exits
+	// non-zero with the underlying error. Off by default (the safe,
+	// clean-tree behavior).
+	NoRevert bool
 
 	// Heal (--heal) opts IN to overwriting on-disk content that matches a
 	// PRIOR forge render (an older vintage, but not the latest) with the
@@ -548,7 +565,18 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 			// so the tree is mid-regen. Rewind every forge-written file to
 			// its pre-run state and tell the user the tree is clean rather
 			// than leaving them a `git checkout` to find (fr-40f7ec9bd9).
-			rolledBack = rollbackGeneratedTree(ctx.AbsPath)
+			//
+			// --no-revert opts OUT: a forge/codegen developer debugging a
+			// generator bug needs to READ the output that failed to build,
+			// which the rewind would delete. Keep the artifacts on disk (drop
+			// the journal instead of restoring it) and say so; the run still
+			// fails with the underlying error.
+			if flags.NoRevert {
+				checksums.CommitRollback()
+				fmt.Fprintln(os.Stderr, "\n🔎 --no-revert: leaving this run's generated files on disk for inspection (the tree was NOT rewound). Re-run without --no-revert to restore the clean pre-run tree.")
+			} else {
+				rolledBack = rollbackGeneratedTree(ctx.AbsPath)
+			}
 			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
 	}

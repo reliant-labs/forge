@@ -32,6 +32,13 @@ var (
 	// forge release knows a published pkg version. See
 	// docs/pkg-versioning.md for the full dev-vs-release model.
 	pkgVersion string = ""
+
+	// pkgModuleVersionOverride is a test seam. When set (via
+	// SetPkgModuleVersion), PkgModuleVersion returns it instead of reading
+	// the ambient binary build info — build info is fixed at compile time
+	// and varies with GOWORK, so tests must be able to pin it deterministically.
+	pkgModuleVersionOverride    string
+	pkgModuleVersionOverrideSet bool
 )
 
 // pkgVersionRE accepts semver module versions, e.g. v0.3.0 or
@@ -60,6 +67,27 @@ func SetPkgVersion(v string) {
 	pkgVersion = v
 }
 
+// SetPkgModuleVersion overrides the value PkgModuleVersion returns, bypassing
+// the ambient binary build info. Test-only seam: build info is baked at
+// compile time and depends on GOWORK, so scaffolder tests pin it here to stay
+// deterministic. Pass "" to force the "no build-info version" path. Pair with
+// ClearPkgModuleVersion in a t.Cleanup.
+func SetPkgModuleVersion(v string) {
+	mu.Lock()
+	defer mu.Unlock()
+	pkgModuleVersionOverride = v
+	pkgModuleVersionOverrideSet = true
+}
+
+// ClearPkgModuleVersion removes any override set by SetPkgModuleVersion,
+// restoring the real build-info read.
+func ClearPkgModuleVersion() {
+	mu.Lock()
+	defer mu.Unlock()
+	pkgModuleVersionOverride = ""
+	pkgModuleVersionOverrideSet = false
+}
+
 // PkgVersion returns the published forge/pkg module version this binary
 // was released against, or "" when none is known (dev builds, or a
 // malformed stamp). A non-empty return is always a canonical semver
@@ -70,6 +98,61 @@ func PkgVersion() string {
 	mu.RUnlock()
 	if pkgVersionRE.MatchString(v) {
 		return v
+	}
+	return ""
+}
+
+// pkgModulePath is the canonical module path of the companion forge
+// runtime-library module, matched against this binary's dependency graph
+// in PkgModuleVersion.
+const pkgModulePath = "github.com/reliant-labs/forge/pkg"
+
+// PkgModuleVersion returns the version of github.com/reliant-labs/forge/pkg
+// that THIS forge binary was actually compiled against, read from the
+// binary's own build info (runtime/debug). Unlike PkgVersion (a release
+// ldflags stamp), this is populated for ordinary `go install
+// .../cmd/forge@<ref>` builds — the binary records a real, proxy-resolvable
+// pseudo-version (e.g. v0.0.0-20260624040937-ce5dfbd929ed) that is already
+// in the build's module cache. Scaffolded projects can pin it and let
+// `go mod tidy` resolve forge/pkg offline, instead of the unresolvable
+// `v0.0.0` the templates hard-coded when no version was known.
+//
+// Returns "" when the version isn't a canonical require version — most
+// importantly for a workspace build (local `go build` under go.work, where
+// forge/pkg is replaced by the in-tree ./pkg and the dep shows as
+// "(devel)"), in which case the dev sibling/vendoring flow applies instead.
+// Robust to `forge_version: dev` binaries (the daemon): the "dev" label is
+// the forge binary's own version, orthogonal to the forge/pkg dep version
+// recorded here.
+func PkgModuleVersion() string {
+	mu.RLock()
+	ov, ovSet := pkgModuleVersionOverride, pkgModuleVersionOverrideSet
+	mu.RUnlock()
+	if ovSet {
+		if pkgVersionRE.MatchString(ov) {
+			return ov
+		}
+		return ""
+	}
+
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, dep := range info.Deps {
+		d := dep
+		// Follow a replace directive to the effective module: the version
+		// that actually resolves lives on the replacement.
+		if d.Replace != nil {
+			d = d.Replace
+		}
+		if d.Path != pkgModulePath {
+			continue
+		}
+		if pkgVersionRE.MatchString(d.Version) {
+			return d.Version
+		}
+		return ""
 	}
 	return ""
 }

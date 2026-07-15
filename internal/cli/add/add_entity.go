@@ -484,18 +484,24 @@ func buildEntityCRUDMessages(entity string, fields []entityField, opts addEntity
 		fmt.Fprintf(&b, "  %s %s = %d;\n", f.Type.Proto, f.Name, i+1)
 	}
 	b.WriteString("}\n\n")
-	fmt.Fprintf(&b, "message Create%sResponse {\n  %s %s = 1;\n}\n\n", entity, entity, naming.ToSnakeCase(entity))
+	// The entity-carrying response/request field name is derived through
+	// naming.EntityFieldName / naming.EntityListFieldName — the SAME helpers
+	// the CRUD shape detector (validateCRUDShape) matches against and the ops
+	// emitter's Go field derives from. Keep these three sites on the helper so
+	// a multi-word entity ("module_config") can never drift back to a
+	// concatenated-lowercase form that breaks generated CRUD.
+	fmt.Fprintf(&b, "message Create%sResponse {\n  %s %s = 1;\n}\n\n", entity, entity, naming.EntityFieldName(entity))
 
 	// Get
 	fmt.Fprintf(&b, "message Get%sRequest {\n  string id = 1;\n}\n\n", entity)
-	fmt.Fprintf(&b, "message Get%sResponse {\n  %s %s = 1;\n}\n\n", entity, entity, naming.ToSnakeCase(entity))
+	fmt.Fprintf(&b, "message Get%sResponse {\n  %s %s = 1;\n}\n\n", entity, entity, naming.EntityFieldName(entity))
 
 	// Update (AIP-134)
 	fmt.Fprintf(&b, "message Update%sRequest {\n", entity)
-	fmt.Fprintf(&b, "  %s %s = 1;\n", entity, naming.ToSnakeCase(entity))
+	fmt.Fprintf(&b, "  %s %s = 1;\n", entity, naming.EntityFieldName(entity))
 	b.WriteString("  google.protobuf.FieldMask update_mask = 2;\n")
 	b.WriteString("}\n\n")
-	fmt.Fprintf(&b, "message Update%sResponse {\n  %s %s = 1;\n}\n\n", entity, entity, naming.ToSnakeCase(entity))
+	fmt.Fprintf(&b, "message Update%sResponse {\n  %s %s = 1;\n}\n\n", entity, entity, naming.EntityFieldName(entity))
 
 	// Delete
 	fmt.Fprintf(&b, "message Delete%sRequest {\n  string id = 1;\n  bool hard_delete = 2;\n}\n\n", entity)
@@ -527,7 +533,7 @@ func buildEntityCRUDMessages(entity string, fields []entityField, opts addEntity
 	fmt.Fprintf(&b, "  bool descending = %d;\n", fn)
 	b.WriteString("}\n\n")
 	fmt.Fprintf(&b, "message List%sResponse {\n", plural)
-	fmt.Fprintf(&b, "  repeated %s %s = 1;\n", entity, naming.Pluralize(naming.ToSnakeCase(entity)))
+	fmt.Fprintf(&b, "  repeated %s %s = 1;\n", entity, naming.EntityListFieldName(entity))
 	b.WriteString("  string next_page_token = 2;\n")
 	b.WriteString("  int32 total_count = 3;\n")
 	b.WriteString("}\n")

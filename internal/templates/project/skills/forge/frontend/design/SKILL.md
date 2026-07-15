@@ -1,6 +1,6 @@
 ---
 name: design
-description: Visual-design discipline for forge frontends — brief the work before building, lean on the component library, use restrained color/type systems, never hand-draw complex SVGs, and verify visually before declaring done.
+description: Visual-design discipline for forge frontends — brief the work before building (never invent an aesthetic without user input), declare the design system before coding, lean on the component library, use restrained color/type systems, never hand-draw complex SVGs, and verify visually before declaring done.
 ---
 
 # Frontend Visual Design
@@ -13,13 +13,33 @@ For any non-trivial visual work — a new screen, a new component shape, anythin
 
 Cover, at minimum:
 
-- **Reference material** — Existing design system? A site, app, or Figma to match? A screenshot? If none, ask the user to attach one OR explicitly approve a divergent direction. Building without a reference is how you get slop.
+- **Reference material** — Existing design system? A site, app, or Figma to match? A screenshot? **Never invent an aesthetic without user input.** For greenfield or unbranded work, do not start designing until you have one of: a reference, a brand, or an explicit "decide for me" from the user. Starting without any of the three is how you get slop.
 - **Audience and tone** — Internal admin tool? Consumer landing page? Developer docs? The default visual answers diverge.
-- **Variations** — When the brief is open-ended ("design an X"), default to **2-3 variations** the user can compare, not one chosen direction. Ask which axes to vary (layout? visual treatment? interaction? copy?). Render them with the `variation_grid` layout (`component_library(action="get", name="variation_grid")`) so each option gets a labeled artboard and the user can scan them side by side. Do not hand-roll a comparison div.
+- **Variations** — Variations are a deliverable, not a courtesy. When the brief is open-ended ("design an X") or the user wants options, first ask which dimension to vary — layout, visual treatment, copy, or interaction — then produce **2-3 clearly-labeled options** side by side with stable ids (`A` / `B` / `C`) the user can reference in follow-ups ("go with B but use A's header"). Render them with the `variation_grid` layout (`component_library(action="get", name="variation_grid")`) so each option gets a labeled artboard. Do not hand-roll a comparison div.
 - **Fidelity** — Sketch / wireframe / hi-fi / production code? Don't ship pixel-polish when the user wanted a wireframe.
 - **Content** — Is the copy real or placeholder? If placeholder, will real copy be longer/shorter? Many layouts break when real copy arrives.
 
 Skip the brief only for small tweaks ("change this color", "add this button") or when the user has clearly given you everything.
+
+### The "decide for me" fallback
+
+When the user explicitly delegates the aesthetic, don't reach for taste — derive the system with this formula. Every choice is checkable:
+
+- **Fonts**: 1-3 max, chosen as a known-good pairing (one display + one body is usually enough). Avoid the overused defaults — Inter, Roboto, Arial — unless the project's design system already uses them.
+- **Neutrals**: no pure `#fff` or `#000`. Use subtly-toned near-whites and near-blacks — oklch with chroma ≤ 0.02, hue borrowed from the accent.
+- **Accents**: 0-2, defined in oklch sharing the SAME lightness and chroma, varying only hue — harmonious by construction, no eyeballing.
+
+Then declare the resulting system (see "Declare the system" below) before writing any component code.
+
+## Recreating or extending existing UI? Read the source first
+
+When you touch an existing product surface, every element you produce is a recreation by default — of that project's visual vocabulary, not a fresh invention. Before writing code:
+
+- Read the project's component library (`frontends/<app>/src/components/ui/`) and its theme — the tokens in `globals.css` and the Tailwind config.
+- Read 2-3 neighboring pages or components that do something similar to what you're building.
+- Note the vocabulary you must match, not just the colors: copywriting tone, hover/click/focus states, shadow depth, corner radii, spacing density.
+
+A new screen that matches the palette but ignores the project's hover states and shadow language still reads as foreign. If you haven't read the neighboring code, you haven't started.
 
 ## Reach for the component library first
 
@@ -37,11 +57,23 @@ Charts and diagrams handle their own coordinate math — pass data, get pixels. 
 
 For diagrams specifically, see `[[diagrams]]`.
 
+## Declare the system, then follow it
+
+After the brief (or the source-reading pass), state the design system out loud in your response BEFORE building. Consistency is only checkable if it's declared — an undeclared system is just a mood. Name, concretely:
+
+- **Type**: the 1-3 font families and which scale steps you'll use where.
+- **Spacing**: the scale (Tailwind's default steps count) — no ad-hoc pixel values.
+- **Backgrounds**: 1-2 background colors per surface, max, each named.
+- **Layout pattern per content type**: e.g. tables for records, cards for summaries, split-pane for master/detail — so the same content type never gets two treatments.
+
+Then follow it. Any element that deviates from the declared system needs a reason you could say out loud; if you can't, it's drift.
+
 ## Color discipline
 
 - **Use design tokens.** Tailwind theme tokens (`bg-card`, `text-muted-foreground`, `border-border`), shadcn semantic names (`primary` / `secondary` / `destructive` / `muted`), or CSS variables defined in `globals.css`. Never invent raw hex colors when a token expresses the intent.
 - **When you must define new colors, use oklch.** `oklch(0.72 0.12 250)` is a sky blue. Pick a lightness and chroma, vary hue across the palette. Keep all "neutral" whites/blacks at chroma ≤ 0.02; saturation creeping into greys is the #1 tell of LLM-generated palettes.
-- **One or two accents, max.** Pick a primary accent. Optionally one secondary at the same lightness and chroma, with a different hue. Stop there. Diagrams full of seven different colors are slop.
+- **No pure `#fff` / `#000`.** Backgrounds and text want subtly-toned near-whites and near-blacks (chroma ≤ 0.02, hue borrowed from the accent), not absolute white/black.
+- **Zero to two accents, max.** Pick a primary accent. Optionally one secondary at the same lightness and chroma, with a different hue — sharing L and C and varying only H keeps the pair harmonious by construction. Stop there. Diagrams full of seven different colors are slop.
 - **Avoid aggressive gradients as decoration.** Subtle, low-contrast gradients are fine for surfaces; rainbow or high-saturation gradients on buttons / cards / headings are not.
 
 ## Type discipline
@@ -50,16 +82,16 @@ For diagrams specifically, see `[[diagrams]]`.
 - **Pull from the existing system.** If the project already has font tokens in `globals.css` or `tailwind.config`, use those. Don't introduce a new font family on a whim.
 - **Avoid the AI defaults.** Inter, Roboto, Arial, and Fraunces are the four fonts that scream "model picked this." Use them only if the project's design system already does.
 - **Set a type scale, don't pick sizes ad-hoc.** Tailwind's `text-xs / sm / base / lg / xl / 2xl / 3xl` is a scale — use it. `text-[17px]` once-off is fine for a tight constraint, but `text-[17px]` / `text-[19px]` / `text-[23px]` across one screen is not.
-- **Hit-targets and minimums.** Body copy: ≥ 14px. Mobile buttons / tap targets: ≥ 44px square. Slide / presentation type: ≥ 24px.
+- **Scale floors — check the numbers, don't eyeball.** Body copy: ≥ 14px. Touch targets: ≥ 44px square. Slide / hero-canvas text: ≥ 24px on a 1920×1080 canvas. Print: ≥ 12pt. Anything below a floor is a defect, not a style choice.
 
 ## Never hand-draw complex SVGs
 
-The model is bad at SVG. Concretely:
+The model is bad at SVG. The line is **primitive shapes**:
 
-- **OK to hand-write:** rectangles, circles, lines, simple icons from `lucide-react`, single-path checkmarks.
+- **OK to hand-write:** rectangles, circles, lines, diamonds, simple icons from `lucide-react`, single-path checkmarks.
 - **Don't hand-write:** logos, illustrations, multi-shape diagrams, organic curves, anything you would describe as "a small drawing of X."
 
-For anything in the "don't" bucket, use a **placeholder slot** instead:
+For anything in the "don't" bucket, use a **placeholder slot** instead — sized to the real asset's dimensions, with a subtle fill (e.g. faint diagonal stripes or `bg-muted/30`) and a monospace label naming what belongs there:
 
 ```tsx
 <div className="flex aspect-video items-center justify-center rounded-lg border border-dashed border-border bg-muted/30">
@@ -67,7 +99,7 @@ For anything in the "don't" bucket, use a **placeholder slot** instead:
 </div>
 ```
 
-Then ASK the user for the asset, or accept that the placeholder ships. A clearly-marked slot is honest; a hand-drawn-by-LLM logo is embarrassing.
+Then ASK the user for the real asset, or accept that the placeholder ships. A clearly-marked, correctly-sized slot is honest; a hand-drawn-by-LLM logo is embarrassing.
 
 ## Layout primitives
 
@@ -77,18 +109,18 @@ Then ASK the user for the asset, or accept that the placeholder ships. A clearly
 
 ## Anti-slop tropes to avoid
 
-These read as "AI-generated" to any designer who looks at the output:
+This is a blocklist, not a mood board — each item is checkable in a screenshot. These read as "AI-generated" to any designer who looks at the output:
 
+- **Aggressive gradient backgrounds.** High-saturation or rainbow gradients as page/hero backgrounds. Subtle low-contrast surface gradients are the ceiling.
 - **Containers with `rounded-2xl` + a left-border accent stripe.** The signature "AI dashboard card." Use it sparingly or not at all.
-- **Heavy use of decorative emoji** as section markers (✨ ✅ 🚀 🎯). Skip unless the brand uses emoji.
-- **Decorative gradient meshes / glow blobs** behind hero content. Once in a while is fine; on every card is slop.
-- **Stat-card rows with arbitrary "+12%" metrics** invented to fill space. Numbers must be real, or omitted.
+- **Emoji** anywhere in the UI (✨ ✅ 🚀 🎯) unless the brand demonstrably uses them.
+- **Data slop** — decorative stats ("+12%", "99.9%"), meters, and icon rows that inform nothing, invented to fill space. Numbers must be real, or omitted.
+- **Every section needing an icon.** Icons earn their place when they aid scanning; decorative icons are visual noise.
 - **"Powered by" / "Built with" filler footers** on internal tools.
-- **Every section needing an icon**. Icons earn their place when they aid scanning; decorative icons are visual noise.
 
 ## No filler content
 
-Every element earns its place. If a section feels empty, that's a design problem to solve with layout and composition — not by inventing copy or fake data to fill it. **Ask before adding sections, pages, or copy that the user didn't request.**
+Every element earns its place — one thousand no's for every yes; less is more. An empty-feeling section is a **layout problem, not a content problem**: solve it with composition, whitespace, or by cutting the section — never by inventing copy or fake data to fill it. **Ask before adding sections, pages, or copy that the user didn't request.**
 
 ## Verify visually before declaring done
 
@@ -173,10 +205,15 @@ Run it at multiple viewports (resize via `mcp__chrome-devtools__resize_page` fir
 ## Rules
 
 - For non-trivial visual work, ask a design brief BEFORE coding.
+- Never invent an aesthetic: get a reference, a brand, or an explicit "decide for me" first — then use the fallback formula, not taste.
+- Extending existing UI? Read the project's component library, Tailwind theme, and neighboring code before writing anything.
+- Declare the system (fonts, spacing scale, backgrounds, layout patterns) before building, then follow it.
 - Search `component_library` before hand-rolling anything visual.
-- Use design tokens; if you must add colors, use oklch with low chroma for neutrals.
+- Use design tokens; if you must add colors, use oklch — chroma ≤ 0.02 neutrals, no pure `#fff`/`#000`, 0-2 accents sharing L and C.
 - 1-3 fonts, off the AI-default list unless the project already uses them.
-- Use placeholders + ask for assets — never hand-draw a logo or illustration in SVG.
+- Respect the scale floors: 14px body, 24px slide/hero text, 12pt print, 44px touch targets.
+- Use placeholders + ask for assets — never hand-draw SVGs beyond primitive shapes.
 - Flex/grid + `gap`, never bare inline siblings.
-- Default to 2-3 variations for open-ended design asks.
+- Variations are a deliverable: ask which dimension to vary, ship 2-3 labeled options with stable ids.
+- No filler: an empty section is a layout problem, not a content problem.
 - Verify visually — screenshot, don't trust the diff.

@@ -108,6 +108,33 @@ func TestGenerateServiceFilesServiceGoUsesTemplates(t *testing.T) {
 	}
 }
 
+// TestGenerateServiceFilesProtoHasServiceOption is the F3 authz-completeness
+// regression: the scaffolded proto must carry the (forge.v1.service) option
+// block WITH default_roles (so RPCs added later by `forge add entity` inherit
+// an authz floor instead of failing the authz-completeness lint), plus the
+// forge/v1/forge.proto import the option extension needs.
+func TestGenerateServiceFilesProtoHasServiceOption(t *testing.T) {
+	root := t.TempDir()
+	if err := GenerateServiceFiles(root, "example.com/myapp", "orders", "myapp", 8081); err != nil {
+		t.Fatalf("GenerateServiceFiles() error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "proto", "services", "orders", "v1", "orders.proto"))
+	if err != nil {
+		t.Fatalf("read proto: %v", err)
+	}
+	proto := string(content)
+	for _, want := range []string{
+		`import "forge/v1/forge.proto";`,
+		"option (forge.v1.service) = {",
+		`default_roles: ["member"]`,
+		"service OrdersService {",
+	} {
+		if !strings.Contains(proto, want) {
+			t.Errorf("scaffolded proto missing %q:\n%s", want, proto)
+		}
+	}
+}
+
 func TestGenerateServiceFilesProtoSkipsExisting(t *testing.T) {
 	root := t.TempDir()
 

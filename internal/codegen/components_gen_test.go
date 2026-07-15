@@ -114,6 +114,48 @@ func TestComponentsToJSON_Shape(t *testing.T) {
 	}
 }
 
+// TestComponentsToJSON_HyphenatedProjectPrimaryBuildPath pins the F5 fix: the
+// primary (server/worker/cron/operator) GoBuild default targets the RAW
+// project name (`./cmd/peptide-platform`), matching the scaffold's cmd/ dir
+// and the generated Dockerfile — not the sanitized `./cmd/peptide_platform`
+// that stranded every hyphenated project into hand-overriding GoBuild.cmd.
+// Secondary binaries still sanitize (a Go-package dir).
+func TestComponentsToJSON_HyphenatedProjectPrimaryBuildPath(t *testing.T) {
+	components := []config.ComponentConfig{
+		{Name: "api", Kind: config.ComponentKindServer},
+		{Name: "peptide-proxy", Kind: config.ComponentKindBinary},
+	}
+	out, err := ComponentsToJSON("peptide-platform", components)
+	if err != nil {
+		t.Fatalf("ComponentsToJSON: %v", err)
+	}
+
+	var doc struct {
+		Components []struct {
+			Kind  string `json:"kind"`
+			Build struct {
+				Cmd        string `json:"cmd"`
+				OutputName string `json:"output_name"`
+			} `json:"build"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+
+	primary := doc.Components[0]
+	if primary.Build.Cmd != "./cmd/peptide-platform" || primary.Build.OutputName != "peptide-platform" {
+		t.Errorf("primary build = {%q %q}, want {./cmd/peptide-platform peptide-platform} (raw project name)",
+			primary.Build.Cmd, primary.Build.OutputName)
+	}
+
+	secondary := doc.Components[1]
+	if secondary.Build.Cmd != "./cmd/peptide_proxy" || secondary.Build.OutputName != "peptide_proxy" {
+		t.Errorf("secondary binary build = {%q %q}, want {./cmd/peptide_proxy peptide_proxy} (Go-package-safe)",
+			secondary.Build.Cmd, secondary.Build.OutputName)
+	}
+}
+
 func TestComponentsToJSON_Idempotent(t *testing.T) {
 	// Map iteration order must not affect the output.
 	components := []config.ComponentConfig{

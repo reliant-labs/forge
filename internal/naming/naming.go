@@ -108,6 +108,36 @@ func Pluralize(s string) string {
 	return inflection.Plural(s)
 }
 
+// EntityFieldName returns the snake_case proto FIELD name that a CRUD
+// create/get/update response uses to carry a single entity — the snake_case
+// of the entity's (PascalCase) message name. For a "ModuleConfig" entity this
+// is "module_config"; protoc-gen-go then generates the Go field "ModuleConfig".
+//
+// This is the SINGLE source of truth for the entity-carrying field name,
+// shared by three sites that MUST agree or multi-word CRUD silently breaks:
+//   - the entity scaffolder (`forge add entity`) emits `<Entity> <field> = 1;`,
+//   - the CRUD ops emitter references the Go form (ToProtoPascalCase of this),
+//   - the CRUD shape detector (validateCRUDShape) matches the response's
+//     observed snake_case field names against this.
+//
+// The historical bug: the detector compared against strings.ToLower(Name)
+// ("moduleconfig"), which matches neither the scaffolder's "module_config" nor
+// the emitter's "ModuleConfig" — so every multi-word entity fell to the
+// custom-read-shape stub and produced empty CRUD. Routing all three through
+// this helper makes the concatenated-lowercase form impossible to reintroduce.
+func EntityFieldName(entityName string) string {
+	return ToSnakeCase(entityName)
+}
+
+// EntityListFieldName returns the snake_case proto FIELD name that a CRUD list
+// response uses to carry the repeated entity — the pluralized snake_case of
+// the entity's message name. For "ModuleConfig" this is "module_configs".
+// It is the plural companion to EntityFieldName; see that doc for why the
+// derivation is centralized here.
+func EntityListFieldName(entityName string) string {
+	return Pluralize(EntityFieldName(entityName))
+}
+
 // ToProtoPascalCase converts a snake_case proto field name to PascalCase using
 // protobuf's Go naming rules: simple title-case each word segment WITHOUT
 // applying Go initialisms. For example:

@@ -694,20 +694,30 @@ func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
 		// List response template emits `<EntityPlural>: items` and
 		// optionally `NextPageToken: nextPageToken`. Validate the
 		// response carries a repeated entity field by that name.
+		//
+		// The field name is derived through naming.EntityListFieldName —
+		// the SAME helper the entity scaffolder emits (`forge add entity`)
+		// and the ops emitter's Go field derives from — so the comparison
+		// is against the actual snake_case proto field ("module_configs"),
+		// not a concatenated-lowercase form ("moduleconfigs") that matched
+		// no proto and broke every multi-word entity's CRUD.
 		if outputKnown {
-			pluralLower := strings.ToLower(inflection.Plural(cm.Entity.Name))
-			if _, has := outputByName[pluralLower]; !has {
-				return false, fmt.Sprintf("response %s lacks repeated %s field %s (observed fields: %s)", cm.Method.OutputType, cm.Entity.Name, pluralLower, describeFields(outputFields))
+			listField := naming.EntityListFieldName(cm.Entity.Name)
+			if _, has := outputByName[listField]; !has {
+				return false, fmt.Sprintf("response %s lacks repeated %s field %s (observed fields: %s)", cm.Method.OutputType, cm.Entity.Name, listField, describeFields(outputFields))
 			}
 		}
 	case "create":
 		// Create response template emits `<EntityName>: entity`.
 		// Validate the response carries a single field of that type
-		// (named after the entity in snake_case).
+		// (named after the entity in snake_case). Same helper as the
+		// scaffolder/emitter (see the list case) so multi-word entities
+		// (module_config, order_item, …) match instead of falling to the
+		// custom-read-shape stub on the concatenated-lowercase mismatch.
 		if outputKnown {
-			lower := strings.ToLower(cm.Entity.Name)
-			if _, has := outputByName[lower]; !has {
-				return false, fmt.Sprintf("response %s lacks %s field %s (observed fields: %s)", cm.Method.OutputType, cm.Entity.Name, lower, describeFields(outputFields))
+			entityField := naming.EntityFieldName(cm.Entity.Name)
+			if _, has := outputByName[entityField]; !has {
+				return false, fmt.Sprintf("response %s lacks %s field %s (observed fields: %s)", cm.Method.OutputType, cm.Entity.Name, entityField, describeFields(outputFields))
 			}
 		}
 	}
@@ -1570,8 +1580,29 @@ func ensureDepsDBField(serviceDir string) error {
 	content := string(data)
 	original := content
 
-	// If the Deps struct doesn't have a DB field yet, inject it.
-	if !(strings.Contains(content, "DB ") && (strings.Contains(content, "orm.Context") || strings.Contains(content, "orm.Client"))) {
+	// The generated CRUD REQUIRES the Deps.DB field to be typed exactly
+	// `orm.Context`. This is load-bearing in two places that must never
+	// silently diverge:
+	//   - the ops call `db.Create<E>(ctx, s.deps.DB, ...)`, whose db-func
+	//     parameter is the orm.Context interface; AND
+	//   - the CRUD test harness — DetectDepsDBField keys the WithDB /
+	//     NewMigratedTestDB emission on an `orm.Context` field, and the
+	//     generated testing.go assigns `deps.DB = cfg.db` (an orm.Context).
+	// A `DB *orm.Client` field compiles the ops but SILENTLY suppresses the
+	// test helpers (`undefined: app.WithDB`) and breaks the deps.DB
+	// assignment. Rather than accept orm.Client as an equivalent (the old
+	// hidden switch), the requirement is made EXPLICIT: detect the canonical
+	// orm.Context field via the SAME AST predicate the test-helper trigger
+	// uses; if a DB field of another type is present, say so LOUDLY; otherwise
+	// inject the canonical field.
+	hasORMContext, _ := DetectDepsDBField(serviceDir)
+	if !hasORMContext && depsDeclaresForeignDBField(content) {
+		fmt.Printf("⚠️  %s declares a Deps.DB field that is not orm.Context — the generated CRUD handlers and their tests require `DB orm.Context` (the ORM client satisfies it). Retype the field to enable WithDB / NewMigratedTestDB.\n", servicePath)
+	}
+
+	// If the Deps struct doesn't have the canonical orm.Context DB field yet
+	// (and no foreign DB field is blocking a clean inject), add it.
+	if !hasORMContext && !depsDeclaresForeignDBField(content) {
 		// Find the Deps struct and inject the DB field after the opening line.
 		marker := "// Add your dependencies here."
 		if !strings.Contains(content, marker) {
@@ -1622,6 +1653,22 @@ func ensureDepsDBField(serviceDir string) error {
 		return nil
 	}
 	return writeUserScaffold(servicePath, []byte(content))
+}
+
+// depsDeclaresForeignDBField reports whether service.go already carries a
+// database-ish Deps field of a type OTHER than orm.Context — the two shapes
+// the generated CRUD cannot use (`*orm.Client`, `*sql.DB`/`sql.DB`). It exists
+// so ensureDepsDBField can make the orm.Context requirement explicit: when
+// this is true and the canonical orm.Context field is absent, forge warns
+// rather than silently injecting a duplicate `DB` field (a compile error) or
+// silently tolerating a type that disables the CRUD test helpers. Detection is
+// text-based, matching ensureDepsDBField's own minimal-mutation style; the
+// caller already used the AST predicate (DetectDepsDBField) for the positive
+// orm.Context case.
+func depsDeclaresForeignDBField(content string) bool {
+	return strings.Contains(content, "orm.Client") ||
+		strings.Contains(content, "*sql.DB") ||
+		strings.Contains(content, "sql.DB")
 }
 
 // injectValidateDepsDBCheck inserts `if d.DB == nil { ... }` into the

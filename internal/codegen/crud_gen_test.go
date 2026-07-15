@@ -2064,6 +2064,87 @@ func TestValidateCRUDShape_BespokeShape(t *testing.T) {
 	}
 }
 
+// TestValidateCRUDShape_MultiWordEntity is the F1 regression: a multi-word
+// entity (module_config) whose proto carries the entity-field names the
+// scaffolder actually emits — snake_case "module_config" (create/get/update)
+// and pluralized snake "module_configs" (list) — MUST pass validateCRUDShape.
+//
+// The historical bug: the detector compared the observed response fields
+// against a concatenated-lowercase form ("moduleconfig" / "moduleconfigs"),
+// which matches NEITHER the scaffolder's snake_case emit NOR the ops emitter's
+// PascalCase Go field. So every multi-word entity failed the shape check and
+// fell to the empty custom-read-shape stub. Routing all three sites through
+// naming.EntityFieldName / EntityListFieldName makes the correct snake_case
+// field the one the detector expects.
+func TestValidateCRUDShape_MultiWordEntity(t *testing.T) {
+	mc := EntityDef{Name: "ModuleConfig", TableName: "module_configs", PkField: "id", PkGoType: "string"}
+
+	svc := ServiceDef{
+		Messages: map[string][]MessageFieldDef{
+			// create response: `ModuleConfig module_config = 1;`
+			"CreateModuleConfigResponse": {
+				{Name: "module_config", ProtoType: "message", MessageType: "ModuleConfig"},
+			},
+			// list request: AIP-158 cursor pair; response: repeated entity
+			// as `module_configs`.
+			"ListModuleConfigsRequest": {
+				{Name: "page_size", ProtoType: "int32"},
+				{Name: "page_token", ProtoType: "string"},
+			},
+			"ListModuleConfigsResponse": {
+				{Name: "module_configs", ProtoType: "message", MessageType: "ModuleConfig"},
+				{Name: "next_page_token", ProtoType: "string"},
+			},
+		},
+	}
+
+	cases := []struct {
+		op   string
+		in   string
+		out  string
+		name string
+	}{
+		{"create", "CreateModuleConfigRequest", "CreateModuleConfigResponse", "CreateModuleConfig"},
+		{"list", "ListModuleConfigsRequest", "ListModuleConfigsResponse", "ListModuleConfigs"},
+	}
+	for _, c := range cases {
+		t.Run(c.op, func(t *testing.T) {
+			cm := CRUDMethod{
+				Method:    MethodTemplateData{Name: c.name, InputType: c.in, OutputType: c.out},
+				Entity:    mc,
+				Operation: c.op,
+			}
+			ok, reason := validateCRUDShape(svc, cm)
+			if !ok {
+				t.Fatalf("multi-word %s entity must pass shape check, got mismatch: %s", c.op, reason)
+			}
+		})
+	}
+
+	// Guard the exact former defect: a response carrying ONLY the
+	// concatenated-lowercase field ("moduleconfig", no underscore) is NOT the
+	// shape the scaffolder emits, so it must now FAIL — proving the detector
+	// keys off the snake_case field, not the concatenated form.
+	badSvc := ServiceDef{
+		Messages: map[string][]MessageFieldDef{
+			"CreateModuleConfigResponse": {
+				{Name: "moduleconfig", ProtoType: "message", MessageType: "ModuleConfig"},
+			},
+		},
+	}
+	ok, reason := validateCRUDShape(badSvc, CRUDMethod{
+		Method:    MethodTemplateData{Name: "CreateModuleConfig", InputType: "CreateModuleConfigRequest", OutputType: "CreateModuleConfigResponse"},
+		Entity:    mc,
+		Operation: "create",
+	})
+	if ok {
+		t.Fatalf("a concatenated-lowercase response field must NOT satisfy the detector (expected mismatch)")
+	}
+	if !strings.Contains(reason, "module_config") {
+		t.Errorf("mismatch reason should name the expected snake_case field module_config; got %q", reason)
+	}
+}
+
 // TestGenerateCRUDHandlers_StubsOnShapeMismatch is the full integration
 // regression for crud-body-generator-shape-mismatch: when the input/output
 // messages don't fit the CRUD conventions, the package must still compile
@@ -2245,6 +2326,163 @@ type Service struct {
 	}
 	if strings.Contains(content, `"example.com/test/pkg/middleware"`) {
 		t.Errorf("non-tenant custom body must not import middleware (unused); got:\n%s", content)
+	}
+}
+
+// TestGenerateCRUDHandlers_MultiWordEntity is the F1 end-to-end guard: a
+// multi-word entity (module_config), with the exact proto shape `forge add
+// entity module_config ...` emits, must generate REAL CRUD — a wired ops file
+// with crud.*Op constructors and a delegating shim — NOT the empty
+// custom-read-shape stub that the concatenated-lowercase detector bug produced.
+//
+// It asserts the generated Go (a) parses, (b) references the PascalCase Go
+// response fields protoc-gen-go derives from the snake proto fields
+// (ModuleConfig / ModuleConfigs), and (c) actually runs a query and packs rows
+// (db.ListModuleConfig + the ModuleConfigs: response field) — i.e. "returns
+// rows", never CodeUnimplemented.
+func TestGenerateCRUDHandlers_MultiWordEntity(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "settings")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceGo := `package settings
+
+import "github.com/reliant-labs/forge/pkg/orm"
+
+type Deps struct {
+	DB orm.Context
+}
+
+type Service struct {
+	deps Deps
+}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Proto shape mirrors `forge add entity module_config name:string
+	// enabled:bool` exactly: snake_case entity fields, AIP-158 list.
+	svc := ServiceDef{
+		Name:       "SettingsService",
+		GoPackage:  "example.com/test/gen/proto/services/settings/v1",
+		PkgName:    "settingsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "CreateModuleConfig", InputType: "CreateModuleConfigRequest", OutputType: "CreateModuleConfigResponse"},
+			{Name: "GetModuleConfig", InputType: "GetModuleConfigRequest", OutputType: "GetModuleConfigResponse"},
+			{Name: "ListModuleConfigs", InputType: "ListModuleConfigsRequest", OutputType: "ListModuleConfigsResponse"},
+			{Name: "UpdateModuleConfig", InputType: "UpdateModuleConfigRequest", OutputType: "UpdateModuleConfigResponse"},
+			{Name: "DeleteModuleConfig", InputType: "DeleteModuleConfigRequest", OutputType: "DeleteModuleConfigResponse"},
+		},
+		Messages: map[string][]MessageFieldDef{
+			"CreateModuleConfigRequest": {
+				{Name: "name", ProtoType: "string"},
+				{Name: "enabled", ProtoType: "bool"},
+			},
+			"CreateModuleConfigResponse": {
+				{Name: "module_config", ProtoType: "message", MessageType: "ModuleConfig"},
+			},
+			"GetModuleConfigRequest": {
+				{Name: "id", ProtoType: "string"},
+			},
+			"GetModuleConfigResponse": {
+				{Name: "module_config", ProtoType: "message", MessageType: "ModuleConfig"},
+			},
+			"ListModuleConfigsRequest": {
+				{Name: "page_size", ProtoType: "int32"},
+				{Name: "page_token", ProtoType: "string"},
+			},
+			"ListModuleConfigsResponse": {
+				{Name: "module_configs", ProtoType: "message", MessageType: "ModuleConfig"},
+				{Name: "next_page_token", ProtoType: "string"},
+			},
+			"UpdateModuleConfigRequest": {
+				{Name: "module_config", ProtoType: "message", MessageType: "ModuleConfig"},
+				{Name: "update_mask", ProtoType: "message", MessageType: "google.protobuf.FieldMask"},
+			},
+			"UpdateModuleConfigResponse": {
+				{Name: "module_config", ProtoType: "message", MessageType: "ModuleConfig"},
+			},
+			"DeleteModuleConfigRequest": {
+				{Name: "id", ProtoType: "string"},
+			},
+			"DeleteModuleConfigResponse": {
+				{Name: "id", ProtoType: "string"},
+			},
+		},
+	}
+
+	entities := []EntityDef{{
+		Name: "ModuleConfig", TableName: "module_configs", PkField: "id", PkGoType: "string",
+		Fields: []EntityField{
+			{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string"},
+			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
+			{Name: "enabled", GoName: "Enabled", ProtoType: "bool", GoType: "bool"},
+		},
+		Columns: []EntityColumn{
+			{Name: "id", Type: "string", NotNull: true, IsPK: true},
+			{Name: "name", Type: "string", NotNull: true},
+			{Name: "enabled", Type: "bool", NotNull: true},
+		},
+		SearchColumns: []string{"name"},
+	}}
+
+	crudMethods := MatchCRUDMethods(svc, entities)
+	if len(crudMethods) != 5 {
+		t.Fatalf("expected 5 matched CRUD methods, got %d", len(crudMethods))
+	}
+	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
+	}
+
+	// The ops file must carry REAL op constructors (not just conversions),
+	// and reference the PascalCase Go response fields protoc-gen-go derives
+	// from module_config / module_configs.
+	opsBytes, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud_ops_gen.go"))
+	if err != nil {
+		t.Fatalf("read ops file: %v", err)
+	}
+	ops := string(opsBytes)
+	if _, perr := parser.ParseFile(token.NewFileSet(), "handlers_crud_ops_gen.go", ops, parser.SkipObjectResolution); perr != nil {
+		t.Fatalf("ops file is not valid Go: %v\n----\n%s", perr, ops)
+	}
+	for _, want := range []string{
+		"crud.CreateOp[",
+		"crud.ListOp[",
+		"crud.GetOp[",
+		"crud.UpdateOp[",
+		"crud.DeleteOp[",
+		"ModuleConfig: moduleconfigToProto(entity)", // create/get/update Pack: Go field name
+		"ModuleConfigs: out",                        // list Pack: pluralized Go field name
+	} {
+		if !strings.Contains(ops, want) {
+			t.Errorf("ops file missing %q — multi-word CRUD did not wire real ops; got:\n%s", want, ops)
+		}
+	}
+
+	// The shim delegates to the crud lifecycle for every op (no stub markers,
+	// no CodeUnimplemented) — the whole point of "returns rows".
+	shimBytes, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud.go"))
+	if err != nil {
+		t.Fatalf("read shim: %v", err)
+	}
+	shim := string(shimBytes)
+	if _, perr := parser.ParseFile(token.NewFileSet(), "handlers_crud.go", shim, parser.SkipObjectResolution); perr != nil {
+		t.Fatalf("shim is not valid Go: %v\n----\n%s", perr, shim)
+	}
+	for _, want := range []string{"crud.HandleCreate(", "crud.HandleList(", "crud.HandleGet(", "crud.HandleUpdate(", "crud.HandleDelete("} {
+		if !strings.Contains(shim, want) {
+			t.Errorf("shim missing delegation %q — a multi-word entity fell back to a stub; got:\n%s", want, shim)
+		}
+	}
+	if strings.Contains(shim, "forge:custom-read-shape") {
+		t.Errorf("multi-word entity must NOT produce custom-read-shape stubs; got:\n%s", shim)
+	}
+	if strings.Contains(shim, "connect.CodeUnimplemented") {
+		t.Errorf("multi-word entity CRUD must run real ops, not 501; got:\n%s", shim)
 	}
 }
 

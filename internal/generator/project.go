@@ -91,14 +91,19 @@ func (g *ProjectGenerator) isLibrary() bool {
 // Libraries don't; services and CLIs do.
 func (g *ProjectGenerator) hasCmd() bool { return !g.isLibrary() }
 
-// binaryName returns the main binary name. For CLI projects this is
-// the project name; for service projects it's still the project name
-// (cmd/main.go currently lives at the project root).
+// binaryName returns the PRIMARY binary name — the leaf of the cmd/<bin>/
+// tree, the Dockerfile `go build ... ./cmd/<bin>` target, and the built
+// binary. It is the project name VERBATIM (hyphens preserved): a project
+// named "peptide-platform" scaffolds cmd/peptide-platform/. `go build
+// ./cmd/peptide-platform` is a valid target (a directory path, not a Go
+// package identifier — the package clause inside is `package main`
+// regardless), and the primary dir mirroring the project/module name is the
+// established convention every existing project + generated Dockerfile
+// already uses. Secondary binaries (`forge add binary`) DO sanitize, because
+// they are named after a Go component, not the project. The deploy-side
+// build declaration must therefore also target the raw primary path — see
+// codegen.GenerateComponentsJSON (the F5 fix aligned it to this).
 func (g *ProjectGenerator) binaryName() string {
-	if g.ServiceName != "" && g.isService() {
-		// services keep the historical layout (single cmd/ regardless of name)
-		return g.Name
-	}
 	return g.Name
 }
 

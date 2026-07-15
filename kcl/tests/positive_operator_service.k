@@ -1,5 +1,5 @@
 """
-Positive test — the OPERATOR-agnostic model (OPERATOR_AGNOSTIC.md): an
+Positive test — the OPERATOR-agnostic model (docs/design/OPERATOR_AGNOSTIC.md): an
 operator is NOT a distinct top-level type. It is an ordinary agnostic
 `forge.Service` whose `k8s` escape hatch carries a cluster-scoped
 `operator` sub-block (OperatorSpec: cluster_rbac + crds). Setting that

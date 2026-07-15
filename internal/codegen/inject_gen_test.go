@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,6 +165,269 @@ func TestGenerateInject_ConventionalDeps(t *testing.T) {
 	}
 	if !strings.Contains(out, "Config: infra.Cfg,") {
 		t.Fatalf("Config should wire to infra.Cfg:\n%s", out)
+	}
+}
+
+// TestGenerateCompose_ReconcileAddsNewService is the F3#1 regression: a
+// service added AFTER the initial compose.go scaffold must be wired into the
+// (write-once, user-owned) compose.go additively — its import, its Components
+// field, and its NewComponents construction — so the regenerated
+// mounts_services.go's `c.<Field>` reference resolves instead of failing to
+// compile. The existing service must be left intact and the result must be
+// valid Go; re-running with the same set must be a no-op (idempotent).
+func TestGenerateCompose_ReconcileAddsNewService(t *testing.T) {
+	dir := newInjectProject(t)
+	writeComponentDeps(t, dir, "internal/handlers", "user", "user",
+		"\tLogger *slog.Logger\n\tConfig *config.Config")
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+
+	// First emit: only the user service.
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "UserService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+	first := readInject(t, dir)
+	if !strings.Contains(first, "c.User =") {
+		t.Fatalf("first emit missing c.User:\n%s", first)
+	}
+	if strings.Contains(first, "c.Billing =") {
+		t.Fatalf("first emit must not carry billing yet:\n%s", first)
+	}
+
+	// Add a second service on disk and regenerate over BOTH. compose.go
+	// already exists (write-once), so this exercises the reconciler.
+	writeComponentDeps(t, dir, "internal/handlers", "billing", "billing",
+		"\tLogger *slog.Logger\n\tConfig *config.Config")
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services: []ServiceDef{
+			{Name: "UserService", ModulePath: "example.com/proj"},
+			{Name: "BillingService", ModulePath: "example.com/proj"},
+		},
+	}); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+
+	// Billing is now wired: construction, struct field, and import.
+	if !strings.Contains(out, "c.Billing =") {
+		t.Fatalf("reconcile did not add the c.Billing construction:\n%s", out)
+	}
+	if !strings.Contains(out, "example.com/proj/internal/handlers/billing") {
+		t.Fatalf("reconcile did not add the billing import:\n%s", out)
+	}
+	if !strings.Contains(out, "Billing billing.Service") {
+		t.Fatalf("reconcile did not add the Billing Components field:\n%s", out)
+	}
+	// The pre-existing user service must be untouched.
+	if !strings.Contains(out, "c.User =") {
+		t.Fatalf("reconcile clobbered the existing user wiring:\n%s", out)
+	}
+	// The whole file must remain valid Go.
+	if _, err := parser.ParseFile(token.NewFileSet(), "compose.go", out, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("reconciled compose.go is not valid Go: %v\n----\n%s", err, out)
+	}
+
+	// Idempotent: regenerating with the same set changes nothing.
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services: []ServiceDef{
+			{Name: "UserService", ModulePath: "example.com/proj"},
+			{Name: "BillingService", ModulePath: "example.com/proj"},
+		},
+	}); err != nil {
+		t.Fatalf("idempotent GenerateCompose: %v", err)
+	}
+	if again := readInject(t, dir); again != out {
+		t.Fatalf("reconcile is not idempotent; second run diverged:\n%s", again)
+	}
+}
+
+// TestGenerateCompose_ReconcileWiresAuthorizerService proves the reconciler
+// emits the authz-var preamble + the fallible New(...) error branch for a
+// service whose Deps declare an Authorizer and whose New returns (T, error) —
+// the shape a real `forge add service` scaffolds — and pulls in fmt/config/
+// middleware imports as needed.
+func TestGenerateCompose_ReconcileWiresAuthorizerService(t *testing.T) {
+	dir := newInjectProject(t)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+	// Seed compose.go with a trivial first service (no authz/fallible) so the
+	// authz/config/middleware imports are ABSENT and the reconciler must add
+	// them for the second service.
+	writeComponentDeps(t, dir, "internal/handlers", "user", "user",
+		"\tLogger *slog.Logger")
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "UserService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+
+	// A fallible, authorizer-bearing service — mirrors the real scaffold.
+	billingDir := filepath.Join(dir, "internal", "handlers", "billing")
+	if err := os.MkdirAll(billingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	billingSrc := `package billing
+
+type Service interface{ Do() }
+
+type Deps struct {
+	Logger     *slog.Logger
+	Authorizer middleware.Authorizer
+}
+
+func New(d Deps) (Service, error) { return nil, nil }
+
+func NewAuthorizer() middleware.Authorizer { return nil }
+`
+	if err := os.WriteFile(filepath.Join(billingDir, "contract.go"), []byte(billingSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services: []ServiceDef{
+			{Name: "UserService", ModulePath: "example.com/proj"},
+			{Name: "BillingService", ModulePath: "example.com/proj"},
+		},
+	}); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+
+	for _, want := range []string{
+		"billingAuthz middleware.Authorizer = billing.NewAuthorizer()",
+		"config.DevAuthBypass(infra.Cfg)",
+		"billingInst, err := billing.New(billing.Deps{",
+		"return nil, fmt.Errorf(\"Billing: %w\", err)",
+		"c.Billing = billingInst",
+		"\"fmt\"",
+		"example.com/proj/pkg/config",
+		"example.com/proj/pkg/middleware",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("reconciled compose.go missing %q:\n%s", want, out)
+		}
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "compose.go", out, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("reconciled compose.go is not valid Go: %v\n----\n%s", err, out)
+	}
+}
+
+// TestGenerateCompose_ReconcileWiresDBOnExistingService is the F4 regression:
+// a service ALREADY wired into compose.go that later GAINS a DB dep (the
+// `DB orm.Context` field the first entity injects) must have that dep wired
+// into its existing construction — a stale, write-once compose.go must not
+// leave the by-type resolution un-applied (boot-time nil DB). The reconciler
+// injects the assignment into the existing New(Deps{…}) literal.
+func TestGenerateCompose_ReconcileWiresDBOnExistingService(t *testing.T) {
+	dir := newInjectProject(t)
+	// Infra exposes a DB field by exact name so the assignment resolves
+	// deterministically without type-checking the temp project.
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config\n\tDB Repository")
+
+	// settings service WITHOUT a DB dep initially.
+	writeComponentDeps(t, dir, "internal/handlers", "settings", "settings",
+		"\tLogger *slog.Logger\n\tConfig *config.Config")
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "SettingsService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+	if first := readInject(t, dir); strings.Contains(first, "DB:") {
+		t.Fatalf("first emit must not carry a DB assignment yet:\n%s", first)
+	}
+
+	// The service gains a DB dep — exactly what ensureDepsDBField does when the
+	// first entity appears. Rewrite its Deps to include DB.
+	writeComponentDeps(t, dir, "internal/handlers", "settings", "settings",
+		"\tLogger *slog.Logger\n\tConfig *config.Config\n\tDB Repository")
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "SettingsService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	// gofmt aligns struct-literal values, so collapse whitespace before
+	// matching the field/expr pairs.
+	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	if !strings.Contains(flat(out), "DB: infra.DB") {
+		t.Fatalf("reconcile did not wire the gained DB dep into the existing construction:\n%s", out)
+	}
+	// The prior Logger/Config wiring must remain.
+	if !strings.Contains(flat(out), "Logger: infra.Log") || !strings.Contains(flat(out), "Config: infra.Cfg") {
+		t.Fatalf("reconcile disturbed the existing assignments:\n%s", out)
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "compose.go", out, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("reconciled compose.go is not valid Go: %v\n----\n%s", err, out)
+	}
+	// Idempotent: the assignment is not injected twice.
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "SettingsService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("idempotent GenerateCompose: %v", err)
+	}
+	if again := readInject(t, dir); strings.Count(flat(again), "DB: infra.DB") != 1 {
+		t.Fatalf("DB assignment must be wired exactly once (idempotent):\n%s", again)
+	}
+}
+
+// TestGenerateProviders_RetrofitsORMOnFirstEntity is the F4 provider-side
+// regression: a providers.go scaffolded BEFORE the first entity has a
+// `DB *sql.DB` pool but no ORM client. When the first entity turns on the ORM
+// (ormEnabled), the write-once providers.go must be retrofitted with the
+// `ORM *orm.Client` field + its OpenInfra construction so the service's
+// `DB orm.Context` dep resolves — instead of a build break from *sql.DB not
+// satisfying orm.Context.
+func TestGenerateProviders_RetrofitsORMOnFirstEntity(t *testing.T) {
+	dir := t.TempDir()
+
+	// First emit: has a database driver but no entities yet (ormEnabled=false).
+	if err := GenerateProviders("example.com/proj", "postgres", false, dir); err != nil {
+		t.Fatalf("first GenerateProviders: %v", err)
+	}
+	path := filepath.Join(dir, "internal", "app", "providers.go")
+	before, _ := os.ReadFile(path)
+	if strings.Contains(string(before), "ORM *orm.Client") {
+		t.Fatalf("pre-entity providers.go must not carry the ORM client yet:\n%s", before)
+	}
+	if !strings.Contains(string(before), "DB *sql.DB") {
+		t.Fatalf("pre-entity providers.go should carry the *sql.DB pool:\n%s", before)
+	}
+
+	// First entity arrives → ormEnabled becomes true; retrofit fires.
+	if err := GenerateProviders("example.com/proj", "postgres", true, dir); err != nil {
+		t.Fatalf("retrofit GenerateProviders: %v", err)
+	}
+	after, _ := os.ReadFile(path)
+	got := string(after)
+	for _, want := range []string{
+		"ORM *orm.Client",
+		"orm.NewClientWithDB(db, \"postgres\")",
+		"infra.ORM = ormClient",
+		"github.com/reliant-labs/forge/pkg/orm",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("retrofitted providers.go missing %q:\n%s", want, got)
+		}
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "providers.go", got, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("retrofitted providers.go is not valid Go: %v\n----\n%s", err, got)
+	}
+
+	// Idempotent: a second retrofit run injects nothing more.
+	if err := GenerateProviders("example.com/proj", "postgres", true, dir); err != nil {
+		t.Fatalf("idempotent GenerateProviders: %v", err)
+	}
+	again, _ := os.ReadFile(path)
+	if strings.Count(string(again), "ORM *orm.Client") != 1 {
+		t.Fatalf("ORM field must be present exactly once (idempotent):\n%s", again)
 	}
 }
 

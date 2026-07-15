@@ -1632,7 +1632,7 @@ schema RenderedWorkload:
     """DEMOTED / ADAPTER-INTERNAL — the k8s-shaped projection target.
 
     This is the OLD user-facing `forge.Service` shape, renamed and demoted
-    by the agnostic-core collapse (FORGE_KCL_IDIOMS.md). It is NO LONGER what
+    by the agnostic-core collapse (docs/design/FORGE_KCL_IDIOMS.md). It is NO LONGER what
     a user authors: the ONE user-facing workload schema is now the
     target-agnostic `forge.Service` (kcl/core.k). This schema is the k8s
     ADAPTER's projection target — `forge._service_to_k8s` (kcl/core.k)
@@ -1769,6 +1769,12 @@ schema RenderedWorkload:
     pod_annotations: {str: str} = {}
     node_selector: {str: str} = {}
     tolerations: [{str: any}] = []
+    # `termination_grace_period_seconds` overrides the pod's
+    # terminationGracePeriodSeconds for workloads whose graceful drain
+    # exceeds the k8s 30s default (e.g. a Temporal worker releasing
+    # in-flight activities on SIGTERM). Unset => field omitted (k8s
+    # default 30s), byte-identical to before.
+    termination_grace_period_seconds?: int
     # Pod volumes + their container mounts (see Volume). The escape
     # hatch for the restricted-PSA `readOnlyRootFilesystem = true`
     # baseline: declare an empty_dir volume at the writable path the
@@ -2254,7 +2260,7 @@ schema Bundle:
     check:
         # A cluster_target is required iff at least one workload resolves to
         # the k8s target — i.e. any workload WITHOUT a `host` block (target
-        # polymorphism, FORGE_TARGET_POLYMORPHISM.md §1.4). The k8s adapter
+        # polymorphism, docs/design/FORGE_TARGET_POLYMORPHISM.md §1.4). The k8s adapter
         # (`_service_to_k8s`) seeds each such workload's RenderedWorkload from
         # `cluster_target`, so a workload without a target would dereference
         # an Undefined `target.deploy` and fail deep in the adapter; reject it

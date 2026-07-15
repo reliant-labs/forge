@@ -1,7 +1,7 @@
 """
 PROOF — target polymorphism: ONE agnostic `forge.Service` builder renders to
 BOTH a host process (dev) AND a k8s Deployment (cluster), selected PER WORKLOAD
-by the presence of a `host` block. See FORGE_TARGET_POLYMORPHISM.md.
+by the presence of a `host` block. See docs/design/FORGE_TARGET_POLYMORPHISM.md.
 
 This is the acid test of the HOST adapter (`_service_to_host`) + the
 per-workload target selector (`_project_workload`). We author ONE pure-agnostic
@@ -157,5 +157,5 @@ assert_no_host_leakage = _k8s_dep == _pure_dep
 #   presence of a `host` block, never baked in. The host workload renders to a
 #   HostDeploy (air, host env in the deploy block); the same builder plain
 #   renders a normal k8s Deployment, byte-identical to a pure-k8s Bundle. This
-#   is exactly the shared-builder break (CONTROL_PLANE_MIGRATION.md B3) unwound.
+#   is exactly the shared-builder break (docs/design/CONTROL_PLANE_MIGRATION.md B3) unwound.
 # ═══════════════════════════════════════════════════════════════════════════

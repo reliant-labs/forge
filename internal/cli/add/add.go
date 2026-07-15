@@ -470,6 +470,20 @@ func runAddService(f *factory.Factory, name string, port int, resume, force bool
 	// so they can skip the append and the rollback-on-failure restore.
 	existingIdx := -1
 
+	// Rollback tracking for a FRESH add: if the post-scaffold generate
+	// pipeline (buf validate / authz-completeness lint / build) fails, the
+	// files the scaffold just wrote (the handler dir + proto/services/<pkg>)
+	// must be removed so the tree isn't left half-created. Without this a
+	// failed validation strands an orphan proto dir and handler dir that
+	// confuse the next `forge add service`. We only remove dirs this run
+	// CREATED — a pre-existing dir (resume/force, or a re-run over a manual
+	// edit) is never blown away.
+	servicePkg := naming.ServicePackage(name)
+	var (
+		handlerDirPreexisted bool
+		protoDirPreexisted   bool
+	)
+
 	return addComponent(componentAddSpec{
 		name:     name,
 		ctxLabel: ctxLabel,
@@ -497,6 +511,15 @@ func runAddService(f *factory.Factory, name string, port int, resume, force bool
 					existingIdx = i
 					break
 				}
+			}
+			// Snapshot on-disk pre-existence for rollback (see rollback vars
+			// above). Captured here in preflight — the only hook with root in
+			// hand that runs BEFORE scaffold writes anything.
+			if _, err := os.Stat(filepath.Join(root, "internal", "handlers", servicePkg)); err == nil {
+				handlerDirPreexisted = true
+			}
+			if _, err := os.Stat(filepath.Join(root, "proto", "services", servicePkg)); err == nil {
+				protoDirPreexisted = true
 			}
 			if port == 0 {
 				if existingIdx >= 0 {
@@ -556,6 +579,13 @@ func runAddService(f *factory.Factory, name string, port int, resume, force bool
 			fmt.Println("\n🔧 Running generation pipeline...")
 			err := f.Gen.RunPipeline(p.root)
 			if err != nil {
+				// Roll back the freshly-scaffolded files so a validation
+				// failure doesn't strand a half-created service (orphan proto
+				// dir + handler dir). Only dirs this run created are removed;
+				// a pre-existing dir (resume/force / manual edit) is preserved.
+				if existingIdx < 0 && !resume && !force {
+					rollbackServiceScaffold(p.root, servicePkg, handlerDirPreexisted, protoDirPreexisted)
+				}
 				return fmt.Errorf("generation pipeline failed for service %q: %w", name, err)
 			}
 
@@ -596,6 +626,31 @@ func runAddService(f *factory.Factory, name string, port int, resume, force bool
 			return nil
 		},
 	})
+}
+
+// rollbackServiceScaffold removes the on-disk files a FAILED `forge add
+// service` scaffolded — the handler dir (internal/handlers/<pkg>) and the
+// proto tree (proto/services/<pkg>) — so a validation/pipeline failure leaves
+// the tree in its pre-add state instead of a half-created service. It removes
+// ONLY dirs this run created: a dir that pre-existed (handlerPreexisted /
+// protoPreexisted captured before scaffold) is left untouched, so a --resume /
+// --force run or a re-run over manual edits never blows away real work.
+// Best-effort: removal errors are surfaced as a warning, never masking the
+// underlying pipeline error the caller is about to return.
+func rollbackServiceScaffold(root, servicePkg string, handlerPreexisted, protoPreexisted bool) {
+	fmt.Fprintf(os.Stderr, "\n↩️  Rolling back scaffold for service %q (validation failed)...\n", servicePkg)
+	remove := func(dir string, preexisted bool) {
+		if preexisted {
+			return
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: could not remove %s during rollback: %v\n", dir, err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "  ✓ removed %s\n", dir)
+	}
+	remove(filepath.Join(root, "internal", "handlers", servicePkg), handlerPreexisted)
+	remove(filepath.Join(root, "proto", "services", servicePkg), protoPreexisted)
 }
 
 // --- add package (alias for package new) ---

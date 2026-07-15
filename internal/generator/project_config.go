@@ -151,8 +151,11 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 
 // resolveBinaryName returns the primary binary name (the cmd/<bin>/ leaf the
 // command tree lives under) for the project at projectDir. It is the
-// forge.yaml project name; falls back to the project directory's base name
-// when the config is unreadable, mirroring ProjectGenerator.binaryName().
+// forge.yaml project name VERBATIM (hyphens preserved), falling back to the
+// project directory's base name when the config is unreadable — mirroring
+// ProjectGenerator.binaryName() so the upgrade / regenerate lane addresses the
+// SAME cmd/<bin>/ dir the scaffold wrote (a project named "peptide-platform"
+// lives at cmd/peptide-platform/).
 func resolveBinaryName(projectDir string) string {
 	cfg, err := ReadProjectConfig(filepath.Join(projectDir, "forge.yaml"))
 	if err == nil && cfg != nil && cfg.Name != "" {

@@ -13,16 +13,26 @@
 //     replace; `go mod tidy` resolves it from the module proxy like any
 //     other dependency.
 //
-//   - DEV flow: dev builds have no published pkg version. When the new
-//     project sits next to a forge checkout (the common
+//   - DEV flow: dev builds have no published (ldflags-stamped) pkg version.
+//     When the new project sits next to a forge checkout (the common
 //     `~/src/{forge,myproject}` layout), the scaffolded go.mod gets a
 //     host-absolute `replace github.com/reliant-labs/forge/pkg =>
 //     <sibling>/forge/pkg`; the first `forge generate` then vendors that
 //     source into <project>/.forge-pkg/ and rewrites the replace to
 //     `./.forge-pkg` so docker builds see the same code (see
-//     internal/cli/dev_pkg_replace.go). With no sibling checkout either,
-//     nothing is emitted and `go mod tidy` falls back to resolving a
-//     pseudo-version from the proxy — today's pre-existing behavior.
+//     internal/cli/dev_pkg_replace.go).
+//
+//     With no sibling checkout either (the daemon and any `go install`'d
+//     forge), we pin the forge/pkg pseudo-version THIS binary was built
+//     against, read from its own build info (buildinfo.PkgModuleVersion) —
+//     a real, proxy-resolvable, already-cached version. This is what lets a
+//     fresh scaffold's per-module `go mod tidy` (root AND the separate gen/
+//     submodule, which the go.work replace does NOT reach) resolve forge/pkg
+//     instead of choking on the unresolvable `v0.0.0` the templates used to
+//     hard-code. Only when even the build info carries no usable version (a
+//     local go.work build, where forge/pkg shows as "(devel)") is nothing
+//     emitted and `go mod tidy` left to resolve a pseudo-version from the
+//     proxy — the historical fallback.
 //
 // The full model is documented in docs/pkg-versioning.md.
 package generator
@@ -53,10 +63,26 @@ const forgePkgModule = "github.com/reliant-labs/forge/pkg"
 //   - both empty → emit nothing; `go mod tidy` resolves a proxy
 //     pseudo-version (dev flow without a sibling checkout).
 func resolveForgePkgDep(projectPath string) (pinnedVersion, devReplaceTarget string) {
+	// 1. Release stamp (ldflags) — a published forge/pkg version.
 	if v := buildinfo.PkgVersion(); v != "" {
 		return v, ""
 	}
-	return "", siblingForgePkgDir(projectPath)
+	// 2. Sibling forge checkout — prefer a live replace so local forge/pkg
+	//    edits flow into the scaffold immediately (the `~/src/{forge,proj}`
+	//    dev layout).
+	if sib := siblingForgePkgDir(projectPath); sib != "" {
+		return "", sib
+	}
+	// 3. No sibling (daemon / `go install`'d forge): pin the forge/pkg
+	//    pseudo-version this binary was compiled against. Real, resolvable,
+	//    and already cached — unlike the templates' old `v0.0.0` fallback,
+	//    which the separate gen/ submodule's `go mod tidy` could never fetch.
+	if v := buildinfo.PkgModuleVersion(); v != "" {
+		return v, ""
+	}
+	// 4. Nothing usable (local go.work build, forge/pkg == "(devel)"): emit
+	//    neither pin nor replace; `go mod tidy` resolves from the proxy.
+	return "", ""
 }
 
 // siblingForgePkgDir returns the absolute path of a sibling forge

@@ -239,6 +239,42 @@ func forgePkgGenReplaceTarget(projectDir string) (string, error) {
 	return rebaseForgePkgReplaceForGen(st.Target), nil
 }
 
+// forgePkgRequireLineRE matches the forge/pkg `require` line in a root
+// go.mod — either the block form (`\tgithub.com/reliant-labs/forge/pkg
+// vX.Y.Z`) or the single-line form (`require github.com/... vX.Y.Z`). It
+// deliberately does NOT match a `replace` line (which begins with the
+// `replace` keyword, so the module path is not the first token) nor the
+// `module` directive.
+var forgePkgRequireLineRE = regexp.MustCompile(
+	`(?m)^[\t ]*(?:require[\t ]+)?github\.com/reliant-labs/forge/pkg[\t ]+(v[^\s]+)[\t ]*$`,
+)
+
+// rootForgePkgRequireVersion returns the CONCRETE forge/pkg version pinned
+// in the project's root go.mod, or "" when none is pinned. The bare
+// placeholder `v0.0.0` (the dev-sibling flow, paired with a replace) is
+// treated as "no concrete pin" — only a release tag or a proxy-resolvable
+// pseudo-version (vX.Y.Z-<ts>-<hash>) counts. Used to mirror a pinned root
+// into a freshly bootstrapped gen/go.mod so the two submodules resolve
+// forge/pkg to the SAME version.
+func rootForgePkgRequireVersion(projectDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read go.mod: %w", err)
+	}
+	m := forgePkgRequireLineRE.FindStringSubmatch(string(data))
+	if m == nil {
+		return "", nil
+	}
+	v := strings.TrimSpace(m[1])
+	if v == "v0.0.0" {
+		return "", nil // dev-sibling placeholder, not a concrete pin
+	}
+	return v, nil
+}
+
 // rebaseForgePkgReplaceForGen translates a root-module forge/pkg replace
 // target into the equivalent target for the gen/ submodule (one dir
 // deeper). Absolute paths pass through unchanged; relative paths gain one

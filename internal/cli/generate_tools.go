@@ -110,10 +110,32 @@ func ensureGenGoMod(projectDir string) error {
 		fmt.Fprintf(os.Stderr, "Warning: could not derive gen/ forge/pkg replace from root go.mod: %v\n", err)
 		genReplace = ""
 	}
+	// When the root go.mod pins a CONCRETE forge/pkg version (release tag or
+	// a proxy-resolvable pseudo-version) with no replace, mirror that pin into
+	// gen/ so both submodules resolve the SAME forge/pkg. Without this a
+	// bootstrapped gen/go.mod would omit forge/pkg entirely and `go mod tidy`
+	// could drift it to a different version than the root. Only read the pin
+	// when there is no replace to rebase — a replace means the dev-sibling
+	// flow, where the root require is the bare v0.0.0 placeholder the replace
+	// resolves.
+	var forgePkgVersion string
+	if genReplace == "" {
+		if v, verr := rootForgePkgRequireVersion(projectDir); verr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not read root forge/pkg version: %v\n", verr)
+		} else {
+			forgePkgVersion = v
+		}
+	}
 	data := struct {
-		Module          string
-		GoVersion       string
-		ForgePkgVersion string // empty in the bootstrap path → template emits `forge/pkg v0.0.0`, resolved by the gen-local replace below (mirrors the root replace). A real pin is supplied on the forge-new render path.
+		Module    string
+		GoVersion string
+		// ForgePkgVersion mirrors a concrete root pin (release tag or
+		// pseudo-version) so gen/ resolves the same forge/pkg. Empty in the
+		// dev-sibling flow (paired with ForgePkgGenReplace below → template
+		// emits the v0.0.0 placeholder the replace resolves) and in the
+		// local-go.work-no-sibling flow (template omits the require and tidy
+		// resolves from the proxy).
+		ForgePkgVersion string
 		// ForgePkgGenReplace is the gen-relative forge/pkg replace target
 		// (root replace rebased one dir deeper). Empty in release/no-sibling
 		// mode → template emits no replace and tidy resolves from the proxy.
@@ -121,6 +143,7 @@ func ensureGenGoMod(projectDir string) error {
 	}{
 		Module:             modulePath,
 		GoVersion:          goVersion,
+		ForgePkgVersion:    forgePkgVersion,
 		ForgePkgGenReplace: genReplace,
 	}
 	if err := assets.WriteTemplateWithData("gen-go.mod.tmpl", goMod, data); err != nil {

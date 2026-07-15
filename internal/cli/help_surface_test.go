@@ -66,6 +66,7 @@ func TestGenerateHelpSurface(t *testing.T) {
 		"accept",
 		"explain-drift",
 		"force-cleanup",
+		"no-revert",
 		"plan",
 		"reason",
 		"scope", // deprecated alias for --steps; hidden via MarkDeprecated

@@ -24,6 +24,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -166,7 +167,98 @@ Examples:
 	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the host + frontend phases to specific services/frontends by name (repeatable). `forge up --target admin-server --host-only` is the single-service inner loop. Default: everything.")
 
 	cmd.AddCommand(newUpStopCmd())
+	cmd.AddCommand(newUpServicesCmd())
 	return cmd
+}
+
+// newUpServicesCmd is the retrieve-after-the-fact half of the `forge up`
+// summary: `forge up services --env=<env>` re-derives the same host
+// service + frontend table long after the startup scrollback has scrolled
+// away, so a human (or an agent that reconnected to a running stack) can
+// re-discover every listening URL, its log file, and whether it's actually
+// up — without re-running `forge up`. It renders the env's KCL through the
+// SAME devstack context `forge up` uses (identical ports), probes each
+// declared port for a live listener, and cross-references the ownership
+// markers the reclaim guard stamps so it can tell "our process is up" from
+// "something else grabbed the port".
+func newUpServicesCmd() *cobra.Command {
+	var env string
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "services",
+		Short: "List the host services + frontends `forge up` runs for an env — URLs, log paths, and live listen status",
+		Long: `List every host service and frontend the env's ` + "`forge up`" + ` runs, with:
+
+  * its browser URL (http://localhost:<port>),
+  * its per-service log file (tail -f / grep target), and
+  * whether a listener is accepting on the port RIGHT NOW (up/down),
+    including the holder pid and whether that process is forge-owned.
+
+Reads the same rendered KCL + resolved ports ` + "`forge up`" + ` uses, so the
+table matches what ` + "`forge up --env=<env>`" + ` printed — retrievable after
+the startup scrollback is gone. ALL declared frontends are listed (a
+project may declare several; each gets its own port row).
+
+Examples:
+  forge up services --env=dev
+  forge up services --env=dev --json   # machine-readable for scripts/agents`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if env == "" {
+				return fmt.Errorf("--env is required (e.g. --env=dev)")
+			}
+			return runUpServices(cmd.Context(), env, jsonOut)
+		},
+	}
+	cmd.Flags().StringVar(&env, "env", "", "Environment to report (e.g. dev) — required")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (name/kind/url/port/log/listening/pid/owned per service)")
+	return cmd
+}
+
+// runUpServices renders the env's KCL, probes each declared port, and
+// prints the host-service + frontend table (or JSON). It arms the SAME
+// devstack render context `forge up`/`forge deploy` arm so ports resolve
+// identically, then restores any resolve_port drift — this is a read-only
+// report and must not shift the stable port assignments a live stack is on.
+func runUpServices(ctx context.Context, env string, jsonOut bool) error {
+	store, err := loadProjectStore()
+	if err != nil {
+		return err
+	}
+	projectDir := projectDirForKCL()
+	_, restore := activateDevStack(projectDir, env)
+	entities, err := RenderKCL(ctx, projectDir, env)
+	restore() // revert resolve_port bytes; a status render must not drift ports
+	if err != nil {
+		return fmt.Errorf("render KCL: %w", err)
+	}
+
+	// Honor the frontend feature gate so a frontends-off project's report
+	// doesn't list frontends `forge up` never starts. Use the pure predicate
+	// (not skipFeature) so this read-only report emits no phase-skip log line
+	// — that would pollute the --json output and is meaningless here (the
+	// `services` command runs no phase).
+	frontendsOn := isFeatureEnabled(store, config.FeatureFrontend)
+	rows := collectUpServices(entities, env, nil, frontendsOn, portInUse)
+	// Enrich with the listener pid + forge-ownership marker — the reclaim
+	// guard's signal, reused here to distinguish "our stack is up" from "a
+	// foreign process holds the port".
+	enrichOwnership(rows, env)
+
+	if jsonOut {
+		rep := upServicesReport{Env: env, Services: rows}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep)
+	}
+	if len(rows) == 0 {
+		fmt.Printf("[up] no host services or frontends declared in deploy/kcl/%s/\n", env)
+		return nil
+	}
+	// notReadyLabel "down": unlike the immediate post-launch summary (where a
+	// not-yet-listening port means "still booting"), this snapshot runs long
+	// after start, so a dead port is genuinely down.
+	renderUpSummary(os.Stdout, env, rows, "down", true, nil)
+	return nil
 }
 
 // newUpStopCmd reads the PID files written by `forge up --background`
@@ -327,33 +419,58 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// the frontend feature gate. Cluster-only never reaches here.
 	frontendsOn := !skipFeature(store, config.FeatureFrontend, "up:frontend:portcheck")
 	if conflicts := conflictingPorts(entities, opts.targets, frontendsOn, portInUse); len(conflicts) > 0 {
-		// Tell OUR own already-running stack from a FOREIGN port holder via
-		// the per-env lock (the tracked PIDs), not by guessing from the
-		// bound port alone. Three outcomes:
-		//   * our stack is live and --restart  -> stop it (tree-kill, which
-		//     waits for the listeners to free) and continue;
-		//   * our stack is live, no --restart  -> a clear error pointing at
-		//     the unblock that actually works (forge up stop / --restart);
-		//   * nothing tracked but the port is busy -> a foreign process;
-		//     error pointing at lsof.
-		ours := upStackLive(opts.env)
-		if ours && opts.restart {
-			fmt.Printf("\n[up] --restart: stopping the running env=%s stack first\n", opts.env)
-			_ = runUpStop(opts.env) // tree-kill + wait-for-exit => ports released
+		// Tell OUR own (possibly orphaned) stack from a FOREIGN port holder by
+		// INSPECTING THE LIVE HOLDER, not by guessing from the bound port and
+		// not by trusting the drift-prone .pids ledger alone. A process
+		// carrying our FORGE_UP_ENV marker — on the holder or any ancestor —
+		// is our orphan even when the ledger is stale/absent (a crash mid-run,
+		// air re-exec under a new pid, or an npm grandchild reparented to
+		// launchd). classifyPortConflicts splits the conflicts accordingly;
+		// the ledger is still consulted as a fast "is a live stack tracked"
+		// hint. Outcomes:
+		//   * ours (marker or ledger) and --restart -> reclaim it (tree-kill,
+		//     which waits for the listeners to free) and continue;
+		//   * ours, no --restart -> a clear error pointing at the unblock that
+		//     actually works (forge up --restart / forge up stop);
+		//   * genuinely foreign (unmarked holder) -> error pointing at lsof.
+		//     A foreign process is NEVER killed.
+		facts := newOSProcFacts()
+		owned, foreign := classifyPortConflicts(opts.env, conflicts, portListenerPID, facts)
+		ours := upStackLive(opts.env) || len(owned) > 0
+
+		if opts.restart && ours {
+			fmt.Printf("\n[up] --restart: reclaiming the running/orphaned env=%s stack first\n", opts.env)
+			if upStackLive(opts.env) {
+				_ = runUpStop(opts.env) // tree-kill ledger pids + wait-for-exit
+			}
+			// Reclaim marker-identified orphans the ledger never recorded (the
+			// common case after a crash: real forge processes, no live ledger).
+			reclaimMarkedOrphans(opts.env, conflicts, portListenerPID, facts)
 			conflicts = conflictingPorts(entities, opts.targets, frontendsOn, portInUse)
+			// Re-classify against a FRESH process snapshot — the reclaim above
+			// changed the table, so the pre-reclaim ppid map is stale.
+			owned, foreign = classifyPortConflicts(opts.env, conflicts, portListenerPID, newOSProcFacts())
 		}
+
 		if len(conflicts) > 0 {
 			var b strings.Builder
-			if ours && !opts.restart {
-				_, _ = fmt.Fprintf(&b, "[up] a forge stack is already running for env=%s:\n", opts.env)
-				for _, c := range conflicts {
+			// Our own (possibly orphaned) stack still holds ports — route to
+			// the "ours" message even when the ledger said nothing, because
+			// the live holder carries our marker.
+			if len(owned) > 0 {
+				_, _ = fmt.Fprintf(&b, "[up] a forge-managed stack for env=%s is still running (possibly orphaned from an earlier run):\n", opts.env)
+				for _, c := range owned {
 					_, _ = fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
 				}
-				_, _ = fmt.Fprintf(&b, "     stop it:     forge up stop --env=%s\n", opts.env)
-				_, _ = fmt.Fprintf(&b, "     or refresh:  forge up --env=%s --restart", opts.env)
-			} else {
+				_, _ = fmt.Fprintf(&b, "     refresh:  forge up --env=%s --restart\n", opts.env)
+				_, _ = fmt.Fprintf(&b, "     or stop:  forge up stop --env=%s", opts.env)
+			}
+			if len(foreign) > 0 {
+				if b.Len() > 0 {
+					b.WriteString("\n")
+				}
 				_, _ = fmt.Fprintf(&b, "[up] these ports are held by a process forge doesn't manage (env=%s):\n", opts.env)
-				for _, c := range conflicts {
+				for _, c := range foreign {
 					_, _ = fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
 				}
 				b.WriteString("     free them (lsof -i :<port>, kill the PID) or use --target to start a different service")
@@ -407,7 +524,9 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// Summary box: what's listening where, and where to find each
 	// service's log. Printed in both the supervise and detach paths so the
 	// URLs + log paths are one glance away (and greppable for an agent).
-	printUpSummary(entities, opts.env, detach, opts.targets)
+	// frontendsOn (computed above for the port-conflict guard) is reused so
+	// the summary lists exactly the frontends this run actually started.
+	printUpSummary(entities, opts.env, detach, opts.targets, frontendsOn)
 
 	// Persist the per-env lock (tracked PIDs) for BOTH the supervise and
 	// detach paths, so a concurrent `forge up` for this env detects the
@@ -549,22 +668,50 @@ func upClusterBringup(ctx context.Context, in upClusterInput) error {
 	return nil
 }
 
-// printUpSummary prints a compact box of what `forge up` just brought
-// up: each host service and frontend, its URL (when a listen port is
-// known), and the path to its log file — plus where to grep all logs
-// and how to list cluster routes. Mirrors the cloud-dev "final banner"
-// so a developer (or an LLM agent) can find URLs and logs at a glance
-// instead of scraping them out of interleaved startup scrollback.
+// upServiceRow is one host service / frontend line shared by the immediate
+// `forge up` summary and the retrieve-after-the-fact `forge up services`
+// output. The JSON tags are the `--json` contract (kept additive so
+// dashboards/agents stay stable as fields are added).
+type upServiceRow struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`           // "host" | "frontend"
+	URL  string `json:"url,omitempty"`  // browser-reachable URL; empty when no port is declared
+	Port int    `json:"port,omitempty"` // declared listen port; 0 when unknown
+	Log  string `json:"log"`            // project-relative log path (tail/grep target)
+	// Listening is a point-in-time port probe: true when a TCP listener is
+	// accepting on Port. False for a not-yet-bound (booting) or dead service,
+	// and always false when Port is 0.
+	Listening bool `json:"listening"`
+	// PID / Owned are filled by enrichOwnership (the `services` command path):
+	// the pid LISTENing on Port, and whether it — or an ancestor — carries
+	// this env's forge-up ownership marker. PID 0 / Owned false when no
+	// listener, or on platforms where the port→pid lookup is a no-op.
+	PID   int  `json:"pid,omitempty"`
+	Owned bool `json:"owned,omitempty"`
+}
+
+// upServicesReport is the `forge up services --json` envelope. Stable so
+// scripts / sub-agents can consume it.
+type upServicesReport struct {
+	Env      string         `json:"env"`
+	Services []upServiceRow `json:"services"`
+}
+
+// collectUpServices builds the ordered host-then-frontend rows for env,
+// scoped by --target (inTargetSet) and — for frontends — the frontendsOn
+// gate. It is the pure core shared by the immediate summary and the
+// `services` command: the port liveness probe is injected so the
+// collection is unit-testable without real sockets (pass nil to skip it).
 //
-// Best-effort: host-service ports are read from the KCL `PORT` env var
-// (the bind-port convention); a service that doesn't declare one is
-// listed without a URL. No-op when nothing host/frontend ran.
-func printUpSummary(e *KCLEntities, env string, background bool, targets []string) {
+// Host-service ports come from the KCL PORT convention (hostEnvPort); a
+// service declaring no inline PORT is listed without a URL. EVERY declared
+// frontend is emitted (a project may declare several, each with its own
+// port) — never collapsed to one.
+func collectUpServices(e *KCLEntities, env string, targets []string, frontendsOn bool, probe func(int) bool) []upServiceRow {
 	if e == nil {
-		return
+		return nil
 	}
-	type row struct{ name, url, log string }
-	var hosts, fronts []row
+	var rows []upServiceRow
 	for _, svc := range e.Services {
 		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
 			continue
@@ -572,60 +719,208 @@ func printUpSummary(e *KCLEntities, env string, background bool, targets []strin
 		if !inTargetSet(targets, svc.Name) {
 			continue
 		}
-		url := ""
+		r := upServiceRow{Name: svc.Name, Kind: "host", Log: summaryLogPath(env, svc.Name)}
 		if p := hostEnvPort(svc.Name, svc.Deploy.Host); p != "" {
-			url = "http://localhost:" + p
+			if port, err := strconv.Atoi(p); err == nil && port > 0 {
+				r.Port = port
+				r.URL = "http://localhost:" + p
+			}
 		}
-		hosts = append(hosts, row{svc.Name, url, summaryLogPath(env, svc.Name)})
+		rows = append(rows, r)
 	}
-	for _, fe := range e.Frontends {
-		if !inTargetSet(targets, fe.Name) {
+	if frontendsOn {
+		for _, fe := range e.Frontends {
+			if !inTargetSet(targets, fe.Name) {
+				continue
+			}
+			r := upServiceRow{Name: fe.Name, Kind: "frontend", Log: summaryLogPath(env, "frontend:"+fe.Name)}
+			if fe.Port > 0 {
+				r.Port = fe.Port
+				r.URL = fmt.Sprintf("http://localhost:%d", fe.Port)
+			}
+			rows = append(rows, r)
+		}
+	}
+	if probe != nil {
+		probeRowsListening(rows, probe)
+	}
+	return rows
+}
+
+// probeRowsListening fills each row's Listening flag by probing its Port
+// CONCURRENTLY, so the liveness snapshot costs one dial timeout total
+// rather than one-per-service (matters when several services are still
+// booting and each dial pays the full timeout). Rows without a known port
+// are left false.
+func probeRowsListening(rows []upServiceRow, probe func(int) bool) {
+	var wg sync.WaitGroup
+	for i := range rows {
+		if rows[i].Port <= 0 {
 			continue
 		}
-		url := ""
-		if fe.Port > 0 {
-			url = fmt.Sprintf("http://localhost:%d", fe.Port)
-		}
-		fronts = append(fronts, row{fe.Name, url, summaryLogPath(env, "frontend:"+fe.Name)})
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rows[i].Listening = probe(rows[i].Port)
+		}(i)
 	}
-	if len(hosts) == 0 && len(fronts) == 0 {
+	wg.Wait()
+}
+
+// enrichOwnership fills each listening row's PID + Owned by resolving the
+// port's listener (portListenerPID / lsof) and walking its ancestry for
+// this env's forge-up marker (forgeOwnerOfPID). It CONSUMES the ownership
+// work's helpers rather than re-discovering process ownership — the same
+// signal the pre-flight reclaim guard uses. Best-effort: on platforms
+// where portListenerPID is a no-op (Windows) PID stays 0 and Owned false,
+// so the report degrades to health-only without misfiring.
+func enrichOwnership(rows []upServiceRow, env string) {
+	facts := newOSProcFacts()
+	for i := range rows {
+		if rows[i].Port <= 0 {
+			continue
+		}
+		pid := portListenerPID(rows[i].Port)
+		if pid <= 0 {
+			continue
+		}
+		rows[i].PID = pid
+		if _, ok := forgeOwnerOfPID(pid, env, facts); ok {
+			rows[i].Owned = true
+		}
+	}
+}
+
+// printUpSummary prints a compact box of what `forge up` just brought
+// up: each host service and frontend, its URL (when a listen port is
+// known), a point-in-time listen check, and the path to its log file —
+// plus where to grep all logs, how to list cluster routes, and how to
+// re-list this table later. Mirrors the cloud-dev "final banner" so a
+// developer (or an LLM agent) can find URLs and logs at a glance instead
+// of scraping them out of interleaved startup scrollback.
+//
+// Health here is best-effort: the processes JUST started, so a service
+// still binding its port shows "starting" (not "down"). Use
+// `forge up services --env=<env>` for the settled status.
+func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool) {
+	rows := collectUpServices(e, env, targets, frontendsOn, portInUse)
+	if len(rows) == 0 {
 		return
+	}
+	trailer := "Ctrl-C to stop."
+	if background {
+		trailer = fmt.Sprintf("Detached — stop with `forge up stop --env=%s`", env)
+	}
+	// showOwner=false: the immediate summary stays off the lsof/ps hot path;
+	// notReadyLabel="starting" because a just-launched port not yet bound is
+	// booting, not down.
+	renderUpSummary(os.Stdout, env, rows, "starting", false, []string{trailer})
+}
+
+// renderUpSummary writes the aligned host-service + frontend table + the
+// standard "where to look next" footer (logs dir, cluster routes, live
+// status command) to w. Shared by the immediate summary and the `services`
+// command so both print the identical block.
+//
+//   - notReadyLabel is the status word for a known-but-not-listening port
+//     ("starting" right after launch, "down" for the settled snapshot).
+//   - showOwner appends the listener pid + a "not forge-owned" flag when a
+//     foreign process holds the port (the `services` command).
+//   - trailers are extra footer lines (e.g. the Ctrl-C / detached hint).
+func renderUpSummary(w io.Writer, env string, rows []upServiceRow, notReadyLabel string, showOwner bool, trailers []string) {
+	if len(rows) == 0 {
+		return
+	}
+	// Column widths from the data so name/URL/status align in one table.
+	nameW, urlW := 0, 0
+	for _, r := range rows {
+		if len(r.Name) > nameW {
+			nameW = len(r.Name)
+		}
+		u := r.URL
+		if u == "" {
+			u = summaryNoPort
+		}
+		if len(u) > urlW {
+			urlW = len(u)
+		}
 	}
 
 	const bar = "│"
-	line := func(name, url, log string) {
-		if url != "" {
-			fmt.Printf("%s   %-22s %s\n", bar, name, url)
-		} else {
-			fmt.Printf("%s   %s\n", bar, name)
+	printRow := func(r upServiceRow) {
+		urlCell := r.URL
+		if urlCell == "" {
+			urlCell = summaryNoPort
 		}
-		fmt.Printf("%s     ↳ %s\n", bar, log)
+		fmt.Fprintf(w, "%s  %s %-*s  %-*s  %s\n",
+			bar, statusGlyph(r, notReadyLabel), nameW, r.Name, urlW, urlCell, rowStatus(r, notReadyLabel, showOwner))
+		fmt.Fprintf(w, "%s       ↳ %s\n", bar, r.Log)
+	}
+	printGroup := func(title, kind string) {
+		printed := false
+		for _, r := range rows {
+			if r.Kind != kind {
+				continue
+			}
+			if !printed {
+				fmt.Fprintf(w, "%s %s\n", bar, title)
+				printed = true
+			}
+			printRow(r)
+		}
 	}
 
-	fmt.Println()
-	fmt.Printf("╭─ forge up · env=%s ─────────────────────────────────────\n", env)
-	if len(hosts) > 0 {
-		fmt.Printf("%s Host services\n", bar)
-		for _, r := range hosts {
-			line(r.name, r.url, r.log)
-		}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "╭─ forge up · env=%s ─────────────────────────────────────\n", env)
+	printGroup("Host services", "host")
+	printGroup("Frontends", "frontend")
+	fmt.Fprintf(w, "%s\n", bar)
+	fmt.Fprintf(w, "%s Logs   %s/   — tail -f / grep the per-service *.log here\n", bar, upLogDir(env))
+	fmt.Fprintf(w, "%s Cluster routes:  forge cluster urls\n", bar)
+	fmt.Fprintf(w, "%s Live status:     forge up services --env=%s\n", bar, env)
+	for _, t := range trailers {
+		fmt.Fprintf(w, "%s %s\n", bar, t)
 	}
-	if len(fronts) > 0 {
-		fmt.Printf("%s Frontends\n", bar)
-		for _, r := range fronts {
-			line(r.name, r.url, r.log)
-		}
+	fmt.Fprintln(w, "╰─────────────────────────────────────────────────────────")
+	fmt.Fprintln(w)
+}
+
+// summaryNoPort is the URL cell for a service that declares no listen port
+// (nothing browser-reachable to link).
+const summaryNoPort = "(no port declared)"
+
+// statusGlyph is the leading health mark for a summary row: a filled dot
+// when a listener is accepting, a hollow dot for a known-but-not-listening
+// port, and a middot when no port is declared (health is not meaningful).
+func statusGlyph(r upServiceRow, _ string) string {
+	switch {
+	case r.Port <= 0:
+		return "·"
+	case r.Listening:
+		return "●"
+	default:
+		return "○"
 	}
-	fmt.Printf("%s\n", bar)
-	fmt.Printf("%s Logs   %s/   — tail -f / grep the per-service *.log here\n", bar, upLogDir(env))
-	fmt.Printf("%s Cluster routes:  forge cluster urls\n", bar)
-	if background {
-		fmt.Printf("%s Detached — stop with `forge up stop --env=%s`\n", bar, env)
-	} else {
-		fmt.Printf("%s Ctrl-C to stop.\n", bar)
+}
+
+// rowStatus is the trailing status word for a summary row. With showOwner
+// it annotates a live port with its holder pid and flags a listener that
+// is NOT forge-owned (something else grabbed the port) — the ownership
+// signal reused from the reclaim guard.
+func rowStatus(r upServiceRow, notReadyLabel string, showOwner bool) string {
+	if r.Port <= 0 {
+		return ""
 	}
-	fmt.Println("╰─────────────────────────────────────────────────────────")
-	fmt.Println()
+	if !r.Listening {
+		return notReadyLabel
+	}
+	if !showOwner || r.PID <= 0 {
+		return "up"
+	}
+	if r.Owned {
+		return fmt.Sprintf("up (pid %d)", r.PID)
+	}
+	return fmt.Sprintf("up (pid %d, not forge-owned)", r.PID)
 }
 
 // summaryLogPath returns the display (project-relative) log path for a
@@ -1088,6 +1383,11 @@ func newProcRegistry(env string) *procRegistry {
 // files under ~/.cache/forge/up/<env>/<name>.log so the user can
 // `tail -f` them after detach.
 func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error {
+	// Stamp forge ownership onto the child (and, via env inheritance, every
+	// descendant) BEFORE it starts. This is the authoritative signal a later
+	// `forge up` uses to recognise its own orphans on a busy port even when
+	// the .pids ledger has drifted — see up_reclaim.go.
+	stampForgeOwnership(cmd, p.env, name)
 	if background {
 		logPath, err := upLogPath(p.env, name)
 		if err != nil {
@@ -1233,8 +1533,17 @@ func (p *procRegistry) persist() {
 		_, _ = fmt.Fprintf(&b, "%s\t%d\n", mp.name, pid)
 	}
 	p.mu.Unlock()
-	if err := os.WriteFile(statePath, []byte(b.String()), 0o644); err != nil {
+	// Write atomically (temp + rename) so a crash mid-write can't leave a
+	// truncated/corrupt ledger that `forge up stop` would misparse. The temp
+	// lives in the same dir so the rename is a same-filesystem atomic swap.
+	tmp := statePath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
 		fmt.Printf("[up] warning: write state: %v\n", err)
+		return
+	}
+	if err := os.Rename(tmp, statePath); err != nil {
+		fmt.Printf("[up] warning: commit state: %v\n", err)
+		_ = os.Remove(tmp)
 	}
 }
 
@@ -1385,52 +1694,42 @@ func runUpStop(env string) error {
 	if err != nil {
 		return err
 	}
-	if _, statErr := os.Stat(statePath); statErr != nil {
-		if os.IsNotExist(statErr) {
-			fmt.Printf("[up] no tracked stack for env=%s.\n", env)
-			return nil
-		}
-		return fmt.Errorf("stat state: %w", statErr)
-	}
-	procs := trackedStack(env)
+	// The ledger is a fast index of what THIS env's `forge up` started, but
+	// it drifts (a crashed run never persisted; air re-execs under a new
+	// pid). It is no longer the sole source of truth: after tearing down the
+	// tracked pids we ALSO sweep the process table for anything still
+	// carrying our FORGE_UP_ENV marker, so `forge up stop` is always a clean
+	// unblock even when the ledger is stale or absent.
+	procs := trackedStack(env) // nil when no ledger present
 
-	// SIGTERM each process TREE — the runner plus every transitive
+	// SIGTERM each tracked process TREE — the runner plus every transitive
 	// descendant, including the server a runner like Air re-execs in its own
 	// process group. (Signalling only the runner's group left that respawned
 	// child orphaned and squatting its port — the bug we're fixing.)
+	ledgerPIDs := make([]int, 0, len(procs))
 	for _, t := range procs {
 		fmt.Printf("[up] %s: stopping (pid %d + tree)\n", t.name, t.pid)
-		killProcessTree(t.pid, syscall.SIGTERM)
+		ledgerPIDs = append(ledgerPIDs, t.pid)
 	}
+	// killTreesAndWait SIGTERMs, polls liveness (so a `--restart` caller
+	// knows the listeners are released on return), then SIGKILLs stragglers.
+	killTreesAndWait(ledgerPIDs)
 
-	// Wait for the runners to actually exit by POLLING liveness, so a caller
-	// like `--restart` knows the listeners are released on return. Return the
-	// instant they're gone; SIGKILL stragglers after a bounded grace.
-	deadline := time.Now().Add(8 * time.Second)
-	for {
-		anyAlive := false
-		for _, t := range procs {
-			if processAlive(t.pid) {
-				anyAlive = true
-				break
-			}
-		}
-		if !anyAlive || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	for _, t := range procs {
-		if processAlive(t.pid) {
-			fmt.Printf("[up] %s: did not exit, SIGKILL\n", t.name)
-			killProcessTree(t.pid, syscall.SIGKILL)
-		}
-	}
+	// Marker sweep: reclaim any forge-owned orphan for this env the ledger
+	// missed. Runs unconditionally (even with no ledger) so a wedged env
+	// always has a clean unblock. Only processes carrying the exact env
+	// marker are ever signalled — an unmarked process is never touched.
+	reclaimed := reclaimAllMarkedOrphans(env, newOSProcFacts())
 
 	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
 		fmt.Printf("[up] warning: remove state: %v\n", err)
 	}
-	fmt.Printf("[up] stopped %d process(es) for env=%s.\n", len(procs), env)
+	total := len(procs) + reclaimed
+	if total == 0 {
+		fmt.Printf("[up] no tracked stack for env=%s.\n", env)
+		return nil
+	}
+	fmt.Printf("[up] stopped %d process(es) for env=%s.\n", total, env)
 	return nil
 }
 

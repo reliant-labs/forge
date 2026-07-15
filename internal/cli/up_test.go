@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -646,4 +649,208 @@ func TestConflictingPorts(t *testing.T) {
 			t.Fatalf("got %v; want none (noport declares no PORT)", names(got))
 		}
 	})
+}
+
+// TestCollectUpServices verifies the summary/services row collection:
+// host services + EVERY declared frontend are surfaced (multiple
+// frontends never collapse to one), ports/URLs resolve from the KCL
+// conventions, the health probe is applied, and --target / the frontend
+// gate scope the set.
+func TestCollectUpServices(t *testing.T) {
+	entities := &KCLEntities{
+		Services: []ServiceEntity{
+			{Name: "admin-server", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
+				EnvVars: []KCLEnvVar{{Name: "ADMIN_SERVER_PORT", Value: "8090"}},
+			}}},
+			{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
+			{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+		},
+		Frontends: []FrontendEntity{
+			{Name: "admin-web", Port: 3000},
+			{Name: "reliant-web", Port: 3001},
+		},
+	}
+	// admin-server (:8090) and reliant-web (:3001) are listening; admin-web
+	// (:3000) is not (still booting).
+	probe := func(p int) bool { return p == 8090 || p == 3001 }
+
+	rows := collectUpServices(entities, "dev", nil, true, probe)
+
+	// Order: host services first, then ALL frontends. cluster-svc is dropped
+	// (not host-mode).
+	var got []string
+	for _, r := range rows {
+		got = append(got, r.Kind+":"+r.Name)
+	}
+	want := []string{"host:admin-server", "host:noport", "frontend:admin-web", "frontend:reliant-web"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("rows: got %v, want %v", got, want)
+	}
+
+	byName := map[string]upServiceRow{}
+	for _, r := range rows {
+		byName[r.Name] = r
+	}
+	if r := byName["admin-server"]; r.Port != 8090 || r.URL != "http://localhost:8090" || !r.Listening {
+		t.Errorf("admin-server: got %+v; want port 8090, url set, listening", r)
+	}
+	if r := byName["noport"]; r.Port != 0 || r.URL != "" || r.Listening {
+		t.Errorf("noport: got %+v; want no port/url and not listening", r)
+	}
+	if r := byName["admin-web"]; r.Port != 3000 || r.Listening {
+		t.Errorf("admin-web: got %+v; want port 3000, not listening", r)
+	}
+	if r := byName["reliant-web"]; r.Port != 3001 || !r.Listening {
+		t.Errorf("reliant-web: got %+v; want port 3001, listening", r)
+	}
+	// Both frontends present — never collapsed to one.
+	feCount := 0
+	for _, r := range rows {
+		if r.Kind == "frontend" {
+			feCount++
+		}
+	}
+	if feCount != 2 {
+		t.Errorf("frontend rows: got %d, want 2 (all frontends surfaced)", feCount)
+	}
+
+	// Frontend gate off drops frontends entirely.
+	rows = collectUpServices(entities, "dev", nil, false, probe)
+	for _, r := range rows {
+		if r.Kind == "frontend" {
+			t.Errorf("frontend %q listed with gate off", r.Name)
+		}
+	}
+
+	// --target scopes to one service.
+	rows = collectUpServices(entities, "dev", []string{"reliant-web"}, true, probe)
+	if len(rows) != 1 || rows[0].Name != "reliant-web" {
+		t.Errorf("target scope: got %v; want [reliant-web]", rows)
+	}
+}
+
+// TestRenderUpSummary formats the block to a buffer and asserts it lists
+// every service with its URL, health word, and log path — the greppable
+// contract an agent relies on. It also prints the block so the test log
+// shows the real output shape.
+func TestRenderUpSummary(t *testing.T) {
+	rows := []upServiceRow{
+		{Name: "admin-server", Kind: "host", URL: "http://localhost:8090", Port: 8090, Log: ".forge/logs/dev/admin-server.log", Listening: true, PID: 4242, Owned: true},
+		{Name: "worker", Kind: "host", Log: ".forge/logs/dev/worker.log"},
+		{Name: "admin-web", Kind: "frontend", URL: "http://localhost:3000", Port: 3000, Log: ".forge/logs/dev/frontend_admin-web.log", Listening: true, PID: 5151, Owned: false},
+		{Name: "reliant-web", Kind: "frontend", URL: "http://localhost:3001", Port: 3001, Log: ".forge/logs/dev/frontend_reliant-web.log", Listening: false},
+	}
+	var b bytes.Buffer
+	renderUpSummary(&b, "dev", rows, "down", true, []string{"Ctrl-C to stop."})
+	out := b.String()
+	t.Logf("\n%s", out)
+
+	for _, want := range []string{
+		"admin-server", "http://localhost:8090", "up (pid 4242)",
+		"admin-web", "up (pid 5151, not forge-owned)",
+		"reliant-web", "http://localhost:3001", "down",
+		"worker", "(no port declared)",
+		".forge/logs/dev/frontend_reliant-web.log",
+		"Logs   .forge/logs/dev/",
+		"forge cluster urls",
+		"forge up services --env=dev",
+		"Host services", "Frontends",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+// TestRunUpServices_EndToEnd drives the `forge up services` code path all
+// the way through: render KCL (via the fixture override) → collect rows →
+// probe a real listener → enrich ownership → format. It binds a live
+// socket on the host service's port so the health snapshot reports it
+// "up", and leaves the two frontends unbound so they report "down" — and
+// asserts BOTH frontends appear (never collapsed). Covers the text table
+// and the --json contract.
+func TestRunUpServices_EndToEnd(t *testing.T) {
+	// A real listener on a free port so the probe reports the host service up.
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	dir := t.TempDir()
+	writeForgeYAML(t, dir, `name: demo
+module_path: github.com/example/demo
+version: "0.1.0"
+binary: shared
+features:
+  codegen: true
+  frontend: true
+`)
+	fixture := fmt.Sprintf(`{
+      "services": [
+        {"name": "admin-server", "deploy": {"type": "host", "runner": "go-run",
+          "env_vars": [{"name": "ADMIN_SERVER_PORT", "value": "%d"}]}},
+        {"name": "cluster-only", "deploy": {"type": "cluster", "cluster": "k3d-demo"}}
+      ],
+      "frontends": [
+        {"name": "admin-web", "path": "web/admin", "port": 3100},
+        {"name": "reliant-web", "path": "web/reliant", "port": 3101}
+      ]
+    }`, port)
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, fixture))
+	t.Chdir(dir)
+
+	// Text output.
+	out := captureStdout(t, func() {
+		if err := runUpServices(context.Background(), "dev", false); err != nil {
+			t.Fatalf("runUpServices: %v", err)
+		}
+	})
+	t.Logf("\n%s", out)
+	for _, want := range []string{
+		"admin-server", fmt.Sprintf("http://localhost:%d", port),
+		"admin-web", "http://localhost:3100",
+		"reliant-web", "http://localhost:3101", // BOTH frontends surfaced
+		"down", // an unbound frontend port
+		"forge up services --env=dev",
+		".forge/logs/dev/",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text output missing %q\n---\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "cluster-only") {
+		t.Errorf("cluster service leaked into host/frontend table:\n%s", out)
+	}
+
+	// JSON output.
+	jsonOut := captureStdout(t, func() {
+		if err := runUpServices(context.Background(), "dev", true); err != nil {
+			t.Fatalf("runUpServices json: %v", err)
+		}
+	})
+	var rep upServicesReport
+	if err := json.Unmarshal([]byte(jsonOut), &rep); err != nil {
+		t.Fatalf("parse json %q: %v", jsonOut, err)
+	}
+	if rep.Env != "dev" {
+		t.Errorf("json env: got %q, want dev", rep.Env)
+	}
+	byName := map[string]upServiceRow{}
+	for _, r := range rep.Services {
+		byName[r.Name] = r
+	}
+	if len(byName) != 3 { // 1 host + 2 frontends (cluster excluded)
+		t.Fatalf("json services: got %d (%v), want 3", len(byName), byName)
+	}
+	if r := byName["admin-server"]; r.Port != port || !r.Listening || r.PID <= 0 {
+		t.Errorf("admin-server json: got %+v; want port %d, listening, pid>0", r, port)
+	}
+	if _, present := byName["admin-web"]; !present {
+		t.Error("admin-web missing from json")
+	}
+	if r, present := byName["reliant-web"]; !present || r.Listening {
+		t.Errorf("reliant-web json: got %+v (present=%v); want present and not listening", r, present)
+	}
 }

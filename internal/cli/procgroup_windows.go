@@ -41,3 +41,13 @@ func processAlive(pid int) bool {
 func killProcessTree(pid int, sig syscall.Signal) {
 	_ = signalProcessGroup(pid, sig)
 }
+
+// ppidMap / listPIDs / portListenerPID: the marker-based ownership
+// reclaim (up_reclaim.go) is Unix-first. On Windows these return empty so
+// ownership resolution degrades to "unidentifiable → foreign" — never a
+// misfire — keeping the build green without a tasklist/netstat port.
+func ppidMap() map[int]int { return nil }
+
+func listPIDs() []int { return nil }
+
+func portListenerPID(_ int) int { return 0 }

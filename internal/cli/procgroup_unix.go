@@ -72,6 +72,69 @@ func killProcessTree(pid int, sig syscall.Signal) {
 	}
 }
 
+// ppidMap returns a pid→ppid snapshot of the whole process table, read
+// from `ps` (works on macOS and Linux without /proc). Used by the
+// ownership resolver to walk a port-holder's ancestry looking for the
+// FORGE_UP_ENV marker. A nil/empty map (ps failed) makes ancestry walks a
+// no-op — the caller then only trusts the holder's own env.
+func ppidMap() map[int]int {
+	out, err := exec.CommandContext(context.Background(), "ps", "-axo", "pid=,ppid=").Output()
+	if err != nil {
+		return nil
+	}
+	m := map[int]int{}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		pid, e1 := strconv.Atoi(f[0])
+		ppid, e2 := strconv.Atoi(f[1])
+		if e1 != nil || e2 != nil {
+			continue
+		}
+		m[pid] = ppid
+	}
+	return m
+}
+
+// listPIDs returns every pid in the process table — the scan surface for
+// `forge up stop`'s marker sweep (find every process carrying our
+// FORGE_UP_ENV, whatever port it holds).
+func listPIDs() []int {
+	m := ppidMap()
+	out := make([]int, 0, len(m))
+	for pid := range m {
+		out = append(out, pid)
+	}
+	return out
+}
+
+// portListenerPID returns the pid LISTENing on 127.0.0.1:<port>, or 0 when
+// none is found / the lookup tool is unavailable. Uses lsof (present by
+// default on macOS; commonly on Linux). A 0 return classifies the holder as
+// unidentifiable → foreign, so a missing lsof degrades to today's safe
+// "never reclaim an unknown process" behaviour rather than a misfire.
+func portListenerPID(port int) int {
+	if port <= 0 {
+		return 0
+	}
+	out, err := exec.CommandContext(context.Background(),
+		"lsof", "-nP", "-tiTCP:"+strconv.Itoa(port), "-sTCP:LISTEN").Output()
+	if err != nil {
+		return 0
+	}
+	// lsof -t prints one pid per line; take the first.
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			if pid, e := strconv.Atoi(line); e == nil {
+				return pid
+			}
+		}
+	}
+	return 0
+}
+
 // descendantPIDs returns every transitive child of root, reading the
 // (pid, ppid) table from `ps` so it works on macOS and Linux alike without
 // depending on /proc.

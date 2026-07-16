@@ -6,9 +6,94 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 )
+
+// newRunCmd restores `forge run` as the single-command dev runner: bring
+// the project's host services + frontends up against the current working
+// directory, skipping the cluster build/deploy. It is a thin alias over
+// the SAME runner `forge up --host-only` uses (runUp with hostOnly=true) —
+// no duplicated launch logic — so behaviour (KCL render, port-conflict
+// guard, non-TTY detach, per-service logs) is identical to that path.
+//
+// The one thing `run` adds over `up --host-only` is dev-server passthrough:
+// tokens after `--` are forwarded to each frontend's dev server
+// (`npm run dev -- <flags>`). This is what the reliant one-shot workflow
+// relies on — `reliant forge run -- --host 0.0.0.0` starts the scaffolded
+// Vite frontend bound to 0.0.0.0 so the workspace proxy can reach it and
+// hand the user a preview URL.
+//
+// No positional target: like the old orchestrator-shaped `forge run`, it
+// brings up EVERYTHING host-mode in the env (the scaffold's single service
+// + frontend), so the workflow needs no target to name. Env defaults to dev
+// (the env `forge new` scaffolds and the one-shot builds against).
+func newRunCmd() *cobra.Command {
+	var env string
+	cmd := &cobra.Command{
+		Use:   "run [-- <dev-server flags>]",
+		Short: "Run the project's dev servers (host services + frontends) against the current dir, skipping cluster build/deploy",
+		Long: `Run the project's dev loop against the current working directory.
+
+Brings up every host-mode service and frontend declared in
+deploy/kcl/<env>/ (default env: dev), skipping the cluster build + deploy
+phases — the inner loop for iterating on a scaffolded project. This is an
+alias for ` + "`forge up --host-only`" + `; see that command for the full
+lifecycle (non-TTY runs start everything and return, leaving the processes
+running; stop them with ` + "`forge up stop --env=<env>`" + `).
+
+Tokens after ` + "`--`" + ` are forwarded to each frontend's dev server
+(` + "`npm run dev -- <flags>`" + `), so a Vite/Next dev server can be told
+to bind a specific host/port.
+
+Examples:
+  forge run                        # host services + frontends, env=dev
+  forge run --env=staging          # against the staging env's KCL
+  forge run -- --host 0.0.0.0      # forward --host 0.0.0.0 to the dev server`,
+		// Runtime failures (a port already bound, a child dying) are not
+		// usage errors — dumping the flag table after them buries the
+		// actionable message. Mirrors the removed run command's shape.
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			frontendArgs, err := runPassthroughArgs(args, cmd.ArgsLenAtDash())
+			if err != nil {
+				return err
+			}
+			return runUp(cmd.Context(), upOptions{
+				env:          env,
+				hostOnly:     true,
+				frontendArgs: frontendArgs,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&env, "env", "dev", "Deploy environment whose deploy/kcl/<env>/ to run (default: dev)")
+	return cmd
+}
+
+// runPassthroughArgs splits `forge run`'s positional args at the cobra
+// `--` terminator: everything AFTER `--` is dev-server passthrough
+// (forwarded to each frontend), and there must be nothing BEFORE it —
+// `forge run` takes no positional target (it brings up everything
+// host-mode). dashPos is cmd.ArgsLenAtDash(): the count of args before the
+// `--`, or -1 when no `--` was given. Extracted from the RunE so the
+// split/validation is unit-testable without a real project.
+func runPassthroughArgs(args []string, dashPos int) ([]string, error) {
+	const noPositional = "forge run takes no positional arguments; pass dev-server flags after `--` (e.g. forge run -- --host 0.0.0.0)"
+	if dashPos < 0 {
+		// No `--` terminator. Any bare positional is a usage mistake.
+		if len(args) > 0 {
+			return nil, fmt.Errorf(noPositional)
+		}
+		return nil, nil
+	}
+	if dashPos > 0 {
+		// Positional args appeared before the `--`.
+		return nil, fmt.Errorf(noPositional)
+	}
+	return args[dashPos:], nil
+}
 
 // This file holds the env-composition helpers shared by the host-mode
 // phase of `forge up` (up.go) and the dev/prod parity check

@@ -53,3 +53,15 @@ repos:
       - id: commitlint
         stages: [commit-msg]
         additional_dependencies: ['@commitlint/config-conventional']
+
+  # Blocks commits that add locally-forbidden strings. Patterns live in a
+  # gitignored .forbidden-strings file at the repo root; the check is a no-op
+  # when that file is absent, so the forbidden values are never committed.
+  - repo: local
+    hooks:
+      - id: forbidden-strings
+        name: forbidden strings
+        entry: scripts/check-forbidden-strings.sh
+        language: script
+        pass_filenames: false
+        always_run: true

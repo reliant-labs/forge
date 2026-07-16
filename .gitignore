@@ -116,3 +116,6 @@ tmp/
 .claude/scheduled_tasks.lock
 .claude/worktrees/forge-mcp
 .scratch/
+
+# Local-only patterns for the forbidden-strings pre-commit guard (never committed)
+.forbidden-strings

@@ -450,6 +450,74 @@ func TestHostEnvPort(t *testing.T) {
 	}
 }
 
+// TestHostEnvPorts is the Gap-A fix: a host service binds EVERY declared
+// <...>_PORT, not just the first/canonical one. Probing only one let a real
+// conflict slip past the pre-flight guard.
+func TestHostEnvPorts(t *testing.T) {
+	eq := func(t *testing.T, got, want []int) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("got %v, want %v", got, want)
+			}
+		}
+	}
+
+	if got := hostEnvPorts("svc", nil); got != nil {
+		t.Errorf("nil host: got %v, want nil", got)
+	}
+
+	// The headline case: one service with several distinct bind ports, each a
+	// <...>_PORT env var. ALL are returned, in declaration order.
+	multi := &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "DATABASE_URL", Value: "postgres://x"},
+		{Name: "API_PORT", Value: "8081"},
+		{Name: "METRICS_PORT", Value: "3091"},
+		{Name: "PPROF_PORT", Value: "6060"},
+	}}
+	eq(t, hostEnvPorts("api", multi), []int{8081, 3091, 6060})
+
+	// Only generic PORT declared → it is the bind port.
+	eq(t, hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "PORT", Value: "8080"},
+	}}), []int{8080})
+
+	// Generic PORT + the service-specific <NAME>_PORT → PORT is a vestigial
+	// default the binary ignores, so it is dropped; the specific one wins.
+	// (Over-detecting a vestigial PORT would mean a false pre-flight conflict
+	// and a readiness gate waiting for a port that never binds.)
+	eq(t, hostEnvPorts("admin-server", &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "PORT", Value: "8080"},
+		{Name: "ADMIN_SERVER_PORT", Value: "8090"},
+	}}), []int{8090})
+
+	// Generic PORT alongside a NON-name-matching *_PORT (e.g. a metrics port):
+	// no service-specific override, so BOTH are real bind ports.
+	eq(t, hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "PORT", Value: "8080"},
+		{Name: "METRICS_PORT", Value: "9090"},
+	}}), []int{9090, 8080})
+
+	// Duplicate values collapse; ref-only ports have no host-side literal and
+	// are skipped.
+	eq(t, hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "API_PORT", Value: "8081"},
+		{Name: "HTTP_PORT", Value: "8081"},                                  // dup value
+		{Name: "GRPC_PORT", ConfigMapRef: "cfg", ConfigMapKey: "GRPC_PORT"}, // ref, no literal
+		{Name: "BAD_PORT", Value: "not-a-number"},                           // unparseable
+	}}), []int{8081})
+
+	// No inline port at all → empty.
+	if got := hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "DATABASE_URL", Value: "postgres://x"},
+	}}); got != nil {
+		t.Errorf("no port: got %v, want nil", got)
+	}
+}
+
 func TestPersistUsesCapturedPid(t *testing.T) {
 	// Regression: `forge up --background` Release()s the child (resetting
 	// cmd.Process.Pid to -1), so persist() must use the PID captured at
@@ -583,6 +651,14 @@ func TestConflictingPorts(t *testing.T) {
 			{Name: "admin-server", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
 				EnvVars: []KCLEnvVar{{Name: "ADMIN_SERVER_PORT", Value: "8090"}},
 			}}},
+			// Multi-port host service: three distinct declared bind ports.
+			{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
+				EnvVars: []KCLEnvVar{
+					{Name: "API_PORT", Value: "8081"},
+					{Name: "METRICS_PORT", Value: "3091"},
+					{Name: "PPROF_PORT", Value: "6060"},
+				},
+			}}},
 			{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
 			{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
 		},
@@ -649,6 +725,29 @@ func TestConflictingPorts(t *testing.T) {
 			t.Fatalf("got %v; want none (noport declares no PORT)", names(got))
 		}
 	})
+
+	t.Run("multi-port service surfaces EVERY busy port", func(t *testing.T) {
+		// Gap A: api binds :8081, :3091, :6060. A conflict on any one of them
+		// must be caught — previously only the first was probed, so a stale
+		// stack squatting :3091 slipped past and a second stack launched.
+		got := conflictingPorts(entities, []string{"api"}, true, busy(3091))
+		if g := names(got); len(g) != 1 || g[0] != "api" || got[0].port != 3091 {
+			t.Fatalf("got %v (ports %v); want one api conflict on :3091", g, ports(got))
+		}
+		// Two of its three ports busy → two conflicts, both named api.
+		got = conflictingPorts(entities, []string{"api"}, true, busy(8081, 6060))
+		if len(got) != 2 || got[0].port != 8081 || got[1].port != 6060 {
+			t.Fatalf("got ports %v; want [8081 6060] both on api", ports(got))
+		}
+	})
+}
+
+func ports(cs []portConflict) []int {
+	out := make([]int, len(cs))
+	for i, c := range cs {
+		out[i] = c.port
+	}
+	return out
 }
 
 // TestCollectUpServices verifies the summary/services row collection:
@@ -852,5 +951,174 @@ features:
 	}
 	if r, present := byName["reliant-web"]; !present || r.Listening {
 		t.Errorf("reliant-web json: got %+v (present=%v); want present and not listening", r, present)
+	}
+}
+
+// listeningSet builds an injected `listening` probe for the readiness tests.
+func listeningSet(ports ...int) func(int) bool {
+	set := map[int]bool{}
+	for _, p := range ports {
+		set[p] = true
+	}
+	return func(p int) bool { return set[p] }
+}
+
+// TestClassifyPortReadiness is the Gap-B core: after launch, tell OUR OWN
+// marked child apart from a foreign/stale holder and from nothing-listening.
+// listening / resolvePID / procFacts are all injected — no real sockets or
+// lsof.
+func TestClassifyPortReadiness(t *testing.T) {
+	f := fakeFacts{
+		env: map[int][]string{
+			100: marker("dev", "api"), // our child for env=dev
+			200: {"PATH=/usr/bin"},    // foreign: no marker
+		},
+		ppid: map[int]int{100: 1, 200: 1},
+	}
+	resolve := func(port int) int {
+		switch port {
+		case 8081:
+			return 100 // ours
+		case 3091:
+			return 200 // foreign
+		case 7000:
+			return 0 // listening but holder unresolvable
+		default:
+			return 0
+		}
+	}
+
+	// our-child-bound.
+	if got := classifyPortReadiness(8081, "dev", listeningSet(8081, 3091, 7000), resolve, f); got != portReadyOurs {
+		t.Errorf("our child bound: got %v, want portReadyOurs", got)
+	}
+	// foreign-holds-port (the stale-holder trap).
+	if got := classifyPortReadiness(3091, "dev", listeningSet(8081, 3091, 7000), resolve, f); got != portReadyForeign {
+		t.Errorf("foreign holder: got %v, want portReadyForeign", got)
+	}
+	// nothing-listening (silent bind failure).
+	if got := classifyPortReadiness(9999, "dev", listeningSet(8081, 3091, 7000), resolve, f); got != portReadyNobody {
+		t.Errorf("nothing listening: got %v, want portReadyNobody", got)
+	}
+	// Listening but holder unresolvable (no lsof / Windows) → degrade to
+	// "ours" rather than a FALSE foreign that would fail a healthy run.
+	if got := classifyPortReadiness(7000, "dev", listeningSet(7000), resolve, f); got != portReadyOurs {
+		t.Errorf("unresolvable holder: got %v, want portReadyOurs (graceful degrade)", got)
+	}
+	// A marker for a DIFFERENT env is foreign to us (mirrors the reclaim
+	// guard's per-env ownership).
+	f2 := fakeFacts{env: map[int][]string{300: marker("staging", "api")}, ppid: map[int]int{300: 1}}
+	if got := classifyPortReadiness(8081, "dev", listeningSet(8081), func(int) int { return 300 }, f2); got != portReadyForeign {
+		t.Errorf("wrong-env marker: got %v, want portReadyForeign", got)
+	}
+}
+
+// TestEvalHostReadiness checks the whole-service snapshot: every declared
+// bind port of a multi-port host service is classified, non-host / no-port
+// services contribute nothing, --target scopes the set, and the failure list
+// + error name the offending ports with the right foreign-vs-nobody wording.
+func TestEvalHostReadiness(t *testing.T) {
+	entities := &KCLEntities{
+		Services: []ServiceEntity{
+			{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
+				EnvVars: []KCLEnvVar{
+					{Name: "API_PORT", Value: "8081"},
+					{Name: "METRICS_PORT", Value: "3091"},
+					{Name: "PPROF_PORT", Value: "6060"},
+				},
+			}}},
+			{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
+			{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+		},
+	}
+	// :8081 bound by our child (100, marked dev); :3091 held by a foreign
+	// process (200, unmarked); :6060 nothing listening.
+	f := fakeFacts{
+		env:  map[int][]string{100: marker("dev", "api"), 200: {"PATH=/x"}},
+		ppid: map[int]int{100: 1, 200: 1},
+	}
+	listening := listeningSet(8081, 3091)
+	resolve := func(p int) int {
+		switch p {
+		case 8081:
+			return 100
+		case 3091:
+			return 200
+		default:
+			return 0
+		}
+	}
+
+	rs := evalHostReadiness(entities, "dev", nil, listening, resolve, f)
+	if len(rs) != 3 { // one per api port; noport + cluster-svc contribute none
+		t.Fatalf("got %d results, want 3 (one per api bind port): %+v", len(rs), rs)
+	}
+	byPort := map[int]portReadyState{}
+	for _, r := range rs {
+		if r.name != "api" {
+			t.Errorf("unexpected service in readiness set: %q", r.name)
+		}
+		byPort[r.port] = r.state
+	}
+	if byPort[8081] != portReadyOurs {
+		t.Errorf(":8081 = %v, want ours", byPort[8081])
+	}
+	if byPort[3091] != portReadyForeign {
+		t.Errorf(":3091 = %v, want foreign", byPort[3091])
+	}
+	if byPort[6060] != portReadyNobody {
+		t.Errorf(":6060 = %v, want nobody", byPort[6060])
+	}
+
+	// Only the not-ours ports keep the gate waiting / name the failure.
+	unready := hostReadyUnready(rs)
+	if len(unready) != 2 {
+		t.Fatalf("unready = %d, want 2 (the foreign + the nobody)", len(unready))
+	}
+	msg := hostReadyError("dev", unready).Error()
+	for _, want := range []string{"api", "3091", "6060", "forge up --env=dev --restart"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("readiness error missing %q:\n%s", want, msg)
+		}
+	}
+	if !strings.Contains(msg, "stale/foreign") || !strings.Contains(msg, "failed to bind") {
+		t.Errorf("readiness error should distinguish foreign vs nobody:\n%s", msg)
+	}
+	// :8081 (ours) must NOT appear as a failure.
+	if strings.Contains(msg, "8081") {
+		t.Errorf("readiness error names an already-bound port:\n%s", msg)
+	}
+
+	// All ports ours → nothing unready (the healthy pass).
+	allOurs := evalHostReadiness(entities, "dev", nil, func(int) bool { return true },
+		func(int) int { return 100 }, f)
+	if u := hostReadyUnready(allOurs); len(u) != 0 {
+		t.Errorf("all-ours: want no unready, got %+v", u)
+	}
+
+	// --target scopes the gate: targeting only the no-port service yields
+	// nothing to wait on.
+	if got := evalHostReadiness(entities, "dev", []string{"noport"}, listening, resolve, f); len(got) != 0 {
+		t.Errorf("target=noport: want 0 results, got %+v", got)
+	}
+}
+
+// TestWaitHostServicesReady_NoPortsIsInstantPass pins the fast path: when no
+// host service declares a bind port there is nothing to gate, so the wrapper
+// returns nil immediately without any real socket/lsof work or polling.
+func TestWaitHostServicesReady_NoPortsIsInstantPass(t *testing.T) {
+	e := &KCLEntities{Services: []ServiceEntity{
+		{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
+		{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+	}}
+	done := make(chan error, 1)
+	go func() { done <- waitHostServicesReady(e, "dev", nil, hostReadyTimeout, hostReadyPoll) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("no declared ports: want nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitHostServicesReady did not return promptly when no ports are declared")
 	}
 }

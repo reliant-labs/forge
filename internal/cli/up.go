@@ -527,6 +527,23 @@ func runUp(ctx context.Context, opts upOptions) error {
 		}
 	}
 
+	// Post-launch readiness gate. The host phase only confirmed the runners
+	// FORKED — not that their children actually bound their ports. Before we
+	// paint a (potentially misleading) green summary, wait until OUR OWN
+	// marked child is the listener on every expected host-service port, or
+	// fail loudly. This catches both a silent bind failure (nothing ever
+	// listens) and the stale-holder trap (a foreign/old process still answers
+	// the probe) — either of which the best-effort summary used to show as
+	// "up". Detect and report only: nothing is killed here, and the started
+	// children stay reclaimable via `forge up --restart` (the error says so).
+	// Only when this run actually started host services (scope.host); scoped
+	// by --target inside the gate.
+	if scope.host {
+		if err := waitHostServicesReady(entities, opts.env, opts.targets, hostReadyTimeout, hostReadyPoll); err != nil {
+			return err
+		}
+	}
+
 	// Summary box: what's listening where, and where to find each
 	// service's log. Printed in both the supervise and detach paths so the
 	// URLs + log paths are one glance away (and greppable for an agent).
@@ -966,6 +983,63 @@ func hostEnvPort(name string, host *HostDeploy) string {
 	return generic
 }
 
+// hostEnvPorts returns EVERY TCP port a host service will bind, derived
+// from its inline env literals — not just the single canonical one
+// hostEnvPort surfaces for the summary URL. A service commonly binds
+// several ports (an API port, a metrics/pprof port, a debug port), each
+// declared as its own `<...>_PORT` env var; probing only one of them let a
+// real conflict slip past the pre-flight guard, so it launched a second
+// stack on top of a stale one. This enumerates the full set instead.
+//
+// Ports come from:
+//   - every `<...>_PORT`-suffixed env var with an inline value, and
+//   - the generic `PORT`, but ONLY when the service declares no
+//     service-specific `<NAME>_PORT` — a service that declares both binds
+//     the specific one and treats generic PORT as a vestigial default (the
+//     same heuristic hostEnvPort uses). Including a vestigial PORT would
+//     over-detect: a false pre-flight conflict, or a readiness gate waiting
+//     for a port the binary never binds.
+//
+// Only the inline `value` channel is visible host-side; config_map_ref /
+// secret_ref ports carry no literal here and cannot be probed. Returned in
+// declaration order, deduplicated. Empty when nothing declares a port.
+func hostEnvPorts(name string, host *HostDeploy) []int {
+	if host == nil {
+		return nil
+	}
+	specific := strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_PORT"
+	var ports []int
+	seen := map[int]bool{}
+	add := func(v string) {
+		p, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || p <= 0 || seen[p] {
+			return
+		}
+		seen[p] = true
+		ports = append(ports, p)
+	}
+	hasSpecific := false
+	generic := ""
+	for _, ev := range host.EnvVars {
+		if ev.Value == "" {
+			continue
+		}
+		switch {
+		case ev.Name == specific:
+			hasSpecific = true
+			add(ev.Value)
+		case ev.Name == "PORT":
+			generic = ev.Value // deferred: only the bind port when no <NAME>_PORT
+		case strings.HasSuffix(ev.Name, "_PORT"):
+			add(ev.Value)
+		}
+	}
+	if !hasSpecific && generic != "" {
+		add(generic)
+	}
+	return ports
+}
+
 // portConflict names a service/frontend the current `forge up` would
 // start whose expected listen port is already bound by something else.
 type portConflict struct {
@@ -993,8 +1067,10 @@ func portInUse(port int) bool {
 // It is the pure core of the pre-flight guard: probe is injected so the
 // collection logic is testable without real sockets.
 //
-//   - Host services (deploy.Type=="host"): expected port via hostEnvPort
-//     (skipped when the service declares no inline PORT).
+//   - Host services (deploy.Type=="host"): EVERY expected bind port via
+//     hostEnvPorts (skipped when the service declares no inline port). A
+//     multi-port service emits one conflict per busy port, so a collision
+//     on any of its ports is caught — probing only one used to miss it.
 //   - Frontends: fe.Port (skipped when 0, and entirely when frontendsOn
 //     is false — the frontend feature is gated off).
 //
@@ -1013,16 +1089,10 @@ func conflictingPorts(e *KCLEntities, targets []string, frontendsOn bool, probe 
 		if !inTargetSet(targets, svc.Name) {
 			continue
 		}
-		p := hostEnvPort(svc.Name, svc.Deploy.Host)
-		if p == "" {
-			continue
-		}
-		port, err := strconv.Atoi(p)
-		if err != nil || port <= 0 {
-			continue
-		}
-		if probe(port) {
-			conflicts = append(conflicts, portConflict{name: svc.Name, port: port})
+		for _, port := range hostEnvPorts(svc.Name, svc.Deploy.Host) {
+			if probe(port) {
+				conflicts = append(conflicts, portConflict{name: svc.Name, port: port})
+			}
 		}
 	}
 	if frontendsOn {
@@ -1039,6 +1109,161 @@ func conflictingPorts(e *KCLEntities, targets []string, frontendsOn bool, probe 
 		}
 	}
 	return conflicts
+}
+
+// portReadyState is how a host service's expected bind port resolved on a
+// post-launch readiness check.
+type portReadyState int
+
+const (
+	// portReadyOurs: our own forge-up-marked child is listening — or (the
+	// degrade case) SOMETHING is listening but the holder pid can't be
+	// resolved (no lsof / Windows), so we can't prove it's foreign and don't
+	// misfire. Either way the port is up and this run is not blocked.
+	portReadyOurs portReadyState = iota
+	// portReadyForeign: a resolvable, NON-forge-owned process holds the
+	// port — a stale/old/foreign listener answering the probe, not the child
+	// this run started. The "stale process painted green" trap.
+	portReadyForeign
+	// portReadyNobody: nothing is listening — our child never bound it (a
+	// silent bind failure, or still mid-startup when the grace window ended).
+	portReadyNobody
+)
+
+// classifyPortReadiness resolves who — if anyone — is listening on port and
+// whether it is a child THIS env's `forge up` started. listening / resolvePID
+// are injected (portInUse / portListenerPID in production) so the classifier
+// is unit-testable without real sockets or an lsof shell-out.
+//
+// It reuses the reclaim guard's ownership resolver (forgeOwnerOfPID): a
+// listener whose ancestry carries FORGE_UP_ENV==env is ours. Because the
+// pre-flight guard has already reclaimed (or errored on) any SAME-env orphan
+// before we start, a marked listener on our port at this point is the child
+// we just launched — not a prior run's orphan.
+func classifyPortReadiness(port int, envName string, listening func(int) bool, resolvePID func(int) int, f procFacts) portReadyState {
+	if !listening(port) {
+		return portReadyNobody
+	}
+	pid := resolvePID(port)
+	if pid <= 0 {
+		// Something is listening but the holder is unidentifiable (lsof
+		// missing / Windows no-op). Degrade to "up" rather than misfire — we
+		// cannot prove a foreign holder. Mirrors enrichOwnership.
+		return portReadyOurs
+	}
+	if _, ok := forgeOwnerOfPID(pid, envName, f); ok {
+		return portReadyOurs
+	}
+	return portReadyForeign
+}
+
+// hostReadyResult is one expected host-service bind port and how it resolved.
+type hostReadyResult struct {
+	name  string
+	port  int
+	state portReadyState
+}
+
+// evalHostReadiness classifies EVERY expected bind port of the host services
+// THIS run started (scoped by --target), once, using the injected probes.
+// Pure + snapshot-based → unit-testable; waitHostServicesReady calls it each
+// poll with live probes + a fresh process snapshot. Frontends are out of
+// scope (their ports are resolve_port-dynamic); this gate covers the fixed
+// host-service bind ports the incident was about.
+func evalHostReadiness(e *KCLEntities, envName string, targets []string, listening func(int) bool, resolvePID func(int) int, f procFacts) []hostReadyResult {
+	if e == nil {
+		return nil
+	}
+	var out []hostReadyResult
+	for _, svc := range e.Services {
+		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
+			continue
+		}
+		if !inTargetSet(targets, svc.Name) {
+			continue
+		}
+		for _, port := range hostEnvPorts(svc.Name, svc.Deploy.Host) {
+			out = append(out, hostReadyResult{
+				name:  svc.Name,
+				port:  port,
+				state: classifyPortReadiness(port, envName, listening, resolvePID, f),
+			})
+		}
+	}
+	return out
+}
+
+// hostReadyUnready filters a readiness snapshot to the ports NOT yet bound by
+// our own child (foreign holder or nothing listening) — the set that keeps
+// the poll loop going and, at timeout, names the failure.
+func hostReadyUnready(rs []hostReadyResult) []hostReadyResult {
+	var out []hostReadyResult
+	for _, r := range rs {
+		if r.state != portReadyOurs {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// hostReadyError renders the loud failure when the grace window ends with
+// host-service ports still not bound by this run's child. It DETECTS ONLY —
+// nothing is killed here; the started (marked) children stay reclaimable via
+// `forge up --restart` / `forge up stop`, which the message points at.
+func hostReadyError(envName string, unready []hostReadyResult) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[up] host service(s) never came up under this run (env=%s):\n", envName)
+	for _, r := range unready {
+		reason := "nothing is listening — the service failed to bind its port"
+		if r.state == portReadyForeign {
+			reason = "held by another process — not the child this run started (stale/foreign holder)"
+		}
+		fmt.Fprintf(&b, "       %-14s :%d  %s\n", r.name, r.port, reason)
+	}
+	fmt.Fprintf(&b, "     inspect the log under %s/ (lsof -i :<port> for the holder),\n", upLogDir(envName))
+	fmt.Fprintf(&b, "     then retry with: forge up --env=%s --restart", envName)
+	return errors.New(b.String())
+}
+
+// hostReadyTimeout / hostReadyPoll bound the post-launch readiness gate: how
+// long to wait for host services to bind, and how often to re-check. Air /
+// go-run compile the binary on start, so the window must outlast a warm
+// incremental build's compile+bind; a genuinely cold first build can exceed
+// it, in which case the gate reports "nothing listening" for a service that
+// was merely slow — the accepted trade for catching the silent-bind and
+// stale-holder failures the summary used to paint green.
+const (
+	hostReadyTimeout = 15 * time.Second
+	hostReadyPoll    = 250 * time.Millisecond
+)
+
+// waitHostServicesReady is the post-launch readiness gate. After the host
+// phase has forked its runners, it polls every expected host-service bind
+// port until OUR OWN marked child is the listener on each, or the grace
+// window elapses — then errors, naming the offending service/port(s). This
+// closes the gap where forge only confirmed the runner FORKED (never that
+// its child actually bound the port) and the best-effort summary could not
+// tell "my new child bound it" from "a stale holder still answers" — so it
+// painted a stale process green. A fresh process snapshot is taken each poll
+// so an air re-exec / late fork is picked up. Nothing is killed: detect and
+// report only. A nil return means every declared host port is bound by us
+// (or nothing declared a port).
+func waitHostServicesReady(e *KCLEntities, envName string, targets []string, timeout, poll time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		rs := evalHostReadiness(e, envName, targets, portInUse, portListenerPID, newOSProcFacts())
+		if len(rs) == 0 {
+			return nil // no host service declares a bind port; nothing to gate
+		}
+		unready := hostReadyUnready(rs)
+		if len(unready) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return hostReadyError(envName, unready)
+		}
+		time.Sleep(poll)
+	}
 }
 
 // entitiesEmpty reports whether the entity set has zero declarations

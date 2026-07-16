@@ -79,8 +79,8 @@ jobs:
         #      (`go install ...@<sha>` is a valid ref).
         #   3. Neither available → fall back to @main (regenerate from a
         #      tagged release to eliminate this branch).
-        # TODO: regenerate from a tagged forge release to pin this install.
-        run: go install github.com/reliant-labs/forge/cmd/forge@main
+        # Pinned to the current tagged forge release for reproducible CI.
+        run: go install github.com/reliant-labs/forge/cmd/forge@v0.0.3
       - name: Verify generated code
         run: forge ci verify-generated
 

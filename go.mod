@@ -10,7 +10,7 @@ require (
 	github.com/reliant-labs/forge/pkg v0.0.0-20260624040937-ce5dfbd929ed
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.9
+	github.com/spf13/pflag v1.0.10
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/mod v0.35.0
 	golang.org/x/sys v0.45.0

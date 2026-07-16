@@ -133,6 +133,10 @@ interface pattern throughout the entire stack.`,
 	rootCmd.PersistentFlags().BoolVar(&silenceExperimental, "silence-experimental", false, "suppress the experimental-features warning (also: FORGE_SILENCE_EXPERIMENTAL=1)")
 
 	// Add all commands
+	// `forge run` is the single-command dev runner (alias for
+	// `forge up --host-only` + dev-server passthrough) — restored for the
+	// reliant one-shot's `reliant forge run -- --host 0.0.0.0` preview flow.
+	rootCmd.AddCommand(newRunCmd())
 	rootCmd.AddCommand(newGenerateCmd())
 	// `forge disown` is the one-way door from forge-owned (Tier-1) to
 	// user-owned (Tier-2). Top-level because the drift-guard error

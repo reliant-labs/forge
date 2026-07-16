@@ -272,7 +272,7 @@ func TestUpCmd_NoPortForwardSurface(t *testing.T) {
 func TestBuildFrontendCmd_PortFromKCLOverridesParent(t *testing.T) {
 	parent := []string{"PATH=/usr/bin", "PORT=8080", "EDITOR=vim"}
 	fe := FrontendEntity{Name: "web", Path: "frontend", Port: 3000, EnvFile: "/does/not/exist"}
-	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent)
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil)
 
 	// PORT=3000 (KCL) must be present, PORT=8080 (parent) must NOT.
 	hasKCLPort := false
@@ -311,7 +311,7 @@ func TestBuildFrontendCmd_KCLEnvVarsInjected(t *testing.T) {
 			{Name: "VITE_API_URL", Value: "http://localhost:3090"},
 		},
 	}
-	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent)
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil)
 
 	got := map[string]string{}
 	for _, kv := range cmd.Env {
@@ -339,7 +339,7 @@ func TestBuildFrontendCmd_ParentShellOverridesEnvVars(t *testing.T) {
 	parent := []string{"VITE_ADMIN_URL=http://override"}
 	fe := FrontendEntity{Name: "web", Path: "web", EnvFile: "/does/not/exist",
 		EnvVars: []KCLEnvVar{{Name: "VITE_ADMIN_URL", Value: "http://kcl"}}}
-	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent)
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil)
 	for _, kv := range cmd.Env {
 		if kv == "VITE_ADMIN_URL=http://kcl" {
 			t.Errorf("KCL env_var should not override the parent shell; env: %v", cmd.Env)
@@ -354,7 +354,7 @@ func TestBuildFrontendCmd_ParentShellOverridesEnvVars(t *testing.T) {
 func TestBuildFrontendCmd_PortZeroLeavesParentPortAlone(t *testing.T) {
 	parent := []string{"PORT=8080"}
 	fe := FrontendEntity{Name: "web", Path: "frontend", Port: 0, EnvFile: "/does/not/exist"}
-	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent)
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil)
 
 	for _, kv := range cmd.Env {
 		if kv == "PORT=0" {

@@ -67,6 +67,12 @@ type upOptions struct {
 	// single-service inner loop (combine with --host-only to skip the
 	// cluster build+deploy). Empty means "everything", the default.
 	targets []string
+	// frontendArgs are passthrough tokens forwarded to each frontend's dev
+	// server command (`npm run dev -- <frontendArgs>`). Not bound to a
+	// `forge up` flag — it's the seam `forge run -- <flags>` sets so the
+	// reliant one-shot's `forge run -- --host 0.0.0.0` reaches Vite. Empty
+	// (the default, and always for `forge up`) is a no-op.
+	frontendArgs []string
 }
 
 // inTargetSet reports whether name should run given the --target filter.
@@ -515,7 +521,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// (with a log line) when features.frontend: false — the orchestrator
 	// otherwise tries to npm-run-dev a tree that the project never scaffolded.
 	if scope.frontend && !skipFeature(store, config.FeatureFrontend, "up:frontend") {
-		feFailures := upFrontends(ctx, entities, opts.env, detach, opts.noInstall, opts.targets, procs)
+		feFailures := upFrontends(ctx, entities, opts.env, detach, opts.noInstall, opts.targets, opts.frontendArgs, procs)
 		if feFailures > 0 {
 			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
 		}
@@ -1222,7 +1228,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 // fresh checkout doesn't fail with "next: command not found". A failed
 // install counts as a frontend failure (logged, non-fatal) so the rest
 // of the loop still comes up.
-func upFrontends(ctx context.Context, e *KCLEntities, env string, background, noInstall bool, targets []string, procs *procRegistry) int {
+func upFrontends(ctx context.Context, e *KCLEntities, env string, background, noInstall bool, targets, frontendArgs []string, procs *procRegistry) int {
 	failures := 0
 	for _, fe := range e.Frontends {
 		if !inTargetSet(targets, fe.Name) {
@@ -1233,7 +1239,7 @@ func upFrontends(ctx context.Context, e *KCLEntities, env string, background, no
 			failures++
 			continue
 		}
-		cmd := buildFrontendCmd(ctx, fe, env, os.Environ())
+		cmd := buildFrontendCmd(ctx, fe, env, os.Environ(), frontendArgs)
 		if err := procs.start("frontend:"+fe.Name, cmd, background); err != nil {
 			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
 			failures++
@@ -1321,12 +1327,25 @@ func frontendDepsStale(dir string) bool {
 // fe.Port == 0 (legacy projects that don't set the field) skips the
 // force-inject so we don't surface a meaningless "PORT=0" line that
 // would crash the dev server.
-func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parentEnv []string) *exec.Cmd {
+//
+// frontendArgs are passthrough tokens forwarded to the dev server after a
+// `--` separator (`npm run dev -- <frontendArgs>`), so `forge run --
+// --host 0.0.0.0` reaches Vite/Next. Empty (the `forge up` default) leaves
+// the command untouched.
+func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parentEnv, frontendArgs []string) *exec.Cmd {
 	runner := fe.DevRunner
 	if runner == "" {
 		runner = "npm"
 	}
-	cmd := exec.CommandContext(ctx, runner, "run", "dev")
+	runArgs := []string{"run", "dev"}
+	if len(frontendArgs) > 0 {
+		// `npm run dev -- <args>` forwards <args> to the underlying dev
+		// server (vite / next dev) rather than to npm itself. The `--`
+		// terminator is required for npm/pnpm/yarn to stop consuming flags.
+		runArgs = append(runArgs, "--")
+		runArgs = append(runArgs, frontendArgs...)
+	}
+	cmd := exec.CommandContext(ctx, runner, runArgs...)
 	cmd.Dir = fe.Path
 
 	envFile := fe.EnvFile

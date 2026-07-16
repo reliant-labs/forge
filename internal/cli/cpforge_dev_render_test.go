@@ -7,12 +7,18 @@ package cli
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestCpForgeDevRendersWithResolvePort(t *testing.T) {
-	const projectDir = "/Users/user/src/reliant-labs/cp-forge"
+	// Dev-machine path to the local cp-forge checkout; defaults to the standard
+	// ~/src/reliant-labs/cp-forge layout, overridable via CPFORGE_PROJECT_DIR.
+	projectDir := os.Getenv("CPFORGE_PROJECT_DIR")
+	if projectDir == "" {
+		projectDir = filepath.Join(os.Getenv("HOME"), "src/reliant-labs/cp-forge")
+	}
 	if _, err := os.Stat(projectDir + "/deploy/kcl/dev"); err != nil {
 		t.Skipf("cp-forge not present: %v", err)
 	}

@@ -37,11 +37,24 @@ import (
 	cfgloader "github.com/reliant-labs/forge/internal/config"
 )
 
-const (
-	cpDir     = "/Users/user/src/reliant-labs/control-plane"
-	forgeKCL  = "/Users/user/src/reliant-labs/forge/kcl"
-	cpProject = "control-plane"
+// Dev-machine sibling-repo paths for the RUN_PARITY parity proof. They default
+// to the standard local layout under $HOME (i.e. ~/src/reliant-labs/...) and can
+// be overridden with CP_DIR / FORGE_KCL_DIR for non-standard checkouts.
+var (
+	cpDir    = parityDevDir("CP_DIR", "src/reliant-labs/control-plane")
+	forgeKCL = parityDevDir("FORGE_KCL_DIR", "src/reliant-labs/forge/kcl")
 )
+
+const cpProject = "control-plane"
+
+// parityDevDir returns the value of env if it is set, otherwise $HOME joined
+// with rel (the standard local sibling-repo layout).
+func parityDevDir(env, rel string) string {
+	if v := os.Getenv(env); v != "" {
+		return v
+	}
+	return filepath.Join(os.Getenv("HOME"), rel)
+}
 
 // controlPlaneFields mirrors proto/config/v1/config.proto in source order.
 // Durations use ProtoType "google.protobuf.Duration" (maps to str, same as the

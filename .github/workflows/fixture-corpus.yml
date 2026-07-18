@@ -54,7 +54,7 @@ jobs:
       # `next build`). The fixture skips its npm phase with a logged
       # reason when npm is absent — CI must NOT take that branch, so
       # provision Node explicitly instead of relying on the runner image.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 

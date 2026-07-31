@@ -1,0 +1,244 @@
+{{if eq .Platform "nextjs"}}"use client";
+
+{{end}}// yours: scaffolded once, never touched again — forge will not overwrite this file
+//
+// The sign-in and callback SCREENS, framework-agnostic.
+//
+// ── Why these are components and not pages ────────────────────────────
+//
+// Next.js and Vite disagree about routing and about nothing else here. The
+// App Router wants a default-exported `page.tsx` in a directory that names the
+// route; TanStack Router wants a `createRoute({...})` entry in `routes.tsx`.
+// Both then render the SAME two screens.
+//
+// So the screens live here, once, and each framework's route file is a
+// four-line adapter that supplies the two things that genuinely differ:
+//
+//   - `search`   — how to read the query string (Next: useSearchParams; Vite:
+//                  window.location.search, since the callback's params are
+//                  not part of the typed route).
+//   - `navigate` — how to go somewhere after a successful exchange (Next:
+//                  useRouter().replace; Vite: router.navigate).
+//
+// Injecting those two rather than importing a router keeps this file testable
+// with no router mounted at all, which is what `auth-screens.test.tsx` does.
+
+import { useCallback, useEffect, useState } from "react";
+
+import Button from "@/components/ui/button";
+
+import { OAuthError } from "./oidc";
+import { handleAuthCallback, isOidcConfigured } from "./oidc-provider";
+
+/** How a screen leaves. Supplied by whichever router is in play. */
+export type Navigate = (path: string) => void;
+
+/**
+ * SignInScreen — one button that hands off to the identity provider.
+ *
+ * There is deliberately NO username/password form here. forge's backend
+ * never sees a password: the user authenticates AT THE PROVIDER, which is the
+ * entire point of the redirect flow. A form on this page could only collect
+ * credentials it has nowhere legitimate to send, and every scaffolded
+ * password form is an invitation to POST them somewhere that does not exist.
+ *
+ * `login` is passed in (from `useAuth()`) rather than imported so this screen
+ * renders identically against the mock provider — which is what makes a
+ * signed-out-first product's routes developable with no IdP.
+ */
+export function SignInScreen({
+  login,
+  isAuthenticated,
+  navigate,
+  returnTo = "/",
+}: {
+  login: () => Promise<void>;
+  isAuthenticated: boolean;
+  navigate: Navigate;
+  returnTo?: string;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // Already signed in: this page has nothing to do. Sending the user on
+  // rather than showing a "Sign in" button they do not need.
+  useEffect(() => {
+    if (isAuthenticated) {
+      navigate(returnTo);
+    }
+  }, [isAuthenticated, navigate, returnTo]);
+
+  const onSignIn = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await login();
+      // In the real provider this line is not reached — the browser has
+      // navigated to the IdP. Under the mock, login() resolves and the
+      // effect above takes over.
+    } catch (err) {
+      // A failure here is local and pre-redirect: no IdP configured, no
+      // WebCrypto (insecure context), or storage blocked. All three are
+      // actionable, so the message is shown rather than swallowed.
+      setBusy(false);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [login]);
+
+  return (
+    <main className="flex flex-1 flex-col items-center justify-center p-8">
+      <div className="w-full max-w-sm text-center">
+        <h1 className="mb-2 text-2xl font-bold tracking-tight text-ink">
+          Sign in
+        </h1>
+        <p className="mb-6 text-sm text-ink-muted">
+          {isOidcConfigured()
+            ? "You'll be redirected to your identity provider."
+            : "No identity provider is configured yet, so this uses the local development session."}
+        </p>
+
+        <Button onClick={() => void onSignIn()} disabled={busy} className="w-full">
+          {busy ? "Redirecting…" : "Continue"}
+        </Button>
+
+        {error ? (
+          <p
+            role="alert"
+            className="mt-4 rounded-md border border-danger bg-surface p-3 text-left text-sm text-danger"
+          >
+            {error}
+          </p>
+        ) : null}
+      </div>
+    </main>
+  );
+}
+
+/**
+ * Which query string has already been redeemed, and the in-flight promise for
+ * it. Module-level, NOT a ref or a piece of state.
+ *
+ * This is the StrictMode double-invoke guard, and where it lives is the whole
+ * point. React 18+ StrictMode mounts an effect, tears it down, and mounts it
+ * AGAIN in development. A `useRef` guard does not help: the second mount gets
+ * a fresh ref, so it re-runs. An authorization code is single-use, so that
+ * second run redeems a spent code and shows the user `invalid_grant` on a
+ * login that actually succeeded — a bug that appears only in development and
+ * only intermittently, which is the worst possible place for it.
+ *
+ * Keyed by the search string so a genuinely new callback (a second sign-in in
+ * the same page session) is not blocked by the first one's entry.
+ */
+const redemptions = new Map<string, Promise<string>>();
+
+/**
+ * Forgets every recorded redemption.
+ *
+ * Exported for tests, which mount this screen repeatedly with the same
+ * fixture query string — without a reset, case two would reuse case one's
+ * cached promise and assert against an exchange that never ran.
+ *
+ * There is no reason to call this from application code: a real callback URL
+ * is visited once, and forgetting a redemption is precisely what re-enables
+ * the double-redeem this cache exists to prevent.
+ */
+export function resetRedemptionsForTests(): void {
+  redemptions.clear();
+}
+
+/**
+ * AuthCallbackScreen — completes the flow, then leaves.
+ *
+ * The exchange runs exactly once per callback URL; see `redemptions` above.
+ *
+ * On success it REPLACES the history entry rather than pushing: the callback
+ * URL carries a spent code, and leaving it in history means Back returns to a
+ * page that can only fail.
+ */
+export function AuthCallbackScreen({
+  search,
+  navigate,
+}: {
+  search: string;
+  navigate: Navigate;
+}) {
+  const [error, setError] = useState<{ message: string; detail: string } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        // Reuse the in-flight or completed redemption for this exact URL
+        // rather than starting a second one.
+        let redemption = redemptions.get(search);
+        if (!redemption) {
+          redemption = handleAuthCallback(search);
+          redemptions.set(search, redemption);
+        }
+        const returnTo = await redemption;
+        if (!cancelled) {
+          navigate(returnTo);
+        }
+      } catch (err) {
+        // A failed redemption is not retried on remount either: the code is
+        // spent (or was never valid), so a retry can only fail differently.
+        // The user is offered "Try again", which starts a fresh login.
+        if (cancelled) {
+          return;
+        }
+        // An IdP-reported failure and a local failure read very differently
+        // to whoever has to fix them, so they are told apart here.
+        if (err instanceof OAuthError) {
+          setError({
+            message:
+              err.code === "access_denied"
+                ? "Sign-in was cancelled."
+                : "The identity provider rejected this sign-in.",
+            detail: err.description || err.code,
+          });
+        } else {
+          setError({
+            message: "This sign-in could not be completed.",
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [search, navigate]);
+
+  if (error) {
+    return (
+      <main className="flex flex-1 flex-col items-center justify-center p-8">
+        <div className="w-full max-w-md text-center">
+          <h1 className="mb-2 text-2xl font-bold tracking-tight text-ink">
+            {error.message}
+          </h1>
+          <p
+            role="alert"
+            className="mb-6 break-words text-sm text-ink-muted"
+          >
+            {error.detail}
+          </p>
+          <Button variant="outline" onClick={() => navigate("/auth/sign-in")}>
+            Try again
+          </Button>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="flex flex-1 flex-col items-center justify-center p-8">
+      <div
+        className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-accent"
+        role="status"
+        aria-label="Completing sign-in"
+      />
+    </main>
+  );
+}

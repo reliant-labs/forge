@@ -63,12 +63,14 @@ func runDevInfo(configPath string) error {
 	fmt.Printf("kubectl context (expected): %s\n", expectedCtx)
 	fmt.Printf("k3d config:                 %s\n", configPath)
 	fmt.Println()
-	fmt.Println("Declared component ports:")
+	fmt.Println("Components:")
 	// Component inventory comes from the REAL sources (proto descriptor +
-	// owned worker/operator files + cmd/ binaries), not the removed
-	// components.json — see codegen.IntrospectComponents. Ports are a
-	// deploy fact (KCL), so introspected components carry none and the
-	// listing prints names without ports.
+	// owned worker/operator files + cmd/ binaries) — see
+	// codegen.IntrospectComponents, which returns the Connect servers the
+	// descriptor exposes. Every one of them mounts onto the binary's single
+	// Connect mux, so in-cluster they all answer on the same port; a
+	// deviation is declared per env in deploy/kcl/<env>/main.k, which this
+	// static listing deliberately does not evaluate.
 	projectDir := "."
 	if p, ferr := findProjectConfigFile(); ferr == nil {
 		projectDir = filepath.Dir(p)
@@ -92,12 +94,7 @@ func printServicePorts(comps []config.ComponentConfig) {
 	sorted := append([]config.ComponentConfig{}, comps...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	for _, c := range sorted {
-		port := c.PrimaryPort()
-		if port == 0 {
-			fmt.Printf("  %-30s (no port declared)\n", c.Name)
-			continue
-		}
-		fmt.Printf("  %-30s %d\n", c.Name, port)
+		fmt.Printf("  %-30s serves :%d\n", c.Name, config.DefaultServePort)
 	}
 }
 

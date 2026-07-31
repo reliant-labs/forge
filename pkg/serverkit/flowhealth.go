@@ -43,7 +43,7 @@ type flowHealthCheckStatus struct {
 // checks. Every check runs on each request (the assertion is cheap relative to
 // the network round-trip and must reflect live state). The overall status is
 // healthy iff every check passed; any failure yields 503 so a load balancer /
-// `forge smoke` reads the break directly off the status code.
+// `forge env smoke` reads the break directly off the status code.
 func flowHealthHandler(checks []FlowCheck) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		resp := flowHealthResponse{Status: "healthy"}

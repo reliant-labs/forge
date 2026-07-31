@@ -78,11 +78,13 @@ func TestGenerateFrontendFiles_StaticOptIn(t *testing.T) {
 }
 
 // TestGenerateFrontendFiles_RealBackendByDefault pins the J-round fix 4:
-// the scaffold must NOT ship with mock mode silently enabled. The
-// default is the real backend (apiurl_gen wiring); mock mode is an
-// explicit .env.local opt-in, and when it IS on the generated layout
-// renders a visible "MOCK DATA" banner so a working-looking UI can
-// never masquerade as a working stack.
+// the scaffold must NOT ship with mock mode silently enabled. Since the
+// hand-editable .env.local was ripped out, the guarantee is now
+// STRUCTURAL: no committed dotenv can bake mock on, and connect.ts gates
+// mock strictly on the NEXT_PUBLIC_MOCK_API env var (unset => real
+// backend). When mock IS on the generated layout renders a visible "MOCK
+// DATA" banner so a working-looking UI can never masquerade as a working
+// stack.
 func TestGenerateFrontendFiles_RealBackendByDefault(t *testing.T) {
 	dir := t.TempDir()
 	if err := GenerateFrontendFiles(dir, "example.com/myapp", "myapp", "web", 8080, ""); err != nil {
@@ -90,18 +92,22 @@ func TestGenerateFrontendFiles_RealBackendByDefault(t *testing.T) {
 	}
 	feDir := filepath.Join(dir, "frontends", "web")
 
-	env, err := os.ReadFile(filepath.Join(feDir, ".env.local"))
-	if err != nil {
-		t.Fatalf("read .env.local: %v", err)
+	// The hand-editable .env.local is gone — mock mode can no longer be
+	// silently baked into a committed dotenv; it is an explicit runtime
+	// env-var opt-in (or KCL config).
+	if _, err := os.Stat(filepath.Join(feDir, ".env.local")); !os.IsNotExist(err) {
+		t.Errorf("scaffold must not ship a .env.local (stat err = %v); mock is a runtime env opt-in", err)
 	}
-	for _, line := range strings.Split(string(env), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "NEXT_PUBLIC_MOCK_API=") && strings.TrimPrefix(trimmed, "NEXT_PUBLIC_MOCK_API=") != "" {
-			t.Errorf(".env.local silently enables mock mode (%q) — mock must be an explicit opt-in", trimmed)
-		}
+
+	// connect.ts is the structural guard: mock engages ONLY when
+	// NEXT_PUBLIC_MOCK_API is explicitly set, so the default (unset) is the
+	// real backend.
+	connect, err := os.ReadFile(filepath.Join(feDir, "src", "lib", "connect.ts"))
+	if err != nil {
+		t.Fatalf("read connect.ts: %v", err)
+	}
+	if !strings.Contains(string(connect), "NEXT_PUBLIC_MOCK_API") {
+		t.Error("connect.ts must gate mock mode on NEXT_PUBLIC_MOCK_API (real backend is the unset default)")
 	}
 
 	layout, err := os.ReadFile(filepath.Join(feDir, "src", "app", "layout.tsx"))
@@ -125,18 +131,16 @@ func TestGenerateFrontendFiles_ViteRealBackendByDefault(t *testing.T) {
 	}
 	feDir := filepath.Join(dir, "frontends", "web")
 
-	env, err := os.ReadFile(filepath.Join(feDir, ".env.local"))
-	if err != nil {
-		t.Fatalf("read .env.local: %v", err)
+	if _, err := os.Stat(filepath.Join(feDir, ".env.local")); !os.IsNotExist(err) {
+		t.Errorf("scaffold must not ship a .env.local (stat err = %v); mock is a runtime env opt-in", err)
 	}
-	for _, line := range strings.Split(string(env), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "VITE_MOCK_API=") && strings.TrimPrefix(trimmed, "VITE_MOCK_API=") != "" {
-			t.Errorf(".env.local silently enables mock mode (%q) — mock must be an explicit opt-in", trimmed)
-		}
+
+	connect, err := os.ReadFile(filepath.Join(feDir, "src", "lib", "connect.ts"))
+	if err != nil {
+		t.Fatalf("read connect.ts: %v", err)
+	}
+	if !strings.Contains(string(connect), "VITE_MOCK_API") {
+		t.Error("connect.ts must gate mock mode on VITE_MOCK_API (real backend is the unset default)")
 	}
 
 	app, err := os.ReadFile(filepath.Join(feDir, "src", "App.tsx"))

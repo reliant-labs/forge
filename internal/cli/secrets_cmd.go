@@ -5,12 +5,14 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 )
 
-// newSecretsCmd is the `forge secrets` command group. Today it exposes a
+// newSecretsCmd is the `forge env secrets` command group. Today it exposes a
 // single `sync` subcommand that materializes the k8s Secrets an env's
 // dotenv secret_provider implies — the standalone primitive CI lanes need
-// so they can provision cluster secrets WITHOUT a full `forge deploy`
+// so they can provision cluster secrets WITHOUT a full `forge env deploy`
 // (which would also bring up compose/host targets). External-provider
 // envs are a no-op (forge never renders their values).
 func newSecretsCmd() *cobra.Command {
@@ -26,22 +28,22 @@ and apply them. ExternalSecrets envs are a no-op (their values are
 provisioned out-of-band).`,
 	}
 	cmd.AddCommand(newSecretsSyncCmd())
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 // newSecretsSyncCmd renders + applies the k8s Secrets for an env whose
 // bundle declares a DotenvSecrets provider. It is the same projection the
 // deploy phase runs (applyK8sSecretsFromProvider) lifted into a standalone
-// command, so a CI lane can do `forge secrets sync --env dev` before its
+// command, so a CI lane can do `forge env secrets sync dev` before its
 // `kcl run | kubectl apply` and retire a hand-rolled secret-bootstrap
 // script. Guarded to LOCAL clusters (it renders plaintext); fail-fasts on
 // a declared ref the dotenv can't supply.
 func newSecretsSyncCmd() *cobra.Command {
-	var env string
 	var dryRun bool
 	cmd := &cobra.Command{
-		Use:   "sync",
+		Use:   "sync <environment>",
 		Short: "Render + apply the k8s Secrets for an env's dotenv secret_provider (local clusters only)",
+		Args:  cobra.ExactArgs(1),
 		Long: `Render the k8s Secret objects implied by an environment's bundle
 secret_provider and apply them to the current kubectl context.
 
@@ -53,16 +55,12 @@ The dotenv renders PLAINTEXT, so this refuses any non-local cluster.
 Use it in a CI test lane (k3d/kind) to provision cluster secrets the
 forge-native way instead of a bespoke create-secret script:
 
-  forge secrets sync --env dev
+  forge env secrets sync dev
   kcl run deploy/kcl/dev/main.k -D image_tag=ci | kubectl apply -f -`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if env == "" {
-				return fmt.Errorf("--env is required (e.g. --env=dev)")
-			}
-			return runSecretsSync(cmd.Context(), env, dryRun)
+			return runSecretsSync(cmd.Context(), args[0], dryRun)
 		},
 	}
-	cmd.Flags().StringVar(&env, "env", "", "Environment whose secret_provider to sync (e.g. dev) — required")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the Secret manifests instead of applying them")
 	return cmd
 }

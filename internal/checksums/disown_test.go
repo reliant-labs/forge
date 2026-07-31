@@ -233,11 +233,19 @@ func TestScanTier1Drift_IgnoresDisowned(t *testing.T) {
 	}
 }
 
-// TestWriteScaffoldIfMissing_ReScaffoldsDeletedFile: a scaffold path
-// whose file has been deleted is re-written on the next run (write-if-
-// absent), carrying no marker — user-owned from birth again.
-func TestWriteScaffoldIfMissing_ReScaffoldsDeletedFile(t *testing.T) {
+// TestWriteScaffoldIfMissing_DeletedFileStaysDeleted: a scaffold path the
+// user has DELETED is not written again.
+//
+// This test previously asserted the opposite ("re-scaffolds a deleted
+// file"), encoding write-if-absent as the contract. That was the defect:
+// an author whose hardened migrations the scaffolded lifecycle test could
+// not satisfy deleted it and watched three consecutive `forge generate`
+// runs hand it back, against the file's own banner. Deleting is an act of
+// ownership exactly as much as editing is, so the birth ledger — not the
+// file's presence — decides. The reset is dropping the ledger entry.
+func TestWriteScaffoldIfMissing_DeletedFileStaysDeleted(t *testing.T) {
 	ResetSkipWrite()
+	ResetScaffoldLedgerCache()
 	defer ResetPerRunState()
 
 	root := t.TempDir()
@@ -247,7 +255,13 @@ func TestWriteScaffoldIfMissing_ReScaffoldsDeletedFile(t *testing.T) {
 	if wrote, err := WriteScaffoldIfMissing(root, rel, scaffold); err != nil || !wrote {
 		t.Fatalf("initial scaffold: wrote=%v err=%v", wrote, err)
 	}
-	// User edits, then deletes to trigger a refresh.
+	// The born scaffold carries no marker — it is the user's from line one.
+	born, _ := os.ReadFile(filepath.Join(root, rel))
+	if _, found := ExtractMarker(born); found {
+		t.Errorf("scaffold must not carry a forge:hash marker:\n%s", born)
+	}
+
+	// User edits, then deletes.
 	if err := os.WriteFile(filepath.Join(root, rel), []byte("package svc // user\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -256,14 +270,13 @@ func TestWriteScaffoldIfMissing_ReScaffoldsDeletedFile(t *testing.T) {
 	}
 
 	wrote, err := WriteScaffoldIfMissing(root, rel, scaffold)
-	if err != nil || !wrote {
-		t.Fatalf("re-scaffold of a deleted file: wrote=%v err=%v", wrote, err)
+	if err != nil {
+		t.Fatalf("regenerate after delete: %v", err)
 	}
-	got, _ := os.ReadFile(filepath.Join(root, rel))
-	if string(got) != string(scaffold) {
-		t.Errorf("re-scaffold content = %q, want %q", got, scaffold)
+	if wrote {
+		t.Fatal("a deliberately deleted scaffold must NOT be re-written")
 	}
-	if _, found := ExtractMarker(got); found {
-		t.Errorf("scaffold must not carry a forge:hash marker:\n%s", got)
+	if _, statErr := os.Stat(filepath.Join(root, rel)); !os.IsNotExist(statErr) {
+		t.Fatalf("deleted scaffold is back on disk (stat err = %v)", statErr)
 	}
 }

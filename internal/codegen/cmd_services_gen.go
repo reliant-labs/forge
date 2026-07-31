@@ -103,6 +103,30 @@ func cmdSvcFieldName(name string) string {
 	return field
 }
 
+// CmdServiceCommand describes the services/ group command `forge generate`
+// emits for a raw service-name spelling: the runtime (kebab) name — which is
+// both the cobra Use value and the <name>.go filename stem under
+// cmd/<bin>/cmd/services/ — and the exported constructor cmd/<bin>/main.go
+// must name to ship it.
+//
+// ok is false for a name the command tree RESERVES (see
+// reservedSubcommandNames): those get no subcommand file at all, so there is
+// nothing to wire into the composition root.
+//
+// It exists so callers that TALK about the command (the `forge scaffold
+// service` wiring instruction) derive the symbol from the same place the
+// generator does, and can never print a constructor that was not emitted.
+func CmdServiceCommand(name string) (runtime, ctor string, ok bool) {
+	runtime = naming.ToKebabCase(strings.TrimSuffix(name, "Service"))
+	if runtime == "" {
+		runtime = naming.ToKebabCase(name)
+	}
+	if reservedSubcommandNames[runtime] {
+		return runtime, "", false
+	}
+	return runtime, "New" + cmdSvcFieldName(name) + "Cmd", true
+}
+
 // cmdServiceItemsFromNames projects raw service names (any spelling: proto
 // "AdminServerService", forge.yaml "admin-server") onto group-item rows,
 // filtering reserved collisions into the skipped list. The kebab/Pascal
@@ -124,9 +148,10 @@ func cmdServiceItemsFromNames(module, bin string, names []string, mountOverride 
 	var items []CmdGroupItem
 	var skipped []string
 	for _, name := range names {
-		runtime := naming.ToKebabCase(strings.TrimSuffix(name, "Service"))
-		if runtime == "" {
-			runtime = naming.ToKebabCase(name)
+		runtime, _, emitted := CmdServiceCommand(name)
+		if !emitted {
+			skipped = append(skipped, runtime)
+			continue
 		}
 		field := cmdSvcFieldName(name)
 		mountField := field
@@ -134,10 +159,6 @@ func cmdServiceItemsFromNames(module, bin string, names []string, mountOverride 
 			if override, ok := mountOverride[name]; ok {
 				mountField = override
 			}
-		}
-		if reservedSubcommandNames[runtime] {
-			skipped = append(skipped, runtime)
-			continue
 		}
 		items = append(items, CmdGroupItem{Module: module, Bin: bin, Name: runtime, FieldName: field, MountFieldName: mountField})
 	}
@@ -149,7 +170,7 @@ func cmdServiceItemsFromNames(module, bin string, names []string, mountOverride 
 // generated from, so every service subcommand lines up with a typed
 // (*app.Components).Mount<Svc>). Workers/operators are deliberately absent —
 // generate performs no worker/operator discovery; their subcommands are
-// scaffold-once OWNED code written by `forge add worker/operator`.
+// scaffold-once OWNED code written by `forge scaffold worker/operator`.
 type CmdServiceGroupInput struct {
 	Bin      string
 	Services []string               // raw service-name spellings
@@ -167,12 +188,12 @@ type CmdServiceGroupInput struct {
 //
 // It ALSO scaffolds cmd/<bin>/main.go — the composition root — ONCE
 // (write-if-absent) from the service rows. main.go is OWNED code thereafter:
-// `forge add worker/operator` appends the constructor ref by hand. The
+// `forge scaffold worker/operator` appends the constructor ref by hand. The
 // per-worker/operator subcommand files are NOT emitted here — they are
 // scaffold-once OWNED code (ScaffoldWorkerCmd / ScaffoldOperatorCmd).
 //
 // cs is the project's checksum tracker — passing it keeps the (proto-derived)
-// service files out of `forge audit`'s orphan list. A nil cs is tolerated.
+// service files out of `forge project audit`'s orphan list. A nil cs is tolerated.
 func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.FileChecksums) error {
 	modulePath, err := GetModulePath(targetDir)
 	if err != nil {
@@ -222,7 +243,7 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 
 	// workers/ — one file per worker + the anchor.
 	// NOTE: the per-worker subcommand files (workers/<name>.go) are NOT emitted
-	// here. Each is scaffold-once OWNED code the `forge add worker` scaffold
+	// here. Each is scaffold-once OWNED code the `forge scaffold worker` scaffold
 	// writes exactly once (ScaffoldWorkerCmd) and then hand-wires into the owned
 	// main.go / lifecycle.go. `forge generate` performs ZERO worker discovery, so
 	// this pass only (re)writes the anchor that keeps the workers/ subpackage
@@ -236,7 +257,7 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 	}
 
 	// operators/ — anchor only (see the workers/ note above). Per-operator
-	// subcommand files are scaffold-once OWNED code written by `forge add
+	// subcommand files are scaffold-once OWNED code written by `forge scaffold
 	// operator` (ScaffoldOperatorCmd), never by `forge generate`.
 	opAnchor, err := templates.ProjectTemplates().Render("cmd-operator-register.go.tmpl", struct{}{})
 	if err != nil {
@@ -250,7 +271,7 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 	// every group constructor explicitly and passes them to cmd.Execute (no
 	// init() self-registration, no dynamic registry). Forge emits it ONCE with
 	// the services known at scaffold time; thereafter it is hand-maintained
-	// (`forge add worker/operator` appends the constructor ref). It carries NO
+	// (`forge scaffold worker/operator` appends the constructor ref). It carries NO
 	// worker/operator refs on the initial emit — generate does no worker/operator
 	// discovery — and an existing main.go is left untouched.
 	if err := generateCmdMain(targetDir, modulePath, in.Bin, svcItems); err != nil {
@@ -262,7 +283,7 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 
 // ScaffoldWorkerCmd writes the scaffold-once per-worker subcommand file
 // cmd/<bin>/cmd/workers/<name>.go for a SINGLE worker, write-if-absent. This is
-// the `forge add worker` counterpart to the retired generate-time worker loop:
+// the `forge scaffold worker` counterpart to the retired generate-time worker loop:
 // one new component, known by name, scaffolded once as OWNED code (the dev then
 // hand-wires it into main.go / lifecycle.go / compose.go). Returns true when it
 // wrote a fresh file (false when one already existed).
@@ -307,7 +328,7 @@ func GenerateCmdMainRoot(targetDir, bin string, cs *checksums.FileChecksums) err
 
 // generateCmdMain renders cmd/<bin>/main.go (the SCAFFOLD-ONCE composition root)
 // from the resolved service rows. It carries NO worker/operator refs — generate
-// performs zero worker/operator discovery; those are hand-wired by `forge add`.
+// performs zero worker/operator discovery; those are hand-wired by `forge scaffold`.
 // The output is gofmt-canonicalized so the arg list collapses cleanly (an empty
 // component set yields a bare `cmd.Execute()`). Written write-if-absent: forge
 // emits it once, then never overwrites the owned file.

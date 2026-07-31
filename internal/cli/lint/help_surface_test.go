@@ -55,26 +55,29 @@ func TestLintHelpSurface(t *testing.T) {
 		"contract",
 		"conventions",
 		"fix",
+		"generated-drift",
 		"help-dev",
 		"json",
 		"migration-safety",
+		"no-fix",
+		// User surface, not maintainer: it is the answer to "how do I lint
+		// the backend without paying for the Node toolchain", and it mirrors
+		// the frontend-skipping vocabulary `forge build` already uses.
+		"skip-frontends",
 		"strict",
 		"tests",
 	})
 
 	assertStringSlicesEqual(t, "lint hidden flags", hiddenFlagNames(cmd), []string{
 		"banners",
-		"bootstrap-deps-coverage",
 		"check-workarounds",
 		"config-deps",
 		"exported-vars",
-		"frontend-packs",
 		"frontend-stores",
 		"optional-deps-guard",
 		"scaffolds",
 		"suggest-buf-excepts",
 		"suggest-excludes",
-		"wire-coverage",
 	})
 
 	// Hidden flags must not leak into the rendered help.
@@ -94,11 +97,11 @@ func TestLintHelpSurface(t *testing.T) {
 // flags must still parse and set their values exactly as before.
 func TestLintHiddenFlagsStillParse(t *testing.T) {
 	cmd := newCmd(testFactory())
-	args := []string{"--banners", "--wire-coverage", "--config-deps"}
+	args := []string{"--banners", "--check-workarounds", "--config-deps"}
 	if err := cmd.Flags().Parse(args); err != nil {
 		t.Fatalf("Parse(%v) error = %v (hidden flags must remain functional)", args, err)
 	}
-	for name, want := range map[string]string{"banners": "true", "wire-coverage": "true", "config-deps": "true"} {
+	for name, want := range map[string]string{"banners": "true", "check-workarounds": "true", "config-deps": "true"} {
 		f := cmd.Flags().Lookup(name)
 		if f == nil {
 			t.Fatalf("flag --%s not registered", name)

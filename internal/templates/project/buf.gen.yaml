@@ -27,6 +27,12 @@ inputs:
   - directory: proto
     exclude_paths:
       - proto/forge/v1
+      # buf/validate/validate.proto is protovalidate's option-definition
+      # file, vendored so buf.validate field rules compile offline. It is a
+      # COMPILE input only — the protovalidate runtime library supplies the
+      # Go/TS types, so no code is generated from it (a local copy would
+      # double-register the descriptor and panic every binary at init).
+      - proto/buf/validate
 plugins:
   - local: protoc-gen-go
     out: gen

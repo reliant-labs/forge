@@ -19,7 +19,7 @@ provider exec's `deploy_cmd` via `sh -c` after substituting:
 | `${PROJECT_DIR}` | absolute project root on the deploy machine          |
 | `${YOURS}`       | any key you declare in the `env` map                 |
 
-`rollback_cmd` is optional. When unset, `forge deploy --rollback` errors
+`rollback_cmd` is optional. When unset, `forge env deploy --rollback` errors
 loudly — forge can't synthesise a rollback for an arbitrary CLI. Set it
 explicitly (or skip rollback for that service).
 
@@ -181,7 +181,7 @@ SSH key itself, not in KCL.
 1. Deploy success writes `.forge/state/external-<env>-<service>.json`
    with `{image, tag, deployed_at}`.
 2. Next deploy success overwrites that file with the new tag.
-3. `forge deploy --rollback` reads the file, substitutes the recorded
+3. `forge env deploy --rollback` reads the file, substitutes the recorded
    tag into `${LAST_TAG}`, and runs `rollback_cmd`.
 4. If the state file is missing AND the dispatcher's fallback tag is
    empty, rollback errors loudly — forge won't guess.
@@ -194,7 +194,7 @@ deploy is a no-op (no previous tag yet). Subsequent rollbacks work.
 | If your target is… | Use… |
 |--------------------|------|
 | In a Kubernetes cluster you control | `forge.K8sCluster`, not External |
-| On your laptop for `forge up` | `forge.HostDeploy`, not External |
+| On your laptop for `forge env up` | `forge.HostDeploy`, not External |
 | A binary you ship without scheduling | `forge.BuildOnly`, not External |
 | Anything driven by a CLI | `forge.External` (this skill) |
 | Docker-compose on a remote host | `forge.Compose` (cleaner than scripting it via External) |

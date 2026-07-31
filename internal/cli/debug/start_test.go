@@ -3,6 +3,7 @@ package debug
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,7 +24,7 @@ func TestMainPackageForService_NoWildcard(t *testing.T) {
 	writeMain(t, filepath.Join(dir, "cmd", "proxy", "main.go"))
 
 	withWD(t, dir, func() {
-		// A SERVICE_NAME-dispatched service ("admin-server") has no own cmd
+		// A service reached as a subcommand ("admin-server") has no own cmd
 		// dir; it must resolve to the dispatcher binary, NOT a wildcard.
 		got, err := mainPackageForService("admin-server", "")
 		if err != nil {
@@ -64,28 +65,49 @@ func TestMainPackageForService_AmbiguousErrors(t *testing.T) {
 }
 
 // TestServiceRunSpec verifies the run args + env that make a debugged service
-// SERVE rather than exit 0: `server` subcommand + SERVICE_NAME/PORT.
+// SERVE rather than exit 0 on a usage message.
+//
+// The subcommand IS the selection: when the command tree declares
+// `Use: "<service>"`, that command is what gets launched. SERVICE_NAME is
+// deliberately NOT set — it selects nothing (the scaffolded config proto
+// reserves the field), so setting it would only paper over a wrong argv.
 func TestServiceRunSpec(t *testing.T) {
 	dir := t.TempDir()
 	writeMain(t, filepath.Join(dir, "cmd", "app", "main.go"))
 	writeFile(t, filepath.Join(dir, "cmd", "app", "cmd", "server.go"),
 		"package cmd\n\nvar serverCmd = cobra.Command{\n\tUse: \"server\",\n}\n")
+	// The per-service subcommand, in the services/ command group.
+	writeFile(t, filepath.Join(dir, "cmd", "app", "cmd", "services", "admin-server.go"),
+		"package services\n\nvar adminCmd = cobra.Command{\n\tUse: \"admin-server\",\n}\n")
 	// A standalone binary with no `server` subcommand.
 	writeMain(t, filepath.Join(dir, "cmd", "plain", "main.go"))
 
 	withWD(t, dir, func() {
+		// A service with its own subcommand boots ONLY that service.
 		args, env := serviceRunSpec("admin-server", "./cmd/app", 38745)
-		if len(args) != 1 || args[0] != "server" {
-			t.Fatalf("args = %v, want [server]", args)
+		if len(args) != 1 || args[0] != "admin-server" {
+			t.Fatalf("args = %v, want [admin-server]", args)
 		}
-		if !contains(env, "SERVICE_NAME=admin-server") {
-			t.Fatalf("env %v missing SERVICE_NAME=admin-server", env)
+		if !contains(env, "OTEL_SERVICE_NAME=admin-server") {
+			t.Fatalf("env %v missing OTEL_SERVICE_NAME=admin-server", env)
 		}
 		if !contains(env, "PORT=38745") {
 			t.Fatalf("env %v missing PORT=38745", env)
 		}
+		for _, e := range env {
+			if strings.HasPrefix(e, "SERVICE_NAME=") {
+				t.Fatalf("env %v sets SERVICE_NAME, which selects nothing", env)
+			}
+		}
 
-		// A binary without a server subcommand runs as-is (no args/env).
+		// No dedicated subcommand (a reserved name, or one the composition
+		// root never named) falls back to the all-services process.
+		args, _ = serviceRunSpec("billing", "./cmd/app", 38745)
+		if len(args) != 1 || args[0] != "server" {
+			t.Fatalf("args = %v, want [server] fallback", args)
+		}
+
+		// A binary with neither runs as-is (no args/env).
 		args, env = serviceRunSpec("plain", "./cmd/plain", 38745)
 		if args != nil || env != nil {
 			t.Fatalf("standalone binary should get no run spec, got args=%v env=%v", args, env)
@@ -93,21 +115,26 @@ func TestServiceRunSpec(t *testing.T) {
 	})
 }
 
-func TestDeclaresServerUse(t *testing.T) {
+func TestDeclaresUse(t *testing.T) {
 	cases := []struct {
 		src  string
-		want bool
+		want string
+		ok   bool
 	}{
-		{`Use:   "server [services...]",`, true},
-		{`Use: "server",`, true},
-		{`	Use:  "server",`, true},
-		{`Use: "serve",`, false},
-		{`Use: "db",`, false},
-		{`Short: "run the server",`, false},
+		{`Use:   "server [services...]",`, "server", true},
+		{`Use: "server",`, "server", true},
+		{`	Use:  "server",`, "server", true},
+		{`Use: "serve",`, "server", false},
+		{`Use: "db",`, "server", false},
+		{`Short: "run the server",`, "server", false},
+		{`Use: "admin-server",`, "admin-server", true},
+		{`Use: "admin-server",`, "admin", false},
+		{`Use: "db <command>",`, "db", true},
+		{`Use: "anything",`, "", false},
 	}
 	for _, tc := range cases {
-		if got := declaresServerUse(tc.src); got != tc.want {
-			t.Errorf("declaresServerUse(%q) = %v, want %v", tc.src, got, tc.want)
+		if got := declaresUse(tc.src, tc.want); got != tc.ok {
+			t.Errorf("declaresUse(%q, %q) = %v, want %v", tc.src, tc.want, got, tc.ok)
 		}
 	}
 }

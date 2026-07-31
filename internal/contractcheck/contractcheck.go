@@ -4,9 +4,8 @@
 // internal/linter/forgeconv/:
 //
 //   - internal-package-contract-names (Service/Deps/New canonical shape)
-//   - interactor-deps-are-interfaces  (interactor Deps fields are interfaces)
-//   - adapter-no-rpc                  (adapter packages don't register RPC)
-//   - utility-package auto-skip       (pre-rule filter for the contract-names rule)
+//   - deps-are-interfaces             (every Deps field is an interface)
+//   - outbound-io-no-rpc              (an outbound boundary registers no RPC)
 //
 // The forge entry points that used to call those analyzers individually
 // (`preCodegenContractCheck` in internal/cli/generate.go and
@@ -63,16 +62,26 @@ const (
 	// produces a bootstrap that doesn't compile.
 	RuleInternalPackageContractNames Rule = "forgeconv-internal-package-contract-names"
 
-	// RuleInteractorDepsAreInterfaces warns when an interactor-marked
-	// package declares a Deps field whose type is a concrete struct
-	// (or pointer to one) rather than an interface. The pattern
-	// defeats the all-mock-test surface interactors are designed for.
-	RuleInteractorDepsAreInterfaces Rule = "forgeconv-interactor-deps-are-interfaces"
+	// RuleDepsAreInterfaces warns when any package declares a Deps
+	// field whose type is a concrete struct (or pointer to one) rather
+	// than an interface. Concrete deps defeat the all-mock unit-test
+	// surface that `New(Deps)` exists to provide.
+	RuleDepsAreInterfaces Rule = "forgeconv-deps-are-interfaces"
 
-	// RuleAdapterNoRPC warns when an adapter-marked package registers
-	// a Connect RPC handler. Adapters are outbound-only by convention;
-	// inbound RPC means the package should be a service.
-	RuleAdapterNoRPC Rule = "forgeconv-adapter-no-rpc"
+	// RuleOutboundIONoRPC warns when a package marked
+	// `// forge:outbound-io` registers a Connect RPC handler. The
+	// marker asserts the package only calls OUT; an inbound handler
+	// contradicts it, and the RPC surface is the actual service.
+	RuleOutboundIONoRPC Rule = "forgeconv-outbound-io-no-rpc"
+
+	// RuleInternalPackageMissingContract warns when a package under
+	// internal/ has a component's shape but no contract.go — a component
+	// created by hand instead of by `forge scaffold package`. Everything
+	// downstream keys on contract.go (bootstrap wiring, mock generation,
+	// the observe decorator, every reporter), so such a package is not
+	// half-wired, it is invisible. RuleInternalPackageContractNames only
+	// ever looked INSIDE a contract.go; this is its complement.
+	RuleInternalPackageMissingContract Rule = "forgeconv-internal-package-missing-contract"
 )
 
 // AllRules is the canonical "run everything" list. Callers that pass
@@ -82,8 +91,9 @@ const (
 func AllRules() []Rule {
 	return []Rule{
 		RuleInternalPackageContractNames,
-		RuleInteractorDepsAreInterfaces,
-		RuleAdapterNoRPC,
+		RuleInternalPackageMissingContract,
+		RuleDepsAreInterfaces,
+		RuleOutboundIONoRPC,
 	}
 }
 
@@ -100,10 +110,17 @@ type Options struct {
 	Rules []Rule
 
 	// Excludes is the contracts.exclude list from forge.yaml — a list
-	// of module-relative slash paths to skip wholesale. Only the
-	// internal-package-contract-names rule consults this; the other
-	// rules ignore it because the marker convention
-	// (`// forge:adapter` / `// forge:interactor`) is itself opt-in.
+	// of module-relative slash paths to skip wholesale. The two
+	// canonical-shape rules consult it — internal-package-contract-names
+	// (what a contract.go must declare) and internal-package-missing-contract
+	// (that a component-shaped package have one at all). Both ask whether
+	// forge's shape applies to the package, so "not bootstrap-managed" is a
+	// real exemption from both, and honoring it in one but not the other
+	// would tell an excluded package to run the very verb the exclusion says
+	// it is out of. The remaining rules assert properties that hold
+	// regardless of whether forge wires the package, and honoring the
+	// exclude list there would silence them on exactly the packages most
+	// likely to need them.
 	Excludes []string
 }
 
@@ -160,14 +177,20 @@ func runRule(rootDir string, r Rule, opts Options) ([]forgeconv.Finding, error) 
 			return nil, err
 		}
 		return res.Findings, nil
-	case RuleInteractorDepsAreInterfaces:
-		res, err := lintInteractorDepsAreInterfaces(rootDir)
+	case RuleInternalPackageMissingContract:
+		res, err := lintMissingContract(rootDir, opts.Excludes)
 		if err != nil {
 			return nil, err
 		}
 		return res.Findings, nil
-	case RuleAdapterNoRPC:
-		res, err := lintAdapterNoRPC(rootDir)
+	case RuleDepsAreInterfaces:
+		res, err := lintDepsAreInterfaces(rootDir)
+		if err != nil {
+			return nil, err
+		}
+		return res.Findings, nil
+	case RuleOutboundIONoRPC:
+		res, err := lintOutboundIONoRPC(rootDir)
 		if err != nil {
 			return nil, err
 		}

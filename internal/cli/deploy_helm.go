@@ -54,7 +54,7 @@ func marshalManifestDicts(mans []any) (string, error) {
 // renders, applying the SAME uniform exclusive rule as
 // cluster.selectHelmChartsByGroup (which re-applies it inside Apply): a
 // chart's NAME is its GROUP, so the result is EVERY chart when targets is
-// empty (a bare `forge deploy <env>` reconciles every declared platform
+// empty (a bare `forge env deploy <env>` reconciles every declared platform
 // dep — the full declarative reconcile), and EXACTLY the charts whose Name
 // ∈ targets otherwise. Pre-selecting here keeps the CRD-bundle network
 // fetch scoped to the charts the apply will actually render.

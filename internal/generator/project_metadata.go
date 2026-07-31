@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -127,11 +128,11 @@ func (g *ProjectGenerator) generateGolangciLint() error {
 	// pain — users learned to keep a separate .golangci.user.yml just
 	// to survive `forge generate`.
 	// Render from the full scaffold payload so the template can branch on
-	// the typed-access guardrail (config.enforce_typed_access). ForScaffold
+	// the typed-access guardrail (config.enforce_typed_access). forScaffold
 	// supplies the greenfield default (TypedAccessGuard="error") and the
 	// allowlisted loader package; the only other field the template reads is
 	// Module (goimports local-prefixes).
-	data := g.ForScaffold()
+	data := g.forScaffold()
 	return writeIfAbsent(filepath.Join(g.Path, ".golangci.yml"), "golangci.yml.tmpl", data)
 }
 
@@ -158,12 +159,16 @@ func (g *ProjectGenerator) generateExamplesReadme() error {
 // (pkg/middleware/middleware.go) plus its policy-wiring test.
 //
 // The middleware MECHANISMS live in the forge libraries
-// (pkg/authn, pkg/authz, pkg/middleware, pkg/observe) — versioned with
-// forge so security fixes flow to every project. Historically ~25
-// static middleware files were photocopied here; field evidence showed
-// they stayed byte-identical and never received fixes, so they were
-// folded into the libraries. The two files below are user-owned from
-// line one (scaffold-once; never overwritten if present).
+// (pkg/authn, pkg/middleware, pkg/observe) — versioned with forge so
+// security fixes flow to every project. Historically ~25 static
+// middleware files were photocopied here; field evidence showed they
+// stayed byte-identical and never received fixes, so they were folded
+// into the libraries. The two files below are user-owned from line one
+// (scaffold-once; never overwritten if present).
+//
+// Access control is HANDLER LOGIC now (GetUser + hand-written checks), not
+// generated wiring — so there is no role_resolver.go or access-control
+// scaffold.
 func (g *ProjectGenerator) generatePkgMiddleware() error {
 	middlewareFiles := []struct {
 		templateName string
@@ -171,10 +176,6 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 	}{
 		{"middleware.go", "middleware.go"},
 		{"middleware_test.go", "middleware_test.go"},
-		// role_resolver.go is the project's identity→roles seam for forge's
-		// descriptor-driven authorization (forge/pkg/authz). Scaffold-once,
-		// user-owned from line one — same never-clobber guard as middleware.go.
-		{"role_resolver.go", "role_resolver.go"},
 	}
 
 	for _, f := range middlewareFiles {
@@ -190,11 +191,25 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 			return fmt.Errorf("write %s: %w", f.destName, err)
 		}
 	}
+
+	// The open-procedure set the interceptor reads. It is forge-owned and
+	// `forge generate` rewrites it from the protos' auth_required
+	// declarations — but the package has to COMPILE before any generate has
+	// run, and middleware.go references the symbol this file declares. A
+	// project with no services yet gets the health probes and nothing else,
+	// which is also the correct answer.
+	procedures, err := codegen.RenderOpenProcedures(nil, "")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(g.Path, "pkg", "middleware", "procedures_gen.go"), procedures, 0644); err != nil {
+		return fmt.Errorf("write procedures_gen.go: %w", err)
+	}
 	return nil
 }
 
 // recordFrozenChecksums re-certifies the frozen files managed by
-// `forge upgrade`. Must run after the frozen files have been written so
+// `forge project upgrade`. Must run after the frozen files have been written so
 // new projects start with valid embedded hashes.
 func (g *ProjectGenerator) recordFrozenChecksums() error {
 	return RecordFrozenChecksums(g.Path, g.effectiveBinary(), g.effectiveKind())
@@ -202,11 +217,11 @@ func (g *ProjectGenerator) recordFrozenChecksums() error {
 
 // RecordFrozenChecksums re-stamps the embedded forge:hash marker on
 // every marker-bearing managed file at projectDir. Exposed publicly so
-// callers outside the scaffold path (e.g. `forge new` after
+// callers outside the scaffold path (e.g. `forge project new` after
 // `bootstrapGeneratedCode` runs goimports and reformats files) can
 // re-certify the post-formatting bytes — otherwise the hashes stamped
 // at scaffold time would not match the on-disk content, and the drift
-// guard / `forge upgrade --dry-run` would flag every formatted file as
+// guard / `forge project upgrade --dry-run` would flag every formatted file as
 // user-modified.
 func RecordFrozenChecksums(projectDir, binary, kind string) error {
 	for _, f := range managedFilesForKindBinary(kind, binary, resolveBinaryName(projectDir)) {

@@ -10,30 +10,46 @@ import (
 func TestTier1ExtensionPointHint(t *testing.T) {
 	tests := []struct {
 		path     string
-		wantSubs []string // all must appear in the hint; empty slice → want ""
+		wantSubs []string
 	}{
 		{"pkg/app/bootstrap.go", []string{"internal/app/providers.go", "internal/app/compose.go", "OpenInfra"}},
 		{"pkg/app/app_gen.go", []string{"internal/app/providers.go", "internal/app/compose.go"}},
 		{"pkg/app/wire_gen.go", []string{"internal/app/providers.go", "internal/app/compose.go"}},
-		{"internal/handlers/echo/authorizer_gen.go", []string{"internal/handlers/echo/authorizer.go", "user-owned", "NewAuthorizer()"}},
 		{"internal/handlers/orders/handlers_gen.go", []string{"contract.go", "proto"}},
 		{"internal/handlers/orders/mock_gen.go", []string{"contract.go", "proto"}},
-		// No designated extension point — no hint.
-		{"pkg/app/testing.go", nil},
-		{"pkg/config/config.go", nil},
-		{"internal/cli/serve.go", nil},
+
+		// pkg/app/testing.go was forked in the fleet for exactly one
+		// reason — "interface-typed Deps stubs aren't generated". That
+		// capability shipped, so the hint must now name the seam. A
+		// blank hint here is what kept an obsolete fork alive.
+		{"pkg/app/testing.go", []string{"With<Svc>Deps", "AUTO-STUBBED"}},
+
+		// The HTTP edge: forge owns serve.go end-to-end and exposes no
+		// seam. The hint must SAY that and name each missing seam, so
+		// the user files an issue instead of forking.
+		{"cmd/control-plane/cmd/serve.go", []string{
+			"NO EXTENSION POINT EXISTS", "interceptor chain", "CORS", "ExtraRoutes", "forge gap",
+		}},
+		{"cmd/api/cmd/server.go", []string{"NO EXTENSION POINT EXISTS", "Extras"}},
+		{"cmd/api/cmd/version.go", []string{"commands.go", "userCommands"}},
+
+		// mounts_services.go has a per-service seam AND a project-level
+		// gap; the hint carries both halves.
+		{"internal/app/mounts_services.go", []string{"RegisterHTTP", "NO EXTENSION POINT EXISTS", "ExtraRoutes"}},
+
+		{"pkg/config/config.go", []string{"forge.yaml"}},
+		{"internal/db/order_orm.go", []string{"migration", "proto"}},
+		{"frontends/admin-web/src/app/dashboard_gen.tsx", []string{"regenerate from proto"}},
+
 		// Leading ./ normalized.
 		{"./pkg/app/bootstrap.go", []string{"internal/app/providers.go"}},
+
+		// Unknown Tier-1 path: still never silent.
+		{"some/unmapped/thing_gen.go", []string{"NO EXTENSION POINT EXISTS"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
 			got := tier1ExtensionPointHint(tt.path)
-			if len(tt.wantSubs) == 0 {
-				if got != "" {
-					t.Errorf("hint for %s = %q, want none", tt.path, got)
-				}
-				return
-			}
 			for _, want := range tt.wantSubs {
 				if !strings.Contains(got, want) {
 					t.Errorf("hint for %s missing %q; got %q", tt.path, want, got)
@@ -43,8 +59,29 @@ func TestTier1ExtensionPointHint(t *testing.T) {
 	}
 }
 
+// TestTier1ExtensionPointHintIsTotal pins the property that replaces
+// `forge project disown`: the hint is never empty. A blank hint reads as
+// "forge has no opinion", which leaves the one-way door as the only
+// remedy on screen — the exact mechanism that produced a fleet in which
+// zero disowns were deliberate.
+func TestTier1ExtensionPointHintIsTotal(t *testing.T) {
+	paths := []string{
+		"pkg/app/wire_gen.go", "pkg/app/testing.go", "pkg/config/config.go",
+		"cmd/x/cmd/serve.go", "cmd/x/cmd/server.go", "cmd/x/cmd/svc_register.go",
+		"internal/app/mounts_services.go", "internal/app/auth.go",
+		"internal/handlers/orders/handlers_gen.go", "internal/db/thing_orm.go",
+		"frontends/web/src/lib/apiurl_gen.ts", "deploy/kcl/main.k",
+		"", ".", "weird", "a/b/c/d/e_gen.go",
+	}
+	for _, p := range paths {
+		if got := tier1ExtensionPointHint(p); strings.TrimSpace(got) == "" {
+			t.Errorf("tier1ExtensionPointHint(%q) is empty — the hint must be total", p)
+		}
+	}
+}
+
 // TestFormatTier1DriftReport pins the message-design contract: the
-// extension point leads, `forge disown` trails as the LAST resort and
+// extension point leads, `forge project disown` trails as the LAST resort and
 // is described as a one-way permanent transfer, friction recording and
 // --explain-drift are advertised.
 func TestFormatTier1DriftReport(t *testing.T) {
@@ -62,28 +99,36 @@ func TestFormatTier1DriftReport(t *testing.T) {
 		"embedded: aaaa1111",
 		"current:  bbbb2222",
 		"↪ custom wiring belongs in internal/app/providers.go (OpenInfra) + internal/app/compose.go (NewComponents) — the retired pkg/app DI unit no longer runs",
+		"↪ this change belongs in forge.yaml",
 		"--explain-drift",
-		"forge friction add",
-		"forge disown <path> --reason",
-		"ONE-WAY transfer",
-		"Forge never updates the file again",
-		"deleting the file and running `forge generate`",
+		"forge project disown <path> --reason",
+		// Disown is described as a recorded gap, never as an end state.
+		"not a solution",
+		"not an end state",
+		"ZERO that were deliberate",
+		"Expect to delete the entry",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("report missing %q; got:\n%s", want, got)
 		}
 	}
 
-	// Hint lines only appear for mapped paths — the config.go entry must
-	// not carry a wiring hint.
-	if strings.Count(got, "↪") != 1 {
-		t.Errorf("expected exactly 1 hint line, got %d:\n%s", strings.Count(got, "↪"), got)
+	// EVERY drifted file carries a hint. The hint is total, so a silent
+	// row — the state that left the one-way door as the only remedy on
+	// screen — can never come back.
+	if n := strings.Count(got, "↪"); n != len(drift) {
+		t.Errorf("expected one hint line per drifted file (%d), got %d:\n%s", len(drift), n, got)
 	}
 
 	// Option ordering: the extension-point option must come before the
 	// disown one-way door.
-	if strings.Index(got, "extension point") > strings.Index(got, "forge disown") {
+	if strings.Index(got, "extension point") > strings.Index(got, "forge project disown") {
 		t.Errorf("extension-point guidance must precede the disown option:\n%s", got)
+	}
+	// And reporting the gap must precede it too — a missing seam is a
+	// forge defect, and the issue tracker outranks the escape hatch.
+	if strings.Index(got, "report the named gap") > strings.Index(got, "forge project disown") {
+		t.Errorf("gap-reporting guidance must precede the disown option:\n%s", got)
 	}
 }
 

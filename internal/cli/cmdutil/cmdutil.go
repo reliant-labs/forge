@@ -12,17 +12,70 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 )
 
-// Name returns the command name users should type to invoke Forge. When the
-// binary is "forge" (standalone install) it returns "forge"; when embedded in
-// another binary (e.g. "reliant") it returns "reliant forge". Shared so group
-// commands can print copy-pasteable next-step hints without importing
-// internal/cli.
+// cmdRoute records, at execution time, how the forge CLI is mounted in
+// the EXECUTING binary's cobra tree: no tokens for a standalone forge
+// binary (however its file is named), ["forge"] when mounted as a
+// subcommand of another root (e.g. `reliant forge`). The forge root
+// command's PersistentPreRun records it via RecordCmdRoute before any
+// subcommand RunE fires, so Name() and self-invocation
+// (internal/cli.forgeExecCommand) reflect the REAL mount instead of
+// guessing from the binary's basename.
+//
+// The basename guess was a silent-degradation trap: a standalone binary
+// named anything but exactly "forge" (a temp build, forge-v2) both
+// printed un-runnable next-step hints ("forge-v2 forge generate") and
+// self-invoked `<exe> forge protoc-gen-forge`, which hit cobra's
+// "unknown command" and broke descriptor generation.
+var cmdRoute struct {
+	recorded bool
+	tokens   []string
+}
+
+// RecordCmdRoute walks from forge's root command up to the executed
+// tree's real root and records the subcommand tokens between them.
+// Called by the forge root PersistentPreRun on every invocation.
+func RecordCmdRoute(forgeRoot *cobra.Command) {
+	var tokens []string
+	for c := forgeRoot; c.HasParent(); c = c.Parent() {
+		tokens = append([]string{c.Name()}, tokens...)
+	}
+	cmdRoute.tokens = tokens
+	cmdRoute.recorded = true
+}
+
+// CmdRouteTokens returns the recorded mount route (subcommand tokens
+// from the executing binary to forge's root) and whether one was
+// recorded this process.
+func CmdRouteTokens() ([]string, bool) {
+	return cmdRoute.tokens, cmdRoute.recorded
+}
+
+// ResetCmdRoute clears the recorded route. Test hook only — production
+// code records exactly once per process, at dispatch.
+func ResetCmdRoute() {
+	cmdRoute.recorded = false
+	cmdRoute.tokens = nil
+}
+
+// Name returns the command name users should type to invoke Forge. It
+// prefers the recorded mount route (RecordCmdRoute): a standalone
+// binary reports its own basename (users literally type that name),
+// an embedded mount reports "<basename> forge" (e.g. "reliant forge").
+// Without a recording it falls back to the legacy basename heuristic.
+// Shared so group commands can print copy-pasteable next-step hints
+// without importing internal/cli.
 func Name() string {
 	base := filepath.Base(os.Args[0])
+	if tokens, ok := CmdRouteTokens(); ok {
+		return strings.Join(append([]string{base}, tokens...), " ")
+	}
 	if base == "forge" {
 		return "forge"
 	}
@@ -33,7 +86,7 @@ func Name() string {
 // canonical sentinel lives here (the shared leaf package) so both internal/cli
 // and the dir-nested command groups compare against the same value;
 // internal/cli's config.ErrProjectConfigNotFound aliases this.
-var ErrProjectConfigNotFound = errors.New("forge.yaml not found in current directory (run 'forge new' to create a project)")
+var ErrProjectConfigNotFound = errors.New("forge.yaml not found in current directory (run 'forge project new' to create a project)")
 
 // ProjectRoot finds the project root by looking for forge.yaml in the cwd
 // (NOT a walk-up — see FindProjectRoot for that). Returns a user-facing error
@@ -48,7 +101,7 @@ func ProjectRoot() (string, error) {
 		return "", cliutil.UserErr("forge",
 			"forge.yaml not found in current directory",
 			"",
-			"cd into your project root, or run 'forge new <name>' to scaffold a new project")
+			"cd into your project root, or run 'forge project new <name>' to scaffold a new project")
 	}
 	return cwd, nil
 }

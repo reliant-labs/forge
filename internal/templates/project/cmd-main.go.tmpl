@@ -1,6 +1,6 @@
-// forge-scaffold (USER-OWNED): forge writes this file ONCE (write-if-absent),
-// then NEVER regenerates or overwrites it. The command tree + component wiring is
-// owned code — add a component by hand-editing here (or via `forge add`), never a
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+// forge writes it ONCE (write-if-absent). The command tree + component wiring is
+// owned code — add a component by hand-editing here (or via `forge scaffold`), never a
 // re-derivation. Delete the file + re-run `forge generate` to re-scaffold from template.
 // Source: internal/templates/project/cmd-main.go.tmpl.
 //
@@ -13,9 +13,14 @@
 // imports the group subpackages, and the groups import cmd only for the shared
 // Deps/Serve helpers, there is no cmd↔group import cycle.
 //
-// binary=shared only changes the DEPLOY story (one image serving many services
-// via cobra subcommands); the command tree itself is identical to per-service
-// mode. To run a specific service: `{{.Bin}} <service>`. To list services:
+// The command tree is IDENTICAL in both binary modes; binary=shared changes only
+// the DEPLOY story. This binary is a monolith by default: the image's CMD is
+// `{{.Bin}} server`, which mounts every service and runs every worker in one
+// process. Splitting a service into its own Deployment is a manifest change, not
+// a rewrite — set that component's `command` in deploy/kcl/<env>/main.k (which is
+// what the binary=shared scaffold pre-wires: `command = ["/app/<project>", c.name]`).
+//
+// To run a specific service: `{{.Bin}} <service>`. To list services:
 // `{{.Bin}} --help`.
 package main
 

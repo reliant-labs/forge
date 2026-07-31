@@ -1,12 +1,13 @@
 ---
 name: kcl-schemas-to-module
 description: Migrate a forge project's in-tree `deploy/kcl/schema.k` / `base.k` / `render.k` / `lib/*.k` to the upstream `forge` KCL module. ~3000 lines of duplicated schema deletes; projects import typed entities (Service / Operator / Frontend / CronJob with polymorphic deploy) instead of constructing the legacy `Application` struct.
+detection: ls deploy/kcl/schema.k deploy/kcl/base.k deploy/kcl/render.k >/dev/null 2>&1
 relevance: migration
 ---
 
 # Migrating in-tree KCL schemas to the upstream forge module
 
-Use this skill when `forge upgrade` reports a jump across the version
+Use this skill when `forge project upgrade` reports a jump across the version
 that hoisted the KCL schemas out of every project (`1.x → 2.0`). It
 only affects projects that have `deploy/kcl/schema.k`, `base.k`,
 `render.k`, and a `deploy/kcl/lib/` subtree in their working tree —
@@ -14,7 +15,7 @@ all of which become redundant after the upstream module ships.
 
 ## 1. What changed
 
-Before: every forge project's `forge new` / `forge generate` copied
+Before: every forge project's `forge project new` / `forge generate` copied
 ~3000 lines of KCL schema + render logic into `deploy/kcl/`. Schema
 changes couldn't propagate — fixing a bug in `render.k` meant
 hand-porting it across every project. And the legacy `Application`
@@ -31,7 +32,7 @@ and `import forge`; the schemas live upstream and version under
 
 The win:
 
-- Schema changes propagate via `forge upgrade` bumping the module
+- Schema changes propagate via `forge project upgrade` bumping the module
   version pin in `kcl.mod`.
 - Intent is typed — `Operator` is no longer "an Application that
   happens to also need cluster-scoped RBAC."
@@ -78,10 +79,10 @@ forge = { path = "/path/to/forge/kcl" }
 
 ```bash
 rm deploy/kcl/schema.k deploy/kcl/base.k deploy/kcl/render.k
-rm -rf deploy/kcl/lib  # if a lib/ subdir exists from forge add crd / similar
+rm -rf deploy/kcl/lib  # if a lib/ subdir exists from forge scaffold crd / similar
 ```
 
-Project-specific `deploy/kcl/lib/<x>_crd.k` files that `forge add crd`
+Project-specific `deploy/kcl/lib/<x>_crd.k` files that `forge scaffold crd`
 emitted stay — those are owned by the project. The module ships the
 `forge.crd(...)` HELPER but doesn't ship project CRDs.
 
@@ -162,18 +163,19 @@ Per-entity mapping rules:
 
 ```bash
 forge generate
-forge build --env dev   # exercises the JSON contract
-forge deploy dev --dry-run   # exercises render_manifests
+forge build dev   # exercises the JSON contract
+forge env deploy dev --dry-run   # exercises render_manifests
 ```
 
-`forge generate` emits the per-env `config_gen.k` files (project-
-specific config, NOT touched by this migration). The new `main.k`
-imports them the same way it always did:
+`forge generate` emits the shared `config_schema.k` + `config_projection.k`
+and a per-env `config.k` (project-specific config, NOT touched by this
+migration). The `main.k` imports them the same way it always did:
 
 ```kcl
-import deploy.kcl.dev.config_gen as cfg
+import config_projection
+import .config as appcfg
 # ...
-env_vars = cfg.APP_ENV
+env_vars = forge.env_project(config_projection.appConfigEnvMap(appcfg.app_config))
 ```
 
 ## 4. Migration (manual part)
@@ -223,15 +225,15 @@ kcl run dev/main.k -S manifests | kubectl apply --dry-run=client -f -
 
 # 3. The forge build + deploy round-trip still works.
 forge generate
-forge build --env dev
-forge deploy dev --dry-run
+forge build dev
+forge env deploy dev --dry-run
 ```
 
 ## 6. Rollback
 
 ```bash
 git checkout HEAD -- deploy/kcl/
-forge upgrade --to <prior-version>
+forge project upgrade --to <prior-version>
 ```
 
 The prior version's `forge generate` re-emits the in-tree schemas.
@@ -240,7 +242,7 @@ Note: `--to <prior-version>` requires the older forge build on PATH.
 ## See also
 
 - `architecture` skill — where the KCL module sits in the deploy pipeline.
-- `deploy` skill — how `forge deploy <env>` consumes both `output`
+- `deploy` skill — how `forge env deploy <env>` consumes both `output`
   (JSON contract) and `manifests` (k8s YAML).
 - `forge/kcl/README.md` — the module's user-facing reference for the
   four typed entities and the polymorphic deploy union.

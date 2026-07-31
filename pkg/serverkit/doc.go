@@ -13,42 +13,52 @@
 //
 // serverkit takes COMPOSED INPUTS and owns only the uniform lifecycle. It
 // knows nothing about service SELECTION: which services are mounted, which
-// workers/operators run, and how the interceptor chain / REST swap / OTel
-// /metrics handler were built all happen ABOVE serverkit, in the generated
-// cmd-server shim. serverkit receives the finished http.Handler plus the
-// already-selected Workers/Operators and an OnShutdown closure.
+// workers/operators run, and how the interceptor chain was built all happen
+// ABOVE serverkit, in the project's own serve.go. serverkit receives the
+// finished handler (or the mux), the already-selected Workers/Operators,
+// and an OnShutdown closure.
 //
-// # Usage in generated code
+// Alongside Run, serverkit offers the composition STEPS that every serve.go
+// performs identically — Boot, AutoMigrate, RecordMounted, AddWorkers,
+// RequireComplete, RESTHandler (see compose.go and rest.go). They are what
+// let serve.go be short enough to read as a list of decisions, and what let
+// improvements to them reach existing projects through a dependency bump
+// rather than a re-scaffold of a file the user owns.
 //
-// The generated cmd/server.go composes the server and hands it to Run:
+// # Usage in the composition root
 //
-//	mux := http.NewServeMux()
-//	shutdownOTel, metricsHandler, _ := setupOTel(ctx)
-//	if metricsHandler != nil { mux.Handle("/metrics", metricsHandler) }
-//	// run migrations (the cmd opens the DB it needs)
-//	opts := connectHandlerOptions(logger) // observe.DefaultMiddlewares + project interceptors
-//	// FORGE_SHAPE_REDESIGN §2 hybrid DI: owned infra → generated injector →
-//	// owned two-phase wiring, then per-subcommand mount selection over the
-//	// data-only inventory.
-//	infra, _ := app.OpenInfra(ctx, cfg, logger)
-//	services, _ := app.Build(infra)
-//	_ = app.PostBuild(services)
-//	mounted := mountServices(services, mux, cfg, logger, names, opts...) // app.Inventory rows
-//	var handler http.Handler = mux
-//	if rest := restHandler(mux, mounted); rest != nil { handler = rest }
-//	return serverkit.Run(ctx, projectConfig(cfg), serverkit.Server{
-//	    Handler:    handler,
-//	    Logger:     logger,
-//	    Workers:    selected(app.WorkerList(services), names),
-//	    Operators:  selected(app.OperatorList(services), names),
-//	    RunOperators: func(ctx context.Context, l *slog.Logger, addr string) error {
-//	        return app.RunOperators(services, ctx, l, addr)
-//	    },
-//	    OnShutdown: func(ctx context.Context) error { return shutdownOTel(ctx) },
-//	    CORSMiddleware:            fmw.CORSMiddleware,
-//	    SecurityHeadersMiddleware: securityHeaders,
-//	    RequestIDMiddleware:       fmw.RequestIDMiddleware,
-//	})
+// cmd/<bin>/cmd/serve.go is the project's SCAFFOLD-ONCE composition root:
+// forge writes it once and the application owns it from then on. It holds
+// the DECISIONS — the fail-closed auth posture, the interceptor order, the
+// payload caps, the CORS policy, the readiness set, the teardown — while
+// the steps that look the same in every project call into here:
+//
+//	skCfg, _ := serverkitConfig(cfg)      // project-typed → vendor-neutral, Normalize()d
+//	logger, mux := serverkit.Boot(skCfg)  // logger + slog.SetDefault + mux
+//	_ = serverkit.AutoMigrate(skCfg, logger, pkgapp.AutoMigrate)
+//
+//	// … the owner's decisions: auth, interceptor chain, payload caps …
+//
+//	srv := serverkit.Server{Mux: mux, HandlerOpts: opts, Logger: logger, …}
+//	srv.AddReadyCheck(serverkit.DBReadyCheck("database", infra.DB))
+//	srv.OnShutdown = func(context.Context) error { return infra.DB.Close() }
+//
+//	mounted := spec.Mount(components, srv.Mux, cfg, logger, opts...)
+//	srv.RecordMounted(mounted)
+//	if rest := serverkit.RESTHandler(srv.Mux, mounted, logger); rest != nil {
+//	    srv.Handler = rest
+//	}
+//	srv.AddWorkers(spec.Workers(components))
+//	if spec.RequireComplete {
+//	    if err := srv.RequireComplete(app.Inventory); err != nil { return err }
+//	}
+//	return serverkit.Run(ctx, skCfg, srv)
+//
+// Those helpers (compose.go) are deliberately SEPARATE steps rather than
+// one Compose(...) call: the composition root has to be able to reorder and
+// replace them — migrate after mounting, skip the readiness pool, wrap the
+// mux — and a step usable in only one position is a template with extra
+// syntax, not a library.
 //
 // # The Server value
 //
@@ -70,8 +80,8 @@
 //  3. CORS, security-headers, request-id, and h2c are layered over that
 //     top mux from Config gating + the Server factory fields.
 //  4. Listener binds, readiness flips true.
-//  5. Workers start; operator manager starts when len(Operators) > 0 and
-//     the RUN_OPERATORS gate allows.
+//  5. Workers start; the operator manager starts when len(Operators) > 0,
+//     which is the caller's decision and the only one.
 //  6. SIGINT/SIGTERM → readiness flips false → pre-stop sleep →
 //     workers stop → Server.OnShutdown → http.Server shuts down →
 //     pprof shuts down.
@@ -92,11 +102,17 @@
 //
 // # What does not belong here
 //
-// Service SELECTION and COMPOSITION stay in the generated cmd-server
-// shim: mux build, service mount (via the existing appkit mechanism),
-// the interceptor chain, the REST transcoder swap, OTel setup, and
-// auto-migration. Per-service DI wiring stays in the generated
-// bootstrap.go — that body is genuinely typed and does not compress into
-// a library. serverkit holds only the parts that look the same in every
-// forge project.
+// The line is OWNERSHIP, not size. Anything an application author has a
+// legitimate reason to change stays in their serve.go: the auth posture,
+// the interceptor chain and its order, the payload caps, the CORS and
+// security-header policy, which readiness checks are registered, what
+// teardown closes, and which services/workers/operators this process runs.
+// Absorbing any of those into serverkit would take a decision away from the
+// person who has to answer for it.
+//
+// Service SELECTION stays above serverkit too: mounting goes through the
+// project's own typed Mount<Svc> methods, so selection is compile-time and
+// serverkit never sees a service name it has to resolve. Per-component DI
+// wiring stays in the generated internal/app. serverkit holds only what is
+// identical in every forge project.
 package serverkit

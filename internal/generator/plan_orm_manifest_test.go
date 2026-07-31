@@ -12,11 +12,11 @@ import (
 
 // ── M3: ORM outputs are forge-certified ────────────────────────────────
 //
-// Kalshi fr-4dfef712e9, reproduced verbatim: `forge disown
+// Kalshi fr-4dfef712e9, reproduced verbatim: `forge project disown
 // internal/db/trade_orm.go` refused because the ORM emitter never
 // registered its outputs — the escape hatch the file's own header
-// advertises ("forge disown to take ownership") was unusable, and
-// `forge audit` saw every *_orm.go as an orphan. In the self-certifying
+// advertises ("forge project disown to take ownership") was unusable, and
+// `forge project audit` saw every *_orm.go as an orphan. In the self-certifying
 // era the registration IS the embedded forge:hash marker: every output
 // must verify Pristine on disk.
 
@@ -51,10 +51,10 @@ func TestGeneratePlanORM_CertifiesOutputs(t *testing.T) {
 			continue
 		}
 		// Self-certification replaces the manifest entry: a verifying
-		// marker is what makes `forge disown` and `forge audit` see the
+		// marker is what makes `forge project disown` and `forge project audit` see the
 		// file as forge-owned Tier-1.
 		if got := checksums.Verify(content); got != checksums.Pristine {
-			t.Errorf("%s does not self-certify (Verify=%v) — forge disown/audit can't see it", rel, got)
+			t.Errorf("%s does not self-certify (Verify=%v) — forge project disown/audit can't see it", rel, got)
 		}
 		if !insp.IsTier1(filepath.ToSlash(rel)) {
 			t.Errorf("%s not classified Tier-1 (forge-owned, regenerated every run)", rel)
@@ -231,7 +231,7 @@ func TestGeneratePlanORM_NilChecksumsTolerated(t *testing.T) {
 // without a certification marker. The emitter overwrites it with the
 // fresh render (the same regenerate-every-run behavior the file always
 // had) and the stamped marker makes every FUTURE edit drift-guard-
-// visible and `forge disown` possible.
+// visible and `forge project disown` possible.
 func TestGeneratePlanORM_AdoptsUntrackedExistingFiles(t *testing.T) {
 	checksums.ResetSkipWrite()
 	root := t.TempDir()

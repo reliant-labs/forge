@@ -71,16 +71,12 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install forge
-        # Version is stamped at scaffold time from the forge binary that
-        # produced the project. CI installs that exact ref so this step is
-        # reproducible:
-        #   1. Tagged/pseudo-version build → pin by module version.
-        #   2. Local `dev` build with a known git SHA → pin by SHA
-        #      (`go install ...@<sha>` is a valid ref).
-        #   3. Neither available → fall back to @main (regenerate from a
-        #      tagged release to eliminate this branch).
-        # TODO: regenerate from a tagged forge release to pin this install.
-        run: go install github.com/reliant-labs/forge/cmd/forge@main
+        # THIS repo is forge. A scaffolded project pins the published forge
+        # that generated it, but forge's own CI must verify the checkout under
+        # test — installing a tag would validate every PR against the last
+        # release, so no change to a template or an emitter could ever go
+        # green until after it shipped. Build from the working tree instead.
+        run: go install ./cmd/forge
       - name: Verify generated code
         run: forge ci verify-generated
 
@@ -89,6 +85,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
       - name: Cache KCL CLI
         uses: actions/cache@v5
         id: kcl-cache
@@ -102,6 +101,10 @@ jobs:
 
       - name: Add KCL to PATH
         run: echo "$HOME/.kcl/bin" >> $GITHUB_PATH
+      - name: Install forge
+        # Same reason as verify-generated: this step runs `forge`, and in
+        # forge's own repo the forge that must run is the one being tested.
+        run: go install ./cmd/forge
       - name: Validate KCL manifests
         run: forge ci validate-kcl
 
@@ -119,6 +122,10 @@ jobs:
         # compromised upstream release silently alter scan results. The
         # Dependabot config watches this file so bumps arrive as PRs.
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      - name: Install forge
+        # Same reason as verify-generated: this step runs `forge`, and in
+        # forge's own repo the forge that must run is the one being tested.
+        run: go install ./cmd/forge
       - name: Go vulnerability check
         run: forge ci vuln-scan --go
 

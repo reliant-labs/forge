@@ -35,7 +35,7 @@ func TestExpandHomePath(t *testing.T) {
 
 // TestLoadExternalEnvFile_TildePath proves the end-to-end path: a ~-prefixed
 // env_file under the user's home is found and parsed (the exact failure the
-// live `forge deploy prod` hit: "env_file ~/src/kalshi/.env not found").
+// live `forge env deploy prod` hit: "env_file ~/src/kalshi/.env not found").
 func TestLoadExternalEnvFile_TildePath(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {

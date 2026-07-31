@@ -2,7 +2,7 @@
 # Smoke test for the Gateway API ingress story. Real k3d + Traefik + curl.
 #
 # Drives a freshly-scaffolded `forge new --kind service` project through
-#   forge dev cluster up  (Gateway API CRDs + Traefik + GatewayClass)
+#   forge cluster up      (Gateway API CRDs + Traefik + GatewayClass)
 #   kubectl apply         (Gateway + HTTPRoute from rendered KCL,
 #                          plus a stand-in traefik/whoami backend instead
 #                          of the forge-built service image)
@@ -26,19 +26,16 @@
 #                        host ports already bound)
 #
 # The cluster is named `e2e-ingress` (distinct from the scaffold default
-# so this smoke can run alongside other forge dev clusters). Cleanup
+# so this smoke can run alongside other forge k3d clusters). Cleanup
 # runs unconditionally via trap, even on failure.
 #
 # Known caveats this smoke deliberately works around (rather than
 # fixes — see the report from the script's author for details):
-#   - The scaffolded `forge new` project's main.k references
-#     `cfg.APP_ENV`, which `config_gen.k` only declares when the
-#     project has annotated config fields. We strip the reference.
 #   - The scaffolded `kcl.mod` pins the forge KCL module to a
 #     published git tag that may not exist during local development.
 #     We rewrite to a `path = ` dep pointing at the repo's kcl/ dir.
 #   - The scaffolded `deploy/k3d.yaml` maps host:18080->container:80
-#     for the bundled Traefik that `forge dev cluster up` then
+#     for the bundled Traefik that `forge cluster up` then
 #     disables; the generated `deploy/k3d-ports.yaml` would append a
 #     conflicting host:18080 mapping. We strip the conflicting entry.
 
@@ -221,7 +218,7 @@ grep -A 6 "HTTP_ROUTES" "${INGRESS_K}" | sed 's/^/    /'
 
 # The scaffolded deploy/k3d.yaml creates a k3d registry on host port
 # 5050. If the user already has a forge project's registry running
-# on 5050 (very common — every previous `forge dev cluster up` left
+# on 5050 (very common — every previous `forge cluster up` left
 # one), `k3d cluster create` will fail with "port already allocated".
 # Pick a fresh port for the smoke test.
 step "Pick a free host port for the smoke-test registry"
@@ -247,7 +244,7 @@ PYEOF
 # ---- 5. fix the k3d.yaml port collision -------------------------------
 
 # The scaffolded deploy/k3d.yaml maps host:18080->container:80 for the
-# bundled Traefik that `forge dev cluster up` then disables. The
+# bundled Traefik that `forge cluster up` then disables. The
 # generated deploy/k3d-ports.yaml fragment will append a second
 # host:18080->container:18080 entry from the Gateway listener — k3d
 # rejects two entries on the same host port.
@@ -291,23 +288,6 @@ grep -A 4 "^ports:" "${K3D_YAML}" | sed 's/^/    /' || info "(no ports block —
 # `kcl-v0.1.0` tag, which may not yet exist on the remote during local
 # development. Rewrite to `path = ` so the local checkout's
 # `kcl/` directory satisfies the import.
-# Work around a known scaffold bug: when there are no annotated config
-# fields in proto/config/v1/config.proto (the default for a fresh `forge
-# new`), `config_gen.k` declares only `CONFIG_MAPS` — no `APP_ENV` list
-# — but main.k.tmpl still references `cfg.APP_ENV`. KCL errors with
-# "attribute 'APP_ENV' not found". Strip the reference.
-step "Strip cfg.APP_ENV reference from scaffolded dev/main.k"
-MAIN_K="${PROJECT_DIR}/deploy/kcl/dev/main.k"
-python3 - "${MAIN_K}" <<'PYEOF'
-import sys, re
-path = sys.argv[1]
-src = open(path).read()
-new = src.replace("forge.COMMON_ENV + cfg.APP_ENV + ",
-                  "forge.COMMON_ENV + ")
-new = new.replace("forge.COMMON_ENV + cfg.APP_ENV", "forge.COMMON_ENV")
-open(path, "w").write(new)
-PYEOF
-
 step "Point project kcl.mod at the local forge KCL module"
 KCL_MOD="${PROJECT_DIR}/kcl.mod"
 python3 - "${KCL_MOD}" "${REPO_ROOT}/kcl" <<'PYEOF'
@@ -359,14 +339,14 @@ fi
 info "k3d-ports.yaml:"
 sed 's/^/    /' "${PROJECT_DIR}/deploy/k3d-ports.yaml"
 
-# ---- 7. forge dev cluster up ------------------------------------------
+# ---- 7. forge cluster up ----------------------------------------------
 
-step "forge dev cluster up (5 min timeout)"
+step "forge cluster up (5 min timeout)"
 (
     cd "${PROJECT_DIR}"
     # 5-minute timeout — first run pulls images + downloads CRDs.
-    timeout 300 "${FORGE_BIN}" dev cluster up --wait 2>&1
-) || fail "forge dev cluster up failed"
+    timeout 300 "${FORGE_BIN}" cluster up --wait 2>&1
+) || fail "forge cluster up failed"
 
 # Sanity: the cluster is reachable.
 kubectl --context "k3d-${CLUSTER_NAME}" get nodes >/dev/null 2>&1 || \

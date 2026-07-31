@@ -11,7 +11,7 @@ import (
 // assertGofmtClean fails if src is not already gofmt-formatted. Rendered
 // scaffolds land directly in user repos, so template output must be
 // byte-identical to its gofmt form — a drifted template fails every
-// downstream `gofmt -l` / lint gate on a fresh `forge add`.
+// downstream `gofmt -l` / lint gate on a fresh `forge scaffold`.
 func assertGofmtClean(t *testing.T, name, src string) {
 	t.Helper()
 	formatted, err := format.Source([]byte(src))

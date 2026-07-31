@@ -12,12 +12,18 @@ import (
 	"sort"
 	"strings"
 	"testing"
+{{- if .NeedsTimestamppb}}
+	"time"
+{{- end}}
 
 	"connectrpc.com/connect"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/testkit"
 {{- if .NeedsFieldMask}}
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+{{- end}}
+{{- if .NeedsTimestamppb}}
+	"google.golang.org/protobuf/types/known/timestamppb"
 {{- end}}
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
@@ -83,12 +89,8 @@ func crudTestDB(t *testing.T) orm.Context {
 // crudTestCtx returns a context with authenticated test claims attached —
 // what the auth middleware would have produced for a real request.
 func crudTestCtx() context.Context {
-	ctx := middleware.ContextWithClaims(context.Background(),
+	return middleware.ContextWithClaims(context.Background(),
 		&middleware.Claims{UserID: "test-user", Email: "test@example.com"})
-{{- if .HasTenant}}
-	ctx = middleware.ContextWithTenantID(ctx, "test-tenant")
-{{- end}}
-	return ctx
 }
 
 // assertCleanError asserts a client-facing error: the expected code, and
@@ -114,13 +116,23 @@ func assertCleanError(t *testing.T, label string, err error, want connect.Code) 
 // path for {{.EntityName}} end to end.
 func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 	db := crudTestDB(t)
+{{- if .ParentSeedSQL}}
+
+	// Rows for {{.EntityName}}'s foreign-key parent closure, seeded at the
+	// DB level (foreign keys may cross services) with deterministic ids —
+	// the create requests below reference them.
+	if _, err := db.Exec(context.Background(), `
+{{.ParentSeedSQL}}`); err != nil {
+		t.Fatalf("seed parent rows: %v", err)
+	}
+{{- end}}
 	svc := app.NewTest{{$.TestHelperName}}(t, app.WithDB(db))
 	ctx := crudTestCtx()
 
 	// Two creates must produce two rows with distinct, non-empty IDs.
 	first, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.CreateMethod.InputType}}{
 {{- range .CreateFields}}
-{{- if eq .Kind "scalar" "enum"}}
+{{- if eq .Kind "scalar" "enum" "timestamp"}}
 		{{.ProtoName}}: {{.TestValue}},
 {{- end}}
 {{- end}}
@@ -130,8 +142,8 @@ func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 	}
 	second, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.CreateMethod.InputType}}{
 {{- range .CreateFields}}
-{{- if eq .Kind "scalar" "enum"}}
-		{{.ProtoName}}: {{.TestValue}},
+{{- if eq .Kind "scalar" "enum" "timestamp"}}
+		{{.ProtoName}}: {{.TestValue2}},
 {{- end}}
 {{- end}}
 	}))
@@ -198,7 +210,11 @@ func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 	// path. See https://google.aip.dev/134.
 	maskedRow := reread.Msg.Get{{.EntityName}}()
 {{- if ne .SecondStringField ""}}
-	keep{{.SecondStringField}} := maskedRow.Get{{.SecondStringField}}()
+	// keptUnmaskedValue uses a fixed, field-independent local name on
+	// purpose: deriving it from the field name would produce identifiers
+	// ending in an initialism (…Id, …Api) and trip revive's var-naming rule
+	// on this owned scaffold.
+	keptUnmaskedValue := maskedRow.Get{{.SecondStringField}}()
 	// Clobber value the mask does NOT name — it must not persist.
 	maskedRow.{{.SecondStringField}} = "MUST-NOT-PERSIST"
 {{- end}}
@@ -217,8 +233,8 @@ func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 		t.Errorf("masked update did not write the masked field: {{.MutableStringFieldPath}} = %q, want %q", v, "masked-updated")
 	}
 {{- if ne .SecondStringField ""}}
-	if v := afterMasked.Msg.Get{{.EntityName}}().Get{{.SecondStringField}}(); v != keep{{.SecondStringField}} {
-		t.Errorf("masked update CLOBBERED an unmasked field: {{.SecondStringFieldPath}} = %q, want %q — update_mask must restrict the write", v, keep{{.SecondStringField}})
+	if v := afterMasked.Msg.Get{{.EntityName}}().Get{{.SecondStringField}}(); v != keptUnmaskedValue {
+		t.Errorf("masked update CLOBBERED an unmasked field: {{.SecondStringFieldPath}} = %q, want %q — update_mask must restrict the write", v, keptUnmaskedValue)
 	}
 {{- end}}
 
@@ -229,6 +245,15 @@ func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 	}))
 	assertCleanError(t, "masked update with unknown path", err, connect.CodeInvalidArgument)
 {{- end}}
+
+	// Update of an id that does not exist is a NotFound, not a 200 echoing
+	// back a row the database does not have. Update writes straight through
+	// — there is no read before it — so the row count is the only evidence
+	// that anything was written.
+	ghost := reread.Msg.Get{{.EntityName}}()
+	ghost.{{.PkField}} = "never-existed"
+	_, err = svc.{{.UpdateMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.UpdateMethod.InputType}}{ {{.UpdateEntityField}}: ghost}))
+	assertCleanError(t, "update missing", err, connect.CodeNotFound)
 {{- end}}
 {{- if .HasDelete}}
 
@@ -238,6 +263,16 @@ func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 	}
 	_, err = svc.{{.GetMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.GetMethod.InputType}}{ {{.PkField}}: id1}))
 	assertCleanError(t, "get after delete", err, connect.CodeNotFound)
+
+	// Get and Delete must AGREE about what "this row does not exist" means.
+	// Deleting the same id twice, and deleting an id that never existed,
+	// both answer exactly what Get answers for those ids. Delete used to
+	// return 200 with an empty body for both, which a client could not
+	// tell apart from a delete that did something.
+	_, err = svc.{{.DeleteMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.DeleteMethod.InputType}}{ {{.PkField}}: id1}))
+	assertCleanError(t, "delete twice", err, connect.CodeNotFound)
+	_, err = svc.{{.DeleteMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.DeleteMethod.InputType}}{ {{.PkField}}: "never-existed"}))
+	assertCleanError(t, "delete missing", err, connect.CodeNotFound)
 {{- end}}
 
 	// A never-existed id maps to a clean NotFound too.

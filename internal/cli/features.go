@@ -1,6 +1,6 @@
-// Package cli — `forge features` cobra command.
+// Package cli — `forge project features` cobra command.
 //
-// `forge features` prints the RESOLVED feature graph for the current
+// `forge project features` prints the RESOLVED feature graph for the current
 // project: every feature, whether it is on or off, WHY (derived from
 // project shape vs explicitly set in forge.yaml), and its dependency
 // edges (other features / shape preconditions it requires). It is the
@@ -9,7 +9,7 @@
 // config loads clean, this command shows the coherent set; the validator
 // guarantees what it prints can never contradict itself.
 //
-// `forge features` covers the whole menu, stable + experimental, with
+// `forge project features` covers the whole menu, stable + experimental, with
 // the dependency column — including the four opt-in experimental flags.
 
 package cli
@@ -24,7 +24,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// featureDisplayOrder is the stable print order for `forge features` —
+// featureDisplayOrder is the stable print order for `forge project features` —
 // roughly the codegen → build → deploy → frontend → experimental flow a
 // reader thinks in, rather than alphabetical. Any feature not listed
 // here (defensive: a future Feature* constant the menu forgot) is
@@ -42,7 +42,6 @@ var featureDisplayOrder = []config.FeatureName{
 	config.FeatureCI,
 	config.FeatureBuild,
 	config.FeatureDeploy,
-	config.FeaturePacks,
 	// Experimental — printed in the same list with an (experimental) tag.
 	config.FeatureIngress,
 	config.FeatureExternalBuilds,
@@ -161,8 +160,6 @@ func featureExplicitlySet(f config.FeaturesConfig, name config.FeatureName) bool
 		return f.Observability != nil
 	case config.FeatureHotReload:
 		return f.HotReload != nil
-	case config.FeaturePacks:
-		return f.Packs != nil
 	case config.FeatureDeploy:
 		return f.Deploy != nil
 	default:

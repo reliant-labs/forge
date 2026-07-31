@@ -18,8 +18,7 @@ Run `forge skill list` to discover available playbooks, and `forge skill load <n
 - **proto** — protobuf schema conventions
 - **architecture** — system architecture and layout
 - **workers** — background job workers
-- **auth** — authentication and authorization
-- **packs** — reusable pack system
+- **auth** — authentication
 - **testing** — testing overview
 - **testing/unit** — unit test patterns
 - **testing/integration** — integration test patterns
@@ -37,7 +36,7 @@ Run `forge skill list` to discover available playbooks, and `forge skill load <n
 2. **Proto is the canonical input** — all API contracts, ORM models, and frontend hooks derive from proto definitions.
 3. **`forge generate` is safe** — it never overwrites hand-written business logic (handler files, `pkg/app/setup.go`, etc.).
 4. **Migrations are the DB source of truth** — the database schema comes from migrations, not proto. Proto drives the ORM layer above them.
-5. **Use `forge test`** — not raw `go test`. The CLI sets up the correct environment, test database, and flags.
+5. **Use `task test`** — not raw `go test`. The project's `Taskfile.yml` sets the correct build tags, timeouts, and frontend lane, and it is what CI runs. (There is no `forge test`.)
 
 ## Testing tiers
 

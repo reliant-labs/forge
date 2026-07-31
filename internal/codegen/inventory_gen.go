@@ -10,7 +10,7 @@
 // the inventory row AND the string-keyed constructor table (appkit.Run
 // walked it constructing everything by name). Construction now lives
 // entirely in the generated Build (inject_gen.go); the inventory is a pure
-// descriptor. Names live HERE only — for display (`forge map`/`audit`, CLI
+// descriptor. Names live HERE only — for display (`forge project map`/`audit`, CLI
 // listing) and for choosing which subset to MOUNT per-subcommand — NEVER as
 // a construction key.
 //
@@ -47,8 +47,7 @@ type InventoryServiceData struct {
 	Name string
 	// FieldName is the exported field on *Services holding the instance.
 	FieldName string
-	// Alias is the import alias for the service's handler package (for the
-	// Deps-typed authorizer reference in the Mount closure).
+	// Alias is the import alias for the service's handler package.
 	Alias string
 	// ImportPath is the module-relative handler import path.
 	ImportPath string
@@ -81,9 +80,6 @@ type InventoryServiceData struct {
 	Version     string
 	// HasWebhooks gates the webhook-route registration in the Mount body.
 	HasWebhooks bool
-	// HasAuthorizer is true when the service Deps declares an Authorizer —
-	// the Mount closure threads its authz interceptor like services_gen.
-	HasAuthorizer bool
 }
 
 // InventoryGenData is the rendered template input for mounts_services.go.tmpl.
@@ -99,7 +95,7 @@ type InventoryGenData struct {
 // GenerateInventory emits internal/app/mounts_services.go: the typed
 // per-service Mount<Svc> methods over *Components, the typed MountByName map,
 // MountAll, and the data-only `var Inventory = []ComponentInfo{...}` that
-// introspection (forge map / audit / services listing) reads. It is ALWAYS
+// introspection (forge project map / audit / services listing) reads. It is ALWAYS
 // written when internal/app is emitted (no len(Services)==0 early-return):
 // cmd/server.go references app.Inventory / the typed mounts unconditionally,
 // so the symbols must exist even with no Connect services.
@@ -164,15 +160,6 @@ func GenerateInventory(in InventoryGenInput) error {
 		// InventoryServiceData doc). Empty Version for an unversioned package.
 		protoVersion := naming.ProtoPackageVersion(svc.Package)
 
-		deps, _ := ParseServiceDeps(res.Dir)
-		hasAuthz := false
-		for _, df := range deps {
-			if df.Name == "Authorizer" {
-				hasAuthz = true
-				break
-			}
-		}
-
 		rows = append(rows, InventoryServiceData{
 			Name:             runtimeName,
 			FieldName:        fieldName,
@@ -184,7 +171,6 @@ func GenerateInventory(in InventoryGenInput) error {
 			BaseService:      runtimeName,
 			Version:          protoVersion,
 			HasWebhooks:      in.WebhookServices[naming.ServicePackage(svc.Name)],
-			HasAuthorizer:    hasAuthz,
 		})
 	}
 

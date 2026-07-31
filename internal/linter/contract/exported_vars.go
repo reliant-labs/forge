@@ -3,6 +3,7 @@ package contract
 import (
 	"go/ast"
 	"go/token"
+	"go/types"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -55,12 +56,24 @@ func runExportedVars(pass *analysis.Pass) (interface{}, error) {
 		}
 	}
 
+	// Generated files are exempt (see generated.go): forge codegen
+	// deliberately exports package vars the rule forbids in user code —
+	// the documented `<Entity>Columns` allowlist in Tier-1 `_orm.go`
+	// files, the data-only `Inventory` descriptor in mounts_services.go.
+	// Those shapes are forge's responsibility; the user cannot durably
+	// change them. The skip is per-FILE, so hand-written vars elsewhere
+	// in the same package are still flagged.
+	genFiles := generatedFilenames(pass)
+
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{(*ast.GenDecl)(nil)}
 	insp.Preorder(nodeFilter, func(n ast.Node) {
 		genDecl := n.(*ast.GenDecl)
 		if genDecl.Tok != token.VAR {
+			return
+		}
+		if genFiles[pass.Fset.Position(genDecl.Pos()).Filename] {
 			return
 		}
 
@@ -76,8 +89,8 @@ func runExportedVars(pass *analysis.Pass) (interface{}, error) {
 					continue
 				}
 
-				// Exception: var Err* = errors.New(...) or fmt.Errorf(...)
-				if isSentinelError(name.Name, valueSpec, i) {
+				// Exception: an Err-named sentinel of error type.
+				if isSentinelError(pass, name.Name, valueSpec, i) {
 					continue
 				}
 
@@ -127,24 +140,46 @@ func hasEmbedDirective(gd *ast.GenDecl) bool {
 	return false
 }
 
-// isSentinelError returns true if the variable looks like an idiomatic
-// sentinel error: var ErrFoo = errors.New(...) or var ErrFoo = fmt.Errorf(...).
-func isSentinelError(name string, spec *ast.ValueSpec, idx int) bool {
+// errorInterface is the universe `error` type, the thing this rule's one
+// substantive exception is actually about.
+var errorInterface = types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
+
+// isSentinelError reports whether a variable is an idiomatic error
+// sentinel: an `Err`-prefixed package var whose TYPE implements error.
+//
+// The test is the type, not the constructor. Matching on the callee —
+// `errors.New` / `fmt.Errorf` and nothing else — put forge's own guidance
+// in conflict with forge's own lint: the `service-layer` and `api` skills
+// tell an author to build domain errors from `forge/pkg/svcerr`
+// (`svcerr.ResourceExhausted("seat cap")`, `svcerr.ErrNotFound`) rather
+// than re-roll them, and every one of those shapes was flagged. So were
+// `errors.Join`, an aliased `errors` import, and a typed struct sentinel.
+// Only `pkg/svcerr` itself passed, and only because it happens to use the
+// two literal spellings the whitelist knew.
+//
+// Type information makes the exception mean what its name says, and it
+// stays narrow: `var ErrX = "boom"` is still an exported package var and
+// is still reported.
+func isSentinelError(pass *analysis.Pass, name string, spec *ast.ValueSpec, idx int) bool {
 	if !strings.HasPrefix(name, "Err") {
 		return false
 	}
-
-	// Must have an initializer.
-	if idx >= len(spec.Values) {
+	if pass.TypesInfo == nil {
 		return false
 	}
-
-	callExpr, ok := spec.Values[idx].(*ast.CallExpr)
-	if !ok {
+	// `var ErrX error = f()` states the type outright; otherwise it is the
+	// initializer's type. A bare `var ErrX` with neither is not a sentinel.
+	var typ types.Type
+	switch {
+	case spec.Type != nil:
+		typ = pass.TypesInfo.TypeOf(spec.Type)
+	case idx < len(spec.Values):
+		typ = pass.TypesInfo.TypeOf(spec.Values[idx])
+	}
+	if typ == nil || typ == types.Typ[types.Invalid] {
 		return false
 	}
-
-	return isCallTo(callExpr, "errors", "New") || isCallTo(callExpr, "fmt", "Errorf")
+	return types.Implements(typ, errorInterface)
 }
 
 // isKubebuilderAPIVar returns true when the variable matches one of the

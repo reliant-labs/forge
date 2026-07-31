@@ -1,16 +1,20 @@
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/spf13/cobra"
 
-// newMigrateCmd creates the top-level `forge migrate` command. This is a
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+)
+
+// newMigrateCmd creates the top-level `forge project migrate` command. This is a
 // sibling to `forge db migrate` (which drives golang-migrate against a live
-// DB); `forge migrate` is the entrypoint for project-level migration tooling
+// DB); `forge project migrate` is the entrypoint for project-level migration tooling
 // that operates on files in the working tree — e.g. importing migrations from
 // other formats (goose, dbmate, sql-migrate) into forge's golang-migrate
 // shape.
 //
 // The split is deliberate: `forge db migrate` requires a DSN and modifies
-// database state; `forge migrate import` requires neither. Conflating them
+// database state; `forge project migrate import` requires neither. Conflating them
 // under a single noun made the help text inscrutable.
 func newMigrateCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -23,10 +27,15 @@ distinct from ` + "`forge db migrate`" + `, which drives the golang-migrate runn
 against a live database.
 
 Examples:
-  forge migrate import --from goose --src-dir ../old-project/migrations`,
+  forge project migrate import --from goose --src-dir ../old-project/migrations
+  forge project migrate tdd --dry-run`,
 	}
 
 	cmd.AddCommand(newMigrateImportCmd())
+	// `tdd` is the hand-rolled-handler-test codemod. It moved here from the
+	// removed `forge test migrate-tdd`: it rewrites files in the working tree,
+	// which is what this noun is for, and it was never a way to run tests.
+	cmd.AddCommand(newMigrateTDDCmd())
 
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }

@@ -66,9 +66,7 @@ func TestGenerateConfigLoader_ThinAliasShim(t *testing.T) {
 		"forgeconfig.LoadTyped[*configv1.AppConfig](cmd)",
 		// Free funcs over the message — never methods on a generated struct.
 		"func Validate(cfg *Config) error",
-		"func DevAuthBypass(cfg *Config) bool",
 		"forgeconfig.Validate(cfg)",
-		"forgeconfig.DevAuthBypass(cfg)",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("generated config.go missing %q\n%s", want, content)

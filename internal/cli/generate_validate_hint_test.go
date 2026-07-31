@@ -65,20 +65,6 @@ gen/db/v1/cycle_run.pb.orm.go:55:18: undefined: orm.TypeDoublePrecision`,
 			},
 		},
 		{
-			name:      "authorizer-gen-missing",
-			errOutput: `bootstrap.go:42:18: undefined: GeneratedAuthorizer`,
-			wantContains: []string{
-				"authorizer_gen.go",
-			},
-		},
-		{
-			name:      "authorizer-gen-file-not-found",
-			errOutput: `internal/auth/authorizer_gen: no such file`,
-			wantContains: []string{
-				"authorizer_gen.go",
-			},
-		},
-		{
 			name:      "empty-stderr",
 			errOutput: "",
 			wantContains: []string{

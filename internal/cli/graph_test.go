@@ -22,18 +22,16 @@ import (
 //     assert presence/count instead.
 
 // writeGraphProjectYAML writes a minimal forge.yaml the graph command
-// can consume — one service ("tasks"), one package ("repo"), one
-// frontend ("web"), and the schema-required empty sections. The
-// caller may add more bodies on top via os.WriteFile.
+// can consume — one frontend ("web") and the schema-required empty
+// sections. The service inventory comes from the proto descriptor and the
+// internal-package inventory from internal/<pkg>/contract.go, so neither is
+// declared here. The caller may add more bodies on top via os.WriteFile.
 func writeGraphProjectYAML(t *testing.T, dir string) {
 	t.Helper()
 	body := `name: demo
 module_path: github.com/demo/demo
 version: 0.0.1
 forge_version: dev
-packages:
-    - name: repo
-      type: adapter
 frontends:
     - name: web
       type: nextjs
@@ -51,11 +49,35 @@ docs: {}
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
-	// The service inventory is enumerated from the proto descriptor now
-	// (codegen.IntrospectComponents), not components.json. "TasksService"
+	// The service inventory is enumerated from the proto descriptor
+	// (codegen.IntrospectComponents). "TasksService"
 	// maps to component "tasks" with Path internal/handlers/tasks — the dir
 	// writeTasksContract populates with the Repo dep.
 	writeForgeDescriptor(t, dir, "TasksService")
+}
+
+// writeRepoAdapterPackage lays down internal/repo/contract.go carrying the
+// `//forge:outbound-io` marker. That file IS the package declaration the
+// graph discovers, and the marker IS the claim it reports — there is no
+// forge.yaml entry to disagree with either.
+func writeRepoAdapterPackage(t *testing.T, dir string) {
+	t.Helper()
+	pkgDir := filepath.Join(dir, "internal", "repo")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatalf("mkdir internal/repo: %v", err)
+	}
+	src := `// forge:outbound-io
+package repo
+
+type Service interface{}
+
+type Deps struct{}
+
+func New(d Deps) Service { return nil }
+`
+	if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write internal/repo/contract.go: %v", err)
+	}
 }
 
 // writeTasksContract writes a contract.go for the tasks service whose
@@ -92,6 +114,7 @@ func TestGraph_EmitsAllResourceTypes(t *testing.T) {
 	dir := t.TempDir()
 	writeGraphProjectYAML(t, dir)
 	writeTasksContract(t, dir)
+	writeRepoAdapterPackage(t, dir)
 
 	// Stub the KCL render: one service ("tasks", cluster deploy with
 	// one env var), one frontend ("web", port overridden to 3001 so
@@ -136,6 +159,10 @@ func TestGraph_EmitsAllResourceTypes(t *testing.T) {
 	}
 	if len(doc.Packages) != 1 {
 		t.Fatalf("packages len = %d, want 1", len(doc.Packages))
+	}
+	// The type is read off the package's own `//forge:outbound-io` marker.
+	if doc.Packages[0].Name != "repo" || doc.Packages[0].Type != "outbound-io" {
+		t.Errorf("packages[0] = %+v, want {repo outbound-io}", doc.Packages[0])
 	}
 	if len(doc.Gateways) != 1 {
 		t.Fatalf("gateways len = %d, want 1", len(doc.Gateways))

@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/jinzhu/inflection"
 )
@@ -41,9 +42,9 @@ type FrontendHookTemplateData struct {
 	// frontend-local @/lib/connect + @/gen paths — byte-identical to
 	// projects that predate the workspaces flag.
 	Workspaces bool
-	// ApiPackage is the workspace package name for the shared API
+	// APIPackage is the workspace package name for the shared API
 	// (e.g. "@myapp/api"). Empty when Workspaces is false.
-	ApiPackage string
+	APIPackage string
 	// EntityScopes is the sorted, deduplicated set of camelCase CRUD
 	// entity names ("task", "user") derived from the service's RPC
 	// names. The template emits one entity-scope key per entry in the
@@ -80,16 +81,45 @@ type FrontendHookMethod struct {
 	EntityScope string
 }
 
-// queryPrefixes are RPC name prefixes that indicate a read-only query.
+// queryPrefixes are the read-only verbs an RPC name may start with.
+//
+// This is deliberately a QUERY list, not a mutation list: anything that
+// does not start with a read verb is a mutation. That default is the safe
+// one and is why the list can never miss a domain write verb — Dispense,
+// Reconcile, Escalate are all mutations without anyone adding them. A
+// missed read costs a cache entry; a missed WRITE would be replayed by
+// React Query on every component remount.
 var queryPrefixes = []string{
 	"Get", "List", "Search", "Find",
 	"Check", "Has", "Is", "Count", "Exists",
 }
 
-// isQueryMethod returns true if the method name starts with a read-only prefix.
+// isQueryMethod reports whether an RPC name begins with a read-only verb.
+//
+// The match is on whole WORDS, not characters. The prefix must be followed
+// by the start of another word — an uppercase letter or a digit — or by
+// nothing at all. Character-prefix matching read "Is" out of
+// IssuePrescription and generated useQuery for a clinical write, which
+// React Query then replayed on every remount. The same collision hides in
+// Checkout ("Check"), Countersign ("Count"), Listen ("List") and Hash
+// ("Has"): a longer verb list would not have caught any of them, because
+// the defect is in how the prefix is compared, not in which verbs are on
+// the list.
+//
+// An imperative RPC that genuinely opens with a read word — or a bespoke
+// verb this cannot know about — carries `// forge:mutation` in the proto;
+// see internal/cli/generate_frontend_hooks.go.
 func isQueryMethod(name string) bool {
 	for _, prefix := range queryPrefixes {
-		if strings.HasPrefix(name, prefix) {
+		rest, ok := strings.CutPrefix(name, prefix)
+		if !ok {
+			continue
+		}
+		if rest == "" {
+			return true
+		}
+		r, _ := utf8.DecodeRuneInString(rest)
+		if unicode.IsUpper(r) || unicode.IsDigit(r) {
 			return true
 		}
 	}

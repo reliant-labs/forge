@@ -94,6 +94,11 @@ type buildOptions struct {
 	outputDir   string
 	buildTarget string
 	parallel    bool
+	// parallelSet records whether the user explicitly passed
+	// --parallel/--no-parallel. When false, forge is free to auto-select
+	// sequential under a constrained memory budget (see
+	// resolveBuildConcurrency); an explicit flag always wins.
+	parallelSet bool
 	buildDocker bool
 	debug       bool
 	// pushRegistry, when non-empty, retags built docker images to
@@ -116,18 +121,20 @@ type buildOptions struct {
 	// builds for staging/prod aren't affected.
 	env string
 	// skipFrontends, when true, drops every frontend from the build set
-	// regardless of deploy type. Set by `forge up`'s build phase because
+	// regardless of deploy type. Set by `forge env up`'s build phase because
 	// up dev-serves frontends via `npm run dev` (in upFrontends) and
 	// never consumes the `npm run build` prod artifact. Saves the entire
-	// Next.js prod build time on every `forge up` cycle. Direct
+	// Next.js prod build time on every `forge env up` cycle. Direct
 	// `forge build` callers leave this false to preserve prod-build
-	// behaviour. Independent of the Frontend.deploy-discriminator
-	// filter (which is a no-op until forge.Frontend gets a deploy field).
+	// behaviour. Independent of the Frontend.deploy-discriminator filter,
+	// which reads the `deploy` block forge.Frontend declares (kcl/schema.k:
+	// `deploy?: FirebaseHosting`) to decide which frontends need a docker
+	// image at all.
 	skipFrontends bool
 	// tag, when set, overrides the git-derived image tag computed by
 	// resolveImageTag. CI pipelines that pin the image to a release
 	// number (e.g. `--tag v1.2.3`) use this. Empty (the default) means
-	// "compute from git" — the same resolution `forge deploy` falls
+	// "compute from git" — the same resolution `forge env deploy` falls
 	// back to when no build-state file is present.
 	tag string
 	// skipGenerate disables the pre-build "ensure generated code" step
@@ -142,8 +149,8 @@ type buildOptions struct {
 	// "v1.4.0") for a build-once → promote release. After the build's
 	// per-image digests are captured (the existing digest-capture flow),
 	// runBuild harvests them into a Release ledger at
-	// .forge/releases/<release>.json. `forge promote <release> --to <env>`
-	// then binds an env to it and `forge deploy <env>` pins the SAME
+	// .forge/releases/<release>.json. `forge env promote <release> --to <env>`
+	// then binds an env to it and `forge env deploy <env>` pins the SAME
 	// digests — build once, promote, no per-env rebuild. Implies --push
 	// in spirit (a release pins registry digests), but is enforced softly:
 	// a --release build with no captured digest fails loudly rather than
@@ -155,13 +162,15 @@ func newBuildCmd() *cobra.Command {
 	var opts buildOptions
 
 	cmd := &cobra.Command{
-		Use:   "build",
+		Use:   "build [environment]",
 		Short: "Build the project binary and frontends",
+		Args:  cobra.MaximumNArgs(1),
 		Long: `Build the project's services and frontends.
 
 This command is a PURE EXECUTOR of the per-service, per-env build
-declaration in KCL. With --env set it iterates the services the
-rendered env declares and dispatches on each service's build.type:
+declaration in KCL. With an environment argument it iterates the
+services the rendered env declares and dispatches on each service's
+build.type:
 - go     → go build the declared cmd (CGO_ENABLED=0, stripped) — no
            hardcoded ./cmd; the target package comes from KCL
 - docker → docker build the service's image (dockerfile/platform/...)
@@ -172,6 +181,7 @@ the shared project image. Output binaries land in the output dir.
 
 Examples:
   forge build                                # Build everything
+  forge build staging                        # Scope docker builds/tag resolution to deploy/kcl/staging/
   forge build -t web                         # Build only the "web" frontend
   forge build -o bin                         # Output binaries to bin/
   forge build --docker                       # Also build Docker images
@@ -186,6 +196,9 @@ mirror config inside k3d resolves the manifest reference at pull time).
 This lets deployed manifests reference the in-cluster-resolvable name
 without forcing the user to add /etc/hosts entries on the host.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				opts.env = args[0]
+			}
 			if _, err := requireFeature(config.FeatureBuild); err != nil {
 				return err
 			}
@@ -205,42 +218,45 @@ without forcing the user to add /etc/hosts entries on the host.`,
 			if err := validateReleaseFlags(opts); err != nil {
 				return err
 			}
+			// Did the user pin concurrency explicitly? If so it's honoured
+			// verbatim; otherwise a constrained memory budget may serialize.
+			opts.parallelSet = cmd.Flags().Changed("parallel")
 			return runBuild(cmd.Context(), opts)
 		},
 	}
 
 	cmd.Flags().StringVarP(&opts.outputDir, "output", "o", "bin", "Output directory for binaries")
-	cmd.Flags().StringVarP(&opts.buildTarget, "target", "t", "all", "Build target (all | external | a specific service/frontend name). `external` builds only the KCL services declaring build_cmd; requires --env.")
+	cmd.Flags().StringVarP(&opts.buildTarget, "target", "t", "all", "Build target (all | external | a specific service/frontend name). `external` builds only the KCL services declaring build_cmd; requires the environment argument.")
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
 	cmd.Flags().StringVar(&opts.pushRegistry, "push", "", "Push docker images to this registry after build (implies --docker)")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
-	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set, services declared `deploy: host` in deploy/kcl/<env>/ are excluded from docker build/push (the Go binary still includes their code).")
-	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge deploy uses the same value.")
+	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge env deploy uses the same value.")
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge build` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
-	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). REQUIRES --env <env>: the release's image SET (project images plus per-env external build_cmd images like reliant/workspace-base) is discovered from deploy/kcl/<env>/main.k. The built images stay env-agnostic — pick any env that declares the full set, then promote to every env with `forge promote <version> --to <env>`. Captures each image's digest into a release ledger (.forge/releases/<version>.json); `forge deploy <env>` then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
+	cmd.Flags().StringVar(&opts.release, "release", "", "Cut a build-once → promote release with this version label (e.g. v1.4.0). REQUIRES the environment argument: the release's image SET (project images plus per-env external build_cmd images like reliant/workspace-base) is discovered from deploy/kcl/<env>/main.k. The built images stay env-agnostic — pick any env that declares the full set, then promote to every env with `forge env promote <version> --to <env>`. Captures each image's digest into a release ledger (.forge/releases/<version>.json); `forge env deploy <env>` then pins the SAME digests. Implies --docker; pair with --push so the digests are registry-addressable.")
 
 	return cmd
 }
 
-// validateReleaseFlags enforces that `forge build --release <ver>` is run
-// with --env. A release must pin the FULL image set, including the per-env
-// external build_cmd images (e.g. reliant, workspace-base) that exist ONLY
-// in deploy/kcl/<env>/main.k. Without --env, forge has no rendered KCL to
-// discover them, so it silently builds just the project's own images
-// (control-plane + frontends) — an incomplete release — and the build can
-// fail outright for want of env context. The images themselves stay
-// env-agnostic; --env only supplies the SET to build, after which the
-// release is promotable to every env. No-op when --release is unset.
+// validateReleaseFlags enforces that `forge build <env> --release <ver>` is
+// run with an environment argument. A release must pin the FULL image set,
+// including the per-env external build_cmd images (e.g. reliant,
+// workspace-base) that exist ONLY in deploy/kcl/<env>/main.k. Without an
+// env, forge has no rendered KCL to discover them, so it silently builds
+// just the project's own images (control-plane + frontends) — an incomplete
+// release — and the build can fail outright for want of env context. The
+// images themselves stay env-agnostic; the env only supplies the SET to
+// build, after which the release is promotable to every env. No-op when
+// --release is unset.
 func validateReleaseFlags(opts buildOptions) error {
 	if opts.release == "" || opts.env != "" {
 		return nil
 	}
-	return fmt.Errorf("--release requires --env <env> so forge can build the full image set " +
+	return fmt.Errorf("--release requires an environment argument (`forge build <env> --release <ver>`) so forge can build the full image set " +
 		"(including per-env external build_cmd images like reliant/workspace-base, which are declared " +
 		"in deploy/kcl/<env>/main.k); the images are still env-agnostic — pick any env that declares " +
-		"them, then promote the release to all envs with `forge promote <version> --to <env>`")
+		"them, then promote the release to all envs with `forge env promote <version> --to <env>`")
 }
 
 // resolveBuildArch chooses the GOARCH for `go build`. The arg-shaped
@@ -350,13 +366,13 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// build/push path below and the post-push build-state write consume
 	// this; resolving once guarantees the tag the user sees printed
 	// equals the tag that lands in .forge/state/build-<env>.json and the
-	// tag that subsequent `forge deploy` reads back. Override priority:
+	// tag that subsequent `forge env deploy` reads back. Override priority:
 	//
 	//  1. --tag flag (explicit; always wins).
 	//  2. With --env: the env's RESOLVED image_tag for the PROJECT image
 	//     (cfg.Name), read off the rendered manifests. This is the exact
-	//     tag `forge deploy <env>` references — so `forge build --env
-	//     <env> --push` then `forge deploy <env>` push and deploy the
+	//     tag `forge env deploy <env>` references — so `forge build --env
+	//     <env> --push` then `forge env deploy <env>` push and deploy the
 	//     SAME tag by construction, instead of build tagging from
 	//     git-describe while the manifests bake the env literal (e.g.
 	//     "staging") → ImagePullBackOff.
@@ -395,7 +411,6 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	fmt.Printf("[build] Building project: %s\n", cfg.Name)
 	fmt.Printf("[build]   Output:   %s\n", opts.outputDir)
 	fmt.Printf("[build]   Target:   %s\n", opts.buildTarget)
-	fmt.Printf("[build]   Parallel: %v\n", opts.parallel)
 	fmt.Printf("[build]   Docker:   %v\n", opts.buildDocker)
 	if opts.env != "" {
 		fmt.Printf("[build]   Env:      %s\n", opts.env)
@@ -435,6 +450,15 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	start := time.Now()
 	var results []buildResult
 
+	// Memory-aware concurrency: a constrained memory budget (e.g. a 4Gi
+	// cloud-daemon pod) serializes the Go + frontend builds and caps the
+	// child compilers, so their combined peak can't trip the OOM killer.
+	// An explicit --parallel/--no-parallel wins over the auto-decision.
+	budget := detectBuildMemoryBudget()
+	parallel, memCaps := resolveBuildConcurrency(opts.parallelSet, opts.parallel, budget)
+	opts.parallel = parallel
+	fmt.Printf("[build]   Memory:   %s\n", describeBuildBudget(budget, memCaps))
+
 	plan := buildPlan{
 		cfg:               cfg,
 		frontends:         frontends,
@@ -445,6 +469,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		resolvedTag:       resolvedTag,
 		resolvedVersion:   resolvedVersion,
 		opts:              opts,
+		memCaps:           memCaps,
 	}
 	if opts.parallel {
 		results = buildParallel(ctx, plan)
@@ -546,10 +571,16 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 }
 
 // buildTargetSet is the resolved set of build inputs runBuild derives from the
-// project config, the rendered KCL (when --env is set), and the --target /
-// --skip-frontends flags: which frontends to prod-build, which of those need a
-// docker image, the deduped Go-build targets, whether to skip the project
-// docker build, and the docker target arch.
+// project config, the rendered KCL (when --env is set), the --target flag, and
+// the internal skipFrontends switch: which frontends to prod-build, which of
+// those need a docker image, the deduped Go-build targets, whether to skip the
+// project docker build, and the docker target arch.
+//
+// skipFrontends is deliberately NOT a CLI flag — `forge build` builds every
+// declared frontend by default and users narrow the set with `--target`
+// (`-t <project-name>` for the binary alone). The field exists for
+// `forge env up`, which dev-serves frontends via `npm run dev` and so must
+// suppress the prod build from inside the process.
 type buildTargetSet struct {
 	frontends         []config.FrontendConfig
 	dockerFrontends   []config.FrontendConfig
@@ -558,29 +589,32 @@ type buildTargetSet struct {
 	cfgArchForDocker  string
 }
 
-// resolveBuildTargetSet applies the framework/--target/--skip-frontends filters
-// and the KCL-driven docker/platform overrides to produce the concrete build
-// set. Extracted from runBuild so the filtering logic (and its early-return
-// validation for `--target external`) is a single cohesive unit. opts is taken
-// by value; its skipFrontends field is only consumed within this function.
+// resolveBuildTargetSet applies the framework / --target / skipFrontends
+// filters and the KCL-driven docker/platform overrides to produce the concrete
+// build set. Extracted from runBuild so the filtering logic (and its
+// early-return validation for `--target external`) is a single cohesive unit.
+// opts is taken by value; its skipFrontends field is only consumed within this
+// function.
 func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opts buildOptions) (buildTargetSet, error) {
-	frontends := cfg.Frontends
-	buildBinary := true
-
-	// `stack.frontend.framework: none` means the project has no frontend
-	// build toolchain forge should drive — drop every declared frontend
-	// from the build set BEFORE anything runs `npm run build`. Without
-	// this, a project that set framework:none (often because deps aren't
-	// installed / the frontend builds out-of-band) still had forge run
-	// `npm run build`, and a failure there (e.g. `next: command not
-	// found`) failed the WHOLE build, blocking an unrelated deployable Go
-	// service that compiled fine (fr-cc10bfab0c). Logged, not silent, so
-	// the user can see why their frontend wasn't built. The frontends stay
-	// in cfg.Frontends for non-build commands (generate, up's dev serve).
+	// The starting set is the project-level "frontends forge owns a Node
+	// toolchain for", with each path resolved through the frontends/<name>
+	// fallback. It is the SAME set `forge lint`'s frontend lane walks —
+	// both commands shell into these directories, so neither re-derives it.
+	//
+	// `stack.frontend.framework: none` empties that set BEFORE anything
+	// runs `npm run build`. Without it, a project that set framework:none
+	// (often because deps aren't installed / the frontend builds
+	// out-of-band) still had forge run `npm run build`, and a failure there
+	// (e.g. `next: command not found`) failed the WHOLE build, blocking an
+	// unrelated deployable Go service that compiled fine (fr-cc10bfab0c).
+	// Logged, not silent, so the user can see why their frontend wasn't
+	// built. The frontends stay in cfg.Frontends for non-build commands
+	// (generate, up's dev serve).
 	if frontendsSkippedByFramework(cfg) {
-		fmt.Printf("[build]   Skipping %d frontend(s): stack.frontend.framework is \"none\"\n", len(frontends))
-		frontends = nil
+		fmt.Printf("[build]   Skipping %d frontend(s): stack.frontend.framework is \"none\"\n", len(cfg.Frontends))
 	}
+	frontends := cfg.ToolchainFrontends()
+	buildBinary := true
 
 	// `--target external` is the explicit "build ONLY the KCL services
 	// with build_cmd" filter. Useful for the cp-forge pattern where the
@@ -590,7 +624,7 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 	// rendered KCL set to filter against.
 	if opts.buildTarget == "external" {
 		// No experimental gate here: `build_cmd` is the build-side mirror
-		// of External's `deploy_cmd`, and `forge deploy` of an External
+		// of External's `deploy_cmd`, and `forge env deploy` of an External
 		// target needs no opt-in. Gating build behind
 		// features.experimental.external_builds while deploy ran free left
 		// the build/deploy pair of the SAME target with mismatched maturity
@@ -628,23 +662,23 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 		}
 	}
 
-	// `forge up` skips frontend prod builds entirely. Its frontend phase
+	// `forge env up` skips frontend prod builds entirely. Its frontend phase
 	// (upFrontends) dev-serves via `npm run dev` and never consumes the
 	// prod artifact. Set explicitly by upBuildCluster.
 	if opts.skipFrontends {
 		if len(frontends) > 0 {
-			fmt.Printf("[build]   Skipping %d frontend(s): forge up dev-serves frontends\n", len(frontends))
+			fmt.Printf("[build]   Skipping %d frontend(s): forge env up dev-serves frontends\n", len(frontends))
 		}
 		frontends = nil
 	}
 
 	// KCL-driven prod-build skip for host-mode frontends. Host-mode
 	// frontends only ever run via `npm run dev` (the dev loop in
-	// `forge up`); they never consume the `npm run build` artifact, so
+	// `forge env up`); they never consume the `npm run build` artifact, so
 	// running the full Next.js prod build is wasted minutes. Skip them
 	// from `frontends` (the input to buildFrontend → `npm run build`)
 	// while keeping their entry in cfg.Frontends so other commands
-	// (forge generate, forge up's frontend phase) see them unchanged.
+	// (forge generate, forge env up's frontend phase) see them unchanged.
 	//
 	// Frontends without a Deploy block (legacy KCL that doesn't emit
 	// frontend deploy yet) fall through to "build" — preserving the
@@ -781,7 +815,7 @@ func persistProjectBuildState(ctx context.Context, cfg *config.ProjectConfig, op
 //
 // Fails (does not silently no-op) when no digest was captured: a release is a
 // promise that "these exact bytes ship everywhere", and an empty promise is a
-// latent footgun (a later `forge promote`/`deploy` would resolve nothing and
+// latent footgun (a later `forge env promote`/`deploy` would resolve nothing and
 // fall back to tags — exactly the mutable-tag failure the release model exists
 // to kill). The actionable remedy is in the error: pass --push.
 func writeReleaseLedger(ctx context.Context, opts buildOptions) error {
@@ -806,7 +840,7 @@ func writeReleaseLedger(ctx context.Context, opts buildOptions) error {
 	fmt.Printf("\n[build] Cut release %s (%d image(s)): %s\n",
 		rel.Version, len(rel.Artifacts), strings.Join(releaseImageNames(rel), ", "))
 	fmt.Printf("[build]   Ledger: %s\n", releasePath(projectDir, rel.Version))
-	fmt.Printf("[build]   Promote: forge promote %s --to <env>\n", rel.Version)
+	fmt.Printf("[build]   Promote: forge env promote %s --to <env>\n", rel.Version)
 	return nil
 }
 
@@ -824,6 +858,10 @@ type buildPlan struct {
 	resolvedTag       string
 	resolvedVersion   versionInfo
 	opts              buildOptions
+	// memCaps are the child-compiler memory caps to apply under a
+	// constrained memory budget (empty => apply nothing). Threaded into
+	// buildGoTarget (GOMEMLIMIT/GOMAXPROCS) and buildFrontend (NODE_OPTIONS).
+	memCaps buildMemoryCaps
 }
 
 func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
@@ -860,7 +898,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 		wg.Add(1)
 		go func(t goBuildTarget) {
 			defer wg.Done()
-			r := buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion)
+			r := buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion, plan.memCaps)
 			mu.Lock()
 			results = append(results, r)
 			mu.Unlock()
@@ -871,7 +909,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 		wg.Add(1)
 		go func(f config.FrontendConfig) {
 			defer wg.Done()
-			r := buildFrontend(ctx, f)
+			r := buildFrontend(ctx, f, plan.memCaps)
 			mu.Lock()
 			results = append(results, r)
 			mu.Unlock()
@@ -948,14 +986,14 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 		goArch = resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
 	}
 	for _, t := range goTargets {
-		r := buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion)
+		r := buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion, plan.memCaps)
 		results = append(results, r)
 		if r.err != nil {
 			return results // Stop on first failure in sequential mode
 		}
 	}
 	for _, fe := range frontends {
-		r := buildFrontend(ctx, fe)
+		r := buildFrontend(ctx, fe, plan.memCaps)
 		results = append(results, r)
 		if r.err != nil {
 			return results
@@ -1074,7 +1112,7 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 // crossArch is the build-context arch resolution (host vs deploy-target);
 // an explicit GoBuild.goarch overrides it. debug swaps the stripped
 // ldflags for delve gcflags.
-func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug bool, crossArch string, versionInfo versionInfo) buildResult {
+func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug bool, crossArch string, versionInfo versionInfo, memCaps buildMemoryCaps) buildResult {
 	start := time.Now()
 	binaryPath := filepath.Join(outputDir, t.outputName)
 
@@ -1135,6 +1173,9 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	for k, v := range t.env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+	// Constrained-budget caps last so they bound the compiler even over an
+	// inherited GOMEMLIMIT/GOMAXPROCS. Skipped when empty (unconstrained).
+	cmd.Env = applyGoMemoryCaps(cmd.Env, memCaps)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -1234,15 +1275,22 @@ func resolveBuildVersion(ctx context.Context, override string) versionInfo {
 // (gitVersionTag was removed when build/deploy converged on the single
 // `resolveImageTag` helper — see internal/cli/image_tag.go. The same
 // `git describe --tags --always --dirty` shape now lives there as the
-// shared source of truth both `forge build` and `forge deploy` consume.)
+// shared source of truth both `forge build` and `forge env deploy` consume.)
 
-func buildFrontend(ctx context.Context, fe config.FrontendConfig) buildResult {
+func buildFrontend(ctx context.Context, fe config.FrontendConfig, memCaps buildMemoryCaps) buildResult {
 	start := time.Now()
 	fmt.Printf("[build] %s: NODE_ENV=production npm run build in %s\n", fe.Name, fe.Path)
 
 	cmd := exec.CommandContext(ctx, "npm", "run", "build")
 	cmd.Dir = fe.Path
 	cmd.Env = withForcedEnv(os.Environ(), "NODE_ENV", "production")
+	// Cap V8's heap under a constrained budget so `next build` can't
+	// balloon past the envelope. Merged with any inherited NODE_OPTIONS so
+	// a project's own flags survive; forge's cap is appended (wins on the
+	// repeated --max-old-space-size key). No-op when unconstrained.
+	if memCaps.nodeOptions != "" {
+		cmd.Env = withMergedNodeOptions(cmd.Env, memCaps.nodeOptions)
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -1253,6 +1301,29 @@ func buildFrontend(ctx context.Context, fe config.FrontendConfig) buildResult {
 		duration: time.Since(start),
 		err:      err,
 	}
+}
+
+// withMergedNodeOptions appends forge's NODE_OPTIONS flags to any inherited
+// NODE_OPTIONS (rather than replacing it), so a project's own Node flags are
+// preserved. When both set --max-old-space-size, Node honours the LAST
+// occurrence, and forge's is appended last — so forge's cap wins by design.
+func withMergedNodeOptions(env []string, add string) []string {
+	const key = "NODE_OPTIONS="
+	rewritten := make([]string, 0, len(env)+1)
+	merged := false
+	for _, entry := range env {
+		if strings.HasPrefix(entry, key) {
+			existing := strings.TrimPrefix(entry, key)
+			rewritten = append(rewritten, key+strings.TrimSpace(existing+" "+add))
+			merged = true
+			continue
+		}
+		rewritten = append(rewritten, entry)
+	}
+	if !merged {
+		rewritten = append(rewritten, key+add)
+	}
+	return rewritten
 }
 
 func withForcedEnv(env []string, key, value string) []string {
@@ -1613,8 +1684,13 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 // unrelated frontend build failure from sinking a deployable Go service
 // (fr-cc10bfab0c). Returns false when there are no frontends (nothing to
 // skip — the log line would be noise).
+//
+// The opt-out predicate itself lives on the config type
+// (config.ProjectConfig.FrontendToolchainDisabled) so `forge lint`'s
+// frontend lane honors the SAME switch: both commands shell into
+// frontends, so both must agree on which ones forge may touch.
 func frontendsSkippedByFramework(cfg *config.ProjectConfig) bool {
-	return cfg.Stack.EffectiveFrontendFramework() == "none" && len(cfg.Frontends) > 0
+	return cfg.FrontendToolchainDisabled() && len(cfg.Frontends) > 0
 }
 
 func filterFrontends(frontends []config.FrontendConfig, target string) []config.FrontendConfig {
@@ -1627,7 +1703,7 @@ func filterFrontends(frontends []config.FrontendConfig, target string) []config.
 }
 
 // filterFrontendsForBuild drops frontends whose KCL `deploy.type` is
-// "host" — the host-mode dev server (`npm run dev` in forge up) doesn't
+// "host" — the host-mode dev server (`npm run dev` in forge env up) doesn't
 // consume the production build artifact, so running `npm run build`
 // for it is a pure waste. Per-frontend lookup goes by name; a frontend
 // in cfg.Frontends with no matching KCL entry (or whose KCL entry has
@@ -1682,7 +1758,7 @@ func projectDirForKCL() string {
 }
 
 // summarizeKCLBuildPlan prints the per-deploy.type split so users see,
-// in one glance, which services this `forge build --env=<env>` will
+// in one glance, which services this `forge build <env>` will
 // docker-build vs skip vs treat as build-only-variants. The skip set
 // matches the runtime behaviour wired in runBuild — host and build-only
 // services are excluded from the docker layer; cluster services drive

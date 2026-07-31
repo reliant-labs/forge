@@ -8,43 +8,51 @@
 //
 //   - construction-time refusal: a production server with no auth
 //     provider configured must not start (see [NewInterceptor]);
-//   - mode resolution (validator installed / external provider /
-//     AUTH_MODE=none / dev mode), decided once at construction, never
-//     per-request;
+//   - mode resolution (validator installed / external provider),
+//     decided once at construction, never per-request;
 //   - the exact-match unauthenticated-procedure allow-list gate;
 //   - Bearer-token extraction and the CodeUnauthenticated error
 //     envelope (a missing Authorization header is a 401, never a
 //     silent pass-through);
-//   - claims plumbing: validate → enrich → stash on the context.
+//   - claims plumbing: validate → enrich → stash on the context;
+//   - the claims stash itself — [Claims], [ContextWithClaims],
+//     [ClaimsFromContext] and the [GetUser] handler helper, over a
+//     context key this package keeps private so there is exactly one
+//     key in play.
 //
 // The project owns the POLICY, passed in as a [Policy] value from the
 // scaffolded-once pkg/middleware/middleware.go:
 //
 //   - the token validator (and when it gets installed),
 //   - the identity enricher hook (e.g. hydrate claims from the user
-//     table after signature validation),
-//   - the allow-list contents,
-//   - dev-claims behaviour (the synthetic principal attached while
-//     running with auth off), and
-//   - the claims context key, via the ContextWithClaims callback —
-//     generated handlers keep referencing the project's
-//     middleware.Claims / middleware.ClaimsFromContext, so the public
-//     surface of generated code does not churn when the mechanism
-//     moves here.
+//     table after signature validation), and
+//   - the allow-list contents.
+//
+// A project may still stash claims under a context key it owns by
+// setting [Policy.ContextWithClaims]; it then owns the matching reader,
+// because this package's readers look under this package's key.
 //
 // # Modes
 //
 // [NewInterceptor] resolves exactly one of three modes at construction
 // time (decision order matters; first match wins):
 //
-//  1. Validate — Policy.ValidatorConfigured is true. Every procedure
+//  1. Validate — Policy.ValidatorConfigured is true. A present Bearer
+//     token is validated; a present-but-invalid token is rejected. Whether
+//     a MISSING token is rejected depends on Policy.AnonymousOK: when set
+//     (the forge scaffold default) authentication is a non-gating
+//     middleware — a token-less request proceeds claim-less and handlers
+//     enforce identity via authn.GetUser; when false every procedure
 //     not in Policy.Unauthenticated REQUIRES a valid Bearer token.
-//  2. Passthrough — Policy.ExternalAuth is true (a pack or hand-rolled
-//     interceptor later in the chain owns auth), OR the operator typed
-//     AUTH_MODE=none into the environment (explicit opt-out, read once
-//     at construction), OR Policy.DevMode is true (injected from the
-//     project's typed config — this package never re-derives dev mode
-//     from the environment).
+//  2. Passthrough — Policy.ExternalAuth is true: something else in the
+//     chain owns identity. This is the ONLY way to run a forge service
+//     without this interceptor authenticating, and it is a field a human
+//     wrote into the project's own middleware file, visible in the
+//     project's source and in code review. There is deliberately no
+//     environment variable that turns authentication off: an ambient
+//     opt-out is settable from any shell, appears in no config the app
+//     can read, and makes "this server authenticates" unprovable from
+//     the source.
 //  3. Unconfigured — none of the above. NewInterceptor returns an
 //     error and startup must abort: a production server with no auth
 //     provider is always a bug, and refusing to start is safer than
@@ -53,16 +61,14 @@
 // # Usage from the project's middleware package
 //
 //	// pkg/middleware/middleware.go (user-owned, scaffolded once)
-//	func NewAuthInterceptor(devMode bool) (connect.Interceptor, error) {
+//	func NewAuthInterceptor(deps AuthDeps) (connect.Interceptor, error) {
 //	    return authn.NewInterceptor(authn.Policy{
-//	        DevMode:             devMode,
-//	        ValidatorConfigured: validatorInstalled(),
-//	        ExternalAuth:        externalAuthRegistered(),
-//	        Validate:            ValidateToken,
-//	        Unauthenticated:     unauthenticatedProcedures,
+//	        ValidatorConfigured: deps.Validate != nil,
+//	        ExternalAuth:        deps.ExternalAuth,
+//	        AnonymousOK:         deps.AnonymousOK,
+//	        Validate:            deps.Validate,
+//	        Unauthenticated:     UnauthenticatedProcedures,
 //	        Enrich:              enrichClaims,
-//	        DevClaims:           devClaims,
-//	        ContextWithClaims:   ContextWithClaims,
 //	    })
 //	}
 //
@@ -71,23 +77,21 @@
 // Some projects need to install MORE than the library's single claims
 // stash once a request is authenticated — a second, parallel identity
 // context (e.g. a ported internal/auth user-id context), the raw
-// Authorization header for outbound propagation, tenant stamping, or
+// Authorization header for outbound propagation, or
 // any enrichment that writes context values rather than rewriting
 // Claims. The library owns the hard mechanism (header extraction,
 // validation, error mapping, the claims stash, the allow-list); the
 // project layers its extra context through [Policy.Decorate], which runs
-// at the SINGLE post-authentication chokepoint for BOTH the Validate
-// path and the dev-claims path. Without it a project that needs a
-// dual-context bridge had to fork the whole interceptor for one missing
-// callback — Decorate is that callback, so the fork collapses to a
-// Policy value.
+// at the SINGLE post-authentication chokepoint in the Validate path.
+// Without it a project that needs a dual-context bridge had to fork the
+// whole interceptor for one missing callback — Decorate is that callback,
+// so the fork collapses to a Policy value.
 package authn
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -110,14 +114,14 @@ type Policy struct {
 	// hand-rolled setup code) registered its own interceptor alongside
 	// this one. The interceptor then becomes a pure passthrough so the
 	// external interceptor is the sole source of truth.
+	//
+	// This is also the ONLY disable seam: setting it is how a service
+	// runs without this interceptor checking anything. It is a code-level
+	// decision on purpose — the field is written in the project's own
+	// middleware file, so "does this server authenticate?" is answered by
+	// reading the source rather than by knowing what was exported in the
+	// shell that started it.
 	ExternalAuth bool
-
-	// DevMode is INJECTED from the project's typed config
-	// (cfg.Mode().IsDev(), computed once in config.Load from
-	// ENVIRONMENT). This package never reads the environment to decide
-	// dev mode — dev-mode has exactly one source of truth across
-	// bootstrap, this interceptor, and any auth pack.
-	DevMode bool
 
 	// Validate validates a raw bearer token and returns the claims.
 	// Called per-request in Validate mode, through whatever indirection
@@ -136,6 +140,20 @@ type Policy struct {
 	// with "/grpc.health.v1.Health/Check".
 	Unauthenticated map[string]struct{}
 
+	// AnonymousOK makes authentication NON-GATING in Validate mode:
+	// authentication becomes a middleware that validates a token IF ONE IS
+	// PRESENT and otherwise lets the request proceed claim-less. A missing
+	// Authorization header calls next() with no claims (a handler that needs
+	// a principal enforces that itself via authn.GetUser); a PRESENT
+	// token is still validated, and a present-but-INVALID token is still a
+	// CodeUnauthenticated error (a bad credential is a real error, never a
+	// silent anonymous pass). This is the default the forge scaffold sets —
+	// access control is handler logic (GetUser), not a blanket
+	// 401-by-annotation. Leave false to keep the strict "every non-allowlisted
+	// procedure requires a valid token" posture. No effect outside Validate
+	// mode (passthrough/dev are already non-gating).
+	AnonymousOK bool
+
 	// Enrich, when non-nil, runs after token validation and before the
 	// claims are stashed on the context. Projects use it to hydrate
 	// identity (roles from the DB, org membership, feature flags) onto
@@ -144,36 +162,28 @@ type Policy struct {
 	// CodeUnauthenticated.
 	Enrich func(ctx context.Context, claims *auth.Claims) (*auth.Claims, error)
 
-	// DevClaims, when non-nil, supplies the synthetic principal
-	// attached to every request while the interceptor runs in
-	// passthrough mode (dev mode or AUTH_MODE=none). Lets handlers and
-	// authorizers that read claims keep working without a validator.
-	// nil (the default) keeps passthrough a pure identity — no claims.
-	// Ignored in Validate mode and when ExternalAuth is set (the
-	// external provider owns claims then).
-	DevClaims func() *auth.Claims
-
-	// ContextWithClaims stashes validated (or dev) claims on the
-	// context. The project owns the context key — generated handlers
-	// read claims back via the project's ClaimsFromContext, so the
-	// library never defines a key of its own. Required in Validate
-	// mode and whenever DevClaims is set.
+	// ContextWithClaims stashes validated claims on the context.
+	//
+	// Optional: when nil, Validate mode uses the library's own
+	// [ContextWithClaims], whose principal is read back by
+	// [ClaimsFromContext] and [GetUser]. Set it only to stash claims under
+	// a context key the project owns instead — in which case the project
+	// is also responsible for the reader, since the library's readers look
+	// under the library's key.
 	ContextWithClaims func(ctx context.Context, claims *auth.Claims) context.Context
 
 	// Decorate, when non-nil, runs at the SINGLE post-authentication
 	// chokepoint — AFTER the library has installed claims via
-	// ContextWithClaims — in BOTH the Validate path (a real Bearer token
-	// was validated and, if set, Enrich'd) and the dev-claims path
-	// (DevClaims supplied the synthetic principal). It lets the project
-	// layer ADDITIONAL context the library does not own:
+	// ContextWithClaims — in the Validate path (a real Bearer token was
+	// validated and, if set, Enrich'd). It lets the project layer
+	// ADDITIONAL context the library does not own:
 	//
 	//   - a second, parallel identity context (e.g. a ported
 	//     internal/auth user-id context that other packages read);
 	//   - the raw Authorization header, for forwarding the caller's
 	//     identity on outbound calls — passed as authorization so the
-	//     project never has to re-derive it (it is "" in the dev-claims
-	//     path when no header was sent);
-	//   - tenant stamping, feature flags, or any context-valued
+	//     project never has to re-derive it;
+	//   - feature flags, or any context-valued
 	//     enrichment that writes onto ctx rather than rewriting Claims.
 	//
 	// Decorate only ADDS context; it cannot reject the request. Reject
@@ -181,9 +191,8 @@ type Policy struct {
 	// which run before Decorate. nil (the default) leaves the context
 	// exactly as the library produced it — behaviour is unchanged.
 	//
-	// Decorate does NOT run in the pure-passthrough modes (ExternalAuth,
-	// or dev/AUTH_MODE=none with no DevClaims): there are no claims to
-	// decorate around, and ExternalAuth means another interceptor owns
+	// Decorate does NOT run in passthrough mode (ExternalAuth): there are
+	// no claims to decorate around, because another interceptor owns
 	// identity entirely.
 	Decorate func(ctx context.Context, claims *auth.Claims, authorization string) context.Context
 
@@ -192,7 +201,7 @@ type Policy struct {
 	// from Validate and the connect.Error the library would return by
 	// default (always CodeUnauthenticated, wrapping the validation
 	// error). Projects use it to distinguish, say, an expired token
-	// (CodeUnauthenticated) from a revoked tenant (CodePermissionDenied)
+	// (CodeUnauthenticated) from a revoked account (CodePermissionDenied)
 	// without forking the interceptor. Returning nil falls back to the
 	// library default. nil (the default) keeps the standard
 	// CodeUnauthenticated envelope. Applies only to validator failures;
@@ -211,17 +220,15 @@ const (
 	modePassthrough
 )
 
-// resolve applies the documented decision order. AUTH_MODE is read here
-// — once, at construction — never per-request.
+// resolve applies the documented decision order, once, at construction —
+// never per-request. Both inputs are fields the caller passed: nothing
+// about a running server's authentication can be changed by the
+// environment it was started in.
 func (p Policy) resolve() mode {
 	switch {
 	case p.ValidatorConfigured:
 		return modeValidate
 	case p.ExternalAuth:
-		return modePassthrough
-	case strings.EqualFold(os.Getenv("AUTH_MODE"), "none"):
-		return modePassthrough
-	case p.DevMode:
 		return modePassthrough
 	}
 	return modeUnconfigured
@@ -235,26 +242,24 @@ func NewInterceptor(p Policy) (connect.Interceptor, error) {
 	switch p.resolve() {
 	case modeUnconfigured:
 		return nil, errors.New("authn.NewInterceptor: no auth provider configured — " +
-			"install an auth pack, register a real validator (middleware.SetTokenValidator), " +
-			"or set AUTH_MODE=none (or ENVIRONMENT=development) to explicitly run without " +
-			"authentication; see pkg/middleware/middleware.go for the policy hooks")
+			"return a validator from app.SetupAuth, or set AuthDeps.ExternalAuth " +
+			"when another interceptor in the chain owns identity; both are edits to " +
+			"your own source, and there is no environment variable that runs this " +
+			"server without authentication (see pkg/middleware/middleware.go)")
 	case modeValidate:
 		if p.Validate == nil {
 			return nil, errors.New("authn.NewInterceptor: ValidatorConfigured is true but Policy.Validate is nil")
 		}
 		if p.ContextWithClaims == nil {
-			return nil, errors.New("authn.NewInterceptor: Validate mode requires Policy.ContextWithClaims (the project-owned claims stash)")
+			// Default to the library's own claims stash, which
+			// ClaimsFromContext / GetUser read back. A project only
+			// supplies this to use a context key it owns.
+			p.ContextWithClaims = ContextWithClaims
 		}
 		return &interceptor{policy: p}, nil
 	default: // modePassthrough
-		// External auth owns claims; dev/none passthrough may attach a
-		// synthetic dev principal when the project supplies one.
-		if !p.ExternalAuth && p.DevClaims != nil {
-			if p.ContextWithClaims == nil {
-				return nil, errors.New("authn.NewInterceptor: Policy.DevClaims requires Policy.ContextWithClaims")
-			}
-			return &devClaimsInterceptor{policy: p}, nil
-		}
+		// ExternalAuth: another interceptor owns identity, so this one
+		// inspects nothing and attaches no claims.
 		return passthrough{}, nil
 	}
 }
@@ -270,52 +275,6 @@ func (passthrough) WrapStreamingClient(next connect.StreamingClientFunc) connect
 }
 func (passthrough) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return next
-}
-
-// devClaimsInterceptor is passthrough plus the project's synthetic dev
-// principal: no header inspection, no rejection, but every request
-// carries claims so claim-reading handlers work with auth off.
-type devClaimsInterceptor struct {
-	policy Policy
-}
-
-// attach installs the synthetic dev principal and then runs the
-// project's Decorate hook (if any) at the same chokepoint the Validate
-// path uses. The raw Authorization header is passed through to Decorate
-// — the dev-claims path accepts any header without validating it (the
-// admin-web stub provider sends a placeholder token), so a project that
-// forwards the caller's Authorization on outbound calls still sees it
-// here.
-func (d *devClaimsInterceptor) attach(ctx context.Context, authorization string) context.Context {
-	claims := d.policy.DevClaims()
-	if claims == nil {
-		return ctx
-	}
-	ctx = d.policy.ContextWithClaims(ctx, claims)
-	if d.policy.Decorate != nil {
-		ctx = d.policy.Decorate(ctx, claims, authorization)
-	}
-	return ctx
-}
-
-func (d *devClaimsInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		var authorization string
-		if req != nil {
-			authorization = req.Header().Get("Authorization")
-		}
-		return next(d.attach(ctx, authorization), req)
-	}
-}
-
-func (d *devClaimsInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-func (d *devClaimsInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		return next(d.attach(ctx, conn.RequestHeader().Get("Authorization")), conn)
-	}
 }
 
 // interceptor is the Validate-mode implementation.
@@ -367,13 +326,21 @@ func (a *interceptor) allowUnauthenticated(procedure string) bool {
 // Authorization header, runs the enricher hook, and attaches the
 // resulting claims to the context.
 //
-// A missing Authorization header is CodeUnauthenticated. The ONLY
-// unauthenticated path through this interceptor is the explicit
-// allow-list, which the callers check BEFORE invoking this function —
-// an anonymous pass-through here would silently downgrade every handler
-// that forgets to check claims.
+// A missing Authorization header is CodeUnauthenticated UNLESS
+// Policy.AnonymousOK is set, in which case the request proceeds claim-less
+// (authentication is a non-gating middleware — a handler that needs a
+// principal enforces it via authn.GetUser). A PRESENT token is always
+// validated; a present-but-invalid token is CodeUnauthenticated regardless
+// of AnonymousOK (a bad credential is a real error, never a silent
+// anonymous pass). When AnonymousOK is false the strict posture holds: the
+// only unauthenticated path is the explicit allow-list, checked by the
+// callers BEFORE invoking this function.
 func (a *interceptor) authenticate(ctx context.Context, authorization string) (context.Context, error) {
 	if authorization == "" {
+		if a.policy.AnonymousOK {
+			// Non-gating: no credential presented, proceed claim-less.
+			return ctx, nil
+		}
 		return ctx, connect.NewError(connect.CodeUnauthenticated,
 			errors.New("missing Authorization header (procedure is not on the unauthenticated allow-list)"))
 	}
@@ -409,7 +376,7 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string) (c
 	if a.policy.Decorate != nil {
 		// The single post-authentication chokepoint: layer any
 		// project-owned context (dual identity bridge, raw Authorization
-		// for outbound propagation, tenant stamping) around the
+		// for outbound propagation) around the
 		// library's claims stash. Decorate only adds context — it cannot
 		// reject — so the raw authorization header is handed through too.
 		ctx = a.policy.Decorate(ctx, claims, authorization)

@@ -34,19 +34,24 @@
 // ── What little persistent state remains under .forge/ ───────────────
 //
 //   - .forge/disowned.json — the one-way ownership door. Path + reason
-//   - timestamp per `forge disown`. Generate skips these paths while
+//   - timestamp per `forge project disown`. Generate skips these paths while
 //     the file exists; deleting the file re-adopts it. Committed.
 //   - .forge/hashes.json — the scoped fallback for the few Tier-1
 //     output formats that cannot carry comments (JSON). path → body
 //     hash of the last render. Deliberately minimal: this exception
 //     must not regrow the global manifest. Committed.
 //
+//   - .forge/scaffolded.json — the scaffold-once BIRTH LEDGER: every
+//     path forge has ever scaffolded here. It is what lets a DELETED
+//     scaffold stay deleted (see scaffoldledger.go). Committed.
+//
 // Scaffold ("yours") files carry NO marker and are user-owned from
-// birth: forge writes each one exactly once, keyed on the file's own
-// absence (WriteScaffoldIfMissing). Once the file exists forge NEVER
-// overwrites it — no flag, no exception. To refresh one, delete it and
-// regenerate. This is the single non-Tier-1 tier: there is no separate
-// "scaffold reset" machinery (deleting the file IS the reset).
+// birth: forge writes each one exactly once, keyed on the BIRTH LEDGER
+// (WriteScaffoldIfMissing / ScaffoldOnceDecision). Once forge has
+// scaffolded a path it NEVER writes it again — no flag, no exception —
+// whether the user then edits the file or deletes it. Deleting is an act
+// of ownership, not a request for a fresh copy. To re-scaffold on
+// purpose, drop the path's entry from .forge/scaffolded.json.
 package checksums
 
 import (
@@ -62,7 +67,7 @@ import (
 
 // On-disk state files, project-relative.
 const (
-	// DisownedFile records one-way ownership transfers (`forge disown`).
+	// DisownedFile records one-way ownership transfers (`forge project disown`).
 	DisownedFile = ".forge/disowned.json"
 	// HashesFile is the scoped fallback manifest for comment-incapable
 	// Tier-1 outputs only (see package doc).
@@ -138,15 +143,20 @@ func AddSideRenderOnly(relPath string) { sideRenderOnly[relPath] = true }
 func ResetPerRunState() {
 	sideRenderOnly = map[string]bool{}
 	healNoticed = map[string]bool{}
-	pendingHeals = map[string]string{}
+	pendingHeals = map[string]pendingHeal{}
 	AutoHeal = false
 	forceScope = nil
+	// The birth ledger is PERSISTENT state, but its in-memory copy is a
+	// cache: a long-lived process (or a test binary building several
+	// projects) must re-read it from disk rather than answer from a
+	// previous invocation's view.
+	ResetScaffoldLedgerCache()
 }
 
 // forceScope is the per-run set of relative paths `--force` is allowed
 // to clobber. nil (the default) means UNSCOPED — force keeps its
 // historical "overwrite any modified file" meaning, which is right for
-// non-pipeline callers (`forge upgrade`, project creation) and for
+// non-pipeline callers (`forge project upgrade`, project creation) and for
 // pipeline presets that deliberately skip the stomp guard.
 //
 // The generate pipeline installs a scope (SetForceScope) from inside
@@ -204,23 +214,96 @@ func forceApplies(relPath string, force bool) bool {
 // --force` to discard a specific drifted file. Either way the user, not
 // forge, decides to throw the bytes away.
 //
-// `forge upgrade` does not consult this var — it has its own diff-driven
+// `forge project upgrade` does not consult this var — it has its own diff-driven
 // writer with its own --force.
 var AutoHeal bool
 
-// HealNoticeFn is invoked once per file per run when an EXPLICITLY
-// requested heal (--heal / AutoHeal, or a scoped --force) has replaced
-// on-disk content that was a PRISTINE OLDER forge render with the
-// current template's output. Healing must never be silent: even when the
-// user opted in, if the old vintage was actually a deliberate edit, this
-// notice is the only trace that forge threw it away.
+// HealTrigger names WHAT allowed replacing a pristine-but-older forge
+// render, so the heal notice can tell the truth about it. Pre-trigger,
+// the notice unconditionally claimed "(you opted in via --heal/--force)"
+// — but the most common path into a heal is neither flag: the generate
+// pipeline's own writers pass force=true for the Tier-1 paths they own,
+// and on a run with no --force the scope is never installed, so that
+// blanket force applies (forceApplies' unscoped-legacy branch). A plain
+// `forge generate` after a proto edit or template bump then printed
+// "you opted in via --heal/--force" for every regenerated file — a
+// claim of user intent the user never expressed.
+type HealTrigger int
+
+const (
+	// HealTriggerImplicit means no user flag was involved — the write went
+	// through because the pipeline (or another forge-internal caller)
+	// holds unscoped force over its own Tier-1 paths. This is the normal
+	// "regenerate after inputs/templates changed" path.
+	HealTriggerImplicit HealTrigger = iota
+	// HealTriggerHealFlag means the user passed --heal (AutoHeal).
+	HealTriggerHealFlag
+	// HealTriggerForceFlag means the user passed --force and this file is in
+	// the per-run force scope the Tier-1 drift guard installed.
+	HealTriggerForceFlag
+)
+
+// healTriggerFor classifies what allowed a heal that is about
+// to proceed at relPath. Callers only invoke it after the AutoHeal /
+// forceApplies gate has passed, so exactly one of the three cases holds.
+func healTriggerFor(relPath string, force bool) HealTrigger {
+	if AutoHeal {
+		return HealTriggerHealFlag
+	}
+	if force && forceScope != nil && forceScope[relPath] {
+		return HealTriggerForceFlag
+	}
+	return HealTriggerImplicit
+}
+
+// HealNoticeFn is invoked once per file per run when a write has
+// replaced on-disk content that was a PRISTINE OLDER forge render with
+// the current output. Healing must never be silent: if the old vintage
+// was actually a deliberate edit that happened to hash-equal a prior
+// render, this notice is the only trace that forge threw it away. The
+// trigger records what allowed the overwrite so the message never
+// claims a flag opt-in the user didn't make.
 //
 // Package var so the CLI can redirect the report; the default prints to
 // stderr. Never nil it out — assign a no-op func in tests instead.
-var HealNoticeFn = func(relPath string) {
-	fmt.Fprintf(os.Stderr,
-		"♻️  healed stale codegen: %s — on-disk content was a pristine prior forge render (not the latest); overwrote it with the current template (you opted in via --heal/--force). If that content was a deliberate edit, restore it, then move the edit to an extension point or `forge disown` the file.\n",
-		relPath)
+var HealNoticeFn = func(relPath string, trigger HealTrigger) {
+	fmt.Fprint(os.Stderr, healNoticeText(relPath, trigger))
+}
+
+// healNoticeText renders the heal notice for one file. Split from
+// HealNoticeFn so the tone contract is unit-testable.
+//
+// Tone matters here. Every heal replaces content that VERIFIED as a
+// pristine prior forge render (hash-certified — no detected user edit),
+// and the IMPLICIT trigger is the completely normal pipeline path:
+// forge regenerating its own recent output after a template/input
+// change (on a fresh scaffold this fires for every file the pipeline
+// re-renders). That case gets a calm one-liner — a scary
+// "restore it / disown the file" warning for routine regeneration
+// trained users to ignore the notice entirely (a pristine minutes-old
+// project printed seven of them). The explicit --heal/--force notices
+// keep the restore/disown remedy: the user deliberately discarded
+// content there, and a deliberate revert that hash-equals an old render
+// is byte-indistinguishable from stale codegen, so those are the paths
+// where the escape hatch is worth naming. Genuinely MODIFIED content
+// never reaches a heal at all — the Tier-1 drift guard / no-heal skip
+// handles it with the full warning.
+func healNoticeText(relPath string, trigger HealTrigger) string {
+	const remedy = "If that content was a deliberate edit, restore it, then move the edit to an extension point or `forge project disown` the file."
+	switch trigger {
+	case HealTriggerHealFlag:
+		return fmt.Sprintf(
+			"♻️  healed stale codegen: %s — on-disk content was a pristine prior forge render (not the latest); overwrote it with the current template (you opted in via --heal). %s\n",
+			relPath, remedy)
+	case HealTriggerForceFlag:
+		return fmt.Sprintf(
+			"♻️  healed stale codegen: %s — on-disk content was a pristine prior forge render (not the latest); overwrote it with the current template (you opted in via --force). %s\n",
+			relPath, remedy)
+	default:
+		return fmt.Sprintf(
+			"♻️  refreshed %s (pristine older forge render → current template output)\n",
+			relPath)
+	}
 }
 
 // NoHealSkipFn is invoked once per file per run when the default
@@ -231,7 +314,7 @@ var HealNoticeFn = func(relPath string) {
 // refuses to silently overwrite it. Default prints to stderr.
 var NoHealSkipFn = func(relPath string) {
 	fmt.Fprintf(os.Stderr,
-		"⏭️  %s matches a PRIOR forge render but not the current template — left untouched, because that is byte-indistinguishable from a deliberate edit and forge will not silently revert your work. To regenerate it from the current templates: `forge generate --heal` (advances every such file) or `forge generate --force` (this file only). To keep your version permanently: `forge disown %s`.\n",
+		"⏭️  %s matches a PRIOR forge render but not the current template — left untouched, because that is byte-indistinguishable from a deliberate edit and forge will not silently revert your work. To regenerate it from the current templates: `forge generate --heal` (advances every such file) or `forge generate --force` (this file only). To keep your version permanently: `forge project disown %s`.\n",
 		relPath, relPath)
 }
 
@@ -254,26 +337,33 @@ func noticeHealOnce(relPath string) {
 	}
 }
 
+// pendingHeal is one deferred heal notice: the body hash of the
+// pristine on-disk content the write replaced, plus what allowed the
+// overwrite (the trigger the eventual notice reports).
+type pendingHeal struct {
+	oldBody string
+	trigger HealTrigger
+}
+
 // pendingHeals defers the heal notice until after post-write formatters
-// (goimports) have run: path → body hash of the pristine on-disk
-// content that the write replaced. If the FINAL on-disk body hash ends
-// up equal to the replaced one, the "heal" was formatting-only noise
-// (the emitter's pre-goimports output differed, the formatted result
-// converged back) and no notice fires. FlushHealNotices resolves the
-// set; non-pipeline callers (forge upgrade) flush immediately after
-// their writes.
-var pendingHeals = map[string]string{}
+// (goimports) have run: path → the replaced content's body hash + the
+// heal trigger. If the FINAL on-disk body hash ends up equal to the
+// replaced one, the "heal" was formatting-only noise (the emitter's
+// pre-goimports output differed, the formatted result converged back)
+// and no notice fires. FlushHealNotices resolves the set; non-pipeline
+// callers (forge project upgrade) flush immediately after their writes.
+var pendingHeals = map[string]pendingHeal{}
 
 // FlushHealNotices emits the deferred heal notices for every pending
 // path whose final on-disk body hash actually changed relative to the
 // pristine content the run replaced. Clears the pending set.
 func FlushHealNotices(root string) {
-	for relPath, oldBody := range pendingHeals {
+	for relPath, pending := range pendingHeals {
 		onDisk, err := os.ReadFile(filepath.Join(root, relPath))
 		if err != nil {
 			continue
 		}
-		if BodyHash(onDisk) == oldBody {
+		if BodyHash(onDisk) == pending.oldBody {
 			continue // formatting-only churn; nothing was destroyed
 		}
 		if healNoticed[relPath] {
@@ -281,16 +371,16 @@ func FlushHealNotices(root string) {
 		}
 		healNoticed[relPath] = true
 		if HealNoticeFn != nil {
-			HealNoticeFn(relPath)
+			HealNoticeFn(relPath, pending.trigger)
 		}
 	}
-	pendingHeals = map[string]string{}
+	pendingHeals = map[string]pendingHeal{}
 }
 
 // DisownedEntry is the per-path record in .forge/disowned.json: the
 // WHY of the one-way ownership transfer plus when it happened. The
-// reason is design feedback — it's also recorded in
-// .forge/friction.jsonl by the CLI layer.
+// reason is design feedback; `forge project audit --json` surfaces it
+// on each disowned_files row.
 type DisownedEntry struct {
 	Reason     string `json:"reason,omitempty"`
 	DisownedAt string `json:"disowned_at,omitempty"`
@@ -316,7 +406,7 @@ type FileChecksums struct {
 	Unstampable map[string]string `json:"-"`
 }
 
-// IsDisowned reports whether relPath has been `forge disown`-ed.
+// IsDisowned reports whether relPath has been `forge project disown`-ed.
 func (cs *FileChecksums) IsDisowned(relPath string) bool {
 	if cs == nil {
 		return false
@@ -497,7 +587,7 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 					return false, nil
 				}
 				if _, pending := pendingHeals[relPath]; !pending {
-					pendingHeals[relPath] = oldBody
+					pendingHeals[relPath] = pendingHeal{oldBody: oldBody, trigger: healTriggerFor(relPath, force)}
 				}
 			}
 		case Modified:
@@ -522,7 +612,7 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 					return false, nil
 				}
 				if _, pending := pendingHeals[relPath]; !pending {
-					pendingHeals[relPath] = embedded
+					pendingHeals[relPath] = pendingHeal{oldBody: embedded, trigger: healTriggerFor(relPath, force)}
 				}
 			case !forceApplies(relPath, force):
 				// Hand-edited after forge stamped it: the stomp guard's
@@ -586,7 +676,7 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 					return false, nil
 				}
 				if _, pending := pendingHeals[relPath]; !pending {
-					pendingHeals[relPath] = onDiskBody
+					pendingHeals[relPath] = pendingHeal{oldBody: onDiskBody, trigger: healTriggerFor(relPath, force)}
 				}
 			}
 		case tracked: // mismatch → hand-edited
@@ -624,8 +714,8 @@ func WriteGeneratedFileTier1(root, relPath string, content []byte, cs *FileCheck
 // followed by an atomic rename, so a reader (or a resumed run) never sees a
 // half-written file. A plain os.WriteFile truncates-then-writes: if the
 // process dies mid-write — the daemon disconnecting mid-`forge generate` —
-// the target is left partial. That is exactly how gen/mcp/manifest.json ended
-// up as truncated JSON that `forge mcp serve` and the MCP bridge choke on
+// the target is left partial. That is exactly how a generated JSON artifact
+// ended up truncated, and unparseable to every reader of it
 // (fr F9). rename(2) within one directory is atomic on every filesystem forge
 // targets, so the file is either the old bytes or the complete new bytes,
 // never a prefix. The temp file is cleaned up on any error before the rename.
@@ -660,23 +750,30 @@ func atomicWriteFile(path string, content []byte, perm os.FileMode) error {
 	return nil
 }
 
-// WriteScaffoldIfMissing writes a scaffold ("yours") file only when the
-// destination does not already exist. Scaffold content carries NO marker
-// and is user-owned from birth: forge writes it once, then NEVER touches
-// it again — no flag, no exception. To refresh, delete the file and
-// regenerate (the write-if-absent gate re-emits the pristine scaffold).
+// WriteScaffoldIfMissing writes a scaffold ("yours") file exactly ONCE,
+// at birth. Scaffold content carries NO marker and is user-owned from
+// birth: forge writes it once, then NEVER touches it again — no flag, no
+// exception.
 //
-// Returns true when the file was written (it was absent). A file already
-// on disk — whether pristine, hand-edited, or fully rewritten — is left
-// exactly as-is and returns (false, nil). Parent directories are created
-// as needed.
+// "Once" is decided by the BIRTH LEDGER (scaffoldledger.go), not by the
+// file's presence on disk. The two differ in the case that matters: a
+// user who DELETES a scaffold has exercised ownership just as much as one
+// who edits it, and a presence check reads that deletion as "absent, so
+// write it" and silently undoes the decision. The ledger separates "never
+// scaffolded" (write) from "scaffolded and then deleted" (leave deleted).
+//
+// To re-scaffold on purpose, drop the path's entry from
+// .forge/scaffolded.json — deleting the file is no longer the reset.
+//
+// Returns true when the file was written (a genuine birth). An existing
+// file — pristine, hand-edited, or fully rewritten — and a deliberately
+// deleted one are both left exactly as they are, returning (false, nil).
+// Parent directories are created as needed.
 func WriteScaffoldIfMissing(root, relPath string, content []byte) (bool, error) {
-	fullPath := filepath.Join(root, relPath)
-	if _, statErr := os.Stat(fullPath); statErr == nil {
-		return false, nil // exists — forge never overwrites a scaffold
-	} else if !os.IsNotExist(statErr) {
-		return false, statErr
+	if !ScaffoldOnceDecision(root, relPath) {
+		return false, nil // exists, deliberately deleted, or unreadable
 	}
+	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
 	}
@@ -684,6 +781,7 @@ func WriteScaffoldIfMissing(root, relPath string, content []byte) (bool, error) 
 	if err := atomicWriteFile(fullPath, content, 0o644); err != nil {
 		return false, err
 	}
+	RecordScaffold(root, relPath)
 	WrittenThisRun[relPath] = true
 	return true, nil
 }
@@ -758,7 +856,6 @@ type MarkerInfo struct {
 var scanSkipDirs = map[string]bool{
 	".git":         true,
 	".forge":       true,
-	".forge-pkg":   true,
 	"node_modules": true,
 	"vendor":       true,
 	".next":        true,
@@ -815,22 +912,11 @@ func ScanMarkers(root string) map[string]MarkerInfo {
 		if !found {
 			return nil
 		}
-		mi := MarkerInfo{Embedded: embedded, Body: BodyHash(content)}
-		switch {
-		case embedded == mi.Body:
-			mi.Status = Pristine
-		case goFormatterEquivalent(root, rel, content, embedded):
-			// Formatter-only drift on a .go file: the bytes re-hash to the
-			// certified render after canonical formatting (goformat.go), so
-			// a goimports/gofmt pass — not a hand — produced the mismatch.
-			// The file is clean; the next successful Tier-1 write restores
-			// canonical bytes and a fresh stamp. Non-Go formats keep
-			// exact-byte semantics.
-			mi.Status = Pristine
-		default:
-			mi.Status = Modified
+		out[rel] = MarkerInfo{
+			Embedded: embedded,
+			Body:     BodyHash(content),
+			Status:   ClassifyPath(root, rel, content),
 		}
-		out[rel] = mi
 		return nil
 	})
 	return out
@@ -920,7 +1006,7 @@ func (cs *FileChecksums) DisownPaths(root string, relPaths []string, reason stri
 // became a scaffold-once "yours" file (write-if-absent, never
 // overwritten), or forge stopped emitting it entirely. Such a disown is
 // dead weight — it protects against an overwrite that can no longer
-// happen — and misleads users into thinking `forge disown` is routine.
+// happen — and misleads users into thinking `forge project disown` is routine.
 //
 // Package var so the CLI can redirect/capture the report; the default
 // prints to stderr. Never nil it out — assign a no-op in tests instead.

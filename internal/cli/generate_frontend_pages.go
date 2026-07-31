@@ -71,8 +71,10 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) erro
 // `forge generate` runs. Honor that promise by skipping the write when
 // the target file already exists on disk (write-if-absent), mirroring
 // the `emitScaffoldOnceIfMissing` pattern that `generateFrontendNav`
-// already uses for nav.tsx / page.tsx. Once a page exists forge NEVER
-// overwrites it — no flag; to refresh one, delete it and regenerate.
+// already uses for nav.tsx / page.tsx. Once forge has scaffolded a page it
+// NEVER writes that path again — no flag — whether the user then edits the
+// file or deletes it. To re-scaffold on purpose, drop the path's entry
+// from .forge/scaffolded.json.
 //
 // Per-kind dispatch:
 //   - nextjs:   pages/ templates → src/app/<slug>/[id]/{,edit/}page.tsx
@@ -93,6 +95,16 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 	// collect it once here (it's frontend-independent) and hand it to the
 	// per-frontend orphan reporter below.
 	liveSlugs := liveEntitySlugs(services, entityByName)
+
+	// Foreign-key referents: which CRUD entity a `<owner>_id` form field
+	// points at, and the generated hooks that browse and resolve it. Built
+	// once from the WHOLE project (an FK routinely crosses services) and
+	// frontend-independent, like liveSlugs.
+	//
+	// This is what makes `patientId` render an <EntityPicker> instead of a
+	// raw text input for a UUID. forge shipped that component and its own
+	// page generator did not know it existed.
+	fkReferents := codegen.BuildFKReferents(crudPagesWithMeta(services, entityByName))
 
 	for _, fe := range cfg.Frontends {
 		feType := strings.ToLower(strings.TrimSpace(fe.Type))
@@ -125,8 +137,10 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 				}
 				// Typed columns / search fields / detail rows: the
 				// templates render explicit field declarations from the
-				// proto entity instead of Object.keys reflection.
-				codegen.AttachEntityMeta(&entity, entityDef)
+				// proto entity instead of Object.keys reflection. svc
+				// supplies the deep type graph for enum-column resolution.
+				codegen.AttachEntityMeta(&entity, entityDef, svc)
+				codegen.AttachForeignKeys(&entity, fkReferents)
 				kinds := []struct {
 					emit bool
 					tmpl *template.Template
@@ -167,6 +181,27 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 	}
 
 	return nil
+}
+
+// crudPagesWithMeta returns every CRUD entity page the generator considers
+// live this run, with entity metadata attached — the same gate
+// generateFrontendPages applies before writing a page. It is the input to
+// foreign-key resolution, which needs the WHOLE project's pages (an FK
+// crosses services routinely) and the entity-derived fields AttachEntityMeta
+// supplies (PkFieldCamel, DisplayField).
+func crudPagesWithMeta(services []codegen.ServiceDef, entityByName map[string]codegen.EntityDef) []codegen.PageTemplateData {
+	var pages []codegen.PageTemplateData
+	for _, svc := range services {
+		for _, entity := range codegen.ExtractCRUDEntities(svc) {
+			entityDef, ok := entityByName[strings.ToLower(entity.EntityName)]
+			if !ok {
+				continue
+			}
+			codegen.AttachEntityMeta(&entity, entityDef, svc)
+			pages = append(pages, entity)
+		}
+	}
+	return pages
 }
 
 // liveEntitySlugs returns the set of route slugs the page generator emits
@@ -343,7 +378,16 @@ func pageLayoutForKind(feType string) (*pageLayout, error) {
 	}
 }
 
-// loadPageTemplate reads and parses a page template from the embedded FS.
+// pagePartialsPath holds the framework-neutral page fragments both the
+// Next.js and the Vite page templates invoke with {{template ...}} — today
+// the foreign-key <EntityPicker> control and the <EntityName> detail row.
+// One definition, both trees: the FK control is subtle enough that four
+// hand-kept copies would drift.
+const pagePartialsPath = "pages/_partials.tmpl"
+
+// loadPageTemplate reads and parses a page template from the embedded FS,
+// with the shared partials parsed into the same template set so a page can
+// {{template "fkPickerField" .}}.
 // `dir` is the per-kind template subdirectory under internal/templates/frontend/
 // (e.g. "pages" for nextjs, "vite-spa-pages" for vite-spa).
 func loadPageTemplate(dir, name string) (*template.Template, error) {
@@ -357,6 +401,14 @@ func loadPageTemplate(dir, name string) (*template.Template, error) {
 		return nil, fmt.Errorf("parse page template %s/%s: %w", dir, name, err)
 	}
 
+	partials, err := templates.FrontendTemplates().Get(pagePartialsPath)
+	if err != nil {
+		return nil, fmt.Errorf("read page partials %s: %w", pagePartialsPath, err)
+	}
+	if _, err := tmpl.Parse(string(partials)); err != nil {
+		return nil, fmt.Errorf("parse page partials %s: %w", pagePartialsPath, err)
+	}
+
 	return tmpl, nil
 }
 
@@ -364,8 +416,9 @@ func loadPageTemplate(dir, name string) (*template.Template, error) {
 // scaffold-once ("yours:" banner) semantics: the file is written once at
 // scaffold time and NEVER overwritten on subsequent `forge generate`
 // runs, matching the leading banner comment every page template carries.
-// Once the page exists on disk forge leaves it alone — no flag, no
-// exception. To refresh one, delete it and regenerate.
+// Once forge has scaffolded the page it leaves that path alone — no flag,
+// no exception — whether the user edited it or deleted it. To re-scaffold
+// on purpose, drop the path's entry from .forge/scaffolded.json.
 //
 // Returns (wrote, err) — wrote=false when the destination already
 // existed and was preserved, so the caller can distinguish freshly-
@@ -377,12 +430,18 @@ func loadPageTemplate(dir, name string) (*template.Template, error) {
 func renderPageScaffoldIfMissing(tmpl *template.Template, data codegen.PageTemplateData, projectDir, relPath string) (bool, error) {
 	fullPath := filepath.Join(projectDir, relPath)
 
-	// Scaffold-once: if the user already has this file on disk, leave it
-	// alone (the WriteScaffoldIfMissing gate enforces this too, but the
-	// early return avoids rendering the template needlessly).
-	if _, err := os.Stat(fullPath); err == nil {
+	// Scaffold-once: skip both the file the user already has AND the one
+	// they deliberately deleted. The WriteScaffoldIfMissing gate below
+	// decides this authoritatively; asking the ledger here just avoids
+	// rendering a template whose output we would discard.
+	//
+	// This early return must ask the LEDGER, not os.Stat: a presence check
+	// here would re-render (and, before the gate learned better, re-write)
+	// a page the user removed on purpose.
+	if !checksums.ScaffoldOnceDecision(projectDir, relPath) {
 		return false, nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	}
+	if _, err := os.Stat(fullPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, fmt.Errorf("stat %s: %w", relPath, err)
 	}
 
@@ -391,5 +450,12 @@ func renderPageScaffoldIfMissing(tmpl *template.Template, data codegen.PageTempl
 		return false, err
 	}
 
-	return checksums.WriteScaffoldIfMissing(projectDir, relPath, buf.Bytes())
+	// Import ORDER is derived here, not authored in the template. A page's
+	// import set is conditional on the entity's shape and two of its
+	// specifiers (the service hooks module, the enums' protobuf-es module)
+	// are only known at render time, so no fixed line order in the template
+	// can be canonical for every entity — the scaffold has to sort what it
+	// actually emitted. Same contract as the gofmt/goimports pass the Tier-1
+	// writer runs over .go renders.
+	return checksums.WriteScaffoldIfMissing(projectDir, relPath, templates.CanonicalTSImportOrder(buf.Bytes()))
 }

@@ -16,7 +16,7 @@ import (
 // The CLI/display name (which may contain hyphens) is translated to a
 // Go-package-safe form for the directory and `package` declaration.
 //
-// Both the "new project" and "add operator" flows delegate here so the
+// Both the "new project" and "scaffold operator" flows delegate here so the
 // generated output is always identical.
 func GenerateOperatorFiles(root, modulePath, name, group, version string) error {
 	return GenerateOperatorFilesWithAPI(root, modulePath, name, group, version, "", "")

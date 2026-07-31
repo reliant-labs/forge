@@ -11,7 +11,7 @@ All patterns are table-driven by default: one slice of cases, one iteration help
 
 ## Pattern 1: RPC handler test (use `tdd.TableRPC`)
 
-One-line: in-process handler call via the generated `NewTest<Service>` helper from `internal/app/testing.go`. Hermetic; no server, no network. The library carries the iteration + error-code assertion so the test file is just the case table.
+One-line: in-process handler call via the generated `NewTest<Svc>` helper in `pkg/app/testing.go` — `<Svc>` is the SERVICE NAME in PascalCase (service `users` ⇒ `app.NewTestUsers`), not the proto service name. Hermetic; no server, no network. The library carries the iteration + error-code assertion so the test file is just the case table.
 
 ```go
 package myservice_test
@@ -23,19 +23,19 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/tdd"
 
-	apiv1 "github.com/example/proj/gen/api/v1"
-	"github.com/example/proj/internal/app"
+	pb "github.com/example/proj/gen/services/users/v1"
+	"github.com/example/proj/pkg/app"
 )
 
 func TestCreateUser(t *testing.T) {
 	t.Parallel()
-	svc := app.NewTestUserService(t)
+	svc := app.NewTestUsers(t)
 
-	tdd.TableRPC(t, []tdd.Case[apiv1.CreateUserRequest, apiv1.CreateUserResponse]{
+	tdd.TableRPC(t, []tdd.Case[pb.CreateUserRequest, pb.CreateUserResponse]{
 		{
 			Name: "happy path",
-			Req:  connect.NewRequest(&apiv1.CreateUserRequest{Name: "Alice"}),
-			Check: func(t *testing.T, resp *connect.Response[apiv1.CreateUserResponse]) {
+			Req:  connect.NewRequest(&pb.CreateUserRequest{Name: "Alice"}),
+			Check: func(t *testing.T, resp *connect.Response[pb.CreateUserResponse]) {
 				if resp.Msg.User.GetName() != "Alice" {
 					t.Fatalf("name = %q", resp.Msg.User.GetName())
 				}
@@ -43,7 +43,7 @@ func TestCreateUser(t *testing.T) {
 		},
 		{
 			Name:    "missing name",
-			Req:     connect.NewRequest(&apiv1.CreateUserRequest{}),
+			Req:     connect.NewRequest(&pb.CreateUserRequest{}),
 			WantErr: connect.CodeInvalidArgument,
 		},
 	}, svc.CreateUser)
@@ -54,7 +54,7 @@ func TestCreateUser(t *testing.T) {
 
 Scaffold contract: forge-generated rows assert `WantErr: connect.CodeUnimplemented` and are SELF-DESTRUCTING — they fail the moment the handler is implemented, forcing real `Check`/`WantErr` assertions to replace them. There is deliberately no "any outcome" mode in `pkg/tdd`: every row must be able to fail.
 
-When to use: validating a single handler's request/response/error contract. This is the default unit-test shape for any RPC. The scaffold-once, user-owned CRUD test (`handlers_crud_test.go`) uses the same shape with `app.NewTest<Service>Server` and `client.<Method>` — the test server mounts the production `middleware.AuthzInterceptor` chain with the permissive test authorizer, so swapping in a real authorizer via `app.WithAuthorizer` exercises genuine denials.
+When to use: validating a single handler's request/response/error contract. This is the default unit-test shape for any RPC. The scaffold-once, user-owned CRUD test (`handlers_crud_test.go`) drives the same in-process service against a real migrated DB — `app.NewTest<Svc>(t, app.WithDB(db))`, then `svc.Create<Entity>(ctx, connect.NewRequest(...))`. (`app.NewTest<Svc>Server(t)` exists too, returning an `httptest.Server` + typed client, for tests that need the wire.) A handler's own access checks live in the handler, so exercise them the same way as any other branch: drive the handler with claims that hold — or lack — what the check requires via `app.AuthedContext(t, testkit.WithRoles(...), testkit.WithOrgID(...))` and assert the `CodePermissionDenied` / `CodeNotFound` outcome.
 
 ## Pattern 2: Contract test (use `tdd.TableContract`)
 

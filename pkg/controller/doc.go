@@ -1,7 +1,7 @@
 // Package controller provides opinionated runtime helpers for
 // controller-runtime reconcilers. It is the operator-flavored sibling
 // of forge/pkg/contractkit: a runtime library that the thin shims
-// emitted by `forge add crd <name>` delegate to.
+// emitted by `forge scaffold crd <name>` delegate to.
 //
 // The motivation is the same as contractkit. The previous operator
 // scaffold emitted ~80 lines per CRD of mostly-mechanical reconciler

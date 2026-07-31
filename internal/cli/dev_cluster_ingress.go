@@ -118,7 +118,7 @@ func ingressCacheDir() (string, error) {
 // fetchGatewayAPICRDs ensures the pinned-version CRD YAML is on disk
 // at the cache path and returns the path. Re-downloads when the file
 // is missing; trusts the version-pinned filename for cache busting
-// (a forge upgrade changes the VERSION file, the new release URL
+// (a forge project upgrade changes the VERSION file, the new release URL
 // hashes to a different filename, the old cache file stays around).
 func fetchGatewayAPICRDs(ctx context.Context, version string) (string, error) {
 	return fetchCachedCRDYAML(ctx, "gateway-api-crds-"+version+".yaml",
@@ -227,7 +227,7 @@ func kubectlApplyBytes(ctx context.Context, kctx string, yamlBytes []byte) error
 // dependency — a forge.HelmChart in the env Bundle's `helm_charts`, rendered
 // (`helm template --skip-crds`) with forge-supplied pinned standard-channel
 // Gateway API CRDs (crds="gateway-api") and the `eg` GatewayClass riding the
-// chart's `manifests`, applied CRD-first via `forge deploy <env>
+// chart's `manifests`, applied CRD-first via `forge env deploy <env>
 // --target=envoy-gateway` (helm-as-a-RENDERER, internal/cluster). The pinned
 // CRD bundle is still fetched here (fetchGatewayAPICRDs, reused by
 // deploy_helm.go's fetchHelmChartCRDs). The former imperative
@@ -237,7 +237,7 @@ func kubectlApplyBytes(ctx context.Context, kctx string, yamlBytes []byte) error
 
 // NOTE: cert-manager is no longer installed imperatively here. It is a
 // declarative platform dependency — a forge.HelmChart in the env Bundle,
-// rendered (`helm template --skip-crds`) and applied via `forge deploy
+// rendered (`helm template --skip-crds`) and applied via `forge env deploy
 // <env> --target=cert-manager` (helm-as-a-RENDERER, internal/cluster).
 // The former `helm upgrade --install` cert-manager machinery (chart
 // coordinates, repo-add, install fn) was removed with `forge cluster-setup`.
@@ -455,7 +455,7 @@ func runningClusterHostPorts(ctx context.Context, clusterName string) (map[int]b
 // MISSING (sorted ascending). An empty result means the live cluster maps
 // every listener the env needs — no drift.
 //
-// `required` is DERIVED from the SAME render `forge up` deploys (the env's
+// `required` is DERIVED from the SAME render `forge env up` deploys (the env's
 // Gateway listeners — see renderedGatewayHostPorts), NOT from the static
 // deploy/k3d.yaml port block. That's the single-source-of-truth contract:
 // drift is "a listener this env renders has no host port on the running
@@ -493,7 +493,7 @@ func clusterPortDrift(ctx context.Context, clusterName string, required map[int]
 }
 
 // renderedGatewayHostPorts returns the host-port set the env's RENDERED
-// Gateway listeners require — the EXACT listeners `forge up`/`forge deploy`
+// Gateway listeners require — the EXACT listeners `forge env up`/`forge env deploy`
 // produce (transform-added listeners like the dev `controller` included).
 // This is the single source of truth the drift check reasons about. A
 // render failure or an env with no gateways yields an empty set (the caller

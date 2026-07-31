@@ -57,7 +57,7 @@ func TestBuildEntityDef_CrossFileMessageSchemaResolution(t *testing.T) {
 
 	// And the projected mock-data import path must point at the shared
 	// module, so `import { DaemonSchema } from "@/gen/controlplane/v1/shared_pb"`.
-	mock := EntityDefToMockData(got, svc)
+	mock := EntityDefToMockData(got, svc, nil)
 	wantImport := ProtoFileToTSImportPath(sharedFile)
 	if mock.ImportPath != wantImport {
 		t.Errorf("mock ImportPath = %q, want %q", mock.ImportPath, wantImport)

@@ -5,13 +5,6 @@ import (
 	"testing"
 )
 
-// serviceComponent is a single server component, injected via the
-// LoadStrict variadic to derive the project kind to "service" now that
-// components (and kind) live outside forge.yaml.
-func serviceComponent() []ComponentConfig {
-	return []ComponentConfig{{Name: "api", Kind: "server", Path: "handlers/api"}}
-}
-
 // TestFeatureGraph_FrontendRequiresCodegen pins the canonical error
 // shape from the spec: a feature enabled with a dependency off is a load
 // error naming both sides and the fix.
@@ -22,7 +15,7 @@ features:
   codegen: false
   frontend: true
 `
-	_, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
+	_, err := LoadProject([]byte(in), serviceProjectPath(t, in))
 	if err == nil {
 		t.Fatal("expected load error for frontend-on/codegen-off, got nil")
 	}
@@ -45,7 +38,7 @@ features:
   orm: true
   migrations: false
 `
-	_, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
+	_, err := LoadProject([]byte(in), serviceProjectPath(t, in))
 	if err == nil {
 		t.Fatal("expected load error for orm-on/driver-none, got nil")
 	}
@@ -62,7 +55,7 @@ features:
   build: false
   deploy: true
 `
-	_, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
+	_, err := LoadProject([]byte(in), serviceProjectPath(t, in))
 	if err == nil {
 		t.Fatal("expected load error for deploy-on/build-off, got nil")
 	}
@@ -81,40 +74,12 @@ features:
   experimental:
     ingress: true
 `
-	_, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
+	_, err := LoadProject([]byte(in), serviceProjectPath(t, in))
 	if err == nil {
 		t.Fatal("expected load error for ingress-on/deploy-off, got nil")
 	}
 	if !strings.Contains(err.Error(), "ingress") || !strings.Contains(err.Error(), "deploy") {
 		t.Errorf("error missing ingress/deploy wording\ngot: %s", err.Error())
-	}
-}
-
-// TestFeatureGraph_OperatorComponentRequiresOperatorsFeature: an
-// operator-kind component without the experimental operators feature is
-// a load error.
-func TestFeatureGraph_OperatorComponentRequiresOperatorsFeature(t *testing.T) {
-	// The operator component is injected via the variadic; an operator kind
-	// derives the project to "service".
-	operator := ComponentConfig{Name: "widget", Kind: "operator", Group: "example.com", Version: "v1"}
-	base := `name: demo
-module_path: github.com/example/demo
-`
-	_, err := LoadStrict([]byte(base), "forge.yaml", operator)
-	if err == nil {
-		t.Fatal("expected load error for operator component without operators feature, got nil")
-	}
-	if !strings.Contains(err.Error(), "operator") {
-		t.Errorf("error missing operator wording\ngot: %s", err.Error())
-	}
-
-	// With the feature on, it loads clean.
-	ok := base + `features:
-  experimental:
-    operators: true
-`
-	if _, err := LoadStrict([]byte(ok), "forge.yaml", operator); err != nil {
-		t.Fatalf("operator component WITH operators feature should load: %v", err)
 	}
 }
 
@@ -129,7 +94,7 @@ features:
   build: false
   deploy: true
 `
-	_, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
+	_, err := LoadProject([]byte(in), serviceProjectPath(t, in))
 	if err == nil {
 		t.Fatal("expected batched load error, got nil")
 	}
@@ -141,7 +106,7 @@ features:
 
 // TestFeatureGraph_ALaCarteLitmus is the spec's à la carte litmus: a
 // kind:service project with ONLY orm + codegen + migrations on (frontend,
-// deploy, observability, hot_reload, packs, starters explicitly off)
+// deploy, observability, hot_reload explicitly off)
 // loads with NO contradiction — "forge as pure postgres schema-truth ORM
 // + codegen." The dependency graph must accept this clean.
 func TestFeatureGraph_ALaCarteLitmus(t *testing.T) {
@@ -159,11 +124,10 @@ features:
   ci: false
   observability: false
   hot_reload: false
-  packs: false
   contracts: false
   docs: false
 `
-	cfg, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
+	cfg, err := LoadProject([]byte(in), serviceProjectPath(t, in))
 	if err != nil {
 		t.Fatalf("à la carte ORM+codegen+migrations config must load clean: %v", err)
 	}
@@ -179,7 +143,6 @@ features:
 		FeatureBuild:         false,
 		FeatureObservability: false,
 		FeatureHotReload:     false,
-		FeaturePacks:         false,
 	} {
 		if eff[name] != want {
 			t.Errorf("feature %q: got %v, want %v", name, eff[name], want)

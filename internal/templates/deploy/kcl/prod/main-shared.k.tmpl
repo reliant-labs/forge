@@ -10,9 +10,10 @@ hierarchy. See `dev/main.k` for the `manifests` / `output` contract.
 import forge
 import forge.components as fc
 
-import deploy.kcl.prod.config_gen as cfg
+import config_projection
+import .config as appcfg
 {{- if .IngressEnabled}}
-import deploy.kcl.prod.ingress as ing
+import .ingress as ing
 {{- end}}
 
 _registry = forge.registry("ghcr.io/OWNER")
@@ -33,7 +34,7 @@ _cluster = forge.ClusterTarget {
 # Base env every component sees, assembled with forge.env_merge (name-keyed,
 # LAST-wins) so a later layer overrides an earlier one by name instead of the
 # `+`-concat footgun (which emits duplicate keys kubectl rejects).
-_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, cfg.APP_ENV), [
+_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, forge.env_project(config_projection.appConfigEnvMap(appcfg.app_config))), [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
 ])
 
@@ -48,15 +49,45 @@ _components = [c | {
 } for c in fc.load_components(fc.COMPONENTS_GEN)]
 
 _component_env = fc.ComponentEnv {
+    # Deploy-time schema migrations. `load_migrate` reads the argv forge
+    # emits into components_gen.json (`/app/<project> db migrate up`, over the
+    # migrations EMBEDDED in the image) — empty until the project ships its
+    # first db/migrations/*.sql, populated from then on with no edit here.
+    #
+    # It renders as an initContainer on every Deployment-shaped workload, so
+    # the schema is current BEFORE any new pod serves a request and a failed
+    # migration stalls the rollout with the old pods still serving. Concurrent
+    # replicas are safe — golang-migrate takes a postgres advisory lock.
+    migrate = fc.load_migrate(fc.COMPONENTS_GEN)
     namespace = _namespace
+    project = "{{.ProjectName}}"
     registry = _registry
     image_tag = forge.image_tag("prod")
     network_policies = True
+    # NetworkPolicy inputs. `default-deny` blackholes every egress the
+    # allow-list misses, so these are what keep the app's database,
+    # collector and ingress reachable at all.
+    #
+    # TCP ports the workload may dial outside the cluster: 443 for
+    # HTTPS (JWKS, object storage, third-party APIs) and 5432 for a
+    # managed Postgres, which normally lives OFF-cluster. Add the port
+    # of any other external dependency (6379, 9092, ...).
+    egress_ports = [443, 5432]
+    # Namespace running the OTLP collector `OTEL_EXPORTER_OTLP_ENDPOINT`
+    # points at (forge's OTEL_ENV bundle defaults to
+    # `otel-collector.observability`). Clear it if you export telemetry
+    # somewhere else, and add that destination's port to egress_ports.
+    telemetry_namespace = "observability"
+    # Namespace running the Gateway controller that terminates public
+    # traffic — `forge cluster up` installs Envoy Gateway here. It MUST
+    # match where the controller for this env's `gateway_class_name`
+    # runs, or ingress is denied and the Gateway serves 503s.
+    ingress_namespace = "envoy-gateway-system"
 }
 
 _support = forge.Bundle {
     cluster_target = _cluster
-    config_maps = cfg.CONFIG_MAPS
+    config_maps = []
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
     http_routes = ing.HTTP_ROUTES
@@ -79,6 +110,12 @@ _bundle = forge.Bundle {
         image = "{{.ProjectName}}"
         command = c.command
         env_vars = c.env_vars
+        # Ports come from THIS file, never from components_gen.json: a port is a
+        # deploy fact. Add them to the `_components` overlay above
+        # (`ports = [fc.ComponentPort {name = "http", port = 9090, expose = True}]`)
+        # and they flow to both the manifests and this build/dispatch contract.
+        # Empty is the normal case — the Server expansion serves the standard
+        # :8080 mux, which is the one port the binary actually binds.
         deploy = _cluster.deploy | {replicas = _replicas, resources = _resources, ports = [p.port for p in c.ports]}
         if c.build:
             build = forge.build_of(c.build)
@@ -104,7 +141,30 @@ _bundle = forge.Bundle {
         crds = c.crds
         env_vars = c.env_vars
     } for c in _op_components]
-    config_maps = cfg.CONFIG_MAPS
+    config_maps = []
+    # SECRET VALUES for this env come from OUTSIDE forge. Every config field
+    # marked `sensitive: true` in proto/config/v1/config.proto projects into
+    # the manifest as a valueFrom.secretKeyRef, and `external` means forge
+    # renders + validates that WIRING but never sees, writes, or stores a
+    # value: no dotenv, no plaintext Secret in the render, nothing to leak
+    # through a `kubectl get -o yaml` of a git-tracked file.
+    #
+    # Provision the Secret out of band — External Secrets Operator, sealed
+    # secrets, your cloud's secret manager, or, once, by hand:
+    #
+    #   kubectl -n {{.ProjectName}}-prod create secret generic {{.ProjectName}}-secrets \
+    #     --from-literal=database_url='postgres://USER:PASSWORD@HOST:5432/DBNAME?sslmode=require'
+    #
+    # `required_secrets` below turns "it is missing" from a silent
+    # CreateContainerConfigError minutes after a green apply into a
+    # pre-apply BLOCK naming the Secret and the key.
+    secret_provider = forge.ExternalSecrets {}
+    required_secrets = [forge.ExternalSecret {
+        name = "{{.ProjectName}}-secrets"
+        namespace = _namespace
+        keys = ["database_url"]
+        reason = "backs every `sensitive` config field (DATABASE_URL); the workloads read it via valueFrom.secretKeyRef and will not start without it"
+    }]
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
     http_routes = ing.HTTP_ROUTES

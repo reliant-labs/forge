@@ -100,7 +100,7 @@ func TestGenerateConfigProjectionKCL_SkipsEmptyEnvVar(t *testing.T) {
 	fields := []ConfigField{
 		{Name: "port", ProtoType: "int32", EnvVar: "PORT"},
 		{Name: "trader", ProtoType: "message", MessageType: "TraderConfig"}, // block ref, no env_var
-		{Name: "unbound", ProtoType: "string"},                             // no env_var at all
+		{Name: "unbound", ProtoType: "string"},                              // no env_var at all
 	}
 	got, err := GenerateConfigProjectionKCL(fields)
 	if err != nil {

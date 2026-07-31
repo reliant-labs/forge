@@ -27,8 +27,12 @@
 package cli
 
 import (
+	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/generator/contract"
 )
 
 // tier1OwnerGate returns the predicate function that decides whether
@@ -50,10 +54,12 @@ func tier1OwnerGate(relPath string) func(*pipelineContext) bool {
 // `glob` is set per entry.
 //
 //   - exact:  full relative-path equality (e.g. "pkg/app/migrate.go").
-//   - prefix: trailing-slash directory prefix (e.g. "pkg/middleware/").
+//   - prefix: trailing-slash directory prefix matching every path under a
+//     directory (e.g. "internal/db/").
 //   - glob:   suffix-aware shell glob applied per segment using
-//     path.Match semantics (e.g. "pkg/middleware/*_gen.go",
-//     "handlers/*/handlers_crud_ops_gen.go",
+//     path.Match semantics (e.g.
+//     "internal/handlers/*/handlers_crud_ops_gen.go",
+//     "internal/db/*_orm.go",
 //     "frontends/*/src/hooks/*-hooks.ts").
 type tier1OwnerEntry struct {
 	exact  string
@@ -122,22 +128,12 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 
 	// internal/db/orm_shared.go + internal/db/*_orm.go are emitted by
 	// stepInternalDBORM (M3: the ORM emitter records its outputs in the
-	// manifest so `forge disown` works on them and audit doesn't see
+	// manifest so `forge project disown` works on them and audit doesn't see
 	// orphans). When the ORM step is gated off (features.orm=false or
 	// no services), absence from WrittenThisRun is uninformative and
 	// the stale sweep must leave the tracked entity code alone.
 	{exact: "internal/db/orm_shared.go", gate: gateORMHasServices},
 	{glob: "internal/db/*_orm.go", gate: gateORMHasServices},
-
-	// pkg/middleware/*_gen.go covers the auth/tenant middleware
-	// emitters (stepAuthMiddleware + stepTenantMiddleware). Both are
-	// codegen-gated and require at least a configured project; their
-	// finer-grained gates (e.g. gateAuthProviderConfigured) are
-	// strict subsets of gateCodegenHasServices for the purposes of
-	// the stomp guard — using the broader gate keeps the registry
-	// simple while staying fail-closed: if the project has services,
-	// SOME middleware emitter runs, so the drift stays in-scope.
-	{prefix: "pkg/middleware/", gate: gateCodegenHasServices},
 
 	// frontends/<name>/src/hooks/*-hooks.ts is emitted by
 	// stepFrontendHooks. Gated on frontend feature + HasServices
@@ -163,9 +159,19 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 // emitter would run in the current pipeline context. Unknown paths
 // (no entry in tier1OwnerRegistry) are passed through unchanged —
 // fail-closed for the registry's blind spots.
+//
+// Drift on an artifact whose package has opted OUT of contract codegen
+// is dropped from both buckets: the guard exists to warn before an
+// emitter overwrites the bytes in place, and no emitter will. The
+// contracts step reconciles those paths instead (contract/retire.go),
+// and reports each one itself — silence here, a decision there.
 func filterTier1DriftInScope[T any](ctx *pipelineContext, drift []T, path func(T) string) (inScope, outOfScope []T) {
 	for _, d := range drift {
-		gate := tier1OwnerGate(path(d))
+		rel := path(d)
+		if contractArtifactOptedOut(ctx, rel) {
+			continue
+		}
+		gate := tier1OwnerGate(rel)
 		if gate == nil {
 			inScope = append(inScope, d)
 			continue
@@ -177,4 +183,29 @@ func filterTier1DriftInScope[T any](ctx *pipelineContext, drift []T, path func(T
 		}
 	}
 	return inScope, outOfScope
+}
+
+// contractArtifactOptedOut reports whether relPath is a contract-codegen
+// artifact (mock_gen.go and the observability wrappers) sitting in a
+// package that has opted out of contract codegen — centrally via
+// forge.yaml `contracts.exclude`, or locally via the
+// `//forge:exclude-contract` directive. Both sources are consulted as a
+// union, matching every other walk that honours the opt-out.
+//
+// Such a path is nobody's emit target. `forge generate` will not rewrite
+// it; the contracts step either retires it (when forge can prove the
+// bytes are its own) or leaves it untouched and says so. Telling the
+// user "re-run with --force to discard your edits" about a file forge is
+// not going to write would be a lie, and — before retirement existed —
+// was an instruction that could not resolve anything.
+func contractArtifactOptedOut(ctx *pipelineContext, relPath string) bool {
+	if ctx == nil || !contract.IsRetirableArtifact(path.Base(relPath)) {
+		return false
+	}
+	pkgPath := path.Dir(relPath)
+	if ctx.Cfg != nil && ctx.Cfg.Contracts.IsExcluded(pkgPath) {
+		return true
+	}
+	return codegen.HasExcludeContractDirective(
+		filepath.Join(ctx.ProjectDir, filepath.FromSlash(pkgPath)))
 }

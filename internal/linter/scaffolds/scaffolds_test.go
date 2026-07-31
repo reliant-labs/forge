@@ -25,11 +25,20 @@ func TestLintRoot_ScaffoldMarkerPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LintRoot returned error: %v", err)
 	}
-	if !res.HasErrors() {
-		t.Fatal("expected scaffold-not-customized error, got none")
-	}
 	if !findingMatches(res.Findings, "scaffold-not-customized") {
 		t.Fatalf("expected a scaffold-not-customized finding, got: %+v", res.Findings)
+	}
+	// WARNING severity, not error: a fresh scaffold always carries
+	// FORGE_SCAFFOLD markers, so uncustomized scaffold is pending work —
+	// it must be surfaced but must never gate the build (`forge lint`
+	// has to exit 0 on forge's own freshly-scaffolded output).
+	if res.HasErrors() {
+		t.Fatalf("scaffold-not-customized must be a warning, got error severity: %+v", res.Findings)
+	}
+	for _, f := range res.Findings {
+		if f.Rule == "scaffold-not-customized" && f.Severity != SeverityWarning {
+			t.Fatalf("scaffold-not-customized severity = %q, want %q", f.Severity, SeverityWarning)
+		}
 	}
 }
 
@@ -71,7 +80,7 @@ func TestIsGenFilename(t *testing.T) {
 	}{
 		{"handlers/api/handlers_crud_gen.go", true},
 		{"handlers/api/handlers_crud_gen_test.go", true},
-		{"handlers/api/authorizer_gen.go", true},
+		{"handlers/api/mock_gen.go", true},
 		{"handlers/api/service.go", false},
 		{"handlers/api/handlers.go", false},
 		{"pkg/middleware/auth_gen.go", true},

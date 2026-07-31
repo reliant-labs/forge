@@ -51,9 +51,9 @@ func maskTestEntities() []EntityDef {
 			PkField:   "id",
 			PkGoType:  "string",
 			Fields: []EntityField{
-				{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string"},
-				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
-				{Name: "email", GoName: "Email", ProtoType: "string", GoType: "string"},
+				{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+				{Name: "email", GoName: "Email", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
 			},
 		},
 	}
@@ -103,11 +103,11 @@ func TestGenerateCRUDHandlers_UpdateMaskWired(t *testing.T) {
 	if !strings.Contains(ops, "Mask: func(req *pb.UpdatePatientRequest) []string { return req.GetUpdateMask().GetPaths() },") {
 		t.Error("ops file should wire UpdateOp.Mask from req.GetUpdateMask().GetPaths()")
 	}
-	if !strings.Contains(ops, "PersistMasked: func(ctx context.Context, tenantID string, entity *db.Patient, fields []string) error {") {
+	if !strings.Contains(ops, "PersistMasked: func(ctx context.Context, entity *db.Patient, fields []string) error {") {
 		t.Error("ops file should wire UpdateOp.PersistMasked")
 	}
 	if !strings.Contains(ops, "db.UpdatePatientMasked(ctx, s.deps.DB, entity, fields)") {
-		t.Error("PersistMasked should delegate to db.UpdatePatientMasked (un-tenanted signature)")
+		t.Error("PersistMasked should delegate to db.UpdatePatientMasked")
 	}
 
 	// The user-owned shim documents that the mask is honored, not the old
@@ -202,8 +202,8 @@ func TestGenerateCRUDTests_MaskedAndUnmaskedExercised(t *testing.T) {
 	if !strings.Contains(content, "MUST-NOT-PERSIST") {
 		t.Error("masked update should load an unmasked field with a clobber value")
 	}
-	if !strings.Contains(content, "keepEmail") {
-		t.Error("masked update should assert the unmasked field (email) survived")
+	if !strings.Contains(content, "keptUnmaskedValue") {
+		t.Error("masked update should assert the unmasked field (email) survived via keptUnmaskedValue")
 	}
 	// Unknown mask path → clean InvalidArgument.
 	if !strings.Contains(content, "this_field_does_not_exist") ||

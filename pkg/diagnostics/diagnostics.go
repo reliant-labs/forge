@@ -3,7 +3,7 @@ package diagnostics
 // diagnostics.go — public type surface.
 //
 // The two value types — Diagnostic and the Kind/Severity enums — are
-// JSON-marshalable so `forge audit --json` can roll them up under a
+// JSON-marshalable so `forge project audit --json` can roll them up under a
 // new audit category without forcing a separate wire format. Field
 // names match the canonical lint diagnostic shape from
 // `internal/linter/forgeconv/forgeconv.go::Finding` (the canonical
@@ -63,7 +63,7 @@ const (
 //
 // Construction is private to the Registry's Register* methods; do not
 // build Diagnostic literals from user code. The JSON shape is part of
-// the forge audit / lint contract.
+// the forge project audit / lint contract.
 type Diagnostic struct {
 	// Kind is one of the KindXxx constants above.
 	Kind Kind `json:"kind"`
@@ -77,7 +77,7 @@ type Diagnostic struct {
 
 	// File is the project-relative path of the codegen-emitted source
 	// (forward slashes regardless of OS). Matches the path convention
-	// used by `forge audit --json` and `forge lint`.
+	// used by `forge project audit --json` and `forge lint`.
 	File string `json:"file"`
 
 	// Line is the 1-indexed line number of the marker in File.

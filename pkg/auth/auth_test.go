@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
@@ -28,14 +27,24 @@ func TestIsUnauthenticatedProcedure_Health(t *testing.T) {
 	for _, p := range []string{
 		"/grpc.health.v1.Health/Check",
 		"/grpc.health.v1.Health/Watch",
-		"/myapp/HealthCheck", // legacy: substring match
 	} {
 		if !v.IsUnauthenticatedProcedure(p, nil) {
 			t.Errorf("%q should be unauthenticated", p)
 		}
 	}
-	if v.IsUnauthenticatedProcedure("/svc/Foo", nil) {
-		t.Error("/svc/Foo should NOT be unauthenticated")
+	// Application RPCs that merely contain "Health" MUST still require auth:
+	// the skip is an exact gRPC health-check service-path match, not a
+	// substring, so a "GetPatientHealthRecord" endpoint is never exempted.
+	for _, p := range []string{
+		"/svc/Foo",
+		"/myapp/HealthCheck",
+		"/myapp.v1.Records/GetPatientHealthRecord",
+		"/myapp.v1.Notes/MentalHealthNote",
+		"/myapp.v1.Metrics/HealthMetrics",
+	} {
+		if v.IsUnauthenticatedProcedure(p, nil) {
+			t.Errorf("%q must require auth (not a health-check procedure)", p)
+		}
 	}
 }
 
@@ -126,7 +135,16 @@ func TestAuthenticateHeaders_JWT_HS256_Valid(t *testing.T) {
 	}
 }
 
-func TestAuthenticateHeaders_JWT_EnvSecretFallback(t *testing.T) {
+// A validator trusts EXACTLY the key its constructor was handed. An ambient
+// JWT_SECRET in the process environment is not signing material — this
+// package reads no environment variable at all.
+//
+// It is what makes "no signing material configured means no credential is
+// accepted" provable: a JWT_SECRET left over in a developer's shell, in a CI
+// job, or in a Deployment that outlived its IdP migration must not silently
+// re-authenticate anyone. The key reaches this package one way — the typed
+// config field the app declares, handed to the constructor.
+func TestAuthenticateHeaders_JWT_IgnoresAmbientEnvSecret(t *testing.T) {
 	t.Setenv("JWT_SECRET", "envsecret")
 	v, _ := NewValidator(Config{
 		Provider: ProviderJWT,
@@ -138,15 +156,12 @@ func TestAuthenticateHeaders_JWT_EnvSecretFallback(t *testing.T) {
 	})
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+tokStr)
-	if _, err := v.AuthenticateHeaders(context.Background(), h, InterceptorOptions{}); err != nil {
-		t.Fatalf("env-secret fallback failed: %v", err)
+	if _, err := v.AuthenticateHeaders(context.Background(), h, InterceptorOptions{}); err == nil {
+		t.Fatal("a token signed with an ambient JWT_SECRET was accepted; the library must trust only the key it was given")
 	}
 }
 
 func TestAuthenticateHeaders_JWT_NoSecret_ProducesError(t *testing.T) {
-	if err := os.Unsetenv("JWT_SECRET"); err != nil {
-		t.Fatal(err)
-	}
 	v, _ := NewValidator(Config{
 		Provider: ProviderJWT,
 		JWT:      JWTConfig{SigningMethod: "HS256"},
@@ -263,21 +278,6 @@ func TestAuthenticateHeaders_Both_BothFail(t *testing.T) {
 	_, err := v.AuthenticateHeaders(context.Background(), http.Header{}, InterceptorOptions{})
 	if err == nil || connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("expected Unauthenticated, got %v", err)
-	}
-}
-
-func TestAuthenticateHeaders_DevMode(t *testing.T) {
-	devClaims := &Claims{UserID: "dev-user", OrgID: "dev-org"}
-	v, _ := NewValidator(Config{Provider: ProviderJWT})
-	c, err := v.AuthenticateHeaders(context.Background(), http.Header{}, InterceptorOptions{
-		AllowDevMode: true,
-		DevClaims:    devClaims,
-	})
-	if err != nil {
-		t.Fatalf("dev mode should pass: %v", err)
-	}
-	if c != devClaims {
-		t.Errorf("dev claims not injected: got %+v", c)
 	}
 }
 

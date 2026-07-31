@@ -37,7 +37,10 @@ func TestScaffoldIngressWiresKCLForServiceKind(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s/main.k: %v", env, err)
 		}
-		if !strings.Contains(string(raw), "import deploy.kcl."+env+".ingress as ing") {
+		// Relative import — deploy/kcl/ is the KCL package root
+		// (deploy/kcl/kcl.mod), so each env imports its sibling
+		// ingress.k with a leading-dot path.
+		if !strings.Contains(string(raw), "import .ingress as ing") {
 			t.Errorf("%s/main.k missing ingress import:\n%s", env, raw)
 		}
 		if !strings.Contains(string(raw), "gateways = ing.GATEWAYS") {

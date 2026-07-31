@@ -29,8 +29,8 @@ func TestLintHandlerTests_HandRolledFires(t *testing.T) {
 	if !strings.Contains(got[0].Message, "tdd.RunRPCCases") {
 		t.Errorf("message should mention `tdd.RunRPCCases`; got: %s", got[0].Message)
 	}
-	if !strings.Contains(got[0].Message, "forge test migrate-tdd") {
-		t.Errorf("message should mention the codemod (`forge test migrate-tdd`); got: %s", got[0].Message)
+	if !strings.Contains(got[0].Message, "forge project migrate tdd") {
+		t.Errorf("message should mention the codemod (`forge project migrate tdd`); got: %s", got[0].Message)
 	}
 	// Warnings must not gate the build.
 	if res.HasErrors() {

@@ -64,7 +64,12 @@ func runExternalBuildDoctorChecks(ctx context.Context, cfg *config.ProjectConfig
 	if !cfg.Features.BuildEnabled() {
 		return nil
 	}
-	if signal != "" && signal != "external-builds" {
+	// Only the unfiltered pass. `--signal` selects among the values
+	// doctor.RunFiltered accepts (metrics/traces/logs/profiles/deploy); it
+	// REJECTS anything else before a check runs, so a guard naming its own
+	// signal here could never be true and advertised a filter that does not
+	// exist.
+	if signal != "" {
 		return nil
 	}
 	// We only render the dev env — same as auditExternalBuilds /

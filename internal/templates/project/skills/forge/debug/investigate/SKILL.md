@@ -23,7 +23,7 @@ You have a bug report with no obvious code path — you need to form and rank hy
 Forgot `forge generate` after a proto change. Run it and retest:
 ```
 forge generate
-forge test
+task test
 ```
 
 **Nil proto fields**
@@ -36,7 +36,7 @@ Returning `Internal` when it should be `InvalidArgument`, `NotFound`, or `Permis
 Shared state modified without synchronization. Look for package-level vars, map writes, or shared slices accessed from handlers.
 
 **Migration / codegen drift**
-Code expects a column or table that hasn't been migrated yet, or references generated symbols that are stale after a proto/schema change. Run `forge audit` to surface the mismatch and `forge generate` to refresh — do this *before* chasing the code when a symbol is "undefined" right after a schema change.
+Code expects a column or table that hasn't been migrated yet, or references generated symbols that are stale after a proto/schema change. Run `forge project audit` to surface the mismatch and `forge generate` to refresh — do this *before* chasing the code when a symbol is "undefined" right after a schema change.
 
 **Missing error checks on Connect calls**
 Frontend calling Connect endpoints without handling error responses. Check for unchecked `.error` on client responses.
@@ -45,7 +45,7 @@ Frontend calling Connect endpoints without handling error responses. Check for u
 
 Code reading ranks hypotheses; runtime evidence confirms them. The fast forge tools:
 
-- **`forge introspect handlers`** — localize: if the failing RPC isn't in the assembled binary's list, the fault is a downstream/remote hop, not this code. This often kills several hypotheses at once.
+- **`forge project introspect handlers`** — localize: if the failing RPC isn't in the assembled binary's list, the fault is a downstream/remote hop, not this code. This often kills several hypotheses at once.
 - **`forge api curl <service.method>`** — exercise the endpoint from the shell to confirm the symptom (stops at the auth interceptor — no token minting).
 - **`forge cluster logs --service <name>`** — read the server's actual logs for the request (kubectl-backed; owner cluster only — use `kubectl --context <other>` for a peer in another cluster).
 - **`forge debug start <svc>`** — attach Delve when logs aren't enough. Caveats: in a multi-binary repo `start <service>` can mis-build (falls back to `./cmd/...`) so pass an explicit path; and `forge debug stop` after `--attach` kills the live process.
@@ -59,4 +59,4 @@ Present findings as:
 
 Do not fix the bug in investigation mode — hand off with clear evidence.
 
-**Note for the implementer's handoff:** a green `forge smoke` / `forge doctor` does NOT prove the app flow works (they check listeners/compose/telemetry, not app-flow invariants). The fix is only proven by a declarative, exit-coded app-health assertion (model: a project `doctor:<flow>` task) plus a full `forge test e2e`.
+**Note for the implementer's handoff:** a green `forge env smoke` / `forge env status <env>` does NOT prove the app flow works (they check listeners/compose/telemetry, not app-flow invariants). The fix is only proven by a declarative, exit-coded app-health assertion (model: a project `doctor:<flow>` task) plus a full `task test:e2e`.

@@ -65,9 +65,13 @@ type PlanEntityField struct {
 	Unique     bool   `yaml:"unique,omitempty" json:"unique,omitempty"`
 	Default    string `yaml:"default,omitempty" json:"default,omitempty"`
 	References string `yaml:"references,omitempty" json:"references,omitempty"` // "users.id"
-	TenantKey  bool   `yaml:"tenant_key,omitempty" json:"tenant_key,omitempty"`
 	// Generated marks a GENERATED ALWAYS AS (...) STORED column: the DB
 	// computes it, so the ORM emits ,scanonly (never written on
 	// INSERT/UPDATE).
 	Generated bool `yaml:"generated,omitempty" json:"generated,omitempty"`
+	// Secret marks a column backed by a `// forge:secret` wire field: the
+	// read path never packs it (a client always reads it back as ""), so the
+	// generated repo's Spec.SecretColumns preserves it on a maskless
+	// full-replace Update rather than clobbering the stored value with "".
+	Secret bool `yaml:"secret,omitempty" json:"secret,omitempty"`
 }

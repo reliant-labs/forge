@@ -2,33 +2,23 @@
 
 Skills are focused, self-contained playbooks that teach an AI agent (or a human) how to accomplish a specific task in a Forge project.
 
-Skills are served via `forge skill list` and `forge skill load <name>` — they are embedded in the forge binary and not written to disk. Each skill has a path-based name (e.g. `db`, `frontend/state`, `debug/investigate`).
+Each skill has a path-based name derived from its directory (`db`, `frontend/state`, `debug/investigate`).
+
+## Where the bytes live, and which copy is authoritative
+
+Three distinct places, and confusing them is how a reader ends up following an older vintage:
+
+| | Path | Who writes it |
+|---|---|---|
+| **Source** | `internal/templates/project/skills/{forge,general}/**/SKILL.md` (this tree) | you, in the forge repo — `//go:embed`ed into the binary |
+| **Delivered render** | `<project>/.claude/skills/<flat-name>/SKILL.md` | `forge generate`, every run (Tier-1). Hierarchy flattens with `-`: `frontend/state` → `frontend-state`. Migration skills are NOT delivered |
+| **Project / user skills** | `<project>/.forge/skills/**`, `~/.forge/skills/**` | you. Precedence on a path collision: forge-shipped < project < user-global |
+
+`forge skill load <name>` prints from the binary — that is the authoritative copy, and it carries no banner or preamble. The delivered render is what a harness preloads; it is only as current as the last `forge generate` in that checkout, which is why every rendered skill's preamble points back at `forge skill load`.
 
 ## Structure
 
-Skills are organized by **action** — what you're trying to do — not by CLI command.
-
-```
-.reliant/skills/
-└── forge/
-    ├── SKILL.md                        # Project overview: proto-first philosophy, layout, dev loop
-    ├── services/SKILL.md               # Scaffold and wire services, packages, frontends
-    ├── workers/SKILL.md                # Background workers (including cron-scheduled)
-    ├── api/SKILL.md                    # Write Connect RPC handlers
-    ├── frontend/SKILL.md               # Write frontends (Next.js web + React Native mobile)
-    ├── testing/                        # Testing methodology
-    │   ├── SKILL.md                    # Philosophy: mock vs real, harness patterns, flakiness
-    │   ├── unit/SKILL.md              # Hermetic unit tests with generated mocks
-    │   ├── integration/SKILL.md       # Integration tests with real DB
-    │   └── e2e/SKILL.md              # End-to-end tests against running stack
-    ├── debug/                          # Debugging methodology
-    │   ├── SKILL.md                    # Orchestrator: triage, parallel investigation, synthesis
-    │   ├── reproduce/SKILL.md         # Runtime reproduction with diagnostic logging
-    │   ├── isolate/SKILL.md           # TDD-driven bug isolation via top-down bisection
-    │   └── investigate/SKILL.md       # Hypothesis-driven debugging via code review
-    ├── db/SKILL.md                     # Database: migrations, queries, proto-db sync
-    └── deploy/SKILL.md                 # Ship it: lint, build, deploy, verify
-```
+Skills are organized by **action** — what you're trying to do — not by CLI command. A skill with sub-topics is a directory of directories: `testing/SKILL.md` beside `testing/unit/SKILL.md`, `testing/integration/SKILL.md`, `testing/e2e/SKILL.md`. Run `forge skill list` for the live catalog — do not maintain a copy of it here.
 
 ## How skills are used
 
@@ -65,7 +55,7 @@ emit: both       # both audiences (compiler strips @forge-only blocks for genera
 ## Forge-Specific Debug Tools
 
 forge debug start              # attach Delve debugger
-forge test --race              # run tests with race detector
+task test              # run tests with race detector
 <!-- @forge-only:end -->
 ```
 
@@ -74,7 +64,7 @@ forge test --race              # run tests with race detector
 Content outside `@forge-only` blocks is included in both emits. **The general prose has to be more than just CLI-free — it has to be architecture-free.** Anything that assumes a forge-shaped project belongs in `@forge-only`, including:
 
 - Specific generated files / paths (`wire_gen.go`, `internal/<svc>/`, `pkg/tdd`).
-- Forge architectural concepts (proto-as-canonical-input, generated mocks, Tier-1 vs Tier-2 ownership, DI wiring, `forge generate` pipelines, `forge audit`).
+- Forge architectural concepts (proto-as-canonical-input, generated mocks, Tier-1 vs Tier-2 ownership, DI wiring, `forge generate` pipelines, `forge project audit`).
 - Cross-references to forge sibling skills (`see the X sub-skill`) — those links are dead in a non-forge project. Fold the key idea inline in the general prose, then name the sub-skill inside the `@forge-only` block.
 - Stack-specific tooling that only makes sense in a forge project (Connect RPC handler patterns, KCL deploy specifics, sqlc query files).
 
@@ -84,13 +74,17 @@ See `forge/debug/SKILL.md` and `forge/diagrams/SKILL.md` for worked examples.
 
 ## Adding your own skills
 
-To add project-specific skills, create `.reliant/skills/<name>/SKILL.md` files. Use the existing forge skills as a template:
+Project-specific skills go in `<project>/.forge/skills/<name>/SKILL.md` (or `~/.forge/skills/` to carry one across projects) — never in this tree, which forge owns. Use the existing forge skills as a template:
 
-1. **YAML frontmatter** with `name` (must match directory name) and `description`
+1. **YAML frontmatter** with `name` (must match directory name) and `description` — the file must OPEN with it, at byte 0
 2. **Action-oriented structure** — organize by what the developer wants to do, not by CLI subcommand
 3. **Rules** — invariants and things you must not do
 4. **When this skill is not enough** — pointers to other skills or approaches
 
-Keep skills short and actionable. Target < 60 lines. If a skill is getting long, split it into nested sub-skills.
+Keep skills short and actionable. `TestShippedSkillsFitDeliveryBudget` enforces a hard delivered-size cap (the template plus the banner and preamble forge prepends); past it the tail is truncated away, taking the sub-skill pointers with it. Split a long skill into a sibling `<skill>/<subtopic>/SKILL.md` and leave a one-line pointer — never trade the cap for a longer file.
 
-**Important**: every command you cite in a skill must actually exist. There's a test at `internal/generator/skills_commands_test.go` that walks every SKILL.md and asserts each `forge ...` command resolves to a real cobra subcommand. That test will fail CI if you add a skill that references a non-existent command.
+## Every claim in a skill is checked
+
+`internal/templates/skills_validation_test.go` fact-checks every shipped SKILL.md against the binary it ships inside: `forge <chain>` references against the real cobra tree, the `--flags` after them against what that command accepts, path references against a real scaffold, `(forge.v1.*)` annotation fields against the compiled descriptors, `forge skill load <path>` targets, `forge/pkg/*` subpackages, audit categories, feature flags, proto packages, and forge.yaml keys. Legitimate exceptions go in `internal/templates/testdata/skills_validation_allowlist.txt` **with a justification** — an unexplained entry fails the test, and so does one whose claim no longer appears in the skill.
+
+What the validators cannot see, you have to check yourself: **run the command and read the emitted file.** A claim about what generated code looks like is only as good as the last time someone scaffolded a project and looked.

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/devstack"
@@ -10,7 +11,7 @@ import (
 
 // activateDevStack arms the render-context globals BEFORE the first render so
 // that every render path (entity AND manifest) sees the same parallel-dev-
-// stack inputs under BOTH `forge up` and `forge deploy`:
+// stack inputs under BOTH `forge env up` and `forge env deploy`:
 //
 //   - devstack.SetActive — pushes option("worktree") + option("branch") into
 //     KCL (the raw git facts; the KCL author decides which to key on).
@@ -46,7 +47,13 @@ func activateDevStack(projectDir, env string) (devstack.Options, func()) {
 	restore := kclplugin.UsePortStore(storePath)
 
 	if opts.Worktree != "" || opts.Branch != "" {
-		fmt.Printf("[devstack] worktree=%q branch=%q\n", opts.Worktree, opts.Branch)
+		// STDERR, not stdout: this is a diagnostic about the render context,
+		// not output. On stdout it prefixed the JSON document of every
+		// `--json` command that arms a devstack render (`forge env status
+		// --json` is the discovery call agents and scripts parse), so the
+		// stream did not decode. A human piping through a terminal still
+		// sees it.
+		fmt.Fprintf(os.Stderr, "[devstack] worktree=%q branch=%q\n", opts.Worktree, opts.Branch)
 	}
 	return opts, restore
 }

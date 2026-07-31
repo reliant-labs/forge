@@ -18,10 +18,10 @@ import (
 // time`, IsZero on a string). The entity matrix here covers every
 // stamping/PK branch the emitter has:
 //
-//   - string PK + tenant + soft-delete + declared NOT NULL time columns
+//   - string PK + soft-delete + declared NOT NULL time columns
 //   - legacy TEXT created_at/updated_at (string stamps)
 //   - nullable managed columns (pointer stamps), time and string
-//   - server-allocated int64 and int32 PKs
+//   - server-allocated int64 PKs, with and without timestamps
 //   - unstampable epoch-integer "timestamps" (no stamping emitted)
 //   - id-only integer-PK table (DEFAULT VALUES, no strings import)
 //
@@ -40,7 +40,7 @@ func TestGeneratePlanORM_OutputTypeChecks(t *testing.T) {
 			Name: "Project", Timestamps: true, SoftDelete: true,
 			Fields: []config.PlanEntityField{
 				{Name: "id", Type: "string", PrimaryKey: true, NotNull: true},
-				{Name: "org_id", Type: "string", TenantKey: true, NotNull: true},
+				{Name: "org_id", Type: "string", NotNull: true},
 				{Name: "name", Type: "string", NotNull: true},
 				{Name: "tags", Type: "[]string"},
 				{Name: "created_at", Type: "time", NotNull: true},
@@ -84,7 +84,7 @@ func TestGeneratePlanORM_OutputTypeChecks(t *testing.T) {
 		{
 			Name: "Tick",
 			Fields: []config.PlanEntityField{
-				{Name: "id", Type: "int32", PrimaryKey: true, NotNull: true},
+				{Name: "id", Type: "int64", PrimaryKey: true, NotNull: true},
 				{Name: "label", Type: "string", NotNull: true},
 			},
 		},

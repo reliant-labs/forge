@@ -8,6 +8,12 @@ import type { Metadata } from "next";
 
 import "./globals.css";
 
+// Inter is this project's DECLARED body face, not a taste choice: it is the
+// neutral default a scaffold owes an app that has no brief yet, self-hosted
+// by next/font (no third-party request, no layout shift). The `design` skill
+// blocklists Inter for fonts YOU pick and exempts this one for that reason.
+// To rebrand, swap the loader here and the `--font-sans` token in
+// globals.css — never per-component `font-*` classes.
 const inter = Inter({
   subsets: ["latin"],
   variable: "--font-inter",
@@ -20,15 +26,21 @@ export const metadata: Metadata = {
 
 // MockModeBanner renders a loud, always-visible reminder when the app is
 // running against mock data instead of the real backend. Mock mode is
-// opt-in (NEXT_PUBLIC_MOCK_API in .env.local); the banner exists so a
+// opt-in (NEXT_PUBLIC_MOCK_API — set it in your shell for dev, or the
+// forge.Frontend `config.mock` KCL knob); the banner exists so a
 // working-looking UI can never silently masquerade as a working stack.
+//
+// It is loud through the SEMANTIC warning tokens (`bg-warning` /
+// `text-on-warning` from globals.css), not a raw palette color — the same
+// rule every other surface in this app follows, so rebranding moves the
+// banner too.
 function MockModeBanner() {
   const mode = process.env.NEXT_PUBLIC_MOCK_API;
   if (mode !== "true" && mode !== "hybrid") return null;
   return (
-    <div className="bg-amber-400 px-4 py-1.5 text-center text-sm font-semibold text-amber-950">
+    <div className="bg-warning px-4 py-1.5 text-center text-sm font-semibold text-on-warning">
       {mode === "true"
-        ? "MOCK DATA — backend not connected (unset NEXT_PUBLIC_MOCK_API in .env.local to use the real backend)"
+        ? "MOCK DATA — backend not connected (unset NEXT_PUBLIC_MOCK_API to use the real backend)"
         : "HYBRID MOCK MODE — ?scenario= overlays active; unmatched RPCs hit the real backend"}
     </div>
   );
@@ -43,7 +55,7 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${inter.variable} font-sans antialiased`}>
         <Providers>
-          <div className="flex h-screen flex-col overflow-hidden bg-gray-50">
+          <div className="flex h-screen flex-col overflow-hidden bg-surface-muted text-ink">
             <MockModeBanner />
             <div className="flex min-h-0 flex-1 overflow-hidden">
               <Nav />

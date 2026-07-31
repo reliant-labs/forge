@@ -5,8 +5,8 @@
 //
 // Historically the core emitters threaded ProjectDir / ModulePath /
 // *checksums.FileChecksums through 7-12 positional parameters each.
-// Newer emitters (mcp_gen, ingress_k3d_gen, deploy_config_gen) adopted
-// a per-emitter GenInput struct instead. GenContext finishes that
+// Newer emitters (ingress_k3d_gen) adopted a per-emitter
+// GenInput struct instead. GenContext finishes that
 // migration: GenInput structs EMBED it so the three fields are declared
 // once and accessed uniformly (in.ProjectDir, in.ModulePath,
 // in.Checksums) via Go's field promotion, while the per-emitter struct
@@ -37,7 +37,7 @@ type GenContext struct {
 	ModulePath string
 
 	// Checksums, when non-nil, records each rendered Tier-1 file's hash
-	// so `forge audit` doesn't flag forge-owned output as stale. A nil
+	// so `forge project audit` doesn't flag forge-owned output as stale. A nil
 	// tracker is tolerated everywhere — the file is still written.
 	Checksums *checksums.FileChecksums
 }

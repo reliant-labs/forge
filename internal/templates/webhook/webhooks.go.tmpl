@@ -8,12 +8,34 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/middleware"
 )
+
+// {{.Name | camelCase}}Dedupe remembers which {{.Name}} deliveries were already
+// processed, so a redelivery is acknowledged instead of applied twice. It is
+// bounded (least-recently-marked key evicted past MaxKeys) and TTL'd, so it
+// cannot grow for the life of the process.
+//
+// Size TTL to the provider's retry window: a provider that keeps retrying a
+// failed delivery for 24h needs a 24h window to still recognise the
+// redelivery as a duplicate.
+//
+// PER-PROCESS: every replica keeps its own copy, so a duplicate delivery
+// routed to a different replica IS processed again. For at-most-once across
+// replicas, keep this call shape and point the two methods below at shared
+// storage — a webhook_events table with a UNIQUE constraint on event_id,
+// where "is processed" is a SELECT and "mark processed" an INSERT the
+// constraint rejects the second time.
+var {{.Name | camelCase}}Dedupe = middleware.NewDedupeStore(middleware.DedupeConfig{
+	MaxKeys: 10_000,
+	TTL:     24 * time.Hour,
+})
 
 // handleWebhook{{.Name | pascalCase}} handles incoming {{.Name}} webhooks.
 //
 // Routes are auto-registered via webhook_routes_gen.go AND auto-wired by
-// pkg/app/bootstrap.go (which calls s.RegisterWebhookRoutes(mux, stack)
+// internal/app/mounts_services.go (which calls s.RegisterWebhookRoutes(mux, stack)
 // after the user-owned RegisterHTTP). No manual wiring required.
 func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -21,22 +43,26 @@ func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, webhookMaxBodySize))
+	body, err := io.ReadAll(io.LimitReader(r.Body, middleware.DefaultWebhookMaxBodySize))
 	if err != nil {
 		s.deps.Logger.Error("failed to read webhook body", "error", err)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
-	// Verify webhook signature.
+	// Verify the signature FIRST — everything below trusts the body, and the
+	// sender is anonymous until the signature checks out.
 	if err := s.verify{{.Name | pascalCase}}Signature(r.Header, body); err != nil {
 		s.deps.Logger.Warn("webhook signature verification failed", "error", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	// Extract event ID for idempotency.
-	eventID := extractEventID(r.Header)
+	// Extract event ID for idempotency. middleware.WebhookEventID covers the
+	// common provider headers (X-Event-ID / X-Webhook-ID / X-Request-ID,
+	// Stripe-Event-Id, X-GitHub-Delivery); if {{.Name}} stamps something else,
+	// read that header directly and fall back to the helper.
+	eventID := middleware.WebhookEventID(r.Header)
 	if eventID == "" {
 		s.deps.Logger.Warn("webhook missing event ID")
 		http.Error(w, "missing event ID", http.StatusBadRequest)
@@ -44,7 +70,7 @@ func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *
 	}
 
 	// Idempotency check.
-	processed, err := s.isWebhookProcessed(r.Context(), eventID)
+	processed, err := s.is{{.Name | pascalCase}}WebhookProcessed(r.Context(), eventID)
 	if err != nil {
 		s.deps.Logger.Error("failed to check webhook idempotency", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -56,7 +82,7 @@ func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *
 		return
 	}
 
-	event := webhookEvent{
+	event := middleware.WebhookEvent{
 		ID:         eventID,
 		Source:     "{{.Name}}",
 		Headers:    r.Header,
@@ -71,12 +97,30 @@ func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *
 		return
 	}
 
-	// Mark as processed.
-	if err := s.markWebhookProcessed(r.Context(), eventID, "{{.Name}}"); err != nil {
+	// Mark as processed — only now, after processing SUCCEEDED, so the
+	// provider's retry of a failed delivery is reprocessed rather than
+	// acknowledged as a duplicate.
+	if err := s.mark{{.Name | pascalCase}}WebhookProcessed(r.Context(), eventID); err != nil {
 		s.deps.Logger.Error("failed to mark webhook as processed", "event_id", eventID, "error", err)
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// is{{.Name | pascalCase}}WebhookProcessed reports whether this delivery was
+// already applied. Swap the body for a lookup against shared storage to make
+// deduplication hold across replicas; the error return exists so that lookup
+// can fail loudly instead of silently reprocessing.
+func (s *Service) is{{.Name | pascalCase}}WebhookProcessed(_ context.Context, eventID string) (bool, error) {
+	return {{.Name | camelCase}}Dedupe.Seen(eventID), nil
+}
+
+// mark{{.Name | pascalCase}}WebhookProcessed records a successfully processed
+// delivery. Swap the body for an INSERT into the same shared storage
+// is{{.Name | pascalCase}}WebhookProcessed reads.
+func (s *Service) mark{{.Name | pascalCase}}WebhookProcessed(_ context.Context, eventID string) error {
+	{{.Name | camelCase}}Dedupe.Mark(eventID)
+	return nil
 }
 
 // verify{{.Name | pascalCase}}Signature verifies the webhook signature.
@@ -89,7 +133,7 @@ func (s *Service) verify{{.Name | pascalCase}}Signature(headers http.Header, bod
 	//     return fmt.Errorf("missing signature header")
 	// }
 	// secret := s.deps.Config.{{.Name | pascalCase}}WebhookSecret
-	// if !verifyHMACSHA256(body, signature, secret) {
+	// if !middleware.VerifyHMACSHA256(body, signature, secret) {
 	//     return fmt.Errorf("invalid signature")
 	// }
 
@@ -98,7 +142,7 @@ func (s *Service) verify{{.Name | pascalCase}}Signature(headers http.Header, bod
 
 // process{{.Name | pascalCase}}Webhook processes a verified webhook event.
 // TODO: Implement your webhook processing logic.
-func (s *Service) process{{.Name | pascalCase}}Webhook(ctx context.Context, event webhookEvent) error {
+func (s *Service) process{{.Name | pascalCase}}Webhook(ctx context.Context, event middleware.WebhookEvent) error {
 	s.deps.Logger.Info("processing webhook", "source", event.Source, "event_id", event.ID)
 
 	// TODO: Parse event.Body and handle different event types.

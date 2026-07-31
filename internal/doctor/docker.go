@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -40,9 +42,45 @@ var defaultPortQueries = []portQuery{
 	{"app-debug", 8080},
 }
 
-// CheckDocker verifies that Docker Compose services are running and discovers
+// composeFileNames are the filenames `docker compose` picks up by default.
+// Their ABSENCE is the discriminator between "this project declares no
+// compose stack" (not applicable) and "the compose stack is broken".
+var composeFileNames = []string{
+	"compose.yaml", "compose.yml",
+	"docker-compose.yaml", "docker-compose.yml",
+}
+
+// hasComposeFile reports whether projectDir declares a compose stack.
+func hasComposeFile(projectDir string) bool {
+	for _, name := range composeFileNames {
+		if _, err := os.Stat(filepath.Join(projectDir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckDocker verifies that the project's docker-compose infra (postgres,
+// nats, the bundled lgtm telemetry container, …) is running, and discovers
 // published ports for use by downstream checks.
+//
+// It covers ONLY the compose half of a dev stack. The host-service half —
+// what `forge run` launches — is `forge env status <env>`'s own table, which
+// reports holder pid, forge-ownership and build freshness; a compose probe
+// can see none of that, and doctor's old attempt to answer both was how
+// `forge doctor` came to FAIL on a completely healthy host-mode stack.
 func CheckDocker(ctx context.Context, env *Environment) CheckResult {
+	// A project that declares no compose file has no compose stack by
+	// design (--kind cli, or a host-only dev loop). That is NOT APPLICABLE,
+	// and it is the state doctor used to report as a hard failure.
+	if !hasComposeFile(env.ProjectDir) {
+		return CheckResult{
+			Status:   StatusSkip,
+			Message:  "no compose file — this project declares no compose infra",
+			Evidence: fmt.Sprintf("looked for %s in %s", strings.Join(composeFileNames, ", "), env.ProjectDir),
+		}
+	}
+
 	// Run docker compose ps --format json in the project directory.
 	cmd := exec.CommandContext(ctx, "docker", "compose", "ps", "--format", "json")
 	cmd.Dir = env.ProjectDir
@@ -60,9 +98,12 @@ func CheckDocker(ctx context.Context, env *Environment) CheckResult {
 
 	output := strings.TrimSpace(string(out))
 	if output == "" {
+		// The file declares services and none are up. Nothing is broken —
+		// the user has not started them — so this is a state, not a fault,
+		// and the message says how to change it.
 		return CheckResult{
-			Status:   StatusFail,
-			Message:  "No Docker Compose services found",
+			Status:   StatusSkip,
+			Message:  "compose infra declared but not running — start it with `docker compose up -d`",
 			Evidence: fmt.Sprintf("'docker compose ps' returned empty output in %s", env.ProjectDir),
 		}
 	}
@@ -82,10 +123,13 @@ func CheckDocker(ctx context.Context, env *Environment) CheckResult {
 	}
 
 	if len(services) == 0 {
+		// `docker compose ps` answered, but nothing in the answer parsed.
+		// forge cannot tell whether the infra is healthy — that is
+		// UNDETERMINED, not a failure of the project.
 		return CheckResult{
-			Status:   StatusFail,
-			Message:  "No Docker Compose services found",
-			Evidence: "Could not parse any service from 'docker compose ps' output",
+			Status:   StatusUnknown,
+			Message:  "could not parse any service from `docker compose ps`",
+			Evidence: output,
 		}
 	}
 

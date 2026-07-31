@@ -41,8 +41,8 @@ func TestHealthCheck_OK(t *testing.T) {
 }
 
 // TestHealthCheck_Down asserts a 5xx downstream response is mapped to
-// an error — the calling interactor must see the failure rather than
-// silently treat the dependency as healthy.
+// an error — the caller must see the failure rather than silently treat
+// the dependency as healthy.
 func TestHealthCheck_Down(t *testing.T) {
 	t.Parallel()
 

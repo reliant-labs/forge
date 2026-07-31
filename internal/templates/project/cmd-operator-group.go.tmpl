@@ -1,6 +1,6 @@
-// forge-scaffold (USER-OWNED): forge writes this file ONCE (write-if-absent),
-// then NEVER regenerates or overwrites it. The command tree + component wiring is
-// owned code — add a component by hand-editing here (or via `forge add`), never a
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+// forge writes it ONCE (write-if-absent). The command tree + component wiring is
+// owned code — add a component by hand-editing here (or via `forge scaffold`), never a
 // re-derivation. Delete the file + re-run `forge generate` to re-scaffold from template.
 // Source: operator {{.Name}} (one file per operator — devspace idiom).
 //
@@ -15,7 +15,7 @@
 // yet. An operator that COLOCATES a Connect service (a controller that also
 // serves its own API) hand-wires that service's typed Mount here — replace
 // cmd.MountNone with (*app.Components).Mount<Svc> — until the capability model
-// lands. (`forge disown` this file to own that edit across regenerations.)
+// lands. (`forge project disown` this file to own that edit across regenerations.)
 //
 // main.go names this command's exported New…Cmd constructor explicitly and
 // passes it to cmd.Execute — the tree is assembled in the composition root,

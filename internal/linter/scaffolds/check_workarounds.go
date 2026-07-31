@@ -12,26 +12,36 @@
 // legitimate in some projects (a project might genuinely want a
 // `cmd/maintenance.go` cli tool that's not modeled in forge.yaml). The
 // warning includes a "should be:" pointer so the reader knows the
-// canonical replacement once the corresponding forge primitive ships.
+// canonical replacement.
 //
-// Three rules today, each tracking a workaround actually shipped to
+// A "should be:" pointer written in the FUTURE TENSE is a liability once
+// the primitive it waits on ships: it reads as an open gap, and an open
+// gap is the standing justification for keeping the fork alive. Rule 1
+// below sat stale for a month after its gap closed and was cited as
+// live evidence in an ownership audit. When a primitive lands, the
+// message it obsoletes has to move with it.
+//
+// Two rules today, each tracking a workaround actually shipped to
 // cpnext:
 //
-//  1. `wireCastHelpers` — flags `castXxxRepo`-shaped functions in
-//     `pkg/app/wire_gen.go`, the cross-lane `any`→typed bridge that
-//     T2-D shipped (FORGE_REVIEW_PROCESS.md §2.1). R5-1's
-//     `forge:placeholder` annotation eliminates the need.
-//
-//  2. `testingExtras` — flags `pkg/app/testing_extras.go` files, the
+//  1. `testingExtras` — flags `pkg/app/testing_extras.go` files, the
 //     hand-rolled stub-repo workaround for the "scaffold-test factory
 //     doesn't fill required Deps" gap (FORGE_REVIEW_PROCESS.md §2.2).
-//     R5-2's auto-stubbing in `bootstrap_testing.go.tmpl` eliminates it.
+//     That gap is CLOSED: `computeAutoStubs` (internal/codegen/
+//     bootstrap_gen.go) synthesizes a stub for every interface-typed
+//     Deps field — bare identifiers and cross-package selectors alike —
+//     and `bootstrap_testing.go.tmpl` emits them. The rule is therefore
+//     sharper than when it was written, not obsolete: the file it flags
+//     no longer has a gap to justify it, so the finding is now "delete
+//     this", not "wait for the fix". Only unresolvable selectors still
+//     need hand-rolling, and those are named individually by a TODO in
+//     NewTest<Svc> rather than carried in a wholesale bridge file.
 //
-//  3. `cmdNotInBinaries` — flags `cmd/<name>.go` files that aren't
+//  2. `cmdNotInBinaries` — flags `cmd/<name>.go` files that aren't
 //     declared in `forge.yaml`'s `binaries:` block. Today every
 //     non-server second binary is hand-written (cpnext's
 //     `cmd/workspace_proxy.go` is 270 LOC of cobra/k8s/signal-handling
-//     boilerplate). R5-2's `forge add binary` command makes the
+//     boilerplate). R5-2's `forge scaffold binary` command makes the
 //     declaration explicit.
 //
 // Wiring: `runCheckWorkaroundsLint` invokes `LintWorkaroundsRoot` from
@@ -42,22 +52,10 @@ package scaffolds
 import (
 	"bufio"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
-
-// castHelperRE matches Go function declarations whose name follows the
-// `cast<Name>` shape (T2-D's `castUserRepo` was the canonical instance).
-// We deliberately do NOT match arbitrary lowercase-cast helpers — only
-// the `cast<Pascal>` variant tied to the cross-lane bridge pattern.
-//
-// The receiver is unconstrained: `castUserRepo(...)` (free function) and
-// `(s *App) castUserRepo(...)` (method) both fire. The `func ` literal
-// keeps us off doc-comments and off string-literal references.
-var castHelperRE = regexp.MustCompile(`(?m)^func\s+(?:\([^)]*\)\s+)?(cast[A-Z][A-Za-z0-9]*)\s*\(`)
 
 // LintWorkaroundsRoot walks the project tree rooted at root and applies
 // the three workaround-detection rules. Returns a Result whose Findings
@@ -79,9 +77,11 @@ func LintWorkaroundsRoot(root string) (Result, error) {
 			Rule:     "workaround-testing-extras",
 			Severity: SeverityWarning,
 			Path:     rel,
-			Message: "pkg/app/testing_extras.go is a hand-rolled stub-repo file shipped to bridge `app.NewTest<Svc>` not filling required Deps " +
-				"(FORGE_REVIEW_PROCESS.md §2.2). " +
-				"Should be: remove once `bootstrap_testing.go.tmpl` auto-stubs interface-typed Deps; the testing factory will then construct realistic per-test deps without a hand-rolled bridge.",
+			Message: "pkg/app/testing_extras.go is a hand-rolled stub-repo file forked to bridge `app.NewTest<Svc>` not filling required Deps " +
+				"(FORGE_REVIEW_PROCESS.md §2.2). That gap IS CLOSED: computeAutoStubs synthesizes a stub for every interface-typed Deps field — " +
+				"including cross-package selector types like `repo.Repository` — and With<Svc>Deps overrides any of them. " +
+				"Should be: delete this file and inject real behavior through With<Svc>Deps(...) in your own _test.go files. " +
+				"A field forge could not resolve is called out by a TODO in NewTest<Svc>, so what still needs hand-rolling is named at the point of use, not carried wholesale here.",
 		})
 	}
 
@@ -123,111 +123,12 @@ func LintWorkaroundsRoot(root string) (Result, error) {
 				Message: fmt.Sprintf(
 					"cmd/%s is a hand-written second binary not declared in forge.yaml's `binaries:` block "+
 						"(FORGE_REVIEW_PROCESS.md §2.4 workspace_proxy pattern). "+
-						"Should be: declare in forge.yaml binaries: block (post-`forge add binary`), or remove if unused.",
+						"Should be: declare in forge.yaml binaries: block (post-`forge scaffold binary`), or remove if unused.",
 					e.Name(),
 				),
 			})
 		}
 	}
-
-	// Rule 4 is dev-vendor specific — a project in "dev-vendor mode" has
-	// `go.mod` with `replace github.com/reliant-labs/forge/pkg =>
-	// ./.forge-pkg` plus a vendored `.forge-pkg/` directory. The generated
-	// Dockerfile MUST `COPY .forge-pkg/` before `RUN go mod download`, else
-	// the in-container `go mod download` fails with
-	// `reading .forge-pkg/go.mod: no such file or directory`. The Dockerfile
-	// is a Tier-2 scaffold-once file that `forge generate` does NOT
-	// re-render, so projects scaffolded before the COPY-line template
-	// feature carry a silently-broken Docker build. Surface it as a warning
-	// so the user runs `forge upgrade` (or hand-adds the line).
-	if finding, ok := lintDevVendorDockerfile(root); ok {
-		result.Findings = append(result.Findings, finding)
-	}
-
-	// Rule 1 is content-based — walk pkg/app/wire_gen.go and look for
-	// `cast<Name>` function declarations. We could broaden this to all
-	// wire-gen-adjacent files but the canonical site is the only one
-	// that's shipped to cpnext, so we scope tightly to keep false
-	// positives down.
-	wireGenPath := filepath.Join(root, "pkg", "app", "wire_gen.go")
-	if data, err := os.ReadFile(wireGenPath); err == nil {
-		matches := castHelperRE.FindAllStringSubmatch(string(data), -1)
-		seen := make(map[string]bool)
-		for _, m := range matches {
-			if len(m) < 2 {
-				continue
-			}
-			name := m[1]
-			if seen[name] {
-				continue
-			}
-			seen[name] = true
-			rel := relPath(wireGenPath, root)
-			result.Findings = append(result.Findings, Finding{
-				Rule:     "workaround-wire-cast-helper",
-				Severity: SeverityWarning,
-				Path:     rel,
-				Message: fmt.Sprintf(
-					"%s in pkg/app/wire_gen.go is a cross-lane `any`→typed bridge "+
-						"(FORGE_REVIEW_PROCESS.md §2.1 castUserRepo pattern). "+
-						"Should be: remove once `forge:placeholder` annotation lands; AppExtras fields can carry their final types directly without a cast helper.",
-					name,
-				),
-			})
-		}
-	}
-
-	// Belt-and-suspenders: also scan the entire tree for unexpected
-	// matches of the castHelperRE pattern, in case a project has moved
-	// the helper to a sibling file. We intentionally only walk
-	// pkg/app/ — broader scopes turn up unrelated `cast` helpers in
-	// internal packages.
-	pkgAppDir := filepath.Join(root, "pkg", "app")
-	_ = filepath.WalkDir(pkgAppDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // soft-skip per-file errors
-		}
-		if d.IsDir() {
-			if shouldSkipDir(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		if path == wireGenPath {
-			return nil // already handled above
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil //nolint:nilerr // unreadable file is treated as no findings; walk continues
-		}
-		matches := castHelperRE.FindAllStringSubmatch(string(data), -1)
-		seen := make(map[string]bool)
-		for _, m := range matches {
-			if len(m) < 2 {
-				continue
-			}
-			name := m[1]
-			if seen[name] {
-				continue
-			}
-			seen[name] = true
-			result.Findings = append(result.Findings, Finding{
-				Rule:     "workaround-wire-cast-helper",
-				Severity: SeverityWarning,
-				Path:     relPath(path, root),
-				Message: fmt.Sprintf(
-					"%s helper in pkg/app/ is a cross-lane `any`→typed bridge "+
-						"(FORGE_REVIEW_PROCESS.md §2.1 castUserRepo pattern). "+
-						"Should be: remove once `forge:placeholder` annotation lands; AppExtras fields can carry their final types directly without a cast helper.",
-					name,
-				),
-			})
-		}
-		return nil
-	})
 
 	return result, nil
 }
@@ -235,7 +136,7 @@ func LintWorkaroundsRoot(root string) (Result, error) {
 // isExemptCmdFile returns true for cmd/<name>.go files that conventionally
 // belong to the cobra harness rather than to an independent binary.
 // Keep this list synced with the forge templates that emit cmd/* —
-// `forge new --kind service` ships server.go, db.go, and otel.go, all
+// `forge project new --kind service` ships server.go, db.go, and otel.go, all
 // of which are generated cobra subcommands rather than independent
 // second-binary scaffolds.
 //
@@ -312,79 +213,6 @@ func readDeclaredBinaries(path string) map[string]bool {
 	}
 	flush()
 	return out
-}
-
-// devVendorReplaceRE matches the go.mod replace directive that puts a
-// project into dev-vendor mode: the forge/pkg module redirected at the
-// local `./.forge-pkg` checkout. Whitespace around `=>` is flexible
-// (gofmt aligns the column, but hand-edits vary); a leading `./` is
-// optional so both `=> ./.forge-pkg` and `=> .forge-pkg` match.
-var devVendorReplaceRE = regexp.MustCompile(
-	`replace\s+github\.com/reliant-labs/forge/pkg\s+=>\s+\.?/?\.forge-pkg\b`)
-
-// dockerfileCopyForgePkgRE matches the `COPY .forge-pkg/ ./.forge-pkg/`
-// line the Dockerfile template emits for dev-vendor projects. We accept
-// `COPY .forge-pkg/` and `COPY .forge-pkg ` (trailing space, no slash)
-// so a hand-added variant still satisfies the rule.
-var dockerfileCopyForgePkgRE = regexp.MustCompile(`(?m)^\s*COPY\s+\.forge-pkg[/ ]`)
-
-// DevVendorDockerfileWarning is the exported, single-rule entry point for
-// the dev-vendor Dockerfile drift check (fr-04c408ebbe). It lets callers
-// outside the linter (notably `forge generate`) surface JUST this finding
-// — generate knows it manages `.forge-pkg/` but does not re-render the
-// Tier-2 Dockerfile, so it must independently WARN when the vendored
-// state and the Dockerfile have drifted apart. Returns ok=false when
-// there's nothing to warn about (not dev-vendor mode, no Dockerfile, or
-// the COPY line is already present).
-func DevVendorDockerfileWarning(root string) (Finding, bool) {
-	return lintDevVendorDockerfile(root)
-}
-
-// lintDevVendorDockerfile reports the stale-dev-vendor-Dockerfile
-// workaround: the project is in dev-vendor mode (go.mod replace targeting
-// ./.forge-pkg, or a `.forge-pkg/go.mod` on disk) but its Dockerfile
-// lacks the `COPY .forge-pkg/` line that the in-container `go mod
-// download` needs. Returns ok=false when the project is not in dev-vendor
-// mode, has no Dockerfile, or the Dockerfile already carries the COPY line.
-func lintDevVendorDockerfile(root string) (Finding, bool) {
-	if !isDevVendorMode(root) {
-		return Finding{}, false
-	}
-	dockerfilePath := filepath.Join(root, "Dockerfile")
-	data, err := os.ReadFile(dockerfilePath)
-	if err != nil {
-		// No Dockerfile (or unreadable) — nothing to warn about. A
-		// dev-vendor project without a Dockerfile isn't building an image.
-		return Finding{}, false
-	}
-	if dockerfileCopyForgePkgRE.Match(data) {
-		return Finding{}, false
-	}
-	return Finding{
-		Rule:     "workaround-dev-vendor-dockerfile",
-		Severity: SeverityWarning,
-		Path:     relPath(dockerfilePath, root),
-		Message: "Dockerfile is missing a `COPY .forge-pkg/` line but go.mod vendors forge/pkg at ./.forge-pkg " +
-			"(dev-vendor mode). The in-container `go mod download` will fail with " +
-			"`reading .forge-pkg/go.mod: no such file or directory`. " +
-			"Should be: add `COPY .forge-pkg/ ./.forge-pkg/` before `RUN go mod download`, or run `forge upgrade` to re-render the Dockerfile.",
-	}, true
-}
-
-// isDevVendorMode reports whether the project rooted at root vendors
-// forge/pkg locally. Two independent signals, either sufficient: a
-// `.forge-pkg/go.mod` on disk (matches the generator's detection at
-// internal/generator/upgrade.go), or a go.mod replace directive pointing
-// at ./.forge-pkg.
-func isDevVendorMode(root string) bool {
-	if _, err := os.Stat(filepath.Join(root, ".forge-pkg", "go.mod")); err == nil {
-		return true
-	}
-	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
-	if err != nil {
-		return false
-	}
-	return devVendorReplaceRE.Match(data)
 }
 
 // scalarYAMLValue extracts the value of `key` from a line shaped like

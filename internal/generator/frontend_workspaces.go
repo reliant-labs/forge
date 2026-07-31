@@ -38,9 +38,9 @@ type FrontendWorkspaceLayout struct {
 	// Scope is the npm scope without the leading `@`. Derived from
 	// the project name; sanitized to a valid npm scope segment.
 	Scope string
-	// ApiPackage is the fully-qualified npm package name for the API
+	// APIPackage is the fully-qualified npm package name for the API
 	// workspace (e.g. "@myapp/api").
-	ApiPackage string
+	APIPackage string
 	// HooksPackage is the fully-qualified npm package name for the
 	// hooks workspace (e.g. "@myapp/hooks").
 	HooksPackage string
@@ -67,7 +67,7 @@ func NewFrontendWorkspaceLayout(projectName string) FrontendWorkspaceLayout {
 	}
 	return FrontendWorkspaceLayout{
 		Scope:           scope,
-		ApiPackage:      "@" + scope + "/api",
+		APIPackage:      "@" + scope + "/api",
 		HooksPackage:    "@" + scope + "/hooks",
 		UIWebPackage:    "@" + scope + "/ui-web",
 		UINativePackage: "@" + scope + "/ui-native",
@@ -124,12 +124,18 @@ func WriteFrontendWorkspaceFiles(projectDir, projectName string, workspaces bool
 	if err := writePnpmWorkspaceYaml(projectDir); err != nil {
 		return err
 	}
-	if err := writeApiPackage(projectDir, layout); err != nil {
+	if err := writeAPIPackage(projectDir, layout); err != nil {
 		return err
 	}
 	if err := writeHooksPackage(projectDir, layout); err != nil {
 		return err
 	}
+	// packages/hooks holds the generated hooks, which import
+	// @reliant-labs/web-runtime for the ConnectClientError type. Reconciling
+	// the specifier here is what bridges it to a dev forge's checkout, and
+	// what adds the entry to a workspace project scaffolded before the hooks
+	// declared the type.
+	EnsureWorkspaceHooksWebRuntimeDependency(projectDir)
 	if err := writeUIWebPackage(projectDir, layout); err != nil {
 		return err
 	}
@@ -169,7 +175,7 @@ func writePnpmWorkspaceYaml(projectDir string) error {
 #   - packages/* — shared TypeScript packages (api, hooks).
 #     Adding a new shared package: ` + "`mkdir packages/<name> && pnpm init`" + `.
 #   - frontends/* — per-app workspaces (Next.js, Expo, Vite SPA).
-#     Created by ` + "`forge add frontend <name>`" + `.
+#     Created by ` + "`forge scaffold frontend <name>`" + `.
 #
 # Workspace members reference each other via "workspace:*" in their
 # package.json, e.g. "@<scope>/api": "workspace:*".
@@ -180,12 +186,12 @@ packages:
 	return writeIfMissing(path, body)
 }
 
-// writeApiPackage emits packages/api/{package.json, tsconfig.json,
+// writeAPIPackage emits packages/api/{package.json, tsconfig.json,
 // .gitignore, README.md}. The api package surfaces the buf-generated
 // Connect TS clients to the rest of the workspace — its `main` and
 // `types` point at src/gen/index.ts (re-export barrel) so consumers
 // say `import { UserService } from "@<scope>/api"`.
-func writeApiPackage(projectDir string, layout FrontendWorkspaceLayout) error {
+func writeAPIPackage(projectDir string, layout FrontendWorkspaceLayout) error {
 	apiDir := filepath.Join(projectDir, "packages", "api")
 	if err := os.MkdirAll(filepath.Join(apiDir, "src"), 0o755); err != nil {
 		return fmt.Errorf("create packages/api: %w", err)
@@ -213,7 +219,7 @@ func writeApiPackage(projectDir string, layout FrontendWorkspaceLayout) error {
     "typescript": "^5.8.0"
   }
 }
-`, layout.ApiPackage)
+`, layout.APIPackage)
 	if err := writeIfMissing(filepath.Join(apiDir, "package.json"), pkg); err != nil {
 		return err
 	}
@@ -248,7 +254,7 @@ func writeApiPackage(projectDir string, layout FrontendWorkspaceLayout) error {
 // The contents of src/gen/ are produced by ` + "`buf generate`" + ` (driven by
 // the project's root ` + "`buf.gen.yaml`" + `). Add a re-export line below for
 // each generated file you want to surface from the package, or import
-// directly from "` + layout.ApiPackage + `/<path>" using the subpath export.
+// directly from "` + layout.APIPackage + `/<path>" using the subpath export.
 //
 // e.g. once you have proto/services/users/v1/users.proto:
 //   export * from "./gen/services/users/v1/users_pb";
@@ -277,7 +283,7 @@ src/gen/
 		"- `src/index.ts` — re-export barrel; add `export * from \"./gen/...\"`\n"+
 		"  for each generated file you want to expose by the top-level package name.\n\n"+
 		"Subpath imports also work: `import { UserService } from \"%s/services/users/v1/users_pb\"`.\n",
-		layout.ApiPackage, layout.ApiPackage, layout.ApiPackage)
+		layout.APIPackage, layout.APIPackage, layout.APIPackage)
 	if err := writeIfMissing(filepath.Join(apiDir, "README.md"), readme); err != nil {
 		return err
 	}
@@ -287,11 +293,17 @@ src/gen/
 // writeHooksPackage emits packages/hooks/{package.json, tsconfig.json,
 // src/use-api-query.ts, src/use-api-mutation.ts, src/index.ts}.
 //
-// The package is DOM-free: it depends on @tanstack/react-query and the
-// project's @<scope>/api workspace, and uses no document/window APIs.
-// That keeps it consumable from both Next.js (DOM-aware) and React
-// Native (DOM-free Hermes/Node runtime).
-func writeHooksPackage(projectDir string, layout FrontendWorkspaceLayout) error {
+// The package is DOM-free: it depends on @tanstack/react-query, the
+// project's @<scope>/api workspace and @reliant-labs/web-runtime (for the
+// ConnectClientError type the generated hooks declare), and uses no
+// document/window APIs. That keeps it consumable from both Next.js
+// (DOM-aware) and React Native (DOM-free Hermes/Node runtime).
+//
+// The runtime specifier written here is the published range; a dev forge
+// build rewrites it to a `file:` bridge in
+// EnsureWorkspaceHooksWebRuntimeDependency, the same reconcile every
+// frontend manifest gets.
+func writeHooksPackage(projectDir string, layout FrontendWorkspaceLayout) error { //nolint:funlen // length is embedded TypeScript source literals, not control flow — the branching is one writeIfMissing per emitted file.
 	hooksDir := filepath.Join(projectDir, "packages", "hooks")
 	if err := os.MkdirAll(filepath.Join(hooksDir, "src", "generated"), 0o755); err != nil {
 		return fmt.Errorf("create packages/hooks: %w", err)
@@ -315,6 +327,7 @@ func writeHooksPackage(projectDir string, layout FrontendWorkspaceLayout) error 
     "%s": "workspace:*",
     "@bufbuild/protobuf": "^2.5.0",
     "@connectrpc/connect": "^2.0.0",
+    "%s": "%s",
     "@tanstack/react-query": "^5.59.0"
   },
   "peerDependencies": {
@@ -324,7 +337,7 @@ func writeHooksPackage(projectDir string, layout FrontendWorkspaceLayout) error 
     "typescript": "^5.8.0"
   }
 }
-`, layout.HooksPackage, layout.ApiPackage)
+`, layout.HooksPackage, layout.APIPackage, WebRuntimePackage, webRuntimePublishedRange)
 	if err := writeIfMissing(filepath.Join(hooksDir, "package.json"), pkg); err != nil {
 		return err
 	}
@@ -403,7 +416,9 @@ export function connectClient<S extends DescService>(service: S) {
 		return err
 	}
 
-	useApiQuery := `import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
+	useAPIQuery := `import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
+
+import type { ConnectClientError } from "@reliant-labs/web-runtime";
 
 /**
  * useApiQuery wraps a Connect client promise-returning call in a
@@ -413,8 +428,15 @@ export function connectClient<S extends DescService>(service: S) {
  * Generated per-service hooks live alongside this file under
  * src/generated/ — see ./generated/index.ts. Use this base wrapper for
  * one-off or composite operations that don't map to a generated hook.
+ *
+ * TError stays a parameter here — unlike the generated hooks, this wrapper
+ * takes an ARBITRARY promise, so it cannot know the transport that produced
+ * it. It DEFAULTS to ConnectClientError because the documented use is a
+ * Connect client call, and that is the shape the transport's error-normalize
+ * interceptor throws. React Query's ` + "`Error`" + ` hid reason/code/status/
+ * retryable and left message prose as the only thing a call site could match.
  */
-export function useApiQuery<TData, TError = Error>(
+export function useApiQuery<TData, TError = ConnectClientError>(
   key: readonly unknown[],
   fetcher: () => Promise<TData>,
   options?: Omit<
@@ -429,18 +451,27 @@ export function useApiQuery<TData, TError = Error>(
   });
 }
 `
-	if err := writeIfMissing(filepath.Join(hooksDir, "src", "use-api-query.ts"), useApiQuery); err != nil {
+	if err := writeIfMissing(filepath.Join(hooksDir, "src", "use-api-query.ts"), useAPIQuery); err != nil {
 		return err
 	}
 
-	useApiMutation := `import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
+	useAPIMutation := `import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
+
+import type { ConnectClientError } from "@reliant-labs/web-runtime";
 
 /**
  * useApiMutation wraps a Connect client promise-returning call in a
  * @tanstack/react-query useMutation. The hooks package is DOM-free so
  * this helper works in both Next.js and React Native.
+ *
+ * TError stays a parameter here — unlike the generated hooks, this wrapper
+ * takes an ARBITRARY promise, so it cannot know the transport that produced
+ * it. It DEFAULTS to ConnectClientError because the documented use is a
+ * Connect client call, and that is the shape the transport's error-normalize
+ * interceptor throws. React Query's ` + "`Error`" + ` hid reason/code/status/
+ * retryable and left message prose as the only thing a call site could match.
  */
-export function useApiMutation<TData, TVariables, TError = Error>(
+export function useApiMutation<TData, TVariables, TError = ConnectClientError>(
   mutationFn: (variables: TVariables) => Promise<TData>,
   options?: Omit<
     UseMutationOptions<TData, TError, TVariables>,
@@ -453,7 +484,7 @@ export function useApiMutation<TData, TVariables, TError = Error>(
   });
 }
 `
-	if err := writeIfMissing(filepath.Join(hooksDir, "src", "use-api-mutation.ts"), useApiMutation); err != nil {
+	if err := writeIfMissing(filepath.Join(hooksDir, "src", "use-api-mutation.ts"), useAPIMutation); err != nil {
 		return err
 	}
 
@@ -479,7 +510,7 @@ export * from "./generated";
 	// scaffold before any service hooks have been emitted. The frontend-
 	// hooks step rewrites this file every run.
 	generatedIndex := `// Code generated by forge. DO NOT EDIT.
-// forge-owned: regenerated every run — do not edit (forge disown to take ownership)
+// forge-owned: regenerated every run — do not edit (forge project disown to take ownership)
 // Re-exports per-service hooks. Re-rendered every ` + "`forge generate`" + `.
 export {};
 `
@@ -526,8 +557,8 @@ func writeUIWebPackage(projectDir string, layout FrontendWorkspaceLayout) error 
 	// Components live under src/components/ui/<name>.tsx — mirroring the
 	// per-frontend layout (frontends/<n>/src/components/ui/<name>.tsx).
 	// This lets the tsconfig path mapping target `@/components/ui/*`
-	// specifically, leaving `@/components/<other>/*` (e.g. the auth pack's
-	// `@/components/auth/`) resolving against the per-frontend src tree.
+	// specifically, leaving `@/components/<other>/*` (e.g. the owned
+	// `@/components/nav`) resolving against the per-frontend src tree.
 	componentsDir := filepath.Join(uiDir, "src", "components", "ui")
 	if err := os.MkdirAll(componentsDir, 0o755); err != nil {
 		return fmt.Errorf("create packages/ui-web: %w", err)

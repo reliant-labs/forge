@@ -15,7 +15,7 @@ import (
 // TestWriteProjectConfig_StampsForgeVersion verifies that scaffolding a
 // new project records the current forge binary version under
 // `forge_version` in forge.yaml. This is the foundation of the upgrade
-// story — `forge upgrade` consumes the field, `forge generate` warns on
+// story — `forge project upgrade` consumes the field, `forge generate` warns on
 // mismatch.
 func TestWriteProjectConfig_StampsForgeVersion(t *testing.T) {
 	tmp := t.TempDir()
@@ -87,15 +87,15 @@ func TestWriteProjectConfig_ScaffoldsTypedAccessError(t *testing.T) {
 		t.Error("scaffolded config must gate the build (TypedAccessGuardGates() = false)")
 	}
 
-	// The scaffold render lane must agree: ForScaffold projects the strict
+	// The scaffold render lane must agree: forScaffold projects the strict
 	// gating mode into the .golangci.yml payload.
-	if got := g.ForScaffold().TypedAccessGuard; got != config.EnforceTypedAccessError {
-		t.Errorf("ForScaffold().TypedAccessGuard = %q, want %q", got, config.EnforceTypedAccessError)
+	if got := g.forScaffold().TypedAccessGuard; got != config.EnforceTypedAccessError {
+		t.Errorf("forScaffold().TypedAccessGuard = %q, want %q", got, config.EnforceTypedAccessError)
 	}
 }
 
 // TestApplyKindFeatureDefaults_Service is a no-op assertion: the
-// default scaffold (`forge new --kind service` or no flag) must leave
+// default scaffold (`forge project new --kind service` or no flag) must leave
 // every STABLE feature enabled. Experimental features are default-off
 // for every kind (including service) — the user opts in per project
 // via `features.experimental.<name>: true` after scaffolding.
@@ -118,7 +118,7 @@ func TestApplyKindFeatureDefaults_Service(t *testing.T) {
 
 // TestApplyKindFeatureDefaults_CLI verifies the CLI per-kind matrix.
 // The feature-block prompt's documented matrix is "build/ci/docs
-// true; deploy/frontend/packs/starters/observability false." Per the
+// true; deploy/frontend/observability false." Per the
 // existing forge convention (forge has disabled codegen/ORM/migrations
 // for non-service kinds since the kind flag landed), we also leave
 // those off — the CLI scaffold has no proto/services dir to drive
@@ -136,7 +136,6 @@ func TestApplyKindFeatureDefaults_CLI(t *testing.T) {
 		config.FeatureContracts:     true,
 		config.FeatureDeploy:        false,
 		config.FeatureFrontend:      false,
-		config.FeaturePacks:         false,
 		config.FeatureObservability: false,
 		config.FeatureORM:           false,
 		config.FeatureCodegen:       false, // existing forge default — no proto/services to codegen
@@ -154,7 +153,7 @@ func TestApplyKindFeatureDefaults_CLI(t *testing.T) {
 // TestApplyKindFeatureDefaults_Library verifies the library matrix.
 // The feature-block prompt's documented matrix is "library: ci/docs
 // true, everything else false." We honor the prompt for docs/build/
-// deploy/frontend/packs/starters/observability/orm/codegen/migrations/
+// deploy/frontend/observability/orm/codegen/migrations/
 // hot_reload but preserve the existing forge convention of CI=false
 // for library — TestProjectGeneratorKindLibraryScaffold asserts no
 // .github/workflows/ tree is emitted on a library scaffold, and the
@@ -173,7 +172,6 @@ func TestApplyKindFeatureDefaults_Library(t *testing.T) {
 		config.FeatureBuild:         false,
 		config.FeatureDeploy:        false,
 		config.FeatureFrontend:      false,
-		config.FeaturePacks:         false,
 		config.FeatureObservability: false,
 		config.FeatureORM:           false,
 		config.FeatureCodegen:       false,
@@ -208,7 +206,7 @@ func TestApplyKindFeatureDefaults_PreservesExplicit(t *testing.T) {
 // TestWriteProjectConfig_CLIKindFeaturesDeriveOnLoad verifies the
 // scaffolded CLI forge.yaml carries NO features: block — the per-kind
 // matrix is derived from `kind: cli` at load time. The round-trip that
-// matters is `forge new` → loadProjectConfig: the loaded config must
+// matters is `forge project new` → loadProjectConfig: the loaded config must
 // resolve build=on / packs=off without any explicit flags on disk.
 func TestWriteProjectConfig_CLIKindFeaturesDeriveOnLoad(t *testing.T) {
 	tmp := t.TempDir()
@@ -243,9 +241,6 @@ func TestWriteProjectConfig_CLIKindFeaturesDeriveOnLoad(t *testing.T) {
 	}
 	if !cfg.Features.BuildEnabled() {
 		t.Error("kind=cli loaded config: BuildEnabled() = false, want true (derived)")
-	}
-	if cfg.Features.PacksEnabled() {
-		t.Error("kind=cli loaded config: PacksEnabled() = true, want false (derived)")
 	}
 	if cfg.Features.CodegenEnabled() {
 		t.Error("kind=cli loaded config: CodegenEnabled() = true, want false (derived)")

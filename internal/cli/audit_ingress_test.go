@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cli/audittype"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -17,11 +19,11 @@ import (
 // moved to package audit alongside the report assembly.
 
 // TestCrossCheckIngress_UnknownService asserts that routes referencing
-// a non-existent forge.yaml backend produce an error-level finding and
+// a non-existent backend produce an error-level finding and
 // flip the category status to error.
 func TestCrossCheckIngress_UnknownService(t *testing.T) {
 	services := []config.ComponentConfig{
-		{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}},
+		{Name: "api", Kind: config.ComponentKindServer},
 	}
 	routes := []HTTPRouteEntity{
 		{Name: "api-route", Service: "api", Port: 8080},
@@ -46,13 +48,14 @@ func TestCrossCheckIngress_UnknownService(t *testing.T) {
 	}
 }
 
-// TestCrossCheckIngress_ServiceWithoutRoute asserts that a service
-// with Port>0 but no matching route produces an info-level finding and
-// keeps status at ok (cluster-internal services are valid).
+// TestCrossCheckIngress_ServiceWithoutRoute asserts that a SERVER with no
+// matching route produces an info-level finding and keeps status at ok
+// (cluster-internal services are valid). The finding names the port the
+// server actually answers on — the binary's single Connect mux.
 func TestCrossCheckIngress_ServiceWithoutRoute(t *testing.T) {
 	services := []config.ComponentConfig{
-		{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}},
-		{Name: "internal-only", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 9000}}},
+		{Name: "api", Kind: config.ComponentKindServer},
+		{Name: "internal-only", Kind: config.ComponentKindServer},
 	}
 	routes := []HTTPRouteEntity{
 		{Name: "api-route", Service: "api", Port: 8080},
@@ -63,32 +66,48 @@ func TestCrossCheckIngress_ServiceWithoutRoute(t *testing.T) {
 	}
 	findings, _ := cat.Details["findings"].([]string)
 	var sawInfo bool
+	want := fmt.Sprintf(":%d", config.DefaultServePort)
 	for _, f := range findings {
-		if strings.HasPrefix(f, "info: ") && strings.Contains(f, "internal-only") && strings.Contains(f, ":9000") {
+		if strings.HasPrefix(f, "info: ") && strings.Contains(f, "internal-only") && strings.Contains(f, want) {
 			sawInfo = true
 		}
 	}
 	if !sawInfo {
-		t.Errorf("expected info finding for internal-only; got %v", findings)
+		t.Errorf("expected info finding for internal-only naming %s; got %v", want, findings)
 	}
 	if got, _ := cat.Details["services_without_route"].(int); got != 1 {
 		t.Errorf("services_without_route = %v, want 1", cat.Details["services_without_route"])
 	}
 }
 
-// TestCrossCheckIngress_PortZeroSkipped asserts that services with no
-// declared port (Port==0) don't generate "no route" info lines —
-// workers/operators that just consume the bus shouldn't show up here.
-func TestCrossCheckIngress_PortZeroSkipped(t *testing.T) {
+// TestCrossCheckIngress_NonServersSkipped asserts that components which get
+// no k8s Service — workers, crons, operators, binaries — never produce a "no
+// route" info line. Nothing can route to them, so their absence from the
+// route table says nothing.
+//
+// The empty-Kind case is deliberate and load-bearing: EffectiveKind defaults
+// to "server", so a component that states no kind IS a server and MUST be
+// reported.
+func TestCrossCheckIngress_NonServersSkipped(t *testing.T) {
 	services := []config.ComponentConfig{
-		{Name: "worker"},
+		{Name: "sync", Kind: config.ComponentKindWorker},
+		{Name: "nightly", Kind: config.ComponentKindCron},
+		{Name: "controller", Kind: config.ComponentKindOperator},
+		{Name: "proxy", Kind: config.ComponentKindBinary},
 	}
-	cat := crossCheckIngress(services, []string{"worker"}, nil, nil, nil)
+	cat := crossCheckIngress(services, []string{"sync", "nightly", "controller", "proxy"}, nil, nil, nil)
 	if cat.Status != audittype.StatusOK {
 		t.Errorf("status = %q, want ok", cat.Status)
 	}
 	if _, ok := cat.Details["findings"]; ok {
-		t.Errorf("unexpected findings for port-zero service: %v", cat.Details["findings"])
+		t.Errorf("unexpected findings for non-server components: %v", cat.Details["findings"])
+	}
+
+	unkinded := []config.ComponentConfig{{Name: "api"}}
+	cat = crossCheckIngress(unkinded, []string{"api"}, nil, nil, nil)
+	if got, _ := cat.Details["services_without_route"].(int); got != 1 {
+		t.Errorf("an unkinded component defaults to server and must be reported; services_without_route = %v",
+			cat.Details["services_without_route"])
 	}
 }
 
@@ -96,7 +115,7 @@ func TestCrossCheckIngress_PortZeroSkipped(t *testing.T) {
 // branch is wired symmetrically with HTTPRoute — unknown svc refs in
 // a GRPCRoute escalate to error too.
 func TestCrossCheckIngress_GRPCRoutesAlsoChecked(t *testing.T) {
-	services := []config.ComponentConfig{{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}}}
+	services := []config.ComponentConfig{{Name: "api", Kind: config.ComponentKindServer}}
 	grpc := []GRPCRouteEntity{
 		{Name: "grpc-ghost", Service: "ghost", Port: 9000},
 	}
@@ -133,8 +152,8 @@ func TestAuditIngress_KCLRenderFailureWarn(t *testing.T) {
 // count (http+grpc), services-without-route count.
 func TestCrossCheckIngress_SummaryFormat(t *testing.T) {
 	services := []config.ComponentConfig{
-		{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}},
-		{Name: "internal", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 9000}}},
+		{Name: "api", Kind: config.ComponentKindServer},
+		{Name: "internal", Kind: config.ComponentKindServer},
 	}
 	gws := []GatewayEntity{{Name: "edge"}}
 	http := []HTTPRouteEntity{{Name: "api-route", Service: "api", Port: 8080}}
@@ -154,8 +173,8 @@ func TestCrossCheckIngress_SummaryFormat(t *testing.T) {
 
 // TestCrossCheckIngress_FrontendBackend asserts a route pointing at a
 // frontend by name passes the cross-check — frontends are valid K8s
-// Service targets too. The "port declared but no route" info finding
-// stays scoped to cfg.Components, so an SSR-only frontend doesn't get
+// Service targets too. The "serves but no route" info finding
+// stays scoped to the discovered components, so an SSR-only frontend doesn't get
 // flagged as a gap.
 func TestCrossCheckIngress_FrontendBackend(t *testing.T) {
 	services := []config.ComponentConfig{}
@@ -181,7 +200,7 @@ func TestCrossCheckIngress_FrontendBackend(t *testing.T) {
 // passes the cross-check — at the k8s layer a webhook handler is just
 // another Service in the namespace.
 func TestCrossCheckIngress_WebhookBackend(t *testing.T) {
-	services := []config.ComponentConfig{{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}}}
+	services := []config.ComponentConfig{{Name: "api", Kind: config.ComponentKindServer}}
 	backends := []string{"api", "stripe"}
 	routes := []HTTPRouteEntity{
 		{Name: "stripe-webhook", Service: "stripe", Port: 8080},
@@ -203,7 +222,7 @@ func TestCrossCheckIngress_WebhookBackend(t *testing.T) {
 // a route pointing at a name that's neither service, frontend, nor
 // webhook still flips the category to error.
 func TestCrossCheckIngress_UnknownNonBackend(t *testing.T) {
-	services := []config.ComponentConfig{{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}}}
+	services := []config.ComponentConfig{{Name: "api", Kind: config.ComponentKindServer}}
 	backends := []string{"api", "web", "stripe"}
 	routes := []HTTPRouteEntity{
 		{Name: "ghost-route", Service: "nobody", Port: 8080},
@@ -289,17 +308,9 @@ func TestIngressBackendNames(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cfg := &config.ProjectConfig{
-		Components: []config.ComponentConfig{
-			{Name: "api"},
-			{Name: "worker"},
-		},
-		Frontends: []config.FrontendConfig{
-			{Name: "web"},
-			{Name: "admin"},
-		},
-	}
-	got := ingressBackendNames(cfg, dir)
+	components := codegen.Inventory{{Name: "api"}, {Name: "worker"}}
+	frontends := []config.FrontendConfig{{Name: "web"}, {Name: "admin"}}
+	got := ingressBackendNames(components, frontends, dir)
 	want := map[string]bool{"api": true, "worker": true, "stripe": true, "github": true, "web": true, "admin": true}
 	seen := map[string]bool{}
 	for _, n := range got {

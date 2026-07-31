@@ -1,11 +1,11 @@
 ---
 name: binaries
-description: Non-server long-running binaries — when to use `forge add binary` vs `forge add worker` vs `forge add service`, plus the lifecycle and deploy story.
+description: Non-server long-running binaries — when to use `forge scaffold binary` vs `forge scaffold worker` vs `forge scaffold service`, plus the lifecycle and deploy story.
 ---
 
 # Binaries
 
-A "binary" is a non-server long-running process that ships its own Deployment. Examples: a reverse proxy, a workspace gateway, an off-service NATS consumer, an authentication sidecar. Forge scaffolds binaries via `forge add binary <name>`.
+A "binary" is a non-server long-running process that ships its own Deployment. Examples: a reverse proxy, a workspace gateway, an off-service NATS consumer, an authentication sidecar. Forge scaffolds binaries via `forge scaffold binary <name>`.
 
 A binary is its own thin `package main` cobra root under `cmd/<package>/main.go` (devspace idiom — each binary gets its own `cmd/<bin>/` tree), delegating to a small owned composition root in `internal/<package>/`. It does NOT share the server's `internal/app/compose.go` `NewComponents` — that bag constructs the server's handlers/workers; a standalone binary owns its own narrow `Deps`/`Service`/`New` contract. The binary owns *which* runtime loop it composes; it reuses the same typed `internal/config` flag set as the server.
 
@@ -22,7 +22,7 @@ Binaries sit alongside services, workers, and operators as the four long-running
 
 The litmus test for binary vs worker is: **does this need its own Deployment, OR is it a run-once operational tool?** If either — it's a binary. If neither — it's a worker.
 
-Resist the temptation to hand-roll a `cmd/<name>/main.go` from scratch. `forge add binary` scaffolds the `cmd/<package>/main.go` entry point AND the `internal/<package>/` composition root for you, registers it in `forge.yaml` under `binaries:`, and gives it an image tag — so it stays visible to `forge generate`/`build`/`deploy`. A from-scratch `main()` that doesn't go through `forge add binary` re-implements config/flag loading and shutdown plumbing the scaffold already solves, and is invisible to deploy.
+Resist the temptation to hand-roll a `cmd/<name>/main.go` from scratch. `forge scaffold binary` scaffolds the `cmd/<package>/main.go` entry point AND the `internal/<package>/` composition root for you, registers it in `forge.yaml` under `binaries:`, and gives it an image tag — so it stays visible to `forge generate`/`build`/`deploy`. A from-scratch `main()` that doesn't go through `forge scaffold binary` re-implements config/flag loading and shutdown plumbing the scaffold already solves, and is invisible to deploy.
 
 ## The cmd/ surface
 
@@ -30,15 +30,15 @@ The server binary's cobra surface is real, owned Go — one symbol per command y
 
 - **`cmd/<server>/main.go`** (yours) — the server cobra root with the full command tree.
 - The server's `serve` command applies a typed `(*app.Components).Mount<Svc>` method expression (or `MountAll`) onto a `serverkit.Server`; named subsets compose the typed `app.MountByName` function values.
-- **`cmd/<binary>/main.go`** (yours, from `forge add binary`) — a separate thin `package main` cobra root for each standalone binary, NOT a subcommand under the server root. It loads config, constructs the binary's `Service` via `internal/<package>.New(Deps{...})`, and calls `svc.Run(ctx)`.
+- **`cmd/<binary>/main.go`** (yours, from `forge scaffold binary`) — a separate thin `package main` cobra root for each standalone binary, NOT a subcommand under the server root. It loads config, constructs the binary's `Service` via `internal/<package>.New(Deps{...})`, and calls `svc.Run(ctx)`.
 
-There is **no** `cmd/services_gen.go` string-projection, **no** `RegisteredServices` constructor table, and **no** `userCommands()` catch-all. A data-only `Inventory` registry survives for introspection (`forge map`/`audit`, CLI listing) — names there are for display, never a construction lookup key.
+There is **no** `cmd/services_gen.go` string-projection, **no** `RegisteredServices` constructor table, and **no** `userCommands()` catch-all. A data-only `Inventory` registry survives for introspection (`forge project map`/`audit`, CLI listing) — names there are for display, never a construction lookup key.
 
 ## Adding a binary
 
 ```bash
-forge add binary workspace-proxy
-forge add binary auth-sidecar
+forge scaffold binary workspace-proxy
+forge scaffold binary auth-sidecar
 ```
 
 This creates:
@@ -50,20 +50,15 @@ internal/<package>/<package>.go      # Runner struct + Run(ctx) runtime body
 internal/<package>/<package>_test.go # construction + lifecycle tests
 ```
 
-Plus an entry under `binaries:` in `forge.yaml` so deploy emits a Deployment:
-
-```yaml
-binaries:
-  - name: workspace-proxy
-    path: cmd/workspace_proxy/main.go
-    kind: long-running
-```
+Nothing is written to `forge.yaml` — it is global-only. The binary is
+discovered from its `cmd/<package>/main.go`, and that discovery is what makes
+deploy emit a Deployment for it.
 
 The hyphenated CLI name (e.g. `workspace-proxy`) becomes the Go package name with hyphens replaced by underscores (`workspace_proxy`), so `cmd/workspace_proxy/main.go` and `internal/workspace_proxy/` line up with `package workspace_proxy`.
 
 ## Binary composition root
 
-A binary owns its **own small typed composition root** in `internal/<package>/contract.go`: a `Deps` struct of interface-typed fields **resolved by type, never by string name**, gated by `validateDeps()` at construction, and a `New(Deps) (Service, error)` constructor. The thin `cmd/<package>/main.go` builds the `Deps` (logger, typed config, plus any DB/NATS/k8s/HTTP collaborators) and hands them to `New`. This is the binary's analogue of the server's `internal/app/compose.go` `NewComponents` — but local to the binary, not the server's `Components` bag.
+A binary owns its **own small typed composition root** in `internal/<package>/contract.go`: a `Deps` struct of interface-typed fields **resolved by type, never by string name**, gated by `validateDeps()` at construction, and a `New(Deps) (Service, error)` constructor. The thin `cmd/<package>/main.go` builds the `Deps` (logger, typed config, plus any DB/NATS/k8s/HTTP dependencies) and hands them to `New`. This is the binary's analogue of the server's `internal/app/compose.go` `NewComponents` — but local to the binary, not the server's `Components` bag.
 
 ```go
 // internal/workspace_proxy/contract.go
@@ -84,10 +79,10 @@ func New(deps Deps) (Service, error) {
 ```
 
 Notes:
-- **In-process is the default.** A cross-binary collaborator is the one-line swap: fill its interface with a Connect client instead of the in-proc instance; the consumer is untouched.
-- **Per-binary singletons are natural.** A collaborator that must be one instance within *each* process is constructed once in `cmd/<package>/main.go` and passed into `Deps`.
+- **In-process is the default.** A cross-binary dep is the one-line swap: fill its interface with a Connect client instead of the in-proc instance; the consumer is untouched.
+- **Per-binary singletons are natural.** A dep that must be one instance within *each* process is constructed once in `cmd/<package>/main.go` and passed into `Deps`.
 - **Two-phase wiring is first-class.** Construct, then inject via setters (`x.WithY(z)`) for near-diamonds — plain method calls after both ends exist, in `main.go`.
-- **Scalars are config, not collaborators.** A `string`/`int`/`bool`/`Duration` lives in a `<Component>Config` proto block consumed as one typed `Cfg config.<Component>Config` Deps field — never a naked scalar Deps field.
+- **Scalars are config, not dependencies.** A `string`/`int`/`bool`/`Duration` lives in a `<Component>Config` proto block consumed as one typed `Cfg config.<Component>Config` Deps field — never a naked scalar Deps field.
 
 ## Lifecycle — Run blocks until ctx is cancelled
 
@@ -179,14 +174,14 @@ func (r *Runner) Run(ctx context.Context) error {
 
 `internal/<binary>/<binary>_test.go` ships:
 
-1. **Construction test** — calls `New(Deps{...})` with collaborators mocked through their interface seams, and asserts `validateDeps` accepts a complete `Deps` and rejects missing required fields. Because every dep is an interface filled in one place, "spin up this binary with X mocked" is a few-line, one-call operation against `New`.
+1. **Construction test** — calls `New(Deps{...})` with every dep mocked through its generated `mock_gen.go` mock, and asserts `validateDeps` accepts a complete `Deps` and rejects missing required fields. Because every dep is an interface filled in one place, "spin up this binary with X mocked" is a few-line, one-call operation against `New`.
 2. **Lifecycle test** — start `Run(ctx)` in a goroutine, cancel ctx, assert it returns cleanly; keep it so shutdown regressions stay caught.
 
 Binaries that don't mount RPCs don't use `tdd.RunRPCCases`; ones that do mount handlers test those the same way services do.
 
 ## Lint
 
-`forge lint` / `forge map` check that:
+`forge lint` / `forge project map` check that:
 
 - Every `binaries:` entry has a matching `cmd/<package>/main.go` and `internal/<package>/contract.go`.
 - The `Path` in forge.yaml matches the scaffolded `cmd/<package>/main.go`.

@@ -18,7 +18,7 @@ func TestNewFrontendWorkspaceLayout_DerivesScopeFromProjectName(t *testing.T) {
 		name      string
 		project   string
 		wantScope string
-		wantApi   string
+		wantAPI   string
 		wantHooks string
 		wantUIWeb string
 	}{
@@ -37,8 +37,8 @@ func TestNewFrontendWorkspaceLayout_DerivesScopeFromProjectName(t *testing.T) {
 			if got.Scope != tt.wantScope {
 				t.Errorf("Scope = %q, want %q", got.Scope, tt.wantScope)
 			}
-			if got.ApiPackage != tt.wantApi {
-				t.Errorf("ApiPackage = %q, want %q", got.ApiPackage, tt.wantApi)
+			if got.APIPackage != tt.wantAPI {
+				t.Errorf("APIPackage = %q, want %q", got.APIPackage, tt.wantAPI)
 			}
 			if got.HooksPackage != tt.wantHooks {
 				t.Errorf("HooksPackage = %q, want %q", got.HooksPackage, tt.wantHooks)
@@ -227,8 +227,8 @@ func TestWriteFrontendWorkspaceFiles_EmitsUIWebPackage(t *testing.T) {
 	// src/components/ui/ — matching the per-frontend layout
 	// (src/components/ui/<name>.tsx). The /ui/ namespace lets the
 	// tsconfig path mapping target ONLY component-library paths and
-	// leave non-ui local paths (e.g. the auth pack's
-	// `@/components/auth/`) resolving against the per-frontend src.
+	// leave non-ui local paths (e.g. the owned
+	// `@/components/nav`) resolving against the per-frontend src.
 	for _, name := range []string{"button", "card", "login_form", "row_actions_menu"} {
 		path := filepath.Join(dir, "packages", "ui-web", "src", "components", "ui", name+".tsx")
 		if _, err := os.Stat(path); err != nil {
@@ -374,8 +374,8 @@ func TestGenerateFrontendFiles_WorkspacesSkipsPerFrontendComponents(t *testing.T
 	// tsconfig.json carries the path mapping that redirects
 	// `@/components/ui/*` to packages/ui-web/src/components/ui/*.
 	// Pin both the redirected mapping AND the existing `@/*` catch-all
-	// so the pages that import `@/lib/...` (and packs that import
-	// `@/components/auth/...`) keep resolving against the local src
+	// so the pages that import `@/lib/...` (and the owned components that
+	// import `@/components/nav`) keep resolving against the local src
 	// tree.
 	tsconfigBody := mustRead(t, filepath.Join(dir, "frontends", "web", "tsconfig.json"))
 	if !strings.Contains(tsconfigBody, `"@/components/ui/*": ["../../packages/ui-web/src/components/ui/*"]`) {

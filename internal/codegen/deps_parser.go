@@ -21,11 +21,11 @@ import (
 // (e.g. "*sql.DB", "orm.Context") without re-walking the AST.
 type DepsField struct {
 	// Name is the exported Go field name as written in the Deps struct,
-	// e.g. "Logger", "Config", "Authorizer", "Repo", "Audit", "DB".
+	// e.g. "Logger", "Config", "Repo", "Audit", "DB".
 	Name string
 
 	// Type is the pretty-printed Go type expression, e.g. "*slog.Logger",
-	// "*config.Config", "middleware.Authorizer", "orm.Context", "*sql.DB",
+	// "*config.Config", "orm.Context", "*sql.DB",
 	// "Repository". Used by wire_gen to emit zero-values when no
 	// producer matches and to render TODO comments that name the type
 	// the user needs to wire.
@@ -104,6 +104,97 @@ func ParseServiceDeps(dir string) ([]DepsField, error) {
 		}
 	}
 	return nil, nil
+}
+
+// DepsLiteralKeys returns every field name a `<pkg>.Deps{…}` composite literal
+// may legally key for the Deps struct declared in dir, plus whether a Deps
+// struct was FOUND there at all.
+//
+// This is a DIFFERENT question from ParseServiceDeps, and the difference is the
+// whole point. ParseServiceDeps answers "what must forge WIRE?" — so it drops
+// unexported and embedded fields, which forge cannot address. DepsLiteralKeys
+// answers "what may the literal legally NAME?" — the full key set, embedded and
+// unexported included. compose.go's reconciler uses it to drop a key that is
+// provably not a field, and it must never mistake a key forge does not emit
+// (an embedded `Base:` the author wired by hand) for a dead one. The wiring set
+// is a subset of the key set, so the two can never disagree about a key forge
+// itself emitted.
+//
+// The `found` bool is the guard that keeps the removal case from becoming a
+// licence to destroy. An empty key set is AMBIGUOUS: it means either "the Deps
+// struct genuinely has no fields" or "the package is mid-edit and did not
+// parse" — this walk, like ParseServiceDeps, skips a file it cannot parse. Only
+// `found` distinguishes them, and a caller that deletes on the strength of an
+// absent field must act only on a set that was positively read.
+func DepsLiteralKeys(dir string) (keys map[string]bool, found bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, false
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(dir, entry.Name()), nil, parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok || typeSpec.Name.Name != "Deps" {
+					continue
+				}
+				structType, ok := typeSpec.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+				keys = map[string]bool{}
+				for _, f := range structType.Fields.List {
+					if len(f.Names) == 0 {
+						// Embedded: the literal keys it by the type's base
+						// identifier (`Base` for `Base`, `*Base` and `pkg.Base`).
+						if name := embeddedFieldName(f.Type); name != "" {
+							keys[name] = true
+						}
+						continue
+					}
+					for _, n := range f.Names {
+						keys[n.Name] = true
+					}
+				}
+				return keys, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// embeddedFieldName returns the field name Go gives an embedded struct field —
+// the base identifier of the type, with any pointer and package qualifier
+// stripped. Returns "" for a shape that cannot be embedded.
+func embeddedFieldName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.StarExpr:
+		return embeddedFieldName(t.X)
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	case *ast.IndexExpr: // generic instantiation: Base[T]
+		return embeddedFieldName(t.X)
+	case *ast.IndexListExpr:
+		return embeddedFieldName(t.X)
+	case *ast.Ident:
+		return t.Name
+	}
+	return ""
 }
 
 // HasOptionalDepMarker returns true if any line in the comment text

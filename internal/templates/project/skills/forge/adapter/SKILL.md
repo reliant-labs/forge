@@ -14,7 +14,7 @@ Add an adapter the moment you need to call an external system that isn't your ow
 
 - You're about to import a vendor SDK in your application bootstrap or in a handler.
 - You're about to write `POST https://api.stripe.com/v1/...` (or the equivalent in your stack) inline in a service.
-- You're orchestrating two external calls together — that's an interactor over two adapters, not an unstructured helper.
+- You're orchestrating two external calls together — that's an orchestrating service over two adapters, not an unstructured helper.
 
 If the external system is your own first-party API that you already generate clients for, you don't need an adapter — depend on the generated client. Adapters exist for boundaries you don't already manage.
 
@@ -28,7 +28,7 @@ If the external system is your own first-party API that you already generate cli
 
 ## What does NOT go in
 
-- Multi-step workflows (validate → fetch → send → audit). Compose those in an interactor that depends on this adapter's interface.
+- Multi-step workflows (validate → fetch → send → audit). Compose those in an orchestrating service that depends on this adapter's interface.
 - Business logic — eligibility checks, pricing, dedupe. Those belong to the domain.
 - Reaching into other adapters or services. Adapters are leaf nodes; they don't know about each other.
 
@@ -94,7 +94,7 @@ func TestCreateCharge_OK(t *testing.T) {
 }
 ```
 
-The interactor that calls this adapter in production mocks the interface, never the downstream HTTP server.
+The package that calls this adapter in production mocks the interface — `forge generate` already put a `MockService` for it in this package's `mock_gen.go` — never the downstream HTTP server.
 
 ## Library choice is yours
 
@@ -111,7 +111,7 @@ Your adapter wraps whatever client you choose — raw HTTP, the vendor SDK, an R
 
 Adapters are leaf nodes at construction, but occasionally a downstream consumer registers a callback / sink / subscriber onto the adapter after both exist (e.g. an event-bus adapter receiving subscribers from services built later). Don't add the consumer to the adapter's `Deps` — that inverts the leaf rule, and constructor topo-ordering alone deadlocks on this shape.
 
-Use **construct-then-register** inside `NewComponents` (`forge disown internal/app/compose.go` first to hand-own the construction site): build the adapter, build the consumer, then call the register/subscribe setter. It's an ordinary method call after both ends exist — not a framework seam.
+Use **construct-then-register** inside `NewComponents` (`forge project disown internal/app/compose.go` first to hand-own the construction site): build the adapter, build the consumer, then call the register/subscribe setter. It's an ordinary method call after both ends exist — not a framework seam.
 
 ```go
 bus := eventbus.New(eventbus.Deps{Logger: log})
@@ -127,25 +127,33 @@ There is no `PostBootstrap` / `post_bootstrap.go` seam — late registration is 
 Scaffold an adapter with:
 
 ```
-forge add adapter stripe-adapter
+forge scaffold adapter stripe-adapter
 ```
 
 This emits the canonical package layout:
 
 ```
 internal/stripe-adapter/
-  contract.go        # // forge:adapter — Service interface, narrow surface
-  adapter.go         # Service struct + downstream calls; New(Deps) Service
+  contract.go        # // forge:outbound-io — Service interface, narrow surface
+  adapter.go         # Service struct + downstream calls; New(Deps) Service,
+                     # marked // forge:constructor (adapters do I/O — keep it)
   adapter_test.go    # httptest stub of the downstream
+  observe_chain.go   # YOURS (scaffold-once) — newObserveChain() assembles the
+                     # in-process middleware chain (span, metrics, structured
+                     # log, panic-recovery) the generated decorator routes every
+                     # Service method through (see the observability skill)
 ```
 
-Plus a `cache.go` stub for any local caching the adapter needs (delete it if you don't). `forge add package <name> --type adapter` resolves to the same code path.
+Plus a `cache.go` stub for any local caching the adapter needs (delete it if you don't). `forge scaffold package <name> --type adapter` resolves to the same code path.
 
-## Marker comment and lint enforcement
+## Marker comments and lint enforcement
 
-Every adapter package's `contract.go` carries a `// forge:adapter` marker comment on the package doc. The marker tells the next reader the package's role in the architecture, and one lint rule enforces invariant:
+Every adapter package's `contract.go` carries a `// forge:outbound-io` marker on the package doc, and its `func New` carries `// forge:constructor` (the observability opt-in — see below).
 
-- `forgeconv-adapter-no-rpc` — adapter packages must not register Connect RPC handlers. Adapters are outbound-only; an RPC means it's actually a service.
+`// forge:outbound-io` is named for what it ASSERTS, not for the pattern: *this package calls out to a third-party system and serves nothing inbound.* That is the only part of "adapter" a linter can check, and naming the marker after it means you can tell when to stamp it by reading it. Stamp it on any package that is an outbound boundary, whether or not you would have called it an adapter. Two rules read it:
+
+- `forgeconv-outbound-io-no-rpc` — a package carrying the marker must not register Connect RPC handlers. An inbound handler contradicts the claim; the RPC surface is the actual service, and this package is the dependency underneath it.
+- `enforce-component-observe` — a wired component that made no observability decision (neither `// forge:constructor` nor `// forge:no-observe`) is an ERROR. Because `// forge:outbound-io` means the package does I/O by definition, the suggestion is always `// forge:constructor`; scaffolds stamp it, so a fresh adapter is already green. Kill-switch: `config.enforce_component_observe: off`.
 
 ## Wiring: construct in the explicit composition
 
@@ -153,12 +161,14 @@ An adapter is a leaf built in `internal/app/compose.go` `NewComponents` (off the
 
 ```go
 // internal/app/compose.go
-stripe := stripeadapter.New(stripeadapter.Deps{
-    HTTPClient: &http.Client{Timeout: 30 * time.Second},
-    Cfg:        infra.Cfg.Stripe,  // scalars travel as one typed Config block
-})
+stripe := stripeadapter.NewServiceWithForgeMiddleware(stripeadapter.New(stripeadapter.Deps{
+    HTTPClient: infra.DefaultClient(),  // instrumented shared transport: OTel client spans + propagation + 30s timeout
+    Cfg:        infra.Cfg.Stripe,       // scalars travel as one typed Config block
+}))
 bill := billing.New(billing.Deps{Charges: stripe})  // consumer sees stripeadapter.Service, not the concrete type
 ```
+
+`forge generate` emits exactly this shape automatically: any `HTTPClient *http.Client` Deps field is wired to `infra.DefaultClient()`, and an instrumented package — one carrying the `// forge:constructor` marker (adapter scaffolds stamp it by default) or the owned `observe_chain.go` seam — is constructed wrapped, as `New<Concrete>WithForgeMiddleware(New(...))` (the constructor named after the concrete return type; the canonical `&service{}` yields `NewServiceWithForgeMiddleware`). Prefer `infra.DefaultClient()` over a bare `&http.Client{}` — the bare client makes the adapter's outbound calls invisible to traces.
 
 Because the consumer depends on the interface, swapping the real adapter for a mock (tests) or a different backend is a one-line change here — the consumer is untouched.
 
@@ -167,5 +177,5 @@ Because the consumer depends on the interface, swapping the real adapter for a m
 - **Composing multiple adapters into a workflow** — see `interactor`.
 - **The Service / Deps / New shape itself** — see `service-layer`.
 - **Wrapping vendor errors into svcerr sentinels** — see `service-layer`'s errors section and `forge/pkg/svcerr`.
-- **Webhook ingestion (inbound from a vendor)** — that's a webhook handler, not an adapter. See `forge add webhook`.
+- **Webhook ingestion (inbound from a vendor)** — that's a webhook handler, not an adapter. See `forge scaffold webhook`.
 <!-- @forge-only:end -->

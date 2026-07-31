@@ -17,15 +17,19 @@ type Deps struct {
 	Logger *slog.Logger
 
 	// HTTPClient is injected so tests can swap in an httptest-backed
-	// transport. Production wiring should pass a *http.Client with
-	// timeouts and (where appropriate) a retrying transport.
+	// transport. Production wiring passes `infra.DefaultClient()` (see
+	// internal/app/providers.go) — a fresh client over the SHARED
+	// instrumented base transport, so every outbound call gets OTel
+	// client spans + trace propagation + a sane timeout for free. The
+	// composition site (internal/app/compose.go) wires it automatically;
+	// layer a retrying transport on top here if the downstream needs it.
 	HTTPClient *http.Client
 
 	// BaseURL is the downstream service base. Read from your project's
 	// pkg/config in Setup() and pass it through.
 	BaseURL string
 
-	// TODO: Add adapter-specific config (API keys, tenant IDs, etc.) by
+	// TODO: Add adapter-specific config (API keys, account IDs, etc.) by
 	// extending Deps; keep secrets behind interface methods if you want
 	// the test setup to avoid threading them through.
 }
@@ -36,17 +40,26 @@ type service struct {
 	deps Deps
 }
 
-// New constructs a {{.Name}} adapter. The bootstrap template wires this
-// from Setup() in pkg/app/setup.go.
+// New constructs a {{.Name}} adapter. internal/app/compose.go wires this
+// from the Infra you declare in internal/app/providers.go.
 //
 // The two-result `(Service, error)` shape lets New surface dep-validation
 // or one-time-init failures (missing required deps, bad config, etc.).
 // Scaffolds ship with a no-error path; polish the body when you grow
 // dep validation or eager initialization.
+//
+// forge:constructor
+//
+// The marker above opts this adapter into the generated observability
+// decorator (routed through the owned observe_chain.go seam). Adapters do I/O,
+// so keep it. To opt out, replace it with `// forge:no-observe` on this line;
+// `// forge:no-observe` on a single Service method skips just that method.
 func New(deps Deps) (Service, error) {
 	if deps.HTTPClient == nil {
-		// Always supply a defaulted client so a minimal Setup() (just a
-		// logger + base URL) still works in dev.
+		// Always supply a defaulted client so a minimal wiring (just a
+		// logger + base URL) still works in dev/tests. Production wiring
+		// passes infra.DefaultClient() instead — same timeout, plus the
+		// shared instrumented transport (OTel spans + propagation).
 		deps.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &service{deps: deps}, nil

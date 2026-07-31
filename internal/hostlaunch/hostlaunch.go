@@ -5,7 +5,7 @@
 //
 //   - `forge run <svc>` — single-service host runner (foreground or
 //     background; backed by a per-service PID file).
-//   - `forge up` host phase — N-service loop that hangs the cmds off
+//   - `forge env up` host phase — N-service loop that hangs the cmds off
 //     a process registry for cascade teardown.
 //
 // Both pick a runner (go-run / air / binary / delve), default the env
@@ -20,7 +20,7 @@
 //   - foreground stream-prefix + signal handling lives in the single-
 //     service `forge run` path because it has different semantics
 //     (one process, persistent PID file, `stop` subcommand);
-//   - the N-process registry that `forge up` uses for cascade
+//   - the N-process registry that `forge env up` uses for cascade
 //     teardown stays in `internal/cli/up.go` for the same reason.
 //
 // What's shared here is the pure command-construction matrix plus the
@@ -274,7 +274,7 @@ func LayerHostEnv(base []string, projectConfig, secrets, envVars map[string]stri
 //	$HOME/.cache/forge/run/<service>.pid
 //
 // Canonical convention. Used by `forge run <svc>` (foreground cleanup
-// + background detach + stop subcommand). `forge up` uses its own
+// + background detach + stop subcommand). `forge env up` uses its own
 // per-env state file under $HOME/.cache/forge/up/<env>.pids because it
 // tracks N processes (services + frontends + port-forwards) and the
 // per-env grouping is the unit of teardown there; the two conventions

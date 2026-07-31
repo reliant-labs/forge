@@ -101,7 +101,12 @@ func dockerProxyValues(httpProxy, httpsProxy string) []string {
 // surface a missing/installed docker binary, and we don't want a second
 // noisy line for the same root cause.
 func runDockerProxyDoctorChecks(ctx context.Context, cfg *config.ProjectConfig, _, signal string) []doctor.CheckResult {
-	if signal != "" && signal != "tools" {
+	// Only the unfiltered pass. `--signal` selects among the values
+	// doctor.RunFiltered accepts (metrics/traces/logs/profiles/deploy); it
+	// REJECTS anything else before a check runs, so a guard naming its own
+	// signal here could never be true and advertised a filter that does not
+	// exist.
+	if signal != "" {
 		return nil
 	}
 	if cfg == nil || !cfg.Features.BuildEnabled() {

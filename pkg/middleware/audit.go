@@ -7,6 +7,8 @@ import (
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // auditMessage is the canonical slog message string for every audit
@@ -63,6 +65,15 @@ type AuditEvent struct {
 	// TraceID is the OTel trace id (hex), empty when the request carries
 	// no span context.
 	TraceID string
+	// RequestID is the per-request correlation id (the X-Request-Id the
+	// client was handed), empty when the request reached the interceptor
+	// without one. It is what makes the audit trail JOINABLE: without it
+	// a customer-quoted request id finds the operational "rpc completed"
+	// line but nothing in the audit record, so "what did this call
+	// actually do, and who made it" cannot be answered from the id alone.
+	// TraceID does not substitute — it is empty whenever no OTLP/tracing
+	// span exists, which is the default configuration.
+	RequestID string
 }
 
 // AuditSink is a durable destination for audit events (a database, an
@@ -199,6 +210,15 @@ func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr str
 		slog.Time("timestamp", start),
 	}
 
+	// Correlate with the request the client was given a receipt for. This
+	// is the ONLY id an incident starts from — the customer quotes their
+	// X-Request-Id — so an audit record without it cannot be joined to the
+	// operational log line for the same call.
+	if rid := RequestIDFromContext(ctx); rid != "" {
+		event.RequestID = rid
+		attrs = append(attrs, slog.String("request_id", rid))
+	}
+
 	// Correlate with the active trace when one is present.
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.HasTraceID() {
 		event.TraceID = spanCtx.TraceID().String()
@@ -227,13 +247,21 @@ func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr str
 		code := connect.CodeOf(err)
 		event.Status = "error"
 		event.ErrorCode = code.String()
+		// The CLIENT-VISIBLE message, deliberately: an audit stream is
+		// routinely shipped to a SIEM or a compliance store, and svcerr has
+		// already decided what text is safe to hand out. The unredacted
+		// diagnostic lives on the operational "rpc failed" record, which
+		// this one joins by request_id.
 		event.ErrorMessage = err.Error()
 		attrs = append(attrs,
 			slog.String("status", "error"),
 			slog.String("code", code.String()),
 			slog.String("error", err.Error()),
 		)
-		a.logger.LogAttrs(ctx, slog.LevelWarn, auditMessage, attrs...)
+		// Same severity policy as the operational log — a server fault is
+		// ERROR, a rejected request is WARN. Two streams disagreeing about
+		// how bad the same RPC was is its own incident.
+		a.logger.LogAttrs(ctx, observe.LevelForError(err), auditMessage, attrs...)
 	} else {
 		attrs = append(attrs, slog.String("status", "ok"))
 		a.logger.LogAttrs(ctx, slog.LevelInfo, auditMessage, attrs...)

@@ -14,7 +14,7 @@ import (
 
 // addforgeReplaceMain adds a `replace github.com/reliant-labs/forge/pkg => <repo>/pkg`
 // directive to the project go.mod so `go mod tidy` resolves the in-repo
-// pkg (auth, tenant, orm, etc.). Used in tests where the generated project
+// pkg (auth, crud, orm, etc.). Used in tests where the generated project
 // references a forge/pkg subpackage not yet present in the latest published
 // forge/pkg snapshot.
 func addforgeReplaceMain(t *testing.T, projectDir string) {
@@ -430,72 +430,20 @@ func TestBootstrapGeneratedCodeRunsGeneratePipelineInProjectDirectory(t *testing
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	stubPath := filepath.Join(dir, "buf")
-	stubScript := `#!/bin/sh
-set -eu
-mkdir -p gen/services/api/v1/apiv1connect
-cat > gen/services/api/v1/api.pb.go <<'PBEOF'
-package apiv1
-
-import "google.golang.org/protobuf/types/known/timestamppb"
-
-var File_services_api_v1_api_proto = struct{}{}
-
-type API struct {
-	Id          string
-	Name        string
-	Description string
-	Active      bool
-	CreatedAt   *timestamppb.Timestamp
-	UpdatedAt   *timestamppb.Timestamp
-	DeletedAt   *timestamppb.Timestamp
-}
-
-type CreateRequest struct{}
-type CreateResponse struct{}
-type GetRequest struct{}
-type GetResponse struct{}
-type UpdateRequest struct{}
-type UpdateResponse struct{}
-type DeleteRequest struct{}
-type DeleteResponse struct{}
-type ListRequest struct{}
-type ListResponse struct{}
-PBEOF
-cat > gen/services/api/v1/apiv1connect/api.connect.go <<'CONNECTEOF'
-package apiv1connect
-
-import (
-	"net/http"
-
-	"connectrpc.com/connect"
-)
-
-type UnimplementedAPIServiceHandler struct{}
-
-type APIServiceHandler interface{}
-
-type APIServiceClient interface{}
-
-func NewAPIServiceHandler(_ any, _ ...connect.HandlerOption) (string, http.Handler) {
-	return "/api.v1.APIService/", http.NotFoundHandler()
-}
-
-func NewAPIServiceClient(_ connect.HTTPClient, _ string, _ ...connect.ClientOption) APIServiceClient {
-	return nil
-}
-CONNECTEOF
-exit 0
-`
-	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	pathEnv := os.Getenv("PATH")
-	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+pathEnv); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Setenv("PATH", pathEnv) }()
+	// Drive the pipeline with the REAL toolchain.
+	//
+	// This test used to stub buf with a shell script that hand-wrote a couple
+	// of .pb.go files. The stub could not keep pace with the pipeline: it
+	// emitted no proto descriptor and no gen/config/v1, both of which later
+	// steps came to require, so the run aborted long before the assertions and
+	// the test sat permanently red. Chasing that with an ever-larger fake buf
+	// just builds a second, drifting implementation of the toolchain.
+	//
+	// Real buf resolves protoc-gen-go / protoc-gen-connect-go from PATH — the
+	// scaffolded buf.gen.yaml uses local plugins, so no BSR and no network are
+	// involved — and protoc-gen-forge is served by this very binary through
+	// TestMain. The pipeline therefore runs end to end against production code.
+	requireProtoToolchain(t)
 
 	// Generated code (pkg/middleware/middleware.go etc.) imports
 	// github.com/reliant-labs/forge/pkg/auth which doesn't exist in the
@@ -656,50 +604,9 @@ func TestVersionWarnSentinelPath(t *testing.T) {
 	}
 }
 
-// TestRelevantMigrationSkills_FindsCanonicalContractkit verifies that
-// the upgrade path discovery hits the canonical v0.x-to-contractkit
-// skill for any 0.x project bumping forward. The skill ships in the
-// embedded template tree.
-func TestRelevantMigrationSkills_FindsCanonicalContractkit(t *testing.T) {
-	skills := relevantMigrationSkills("0.5.0", "1.6.0")
-	var found bool
-	for _, s := range skills {
-		if s.Path == "migrations/v0.x-to-contractkit" {
-			found = true
-			if s.Description == "" {
-				t.Errorf("skill %q has empty description (frontmatter unparsed?)", s.Path)
-			}
-			break
-		}
-	}
-	if !found {
-		var paths []string
-		for _, s := range skills {
-			paths = append(paths, s.Path)
-		}
-		t.Errorf("relevantMigrationSkills(0.5.0 → 1.6.0) did not include migrations/v0.x-to-contractkit. Got: %v", paths)
-	}
-}
-
-// TestRelevantMigrationSkills_LegacyTreatedAsSurfaceAll verifies that a
-// legacy project (no forge_version) sees every per-version skill,
-// including the contractkit canonical example.
-func TestRelevantMigrationSkills_LegacyTreatedAsSurfaceAll(t *testing.T) {
-	skills := relevantMigrationSkills("0.0.0", "1.6.0")
-	if len(skills) == 0 {
-		t.Fatal("expected at least one migration skill for legacy projects, got none")
-	}
-	var found bool
-	for _, s := range skills {
-		if s.Path == "migrations/v0.x-to-contractkit" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("legacy 0.0.0 → latest path missing canonical migrations/v0.x-to-contractkit skill")
-	}
-}
+// Migration-skill discovery is exercised in upgrade_migrations_test.go,
+// against the single applicability decision every migration surface
+// shares (migrationApplies).
 
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)

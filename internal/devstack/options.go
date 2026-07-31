@@ -43,14 +43,14 @@ func (o Options) DArgs() []string {
 }
 
 // The active options are a process-global, set ONCE at the start of a forge
-// command (forge up / forge deploy) and read by every render path — both
+// command (forge env up / forge env deploy) and read by every render path — both
 // the entity render (renderKCLRaw) and the manifest render
 // (cluster.renderDArgs). A global is how forge already threads per-command
 // render context (cf. the port store) without churning ~20 render call
 // sites.
 //
 // The zero value emits no args, so any command that never calls SetActive
-// (forge ci, forge audit, tests) renders byte-identically to today.
+// (forge ci, forge project audit, tests) renders byte-identically to today.
 var (
 	activeMu sync.RWMutex
 	active   Options

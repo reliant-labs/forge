@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// The FORGE_SCAFFOLD marker scanners are shared by `forge audit`
-// (internal/cli/audit) and `forge map` (internal/cli/map.go). They live in
+// The FORGE_SCAFFOLD marker scanners are shared by `forge project audit`
+// (internal/cli/audit) and `forge project map` (internal/cli/map.go). They live in
 // the leaf package so both reach one implementation without an import cycle.
 
 // CountLineStartScaffoldMarkers counts line-start `// FORGE_SCAFFOLD:` and

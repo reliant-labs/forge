@@ -13,7 +13,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
 	"time"
+
+	"github.com/reliant-labs/forge/internal/templates"
 
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
@@ -25,10 +28,9 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
-	linkForgeSibling(t, dir)
 
 	// Create project
-	runCmd(t, dir, forgeBin, "new", "basicapp", "--mod", "example.com/basicapp", "--service", "api")
+	runCmd(t, dir, forgeBin, "project", "new", "basicapp", "--mod", "example.com/basicapp", "--service", "api")
 
 	projectDir := filepath.Join(dir, "basicapp")
 	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.yaml"))
@@ -59,19 +61,12 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 	// Test
 	runCmd(t, projectDir, "go", "test", "./...")
 
-	// golangci-lint (if available)
-	if toolAvailable("golangci-lint") {
-		runCmd(t, projectDir, "golangci-lint", "run", "./...")
-	} else {
-		t.Log("golangci-lint not available, skipping lint check")
-	}
-
-	// buf lint (if available)
-	if toolAvailable("buf") {
-		runCmd(t, projectDir, "buf", "lint")
-	} else {
-		t.Log("buf not available, skipping proto lint check")
-	}
+	// Lint gates. These are LAST in the function on purpose: requireTool
+	// skips the whole test on a laptop without the tool, and everything
+	// above has already asserted by the time it can fire.
+	requireTool(t, "golangci-lint", "buf")
+	runGolangciLintE2E(t, projectDir, "./...")
+	runCmd(t, projectDir, "buf", "lint")
 }
 
 // TestE2EScaffoldMultiServiceProject creates a project with multiple services
@@ -81,10 +76,9 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
-	linkForgeSibling(t, dir)
 
 	// Create project with multiple services and a frontend
-	runCmd(t, dir, forgeBin, "new", "multiapp",
+	runCmd(t, dir, forgeBin, "project", "new", "multiapp",
 		"--mod", "example.com/multiapp",
 		"--service", "api,users,orders",
 		"--frontend", "web",
@@ -122,10 +116,9 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 	// Test
 	runCmd(t, projectDir, "go", "test", "./...")
 
-	// golangci-lint
-	if toolAvailable("golangci-lint") {
-		runCmd(t, projectDir, "golangci-lint", "run", "./...")
-	}
+	// golangci-lint — last in the function; see TestE2EScaffoldBasicProject.
+	requireTool(t, "golangci-lint")
+	runGolangciLintE2E(t, projectDir, "./...")
 }
 
 // TestE2EScaffoldWithEntityProto and TestE2EScaffoldLifecycle (scaffold_lifecycle_e2e_test.go)
@@ -133,23 +126,22 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 // schema-truth lifecycle gate in fixture_corpus_e2e_test.go supersedes them.
 
 // TestE2EScaffoldAddService creates a project, then adds a service using
-// `forge add service`, regenerates, and verifies the build.
+// `forge scaffold service`, regenerates, and verifies the build.
 func TestE2EScaffoldAddService(t *testing.T) {
 	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
-	linkForgeSibling(t, dir)
 
 	// Create initial project
 	// The intended behavior is project-may-start-with-or-without-services;
 	// use --service for the canonical full scaffold.
-	runCmd(t, dir, forgeBin, "new", "addtest", "--mod", "example.com/addtest", "--service", "api")
+	runCmd(t, dir, forgeBin, "project", "new", "addtest", "--mod", "example.com/addtest", "--service", "api")
 
 	projectDir := filepath.Join(dir, "addtest")
 
 	// Add a new service
-	runCmd(t, projectDir, forgeBin, "add", "service", "billing")
+	runCmd(t, projectDir, forgeBin, "scaffold", "service", "billing")
 
 	// Verify both services exist
 	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api", "service.go"))
@@ -196,10 +188,9 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
-	linkForgeSibling(t, dir)
 
 	// Create project
-	runCmd(t, dir, forgeBin, "new", "srvtest", "--mod", "example.com/srvtest", "--service", "api")
+	runCmd(t, dir, forgeBin, "project", "new", "srvtest", "--mod", "example.com/srvtest", "--service", "api")
 
 	projectDir := filepath.Join(dir, "srvtest")
 
@@ -225,14 +216,11 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		"DATABASE_URL=", // No DB needed for health check
-		// The scaffold defaults ENVIRONMENT=production, where a server
-		// with no auth provider REFUSES to start (the H2 refusal
-		// contract, tested in forge/pkg/authn). This test is about the
-		// serve lifecycle (healthz/readyz). Auth bypass is now EXPLICIT —
-		// dev mode alone keeps auth on — so opt in with AUTH_DEV_MODE=true
-		// to boot the providerless scaffold.
+		// This test is about the serve lifecycle (healthz/readyz). The
+		// scaffold's SetupAuth always builds a real JWT validator, so the
+		// server boots in validate mode; /healthz and /readyz are on the
+		// unauthenticated allow-list and need no token.
 		"ENVIRONMENT=development",
-		"AUTH_DEV_MODE=true",
 	)
 
 	// Capture output for debugging
@@ -301,6 +289,18 @@ var (
 func requirePublishedForgePkg(t *testing.T) {
 	t.Helper()
 	publishedPkgOnce.Do(func() {
+		// Probe EVERY forge/pkg subpackage the templates import, not one
+		// hand-named package. The old probe asked for pkg/appkit, which no
+		// template imports at all — so it resolved against the published
+		// module, reported green, and let eleven tests run a `go mod tidy`
+		// that could not possibly succeed: the scaffold imports
+		// pkg/validate, which landed after the last pkg release tag, and
+		// `go mod tidy` ignores go.work by design.
+		want := templates.ForgePkgImports()
+		if len(want) == 0 {
+			publishedPkgErr = fmt.Errorf("templates report no forge/pkg imports; the probe would be vacuous")
+			return
+		}
 		dir, err := os.MkdirTemp("", "forge-pkg-probe-")
 		if err != nil {
 			publishedPkgErr = err
@@ -313,12 +313,18 @@ func requirePublishedForgePkg(t *testing.T) {
 			publishedPkgErr = fmt.Errorf("probe init: %v\n%s", err, out)
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 		defer cancel()
-		get := exec.CommandContext(ctx, "go", "get", "github.com/reliant-labs/forge/pkg/appkit@latest")
+		args := make([]string, 0, len(want)+1)
+		args = append(args, "get")
+		for _, name := range want {
+			args = append(args, "github.com/reliant-labs/forge/pkg/"+name+"@latest")
+		}
+		get := exec.CommandContext(ctx, "go", args...)
 		get.Dir = dir
 		if out, err := get.CombinedOutput(); err != nil {
-			publishedPkgErr = fmt.Errorf("published forge/pkg lacks appkit/serverkit (push the pkg release tag — see scripts/release-pkg.sh): %v\n%s", err, out)
+			publishedPkgErr = fmt.Errorf("published forge/pkg does not satisfy the scaffold's imports %v "+
+				"(push the pkg release tag — see scripts/release-pkg.sh): %v\n%s", want, err, out)
 		}
 	})
 	if publishedPkgErr != nil {
@@ -522,10 +528,162 @@ func runCmdOutput(t *testing.T, dir string, name string, args ...string) string 
 	return string(output)
 }
 
+// ── golangci-lint's machine-global lock ─────────────────────────────────────
+//
+// golangci-lint takes an exclusive OS file lock on $TMPDIR/golangci-lint.lock
+// for the whole of a run, and by default waits only FIVE SECONDS for it before
+// exiting 3 with:
+//
+//	Error: parallel golangci-lint is running
+//
+// A lint of a scaffolded project takes tens of seconds, so five seconds of
+// patience is no patience at all: any two e2e tests whose lint steps overlap
+// leave one of them dead, and which one is decided by scheduling rather than by
+// anything in the code. That is why TestE2EScaffoldIsReviveExportedClean and
+// TestE2EFreshScaffoldLintExitsZero each pass alone and fail in the full suite,
+// and it gets worse under CI sharding, not better.
+//
+// The lock is contention control, not analysis: neither knob below can change a
+// single finding. It is also NOT in the cache directory — pointing
+// GOLANGCI_LINT_CACHE somewhere private leaves the run dying after the same 5.1
+// seconds, because the lock lives in os.TempDir() and is shared by every
+// golangci-lint on the machine regardless of cache.
+//
+// `go test -parallel` already budgets how much of this suite runs at once. A
+// second, hidden, machine-global serialization point inside one of the tools
+// makes that budget a lie, so the instruction to give is "these runs are
+// independent" — spelled two ways, because which one is available depends on
+// whether this suite owns the argv:
+//
+//   - It does for a DIRECT invocation, so those pass --allow-parallel-runners,
+//     the documented flag for exactly this ("Allow multiple parallel
+//     golangci-lint instances running"). golangciLintRunArgs is the only place
+//     that spells it.
+//
+//   - It does NOT when golangci-lint is a GRANDCHILD under `forge lint`:
+//     nothing in that command's surface forwards flags to it. There the same
+//     instruction has to arrive as environment, and golangciLockIsolationEnv
+//     gives the subprocess its own TMPDIR — hence its own lock file, hence
+//     nothing to contend with. This suite deliberately does not change what the
+//     shipped `forge lint` does to a user's machine in order to unflake itself;
+//     if `forge lint` grows the flag (it has the same defect against a user's
+//     editor or a sibling CI step), delete golangciLockIsolationEnv and its
+//     three call sites.
+
+// golangciLintRunArgs returns the argv for `golangci-lint run` with the
+// parallel-safety flag ahead of the caller's arguments. Every direct invocation
+// in this suite must build its arguments here.
+func golangciLintRunArgs(args ...string) []string {
+	return append([]string{"run", "--allow-parallel-runners"}, args...)
+}
+
+// runGolangciLintE2E runs golangci-lint in dir and fails the test on a non-zero
+// exit. Callers that need the output, or that must tolerate a non-zero exit
+// because findings are the thing under test, build their own exec.Cmd from
+// golangciLintRunArgs instead.
+func runGolangciLintE2E(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	runCmd(t, dir, "golangci-lint", golangciLintRunArgs(args...)...)
+}
+
+// golangciLockIsolationEnv returns a TMPDIR= entry pointing at a fresh
+// directory, so a golangci-lint launched somewhere below the subprocess gets a
+// lock file no other test shares. Append it to cmd.Env of anything that runs
+// `forge lint`; os/exec keeps the last duplicate of a key, so it wins over the
+// inherited TMPDIR.
+func golangciLockIsolationEnv(t *testing.T) string {
+	t.Helper()
+	return "TMPDIR=" + t.TempDir()
+}
+
 // toolAvailable checks if a tool is on PATH.
+//
+// PREFER requireTool. A bare boolean has exactly one honest use — deciding
+// which of two real code paths to take — and zero honest uses as the guard on
+// an assertion, because the false branch is a test that passes without
+// testing. Every remaining caller is a conversion that has not happened yet.
 func toolAvailable(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
+}
+
+// ── Required-tool gate ──────────────────────────────────────────────────────
+//
+// A missing external tool has two honest answers and they are not the same
+// answer. On a contributor's laptop the tool is genuinely absent and no
+// checkout can supply it, so SKIP is right: the run stays useful and says out
+// loud what it did not do. In CI the tool is the WORKFLOW'S JOB to install, so
+// a missing tool is a broken gate — and a broken gate that skips reports the
+// same green as a gate that passed. That is how 47 of this suite's 52 tests
+// went a year without running while CI stayed green.
+//
+// requireTool collapses both answers into one call so no test has to choose:
+//
+//	requireTool(t, "node", "npm")   // everything below this line is real
+//
+// Trigger, in precedence order:
+//
+//	FORGE_E2E_REQUIRE_TOOLS  Explicit; wins in both directions. The e2e
+//	                         workflow sets it at the job level so the
+//	                         requirement is written down next to the installs
+//	                         rather than inferred three layers away. Setting
+//	                         it to 0/false is the escape hatch for a CI job
+//	                         that genuinely cannot provision something — and
+//	                         that job then has to say so, in the workflow, in
+//	                         writing, where review can see it.
+//	CI                       Set by GitHub Actions and every other CI. Strict
+//	                         is the DEFAULT under automation on purpose: a new
+//	                         workflow that runs `-tags e2e` without knowing
+//	                         this env var exists still fails loudly instead of
+//	                         quietly covering less than it appears to.
+//	(neither)                Laptop. Skip, naming the tool.
+//
+// Deliberately NOT inferred from GITHUB_ACTIONS alone: the same strictness is
+// wanted from any runner (act, a future buildkite lane, a nightly cron box),
+// and `CI` is the portable spelling.
+func requireTool(t *testing.T, names ...string) {
+	t.Helper()
+	if len(names) == 0 {
+		t.Fatal("requireTool called with no tools — a gate that requires nothing is the exact bug this helper exists to prevent")
+	}
+	var missing []string
+	for _, name := range names {
+		if _, err := exec.LookPath(name); err != nil {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	list := strings.Join(missing, ", ")
+	// The skip is written as the guarded branch and the failure as the
+	// fall-through on purpose: internal/vacuousguard's dead-skip rule reads
+	// the AST, and a t.Skip with no enclosing conditional is — correctly —
+	// an unconditional skip. Spelling it this way makes the condition the
+	// skip depends on visible to the guard and to the reader.
+	if !e2eToolsRequired() {
+		t.Skipf("%s not on PATH — skipped locally. This is a HARD FAILURE in CI; "+
+			"run with FORGE_E2E_REQUIRE_TOOLS=1 to reproduce that here.", list)
+	}
+	t.Fatalf("required tool(s) not on PATH: %s\n"+
+		"This run is under CI (or FORGE_E2E_REQUIRE_TOOLS is set), where a missing tool is a "+
+		"provisioning bug in the workflow, not a property of the machine. Install it in the job "+
+		"that runs `go test -tags e2e`; skipping here would report green for a check that never ran.",
+		list)
+}
+
+// e2eToolsRequired reports whether a missing tool must fail rather than skip.
+// See requireTool for the precedence rationale.
+func e2eToolsRequired() bool {
+	if v, ok := os.LookupEnv("FORGE_E2E_REQUIRE_TOOLS"); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "", "0", "false", "no", "off":
+			return false
+		default:
+			return true
+		}
+	}
+	return os.Getenv("CI") != ""
 }
 
 // waitForServer polls a URL until it gets a 200 or the timeout expires.
@@ -570,23 +728,4 @@ func readFileE2E(t *testing.T, path string) string {
 		t.Fatalf("ReadFile(%s) error = %v", path, err)
 	}
 	return string(data)
-}
-
-// linkForgeSibling symlinks the forge repo checkout next to the
-// scaffold parent dir so `forge new` detects the sibling forge/pkg and
-// writes the dev replace — the documented "forge alongside project"
-// dev layout; `forge generate` then vendors it into ./.forge-pkg.
-// Without it, scaffolds in t.TempDir() resolve forge/pkg from the
-// published proxy snapshot, which lags the in-repo packages the
-// current scaffold references (e.g. pkg/authn, pkg/appkit), and
-// generate's root `go mod tidy` step fails.
-func linkForgeSibling(t *testing.T, parentDir string) {
-	t.Helper()
-	link := filepath.Join(parentDir, "forge")
-	if _, err := os.Lstat(link); err == nil {
-		return
-	}
-	if err := os.Symlink(findRepoRoot(t), link); err != nil {
-		t.Fatalf("symlink forge sibling checkout: %v", err)
-	}
 }

@@ -4,7 +4,6 @@ package middleware
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,14 +13,11 @@ import (
 // (mode resolution, allow-list gate, Bearer parsing, enrichment
 // plumbing) is tested in forge/pkg/authn; don't re-test it here.
 
-// A server with no validator, no external auth, no AUTH_MODE=none, and
-// DevMode false must refuse to start.
+// A server with no validator and no external auth must refuse to start.
 func TestNewAuthInterceptor_UnconfiguredErrors(t *testing.T) {
-	// NOT parallel: reads AUTH_MODE env other subtests mutate.
-	t.Setenv("AUTH_MODE", "")
 	ic, err := NewAuthInterceptor(AuthDeps{})
 	if err == nil {
-		t.Fatal("NewAuthInterceptor must error when unconfigured outside dev mode")
+		t.Fatal("NewAuthInterceptor must error when unconfigured")
 	}
 	if ic != nil {
 		t.Fatal("NewAuthInterceptor must return a nil interceptor alongside the error")
@@ -30,7 +26,6 @@ func TestNewAuthInterceptor_UnconfiguredErrors(t *testing.T) {
 
 // An explicit AuthDeps.Validate flips the interceptor into validate mode.
 func TestNewAuthInterceptor_ValidatorConfigured(t *testing.T) {
-	t.Setenv("AUTH_MODE", "")
 	validate := func(string) (*Claims, error) {
 		return &Claims{UserID: "u1"}, nil
 	}
@@ -50,7 +45,6 @@ func TestNewAuthInterceptor_ValidatorConfigured(t *testing.T) {
 // AuthDeps.ExternalAuth puts the interceptor in passthrough mode — the
 // pack's own interceptor in the chain is the source of truth.
 func TestNewAuthInterceptor_ExternalAuthIsPassthrough(t *testing.T) {
-	t.Setenv("AUTH_MODE", "")
 	ic, err := NewAuthInterceptor(AuthDeps{ExternalAuth: true})
 	if err != nil {
 		t.Fatalf("NewAuthInterceptor with external auth must not error: %v", err)
@@ -66,148 +60,59 @@ func TestNewAuthInterceptor_ExternalAuthIsPassthrough(t *testing.T) {
 	}
 }
 
-// Dev mode (injected, not read from the environment) is an explicit
-// opt-in to running without an auth provider.
-func TestNewAuthInterceptor_DevModeIsPassthrough(t *testing.T) {
-	t.Setenv("AUTH_MODE", "")
-	ic, err := NewAuthInterceptor(AuthDeps{DevMode: true})
-	if err != nil {
-		t.Fatalf("NewAuthInterceptor in dev mode must not error: %v", err)
+// AuthDeps.ExternalAuth is the ONLY opt-out, and it is a field in this file.
+// Nothing in the process environment can stand a server up without
+// authentication: this asserts the negative, because "we removed the env
+// opt-out" is only true while nothing quietly re-adds one.
+func TestNewAuthInterceptor_EnvironmentCannotOptOut(t *testing.T) {
+	// NOT parallel: mutates the process environment.
+	for _, name := range []string{"AUTH_MODE", "AUTH", "DISABLE_AUTH", "NO_AUTH"} {
+		t.Setenv(name, "none")
 	}
-	if ic == nil {
-		t.Fatal("NewAuthInterceptor must not return nil in dev mode")
-	}
-}
-
-// The scaffolded devClaims default is a synthetic dev principal so the
-// generated CRUD handlers (which demand claims via GetUser) are
-// callable in dev with zero auth config. Projects that want claim-free
-// passthrough change devClaims to return nil — and then this test.
-func TestDevClaims_DefaultSyntheticPrincipal(t *testing.T) {
-	t.Parallel()
-	c := devClaims()
-	if c == nil {
-		t.Fatal("scaffolded devClaims must return a synthetic dev principal (return nil only if you deliberately want claim-free dev passthrough)")
-	}
-	if c.UserID == "" || c.Role == "" {
-		t.Fatalf("dev principal must carry a UserID and Role, got %+v", c)
-	}
-}
-
-// In dev passthrough the interceptor attaches the devClaims principal,
-// so GetUser-based handlers (generated CRUD) work without a validator.
-func TestNewAuthInterceptor_DevModeAttachesDevClaims(t *testing.T) {
-	// NOT parallel: reads package-level state other subtests mutate.
-	t.Setenv("AUTH_MODE", "")
-	ic, err := NewAuthInterceptor(AuthDeps{DevMode: true})
-	if err != nil {
-		t.Fatalf("NewAuthInterceptor in dev mode must not error: %v", err)
-	}
-	var got *Claims
-	wrapped := ic.WrapUnary(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-		got, _ = ClaimsFromContext(ctx)
-		return nil, nil
-	})
-	_, _ = wrapped(context.Background(), nil)
-	if got == nil {
-		t.Fatal("dev passthrough must attach the devClaims principal so GetUser succeeds")
-	}
-	if want := devClaims(); got.UserID != want.UserID {
-		t.Fatalf("attached claims = %+v, want the devClaims principal %+v", got, want)
-	}
-}
-
-// AUTH_MODE=none is the explicit production opt-out.
-func TestNewAuthInterceptor_AuthModeNoneIsPassthrough(t *testing.T) {
-	t.Setenv("AUTH_MODE", "none")
-	ic, err := NewAuthInterceptor(AuthDeps{})
-	if err != nil {
-		t.Fatalf("NewAuthInterceptor with AUTH_MODE=none must not error: %v", err)
-	}
-	if ic == nil {
-		t.Fatal("NewAuthInterceptor must not return nil with AUTH_MODE=none")
+	if _, err := NewAuthInterceptor(AuthDeps{}); err == nil {
+		t.Fatal("an environment variable disabled authentication; only AuthDeps.ExternalAuth may")
 	}
 }
 
 // The allow-list must stay exact-match only — substring matching is how
 // auth bypasses are born. (The gate itself lives in pkg/authn; this
-// pins the CONTENTS this project ships with.)
+// pins the CONTENTS this project ships with. The set is generated from the
+// protos' auth_required declarations — see procedures_gen.go — so an entry
+// appearing here that no rpc declared is a generator bug, and an rpc you
+// meant to publish that is missing is a missing annotation.)
 func TestUnauthenticatedProcedures_Contents(t *testing.T) {
 	t.Parallel()
 	for _, p := range []string{
 		"/grpc.health.v1.Health/Check",
 		"/grpc.health.v1.Health/Watch",
 	} {
-		if _, ok := unauthenticatedProcedures[p]; !ok {
+		if _, ok := UnauthenticatedProcedures[p]; !ok {
 			t.Fatalf("%s must be on the allow-list", p)
 		}
 	}
-	if _, ok := unauthenticatedProcedures["/demo.v1.Service/HealthCheck"]; ok {
+	if _, ok := UnauthenticatedProcedures["/demo.v1.Service/HealthCheck"]; ok {
 		t.Fatal("substring-shaped entries must not be allow-listed")
 	}
 }
 
-// Claims round-trip through this package's context key.
-func TestClaimsContextRoundTrip(t *testing.T) {
+// The claims stash is library mechanism (forge/pkg/authn owns the type,
+// the context key, the accessors and GetUser, and tests them). What this
+// package owns is the RE-EXPORT: handlers and generated code spell
+// middleware.ContextWithClaims / GetUser, so this asserts those names reach
+// the same stash — a delegation wired to a different key would authenticate
+// the request and then report "no authenticated user" in every handler.
+func TestClaimsReExportsReachTheLibraryStash(t *testing.T) {
 	t.Parallel()
-	if _, ok := ClaimsFromContext(context.Background()); ok {
-		t.Fatal("background context must carry no claims")
-	}
 	ctx := ContextWithClaims(context.Background(), &Claims{UserID: "u-1"})
 	got, ok := ClaimsFromContext(ctx)
 	if !ok || got.UserID != "u-1" {
 		t.Fatalf("claims round-trip failed: %+v", got)
 	}
-	if _, err := GetUser(ctx); err != nil {
-		t.Fatalf("GetUser must find stashed claims: %v", err)
+	user, err := GetUser(ctx)
+	if err != nil {
+		t.Fatalf("GetUser must find claims installed via ContextWithClaims: %v", err)
 	}
-	if _, err := GetUser(context.Background()); err == nil {
-		t.Fatal("GetUser must error without claims")
-	}
-}
-
-func TestVerifyAuth(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	if err := VerifyAuth(ctx, "admin"); err == nil {
-		t.Fatal("want error when no claims on context")
-	} else {
-		var cerr *connect.Error
-		if !errors.As(err, &cerr) || cerr.Code() != connect.CodeUnauthenticated {
-			t.Fatalf("want Unauthenticated, got %v", err)
-		}
-	}
-
-	withClaims := ContextWithClaims(ctx, &Claims{Role: "admin", Roles: []string{"editor"}})
-	if err := VerifyAuth(withClaims); err != nil {
-		t.Fatalf("no-role check should pass when claims present: %v", err)
-	}
-	if err := VerifyAuth(withClaims, "admin"); err != nil {
-		t.Fatalf("role match on Role field should pass: %v", err)
-	}
-	if err := VerifyAuth(withClaims, "editor"); err != nil {
-		t.Fatalf("role match on Roles slice should pass: %v", err)
-	}
-	if err := VerifyAuth(withClaims, "owner"); err == nil {
-		t.Fatal("role miss should fail")
-	} else {
-		var cerr *connect.Error
-		if !errors.As(err, &cerr) || cerr.Code() != connect.CodePermissionDenied {
-			t.Fatalf("want PermissionDenied, got %v", err)
-		}
-	}
-}
-
-// DevAuthorizer is allow-all; it must satisfy the Authorizer interface
-// the composition root swaps in under dev mode.
-func TestDevAuthorizer(t *testing.T) {
-	t.Parallel()
-	var a Authorizer = DevAuthorizer{}
-	if err := a.CanAccess(context.Background(), "/x.v1.X/Do"); err != nil {
-		t.Fatalf("DevAuthorizer must allow: %v", err)
-	}
-	if err := a.Can(context.Background(), nil, ActionDelete, "thing"); err != nil {
-		t.Fatalf("DevAuthorizer must allow: %v", err)
+	if user.UserID != "u-1" {
+		t.Fatalf("GetUser returned %q, want %q", user.UserID, "u-1")
 	}
 }

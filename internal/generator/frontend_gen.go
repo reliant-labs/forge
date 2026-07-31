@@ -10,9 +10,14 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// frontendTemplateDir returns the template subdirectory for the given kind.
-// kind="mobile" uses react-native templates; kind="vite-spa" uses vite-spa
-// templates; everything else (including "" and "web") uses nextjs.
+// frontendTemplateDir returns the per-kind template subdirectory for the
+// given kind. kind="mobile" uses react-native templates; kind="vite-spa"
+// uses vite-spa templates; everything else (including "" and "web") uses
+// nextjs.
+//
+// This names the PLATFORM-SPECIFIC directory only. The full tree a
+// frontend is scaffolded from also includes the shared roots — see
+// templates.FrontendTemplateRoots / templates.ListFrontendTree.
 func frontendTemplateDir(kind string) string {
 	switch kind {
 	case "mobile":
@@ -22,6 +27,24 @@ func frontendTemplateDir(kind string) string {
 	default:
 		return "nextjs"
 	}
+}
+
+// frontendKindHasMockSurface reports whether a frontend --kind gets the
+// generated mock/scenario surface (see EmitFrontendMockSurface). Browser
+// frontends do; React Native does not — its connect.ts never references
+// "@/lib/mock-transport", and Metro would bundle the fixtures into the app.
+func frontendKindHasMockSurface(kind string) bool {
+	return frontendTemplateDir(kind) != "react-native"
+}
+
+// FrontendTypeHasMockSurface is frontendKindHasMockSurface keyed by the
+// forge.yaml `frontends[].type` (nextjs / vite-spa / react-native) rather
+// than by the `--kind` flag the scaffold takes. Used by the `forge generate`
+// frontend-mocks step, which reads the persisted config. An unrecognised
+// type gets nothing — the surface is rendered from templates that only the
+// two browser kinds import.
+func FrontendTypeHasMockSurface(feType string) bool {
+	return strings.EqualFold(feType, "nextjs") || strings.EqualFold(feType, "vite-spa")
 }
 
 // FrontendGenOptions carries optional project-level settings forwarded
@@ -56,7 +79,7 @@ type FrontendGenOptions struct {
 
 // GenerateFrontendFiles generates the frontend directory and files.
 // kind selects the template set: "" or "web" for Next.js, "mobile" for React Native.
-// Both the "new" project flow and the "add frontend" flow delegate here so
+// Both the "new" project flow and the "scaffold frontend" flow delegate here so
 // the output is always identical.
 //
 // This thin shim preserves the original signature for backward
@@ -80,7 +103,11 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 
 	tmplDir := frontendTemplateDir(kind)
 
-	frontendFiles, err := templates.FrontendTemplates().List(tmplDir)
+	// The tree is composed from frontend/shared[-web]/ plus the per-kind
+	// directory (see templates.FrontendTemplateRoots): generic mechanism
+	// modules live in exactly one place and render into every kind that
+	// claims them.
+	frontendFiles, err := templates.ListFrontendTree(tmplDir)
 	if err != nil {
 		return fmt.Errorf("list frontend templates: %w", err)
 	}
@@ -102,15 +129,15 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	data := templates.FrontendTemplateData{
 		FrontendName: frontendName,
 		ProjectName:  projectName,
-		ApiUrl:       fmt.Sprintf("http://localhost:%d", apiPort),
-		ApiPort:      fmt.Sprintf("%d", apiPort),
+		Platform:     tmplDir,
+		APIURL:       fmt.Sprintf("http://localhost:%d", apiPort),
 		Module:       modulePath,
 		Workspaces:   opts.Workspaces,
 		Output:       output,
 		BasePath:     opts.BasePath,
 	}
 	if opts.Workspaces {
-		data.ApiPackage = layout.ApiPackage
+		data.APIPackage = layout.APIPackage
 		data.HooksPackage = layout.HooksPackage
 		data.UIWebPackage = layout.UIWebPackage
 		// UINativePackage only surfaces in mobile (RN) templates —
@@ -122,12 +149,12 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	}
 
 	for _, file := range frontendFiles {
-		content, err := templates.FrontendTemplates().Render(filepath.Join(tmplDir, file), data)
+		content, err := templates.FrontendTemplates().Render(file.Path, data)
 		if err != nil {
-			return fmt.Errorf("render frontend template %s: %w", file, err)
+			return fmt.Errorf("render frontend template %s: %w", file.Path, err)
 		}
 
-		destFile := strings.TrimSuffix(file, ".tmpl")
+		destFile := strings.TrimSuffix(file.Rel, ".tmpl")
 
 		destPath := filepath.Join(frontendDir, destFile)
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
@@ -178,19 +205,55 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		}
 	}
 
+	// Emit the mock/scenario surface the scaffolded src/lib/connect.ts
+	// references — statically under Vite ESM, and as a literal require()
+	// (which webpack resolves at build time) under Next.js. Without it the
+	// tree the scaffold hands back does not typecheck and does not build,
+	// and `forge scaffold frontend` has no generate pass behind it to
+	// fill the gap. Entity fixtures arrive on the next `forge generate`;
+	// the no-entity render is complete and self-contained on its own — see
+	// EmitFrontendMockSurface.
+	//
+	// The ownership state is loaded here rather than threaded in: this is
+	// the scaffold path, where the frontend directory did not exist a
+	// moment ago, so there is nothing disowned under it — but the writer
+	// still records what it stamps, and reading the project's real state
+	// keeps a re-scaffold over a disowned path honest.
+	if frontendKindHasMockSurface(kind) {
+		cs, err := LoadChecksums(root)
+		if err != nil {
+			return fmt.Errorf("load ownership state: %w", err)
+		}
+		if _, err := EmitFrontendMockSurface(root, filepath.Join("frontends", frontendName), nil, nil, nil, cs); err != nil {
+			return fmt.Errorf("emit frontend mock surface: %w", err)
+		}
+		if err := SaveChecksums(root, cs); err != nil {
+			return fmt.Errorf("save ownership state: %w", err)
+		}
+	}
+
+	// Resolve the @reliant-labs/web-runtime specifier for THIS machine before
+	// anything installs. The scaffold flow runs `npm install` straight after
+	// generating the files, so a dev build has to have swapped the published
+	// range for its `file:` bridge by now or that first install would go
+	// looking for the package in the registry.
+	EnsureWebRuntimeDependency(root, filepath.Join("frontends", frontendName), frontendName)
+
 	return nil
 }
 
 // coreComponents lists the components automatically installed during scaffold.
 //
 // The list is deliberately split: the "primitives" group is the layered
-// base library that frontend packs (`data-table`, `auth-ui`, …) MUST
-// import from instead of inlining their own button/input/etc. markup.
-// The trailing "domain" group is higher-level building blocks the
-// scaffold ships unconditionally because every forge frontend tends to
-// reach for them.
+// base library that the owned frontend components shipped in the base
+// scaffold (`src/components/nav.tsx`, `src/components/session_nav.tsx`, …)
+// import
+// from instead of inlining their own button/input/etc. markup. The
+// trailing "domain" group is higher-level building blocks the scaffold
+// ships unconditionally because every forge frontend tends to reach for
+// them.
 var coreComponents = []string{
-	// Primitives — base building blocks for every frontend pack.
+	// Primitives — base building blocks for every generated frontend.
 	// "link" first: every navigating component (page_header,
 	// row_actions_menu) imports "./link". The library copy is a plain
 	// anchor; installCoreComponents/EnsureCoreComponents overwrite it

@@ -1,9 +1,11 @@
 package codegen
 
 import (
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -117,7 +119,18 @@ func TestGenerateInject_MissingProviderIsLoud(t *testing.T) {
 		t.Fatalf("expected MissingProvider error, got nil")
 	}
 	msg := err.Error()
-	for _, want := range []string{"Billing", "Stripe", "StripeClient", "providers.go"} {
+	for _, want := range []string{
+		"Billing", "Stripe", "StripeClient", "providers.go",
+		// F14: the enriched error carries a copy-paste-correct remedy — the
+		// Infra field, the OpenInfra construction, and the automatic compose
+		// wiring — so the forced hand-wiring is correct-by-construction rather
+		// than a silent nil.
+		"add a field to the Infra struct",
+		"Stripe StripeClient",
+		"construct it in OpenInfra",
+		"infra.Stripe = ",
+		"NewComponents sets Billing.Deps.Stripe = infra.Stripe",
+	} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("error missing %q:\n%s", want, msg)
 		}
@@ -142,6 +155,95 @@ func TestGenerateInject_OptionalMissingIsSilent(t *testing.T) {
 	out := readInject(t, dir)
 	if !strings.Contains(out, "Stripe: nil,") {
 		t.Fatalf("optional dep should be typed nil:\n%s", out)
+	}
+}
+
+// TestGenerateInject_ClockIDGenSeam: the framework Clock / IDGen seam.
+// A required Deps field typed `func() time.Time` wires to `time.Now` and one
+// typed `func() string` wires to a ULID id generator — BY TYPE, without the
+// author declaring an Infra field or hand-wiring the composition (the
+// Clock/NewID DI-saga fix). No MissingProvider is raised, and the `time` +
+// ulid imports are emitted.
+func TestGenerateInject_ClockIDGenSeam(t *testing.T) {
+	dir := newInjectProject(t)
+	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tNow func() time.Time\n\tNewID func() string")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	})
+	if err != nil {
+		t.Fatalf("framework func seam must not raise MissingProvider: %v", err)
+	}
+	out := readInject(t, dir)
+	for _, want := range []string{
+		"Now: time.Now,",
+		"NewID: func() string { return ulid.Make().String() },",
+		`"time"`,
+		`"github.com/oklog/ulid/v2"`,
+	} {
+		if !containsNormalized(out, want) {
+			t.Fatalf("compose.go missing %q:\n%s", want, out)
+		}
+	}
+	assertGofmtFixedPoint(t, filepath.Join(dir, "internal", "app", "compose.go"))
+}
+
+// containsNormalized is substring containment with runs of whitespace collapsed
+// on both sides. Alignment inside an emitted struct literal is DERIVED by the
+// writer's gofmt pass — it depends on the longest key in the literal, which the
+// assertion has no business predicting. Asserting the exact column is asserting
+// the formatter's arithmetic, and it breaks the moment a sibling field is added.
+func containsNormalized(haystack, needle string) bool {
+	collapse := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	return strings.Contains(collapse(haystack), collapse(needle))
+}
+
+// TestGenerateInject_OptionalFuncDepIsNil: an OPTIONAL func-typed dep is left
+// to the optional/nil tail (the `//forge:optional-dep` contract wins over the
+// framework seam) — codegen accepts it without raising, so the escape hatch
+// works end-to-end for func-typed deps too (Fix 1(a)).
+func TestGenerateInject_OptionalFuncDepIsNil(t *testing.T) {
+	dir := newInjectProject(t)
+	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\t// forge:optional-dep\n\tNow func() time.Time")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	})
+	if err != nil {
+		t.Fatalf("optional func dep must not raise: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, "Now: nil,") {
+		t.Fatalf("optional func dep should be typed nil, not the framework clock:\n%s", out)
+	}
+	if strings.Contains(out, "time.Now") {
+		t.Fatalf("optional func dep must NOT get the framework clock:\n%s", out)
+	}
+}
+
+// TestGenerateInject_SameNameInfraFieldOverridesSeam: an author who declares
+// an Infra field of the SAME NAME as the func Deps field keeps control — the
+// seam yields to the exact-name Infra path.
+func TestGenerateInject_SameNameInfraFieldOverridesSeam(t *testing.T) {
+	dir := newInjectProject(t)
+	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tNow func() time.Time")
+	writeInfra(t, dir, "\tNow func() time.Time")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, "Now: infra.Now,") {
+		t.Fatalf("same-name Infra field should override the framework clock seam:\n%s", out)
 	}
 }
 
@@ -245,75 +347,49 @@ func TestGenerateCompose_ReconcileAddsNewService(t *testing.T) {
 	}
 }
 
-// TestGenerateCompose_ReconcileWiresAuthorizerService proves the reconciler
-// emits the authz-var preamble + the fallible New(...) error branch for a
-// service whose Deps declare an Authorizer and whose New returns (T, error) —
-// the shape a real `forge add service` scaffolds — and pulls in fmt/config/
-// middleware imports as needed.
-func TestGenerateCompose_ReconcileWiresAuthorizerService(t *testing.T) {
+// TestGenerateCompose_ReconcileAddsClockService proves the `forge scaffold
+// service`-with-Clock path: a service carrying a `func() time.Time` dep,
+// added AFTER the compose.go scaffold, gets its Clock seam assignment AND the
+// `time` import injected additively (format.Source is gofmt-only, so the
+// reconciler adds the import itself), leaving valid Go.
+func TestGenerateCompose_ReconcileAddsClockService(t *testing.T) {
 	dir := newInjectProject(t)
-	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
-	// Seed compose.go with a trivial first service (no authz/fallible) so the
-	// authz/config/middleware imports are ABSENT and the reconciler must add
-	// them for the second service.
 	writeComponentDeps(t, dir, "internal/handlers", "user", "user",
 		"\tLogger *slog.Logger")
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+
+	// First emit: only the user service (no time import).
 	if err := GenerateCompose(InjectGenInput{
 		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
 		Services:   []ServiceDef{{Name: "UserService", ModulePath: "example.com/proj"}},
 	}); err != nil {
 		t.Fatalf("first GenerateCompose: %v", err)
 	}
-
-	// A fallible, authorizer-bearing service — mirrors the real scaffold.
-	billingDir := filepath.Join(dir, "internal", "handlers", "billing")
-	if err := os.MkdirAll(billingDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	billingSrc := `package billing
-
-type Service interface{ Do() }
-
-type Deps struct {
-	Logger     *slog.Logger
-	Authorizer middleware.Authorizer
-}
-
-func New(d Deps) (Service, error) { return nil, nil }
-
-func NewAuthorizer() middleware.Authorizer { return nil }
-`
-	if err := os.WriteFile(filepath.Join(billingDir, "contract.go"), []byte(billingSrc), 0o644); err != nil {
-		t.Fatal(err)
+	if first := readInject(t, dir); strings.Contains(first, `"time"`) {
+		t.Fatalf("first emit should not import time yet:\n%s", first)
 	}
 
+	// Add a Clock-bearing service and reconcile over both.
+	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tNow func() time.Time")
 	if err := GenerateCompose(InjectGenInput{
 		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
 		Services: []ServiceDef{
 			{Name: "UserService", ModulePath: "example.com/proj"},
-			{Name: "BillingService", ModulePath: "example.com/proj"},
+			{Name: "OrdersService", ModulePath: "example.com/proj"},
 		},
 	}); err != nil {
 		t.Fatalf("reconcile GenerateCompose: %v", err)
 	}
 	out := readInject(t, dir)
-
-	for _, want := range []string{
-		"billingAuthz middleware.Authorizer = billing.NewAuthorizer()",
-		"config.DevAuthBypass(infra.Cfg)",
-		"billingInst, err := billing.New(billing.Deps{",
-		"return nil, fmt.Errorf(\"Billing: %w\", err)",
-		"c.Billing = billingInst",
-		"\"fmt\"",
-		"example.com/proj/pkg/config",
-		"example.com/proj/pkg/middleware",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("reconciled compose.go missing %q:\n%s", want, out)
-		}
+	if !strings.Contains(out, "Now: time.Now,") {
+		t.Fatalf("reconcile did not wire the Clock seam:\n%s", out)
+	}
+	if !strings.Contains(out, `"time"`) {
+		t.Fatalf("reconcile did not add the time import for the Clock seam:\n%s", out)
 	}
 	if _, err := parser.ParseFile(token.NewFileSet(), "compose.go", out, parser.SkipObjectResolution); err != nil {
-		t.Fatalf("reconciled compose.go is not valid Go: %v\n----\n%s", err, out)
+		t.Fatalf("reconciled compose.go is not valid Go: %v\n%s", err, out)
 	}
 }
 
@@ -375,6 +451,144 @@ func TestGenerateCompose_ReconcileWiresDBOnExistingService(t *testing.T) {
 	}
 	if again := readInject(t, dir); strings.Count(flat(again), "DB: infra.DB") != 1 {
 		t.Fatalf("DB assignment must be wired exactly once (idempotent):\n%s", again)
+	}
+}
+
+// writeFallibleComponentDeps writes a component whose New returns (Service,
+// error) — the real scaffold shape. Its compose
+// construction is therefore the fallible `xInst, err := pkg.New(pkg.Deps{…})`
+// … `c.X = xInst` form, where the Deps literal PRECEDES the `c.X =` assignment.
+func writeFallibleComponentDeps(t *testing.T, projectDir, roleRoot, leaf, pkg, depsBody string) {
+	t.Helper()
+	dir := filepath.Join(projectDir, filepath.FromSlash(roleRoot), leaf)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	src := "package " + pkg + "\n\ntype Service interface{ Do() }\n\ntype Deps struct {\n" + depsBody +
+		"\n}\n\nfunc New(d Deps) (Service, error) { return nil, nil }\n"
+	if err := os.WriteFile(filepath.Join(dir, "contract.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+}
+
+// TestGenerateCompose_ReconcileWiresDBOnFallibleService is the runtime-crash
+// regression the earlier non-fallible DB test never reached: the REAL scaffold
+// emits a fallible service, whose construction is
+// `xInst, err := pkg.New(pkg.Deps{…})` … `c.X = xInst` — the Deps literal sits
+// BEFORE the `c.X =` assignment. The field-level additive pass anchors its
+// Deps-literal search AFTER that assignment, so it silently no-ops on this
+// shape and the gained `DB` dep is never wired: compose.go constructs the
+// handler with a nil DB and the app crashes at boot ("Deps.DB is required").
+// The pristine-stale converge closes the gap by re-rendering the whole file
+// once nothing user-owned would be lost.
+func TestGenerateCompose_ReconcileWiresDBOnFallibleService(t *testing.T) {
+	dir := newInjectProject(t)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config\n\tDB Repository")
+
+	// A fallible service WITHOUT a DB dep initially.
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tLogger *slog.Logger\n\tConfig *config.Config")
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+	first := readInject(t, dir)
+	// Precondition: the fallible shape (so this test exercises the anchor gap)
+	// and no DB assignment yet.
+	if !strings.Contains(first, "ordersInst, err := orders.New(orders.Deps{") {
+		t.Fatalf("expected the fallible construction shape in the first emit:\n%s", first)
+	}
+	if strings.Contains(first, "DB:") {
+		t.Fatalf("first emit must not carry a DB assignment yet:\n%s", first)
+	}
+
+	// The service gains a DB dep (what the first entity's ensureDepsDBField does).
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tLogger *slog.Logger\n\tConfig *config.Config\n\tDB Repository")
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	if !strings.Contains(flat(out), "DB: infra.DB") {
+		t.Fatalf("reconcile did not wire the gained DB dep into the fallible construction:\n%s", out)
+	}
+	// Existing wiring must remain intact.
+	for _, want := range []string{"Logger: infra.Log", "Config: infra.Cfg", "c.Orders = ordersInst"} {
+		if !strings.Contains(flat(out), want) {
+			t.Fatalf("reconcile disturbed existing wiring (missing %q):\n%s", want, out)
+		}
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "compose.go", out, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("reconciled compose.go is not valid Go: %v\n----\n%s", err, out)
+	}
+	// Idempotent: the DB assignment is wired exactly once.
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("idempotent GenerateCompose: %v", err)
+	}
+	if again := readInject(t, dir); strings.Count(flat(again), "DB: infra.DB") != 1 {
+		t.Fatalf("DB assignment must be wired exactly once (idempotent):\n%s", again)
+	}
+}
+
+// TestGenerateCompose_ReconcilePreservesCustomizationOnStaleFile locks the
+// safety gate on the pristine-stale converge: a compose.go that carries ANY
+// line the fresh render lacks (here a hand-added statement) is a customized /
+// disowned file the user owns. Even when it is ALSO stale (a fallible service
+// has gained a DB dep it lacks), the converge MUST decline and leave the file
+// to the additive/preserve path — the customization survives byte-for-byte and
+// forge never clobbers hand-owned wiring.
+func TestGenerateCompose_ReconcilePreservesCustomizationOnStaleFile(t *testing.T) {
+	dir := newInjectProject(t)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config\n\tDB Repository")
+
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tLogger *slog.Logger\n\tConfig *config.Config")
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+
+	// Hand-customize: inject a sentinel line the fresh render never emits.
+	const sentinel = "\t_ = infra // forge-test: HAND-ADDED sentinel, must survive"
+	composePath := filepath.Join(dir, "internal", "app", "compose.go")
+	raw := readInject(t, dir)
+	customized := strings.Replace(raw, "c := &Components{}\n", "c := &Components{}\n"+sentinel+"\n", 1)
+	if customized == raw {
+		t.Fatalf("failed to inject sentinel into compose.go:\n%s", raw)
+	}
+	if err := os.WriteFile(composePath, []byte(customized), 0o644); err != nil {
+		t.Fatalf("write customized compose.go: %v", err)
+	}
+
+	// Make it stale too: the service gains a DB dep the file does not wire.
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tLogger *slog.Logger\n\tConfig *config.Config\n\tDB Repository")
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, "HAND-ADDED sentinel, must survive") {
+		t.Fatalf("customization was clobbered by the reconcile:\n%s", out)
+	}
+	// The converge declined (customized file left to the additive path); the
+	// fallible additive pass cannot retrofit the DB, so it stays absent — the
+	// correct conservative outcome for a hand-owned file.
+	if strings.Contains(out, "DB:") {
+		t.Fatalf("a customized/disowned compose.go must not be wholesale-converged:\n%s", out)
 	}
 }
 
@@ -477,10 +691,10 @@ func TestGenerateInject_ScalarResolvesFromConfig(t *testing.T) {
 		t.Fatalf("GenerateInject: %v", err)
 	}
 	out := readInject(t, dir)
-	if !strings.Contains(out, "EIAKey: infra.Cfg.EIAKey,") {
+	if !containsNormalized(out, "EIAKey: infra.Cfg.EIAKey,") {
 		t.Fatalf("EIAKey should resolve from infra.Cfg:\n%s", out)
 	}
-	if !strings.Contains(out, "Unmapped: \"\",") {
+	if !containsNormalized(out, "Unmapped: \"\",") {
 		t.Fatalf("Unmapped scalar should take typed-zero:\n%s", out)
 	}
 }
@@ -523,4 +737,663 @@ func appendType(t *testing.T, projectDir, rolePath, decl string) {
 	if err := os.WriteFile(path, append(data, []byte("\n"+decl+"\n")...), 0o644); err != nil {
 		t.Fatalf("append: %v", err)
 	}
+}
+
+// ─── HTTP-client seam + observed-wrapper emission ────────────────────────
+
+// TestGenerateInject_HTTPClientSeam: a required Deps field typed exactly
+// `*http.Client` (the adapter/client scaffold shape) resolves to the
+// scaffold-once providers.go method `infra.DefaultClient()` — the
+// instrumented outbound default — instead of raising MissingProvider.
+func TestGenerateInject_HTTPClientSeam(t *testing.T) {
+	dir := newInjectProject(t)
+	writeComponentDeps(t, dir, "internal", "stripe", "stripe", "\tHTTPClient *http.Client")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Packages: []BootstrapPackageData{
+			{Name: "stripe", Package: "stripe", ImportPath: "stripe", FieldName: "Stripe", VarName: "stripe"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("HTTP-client seam must not raise MissingProvider: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, "HTTPClient: infra.DefaultClient(),") {
+		t.Fatalf("HTTPClient should wire to infra.DefaultClient():\n%s", out)
+	}
+	if _, ferr := format.Source([]byte(out)); ferr != nil {
+		t.Fatalf("generated compose.go is not gofmt-valid: %v\n%s", ferr, out)
+	}
+}
+
+// TestGenerateInject_SameNameInfraFieldOverridesHTTPClientSeam: an author who
+// declares Infra.HTTPClient keeps control — the exact-name Infra path wins
+// over the DefaultClient() seam (same override contract as Clock/IDGen).
+func TestGenerateInject_SameNameInfraFieldOverridesHTTPClientSeam(t *testing.T) {
+	dir := newInjectProject(t)
+	writeComponentDeps(t, dir, "internal", "stripe", "stripe", "\tHTTPClient *http.Client")
+	writeInfra(t, dir, "\tHTTPClient *http.Client")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Packages: []BootstrapPackageData{
+			{Name: "stripe", Package: "stripe", ImportPath: "stripe", FieldName: "Stripe", VarName: "stripe"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, "HTTPClient: infra.HTTPClient,") {
+		t.Fatalf("same-name Infra field should override the DefaultClient seam:\n%s", out)
+	}
+	if strings.Contains(out, "infra.DefaultClient()") {
+		t.Fatalf("seam must yield to the explicit Infra field:\n%s", out)
+	}
+}
+
+// TestGenerateInject_OptionalHTTPClientIsNil: `//forge:optional-dep` wins
+// over the seam — the marker's "nil is acceptable" contract is respected
+// (the scaffolds default a nil HTTPClient internally).
+func TestGenerateInject_OptionalHTTPClientIsNil(t *testing.T) {
+	dir := newInjectProject(t)
+	writeComponentDeps(t, dir, "internal", "stripe", "stripe",
+		"\t// forge:optional-dep\n\tHTTPClient *http.Client")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Packages: []BootstrapPackageData{
+			{Name: "stripe", Package: "stripe", ImportPath: "stripe", FieldName: "Stripe", VarName: "stripe"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("optional HTTPClient must not raise: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, "HTTPClient: nil,") {
+		t.Fatalf("optional HTTPClient should be typed nil:\n%s", out)
+	}
+	if strings.Contains(out, "infra.DefaultClient()") {
+		t.Fatalf("optional HTTPClient must NOT get the DefaultClient seam:\n%s", out)
+	}
+}
+
+// writeObservedPackage writes an internal contract package whose New returns
+// the Service interface, plus the OWNED observe_chain.go seam — the shape
+// `forge scaffold package` scaffolds. The seam's presence (its
+// newObserveChain builder) is the opt-in signal DetectObserveChainSeam keys
+// on; the middleware wrapper constructor itself is generated
+// (middleware_gen.go, named off the concrete return type — here `service` →
+// NewServiceWithForgeMiddleware) and not needed for this compose-emission test.
+func writeObservedPackage(t *testing.T, projectDir, leaf, pkg string, fallible bool) {
+	t.Helper()
+	dir := filepath.Join(projectDir, "internal", leaf)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// New returns a concrete `service` impl (the shape the real interactor /
+	// service / adapter scaffolds emit), so ResolveMiddlewareWrapper resolves the
+	// wrapper name off the concrete type: `service` → `NewServiceWithForgeMiddleware`.
+	newFn := "func New(d Deps) Service { return &service{} }"
+	if fallible {
+		newFn = "func New(d Deps) (Service, error) { return &service{}, nil }"
+	}
+	contract := "package " + pkg + "\n\ntype Service interface{ Do() }\n\ntype service struct{}\n\nfunc (s *service) Do() {}\n\ntype Deps struct {\n\tLogger *slog.Logger\n}\n\n" + newFn + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "contract.go"), []byte(contract), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	seam := "package " + pkg + "\n\nfunc newObserveChain() interface{} { return nil }\n"
+	if err := os.WriteFile(filepath.Join(dir, "observe_chain.go"), []byte(seam), 0o644); err != nil {
+		t.Fatalf("write observe_chain: %v", err)
+	}
+}
+
+// TestGenerateCompose_WrappedObservedPackage: a package with an observe_chain.go
+// seam and an interface-returning New is constructed in WRAPPED form.
+func TestGenerateCompose_WrappedObservedPackage(t *testing.T) {
+	dir := newInjectProject(t)
+	writeObservedPackage(t, dir, "stripe", "stripe", false)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Packages: []BootstrapPackageData{
+			{Name: "stripe", Package: "stripe", ImportPath: "stripe", FieldName: "Stripe", VarName: "stripe"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, "c.Stripe = stripe.NewServiceWithForgeMiddleware(stripe.New(stripe.Deps{") {
+		t.Fatalf("expected wrapped construction:\n%s", out)
+	}
+	if _, ferr := format.Source([]byte(out)); ferr != nil {
+		t.Fatalf("wrapped compose.go is not gofmt-valid: %v\n%s", ferr, out)
+	}
+}
+
+// TestGenerateCompose_WrappedFalliblePackage: the fallible two-step keeps the
+// error branch and wraps the constructed local var.
+func TestGenerateCompose_WrappedFalliblePackage(t *testing.T) {
+	dir := newInjectProject(t)
+	writeObservedPackage(t, dir, "stripe", "stripe", true)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Packages: []BootstrapPackageData{
+			{Name: "stripe", Package: "stripe", ImportPath: "stripe", FieldName: "Stripe", VarName: "stripe", Fallible: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, "stripeInst, err := stripe.New(stripe.Deps{") {
+		t.Fatalf("fallible construction missing:\n%s", out)
+	}
+	if !strings.Contains(out, "c.Stripe = stripe.NewServiceWithForgeMiddleware(stripeInst)") {
+		t.Fatalf("fallible wrapped assignment missing:\n%s", out)
+	}
+	if _, ferr := format.Source([]byte(out)); ferr != nil {
+		t.Fatalf("wrapped compose.go is not gofmt-valid: %v\n%s", ferr, out)
+	}
+}
+
+// TestGenerateCompose_FallibleErrorStringIsLintClean: the fallible
+// construction wraps New's error. The error string must not START with the
+// capitalized component FieldName ("Stripe: %w") — staticcheck's ST1005
+// ("error strings should not be capitalized") flags that on forge's own
+// emitted compose.go, breaking the invariant that `forge lint` exits 0 on a
+// fresh scaffold. The emitted form is "construct <FieldName>: %w" —
+// lowercase first word, component name preserved.
+func TestGenerateCompose_FallibleErrorStringIsLintClean(t *testing.T) {
+	dir := newInjectProject(t)
+	writeObservedPackage(t, dir, "stripe", "stripe", true)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Packages: []BootstrapPackageData{
+			{Name: "stripe", Package: "stripe", ImportPath: "stripe", FieldName: "Stripe", VarName: "stripe", Fallible: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, `fmt.Errorf("construct Stripe: %w", err)`) {
+		t.Fatalf("fallible error wrap should read `construct Stripe: %%w`:\n%s", out)
+	}
+	if strings.Contains(out, `fmt.Errorf("Stripe: %w", err)`) {
+		t.Fatalf("ST1005 regression — capitalized error string emitted:\n%s", out)
+	}
+}
+
+// TestGenerateCompose_ConcreteConstructorNotWrapped: a handler-shaped package
+// (New returns *Service) is NEVER wrapped, even when an observe_chain.go seam
+// is present — otelconnect owns the RPC edge and the Components field type is
+// the concrete pointer.
+func TestGenerateCompose_ConcreteConstructorNotWrapped(t *testing.T) {
+	dir := newInjectProject(t)
+	pkgDir := filepath.Join(dir, "internal", "things")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	src := "package things\n\ntype Service struct{}\n\ntype Deps struct {\n\tLogger *slog.Logger\n}\n\nfunc New(d Deps) *Service { return &Service{} }\n"
+	if err := os.WriteFile(filepath.Join(pkgDir, "service.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write service: %v", err)
+	}
+	seam := "package things\n\nfunc newObserveChain() interface{} { return nil }\n"
+	if err := os.WriteFile(filepath.Join(pkgDir, "observe_chain.go"), []byte(seam), 0o644); err != nil {
+		t.Fatalf("write observe_chain: %v", err)
+	}
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Packages: []BootstrapPackageData{
+			{Name: "things", Package: "things", ImportPath: "things", FieldName: "Things", VarName: "things"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	if strings.Contains(out, "WithForgeMiddleware") {
+		t.Fatalf("concrete-returning constructor must not be wrapped:\n%s", out)
+	}
+}
+
+// TestGenerateCompose_ReconcileAddsWrappedPackage: a wrapped package added
+// AFTER the initial compose.go scaffold is injected additively in wrapped
+// form, the result stays valid Go, and the reconcile is idempotent.
+func TestGenerateCompose_ReconcileAddsWrappedPackage(t *testing.T) {
+	dir := newInjectProject(t)
+	writeComponentDeps(t, dir, "internal/handlers", "user", "user",
+		"\tLogger *slog.Logger\n\tConfig *config.Config")
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "UserService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+
+	writeObservedPackage(t, dir, "stripe", "stripe", false)
+	in := InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "UserService", ModulePath: "example.com/proj"}},
+		Packages: []BootstrapPackageData{
+			{Name: "stripe", Package: "stripe", ImportPath: "stripe", FieldName: "Stripe", VarName: "stripe"},
+		},
+	}
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, "c.Stripe = stripe.NewServiceWithForgeMiddleware(stripe.New(stripe.Deps{") {
+		t.Fatalf("reconcile did not inject the wrapped construction:\n%s", out)
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "compose.go", out, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("reconciled compose.go is not valid Go: %v\n%s", err, out)
+	}
+	// Idempotent.
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("idempotent GenerateCompose: %v", err)
+	}
+	if again := readInject(t, dir); again != out {
+		t.Fatalf("wrapped reconcile is not idempotent:\n%s", again)
+	}
+}
+
+// TestGenerateCompose_WrappedProducerInjectsDecorated: a consumer of an
+// INSTRUMENTED producer must receive the DECORATED value, not the raw
+// constructed instance.
+//
+// The regression this pins: compose emitted
+//
+//	c.Stripe = stripe.NewServiceWithForgeMiddleware(stripeInst)
+//	billingInst, err := billing.New(billing.Deps{Payments: stripeInst})
+//
+// — the decorator was assigned to a Components field nothing reads, while the
+// one real caller got the undecorated instance. Every call through the
+// producer bypassed the observability chain the package was opted into, and
+// `forge lint --enforce-component-observe` still reported "every wired
+// component has an observability decision" because a decorator HAD been
+// constructed. Silent capability loss with a green guard.
+func TestGenerateCompose_WrappedProducerInjectsDecorated(t *testing.T) {
+	dir := newInjectProject(t)
+	writeObservedPackage(t, dir, "stripe", "stripe", false)
+	writeComponentDeps(t, dir, "internal/handlers", "billing", "billing", "\tPayments stripe.Service")
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "BillingService", ModulePath: "example.com/proj"}},
+		Packages: []BootstrapPackageData{
+			{Name: "stripe", Package: "stripe", ImportPath: "stripe", FieldName: "Stripe", VarName: "stripe"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+
+	if !strings.Contains(out, "c.Stripe = stripe.NewServiceWithForgeMiddleware(") {
+		t.Fatalf("producer should be constructed in wrapped form:\n%s", out)
+	}
+	if !strings.Contains(out, "Payments: c.Stripe,") {
+		t.Fatalf("consumer must receive the DECORATED producer (Payments: c.Stripe), got:\n%s", out)
+	}
+	if strings.Contains(out, "Payments: stripeInst,") {
+		t.Fatalf("consumer received the UNDECORATED instance — the observe chain is bypassed:\n%s", out)
+	}
+	if _, ferr := format.Source([]byte(out)); ferr != nil {
+		t.Fatalf("compose.go is not gofmt-valid: %v\n%s", ferr, out)
+	}
+}
+
+// TestGenerateCompose_ReconcileDropsRemovedDepsField is the converge regression
+// the additive-only reconciler could not reach: removing a field from a
+// component's Deps struct is ordinary refactoring, but compose.go keeps
+// constructing it, so `<alias>.Deps{…}` names a field the struct no longer has
+// and the project stops compiling — `unknown field DB in struct literal`. Every
+// subsequent `forge generate` re-ran the same additive passes and left the dead
+// key in place, so generate could not heal a state generate created; the only
+// recovery an agent found in a live run was `rm -f internal/app/compose.go`.
+//
+// The key set of a `<pkg>.Deps{…}` literal is not a degree of freedom the
+// author owns — Go fixes it to the Deps struct's field set. So a key outside
+// that set is DERIVABLY dead (proven from the struct, not from compose.go) and
+// dropping it destroys nothing that could ever have compiled.
+func TestGenerateCompose_ReconcileDropsRemovedDepsField(t *testing.T) {
+	dir := newInjectProject(t)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config\n\tDB Repository")
+
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tLogger *slog.Logger\n\tConfig *config.Config\n\tDB Repository")
+	in := InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	if !strings.Contains(flat(readInject(t, dir)), "DB: infra.DB") {
+		t.Fatalf("precondition: first emit must wire DB:\n%s", readInject(t, dir))
+	}
+
+	// The author removes the DB dependency from the Deps struct.
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tLogger *slog.Logger\n\tConfig *config.Config")
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	if strings.Contains(flat(out), "DB:") {
+		t.Fatalf("compose.go still constructs the REMOVED Deps field — the project cannot build:\n%s", out)
+	}
+	for _, want := range []string{"Logger: infra.Log", "Config: infra.Cfg", "c.Orders = ordersInst"} {
+		if !strings.Contains(flat(out), want) {
+			t.Fatalf("drop disturbed the surviving wiring (missing %q):\n%s", want, out)
+		}
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "compose.go", out, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("reconciled compose.go is not valid Go: %v\n----\n%s", err, out)
+	}
+	// Idempotent: a second generate over the converged file changes nothing.
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("idempotent GenerateCompose: %v", err)
+	}
+	if again := readInject(t, dir); again != out {
+		t.Fatalf("reconcile is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", out, again)
+	}
+}
+
+// TestGenerateCompose_DropsRemovedDepsKeyButNotTheExpression is the ownership
+// line stated as a test: forge owns the KEY SET of a `<pkg>.Deps{…}` literal
+// (Go fixes it to the Deps struct's fields) and the author owns the EXPRESSION.
+// A hand-wired value on a surviving field must come through the drop
+// byte-for-byte, in the same edit that removes the key whose field is gone.
+func TestGenerateCompose_DropsRemovedDepsKeyButNotTheExpression(t *testing.T) {
+	dir := newInjectProject(t)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config\n\tDB Repository\n\tAuditLog *slog.Logger")
+
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tLogger *slog.Logger\n\tConfig *config.Config\n\tDB Repository")
+	in := InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+
+	// The author re-wires Logger by hand to a different Infra source.
+	composePath := filepath.Join(dir, "internal", "app", "compose.go")
+	handWired := strings.Replace(readInject(t, dir), "Logger: infra.Log,", "Logger: infra.AuditLog,", 1)
+	if !strings.Contains(handWired, "infra.AuditLog") {
+		t.Fatalf("failed to hand-wire Logger:\n%s", readInject(t, dir))
+	}
+	if err := os.WriteFile(composePath, []byte(handWired), 0o644); err != nil {
+		t.Fatalf("write hand-wired compose.go: %v", err)
+	}
+
+	// ...and removes DB from the Deps struct.
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tLogger *slog.Logger\n\tConfig *config.Config")
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	if strings.Contains(flat(out), "DB:") {
+		t.Fatalf("the removed field's key survived:\n%s", out)
+	}
+	if !strings.Contains(flat(out), "Logger: infra.AuditLog") {
+		t.Fatalf("the hand-wired EXPRESSION was clobbered — the drop must touch keys only:\n%s", out)
+	}
+}
+
+// TestGenerateCompose_DropSurvivesCustomizedFile: a compose.go the author has
+// customized is exactly the file the additive passes and the pristine-stale
+// converge both DECLINE to touch — so before this, a customized file that lost
+// a Deps field was permanently unbuildable by generate. The drop is not one of
+// those passes and is not gated by them: the customization survives AND the
+// dead key goes.
+func TestGenerateCompose_DropSurvivesCustomizedFile(t *testing.T) {
+	dir := newInjectProject(t)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config\n\tDB Repository")
+
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tLogger *slog.Logger\n\tConfig *config.Config\n\tDB Repository")
+	in := InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+	const sentinel = "\t_ = infra // forge-test: HAND-ADDED sentinel, must survive"
+	composePath := filepath.Join(dir, "internal", "app", "compose.go")
+	raw := readInject(t, dir)
+	customized := strings.Replace(raw, "c := &Components{}\n", "c := &Components{}\n"+sentinel+"\n", 1)
+	if customized == raw {
+		t.Fatalf("failed to inject sentinel:\n%s", raw)
+	}
+	if err := os.WriteFile(composePath, []byte(customized), 0o644); err != nil {
+		t.Fatalf("write customized compose.go: %v", err)
+	}
+
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tLogger *slog.Logger\n\tConfig *config.Config")
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	if !strings.Contains(out, "HAND-ADDED sentinel, must survive") {
+		t.Fatalf("customization was clobbered:\n%s", out)
+	}
+	if strings.Contains(strings.Join(strings.Fields(out), " "), "DB:") {
+		t.Fatalf("a customized file must still shed the dead key:\n%s", out)
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "compose.go", out, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("reconciled compose.go is not valid Go: %v\n----\n%s", err, out)
+	}
+}
+
+// TestGenerateCompose_DropsTheLastDepsField is why the drop needs POSITIVE
+// proof of the key set rather than a non-empty one. Emptying a Deps struct
+// entirely is ordinary refactoring and leaves every key in the literal dead; a
+// `len(keys) > 0` gate would have quietly refused to heal it. DepsFound is what
+// separates "the struct has no fields" from "the package did not parse".
+func TestGenerateCompose_DropsTheLastDepsField(t *testing.T) {
+	dir := newInjectProject(t)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders", "\tLogger *slog.Logger")
+	in := InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+	if !strings.Contains(readInject(t, dir), "Logger: infra.Log") {
+		t.Fatalf("precondition: first emit must wire Logger:\n%s", readInject(t, dir))
+	}
+
+	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders", "")
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	if strings.Contains(out, "Logger:") {
+		t.Fatalf("emptying the Deps struct must empty the literal:\n%s", out)
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "compose.go", out, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("reconciled compose.go is not valid Go: %v\n----\n%s", err, out)
+	}
+}
+
+// TestGenerateCompose_DropSkipsUnparsableComponent is the guard that keeps the
+// drop from becoming a licence to destroy. A component package mid-edit yields
+// the SAME empty key set as a component with no deps, and acting on it would
+// empty a perfectly good literal on the strength of source forge could not
+// read. Nothing may be dropped without a Deps struct that positively parsed.
+func TestGenerateCompose_DropSkipsUnparsableComponent(t *testing.T) {
+	dir := newInjectProject(t)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config\n\tDB Repository")
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tLogger *slog.Logger\n\tConfig *config.Config\n\tDB Repository")
+	in := InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+	before := readInject(t, dir)
+
+	// Mid-edit: the component's only source file no longer parses.
+	broken := "package orders\n\ntype Service interface{ Do() }\n\ntype Deps struct {\n\tLogger *slog.Logger\n"
+	if err := os.WriteFile(filepath.Join(dir, "internal", "handlers", "orders", "contract.go"), []byte(broken), 0o644); err != nil {
+		t.Fatalf("write broken contract: %v", err)
+	}
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	after := readInject(t, dir)
+	for _, want := range []string{"Logger: infra.Log", "Config: infra.Cfg", "DB: infra.DB"} {
+		if !strings.Contains(strings.Join(strings.Fields(after), " "), want) {
+			t.Fatalf("unreadable component source must never authorize a drop (lost %q):\n--- before ---\n%s\n--- after ---\n%s", want, before, after)
+		}
+	}
+}
+
+// TestGenerateCompose_DropKeepsEmbeddedDepsKey: the key set forge measures
+// against is the literal's FULL legal key set, not the subset forge knows how
+// to wire. ParseServiceDeps drops embedded fields because it cannot address
+// them — so measuring against it would delete an embedded key the author wired
+// by hand, which is a field that exists.
+func TestGenerateCompose_DropKeepsEmbeddedDepsKey(t *testing.T) {
+	dir := newInjectProject(t)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+	depsBody := "\tBase\n\tLogger *slog.Logger\n\tConfig *config.Config"
+	writeFallibleComponentDeps(t, dir, "internal/handlers", "orders", "orders", depsBody)
+	in := InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+	// The author wires the embedded field by hand — forge never emits it.
+	composePath := filepath.Join(dir, "internal", "app", "compose.go")
+	raw := readInject(t, dir)
+	withEmbedded := strings.Replace(raw, "orders.Deps{", "orders.Deps{\n\t\tBase: orders.Base{},", 1)
+	if withEmbedded == raw {
+		t.Fatalf("failed to hand-wire the embedded key:\n%s", raw)
+	}
+	if err := os.WriteFile(composePath, []byte(withEmbedded), 0o644); err != nil {
+		t.Fatalf("write compose.go: %v", err)
+	}
+
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	if out := readInject(t, dir); !strings.Contains(out, "Base: orders.Base{}") {
+		t.Fatalf("an embedded Deps key IS a field — it must survive the drop:\n%s", out)
+	}
+}
+
+// TestGenerateCompose_RemovedDepsFieldStillCompiles is the same defect proven
+// where it actually bites: `go build ./...` on a real module, not a string
+// match. The pinning unit tests assert the dead key is gone; this one asserts
+// the thing the user experiences — a project whose Deps struct lost a field
+// still compiles after `forge generate`, with no `rm -f internal/app/compose.go`
+// in between. The sandbox module has no external requires, so the build needs
+// nothing from the network.
+func TestGenerateCompose_RemovedDepsFieldStillCompiles(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	write("go.mod", "module example.com/proj\n\ngo 1.26.2\n")
+	write("forge.yaml", "name: proj\nmodule_path: example.com/proj\n")
+	write("internal/app/providers.go", `package app
+
+import (
+	"log/slog"
+
+	"example.com/proj/internal/handlers/orders"
+)
+
+type Infra struct {
+	Log *slog.Logger
+	DB  orders.Store
+}
+`)
+	ordersSrc := func(withDB bool) string {
+		db := ""
+		if withDB {
+			db = "\n\tDB     Store"
+		}
+		return `package orders
+
+import "log/slog"
+
+type Store interface{ Get() }
+
+type Service interface{ Do() }
+
+type Deps struct {
+	Logger *slog.Logger` + db + `
+}
+
+func New(d Deps) (Service, error) { return nil, nil }
+`
+	}
+	write("internal/handlers/orders/contract.go", ordersSrc(true))
+
+	in := InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	}
+	goBuild := func(stage string) {
+		t.Helper()
+		cmd := exec.Command("go", "build", "./...")
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: go build failed: %v\n%s\n--- compose.go ---\n%s",
+				stage, err, out, readInject(t, dir))
+		}
+	}
+
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("first GenerateCompose: %v", err)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(readInject(t, dir)), " "), "DB: infra.DB") {
+		t.Fatalf("precondition: first emit must wire DB:\n%s", readInject(t, dir))
+	}
+	goBuild("before the refactor")
+
+	// The author drops the DB dependency. Nothing else changes.
+	write("internal/handlers/orders/contract.go", ordersSrc(false))
+	if err := GenerateCompose(in); err != nil {
+		t.Fatalf("reconcile GenerateCompose: %v", err)
+	}
+	goBuild("after removing the Deps field")
 }

@@ -113,7 +113,7 @@ func silenceNotices(t *testing.T) (healed, skipped *int) {
 	t.Helper()
 	oldHeal, oldSkip := HealNoticeFn, NoHealSkipFn
 	h, s := 0, 0
-	HealNoticeFn = func(string) { h++ }
+	HealNoticeFn = func(string, HealTrigger) { h++ }
 	NoHealSkipFn = func(string) { s++ }
 	t.Cleanup(func() { HealNoticeFn, NoHealSkipFn = oldHeal, oldSkip })
 	return &h, &s

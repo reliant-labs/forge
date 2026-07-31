@@ -17,7 +17,17 @@ tmp_dir = "tmp"
   exclude_regex = ["_test\\.go$"]
   exclude_unchanged = false
   follow_symlink = false
-  full_bin = "./tmp/{{.Name}} server"
+  # ENVIRONMENT=development is what makes the reloaded server usable from a
+  # browser: it is the only thing that turns the CORS layer on when
+  # CORS_ORIGINS is empty (serverkit.Config.CORSEnabled), and the frontend's
+  # dev port is not knowable to the server, so an allow-list cannot be
+  # pre-seeded. The config field defaults to `production` — a deployed posture
+  # — so a launcher that does not set this serves no CORS at all and every
+  # page in the scaffolded frontend fails with "Failed to fetch". Air is a
+  # local hot-reload runner and can never be a deployed process, so stating it
+  # here is a fact about air, not a policy leak: the same line appears in the
+  # other dev launchers (docker-compose's app services, .vscode/launch.json).
+  full_bin = "ENVIRONMENT=development ./tmp/{{.Name}} server"
   include_ext = ["go", "yaml"]
   include_file = []
   kill_delay = "5s"

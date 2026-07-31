@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-self-certifying
-description: Migrate off the global `.forge/checksums.json` manifest onto self-certifying generated files — every Tier-1 file embeds its own content hash (`forge:hash=<sha256>`) in the DO-NOT-EDIT header, so the pristine check travels WITH the file through clones, branches, and partial commits. The migration is automatic on the next `forge generate` / `forge upgrade`; this skill explains what happens and how to resolve the one loud failure mode (provenance-unknown files).
+description: Migrate off the global `.forge/checksums.json` manifest onto self-certifying generated files — every Tier-1 file embeds its own content hash (`forge:hash=<sha256>`) in the DO-NOT-EDIT header, so the pristine check travels WITH the file through clones, branches, and partial commits. The migration is automatic on the next `forge generate` / `forge project upgrade`; this skill explains what happens and how to resolve the one loud failure mode (provenance-unknown files).
+detection: test -f .forge/checksums.json
 relevance: migration
 ---
 
@@ -37,20 +38,20 @@ compare with the embedded value.
   ♻️ heal notice (`--no-heal` opts out).
 - **Marker fails** → hand-edited: the stomp guard refuses and names the
   file. Remedies, in order: move the edit to a user-owned extension
-  point; `--force` (scoped to exactly the named files); `forge disown
+  point; `--force` (scoped to exactly the named files); `forge project disown
   <path> --reason "<why>"` (one-way transfer to your ownership).
 - **No marker** → forge never certified those bytes: user-owned (Tier-2
   scaffolds never carry markers).
 
 Remaining committed state under `.forge/` (only when non-empty):
 
-- `disowned.json` — `forge disown` records (path + reason + timestamp).
+- `disowned.json` — `forge project disown` records (path + reason + timestamp).
 - `hashes.json` — render hashes for the few generated files whose
   format cannot carry comments (JSON outputs only).
 
 ## 3. The automatic migration
 
-The first `forge generate` (or `forge upgrade`) on a project that still
+The first `forge generate` (or `forge project upgrade`) on a project that still
 has `.forge/checksums.json`:
 
 1. Files whose bytes match the manifest's recorded hash **or any prior
@@ -77,7 +78,7 @@ Each named file is one of two things — you decide which:
   exactly the named files; they regenerate from the current templates
   and get real markers.
 - A hand-edit you want to keep: restore or back it up, then
-  `forge disown <path> --reason "<why>"` (or move the edit to the
+  `forge project disown <path> --reason "<why>"` (or move the edit to the
   extension point the error names and then `--force`).
 
 ## 5. What changed for everyday workflows

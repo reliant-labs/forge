@@ -35,15 +35,29 @@ func testProjectConfig() *config.ProjectConfig {
 	return &config.ProjectConfig{
 		Name:       "test-project",
 		ModulePath: "github.com/example/test-project",
-		Components: []config.ComponentConfig{
-			{Name: "api", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}},
-		},
 	}
+}
+
+// projectWithService writes the one artifact that DECLARES a Connect
+// service — the forge descriptor — into a temp project dir, and returns it.
+// The upgrade template data reads its service name from there, not from a
+// config field.
+func projectWithService(t *testing.T, service string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	desc := `{"services": [{"Name": "` + service + `", "Package": "` + service + `.v1"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), []byte(desc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func TestBuildTemplateData(t *testing.T) {
 	cfg := testProjectConfig()
-	data := buildTemplateData(cfg, "")
+	data := buildTemplateData(cfg, projectWithService(t, "api"))
 
 	if data.Name != "test-project" {
 		t.Errorf("Name = %q, want %q", data.Name, "test-project")
@@ -86,21 +100,24 @@ func TestManagedFiles(t *testing.T) {
 		t.Fatal("managedFiles() returned empty list")
 	}
 
-	// Check that expected files are in the list. NOTE: cmd/main.go is
-	// intentionally NOT managed here — it is the composition root, owned by the
-	// generate pipeline (GenerateCmdGroups), which has the component inventory.
+	// Check that expected files are in the list. NOTE: cmd/main.go and the
+	// four scaffold-once command-tree files (serve.go, server.go,
+	// version.go, db.go) are intentionally NOT managed here — see the
+	// assertions after the loop.
 	expected := map[string]bool{
-		"cmd/cmd/serve.go":   true,
-		"cmd/cmd/server.go":  true,
-		"cmd/cmd/root.go":    true,
-		"cmd/cmd/version.go": true,
-		"Taskfile.yml":       true,
-		"Dockerfile":         true,
-		"docker-compose.yml": true,
-		".golangci.yml":      true,
+		// root.go and db_source.go are the command-tree files that remain
+		// genuinely re-derived: root.go declares ServiceName from the
+		// forge.yaml name and gates newDBCmd on a user config field, and
+		// db_source.go's referenceability depends on db/migrations/ content.
+		"cmd/cmd/root.go":      true,
+		"cmd/cmd/db_source.go": true,
+		"Taskfile.yml":         true,
+		"Dockerfile":           true,
+		"docker-compose.yml":   true,
+		".golangci.yml":        true,
 		// The thin auth-policy pair is the ONLY middleware the project
 		// keeps; the mechanism files (cors/auth/claims/…) moved to
-		// forge/pkg/{authn,authz,middleware} and must NOT be managed.
+		// forge/pkg/{authn,middleware} and must NOT be managed.
 		"pkg/middleware/middleware.go":      true,
 		"pkg/middleware/middleware_test.go": true,
 	}
@@ -119,6 +136,21 @@ func TestManagedFiles(t *testing.T) {
 	// cmd/main.go moved out of the upgrade lane into the generate pipeline.
 	if found["cmd/main.go"] {
 		t.Error("managedFiles() must NOT include cmd/main.go — it is owned by GenerateCmdGroups")
+	}
+	// The four scaffold-once command-tree files are USER-OWNED: every
+	// statement in each is a decision the application owns. Managing any of
+	// them here would put it back on the re-render path and hand ownership
+	// back to forge, which is precisely what the library splits were for.
+	for path, decisions := range map[string]string{
+		"cmd/cmd/serve.go":   "auth posture, interceptor order, payload caps, CORS, readiness, teardown",
+		"cmd/cmd/server.go":  "what this process mounts and supervises, and whether a gap fails boot",
+		"cmd/cmd/version.go": "the ldflags-stamped variables the build's -X flags target by name",
+		"cmd/cmd/db.go":      "migration policy: dirty-schema fail-hard, is 'nothing pending' success",
+	} {
+		if found[path] {
+			t.Errorf("managedFiles() must NOT include %s — it is scaffold-once and user-owned (%s)",
+				path, decisions)
+		}
 	}
 }
 
@@ -139,7 +171,7 @@ func TestRenderManagedFile(t *testing.T) {
 }
 
 // golangciManagedFile returns the .golangci.yml managed-file descriptor so
-// the guardrail tests render exactly what `forge upgrade` would emit.
+// the guardrail tests render exactly what `forge project upgrade` would emit.
 func golangciManagedFile(t *testing.T) managedFile {
 	t.Helper()
 	for _, f := range managedFiles() {
@@ -360,10 +392,10 @@ func TestUpgradeDetectsModified(t *testing.T) {
 
 	// Verify a Tier 1 file would still be overwritten even if modified
 	for _, r := range results {
-		if r.Path == "cmd/test-project/cmd/version.go" {
+		if r.Path == "cmd/test-project/cmd/root.go" {
 			// Tier 1 files report as up-to-date (since we didn't modify it) or updated
 			if r.Status == UpgradeUserModified {
-				t.Errorf("cmd/test-project/cmd/version.go: Tier 1 file should never be user-modified, got %q", r.Status)
+				t.Errorf("cmd/test-project/cmd/root.go: Tier 1 file should never be user-modified, got %q", r.Status)
 			}
 		}
 	}
@@ -385,7 +417,12 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	// Modify a Tier-1 file and a Tier-2 file (user edits: markers gone).
-	modifiedPath := filepath.Join(dir, "cmd/test-project/cmd/version.go")
+	// root.go is the Tier-1 exemplar: it is still genuinely re-derived
+	// (ServiceName from forge.yaml, newDBCmd gated on a config field), so
+	// --force overwriting it is the intended behaviour. The command-tree
+	// files that became scaffold-once cannot stand in here — forge does not
+	// rewrite those at all anymore, with or without --force.
+	modifiedPath := filepath.Join(dir, "cmd/test-project/cmd/root.go")
 	if err := os.WriteFile(modifiedPath, []byte("// user modified\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +438,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Path == "cmd/test-project/cmd/version.go" || r.Path == "Dockerfile" {
+		if r.Path == "cmd/test-project/cmd/root.go" || r.Path == "Dockerfile" {
 			if r.Status != UpgradeUpdated {
 				t.Errorf("%s: status = %q, want %q with --force", r.Path, r.Status, UpgradeUpdated)
 			}
@@ -414,7 +451,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(content) == "// user modified\n" {
-		t.Error("cmd/test-project/cmd/version.go was not overwritten by --force")
+		t.Error("cmd/test-project/cmd/root.go was not overwritten by --force")
 	}
 	content, err = os.ReadFile(modifiedTier2)
 	if err != nil {
@@ -435,12 +472,12 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 	// forge render of an older vintage (the marker is the "checksum
 	// matches disk" state).
 	oldContent := []byte("// old template content\npackage main\n")
-	writeManagedRender(t, dir, "cmd/test-project/cmd/version.go", oldContent, true)
-	otelPath := filepath.Join(dir, "cmd", "test-project", "cmd", "version.go")
+	writeManagedRender(t, dir, "cmd/test-project/cmd/root.go", oldContent, true)
+	tier1Path := filepath.Join(dir, "cmd", "test-project", "cmd", "root.go")
 
 	// Write other files from current templates so they're up-to-date
 	for _, f := range managedFilesForCfg(cfg) {
-		if f.destPath == "cmd/test-project/cmd/version.go" {
+		if f.destPath == "cmd/test-project/cmd/root.go" {
 			continue
 		}
 		content, err := renderManagedFile(f, data)
@@ -457,20 +494,20 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Path == "cmd/test-project/cmd/version.go" {
+		if r.Path == "cmd/test-project/cmd/root.go" {
 			if r.Status != UpgradeUpdated {
-				t.Errorf("cmd/test-project/cmd/version.go: status = %q, want %q (unmodified file should auto-update)", r.Status, UpgradeUpdated)
+				t.Errorf("cmd/test-project/cmd/root.go: status = %q, want %q (unmodified file should auto-update)", r.Status, UpgradeUpdated)
 			}
 		}
 	}
 
 	// Verify file was actually updated
-	content, err := os.ReadFile(otelPath)
+	content, err := os.ReadFile(tier1Path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(content) == string(oldContent) {
-		t.Error("cmd/test-project/cmd/version.go was not updated")
+		t.Error("cmd/test-project/cmd/root.go was not updated")
 	}
 }
 
@@ -539,7 +576,7 @@ func TestUpgradeAutoUpdatesStaleCodegen(t *testing.T) {
 }
 
 // TestUpgradeSkipsDisownedFiles: a disowned (or legacy forked) entry is
-// user-owned — `forge upgrade` must leave the on-disk file untouched
+// user-owned — `forge project upgrade` must leave the on-disk file untouched
 // while it exists, reporting it as skipped instead.
 func TestUpgradeSkipsDisownedFiles(t *testing.T) {
 	cfg := testProjectConfig()
@@ -595,7 +632,7 @@ func TestUpgradeSkipsDisownedFiles(t *testing.T) {
 
 // TestUpgrade_SkipsThinMiddlewareInLegacyLayout: a pre-library-split
 // project (old pkg/middleware mechanism files, no middleware.go) must
-// NOT receive the thin policy pair from `forge upgrade` — the legacy
+// NOT receive the thin policy pair from `forge project upgrade` — the legacy
 // files declare the same symbols and the package would stop compiling.
 // Adoption is the user-driven migrations/v0.x-to-middleware-lib path.
 func TestUpgrade_SkipsThinMiddlewareInLegacyLayout(t *testing.T) {
@@ -632,5 +669,177 @@ func TestUpgrade_SkipsThinMiddlewareInLegacyLayout(t *testing.T) {
 	}
 	if hasLegacyMiddlewareLayout(dir) {
 		t.Fatal("a project with middleware.go is on the thin layout even if old files linger")
+	}
+}
+
+// materializeManagedProject renders every managed file for cfg into dir as a
+// stamped (forge-certified) render, then hand-edits the named paths so they
+// read as user-modified. Returns the rendered template data so callers can
+// assert against expected content.
+func materializeManagedProject(t *testing.T, dir string, cfg *config.ProjectConfig, userEdited ...string) {
+	t.Helper()
+	data := buildTemplateData(cfg, "")
+	for _, f := range managedFilesForCfg(cfg) {
+		content, err := renderManagedFile(f, data)
+		if err != nil {
+			t.Fatalf("render %s: %v", f.templateName, err)
+		}
+		writeManagedRender(t, dir, f.destPath, content, true)
+	}
+	for _, rel := range userEdited {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte("# hand-edited by the user\n"), 0o644); err != nil {
+			t.Fatalf("hand-edit %s: %v", rel, err)
+		}
+	}
+}
+
+// TestUpgradeForcePaths_TouchesOnlyNamedPaths pins the point of per-path
+// force: adopting one template must not stomp every other file the user
+// customized. Two user-modified files, one named — the other must come
+// through byte-identical and still be reported as user-modified.
+func TestUpgradeForcePaths_TouchesOnlyNamedPaths(t *testing.T) {
+	cfg := testProjectConfig()
+	dir := t.TempDir()
+
+	const forced = "Dockerfile"
+	const spared = "docker-compose.yml"
+	materializeManagedProject(t, dir, cfg, forced, spared)
+
+	sparedBefore, err := os.ReadFile(filepath.Join(dir, spared))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := UpgradeSelection(dir, cfg, ForcePaths(forced), false)
+	if err != nil {
+		t.Fatalf("UpgradeSelection: %v", err)
+	}
+
+	byPath := map[string]UpgradeResult{}
+	for _, r := range results {
+		byPath[r.Path] = r
+	}
+	if got := byPath[forced]; got.Status != UpgradeUpdated || !got.Forced {
+		t.Errorf("%s: status = %q forced = %v, want %q/true", forced, got.Status, got.Forced, UpgradeUpdated)
+	}
+	if got := byPath[spared]; got.Status != UpgradeUserModified {
+		t.Errorf("%s: status = %q, want %q (not named in the force selection)", spared, got.Status, UpgradeUserModified)
+	}
+
+	forcedNow, err := os.ReadFile(filepath.Join(dir, forced))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(forcedNow), "hand-edited by the user") {
+		t.Errorf("%s: named in --force but the user edit survived", forced)
+	}
+	sparedNow, err := os.ReadFile(filepath.Join(dir, spared))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(sparedNow) != string(sparedBefore) {
+		t.Errorf("%s: not named in --force but was rewritten:\n%s", spared, sparedNow)
+	}
+}
+
+// TestUpgradeForceAll_OverwritesEveryUserModifiedFile keeps the whole-project
+// meaning of a bare --force intact alongside the per-path form.
+func TestUpgradeForceAll_OverwritesEveryUserModifiedFile(t *testing.T) {
+	cfg := testProjectConfig()
+	dir := t.TempDir()
+
+	edited := []string{"Dockerfile", "docker-compose.yml"}
+	materializeManagedProject(t, dir, cfg, edited...)
+
+	if _, err := UpgradeSelection(dir, cfg, ForceAll(), false); err != nil {
+		t.Fatalf("UpgradeSelection: %v", err)
+	}
+	for _, rel := range edited {
+		got, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(got), "hand-edited by the user") {
+			t.Errorf("%s: bare --force must overwrite every user-modified file", rel)
+		}
+	}
+}
+
+// TestUpgradeDisownedSurvivesForce is the ownership invariant: `forge project
+// disown` is a one-way transfer, so a disowned file is never written by
+// upgrade — not by a bare --force, not by naming it explicitly. That is what
+// makes disown the durable answer to "this file is mine now", as opposed to
+// silently editing a frozen file and hoping nobody forces.
+func TestUpgradeDisownedSurvivesForce(t *testing.T) {
+	const disowned = "Dockerfile"
+	userContent := []byte("# user-owned after disown\nFROM scratch\n")
+
+	for _, tc := range []struct {
+		name string
+		sel  ForceSelection
+	}{
+		{"bare --force", ForceAll()},
+		{"--force <the disowned path>", ForcePaths(disowned)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testProjectConfig()
+			dir := t.TempDir()
+			materializeManagedProject(t, dir, cfg)
+
+			if err := os.WriteFile(filepath.Join(dir, disowned), userContent, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cs := &FileChecksums{Disowned: map[string]DisownedEntry{}, Unstampable: map[string]string{}}
+			if err := cs.DisownPaths(dir, []string{disowned}, "hand-maintained base image"); err != nil {
+				t.Fatal(err)
+			}
+			if err := SaveChecksums(dir, cs); err != nil {
+				t.Fatal(err)
+			}
+
+			results, err := UpgradeSelection(dir, cfg, tc.sel, false)
+			if err != nil {
+				t.Fatalf("UpgradeSelection: %v", err)
+			}
+			for _, r := range results {
+				if r.Path == disowned && r.Status != UpgradeSkipped {
+					t.Errorf("%s: status = %q, want %q — force must not override disown", disowned, r.Status, UpgradeSkipped)
+				}
+			}
+			got, err := os.ReadFile(filepath.Join(dir, disowned))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != string(userContent) {
+				t.Errorf("upgrade overwrote a disowned file under %s:\n%s", tc.name, got)
+			}
+		})
+	}
+}
+
+// TestManagedPathsFor_MatchesUpgradeResults pins the path list the CLI
+// validates --force arguments against to the paths upgrade actually reports.
+// A drift between the two would reject a legitimate path (or accept one that
+// silently does nothing).
+func TestManagedPathsFor_MatchesUpgradeResults(t *testing.T) {
+	cfg := testProjectConfig()
+	dir := t.TempDir()
+	materializeManagedProject(t, dir, cfg)
+
+	results, err := UpgradeSelection(dir, cfg, ForceNone(), true)
+	if err != nil {
+		t.Fatalf("UpgradeSelection: %v", err)
+	}
+	managed := map[string]bool{}
+	for _, p := range ManagedPathsFor(cfg) {
+		managed[p] = true
+	}
+	for _, r := range results {
+		if !managed[r.Path] {
+			t.Errorf("upgrade reported %q but ManagedPathsFor omits it", r.Path)
+		}
+	}
+	if len(managed) != len(results) {
+		t.Errorf("ManagedPathsFor returned %d paths, upgrade reported %d", len(managed), len(results))
 	}
 }

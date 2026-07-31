@@ -387,7 +387,7 @@ func promoteApplyDepsCall(call *ast.CallExpr, fset *token.FileSet, auto *[]strin
 	}
 
 	conventional := map[string]bool{
-		"Logger": true, "Config": true, "Authorizer": true,
+		"Logger": true, "Config": true,
 	}
 
 	var stmts []ast.Stmt

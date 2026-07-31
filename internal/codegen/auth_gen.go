@@ -6,67 +6,47 @@ import (
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// AuthTemplateData holds the data shape expected by the auth middleware templates.
-type AuthTemplateData struct {
-	Provider    string // "jwt", "api_key", "both"
-	JWT         config.JWTConfig
-	APIKey      config.APIKeyConfig
-	Module      string
-	SkipMethods []string // procedure names that don't require auth
+// AuthSetupTemplateData is the data shape for the owned internal/app/auth.go
+// scaffold (app-auth.go.tmpl).
+type AuthSetupTemplateData struct {
+	Module string
 }
 
-// GenerateAuthMiddleware renders the auth middleware templates and writes
-// the generated files into pkg/middleware/ of the target project.
-// It generates:
-//   - pkg/middleware/auth_gen.go (always regenerated — DO NOT EDIT)
-//   - pkg/middleware/auth_validator.go (only if API key auth is configured and file doesn't exist)
+// GenerateAuthSetup scaffolds internal/app/auth.go ONCE — the OWNED,
+// user-editable SetupAuth() that picks the request authenticator in CODE
+// (default: a JWT validator built from the typed config's jwt_* fields). It
+// replaces the retired forge-owned auth_gen.go validator codegen:
+// authentication is a code-wiring choice (which validator) reading
+// per-deployment values that are ordinary config fields, not a static
+// forge.yaml block.
 //
-// cs is the project's checksum tracker; passing it ensures the generated
-// files do not show up as orphans in `forge audit`. A nil cs is tolerated
-// (the file is still written) so callers without an active generate cycle
-// can use the helper too.
-func GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMethods []string, targetDir string, cs *checksums.FileChecksums) error {
-	middlewareDir := filepath.Join(targetDir, "pkg", "middleware")
-	if err := os.MkdirAll(middlewareDir, 0755); err != nil {
-		return fmt.Errorf("create middleware dir: %w", err)
+// Scaffold-once, never overwritten after first emit (os.Stat guard) — the
+// user owns the bytes. The generated cmd serve wiring calls app.SetupAuth
+// and threads the returned validator into the auth interceptor.
+func GenerateAuthSetup(modulePath, projectDir string) error {
+	appDir := filepath.Join(projectDir, "internal", "app")
+	path := filepath.Join(appDir, "auth.go")
+	rel := filepath.Join("internal", "app", "auth.go")
+	if !checksums.ScaffoldOnceDecision(projectDir, rel) {
+		// Scaffold-once, user-owned — never clobber an existing copy, and
+		// never resurrect a deleted one. A project that wires auth its own
+		// way (or has no auth surface at all) deletes this file and it
+		// stays gone.
+		return nil
 	}
-
-	data := AuthTemplateData{
-		Provider:    cfg.Provider,
-		JWT:         cfg.JWT,
-		APIKey:      cfg.APIKey,
-		Module:      modulePath,
-		SkipMethods: skipMethods,
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		return fmt.Errorf("create internal/app dir: %w", err)
 	}
-
-	// Always regenerate auth_gen.go (force=true: this file is forge-owned).
-	content, err := templates.MiddlewareTemplates().Render("auth_gen.go.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("app-auth.go.tmpl", AuthSetupTemplateData{Module: modulePath})
 	if err != nil {
-		return fmt.Errorf("render auth_gen.go.tmpl: %w", err)
+		return fmt.Errorf("render app-auth.go.tmpl: %w", err)
 	}
-	if err := writeForgeOwned(targetDir, filepath.Join("pkg", "middleware", "auth_gen.go"), content, cs); err != nil {
-		return fmt.Errorf("write auth_gen.go: %w", err)
+	if err := writeUserScaffold(path, content); err != nil {
+		return err
 	}
-
-	// Generate auth_validator.go only if API key auth is used and the file doesn't exist.
-	// This is a user-editable file — never overwrite it. Once it exists, we don't
-	// even checksum it (it's user-owned, not forge-owned).
-	if cfg.Provider == "api_key" || cfg.Provider == "both" {
-		validatorPath := filepath.Join(middlewareDir, "auth_validator.go")
-		if _, err := os.Stat(validatorPath); os.IsNotExist(err) {
-			validatorContent, err := templates.MiddlewareTemplates().Render("auth_validator.go.tmpl", data)
-			if err != nil {
-				return fmt.Errorf("render auth_validator.go.tmpl: %w", err)
-			}
-			if err := writeUserScaffold(validatorPath, validatorContent); err != nil {
-				return fmt.Errorf("write auth_validator.go: %w", err)
-			}
-		}
-	}
-
+	checksums.RecordScaffold(projectDir, rel)
 	return nil
 }

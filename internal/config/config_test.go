@@ -6,24 +6,6 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-func TestCIConfig_EffectiveGoVersion(t *testing.T) {
-	tests := []struct {
-		version string
-		want    string
-	}{
-		{"", "1.26"},
-		{"1.24", "1.24"},
-		{"1.25", "1.25"},
-	}
-	for _, tt := range tests {
-		cfg := &CIConfig{GoVersion: tt.version}
-		got := cfg.EffectiveGoVersion()
-		if got != tt.want {
-			t.Errorf("EffectiveGoVersion() with version=%q: got %q, want %q", tt.version, got, tt.want)
-		}
-	}
-}
-
 func TestCIConfig_IsLintEnabled(t *testing.T) {
 	tests := []struct {
 		name string
@@ -148,77 +130,25 @@ allowed_destructive:
 	}
 }
 
-func TestCIExtraJob_EffectiveRunsOn(t *testing.T) {
-	tests := []struct {
-		runsOn string
-		want   string
-	}{
-		{"", "ubuntu-latest"},
-		{"self-hosted", "self-hosted"},
-	}
-	for _, tt := range tests {
-		job := &CIExtraJob{RunsOn: tt.runsOn}
-		got := job.EffectiveRunsOn()
-		if got != tt.want {
-			t.Errorf("EffectiveRunsOn() with runsOn=%q: got %q, want %q", tt.runsOn, got, tt.want)
-		}
-	}
-}
-
-func TestComponentConfig_KindAndScheduleYAMLRoundTrip(t *testing.T) {
+// TestComponentConfig_EffectiveKind pins the kind discriminator's
+// normalisation. There is no YAML round-trip to test: a ComponentConfig is
+// never serialized — it is the in-memory shape discovery hands back.
+func TestComponentConfig_EffectiveKind(t *testing.T) {
 	tests := []struct {
 		name     string
-		yamlStr  string
+		comp     ComponentConfig
 		wantKind string
-		wantSch  string
 	}{
-		{
-			"cron with schedule",
-			"name: cleanup\nkind: cron\npath: workers/cleanup\nschedule: \"*/5 * * * *\"\n",
-			"cron",
-			"*/5 * * * *",
-		},
-		{
-			"worker",
-			"name: processor\nkind: worker\npath: workers/processor\n",
-			"worker",
-			"",
-		},
-		{
-			"server with no kind defaults to server",
-			"name: api\npath: handlers/api\nports:\n  http: 8080\n",
-			"server",
-			"",
-		},
+		{"cron with schedule", ComponentConfig{Name: "cleanup", Kind: "cron", Schedule: "*/5 * * * *"}, "cron"},
+		{"worker", ComponentConfig{Name: "processor", Kind: "worker"}, "worker"},
+		{"empty kind defaults to server", ComponentConfig{Name: "api"}, "server"},
+		{"kind is case/space insensitive", ComponentConfig{Name: "api", Kind: " Operator "}, "operator"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var cfg ComponentConfig
-			if err := yaml.Unmarshal([]byte(tt.yamlStr), &cfg); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if cfg.EffectiveKind() != tt.wantKind {
-				t.Errorf("EffectiveKind = %q, want %q", cfg.EffectiveKind(), tt.wantKind)
-			}
-			if cfg.Schedule != tt.wantSch {
-				t.Errorf("Schedule = %q, want %q", cfg.Schedule, tt.wantSch)
-			}
-
-			// Round-trip: marshal and unmarshal again
-			out, err := yaml.Marshal(&cfg)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			var cfg2 ComponentConfig
-			if err := yaml.Unmarshal(out, &cfg2); err != nil {
-				t.Fatalf("unmarshal round-trip: %v", err)
-			}
-			if cfg2.EffectiveKind() != tt.wantKind {
-				t.Errorf("round-trip EffectiveKind = %q, want %q", cfg2.EffectiveKind(), tt.wantKind)
-			}
-			if cfg2.Schedule != tt.wantSch {
-				t.Errorf("round-trip Schedule = %q, want %q", cfg2.Schedule, tt.wantSch)
+			if got := tt.comp.EffectiveKind(); got != tt.wantKind {
+				t.Errorf("EffectiveKind = %q, want %q", got, tt.wantKind)
 			}
 		})
 	}
@@ -268,42 +198,6 @@ func TestFrontendConfig_KindYAMLRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPackageConfig_KindYAMLRoundTrip(t *testing.T) {
-	tests := []struct {
-		name     string
-		yamlStr  string
-		wantKind string
-	}{
-		{"eventbus", "name: events\nkind: eventbus\n", "eventbus"},
-		{"client", "name: stripe\nkind: client\n", "client"},
-		{"generic (no kind)", "name: utils\n", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var cfg PackageConfig
-			if err := yaml.Unmarshal([]byte(tt.yamlStr), &cfg); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if cfg.Kind != tt.wantKind {
-				t.Errorf("Kind = %q, want %q", cfg.Kind, tt.wantKind)
-			}
-
-			out, err := yaml.Marshal(&cfg)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			var cfg2 PackageConfig
-			if err := yaml.Unmarshal(out, &cfg2); err != nil {
-				t.Fatalf("unmarshal round-trip: %v", err)
-			}
-			if cfg2.Kind != tt.wantKind {
-				t.Errorf("round-trip Kind = %q, want %q", cfg2.Kind, tt.wantKind)
-			}
-		})
-	}
-}
-
 func TestDeployConfig_EffectiveRegistry(t *testing.T) {
 	tests := []struct {
 		reg  string
@@ -339,25 +233,6 @@ func TestDeployConfig_IsConcurrencyEnabled(t *testing.T) {
 				t.Errorf("IsConcurrencyEnabled(): got %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestAPIKeyConfig_EffectiveAPIKeyHeader(t *testing.T) {
-	tests := []struct {
-		header string
-		want   string
-	}{
-		{"", "X-API-Key"},
-		{"X-Custom-Key", "X-Custom-Key"},
-		{"Authorization", "Authorization"},
-	}
-
-	for _, tt := range tests {
-		cfg := APIKeyConfig{Header: tt.header}
-		got := cfg.EffectiveAPIKeyHeader()
-		if got != tt.want {
-			t.Errorf("EffectiveAPIKeyHeader() with header=%q: got %q, want %q", tt.header, got, tt.want)
-		}
 	}
 }
 
@@ -422,25 +297,6 @@ func TestProjectConfig_EffectiveForgeVersion(t *testing.T) {
 				t.Errorf("EffectiveForgeVersion(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestJWTConfig_EffectiveSigningMethod(t *testing.T) {
-	tests := []struct {
-		method string
-		want   string
-	}{
-		{"", "RS256"},
-		{"HS256", "HS256"},
-		{"ES256", "ES256"},
-	}
-
-	for _, tt := range tests {
-		cfg := JWTConfig{SigningMethod: tt.method}
-		got := cfg.EffectiveSigningMethod()
-		if got != tt.want {
-			t.Errorf("EffectiveSigningMethod() with method=%q: got %q, want %q", tt.method, got, tt.want)
-		}
 	}
 }
 
@@ -566,6 +422,33 @@ func TestConfigGuardConfig_EffectiveEnforceTypedAccess(t *testing.T) {
 			c := ConfigGuardConfig{EnforceTypedAccess: tt.in}
 			if got := c.EffectiveEnforceTypedAccess(); got != tt.want {
 				t.Errorf("EffectiveEnforceTypedAccess(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConfigGuardConfig_EffectiveEnforceComponentObserve(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"absent defaults to error", "", EnforceComponentObserveError},
+		{"whitespace defaults to error", "   ", EnforceComponentObserveError},
+		{"off", "off", EnforceComponentObserveOff},
+		{"error", "error", EnforceComponentObserveError},
+		{"case-insensitive Off", "Off", EnforceComponentObserveOff},
+		{"unknown defaults to error", "nonsense", EnforceComponentObserveError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := ConfigGuardConfig{EnforceComponentObserve: tt.in}
+			if got := c.EffectiveEnforceComponentObserve(); got != tt.want {
+				t.Errorf("EffectiveEnforceComponentObserve(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			wantEnabled := tt.want != EnforceComponentObserveOff
+			if got := c.ComponentObserveGuardEnabled(); got != wantEnabled {
+				t.Errorf("ComponentObserveGuardEnabled(%q) = %v, want %v", tt.in, got, wantEnabled)
 			}
 		})
 	}

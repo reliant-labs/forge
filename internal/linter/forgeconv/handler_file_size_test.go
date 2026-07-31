@@ -9,7 +9,7 @@ import (
 // TestLintHandlerFileSize_TableDriven exercises the analyzer end-to-end
 // across the three canonical states: a file below the threshold (no
 // warning), a file above the threshold (warning fires with both the
-// `<actual> > <threshold> lines` phrasing and the forge add handler-file
+// `<actual> > <threshold> lines` phrasing and the forge scaffold handler-file
 // remediation pointer), and a comment-heavy file whose RAW line count
 // dwarfs the threshold but whose SOURCE LOC is tiny (counter must
 // strip comments and blanks).
@@ -39,7 +39,7 @@ func TestLintHandlerFileSize_TableDriven(t *testing.T) {
 			fixture:     "over_threshold",
 			threshold:   10,
 			wantCount:   1,
-			wantMsgPart: "consider splitting via 'forge add handler-file'",
+			wantMsgPart: "consider splitting it with 'forge scaffold handler-file'",
 		},
 		{
 			name:        "mostly comments — no warning (comments stripped)",

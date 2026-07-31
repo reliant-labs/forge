@@ -10,7 +10,7 @@
 //   - ConfigService — read / write / mutate forge.yaml on disk.
 //
 // Data carriers (FileChecksums, Harness, ProjectGenerator,
-// SeedEntity, E2EMethodInfo, UpgradeResult, ServiceInfo, *TemplateData
+// E2EMethodInfo, UpgradeResult, ServiceInfo, *TemplateData
 // structs) remain plain types — they have no behavioural seam to mock.
 package generator
 
@@ -19,20 +19,19 @@ import "github.com/reliant-labs/forge/internal/config"
 // Service is the file-emission surface of the generator package.
 // Methods write into the user-project working directory; callers wanting
 // finer-grained mocking can stub one method at a time.
-type Service interface {
+type Service interface { //nolint:interfacebloat // one method per emitted artifact family, which is the point: the doc above promises callers can stub a single emission. Narrowing it would mean several interfaces every caller has to hold at once.
 	// Plan-mode generators.
 	GeneratePlanORM(root, modulePath, serviceName string, entities []config.PlanEntity, cs *FileChecksums) error
 	GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.PlanRPC, entities []config.PlanEntity) error
 
 	// Component scaffolders.
-	GenerateServiceFiles(root, modulePath, serviceName, projectName string, port int) error
+	GenerateServiceFiles(root, modulePath, serviceName, projectName string) error
 	GenerateWorkerFiles(root, modulePath, workerName, kind, schedule string) error
 	GenerateOperatorFiles(root, modulePath, name, group, version string) error
 	GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) error
 	GenerateFrontendFiles(root, modulePath, projectName, frontendName string, apiPort int, kind string) error
 	EnsureCoreComponents(frontendDir string) error
 	GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, methods []E2EMethodInfo) error
-	GenerateEntitySeeds(entities []SeedEntity, outputDir string) error
 	GenerateGrafanaDashboards(projectName, projectDir string) error
 
 	// Project-level upgrade / regeneration.
@@ -50,7 +49,6 @@ type Service interface {
 type ConfigService interface {
 	ReadProjectConfig(path string) (*config.ProjectConfig, error)
 	WriteProjectConfigFile(cfg *config.ProjectConfig, path string) error
-	AppendServiceToConfig(projectRoot, serviceName string, port int) error
 	AppendFrontendToConfig(projectRoot, frontendName string, port int) error
 	AppendFrontendToConfigWithKind(projectRoot, frontendName string, port int, kind string) error
 }

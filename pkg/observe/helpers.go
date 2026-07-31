@@ -83,6 +83,25 @@ func TraceVoidCall(ctx context.Context, tracer trace.Tracer, operationName strin
 	return err
 }
 
+// RecordSpanError marks span as failed when err is non-nil: the error is
+// recorded as a span event and the span status is set to Error. This is
+// the one-liner the owned per-package observe.go wrappers call after each
+// inner method invocation:
+//
+//	ctx, span := o.tracer.Start(ctx, "userstore.Get")
+//	defer span.End()
+//	out, err := o.inner.Get(ctx, id)
+//	observe.RecordSpanError(span, err)
+//
+// nil-safe on both span and err (a nil err is the no-op success path).
+func RecordSpanError(span trace.Span, err error) {
+	if span == nil || err == nil {
+		return
+	}
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+}
+
 // CallMetrics is a triple of OpenTelemetry instruments for opt-in
 // per-method instrumentation inside internal packages. Use NewCallMetrics
 // to construct; reuse a single CallMetrics per package (creating

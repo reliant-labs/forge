@@ -31,7 +31,6 @@ func TestFeaturesConfig_ZeroValue_AllEnabled(t *testing.T) {
 		{"FrontendEnabled", f.FrontendEnabled},
 		{"ObservabilityEnabled", f.ObservabilityEnabled},
 		{"HotReloadEnabled", f.HotReloadEnabled},
-		{"PacksEnabled", f.PacksEnabled},
 		{"DeployEnabled", f.DeployEnabled},
 	}
 	for _, m := range methods {
@@ -118,7 +117,6 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		Frontend:      boolPtr(false),
 		Observability: boolPtr(false),
 		HotReload:     boolPtr(false),
-		Packs:         boolPtr(false),
 		Deploy:        boolPtr(false),
 		// Experimental fields are plain bool: zero value IS the "off"
 		// case, so we don't need to set them.
@@ -139,7 +137,6 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		{"FrontendEnabled", f.FrontendEnabled},
 		{"ObservabilityEnabled", f.ObservabilityEnabled},
 		{"HotReloadEnabled", f.HotReloadEnabled},
-		{"PacksEnabled", f.PacksEnabled},
 		{"IngressEnabled", f.IngressEnabled},
 	}
 	for _, m := range methods {
@@ -252,7 +249,7 @@ func TestFeaturesConfig_YAMLRoundTrip(t *testing.T) {
 }
 
 // TestFeaturesConfig_NewFeatures_ZeroValue locks in the additive
-// contract for the build/packs/starters fields: a forge.yaml without
+// contract for the build field: a forge.yaml without
 // a `features:` block (or with the block but those fields absent)
 // must report each feature as enabled. This is the backwards-compat
 // promise for projects scaffolded before the field was introduced.
@@ -261,24 +258,17 @@ func TestFeaturesConfig_NewFeatures_ZeroValue(t *testing.T) {
 	if !f.BuildEnabled() {
 		t.Error("BuildEnabled() on zero-value = false, want true")
 	}
-	if !f.PacksEnabled() {
-		t.Error("PacksEnabled() on zero-value = false, want true")
-	}
 }
 
 // TestFeaturesConfig_NewFeatures_ExplicitFalse covers the
-// `features.build/packs: false` opt-out path used by
-// `forge new --kind cli/library` and explicit user disabling.
+// `features.build: false` opt-out path used by
+// `forge project new --kind cli/library` and explicit user disabling.
 func TestFeaturesConfig_NewFeatures_ExplicitFalse(t *testing.T) {
 	f := FeaturesConfig{
 		Build: boolPtr(false),
-		Packs: boolPtr(false),
 	}
 	if f.BuildEnabled() {
 		t.Error("BuildEnabled() with explicit false = true, want false")
-	}
-	if f.PacksEnabled() {
-		t.Error("PacksEnabled() with explicit false = true, want false")
 	}
 }
 
@@ -325,7 +315,7 @@ func TestDisabledFeatureError_Format(t *testing.T) {
 // TestEffectiveFeatures_MapShape asserts that every Feature*
 // constant declared by the config package is keyed in the map
 // returned by EffectiveFeatures(). The map is the wire shape
-// `forge audit --json | jq '.features.details.resolved'` reads,
+// `forge project audit --json | jq '.features.details.resolved'` reads,
 // and the additive-extension contract requires every constant to
 // be present (sub-agents check `.<feature> == true|false`).
 func TestEffectiveFeatures_MapShape(t *testing.T) {
@@ -333,7 +323,7 @@ func TestEffectiveFeatures_MapShape(t *testing.T) {
 		FeatureORM, FeatureCodegen, FeatureMigrations, FeatureCI,
 		FeatureBuild, FeatureContracts, FeatureDocs,
 		FeatureFrontend, FeatureObservability, FeatureHotReload,
-		FeaturePacks, FeatureDeploy,
+		FeatureDeploy,
 	}
 	var f FeaturesConfig
 	resolved := f.EffectiveFeatures()
@@ -392,7 +382,6 @@ version: "1.0"
 		{"FrontendEnabled", cfg.Features.FrontendEnabled},
 		{"ObservabilityEnabled", cfg.Features.ObservabilityEnabled},
 		{"HotReloadEnabled", cfg.Features.HotReloadEnabled},
-		{"PacksEnabled", cfg.Features.PacksEnabled},
 	}
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {

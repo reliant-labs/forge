@@ -349,7 +349,7 @@ func TestExternal_Rollback_NoRollbackCmd(t *testing.T) {
 // TestExternal_Deploy_DryRun confirms --dry-run prints the resolved
 // deploy_cmd + health_cmd lines but does NOT exec anything and does
 // NOT write the state file. The trap this guards against: a user runs
-// `forge deploy prod --dry-run` expecting a preview and instead ships
+// `forge env deploy prod --dry-run` expecting a preview and instead ships
 // their external CLI for real.
 func TestExternal_Deploy_DryRun(t *testing.T) {
 	dir := t.TempDir()
@@ -590,11 +590,11 @@ func TestExternal_Deploy_CodeVersionAndPipelineTokens(t *testing.T) {
 }
 
 // TestExternal_Deploy_LastTagFromPriorDeploy confirms ${LAST_TAG} carries
-// the previously-recorded forge deploy tag on a NORMAL deploy (not just
+// the previously-recorded forge env deploy tag on a NORMAL deploy (not just
 // rollback), so a script can reference the outgoing version.
 func TestExternal_Deploy_LastTagFromPriorDeploy(t *testing.T) {
 	dir := t.TempDir()
-	// Seed a prior forge deploy of this service at tag v1.
+	// Seed a prior forge env deploy of this service at tag v1.
 	if _, err := WriteDeployState(dir, "external", "prod", "edge", DeployState{Image: "x/edge", Tag: "v1"}); err != nil {
 		t.Fatalf("seed prior state: %v", err)
 	}

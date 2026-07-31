@@ -4,6 +4,14 @@
 // package re-rolls the canonical service-error → connect.Error switch
 // statement that ships in forge/pkg/svcerr.
 //
+// It is one of the two rules LintHandlerErrorMapping runs over the
+// handler tree — the two directions the same convention can be broken
+// in. This one catches TOO MUCH mapping (a re-rolled per-service
+// switch); forgeconv-unwrapped-domain-error, in
+// unwrapped_domain_error.go, catches NONE AT ALL (`return nil, err`
+// straight out of a collaborator call). The second is the one that
+// silently ships, so it is the one at error severity.
+//
 // Why this exists
 //
 // The 2026-05-06 dogfood pass of control-plane-next surfaced 4
@@ -50,8 +58,15 @@ import (
 )
 
 // LintHandlerErrorMapping walks rootDir for Go files under handlers/
-// directories and flags hand-rolled service-error → connect.Error
-// helpers. Returns findings in deterministic order.
+// directories and runs both handler error-mapping rules over each:
+//
+//   - forgeconv-no-handler-error-mapping — a hand-rolled service-error →
+//     connect.Error helper (this file). Warning.
+//   - forgeconv-unwrapped-domain-error — a domain error returned across
+//     the RPC boundary with nothing applied to it
+//     (unwrapped_domain_error.go). Error.
+//
+// Returns findings in deterministic order.
 //
 // The walk recognises any directory whose path component is exactly
 // "handlers" as the canonical handler tree (matches the
@@ -101,7 +116,8 @@ func LintHandlerErrorMapping(rootDir string) (Result, error) {
 		if relErr != nil {
 			rel = p
 		}
-		findings, err := lintHandlerErrorMappingFile(rel, p)
+		fset := token.NewFileSet()
+		parsed, err := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
 		if err != nil {
 			// A parse failure shouldn't blank the report; emit a warning so
 			// the user knows the file was skipped.
@@ -113,7 +129,8 @@ func LintHandlerErrorMapping(rootDir string) (Result, error) {
 			})
 			continue
 		}
-		result.Findings = append(result.Findings, findings...)
+		result.Findings = append(result.Findings, lintHandlerErrorMappingFile(rel, fset, parsed)...)
+		result.Findings = append(result.Findings, lintUnwrappedDomainErrorFile(rel, fset, parsed)...)
 	}
 
 	sort.SliceStable(result.Findings, func(i, j int) bool {
@@ -144,22 +161,21 @@ var suspectMapperNames = map[string]bool{
 	"connectErrorOf":  true,
 }
 
-// lintHandlerErrorMappingFile parses one handler-tree Go file and
-// flags candidate mapping helpers. Returns at most one finding per
+// lintHandlerErrorMappingFile inspects one parsed handler-tree Go file
+// and flags candidate mapping helpers. Returns at most one finding per
 // candidate function — no per-line spam.
-func lintHandlerErrorMappingFile(relPath, absPath string) ([]Finding, error) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, absPath, nil, parser.SkipObjectResolution)
-	if err != nil {
-		return nil, err
-	}
-
+//
+// The svcerr-import suppression below is specific to THIS rule and must
+// not be lifted to the walker: forgeconv-unwrapped-domain-error's most
+// dangerous case is precisely a file that imports svcerr and wraps in
+// three handlers out of four.
+func lintHandlerErrorMappingFile(relPath string, fset *token.FileSet, file *ast.File) []Finding {
 	// Track whether the file imports svcerr already — if so, the user
 	// is already on the canonical path; suppress findings (a hand-rolled
 	// helper sitting next to svcerr.Wrap would surface as a separate
 	// signal during code review).
 	if importsSvcerr(file) {
-		return nil, nil
+		return nil
 	}
 
 	var findings []Finding
@@ -192,7 +208,7 @@ func lintHandlerErrorMappingFile(relPath, absPath string) ([]Finding, error) {
 		})
 	}
 
-	return findings, nil
+	return findings
 }
 
 // importsSvcerr reports whether the file imports forge/pkg/svcerr.

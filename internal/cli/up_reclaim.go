@@ -1,25 +1,71 @@
 package cli
 
 import (
-	"fmt"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 )
 
-// Ownership markers stamped onto every host process / frontend `forge up`
+// Ownership markers stamped onto every host process / frontend `forge env up`
 // spawns (see stampForgeOwnership). They ride the child's environment, so
 // they PROPAGATE to every descendant — air's re-exec'd server, npm's
 // next/vite grandchild — regardless of pid churn or a stale/absent ledger.
 // This makes process ownership a property of the LIVE process, discoverable
 // by inspecting whoever actually holds a wanted port, rather than a fact
 // that lives only in the drift-prone per-env .pids file.
+//
+// Ownership is keyed on the PAIR (project, env), never env alone. FORGE_UP_ENV
+// names the environment; FORGE_UP_PROJECT names the specific project directory
+// whose `forge env up` spawned the process. A reclaim (the pre-flight guard /
+// `env down`) only ever touches a process whose BOTH markers match the
+// reclaiming project+env, so two different projects sharing an env name (e.g.
+// both "dev") can never kill each other's host processes — the incident. A
+// process that carries FORGE_UP_ENV but NO FORGE_UP_PROJECT (a stack spawned by
+// a pre-fix forge, or any non-forge process) can never match and is always
+// treated as FOREIGN — the reclaim only ever NARROWS what counts as "ours".
 const (
 	forgeUpEnvVar     = "FORGE_UP_ENV"
 	forgeUpServiceVar = "FORGE_UP_SERVICE"
+	forgeUpProjectVar = "FORGE_UP_PROJECT"
 )
+
+// projectIDForDir hashes a project directory into a short, stable id that is
+// safe both as an environment-variable value AND as a single filesystem path
+// component (the per-project ledger dir under ~/.cache/forge/up/). The dir is
+// canonicalised first — made absolute and de-symlinked — so `.`, `./`, and a
+// symlinked alias of the same checkout all map to ONE id. A dir that can't be
+// resolved yields an empty id, which fails ownership matching CLOSED (nothing
+// is reclaimed) — the safe direction.
+func projectIDForDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(canonicalProjectDir(dir)))
+	return hex.EncodeToString(sum[:8]) // 16 hex chars — ample against collisions
+}
+
+// canonicalProjectDir is the absolute, de-symlinked form of dir — the exact
+// string projectIDForDir hashes, and the one recorded in project.json so the
+// record round-trips back to the id it sits under.
+func canonicalProjectDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	if resolved, rerr := filepath.EvalSymlinks(abs); rerr == nil {
+		abs = resolved
+	}
+	return abs
+}
 
 // procFacts is the process-inspection seam the ownership resolver reads:
 // a pid's environment and its parent. The real implementation reads the OS
@@ -33,6 +79,11 @@ type procFacts interface {
 	environ(pid int) (env []string, ok bool)
 	// parent returns pid's parent pid. ok is false when unknown.
 	parent(pid int) (ppid int, ok bool)
+	// argv returns pid's command line. ok is false when argv is unreadable —
+	// on a platform with no argv source at all, or for a process whose
+	// cmdline the kernel withholds. Duplicate attribution reports an
+	// unreadable argv as UNDETERMINED rather than guessing a row.
+	argv(pid int) (args []string, ok bool)
 }
 
 // osProcFacts is the production procFacts: it reads real process env via
@@ -56,28 +107,65 @@ func (o *osProcFacts) parent(pid int) (int, bool) {
 	return ppid, ok
 }
 
+func (o *osProcFacts) argv(pid int) ([]string, bool) {
+	return readProcArgv(pid)
+}
+
+// pidList is every pid in the snapshot this instance was built from — the scan
+// surface for the ownership sweeps. Read off the SAME snapshot the ancestry
+// walk uses, so a sweep cannot select a pid whose parent the walk has never
+// heard of, and so one process-table read serves the whole decision.
+func (o *osProcFacts) pidList() []int {
+	out := make([]int, 0, len(o.ppids))
+	for pid := range o.ppids {
+		out = append(out, pid)
+	}
+	return out
+}
+
 // markerEnvName extracts the FORGE_UP_ENV value from a process's environment
 // (empty when absent). The environ slice is KEY=VALUE strings; a later
 // duplicate wins, matching exec's last-wins env semantics.
 func markerEnvName(env []string) string {
-	v, _ := markerFields(env)
+	v, _, _ := markerFields(env)
 	return v
 }
 
-// markerFields extracts (FORGE_UP_ENV, FORGE_UP_SERVICE) from a process's
-// environment. Either may be empty when the marker is absent.
-func markerFields(env []string) (envName, service string) {
+// markerFields extracts (FORGE_UP_ENV, FORGE_UP_SERVICE, FORGE_UP_PROJECT) from
+// a process's environment. Any may be empty when its marker is absent — in
+// particular projectID is empty for a process spawned by a pre-fix forge that
+// only stamped the env marker, which markerMatches then treats as foreign.
+func markerFields(env []string) (envName, service, projectID string) {
 	prefixEnv := forgeUpEnvVar + "="
 	prefixSvc := forgeUpServiceVar + "="
+	prefixProj := forgeUpProjectVar + "="
 	for _, kv := range env {
 		switch {
 		case strings.HasPrefix(kv, prefixEnv):
 			envName = kv[len(prefixEnv):]
 		case strings.HasPrefix(kv, prefixSvc):
 			service = kv[len(prefixSvc):]
+		case strings.HasPrefix(kv, prefixProj):
+			projectID = kv[len(prefixProj):]
 		}
 	}
-	return envName, service
+	return envName, service, projectID
+}
+
+// markerMatches reports whether a process's environment identifies it as owned
+// by (projectID, envName) — the single ownership predicate every resolver
+// below funnels through. BOTH markers must match, AND the process's project
+// marker must be non-empty: a process with no FORGE_UP_PROJECT (a pre-fix
+// stack, or any non-forge process) can NEVER match, so it is always foreign
+// and never reclaimed. Because the reclaiming projectID is a concrete hash, an
+// empty reclaiming id (unresolvable project dir) also matches nothing — the
+// predicate fails closed in both directions, only ever NARROWING "ours".
+func markerMatches(env []string, projectID, envName string) (service string, ok bool) {
+	name, svc, proj := markerFields(env)
+	if name == envName && proj != "" && proj == projectID {
+		return svc, true
+	}
+	return "", false
 }
 
 // maxAncestryDepth bounds the parent walk so a pathological ppid cycle (or a
@@ -86,19 +174,21 @@ func markerFields(env []string) (envName, service string) {
 const maxAncestryDepth = 8
 
 // forgeOwnerOfPID reports whether pid — or any ancestor up to init (pid 1) —
-// carries FORGE_UP_ENV==env, i.e. whether the process is one THIS env's
-// `forge up` spawned. Returns the matching FORGE_UP_SERVICE marker too.
+// is owned by (projectID, envName), i.e. whether the process is one THIS
+// project's `forge env up` for THIS env spawned. Returns the matching
+// FORGE_UP_SERVICE marker too.
 //
 // Walking ancestry is the grandchild-reparented-to-launchd safeguard: even
 // if the port-holder's own env were unreadable, a marked ancestor still
 // identifies it as ours. It cannot produce a false positive — a process not
-// descended from forge has no forge-marked ancestor — so a genuinely foreign
-// holder is never misclassified as reclaimable. The walk stops at pid 1
+// descended from THIS project's forge has no matching marked ancestor — so a
+// genuinely foreign holder (including another project's stack on the same env
+// name) is never misclassified as reclaimable. The walk stops at pid 1
 // (launchd/init, everyone's ancestor) which is never inspected.
-func forgeOwnerOfPID(pid int, envName string, f procFacts) (service string, owned bool) {
+func forgeOwnerOfPID(pid int, projectID, envName string, f procFacts) (service string, owned bool) {
 	for depth := 0; pid > 1 && depth < maxAncestryDepth; depth++ {
 		if env, ok := f.environ(pid); ok {
-			if name, svc := markerFields(env); name == envName {
+			if svc, matched := markerMatches(env, projectID, envName); matched {
 				return svc, true
 			}
 		}
@@ -111,29 +201,6 @@ func forgeOwnerOfPID(pid int, envName string, f procFacts) (service string, owne
 	return "", false
 }
 
-// topmostForgeOwnedAncestor returns the HIGHEST ancestor of pid (including
-// pid itself) still carrying FORGE_UP_ENV==env, or -1 when the process is
-// not forge-owned for env. Tree-killing this pid tears down the whole
-// orphaned subtree in one shot — e.g. from a leaf `next` grandchild it
-// climbs to the `npm` forge actually launched, so killing it also reaps
-// `next`, instead of orphaning npm to respawn it.
-func topmostForgeOwnedAncestor(pid int, envName string, f procFacts) int {
-	top := -1
-	for depth := 0; pid > 1 && depth < maxAncestryDepth; depth++ {
-		if env, ok := f.environ(pid); ok {
-			if name, _ := markerFields(env); name == envName {
-				top = pid
-			}
-		}
-		ppid, ok := f.parent(pid)
-		if !ok || ppid == pid || ppid <= 1 {
-			break
-		}
-		pid = ppid
-	}
-	return top
-}
-
 // classifyPortConflicts splits the pre-flight port conflicts into the ones
 // held by a forge-owned process for env (OURS — reclaimable) and the ones
 // held by anything else (FOREIGN — never touched). The holder pid is
@@ -141,11 +208,11 @@ func topmostForgeOwnedAncestor(pid int, envName string, f procFacts) int {
 // ancestry carries no marker, lands in foreign — the conservative default
 // that preserves the "never reclaim an unidentifiable process" safety
 // property.
-func classifyPortConflicts(envName string, conflicts []portConflict, resolvePID func(int) int, f procFacts) (owned, foreign []portConflict) {
+func classifyPortConflicts(projectID, envName string, conflicts []portConflict, resolvePID func(int) int, f procFacts) (owned, foreign []portConflict) {
 	for _, c := range conflicts {
 		pid := resolvePID(c.port)
 		if pid > 0 {
-			if _, ok := forgeOwnerOfPID(pid, envName, f); ok {
+			if _, ok := forgeOwnerOfPID(pid, projectID, envName, f); ok {
 				owned = append(owned, c)
 				continue
 			}
@@ -155,71 +222,47 @@ func classifyPortConflicts(envName string, conflicts []portConflict, resolvePID 
 	return owned, foreign
 }
 
-// reclaimMarkedOrphans tree-kills the forge-owned orphan holding each
-// conflicting port (from the topmost marked ancestor down) and waits for the
-// listeners to actually free. Foreign / unidentifiable holders are left
-// untouched. Used by the `--restart` guard path to reclaim orphans the
-// ledger never recorded (crash, air re-exec, grandchild reparent).
-func reclaimMarkedOrphans(envName string, conflicts []portConflict, resolvePID func(int) int, f procFacts) {
-	killTreesAndWait(markedOrphanRootsForPorts(envName, conflicts, resolvePID, f))
-}
-
-// markedOrphanRootsForPorts is the pure selection core of
-// reclaimMarkedOrphans: it maps each conflicting port to the topmost
-// forge-owned ancestor of its holder, deduping shared roots. Split out so
-// the selection is unit-testable without signalling real processes.
-func markedOrphanRootsForPorts(envName string, conflicts []portConflict, resolvePID func(int) int, f procFacts) []int {
-	var roots []int
-	seen := map[int]bool{}
-	for _, c := range conflicts {
-		pid := resolvePID(c.port)
-		if pid <= 0 {
-			continue
-		}
-		top := topmostForgeOwnedAncestor(pid, envName, f)
-		if top <= 1 || seen[top] {
-			continue
-		}
-		seen[top] = true
-		fmt.Printf("[up] reclaiming orphaned %s on :%d (pid %d + tree)\n", c.name, c.port, top)
-		roots = append(roots, top)
-	}
-	return roots
-}
-
-// reclaimAllMarkedOrphans sweeps the WHOLE process table for processes
-// carrying FORGE_UP_ENV==env and tree-kills them — the port-independent
-// unblock `forge up stop` offers so a user can always clear a wedged env,
-// even with no ledger and whatever port drift occurred. Returns the count of
-// subtrees signalled. Only processes carrying the exact env marker are ever
-// touched; unmarked processes are never signalled.
-func reclaimAllMarkedOrphans(envName string, f procFacts) int {
-	roots := markedOrphanRoots(envName, listPIDs(), f)
-	killTreesAndWait(roots)
-	return len(roots)
-}
-
-// markedOrphanRoots is the pure selection core of reclaimAllMarkedOrphans:
-// from a candidate pid set it keeps every process carrying FORGE_UP_ENV==env
-// whose marked ancestors are NOT also in the set (the subtree roots), so a
-// parent+child pair collapses to a single tree-kill. Split out so the sweep
-// is unit-testable without a real process table.
-func markedOrphanRoots(envName string, pids []int, f procFacts) []int {
+// markedOrphanRoots is the pure selection core of every teardown (stopStack,
+// and through it `forge env down`, `forge env down --all`, and the `up`/`run`
+// pre-flight): from a candidate pid set it keeps every process owned by
+// (projectID, envName) whose marked ancestors are NOT also in the set — the
+// subtree roots — so a parent+child pair collapses to a single tree-kill. A
+// process owned by a DIFFERENT project (or carrying no project marker at all)
+// never enters the marked set, so it is never a root and never killed. Split
+// out so the sweep is unit-testable without a real process table.
+//
+// It answers "is my stack running, and what exactly is it" in ONE pass, keyed
+// on nothing but the ownership markers. That is what makes it correct for a dev
+// loop on kernel-assigned ports, where a second stack conflicts with nothing
+// and so a port probe can no longer detect a predecessor at all.
+func markedOrphanRoots(projectID, envName string, pids []int, f procFacts) []int {
 	marked := map[int]bool{}
 	for _, pid := range pids {
 		if pid <= 1 {
 			continue
 		}
-		if env, ok := f.environ(pid); ok && markerEnvName(env) == envName {
-			marked[pid] = true
+		if env, ok := f.environ(pid); ok {
+			if _, matched := markerMatches(env, projectID, envName); matched {
+				marked[pid] = true
+			}
 		}
 	}
-	var roots []int
+	return subtreeRoots(marked, f)
+}
+
+// subtreeRoots reduces a marked pid set to the processes with no marked
+// ancestor in the same set — the minimal set of trees to signal. Shared by the
+// (project, env)-scoped sweep and the machine-wide enumeration, which differ
+// only in how the marked set was chosen. Sorted so output and tests are stable
+// (map iteration is not).
+func subtreeRoots(marked map[int]bool, f procFacts) []int {
+	roots := make([]int, 0, len(marked))
 	for pid := range marked {
 		if !hasMarkedAncestor(pid, marked, f) {
 			roots = append(roots, pid)
 		}
 	}
+	sort.Ints(roots)
 	return roots
 }
 
@@ -240,9 +283,9 @@ func hasMarkedAncestor(pid int, marked map[int]bool, f procFacts) bool {
 }
 
 // killTreesAndWait SIGTERMs each pid's process tree, polls for exit up to a
-// bounded grace, then SIGKILLs any straggler — the same escalation
-// runUpStop uses, so a caller like `--restart` knows the ports are released
-// on return. No-op on an empty list.
+// bounded grace, then SIGKILLs any straggler. It WAITS, so the `up`/`run`
+// pre-flight that calls it knows the predecessor's ports are released before it
+// launches the replacement. No-op on an empty list.
 func killTreesAndWait(pids []int) {
 	if len(pids) == 0 {
 		return
@@ -274,16 +317,20 @@ func killTreesAndWait(pids []int) {
 }
 
 // stampForgeOwnership marks cmd's child (and, via env inheritance, every
-// descendant) as forge-`up`-owned for envName/service. withForcedEnv dedups,
-// so a re-stamp / an inherited marker from a nested forge-up is overwritten
-// rather than duplicated. A nil cmd.Env is seeded from the current process
-// env so the child doesn't lose its inherited environment.
-func stampForgeOwnership(cmd *exec.Cmd, envName, service string) {
+// descendant) as forge-`up`-owned for (projectID, envName)/service. Stamping
+// projectID alongside envName is what keys ownership per-project: a later
+// reclaim in a different project won't match this marker and so can't kill the
+// child. withForcedEnv dedups, so a re-stamp / an inherited marker from a
+// nested forge-up (a different project's, even) is OVERWRITTEN with this
+// project's id rather than duplicated. A nil cmd.Env is seeded from the current
+// process env so the child doesn't lose its inherited environment.
+func stampForgeOwnership(cmd *exec.Cmd, projectID, envName, service string) {
 	base := cmd.Env
 	if base == nil {
 		base = os.Environ()
 	}
 	base = withForcedEnv(base, forgeUpEnvVar, envName)
 	base = withForcedEnv(base, forgeUpServiceVar, service)
+	base = withForcedEnv(base, forgeUpProjectVar, projectID)
 	cmd.Env = base
 }

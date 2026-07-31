@@ -18,7 +18,7 @@ Any of these means the file should be split:
 - The file is over ~1000 lines.
 - Cross-service coupling friction — a change to one service's RPCs forces you to recompile every consumer of the file.
 - Two services share types and you've started copy-pasting messages between sections.
-- You want to give two services different RBAC policies, different middleware, or different deploy cadences.
+- You want to give two services different access-control policies, different middleware, or different deploy cadences.
 
 The right answer is one `.proto` per service. Treat the existing file as a temporary aggregation that needs unwinding.
 
@@ -58,8 +58,9 @@ A grep across the project for each message name tells you who uses what.
 ### 2. Create `shared/v1/types.proto` (only if needed)
 
 ```proto
+// proto/shared/v1/types.proto
 syntax = "proto3";
-package myproject.shared.v1;
+package shared.v1;
 
 import "google/protobuf/timestamp.proto";
 
@@ -86,9 +87,9 @@ Move each service's RPCs and its private messages into its own file:
 ```proto
 // proto/services/admin/v1/admin.proto
 syntax = "proto3";
-package myproject.services.admin.v1;
+package services.admin.v1;
 
-import "myproject/shared/v1/types.proto";
+import "shared/v1/types.proto";
 
 service AdminService {
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse) {}
@@ -106,7 +107,7 @@ Every place the original mega-file was imported has to be re-pointed:
 - Generated code (Go `*.pb.go`, TypeScript `*_pb.ts`, etc.) — let the regen handle it; never sed-rewrite compiled output.
 - Application code referencing the old generated package path → re-point to the new path.
 
-A grep for the old proto package name (`<project>.<old>.v1`) catches all of these.
+A grep for the old proto package name (`services.<old>.v1`) catches all of these.
 
 ### 5. Regenerate, build, lint, test
 
@@ -131,7 +132,7 @@ Test for whether a type belongs in shared:
 
 1. Does at least one *other* service reference this type? If no, it's not shared.
 2. Are the semantics identical across consumers? If users-service `Auditable` and audit-service `Auditable` differ, they aren't the same type — keep them per-service.
-3. Does the type carry behavior that's service-specific (RBAC, validation, etc.)? If yes, keep it per-service.
+3. Does the type carry behavior that's service-specific (access control, validation, etc.)? If yes, keep it per-service.
 
 Shared types are passive value types. Service-specific concerns stay in the owning service.
 
@@ -200,7 +201,7 @@ service AdminService {
 }
 ```
 
-Apply the rules from the `proto` skill: explicit annotations on PK / tenant / timestamps / soft-delete; one service per file; CRUD naming. `forge lint --conventions` enforces them.
+Apply the rules from the `proto` skill: explicit annotations on PK / timestamps / soft-delete; one service per file; CRUD naming. `forge lint --conventions` enforces them.
 
 ### Update `forge.yaml`
 
@@ -241,7 +242,7 @@ forge generate
 go mod tidy
 go build ./...
 forge lint
-forge test
+task test
 ```
 
 ### Canonical forge example

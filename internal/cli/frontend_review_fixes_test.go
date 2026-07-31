@@ -31,7 +31,7 @@ func renderHooksForTest(t *testing.T, workspaces bool) string {
 	data := codegen.ServiceDefToHookData(svc)
 	data.Workspaces = workspaces
 	if workspaces {
-		data.ApiPackage = "@demo/api"
+		data.APIPackage = "@demo/api"
 	}
 
 	content, err := templates.FrontendTemplates().Get("hooks.ts.tmpl")
@@ -94,23 +94,49 @@ func TestFrontendLintConfigConsistency(t *testing.T) {
 		t.Errorf("hooks file has a value import after a type import (violates import/order type-group-last):\n%s", hooks)
 	}
 
-	// format-utils: the badge variant map must be explicit with a neutral
-	// fallback — no hash-to-color scheme.
-	fu, err := templates.FrontendTemplates().Get("nextjs/src/lib/format-utils.ts")
+	// format-utils: the badge variant map must be explicit — no hash-to-color
+	// scheme — and REGISTRABLE, with a substring-inference + neutral fallback
+	// so domain statuses don't fall through to grey. enumLabel strips the enum
+	// TYPE prefix so labels read "Payment Captured", not "Order Status …".
+	fu, err := templates.FrontendTemplates().Get("shared/src/lib/format-utils.ts")
 	if err != nil {
 		t.Fatalf("read format-utils: %v", err)
 	}
 	if strings.Contains(string(fu), "charCodeAt") {
 		t.Errorf("format-utils still hashes enum values to badge colors")
 	}
-	for _, want := range []string{`?? "neutral"`, "export function userMessage", "rawMessage"} {
+	for _, want := range []string{
+		"export function registerStatusVariants", // domain-status extension seam
+		`return "neutral"`,                       // unrecognized statuses fall through to grey
+		"export function enumLabel",              // type-prefix-stripping label helper
+	} {
 		if !strings.Contains(string(fu), want) {
 			t.Errorf("format-utils missing %q", want)
 		}
 	}
+	// userMessage/stripServerFraming moved to @reliant-labs/web-runtime, next
+	// to normalizeError, which strips the identical backend framing — the two
+	// copies used to carry comments promising to keep each other in sync, and
+	// the scaffold-once copy could never be corrected once a project shipped.
+	for _, gone := range []string{"export function userMessage", "export function stripServerFraming"} {
+		if strings.Contains(string(fu), gone) {
+			t.Errorf("format-utils re-declares %q — error framing is a wire contract owned by @reliant-labs/web-runtime, not a per-project scaffold", gone)
+		}
+	}
+	// inferVariant substring-matched status strings as a last-resort semantic
+	// guess, and it inverted on the commonest English negation prefix:
+	// "inactive" CONTAINS "active", so a retired record rendered success-green.
+	// Same for incomplete/disabled/unhealthy/unverified/disconnected. This
+	// assertion used to REQUIRE the function — the bug was pinned by the test
+	// meant to protect the file. Unrecognized statuses now fall through to
+	// neutral: grey says "nobody declared this" and is recoverable, green says
+	// "this is fine" and is a lie.
+	if strings.Contains(string(fu), "function inferVariant") {
+		t.Errorf("format-utils re-introduces inferVariant — status colour is an exact-match lookup (registerStatusVariants) or neutral, never a substring guess")
+	}
 
 	// query-client: the single error-toast chokepoint with typed opt-out.
-	qc, err := templates.FrontendTemplates().Get("nextjs/src/lib/query-client.ts")
+	qc, err := templates.FrontendTemplates().Get("shared/src/lib/query-client.ts")
 	if err != nil {
 		t.Fatalf("read query-client: %v", err)
 	}
@@ -168,19 +194,27 @@ func crudPageDataForTest(t *testing.T) codegen.PageTemplateData {
 			{Name: "metadata", ProtoType: "message", Kind: codegen.FieldKindMessage}, // must be skipped
 		},
 	}
-	codegen.AttachEntityMeta(&page, entity)
+	codegen.AttachEntityMeta(&page, entity, svc)
 	return page
 }
 
 func renderPageForTest(t *testing.T, tmplName string, data codegen.PageTemplateData) string {
 	t.Helper()
-	tmpl, err := loadPageTemplate("pages", tmplName)
+	return renderPageInDirForTest(t, "pages", tmplName, data)
+}
+
+// renderPageInDirForTest renders a page template out of a named tree —
+// "pages" (Next.js) or "vite-spa-pages" — so an invariant that must hold for
+// both browser trees can be asserted against both.
+func renderPageInDirForTest(t *testing.T, dir, tmplName string, data codegen.PageTemplateData) string {
+	t.Helper()
+	tmpl, err := loadPageTemplate(dir, tmplName)
 	if err != nil {
-		t.Fatalf("load %s: %v", tmplName, err)
+		t.Fatalf("load %s/%s: %v", dir, tmplName, err)
 	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		t.Fatalf("render %s: %v", tmplName, err)
+		t.Fatalf("render %s/%s: %v", dir, tmplName, err)
 	}
 	return buf.String()
 }
@@ -194,30 +228,41 @@ func TestPageTemplates_TypedColumnsNoReflection(t *testing.T) {
 	list := renderPageForTest(t, "list-page.tsx.tmpl", page)
 	for _, want := range []string{
 		`import type { Task } from "@/gen/db/v1/tasks_pb";`,
-		"key: keyof Task & string;",
-		"] satisfies Column[];",
-		`key: "title",`,
-		// status is enum-like → Badge render, declared at generate time.
-		`render: (item) => <Badge label={String(item.status)} variant={enumBadgeVariant(String(item.status))} />,`,
-		// typed search over string fields only
-		`const searchFields = ["id", "title", "status"] as const satisfies readonly (keyof Task & string)[];`,
-		// typed row key + navigation
-		"key={String(item.id)}",
+		// Adopts the runtime <Resource> container + tristate adapter — the
+		// tristate ladder + pagination are owned once, not re-hand-rolled.
+		`import { useQueryResource } from "@/hooks/use-query-resource";`,
+		`import { Resource, type ResourceColumn } from "@reliant-labs/web-runtime";`,
+		`const columns: ResourceColumn<Task>[] = [`,
+		`header: "Title",`,
+		`cell: (item) => formatValue(item.title),`,
+		// status is enum-like (a string, not a proto enum) → <StatusBadge>
+		// with the raw field. No enum object to pass: there is no TS enum
+		// behind a plain string column. The proto-enum branch is pinned by
+		// TestPageTemplates_EnumColumnsRenderThroughStatusBadge.
+		`cell: (item) => <StatusBadge value={item.status} />,`,
+		`import { StatusBadge } from "@/components/status-badge";`,
+		// typed container + row key + navigation
+		`<Resource<Task>`,
+		`rowKey={(item) => String(item.id)}`,
 		"router.push(`/tasks/${item.id}`)",
-		// user-facing error copy
-		"message={userMessage(error)}",
 	} {
 		if !strings.Contains(list, want) {
 			t.Errorf("list page missing %q:\n%s", want, list)
 		}
 	}
-	for _, banned := range []string{"as Record<string, unknown>", "Object.keys(", "Object.values(", "$typeName", "?? data;"} {
+	// No reflection hedges — and no CLIENT-SIDE filtering / hard page cap:
+	// filtering + pagination now happen SERVER-SIDE via the List RPC, so the
+	// browser never fetches one capped page and filters it locally.
+	for _, banned := range []string{
+		"as Record<string, unknown>", "Object.keys(", "Object.values(", "$typeName", "?? data;",
+		"items.filter(", "pageSize: 200", "const searchFields =",
+	} {
 		if strings.Contains(list, banned) {
-			t.Errorf("list page still reflects/hedges (%q):\n%s", banned, list)
+			t.Errorf("list page reflects/hedges or client-filters (%q):\n%s", banned, list)
 		}
 	}
 	// The skipped message-kind field must not become a column.
-	if strings.Contains(list, `key: "metadata"`) {
+	if strings.Contains(list, `header: "Metadata"`) || strings.Contains(list, "item.metadata") {
 		t.Errorf("list page rendered a column for a message-kind field:\n%s", list)
 	}
 
@@ -267,6 +312,100 @@ func TestPageTemplates_TypedColumnsNoReflection(t *testing.T) {
 	}
 	if strings.Contains(create, "as Parameters<typeof mutation.mutate>[0]") {
 		t.Errorf("create page still casts the mutate payload:\n%s", create)
+	}
+}
+
+// enumColumnPageForTest builds a PageTemplateData whose entity carries a REAL
+// proto enum column (not an enum-like string), so the badge branch that has to
+// hand <StatusBadge> the enum object is exercised.
+func enumColumnPageForTest(t *testing.T) codegen.PageTemplateData {
+	t.Helper()
+	svc := codegen.ServiceDef{
+		Name:      "OrderService",
+		Package:   "services.orders.v1",
+		ProtoFile: "proto/services/orders/v1/orders.proto",
+		Methods: []codegen.Method{
+			{Name: "ListOrders", InputType: "ListOrdersRequest", OutputType: "ListOrdersResponse",
+				InputTypeFQ: "services.orders.v1.ListOrdersRequest"},
+			{Name: "GetOrder", InputType: "GetOrderRequest", OutputType: "GetOrderResponse"},
+		},
+		Messages: map[string][]codegen.MessageFieldDef{
+			"ListOrdersResponse": {
+				{Name: "orders", ProtoType: "[]message", MessageType: "services.orders.v1.Order"},
+			},
+		},
+		Schemas: map[string][]codegen.SchemaFieldDef{
+			"services.orders.v1.Order": {
+				{Name: "id", Kind: "string"},
+				{Name: "status", Kind: "enum", TypeName: "services.orders.v1.OrderStatus"},
+			},
+		},
+		SchemaFiles: map[string]string{
+			"services.orders.v1.Order": "proto/services/orders/v1/orders.proto",
+		},
+		Enums: map[string][]string{
+			"services.orders.v1.OrderStatus": {"ORDER_STATUS_UNSPECIFIED", "ORDER_STATUS_PENDING"},
+		},
+	}
+	pages := codegen.ExtractCRUDEntities(svc)
+	if len(pages) != 1 {
+		t.Fatalf("expected 1 CRUD entity, got %d", len(pages))
+	}
+	page := pages[0]
+	codegen.AttachEntityMeta(&page, codegen.EntityDef{
+		Name:      "Order",
+		PkField:   "id",
+		ProtoFile: "proto/services/orders/v1/orders.proto",
+		Fields: []codegen.EntityField{
+			{Name: "id", ProtoType: "string", Kind: codegen.FieldKindScalar},
+			{Name: "status", ProtoType: "enum", Kind: codegen.FieldKindEnum,
+				MessageType: "services.orders.v1.OrderStatus"},
+		},
+	}, svc)
+	return page
+}
+
+// TestPageTemplates_EnumColumnsRenderThroughStatusBadge pins the fix for the
+// bug 4 of 8 hand-written pages shipped: protobuf-es v2 makes `item.status` a
+// runtime NUMBER, and a badge fed that number rendered "1" instead of
+// "Pending". The reverse map now lives in <StatusBadge> — which takes the raw
+// field plus the ENUM OBJECT — so the born page and the component's own
+// docstring describe the SAME call, and neither reverse-maps by hand.
+func TestPageTemplates_EnumColumnsRenderThroughStatusBadge(t *testing.T) {
+	page := enumColumnPageForTest(t)
+
+	for _, tc := range []struct {
+		tmpl string
+		cell string
+	}{
+		{tmpl: "list-page.tsx.tmpl", cell: `cell: (item) => <StatusBadge value={item.status} enumType={ OrderStatus } />,`},
+		{tmpl: "detail-page.tsx.tmpl", cell: `value: <StatusBadge value={item.status} enumType={ OrderStatus } />,`},
+	} {
+		// Both browser page trees must tell the SAME story — the vite-spa
+		// detail page used to have no enum branch at all and rendered the
+		// ordinal for every proto enum.
+		for _, dir := range []string{"pages", "vite-spa-pages"} {
+			rendered := renderPageInDirForTest(t, dir, tc.tmpl, page)
+			for _, want := range []string{
+				`import { StatusBadge } from "@/components/status-badge";`,
+				`import { OrderStatus } from "@/gen/services/orders/v1/orders_pb";`,
+				tc.cell,
+			} {
+				if !strings.Contains(rendered, want) {
+					t.Errorf("%s/%s missing %q:\n%s", dir, tc.tmpl, want, rendered)
+				}
+			}
+			// The hand reverse-map at the call site is exactly what the shared
+			// component now owns — no page may re-grow it.
+			for _, banned := range []string{
+				"OrderStatus[item.status]",
+				`import Badge from "@/components/ui/badge";`,
+			} {
+				if strings.Contains(rendered, banned) {
+					t.Errorf("%s/%s reverse-maps the enum at the call site (%q):\n%s", dir, tc.tmpl, banned, rendered)
+				}
+			}
+		}
 	}
 }
 
@@ -406,7 +545,7 @@ func TestDashboardGenTemplate_RealCountsAndCreateGating(t *testing.T) {
 		`import { useListTasks } from "@/hooks/task-service-hooks";`,
 		"const { data } = useListTasks({});",
 		"const count = data?.tasks?.length;",
-		`{count ?? "—"}`,
+		`{count === undefined ? "—" : String(count)}`,
 		"ALL_ROUTES.filter((route) => route.hasCreate)",
 		"Create {route.labelSingular}",
 		`"use client";`,
@@ -428,6 +567,85 @@ func TestDashboardGenTemplate_RealCountsAndCreateGating(t *testing.T) {
 	if !strings.Contains(string(navRendered), `slug: "tasks", labelSingular: "Task", hasCreate: true`) {
 		t.Errorf("nav_gen missing hasCreate/labelSingular route fields:\n%s", navRendered)
 	}
+}
+
+// TestDashboardGenTemplate_CountsTotalCountNotPageLength pins the count
+// itself. forge's own generated dashboard read `data.tasks.length` — the
+// length of the page it just fetched — so every tile in a project whose
+// tables outgrow one page reports the PAGE SIZE, permanently. This file is
+// the exemplar hand-written tiles are copied from, so it taught the exact
+// page-capped-count habit the build charter spends twelve lines forbidding.
+//
+// When the List response declares total_count the tile must read it, and ask
+// the server for one row rather than a whole page it never renders. When it
+// does NOT, the length fallback stays (it is the only honest number
+// available) and the emitted comment says how to get the real total.
+func TestDashboardGenTemplate_CountsTotalCountNotPageLength(t *testing.T) {
+	render := func(t *testing.T, page templates.NavPageData) string {
+		t.Helper()
+		rendered, err := templates.FrontendTemplates().Render(
+			"nextjs/src/app/dashboard_gen.tsx.tmpl", templates.FrontendTemplateData{
+				FrontendName: "web",
+				ProjectName:  "demo",
+				Pages:        []templates.NavPageData{page},
+				NavHookImports: []templates.NavHookImport{{
+					Module: "@/hooks/task-service-hooks", Symbols: []string{"useListTasks"},
+				}},
+			})
+		if err != nil {
+			t.Fatalf("render dashboard_gen: %v", err)
+		}
+		return string(rendered)
+	}
+
+	base := templates.NavPageData{
+		Label: "Tasks", LabelLower: "tasks", LabelSingular: "Task", Slug: "tasks",
+		HasCreate: true, ListHook: "useListTasks", HooksModule: "@/hooks/task-service-hooks",
+		ItemsField: "tasks", ComponentIdent: "Tasks",
+	}
+
+	t.Run("total_count declared", func(t *testing.T) {
+		withTotal := base
+		withTotal.HasTotalCount = true
+		withTotal.TotalCountField = "totalCount"
+		withTotal.HasPageSize = true
+		out := render(t, withTotal)
+
+		if !strings.Contains(out, "const count = data?.totalCount;") {
+			t.Errorf("tile must count with the server's total_count, not the fetched page:\n%s", out)
+		}
+		if strings.Contains(out, "data?.tasks?.length") {
+			t.Errorf("tile still reads the page-capped length — this is the antipattern:\n%s", out)
+		}
+		if !strings.Contains(out, "const { data } = useListTasks({ pageSize: 1 });") {
+			t.Errorf("tile must request one row (it renders a count, not the rows):\n%s", out)
+		}
+	})
+
+	t.Run("total_count declared, no page_size on the request", func(t *testing.T) {
+		noPageSize := base
+		noPageSize.HasTotalCount = true
+		noPageSize.TotalCountField = "totalCount"
+		out := render(t, noPageSize)
+
+		if !strings.Contains(out, "const count = data?.totalCount;") {
+			t.Errorf("tile must still count with total_count:\n%s", out)
+		}
+		if !strings.Contains(out, "const { data } = useListTasks({});") {
+			t.Errorf("a List request with no page_size field must stay empty (pageSize would not typecheck):\n%s", out)
+		}
+	})
+
+	t.Run("no total_count on the response", func(t *testing.T) {
+		out := render(t, base)
+
+		if !strings.Contains(out, "const count = data?.tasks?.length;") {
+			t.Errorf("without total_count the row length is the only honest count:\n%s", out)
+		}
+		if !strings.Contains(out, "total_count") {
+			t.Errorf("the fallback must name the fix (declare total_count) in the emitted comment:\n%s", out)
+		}
+	})
 }
 
 // TestHooksTemplate_KeyFactory pins the F4/F5 fixes: a generated per-service
@@ -538,7 +756,7 @@ func TestScenarioRpcsTemplate_TypedHandlerMap(t *testing.T) {
 			{Name: "StreamTasks", InputType: "StreamTasksRequest", OutputType: "StreamTasksResponse", ServerStreaming: true},
 		},
 	}}
-	data := codegen.BuildScenarioRpcData(services)
+	data := codegen.BuildScenarioRPCData(services)
 
 	content, err := templates.FrontendTemplates().Get("mocks/scenarios/scenario-rpcs.ts.tmpl")
 	if err != nil {

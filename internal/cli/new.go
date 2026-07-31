@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/modfile"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -47,7 +49,7 @@ func newNewCmd() *cobra.Command {
 
 By default no service is scaffolded: the binary is a deployment unit
 that mounts services — it is not a domain entity. Add your first
-service after scaffolding with 'forge add service <entity>' (name it
+service after scaffolding with 'forge scaffold service <entity>' (name it
 after a domain entity like item/order/user, not the binary), or opt
 into an initial service at creation time with --service <entity>.
 
@@ -62,19 +64,19 @@ Pick a project kind with --kind:
                             no CI workflows by default.
 
 Use --disable to turn off features at creation time:
-  forge new my-project --mod ... --disable ci,deploy
-  forge new my-project --mod ... --disable orm --disable migrations
+  forge project new my-project --mod ... --disable ci,deploy
+  forge project new my-project --mod ... --disable orm --disable migrations
 
 Valid feature names: orm, codegen, migrations, ci, build, deploy,
-contracts, docs, frontend, observability, hot_reload, packs.
+contracts, docs, frontend, observability, hot_reload.
 
 Example:
-  forge new my-project --mod github.com/example/my-project
-  forge new my-project --mod github.com/example/my-project --service gateway
-  forge new my-project --mod github.com/example/my-project --frontend web
-  forge new mycli      --mod github.com/example/mycli --kind cli
-  forge new mylib      --mod github.com/example/mylib --kind library
-  forge new --in-place --mod github.com/example/my-project`,
+  forge project new my-project --mod github.com/example/my-project
+  forge project new my-project --mod github.com/example/my-project --service gateway
+  forge project new my-project --mod github.com/example/my-project --frontend web
+  forge project new mycli      --mod github.com/example/mycli --kind cli
+  forge project new mylib      --mod github.com/example/mylib --kind library
+  forge project new --in-place --mod github.com/example/my-project`,
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var projectName string
@@ -88,14 +90,14 @@ Example:
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
 	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (required, e.g., github.com/example/my-project)")
 	cmd.Flags().StringVar(&kindFlag, "kind", "service", "Project kind: service (default), cli, library")
-	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge add service <entity>'")
+	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge scaffold service <entity>'")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing project configuration")
 	cmd.Flags().StringVar(&license, "license", "MIT", "License to include (MIT, Apache-2.0, BSD-3-Clause, none)")
 	cmd.Flags().StringVar(&licenseAuthor, "license-author", "", "Author/copyright holder for the LICENSE file (defaults to git config user.name)")
-	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs")
+	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload")
 	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for: reliant (default; reliant CLI auto-discovers skills via forge.yaml), claude (writes CLAUDE.md + .claude/skills/), cursor (.cursorrules), copilot (.github/copilot-instructions.md), codex (AGENTS.md)")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
@@ -125,7 +127,7 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 	case config.ProjectKindService, config.ProjectKindCLI, config.ProjectKindLibrary:
 		// ok
 	default:
-		return "", "", "", cliutil.UserErr("forge new",
+		return "", "", "", cliutil.UserErr("forge project new",
 			fmt.Sprintf("invalid --kind %q: valid values are service, cli, library", kindFlag),
 			"",
 			"pass --kind=service for a Connect-RPC server, --kind=cli for a Cobra binary, or --kind=library for a pure Go module")
@@ -143,7 +145,7 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 	case "local", "remote":
 		// ok
 	default:
-		return "", "", "", cliutil.UserErr("forge new",
+		return "", "", "", cliutil.UserErr("forge project new",
 			fmt.Sprintf("invalid --buf-plugins %q: valid values are local, remote", bufPlugins),
 			"",
 			"pass --buf-plugins=local (default; uses protoc-gen-go on PATH) or --buf-plugins=remote (BSR-hosted, no install required)")
@@ -160,7 +162,7 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 	case config.ProjectBinaryPerService, config.ProjectBinaryShared:
 		// ok
 	default:
-		return "", "", "", cliutil.UserErr("forge new",
+		return "", "", "", cliutil.UserErr("forge project new",
 			fmt.Sprintf("invalid --binary %q: valid values are per-service, shared", binaryMode),
 			"",
 			"pass --binary=per-service (default; one cmd/server.go per service) or --binary=shared (one binary, cobra subcommand per service)")
@@ -170,19 +172,19 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 	// clean error before any directory is created.
 	if kind != config.ProjectKindService {
 		if len(serviceNames) > 0 {
-			return "", "", "", cliutil.UserErr("forge new",
+			return "", "", "", cliutil.UserErr("forge project new",
 				fmt.Sprintf("--service is only meaningful with --kind service (got --kind %s)", kind),
 				"",
 				"drop --service, or change to --kind service")
 		}
 		if len(frontendNames) > 0 {
-			return "", "", "", cliutil.UserErr("forge new",
+			return "", "", "", cliutil.UserErr("forge project new",
 				fmt.Sprintf("--frontend is only meaningful with --kind service (got --kind %s)", kind),
 				"",
 				"drop --frontend, or change to --kind service")
 		}
 		if binary == config.ProjectBinaryShared {
-			return "", "", "", cliutil.UserErr("forge new",
+			return "", "", "", cliutil.UserErr("forge project new",
 				fmt.Sprintf("--binary shared is only meaningful with --kind service (got --kind %s)", kind),
 				"",
 				"drop --binary=shared, or change to --kind service")
@@ -296,17 +298,11 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 
 	emitHarnessSkills(gen, targetPath)
 
-	// Generate additional services beyond the first (if any).
-	//
-	// Both binary modes call GenerateServiceFiles to scaffold the
-	// per-service handler/proto skeleton. The forge.yaml services list,
-	// however, is populated differently: in binary=per-service we append
-	// each service post-scaffold via AppendServiceToConfig (the
-	// historical, additive path). In binary=shared we wrote ALL services
-	// into forge.yaml during writeProjectConfig (so the bootstrap.go
-	// generator could see the full set up-front), and skipping the
-	// append step here prevents duplicates.
-	if err := generateAdditionalServices(targetPath, modulePath, projectName, serviceNames, binaryNormalized, gen.ServicePort); err != nil {
+	// Generate additional services beyond the first (if any). Scaffolding the
+	// per-service handler/proto skeleton is the whole job in both binary
+	// modes: forge derives the service inventory from the proto descriptor,
+	// so there is no manifest to keep in sync afterwards.
+	if err := generateAdditionalServices(targetPath, modulePath, projectName, serviceNames); err != nil {
 		return err
 	}
 
@@ -322,6 +318,13 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	if bufPluginsNormalized == "remote" {
 		applyRemoteBufPlugins(targetPath, frontendNames)
 	}
+
+	// Dev-forge bridge: when THIS forge binary is a dev build that stamped
+	// its own source root, write a gitignored go.work linking the scaffold
+	// to the local forge/pkg. Done BEFORE finalize so the bootstrap
+	// (forge generate) + go mod tidy below run under the bridge. No-op for
+	// released binaries.
+	writeDevForgeGoWork(targetPath)
 
 	finalizeNewProject(ctx, newFinalizeInput{
 		targetPath:    targetPath,
@@ -364,7 +367,7 @@ func resolveNewTargetPath(projectName, projectPath string, inPlace, force bool) 
 		// Check that we're not scaffolding over an existing project
 		if _, err := os.Stat(filepath.Join(targetPath, defaultProjectConfigFile)); err == nil {
 			if !force {
-				return "", "", cliutil.UserErr("forge new --in-place",
+				return "", "", cliutil.UserErr("forge project new --in-place",
 					fmt.Sprintf("%s already exists in %s; this directory already contains a Forge project", defaultProjectConfigFile, targetPath),
 					"",
 					"pass --force to overwrite, or scaffold into a fresh directory")
@@ -375,7 +378,7 @@ func resolveNewTargetPath(projectName, projectPath string, inPlace, force bool) 
 	}
 
 	if projectName == "" {
-		return "", "", cliutil.UserErr("forge new",
+		return "", "", cliutil.UserErr("forge project new",
 			"project name is required",
 			"",
 			"pass a project name as the first positional arg, or use --in-place to scaffold in the current directory")
@@ -385,7 +388,7 @@ func resolveNewTargetPath(projectName, projectPath string, inPlace, force bool) 
 
 	// Validate project name (hyphens allowed for directory/module paths)
 	if err := validateProjectName(projectName); err != nil {
-		return "", "", cliutil.WrapUserErr("forge new",
+		return "", "", cliutil.WrapUserErr("forge project new",
 			fmt.Sprintf("invalid project name %q", projectName),
 			"",
 			"use a name starting with a letter, containing only letters/digits/_/-",
@@ -394,12 +397,12 @@ func resolveNewTargetPath(projectName, projectPath string, inPlace, force bool) 
 
 	// Check if directory already exists
 	if _, err := os.Stat(targetPath); err == nil {
-		return "", "", cliutil.UserErr("forge new",
+		return "", "", cliutil.UserErr("forge project new",
 			fmt.Sprintf("directory %s already exists", targetPath),
 			"",
 			"pick a different project name, or use --in-place --force to overwrite")
 	} else if !os.IsNotExist(err) {
-		return "", "", cliutil.WrapUserErr("forge new",
+		return "", "", cliutil.WrapUserErr("forge project new",
 			fmt.Sprintf("failed to stat %s", targetPath),
 			"",
 			"check filesystem permissions on the parent directory",
@@ -438,8 +441,8 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 		gen.ServiceName = c.serviceNames[0]
 		// Pass the rest so binary=shared can emit one cobra subcommand per
 		// service at scaffold time. Per-service mode ignores this and
-		// continues to add additional services post-scaffold via
-		// GenerateServiceFiles + AppendServiceToConfig.
+		// scaffolds the additional services post-scaffold via
+		// GenerateServiceFiles.
 		if len(c.serviceNames) > 1 {
 			gen.AdditionalServices = append([]string(nil), c.serviceNames[1:]...)
 		}
@@ -493,37 +496,52 @@ func emitHarnessSkills(gen *generator.ProjectGenerator, targetPath string) {
 	}
 }
 
-// generateAdditionalServices scaffolds every service beyond the first. Both
-// binary modes call GenerateServiceFiles for the handler/proto skeleton; the
-// forge.yaml services list is populated differently: binary=per-service appends
-// each service post-scaffold (the historical additive path), while binary=shared
-// already wrote ALL services during writeProjectConfig, so the append is skipped
-// to avoid duplicates. Ports are assigned as basePort+i+1.
-func generateAdditionalServices(targetPath, modulePath, projectName string, serviceNames []string, binary string, basePort int) error {
+// generateAdditionalServices scaffolds every service beyond the first: the
+// handler/proto skeleton, via GenerateServiceFiles. That is the whole job in
+// both binary modes — forge derives the service inventory from the proto
+// descriptor, so a scaffolded service needs no entry written anywhere.
+//
+// There is also no per-service port to assign: every service in a binary
+// mounts onto the SAME Connect mux and the process listens once, on the port
+// from AppConfig (env PORT, default 8080), which is a deploy fact set per
+// environment in KCL.
+func generateAdditionalServices(targetPath, modulePath, projectName string, serviceNames []string) error {
 	if len(serviceNames) <= 1 {
 		return nil
 	}
-	for i, svcName := range serviceNames[1:] {
-		port := basePort + i + 1
-		fmt.Printf("\n🔧 Adding additional service '%s' (port %d)...\n", svcName, port)
-		if err := generator.GenerateServiceFiles(targetPath, modulePath, svcName, projectName, port); err != nil {
+	for _, svcName := range serviceNames[1:] {
+		fmt.Printf("\n🔧 Adding additional service '%s'...\n", svcName)
+		if err := generator.GenerateServiceFiles(targetPath, modulePath, svcName, projectName); err != nil {
 			return fmt.Errorf("failed to generate service %s: %w", svcName, err)
-		}
-		if binary != config.ProjectBinaryShared {
-			if err := generator.AppendServiceToConfig(targetPath, svcName, port); err != nil {
-				return fmt.Errorf("failed to update config for service %s: %w", svcName, err)
-			}
 		}
 	}
 	return nil
 }
 
 // generateAdditionalFrontends scaffolds every frontend beyond the first,
-// appending each to forge.yaml. Ports are assigned as baseFrontendPort+i+1.
+// appending each to forge.yaml.
+//
+// Port assignment mirrors the primary frontend's ephemeral model: when
+// baseFrontendPort is 0 (the fresh-scaffold default — the primary is portless,
+// FrontendConfig.Port omitempty, allocated at `forge run`/`up` launch) EVERY
+// additional frontend is also written portless (0), so N frontends all get a
+// distinct free port assigned at launch by resolveEphemeralFrontendPorts and
+// two dev stacks never fight. Only when the caller passes an explicit base
+// (>0) do additionals get a distinct concrete port above it (base+i+1). This
+// replaces the old unconditional base+i+1, which — once the primary went
+// ephemeral (base 0) — emitted the nonsensical `port: 1`, `port: 2`, … into
+// the scaffolded forge.yaml.
 func generateAdditionalFrontends(targetPath, modulePath, projectName string, frontendNames []string, servicePort, baseFrontendPort int, frontendWorkspaces bool) error {
 	for i, feName := range frontendNames[min(1, len(frontendNames)):] {
-		fePort := baseFrontendPort + i + 1
-		fmt.Printf("\n🔧 Adding additional frontend '%s' (port %d)...\n", feName, fePort)
+		fePort := 0
+		if baseFrontendPort > 0 {
+			fePort = baseFrontendPort + i + 1
+		}
+		if fePort > 0 {
+			fmt.Printf("\n🔧 Adding additional frontend '%s' (port %d)...\n", feName, fePort)
+		} else {
+			fmt.Printf("\n🔧 Adding additional frontend '%s' (ephemeral port — allocated at launch)...\n", feName)
+		}
 		if err := generator.GenerateFrontendFilesWithOptions(targetPath, modulePath, projectName, feName, servicePort, "", generator.FrontendGenOptions{
 			Workspaces: frontendWorkspaces,
 		}); err != nil {
@@ -601,11 +619,19 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) {
 
 	// Service projects bootstrap proto/Connect codegen immediately so the
 	// scaffold compiles. CLI/library kinds have no proto/services.
+	//
+	// Non-fatal, and the failure is RECOVERABLE BY RE-RUNNING: everything this
+	// pass owns — gen/, internal/app, and cmd/<bin>/main.go — is either
+	// regenerated or written write-if-absent, so a later `forge generate` fills
+	// in exactly what is missing. That is why the scaffold does not pre-write a
+	// placeholder composition root: an absent main.go gets the real one on
+	// retry, a bare one would be permanent.
 	if in.kind == config.ProjectKindService {
 		fmt.Println("\n🔧 Bootstrapping generated proto code...")
 		if err := bootstrapGeneratedCode(in.targetPath); err != nil {
 			fmt.Fprintf(os.Stderr, "\n⚠️  Project scaffolded but initial code generation failed: %v\n", err)
-			fmt.Fprintf(os.Stderr, "    Run '%s generate && %s build' to retry.\n", Name(), Name())
+			fmt.Fprintln(os.Stderr, "    The project does NOT build yet: gen/, internal/app/ and the cmd/<bin>/main.go composition root are missing.")
+			fmt.Fprintf(os.Stderr, "    Run '%s generate && %s build' to complete it.\n", Name(), Name())
 		}
 	}
 
@@ -639,36 +665,83 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) {
 
 // printNewNextSteps prints the post-scaffold guidance block. The
 // zero-service default is deliberate: a binary is a deployment unit that
-// mounts services — it is NOT a domain entity, so `forge new` never
+// mounts services — it is NOT a domain entity, so `forge project new` never
 // invents a `<project>Service` with CRUD RPCs nobody asked for. On a
 // bare service-kind scaffold the documented first step is
-// `forge add service <entity>` with a real domain entity name.
+// `forge scaffold service <entity>` with a real domain entity name.
+//
+// Every forge command printed here is one the user can PASTE, in order, with
+// no substitution. That is the whole contract of this block, and it is
+// enforced by TestNewNextStepsArePasteable.
+//
+// Step one is a proto edit, because the proto is the only place an entity is
+// declared. That is an instruction, not a command, so the block does the two
+// things that used to be missing when it was worded that way: it names the
+// exact FILE (not a directory), and it shows the `// forge:entity` marker
+// inline — the one piece of forge-specific syntax involved, which nothing
+// else on screen teaches. `forge scaffold` then does the rest in one step,
+// which is what makes naming the proto edit affordable.
 func printNewNextSteps(projectName string, inPlace bool, kind string, serviceNames []string) {
+	for _, line := range newNextSteps(projectName, inPlace, kind, serviceNames) {
+		fmt.Println(line)
+	}
+}
+
+// newNextSteps renders the block printNewNextSteps writes, as lines. Split
+// out so the paste-ability contract is testable without capturing stdout.
+func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []string) []string {
 	n := Name()
-	fmt.Println("\nNext steps:")
+	out := []string{"", "Next steps:"}
 	if !inPlace {
-		fmt.Printf("  cd %s\n", projectName)
+		out = append(out, "  cd "+projectName)
 	}
 	switch {
 	case kind == config.ProjectKindCLI:
-		fmt.Println("  go build ./...        # the cobra skeleton compiles out of the box")
-		fmt.Println("  see README.md for the CLI workflow")
+		out = append(out,
+			"  go build ./...        # the cobra skeleton compiles out of the box",
+			"  see README.md for the CLI workflow")
 	case kind == config.ProjectKindLibrary:
-		fmt.Println("  go build ./...        # the pkg/ skeleton compiles out of the box")
-		fmt.Println("  add exported types under pkg/ and tests alongside them")
+		out = append(out,
+			"  go build ./...        # the pkg/ skeleton compiles out of the box",
+			"  add exported types under pkg/ and tests alongside them")
 	case len(serviceNames) == 0:
-		fmt.Printf("  %s add service <entity>   # first step — name it after a DOMAIN ENTITY (e.g. item, order, user), not the binary\n", n)
-		fmt.Printf("  %s run                    # boots the stack; /healthz serves even before any service exists\n", n)
+		out = append(out,
+			fmt.Sprintf("  %s scaffold service item", n),
+			"      ↳ name it after a DOMAIN ENTITY (item, order, user) — not after the binary",
+			fmt.Sprintf("  %s run", n),
+			"      ↳ boots the stack; /healthz serves even before any service exists")
 	default:
-		fmt.Printf("  edit proto/services/%s/v1/ to define your API (the scaffold ships an example Item entity)\n", naming.ServicePackage(serviceNames[0]))
-		fmt.Printf("  %s generate               # regenerate after proto edits\n", n)
-		fmt.Printf("  %s run                    # boots the stack\n", n)
+		svc := serviceNames[0]
+		protoPath := fmt.Sprintf("proto/services/%s/v1/%s.proto", naming.ServicePackage(svc), svc)
+		scaffold := fmt.Sprintf("  %s scaffold", n)
+		if len(serviceNames) > 1 {
+			// More than one service — narrow the sweep to the one just named.
+			scaffold += " --service " + svc
+		}
+		out = append(out,
+			"  declare your first entity in "+protoPath+":",
+			"",
+			"      // forge:entity",
+			"      message Item {",
+			"        string name = 2;",
+			"        int64 price_cents = 3;",
+			"        bool active = 4;",
+			"      }",
+			"",
+			"      ↳ the marker is the tablizing decision; custom RPCs go in the same file",
+			scaffold,
+			"      ↳ births every marked message — migration pair + CRUD quintet — then generates",
+			fmt.Sprintf("  %s run", n),
+			"      ↳ applies migrations, seeds demo rows, prints your URLs",
+			"",
+			fmt.Sprintf("  Field types and markers: %s project annotations --kind field", n))
 	}
+	return out
 }
 
 // rewriteBufGenYamlToRemote switches the scaffolded buf.gen.yaml from
 // `local:` plugins (the default) to BSR-hosted `remote:` plugins. Used
-// by `forge new --buf-plugins=remote` for users who explicitly want the
+// by `forge project new --buf-plugins=remote` for users who explicitly want the
 // no-install-required experience and accept BSR rate-limits / auth.
 //
 // Idempotent: a buf.gen.yaml that already declares the remote plugins is
@@ -683,7 +756,7 @@ func rewriteBufGenYamlToRemote(projectDir string) error {
 		return fmt.Errorf("stat buf.gen.yaml: %w", err)
 	}
 	remote := `version: v2
-# Switched to BSR-hosted plugins via 'forge new --buf-plugins=remote'.
+# Switched to BSR-hosted plugins via 'forge project new --buf-plugins=remote'.
 # No local protoc-gen-go install required, but anonymous users may hit
 # BSR rate limits during heavy generate cycles — 'buf registry login'
 # raises the cap. To switch back, replace 'remote: <bsr-path>' with
@@ -703,7 +776,7 @@ plugins:
 
 // rewriteFrontendBufGenYamlToRemote switches a frontend's buf.gen.yaml from
 // the default local: TS plugin to the BSR-hosted remote: bufbuild/es. Mirrors
-// rewriteBufGenYamlToRemote — used by `forge new --buf-plugins=remote` so
+// rewriteBufGenYamlToRemote — used by `forge project new --buf-plugins=remote` so
 // users who explicitly want the no-install BSR experience get it on both
 // the Go and TS sides. Idempotent and a no-op when the file is missing.
 func rewriteFrontendBufGenYamlToRemote(path, feName string) error {
@@ -714,7 +787,7 @@ func rewriteFrontendBufGenYamlToRemote(path, feName string) error {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
 	remote := fmt.Sprintf(`version: v2
-# Switched to BSR-hosted plugin via 'forge new --buf-plugins=remote'.
+# Switched to BSR-hosted plugin via 'forge project new --buf-plugins=remote'.
 # No npm install of @bufbuild/protoc-gen-es required, but anonymous users
 # may hit BSR rate limits — 'buf registry login' raises the cap. To switch
 # back, replace 'remote: buf.build/bufbuild/es' with
@@ -730,6 +803,102 @@ plugins:
 	return os.WriteFile(path, []byte(remote), 0o644)
 }
 
+// forgePkgModulePath is the module path of forge's published runtime library.
+// The dev bridge resolves it from the local checkout's ./pkg submodule.
+const forgePkgModulePath = "github.com/reliant-labs/forge/pkg"
+
+// writeDevForgeGoWork bridges a freshly-scaffolded project to the LOCAL forge
+// source when the scaffolding binary is a DEV build that stamped its own
+// source root (buildinfo.DevForgeRoot, injected by the `make dev` /
+// `task install:dev` ldflag). Released binaries never reach the write path
+// (IsDevBuild() is false and DevForgeRoot is empty), so committed projects are
+// unaffected.
+//
+// Why this exists: forge/pkg is a PUBLISHED module, so a fresh scaffold pins
+// the last published tag (v0.0.x) with no replace. A dev forge, however, can
+// generate code that targets UNPUBLISHED forge/pkg APIs, so that published pin
+// won't build. The maintainer-intended fix is a gitignored go.work that
+// `use`s the local forge checkout (gen-go.mod.tmpl's own comment references
+// it). This writes it automatically so contributors skip the manual
+// `go mod edit -replace` dance.
+//
+// It augments the starter go.work the generator already emitted (use . + gen)
+// with `use <DevForgeRoot>/pkg`, so the project and its gen/ submodule resolve
+// github.com/reliant-labs/forge/pkg from the local tree. go.work / go.work.sum
+// are already in the scaffold's .gitignore, so the machine-local path never
+// gets committed.
+func writeDevForgeGoWork(targetPath string) {
+	if !buildinfo.IsDevBuild() {
+		return
+	}
+	// Prefer the explicitly stamped ldflag; otherwise recover the source root
+	// dynamically from this binary's own compiled file paths. The dynamic path
+	// is what makes the bridge work when forge runs EMBEDDED (e.g. `reliant
+	// forge project new`), where the host binary's build never stamped forge's
+	// DevForgeRoot — see buildinfo.DiscoverDevForgeRootFromSource.
+	root := buildinfo.DevForgeRoot
+	if root == "" {
+		root = buildinfo.DiscoverDevForgeRootFromSource()
+	}
+	if root == "" {
+		// Dev build whose local forge source we can neither read from an
+		// ldflag nor discover on disk (e.g. a dev binary shipped to another
+		// machine): we must NOT guess a path. Emit one hint.
+		fmt.Fprintf(os.Stderr,
+			"ℹ️  dev forge build without a discoverable source root: the scaffold pins the published forge/pkg (%s). "+
+				"To auto-link this project against your local forge, rebuild forge with `make dev` "+
+				"(injects DevForgeRoot), or add a `use <path-to-forge>/pkg` to a local go.work yourself.\n",
+			resolveForgePkgVersionForHint())
+		return
+	}
+
+	workPath := filepath.Join(targetPath, "go.work")
+	data, err := os.ReadFile(workPath)
+	if err != nil {
+		// No go.work (e.g. library kind, or codegen disabled) → nothing to
+		// bridge. The scaffold has no gen/ workspace to link.
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "warning: could not read go.work for dev forge bridge: %v\n", err)
+		}
+		return
+	}
+	wf, err := modfile.ParseWork(workPath, data, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not parse go.work for dev forge bridge: %v\n", err)
+		return
+	}
+
+	// forge/pkg is a SEPARATE module (its own go.mod at <root>/pkg), and it
+	// is the only forge module scaffolded projects import — the root/gen
+	// go.mod require only github.com/reliant-labs/forge/pkg, never the main
+	// module. So one `use <root>/pkg` overrides the published require with
+	// the local copy; the main module is intentionally NOT added (it would
+	// pull forge's entire dependency tree into the project's build for no
+	// benefit). AddUse tags the entry with the module path so a re-run is
+	// idempotent.
+	pkgDir := filepath.Join(root, "pkg")
+	if err := wf.AddUse(pkgDir, forgePkgModulePath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not add dev forge use directive: %v\n", err)
+		return
+	}
+	wf.Cleanup()
+	if err := os.WriteFile(workPath, modfile.Format(wf.Syntax), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write dev forge go.work: %v\n", err)
+		return
+	}
+	fmt.Printf("🔗 Dev forge build: wrote go.work bridging this project to %s (gitignored, machine-local)\n", pkgDir)
+}
+
+// resolveForgePkgVersionForHint returns the published forge/pkg version this
+// binary would otherwise pin, for the no-DevForgeRoot hint message. Kept
+// trivial and pure so the hint never fails.
+func resolveForgePkgVersionForHint() string {
+	if v := buildinfo.PkgVersion(); v != "" {
+		return v
+	}
+	return "published tag"
+}
+
 // initGitRepository initializes a git repository and makes initial commit
 func initGitRepository(ctx context.Context, path string) error {
 	cmd := exec.CommandContext(ctx, "git", "init")
@@ -739,7 +908,7 @@ func initGitRepository(ctx context.Context, path string) error {
 	}
 
 	// Activate forge's committed git hooks (.githooks/pre-push runs
-	// `forge lint` + `forge audit`; pre-commit stays fast). core.hooksPath
+	// `forge lint` + `forge project audit`; pre-commit stays fast). core.hooksPath
 	// is set RELATIVE so it resolves against each worktree's own checkout —
 	// one setting in the shared .git/config makes the hooks fire in every
 	// linked worktree. Set here, before the initial commit, so the repo
@@ -796,6 +965,20 @@ func runNpmInstall(ctx context.Context, root string, frontends []string) error {
 // runGoModTidy runs go mod tidy in the project root and gen/ directories when safe.
 func runGoModTidy(ctx context.Context, path string) error {
 
+	// A dev-forge go.work bridge deliberately overrides a published require
+	// (forge/pkg) with an unpublished local checkout — a proxy `go mod tidy`
+	// would 404. Sync the workspace instead (mirrors the generate pipeline).
+	if devWorkspaceBridgesExternalModule(path) {
+		cmd := exec.CommandContext(ctx, "go", "work", "sync")
+		cmd.Dir = path
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("Warning: go work sync failed: %v\n", err)
+		}
+		return nil
+	}
+
 	shouldTidyRoot, err := shouldRunRootGoModTidy(path)
 	if err != nil {
 		return err
@@ -831,7 +1014,7 @@ func bootstrapGeneratedCode(path string) error {
 	generateMu.Lock()
 	defer generateMu.Unlock()
 
-	return runGeneratePipeline(path, false, false)
+	return runGeneratePipeline(path, false)
 }
 
 func shouldRunRootGoModTidy(path string) (bool, error) {
@@ -941,18 +1124,16 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 			gen.Features.Observability = f
 		case "hot_reload", "hot-reload", "hotreload":
 			gen.Features.HotReload = f
-		case "packs":
-			gen.Features.Packs = f
 		case "deploy":
 			gen.Features.Deploy = f
 		case "ingress", "external_builds", "operators", "strict_wiring":
-			return cliutil.UserErr("forge new --disable",
+			return cliutil.UserErr("forge project new --disable",
 				fmt.Sprintf("feature %q is experimental (opt-in only); cannot be --disable'd because it's already off by default", name),
 				"",
 				"experimental features default off; opt in per project via `features.experimental.<name>: true` in forge.yaml")
 		default:
-			return cliutil.UserErr("forge new --disable",
-				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs", name),
+			return cliutil.UserErr("forge project new --disable",
+				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload", name),
 				"",
 				"pick a feature from the list above (comma-separated, repeatable); names are case-insensitive")
 		}

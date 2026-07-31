@@ -21,18 +21,18 @@ export default function Error({
         <h1 className="mb-4 text-3xl font-bold tracking-tight">
           Something went wrong
         </h1>
-        <p className="mb-6 text-gray-600">
+        <p className="mb-6 text-ink-muted">
           An unexpected error occurred. You can try again, or return later.
         </p>
         {error.digest ? (
-          <p className="mb-6 font-mono text-xs text-gray-500">
+          <p className="mb-6 font-mono text-xs text-ink-muted">
             Error ID: {error.digest}
           </p>
         ) : null}
         <button
           type="button"
           onClick={reset}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover"
         >
           Try again
         </button>

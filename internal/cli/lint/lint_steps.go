@@ -28,7 +28,7 @@
 // BOTH formats is byte-identical to the pre-refactor code; TestLintHelpSurface
 // and the lint_json tests are the guardrail.
 //
-// Steps that are advisory in text mode (frontend-packs, tests, banners,
+// Steps that are advisory in text mode (tests, banners,
 // optional-deps-guard, config-deps, check-workarounds) carry gates=false:
 // their runText errors print a ⚠️ line but never set hasFailed, and their
 // JSON collection errors degrade to a warning finding that never flips ok.
@@ -53,12 +53,18 @@ type lintRunCtx struct {
 	ctx context.Context
 	fix bool
 	// strict escalates advisory security findings to errors in the steps
-	// that honor it (today: the forge-convention proto step's
-	// method-auth-annotation rule). Plumbed from `forge lint --strict`.
+	// that honor it (the forge-convention proto step's
+	// method-auth-annotation rule, and the frontend typecheck lane's
+	// "could not run" verdict). Plumbed from `forge lint --strict`.
 	strict bool
-	paths  []string
-	cfg    *config.ProjectConfig
-	cwd    string
+	// skipFrontends drops the whole frontend lane — both the eslint /
+	// stylelint step and the typecheck step. Plumbed from
+	// `forge lint --skip-frontends`, for callers that want a backend-only
+	// gate without paying for the Node toolchain.
+	skipFrontends bool
+	paths         []string
+	cfg           *config.ProjectConfig
+	cwd           string
 }
 
 // linterStep is one entry in the ordered `forge lint` pipeline. See the
@@ -151,9 +157,7 @@ func lintPipeline() []linterStep {
 				return runTypedAccessGuardAdvisory(rc.ctx, rc.paths)
 			},
 			errFormat: "⚠️  typed-config guardrail: %v\n",
-			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectTypedAccessGuardJSON(rc.ctx, rc.paths)
-			},
+			collect:   collectTypedAccessGuardJSON,
 		},
 
 		// 2. Contract interface enforcement.
@@ -164,9 +168,9 @@ func lintPipeline() []linterStep {
 				if rc.cfg != nil && !rc.cfg.Features.ContractsEnabled() {
 					return false, "contracts feature disabled — skipping contract linter"
 				}
-				if _, err := resolveContractLintBinary(rc.ctx); err != nil {
-					return false, "contractlint not available — skipping"
-				}
+				// No availability gate: the analysis runs in-process
+				// (contract_inprocess.go) — there is no separate
+				// contractlint binary to be missing or stale.
 				return true, ""
 			},
 			runText: func(rc *lintRunCtx) error {
@@ -198,21 +202,71 @@ func lintPipeline() []linterStep {
 			},
 		},
 
-		// 5. Frontend linters (tsc + eslint / npm scripts).
+		// 5. Frontend linters (eslint / stylelint via npm scripts).
+		// TypeScript typechecking is step 5b, not this one — see there.
 		{
 			name:  "frontend lint",
 			gates: true,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.skipFrontends {
+					return false, "--skip-frontends — skipping frontend lint"
+				}
 				return true, ""
 			},
 			runText: func(rc *lintRunCtx) error {
-				return runFrontendLinters(rc.ctx, rc.cfg)
+				return runFrontendLinters(rc.ctx, rc.cfg, rc.fix)
 			},
 			errFormat: "❌ Frontend lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				fs, g := collectFrontendLintJSON(rc.ctx, rc.cfg)
+				fs, g := collectFrontendLintJSON(rc)
 				return fs, g, nil
 			},
+		},
+
+		// 5b. Frontend TypeScript typecheck. forge generates these
+		// frontends, so forge — not the caller's shell loop — owns knowing
+		// where they live and how to typecheck them. Its own step (rather
+		// than a limb of step 5) so it has a name in the table, its own
+		// severity dial (lint.frontend.typecheck), and can be skipped
+		// independently; the lane's full rationale is in
+		// lint_frontend_typecheck.go.
+		//
+		// gates=true is the STEP's error-reporting posture. Whether a type
+		// error actually fails the run is decided inside the lane by the
+		// severity dial, which is what a project downgrades or disables —
+		// so `warn` mode returns nil here and never trips this gate.
+		{
+			name:  "frontend typecheck",
+			gates: true,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.skipFrontends {
+					return false, "--skip-frontends — skipping frontend typecheck"
+				}
+				if rc.cfg != nil && rc.cfg.Lint.Frontend.EffectiveTypecheck() == "off" {
+					return false, "lint.frontend.typecheck is \"off\" — skipping frontend typecheck"
+				}
+				// `stack.frontend.framework: none` is the project saying
+				// forge does not drive a Node toolchain here — the same
+				// switch that drops these frontends from `forge build`. The
+				// lane honors it because it would otherwise warn on EVERY
+				// run of a project that deliberately opted out (its deps are
+				// not installed under forge's control, so the typecheck
+				// could never run). Step 5's eslint lane needs no such gate:
+				// its missing-deps path is already a silent skip.
+				if rc.cfg.FrontendToolchainDisabled() && len(rc.cfg.Frontends) > 0 {
+					return false, "stack.frontend.framework is \"none\" — skipping frontend typecheck"
+				}
+				// No declared frontend and no frontends/ directory: a clean
+				// silent no-op, not a finding. A backend-only project must
+				// not be told about a lane that does not apply to it.
+				if len(frontendTypecheckTargets(rc.cfg)) == 0 {
+					return false, ""
+				}
+				return true, ""
+			},
+			runText:   runFrontendTypecheckText,
+			errFormat: "❌ Frontend typecheck failed: %v\n",
+			collect:   collectFrontendTypecheckJSON,
 		},
 
 		// 7. SQL migration safety lint.
@@ -240,7 +294,13 @@ func lintPipeline() []linterStep {
 			name:  "forge convention lint",
 			gates: true,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if dirExists("proto") || dirExists("internal") {
+				// Also runs for a frontend-only project: the forge-owned
+				// dotenv rule (collectConventionFindings) needs to see a
+				// project that declares a frontend or has a frontends/ dir.
+				if dirExists("proto") || dirExists("internal") || dirExists("frontends") {
+					return true, ""
+				}
+				if rc.cfg != nil && len(rc.cfg.Frontends) > 0 {
 					return true, ""
 				}
 				return false, ""
@@ -254,56 +314,9 @@ func lintPipeline() []linterStep {
 			},
 		},
 
-		// 8b. Authz completeness — the generate-time first line of defense
-		// for descriptor-driven authorization. Fails the build when any RPC
-		// lacks an explicit authz decision (required_roles / authz_public /
-		// service default_roles). Errors gate. Runs only when buf.yaml +
-		// proto/ are present and buf is on PATH (the descriptor build needs
-		// it); the runtime fail-closed deny in forge/pkg/authz is the
-		// backstop.
-		{
-			name:  "authz completeness lint",
-			gates: true,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if !authzCompletenessApplies(".") {
-					return false, ""
-				}
-				if _, err := exec.LookPath("buf"); err != nil {
-					return false, "buf not found on PATH — skipping authz completeness lint"
-				}
-				return true, ""
-			},
-			runText: func(rc *lintRunCtx) error {
-				return runAuthzCompletenessLint(rc.ctx)
-			},
-			errFormat: "❌ authz completeness lint: %v\n",
-			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectAuthzCompletenessJSON(rc.ctx)
-			},
-		},
-
-		// 9. Frontend pack convention rules — only meaningful inside the
-		// forge repo (where pack sources live). Warnings only; never gates.
-		{
-			name:  "frontend pack lint",
-			gates: false,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if dirExists(filepath.Join("internal", "packs")) {
-					return true, ""
-				}
-				return false, ""
-			},
-			runText: func(rc *lintRunCtx) error {
-				return runFrontendPackLint()
-			},
-			errFormat: "⚠️  Frontend pack lint: %v\n",
-			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				fs, err := collectFrontendPacksJSON()
-				return fs, false, err
-			},
-		},
-
-		// 10. Scaffold ownership lint — errors gate the build.
+		// 10. Scaffold ownership lint — gen-header errors gate the build;
+		// surviving FORGE_SCAFFOLD markers (scaffold-not-customized) are
+		// warnings, since a fresh scaffold always carries them.
 		{
 			name:  "scaffold ownership lint",
 			gates: true,
@@ -316,6 +329,33 @@ func lintPipeline() []linterStep {
 			errFormat: "❌ Scaffold ownership lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectScaffoldsJSON(rc.cwd)
+			},
+		},
+
+		// 10b. Generated-file drift — hand-edits to files carrying the
+		// `Code generated by forge. DO NOT EDIT.` banner. ERROR-gated: the
+		// next `forge generate` destroys those edits, and lint is the only
+		// check that runs between the edit and that regenerate (rationale
+		// in lint_generated_drift.go). Unlike the generate-time stomp
+		// guard, this scan is unscoped — every drifted forge-owned file
+		// gates, not just the ones this invocation's emitters would touch.
+		{
+			name:  "generated-file drift lint",
+			gates: true,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				// Ownership state is project-scoped: outside a forge project
+				// there is nothing forge claims to own. Silent skip.
+				if rc.cwd == "" || !fileExists("forge.yaml") {
+					return false, ""
+				}
+				return true, ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runGeneratedDriftLint(rc.cwd)
+			},
+			errFormat: "❌ generated-file drift lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectGeneratedDriftJSON(rc.cwd)
 			},
 		},
 
@@ -357,48 +397,6 @@ func lintPipeline() []linterStep {
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectBannersJSON(rc.cwd)
 				return fs, false, err
-			},
-		},
-
-		// 13. Wire-coverage — TODO findings are warnings, unresolved
-		// forge:placeholder annotations are errors and gate the build.
-		{
-			name:  "wire-coverage lint",
-			gates: true,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if fileExists(filepath.Join("pkg", "app", "wire_gen.go")) ||
-					fileExists(filepath.Join("pkg", "app", "app_extras.go")) {
-					return rc.cwd != "", ""
-				}
-				return false, ""
-			},
-			runText: func(rc *lintRunCtx) error {
-				return runWireCoverageLint(rc.cwd)
-			},
-			errFormat: "❌ wire-coverage lint: %v\n",
-			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectWireCoverageJSON(rc.cwd)
-			},
-		},
-
-		// 13b. Bootstrap-deps-coverage — catches the audit-no-op silent-drop
-		// bug class. Gaps gate the build.
-		{
-			name:  "bootstrap-deps-coverage lint",
-			gates: true,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if fileExists(filepath.Join("pkg", "app", "bootstrap.go")) &&
-					fileExists(filepath.Join("pkg", "app", "app_extras.go")) {
-					return rc.cwd != "", ""
-				}
-				return false, ""
-			},
-			runText: func(rc *lintRunCtx) error {
-				return runBootstrapDepsCoverageLint(rc.cwd)
-			},
-			errFormat: "bootstrap-deps-coverage lint failed: %v\n",
-			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectBootstrapCoverageJSON(rc.cwd)
 			},
 		},
 
@@ -447,6 +445,37 @@ func lintPipeline() []linterStep {
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectConfigDepsJSON(rc.cwd)
 				return fs, false, err
+			},
+		},
+
+		// 13e. Enforce-component-observe — every wired component with a Service
+		// interface + a canonical New(Deps) Service constructor must make an
+		// observability decision: `// forge:constructor` to instrument, or
+		// `// forge:no-observe` to opt out. Undecided components are aggregated
+		// into ONE gating error naming all three escapes. ERROR-gated; the
+		// kill-switch is config.enforce_component_observe: off. Mirrors the
+		// enforce_typed_access plumbing (config + gate), but always gates (no
+		// warn arm — the point is a forcing-function).
+		{
+			name:  "enforce-component-observe lint",
+			gates: true,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				// off → silent skip (no message), like the typed-config guard's
+				// non-warn skip.
+				if rc.cfg != nil && !rc.cfg.Config.ComponentObserveGuardEnabled() {
+					return false, ""
+				}
+				if !dirExists("internal") {
+					return false, ""
+				}
+				return rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runEnforceComponentObserveLint(rc.cwd)
+			},
+			errFormat: "❌ enforce-component-observe lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectEnforceComponentObserveJSON(rc.cwd)
 			},
 		},
 

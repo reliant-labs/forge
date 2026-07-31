@@ -1,12 +1,13 @@
 ---
 name: v0.x-to-internal-layout
 description: Migrate top-level handlers/, workers/, operators/ into internal/handlers/, internal/workers/, internal/operators/. The packages are app-internal (no external importers), so they belong under internal/ where the compiler enforces privacy. This is a mechanical move + import-path rewrite; the pkg/ → internal/ fold is a SEPARATE later migration. Use when bumping across the layout-collapse release.
+detection: test -d handlers || test -d workers || test -d operators
 relevance: migration
 ---
 
 # Migrating to the `internal/`-nested project layout
 
-Use this skill when `forge upgrade` reports a jump across the release that
+Use this skill when `forge project upgrade` reports a jump across the release that
 moves the generated component trees under `internal/`. forge used to scaffold
 `handlers/`, `workers/`, and `operators/` at the repo root; it now nests them
 under `internal/`.
@@ -16,7 +17,7 @@ under `internal/`.
 **Before.** Three component trees lived at the repo root:
 
 ```
-handlers/<svc>/{handlers.go, service.go, authorizer.go, handlers_crud_gen.go, ...}
+handlers/<svc>/{handlers.go, service.go, handlers_crud_gen.go, ...}
 workers/<name>/{worker.go, worker_gen.go, ...}
 operators/<op>/{operator.go, operator_gen.go, ...}
 ```
@@ -132,14 +133,14 @@ MOD=$(head -1 go.mod | awk '{print $2}')
 ! grep -rq "\"$MOD/operators/" --include=*.go . && echo "no stale operator imports"
 ```
 
-If all pass, `forge upgrade` will bump `forge_version` in `forge.yaml`.
+If all pass, `forge project upgrade` will bump `forge_version` in `forge.yaml`.
 
 ## 6. Rollback
 
 ```bash
 git revert <move-commit>                 # undo the git mv + import rewrite
 git revert <forge-generate-commit>       # undo the regen
-forge upgrade --to <prev-version>        # pin back to the prior version
+forge project upgrade --to <prev-version>        # pin back to the prior version
 ```
 
 `--to <prev-version>` requires the prior forge build on `PATH`

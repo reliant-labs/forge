@@ -1,0 +1,52 @@
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+// The OWNED observability extension seam for this package. Canonical pattern
+// in `forge skill load observability`.
+package {{.Name}}
+
+import (
+	"log/slog"
+
+	"go.opentelemetry.io/otel"
+
+	"github.com/reliant-labs/forge/pkg/observe"
+)
+
+// newObserveChain assembles the in-process middleware chain that the GENERATED
+// decorator (middleware_gen.go) routes every {{.Name}} Service method
+// through. Spans, metrics, structured logging and panic-recovery are applied
+// uniformly — NO arguments or results are captured, only method identity,
+// duration, and error status.
+//
+// THIS IS THE EXTENSION SEAM. The generated decorator is uniform and never
+// needs editing; shape observability HERE:
+//
+//   - add a project middleware (implement observe.ComponentMiddleware and
+//     append it — e.g. an in-process timeout or rate-limit layer);
+//   - drop a layer you don't want (delete its line — nil is also dropped);
+//   - change the success log level (the observe.LogMiddleware argument).
+//
+// Middlewares run OUTER→INNER in the order listed: recovery wraps everything
+// (a component panic becomes an error, never a crash), then one OTel span per
+// call, then call/error/duration metrics, then one structured log record per
+// call (errors at Error; successful calls at the level below, so they stay
+// quiet under a production Info handler and loud on failure).
+//
+// To opt the package OUT, put `// forge:no-observe` on the package clause (or
+// on a single Service method to skip just that one). The opt-out wins over
+// every opt-in.
+//
+// Deleting this file does NOT opt out. A scaffold stamps BOTH the
+// `// forge:constructor` marker on `func New` and this seam, and either one
+// alone still instruments the package (see ShouldInstrumentComponent) — the
+// seam exists only so projects predating the marker keep working. The marker
+// is the current mechanism.
+func newObserveChain() *observe.ComponentChain {
+	scope := "{{.Module}}/internal/{{.ImportPath}}"
+	logger := slog.Default()
+	return observe.NewComponentChain(
+		observe.RecoverMiddleware(logger),
+		observe.TraceMiddleware(otel.Tracer(scope)),
+		observe.MetricsMiddleware(otel.Meter(scope), "{{.Name}}"),
+		observe.LogMiddleware(logger, {{.LogLevel}}),
+	)
+}

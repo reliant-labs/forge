@@ -13,7 +13,7 @@ This project has not launched yet. There are no users and no backwards compatibi
 ## Architecture
 
 This is a Forge-generated Go + Next.js application with:
-- **Backend**: Go with Connect RPC, JWT auth, RBAC, PostgreSQL + ORM
+- **Backend**: Go with Connect RPC, JWT auth, PostgreSQL + ORM
 - **Frontend**: Next.js with TypeScript, Tailwind CSS, Connect RPC client
 - **Code Generation**: Proto files drive handler, ORM, migration, and frontend generation
 

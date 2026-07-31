@@ -28,15 +28,23 @@ import (
 // CheckCovdata verifies that `go tool covdata` is available in the
 // active Go toolchain. Returns a warning (not a failure) with an
 // install hint when the tool is missing.
+//
+// The probe is `go tool covdata` with NO selector. Exit status alone
+// cannot answer the question: covdata has no zero-arg success mode, so a
+// PRESENT covdata exits 2 ("error: missing command selector") exactly as
+// an ABSENT one does ("go: no such tool"). The previous probe ran
+// `go tool covdata help` — `help` is not one of covdata's selectors
+// either, so a perfectly healthy toolchain fell through to the catch-all
+// and doctor warned `go tool covdata probe failed: exit status 2` on
+// every run, naming no fix for a problem that did not exist. Presence is
+// decided on the output sentinel, not the exit code.
 func CheckCovdata(ctx context.Context, _ *Environment) CheckResult {
-	// `go tool covdata help` is the cheapest probe — exit 0 if
-	// present, exit 2 with `no such tool "covdata"` on stderr
-	// otherwise. Some toolchains print the help to stdout, others to
-	// stderr; we don't care about the output, only the exit status
-	// and whether the missing-tool sentinel appears anywhere.
-	cmd := exec.CommandContext(ctx, "go", "tool", "covdata", "help")
+	cmd := exec.CommandContext(ctx, "go", "tool", "covdata")
 	out, err := cmd.CombinedOutput()
-	if err == nil {
+	body := string(out)
+	// covdata printing its own usage banner IS the proof it exists,
+	// whatever it exits with.
+	if err == nil || strings.Contains(body, "usage: go tool covdata") {
 		return CheckResult{
 			Status:  StatusPass,
 			Message: "go tool covdata available",
@@ -54,7 +62,6 @@ func CheckCovdata(ctx context.Context, _ *Environment) CheckResult {
 		}
 	}
 
-	body := string(out)
 	if strings.Contains(body, "no such tool") && strings.Contains(body, "covdata") {
 		return CheckResult{
 			Status: StatusWarn,

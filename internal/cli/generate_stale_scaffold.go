@@ -2,7 +2,7 @@
 //
 // FRICTION (front-door P0, 2026-06): the scaffold proto explicitly
 // instructs renaming Item to the real entity. Following that instruction
-// leaves handlers/<svc>/handlers_scaffold_test.go — a ONE-SHOT, user-owned
+// leaves handlers/<svc>/handlers_scaffold_<rpc>_test.go — ONE-SHOT, user-owned
 // file rendered from internal/templates/service/unit_test.go.tmpl, never
 // regenerated, no checksum entry — referencing deleted pb types
 // (pb.CreateItemRequest, …). `forge generate` succeeds because the final
@@ -11,8 +11,8 @@
 // file forge wrote, with no hint that the file is theirs to fix.
 //
 // Resolution: NO auto-regen of user-owned files. After codegen has
-// refreshed gen/, scan each handlers/<svc>/handlers_scaffold_test.go (and
-// only that filename — keep scope tight), resolve its `pb "<module>/gen/…"`
+// refreshed gen/, scan each handlers/<svc>/handlers_scaffold_*_test.go (and
+// only those — keep scope tight), resolve its `pb "<module>/gen/…"`
 // import to the on-disk generated package, and cross-check every
 // `pb.<Ident>` reference against the names that package actually declares.
 // Any referenced-but-undeclared ident → one one-line warning naming the
@@ -37,10 +37,12 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// scaffoldTestFileName is the one-shot scaffold test the detector audits.
-// Scope is intentionally a single exact filename: this check exists for
-// the rename-Item-first-day footgun, not as a general stale-test linter.
-const scaffoldTestFileName = "handlers_scaffold_test.go"
+// The detector audits forge's born one-shot scaffold tests and nothing
+// else — codegen.IsScaffoldTestFile is the single definition of which
+// files those are (the per-RPC handlers_scaffold_<rpc>_test.go, plus the
+// pre-split handlers_scaffold_test.go older projects still carry). Scope
+// stays tight on purpose: this check exists for the rename-Item-first-day
+// footgun, not as a general stale-test linter.
 
 // staleScaffoldFinding is one scaffold test file referencing pb idents
 // that the current generated package no longer declares.
@@ -65,9 +67,9 @@ type staleScaffoldFinding struct {
 // a one-shot scaffold file is still a fair signal that the file is stale.
 var pbRefPattern = regexp.MustCompile(`\bpb\.([A-Z][A-Za-z0-9_]*)`)
 
-// detectStaleScaffoldTests walks handlers/ for files named
-// handlers_scaffold_test.go and returns one finding per file that
-// references pb idents absent from its generated package.
+// detectStaleScaffoldTests walks handlers/ for forge's born scaffold test
+// files and returns one finding per file that references pb idents absent
+// from its generated package.
 //
 // Skip semantics (all silent — this is a safety net, never a new
 // failure source):
@@ -84,7 +86,7 @@ func detectStaleScaffoldTests(projectDir string) []staleScaffoldFinding {
 		if err != nil {
 			return nil // unreadable subtree → skip, never fail
 		}
-		if !d.IsDir() && d.Name() == scaffoldTestFileName {
+		if !d.IsDir() && codegen.IsScaffoldTestFile(d.Name()) {
 			scaffoldFiles = append(scaffoldFiles, path)
 		}
 		return nil
@@ -148,7 +150,7 @@ func detectStaleScaffoldTests(projectDir string) []staleScaffoldFinding {
 // <projectDir>/gen/. Returns "" when the file has no such import.
 func resolveScaffoldGenDir(projectDir, modulePath string, content []byte) string {
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, scaffoldTestFileName, content, parser.ImportsOnly)
+	f, err := parser.ParseFile(fset, "scaffold_test.go", content, parser.ImportsOnly)
 	if err != nil {
 		return ""
 	}

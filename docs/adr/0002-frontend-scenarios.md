@@ -32,7 +32,7 @@ src/mocks/
 ├── scenarios/
 │   ├── index.ts               AUTO    registry — { default, github-connected, ... }
 │   ├── default.ts             SEED    fallback scenario, empty handlers, no-op setup
-│   ├── github-connected.ts    USER    user-authored via `forge add scenario`
+│   ├── github-connected.ts    USER    user-authored via `forge scaffold scenario`
 │   └── …
 └── mock-transport.ts          AUTO    reads ?scenario= once, picks scenario, dispatches
 ```
@@ -128,7 +128,7 @@ export function createMockTransport(): Transport {
 
 ### CLI command
 
-`forge add scenario <name>` (in `cli/add_scenario.go`) scaffolds:
+`forge scaffold scenario <name>` (in `cli/add_scenario.go`) scaffolds:
 - `src/mocks/scenarios/<name>.ts` from a template with the right imports and a stub handler
 - Regenerates `src/mocks/scenarios/index.ts` so the new scenario is picked up
 

@@ -6,7 +6,7 @@ import (
 )
 
 // TestResolveUpLifecycle pins the pure TTY-aware lifecycle decision behind
-// `forge up` (Part B, the LLM-first fix): an agent / CI invocation with no
+// `forge env up` (Part B, the LLM-first fix): an agent / CI invocation with no
 // TTY and no explicit flag must resolve to `once` (start + return), never
 // `supervise` (the interactive Ctrl-C hold that would hang forever). The
 // explicit --watch / --background flags override the TTY default, with
@@ -47,7 +47,7 @@ func TestResolveUpLifecycle(t *testing.T) {
 	}
 }
 
-// TestUpScope pins the pure scope derivation behind `forge up`: which phases
+// TestUpScope pins the pure scope derivation behind `forge env up`: which phases
 // run is a function of --cluster-only / --host-only, and that mapping is the
 // single source of truth runUp's gates read. The two flags are mutually
 // exclusive upstream, so the both-set row is defensive (clusterOnly's mask
@@ -86,15 +86,15 @@ func TestUpScope(t *testing.T) {
 	}
 }
 
-// TestUpWatchFlagRegistered confirms `forge up --watch` is wired with help
+// TestUpWatchFlagRegistered confirms `forge env up --watch` is wired with help
 // text that names the force-supervise / no-TTY intent — the surface a human
 // piping output relies on, and the documented counterpart to the non-TTY
 // "return after start" default.
 func TestUpWatchFlagRegistered(t *testing.T) {
-	cmd := newUpCmd()
+	cmd := newEnvUpCmd()
 	f := cmd.Flags().Lookup("watch")
 	if f == nil {
-		t.Fatal("--watch flag not registered on forge up")
+		t.Fatal("--watch flag not registered on forge env up")
 	}
 	if f.DefValue != "false" {
 		t.Errorf("--watch default: got %q, want false", f.DefValue)
@@ -103,7 +103,7 @@ func TestUpWatchFlagRegistered(t *testing.T) {
 		t.Errorf("--watch should be a bool flag, got %q", f.Value.Type())
 	}
 	// The help must point at the TTY-aware lifecycle so a reader of
-	// `forge up --help` understands when the hold happens vs the return.
+	// `forge env up --help` understands when the hold happens vs the return.
 	if !strings.Contains(strings.ToLower(f.Usage), "tty") {
 		t.Errorf("--watch usage should explain the TTY-aware default, got %q", f.Usage)
 	}
@@ -113,8 +113,8 @@ func TestUpWatchFlagRegistered(t *testing.T) {
 // rejected at flag-parse time: they pull the lifecycle in opposite
 // directions (hold vs detach), and a user passing both has a mistaken model.
 func TestUpWatchBackgroundMutuallyExclusive(t *testing.T) {
-	cmd := newUpCmd()
-	cmd.SetArgs([]string{"--env=dev", "--watch", "--background"})
+	cmd := newEnvUpCmd()
+	cmd.SetArgs([]string{"dev", "--watch", "--background"})
 	cmd.SetOut(&strings.Builder{})
 	cmd.SetErr(&strings.Builder{})
 	err := cmd.Execute()

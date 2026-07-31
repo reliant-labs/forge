@@ -55,11 +55,18 @@ func TestInternalContracts_BadFixtureFiresThreeFindings(t *testing.T) {
 			len(got), AsResult(fs).FormatText())
 	}
 
-	// Each finding must carry the same actionable phrase so users can
-	// grep and find the convention doc.
+	// The type findings carry the canonical sentinel so users can grep for
+	// the convention doc. The constructor finding does NOT: its requirement
+	// is the signature, not the identifier `New`, and a sentinel that spells
+	// out `func New(Deps) Service` would put the forced name back into the
+	// prose the rule was fixed to stop printing.
 	const sentinel = "internal-package contracts must declare 'type Service interface', 'type Deps struct', and 'func New(Deps) Service'"
 	for _, f := range got {
-		if !strings.Contains(f.Message, sentinel) {
+		if strings.Contains(f.Message, "NewSender") {
+			if !strings.Contains(f.Message, "//forge:constructor") {
+				t.Errorf("constructor finding must offer the marker escape hatch; got: %s", f.Message)
+			}
+		} else if !strings.Contains(f.Message, sentinel) {
 			t.Errorf("finding missing canonical sentinel; got: %s", f.Message)
 		}
 		if f.Severity != forgeconv.SeverityError {
@@ -84,7 +91,7 @@ func TestInternalContracts_BadFixtureFiresThreeFindings(t *testing.T) {
 // TestInternalContracts_HonorsExcludes verifies that directories listed
 // in the excludes set are skipped — packages that legitimately don't
 // follow the convention (analyzer sub-packages, embed-only packages,
-// internal/packs which isn't bootstrap-managed) opt out via
+// packages that aren't bootstrap-managed) opt out via
 // contracts.exclude in forge.yaml and the analyzer must respect it.
 func TestInternalContracts_HonorsExcludes(t *testing.T) {
 	// First, prove the fixture would otherwise fire (no exclude → findings).
@@ -104,7 +111,7 @@ func TestInternalContracts_HonorsExcludes(t *testing.T) {
 		filepath.Join("testdata", "contracts_excluded"),
 		Options{
 			Rules:    []Rule{RuleInternalPackageContractNames},
-			Excludes: []string{"internal/packs"},
+			Excludes: []string{"internal/legacyshape"},
 		},
 	)
 	if err != nil {
@@ -161,6 +168,118 @@ func New(d *Deps) Service { return nil }
 	}
 	if !strings.Contains(got[0].Message, "New") {
 		t.Errorf("finding should reference New constructor; got: %s", got[0].Message)
+	}
+}
+
+// TestInternalContracts_ServiceMarkerFreesInterfaceName asserts the
+// marker escape hatch: an interface named `Gateway` (role-oriented, which
+// the adapter skill encourages) carrying `//forge:service` satisfies the
+// contract-shape check under its own name — Service/New keyed off the
+// marker, no rename required. `Deps` + `New(Deps) Gateway` stay canonical.
+func TestInternalContracts_ServiceMarkerFreesInterfaceName(t *testing.T) {
+	tmp := t.TempDir()
+	pkgDir := filepath.Join(tmp, "internal", "payments")
+	must(t, mkdirAll(pkgDir))
+	must(t, writeFile(filepath.Join(pkgDir, "contract.go"), `package payments
+
+import "context"
+
+// Gateway is the payments boundary.
+//forge:service
+type Gateway interface {
+	Charge(ctx context.Context, amount int) error
+}
+
+type Deps struct{}
+
+func New(d Deps) (Gateway, error) { return nil, nil }
+`))
+	fs, err := Inspect(context.Background(), tmp,
+		Options{Rules: []Rule{RuleInternalPackageContractNames}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	got := findingsForRule(fs, string(RuleInternalPackageContractNames))
+	if len(got) != 0 {
+		t.Fatalf("a `//forge:service`-marked Gateway should produce 0 findings, got %d:\n%s",
+			len(got), AsResult(fs).FormatText())
+	}
+}
+
+// TestInternalContracts_ContractMarkerAlsoAccepted asserts the
+// `//forge:contract` synonym is honored identically to `//forge:service`,
+// including the single-result `func New(Deps) <Iface>` form.
+func TestInternalContracts_ContractMarkerAlsoAccepted(t *testing.T) {
+	tmp := t.TempDir()
+	pkgDir := filepath.Join(tmp, "internal", "dispatch")
+	must(t, mkdirAll(pkgDir))
+	must(t, writeFile(filepath.Join(pkgDir, "contract.go"), `package dispatch
+
+// Dispatcher routes jobs.
+// forge:contract
+type Dispatcher interface {
+	Dispatch(job string) error
+}
+
+type Deps struct{}
+
+func New(d Deps) Dispatcher { return nil }
+`))
+	fs, err := Inspect(context.Background(), tmp,
+		Options{Rules: []Rule{RuleInternalPackageContractNames}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	got := findingsForRule(fs, string(RuleInternalPackageContractNames))
+	if len(got) != 0 {
+		t.Fatalf("a `//forge:contract`-marked Dispatcher should produce 0 findings, got %d:\n%s",
+			len(got), AsResult(fs).FormatText())
+	}
+}
+
+// TestInternalContracts_UnmarkedRoleInterfaceStillFires asserts the
+// zero-annotation path is unchanged: a role-named interface WITHOUT the
+// marker still fires, and the remediation now surfaces the marker escape.
+func TestInternalContracts_UnmarkedRoleInterfaceStillFires(t *testing.T) {
+	tmp := t.TempDir()
+	pkgDir := filepath.Join(tmp, "internal", "payments")
+	must(t, mkdirAll(pkgDir))
+	must(t, writeFile(filepath.Join(pkgDir, "contract.go"), `package payments
+
+type Gateway interface {
+	Charge(amount int) error
+}
+
+type Deps struct{}
+
+func New(d Deps) (Gateway, error) { return nil, nil }
+`))
+	fs, err := Inspect(context.Background(), tmp,
+		Options{Rules: []Rule{RuleInternalPackageContractNames}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	got := findingsForRule(fs, string(RuleInternalPackageContractNames))
+	// Unmarked, serviceIfaceName defaults to "Service": the interface isn't
+	// named Service (missing-Service finding) AND `New` returns Gateway, not
+	// Service (missing-New finding) — the exact 9-file-rename friction, still
+	// loud without the marker. The Service finding must now advertise the
+	// marker escape so the author reaches for it instead of the rename.
+	if len(got) == 0 {
+		t.Fatalf("unmarked Gateway should still fire; got 0 findings")
+	}
+	foundMarkerHint := false
+	for _, f := range got {
+		if strings.Contains(f.Message, "forge:service") {
+			foundMarkerHint = true
+		}
+	}
+	if !foundMarkerHint {
+		t.Errorf("a finding should surface the //forge:service marker escape; got:\n%s",
+			AsResult(fs).FormatText())
 	}
 }
 
@@ -240,22 +359,27 @@ type Sender interface {
 	}
 }
 
-// TestInternalContracts_UtilityPackagesSkipped is the table-driven
-// guard for the zero-interface auto-skip (utility_skip.go). Each row
-// models one of the recurring utility-package shapes that previously
-// forced cp-forge porters to add `contracts.exclude` entries during
-// migration: constants-only, structs-only, top-level-funcs-only, and a
-// sibling file split. The two negative-control rows (genuine service
-// package, Deps+New without Service) prove the auto-skip is
-// conservative — it doesn't swallow real incomplete-Service bugs.
+// TestInternalContracts_ZeroInterfacePackagesSkipped is the table-driven
+// guard for the zero-interface early-out. Each row models one of the
+// recurring shapes that previously forced cp-forge porters to add
+// `contracts.exclude` entries during migration: constants-only,
+// structs-only, top-level-funcs-only, and a sibling file split. The two
+// negative-control rows (genuine service package, Deps+New without
+// Service) prove the early-out is conservative — it doesn't swallow real
+// incomplete-Service bugs.
+//
+// The early-out is a RULE PREDICATE, not a package category: "declares
+// no interface, therefore cannot declare `Service`". It needs no name,
+// no marker and no forge.yaml entry, which is why there is nothing here
+// for an author to learn.
 //
 // FRICTION 2026-06-02 / 2026-06-03: cp-forge migration shipped at
-// least eight utility-shaped packages with no service-shape surface
+// least eight such packages with no service-shape surface
 // (internal/config, internal/metrics, internal/billing/provideradapters,
 // internal/db, internal/planlimits, internal/ratelimit, internal/natsio,
 // internal/daemonstate). natsio/daemonstate are already covered by the
 // interface-catalogue early-out; the rest are now covered here.
-func TestInternalContracts_UtilityPackagesSkipped(t *testing.T) {
+func TestInternalContracts_ZeroInterfacePackagesSkipped(t *testing.T) {
 	cases := []struct {
 		name    string
 		pkgName string
@@ -383,7 +507,7 @@ type Service interface { Do() error }
 			got := findingsForRule(fs, string(RuleInternalPackageContractNames))
 			if tc.wantSkipped {
 				if len(got) != 0 {
-					t.Fatalf("utility package %q should be auto-skipped, got %d findings:\n%s",
+					t.Fatalf("zero-interface package %q should be auto-skipped, got %d findings:\n%s",
 						tc.pkgName, len(got), AsResult(fs).FormatText())
 				}
 			} else {
@@ -396,18 +520,115 @@ type Service interface { Do() error }
 	}
 }
 
-// TestInternalContracts_StrategyDirectiveSkipped verifies the
-// `//forge:strategy` directive opts a strategy-registry package out of
-// the canonical Service/Deps/New enforcement.
+// TestInternalContracts_StrategyRegistryOptsOutWithExcludeContract pins
+// the ONE opt-out an author has to reach for. A strategy-registry
+// package — one interface, several impl structs each with its own
+// constructor and dep shape — has no single `New(Deps) Service` for the
+// injector to bind, so it needs out of the canonical-shape rule.
 //
-// FRICTION 2026-06-03: kalshi `internal/algos` shipped as a strategy
-// registry (one Strategy interface + multiple impl structs each with
-// their own constructor / Deps shape) and required a contracts.exclude
-// entry. The directive replaces the forge.yaml entry with an in-file
-// opt-in.
-func TestInternalContracts_StrategyDirectiveSkipped(t *testing.T) {
-	fs, err := Inspect(context.Background(),
-		filepath.Join("testdata", "contracts_strategy"),
+// It says so with `//forge:exclude-contract`, the same header directive
+// that takes a package out of bootstrap wiring and mock generation. That
+// is one directive covering every "forge does not manage this package"
+// case, and it is the directive authors already reach for: 54 files
+// across forge and control-plane carry it.
+//
+// The negative half is the point of the test: the directive is OPT-IN.
+// A strategy-shaped package that does NOT carry it still fires all three
+// findings — we do not auto-detect the shape, because an incomplete
+// Service scaffold looks identical from the AST.
+func TestInternalContracts_StrategyRegistryOptsOutWithExcludeContract(t *testing.T) {
+	const registryBody = `
+
+type Strategy interface {
+	Name() string
+	Run(ctx context.Context, input []float64) (float64, error)
+}
+
+type momentum struct{ window int }
+
+func NewMomentum(window int) Strategy { return &momentum{window: window} }
+
+func (m *momentum) Name() string { return "momentum" }
+
+func (m *momentum) Run(_ context.Context, _ []float64) (float64, error) { return 0, nil }
+`
+
+	cases := []struct {
+		name      string
+		contract  string
+		wantFires int
+	}{
+		{
+			name: "with //forge:exclude-contract the registry is silent",
+			contract: `// Strategy-registry package: each algorithm has its own constructor,
+// so there is no single New(Deps) Service for forge to bind.
+//
+//forge:exclude-contract
+package algos
+
+import "context"` + registryBody,
+			wantFires: 0,
+		},
+		{
+			name: "without the directive the same shape still fires",
+			contract: `// Strategy-registry package that never opted out.
+package algos
+
+import "context"` + registryBody,
+			wantFires: 3,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			pkgDir := filepath.Join(tmp, "internal", "algos")
+			must(t, mkdirAll(pkgDir))
+			must(t, writeFile(filepath.Join(pkgDir, "contract.go"), tc.contract))
+
+			fs, err := Inspect(context.Background(), tmp,
+				Options{Rules: []Rule{RuleInternalPackageContractNames}},
+			)
+			if err != nil {
+				t.Fatalf("Inspect: %v", err)
+			}
+			got := findingsForRule(fs, string(RuleInternalPackageContractNames))
+			if len(got) != tc.wantFires {
+				t.Fatalf("want %d findings, got %d:\n%s",
+					tc.wantFires, len(got), AsResult(fs).FormatText())
+			}
+		})
+	}
+}
+
+// TestInternalContracts_ConstructorMarkerFreesConstructorName is the
+// constructor half of the marker escape hatch, and it must agree with
+// codegen: `codegen.IsComponentConstructor` treats a
+// `// forge:constructor`-marked func as THE constructor whatever it is
+// named, and `codegen.DetectConstructorName` is what the injector emits.
+// A lint that still insisted on the identifier `New` would reject a shape
+// forge itself wires — forge contradicting forge, with the user told to
+// rename to a worse name.
+func TestInternalContracts_ConstructorMarkerFreesConstructorName(t *testing.T) {
+	tmp := t.TempDir()
+	pkgDir := filepath.Join(tmp, "internal", "mailer")
+	must(t, mkdirAll(pkgDir))
+	must(t, writeFile(filepath.Join(pkgDir, "contract.go"), `package mailer
+
+import "context"
+
+//forge:service
+type Mailer interface {
+	Send(ctx context.Context, to string) error
+}
+
+type Deps struct{}
+
+// Open dials the upstream and returns the mailer.
+// forge:constructor
+func Open(d Deps) (Mailer, error) { return nil, nil }
+`))
+	fs, err := Inspect(context.Background(), tmp,
 		Options{Rules: []Rule{RuleInternalPackageContractNames}},
 	)
 	if err != nil {
@@ -415,27 +636,86 @@ func TestInternalContracts_StrategyDirectiveSkipped(t *testing.T) {
 	}
 	got := findingsForRule(fs, string(RuleInternalPackageContractNames))
 	if len(got) != 0 {
-		t.Fatalf("strategy-registry package with //forge:strategy directive should produce 0 findings, got %d:\n%s",
+		t.Fatalf("a `// forge:constructor`-marked Open(Deps) (Mailer, error) is the constructor "+
+			"codegen wires; lint must accept it. Got %d findings:\n%s",
 			len(got), AsResult(fs).FormatText())
 	}
 }
 
-// TestInternalContracts_StrategyShapeWithoutDirectiveStillFires is the
-// other half of the contract: the directive is OPT-IN. A package
-// shaped like a strategy registry but missing the directive should
-// still fire all three findings — we intentionally do not auto-detect
-// the shape (too many false-positives on incomplete service scaffolds).
-func TestInternalContracts_StrategyShapeWithoutDirectiveStillFires(t *testing.T) {
-	fs, err := Inspect(context.Background(),
-		filepath.Join("testdata", "contracts_strategy_missing_directive"),
+// TestInternalContracts_MarkedConstructorWithBadSignatureIsTheNearMiss
+// asserts the diagnostic points at the func the author already wrote. A
+// marked constructor whose signature is wrong is the single most useful
+// thing to name; reporting "no constructor" instead sends the author
+// hunting for something that is right there.
+func TestInternalContracts_MarkedConstructorWithBadSignatureIsTheNearMiss(t *testing.T) {
+	tmp := t.TempDir()
+	pkgDir := filepath.Join(tmp, "internal", "store")
+	must(t, mkdirAll(pkgDir))
+	must(t, writeFile(filepath.Join(pkgDir, "contract.go"), `package store
+
+//forge:service
+type Store interface { Get(k string) string }
+
+type Deps struct{}
+
+// Connect takes a DSN instead of Deps — the injector needs func(Deps) Store,
+// so this is a near miss, not an absence.
+//forge:constructor
+func Connect(dsn string) (Store, error) { return nil, nil }
+`))
+	fs, err := Inspect(context.Background(), tmp,
 		Options{Rules: []Rule{RuleInternalPackageContractNames}},
 	)
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
 	got := findingsForRule(fs, string(RuleInternalPackageContractNames))
-	if len(got) != 3 {
-		t.Fatalf("strategy-shaped package without directive should fire 3 findings (Service/Deps/New), got %d:\n%s",
-			len(got), AsResult(fs).FormatText())
+	if len(got) != 1 {
+		t.Fatalf("expected 1 constructor finding, got %d:\n%s", len(got), AsResult(fs).FormatText())
+	}
+	if !strings.Contains(got[0].Message, "Connect") {
+		t.Errorf("the marked func is the near miss and must be named in the message; got: %s", got[0].Message)
+	}
+	if got[0].Line != 11 {
+		t.Errorf("finding should point at the marked func (line 11), got line %d", got[0].Line)
+	}
+}
+
+// TestInternalContracts_ConstructorFindingDoesNotDemandTheNameNew pins the
+// user-facing prose. The requirement is the SIGNATURE; the way to keep your
+// own name is the marker. Text that orders the author to "rename to 'New'"
+// makes forge enforce an antipattern — `New` returning `Service` says
+// nothing about a mailer or a store — which is the opposite of forge's job.
+func TestInternalContracts_ConstructorFindingDoesNotDemandTheNameNew(t *testing.T) {
+	tmp := t.TempDir()
+	pkgDir := filepath.Join(tmp, "internal", "reports")
+	must(t, mkdirAll(pkgDir))
+	must(t, writeFile(filepath.Join(pkgDir, "contract.go"), `package reports
+
+type Service interface { Run() error }
+type Deps struct{}
+`))
+	fs, err := Inspect(context.Background(), tmp,
+		Options{Rules: []Rule{RuleInternalPackageContractNames}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	got := findingsForRule(fs, string(RuleInternalPackageContractNames))
+	if len(got) != 1 {
+		t.Fatalf("expected 1 constructor finding, got %d:\n%s", len(got), AsResult(fs).FormatText())
+	}
+	f := got[0]
+	for _, banned := range []string{"rename to 'New'", "rename the constructor to"} {
+		if strings.Contains(f.Message, banned) || strings.Contains(f.Remediation, banned) {
+			t.Errorf("finding still orders a rename (%q):\nmessage: %s\nremediation: %s",
+				banned, f.Message, f.Remediation)
+		}
+	}
+	// It must instead state the signature and offer the marker.
+	for _, want := range []string{"func(Deps) Service", "//forge:constructor"} {
+		if !strings.Contains(f.Message+f.Remediation, want) {
+			t.Errorf("finding must offer %q:\nmessage: %s\nremediation: %s", want, f.Message, f.Remediation)
+		}
 	}
 }

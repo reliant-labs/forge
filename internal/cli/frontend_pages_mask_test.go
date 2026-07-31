@@ -10,7 +10,7 @@ import (
 // aip134PageDataForTest builds PageTemplateData for the CANONICAL
 // generated update shape: the request wraps the entity and carries a
 // google.protobuf.FieldMask (`Task task = 1; FieldMask update_mask = 2;`)
-// — the shape `forge add entity` and the scaffold proto emit.
+// — the shape `forge scaffold entity` and the scaffold proto emit.
 func aip134PageDataForTest(t *testing.T) codegen.PageTemplateData {
 	t.Helper()
 	svc := codegen.ServiceDef{
@@ -55,7 +55,7 @@ func aip134PageDataForTest(t *testing.T) codegen.PageTemplateData {
 			{Name: "status", ProtoType: "string", Kind: codegen.FieldKindScalar},
 		},
 	}
-	codegen.AttachEntityMeta(&page, entity)
+	codegen.AttachEntityMeta(&page, entity, svc)
 	return page
 }
 

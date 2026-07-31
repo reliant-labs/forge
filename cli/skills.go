@@ -36,7 +36,7 @@ type Skill struct {
 	// Forge itself gates listings on the relevance class only (binary
 	// versions are routinely dev builds / pseudo-versions, which are not
 	// meaningfully comparable); the authoritative project-aware range +
-	// detection gate is `forge upgrade list`. Empty when undeclared.
+	// detection gate is `forge project upgrade list`. Empty when undeclared.
 	AppliesFrom string
 	AppliesTo   string
 

@@ -21,7 +21,7 @@ Use this skill when writing tests for any forge frontend (`frontends/<name>/`). 
 
 ## What NOT to test
 
-- Generated code (`src/hooks/<svc>-hooks.ts`, `src/gen/**`, `src/lib/connect.ts`) — forge owns it
+- Generated code (`src/hooks/<svc>-service-hooks.ts`, `src/gen/**`, `src/lib/connect.ts`) — forge owns it
 - Forge UI primitives (`components/ui/button|input|...`) — forge owns it
 - React / Next / TanStack internals — they have their own tests
 - JSX branch coverage — test visible behavior (`screen.findByText`), not which conditional ran
@@ -126,7 +126,7 @@ describe("ui-store", () => {
 
 - `npm test` — single run
 - `npm run test:watch` — watch mode
-- CI: `.github/workflows/e2e-scaffold.yml` runs `npm test` as part of the smoke test
+- CI: the `test` job in `.github/workflows/ci.yml` runs `npx vitest run` per frontend
 
 ## Rules
 

@@ -1,26 +1,41 @@
 version: '3'
 
 # ┌─────────────────────────────────────────────────────────┐
-# │ Standard operations — use the forge CLI:                │
+# │ Tests are Task targets — this file is the ONE place     │
+# │ that decides how the suite runs, so the local loop and  │
+# │ CI cannot drift apart:                                  │
 # │                                                         │
-# │   forge up --env=dev     Dev loop (hot-reload)          │
-# │   forge debug start      Dev + Delve on :2345           │
+# │   task test              Go unit + every frontend       │
+# │   task test:integration  `integration`-tagged tests     │
+# │   task test:e2e          End-to-end tests               │
+# │   task test:all          Unit + frontend + integration  │
+# │                                                         │
+# │ Everything that needs forge's own orchestration stays   │
+# │ a forge command:                                        │
+# │                                                         │
+# │   forge env up dev       Dev loop (hot-reload)          │
 # │   forge build            Build production binary        │
 # │   forge build --debug    Build with debug symbols       │
-# │   forge test             Run tests                      │
 # │   forge lint             Run linters                    │
-# │   forge deploy           Deploy to k3d / cloud          │
-# │   forge debug start      Interactive Delve session      │
+# │   forge env deploy       Deploy to k3d / cloud          │
+# │   forge debug start      Dev + Delve on :2345           │
 # │   forge db migrate up    Run database migrations        │
 # │   forge generate         Codegen from proto files       │
 # │                                                         │
-# │ Task wrappers below exist so CI and onboarding docs     │
-# │ have a stable entry point that doesn't require the      │
-# │ forge CLI to be installed.                              │
+# │ `task lint` and `task db-seed` delegate to the forge    │
+# │ CLI (it orchestrates linters/seeding no Taskfile line   │
+# │ can express); the rest are plain go/npm/docker and run  │
+# │ without forge installed.                                │
 # └─────────────────────────────────────────────────────────┘
 
 vars:
   GEN_DIR: gen
+  # GOTESTRACE is a TOP-LEVEL var on purpose: only global vars can be
+  # overridden from the command line (`task test GOTESTRACE=`), which is how
+  # the generated CI workflow passes through forge.yaml's `ci.test.race`.
+  # Declared on the task itself it would silently win over the override.
+  # Clearing it drops the race detector for one run; leave it set otherwise.
+  GOTESTRACE: '-race'
   FRONTEND_DIR: frontends/web
 
 tasks:
@@ -59,23 +74,68 @@ tasks:
       - npm run build
 
   test:
-    desc: Run Go unit tests and frontend tests (excludes integration + e2e)
+    # Everything after `--` REPLACES the default `./...`, so it takes both
+    # flags and package patterns:
+    #
+    #   task test                                  whole module + frontends
+    #   task test -- ./internal/lifecycle/...       only those Go packages
+    #   task test -- -v ./...                       verbose
+    #   task test -- -run TestFoo ./internal/...    one test
+    #   task test GOTESTRACE=                       without the race detector
+    #
+    # A scoped run skips the frontend lane — a Go package pattern says nothing
+    # about a frontend. An unmatched pattern fails in `go test` itself, so a
+    # scoped run can never quietly widen into a whole-module run that still
+    # reports success.
+    desc: Run Go unit tests and every frontend's tests (excludes integration + e2e)
     cmds:
       # Integration and e2e tests are guarded by the `integration` and `e2e`
       # build tags respectively, so they are physically excluded from this
       # default test run (no compile, no skip-at-runtime).
-      # -timeout 30s surfaces hangs (subprocess loops, deadlocks, accidental
+      #
+      # -timeout 120s surfaces hangs (subprocess loops, deadlocks, accidental
       # network calls) as fast test failures instead of CI-stalling 10-minute
-      # waits. Pure unit tests should complete in milliseconds; if a test needs
-      # longer it likely belongs behind a build tag (integration / e2e).
-      - go test -race -count=1 -timeout 30s ./...
+      # waits. It is not 30s because the born CRUD tests boot an embedded
+      # postgres on first use: a cold boot alone can eat most of a 30s budget,
+      # so the tighter bound failed the suite for being slow rather than wrong.
+      - go test {{.GOTESTRACE}} -count=1 -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
       - task: test:frontend
 
   test:frontend:
-    desc: Run frontend tests
-    dir: '{{.FRONTEND_DIR}}'
+    # Frontends are DISCOVERED at run time, not baked in at scaffold time.
+    # This task is generated once and never regenerated, so a hard-coded
+    # frontend directory would silently stop covering the project the moment
+    # someone ran `forge scaffold frontend <name>` for a second app — the
+    # suite would stay green while testing only the original one. The glob
+    # also makes this a clean no-op for a backend-only project.
+    desc: Run tests for every frontend under frontends/
     cmds:
-      - npm test -- --passWithNoTests
+      # silent: the loop below prints one `==> npm test (<dir>)` line per
+      # frontend, which is the useful output. Without it Task echoes the whole
+      # script — comments included — on every run of the default test gate.
+      - silent: true
+        cmd: |
+          # A scoped run (`task test -- ./some/pkg/...`) selected Go packages,
+          # which says nothing about any frontend — running the JS suites
+          # anyway is how a "just this package" run ends up executing tests in
+          # a frontend someone else is editing, and reporting on them.
+          if [ -n "{{.CLI_ARGS}}" ]; then
+            echo "Go package patterns given — skipping the frontend lane."
+            exit 0
+          fi
+          # `[ -f ... ] || continue` is what makes the no-frontend case safe:
+          # an unmatched glob expands to the literal pattern in POSIX sh (the
+          # shell Task uses), so without the guard this would try to cd into a
+          # directory named `frontends/*`.
+          ran=0
+          for pkg in frontends/*/package.json; do
+            [ -f "$pkg" ] || continue
+            dir="$(dirname "$pkg")"
+            echo "==> npm test ($dir)"
+            (cd "$dir" && npm test -- --passWithNoTests) || exit 1
+            ran=$((ran + 1))
+          done
+          [ "$ran" -gt 0 ] || echo "No frontends/*/package.json — skipping frontend tests."
 
   test:integration:
     desc: Run integration tests (uses -tags=integration; may require docker compose)
@@ -84,12 +144,31 @@ tasks:
       # therefore excluded from `task test`. They typically need a real
       # database / running infra (see docker-compose.yml). -timeout=10m gives
       # heavy DB-backed scenarios room while still surfacing hangs.
-      - go test -race -tags=integration -count=1 -timeout=10m ./...
+      - go test {{.GOTESTRACE}} -tags=integration -count=1 -timeout=10m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
 
   test:e2e:
+    # `--` args replace the default `./e2e/...`, same as `task test`, so
+    # `task test:e2e -- ./e2e/users/...` targets one service's suite. Every
+    # lane accepts them for the same reason: a target that ACCEPTS arguments
+    # and ignores them reports success for a run the caller never asked for.
+    # Already verbose (-v) — e2e failures are unreadable without it.
     desc: Run end-to-end tests (requires docker compose; uses -tags=e2e)
     cmds:
-      - go test -tags=e2e -v -count=1 -timeout=20m ./e2e/...
+      - go test -tags=e2e -v -count=1 -timeout=20m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./e2e/...{{end}}
+
+  test:all:
+    # The full-suite gate. `task test` is the fast lane (unit + frontend) and
+    # is what the CI test job and the local edit loop run; this target adds the
+    # integration lane for a pre-merge sweep.
+    #
+    # e2e is deliberately NOT here: it needs a deployed stack (cluster,
+    # ingress, seeded database), so it has its own target and its own CI job.
+    # Folding it in would make `task test:all` unrunnable on a fresh checkout,
+    # which is exactly when people reach for it.
+    desc: Run the unit + frontend and integration suites (e2e has its own target)
+    cmds:
+      - task: test
+      - task: test:integration
 
   lint:
     desc: Run all linters via the forge CLI (Go + proto + frontend)
@@ -252,23 +331,20 @@ tasks:
       - go run ./cmd/demo db migrate up
 
   db-seed:
-    # Loads every file in db/seeds/ in lexicographic order via psql. Seeds
-    # are expected to be idempotent (ON CONFLICT DO NOTHING or equivalent),
-    # so re-running is safe. $DATABASE_URL must be set — fall back to the
-    # docker-compose default so `task db-seed` works out of the box.
-    desc: Apply all SQL files in db/seeds/ against $DATABASE_URL
+    # Materializes the deterministic dev dataset (introspected from the applied
+    # schema, FK-coherent, idempotent) and then applies your db/seeds/custom/
+    # overlay. Runs via the forge CLI — the applier is intentionally NOT in
+    # your server binary, so seeding capability is absent from production. Dev
+    # only; refuses non-dev environments.
+    desc: Seed the dev database (`forge db seed apply`)
     cmds:
       - cmd: |
-          if ! command -v psql >/dev/null 2>&1; then
-            echo "psql not installed — install postgresql-client" >&2
+          if ! command -v forge >/dev/null 2>&1; then
+            echo "forge CLI not on PATH — seeding is a forge dev capability (not in your app binary)" >&2
             exit 1
           fi
           : "${DATABASE_URL:?DATABASE_URL must be set (in your shell env or config.<env>.yaml)}"
-          shopt -s nullglob
-          for f in db/seeds/*.sql; do
-            echo "applying $f"
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
-          done
+          forge db seed apply
 
   db-snapshot-restore:
     # Restore a sanitized snapshot dump (custom-format pg_dump, optionally

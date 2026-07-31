@@ -1,12 +1,12 @@
 // File: internal/cli/lint_json.go
 //
 // `forge lint --json` — machine-readable lint output for sub-agents
-// and CI, following the same conventions as `forge audit --json` and
+// and CI, following the same conventions as `forge project audit --json` and
 // `forge doctor --json` (flag name `--json`, indented json.Encoder to
 // stdout, non-zero exit via a sentinel error after the report prints).
 //
 // Output contract (stable; extensions are additive, same policy as the
-// audit-json skill documents for `forge audit --json`):
+// audit-json skill documents for `forge project audit --json`):
 //
 //	{
 //	  "findings": [
@@ -15,7 +15,7 @@
 //	      "line": 42,                          // 1-based; omitted when unknown
 //	      "col": 7,                            // 1-based; omitted when unknown
 //	      "severity": "error",                 // "error" | "warning" | "info"
-//	      "rule": "forge-wire-coverage",       // rule id; "external" for raw sub-tool lines
+//	      "rule": "forge-config-deps",         // rule id; "external" for raw sub-tool lines
 //	      "message": "...",
 //	      "fix_hint": "..."                    // omitted when the rule has none
 //	    }
@@ -28,8 +28,40 @@
 // when text mode would have exited non-zero, and in that case the
 // command returns a sentinel error after the JSON has been written so
 // cobra exits 1. Linters that are warnings-only in text mode (db,
-// tests, banners, check-workarounds, orm-sync, frontend-packs,
-// frontend-stores, wire-coverage TODOs) never flip `ok`.
+// tests, banners, check-workarounds, orm-sync,
+// frontend-stores, config-deps) never flip `ok`.
+//
+// New rules arrive as NEW `rule` values on the existing finding shape —
+// the additive-extension contract: no field is renamed or repurposed, so
+// a consumer that filters on the rules it knows keeps working. The
+// generated-file ownership gate contributes two:
+// `forge-generated-file-edited` (error; flips `ok` to false) and
+// `forge-generated-file-unverified` (warning; never flips `ok`).
+//
+// The frontend typecheck lane contributes two more:
+// `forge-frontend-typecheck` (TypeScript diagnostics, file/line/col
+// anchored at the project-relative source path; severity follows
+// forge.yaml's lint.frontend.typecheck, error by default) and
+// `forge-frontend-typecheck-unavailable` (warning — the check could NOT
+// run because deps aren't installed or no compiler resolves; escalates
+// to a gating error under --strict). A consumer that treats "unavailable"
+// as clean is asserting something the report never claims: a typecheck
+// that could not run is not a typecheck that passed.
+//
+// THE `-unavailable` FAMILY. That last sentence is a contract, not a note
+// about one lane, and every lane that can fail to execute names the
+// condition with its own rule id:
+//
+//	forge-frontend-typecheck-unavailable   — no compiler / deps not installed
+//	forge-frontend-lint-unavailable        — frontend dir missing / deps not installed
+//	typed-config-guardrail-unavailable     — golangci-lint never reported
+//
+// All three are warnings by default and errors that flip `ok` under
+// --strict. The rule id is what makes them machine-legible: before it
+// existed, the guardrail reported "could not run" under the SAME rule id
+// and severity as its real findings, so `forge lint --json` answered
+// "ok": true over a check that never executed and no consumer could tell.
+// New lanes join the family rather than inventing a spelling.
 //
 // External sub-tools (golangci-lint, contractlint, buf, npm scripts)
 // have their output captured and normalized: lines matching the
@@ -57,7 +89,6 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
-	"github.com/reliant-labs/forge/internal/linter/frontendpacklint"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 	"github.com/reliant-labs/forge/internal/linter/scaffolds"
 )
@@ -141,7 +172,7 @@ func skippedFinding(msg string) lintJSONFinding {
 // document to stdout.
 //
 // Stray human prints are a hazard here: several shared helpers
-// (resolveContractLintBinary, loadProjectConfig warnings) write to
+// (loadProjectConfig warnings and friends) write to
 // os.Stdout. For the collection phase we point os.Stdout at stderr so
 // stdout stays pure JSON and nothing a helper says is lost — it just
 // lands on stderr where humans (and CI logs) still see it.
@@ -221,12 +252,12 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 			return nil, err
 		}
 		return buildLintJSONReport(fs, gated), nil
-	case flags.frontendPacks:
-		fs, err := collectFrontendPacksJSON()
+	case flags.generatedDrift:
+		fs, gated, err := collectGeneratedDriftJSON(cwd)
 		if err != nil {
 			return nil, err
 		}
-		return buildLintJSONReport(fs, false), nil
+		return buildLintJSONReport(fs, gated), nil
 	case flags.frontendStores:
 		fs, err := collectFrontendStoresJSON(cwd)
 		if err != nil {
@@ -251,18 +282,6 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 			return nil, err
 		}
 		return buildLintJSONReport(fs, false), nil
-	case flags.wireCoverage:
-		fs, gated, err := collectWireCoverageJSON(cwd)
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, gated), nil
-	case flags.bootstrapCoverage:
-		fs, gated, err := collectBootstrapCoverageJSON(cwd)
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, gated), nil
 	case flags.checkWorkarounds:
 		fs, err := collectWorkaroundsJSON(cwd)
 		if err != nil {
@@ -283,7 +302,12 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 		return buildLintJSONReport(fs, false), nil
 	}
 
-	return collectAllLintersJSON(ctx, flags.strict, paths, cfg, cwd)
+	return collectAllLintersJSON(ctx, lintRunOptions{
+		strict:        flags.strict,
+		skipFrontends: flags.skipFrontends,
+		paths:         paths,
+		cfg:           cfg,
+	}, cwd)
 }
 
 // collectAllLintersJSON mirrors runAllLinters step-for-step. Each step
@@ -293,8 +317,16 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 // — matching text mode, which prints the failure and keeps walking
 // only for the advisory linters but hard-fails the run for the gating
 // ones via hasFailed.
-func collectAllLintersJSON(ctx context.Context, strict bool, paths []string, cfg *config.ProjectConfig, cwd string) (*lintJSONReport, error) {
-	rc := &lintRunCtx{ctx: ctx, fix: false, strict: strict, paths: paths, cfg: cfg, cwd: cwd}
+func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string) (*lintJSONReport, error) {
+	rc := &lintRunCtx{
+		ctx:           ctx,
+		fix:           false,
+		strict:        opts.strict,
+		skipFrontends: opts.skipFrontends,
+		paths:         opts.paths,
+		cfg:           opts.cfg,
+		cwd:           cwd,
+	}
 
 	var findings []lintJSONFinding
 	gated := false
@@ -341,9 +373,9 @@ func collectAllLintersJSON(ctx context.Context, strict bool, paths []string, cfg
 
 // findingsToJSON is the single canonical mapper from the shared
 // finding.Finding (emitted by every internal linter — forgeconv,
-// scaffolds, migrationlint, frontendpacklint) onto the lint --json
-// contract. It replaces the four near-identical per-package mappers that
-// existed before the finding package was introduced.
+// scaffolds, migrationlint) onto the lint --json contract. It replaces
+// the near-identical per-package mappers that existed before the finding
+// package was introduced.
 //
 // Field mapping rules, unified:
 //   - Severity passes through directly: the canonical finding severities
@@ -352,11 +384,6 @@ func collectAllLintersJSON(ctx context.Context, strict bool, paths []string, cfg
 //   - File comes from f.File, falling back to f.Path for whole-file
 //     (line-less) scaffold findings — exactly one of the two is ever set.
 //   - Remediation becomes fix_hint (forgeconv's actionable hints).
-//
-// Pack/Import are linter-internal context that the JSON contract folds
-// into Message at emit time, so they are not projected as separate
-// fields here (preserving the historical frontendpacklint JSON shape,
-// which never exposed them either).
 func findingsToJSON(fs []finding.Finding) []lintJSONFinding {
 	out := make([]lintJSONFinding, 0, len(fs))
 	for _, f := range fs {
@@ -406,21 +433,9 @@ func collectMigrationSafetyJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, b
 	// Migration findings share one fixed remediation (they carry no
 	// per-finding Remediation of their own).
 	for i := range out {
-		out[i].FixHint = "either rewrite the destructive migration as a non-destructive sequence, or allowlist the file under migration_safety.allowed_destructive in forge.yaml"
+		out[i].FixHint = migrationlint.DestructiveChangeRemediation
 	}
 	return out, result.HasErrors(), nil
-}
-
-func collectFrontendPacksJSON() ([]lintJSONFinding, error) {
-	packsRoot := filepath.Join("internal", "packs")
-	if _, err := os.Stat(packsRoot); os.IsNotExist(err) {
-		return []lintJSONFinding{skippedFinding("No internal/packs/ directory found — skipping frontend pack lint")}, nil
-	}
-	res, err := frontendpacklint.LintPacksRoot(packsRoot)
-	if err != nil {
-		return nil, fmt.Errorf("frontend pack lint failed: %w", err)
-	}
-	return findingsToJSON(res.Findings), nil
 }
 
 func collectFrontendStoresJSON(cwd string) ([]lintJSONFinding, error) {
@@ -464,74 +479,6 @@ func collectBannersJSON(cwd string) ([]lintJSONFinding, error) {
 		return nil, fmt.Errorf("banner lint failed: %w", err)
 	}
 	return findingsToJSON(res.Findings), nil
-}
-
-// collectWireCoverageJSON mirrors runWireCoverageLint: TODO markers are
-// warnings, unresolved forge:placeholder annotations are errors and
-// gate the build.
-func collectWireCoverageJSON(projectDir string) ([]lintJSONFinding, bool, error) {
-	var out []lintJSONFinding
-
-	path := filepath.Join(projectDir, "pkg", "app", "wire_gen.go")
-	if f, err := os.Open(path); err == nil {
-		got, scanErr := scanWireGen(f, path, projectDir)
-		_ = f.Close()
-		if scanErr != nil {
-			return nil, false, fmt.Errorf("scan %s: %w", path, scanErr)
-		}
-		for _, w := range got {
-			msg := fmt.Sprintf("%s is unresolved — wire_gen emitted a typed-zero placeholder", w.Field)
-			if w.Function != "" {
-				msg = fmt.Sprintf("%s in %s is unresolved — wire_gen emitted a typed-zero placeholder", w.Field, w.Function)
-			}
-			out = append(out, lintJSONFinding{
-				File:     w.File,
-				Line:     w.Line,
-				Severity: lintSevWarning,
-				Rule:     "forge-wire-coverage",
-				Message:  msg,
-				FixHint:  fmt.Sprintf("add `%s <Type>` to AppExtras in pkg/app/app_extras.go and assign in setup.go, OR mark the field `// forge:optional-dep` if it's intentionally optional", w.Field),
-			})
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, false, fmt.Errorf("open %s: %w", path, err)
-	}
-
-	placeholders, err := scanUnresolvedPlaceholders(projectDir)
-	if err != nil {
-		return nil, false, fmt.Errorf("scan placeholders: %w", err)
-	}
-	for _, p := range placeholders {
-		out = append(out, lintJSONFinding{
-			File:     filepath.Join("pkg", "app", "app_extras.go"),
-			Severity: lintSevError,
-			Rule:     "forge-wire-coverage",
-			Message:  fmt.Sprintf("%s carries `forge:placeholder: %s` but is still typed `%s`", p.FieldName, p.TargetType, p.CurrentType),
-			FixHint:  fmt.Sprintf("tighten the declaration in app_extras.go from `%s %s` to `%s %s`, then re-run `forge generate`", p.FieldName, p.CurrentType, p.FieldName, p.TargetType),
-		})
-	}
-	return out, len(placeholders) > 0, nil
-}
-
-func collectBootstrapCoverageJSON(projectDir string) ([]lintJSONFinding, bool, error) {
-	gaps, skipReason, err := collectBootstrapCoverageFindings(projectDir)
-	if err != nil {
-		return nil, false, err
-	}
-	if skipReason != "" {
-		return []lintJSONFinding{skippedFinding("bootstrap-deps-coverage: " + skipReason)}, false, nil
-	}
-	out := make([]lintJSONFinding, 0, len(gaps))
-	for _, g := range gaps {
-		out = append(out, lintJSONFinding{
-			File:     filepath.Join("internal", g.Package, "contract.go"),
-			Severity: lintSevError,
-			Rule:     "forge-bootstrap-deps-coverage",
-			Message:  fmt.Sprintf("%s matches AppExtras.%s by name but the types diverge (Deps.%s = %s, AppExtras.%s = %s) — bootstrap silently drops the wire and the feature no-ops at runtime", g.Field, g.Field, g.Field, g.DepsType, g.Field, g.AppType),
-			FixHint:  fmt.Sprintf("align AppExtras.%s to %s, OR re-construct %s.New(%s.Deps{%s: ...}) in pkg/app/setup.go", g.Field, g.DepsType, g.Package, g.Package, g.Field),
-		})
-	}
-	return out, len(gaps) > 0, nil
 }
 
 // collectOptionalDepsGuardJSON maps optional-deps-guard findings onto
@@ -674,81 +621,88 @@ func collectGolangciLintJSON(ctx context.Context, paths []string) ([]lintJSONFin
 	return nil, false
 }
 
+// Rule ids contributed by the typed-config guardrail lane.
+//
+// They are SEPARATE ids for the same reason the frontend typecheck lane's
+// are: a consumer must be able to tell "the guardrail ran and had nothing to
+// say" from "the guardrail never ran", and one shared id forces it to parse
+// English out of a free-text message to do that. Both conditions used to
+// arrive as rule "typed-config-guardrail" at warning severity, so a machine
+// reading `ok` — or filtering by rule — could not distinguish them at all.
+const (
+	// ruleTypedAccessGuard tags a forbidigo finding the advisory pass
+	// actually reported.
+	ruleTypedAccessGuard = "typed-config-guardrail"
+	// ruleTypedAccessGuardUnavailable tags the pass producing NO verdict:
+	// golangci-lint never got far enough to report. Warning by default,
+	// error (and gating) under --strict.
+	ruleTypedAccessGuardUnavailable = "typed-config-guardrail-unavailable"
+)
+
 // collectTypedAccessGuardJSON mirrors runTypedAccessGuardAdvisory with
 // captured output. It is the `warn` arm of config.enforce_typed_access:
-// forbidigo findings are surfaced as WARNINGS that never gate (the bool
-// return is always false). Run with --issues-exit-code=0 so a non-zero exit
-// only signals a genuine tool error, which degrades to a single warning
-// finding rather than gating.
-func collectTypedAccessGuardJSON(ctx context.Context, paths []string) ([]lintJSONFinding, bool, error) {
-	args := append([]string{"run", "--enable-only=forbidigo", "--issues-exit-code=0"}, paths...)
-	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
+// forbidigo FINDINGS are surfaced as warnings that never gate.
+//
+// Run with --issues-exit-code=0, so a non-zero exit cannot mean "found
+// something" — it can only mean the invocation never reported. That is not a
+// clean lane: it is emitted under ruleTypedAccessGuardUnavailable, and under
+// --strict it is an error that flips `ok` to false. The old code returned the
+// same rule id at warning severity with gated=false, so `forge lint --json`
+// answered "ok": true over a check that never executed.
+func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+	args := append([]string{"run", "--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths...)
+	cmd := exec.CommandContext(rc.ctx, "golangci-lint", args...)
 	var buf strings.Builder
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	if err := cmd.Run(); err != nil {
-		// Tool error (not findings — those are neutralized by
-		// --issues-exit-code=0). Degrade to a single advisory finding.
-		return []lintJSONFinding{{
-			Severity: lintSevWarning,
-			Rule:     "typed-config-guardrail",
-			Message:  fmt.Sprintf("typed-config guardrail check could not run: %v", err),
-		}}, false, nil
+		out := []lintJSONFinding{{
+			Severity: unavailableSeverity(rc.strict),
+			Rule:     ruleTypedAccessGuardUnavailable,
+			Message:  fmt.Sprintf("typed-config guardrail did NOT run: golangci-lint exited %v", err),
+			FixHint:  typedAccessGuardUnavailableHint,
+		}}
+		// Whatever golangci-lint managed to emit is the EVIDENCE for why it
+		// could not run ("parallel golangci-lint is running"). This
+		// collector used to capture it into buf and then drop it on the
+		// floor, leaving the consumer an exit status and no cause.
+		out = append(out, externalLinesToFindings(buf.String(), ruleTypedAccessGuardUnavailable, lintSevInfo)...)
+		return out, rc.strict, nil
 	}
-	fs := externalLinesToFindings(buf.String(), "typed-config-guardrail", lintSevWarning)
+	fs := externalLinesToFindings(buf.String(), ruleTypedAccessGuard, lintSevWarning)
 	return fs, false, nil
 }
 
-// collectContractLintJSON mirrors runContractLinter with captured
-// output. Exit code 3 is the analyzer's "violations found" signal —
-// the diagnostics are parsed into findings and the run gates. Any
-// other failure gates with the raw output preserved.
+// collectContractLintJSON mirrors runContractLinter: the same
+// IN-PROCESS analysis (contract_inprocess.go), with diagnostics mapped
+// to findings instead of printed. Diagnostics gate; an analysis failure
+// (broken packages, analyzer error) gates with the error preserved as a
+// finding.
 func collectContractLintJSON(ctx context.Context, paths []string, excludes []string) ([]lintJSONFinding, bool, error) {
-	binPath, err := resolveContractLintBinary(ctx)
+	diags, err := runContractAnalysisInProcess(ctx, paths, excludes)
 	if err != nil {
-		return nil, false, err
+		return []lintJSONFinding{{
+			Severity: lintSevError,
+			Rule:     "contract",
+			Message:  fmt.Sprintf("contract linter failed: %v", err),
+		}}, true, nil
 	}
-
-	var lintArgs []string
-	if len(excludes) > 0 {
-		lintArgs = append(lintArgs, "-exclude="+strings.Join(excludes, ","))
+	if len(diags) == 0 {
+		return nil, false, nil
 	}
-	lintArgs = append(lintArgs, paths...)
-
-	var lintExec *exec.Cmd
-	if strings.HasSuffix(binPath, "main.go") {
-		goArgs := append([]string{"run", binPath}, lintArgs...)
-		lintExec = exec.CommandContext(ctx, "go", goArgs...)
-	} else {
-		lintExec = exec.CommandContext(ctx, binPath, lintArgs...)
+	fs := make([]lintJSONFinding, 0, len(diags))
+	for _, d := range diags {
+		fs = append(fs, lintJSONFinding{
+			File:     d.Pos.Filename,
+			Line:     d.Pos.Line,
+			Col:      d.Pos.Column,
+			Severity: lintSevError,
+			Rule:     "contract",
+			Message:  fmt.Sprintf("%s (%s)", d.Message, d.Analyzer),
+			FixHint:  "either declare the exported method in the contract interface, or unexport it (lowercase) if it's helper-only",
+		})
 	}
-
-	// Same env discipline as the text path — see runContractLinter for
-	// the GOWORK / GOFLAGS rationale.
-	lintExec.Env = os.Environ()
-	if !hasWorkspaceGoMod() {
-		lintExec.Env = appendEnvIfUnset(lintExec.Env, "GOWORK", "off")
-		lintExec.Env = appendEnvIfUnset(lintExec.Env, "GOFLAGS", "-mod=mod")
-	}
-	lintExec.Env = ensureEnvDefault(lintExec.Env, "GOPROXY", "https://proxy.golang.org,direct")
-
-	var buf strings.Builder
-	lintExec.Stdout = &buf
-	lintExec.Stderr = &buf
-
-	if err := lintExec.Run(); err != nil {
-		fs := externalLinesToFindings(buf.String(), "contract", lintSevError)
-		if len(fs) == 0 {
-			fs = []lintJSONFinding{{Severity: lintSevError, Rule: "contract", Message: fmt.Sprintf("contract linter failed: %v", err)}}
-		}
-		for i := range fs {
-			if fs[i].FixHint == "" {
-				fs[i].FixHint = "either declare the exported method in the contract interface, or unexport it (lowercase) if it's helper-only"
-			}
-		}
-		return fs, true, nil
-	}
-	return nil, false, nil
+	return fs, true, nil
 }
 
 // collectBufLintJSON runs `buf lint` with captured output. Missing
@@ -771,12 +725,24 @@ func collectBufLintJSON(ctx context.Context) ([]lintJSONFinding, bool) {
 	return nil, false
 }
 
+// ruleFrontendLintUnavailable tags a frontend whose eslint lane could NOT
+// run (declared directory missing, or deps not installed). It used to arrive
+// as rule "skipped" at info severity — indistinguishable from a lane that
+// genuinely did not apply, over a GATING step. Warning by default, error
+// (and gating) under --strict, matching ruleFrontendTypecheckUnavailable.
+const ruleFrontendLintUnavailable = "forge-frontend-lint-unavailable"
+
 // collectFrontendLintJSON mirrors runFrontendLinters / lintFrontendDir
 // but captures npm output instead of streaming it. Failed scripts gate
 // (matching text mode); their output is preserved line-by-line via
-// externalLinesToFindings. Skips (missing dir / node_modules / script)
-// surface as info findings.
-func collectFrontendLintJSON(ctx context.Context, cfg *config.ProjectConfig) ([]lintJSONFinding, bool) {
+// externalLinesToFindings. A frontend the lane could not check surfaces
+// under ruleFrontendLintUnavailable; a frontend with no lint script (the
+// project's own choice) stays an info "skipped".
+//
+// TypeScript typechecking is collected by collectFrontendTypecheckJSON
+// (its own pipeline step), not here.
+func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
+	ctx, cfg := rc.ctx, rc.cfg
 	type fe struct{ name, dir, feType string }
 	var frontends []fe
 	cssHealth := false
@@ -802,17 +768,31 @@ func collectFrontendLintJSON(ctx context.Context, cfg *config.ProjectConfig) ([]
 
 	var out []lintJSONFinding
 	gated := false
+	unavailable := func(msg, hint string) {
+		out = append(out, lintJSONFinding{
+			Severity: unavailableSeverity(rc.strict),
+			Rule:     ruleFrontendLintUnavailable,
+			Message:  msg,
+			FixHint:  hint,
+		})
+		if rc.strict {
+			gated = true
+		}
+	}
 	for _, f := range frontends {
 		if !dirExists(f.dir) {
-			out = append(out, skippedFinding(fmt.Sprintf("%s: directory %s not found, skipping", f.name, f.dir)))
+			unavailable(fmt.Sprintf("%s: directory %s not found — eslint did NOT run", f.name, f.dir),
+				fmt.Sprintf("fix the `path:` for frontend %q in forge.yaml, or remove the entry", f.name))
 			continue
 		}
 		pkgJSON := filepath.Join(f.dir, "package.json")
 		if _, err := os.Stat(pkgJSON); err != nil {
+			// Not a Node project — does not apply, so it contributes nothing.
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(f.dir, "node_modules")); os.IsNotExist(err) {
-			out = append(out, skippedFinding(fmt.Sprintf("%s: node_modules not found — run 'npm install' in %s", f.name, f.dir)))
+			unavailable(fmt.Sprintf("%s: node_modules not found in %s — eslint did NOT run", f.name, f.dir),
+				fmt.Sprintf("run `npm install` in %s, then re-run `forge lint`", f.dir))
 			continue
 		}
 		scripts, err := readPackageScripts(pkgJSON)
@@ -843,11 +823,6 @@ func collectFrontendLintJSON(ctx context.Context, cfg *config.ProjectConfig) ([]
 			runScript("lint")
 		} else {
 			out = append(out, skippedFinding(fmt.Sprintf("%s: no npm lint script found, skipping lint", f.name)))
-		}
-		if hasPackageScript(scripts, "typecheck") {
-			runScript("typecheck")
-		} else if _, err := os.Stat(filepath.Join(f.dir, "tsconfig.json")); err == nil {
-			out = append(out, skippedFinding(fmt.Sprintf("%s: no npm typecheck script found; add `typecheck`: `tsc --noEmit`", f.name)))
 		}
 		if cssHealth {
 			if hasPackageScript(scripts, "lint:styles") {

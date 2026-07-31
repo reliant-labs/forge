@@ -9,7 +9,7 @@ import (
 // TestRollbackContext_DeclaredIsTheOnlySource confirms the K8sCluster
 // rollback derives its kubectl context SOLELY from the group's declared
 // cluster (KCL forge.K8sCluster.cluster) — the same declarative binding
-// the deploy path uses, with no CLI override. A `forge deploy <env>
+// the deploy path uses, with no CLI override. A `forge env deploy <env>
 // --rollback` therefore can't `kubectl rollout undo` against the wrong
 // cluster by relying on the active context.
 func TestRollbackContext_DeclaredIsTheOnlySource(t *testing.T) {

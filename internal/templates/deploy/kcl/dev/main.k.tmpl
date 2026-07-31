@@ -12,11 +12,11 @@ Two outputs:
 
   * `manifests` — Kubernetes manifest list rendered for the env from
     components_gen.json + the forge.components schemas. Pipe to
-    `kubectl apply -f -` or `forge deploy dev`. Select with
+    `kubectl apply -f -` or `forge env deploy dev`. Select with
     `kcl run deploy/kcl/dev -S manifests --format yaml`.
 
   * `output` — JSON contract the forge CLI consumes (`forge build`,
-    `forge up`, `forge deploy`) for host-vs-cluster dispatch + builds.
+    `forge env up`, `forge env deploy`) for host-vs-cluster dispatch + builds.
     Bridged from the same component data. Select with
     `kcl run deploy/kcl/dev -S output --format json`.
 
@@ -33,15 +33,16 @@ command `kcl run deploy/kcl/dev` is run from.
 import forge
 import forge.components as fc
 
-# Per-environment config (generated from forge.yaml + proto annotations).
-# Run `forge generate` to refresh after editing forge.yaml or the config
-# proto. Hand-editing this file is not recommended.
-import deploy.kcl.dev.config_gen as cfg
+# Per-environment config — KCL-native path: the typed AppConfig values
+# live in the user-owned `config.k` next to this file; the generated
+# `config_projection.appConfigEnvMap` projects them into env vars.
+import config_projection
+import .config as appcfg
 {{- if .IngressEnabled}}
 
 # Gateway API ingress topology — user-owned. Base lives in
 # `deploy/kcl/ingress.k`; this env may override hosts, ports, or TLS.
-import deploy.kcl.dev.ingress as ing
+import .ingress as ing
 {{- end}}
 
 # Env-wide deploy target. Overridable via `kcl run -D registry=...`.
@@ -54,11 +55,11 @@ _cluster = forge.ClusterTarget {
     registry = _registry
 }
 
-# Base env every component sees (COMMON_ENV + per-env config_gen), assembled
-# with forge.env_merge (name-keyed, LAST-wins) so a later layer overrides an
-# earlier one by name instead of the `+`-concat footgun (which emits duplicate
-# keys kubectl rejects).
-_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, cfg.APP_ENV), [
+# Base env every component sees (COMMON_ENV + per-env config.k projection),
+# assembled with forge.env_merge (name-keyed, LAST-wins) so a later layer
+# overrides an earlier one by name instead of the `+`-concat footgun (which
+# emits duplicate keys kubectl rejects).
+_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, forge.env_project(config_projection.appConfigEnvMap(appcfg.app_config))), [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
 ])
 
@@ -75,7 +76,18 @@ _components = [c | {
 } for c in fc.load_components(fc.COMPONENTS_GEN)]
 
 _component_env = fc.ComponentEnv {
+    # Deploy-time schema migrations. `load_migrate` reads the argv forge
+    # emits into components_gen.json (`/app/<project> db migrate up`, over the
+    # migrations EMBEDDED in the image) — empty until the project ships its
+    # first db/migrations/*.sql, populated from then on with no edit here.
+    #
+    # It renders as an initContainer on every Deployment-shaped workload, so
+    # the schema is current BEFORE any new pod serves a request and a failed
+    # migration stalls the rollout with the old pods still serving. Concurrent
+    # replicas are safe — golang-migrate takes a postgres advisory lock.
+    migrate = fc.load_migrate(fc.COMPONENTS_GEN)
     namespace = _namespace
+    project = "{{.ProjectName}}"
     registry = _registry
     image_tag = forge.image_tag("dev")
     network_policies = False
@@ -87,7 +99,9 @@ _component_env = fc.ComponentEnv {
 # owns those).
 _support = forge.Bundle {
     cluster_target = _cluster
-    config_maps = cfg.CONFIG_MAPS
+    # Config rides the appConfigEnvMap projection on every component env;
+    # no standalone ConfigMap resources on the native config path.
+    config_maps = []
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
     http_routes = ing.HTTP_ROUTES
@@ -116,6 +130,12 @@ _bundle = forge.Bundle {
         image = "{{.ProjectName}}"
         command = c.command
         env_vars = c.env_vars
+        # Ports come from THIS file, never from components_gen.json: a port is a
+        # deploy fact. Add them to the `_components` overlay above
+        # (`ports = [fc.ComponentPort {name = "http", port = 9090, expose = True}]`)
+        # and they flow to both the manifests and this build/dispatch contract.
+        # Empty is the normal case — the Server expansion serves the standard
+        # :8080 mux, which is the one port the binary actually binds.
         deploy = _cluster.deploy | {ports = [p.port for p in c.ports]}
         if c.build:
             build = forge.build_of(c.build)
@@ -141,7 +161,20 @@ _bundle = forge.Bundle {
         crds = c.crds
         env_vars = c.env_vars
     } for c in _op_components]
-    config_maps = cfg.CONFIG_MAPS
+    config_maps = []
+    # SECRET VALUES for this env. Every config field marked `sensitive: true`
+    # in proto/config/v1/config.proto projects into the manifest as a
+    # valueFrom.secretKeyRef — a REFERENCE — so the values have to come from
+    # somewhere forge can read WITHOUT putting them in git. On a local cluster
+    # that is the gitignored `.env.dev`: forge resolves each declared ref from
+    # it, renders the backing Secret CLI-side, and applies it BEFORE the
+    # Deployments roll out so every secretKeyRef resolves on first schedule.
+    # It also layers the same values onto host processes (`forge run`).
+    #
+    # LOCAL CLUSTERS ONLY — forge refuses to project a dotenv-rendered
+    # plaintext Secret into a non-local cluster. Cloud envs use
+    # `forge.ExternalSecrets {}` (see staging/prod).
+    secret_provider = forge.DotenvSecrets {path = ".env.dev"}
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
     http_routes = ing.HTTP_ROUTES

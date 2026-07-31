@@ -105,7 +105,7 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 	// If the target doesn't look like a path, resolve it from the project's
 	// component inventory. The inventory is enumerated from the REAL
 	// sources (proto descriptor + owned worker/operator files + cmd/
-	// binaries), not the removed components.json — see
+	// binaries) — see
 	// codegen.IntrospectComponents. Debug commands run at the project root,
 	// consistent with mainPackageForService's relative-path resolution.
 	if !strings.Contains(target, "/") && !strings.Contains(target, ".") {
@@ -118,12 +118,12 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 				break
 			}
 		}
-		// A shared-binary project (one cobra binary dispatching services by
-		// SERVICE_NAME) has no per-service component entry; the service name
-		// is a subcommand of the single ./cmd/<binary>. In that case the
-		// component lookup misses but the project is still debuggable — fall
-		// through to mainPackageForService, which resolves the binary's main
-		// package. Only error if we can't resolve a main package at all.
+		// The lookup can legitimately miss — a target that is not a discovered
+		// component (say a cobra subcommand the user registered in the owned
+		// cmd/<bin>/cmd/commands.go) still belongs to the single
+		// ./cmd/<binary>, so the project is debuggable anyway. Fall through to
+		// mainPackageForService, which resolves the binary's main package.
+		// Only error if we can't resolve a main package at all.
 		mainPkg, err := mainPackageForService(target, svcPath)
 		if err != nil {
 			if !found {
@@ -154,9 +154,9 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 	}
 
 	// Determine binary args + env so the launched process actually SERVES
-	// instead of exiting 0 on a usage message. Forge's shared-binary
-	// convention (mirrored by air/deploy) is `<binary> server` with
-	// SERVICE_NAME selecting the service and PORT binding the listener.
+	// instead of exiting 0 on a usage message: the service's own cobra
+	// subcommand when the tree declares one, else the all-services `server`.
+	// See serviceRunSpec.
 	binArgs, binEnv := serviceRunSpec(target, buildPath, port)
 
 	d := dbgsvc.NewDelveDebugger()
@@ -254,9 +254,9 @@ func discoverDelvePort(ctx context.Context) (string, error) {
 //  2. <svcPath>/cmd/<service>  — per-service cmd/<name> layout
 //  3. cmd/<service>            — top-level cmd/<service> (matches forge's
 //     ./cmd/<name> GoBuild default)
-//  4. the SINGLE cmd/* main package — shared-binary repos dispatch every
-//     service through one cobra binary (SERVICE_NAME selects the service),
-//     so a service name with no own main package maps to that one binary.
+//  4. the SINGLE cmd/* main package — forge repos dispatch every service
+//     through one cobra binary (`<bin> <service>`), so a service name with
+//     no own main package maps to that one binary.
 //  5. <svcPath>                — last resort when svcPath is itself a main pkg
 func mainPackageForService(service, svcPath string) (string, error) {
 	candidates := []string{}
@@ -283,14 +283,14 @@ func mainPackageForService(service, svcPath string) (string, error) {
 		// fall through to svcPath
 	default:
 		// Several binaries. A forge service name that isn't itself a binary
-		// dir (handled above) is a SERVICE_NAME-dispatched subcommand of the
-		// multi-service binary — the one cmd/* whose tree declares a `server`
-		// cobra subcommand. Standalone binaries (a thin proxy, an operator
-		// main) have no `server` subcommand. When exactly one binary is a
+		// dir (handled above) is a cobra subcommand of the multi-service
+		// binary — the one cmd/* whose tree declares a `server` cobra
+		// subcommand. Standalone binaries (a thin proxy, an operator main)
+		// have no `server` subcommand. When exactly one binary is a
 		// multi-service dispatcher, that's the answer.
 		var dispatchers []string
 		for _, m := range mains {
-			if hasServerSubcommand("./" + filepath.ToSlash(m)) {
+			if hasSubcommand("./"+filepath.ToSlash(m), "server") {
 				dispatchers = append(dispatchers, m)
 			}
 		}
@@ -352,28 +352,42 @@ func mainPackagesUnderCmd() []string {
 // serviceRunSpec returns the args + extra env a debugged service binary
 // needs to actually SERVE rather than exit 0 on a usage message.
 //
-// Mirrors air/deploy: a binary that has a cobra `server` subcommand is
-// launched as `<binary> server`, with SERVICE_NAME selecting the service
-// (shared-binary dispatch) and PORT binding the listener. When the binary
-// has no `server` subcommand (a single-purpose main), no args are added and
-// the binary runs as-is.
+// The subcommand IS the selection. `<binary> <service>` is a first-class
+// cobra command that mounts only that service (its RunE names the typed
+// (*app.Components).Mount<Svc> method), so when the command tree declares it
+// that is what we launch. A binary whose tree has no such command — a name
+// the tree reserves (server/version/db/help/completion), or a composition
+// root that never named it — falls back to `<binary> server`, the
+// all-services process. A binary with neither (a single-purpose main) runs
+// as-is with no args.
+//
+// No SERVICE_NAME. It selects NOTHING: the scaffolded config proto reserves
+// the `service_name` field precisely because service identity is a build-time
+// property (the generated ServiceName constant), and every rendered manifest
+// sets SERVICE_NAME to the PROJECT name, not the component's. OTEL_SERVICE_NAME
+// is the per-process identity knob — the same one the per-env main.k sets per
+// component — and PORT binds the listener.
 func serviceRunSpec(service, buildPath string, port int) (args []string, env []string) {
-	if !hasServerSubcommand(buildPath) {
+	switch {
+	case hasSubcommand(buildPath, service):
+		args = []string{service}
+	case hasSubcommand(buildPath, "server"):
+		args = []string{"server"}
+	default:
 		return nil, nil
 	}
-	args = []string{"server"}
-	env = []string{"SERVICE_NAME=" + service, "OTEL_SERVICE_NAME=" + service}
+	env = []string{"OTEL_SERVICE_NAME=" + service}
 	if port > 0 {
 		env = append(env, fmt.Sprintf("PORT=%d", port))
 	}
 	return args, env
 }
 
-// hasServerSubcommand reports whether the binary built from buildPath
-// declares a cobra command with `Use: "server"`. It walks the binary's
-// package tree (cmd/<binary>/...) because the command tree is usually
-// assembled from sibling files / subpackages, not the main package itself.
-func hasServerSubcommand(buildPath string) bool {
+// hasSubcommand reports whether the binary built from buildPath declares a
+// cobra command with `Use: "<use>"`. It walks the binary's package tree
+// (cmd/<binary>/...) because the command tree is usually assembled from
+// sibling files / subpackages, not the main package itself.
+func hasSubcommand(buildPath, use string) bool {
 	root := strings.TrimPrefix(buildPath, "./")
 	if root == "" || root == "." {
 		root = "."
@@ -390,7 +404,7 @@ func hasServerSubcommand(buildPath string) bool {
 		if rerr != nil {
 			return nil
 		}
-		if declaresServerUse(string(data)) {
+		if declaresUse(string(data), use) {
 			found = true
 		}
 		return nil
@@ -398,10 +412,13 @@ func hasServerSubcommand(buildPath string) bool {
 	return found
 }
 
-// declaresServerUse reports whether src contains a cobra command whose Use
-// field is "server" (optionally followed by an arg spec, e.g.
-// `Use: "server [services...]"`). Tolerant of gofmt alignment whitespace.
-func declaresServerUse(src string) bool {
+// declaresUse reports whether src contains a cobra command whose Use field's
+// first word is want (the rest, if any, is the arg spec — e.g.
+// `Use: "db <cmd>"`). Tolerant of gofmt alignment whitespace.
+func declaresUse(src, want string) bool {
+	if want == "" {
+		return false
+	}
 	for _, line := range strings.Split(src, "\n") {
 		t := strings.TrimSpace(line)
 		if !strings.HasPrefix(t, "Use:") {
@@ -422,7 +439,7 @@ func declaresServerUse(src string) bool {
 		if sp := strings.IndexAny(use, " \t"); sp >= 0 {
 			first = use[:sp]
 		}
-		if first == "server" {
+		if first == want {
 			return true
 		}
 	}

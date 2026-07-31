@@ -13,15 +13,21 @@ import type { ReactNode } from "react";
 
 // MockModeBanner renders a loud, always-visible reminder when the app is
 // running against mock data instead of the real backend. Mock mode is
-// opt-in (VITE_MOCK_API in .env.local); the banner exists so a
+// opt-in (VITE_MOCK_API — set it in your shell for dev, or the
+// forge.Frontend `config.mock` KCL knob); the banner exists so a
 // working-looking UI can never silently masquerade as a working stack.
+//
+// It is loud through the SEMANTIC warning tokens (`bg-warning` /
+// `text-on-warning` from index.css), not a raw palette color — the same
+// rule every other surface in this app follows, so rebranding moves the
+// banner too.
 function MockModeBanner() {
   const mode = import.meta.env.VITE_MOCK_API;
   if (mode !== "true" && mode !== "hybrid") return null;
   return (
-    <div className="bg-amber-400 px-4 py-1.5 text-center text-sm font-semibold text-amber-950">
+    <div className="bg-warning px-4 py-1.5 text-center text-sm font-semibold text-on-warning">
       {mode === "true"
-        ? "MOCK DATA — backend not connected (unset VITE_MOCK_API in .env.local to use the real backend)"
+        ? "MOCK DATA — backend not connected (unset VITE_MOCK_API to use the real backend)"
         : "HYBRID MOCK MODE — ?scenario= overlays active; unmatched RPCs hit the real backend"}
     </div>
   );
@@ -29,7 +35,7 @@ function MockModeBanner() {
 
 export default function App({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-gray-50">
+    <div className="flex h-screen flex-col overflow-hidden bg-surface-muted text-ink">
       <MockModeBanner />
       <main className="min-h-0 flex-1 overflow-y-auto p-6">
         {children}

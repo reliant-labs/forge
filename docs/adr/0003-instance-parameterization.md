@@ -29,7 +29,7 @@ Two forge-side gaps blocked this:
    _foo_ on branch _bar_" so it could derive a namespace suffix and a port
    offset.
 
-2. **`forge up` and `forge deploy` rendered DIFFERENT ports.** `up` armed a
+2. **`forge env up` and `forge env deploy` rendered DIFFERENT ports.** `up` armed a
    persisted port store so `resolve_port` returned stable ports across runs;
    `deploy` re-probed the preferred ports on every render, so a port that
    drifted under `up` was re-resolved differently under `deploy`.
@@ -62,7 +62,7 @@ option("branch")    -> str   the current git branch, sanitized DNS-safe,
   differs from `--git-common-dir` (the repo's shared dir) iff this is a
   linked worktree — not by sniffing `.git` file-vs-directory (which
   submodules also trip). A consumer that keys on `worktree` keeps the
-  primary checkout DEFAULT on every branch, so a plain `forge up`/`deploy`
+  primary checkout DEFAULT on every branch, so a plain `forge env up`/`deploy`
   on a feature branch is byte-identical to today.
 - **`branch` resolution:** the current branch (`git rev-parse --abbrev-ref
   HEAD`), `""` on a detached HEAD or outside a repo. Reported for the
@@ -101,7 +101,7 @@ port = forge.allocate_port(base, key)   # -> base + block(key)*100
   up and deploy disagree. This is the contract-port correctness fix.
 - **The `key → block` registry** lives at `.forge/blocks.json` and is
   read-modify-written under a single advisory file lock
-  (`.forge/blocks.lock`, `flock(2)`, blocking). BOTH `forge up` AND `forge
+  (`.forge/blocks.lock`, `flock(2)`, blocking). BOTH `forge env up` AND `forge
   deploy` resolve `allocate_port` through this same lock-guarded registry, so
   the two commands render IDENTICAL ports for a key, and the concurrent
   first-`up` of two worktrees serializes (cannot race to the same block).

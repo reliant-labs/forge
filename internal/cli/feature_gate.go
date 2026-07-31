@@ -6,13 +6,13 @@
 // surface they don't use. Two modes are supported:
 //
 //   - requireFeature is the strict gate: a direct cobra subcommand
-//     (e.g. `forge deploy`, `forge build`) returns
+//     (e.g. `forge env deploy`, `forge build`) returns
 //     config.DisabledFeatureError when the relevant feature is off.
 //     The error format is centralised so sub-agents and humans
 //     grepping for the "feature 'X' is disabled" string find one
 //     authoritative spelling.
 //
-//   - skipFeature is the orchestrator gate: when `forge up` is driving
+//   - skipFeature is the orchestrator gate: when `forge env up` is driving
 //     several phases, a disabled phase logs a one-line skip and the
 //     orchestrator continues with whatever remaining phases are
 //     enabled. Returns false when the feature is off so the caller can
@@ -86,7 +86,6 @@ var featureChecks = map[string]featureCheck{
 	config.FeatureFrontend:       func(f config.FeaturesConfig) bool { return f.FrontendEnabled() },
 	config.FeatureObservability:  func(f config.FeaturesConfig) bool { return f.ObservabilityEnabled() },
 	config.FeatureHotReload:      func(f config.FeaturesConfig) bool { return f.HotReloadEnabled() },
-	config.FeaturePacks:          func(f config.FeaturesConfig) bool { return f.PacksEnabled() },
 	config.FeatureDeploy:         func(f config.FeaturesConfig) bool { return f.DeployEnabled() },
 	config.FeatureIngress:        func(f config.FeaturesConfig) bool { return f.IngressEnabled() },
 	config.FeatureExternalBuilds: func(f config.FeaturesConfig) bool { return f.ExternalBuildsEnabled() },
@@ -125,7 +124,7 @@ func isFeatureEnabled(store featureReader, name string) bool {
 // happy path so the caller can hold on to it without a second read.
 //
 // Use from the top of a cobra RunE when the subcommand has no useful
-// fallback (e.g. `forge deploy` against a project with
+// fallback (e.g. `forge env deploy` against a project with
 // features.deploy: false). Don't use from orchestrators — see
 // skipFeature for the orchestrator shape.
 func requireFeature(name string) (*projectstore.Store, error) {
@@ -144,7 +143,7 @@ func requireFeature(name string) (*projectstore.Store, error) {
 // run. When skipping, emits a one-line log so the user can see WHY
 // the phase was elided.
 //
-// Used by `forge up` to elide build/deploy/frontend phases against
+// Used by `forge env up` to elide build/deploy/frontend phases against
 // projects that have those features turned off. Unlike requireFeature
 // this never errors — the orchestrator wants to finish whatever
 // remaining phases are enabled.

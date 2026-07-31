@@ -48,31 +48,31 @@ Combine findings from all tracks before proposing a fix:
 
 On top of the generic triage above, common forge-shaped bug classes:
 
-- **Stale generated code / config drift** → if symbols are "undefined" or a build breaks *right after* a proto / forge.yaml / schema change, suspect stale gen before you chase the code. Run `forge generate`, then `forge audit` to surface drift, then retest. Forge generates from proto + forge.yaml; stale gen masquerades as a bug in hand-written code.
+- **Stale generated code / config drift** → if symbols are "undefined" or a build breaks *right after* a proto / forge.yaml / schema change, suspect stale gen before you chase the code. Run `forge generate`, then `forge project audit` to surface drift, then retest. Forge generates from proto + forge.yaml; stale gen masquerades as a bug in hand-written code.
 - **Can't reach a service / cross-cluster flow fails** → verify connectivity and credentials before assuming a logic bug. Each service deploys to its own `K8sCluster` context (multi-cluster is native); a "service unreachable" or auth failure is usually a stale or wrong kubectl context, an expired credential, or a service that isn't up — not a code path. Confirm the context is current and the target responds first.
 - **Broken DI wiring** → check the explicit composition (`internal/app/compose.go` `NewComponents`, off the owned `internal/app/providers.go` `OpenInfra`). Deps are interface-typed fields resolved by type off `Infra`, so a missing required provider is a compile error (`NewComponents` won't build) or a `forge generate` "no provider" report, not a silent nil — but a wrong fill (an unintended optional dep left nil) can still surface as a nil-pointer panic deep in handler code. There is no generated `wire_gen.go`/`bootstrap.go` to inspect; the wiring is `NewComponents` filling typed `Deps` off `Infra`.
-- **Mock vs real divergence** → tests pass with generated mocks but the real adapter fails. Re-run the integration suite (`forge test integration`) before chasing a unit-test ghost.
-- **Proto-DB drift** → entity types and DB schema evolve independently; `forge audit` flags the mismatch. If the symptom is "column X not found" in a handler that names the right struct field, audit first.
+- **Mock vs real divergence** → tests pass with generated mocks but the real adapter fails. Re-run the integration suite (`task test:integration`) before chasing a unit-test ghost.
+- **Proto-DB drift** → entity types and DB schema evolve independently; `forge project audit` flags the mismatch. If the symptom is "column X not found" in a handler that names the right struct field, audit first.
 
 ## Forge Debug Tools
 
 ```
-forge introspect handlers      # every RPC path the binary registers — localize the fault
+forge project introspect handlers      # every RPC path the binary registers — localize the fault
 forge api curl <svc.method>    # build a copy-pasteable Connect curl from the shell
 forge cluster logs --service X # kubectl-backed log tail for one service (single cluster)
 forge debug start <svc>        # build + attach Delve debugger
 forge debug start --attach PID # attach Delve to a live process (don't `stop` it — see below)
 forge debug break/continue/eval# breakpoints, resume, evaluate in the debug session
 forge debug stop               # ends the session AND kills the debugged process
-forge test --service <name> -V # verbose isolated test runs
-forge test e2e                 # full-stack reproduction
-forge test --race              # run tests with race detector
+task test -- -v ./internal/handlers/<name>/... # verbose isolated test runs
+task test:e2e                 # full-stack reproduction
+task test              # run tests with race detector
 forge generate                 # regenerate code (use when stale gen is suspected)
 ```
 
 **Pick the tool for the job — and know where each stops short:**
 
-- **`forge introspect handlers` to localize.** Prints every RPC path the assembled
+- **`forge project introspect handlers` to localize.** Prints every RPC path the assembled
   binary serves. If the failing RPC isn't there, the fault is a downstream/remote
   hop, not this binary — that one check collapses the search space.
 - **`forge api curl <service.method>` to exercise an endpoint.** Builds and runs a
@@ -89,14 +89,14 @@ forge generate                 # regenerate code (use when stale gen is suspecte
   `--attach` **kills the live process** — detach instead of `stop` when you've
   attached to something you need to keep running.
 
-**Smoke/doctor are NOT app-flow proofs.** A green `forge smoke` / `forge doctor`
+**Smoke/status are NOT app-flow proofs.** A green `forge env smoke` / `forge env status <env>`
 checks listeners, local compose, and telemetry — never app-flow invariants. They
 (and `forge cluster status`, green whenever pods are `Running`) can all be green
 while the actual flow is broken. The **only** things that prove an app-flow fix:
 
 1. a declarative, exit-coded app-health assertion (model: a project `doctor:<flow>`
    task that fails non-zero when the invariant is violated), and
-2. a full `forge test e2e`.
+2. a full `task test:e2e`.
 
 Generic forge tools localize and surface evidence; they do not certify the fix.
 
@@ -117,7 +117,7 @@ The three investigation tracks above each have a dedicated forge sub-skill with 
 
 - **Grafana UI:** http://localhost:3000 (no login needed — anonymous admin)
 - **Traces:** Grafana → Explore → Tempo. Find slow requests, trace cross-service calls.
-- **Metrics:** Grafana → Explore → Prometheus. Query `http_server_request_duration_seconds` etc.
+- **Metrics:** Grafana → Explore → Prometheus. Query `rpc_server_duration_milliseconds` (the otelconnect RPC edge histogram) etc.
 - **Logs:** Grafana → Explore → Loki. Search structured logs.
 - **Profiles:** Grafana → Explore → Pyroscope. CPU, heap, goroutine, mutex profiles from the app's pprof endpoint.
 

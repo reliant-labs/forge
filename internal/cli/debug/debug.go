@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	dbgsvc "github.com/reliant-labs/forge/internal/debug"
 )
@@ -61,7 +62,7 @@ Examples:
 	cmd.AddCommand(newGoroutinesCmd(f))
 	cmd.AddCommand(newStopCmd(f))
 
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 // debugSvc returns a debug.Service handle. Constructed once per call site

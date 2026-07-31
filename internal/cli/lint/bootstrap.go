@@ -1,6 +1,6 @@
 // Package lint holds the `forge lint` command group — the project linter
 // pipeline (golangci / buf / frontend / forge-convention / scaffold /
-// migration-safety / wire-coverage / authz-completeness …) plus the
+// migration-safety / wire-coverage …) plus the
 // targeted single-rule flags and the --json aggregator.
 //
 // It is a dir-nested command group (the devspace idiom). The substrate —

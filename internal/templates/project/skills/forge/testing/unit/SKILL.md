@@ -12,9 +12,9 @@ Unit tests are **hermetic**: no network, no database, no filesystem. They test a
 ## Running
 
 ```bash
-forge test unit                  # all unit tests
-forge test --service <name>      # unit tests for one service
-forge test -V                    # verbose output for debugging
+task test                  # all unit tests
+task test -- ./internal/handlers/<name>/...      # unit tests for one service
+task test -- -v ./...                    # verbose output for debugging
 ```
 
 ## Test Naming Convention

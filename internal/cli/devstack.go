@@ -1,15 +1,15 @@
-// Package cli — `forge devstack` command tree.
+// Package cli — `forge env devstack` command tree.
 //
 // The parallel-dev-stack primitives (ADR 0003) live in internal/devstack:
 // the raw git facts pushed into KCL as options, and the memoized
 // forge.allocate_port(base, key) block allocator. Those primitives are
 // resolved INSIDE a KCL render (under the up/deploy activation path). But a
 // host launcher — a Taskfile target, a bootstrap script — needs the SAME
-// allocated host port BEFORE `forge up` renders the KCL, so it can start the
+// allocated host port BEFORE `forge env up` renders the KCL, so it can start the
 // host `reliant` process LISTENING on exactly the port the in-cluster
 // controller will dial.
 //
-// `forge devstack port <base>` is that single source of truth: it resolves
+// `forge env devstack port <base>` is that single source of truth: it resolves
 // the current worktree key (devstack.Worktree) and returns
 // allocate_port(base, key) — base + block(key)*100 — through the SAME
 // lock-guarded block registry (.forge/blocks.json) the KCL builtin uses, so
@@ -24,10 +24,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/devstack"
 )
 
-// newDevStackCmd builds the `forge devstack` parent command — the host-side
+// newDevStackCmd builds the `forge env devstack` parent command — the host-side
 // surface of the parallel-dev-stack primitives. The KCL-side surface is the
 // option("worktree")/option("branch") seam + the forge.allocate_port builtin;
 // this command lets a launcher resolve the SAME values without a render.
@@ -38,8 +39,8 @@ func newDevStackCmd() *cobra.Command {
 		Long: `Host-side helpers for forge's parallel-dev-stack primitives (ADR 0003).
 
 A launcher (Taskfile target, bootstrap script) that starts a host process
-BEFORE 'forge up' renders the KCL needs the SAME host port the render will
-allocate. 'forge devstack port' resolves it through the same lock-guarded
+BEFORE 'forge env up' renders the KCL needs the SAME host port the render will
+allocate. 'forge env devstack port' resolves it through the same lock-guarded
 block registry (.forge/blocks.json) the forge.allocate_port KCL builtin uses,
 so the launcher and the render can never drift.
 
@@ -48,16 +49,16 @@ unchanged (block 0) — the default dev loop is byte-identical to today. A
 linked git worktree gets its own stable 100-port block.
 
 Examples:
-  forge devstack port 3091     # the reliant-api host port for this worktree
-  forge devstack key           # the worktree key ("" on the primary checkout)`,
+  forge env devstack port 3091     # the reliant-api host port for this worktree
+  forge env devstack key           # the worktree key ("" on the primary checkout)`,
 	}
 	cmd.AddCommand(newDevStackPortCmd())
 	cmd.AddCommand(newDevStackKeyCmd())
 	cmd.AddCommand(newDevStackListCmd())
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
-// newDevStackListCmd: `forge devstack list` → the registered worktree keys,
+// newDevStackListCmd: `forge env devstack list` → the registered worktree keys,
 // one per line, sorted by block index. This is the source a DECLARATIVE
 // per-stack config generator reads to enumerate the active stacks WITHOUT
 // re-implementing worktree detection or the registry format.
@@ -98,7 +99,7 @@ worktrees (or no registry yet) prints nothing and exits 0.`,
 	}
 }
 
-// newDevStackPortCmd: `forge devstack port <base>` → base + block(key)*100,
+// newDevStackPortCmd: `forge env devstack port <base>` → base + block(key)*100,
 // keyed on the current worktree, allocating the block on first use. This is
 // the exact value forge.allocate_port(base, option("worktree")) renders to,
 // so a launcher can match the host listen port to the rendered contract port.
@@ -111,7 +112,7 @@ option("worktree")) renders to for the CURRENT worktree.
 
 The block is read from (or allocated into) .forge/blocks.json under the same
 file lock the KCL builtin uses, so the printed port is identical to what
-'forge up'/'forge deploy' renders for this worktree. On the primary checkout
+'forge env up'/'forge env deploy' renders for this worktree. On the primary checkout
 the key is "" so <base> is returned unchanged.
 
 Used by the dev launcher to start the host 'reliant' process listening on the
@@ -134,7 +135,7 @@ exact port the in-cluster workspace-controller will dial.`,
 	}
 }
 
-// newDevStackKeyCmd: `forge devstack key` → the current worktree key ("" on
+// newDevStackKeyCmd: `forge env devstack key` → the current worktree key ("" on
 // the primary checkout). Lets a launcher derive the namespace suffix / DB
 // suffix without re-implementing the worktree detection.
 func newDevStackKeyCmd() *cobra.Command {

@@ -194,7 +194,7 @@ func TestResolveReleaseDigests(t *testing.T) {
 // TestResolveReleaseDigests_EmptyArtifactsActionableError pins the friction
 // fix: a release cut with an EMPTY artifact map (forgot --push, no services
 // built, all external builds skipped) must fail with an ACTIONABLE message that
-// names the version, the likely causes, and `forge audit` — not the old vague
+// names the version, the likely causes, and `forge project audit` — not the old vague
 // "carries no shared image digests to pin" that read like an internal invariant.
 func TestResolveReleaseDigests_EmptyArtifactsActionableError(t *testing.T) {
 	_, err := resolveReleaseDigests(Release{Version: "v1.4.0", Artifacts: map[string]ReleaseArtifact{}})
@@ -205,9 +205,9 @@ func TestResolveReleaseDigests_EmptyArtifactsActionableError(t *testing.T) {
 	for _, want := range []string{
 		`"v1.4.0"`, // names the offending release
 		"no image digests",
-		"--push",      // the most common cause/remedy
-		"build_cwd",   // external-build-skip cause
-		"forge audit", // the inspect next-step
+		"--push",              // the most common cause/remedy
+		"build_cwd",           // external-build-skip cause
+		"forge project audit", // the inspect next-step
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("empty-artifacts error missing %q\n  got: %s", want, msg)
@@ -242,7 +242,7 @@ func TestResolveReleaseDigests_VariantOnlyError(t *testing.T) {
 }
 
 // TestRunPromote_EmptyReleaseSurfacesActionableError proves the friction fix
-// reaches the user through the actual `forge promote` entrypoint: promoting a
+// reaches the user through the actual `forge env promote` entrypoint: promoting a
 // release that was cut with no digests fails (no binding written) with the
 // actionable guidance, not a silent/confusing dead end.
 func TestRunPromote_EmptyReleaseSurfacesActionableError(t *testing.T) {
@@ -260,7 +260,7 @@ func TestRunPromote_EmptyReleaseSurfacesActionableError(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error promoting an empty release, got nil")
 	}
-	if !strings.Contains(err.Error(), "forge audit") {
+	if !strings.Contains(err.Error(), "forge project audit") {
 		t.Errorf("promote error should carry the actionable guidance\n  got: %s", err.Error())
 	}
 

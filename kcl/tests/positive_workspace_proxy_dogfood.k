@@ -88,9 +88,9 @@ workspace_proxy_prod = workspace_base | {
     env = workspace_base.env | {
         "PROXY_BASE_DOMAIN" = {value = "workspaces.reliantapi.com"}
         "APP_URL" = {value = "https://app.reliantlabs.io"}
-        # secretless-proxy / RPC authz inversion (PROD ONLY).
-        "PROXY_AUTHZ_MODE" = {value = "rpc"}
-        "PROXY_AUTHZ_URL" = {value = "http://admin-server.control-plane-prod.svc.cluster.local:8090"}
+        # secretless-proxy / RPC delegation inversion (PROD ONLY).
+        "PROXY_ADMIN_MODE" = {value = "rpc"}
+        "PROXY_ADMIN_URL" = {value = "http://admin-server.control-plane-prod.svc.cluster.local:8090"}
         # daemon-cluster isolation (PROD ONLY).
         "DAEMON_CLUSTER_ID" = {value = "prod-daemon"}
     }
@@ -150,7 +150,7 @@ _env = {e.name: e for e in _ctr.env}
 # value channel — base + prod.
 assert_env_base_value = _env["OTEL_SERVICE_NAME"].value == "workspace-proxy"
 assert_env_port_value = _env["PORT"].value == "8080"
-assert_env_prod_value = _env["PROXY_AUTHZ_MODE"].value == "rpc"
+assert_env_prod_value = _env["PROXY_ADMIN_MODE"].value == "rpc"
 assert_env_domain = _env["PROXY_BASE_DOMAIN"].value == "workspaces.reliantapi.com"
 # from_secret -> secretKeyRef.
 assert_env_secret = _env["INTERNAL_SERVICE_SECRET"].valueFrom.secretKeyRef == {name = "control-plane-internal", key = "secret"}
@@ -158,7 +158,7 @@ assert_env_secret = _env["INTERNAL_SERVICE_SECRET"].valueFrom.secretKeyRef == {n
 assert_env_config = _env["LOG_LEVEL"].valueFrom.configMapKeyRef == {name = "control-plane-config", key = "log-level"}
 # The base channels survived the `base.env | { deltas }` merge
 # (4 base: OTEL_SERVICE_NAME/PORT/INTERNAL_SERVICE_SECRET/LOG_LEVEL +
-#  5 prod deltas: PROXY_BASE_DOMAIN/APP_URL/PROXY_AUTHZ_MODE/PROXY_AUTHZ_URL/
+#  5 prod deltas: PROXY_BASE_DOMAIN/APP_URL/PROXY_ADMIN_MODE/PROXY_ADMIN_URL/
 #  DAEMON_CLUSTER_ID).
 assert_env_count = len(_ctr.env) == 9
 

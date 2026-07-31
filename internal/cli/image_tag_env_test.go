@@ -101,8 +101,8 @@ func TestParseKCLEntities_ManifestImageTags(t *testing.T) {
 // (the deploy ref), an external build of the `reliant` service with NO
 // per-service pin must use `staging` as ${TAG} — NOT the env-wide
 // build-loop tag the caller threaded (here a stand-in git-describe
-// value). This is what makes `forge build --env staging --push` push
-// the SAME tag `forge deploy staging` references, instead of pushing
+// value). This is what makes `forge build staging --push` push
+// the SAME tag `forge env deploy staging` references, instead of pushing
 // git-describe and deploying "staging" → ImagePullBackOff.
 func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
 	projDir := t.TempDir()
@@ -144,7 +144,7 @@ func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
 // workspace-base "dev-per-daemon") OVERRIDES both the env-wide tag and
 // the manifest-derived tag — so e2e's pinned tags keep building exactly
 // what the daemon pods pull. This is the property that keeps
-// `forge up --env=e2e` building the tags it deploys.
+// `forge env up e2e` building the tags it deploys.
 func TestBuildExternalServices_PerServicePinWins(t *testing.T) {
 	projDir := t.TempDir()
 	// Env render says workspace-base would be :staging, but the service

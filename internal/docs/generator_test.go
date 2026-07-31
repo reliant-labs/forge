@@ -48,7 +48,10 @@ func TestDefaultRegistryHasAllGenerators(t *testing.T) {
 
 func TestResolveGeneratorsAll(t *testing.T) {
 	r := DefaultRegistry()
-	generators := resolveGenerators(r, nil)
+	generators, err := resolveGenerators(r, nil)
+	if err != nil {
+		t.Fatalf("resolveGenerators(nil): %v", err)
+	}
 	if len(generators) != 4 {
 		t.Fatalf("expected 4 generators, got %d", len(generators))
 	}
@@ -56,12 +59,63 @@ func TestResolveGeneratorsAll(t *testing.T) {
 
 func TestResolveGeneratorsFiltered(t *testing.T) {
 	r := DefaultRegistry()
-	generators := resolveGenerators(r, []string{"api", "config"})
+	generators, err := resolveGenerators(r, []string{"api", "config"})
+	if err != nil {
+		t.Fatalf("resolveGenerators: %v", err)
+	}
 	if len(generators) != 2 {
 		t.Fatalf("expected 2 generators, got %d", len(generators))
 	}
 	if generators[0].Name() != "api" || generators[1].Name() != "config" {
 		t.Fatalf("unexpected generators: %v, %v", generators[0].Name(), generators[1].Name())
+	}
+}
+
+// TestResolveGeneratorsRejectsUnknownName is the regression for the
+// silent-no-op: `--generators=bogus` used to drop the unknown name, select
+// ZERO generators, write zero files, and still exit 0 under "Generated 0 doc
+// file(s)" + "Documentation generation complete!".
+func TestResolveGeneratorsRejectsUnknownName(t *testing.T) {
+	r := DefaultRegistry()
+
+	for _, names := range [][]string{
+		{"bogus"},
+		{"api", "bogus"},
+	} {
+		got, err := resolveGenerators(r, names)
+		if err == nil {
+			t.Errorf("resolveGenerators(%v) succeeded with %d generator(s) — an unknown name must be an error, not a silent drop", names, len(got))
+			continue
+		}
+		if !strings.Contains(err.Error(), "bogus") {
+			t.Errorf("resolveGenerators(%v) error %q never names the offending generator", names, err)
+		}
+		// The error has to be actionable: it must list what IS available.
+		for _, want := range r.Names() {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("resolveGenerators(%v) error %q omits available generator %q", names, err, want)
+			}
+		}
+	}
+
+	// A list that resolves to nothing at all (only blanks) is the same
+	// defect wearing a different hat.
+	if _, err := resolveGenerators(r, []string{"", "  "}); err == nil {
+		t.Error("resolveGenerators of an all-blank list succeeded — zero generators selected must not be a pass")
+	}
+}
+
+// TestRunRefusesWhenDocsDisabled: `docs.enabled: false` used to print an
+// info line, return nil, and let the caller declare success over zero files.
+func TestRunRefusesWhenDocsDisabled(t *testing.T) {
+	off := false
+	cfg := &config.ProjectConfig{Docs: config.DocsConfig{Enabled: &off}}
+	err := Run(t.TempDir(), cfg, nil)
+	if err == nil {
+		t.Fatal("docs.Run succeeded with docs.enabled: false — a refusal must not read as success")
+	}
+	if !strings.Contains(err.Error(), "docs.enabled") {
+		t.Errorf("error %q does not name the switch the user has to flip", err)
 	}
 }
 
@@ -197,7 +251,7 @@ func TestAPIGeneratorHugoFormat(t *testing.T) {
 
 func TestArchitectureGeneratorProducesMermaid(t *testing.T) {
 	// The component inventory is enumerated from the proto descriptor now
-	// (codegen.IntrospectComponents), not ProjectConfig.Components — so the
+	// (codegen.IntrospectComponents), not a config field — so the
 	// generator reads ctx.ProjectDir. "GatewayService"/"UserService" map to
 	// server components gateway/user.
 	dir := t.TempDir()
@@ -334,7 +388,7 @@ func TestContractGeneratorProducesDocs(t *testing.T) {
 		Contracts: []*ContractInfo{
 			{
 				PackageName: "auth",
-				Contract: &contract.ContractFile{
+				Contract: &contract.File{
 					Package: "auth",
 					Interfaces: []contract.InterfaceDef{
 						{

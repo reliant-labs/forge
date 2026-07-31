@@ -54,14 +54,27 @@ func ContextWithRequestID(ctx context.Context, id string) context.Context {
 //     them.
 //
 //   - The chosen ID is exposed to downstream middleware/handlers via the
-//     request context (RequestIDFromContext) and echoed on the response
-//     header so the client can log it for later correlation.
+//     request context (RequestIDFromContext), stamped back onto the
+//     INBOUND request header, and echoed on the response header so the
+//     client can log it for later correlation.
+//
+// This middleware OWNS the response echo for every request that passes
+// through it. observe.RequestIDInterceptor, which runs inside it on the
+// Connect path, adopts the context value and deliberately writes no
+// response header of its own — otherwise connect merges its header into
+// the one already written here and the response carries two conflicting
+// X-Request-Id values.
+//
+// The inbound stamp exists for the same reason: handlers and interceptors
+// that reach for the request header rather than the context must see the
+// SAME id, not an empty string that invites them to mint another.
 func RequestIDMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id := r.Header.Get(RequestIDHeader)
 			if id == "" {
 				id = newRequestID()
+				r.Header.Set(RequestIDHeader, id)
 			}
 			w.Header().Set(RequestIDHeader, id)
 			next.ServeHTTP(w, r.WithContext(ContextWithRequestID(r.Context(), id)))

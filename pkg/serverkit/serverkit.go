@@ -76,11 +76,11 @@ type Server struct {
 
 	// RunOperators starts the controller-runtime manager and blocks
 	// until ctx is done. serverkit calls it in a goroutine when
-	// len(Operators) > 0 AND the RUN_OPERATORS env gate allows. The old
-	// per-name operator gating is gone: the caller already decided
-	// whether to populate Operators, so serverkit only honours the
-	// process-wide RUN_OPERATORS opt-out. Nil + non-empty Operators is a
-	// config error. Optional when Operators is empty.
+	// len(Operators) > 0, and on no other condition: the caller already
+	// decided whether this process runs a manager by deciding whether to
+	// populate Operators, and serverkit does not second-guess that from
+	// the environment. Nil + non-empty Operators is a config error.
+	// Optional when Operators is empty.
 	RunOperators func(ctx context.Context, logger *slog.Logger, healthProbeAddr string) error
 
 	// mounted is the set of fully-qualified proto service names this
@@ -112,12 +112,21 @@ type Server struct {
 	// returns 200 when ALL pass, 503 when ANY fails, plus a STATUS-ONLY JSON
 	// aggregate (per-check name + ok + a terse count summary). It deliberately
 	// exposes NO per-entity detail anonymously, so the endpoint is safe to
-	// probe from `forge smoke` (which just curls it) without leaking anything
+	// probe from `forge env smoke` (which just curls it) without leaking anything
 	// sensitive — gate per-entity detail behind your own auth'd endpoint.
 	//
 	// Empty (the default) means no /flow-health is mounted, so existing
 	// services are unaffected. See FlowCheck + AddFlowCheck.
 	FlowChecks []FlowCheck
+
+	// ReadyChecks are the DEPENDENCY probes GET /readyz runs on every
+	// request — "can this replica serve right now", as opposed to
+	// FlowChecks' "is my end-to-end invariant holding". Leaving this empty
+	// makes /readyz report readiness purely on the listener being bound,
+	// which is what let a replica with an unreachable database advertise
+	// itself as Ready through an entire rollout. Register the pool with
+	// AddReadyCheck(DBReadyCheck("database", db)). See readiness.go.
+	ReadyChecks []ReadyCheck
 }
 
 // FlowCheck is one named app-flow health assertion mounted at /flow-health.
@@ -352,7 +361,10 @@ type Config struct {
 	LogFormat string
 
 	// Environment is the deployment environment string. When equal to
-	// "development" Run emits a loud warning about permissive defaults.
+	// EnvDevelopment Run emits a loud warning about permissive defaults,
+	// suppresses HSTS, and enforces CORS even with an empty CORSOrigins
+	// (see CORSEnabled). Every other value — including "" — is treated as
+	// a deployed environment: closed by default.
 	Environment string
 
 	// OTLPEndpoint is the OTLP/gRPC collector endpoint (e.g.
@@ -396,9 +408,14 @@ type Config struct {
 	// its migration connection before the migration runs.
 	DBPoolTuning DBPoolTuning
 
-	// CORSOrigins is the allow-list applied to inbound requests when
-	// non-empty. Each entry must be a full origin (scheme + host +
-	// optional port).
+	// CORSOrigins is the allow-list handed to the CORSMiddleware factory.
+	// Each entry must be a full origin (scheme + host + optional port).
+	//
+	// It does NOT decide whether CORS runs — CORSEnabled does. In
+	// development the factory is invoked with an empty list (the project's
+	// factory then selects its origin-reflecting dev policy, which ignores
+	// the list); in a deployed environment an empty list means no CORS
+	// layer at all.
 	CORSOrigins []string
 
 	// CORSAllowCredentials toggles Access-Control-Allow-Credentials.
@@ -421,12 +438,21 @@ type Config struct {
 	ShutdownTimeout time.Duration
 
 	// ReadMaxBytes caps the size of a single Connect request payload.
-	// Zero falls back to 4 MiB.
+	// Zero falls back to 4 MiB — but ONLY after Normalize has run. A
+	// zero reaching connect.WithReadMaxBytes means UNLIMITED, so any
+	// caller that reads this field before Run must Normalize first.
 	ReadMaxBytes int
 
 	// SendMaxBytes caps the size of a single Connect response payload.
-	// Zero falls back to 4 MiB.
+	// Zero falls back to 4 MiB after Normalize. See ReadMaxBytes for
+	// why an un-normalized read is dangerous.
 	SendMaxBytes int
+
+	// ReadinessTimeout bounds ALL of a /readyz request's dependency
+	// checks together (not each one), so the endpoint's worst case stays
+	// inside a kubelet probe's timeoutSeconds no matter how many checks
+	// are registered. Zero falls back to 2s.
+	ReadinessTimeout time.Duration
 
 	// OperatorHealthProbeAddr is forwarded to Server.RunOperators
 	// for projects (like cp-forge) that bind a /healthz + /readyz
@@ -441,15 +467,29 @@ type Config struct {
 	FailurePolicy FailurePolicy
 }
 
-// defaults projects unset Config fields onto their fallback values.
-// Run calls this once at entry so the rest of the lifecycle reads a
-// fully-populated Config.
-func (c *Config) defaults() {
+// Normalize projects unset Config fields onto their fallback values. It
+// is idempotent, so calling it more than once is free.
+//
+// Run calls it at entry, but Run is NOT the only reader: the generated
+// composition root builds the Connect handler options (payload caps) and
+// opens the migration DB connection from the SAME Config *before* Run is
+// entered. A field left zero at that point is not "the default" — it is
+// the zero value, and for the payload caps connect-go documents zero as
+// UNLIMITED, which turns one anonymous request into an OOMKill.
+//
+// So: whoever reads a Config field outside Run normalizes first. The
+// generated projectServerkitConfig does exactly that, as the last step
+// before it hands the Config back, which is why no reader downstream of
+// it can observe a zero.
+func (c *Config) Normalize() {
 	if c.PreStopDelay == 0 {
 		c.PreStopDelay = 5 * time.Second
 	}
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = 30 * time.Second
+	}
+	if c.ReadinessTimeout == 0 {
+		c.ReadinessTimeout = 2 * time.Second
 	}
 	if c.ReadMaxBytes == 0 {
 		c.ReadMaxBytes = 4 << 20
@@ -461,3 +501,31 @@ func (c *Config) defaults() {
 		c.DBDriver = "pgx"
 	}
 }
+
+// EnvDevelopment is the one Environment value that unlocks permissive edge
+// defaults. It is compared exactly: "dev", "Development" and "" are all
+// deployed environments, because a posture this permissive must never be
+// reachable by a near-miss or by forgetting to set the variable at all.
+const EnvDevelopment = "development"
+
+// IsDevelopment reports whether this Config runs the development posture.
+func (c Config) IsDevelopment() bool { return c.Environment == EnvDevelopment }
+
+// CORSEnabled reports whether Run wraps the caller's handler in the CORS
+// layer — and therefore whether Server.CORSMiddleware is required.
+//
+// Two ways to be on, and the second one is the whole point:
+//
+//   - A non-empty CORSOrigins. An operator naming origins wants them
+//     enforced, in every environment.
+//   - Development. A freshly scaffolded project has no CORS_ORIGINS value
+//     to name — nothing defaults it, and its own frontend's dev port is not
+//     knowable to the server — so gating solely on a non-empty list made the
+//     generated factory's development branch unreachable: the browser
+//     frontend could not call its own backend until someone hand-curated an
+//     allow-list. Development enables the layer with an empty list and lets
+//     the caller's factory choose the dev policy.
+//
+// The dev arm is deliberately the ONLY relaxation: a staging or production
+// Config with no origins gets no CORS layer, exactly as before.
+func (c Config) CORSEnabled() bool { return len(c.CORSOrigins) > 0 || c.IsDevelopment() }

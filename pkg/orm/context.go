@@ -37,6 +37,28 @@ type Context interface {
 	// (raw-SQL path).
 	QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row
 
+	// RunTransaction executes fn inside a transaction, committing when it
+	// returns nil and rolling back on error or panic. The Context handed
+	// to fn is the transactional one, so generated ORM ops inside it join
+	// the transaction transparently.
+	//
+	// This lives on the INTERFACE, not just on *Client, because the
+	// interface is what forge injects: the CRUD generator writes
+	// `DB orm.Context` into a service's Deps, and
+	// forgeconv-deps-are-interfaces requires every Deps field to be an
+	// interface. With the method only on the concrete type, an
+	// app that needed to make two writes atomic could not reach a
+	// transaction through the dependency forge itself wired — so every
+	// such app re-declared this exact method as a local interface and
+	// type-asserted the DB to it. That is forge's own seam, hand-copied
+	// per project.
+	//
+	// On *Tx the call JOINS the transaction already in progress rather
+	// than opening a nested one (this API has no savepoints). That is what
+	// lets a service be called standalone or from inside a larger
+	// transaction without knowing which it is in.
+	RunTransaction(ctx context.Context, fn func(Context) error) error
+
 	// Dialect returns the SQL dialect (postgres — forge is postgres-pinned).
 	// The raw-SQL escape hatch needs it: a hand-written handler that builds
 	// its own SQL string calls db.Dialect().Placeholder(i) for $N parameter

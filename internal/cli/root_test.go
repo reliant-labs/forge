@@ -21,14 +21,14 @@ func execRoot(t *testing.T, args ...string) (string, error) {
 
 // TestRootCmd_RuntimeErrorDoesNotDumpUsage pins that a command failing at
 // RunE (a pipeline-step error, not a usage mistake) does NOT dump the
-// cobra usage block. Before this, every `forge generate` / `forge add`
+// cobra usage block. Before this, every `forge generate` / `forge scaffold`
 // failure buried the real error under ~40 lines of flag help; main()
 // prints the error itself, so the error must be the last thing the user
 // sees.
 func TestRootCmd_RuntimeErrorDoesNotDumpUsage(t *testing.T) {
-	// `forge add entity 9bad` fails validation inside RunE — a runtime
+	// `forge scaffold entity 9bad` fails validation inside RunE — a runtime
 	// error, not a cobra arg/flag error — without touching the project.
-	out, err := execRoot(t, "add", "entity", "9bad")
+	out, err := execRoot(t, "scaffold", "entity", "9bad")
 	if err == nil {
 		t.Fatal("expected an error from an invalid entity name")
 	}
@@ -48,7 +48,7 @@ func TestRootCmd_RuntimeErrorDoesNotDumpUsage(t *testing.T) {
 // is scoped to runtime errors only (SilenceUsage is set after flag
 // parsing succeeds).
 func TestRootCmd_FlagErrorStillShowsUsage(t *testing.T) {
-	out, err := execRoot(t, "add", "entity", "--definitely-not-a-flag")
+	out, err := execRoot(t, "scaffold", "entity", "--definitely-not-a-flag")
 	if err == nil {
 		t.Fatal("expected an error from an unknown flag")
 	}
@@ -61,7 +61,7 @@ func TestRootCmd_FlagErrorStillShowsUsage(t *testing.T) {
 // mistake (cobra validates args before PersistentPreRun runs), so usage
 // help must survive for it.
 func TestRootCmd_ArgErrorStillShowsUsage(t *testing.T) {
-	out, err := execRoot(t, "add", "entity")
+	out, err := execRoot(t, "scaffold", "entity")
 	if err == nil {
 		t.Fatal("expected an error from missing args")
 	}

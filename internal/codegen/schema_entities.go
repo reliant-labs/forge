@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/schemadef"
+	"github.com/reliant-labs/forge/internal/shadowdb"
 )
 
 // BuildSchemaEntities is the entity source of truth: it joins the
@@ -27,7 +28,8 @@ import (
 // Tables without CRUD RPCs are plain schema — owned by hand-written
 // code, invisible to the CRUD/frontend projections.
 func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef, error) {
-	tables, err := schemadef.ApplyAndIntrospect(filepath.Join(projectDir, "db", "migrations"))
+	tables, err := schemadef.ApplyAndIntrospectAt(
+		filepath.Join(projectDir, "db", "migrations"), shadowdb.Resolve(projectDir))
 	if err != nil {
 		return nil, err
 	}
@@ -117,28 +119,86 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 		e.PkField = table.PKCols[0]
 		for _, c := range table.Columns {
 			if c.Name == e.PkField {
-				e.PkGoType = canonicalGoType(string(c.Type), c.IsArray)
+				e.PkGoType = canonicalGoTypeMust(string(c.Type), c.IsArray)
 			}
 		}
 	}
 
-	if conv.HasTenant {
-		e.HasTenant = true
-		e.TenantColumnName = conv.TenantColumn
-		e.TenantFieldName = conv.TenantColumn
-		e.TenantGoName = naming.ToProtoPascalCase(conv.TenantColumn)
-	}
-
 	// Wire fields from the service proto's entity message.
-	e.Fields = wireEntityFields(svc, name)
+	e.Fields = WireEntityFields(svc, name)
+
+	// forge:secret — a secret column is stripped from read responses
+	// (crud_convert's toProto skip); it must also stay OUT of the generated
+	// list `search` filter, or an ILIKE over it becomes an oracle for probing
+	// the secret value. Drop any secret field's column from SearchColumns.
+	e.SearchColumns = dropSecretSearchColumns(e.SearchColumns, e.Fields)
 	return e
 }
 
-// canonicalGoType maps a canonical schema type to the Go type used in
-// generated entity structs (NOT NULL variant; nullable adds a pointer).
-func canonicalGoType(canonical string, isArray bool) string {
+// dropSecretSearchColumns removes columns backed by a `// forge:secret` wire
+// field from the list-search span. Search columns are text columns by
+// convention (schemadef), which cannot see the proto-level marker — this is
+// the join point where the marker prunes the search set.
+func dropSecretSearchColumns(cols []string, fields []EntityField) []string {
+	secret := map[string]bool{}
+	for _, f := range fields {
+		if f.Secret {
+			secret[f.Name] = true
+		}
+	}
+	if len(secret) == 0 {
+		return cols
+	}
+	out := cols[:0:0]
+	for _, c := range cols {
+		if !secret[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// CanonicalGoTypeOK maps a canonical schema type (the closed vocabulary
+// schemadef.MapDeclaredType produces) to the Go type a column projects to
+// on the generated entity struct — the NOT NULL variant; a nullable column
+// adds a pointer, and an array column never does because a slice already
+// carries nil.
+//
+// This is the SINGLE definition. There used to be three: this one, the CRUD
+// conversion generator's dbBaseGoType, and internal/generator's
+// planFieldGoType. They disagreed exactly where it mattered — dbBaseGoType
+// collapsed every array column that was not BIGINT[] to []string, so a
+// BYTEA[] column projected to []string in the half that decides whether a
+// wire field pairs with it and to something else in the half that declares
+// the struct field. Two projections of one column is one projection too
+// many; the other two now route here.
+//
+// A json ARRAY column (jsonb[]) projects to []string: each element is a
+// document, the same way a scalar json column projects to the document
+// text.
+//
+// ok=false means the string is not a canonical schema type and the "string"
+// answer is a FALLBACK rather than a mapping — the same distinction, for
+// the same reason, that schemadef.MapDeclaredType draws with its `known`
+// return. Every caller holds a type that is supposed to be canonical, so
+// ok=false is a forge bug and each one reports it by name rather than
+// declaring the field as text.
+//
+// The `default:` arm this used to end with covered "string, json, unknown"
+// in one breath, which is the defect in miniature: `string` and `json` are
+// MAPPED to Go string, and "unknown" is a type forge has no projection for.
+// Collapsing the three meant a canonical type added upstream without a
+// projection here became a Go `string` field in silence.
+func CanonicalGoTypeOK(canonical string, isArray bool) (goType string, ok bool) {
 	var base string
 	switch canonical {
+	case "string":
+		base = "string"
+	case "json":
+		// A json column holds a document; the entity carries its text. A
+		// json ARRAY column (jsonb[]) is []string for the same reason —
+		// each element is one document.
+		base = "string"
 	case "int64":
 		base = "int64"
 	case "float64":
@@ -149,19 +209,37 @@ func canonicalGoType(canonical string, isArray bool) string {
 		base = "time.Time"
 	case "bytes":
 		base = "[]byte"
-	default: // string, json, unknown
-		base = "string"
+	default:
+		base, ok = "string", false
+		if isArray {
+			return "[]" + base, ok
+		}
+		return base, ok
 	}
 	if isArray {
-		return "[]" + base
+		return "[]" + base, true
 	}
-	return base
+	return base, true
 }
 
-// wireEntityFields extracts the entity wire-message fields from the
+// canonicalGoTypeMust projects a column type that is known to be canonical
+// — it came out of schemadef — so an unmapped one is a forge bug and stops
+// generation by name rather than declaring the field as text.
+func canonicalGoTypeMust(canonical string, isArray bool) string {
+	goType, ok := CanonicalGoTypeOK(canonical, isArray)
+	if !ok {
+		panic("codegen: no Go projection for canonical schema type " + canonical)
+	}
+	return goType
+}
+
+// WireEntityFields extracts the entity wire-message fields from the
 // service descriptor: the deep Schemas map when present, else the
-// shallow Messages map (older descriptors).
-func wireEntityFields(svc ServiceDef, entityName string) []EntityField {
+// shallow Messages map (older descriptors). It is the WIRE half of an
+// entity, the half BuildEntityConv pairs against the applied schema's
+// columns — exported so the birth↔conversion contract can be asserted from
+// internal/scaffold, which owns the other half.
+func WireEntityFields(svc ServiceDef, entityName string) []EntityField {
 	if defs, ok := svc.Schemas[svc.Package+"."+entityName]; ok {
 		fields := make([]EntityField, 0, len(defs))
 		for _, d := range defs {
@@ -182,8 +260,11 @@ func wireEntityFields(svc ServiceDef, entityName string) []EntityField {
 
 func schemaFieldToEntityField(d SchemaFieldDef) EntityField {
 	f := EntityField{
-		Name:   d.Name,
-		GoName: naming.ToProtoPascalCase(d.Name),
+		Name:      d.Name,
+		GoName:    naming.ToProtoPascalCase(d.Name),
+		Optional:  d.Optional,
+		Secret:    d.Secret,
+		ServerSet: d.ServerSet,
 	}
 	switch d.Kind {
 	case "message":
@@ -197,9 +278,21 @@ func schemaFieldToEntityField(d SchemaFieldDef) EntityField {
 		f.ProtoType = "enum"
 		f.MessageType = d.TypeName
 		f.GoType = shortName(d.TypeName)
+		// The message and scalar arms both record `repeated` in GoType; the
+		// enum arm did not, and the descriptor's repeated bit was simply
+		// dropped. Every consumer then read a `repeated Status` field as a
+		// singular one: the frontend mocked the number 1 into a Status[]
+		// and rendered <StatusBadge value={item.tags}> against a prop typed
+		// `string | number`. Kind deliberately stays FieldKindEnum — the
+		// conversion generator branches on it, and a repeated enum is still
+		// an enum.
+		if d.Repeated {
+			f.GoType = "[]" + f.GoType
+		}
 	case "map":
 		f.ProtoType = "message"
-		f.GoType = "map[string]string" // marker; maps need custom handling
+		f.GoType = "map[string]string" // marker; the real key/value types live on the descriptor
+		f.MapValueKind = d.MapValueKind
 	default: // scalar
 		f.ProtoType = d.Kind
 		f.GoType = ProtoTypeToGoType(d.Kind)
@@ -219,6 +312,7 @@ func messageFieldToEntityField(d MessageFieldDef) EntityField {
 		Name:      d.Name,
 		GoName:    naming.ToProtoPascalCase(d.Name),
 		ProtoType: d.ProtoType,
+		Optional:  d.IsOptional,
 	}
 	if d.ProtoType == "message" {
 		f.MessageType = d.MessageType

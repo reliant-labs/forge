@@ -7,8 +7,8 @@ import (
 	"unicode/utf8"
 )
 
-// The name-validation rules below are shared by `forge new` (which stays in
-// internal/cli) and the dir-nested `forge add` group (internal/cli/add).
+// The name-validation rules below are shared by `forge project new` (which stays in
+// internal/cli) and the dir-nested `forge scaffold` group (internal/cli/scaffold).
 // They live here in the shared leaf package so both reach one
 // implementation without an import cycle (internal/cli blank-imports the
 // groups, so the groups cannot import internal/cli). The behavior is
@@ -52,13 +52,13 @@ var ReservedServiceNames = map[string]bool{
 }
 
 // ValidateServiceName checks that a name is valid for a service and not a
-// reserved service name. For background workers use 'forge add worker <name>'.
+// reserved service name. For background workers use 'forge scaffold worker <name>'.
 func ValidateServiceName(name string) error {
 	if err := ValidateIdentifier(name); err != nil {
 		return err
 	}
 	if ReservedServiceNames[strings.ToLower(name)] {
-		return fmt.Errorf("%q is reserved; for background workers use 'forge add worker <name>'", name)
+		return fmt.Errorf("%q is reserved; for background workers use 'forge scaffold worker <name>'", name)
 	}
 	return nil
 }

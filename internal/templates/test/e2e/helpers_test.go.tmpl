@@ -4,29 +4,29 @@
 package {{.ServicePackage}}_test
 
 import (
-	"context"
 	"fmt"
-	"net"
 {{- if .Methods}}
 	"net/http"
 	"testing"
+{{- end}}
+
+	"github.com/reliant-labs/forge/pkg/pgtest"
 
 	pb "{{.Module}}/gen/services/{{.ServicePackage}}/v1"
+{{- if .Methods}}
 	"{{.Module}}/gen/services/{{.ServicePackage}}/v1/{{.ServicePackage}}v1connect"
-{{- else}}
-
-	pb "{{.Module}}/gen/services/{{.ServicePackage}}/v1"
 {{- end}}
 )
 
-// freePort finds an available TCP port on localhost.
+// freePort finds an available TCP port on loopback for the service binary
+// this harness is about to spawn. pgtest.ReserveLoopbackPort is the shared
+// implementation — the same one that picks a port for ephemeral postgres.
 func freePort() int {
-	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "localhost:0")
+	port, err := pgtest.ReserveLoopbackPort()
 	if err != nil {
 		panic(fmt.Sprintf("failed to find free port: %v", err))
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	return port
 }
 {{- if .Methods}}
 

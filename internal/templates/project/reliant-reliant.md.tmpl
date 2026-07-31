@@ -13,15 +13,15 @@ This project has not launched yet. There are no users and no backwards compatibi
 ## Architecture
 
 This is a Forge-generated Go + Next.js application with:
-- **Backend**: Go with Connect RPC, JWT auth, RBAC, PostgreSQL + ORM
+- **Backend**: Go with Connect RPC, JWT auth, PostgreSQL + ORM
 - **Frontend**: Next.js with TypeScript, Tailwind CSS, Connect RPC client
-- **Code Generation**: Proto files drive handler, ORM, migration, and frontend generation
+- **Code Generation**: two truths — proto drives the wire (handlers, clients, hooks); the applied `db/migrations/` schema drives the entity structs, ORM, CRUD wiring and frontend pages
 
 ## Key Conventions
 
-- Entity protos go in `proto/services/<service>/v1/`
+- Service protos go in `proto/services/<service>/v1/`; an entity is CRUD RPCs there PLUS the matching table in `db/migrations/`
 - Generated code lives in `gen/` and `*_gen.go` files — do NOT edit these
-- Custom business logic goes in handler files (not `*_gen.go`) and `pkg/app/setup.go`
+- Custom business logic goes in `internal/handlers/<svc>/` (not `*_gen.go`); wiring goes in the owned `internal/app/providers.go`
 - Frontend hooks in `frontends/*/src/hooks/` are generated — use them, don't write manual fetch calls
 - Run `{{.CLI}} generate` after proto changes, then `{{.CLI}} build` to verify
 
@@ -39,7 +39,15 @@ This is a Forge-generated Go + Next.js application with:
 ## Do NOT Edit
 - `gen/` directory
 - `*_gen.go` files
-- `cmd/server.go`, `cmd/otel.go`
-- `pkg/app/bootstrap.go`
+- `internal/app/compose.go`, `mounts_services.go`, `lifecycle.go` (forge-owned until `{{.CLI}} project disown`)
+- `internal/db/<entity>_orm.go`, `pkg/config/`
 - `frontends/*/src/hooks/*-hooks.ts`
 - `frontends/*/src/gen/`
+
+## Before writing code
+
+- `{{.CLI}} skill load forge` — the entry point: what forge already scaffolds, and the commands that print its whole surface.
+- `{{.CLI}} project capabilities` — every verb, analyzer and marker forge has, in one call.
+- `{{.CLI}} project annotations` — the entity-authoring vocabulary (field types, projected validate rules, proto options).
+- `{{.CLI}} project libraries` — every `forge/pkg/*` library, its purpose, and the source path this project resolves. Run it before porting a utility; read one with `go doc <import path>`. Never search the disk for forge's source.
+- `{{.CLI}} skill list` / `{{.CLI}} skill load <name>` — the skills, served from the binary, so they always match the forge you are running.

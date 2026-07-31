@@ -99,7 +99,7 @@ func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 // path must carry `--context <ctx>` as the leading argument (a global
 // kubectl flag, valid before any subcommand) — NOT a global
 // `kubectl config use-context` switch. Per-command threading is what
-// makes concurrent multi-cluster `forge deploy` safe: two deploys
+// makes concurrent multi-cluster `forge env deploy` safe: two deploys
 // sharing one kubeconfig but targeting different clusters can no longer
 // race on the single global active context (the cross-cluster
 // contamination incident). An empty context leaves the args untouched
@@ -230,8 +230,8 @@ spec: {}
 // we consume) AND `output` (the JSON contract the forge build/run/
 // deploy pipeline consumes via a separate kcl invocation), the
 // `output` sibling is silently skipped rather than emitting a noisy
-// "extra top-level KCL var" warning on every `forge deploy` /
-// `forge up`. Pins the dual-output contract documented at the top of
+// "extra top-level KCL var" warning on every `forge env deploy` /
+// `forge env up`. Pins the dual-output contract documented at the top of
 // the canonical main.k template.
 func TestExtractManifests_SiblingOutputIsSilent(t *testing.T) {
 	// Mirrors the shape kcl emits when main.k declares both
@@ -500,7 +500,7 @@ spec: {}`
 // ClusterRoleBinding all carry the operator's group), and DROPS everything
 // else — both the unrelated service Deployment AND the ungrouped env-shared
 // Namespace. This is the EXCLUSIVE
-// `forge deploy prod --target workspace-controller`.
+// `forge env deploy prod --target workspace-controller`.
 func TestSelectManifestsByGroup_Operator(t *testing.T) {
 	got := SelectManifestsByGroup(operatorFilterManifests, []string{"workspace-controller"})
 	for _, want := range []string{
@@ -1021,14 +1021,14 @@ metadata:
 spec:
   replicas: 1`
 
-// realImmutableStderr is the kubectl error a warm `forge up` produces when
+// realImmutableStderr is the kubectl error a warm `forge env up` produces when
 // the migrate Job already exists with a different image tag (every commit
 // changes the tag, and a Job's spec.template is immutable). This is the
 // CLIENT-SIDE apply shape (`The <Kind> "<name>" is invalid:`).
 const realImmutableStderr = `The Job "control-plane-migrate" is invalid: spec.template: Invalid value: ...: field is immutable`
 
 // cloudImmutableStderr is the SERVER-SIDE apply shape of the very same
-// failure — the one a warm CLOUD `forge deploy` actually hits, because
+// failure — the one a warm CLOUD `forge env deploy` actually hits, because
 // forge always applies with `--server-side`. kubectl encodes the resource
 // as the GVR-style `<resource>.<group>` ("Job.batch") rather than the bare
 // kind ("Job"). The recovery used to parse kind="Job.batch", fail to match
@@ -1331,7 +1331,7 @@ Deployment.apps "api" is invalid: spec.replicas: Invalid value: must be non-nega
 }
 
 // TestApplyWithImmutableRecovery_BatchedMultiConflict_ExitsZero is the direct
-// regression for the prod `forge deploy` exit-1-on-a-healthy-cluster bug. The
+// regression for the prod `forge env deploy` exit-1-on-a-healthy-cluster bug. The
 // workload batch is applied in ONE server-side apply, so a warm redeploy can
 // report MORE THAN ONE immutable conflict at once (the migrate Job AND a
 // second resource). The OLD recovery only re-entered for the SAME Kind/Name as

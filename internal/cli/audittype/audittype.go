@@ -1,5 +1,5 @@
 // Package audittype holds the small, neutral value types shared by the
-// `forge audit` command group (internal/cli/audit) and the internal/cli
+// `forge project audit` command group (internal/cli/audit) and the internal/cli
 // code that contributes audit categories it cannot compute without
 // package-cli internals (the KCL-entity-typed ingress / external-builds
 // categories, and friction.go's auditFriction). It is a leaf package so

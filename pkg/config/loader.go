@@ -248,7 +248,7 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // into the message, and consumers read it with .AsDuration(). (A plain
 // string field stays a string; the descriptor has no name heuristic.)
 //
-// The companion semantics — Mode/DevAuthBypass (role=MODE) and Validate
+// The companion semantics — Mode (role=MODE) and Validate
 // (TLS/CORS roles + allowed_values) — live in this package too (semantic.go),
 // as FREE FUNCTIONS over the message. There is no parallel generated struct:
 // a project holds the proto config type and calls these directly.

@@ -11,7 +11,7 @@ import (
 )
 
 // TestAuditCodegen_DisownedFiles pins the machine-readable disown
-// surface in `forge audit --json`:
+// surface in `forge project audit --json`:
 //
 //   - disowned entries (.forge/disowned.json — including ones the
 //     legacy-manifest migration converted from `forked: true`) show up
@@ -131,38 +131,26 @@ func TestAuditCodegen_NoDisowned(t *testing.T) {
 	}
 }
 
-// TestAuditCodegen_DisownedFilesCarriesReason pins the audit-side backfill:
-// disowned_files rows whose disowned.json entry has no reason of its own
-// inherit the reason resolved by AuditAPI.DisownFrictionReasons (the
-// friction-log join, tested in package cli where it lives), while rows
-// without any resolved reason stay reason-less.
+// TestAuditCodegen_DisownedFilesCarriesReason pins that disowned_files
+// rows surface the --reason recorded in each path's .forge/disowned.json
+// entry, and that a record predating reason capture stays reason-less.
 func TestAuditCodegen_DisownedFilesCarriesReason(t *testing.T) {
 	dir := t.TempDir()
 	content := "package app // user-owned\n"
 	for _, rel := range []string{"pkg/app/wire_gen.go", "pkg/app/bootstrap.go", "pkg/app/migrate.go"} {
 		writeFileTest(t, dir, rel, content)
 	}
-	// Disowned state carries NO reason of its own so audit falls back to the
-	// AuditAPI-resolved reasons (records that predate reason capture).
 	csState := &checksums.FileChecksums{Disowned: map[string]checksums.DisownedEntry{
-		"pkg/app/wire_gen.go":  {DisownedAt: "2026-06-01T00:00:00Z"},
-		"pkg/app/bootstrap.go": {DisownedAt: "2026-06-01T00:00:00Z"},
-		"pkg/app/migrate.go":   {DisownedAt: "2026-06-01T00:00:00Z"},
+		"pkg/app/wire_gen.go":  {Reason: "custom pool wiring forge can't express", DisownedAt: "2026-06-01T00:00:00Z"},
+		"pkg/app/bootstrap.go": {Reason: "legacy fork-era reason", DisownedAt: "2026-06-01T00:00:00Z"},
+		// migrate.go: record predates reason capture — no reason.
+		"pkg/app/migrate.go": {DisownedAt: "2026-06-01T00:00:00Z"},
 	}}
 	if err := checksums.Save(dir, csState); err != nil {
 		t.Fatal(err)
 	}
 
-	// The friction-log join logic (newest-disown-wins, legacy fork joins,
-	// non-disown areas ignored) is exercised in package cli's
-	// disownFrictionReasons tests; here we supply its resolved output.
-	f := testFactory(auditAPIConfig{
-		disownFrictionReasons: map[string]string{
-			"pkg/app/wire_gen.go":  "newest reason wins",
-			"pkg/app/bootstrap.go": "legacy fork-era reason",
-			// migrate.go: no resolved reason.
-		},
-	})
+	f := testFactory(auditAPIConfig{})
 
 	cat := auditCodegen(f, nil, dir)
 	disowned, ok := cat.Details["disowned_files"].([]auditDisownedFile)
@@ -176,13 +164,13 @@ func TestAuditCodegen_DisownedFilesCarriesReason(t *testing.T) {
 	for _, fnd := range disowned {
 		byPath[fnd.Path] = fnd
 	}
-	if got := byPath["pkg/app/wire_gen.go"].Reason; got != "newest reason wins" {
-		t.Errorf("wire_gen.go reason = %q, want the resolved area=disown entry text", got)
+	if got := byPath["pkg/app/wire_gen.go"].Reason; got != "custom pool wiring forge can't express" {
+		t.Errorf("wire_gen.go reason = %q, want the manifest --reason text", got)
 	}
 	if got := byPath["pkg/app/bootstrap.go"].Reason; got != "legacy fork-era reason" {
-		t.Errorf("bootstrap.go reason = %q, want the legacy area=fork text to survive the migration", got)
+		t.Errorf("bootstrap.go reason = %q, want the manifest --reason text", got)
 	}
 	if got := byPath["pkg/app/migrate.go"].Reason; got != "" {
-		t.Errorf("migrate.go reason = %q, want empty (no resolved reason)", got)
+		t.Errorf("migrate.go reason = %q, want empty (record predates reason capture)", got)
 	}
 }

@@ -43,7 +43,7 @@ schema Bundle:
     compose/external get it merged under the `env_file` overlay, k8s
     renders Secret objects from the declared cluster `secret_ref`s and
     applies them before Deployments (guarded to LOCAL clusters only).
-    `forge up` fail-fasts if a declared `secret_ref` is missing from the
+    `forge env up` fail-fasts if a declared `secret_ref` is missing from the
     dotenv.
   * `forge.ExternalSecrets {}` (staging / prod) — forge never sees the
     values. k8s references pre-existing Secrets (ESO / sealed), host and
@@ -157,10 +157,10 @@ kcl run deploy/kcl/dev --format json -S output \
          stray_secrets_file: [.services[] | .deploy.secrets_file] | map(select(. != null))}'
 
 # Host services still get their secrets (set a canary secret_ref, grep the log).
-forge up --env=dev
+forge env up dev
 grep -i CANARY .forge/logs/dev/*.log
 
-# Fail-fast: delete a declared key from the dotenv and confirm forge up errors
+# Fail-fast: delete a declared key from the dotenv and confirm forge env up errors
 # naming the missing secret_ref (then restore it).
 
 # k8s: confirm Secret objects render only into the local cluster, applied
@@ -176,7 +176,7 @@ If the new shape breaks something:
 git checkout HEAD -- deploy/kcl/
 
 # Downgrade.
-forge upgrade --to <prior-version>
+forge project upgrade --to <prior-version>
 ```
 
 The per-service `secrets_file` fallback still loads the same dotenv, so

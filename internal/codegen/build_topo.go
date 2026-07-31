@@ -10,7 +10,7 @@
 // user.Service means construct user before billing, regardless of the
 // field's name. This file computes that order.
 //
-// Conventional deps (Logger / Config / Authorizer / DB / Repo) come from
+// Conventional deps (Logger / Config / DB / Repo) come from
 // the shared Infra value, never another component, so they NEVER
 // participate in a topo edge. Only a Deps field whose declared type
 // resolves to another registered component's Service interface produces
@@ -21,7 +21,7 @@
 // NOT silently break"). Kahn's algorithm yields the order; any nodes that
 // never reach in-degree zero are a residual cycle, reported with the
 // back-edges so build.go can emit a `// forge:build-twophase` block and
-// `forge map`/`audit` can flag it as a guardrail finding.
+// `forge project map`/`audit` can flag it as a guardrail finding.
 //
 // This is PURE over its inputs (the parsed component set + a type
 // resolver) so it is unit-testable without a real project on disk.
@@ -70,6 +70,14 @@ type BuildComponent struct {
 	ServiceTypeKey string
 	// Deps are the parsed Deps fields, in declaration order.
 	Deps []DepsField
+	// DepsKeys is every field name the component's `Deps{…}` literal may
+	// legally key — the full set including the embedded and unexported fields
+	// Deps deliberately drops (see DepsLiteralKeys). DepsFound reports whether
+	// a Deps struct was positively READ, so an empty DepsKeys can be told apart
+	// from a package that failed to parse. Only the compose reconciler's
+	// stale-key drop reads these, and only when DepsFound is true.
+	DepsKeys  map[string]bool
+	DepsFound bool
 
 	// The following unexported fields carry the disk-resolved render
 	// metadata the inject_gen pass needs (package clause, fallible
@@ -78,10 +86,15 @@ type BuildComponent struct {
 	// (same package) populates and consumes them. Keeping them off the
 	// exported surface means the build_topo unit tests (which construct
 	// BuildComponent literals) are unaffected.
-	compPackage    string // Go package clause (constructor selector)
-	compFallible   bool   // New returns (T, error)
-	compRoleRoot   string // "internal/handlers" / "internal" / "internal/workers" / "internal/operators"
-	compImportLeaf string // on-disk dir leaf under the role root (matcher load key)
+	compPackage string // Go package clause (constructor selector)
+	// compConstructor is the component's entry-point func name — `New`, or the
+	// `// forge:constructor`-marked name the author chose instead. compose.go
+	// emits `pkg.<compConstructor>(pkg.Deps{...})`, so detection and emission
+	// read the same marker and a renamed constructor still wires.
+	compConstructor string
+	compFallible    bool   // the constructor returns (T, error)
+	compRoleRoot    string // "internal/handlers" / "internal" / "internal/workers" / "internal/operators"
+	compImportLeaf  string // on-disk dir leaf under the role root (matcher load key)
 	// compPackageKey is the bare package-clause-qualified Service key
 	// (e.g. "billing.Service"). Retained alongside the import-path-keyed
 	// ServiceTypeKey as the resolver's unambiguous-clause fallback.
@@ -98,6 +111,17 @@ type BuildComponent struct {
 	// the inject_gen local-var type, so both match the constructor exactly.
 	// Empty falls back to "*<alias>.Service" (the bootstrap default).
 	compFieldType string
+	// compWrapped is true when the package declares the OWNED observability
+	// wrapper (the generated middleware decorator — see observe_wrap.go) AND its
+	// constructor returns the interface. compose.go then emits the construction
+	// as `c.X = pkg.<compMiddlewareCtor>(pkg.New(...))`.
+	compWrapped bool
+	// compMiddlewareCtor is the generated middleware wrapper's exact constructor
+	// name (codegen.ResolveMiddlewareWrapper — keyed off the constructor's
+	// concrete return type, e.g. "NewServiceWithForgeMiddleware"). compose.go
+	// emits `pkg.<compMiddlewareCtor>(...)`, matching the generator's declaration
+	// byte-for-byte. Empty unless compWrapped.
+	compMiddlewareCtor string
 }
 
 // BuildEdge records a resolved consumer -> producer dependency: the
@@ -131,7 +155,7 @@ type BuildPlan struct {
 }
 
 // HasCycle reports whether the plan contains an unresolved dependency
-// cycle. forge map / audit use this as a guardrail signal.
+// cycle. forge project map / audit use this as a guardrail signal.
 func (p BuildPlan) HasCycle() bool { return len(p.Cycles) > 0 }
 
 // reachesSelf reports whether start can reach itself by following

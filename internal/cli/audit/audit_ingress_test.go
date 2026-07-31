@@ -26,7 +26,7 @@ forge_version: dev
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeComponentsJSONTest(t, dir)
+	markServiceProject(t, dir)
 	report, err := buildAuditReport(testFactory(auditAPIConfig{}), dir)
 	if err != nil {
 		t.Fatalf("buildAuditReport: %v", err)

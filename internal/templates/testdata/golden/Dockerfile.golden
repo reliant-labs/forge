@@ -41,7 +41,7 @@ COPY . .
 # Build with optimizations.
 #
 # ONE image, EVERY binary. Each `cmd/<bin>/` entrypoint (the primary
-# server plus any `forge add binary` siblings — proxy / ctl / worker-style
+# server plus any `forge scaffold binary` siblings — proxy / ctl / worker-style
 # processes) builds into /app/bin/<bin>. The production stage runs the
 # primary by default; secondary binaries are launched by overriding the
 # container command to /app/<bin> per-workload (KCL emits one Deployment

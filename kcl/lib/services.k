@@ -280,7 +280,7 @@ _image_has_tag_or_digest = lambda image: str -> bool {
 #   2. Else, if a PER-IMAGE digest was captured for THIS image name in
 #      `image_digests` (`{<image-name>: "sha256:..."}`), pin
 #      `<registry>/<image>@sha256:…` — the immutable, content-addressed
-#      deploy reference `forge deploy` emits when the build state captured
+#      deploy reference `forge env deploy` emits when the build state captured
 #      a pushed digest for this image. The map is keyed on the BARE image
 #      name (`reliant`, `control-plane`, `workspace-base`), so two services
 #      that share an image both resolve to that image's OWN digest, and a
@@ -326,7 +326,7 @@ _effective_image_tag = lambda entity: any, env_tag: str -> str {
 #      The SHA doesn't move while the worktree stays dirty, so each
 #      rebuild lands a NEW image under the SAME `<sha>-dirty` tag.
 #      With `IfNotPresent`, the kubelet sees the tag locally already
-#      and runs the stale layer — `forge deploy` then reports
+#      and runs the stale layer — `forge env deploy` then reports
 #      "rollout successful" while the cluster runs the previous binary.
 #      `Always` forces a re-pull on every pod start, which restores
 #      the dev iteration loop. (The long-term answer is content-

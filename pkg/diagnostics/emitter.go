@@ -7,20 +7,18 @@ import (
 
 // emitter.go — runtime emit surface.
 //
-// Three implementations today:
+// Three implementations, and they are the whole set:
 //
-//   - LogEmitter writes structured slog lines. The default; this is
-//     what Bootstrap wires when features.strict_wiring is off.
+//   - LogEmitter writes structured slog lines. The emitter a caller
+//     passes Registry.Boot to get warn-level output.
 //   - NopEmitter drops everything. Used by tests that don't care
 //     about diagnostic output, and as the default when a caller
 //     passes nil to Registry.Boot.
-//   - MultiEmitter fans out to N base emitters. Used to compose
-//     LogEmitter + (later) a MetricsEmitter so wiring gaps land on
-//     both stdout and a dashboard.
+//   - MultiEmitter fans out to N base emitters, for a caller that
+//     wants diagnostics in two places at once.
 //
-// MetricsEmitter (OTel counter) is sketched in the design doc but not
-// implemented in this skeleton — adding it is a one-file follow-up
-// that doesn't change the surface here.
+// StrictEmitter (strict.go) wraps any of them to exit non-zero when a
+// diagnostic was emitted.
 
 // Emitter is the runtime sink for diagnostics.
 //
@@ -125,9 +123,9 @@ func (NopEmitter) Emit(Diagnostic)      {}
 func (NopEmitter) Summary([]Diagnostic) {}
 
 // MultiEmitter fans Emit and Summary calls out to every base emitter
-// in order. Used to compose LogEmitter with a future MetricsEmitter
-// so the same wiring gap surfaces on both stdout and an OTel
-// dashboard.
+// in order, so the same wiring gap can surface in two places at once
+// (a caller supplies whatever second sink it wants — this package
+// ships only the three implementations above).
 //
 // Construct with NewMultiEmitter so the zero value is unambiguous —
 // an empty MultiEmitter is a NopEmitter equivalent, which is rarely

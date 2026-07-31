@@ -17,6 +17,14 @@ import (
 type Deps struct {
 	Logger *slog.Logger
 	Config *config.Config
+
+	// HTTPClient is injected so tests can swap in an httptest-backed
+	// transport. Production wiring passes `infra.DefaultClient()` (see
+	// internal/app/providers.go) — a fresh client over the SHARED
+	// instrumented base transport (OTel client spans + trace propagation
+	// + timeout). The composition site (internal/app/compose.go) wires it
+	// automatically; nil falls back to a plain 30s-timeout client.
+	HTTPClient *http.Client
 }
 
 // client implements Service by calling the external API.
@@ -33,11 +41,16 @@ type client struct {
 // Scaffolds ship with a no-error path; polish the body when you grow
 // dep validation or eager initialization.
 func New(deps Deps) (Service, error) {
+	httpClient := deps.HTTPClient
+	if httpClient == nil {
+		// Defaulted so a minimal wiring (logger + config only) still works
+		// in dev/tests. Production wiring passes infra.DefaultClient()
+		// instead — same timeout, plus the instrumented transport.
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
 	return &client{
 		deps: deps,
-		http: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		http: httpClient,
 		// TODO: Set your base URL from config:
 		// baseURL: deps.Config.{{.Name | pascalCase}}BaseURL,
 		baseURL: "https://api.example.com",

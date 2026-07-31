@@ -1,46 +1,47 @@
-// yours: scaffolded once, never touched again — forge will not overwrite this file
+{{- $m := index .Methods 0 -}}
+// yours: scaffolded once, never touched again — forge will not overwrite this file.
 //
-// (One nicety: while this file is still the untouched zero-RPC
-// placeholder, `forge generate` refreshes it with real per-RPC rows as
-// RPCs appear. The moment you change anything, it is yours for good.)
+// ONE RPC PER FILE. This file covers {{$m.Name}} and nothing else, and it
+// declares no package-level identifier, so two people implementing two RPCs
+// in this package never touch the same line. That is not tidiness — a
+// previous scaffold put every RPC's rows and one package-level `setup()`
+// into a single handlers_scaffold_test.go, two owners collided on it, and
+// the whole file was deleted before either wrote a test. Anything forge
+// scaffolds once has to survive the way forge's own output says to grow.
 //
-// Each Test<Method>_Generated function below is a thin shim over
-// `tdd.RunRPCCases` (== `tdd.TableRPC`, see pkg/tdd/rpc.go). Per-RPC
-// rows declare the request, the expected outcome, and (optionally) a
-// Setup/Check hook — the runner iterates rows as t.Run subtests and
-// asserts on either a Connect error code or a happy-path response.
+// Test{{$m.Name}}_Generated is a thin shim over `tdd.RunRPCCases`
+// (== `tdd.TableRPC`, see pkg/tdd/rpc.go). Rows declare the request, the
+// expected outcome, and (optionally) a Setup/Check hook — the runner
+// iterates rows as t.Run subtests and asserts on either a Connect error
+// code or a happy-path response.
 //
-// Scaffold rows are SELF-DESTRUCTING: they assert
-// `WantErr: connect.CodeUnimplemented` against the stub handler, so the
-// row goes red the moment you implement the RPC. That failure is the
-// point — replace the row with real assertions (Check for the happy
-// path, WantErr for failure modes) as part of implementing the handler.
+// The scaffold row is SELF-DESTRUCTING: it asserts
+// `WantErr: connect.CodeUnimplemented` against the stub handler, so the row
+// goes red the moment you implement {{$m.Name}}. That failure is the point
+// — replace it then with real assertions (Check for the happy path, WantErr
+// for failure modes). forge writes this file only when it is absent and
+// {{$m.Name}} is still a stub, so a file you have edited, or an RPC you have
+// implemented, is never re-offered.
 //
-// CRUD RPCs are intentionally absent from this file — their lifecycle
-// coverage lives in handlers_crud_test.go (yours as well). Each method
-// has exactly one per-RPC test owner; never both.
+// CRUD RPCs are intentionally absent — their lifecycle coverage lives in
+// handlers_crud_test.go (yours as well). Each method has exactly one
+// per-RPC test owner; never both.
 //
 // Library reference: github.com/reliant-labs/forge/pkg/tdd
 // Skill: forge skill load testing/patterns
-// Migration:  forge skill load migration/v0.x-to-tdd-rpccases
+// Migration:  forge skill load migrations/v0.x-to-tdd-rpccases
 package {{.ServicePackage}}_test
+{{- if or $m.ClientStreaming $m.ServerStreaming}}
 
-{{- if .Methods}}
-{{- /* First unary (non-streaming) method, if any — drives the
-       authorizer-chain test, which needs a real RPC to push through
-       the test server's interceptor stack. */ -}}
-{{- $unary := "" }}{{- $unaryIn := "" }}
-{{- range .Methods }}
-{{- if and (not .ClientStreaming) (not .ServerStreaming) (not $unary) }}
-{{- $unary = .Name }}{{- $unaryIn = .InputType }}
-{{- end }}
-{{- end }}
+// TODO: {{$m.Name}} is a streaming RPC and tdd.RunRPCCases targets unary
+// handlers. This file is {{$m.Name}}'s slot — write the streaming test here.
+//
+// The service instance comes from app.NewTest{{.TestHelperName}}(t) (see
+// pkg/app/testing.go); pass app.With{{.TestHelperName}}Deps(...) to override
+// a dependency.
+{{- else}}
 
 import (
-	"context"
-{{- if $unary}}
-	"errors"
-{{- end}}
 	"testing"
 
 	"connectrpc.com/connect"
@@ -48,124 +49,44 @@ import (
 	"github.com/reliant-labs/forge/pkg/tdd"
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
-	{{/* Import path uses the on-disk dir leaf; selectors use the package
-	     clause. The two may legally differ — Go resolves the selector via
-	     the explicit alias. */ -}}
-	{{.ServicePackage}} "{{.Module}}/internal/handlers/{{.ServiceImportPath}}"
+
+	{{/* The handler package itself is deliberately NOT imported: nothing
+	     here names a type from it, and Go rejects an unused import. Add
+	     `{{.ServicePackage}} "{{.Module}}/internal/handlers/{{.ServiceImportPath}}"`
+	     when an assertion needs one. (The import path uses the on-disk dir
+	     leaf; the selector uses the package clause, and the two may legally
+	     differ — hence the explicit alias.) */ -}}
 	"{{.Module}}/pkg/app"
-{{- if $unary}}
-	"{{.Module}}/pkg/middleware"
-{{- end}}
 )
 
-// setup constructs a fresh service instance for one test function. Per
-// `pkg/app/testing.go`, app.NewTest{{.TestHelperName}} returns a
-// *{{.ServicePackage}}.Service wired to a permissive authorizer and
-// stubbed dependencies. Override per-row state with Case.Setup or pass
-// `app.With{{.TestHelperName}}Deps(...)` here.
-func setup(t *testing.T) *{{.ServicePackage}}.Service {
-	t.Helper()
-	return app.NewTest{{.TestHelperName}}(t)
-}
-{{- range .Methods}}
-{{- if or .ClientStreaming .ServerStreaming}}
-
-// Test{{.Name}}_Generated — TODO: {{.Name}} is a streaming RPC;
-// tdd.RunRPCCases targets unary handlers. Add a hand-written streaming
-// test here.
-{{- else}}
-
-// Test{{.Name}}_Generated runs the canonical scaffold rows for {{.Name}}.
+// Test{{$m.Name}}_Generated runs the canonical scaffold rows for {{$m.Name}}.
 // Add more rows by appending tdd.RPCCase entries — never write a new
 // Test<X> function for what is really a new row in this table.
-func Test{{.Name}}_Generated(t *testing.T) {
+func Test{{$m.Name}}_Generated(t *testing.T) {
 	t.Parallel()
-	svc := setup(t)
 
-	tdd.RunRPCCases(t, []tdd.RPCCase[pb.{{.InputType}}, pb.{{.OutputType}}]{
+	// app.NewTest{{.TestHelperName}} (pkg/app/testing.go) returns the
+	// {{.ServicePackage}} *Service wired with stubbed dependencies. Override one
+	// with app.With{{.TestHelperName}}Deps(...), or per-row via Case.Setup.
+	svc := app.NewTest{{.TestHelperName}}(t)
+
+	tdd.RunRPCCases(t, []tdd.RPCCase[pb.{{$m.InputType}}, pb.{{$m.OutputType}}]{
 		{
-			// SELF-DESTRUCTING scaffold row: passes only while {{.Name}}
+			// SELF-DESTRUCTING scaffold row: passes only while {{$m.Name}}
 			// is the generated CodeUnimplemented stub. Implementing the
 			// handler makes this row FAIL — replace it then with real
 			// assertions, e.g.
 			//   { Name: "happy_path", Req: ..., Ctx: app.AuthedContext(t),
-			//     Check: func(t *testing.T, resp *connect.Response[pb.{{.OutputType}}]) { ... } },
+			//     Check: func(t *testing.T, resp *connect.Response[pb.{{$m.OutputType}}]) { ... } },
 			//   { Name: "missing_required_field", Req: ...,
 			//     Ctx: app.AuthedContext(t), WantErr: connect.CodeInvalidArgument },
 			// Ctx carries authenticated test claims (UserID "test-user",
 			// role "admin") so middleware.GetUser sees a principal.
 			Name:    "unimplemented_scaffold",
-			Req:     connect.NewRequest(&pb.{{.InputType}}{}),
+			Req:     connect.NewRequest(&pb.{{$m.InputType}}{}),
 			Ctx:     app.AuthedContext(t),
 			WantErr: connect.CodeUnimplemented,
 		},
-	}, svc.{{.Name}})
+	}, svc.{{$m.Name}})
 }
-{{- end}}
-{{- end}}
-
-// TestAuthorizerUnknownMethodFailMode pins the authorizer's
-// unknown-procedure contract. The generated RolesDecider FAILS CLOSED
-// (the pkg/authz zero value): an unknown method — proto drift, a
-// hand-mounted endpoint, or probe traffic — is DENIED, with a
-// once-per-method slog.Warn naming the procedure so it can be added to
-// the proto. Local-dev permissiveness comes from the bootstrap
-// DevAuthorizer swap, never from the policy table. If this service
-// really must serve procedures the table has never heard of, opt into
-// authz.AllowUnknownMethods in authorizer.go and flip these assertions.
-func TestAuthorizerUnknownMethodFailMode(t *testing.T) {
-	t.Parallel()
-
-	a := {{.ServicePackage}}.NewAuthorizer()
-	if err := a.CanAccess(context.Background(), "/services.unknown.v1.UnknownService/UnknownMethod"); err == nil {
-		t.Fatal("fail-closed default: unknown procedure must be denied, got nil error")
-	}
-	// Empty procedure is denied unconditionally regardless of FailMode —
-	// Connect always passes a real procedure name, so an empty value is a
-	// defensive bug check (see pkg/authz Authorizer.CanAccess).
-	if err := a.CanAccess(context.Background(), ""); err == nil {
-		t.Fatal("empty procedure must be denied unconditionally (pkg/authz defensive bug check), got nil error")
-	}
-}
-{{- if $unary}}
-
-// TestNewTest{{.TestHelperName}}AuthorizerChain verifies the test server
-// mounts the production interceptor chain (middleware.AuthzInterceptor —
-// see pkg/app/services_gen.go) and that the policy is the only delta from
-// production: a deny-all authorizer rejects the call at the interceptor,
-// while the default permissive one lets it through to the handler.
-func TestNewTest{{.TestHelperName}}AuthorizerChain(t *testing.T) {
-	t.Parallel()
-
-	// Deny-all: rejected by the authz interceptor before the handler runs.
-	_, denied := app.NewTest{{.TestHelperName}}Server(t, app.WithAuthorizer(denyAllAuthorizer{}))
-	_, err := denied.{{$unary}}(context.Background(), connect.NewRequest(&pb.{{$unaryIn}}{}))
-	tdd.AssertConnectError(t, err, connect.CodePermissionDenied)
-
-	// Default permissive authorizer: the same call must get PAST the
-	// interceptor. The handler itself may still fail (CodeUnimplemented
-	// while scaffolded) — the assertion is that authz did not deny.
-	_, allowed := app.NewTest{{.TestHelperName}}Server(t)
-	_, err = allowed.{{$unary}}(context.Background(), connect.NewRequest(&pb.{{$unaryIn}}{}))
-	if err != nil && connect.CodeOf(err) == connect.CodePermissionDenied {
-		t.Fatalf("default test authorizer must be permissive, got deny: %v", err)
-	}
-}
-
-// denyAllAuthorizer rejects every call — the negative pole for
-// TestNewTest{{.TestHelperName}}AuthorizerChain.
-type denyAllAuthorizer struct{}
-
-func (denyAllAuthorizer) CanAccess(context.Context, string) error {
-	return connect.NewError(connect.CodePermissionDenied, errors.New("deny-all test authorizer"))
-}
-
-func (denyAllAuthorizer) Can(context.Context, *middleware.Claims, string, string) error {
-	return connect.NewError(connect.CodePermissionDenied, errors.New("deny-all test authorizer"))
-}
-{{- end}}
-{{- else}}
-
-// forge-unit-test-placeholder: this file is regenerated once RPCs are
-// defined in the proto file. Run 'forge generate' after adding RPCs.
 {{- end}}

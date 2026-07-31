@@ -17,14 +17,14 @@ The fully qualified service name is `<package>.<Service>`. Take it from your `.p
 
 ```proto
 // proto/services/users/v1/users.proto
-package users.v1;
+package services.users.v1;
 
 service UserService {
   rpc GetUser(GetUserRequest) returns (GetUserResponse);
 }
 ```
 
-→ POST endpoint: `/users.v1.UserService/GetUser`
+→ POST endpoint: `/services.users.v1.UserService/GetUser`
 
 The leading slash is part of the URL. There is **no** `/api/`, `/v1/`, or any other prefix — Connect serves directly off the package + service path.
 
@@ -58,7 +58,7 @@ Empty input messages (`google.protobuf.Empty`) require an empty body: `{}`. Meth
 curl -X POST \
   -H 'Content-Type: application/json' \
   -d '{"id":"abc123"}' \
-  http://localhost:8080/users.v1.UserService/GetUser
+  http://localhost:8080/services.users.v1.UserService/GetUser
 ```
 
 Response (success):
@@ -87,13 +87,13 @@ If the project's `forge.yaml` sets `auth.jwt: true` or `auth.api_keys: true`, me
 curl -X POST -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <token>' \
   -d '{}' \
-  http://localhost:8080/users.v1.UserService/ListUsers
+  http://localhost:8080/services.users.v1.UserService/ListUsers
 
 # API key
 curl -X POST -H 'Content-Type: application/json' \
   -H 'X-API-Key: <key>' \
   -d '{}' \
-  http://localhost:8080/users.v1.UserService/ListUsers
+  http://localhost:8080/services.users.v1.UserService/ListUsers
 ```
 
 Methods that declare `(forge.v1.method).auth_required = false` skip the auth interceptor and accept anonymous calls. The `auth` skill has the full table.
@@ -118,12 +118,12 @@ You will see the first response frame plus a connection that stays open until th
 `forge api curl <service.method>` builds a copy-pasteable curl command for you — no remembering the URL shape, no looking up the request message fields:
 
 ```bash
-forge api curl users.v1.UserService.GetUser
+forge api curl services.users.v1.UserService.GetUser
 # →
 # curl -X POST \
 #   -H 'Content-Type: application/json' \
 #   -d '{"id":""}' \
-#   http://localhost:8080/users.v1.UserService/GetUser
+#   http://localhost:8080/services.users.v1.UserService/GetUser
 ```
 
 The body is a zero-value skeleton populated from the proto definition's fields, in declaration order. Edit it before sending.
@@ -132,7 +132,7 @@ Flags:
 
 | Flag | Effect |
 |------|--------|
-| `--port <n>` | Override the port from `forge.yaml` (e.g. when running behind a port-forward). |
+| `--port <n>` | Port to hit; defaults to 8080 (e.g. when running behind a port-forward). |
 | `--body '{...}'` | Skip the skeleton; use this JSON body verbatim. |
 | `--host <name>` | Override the host (default: `localhost`). |
 
@@ -149,5 +149,5 @@ The helper reads `gen/forge_descriptor.json` for the proto data — run `forge g
 1. **Missing the leading slash** — the URL path *is* `/<pkg>.<Service>/<Method>`, not `<pkg>.<Service>/<Method>`. Without the slash you'll get a 404.
 2. **Wrong Content-Type for streaming** — `application/json` only works for unary RPCs. Streaming returns `415` if you forget `+json`.
 3. **Forgetting the body for empty-input methods** — Connect requires `{}` even for `google.protobuf.Empty`. An empty `-d ''` produces a parse error.
-4. **Confusing the URL with the proto file path** — the proto file lives at `proto/services/users/v1/users.proto`, but the URL is `/users.v1.UserService/GetUser`. The path is derived from the `package` directive, not the directory layout.
+4. **Confusing the URL with the proto file path** — the URL is built from the `package` directive (`/services.users.v1.UserService/GetUser`), not the file path: the `proto/` root and the file name (`users.proto`) never appear in it.
 5. **Hand-rolling the URL when `forge api curl` exists** — let the helper read the descriptor; it will catch service/method renames at the point of use.

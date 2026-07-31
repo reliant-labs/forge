@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,8 +21,8 @@ func TestMatchCRUDMethods_BasicMatching(t *testing.T) {
 			PkField:   "id",
 			PkGoType:  "int64",
 			Fields: []EntityField{
-				{Name: "id", GoName: "ID", GoType: "int64"},
-				{Name: "name", GoName: "Name", GoType: "string"},
+				{Name: "id", GoName: "ID", GoType: "int64", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", GoType: "string", Kind: FieldKindScalar},
 			},
 		},
 	}
@@ -208,8 +209,8 @@ func (s *Service) CreatePatient(ctx context.Context, req *connect.Request[pb.Cre
 			PkField:   "id",
 			PkGoType:  "int64",
 			Fields: []EntityField{
-				{Name: "id", GoName: "ID", GoType: "int64"},
-				{Name: "name", GoName: "Name", GoType: "string"},
+				{Name: "id", GoName: "ID", GoType: "int64", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", GoType: "string", Kind: FieldKindScalar},
 			},
 		},
 	}
@@ -258,23 +259,25 @@ func (s *Service) CreatePatient(ctx context.Context, req *connect.Request[pb.Cre
 }
 
 // TestEnsureDepsDBField_DoesNotMutateWhenHandlersGoExists pins the
-// Tier-3 user-owned contract for handlers/<svc>/service.go.
+// Tier-3 user-owned contract for handlers/<svc>/service.go: a user who
+// owns the WHOLE CRUD surface for an entity (implements every matched RPC
+// in handlers.go) never has service.go mutated.
 //
-// Before this regression test landed, ensureDepsDBField silently
-// injected `DB orm.Context` and a `pkg/orm` import into service.go on
-// the FIRST `forge generate` after a proto service grew a `List*` /
-// `Get*` / `Create*` / etc. method — even when the user had written a
-// hand-rolled handlers.go and never intended to consume forge's CRUD
-// codegen. service.go is Tier-3 user-owned (banners.go classifies it
-// so) and "user-owned, never mutated" is the documented convention;
-// mutating it on regen was a silent stomp.
+// The protection is the DEDUP, not a handlers.go-existence gate. When the
+// user has implemented ListPatients (the only CRUD-matched RPC) by hand,
+// ScanExistingMethods filters it out, GenerateCRUDHandlers emits no op for
+// it, and ensureDepsDBField is never reached — so nothing forge writes ever
+// references s.deps.DB and service.go stays byte-for-byte identical.
 //
-// The opt-out: presence of handlers.go in the service package signals
-// "I'm managing handler wiring myself; keep your hands off service.go".
-// The CRUD dedup pass still emits handlers_crud_gen.go for any CRUD
-// method the user has NOT implemented in handlers.go — but if those
-// stubs reference s.deps.DB and the user hasn't added DB, the resulting
-// `go build` error is loud and visible, not a silent file mutation.
+// (An earlier version gated ensureDepsDBField on the ABSENCE of handlers.go,
+// treating any handlers.go as "user manages Deps". That gate broke once
+// `forge project new` began SHIPPING a handlers.go: it fired on every fresh
+// project, so a newly-added CRUD entity's ops referenced an s.deps.DB field
+// that was never injected and the build broke. See
+// TestEnsureDepsDBField_InjectsWhenHandlersGoHasUnrelatedStubs for the
+// counterpart: an UNIMPLEMENTED CRUD method alongside a shipped handlers.go
+// DOES get the field injected, because forge is the one emitting the
+// s.deps.DB reference.)
 func TestEnsureDepsDBField_DoesNotMutateWhenHandlersGoExists(t *testing.T) {
 	projectDir := t.TempDir()
 	handlerDir := filepath.Join(projectDir, "internal", "handlers", "patients")
@@ -353,8 +356,8 @@ func (s *Service) ListPatients(ctx context.Context, req *connect.Request[pb.List
 			PkField:   "id",
 			PkGoType:  "int64",
 			Fields: []EntityField{
-				{Name: "id", GoName: "ID", GoType: "int64"},
-				{Name: "name", GoName: "Name", GoType: "string"},
+				{Name: "id", GoName: "ID", GoType: "int64", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", GoType: "string", Kind: FieldKindScalar},
 			},
 		},
 	}
@@ -450,8 +453,8 @@ type Service struct {
 			PkField:   "id",
 			PkGoType:  "int64",
 			Fields: []EntityField{
-				{Name: "id", GoName: "ID", GoType: "int64"},
-				{Name: "name", GoName: "Name", GoType: "string"},
+				{Name: "id", GoName: "ID", GoType: "int64", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", GoType: "string", Kind: FieldKindScalar},
 			},
 		},
 	}
@@ -473,6 +476,131 @@ type Service struct {
 	}
 	if !strings.Contains(content, "github.com/reliant-labs/forge/pkg/orm") {
 		t.Errorf("expected pkg/orm import to be injected when no handlers.go exists; got:\n%s", content)
+	}
+}
+
+// TestEnsureDepsDBField_InjectsWhenHandlersGoHasUnrelatedStubs is the
+// direct regression guard for the dogfood bug: `forge project new` ships a
+// handlers.go carrying the example entity's stubs, and adding a REAL CRUD
+// entity (its own table + Create/Get/List/Update/Delete RPCs not present in
+// handlers.go) must still get `DB orm.Context` injected so the generated
+// handlers_crud_ops_gen.go — which dereferences s.deps.DB — compiles.
+//
+// The old handlers.go-existence gate returned early here (handlers.go was on
+// disk), left Deps without a DB field, and the build died on
+// `s.deps.DB undefined`. This pins that the presence of an UNRELATED,
+// unimplemented handlers.go no longer suppresses the injection.
+func TestEnsureDepsDBField_InjectsWhenHandlersGoHasUnrelatedStubs(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "patients")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh scaffold service.go: Logger only, extension marker present.
+	serviceGo := `package patients
+
+import (
+	"fmt"
+	"log/slog"
+)
+
+type Deps struct {
+	Logger *slog.Logger
+	// Add your dependencies here (e.g. Repo Repository).
+}
+
+func (d Deps) validateDeps() error {
+	if d.Logger == nil {
+		return fmt.Errorf("PatientsService: Deps.Logger is required")
+	}
+	// Add checks for your required Deps fields here.
+	return nil
+}
+
+type Service struct {
+	deps Deps
+}
+`
+	servicePath := filepath.Join(handlerDir, "service.go")
+	if err := os.WriteFile(servicePath, []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Shipped handlers.go with an UNRELATED entity's stubs (like the
+	// example Item `forge project new` ships) — NOT the Patient CRUD forge
+	// is about to wire.
+	handlersGo := `package patients
+
+import (
+	"context"
+	"connectrpc.com/connect"
+	pb "example.com/test/gen/proto/services/patients/v1"
+)
+
+func (s *Service) CreateWidget(ctx context.Context, req *connect.Request[pb.CreateWidgetRequest]) (*connect.Response[pb.CreateWidgetResponse], error) {
+	return nil, nil
+}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "handlers.go"), []byte(handlersGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Patient CRUD RPCs — NONE implemented in handlers.go, so forge wires
+	// them and their ops reference s.deps.DB.
+	svc := ServiceDef{
+		Name:       "PatientsService",
+		GoPackage:  "example.com/test/gen/proto/services/patients/v1",
+		PkgName:    "patientsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "CreatePatient", InputType: "CreatePatientRequest", OutputType: "CreatePatientResponse"},
+			{Name: "GetPatient", InputType: "GetPatientRequest", OutputType: "GetPatientResponse"},
+		},
+	}
+	entities := []EntityDef{
+		{
+			Name:      "Patient",
+			TableName: "patients",
+			PkField:   "id",
+			PkGoType:  "string",
+			Fields: []EntityField{
+				{Name: "id", GoName: "Id", GoType: "string", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", GoType: "string", Kind: FieldKindScalar},
+			},
+		},
+	}
+
+	crudMethods := MatchCRUDMethods(svc, entities)
+	if len(crudMethods) == 0 {
+		t.Fatal("expected Patient CRUD methods to match")
+	}
+
+	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
+	}
+
+	after, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(after)
+	if !strings.Contains(content, "orm.Context") {
+		t.Errorf("expected DB orm.Context injected into Deps despite a shipped handlers.go with unrelated stubs; got:\n%s", content)
+	}
+	if !strings.Contains(content, "github.com/reliant-labs/forge/pkg/orm") {
+		t.Errorf("expected pkg/orm import injected; got:\n%s", content)
+	}
+
+	// And the generated ops file references s.deps.DB — the field just
+	// injected is exactly what it needs.
+	opsPath := filepath.Join(handlerDir, "handlers_crud_ops_gen.go")
+	ops, err := os.ReadFile(opsPath)
+	if err != nil {
+		t.Fatalf("expected handlers_crud_ops_gen.go to be written: %v", err)
+	}
+	if !strings.Contains(string(ops), "s.deps.DB") {
+		t.Error("expected the generated ops to reference s.deps.DB (the injected field)")
 	}
 }
 
@@ -602,27 +730,6 @@ func TestGenerateCRUDHandlers_KeepsUserOwnedLegacyGen(t *testing.T) {
 	}
 }
 
-func TestOperationToAuthAction(t *testing.T) {
-	tests := []struct {
-		op   string
-		want string
-	}{
-		{"create", "create"},
-		{"get", "read"},
-		{"list", "list"},
-		{"update", "update"},
-		{"delete", "delete"},
-		{"unknown", "read"},
-	}
-
-	for _, tt := range tests {
-		got := operationToAuthAction(tt.op)
-		if got != tt.want {
-			t.Errorf("operationToAuthAction(%q) = %q, want %q", tt.op, got, tt.want)
-		}
-	}
-}
-
 func TestMatchCRUDMethods_CaseInsensitiveEntityMatch(t *testing.T) {
 	entities := []EntityDef{
 		{Name: "Patient", TableName: "patients", PkField: "id", PkGoType: "int64"},
@@ -701,9 +808,14 @@ func TestGenerateCRUDTests_BasicGeneration(t *testing.T) {
 			PkGoType:   "string",
 			Timestamps: true,
 			Fields: []EntityField{
-				{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string"},
-				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
-				{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool"},
+				{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+				{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool", Kind: FieldKindScalar},
+				// A realistic timestamped entity EXPOSES created_at on the
+				// wire — that is what makes the GetCreatedAt() assertion
+				// compile (the wire assertion is gated on this field, not on
+				// the table column alone).
+				{Name: "created_at", GoName: "CreatedAt", ProtoType: "message", MessageType: "google.protobuf.Timestamp", GoType: "*timestamppb.Timestamp"},
 			},
 		},
 	}
@@ -820,8 +932,8 @@ func TestGenerateCRUDTests_PartialCRUD(t *testing.T) {
 			PkField:   "id",
 			PkGoType:  "string",
 			Fields: []EntityField{
-				{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string"},
-				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
+				{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
 			},
 		},
 	}
@@ -886,8 +998,8 @@ func TestGenerateCRUDTests_SkipsNonQualifyingEntities(t *testing.T) {
 	entities := []EntityDef{{
 		Name: "Patient", TableName: "patients", PkField: "id", PkGoType: "int64",
 		Fields: []EntityField{
-			{Name: "id", GoName: "Id", ProtoType: "int64", GoType: "int64"},
-			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
+			{Name: "id", GoName: "Id", ProtoType: "int64", GoType: "int64", Kind: FieldKindScalar},
+			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
 		},
 	}}
 
@@ -1025,8 +1137,8 @@ func (s *Service) CreatePatient(ctx context.Context, req *connect.Request[pb.Cre
 			PkField:   "id",
 			PkGoType:  "string",
 			Fields: []EntityField{
-				{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string"},
-				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
+				{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
 			},
 		},
 	}
@@ -1170,7 +1282,7 @@ func TestBuildCRUDTestTemplateData(t *testing.T) {
 	crudMethods := []CRUDMethod{
 		{
 			Method:    MethodTemplateData{Name: "CreatePatient", InputType: "CreatePatientRequest", OutputType: "CreatePatientResponse"},
-			Entity:    EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64", Timestamps: true, Fields: []EntityField{{Name: "id", GoName: "ID", GoType: "int64"}, {Name: "name", GoName: "Name", GoType: "string"}}},
+			Entity:    EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64", Timestamps: true, Fields: []EntityField{{Name: "id", GoName: "ID", GoType: "int64"}, {Name: "name", GoName: "Name", GoType: "string"}, {Name: "created_at", GoName: "CreatedAt", ProtoType: "message", MessageType: "google.protobuf.Timestamp", GoType: "*timestamppb.Timestamp"}}},
 			Operation: "create",
 		},
 		{
@@ -1195,7 +1307,7 @@ func TestBuildCRUDTestTemplateData(t *testing.T) {
 		},
 	}
 
-	data := buildCRUDTestTemplateData(svc, crudMethods, "example.com/test", "")
+	data := buildCRUDTestTemplateData(svc, crudMethods, "example.com/test", "", nil)
 
 	if data.Package != "patients" {
 		t.Errorf("Package = %q, want patients", data.Package)
@@ -1217,17 +1329,53 @@ func TestBuildCRUDTestTemplateData(t *testing.T) {
 	if ent.CreateMethod.MethodName != "CreatePatient" {
 		t.Errorf("CreateMethod.MethodName = %q, want CreatePatient", ent.CreateMethod.MethodName)
 	}
-	if len(ent.Fields) != 1 {
-		t.Errorf("expected 1 field (id excluded), got %d", len(ent.Fields))
+	if len(ent.Fields) != 2 {
+		t.Errorf("expected 2 fields (id excluded; name + created_at), got %d", len(ent.Fields))
 	}
 	if !ent.HasTimestamps {
-		t.Error("expected HasTimestamps=true (entity annotation timestamps:true)")
+		t.Error("expected HasTimestamps=true (table timestamps:true AND proto exposes created_at)")
 	}
 	if ent.MutableStringField != "Name" {
 		t.Errorf("MutableStringField = %q, want Name (first non-PK string field)", ent.MutableStringField)
 	}
 	if len(data.CRUDMethods) != 5 {
 		t.Errorf("expected 5 CRUDMethods, got %d", len(data.CRUDMethods))
+	}
+}
+
+// TestBuildCRUDTestTemplateData_TimestampsWithoutProtoField pins the
+// born-from-proto case: the entity's TABLE has a created_at column (so
+// entity.Timestamps is true off the schema), but its proto MESSAGE does
+// not declare created_at. The lifecycle test asserts create sets the
+// timestamp by reading the WIRE getter Get<Entity>().GetCreatedAt(), which
+// pb.<Entity> only defines when the message carries the field — so the
+// assertion must NOT be emitted here, or the generated test would fail to
+// compile. This is the dogfood scenario: a marked entity's minimal birth
+// migration adds created_at/updated_at columns the proto never declared.
+func TestBuildCRUDTestTemplateData_TimestampsWithoutProtoField(t *testing.T) {
+	svc := ServiceDef{
+		Name:       "PeptidesService",
+		GoPackage:  "example.com/test/gen/proto/services/peptides/v1",
+		PkgName:    "peptidesv1",
+		ModulePath: "example.com/test",
+	}
+	crudMethods := []CRUDMethod{
+		{
+			Method: MethodTemplateData{Name: "CreatePeptide", InputType: "CreatePeptideRequest", OutputType: "CreatePeptideResponse"},
+			// Timestamps:true (the peptides table has created_at), but the
+			// wire Fields carry NO created_at — the proto message never
+			// declared one.
+			Entity:    EntityDef{Name: "Peptide", PkField: "id", PkGoType: "string", Timestamps: true, Fields: []EntityField{{Name: "id", GoName: "Id", GoType: "string"}, {Name: "name", GoName: "Name", GoType: "string"}}},
+			Operation: "create",
+		},
+	}
+
+	data := buildCRUDTestTemplateData(svc, crudMethods, "example.com/test", "", nil)
+	if len(data.Entities) != 1 {
+		t.Fatalf("expected 1 entity, got %d", len(data.Entities))
+	}
+	if data.Entities[0].HasTimestamps {
+		t.Error("HasTimestamps must be false when the proto message has no created_at field — the wire GetCreatedAt() assertion would not compile")
 	}
 }
 
@@ -1303,10 +1451,10 @@ func TestBuildCRUDTemplateData_WithFilters(t *testing.T) {
 			Method: MethodTemplateData{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
 			Entity: EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64",
 				Fields: []EntityField{
-					{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
-					{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
-					{Name: "status", GoName: "Status", ProtoType: "string", GoType: "string"},
-					{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool"},
+					{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64", Kind: FieldKindScalar},
+					{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+					{Name: "status", GoName: "Status", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+					{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool", Kind: FieldKindScalar},
 				},
 				// Filter validation runs against the introspected applied
 				// schema (Columns), and search filters span SearchColumns.
@@ -1411,8 +1559,8 @@ func TestBuildCRUDTemplateData_FilterMappingErrors(t *testing.T) {
 		// error must be about that specific filter field.
 		entity := EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64",
 			Fields: []EntityField{
-				{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
-				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
+				{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
 			},
 			Columns: []EntityColumn{
 				{Name: "id", Type: "int64", NotNull: true, IsPK: true},
@@ -1444,8 +1592,8 @@ func TestBuildCRUDTemplateData_FilterMappingErrors(t *testing.T) {
 		// search filter has nothing to span and must fail the generate.
 		entity := EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64",
 			Fields: []EntityField{
-				{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
-				{Name: "age", GoName: "Age", ProtoType: "int32", GoType: "int32"},
+				{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64", Kind: FieldKindScalar},
+				{Name: "age", GoName: "Age", ProtoType: "int32", GoType: "int32", Kind: FieldKindScalar},
 			},
 			Columns: []EntityColumn{
 				{Name: "id", Type: "int64", NotNull: true, IsPK: true},
@@ -1509,9 +1657,9 @@ type Service struct {
 	entities := []EntityDef{{
 		Name: "Patient", TableName: "patients", PkField: "id", PkGoType: "int64",
 		Fields: []EntityField{
-			{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
-			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
-			{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool"},
+			{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64", Kind: FieldKindScalar},
+			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+			{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool", Kind: FieldKindScalar},
 		},
 		// Filter validation runs against the introspected applied schema.
 		Columns: []EntityColumn{
@@ -1554,14 +1702,16 @@ type Service struct {
 	// Per-entity conversion pair: the ops file carries patientToProto /
 	// patientFromProto built from the wire-field x column intersection, and
 	// the Pack seam calls it — no type-alias passthrough.
-	if !contains(content, "func patientToProto(e *db.Patient) *pb.Patient {") {
-		t.Error("expected patientToProto conversion function in ops file")
+	// ToProto returns (*pb.Patient, error) so a corrupt-enum read surfaces
+	// as CodeInternal instead of a silent UNSPECIFIED.
+	if !contains(content, "func patientToProto(e *db.Patient) (*pb.Patient, error) {") {
+		t.Error("expected patientToProto conversion function (error-returning) in ops file")
 	}
-	if !contains(content, "func patientFromProto(m *pb.Patient) *db.Patient {") {
+	if !contains(content, "func patientFromProto(m *pb.Patient) (*db.Patient, error) {") {
 		t.Error("expected patientFromProto conversion function in ops file")
 	}
-	if !contains(content, "out = append(out, patientToProto(it))") {
-		t.Error("expected list Pack to convert rows via patientToProto")
+	if !contains(content, "m, err := patientToProto(it)") || !contains(content, "out = append(out, m)") {
+		t.Error("expected list Pack to convert rows via patientToProto and propagate its error")
 	}
 	// No timestamp columns on this entity → no timestamppb import.
 	if contains(content, "timestamppb") {
@@ -1682,8 +1832,8 @@ type Service struct {
 	entities := []EntityDef{{
 		Name: "Widget", TableName: "widgets", PkField: "id", PkGoType: "int64",
 		Fields: []EntityField{
-			{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
-			{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool"},
+			{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64", Kind: FieldKindScalar},
+			{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool", Kind: FieldKindScalar},
 		},
 		Columns: []EntityColumn{
 			{Name: "id", Type: "int64", NotNull: true, IsPK: true},
@@ -1738,6 +1888,92 @@ type Service struct {
 	}
 	if contains(shim, "forge:custom-read-shape") {
 		t.Errorf("non-paginated list must NOT be a custom-read-shape stub; got:\n%s", shim)
+	}
+}
+
+// TestGenerateCRUDHandlers_OrderByWithoutDescending pins the review bug:
+// a List request that declares `string order_by = N;` but NO companion
+// `bool descending` field must NOT generate an OrderBy closure that
+// dereferences req.Descending (which the proto type doesn't have) — that
+// makes `go build` of the generated app fail. HasOrderBy is still true
+// (order_by IS wired), but the closure returns a constant false
+// (ascending) and never names req.Descending.
+func TestGenerateCRUDHandlers_OrderByWithoutDescending(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "widgets")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceGo := `package widgets
+
+import "github.com/reliant-labs/forge/pkg/orm"
+
+type Deps struct {
+	DB orm.Context
+}
+
+type Service struct {
+	deps Deps
+}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:       "WidgetsService",
+		GoPackage:  "example.com/test/gen/proto/services/widgets/v1",
+		PkgName:    "widgetsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "ListWidgets", InputType: "ListWidgetsRequest", OutputType: "ListWidgetsResponse"},
+		},
+		Messages: map[string][]MessageFieldDef{
+			// order_by present, descending ABSENT — the bug repro.
+			"ListWidgetsRequest": {
+				{Name: "order_by", ProtoType: "string"},
+			},
+			"ListWidgetsResponse": {
+				{Name: "widgets", ProtoType: "message"},
+			},
+		},
+	}
+
+	entities := []EntityDef{{
+		Name: "Widget", TableName: "widgets", PkField: "id", PkGoType: "int64",
+		Fields: []EntityField{
+			{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64", Kind: FieldKindScalar},
+		},
+		Columns: []EntityColumn{
+			{Name: "id", Type: "int64", NotNull: true, IsPK: true},
+		},
+	}}
+
+	crudMethods := MatchCRUDMethods(svc, entities)
+	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
+	}
+
+	opsPath := filepath.Join(handlerDir, "handlers_crud_ops_gen.go")
+	opsBytes, err := os.ReadFile(opsPath)
+	if err != nil {
+		t.Fatalf("order_by-only list must still produce a Tier-1 ops file: %v", err)
+	}
+	ops := string(opsBytes)
+
+	if !contains(ops, "HasOrderBy:    true") {
+		t.Errorf("expected HasOrderBy: true (order_by present); got:\n%s", ops)
+	}
+	// The whole point of the fix: no dereference of the nonexistent field.
+	if contains(ops, "req.Descending") {
+		t.Errorf("order_by WITHOUT a descending field must NOT reference req.Descending; got:\n%s", ops)
+	}
+	if !contains(ops, "return req.OrderBy, false") {
+		t.Errorf("expected the ascending-default OrderBy closure; got:\n%s", ops)
+	}
+	if _, perr := parser.ParseFile(token.NewFileSet(), opsPath, ops, parser.SkipObjectResolution); perr != nil {
+		t.Errorf("ops file is not valid Go: %v\n----\n%s", perr, ops)
 	}
 }
 
@@ -2225,8 +2461,8 @@ type Service struct {
 	entities := []EntityDef{{
 		Name: "Market", TableName: "markets", PkField: "id", PkGoType: "int64",
 		Fields: []EntityField{
-			{Name: "id", GoName: "ID", GoType: "int64"},
-			{Name: "ticker", GoName: "Ticker", GoType: "string"},
+			{Name: "id", GoName: "ID", GoType: "int64", Kind: FieldKindScalar},
+			{Name: "ticker", GoName: "Ticker", GoType: "string", Kind: FieldKindScalar},
 		},
 	}}
 
@@ -2312,25 +2548,42 @@ type Service struct {
 	// 7. The scaffolded file must parse as valid Go — the whole point of
 	//    the wired fallback is that the package keeps compiling against
 	//    the real proto shape.
-	if _, err := parser.ParseFile(token.NewFileSet(), "handlers_crud.go", content, parser.SkipObjectResolution); err != nil {
+	file, err := parser.ParseFile(token.NewFileSet(), "handlers_crud.go", content, parser.SkipObjectResolution)
+	if err != nil {
 		t.Errorf("generated file is not valid Go: %v\n----\n%s", err, content)
 	}
 
 	// 8. The wired body needs pkg/orm and internal/db imported (it builds
-	//    orm.QueryOption filters and calls db.ListMarket). These entities
-	//    are NOT tenant-scoped, so middleware must NOT be imported (unused).
-	for _, want := range []string{`"github.com/reliant-labs/forge/pkg/orm"`, `"example.com/test/internal/db"`} {
-		if !strings.Contains(content, want) {
-			t.Errorf("expected import of %s for the wired custom body; got:\n%s", want, content)
+	//    orm.QueryOption filters and calls db.ListMarket), and must not
+	//    import middleware, which it never calls — an unused import does
+	//    not compile.
+	//
+	//    Read the IMPORT BLOCK, not the file text: the scaffolded header
+	//    names the middleware import path in prose so a handler author
+	//    knows what to add when they write the auth check, and a raw
+	//    substring scan cannot tell that apart from a real import.
+	imported := map[string]bool{}
+	if file != nil {
+		for _, spec := range file.Imports {
+			path, uerr := strconv.Unquote(spec.Path.Value)
+			if uerr != nil {
+				t.Fatalf("unquote import %s: %v", spec.Path.Value, uerr)
+			}
+			imported[path] = true
 		}
 	}
-	if strings.Contains(content, `"example.com/test/pkg/middleware"`) {
-		t.Errorf("non-tenant custom body must not import middleware (unused); got:\n%s", content)
+	for _, want := range []string{"github.com/reliant-labs/forge/pkg/orm", "example.com/test/internal/db"} {
+		if !imported[want] {
+			t.Errorf("expected import of %q for the wired custom body; got imports %v\n%s", want, imported, content)
+		}
+	}
+	if imported["example.com/test/pkg/middleware"] {
+		t.Errorf("custom body must not import middleware (unused); got:\n%s", content)
 	}
 }
 
 // TestGenerateCRUDHandlers_MultiWordEntity is the F1 end-to-end guard: a
-// multi-word entity (module_config), with the exact proto shape `forge add
+// multi-word entity (module_config), with the exact proto shape `forge scaffold
 // entity module_config ...` emits, must generate REAL CRUD — a wired ops file
 // with crud.*Op constructors and a delegating shim — NOT the empty
 // custom-read-shape stub that the concatenated-lowercase detector bug produced.
@@ -2363,8 +2616,9 @@ type Service struct {
 		t.Fatal(err)
 	}
 
-	// Proto shape mirrors `forge add entity module_config name:string
-	// enabled:bool` exactly: snake_case entity fields, AIP-158 list.
+	// Proto shape mirrors what `forge scaffold` births for a
+	// `// forge:entity message ModuleConfig { string name; bool enabled; }`
+	// exactly: snake_case entity fields, AIP-158 list.
 	svc := ServiceDef{
 		Name:       "SettingsService",
 		GoPackage:  "example.com/test/gen/proto/services/settings/v1",
@@ -2418,9 +2672,9 @@ type Service struct {
 	entities := []EntityDef{{
 		Name: "ModuleConfig", TableName: "module_configs", PkField: "id", PkGoType: "string",
 		Fields: []EntityField{
-			{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string"},
-			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
-			{Name: "enabled", GoName: "Enabled", ProtoType: "bool", GoType: "bool"},
+			{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+			{Name: "enabled", GoName: "Enabled", ProtoType: "bool", GoType: "bool", Kind: FieldKindScalar},
 		},
 		Columns: []EntityColumn{
 			{Name: "id", Type: "string", NotNull: true, IsPK: true},
@@ -2455,8 +2709,9 @@ type Service struct {
 		"crud.GetOp[",
 		"crud.UpdateOp[",
 		"crud.DeleteOp[",
-		"ModuleConfig: moduleconfigToProto(entity)", // create/get/update Pack: Go field name
-		"ModuleConfigs: out",                        // list Pack: pluralized Go field name
+		"m, err := moduleconfigToProto(entity)", // create/get/update Pack: error-returning conversion
+		"ModuleConfig: m",                       // create/get/update Pack: Go field name assigned from converted value
+		"ModuleConfigs: out",                    // list Pack: pluralized Go field name
 	} {
 		if !strings.Contains(ops, want) {
 			t.Errorf("ops file missing %q — multi-word CRUD did not wire real ops; got:\n%s", want, ops)
@@ -2517,8 +2772,8 @@ type Service struct {
 	entities := []EntityDef{{
 		Name: "Patient", TableName: "patients", PkField: "id", PkGoType: "string",
 		Fields: []EntityField{
-			{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string"},
-			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
+			{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
 		},
 	}}
 
@@ -2686,8 +2941,8 @@ type Service struct {
 		{
 			Name: "Patient", TableName: "patients", PkField: "id", PkGoType: "int64",
 			Fields: []EntityField{
-				{Name: "id", GoName: "ID", GoType: "int64"},
-				{Name: "name", GoName: "Name", GoType: "string"},
+				{Name: "id", GoName: "ID", GoType: "int64", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", GoType: "string", Kind: FieldKindScalar},
 			},
 		},
 	}
@@ -2831,7 +3086,7 @@ func TestBuildEntityConv(t *testing.T) {
 		},
 	}
 
-	conv := BuildEntityConv(ServiceDef{}, entity)
+	conv, _ := BuildEntityConv(ServiceDef{}, entity)
 	if conv.EntityName != "Patient" || conv.EntityLower != "patient" {
 		t.Errorf("conv names = %q/%q, want Patient/patient", conv.EntityName, conv.EntityLower)
 	}
@@ -2890,13 +3145,108 @@ func TestBuildEntityConv(t *testing.T) {
 	if !ConvNeedsTimestamppb([]EntityConvTemplateData{conv}) {
 		t.Error("ConvNeedsTimestamppb should be true when a conversion uses timestamppb")
 	}
-	plain := BuildEntityConv(ServiceDef{}, EntityDef{
+	plain, _ := BuildEntityConv(ServiceDef{}, EntityDef{
 		Name:    "Tag",
 		Fields:  []EntityField{{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar}},
 		Columns: []EntityColumn{{Name: "id", Type: "string", NotNull: true, IsPK: true}},
 	})
 	if ConvNeedsTimestamppb([]EntityConvTemplateData{plain}) {
 		t.Error("ConvNeedsTimestamppb should be false without timestamp conversions")
+	}
+}
+
+// TestBuildEntityConv_OptionalScalarPairing pins the explicit-presence
+// pairing: a proto3 `optional` scalar is a POINTER field on the
+// protobuf-go struct (*string), and a nullable column is a POINTER
+// field on the entity struct — so the conversion must copy pointer to
+// pointer nil-safely in both directions. Treating the wire side as a
+// plain scalar emitted `e.X = &v` of an already-pointer (**string) and
+// `m.X = *e.X` (string into a *string wire field) — the generated ops
+// file did not compile.
+func TestBuildEntityConv_OptionalScalarPairing(t *testing.T) {
+	entity := EntityDef{
+		Name: "Order",
+		Fields: []EntityField{
+			{Name: "failure_reason", GoName: "FailureReason", ProtoType: "string", GoType: "string", Kind: FieldKindScalar, Optional: true},
+			{Name: "priority", GoName: "Priority", ProtoType: "int32", GoType: "int32", Kind: FieldKindScalar, Optional: true},
+			{Name: "note", GoName: "Note", ProtoType: "string", GoType: "string", Kind: FieldKindScalar, Optional: true},
+			{Name: "completed_at", GoName: "CompletedAt", ProtoType: "message", MessageType: "google.protobuf.Timestamp", GoType: "*timestamppb.Timestamp", Kind: FieldKindTimestamp, Optional: true},
+			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+		},
+		Columns: []EntityColumn{
+			{Name: "failure_reason", Type: "string"},      // nullable → *string entity field
+			{Name: "priority", Type: "int64"},             // nullable numeric → *int64 entity field
+			{Name: "note", Type: "string", NotNull: true}, // optional wire field over a NOT NULL column
+			{Name: "completed_at", Type: "time"},          // nullable → *time.Time entity field
+			{Name: "name", Type: "string"},                // PLAIN wire scalar over a nullable column
+		},
+	}
+
+	conv, _ := BuildEntityConv(ServiceDef{}, entity)
+	toProto := strings.Join(conv.ToProtoAssigns, "\n")
+	fromProto := strings.Join(conv.FromProtoAssigns, "\n")
+
+	// optional string <-> nullable TEXT: nil-safe pointer copy BOTH ways
+	// (never &v of an already-pointer, never a bare deref into a *string
+	// wire field).
+	if !strings.Contains(fromProto, "if m.FailureReason != nil {\n\t\tv := *m.FailureReason\n\t\te.FailureReason = &v\n\t}") {
+		t.Errorf("optional scalar fromProto should nil-safe copy the pointer; got:\n%s", fromProto)
+	}
+	if !strings.Contains(toProto, "if e.FailureReason != nil {\n\t\tv := *e.FailureReason\n\t\tm.FailureReason = &v\n\t}") {
+		t.Errorf("optional scalar toProto should nil-safe copy the pointer; got:\n%s", toProto)
+	}
+
+	// optional int32 <-> nullable BIGINT: numeric cast inside the nil
+	// guard. int32 widens to a BIGINT column losslessly, so the WRITE is a
+	// bare cast; the READ narrows, so it carries a range check — a BIGINT
+	// holding 3000000000 is not an int32, and the cast alone would hand
+	// the client -1294967296.
+	if !strings.Contains(fromProto, "if m.Priority != nil {\n\t\tv := int64(*m.Priority)\n\t\te.Priority = &v\n\t}") {
+		t.Errorf("optional numeric fromProto should cast inside the nil guard; got:\n%s", fromProto)
+	}
+	if !strings.Contains(toProto, "v := int32(*e.Priority)\n\t\tm.Priority = &v") {
+		t.Errorf("optional numeric toProto should cast inside the nil guard; got:\n%s", toProto)
+	}
+	if !strings.Contains(toProto, "if *e.Priority < -2147483648 || *e.Priority > 2147483647 {") {
+		t.Errorf("the narrowing read should be range-checked, not a bare cast; got:\n%s", toProto)
+	}
+
+	// optional wire scalar over a NOT NULL column: deref in under a nil
+	// guard; pointer-wrap out.
+	if !strings.Contains(fromProto, "if m.Note != nil {\n\t\te.Note = *m.Note\n\t}") {
+		t.Errorf("optional scalar over NOT NULL column fromProto should deref under a nil guard; got:\n%s", fromProto)
+	}
+	if !strings.Contains(toProto, "v := e.Note\n\t\tm.Note = &v") {
+		t.Errorf("optional scalar over NOT NULL column toProto should pointer-wrap; got:\n%s", toProto)
+	}
+
+	// optional google.protobuf.Timestamp is NOT a promoted scalar — the
+	// timestamp path already handles presence via the message pointer
+	// (regression pin: promotion must not touch non-scalar kinds).
+	if !strings.Contains(fromProto, "if m.CompletedAt != nil {\n\t\tt := m.CompletedAt.AsTime()\n\t\te.CompletedAt = &t\n\t}") {
+		t.Errorf("optional timestamp fromProto must keep the AsTime pairing; got:\n%s", fromProto)
+	}
+	if !strings.Contains(toProto, "if e.CompletedAt != nil {\n\t\tm.CompletedAt = timestamppb.New(*e.CompletedAt)\n\t}") {
+		t.Errorf("optional timestamp toProto must keep the timestamppb pairing; got:\n%s", toProto)
+	}
+
+	// PLAIN wire scalar over a nullable column: the empty-value mapping
+	// stays (regression pin — promotion fires only on Optional fields).
+	if !strings.Contains(fromProto, "v := m.Name\n\t\te.Name = &v") {
+		t.Errorf("plain scalar over nullable column fromProto must stay pointer-wrap of the value; got:\n%s", fromProto)
+	}
+	if !strings.Contains(toProto, "if e.Name != nil {\n\t\tm.Name = *e.Name\n\t}") {
+		t.Errorf("plain scalar over nullable column toProto must stay deref under nil guard; got:\n%s", toProto)
+	}
+
+	// The Optional bit itself must survive both entity-field constructors
+	// — dropping it there is exactly how the bug hid: the deep-schema
+	// path built the field, BuildEntityConv saw a plain scalar.
+	if f := schemaFieldToEntityField(SchemaFieldDef{Name: "x", Kind: "string", Optional: true}); !f.Optional {
+		t.Error("schemaFieldToEntityField must carry SchemaFieldDef.Optional onto the EntityField")
+	}
+	if f := messageFieldToEntityField(MessageFieldDef{Name: "x", ProtoType: "string", IsOptional: true}); !f.Optional {
+		t.Error("messageFieldToEntityField must carry MessageFieldDef.IsOptional onto the EntityField")
 	}
 }
 

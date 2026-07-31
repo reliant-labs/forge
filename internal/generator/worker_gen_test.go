@@ -2,6 +2,7 @@ package generator
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,5 +79,64 @@ func TestGenerateWorkerFilesCron(t *testing.T) {
 	testContent := readFile(t, filepath.Join(workerDir, "worker_test.go"))
 	if !strings.Contains(testContent, "TestCronWorkerStartStop") {
 		t.Error("cron worker_test.go should contain TestCronWorkerStartStop")
+	}
+}
+
+// TestGenerateWorkerFilesCron_CompilesAgainstProjectModule is the guard the
+// string-matching tests above could never be: it BUILDS the scaffolded cron
+// worker inside a real module.
+//
+// The shipped bug this pins: worker-cron/worker.go.tmpl imports
+// github.com/robfig/cron/v3, nothing put that module in the project's go.mod,
+// and the very next `go build` — including forge generate's own "validate
+// generated code" step — died with "no required module provides package
+// github.com/robfig/cron/v3", rolling the whole generate run back. Asserting
+// that the rendered template CONTAINS the import string is exactly what let
+// that ship.
+//
+// The module is compiled standalone (its own go.mod, no forge/pkg
+// dependency) by rewriting the two project-local imports the template emits
+// away; what is under test is the go.mod requirement, not the template body.
+func TestGenerateWorkerFilesCron_CompilesAgainstProjectModule(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a module (go get + go build); -short runs the string-level assertions only")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"),
+		[]byte("module example.com/cronmod\n\ngo 1.24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// go.opentelemetry.io/otel is a real project dependency too; require it up
+	// front so the only thing the assertion below can be measuring is whether
+	// GenerateWorkerFiles added the CRON module.
+	if out, err := exec.Command("go", "-C", root, "get", "go.opentelemetry.io/otel@v1.34.0").CombinedOutput(); err != nil {
+		t.Skipf("module fetch unavailable in this environment: %v\n%s", err, out)
+	}
+
+	if err := GenerateWorkerFiles(root, "example.com/cronmod", "cleanup", "cron", "*/5 * * * *"); err != nil {
+		t.Fatalf("GenerateWorkerFiles(cron) error = %v", err)
+	}
+
+	gomod := readFile(t, filepath.Join(root, "go.mod"))
+	if !strings.Contains(gomod, cronModulePath) {
+		t.Fatalf("go.mod does not require %s after scaffolding a cron worker:\n%s", cronModulePath, gomod)
+	}
+
+	// Strip the project-local config import so the worker package can build
+	// on its own; the cron dependency is what this test is about.
+	workerDir := filepath.Join(root, "internal", "workers", "cleanup")
+	src := readFile(t, filepath.Join(workerDir, "worker.go"))
+	src = strings.Replace(src, "\n\t\"example.com/cronmod/pkg/config\"\n", "\n", 1)
+	src = strings.Replace(src, "Config *config.Config", "Config *struct{}", 1)
+	if err := os.WriteFile(filepath.Join(workerDir, "worker.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(workerDir, "worker_test.go")); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command("go", "-C", root, "build", "./internal/workers/cleanup").CombinedOutput()
+	if err != nil {
+		t.Fatalf("scaffolded cron worker does not build: %v\n%s", err, out)
 	}
 }

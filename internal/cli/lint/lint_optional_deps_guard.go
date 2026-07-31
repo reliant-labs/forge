@@ -91,7 +91,7 @@
 // Why this lives in cli/ rather than internal/linter/forgeconv/:
 // forgeconv is for proto-aware analyzers; this rule is a Deps-shape
 // companion to lint_bootstrap_deps_coverage.go and shares its
-// collect/format split so `forge lint --json` and `forge audit --json`
+// collect/format split so `forge lint --json` and `forge project audit --json`
 // reuse the same engine.
 
 package lint
@@ -187,7 +187,7 @@ func formatOptionalDepsGuard(w io.Writer, findings []optionalDepsGuardFinding) {
 }
 
 // collectOptionalDepsGuardFindings is the shared engine behind text
-// mode, `forge lint --json`, and `forge audit --json`. Findings come
+// mode, `forge lint --json`, and `forge project audit --json`. Findings come
 // back sorted by (file, line, col) so output is deterministic.
 func collectOptionalDepsGuardFindings(projectDir string) ([]optionalDepsGuardFinding, error) {
 	var findings []optionalDepsGuardFinding

@@ -11,16 +11,16 @@ Workers are long-running background processes that don't serve HTTP but particip
 
 Worker names canonicalize to lowercase **snake_case**: hyphens become underscores and PascalCase/camelCase boundaries split (`email-sender` → `email_sender`, `EmailSender` → `email_sender`, `calibrator_refit` stays `calibrator_refit`). The canonical form is what appears on disk, in the Go package decl, and in the `forge.yaml` `path:` field. The display name in `forge.yaml` `name:` keeps its original spelling.
 
-- `forge add worker calibrator_refit` → directory `internal/workers/calibrator_refit/`, `package calibrator_refit`, `path: internal/workers/calibrator_refit` in `forge.yaml`.
-- `forge add worker email-sender` → directory `internal/workers/email_sender/`, `package email_sender`, `path: internal/workers/email_sender`.
+- `forge scaffold worker calibrator_refit` → directory `internal/workers/calibrator_refit/`, `package calibrator_refit`, `path: internal/workers/calibrator_refit` in `forge.yaml`.
+- `forge scaffold worker email-sender` → directory `internal/workers/email_sender/`, `package email_sender`, `path: internal/workers/email_sender`.
 
 **Migrating from a non-forge codebase:** rename existing worker directories to the canonical snake_case leaf under `internal/workers/` *before* running `forge generate`. The `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
 
 ## Adding a Worker
 
 ```bash
-forge add worker <name>
-forge add worker <name> --kind cron --schedule "*/5 * * * *"
+forge scaffold worker <name>
+forge scaffold worker <name> --kind cron --schedule "*/5 * * * *"
 ```
 
 This creates:
@@ -96,7 +96,7 @@ func (w *Worker) Start(ctx context.Context) error {
 Use `--kind cron` with a `--schedule` (standard cron expression) to scaffold a worker that runs on a schedule using `robfig/cron/v3`:
 
 ```bash
-forge add worker cleanup --kind cron --schedule "0 */6 * * *"
+forge scaffold worker cleanup --kind cron --schedule "0 */6 * * *"
 ```
 
 The generated worker has a `Run(ctx context.Context)` method for your job logic. The cron scheduler is managed inside `Start` and stopped on context cancellation — same lifecycle as a regular worker. The cron closure derives a per-tick `ctx` from a base context set in `Start` and cancelled in `Stop`, so long-running jobs can observe graceful shutdown via `ctx.Done()` instead of running to completion after `Stop` fires.
@@ -109,14 +109,14 @@ func (w *Worker) Run(ctx context.Context) {
 }
 ```
 
-Cron workers are tracked with `kind: cron` and `schedule` in `forge.yaml`:
-```yaml
-services:
-  - name: cleanup
-    type: worker
-    kind: cron
-    schedule: "0 */6 * * *"
-    path: internal/workers/cleanup
+The schedule is not recorded anywhere outside the code. The `Schedule`
+const the cron template emits IS the declaration — discovery reads it back off
+`internal/workers/<name>/worker.go` to classify the worker as cron and to carry
+the expression into the deploy manifests:
+
+```go
+// Schedule is the cron expression that controls how often Run executes.
+const Schedule = "0 */6 * * *"
 ```
 
 ### Simple Periodic (no cron)
@@ -166,7 +166,7 @@ Because `Queue` is an interface, swapping a mock (in a test) or a Connect client
 
 ## Late-bound dependencies between workers
 
-When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't pass it through B's constructor — both workers are constructed in the same pass, so a constructor-only graph would deadlock. **Two-phase wiring is the answer, and it's just plain Go:** `forge disown internal/app/compose.go`, then construct both ends and inject with a setter, by hand inside `NewComponents`.
+When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't pass it through B's constructor — both workers are constructed in the same pass, so a constructor-only graph would deadlock. **Two-phase wiring is the answer, and it's just plain Go:** `forge project disown internal/app/compose.go`, then construct both ends and inject with a setter, by hand inside `NewComponents`.
 
 ```go
 func NewComponents(infra *Infra) (*Components, error) {
@@ -211,6 +211,6 @@ Because `Deps` fields are interfaces filled in one place, instantiating a worker
 - `Stop()` receives a context with a deadline — finish cleanup before it expires.
 - Workers live under `internal/workers/<name>/`, never a top-level `workers/` dir. On-disk directory leaves must match the canonical snake_case form.
 - Worker `Deps` are interface-typed and filled by type in `internal/app/compose.go` `NewComponents`; scalars travel in a typed `<Component>Config` block, never as naked Deps fields.
-- Wire workers explicitly: construct in `NewComponents` onto the worker's `Components` field; the generated `lifecycle.go` `WorkerList` and the cmd serve path supervise them. For late-bound, cross-worker deps, `forge disown internal/app/compose.go` and use setters. There is no `wire_gen.go` and no name-matched `*App` resolution.
-- Use `forge add worker`, not manual directory creation.
+- Wire workers explicitly: construct in `NewComponents` onto the worker's `Components` field; the generated `lifecycle.go` `WorkerList` and the cmd serve path supervise them. For late-bound, cross-worker deps, `forge project disown internal/app/compose.go` and use setters. There is no `wire_gen.go` and no name-matched `*App` resolution.
+- Use `forge scaffold worker`, not manual directory creation.
 - Cron workers require `--schedule` with a valid cron expression (5-field standard format).

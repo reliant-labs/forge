@@ -3,11 +3,17 @@ package app
 import (
 	"context"
 	"log/slog"
+	"net/http"
+	"sync"
+	"time"
 {{- if .HasDatabase}}
 	"database/sql"
 	"fmt"
-	"time"
 {{- end}}
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 
 	"{{.Module}}/pkg/config"
 {{- if .OrmEnabled}}
@@ -16,6 +22,10 @@ import (
 {{- end}}
 {{- if .HasDatabase}}
 
+	"github.com/reliant-labs/forge/pkg/serverkit"
+
+	// Blank import registers the "pgx" database/sql driver that
+	// openDatabase's sql.Open("pgx", …) resolves by name.
 	_ "github.com/jackc/pgx/v5/stdlib"
 {{- end}}
 )
@@ -56,12 +66,80 @@ type Infra struct {
 {{- end}}
 {{- end}}
 
+	// httpBase is the SHARED instrumented base transport under every
+	// DefaultClient(): one connection pool for the process, OTel client
+	// spans + W3C trace-context propagation on every outbound request
+	// (the global propagator is installed by observe.Setup at serve time),
+	// and X-Request-Id forwarding so a third-party call's logs stitch onto
+	// the inbound request that caused it.
+	//
+	// Unexported on purpose — consumers go through DefaultClient(). Never
+	// read the field directly either: transport() below is what guarantees
+	// it is non-nil, and a nil RoundTripper is the one failure here that
+	// nothing reports (see its doc comment).
+	httpBase     http.RoundTripper
+	httpBaseOnce sync.Once
+
 	// FORGE_SCAFFOLD: add a field here for every collaborator NewComponents
 	// reported as "no provider" — a DB repository, a NATS publisher, a
 	// third-party client, or an adapter wrapping. Construct it in OpenInfra.
 	// NewComponents passes `infra.<Field>` into the consuming Deps field, so
 	// the field type only has to be ASSIGNABLE to that Deps field
 	// (a concrete *db.PostgresRepository fills a narrow audit.Repository).
+	//
+	// When a service is SPLIT OUT of this binary and a consumer switches
+	// from the in-process interface to a Connect client, build the client's
+	// HTTP stack with observe.NewClientStack (forge/pkg/observe) — it
+	// bundles the otelconnect client interceptor, request-ID forwarding,
+	// and a timeout — and assign the generated client onto a field here.
+	// That is for CONNECT clients only: its transport is deliberately left
+	// uninstrumented because otelconnect already opens the client span.
+	// Plain HTTP to a third-party REST API goes through DefaultClient()
+	// below, which instruments at the transport instead.
+}
+
+// DefaultClient returns a FRESH *http.Client for one outbound consumer —
+// callers may freely tweak Timeout / CheckRedirect / Jar on the returned
+// value without affecting anyone else. All clients share the single
+// instrumented base transport (one connection pool, OTel client spans,
+// W3C trace propagation, X-Request-Id forwarding), so every outbound HTTP
+// call made through it appears in traces, joins the caller's trace
+// context, and carries the caller's correlation ID.
+//
+// This is the canonical value for an adapter's Deps.HTTPClient — the
+// composition site (internal/app/compose.go) wires `infra.DefaultClient()`
+// into any `HTTPClient *http.Client` Deps field automatically.
+func (i *Infra) DefaultClient() *http.Client {
+	return &http.Client{
+		Transport: i.transport(),
+		Timeout:   30 * time.Second,
+	}
+}
+
+// transport is the SINGLE construction point for the shared base
+// transport, and the reason DefaultClient() never reads httpBase itself.
+//
+// http.Client treats a nil Transport as http.DefaultTransport, so an Infra
+// whose httpBase was never set would keep serving outbound calls — with no
+// OTel span, no trace-context propagation, and no request ID. Nothing
+// fails and nothing logs; the traces just quietly have a hole in them.
+// That state is not detectable after the fact, so it is not allowed to
+// exist: every read establishes the transport if it is missing, which
+// makes "uninstrumented outbound HTTP" unreachable rather than merely
+// unlikely.
+//
+// The result is shared across every client this Infra hands out — one
+// connection pool per process — so this must not be inlined into
+// DefaultClient(), which is deliberately per-call.
+func (i *Infra) transport() http.RoundTripper {
+	i.httpBaseOnce.Do(func() {
+		if i.httpBase == nil {
+			// otelhttp OUTSIDE, so its client span covers the whole round
+			// trip including the header the inner transport adds.
+			i.httpBase = otelhttp.NewTransport(observe.NewRequestIDTransport(http.DefaultTransport))
+		}
+	})
+	return i.httpBase
 }
 
 // OpenInfra builds the owned provider set: open every piece of
@@ -69,16 +147,23 @@ type Infra struct {
 // bindings. NewComponents (compose.go) then constructs every component
 // INLINE off the returned *Infra. Late-bound / two-phase wiring (a setter on
 // one constructed component fed by another) goes in compose.go after the
-// component values exist — `forge disown internal/app/compose.go` to own it.
+// component values exist — `forge project disown internal/app/compose.go` to own it.
 //
 // yours: scaffolded once, never touched again — forge will not overwrite this file
 //
 //forge:allow
 func OpenInfra(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Infra, error) {
 	infra := &Infra{Log: logger, Cfg: cfg}
+
+	// Shared instrumented base transport for every DefaultClient(): OTel
+	// client spans + trace-context propagation + request-ID forwarding over
+	// the process-wide connection pool. Built ONCE, here, before anything
+	// can ask for a client; DefaultClient() then hands out fresh
+	// *http.Client values over it.
+	infra.transport()
 {{- if .HasDatabase}}
 
-	db, err := openDatabase(cfg)
+	db, err := openDatabase(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -101,7 +186,12 @@ func OpenInfra(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*I
 	return infra, nil
 }
 {{if .HasDatabase}}
-func openDatabase(cfg *config.Config) (*sql.DB, error) {
+// dbConnectTimeout bounds the boot-time connectivity check. Long enough to
+// ride out a slow cold start, short enough that a wedged host produces a
+// visible failure instead of a process that never finishes booting.
+const dbConnectTimeout = 10 * time.Second
+
+func openDatabase(ctx context.Context, cfg *config.Config) (*sql.DB, error) {
 	dsn := cfg.DatabaseUrl
 	if dsn == "" {
 		slog.Warn("DATABASE_URL is not set, skipping database setup")
@@ -111,13 +201,30 @@ func openDatabase(cfg *config.Config) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sql.Open: %w", err)
 	}
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-	db.SetConnMaxIdleTime(1 * time.Minute)
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("db.Ping: %w", err)
+	// Pool sizing comes from the DB_* config knobs (db_max_open_conns and
+	// friends in pkg/config), NOT from literals baked in at scaffold time —
+	// the same knobs the generated `cmd serve` applies to its migration
+	// connection, so one setting tunes both pools. A zero/unset knob leaves
+	// the corresponding database/sql default in place.
+	serverkit.ApplyDBPoolTuning(db, serverkit.DBPoolTuning{
+		MaxOpenConns:    int(cfg.DbMaxOpenConns),
+		MaxIdleConns:    int(cfg.DbMaxIdleConns),
+		ConnMaxIdleTime: cfg.DbConnMaxIdleTime.AsDuration(),
+		ConnMaxLifetime: cfg.DbConnMaxLifetime.AsDuration(),
+	})
+	// Bound the boot ping. The ctx threaded in from the command tree is
+	// context.Background() with no deadline, and a BLACKHOLED database host
+	// (a security group that drops instead of refusing, a DNS name pointing
+	// at nothing) never returns an error — it just never returns. The process
+	// then hangs before binding a listener, so there is no /healthz to fail,
+	// no log line after "connecting", and nothing for a platform probe to
+	// notice: the pod sits in Running forever. A deadline turns that into a
+	// crash loop, which is a state operators can actually see.
+	pingCtx, cancel := context.WithTimeout(ctx, dbConnectTimeout)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close() // best-effort cleanup; the ping failure is the actionable error
+		return nil, fmt.Errorf("db.PingContext: %w", err)
 	}
 	return db, nil
 }

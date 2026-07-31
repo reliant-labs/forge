@@ -13,7 +13,7 @@
 //     registry / target arch.
 //   - Run Spec through buildtarget.Runner.Build.
 //   - Persist per-service state when the build succeeded so a
-//     subsequent `forge deploy <env>` can pin the same tag.
+//     subsequent `forge env deploy <env>` can pin the same tag.
 //
 // Build-side ownership boundary: the user's BuildCmd owns BOTH the
 // build AND the push (the user composes
@@ -104,7 +104,7 @@ func externalBuildServices(e *KCLEntities) []ServiceEntity {
 //
 // State-file write: per the Phase 2 brief, every successful build
 // writes .forge/state/build-<env>-<service>.json. The file is the
-// single source of truth a subsequent `forge deploy <env>` reads to
+// single source of truth a subsequent `forge env deploy <env>` reads to
 // pin the image tag — eliminating the build/deploy tag divergence
 // the External (deploy) provider already closes for the deploy side.
 func buildExternalServices(ctx context.Context, services []ServiceEntity, opts buildOptions, registry, tag, projectDir, targetArch string, entities *KCLEntities) []buildResult {
@@ -195,7 +195,7 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 		}
 
 		// Success path: persist the per-service state file so
-		// `forge deploy <env>` reads the exact tag forge build just
+		// `forge env deploy <env>` reads the exact tag forge build just
 		// pushed. Non-fatal: a failed state write logs a warning but
 		// the build itself stays successful (a future deploy will
 		// fall back to git-derived tag resolution).
@@ -215,8 +215,8 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 		}
 
 		// Also write the deploy-side build-<env>.json so a subsequent
-		// `forge deploy <env>` reuses this exact tag without --tag. The
-		// per-service file above is consumed only by forge audit/doctor;
+		// `forge env deploy <env>` reuses this exact tag without --tag. The
+		// per-service file above is consumed only by forge project audit/doctor;
 		// deploy's tag-resolution reads THIS single-per-env file
 		// (build_state.go::buildStatePath, deploy.go:892). Closing this
 		// gap is the external-build half of fr-e6dbce2a01 (build-state

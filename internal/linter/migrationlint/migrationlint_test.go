@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 func TestLintMigrationsDirDetectsUnsafeAddNotNullColumn(t *testing.T) {
@@ -133,6 +135,109 @@ func TestLintMigrationsDirDetectsVolatileDefault(t *testing.T) {
 	dir := writeMigration(t, "0001_add_token.up.sql", `ALTER TABLE users ADD COLUMN token uuid NOT NULL DEFAULT gen_random_uuid();`)
 
 	result, err := LintMigrationsDir(dir, DefaultConfig())
+	if err != nil {
+		t.Fatalf("LintMigrationsDir() error = %v", err)
+	}
+	assertFinding(t, result, "volatile-default", SeverityWarn)
+}
+
+// TestLintMigrationsDirDetectsVolatileDefaultVariants pins the full set
+// of non-deterministic DEFAULT expressions the rule must catch on an
+// ADD COLUMN. Each of these assigns an unpredictable (or uniformly
+// identical) value to every pre-existing row at backfill time, which is
+// the correctness trap the rule exists to flag.
+func TestLintMigrationsDirDetectsVolatileDefaultVariants(t *testing.T) {
+	for _, expr := range []string{
+		"now()",
+		"NOW ()",
+		"current_timestamp",
+		"CURRENT_TIMESTAMP",
+		"clock_timestamp()",
+		"statement_timestamp()",
+		"transaction_timestamp()",
+		"gen_random_uuid()",
+		"uuid_generate_v4()",
+		"random()",
+		"RANDOM()",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			dir := writeMigration(t, "0001_add_col.up.sql",
+				"ALTER TABLE users ADD COLUMN c text DEFAULT "+expr+";")
+
+			result, err := LintMigrationsDir(dir, DefaultConfig())
+			if err != nil {
+				t.Fatalf("LintMigrationsDir() error = %v", err)
+			}
+			assertFinding(t, result, "volatile-default", SeverityWarn)
+		})
+	}
+}
+
+// TestLintMigrationsDirAllowsDeterministicDefaults is the negative half
+// of the rule: a constant DEFAULT is safe on a populated table and must
+// not be flagged, or the rule would be noise on ordinary migrations.
+func TestLintMigrationsDirAllowsDeterministicDefaults(t *testing.T) {
+	for _, expr := range []string{"0", "false", "'unknown'", "'2020-01-01'::timestamptz"} {
+		t.Run(expr, func(t *testing.T) {
+			dir := writeMigration(t, "0001_add_col.up.sql",
+				"ALTER TABLE users ADD COLUMN c text NOT NULL DEFAULT "+expr+";")
+
+			result, err := LintMigrationsDir(dir, DefaultConfig())
+			if err != nil {
+				t.Fatalf("LintMigrationsDir() error = %v", err)
+			}
+			for _, f := range result.Findings {
+				if f.Rule == "volatile-default" {
+					t.Fatalf("deterministic DEFAULT %s must not be flagged; got %#v", expr, f)
+				}
+			}
+		})
+	}
+}
+
+// TestConfigFromProjectEnablesRulesAtProjectDefaults guards the join
+// between the two severity vocabularies: forge.yaml spells the warning
+// level "warn" (config.effectiveSeverity normalizes onto that spelling)
+// while finding.Severity spells it "warning". If the parser stops
+// accepting what the config layer emits, the affected rule silently
+// stops firing rather than failing loudly — so assert that a
+// default-constructed project config actually leaves every rule ARMED,
+// and that an explicit "off" is the only thing that disarms one.
+func TestConfigFromProjectEnablesRulesAtProjectDefaults(t *testing.T) {
+	cfg := ConfigFromProject(config.MigrationSafetyConfig{})
+	if severityFor(cfg.VolatileDefault) != SeverityWarn {
+		t.Fatalf("volatile-default disarmed at project defaults: %q parsed to %q",
+			cfg.VolatileDefault, severityFor(cfg.VolatileDefault))
+	}
+	if severityFor(cfg.UnsafeAddColumn) != SeverityError {
+		t.Fatalf("unsafe-add-column disarmed at project defaults: %q", cfg.UnsafeAddColumn)
+	}
+	if severityFor(cfg.DestructiveChange) != SeverityError {
+		t.Fatalf("destructive-change disarmed at project defaults: %q", cfg.DestructiveChange)
+	}
+
+	// A rule explicitly downgraded to a warning must still fire.
+	warned := ConfigFromProject(config.MigrationSafetyConfig{DestructiveChange: "warn"})
+	if severityFor(warned.DestructiveChange) != SeverityWarn {
+		t.Fatalf("destructive_change: warn disarmed the rule: %q parsed to %q",
+			warned.DestructiveChange, severityFor(warned.DestructiveChange))
+	}
+
+	// "off" is the one dial that disables.
+	disabled := ConfigFromProject(config.MigrationSafetyConfig{VolatileDefault: "off"})
+	if severityFor(disabled.VolatileDefault) != "" {
+		t.Fatalf("volatile_default: off should disable the rule, got %q", severityFor(disabled.VolatileDefault))
+	}
+}
+
+// TestLintMigrationsDirVolatileDefaultFiresAtProjectDefaults is the
+// end-to-end form of the above: the rule must produce a finding when
+// driven by project config, not just by DefaultConfig().
+func TestLintMigrationsDirVolatileDefaultFiresAtProjectDefaults(t *testing.T) {
+	dir := writeMigration(t, "0001_add_token.up.sql",
+		`ALTER TABLE users ADD COLUMN token uuid NOT NULL DEFAULT gen_random_uuid();`)
+
+	result, err := LintMigrationsDir(dir, ConfigFromProject(config.MigrationSafetyConfig{}))
 	if err != nil {
 		t.Fatalf("LintMigrationsDir() error = %v", err)
 	}

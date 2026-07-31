@@ -1,11 +1,11 @@
-// `forge disown <path>... --reason <text>` — one-way ownership transfer.
+// `forge project disown <path>... --reason <text>` — one-way ownership transfer.
 //
 // The file lifecycle has exactly two states and one door:
 //
 //   - forge-owned (Tier-1): regenerated on every `forge generate`;
 //     hand-edits are a hard drift error.
 //   - user-owned ("yours"): never touched after emission.
-//   - `forge disown` is the one-way door from the first to the second.
+//   - `forge project disown` is the one-way door from the first to the second.
 //
 // There is deliberately NO fork limbo (forked-but-maybe-reconciled-
 // later). A fleet-wide audit of every long-lived fork found zero that
@@ -18,10 +18,9 @@
 //
 // --reason is REQUIRED. A disown means the generated code couldn't
 // express what the user needed — that's design feedback, and the reason
-// is the payload. It is recorded per path into .forge/friction.jsonl
-// (area=disown) through the same append-only machinery as `forge
-// friction add`; `forge audit --json` joins it back onto each
-// disowned_files row.
+// is the payload. It is recorded per path in .forge/disowned.json;
+// `forge project audit --json` joins it back onto each disowned_files
+// row.
 package cli
 
 import (
@@ -55,7 +54,7 @@ your edits.
 
 --reason is required. Disowning means the generated code couldn't express what
 you needed; the reason is design feedback, recorded per path in
-.forge/friction.jsonl (view with ` + "`forge friction list --area disown`" + `).
+.forge/disowned.json (surfaced by ` + "`forge project audit --json`" + `).
 
 Re-adoption (returning the file to forge ownership) is by deletion:
 
@@ -66,19 +65,18 @@ disowned content is discarded — copy anything you want to keep into a
 user-owned extension point first.
 
 Prefer NOT disowning when you can: most customizations have a designated
-user-owned home (pkg/app/setup.go / app_extras.go, handlers/<svc>/authorizer.go,
-…) that survives every regenerate. If the extension point can't express it,
-` + "`forge friction add`" + ` records the gap so forge can grow the capability.
+user-owned home (pkg/app/setup.go / app_extras.go,
+…) that survives every regenerate.
 
 Example:
-  forge disown pkg/app/wire_gen.go --reason "custom multi-tenant pool wiring forge can't express"`,
+  forge project disown pkg/app/wire_gen.go --reason "custom connection-pool wiring forge can't express"`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDisown(args, reason, dryRun)
 		},
 	}
 
-	cmd.Flags().StringVar(&reason, "reason", "", "WHY forge's generated code couldn't express what you needed (required; recorded in .forge/disowned.json and .forge/friction.jsonl)")
+	cmd.Flags().StringVar(&reason, "reason", "", "WHY forge's generated code couldn't express what you needed (required; recorded in .forge/disowned.json)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would change without writing .forge/disowned.json")
 
 	return cmd
@@ -88,10 +86,10 @@ Example:
 // directly with a synthetic args slice + flags.
 func runDisown(args []string, reason string, dryRun bool) error {
 	if strings.TrimSpace(reason) == "" {
-		return cliutil.UserErr("forge disown",
+		return cliutil.UserErr("forge project disown",
 			"--reason is required: disowning a generated file is design feedback, and the reason is the payload",
 			"",
-			"re-run as `forge disown <path> --reason \"<why the generated code couldn't express what you need>\"`")
+			"re-run as `forge project disown <path> --reason \"<why the generated code couldn't express what you need>\"`")
 	}
 
 	root, err := projectRoot()
@@ -101,7 +99,7 @@ func runDisown(args []string, reason string, dryRun bool) error {
 
 	cs, err := checksums.Load(root)
 	if err != nil {
-		return cliutil.WrapUserErr("forge disown",
+		return cliutil.WrapUserErr("forge project disown",
 			"failed to load the .forge ownership state", "",
 			"verify .forge/disowned.json and .forge/hashes.json are valid JSON; if hand-edited, restore them from git", err)
 	}
@@ -133,13 +131,13 @@ func runDisown(args []string, reason string, dryRun bool) error {
 		targets = append(targets, path)
 	}
 	if len(missing) > 0 {
-		return cliutil.UserErr("forge disown",
+		return cliutil.UserErr("forge project disown",
 			fmt.Sprintf("%d path(s) missing on disk: %s", len(missing), strings.Join(missing, ", ")),
 			"",
 			"disown records the on-disk content as yours — restore the file first (`git checkout -- <path>`), or run `forge generate` to re-emit it")
 	}
 	if len(unknown) > 0 {
-		return cliutil.UserErr("forge disown",
+		return cliutil.UserErr("forge project disown",
 			fmt.Sprintf("%d path(s) carry no forge certification (no embedded forge:hash marker): %s", len(unknown), strings.Join(unknown, ", ")),
 			"",
 			"only forge-certified (Tier-1) files can be disowned; scaffold-once files are yours from birth — there is nothing to disown. If this is a pre-migration project, run `forge generate` once to migrate off .forge/checksums.json first")
@@ -168,7 +166,7 @@ func runDisown(args []string, reason string, dryRun bool) error {
 	}
 
 	if err := cs.DisownPaths(root, targets, reason); err != nil {
-		return cliutil.WrapUserErr("forge disown",
+		return cliutil.WrapUserErr("forge project disown",
 			"failed to record disowned content", "",
 			"check read permissions on the named files", err)
 	}
@@ -182,14 +180,10 @@ func runDisown(args []string, reason string, dryRun bool) error {
 	}
 
 	if err := checksums.Save(root, cs); err != nil {
-		return cliutil.WrapUserErr("forge disown",
+		return cliutil.WrapUserErr("forge project disown",
 			"failed to save .forge/disowned.json", "",
 			"check write permissions on .forge/", err)
 	}
-
-	// Record the design feedback only AFTER the save succeeded — the
-	// friction log must describe disowns that actually happened.
-	recordDisownFriction(root, "disown", reason, targets, os.Stdout)
 
 	fmt.Printf("\n✅ Disowned %d file(s). They are yours now — forge will never regenerate or overwrite them.\n", len(targets))
 	fmt.Println("   To return a file to forge ownership later: delete it and run `forge generate` (your content is discarded).")

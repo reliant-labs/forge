@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -14,6 +15,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // RequestIDHeader is the canonical correlation header read on inbound
@@ -72,8 +75,8 @@ func (i *loggingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 			attrs = append(attrs, slog.String("request_id", rid))
 		}
 		if err != nil {
-			attrs = append(attrs, slog.Any("error", err))
-			i.logger.LogAttrs(ctx, slog.LevelWarn, "rpc failed", attrs...)
+			attrs = append(attrs, errorAttrs(err)...)
+			i.logger.LogAttrs(ctx, LevelForError(err), "rpc failed", attrs...)
 		} else {
 			i.logger.LogAttrs(ctx, slog.LevelInfo, "rpc completed", attrs...)
 		}
@@ -97,8 +100,8 @@ func (i *loggingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 			attrs = append(attrs, slog.String("request_id", rid))
 		}
 		if err != nil {
-			attrs = append(attrs, slog.Any("error", err))
-			i.logger.LogAttrs(ctx, slog.LevelWarn, "stream failed", attrs...)
+			attrs = append(attrs, errorAttrs(err)...)
+			i.logger.LogAttrs(ctx, LevelForError(err), "stream failed", attrs...)
 		} else {
 			i.logger.LogAttrs(ctx, slog.LevelInfo, "stream completed", attrs...)
 		}
@@ -119,6 +122,60 @@ func requestIDFromCtxOrHeader(ctx context.Context, header interface{ Get(string)
 		return header.Get(RequestIDHeader)
 	}
 	return ""
+}
+
+// errorAttrs renders a failed RPC's error for the LOG, which is not the
+// same thing as rendering it for the client.
+//
+// `error` is what the caller was told. `cause` is what actually happened:
+// svcerr redacts the message of an unrecognised internal failure before it
+// reaches the wire, so without this attribute the driver text — the SQLSTATE,
+// the constraint, the panic value — would exist in exactly no place. The
+// generated ORM records it on the active span too, but OTEL_EXPORTER_OTLP_
+// ENDPOINT is empty by default, so that span goes nowhere in the default
+// configuration and cannot be the only copy.
+//
+// SANITIZE THE WIRE, NEVER THE LOG.
+func errorAttrs(err error) []slog.Attr {
+	attrs := []slog.Attr{slog.Any("error", err)}
+	if cause := svcerr.Cause(err); cause != nil {
+		attrs = append(attrs, slog.String("cause", cause.Error()))
+	}
+	return attrs
+}
+
+// LevelForError is the single place that decides how loud a failed RPC is.
+//
+// Every failure used to log at WARN, including the ones that mean the
+// SERVER is broken. A total database outage produced a stream of WARN
+// records and a 500 for every request, so the standard alert rule —
+// level=ERROR — stayed silent through the whole incident. Meanwhile a
+// client sending a malformed field also logged WARN, which is why raising
+// everything to ERROR is not the fix either: it just moves the noise.
+//
+// The split is fault attribution, not HTTP status:
+//
+//   - ERROR: the server failed and someone should be paged. Internal (a
+//     bug or a dependency down), Unavailable (a dependency refused),
+//     DataLoss, and Unknown (an error nothing classified — which in
+//     practice is a bug in the classification).
+//   - WARN: the request failed for a reason the server correctly
+//     detected. NotFound, InvalidArgument, PermissionDenied,
+//     ResourceExhausted, cancellations. These are the API working.
+//
+// Exported so the audit interceptor and any project-owned logging site
+// classify identically — two log streams disagreeing about severity for
+// the same RPC is its own incident.
+func LevelForError(err error) slog.Level {
+	if err == nil {
+		return slog.LevelInfo
+	}
+	switch connect.CodeOf(err) {
+	case connect.CodeInternal, connect.CodeUnknown, connect.CodeDataLoss, connect.CodeUnavailable:
+		return slog.LevelError
+	default:
+		return slog.LevelWarn
+	}
 }
 
 // TracingInterceptor returns a Connect interceptor that creates one
@@ -308,23 +365,48 @@ func (i *recoveryInterceptor) WrapStreamingHandler(next connect.StreamingHandler
 // panicError wraps a recovered value as an error, preserving the
 // original error chain (errors.Is / errors.As work) when the panic
 // value is itself an error.
+//
+// The result is REDACTED: a panic value is the most internal thing a
+// process has — "panic: assignment to entry in nil map", a nil-pointer
+// dereference naming an unexported field, or an error carrying whatever
+// the failing library put in it — and connect.Error.Message() is
+// verbatim err.Error(), so returning it raw published the crash detail
+// to whoever triggered it. The client gets svcerr.InternalMessage; the
+// panic value and its stack are already logged by the caller, and
+// svcerr.Cause / errors.As still reach the original server-side.
 func panicError(r any) error {
+	var inner error
 	if rerr, ok := r.(error); ok {
-		return fmt.Errorf("panic: %w", rerr)
+		inner = fmt.Errorf("panic: %w", rerr)
+	} else {
+		inner = fmt.Errorf("panic: %v", r)
 	}
-	return fmt.Errorf("panic: %v", r)
+	return svcerr.WithCause(errors.New(svcerr.InternalMessage), inner)
 }
 
 // RequestIDInterceptor returns a Connect interceptor that ensures every
-// inbound request has a correlation ID:
+// inbound request has a correlation ID. It resolves the ID in this
+// order, and the order is the whole point:
 //
-//   - If the inbound request carries a non-empty RequestIDHeader, that
-//     value is trusted and propagated. This lets edge proxies and
-//     upstream services stitch a single trace across hops.
-//   - Otherwise a fresh 16-byte hex token is minted via crypto/rand.
+//  1. An ID ALREADY ON THE CONTEXT wins. The HTTP edge
+//     (pkg/middleware.RequestIDMiddleware) sits outside this interceptor,
+//     and it has already picked the ID, written it to the RESPONSE
+//     header, and put it on ctx. It does not write it back onto the
+//     INBOUND request header, so an interceptor that only consulted
+//     req.Header() found nothing and minted a SECOND id — the response
+//     came back with two X-Request-Id values, every standard client read
+//     the first, and only the second ever reached the logs. Quoting an
+//     ID at support and grepping for it returned nothing.
+//  2. Otherwise the inbound RequestIDHeader, so an edge proxy or calling
+//     service can stitch one ID across hops.
+//  3. Otherwise a fresh 16-byte crypto/rand hex token.
 //
-// The chosen ID is stored on ctx (RequestIDFromContext) and echoed onto
-// the response header so clients can log it for later correlation.
+// ECHO OWNERSHIP follows from the same rule: whichever layer CHOSE the
+// ID echoes it. When the ID came off the context, an outer layer chose
+// it and this interceptor writes no response header at all — that is
+// what keeps exactly one X-Request-Id on the wire. When this interceptor
+// chose the ID (no HTTP middleware in the stack, e.g. a bare Connect
+// mux) it echoes, so the client is never left without one.
 //
 // Place this AFTER RecoveryInterceptor (so panics still get the ID in
 // their log line) and BEFORE LoggingInterceptor (so log records inherit
@@ -337,6 +419,11 @@ type requestIDInterceptor struct{}
 
 func (i *requestIDInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		// An outer layer already chose and echoed an ID: adopt it and stay
+		// out of the response headers.
+		if RequestIDFromContext(ctx) != "" {
+			return next(ctx, req)
+		}
 		id := req.Header().Get(RequestIDHeader)
 		if id == "" {
 			id = newRequestID()
@@ -363,6 +450,9 @@ func (i *requestIDInterceptor) WrapStreamingClient(next connect.StreamingClientF
 
 func (i *requestIDInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return connect.StreamingHandlerFunc(func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		if RequestIDFromContext(ctx) != "" {
+			return next(ctx, conn)
+		}
 		id := conn.RequestHeader().Get(RequestIDHeader)
 		if id == "" {
 			id = newRequestID()

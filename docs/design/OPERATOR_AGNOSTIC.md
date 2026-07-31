@@ -20,6 +20,19 @@ the sanctioned vehicle for "the narrow, non-portable, k8s-only tail, made
 explicit and localized" — and an operator's tail (cluster RBAC, CRDs, a Lease)
 is exactly that.
 
+> **Correction (mechanism since changed).** Where this doc says leader
+> election "stays an env default (`LEADER_ELECTION_ID`)" and that the manager
+> is "gated by `RUN_OPERATORS`", it is describing behaviour `forge/pkg` no
+> longer has. `operatorkit` reads no environment variable: the lease name and
+> namespace, the probe address and the leader-election timings are fields on
+> `operatorkit.Options`, passed from the owned `pkg/app/lifecycle.go` (from a
+> typed config field when they vary per deployment). `serverkit` runs the
+> manager iff the composition root populated `Server.Operators`, with no second
+> gate. The §1 survey below is preserved as the evidence it was; every
+> RECOMMENDATION that rests on an env default should be read as "a config
+> field, passed in code". Everything else in the analysis — the Service +
+> typed-hatch shape, `cluster_rbac`, `crds` — is unaffected.
+
 ---
 
 ## 1. What the code actually shows today
@@ -75,7 +88,7 @@ schema Operator:                       # kcl/schema.k:1785
 Two things the `Operator` schema does **not** do, that matter later:
 
 - **It does not render the CRD manifest.** `crds` is only a *name list*. It
-  drives `forge add crd` codegen and the Go `AddToScheme`/`SetupWithManager`
+  drives `forge scaffold crd` codegen and the Go `AddToScheme`/`SetupWithManager`
   wiring; the actual `CustomResourceDefinition` object is either the permissive
   stub from `lib/crd.k crd(...)` (`lib/crd.k:22`) or hand-supplied. Control-plane
   hand-supplies the full kubebuilder-generated CRD via
@@ -227,15 +240,15 @@ first-class within the hatch**, not for a parallel top-level type.
 | `volumes` (daemon kubeconfig, scratch dirs) | Yes — agnostic `Volume` | `Service` core (`core.k:284`) |
 | `node_selector` / `tolerations` (kata pool) | No | `k8s` hatch — already there (`core.k:218-219`) |
 | `service_account` (out-of-band SA) | No | `k8s` hatch — already there (`core.k:215`) |
-| **`cluster_rbac` (ClusterRole across namespaces)** | **No** — k8s cluster-scoped authz; `namespaced_rbac` is Role-only | `k8s` hatch — **needs adding** |
+| **`cluster_rbac` (ClusterRole across namespaces)** | **No** — k8s cluster-scoped RBAC; `namespaced_rbac` is Role-only | `k8s` hatch — **needs adding** |
 | **`crds` (owned CRD kinds)** | **No** — CRDs are a k8s API-extension concept; also the codegen/`AddToScheme` bridge | `k8s` hatch — **needs adding** |
 | The CRD *manifest* itself | No | `k8s.raw_manifests` (as control-plane already does via `additional_manifests`), or a forge-rendered stub |
-| Leader-election Lease | No (behavior + one RBAC rule) | **env default** (`LEADER_ELECTION_ID`, already how Go works) + a `leases` rule inside `cluster_rbac` |
-| The controller-runtime manager (watch/cache/informers) | No — pure runtime | **Go**, gated by `RUN_OPERATORS`; not a KCL concern beyond "this workload has cluster_rbac+crds" |
+| Leader-election Lease | No (behavior + one RBAC rule) | **Go** — the lease name is an `operatorkit.Options` field set in `lifecycle.go` — plus a `leases` rule inside `cluster_rbac` |
+| The controller-runtime manager (watch/cache/informers) | No — pure runtime | **Go**, gated by whether the composition root populates `Server.Operators`; not a KCL concern beyond "this workload has cluster_rbac+crds" |
 
 The dividing line is clean: **everything a compose adapter could plausibly
 render is core; everything that presupposes a Kubernetes API server (cluster
-authz, CRDs, a Lease, informers) is the k8s-only tail.**
+RBAC, CRDs, a Lease, informers) is the k8s-only tail.**
 
 ---
 
@@ -267,7 +280,7 @@ Notes on the shape:
   ClusterRole. Forge keeps auto-adding the default config-read rule
   (`lib/rbac.k:29`), so authors supply only CRD/lease/coordination rules.
 - **`crds` is a name list**, mirroring `Operator.crds` (`schema.k:1801`) — it is
-  the bridge to `forge add crd` / Go `AddToScheme`, **not** the CRD manifest.
+  the bridge to `forge scaffold crd` / Go `AddToScheme`, **not** the CRD manifest.
   The manifest keeps riding `raw_manifests` (control-plane's full kubebuilder
   CRD) or, for greenfield, a forge-rendered `lib/crd.k crd(...)` stub. Keep the
   `len(crds) > 0` invariant *only* if a workload declares `cluster_rbac`
@@ -292,8 +305,8 @@ Notes on the shape:
    `_render_operator_manifests` can (`render.k:730`).
 
 3. **Leader election**: no field. The pod already gets its Lease from
-   `operatorkit.Run` at runtime; the KCL side supplies `LEADER_ELECTION_ID` as a
-   normal `env` entry (control-plane already does, `staging/main.k:138`) and a
+   `operatorkit.Run` at runtime; the lease name is an `operatorkit.Options`
+   field set in the owned `pkg/app/lifecycle.go`, and the k8s side supplies a
    `coordination.k8s.io/leases` rule inside `cluster_rbac` (already rule #12,
    `services.k:57`).
 
@@ -318,9 +331,9 @@ a clear failure.
 
 Recommendation — **make the rejection loud, at two levels:**
 
-- **Lint/`forge audit` (primary):** a Service whose `k8s` block sets `crds` (or
+- **Lint/`forge project audit` (primary):** a Service whose `k8s` block sets `crds` (or
   `cluster_rbac` with a `leases`/CRD rule) is, by definition, a controller. When
-  a compose target is requested, `forge lint`/`forge audit` should **surface a
+  a compose target is requested, `forge lint`/`forge project audit` should **surface a
   finding**: "workload `X` is a Kubernetes operator (declares `k8s.crds`); it
   has no docker-compose representation and will be **skipped**." This matches the
   §4-style "lint can flag it" nudge (`FORGE_KCL_IDIOMS.md:452`) and the
@@ -352,7 +365,7 @@ reconciler — it's all KCL + a modest forge schema/renderer change.
    when the workload carries `cluster_rbac` (§4.2).
 4. (Optional, later) retire `Operator` / `render_operator` /
    `_render_operator_manifests` / `bundle.operators` once no caller uses them.
-5. (Optional) `forge audit` finding for "operator on a compose target" (§5).
+5. (Optional) `forge project audit` finding for "operator on a compose target" (§5).
 
 **Control-plane migration (once forge ships 1-3):**
 
@@ -370,7 +383,7 @@ reconciler — it's all KCL + a modest forge schema/renderer change.
            k8s = forge.K8sOverrides {
                cluster_rbac = _workspace_controller_rbac  # unchanged 12-rule set
                crds = ["Workspace"]
-               # leader election: LEADER_ELECTION_ID rides env_vars, as today
+               # leader election: the lease name is set in lifecycle.go
            }
        }
    }
@@ -427,7 +440,7 @@ niceties), not for the workload's reason to exist.
 **7.2 A distinct `forge.Operator` reads better and can enforce invariants.**
 `forge.Operator` announces intent ("this is a controller") at the type level; it
 can `check` that `crds` is non-empty and `cluster_rbac` is present; it gives
-forge one clean, unambiguous hook for `forge add crd`, `AddToScheme`/
+forge one clean, unambiguous hook for `forge scaffold crd`, `AddToScheme`/
 `SetupWithManager` scaffolding, and the compose-skip predicate — no "sniff
 whether `k8s.crds` is set" heuristic. The typed `Operator` we have *does* model
 the controller's essence cleanly (its only real defect is the missing `ports`).
@@ -449,7 +462,7 @@ the Service model** without forking the core:
   predicate — as legible as a distinct type, with a place to `check(len(crds) >
   0)` — while `image`/`ports`/`env` stay on the one Service. This is the
   recommended refinement of §4 if the flat two-field shape feels too implicit.
-- *Codegen hook*: `k8s.operator.crds` is exactly as good a hook for `forge add
+- *Codegen hook*: `k8s.operator.crds` is exactly as good a hook for `forge scaffold
   crd`/`AddToScheme` as `Operator.crds` is.
 - *Compose predicate*: `k8s.operator != Undefined` (§5).
 
@@ -476,11 +489,11 @@ own reference implementation listens on.
 - **Renderer (the non-optional half):** `_render_cluster_service` must emit
   `render_cluster_rbac` when the workload carries `cluster_rbac` — today only
   `_render_operator_manifests` does. Schema alone is inert.
-- **Leader election:** stays an env default (`LEADER_ELECTION_ID` + a `leases`
-  rule), never a first-class field — consistent with how `operatorkit.Run`
-  already behaves.
+- **Leader election:** stays out of KCL — the lease name is an
+  `operatorkit.Options` field set in `lifecycle.go`, plus a `leases` rule —
+  never a first-class schema field.
 - **Compose:** the target-namespaced hatch means compose already ignores the
-  tail; make the rejection *loud* — a `forge audit` finding + adapter **skip**
+  tail; make the rejection *loud* — a `forge project audit` finding + adapter **skip**
   (not a hard error) for any workload declaring operator bits.
 - **Control-plane migration:** small, Go-untouched. Swap the `forge.Operator`
   builder for a `forge.Service` with `ports=[9191]` + `k8s.cluster_rbac`/`crds`,

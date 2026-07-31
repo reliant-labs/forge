@@ -1,0 +1,441 @@
+package tierguard
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli"
+)
+
+// TestMain doubles as the protoc-gen-forge plugin.
+//
+// The generate pipeline resolves its own plugin path via os.Executable(),
+// which under `go test` is THIS test binary. buf therefore spawns
+// `<tierguard.test> protoc-gen-forge` and, without this dispatch, reads
+// `go test` output where it expected a CodeGeneratorResponse — the
+// pipeline fails at descriptor extraction with "wire unmarshal: proto:
+// cannot parse invalid wire-format data" and every subsequent step is
+// skipped. That failure mode is quiet in the worst way: the run "passes"
+// having rendered nothing.
+//
+// Routing that argv into cli.Execute() makes the test binary a faithful
+// stand-in for the real forge binary, which is what allows the pipeline
+// to run IN-PROCESS — the requirement for reading
+// checksums.Tier1TargetSet, which lives in this process's memory.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "protoc-gen-forge" {
+		if err := cli.Execute(); err != nil {
+			fmt.Fprintf(os.Stderr, "protoc-gen-forge: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// renderOnce memoizes the two fixture renders. Each costs ~20s of real
+// codegen (buf, sqlc, go mod tidy), and every test in this package wants
+// the same pair, so they are built once per binary.
+var (
+	renderOnce sync.Once
+	renderA    *renderResult
+	renderB    *renderResult
+	renderC    *renderResult
+	renderErr  error
+)
+
+// renders returns the two input-varied fixtures (A, B) and the
+// identity-varied control (C).
+func renders(t *testing.T) (a, b, identity *renderResult) {
+	t.Helper()
+	renderOnce.Do(func() {
+		// Not t.TempDir: the trees outlive the first test that asks for
+		// them, and a failure message points at them for inspection.
+		base, err := os.MkdirTemp("", "tierguard-*")
+		if err != nil {
+			renderErr = err
+			return
+		}
+		if renderA, renderErr = render(filepath.Join(base, "a"), projectA()); renderErr != nil {
+			return
+		}
+		if renderB, renderErr = render(filepath.Join(base, "b"), projectB()); renderErr != nil {
+			return
+		}
+		renderC, renderErr = render(filepath.Join(base, "c"), projectC())
+	})
+	if renderErr != nil {
+		t.Fatalf("rendering the fixtures failed: %v\n\n"+
+			"This guard cannot classify anything without rendered projects. It fails here rather "+
+			"than reporting an empty inventory as success.", renderErr)
+	}
+	return renderA, renderB, renderC
+}
+
+// TestTier1FilesAreDerivedFromUserInput is the guard.
+//
+// It renders two projects whose user inputs differ in all four
+// derivation channels (protos, migrations, contract.go, forge.yaml) and
+// fails for every Tier-1 file whose bytes are identical across both. A
+// constant Tier-1 file is library code in the user's tree: forge gains
+// nothing by regenerating it, and the user who edits it falls off the
+// upgrade path permanently (see the package doc).
+func TestTier1FilesAreDerivedFromUserInput(t *testing.T) {
+	a, b, identity := renders(t)
+
+	assertInventoryIsReal(t, a, b)
+
+	classifications := Classify(a, b, identity)
+	if len(classifications) == 0 {
+		t.Fatal("classified zero files: the Tier-1 inventory is empty, so every assertion below " +
+			"would hold vacuously. See assertInventoryIsReal — this should be unreachable.")
+	}
+
+	exempt := allowed()
+
+	var offenders, unreadable []Classification
+	counts := map[Verdict]int{}
+	for _, c := range classifications {
+		counts[c.Verdict]++
+		switch c.Verdict {
+		case Constant:
+			if _, ok := exempt[c.Path]; ok {
+				continue
+			}
+			offenders = append(offenders, c)
+		case Unreadable:
+			unreadable = append(unreadable, c)
+		}
+	}
+
+	t.Logf("Tier-1 inventory: %d paths across both fixtures (A=%d, B=%d) — "+
+		"derived(content)=%d derived(presence)=%d constant=%d unreadable=%d",
+		len(classifications), len(a.Tier1), len(b.Tier1),
+		counts[Derived], counts[OnlyInOne], counts[Constant], counts[Unreadable])
+
+	// Under -v, print the whole table. The pass/fail verdict only needs
+	// the offenders, but a reader auditing the guard needs to see what it
+	// judged DERIVED too — that is where a false negative would hide.
+	if testing.Verbose() {
+		var table strings.Builder
+		table.WriteString("full classification table (path — verdict — evidence):\n")
+		for _, c := range classifications {
+			fmt.Fprintf(&table, "  %-56s %-18s %s\n", c.Path, c.Verdict, c.Evidence)
+		}
+		t.Log(table.String())
+	}
+
+	for _, c := range unreadable {
+		t.Errorf("%s: %s", c.Path, c.Evidence)
+	}
+
+	if len(offenders) == 0 {
+		return
+	}
+
+	// Rank by size: the biggest constant file is the most library code
+	// sitting in a user tree behind a "do not edit" banner.
+	sort.Slice(offenders, func(i, j int) bool {
+		if offenders[i].SizeBytes != offenders[j].SizeBytes {
+			return offenders[i].SizeBytes > offenders[j].SizeBytes
+		}
+		return offenders[i].Path < offenders[j].Path
+	})
+
+	var msg strings.Builder
+	fmt.Fprintf(&msg, "%d Tier-1 file(s) are NOT derived from user input.\n\n", len(offenders))
+	msg.WriteString("Each was rendered twice against materially different user inputs — " +
+		a.Label + " vs " + b.Label + " — and came out byte-identical.\n" +
+		"A file that does not respond to the user's protos, migrations, contract.go or forge.yaml " +
+		"is not being re-derived from anything;\nit is library code in the user's tree behind a " +
+		"\"do not edit\" banner. Regenerating it cannot keep it correct (it was never a function of " +
+		"the inputs)\nand it carries a real cost: a user who edits it puts it in permanent drift, " +
+		"so every future forge improvement silently stops arriving.\n\n" +
+		"Fix: move the content into forge/pkg and leave a short user-owned scaffold that calls it. " +
+		"If a file is constant only\nBECAUSE these two fixtures do not happen to move it, extend a " +
+		"fixture in fixtures.go to exercise the input it tracks\n(preferred — it becomes real " +
+		"evidence), or add a documented allowList entry in classify.go.\n\n")
+	fmt.Fprintf(&msg, "Ranked by size (largest = most library code misplaced):\n")
+	for i, c := range offenders {
+		kind := "pure library code — can move to forge/pkg verbatim"
+		if c.IdentityDependent {
+			kind = "names the user's module — forge/pkg library + a small user-owned scaffold"
+		}
+		fmt.Fprintf(&msg, "  %2d. %-52s %6d bytes / %4d lines  [%s]\n",
+			i+1, c.Path, c.SizeBytes, c.Lines, kind)
+		fmt.Fprintf(&msg, "      reason: %s\n", c.Evidence)
+		if tp := templatePathFor(c.Path); tp != "" {
+			fmt.Fprintf(&msg, "      template: %s\n", tp)
+		}
+	}
+	fmt.Fprintf(&msg, "\nRendered trees kept for inspection:\n  A: %s\n  B: %s\n  C: %s\n",
+		a.Root, b.Root, identity.Root)
+	t.Error(msg.String())
+}
+
+// assertInventoryIsReal fails loudly when the derived inventory is empty
+// or implausibly thin.
+//
+// This is the anti-vacuity check, and it is the reason this guard is
+// worth having. A differential render that renders nothing classifies
+// nothing and reports success — green output that looks like evidence
+// and is not. The in-process pipeline has a real failure mode that lands
+// exactly there (a broken protoc-gen-forge dispatch makes descriptor
+// extraction fail, after which every emitter is skipped and
+// Tier1TargetSet stays empty), so the empty case must be a loud failure
+// and not a quiet pass.
+func assertInventoryIsReal(t *testing.T, a, b *renderResult) {
+	t.Helper()
+
+	for _, r := range []*renderResult{a, b} {
+		if len(r.Tier1) == 0 {
+			t.Fatalf("fixture %s targeted ZERO Tier-1 files.\n\n"+
+				"checksums.Tier1TargetSet is populated by every Tier-1 write, so an empty set means the "+
+				"pipeline never reached its emitters\n(most likely descriptor extraction failed — check "+
+				"the TestMain protoc-gen-forge dispatch). Failing loudly: a guard that\nrenders zero files "+
+				"passes vacuously and is worse than no guard.\nProject: %s", r.Label, r.Root)
+		}
+		if len(r.Bodies) == 0 {
+			t.Fatalf("fixture %s targeted %d Tier-1 files but none were readable on disk — "+
+				"nothing can be compared.\nProject: %s", r.Label, len(r.Tier1), r.Root)
+		}
+	}
+
+	// Independent of the count, the inventory must contain files that
+	// EVERY project shape has. Their absence means the walk found a
+	// partial run, not a real one.
+	//
+	// Deliberately chosen to span several distinct emitters, so a single
+	// broken step cannot satisfy the whole check: config codegen, the
+	// cmd tree, app composition, and the middleware procedure set.
+	mustContain := []string{
+		"pkg/config/config.go",
+		"pkg/app/testing.go",
+		"pkg/middleware/procedures_gen.go",
+		"cmd/" + binPlaceholder + "/cmd/root.go",
+	}
+	for _, r := range []*renderResult{a, b} {
+		for _, want := range mustContain {
+			if !r.Tier1[filepath.ToSlash(want)] {
+				t.Fatalf("fixture %s has %d Tier-1 targets but not %q.\n\n"+
+					"That file is emitted for every project shape, so its absence means this run captured a "+
+					"PARTIAL pipeline\nand the classification below would be drawn from an incomplete "+
+					"inventory. Failing rather than under-reporting.\nProject: %s",
+					r.Label, len(r.Tier1), want, r.Root)
+			}
+		}
+	}
+
+	for _, r := range []*renderResult{a, b} {
+		if len(r.Missing) > 0 {
+			t.Logf("fixture %s: %d Tier-1 target(s) not readable on disk: %v",
+				r.Label, len(r.Missing), r.Missing)
+		}
+	}
+}
+
+// TestClassifierAgreesWithKnownDerivedFiles pins the classifier against
+// files whose Tier-1 status is not in question: each is per-service or
+// per-entity by construction, so a classifier that calls any of them
+// constant is broken and its verdicts elsewhere cannot be trusted.
+//
+// This is the control on the guard itself. Without it, a bug that made
+// every comparison return "identical" would present as a long list of
+// confident mis-tier findings.
+func TestClassifierAgreesWithKnownDerivedFiles(t *testing.T) {
+	a, b, identity := renders(t)
+
+	byPath := map[string]Classification{}
+	for _, c := range Classify(a, b, identity) {
+		byPath[c.Path] = c
+	}
+
+	// Known-derived, from the schema and the protos respectively. Each
+	// is per-service or per-entity BY CONSTRUCTION, so its content
+	// cannot be constant unless the comparison itself is broken.
+	//
+	// pkg/config/config.go is deliberately NOT in this list, though it
+	// is often cited as per-project. Its per-project element is the
+	// `type Config = configv1.AppConfig` alias — and an alias to a
+	// varying type is itself invariant text. Adding a component config
+	// block to proto/config/v1/config.proto (fixture B's ConfigBlocks)
+	// demonstrably moves deploy/kcl/config_projection.k and the
+	// generated gen/config/v1/config.pb.go while leaving config.go
+	// byte-identical, so the file tracks the config proto's EXISTENCE,
+	// not its content. It is reported as a mis-tier candidate on that
+	// evidence; see the ranked findings.
+	known := []string{
+		"pkg/middleware/procedures_gen.go",
+		"pkg/app/factory_gen.go",
+		"pkg/app/seedgraph_gen.go",
+		"pkg/app/testing.go",
+	}
+	checked := 0
+	for _, p := range known {
+		c, ok := byPath[p]
+		if !ok {
+			t.Errorf("known-derived file %q is not a Tier-1 target in either fixture — "+
+				"the control has nothing to check; has the emitter moved?", p)
+			continue
+		}
+		checked++
+		if c.Verdict == Constant || c.Verdict == Unreadable {
+			t.Errorf("classifier says %q is %s, but it is per-project by construction.\n"+
+				"The classifier is wrong, which makes every other verdict in this package suspect.\n"+
+				"evidence: %s", p, c.Verdict, c.Evidence)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("checked zero known-derived files — this control passed vacuously")
+	}
+	t.Logf("classifier control: %d known-derived files all classified derived", checked)
+}
+
+// templatePathFor maps a generated project path to the template that
+// renders it, so a mis-tier finding points at the file to change.
+// Best-effort: an empty result just omits the hint.
+func templatePathFor(rel string) string {
+	base := filepath.Base(rel)
+	candidates := map[string]string{
+		"root.go":       "internal/templates/project/cmd-tree-root.go.tmpl",
+		"server.go":     "internal/templates/project/cmd-tree-server.go.tmpl",
+		"version.go":    "internal/templates/project/cmd-tree-version.go.tmpl",
+		"db.go":         "internal/templates/project/cmd-tree-db.go.tmpl",
+		"migrate.go":    "internal/templates/project/app-migrate.go.tmpl",
+		"testing.go":    "internal/templates/project/bootstrap_testing.go.tmpl",
+		"compose.go":    "internal/templates/project/app-compose.go.tmpl",
+		"lifecycle.go":  "internal/templates/project/app-lifecycle.go.tmpl",
+		"repo.go":       "internal/templates/project/repo.go.tmpl",
+		"embed.go":      "internal/templates/project/db-embed.go.tmpl",
+		"orm_shared.go": "internal/templates/project/orm-shared.go.tmpl",
+	}
+	tp, ok := candidates[base]
+	if !ok {
+		return ""
+	}
+	// Only report the hint when the template actually exists in this
+	// tree — a stale guess is worse than no hint.
+	if _, err := os.Stat(filepath.Join("..", "..", tp)); err != nil {
+		return ""
+	}
+	return tp
+}
+
+// TestForgeOwnedFilesRouteThroughTheTier1Chokepoint reports files that
+// carry the forge-owned banner but never pass through
+// checksums.WriteGeneratedFile, and are therefore invisible to
+// Tier1TargetSet — the channel this whole guard reads.
+//
+// This is the completeness check on the INVENTORY, and it exists because
+// the gap is real rather than hypothetical:
+// internal/handlers/mocks/<svc>_mock.go is written with a plain
+// os.Create in internal/codegen/generator.go (writeServiceMock), so it
+// is stamped forge-owned, is regenerated every run, and is absent from
+// the producer's own Tier-1 set. It also carries no forge:hash marker,
+// which is why reconstructing the inventory from disk markers instead
+// would ALSO miss it.
+//
+// Such a file gets the worst of both tiers: forge overwrites it every
+// run, but the drift detection and disown machinery that make Tier-1
+// survivable do not apply to it. Reported as a failure so the count
+// cannot grow quietly.
+func TestForgeOwnedFilesRouteThroughTheTier1Chokepoint(t *testing.T) {
+	a, _, _ := renders(t)
+
+	banner := []byte("forge-owned:")
+
+	var offenders []string
+	err := filepath.Walk(a.Root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !info.Mode().IsRegular() {
+			return nil
+		}
+		switch {
+		case strings.Contains(path, string(filepath.Separator)+".git"+string(filepath.Separator)),
+			strings.Contains(path, "node_modules"):
+			return nil
+		}
+		// Head-bounded read: the banner lives at the top of the file.
+		f, oerr := os.Open(path)
+		if oerr != nil {
+			return nil
+		}
+		defer func() { _ = f.Close() }()
+		head := make([]byte, 4096)
+		n, _ := f.Read(head)
+		if n <= 0 || !bytes.Contains(head[:n], banner) {
+			return nil
+		}
+		rel, rerr := filepath.Rel(a.Root, path)
+		if rerr != nil {
+			return nil
+		}
+		if !a.Tier1[normalizeKey(rel, a.Name)] {
+			offenders = append(offenders, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", a.Root, err)
+	}
+
+	// The walk must have had something to judge, or it proved nothing.
+	if len(a.Tier1) == 0 {
+		t.Fatal("no Tier-1 targets — the scan has no set to check membership against")
+	}
+
+	sort.Strings(offenders)
+	for _, p := range offenders {
+		t.Errorf("%s carries the forge-owned banner but is NOT in checksums.Tier1TargetSet.\n"+
+			"It is regenerated every run without passing through checksums.WriteGeneratedFile, so it "+
+			"gets neither drift detection\nnor `forge project disown` — and it is invisible both to "+
+			"this guard's inventory and to a disk-marker scan.\nRoute the write through the Tier-1 "+
+			"writer (or stop stamping it forge-owned).", p)
+	}
+}
+
+// TestTier1InventoryIsProducerDerived documents and checks the inventory
+// method: the set comes from the producer's own bookkeeping, so an
+// emitter added anywhere enters this guard's scope with no list to edit.
+//
+// It also pins the chokepoint property the method depends on. If a future
+// change adds a Tier-1 writer that does NOT route through
+// checksums.WriteGeneratedFile, the set silently under-reports and this
+// guard silently narrows — the exact failure of the earlier audit that
+// read one table in upgrade.go and concluded "exactly 6 Tier-1 files".
+func TestTier1InventoryIsProducerDerived(t *testing.T) {
+	a, _, _ := renders(t)
+
+	if len(a.Tier1) == 0 {
+		t.Fatal("empty inventory (see assertInventoryIsReal)")
+	}
+
+	// The set must be broad rather than one emitter's output: a real
+	// pipeline run touches many distinct top-level directories.
+	dirs := map[string]bool{}
+	for p := range a.Tier1 {
+		dirs[strings.SplitN(p, "/", 2)[0]] = true
+	}
+	if len(dirs) < 4 {
+		var got []string
+		for d := range dirs {
+			got = append(got, d)
+		}
+		sort.Strings(got)
+		t.Errorf("Tier-1 inventory spans only %d top-level dir(s) %v — that looks like a single "+
+			"emitter's output, not a full pipeline run", len(dirs), got)
+	}
+
+	// The pipeline must have populated the set through the checksums
+	// chokepoint; nothing else writes it.
+	if len(checksums.Tier1TargetSet) == 0 {
+		t.Error("checksums.Tier1TargetSet is empty after a render — the inventory channel this guard " +
+			"depends on has changed; re-derive the method before trusting any verdict")
+	}
+}

@@ -3,14 +3,14 @@ Forge KCL — component model (deploy-as-data normalization).
 
 forge no longer hand-writes `forge.Service` entries as KCL text. It
 serializes a DENORMALIZED, k8s-agnostic component shape to
-`deploy/kcl/components_gen.json` (name, kind, ports, env, command,
+`deploy/kcl/components_gen.json` (name, kind, env, command,
 schedule). THIS file owns ALL normalization: the typed `Component`
 base schema plus its kind-selected subtypes expand each entry into the
 right Kubernetes resources.
 
 The inheritance hierarchy:
 
-    Component (base: name, kind, ports, env, command + per-env overlay)
+    Component (base: name, kind, env, command + per-env overlay)
       ├── Server(Component)   → Deployment + Service (named ports)
       ├── Worker(Component)   → Deployment (no Service)
       ├── Cron(Component)     → CronJob (uses schedule)
@@ -46,8 +46,13 @@ lambda.
 # ---------------------------------------------------------------------------
 
 schema ComponentPort:
-    """One named port from components_gen.json. `expose` flags ports
-    that surface on the k8s Service (servers) and Dockerfile EXPOSE.
+    """One named port a component listens on. `expose` flags ports that
+    surface on the k8s Service (servers) and Dockerfile EXPOSE.
+
+    Declared per environment on the component overlay in
+    `deploy/kcl/<env>/main.k` — a port is a deploy fact, so it is stated
+    HERE and never projected out of Go. A Server that declares none gets
+    the standard `http` :8080 mux its expansion falls back to.
     """
     name: str
     port: int
@@ -66,16 +71,15 @@ schema Component:
     expansion is type-directed, not a runtime switch.
 
     Base fields (from components_gen.json):
-      name / kind / ports / env / command / schedule / group / version / crds
+      name / kind / env / command / schedule / group / version / crds
 
     Overlay fields (per-env, default so the JSON loads verbatim):
-      image / registry / namespace / replicas / resources / env_vars /
-      health_check / platform / leader_election
+      ports / image / registry / namespace / replicas / resources /
+      env_vars / health_check / platform / leader_election
     """
     # --- Denormalized base (forge.yaml -> components_gen.json) ---
     name: str
     kind: str
-    ports: [ComponentPort] = []
     # `env` is the base default env from forge.yaml (k8s-agnostic
     # string map). Projected into container env alongside `env_vars`.
     env: {str: str} = {}
@@ -97,6 +101,12 @@ schema Component:
     build: {str:any} = {}
 
     # --- Per-env overlay (set in deploy/kcl/<env>/main.k) ---
+    # Named ports this component listens on. A port is a DEPLOY fact, so
+    # it is declared HERE (per env) and never projected out of Go —
+    # components_gen.json carries no ports. Empty is the normal case: the
+    # Server expansion falls back to the standard `http` :8080 mux, and
+    # Worker/Cron/Binary listen on nothing.
+    ports: [ComponentPort] = []
     # The container image. Defaults to the component name; env files
     # typically set it to the project image so a shared binary's
     # components all run the same image.

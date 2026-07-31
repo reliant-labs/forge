@@ -95,7 +95,7 @@ func CanonicalGoSource(localPrefix, filename string, src []byte) ([]byte, error)
 }
 
 // modulePathCache memoizes GoImportsLocalPrefix per absolute project
-// root. Only successful lookups are cached: `forge new` writes go.mod
+// root. Only successful lookups are cached: `forge project new` writes go.mod
 // mid-scaffold, and caching an early miss would pin the wrong prefix
 // for the rest of the process.
 var (
@@ -160,6 +160,38 @@ func canonicalGoBody(root, relPath string, content []byte) (string, bool) {
 		return "", false
 	}
 	return BodyHash(formatted), true
+}
+
+// CanonicalBodyHash is canonicalGoBody in total form: the body hash of
+// content after canonical Go formatting, falling back to the exact-byte
+// BodyHash for non-Go paths and for content that does not parse. It
+// gives callers one rule for "are these two files the same render?"
+// regardless of format — the .go tolerance applies where it is
+// meaningful and is a no-op everywhere else.
+func CanonicalBodyHash(root, relPath string, content []byte) string {
+	if h, ok := canonicalGoBody(root, relPath, content); ok {
+		return h
+	}
+	return BodyHash(content)
+}
+
+// ClassifyPath is the path-aware form of Verify: the exact-byte
+// classification widened by the .go formatter tolerance, so import
+// regrouping or a gofmt realignment reads as Pristine rather than as a
+// hand-edit. Verify itself stays exact-byte by design (it knows nothing
+// about paths); every gate that has a path in hand should classify
+// through here so the drift scan, the writer, and the artifact-
+// retirement sweep all answer the same question the same way.
+func ClassifyPath(root, relPath string, content []byte) VerifyStatus {
+	status := Verify(content)
+	if status != Modified {
+		return status
+	}
+	embedded, _ := ExtractMarker(content)
+	if goFormatterEquivalent(root, relPath, content, embedded) {
+		return Pristine
+	}
+	return Modified
 }
 
 // goFormatterEquivalent reports whether content is a forge render

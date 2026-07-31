@@ -15,7 +15,7 @@ LLMs are bad at diagrams. The specific failure modes:
 
 This skill exists to prevent those.
 
-**Also load `[[design]]`.** It carries the visual brief, the verify-visually loop, and a copy-pasteable overflow probe you will want when checking your diagram. Diagrams are exactly the case both skills are tuned for — load them together, not just this one.
+**Also load `frontend/design`.** It carries the visual brief, the verify-visually loop, and a copy-pasteable overflow probe you will want when checking your diagram. Diagrams are exactly the case both skills are tuned for — load them together, not just this one.
 
 ## Reach for a component library before hand-rolling
 
@@ -45,7 +45,7 @@ Shipped diagram components and what they're for:
 | `pub_sub_matrix` | Topics × consumers grid, cells marking subscriptions. Pairs with `bus_bar` to make routing rules scannable. |
 | `variation_grid` | Lay out 2-4 candidate diagrams (or any designs) as labeled artboards for the user to compare. Use whenever you produce alternative layouts for the same topology. |
 
-Narrative charts (`quadrant_chart`, `funnel_chart`, `concentric_circles`) handle all coordinate math internally — pass data, get pixels. Same applies to the diagram components above: they own positioning and edge routing. For commodity data viz (bar, line, area, donut, scatter) use Recharts — see the [[frontend]] skill.
+Narrative charts (`quadrant_chart`, `funnel_chart`, `concentric_circles`) handle all coordinate math internally — pass data, get pixels. Same applies to the diagram components above: they own positioning and edge routing. For commodity data viz (bar, line, area, donut, scatter) use Recharts — see the `frontend` skill.
 <!-- @forge-only:end -->
 
 ## When you must hand-roll: declare a shared coordinate space
@@ -155,7 +155,7 @@ Diagrams are exactly the case where the diff lies. After making one:
 4. For every connector path, list the (x,y) waypoints and check that no waypoint falls inside the rect of a card other than the source or target. Connector-through-unrelated-card is the second most common diagram bug after coordinate drift — a vertical line at x=1060 routed past a card at x=1020..1220 slices straight through it, and the screenshot will show the collision.
 5. If you cannot load the app, say so explicitly. A diagram that "compiles" can still be visually broken.
 
-The `[[design]]` skill covers the broader verify-visually discipline, including a copy-pasteable overflow probe — diagrams are exactly the case it's tuned for (connector lines landing outside their cards, node labels wrapping to a third line, the SVG container clipping a curve).
+The `frontend/design` skill covers the broader verify-visually discipline, including a copy-pasteable overflow probe — diagrams are exactly the case it's tuned for (connector lines landing outside their cards, node labels wrapping to a third line, the SVG container clipping a curve).
 
 ## Rules
 

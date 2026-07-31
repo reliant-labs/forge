@@ -10,31 +10,31 @@ Use this skill when porting an existing Go codebase onto a forge-generated scaff
 ## Pre-flight
 
 1. **No BSR (buf.build) auth required — Go or frontend.** Fresh forge projects scaffold with no `deps:` in `buf.yaml` and `local:` plugins on both halves of codegen:
-   - **Go**: `local: protoc-gen-go` / `local: protoc-gen-connect-go` resolved from `$PATH`. `forge new` auto-runs `forge tools install` to put them there.
-   - **TypeScript** (frontends): `local: ./frontends/<name>/node_modules/.bin/protoc-gen-es` from `@bufbuild/protoc-gen-es` pinned in the frontend `package.json`. `forge new` runs `npm install` in each frontend dir before bootstrap codegen.
+   - **Go**: `local: protoc-gen-go` / `local: protoc-gen-connect-go` resolved from `$PATH`. `forge project new` auto-runs `forge tools install` to put them there.
+   - **TypeScript** (frontends): `local: ./frontends/<name>/node_modules/.bin/protoc-gen-es` from `@bufbuild/protoc-gen-es` pinned in the frontend `package.json`. `forge project new` runs `npm install` in each frontend dir before bootstrap codegen.
 
-   Opt back into BSR-hosted plugins with `forge new --buf-plugins=remote` if you prefer no-install (and accept rate limits) on both halves.
-2. Install dev tooling forge expects on PATH but does not ship: `buf` (no BSR auth needed), `goimports`, `npm` (only if you have frontends — and frontend TS codegen requires it), `go`. `forge new` warns and continues without them but downstream `forge generate` and lint passes degrade silently.
+   Opt back into BSR-hosted plugins with `forge project new --buf-plugins=remote` if you prefer no-install (and accept rate limits) on both halves.
+2. Install dev tooling forge expects on PATH but does not ship: `buf` (no BSR auth needed), `goimports`, `npm` (only if you have frontends — and frontend TS codegen requires it), `go`. `forge project new` warns and continues without them but downstream `forge generate` and lint passes degrade silently.
 3. Make sure your host Go version is `>=` the version forge's `pkg/orm` requires. Forge clamps `go.work` upward when it detects an older host, but a host mismatch can still surprise `go build` calls outside forge's own subprocesses.
 4. PATH visibility in your shell does NOT propagate to forge subprocesses unless you `export` it. Add `export PATH=/path/to/go/bin:$PATH` to your shell init or invoke forge with the env inline. `buf generate` is run as a forge subprocess and will silently misbehave if it cannot find tools.
 5. Load relevant skills upfront — they are the most current source of truth on conventions:
    ```bash
    forge skill load architecture
    forge skill load services
-   forge skill load packs
+   forge skill load auth
    forge skill load contracts
    ```
 
 ## Choose the project shape at scaffold time
 
 ```bash
-forge new <name>-next --kind <service|cli|library> --mod <module-path>
+forge project new <name>-next --kind <service|cli|library> --mod <module-path>
 ```
 
 | Kind | Use when |
 |------|----------|
 | `service` (default) | Network-facing app: Connect-RPC server, middleware stack, observability, k8s deploy. See `migration-service`. |
-| `cli` | Cobra-based CLI binary. No `internal/middleware/`, no `cmd/server.go`, no `deploy/`, no service protos. See `migration-cli`. |
+| `cli` | Cobra-based CLI binary. No `pkg/middleware/`, no `cmd/server.go`, no `deploy/`, no service protos. See `migration-cli`. |
 | `library` | Pure Go module with an `internal/` skeleton (and `pkg/` only if you have real external importers); no `cmd/` at all. For shared libraries. |
 
 **Pick this at scaffold time.** `--disable` flags only toggle `forge.yaml` features; they do NOT prevent server-shaped files from being emitted. If you scaffold with the wrong kind, wipe and start over rather than pruning by hand.
@@ -45,7 +45,7 @@ Use a `-next` suffix (e.g. `github.com/owner/project-next`) during the migration
 
 ## Service / package naming
 
-- Hyphens are OK in service / worker / operator names (`forge add service admin-server`). Forge stores the kebab-case form as the display name in `forge.yaml` and snake-cases the form used for the on-disk directory path (`internal/admin_server/`), with a single-token lowercase Go package decl (`package admin`).
+- Hyphens are OK in service / worker / operator names (`forge scaffold service admin-server`). Forge stores the kebab-case form as the display name in `forge.yaml` and snake-cases the form used for the on-disk directory path (`internal/admin_server/`), with a single-token lowercase Go package decl (`package admin`).
 - `forge.yaml` `path:` is always the snake form. Don't hand-edit it to use hyphens.
 - The proto package generated for a pack like `stripe` is `db.v1` (not `<project>.db.v1`) — package names align with directory layout under the buf module root, not the project name.
 - For the full kebab / snake / Pascal / camel mapping across Go, proto, TS, and `forge.yaml`, see the **Naming conventions** table in `architecture`.
@@ -54,8 +54,8 @@ Use a `-next` suffix (e.g. `github.com/owner/project-next`) during the migration
 
 Same shape for both `service` and `cli` targets:
 
-1. `forge new <name>-next --kind <kind> --mod <path>` — scaffold the empty project.
-2. Add components (`forge add operator/service/worker/webhook`) and packs (`forge pack install <pack>`) one at a time. `forge generate` after each.
+1. `forge project new <name>-next --kind <kind> --mod <path>` — scaffold the empty project.
+2. Add components (`forge scaffold operator/service/worker/webhook`) one at a time. `forge generate` after each.
 3. Get a green baseline before porting any business logic: `forge generate && go mod tidy && go build ./... && forge lint`. All four must pass.
 4. **Set the contracts floor before porting.** Edit `forge.yaml`:
    ```yaml
@@ -66,14 +66,14 @@ Same shape for both `service` and `cli` targets:
      exclude: []
    ```
    See the `contracts` skill. Enabling this upfront prevents a 5-hour backfill at the end.
-5. Port app code into `internal/`. Everything not imported outside the module lives there — services (`internal/handlers/<svc>/`, contract + impl + `handlers_gen.go` co-located in ONE dir), workers (`internal/workers/<name>/`), operators (`internal/operators/<name>/`). Order: utility code and domain types first, then the service impls and handlers, then wiring. The wiring is the explicit composition (`internal/app/compose.go` `NewComponents(infra *Infra) (*Components, error)`, generated), off the owned `internal/app/providers.go` `Infra`/`OpenInfra` provider set. `NewComponents` is forge-owned (regenerated; `forge disown internal/app/compose.go` to hand-own); `providers.go` is yours, scaffolded once. There is NO generated `bootstrap.go`/`wire_gen.go` re-emitted under you, so porting wiring is filling each component's `Deps` off `infra.<Field>` (resolved by type) in `NewComponents` and declaring any new collaborator on the `Infra` provider set. (`pkg/` is reserved for code you'll support as public API; absent real external importers, port into `internal/`, not `pkg/`.)
+5. Port app code into `internal/`. Everything not imported outside the module lives there — services (`internal/handlers/<svc>/`, contract + impl + `handlers_crud_ops_gen.go` co-located in ONE dir), workers (`internal/workers/<name>/`), operators (`internal/operators/<name>/`). Order: utility code and domain types first, then the service impls and handlers, then wiring. The wiring is the explicit composition (`internal/app/compose.go` `NewComponents(infra *Infra) (*Components, error)`, generated), off the owned `internal/app/providers.go` `Infra`/`OpenInfra` provider set. `NewComponents` is forge-owned (regenerated; `forge project disown internal/app/compose.go` to hand-own); `providers.go` is yours, scaffolded once. There is NO generated `bootstrap.go`/`wire_gen.go` re-emitted under you, so porting wiring is filling each component's `Deps` off `infra.<Field>` (resolved by type) in `NewComponents` and declaring any new collaborator on the `Infra` provider set. (`pkg/` is reserved for code you'll support as public API; absent real external importers, port into `internal/`, not `pkg/`.)
 6. Add `forge lint --contract` to the gate after every port phase. If a port leaves a package without `contract.go`, lint fails — fix before moving on.
 
-## Pack interactions
+## Cross-cutting concerns (auth, audit, interceptors)
 
-- Install packs **after** the components they extend. Stripe webhook handler? Add the service first, then `forge pack install stripe`.
-- Each pack installs its code into a nested per-pack subpackage chosen by the pack's `subpath:` field. Auth providers nest under `internal/middleware/auth/<provider>/` (e.g. `internal/middleware/auth/jwtauth/`, `internal/middleware/auth/clerk/`, `internal/middleware/auth/apikey/`); the audit pack lives at `internal/middleware/audit/auditlog/`; external-service clients (e.g. `stripe`, `twilio`) live at `internal/clients/<service>/`. `forge pack list` shows the SUBPATH column. Compose interceptors explicitly in the explicit composition in `internal/app/compose.go` (`NewComponents`) — `connect.WithInterceptors(otel, ratelimit, jwtauth.Interceptor(), audit, ...)`. The ordering is load-bearing (otel-outermost → rate-limit → auth → audit) and must be written out explicitly in `NewComponents`; it is never implied by registration order, and Forge ships no chain helper.
-- `forge generate` after every `forge pack install` to wire pack contributions through the codegen pipeline.
+- Auth, audit, and API keys are code + `forge/pkg/*` libraries, not installable packs. Auth lives in owned `internal/app/auth.go` (`SetupAuth()`) over `forge/pkg/auth` + `forge/pkg/apikey`; audit is the `forge/pkg/audit` library; the frontend auth UI is owned scaffold under `frontends/<name>/src/`. See the `auth` and `frontend` skills. Third-party clients (Stripe, Twilio, NATS) are a thin wrapper you write under `internal/<name>/` — see the `adapter` skill.
+- Build the interceptor chain with `observe.Chain(observe.Deps{…})` in the generated `cmd serve.go`, handing your `Auth` / `Audit` / `RateLimit` interceptors in by named field; construct those interceptors in `internal/app/compose.go` (`NewComponents`). Order is load-bearing and lives in `Chain` (recovery → request-id → logging → tracing → metrics, then auth → audit → rate-limit) — it is never implied by registration order, so don't hand-roll a `connect.WithInterceptors(...)` sequence of your own.
+- Add the host component before the code that extends it (a webhook receiver needs its service first), then `forge generate`.
 
 ## Per-package porting recipe (source-copy approach)
 
@@ -86,11 +86,11 @@ find /path/to/<name>-next/internal/<pkg> -name '*.go' \
 cd /path/to/<name>-next && go mod tidy && go build ./... && go test ./internal/<pkg>/...
 ```
 
-For templates / packs / manifests, restrict the rewrite to the runtime-import path (`pkg/...`) only. Doc-strings and `go install ...@version` references that point at the canonical tool MUST be left alone:
+For templates and embedded assets, restrict the rewrite to the runtime-import path (`pkg/...`) only. Doc-strings and `go install ...@version` references that point at the canonical tool MUST be left alone:
 
 ```bash
 find /path/to/<name>-next/internal/<pkg> -type f \
-  \( -name '*.tmpl' -o -name '*.go' -o -name 'pack.yaml' \) \
+  \( -name '*.tmpl' -o -name '*.go' -o -name '*.yaml' -o -name '*.json' \) \
   -exec sed -i 's|<old>/pkg|<new>/pkg|g' {} +
 grep -rn '<old-module-path>[^-]' /path/to/<name>-next/internal/<pkg>
 ```
@@ -103,7 +103,7 @@ Triage every grep hit. README/`go install` references should remain canonical; r
 - **Pin transitive deps the source repo pins.** Before `go mod tidy`, copy version pins for any dep with a fast-moving API (Delve, gRPC, k8s libs, cobra) into the target `go.mod`. A blind `tidy` resolves to latest-compatible and silently breaks API skew.
 - **`//go:embed` of in-repo assets.** Use `cp -r` (preserves dotfiles like `.dockerignore.tmpl`) and verify any string constants that match against embedded content still align after the import-path rewrite. Without that check, embed mismatches no-op silently and downstream scaffolds break at runtime.
 - **Generated proto descriptors and sed do not mix.** A blanket `sed s|forge|forge-next|` rewrites the `go_package` string inside `*.pb.go` rawDesc bytes but does NOT update the varint length prefix → runtime panic in `protobuf/internal/filedesc.unmarshalSeedOptions`. Regenerate via `buf generate` instead of sed-rewriting compiled descriptors.
-- **Manifest files (`pack.yaml`, etc.) are a third file class** alongside `.go` and templates. Pack manifests have a top-level `dependencies:` list of Go module paths. Include manifests in the rewrite glob.
+- **`.proto` files are a third file class** alongside `.go` and templates. Every proto declares `option go_package = "<module>/gen/<pkg>/v1;<pkg>v1"`, so the module-path rewrite must cover `proto/` too — then re-emit `gen/` with `forge generate` (never sed the compiled `*.pb.go`, per the gotcha above).
 
 ## Entity strategy in migrations: your schema is already the truth
 
@@ -136,9 +136,9 @@ If the source project was an older forge project with annotated entity
 protos (or a `proto/db/` directory), see
 `migrations/proto-entities-to-schema-truth` for the flip.
 
-## Halt-and-report rule on forge bugs
+## When forge itself is wrong, mid-migration
 
-If you hit a forge issue mid-migration, **halt the migration**, file/fix the forge bug, then resume. Don't paper over — friction is exactly what dogfooding is for. Forge improvements take priority over completing the migration on schedule.
+Stop and report it, with a reproduction. Do not paper over it, and do not hand-edit generated output to compensate — `forge generate` will overwrite the patch and the defect returns. Fixing forge is a separate piece of work from your migration; detouring into it mid-migration means rebuilding a toolchain and re-verifying everything you had already checked against the old one.
 
 ## Tips for delegating port work to sub-agents
 

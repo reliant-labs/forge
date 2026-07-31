@@ -15,11 +15,12 @@ import (
 // The generator's ORM/CRUD emitters reference a fixed set of symbols from
 // the project's resolved forge/pkg module: orm.Context.Dialect(),
 // orm.UnknownFieldError, and crud.Spec{Timestamps, LegacyTextDeletedAt}.
-// A project that pins (or dev-vendors) a forge/pkg OLDER than this binary
-// can lack those symbols. Without a handshake, `forge generate` rewrites
-// the whole tree and only THEN fails its own `go build` validate with
-// `undefined: orm.UnknownFieldError`, leaving the repo mid-regen (kalshi
-// needed two manual ".forge-pkg re-sync" commits just to recover).
+// A project that pins a forge/pkg OLDER than this binary can lack those
+// symbols. Without a handshake, `forge generate` rewrites the whole tree
+// and only THEN fails its own `go build` validate with `undefined:
+// orm.UnknownFieldError`, leaving the repo mid-regen. This is more likely
+// now that every project pins a PUBLISHED forge/pkg version: a binary newer
+// than the pinned pkg release is exactly the skew this catches early.
 //
 // pkgCompatProbe compiles a tiny throwaway program against the project's
 // resolved forge/pkg BEFORE any codegen mutates the tree. If a required
@@ -116,14 +117,16 @@ func checkPkgCompat(projectDir string) error {
 	b.WriteString("}\n")
 
 	// Land the probe in a temp package dir INSIDE the project so it
-	// resolves forge/pkg through the project's module graph (its require +
-	// any replace / .forge-pkg dev-vendor). The build tag keeps it out of
-	// the normal package's compilation and `go build ./...`.
+	// resolves forge/pkg through the project's module graph (its require,
+	// plus any go.work bridge a maintainer added). The build tag keeps it
+	// out of the normal package's compilation and `go build ./...`.
 	probeDir, err := os.MkdirTemp(projectDir, ".forge-pkgcompat-")
 	if err != nil {
 		return nil // can't probe → defer to the validate backstop
 	}
-	defer os.RemoveAll(probeDir)
+	// Best-effort cleanup of a temp probe dir inside the project. A
+	// failure leaves a stray .forge-pkgcompat-* dir, not a broken build.
+	defer func() { _ = os.RemoveAll(probeDir) }()
 	probeFile := filepath.Join(probeDir, "probe.go")
 	if err := os.WriteFile(probeFile, []byte(b.String()), 0o644); err != nil {
 		return nil
@@ -158,8 +161,7 @@ func checkPkgCompat(projectDir string) error {
 		detail+" — generating would rewrite the tree and then fail its own validate. No files were changed.",
 		"",
 		"bump the forge/pkg pin to match this binary: `go get github.com/reliant-labs/forge/pkg@latest && go mod tidy` "+
-			"(and re-tidy gen/ if present). If you dev-vendor forge/pkg via .forge-pkg, re-sync it from a matching forge checkout. "+
-			"Then re-run 'forge generate'.")
+			"(and re-tidy gen/ if present). Then re-run 'forge generate'.")
 }
 
 // extractMissingPkgSymbols pulls the forge/pkg symbols a probe build

@@ -1,4 +1,4 @@
-// Package cli — `forge audit` ingress category (KCL-entity-typed half).
+// Package cli — `forge project audit` ingress category (KCL-entity-typed half).
 //
 // auditIngress / ingressBackendNames / crossCheckIngress stay in package
 // cli because they depend on the KCL render + entity structs (GatewayEntity
@@ -21,23 +21,26 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-// auditIngress cross-checks forge.yaml backends against the dev-env
+// auditIngress cross-checks the project's backends against the dev-env
 // KCL-declared Gateway API ingress (Gateways + HTTPRoutes + GRPCRoutes).
+// The components are DISCOVERED from the project tree, not read off the
+// config — the audit reports on what the project actually contains.
 // Two failure modes:
 //
 //   - A route's `Service` doesn't match any known backend name —
-//     services, frontends, or webhook handlers (error — the route is
+//     components, frontends, or webhook handlers (error — the route is
 //     dead at deploy time).
-//   - A forge.yaml service declares `port:` but nothing routes to it
-//     (info — internal-only services are valid; we just surface the
-//     gap so the operator notices when they meant to ingress it).
+//   - A SERVER component nothing routes to (info — internal-only
+//     services are valid; we just surface the gap so the operator
+//     notices when they meant to ingress it). Only servers get a k8s
+//     Service, so only servers can be the target of a route.
 //
 // Frontends and webhook services are valid route backends too — at the
 // k8s layer a route's `backendRefs[].name` resolves to any Service in
-// the env namespace regardless of which forge.yaml block scaffolded it.
-// We only emit the "port but no route" info for entries from
-// cfg.Services: frontends own their own scaffold and may legitimately
-// be cluster-internal-only (SSR-only) so flagging them would be noisy.
+// the env namespace regardless of what scaffolded it. We only emit the
+// "port but no route" info for components: frontends own their own
+// scaffold and may legitimately be cluster-internal-only (SSR-only) so
+// flagging them would be noisy.
 //
 // We render the dev env because that's the only env every project is
 // guaranteed to have. If `kcl` isn't on PATH or the dev dir is missing
@@ -54,9 +57,10 @@ func auditIngress(cfg *config.ProjectConfig, projectDir string) audittype.Catego
 			Summary: fmt.Sprintf("could not evaluate dev KCL: %v", err),
 		}
 	}
-	backends := ingressBackendNames(cfg, projectDir)
+	components := codegen.DiscoverProjectComponents(projectDir, cfg.Name)
+	backends := ingressBackendNames(components, cfg.Frontends, projectDir)
 	// A route may legally target any Service in the env namespace — not
-	// just the ones a forge.yaml block scaffolds. Union the KCL-RENDERED
+	// just the ones forge scaffolds. Union the KCL-RENDERED
 	// Service names so hand-authored Services resolve as known backends:
 	//   - entities.Services — typed forge.Service objects.
 	//   - entities.ManifestServiceNames — raw k8s Service manifests injected
@@ -68,24 +72,23 @@ func auditIngress(cfg *config.ProjectConfig, projectDir string) audittype.Catego
 		backends = append(backends, s.Name)
 	}
 	backends = append(backends, entities.ManifestServiceNames...)
-	return crossCheckIngress(cfg.Components, backends, entities.Gateways, entities.HTTPRoutes, entities.GRPCRoutes)
+	return crossCheckIngress(components, backends, entities.Gateways, entities.HTTPRoutes, entities.GRPCRoutes)
 }
 
-// ingressBackendNames returns the union of every forge.yaml-declared
-// name that can legitimately appear as a route backend: services,
-// frontends, and per-service webhook handlers. K8s only sees a Service
-// in the env namespace by that name — the forge.yaml block that
+// ingressBackendNames returns the union of every name that can legitimately
+// appear as a route backend: components, frontends, and per-service webhook
+// handlers. K8s only sees a Service in the env namespace by that name — what
 // scaffolded it is irrelevant at route-resolution time.
-func ingressBackendNames(cfg *config.ProjectConfig, projectDir string) []string {
-	names := make([]string, 0, len(cfg.Components)+len(cfg.Frontends))
-	for _, s := range cfg.Components {
+func ingressBackendNames(components codegen.Inventory, frontends []config.FrontendConfig, projectDir string) []string {
+	names := make([]string, 0, len(components)+len(frontends))
+	for _, s := range components {
 		names = append(names, s.Name)
 		// Webhook backends are discovered from the webhook_<name>.go files in
-		// the service's handler dir, not a declared config list.
+		// the service's handler dir — the file IS the declaration.
 		handlerDir := filepath.Join(projectDir, "internal", "handlers", naming.ServicePackage(s.Name))
 		names = append(names, codegen.WebhookNamesForService(handlerDir)...)
 	}
-	for _, f := range cfg.Frontends {
+	for _, f := range frontends {
 		names = append(names, f.Name)
 	}
 	return names
@@ -98,8 +101,8 @@ func ingressBackendNames(cfg *config.ProjectConfig, projectDir string) []string 
 // (forge.yaml services + frontends + webhook handlers, PLUS the
 // KCL-rendered Service objects — typed forge.Service and raw k8s Service
 // manifests) any route may legally point at; `services` is kept separate
-// because only it drives the "port declared but no route" info finding.
-func crossCheckIngress(services []config.ComponentConfig, backends []string, gateways []GatewayEntity, httpRoutes []HTTPRouteEntity, grpcRoutes []GRPCRouteEntity) audittype.Category {
+// because only it drives the "serves but no route" info finding.
+func crossCheckIngress(services codegen.Inventory, backends []string, gateways []GatewayEntity, httpRoutes []HTTPRouteEntity, grpcRoutes []GRPCRouteEntity) audittype.Category {
 	knownBackend := make(map[string]struct{}, len(backends))
 	for _, b := range backends {
 		knownBackend[b] = struct{}{}
@@ -126,16 +129,21 @@ func crossCheckIngress(services []config.ComponentConfig, backends []string, gat
 		check("route", r.Name, r.Service)
 	}
 
+	// Only SERVER components are addressable: their expansion is the one
+	// that emits a k8s Service. Workers, crons, operators and binaries
+	// have nothing for a route to point at, so "no route" says nothing
+	// about them. Every server answers on the same port — the binary's
+	// single Connect mux (config.DefaultServePort) unless the env's KCL
+	// overlay says otherwise, which this audit does not read.
 	servicesWithoutRoute := 0
 	for _, s := range services {
-		p := s.PrimaryPort()
-		if p <= 0 {
+		if !s.IsServer() {
 			continue
 		}
 		if _, ok := routedService[s.Name]; ok {
 			continue
 		}
-		findings = append(findings, fmt.Sprintf("info: service %s has port :%d declared but no ingress route — cluster-internal only", s.Name, p))
+		findings = append(findings, fmt.Sprintf("info: service %s serves :%d but no ingress route targets it — cluster-internal only", s.Name, config.DefaultServePort))
 		servicesWithoutRoute++
 	}
 

@@ -45,6 +45,9 @@ type {{.TypeName}}Spec struct {
 // {{.TypeName}}State is the desired state set by the user.
 type {{.TypeName}}State string
 
+// {{.TypeName}}StateRunning, {{.TypeName}}StateSuspended and {{.TypeName}}StateDeleting are
+// the lifecycle states a user may ask for in Spec.State. The reconciler
+// reads them and drives Status.Phase toward the match.
 const (
 	{{.TypeName}}StateRunning   {{.TypeName}}State = "Running"
 	{{.TypeName}}StateSuspended {{.TypeName}}State = "Suspended"
@@ -75,6 +78,9 @@ type {{.TypeName}}Status struct {
 // {{.TypeName}}Phase is the observed phase set by the reconciler.
 type {{.TypeName}}Phase string
 
+// {{.TypeName}}PhasePending, {{.TypeName}}PhaseReady, {{.TypeName}}PhaseFailed and
+// {{.TypeName}}PhaseDeleted are the phases the reconciler writes to
+// Status.Phase as it converges on Spec.State.
 const (
 	{{.TypeName}}PhasePending {{.TypeName}}Phase = "Pending"
 	{{.TypeName}}PhaseReady   {{.TypeName}}Phase = "Ready"

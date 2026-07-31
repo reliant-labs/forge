@@ -13,28 +13,8 @@
 //   - The repository call site (db.<Name> function).
 //   - The response packing (proto field that holds the entity).
 //
-// Everything else — auth check, tenant check, error mapping, cursor
-// encoding/decoding, pagination clamping, list bookkeeping — moves into
-// this package.
-//
-// # Auth and tenant
-//
-// The library is decoupled from the per-project middleware package.
-// Auth and tenant checks are expressed as closures the shim passes in.
-// This avoids a hard import dependency on the user project's middleware
-// surface (which is itself generated and project-specific).
-//
-// In a generated shim, the auth closure looks like this:
-//
-//	func(ctx context.Context) error {
-//	    claims, err := middleware.GetUser(ctx)
-//	    if err != nil { return err }
-//	    return s.deps.Authorizer.Can(ctx, claims, middleware.ActionCreate, "user")
-//	}
-//
-// The library invokes the closure (if non-nil) and returns its error
-// wrapped as connect.CodePermissionDenied — preserving the previous
-// generated behaviour.
+// Everything else — error mapping, cursor encoding/decoding, pagination
+// clamping, list bookkeeping — moves into this package.
 //
 // # Behavioural fingerprint
 //

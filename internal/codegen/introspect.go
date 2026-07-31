@@ -11,17 +11,14 @@ import (
 // proto descriptor — the single authoritative, non-brittle source (the
 // same one all of codegen reads via ParseServicesFromProtos). It is the
 // shared seam every read-only diagnostic consumer (audit, graph, api, dev
-// info, architecture docs, run, doctor parity, debug) uses instead of the
-// removed components.json manifest.
+// info, architecture docs, run, doctor parity, debug) reads a project's
+// services through.
 //
-// It deliberately does NOT enumerate workers, operators, or binaries.
-// Those are owned code with no proto contract: the app names them
-// explicitly in its own wiring (lifecycle.go AllWorkers/AllOperators) and
-// enumerates them at runtime. forge has no non-brittle way to know them —
-// a cmd/ filename walk would be exactly the convention-coupled disk read
-// this project rejects — and no need to. Diagnostics therefore report
-// services (with real proto RPC detail); worker/operator inventory is not
-// forge's to synthesize.
+// It enumerates SERVICES only. The supervised kinds (worker, operator) and
+// secondary binaries have no proto contract, so they are discovered from
+// their package directories instead — see DiscoverProjectComponents, which
+// unions the two into an [Inventory] and is what every caller that needs the
+// project's FULL component set goes through.
 //
 // Each entry carries only Name, Kind=server, and the conventional handler
 // Path. Ports are a DEPLOY fact (they live in KCL), left unset. Best-effort:

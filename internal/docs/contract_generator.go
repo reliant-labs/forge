@@ -5,8 +5,10 @@ import "fmt"
 // ContractGenerator produces documentation for internal package contracts.
 type ContractGenerator struct{}
 
+// Name returns the generator's registry key, 'contract'.
 func (g *ContractGenerator) Name() string { return "contracts" }
 
+// Generate produces the service-contract reference from contract.go files.
 func (g *ContractGenerator) Generate(ctx *Context) ([]GeneratedDoc, error) {
 	if len(ctx.Contracts) == 0 {
 		return nil, nil

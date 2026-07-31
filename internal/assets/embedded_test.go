@@ -6,7 +6,7 @@
 // a stale schema — silently. E2E validation of the Tier 2 typed-errors
 // work surfaced exactly this class of bug: the source proto declared
 // `repeated string errors = 6` but the embedded copy didn't, so
-// `forge new` projects couldn't use the new annotation. This test pins
+// `forge project new` projects couldn't use the new annotation. This test pins
 // the sync as a build-time invariant so future schema bumps can't ship
 // half-applied.
 //
@@ -34,7 +34,7 @@ import (
 //	cp proto/forge/v1/forge.proto internal/assets/proto/forge/v1/forge.proto
 //
 // FRICTION (cp-forge, 2026-06-09): the embedded copy missed the
-// `errors = 6` field bump, so `forge new` projects couldn't use the
+// `errors = 6` field bump, so `forge project new` projects couldn't use the
 // new typed-errors proto annotation even though forge codegen
 // fully supported it. The bug surfaced only during end-to-end
 // validation against a freshly-scaffolded project — none of the

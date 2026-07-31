@@ -200,7 +200,7 @@ The tempting design is `SupabaseAuthEnv` / `DaemonClusterEnv` / `InfraEnv` mixin
 1. **Same-field collision.** A mixin sets an *attribute default*. If `SupabaseAuthEnv` and `NatsEnv` and `LitellmEnv` all declare `env = {...}`, they are three defaults for the SAME field — KCL does not union them into one map; the schema's merge resolves to one. You do **not** get `supabase ∪ nats ∪ litellm`. (Contrast `|` on instances, which *does* union — §1 Level 3.)
 2. **Value dependence.** These bundles need per-env VALUES — `namespace` (for the in-cluster FQDN), the Supabase URL, the daemon-link JSON. A mixin computes only from the schema's own declared fields, so to make `NatsEnv` work you'd have to add a `namespace: str` field to the schema and thread the env through `option()`/params anyway. You've paid inheritance-definition cost for a runtime value.
 
-So: **mixins for value-independent invariants + structural defaults (2a). Lambdas + `|` for the value-dependent env bundles (2b → §3).** A mixin `check` is, however, an excellent *guardrail* over bundles a lambda built — e.g. a mixin that asserts "if `PROXY_AUTHZ_MODE=rpc` then `PROXY_AUTHZ_URL` is set," catching a half-wired daemon-split at render time.
+So: **mixins for value-independent invariants + structural defaults (2a). Lambdas + `|` for the value-dependent env bundles (2b → §3).** A mixin `check` is, however, an excellent *guardrail* over bundles a lambda built — e.g. a mixin that asserts "if `PROXY_ADMIN_MODE=rpc` then `PROXY_ADMIN_URL` is set," catching a half-wired daemon-split at render time.
 
 ---
 
@@ -260,7 +260,7 @@ Compare to today's `forge.env_merge(forge.env_merge(app_env, _db_url_only), [ ..
 
 ### 3b. The endpoint resolver — kills the ×5 hand-typed FQDN
 
-The single highest-value lambda. Today `http://<svc>.<ns>.svc.cluster.local:<port>` is hand-typed and duplicated across staging/preprod/prod/e2e/dev-k8s (`WORKSPACE_CONTROLLER_URL …:9191`, `RELIANT_API_URL …:9090`, `PROXY_AUTHZ_URL …:8090`). Three k8s facts (DNS suffix, namespace, port) the author should never handle:
+The single highest-value lambda. Today `http://<svc>.<ns>.svc.cluster.local:<port>` is hand-typed and duplicated across staging/preprod/prod/e2e/dev-k8s (`WORKSPACE_CONTROLLER_URL …:9191`, `RELIANT_API_URL …:9090`, `PROXY_ADMIN_URL …:8090`). Three k8s facts (DNS suffix, namespace, port) the author should never handle:
 
 ```kcl
 # lib/cross.k
@@ -364,7 +364,7 @@ _admin = AdminServer {} | {
 ### Quantified reduction
 
 - **Env-invariant per-service keys** (`OTEL_SERVICE_NAME`, `PORT`, `RUN_OPERATORS`, `LEADER_ELECTION_ID`, `METRICS_/HEALTH_BIND`, `IDLE_TIMEOUT`, `DISABLE_TLS`): ~4-6 per service × 3 backend services × 5 cluster envs ≈ **60-90 restated EnvVar lines deleted**, replaced by ~15 lines of schema defaults stated ONCE in `lib/cp.k`.
-- **Hand-typed FQDNs**: 3 distinct URLs (`WORKSPACE_CONTROLLER_URL`, `RELIANT_API_URL`, `PROXY_AUTHZ_URL`) × up to 5 envs ≈ **~12 hand-typed cluster-DNS strings** → resolver calls; the DNS-suffix/namespace/port knowledge lives in one 3-line lambda.
+- **Hand-typed FQDNs**: 3 distinct URLs (`WORKSPACE_CONTROLLER_URL`, `RELIANT_API_URL`, `PROXY_ADMIN_URL`) × up to 5 envs ≈ **~12 hand-typed cluster-DNS strings** → resolver calls; the DNS-suffix/namespace/port knowledge lives in one 3-line lambda.
 - **`lib/services.k` (236 lines)** folds into `lib/cp.k` schemas at ~roughly half the size (the builders' long "what's invariant" comments become the schema itself), and it now ALSO absorbs the per-service env identity that was in the env blocks.
 - **`env_merge` / `forge.DB_ENV`-filtering / `_dedup` scaffolding**: removed at every call site (map-union replaces it).
 - Net: the three cloud `main.k` env sections (~85 lines each in prod, similar in staging/preprod) drop to the **per-env delta keys only** — roughly a **40-55% cut** in each cluster env's authored env surface, and the deleted lines are precisely the drift-prone duplicated ones.
@@ -386,7 +386,7 @@ _admin = AdminServer {} | {
 
 **Lambda vs schema, restated as the simplicity test:** if you can't name a `check` you'd want on it, it's probably a lambda, not a schema. Services have invariants (`OTEL_SERVICE_NAME` must be set, ports must be positive) → schemas. Env fragments are just data computed from `ns` → lambdas. Reaching for a schema where a lambda suffices adds a type name and a definition-time binding for no checkable invariant — clever, not simple.
 
-**The strongest counter-argument to this whole doc:** control-plane is a *single application* with *six envs*, not a platform with hundreds of tenants. The inheritance/mixin machinery pays off at scale (many services × many envs); at N=6-service × 6-env the `env_merge` lists are verbose but not *complex*. The honest scope: adopt **Levels 1-2 of the chain** (kills the per-service invariant repetition — clear win, low cleverness) and the **endpoint resolver** (kills the FQDN drift — highest value, near-zero cleverness). Treat mixins and a deep specialize-lambda as *optional* — reach for them only if a concern actually proliferates. Don't build the lattice before the duplication demands it.
+**The strongest counter-argument to this whole doc:** control-plane is a *single application* with *six envs*, not a platform with hundreds of independently-composed deployments. The inheritance/mixin machinery pays off at scale (many services × many envs); at N=6-service × 6-env the `env_merge` lists are verbose but not *complex*. The honest scope: adopt **Levels 1-2 of the chain** (kills the per-service invariant repetition — clear win, low cleverness) and the **endpoint resolver** (kills the FQDN drift — highest value, near-zero cleverness). Treat mixins and a deep specialize-lambda as *optional* — reach for them only if a concern actually proliferates. Don't build the lattice before the duplication demands it.
 
 ---
 

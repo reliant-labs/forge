@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -28,8 +29,6 @@ func newGenerateCmd() *cobra.Command {
 	var (
 		watch           bool
 		force           bool
-		accept          bool
-		acceptReason    string
 		explain         bool
 		explainDrift    bool
 		skipValidate    bool
@@ -44,7 +43,6 @@ func newGenerateCmd() *cobra.Command {
 		heal            bool
 		noRevert        bool
 		steps           string
-		deprecatedScope string // hidden alias for --steps, kept for one release
 	)
 
 	cmd := &cobra.Command{
@@ -85,7 +83,6 @@ forensics, parallel-lane and migration escape hatches); run
 			if planOnly {
 				return runGeneratePlan(".", pipelineFlags{
 					Force:           force,
-					Accept:          accept,
 					SkipValidate:    skipValidate,
 					SkipPreChecks:   skipPreChecks,
 					SkipConfigCheck: skipConfigCheck,
@@ -108,60 +105,9 @@ forensics, parallel-lane and migration escape hatches); run
 				}
 			}
 
-			if force && accept {
-				return cliutil.UserErr("forge generate",
-					"--force and --accept are mutually exclusive: --force discards your edits, --accept disowns the drifted files (keeps them, permanently)",
-					"",
-					"pick one — --force to regenerate from templates, or `forge disown <path> --reason \"<why>\"` to take ownership")
-			}
-
-			// --accept is a DEPRECATED alias for disowning the drifted
-			// set. Like `forge disown`, it refuses to run without a
-			// recorded reason — disowns are design feedback, and the
-			// reason is the payload.
-			if accept {
-				fmt.Fprintln(os.Stderr, "⚠️  DEPRECATED: `forge generate --accept` is now an alias for `forge disown` and will be removed in the next release.")
-				fmt.Fprintln(os.Stderr, "   Use `forge disown <path>... --reason \"<why>\"` — it disowns exactly the files you name instead of the whole drifted set.")
-				if strings.TrimSpace(acceptReason) == "" {
-					return cliutil.UserErr("forge generate",
-						"--accept requires --reason: disowning generated files is design feedback, and the reason is the payload",
-						"",
-						"re-run as `forge generate --accept --reason \"<why>\"`, or better: `forge disown <path>... --reason \"<why>\"`")
-				}
-			}
-
-			// --reason only has meaning as the recorded WHY of an --accept
-			// disown. Rejecting the stray spelling loudly (instead of
-			// silently dropping the text) protects the design-feedback
-			// signal: a reason typed but not recorded is worse than no
-			// reason, because the user believes it was captured.
-			if acceptReason != "" && !accept {
-				return cliutil.UserErr("forge generate",
-					"--reason requires --accept: the reason is recorded against the file(s) being disowned",
-					"",
-					"re-run as `forge generate --accept --reason \"<why>\"` (or drop --reason)")
-			}
-
-			// Backwards-compat: --scope was renamed to --steps in this
-			// release. Cobra itself emits the deprecation warning (via
-			// MarkDeprecated below). We just forward the value here, and
-			// reject the ambiguous case where both flags are passed with
-			// different values.
-			if deprecatedScope != "" {
-				if steps != "" && steps != deprecatedScope {
-					return cliutil.UserErr("forge generate",
-						fmt.Sprintf("--steps=%q conflicts with deprecated --scope=%q", steps, deprecatedScope),
-						"",
-						"pass only --steps; --scope is a deprecated alias and will be removed")
-				}
-				steps = deprecatedScope
-			}
-
 			generateMu.Lock()
 			err := runGeneratePipelineFlags(".", pipelineFlags{
 				Force:           force,
-				Accept:          accept,
-				AcceptReason:    acceptReason,
 				ExplainDrift:    explainDrift,
 				SkipValidate:    skipValidate,
 				SkipPreChecks:   skipPreChecks,
@@ -208,8 +154,6 @@ forensics, parallel-lane and migration escape hatches); run
 
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "Watch for changes and regenerate")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Discard hand-edits to Tier-1 files and regenerate from current templates")
-	cmd.Flags().BoolVar(&accept, "accept", false, "DEPRECATED: alias for `forge disown` on every drifted Tier-1 file (one-way transfer to user ownership). Requires --reason. Prefer `forge disown <path>... --reason \"<why>\"`.")
-	cmd.Flags().StringVar(&acceptReason, "reason", "", "WHY the disown was needed (used with --accept). Recorded per disowned path in .forge/friction.jsonl as design feedback; view with 'forge friction list --area disown'.")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print a per-file provenance log after generate")
 	cmd.Flags().BoolVar(&explainDrift, "explain-drift", false, "On Tier-1 drift, run the pipeline with drifted files redirected to .forge/render/ side renders, print a bounded diff of on-disk vs fresh render per file, then fail with the drift report (explains; never overwrites or approves)")
 	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final 'go build ./...' validate step (useful during multi-lane migrations when the tree is in a partial-build state)")
@@ -217,40 +161,26 @@ forensics, parallel-lane and migration escape hatches); run
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
 	cmd.Flags().BoolVar(&forceCleanup, "force-cleanup", false, "Actually delete stale generated files. Default is report-only: print which files WOULD be deleted and leave them in place.")
 	cmd.Flags().BoolVar(&templatesOnly, "templates-only", false, "Re-render template-driven files only. Skips cleanup sweep, drift-guard, and validation. Use when a template change needs to propagate to a project that has uncommitted WIP and can't tolerate a full regen.")
-	cmd.Flags().StringVar(&steps, "steps", "", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge add worker'), \"mocks\" (regen only mock_gen.go after a contract.go change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files).")
+	cmd.Flags().StringVar(&steps, "steps", "", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge scaffold worker'), \"mocks\" (regen both kinds of mock_gen.go — contract-derived and service-derived — after a contract.go or proto change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files).")
 	// Loud-by-default architecture flags. See the per-flag fields on
 	// pipelineFlags for the rationale; runGeneratePlan + warnOrFail consume them.
 	cmd.Flags().BoolVar(&strict, "strict", false, "Promote pipeline warnings to fatal errors. Every 'Warning: ... failed' site that today logs and continues will abort the pipeline instead.")
-	// Note: cobra has a persistent --verbose/-v on root. We rebind the
-	// long form here without a shorthand so generate-specific consumers
-	// (the gate-off skip printer) can read it without conflicting with
-	// the inherited persistent flag.
-	cmd.Flags().BoolVar(&verbose, "verbose", false, "Print one line per gate-off skipped step ('⏩ skipped: <step name> (<reason>)'). Default is silent skip.")
+	// -v works here. It used to be swallowed by a root PersistentFlag bound
+	// to a variable nobody read, so `forge generate -v` parsed cleanly and
+	// changed nothing — the long form was declared without a shorthand
+	// precisely to dodge that collision. The root flag is gone; the
+	// shorthand belongs to the command that actually consumes it.
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print one line per gate-off skipped step ('⏩ skipped: <step name> (<reason>)'). Default is silent skip.")
 	cmd.Flags().BoolVar(&planOnly, "plan", false, "Print the pipeline plan ([RUN]/[SKIP] annotation per step + gate reason) and exit 0 without running any step. Honors --steps and --templates-only.")
 	cmd.Flags().BoolVar(&skipConfigCheck, "skip-config-check", false, "Bypass the forge.yaml ↔ filesystem cross-check (declared services/frontends/packages must have on-disk backing). Use for parallel-lane / mid-migration scenarios.")
 	cmd.Flags().BoolVar(&heal, "heal", false, "Overwrite on-disk content that matches a PRIOR forge render (an older vintage) with the current template. OFF by default: such content is byte-indistinguishable from a deliberate edit, so forge leaves it untouched and tells you how to proceed rather than silently reverting your work. Pass --heal to advance every such file to the current templates.")
 	cmd.Flags().BoolVar(&noRevert, "no-revert", false, "Diagnostic mode: on a post-write step failure (most often the final 'go build' validate), leave the generated files ON DISK instead of rewinding the tree, so you can inspect the codegen output that failed to build. Default (off) reverts to the clean pre-run tree.")
-	// Deprecated alias for --steps. The flag previously called --scope
-	// was renamed in this release to free up the word "scope" for the
-	// file-ownership concept (see internal/checksums/inspector.go).
-	// Hidden so `--help` shows only the canonical --steps; still
-	// functional for one release so existing scripts don't break
-	// overnight.
-	cmd.Flags().StringVar(&deprecatedScope, "scope", "", "(deprecated) renamed to --steps")
-	// cobra's MarkDeprecated both hides the flag from --help and emits
-	// a one-line deprecation message to stderr the first time the user
-	// passes it. One-release alias — drop after the next minor bump.
-	_ = cmd.Flags().MarkDeprecated("scope", "use --steps instead")
 
 	// User-vs-maintainer surface split: the flags below are fully
 	// functional but hidden from --help (visible via --help-dev). The
 	// visible set is pinned by TestGenerateHelpSurface — a new flag must
 	// consciously pick a side. See help_dev.go for the rule of thumb.
-	// (--scope is already hidden above via MarkDeprecated and shows up
-	// in --help-dev automatically.)
 	hideDevFlags(cmd,
-		"accept",            // deprecated alias for `forge disown`
-		"reason",            // only meaningful with --accept
 		"explain-drift",     // drift forensics (debugging the drift guard)
 		"skip-validate",     // multi-lane migration escape hatch
 		"skip-pre-checks",   // parallel-lane escape hatch
@@ -262,15 +192,6 @@ forensics, parallel-lane and migration escape hatches); run
 		"skip-config-check", // parallel-lane / mid-migration escape hatch
 		"no-revert",         // codegen forensics (inspect the output that failed to build)
 	)
-
-	// (`forge generate unfork`, the legacy-fork migration tool, was
-	// removed after its one-release deprecation window — the
-	// legacy-manifest migration converts forked entries to disowned
-	// automatically.)
-
-	// `forge generate accept-fork <paths>` is a DEPRECATED alias for
-	// `forge disown` — kept functioning one release.
-	cmd.AddCommand(newAcceptForkCmd())
 
 	return cmd
 }
@@ -284,18 +205,17 @@ forensics, parallel-lane and migration escape hatches); run
 //
 // projectDir is the root of the project (contains go.mod, proto/, etc.).
 // The caller must hold generateMu.
-func runGeneratePipeline(projectDir string, force, accept bool) error {
-	return runGeneratePipelineOpts(projectDir, force, accept, false)
+func runGeneratePipeline(projectDir string, force bool) error {
+	return runGeneratePipelineOpts(projectDir, force, false)
 }
 
 // runGeneratePipelineOpts is the variant that lets the caller pass
 // additional pipeline flags (currently --skip-validate). Wrapping the
-// legacy 3-arg signature keeps test fixtures (and any out-of-tree
-// callers) source-compatible.
-func runGeneratePipelineOpts(projectDir string, force, accept, skipValidate bool) error {
+// shorter signature keeps test fixtures (and any out-of-tree callers)
+// source-compatible.
+func runGeneratePipelineOpts(projectDir string, force, skipValidate bool) error {
 	return runGeneratePipelineFlags(projectDir, pipelineFlags{
 		Force:        force,
-		Accept:       accept,
 		SkipValidate: skipValidate,
 	})
 }
@@ -306,16 +226,7 @@ func runGeneratePipelineOpts(projectDir string, force, accept, skipValidate bool
 // crossed three — adding a fourth (--skip-pre-checks) without a struct
 // would have meant churning every caller of the positional form.
 type pipelineFlags struct {
-	Force  bool
-	Accept bool
-	// AcceptReason is the user-supplied WHY behind an --accept fork
-	// (`--reason`). Recorded per accepted path into .forge/friction.jsonl
-	// at the moment of forking — forks are design feedback, and the
-	// reason is the payload. Empty means unstated: a placeholder entry
-	// is still recorded and a one-line nudge prints (never an
-	// interactive prompt; agents drive this flow). Meaningless without
-	// Accept; the cobra layer rejects that combination up-front.
-	AcceptReason string
+	Force        bool
 	SkipValidate bool
 
 	SkipPreChecks bool
@@ -336,7 +247,7 @@ type pipelineFlags struct {
 	// Steps names a step preset that narrows the set of pipeline steps
 	// the runner executes. The empty string runs the full pipeline (the
 	// historical default). The "bootstrap-only" value runs JUST the
-	// load/parse/bootstrap/validate subset — used by `forge add worker`
+	// load/parse/bootstrap/validate subset — used by `forge scaffold worker`
 	// so adding a single worker doesn't trigger a full project regen
 	// that stomps unrelated Tier-1 files (.github/workflows/ci.yml,
 	// cmd/server.go, frontend mocks, pkg/config/config.go). The step
@@ -345,14 +256,12 @@ type pipelineFlags struct {
 	//
 	// (Field previously named Scope; renamed because "scope" was
 	// overloaded with the file-ownership concept in
-	// internal/checksums/inspector.go. The CLI flag spelling moved from
-	// --scope to --steps in the same release; --scope is preserved as a
-	// hidden deprecated alias for one release.)
+	// internal/checksums/inspector.go. The CLI flag is --steps.)
 	//
-	// FRICTION 2026-06-03: cp-forge port-workers ran `forge add worker`
+	// FRICTION 2026-06-03: cp-forge port-workers ran `forge scaffold worker`
 	// 7× and watched regen rewrite 5 unrelated Tier-1 files per call.
 	// Composes with the existing tier1OwnerRegistry scoping in
-	// generate_tier1_scope.go — both narrow what `forge add worker`
+	// generate_tier1_scope.go — both narrow what `forge scaffold worker`
 	// touches, just at different layers (drift-guard vs step execution).
 	Steps string
 
@@ -430,13 +339,12 @@ type pipelineFlags struct {
 	Heal bool
 }
 
-// runGeneratePipelineFlags is the canonical entrypoint. Both the legacy
-// runGeneratePipeline (force/accept) and the slightly newer
-// runGeneratePipelineOpts (+ skipValidate) call through here. New flags
-// land on pipelineFlags.
+// runGeneratePipelineFlags is the canonical entrypoint. Both the
+// shorter runGeneratePipeline (force) and runGeneratePipelineOpts
+// (+ skipValidate) call through here. New flags land on pipelineFlags.
 func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// Cross-process file lock (complements the in-process generateMu).
-	// Held for the lifetime of the pipeline so a parallel `forge add`
+	// Held for the lifetime of the pipeline so a parallel `forge scaffold`
 	// can't race a long `forge generate`.
 	release, err := acquireGenerateLock(projectDir)
 	if err != nil {
@@ -473,12 +381,12 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// leaving it mid-regen for the user to `git checkout`. rolledBack is
 	// set by the deferred outcome handler below; it gates SaveChecksums so
 	// we never persist manifest state describing writes we just undid.
-	checksums.BeginRollbackJournal()
+	checksums.BeginRollbackJournal(ctx.AbsPath)
 	rolledBack := false
 
 	// Save checksums on exit, even on partial failures: a step that
 	// successfully wrote files should have those tracked so the user's
-	// next `forge audit` doesn't false-flag user-edited drift. EXCEPTION:
+	// next `forge project audit` doesn't false-flag user-edited drift. EXCEPTION:
 	// a rolled-back run restored the tree to its pre-run state, so saving
 	// the post-write manifest would describe files that no longer exist on
 	// disk — skip it and let the pre-run state files stand.
@@ -502,6 +410,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// pass its Gate, and a step gated off would skip regardless of the
 	// preset.
 	steps := generateSteps()
+	totalSteps := len(steps)
 	if flags.Steps != "" {
 		allow, ok := stepPresetAllowlist[flags.Steps]
 		if !ok {
@@ -574,8 +483,13 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 			if flags.NoRevert {
 				checksums.CommitRollback()
 				fmt.Fprintln(os.Stderr, "\n🔎 --no-revert: leaving this run's generated files on disk for inspection (the tree was NOT rewound). Re-run without --no-revert to restore the clean pre-run tree.")
+				// The compiler output scrolls away behind the pipeline's
+				// own tail output — repeat it here so the last thing on
+				// screen is the thing to fix (same rationale as the
+				// rollback branch).
+				reprintCompilerOutput(err, "")
 			} else {
-				rolledBack = rollbackGeneratedTree(ctx.AbsPath)
+				rolledBack = rollbackGeneratedTree(ctx.AbsPath, err)
 			}
 			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
@@ -602,12 +516,93 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		return err
 	}
 
-	// Success: the writes stand. Drop the journal.
+	// Success: the writes stand. Read the write ledger BEFORE dropping the
+	// journal — it is the only record of what this run actually did, and
+	// the completion line is required to prove its claim from it.
+	summary := checksums.SummarizeWrites(ctx.AbsPath)
 	checksums.CommitRollback()
+	if err := os.RemoveAll(filepath.Join(ctx.AbsPath, failedGenerateDir)); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not clean up %s: %v\n", failedGenerateDir, err)
+	}
 	fmt.Println()
-	fmt.Println("✅ Code generation complete!")
+	printGenerateOutcome(os.Stdout, summary, flags, len(steps), totalSteps)
 	return nil
 }
+
+// printGenerateOutcome renders the completion line from the run's write
+// ledger instead of from "the last step returned nil".
+//
+// FRICTION: `forge generate --steps mocks` printed `✅ Code generation
+// complete!` while regenerating NOTHING — the preset's allowlist omitted
+// the emitter for the very workflow it is named after. The allowlist bug
+// was fixable; the message that hid it is the deeper defect, because a
+// success line that reads identically after 93 writes and after zero
+// writes cannot be believed in either case. So the line states counts,
+// and the zero-write case is LOUD rather than green.
+//
+// The three outcomes are genuinely different facts and must not share
+// wording:
+//
+//	Touched == 0  no emitter fired. The pipeline produced nothing at all.
+//	              This is the silent-no-op signature; it is a warning with
+//	              the two things that cause it and the command that tells
+//	              them apart.
+//	Changed == 0  every emitter fired and the bytes already matched. This
+//	              is the normal, healthy re-run and stays a quiet one-liner.
+//	Changed > 0   real work landed. Name the counts; the file names are
+//	              already on screen from the per-step output above.
+func printGenerateOutcome(w io.Writer, sum checksums.WriteSummary, flags pipelineFlags, ranSteps, totalSteps int) {
+	if sum.Touched == 0 {
+		fmt.Fprintf(w, "⚠️  Code generation ran %d of %d pipeline steps and WROTE NO FILES.\n", ranSteps, totalSteps)
+		switch {
+		case flags.Steps != "" || flags.TemplatesOnly:
+			// The narrowed pipeline is the case that actually shipped
+			// broken, so it gets the sharpest next command.
+			fmt.Fprintf(w, "    Either the tree already matched every template, or the narrowed step set excludes the emitter you need\n")
+			fmt.Fprintf(w, "    (the \"mocks\" preset once omitted its own mock emitter and reported success from exactly here).\n")
+			fmt.Fprintf(w, "    Fix: run `forge generate --plan%s` to see which steps the filter selects, or drop the filter to run the full pipeline.\n", planFlagEcho(flags))
+		default:
+			fmt.Fprintf(w, "    A full pipeline that emits nothing means every codegen step was gated off by project shape.\n")
+			fmt.Fprintf(w, "    Fix: run `forge generate --plan` to see each step's [RUN]/[SKIP] verdict and the gate reason behind it.\n")
+		}
+		return
+	}
+	if sum.Changed() == 0 {
+		fmt.Fprintf(w, "✅ Code generation complete — %d file(s) up to date, 0 changed.\n", sum.Touched)
+		return
+	}
+	fmt.Fprintf(w, "✅ Code generation complete — %d file(s) written, %d changed (%d new, %d updated).\n",
+		sum.Touched, sum.Changed(), len(sum.Created), len(sum.Updated))
+}
+
+// planFlagEcho reproduces the pipeline-narrowing flags so the suggested
+// `--plan` command reproduces the run the user just made, rather than
+// planning a different (full) pipeline that would not show the gap.
+func planFlagEcho(flags pipelineFlags) string {
+	var b strings.Builder
+	if flags.Steps != "" {
+		fmt.Fprintf(&b, " --steps=%s", flags.Steps)
+	}
+	if flags.TemplatesOnly {
+		b.WriteString(" --templates-only")
+	}
+	return b.String()
+}
+
+// failedGenerateDir is where a failed run's generated output is
+// preserved (project-relative, mirroring each file's project path).
+// The revert is the right default — the user's tree must come back
+// clean — but pre-preservation it also destroyed the only sources the
+// validation error CITES: `go build` fails with file:line coordinates
+// in generated code, the revert deletes that code, and the user is left
+// debugging a compiler error against files that no longer exist. The
+// next successful generate removes the directory.
+const failedGenerateDir = ".forge/failed-generate"
+
+// failedGenerateErrorFile holds the failing step's full error text
+// (including the complete compiler output for a `go build` validation
+// failure) inside failedGenerateDir.
+const failedGenerateErrorFile = "error.txt"
 
 // rollbackGeneratedTree rewinds every file forge wrote this run to its
 // captured pre-run state and reports what it recovered. Returns true when
@@ -617,22 +612,122 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 // the antidote to fr-40f7ec9bd9: instead of an opaque mid-regen failure
 // the user learns the tree is back to its pre-run state and that the
 // codegen problem itself is what needs fixing.
-func rollbackGeneratedTree(absPath string) bool {
+//
+// Before rewinding, the failed run's output is preserved under
+// .forge/failed-generate/ (SnapshotJournalTargets) so the error's
+// file:line coordinates stay inspectable, and stepErr's compiler output
+// (when it carries any — see validateBuildError) is REPEATED after the
+// reverted-file list: the original print scrolls away behind that list,
+// and a `tail` of the run must show the error, not just bookkeeping.
+func rollbackGeneratedTree(absPath string, stepErr error) bool {
 	if !checksums.RollbackEnabled() {
 		return false
+	}
+	preserved := checksums.SnapshotJournalTargets(absPath, filepath.Join(absPath, failedGenerateDir))
+	if len(preserved) > 0 {
+		writeFailedGenerateErrorFile(absPath, stepErr)
 	}
 	restored := checksums.RestoreRollback(absPath)
 	if len(restored) == 0 {
 		fmt.Fprintln(os.Stderr, "↩️  generate failed after validation; no forge-written files needed reverting (tree is unchanged).")
+		reprintCompilerOutput(stepErr, "")
 		return true
 	}
 	fmt.Fprintf(os.Stderr, "\n↩️  generate failed its own validation — reverted %d file(s) forge wrote this run; your tree is back to its pre-run state (no `git checkout` needed):\n", len(restored))
 	for _, p := range restored {
 		fmt.Fprintf(os.Stderr, "   - %s\n", p)
 	}
-	fmt.Fprintln(os.Stderr, "   Fix the codegen error above (the generated code did not build), then re-run `forge generate`.")
+	preservedAt := ""
+	if len(preserved) > 0 {
+		preservedAt = failedGenerateDir
+		fmt.Fprintf(os.Stderr, "\n🗂  The failing generated sources were preserved under %s/ (same relative paths, plus %s with the full error) so you can inspect the code the error points at. The next successful `forge generate` cleans that directory up.\n", failedGenerateDir, failedGenerateErrorFile)
+	}
+	reprintCompilerOutput(stepErr, preservedAt)
+	fmt.Fprintln(os.Stderr, "\n   Fix the codegen error above (the generated code did not build), then re-run `forge generate`.")
 	return true
 }
+
+// reprintCompilerOutput repeats a validation failure's compiler output
+// at the END of the failure report. The original output prints before
+// the reverted-file list and the final error line, so on a long run it
+// scrolls off screen and `tail -n` shows only bookkeeping — a real
+// agent burned a full extra pipeline run piped through grep just to
+// re-capture the error. No-op when stepErr carries no build output
+// (non-validate step failures). preservedAt names the directory where
+// the cited sources now live ("" when nothing was preserved).
+func reprintCompilerOutput(stepErr error, preservedAt string) {
+	var ve *validateBuildError
+	if !errors.As(stepErr, &ve) || strings.TrimSpace(ve.Output) == "" {
+		return
+	}
+	where := ""
+	if preservedAt != "" {
+		where = fmt.Sprintf(" (cited files preserved under %s/)", preservedAt)
+	}
+	fmt.Fprintf(os.Stderr, "\n❌ Compiler output, repeated so it is the last thing on screen%s:\n", where)
+	lines := strings.Split(strings.TrimRight(ve.Output, "\n"), "\n")
+	shown := lines
+	if len(shown) > compilerOutputTailLines {
+		shown = shown[:compilerOutputTailLines]
+	}
+	for _, line := range shown {
+		fmt.Fprintf(os.Stderr, "   %s\n", line)
+	}
+	if len(lines) > len(shown) {
+		suffix := ""
+		if preservedAt != "" {
+			suffix = fmt.Sprintf("; full output in %s/%s", preservedAt, failedGenerateErrorFile)
+		}
+		fmt.Fprintf(os.Stderr, "   … (%d more line(s)%s)\n", len(lines)-len(shown), suffix)
+	}
+}
+
+// compilerOutputTailLines bounds the repeated compiler output. The
+// first errors are the actionable ones (the Go compiler reports in
+// file order, and later errors are usually knock-ons), so a bounded
+// head keeps the tail of the run useful without re-dumping megabytes
+// on a catastrophically broken tree.
+const compilerOutputTailLines = 60
+
+// writeFailedGenerateErrorFile records the failing step's full error —
+// including the complete compiler output when present — inside the
+// failed-generate preserve directory, so the error text survives any
+// terminal scrollback limit alongside the sources it cites.
+func writeFailedGenerateErrorFile(absPath string, stepErr error) {
+	if stepErr == nil {
+		return
+	}
+	var b strings.Builder
+	b.WriteString(stepErr.Error())
+	b.WriteString("\n")
+	var ve *validateBuildError
+	if errors.As(stepErr, &ve) && strings.TrimSpace(ve.Output) != "" {
+		b.WriteString("\n--- full compiler output ---\n")
+		b.WriteString(ve.Output)
+		if !strings.HasSuffix(ve.Output, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	dest := filepath.Join(absPath, failedGenerateDir, failedGenerateErrorFile)
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(dest, []byte(b.String()), 0o644)
+}
+
+// validateBuildError is the error returned by runGoBuildValidate. It
+// carries the captured `go build ./...` stderr so the pipeline's
+// failure path can repeat the compiler output at the END of the run
+// (reprintCompilerOutput) and preserve it next to the failing sources
+// (writeFailedGenerateErrorFile). Unwraps to the user-facing wrapped
+// error so errors.Is/As and the printed message are unchanged.
+type validateBuildError struct {
+	Output string // full captured go build stderr
+	err    error  // the cliutil-wrapped user-facing error
+}
+
+func (e *validateBuildError) Error() string { return e.err.Error() }
+func (e *validateBuildError) Unwrap() error { return e.err }
 
 // runGoBuildValidate is the body of stepGoBuildValidate (was Step 9 in
 // the pre-refactor pipeline). Kept as a non-step helper so unit tests
@@ -647,8 +742,11 @@ func runGoBuildValidate(projectDir string) error {
 	if err := validateCmd.Run(); err != nil {
 		errOutput := buildStderr.String()
 		fix := goBuildValidateFixHint(errOutput)
-		return cliutil.WrapUserErr("forge generate (validate generated code)",
-			"go build failed", "", fix, err)
+		return &validateBuildError{
+			Output: errOutput,
+			err: cliutil.WrapUserErr("forge generate (validate generated code)",
+				"go build failed", "", fix, err),
+		}
 	}
 	return nil
 }
@@ -670,10 +768,7 @@ func runGoBuildValidate(projectDir string) error {
 //  2. `undefined:` against the project's own `pkg/config` package —
 //     proto/config/ likely has no annotated config fields yet.
 //
-//  3. `undefined: GeneratedAuthorizer` / `authorizer_gen` not found —
-//     authorizer_gen.go missing; re-run forge generate.
-//
-//  4. Default fall-through — generic "ensure imports / re-run generate".
+//  3. Default fall-through — generic "ensure imports / re-run generate".
 //
 // Extracted from runGoBuildValidate so unit tests can pin the hint
 // selection without spinning up a tmpdir project + a real go build.
@@ -695,9 +790,6 @@ func goBuildValidateFixHint(errOutput string) string {
 	if strings.Contains(errOutput, "pkg/config") {
 		return "ensure proto/config/ has annotated config fields and re-run 'forge generate'"
 	}
-	if strings.Contains(errOutput, "GeneratedAuthorizer") || strings.Contains(errOutput, "authorizer_gen") {
-		return "authorizer_gen.go may be missing — re-run 'forge generate'"
-	}
 	return "ensure all referenced types are imported and re-run 'forge generate'"
 }
 
@@ -714,11 +806,14 @@ func goBuildValidateFixHint(errOutput string) string {
 // Honors `contracts.exclude` from forge.yaml so analyzer sub-packages and
 // other non-bootstrap-managed internal packages can opt out.
 //
-// Only the contract-names rule runs here. The adapter-no-rpc and
-// interactor-deps rules are warnings that don't gate codegen — they
-// surface under `forge lint --conventions` instead. Keeping the
-// pre-codegen check tight to "what would break the next `go build`"
-// is the design discipline from the validation-vs-lint split.
+// Only the contract-names rule runs here, and severity is not the reason:
+// deps-are-interfaces is an error too. The question this check answers is
+// narrower — would the code forge is about to WRITE fail to compile? A
+// non-canonical contract breaks the bootstrap template, so it must stop
+// generation. A concrete `Deps` field compiles fine; it just cannot be
+// unit-tested, so it fails `forge lint` instead. Keeping the pre-codegen
+// check tight to "what would break the next `go build`" is the design
+// discipline from the validation-vs-lint split.
 // contractExcludesFromConfig returns the contracts.exclude list from the
 // project config, or nil when no config is loaded. (A local copy of the
 // helper that moved to internal/cli/lint with `forge lint`; generate.go is
@@ -811,7 +906,7 @@ func runGenerateCheck() error {
 
 	fmt.Println("[generate --check] running generate against current tree...")
 	generateMu.Lock()
-	pipeErr := runGeneratePipelineOpts(".", false, false, true)
+	pipeErr := runGeneratePipelineOpts(".", false, true)
 	generateMu.Unlock()
 	if pipeErr != nil {
 		return fmt.Errorf("generate pipeline: %w", pipeErr)

@@ -1,27 +1,44 @@
 """
 Staging-environment ingress overrides for {{.ProjectName}}.
 
-Same shape as `deploy/kcl/prod/ingress.k`: typically flips listener
-ports to the cloud LB ports (80/443) and adds TLS via cert-manager.
-The block below is commented out — uncomment + fill in the
-ClusterIssuer name and hostname when staging is ready.
+Same shape as `deploy/kcl/prod/ingress.k`, on the staging issuer: the
+base topology's host-mapped 18080 / 19190 listeners exist only in the
+local k3d loop, so a cloud env that inherits them unchanged is
+unreachable and unencrypted. Flipped to the cloud shape and wired into
+GATEWAYS below.
+
+Set the hostname before the first staging deploy — edit _PUBLIC_HOST's
+fallback, or pass it per render:
+
+    kcl run deploy/kcl/staging -D public_host=api.staging.acme.com -S manifests
 """
 
-import deploy.kcl.ingress as base
+import ..ingress as base
 import forge
 
-# STAGING_PUBLIC = base.PUBLIC | {
-#     host = "staging.example.com"
-#     tls = forge.GatewayTLS {
-#         cert_issuer = "letsencrypt-staging"
-#         secret_name = "{{.ProjectName}}-staging-tls"
-#     }
-#     listeners = [
-#         forge.GatewayListener {name = "http", port = 80, protocol = "HTTP"}
-#         forge.GatewayListener {name = "grpc", port = 443, protocol = "HTTPS"}
-#     ]
-# }
+# TODO: replace with this environment's real public hostname. Until it
+# is real, cert-manager cannot issue a certificate for it and the HTTPS
+# listener never becomes ready.
+_PUBLIC_HOST = option("public_host") or "staging.{{.ProjectName}}.example.com"
 
-GATEWAYS = base.GATEWAYS
+_STAGING_PUBLIC = base.PUBLIC | {
+    host = _PUBLIC_HOST
+    tls = forge.GatewayTLS {
+        # The staging ACME endpoint issues untrusted certs but has far
+        # higher rate limits — the right issuer for an env you redeploy
+        # constantly. Flip to `letsencrypt-prod` if staging must serve
+        # browser-trusted TLS.
+        cert_issuer = "letsencrypt-staging"
+        secret_name = "{{.ProjectName}}-staging-tls"
+    }
+    listeners = [
+        # See prod/ingress.k for why the plaintext listener is ACME-only.
+        forge.GatewayListener {name = "acme", port = 80, protocol = "HTTP"}
+        forge.GatewayListener {name = "http", port = 443, protocol = "HTTPS"}
+        forge.GatewayListener {name = "grpc", port = 8443, protocol = "HTTPS"}
+    ]
+}
+
+GATEWAYS = [_STAGING_PUBLIC]
 HTTP_ROUTES = base.HTTP_ROUTES
 GRPC_ROUTES = base.GRPC_ROUTES

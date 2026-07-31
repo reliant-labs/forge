@@ -1,4 +1,4 @@
-// Package cli — `forge map` command.
+// Package cli — `forge project map` command.
 //
 // Map is a tree-shaped view of the project with ownership annotations on
 // every leaf. The annotations come from cross-referencing:
@@ -83,10 +83,10 @@ Use --depth to truncate, --filter to focus on a subtree, --json for
 machine-readable output.
 
 Examples:
-  forge map                    # full tree
-  forge map --depth 2          # shallow
-  forge map --filter handlers  # subtree
-  forge map --json             # machine-readable`,
+  forge project map                    # full tree
+  forge project map --depth 2          # shallow
+  forge project map --filter handlers  # subtree
+  forge project map --json             # machine-readable`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMap(depth, filter, jsonOut)
 		},
@@ -321,10 +321,10 @@ func annotateFileNode(projectDir, rel string, node *MapNode, cs *generator.FileC
 // the comment-form scaffold-marker shipped by forge templates). It
 // deliberately ignores literal-string references to the marker name
 // (forge's own linter source, docs that explain marker syntax) so
-// `forge map` doesn't paint every file that mentions the marker as a
+// `forge project map` doesn't paint every file that mentions the marker as a
 // scaffold.
 //
-// The semantics match `forge lint --scaffolds` and `forge audit`'s
+// The semantics match `forge lint --scaffolds` and `forge project audit`'s
 // scaffold check; keeping the three views consistent avoids the "lint
 // is green but map / audit are yellow" surprise.
 func containsScaffoldMarker(path string) bool {
@@ -343,7 +343,7 @@ func containsScaffoldMarker(path string) bool {
 
 // protoEntityMissingFromMigrations returns the list of `table_name` values
 // in a proto file that do not appear in migTables. The parse is regex-only
-// — no protoc import — to keep `forge map` cheap.
+// — no protoc import — to keep `forge project map` cheap.
 func protoEntityMissingFromMigrations(path string, migTables map[string]struct{}) []string {
 	data, err := os.ReadFile(path)
 	if err != nil {

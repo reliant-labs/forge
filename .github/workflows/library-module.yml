@@ -1,0 +1,71 @@
+# The forge/pkg module: the runtime library that compiles INTO every
+# generated binary.
+#
+# WHAT THIS FIXES. forge/pkg is a SEPARATE Go module (see ../../go.work).
+# `go test ./...` and `golangci-lint run` both operate on the module of the
+# directory they are invoked in — a workspace does not widen either — so the
+# root `lint` and `test` jobs in ci.yml have never read one line of it. Every
+# test under pkg/**, including the ones pinning that no ambient credential
+# can authenticate a request, ran on developer laptops only, and 12 direct
+# environment reads accumulated in the library under a lint rule that already
+# forbade them (and that FAILS a generated project's build for the same
+# call).
+#
+# This workflow is hand-written rather than added to ci.yml, which is
+# generated from internal/templates/ci/github/ci.yml.tmpl and shipped to every
+# forge project. A second module in the workspace is a fact about THIS
+# repository; teaching the template about it would put forge's own layout in
+# every user's CI.
+#
+# The whole pkg suite runs in ~15s, so there is no reason for it to be
+# conditional on paths: a change in the CLI module that breaks the library
+# through the shared go.work is exactly the failure this must catch.
+name: Library Module
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: library-module-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (forge/pkg)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          # golangci-lint discovers pkg/.golangci.yml by walking up from its
+          # working directory. Running from the repo root would silently pick
+          # the CLI module's config and lint none of these packages.
+          working-directory: pkg
+          args: --timeout=5m
+          # NOT only-new-issues: the guardrail this module is held to is
+          # whole-file, and a rule that only sees changed lines lets a
+          # violation ride in on an untouched line of an edited file.
+          only-new-issues: false
+
+  test:
+    name: Test (forge/pkg)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Go tests
+        working-directory: pkg
+        run: go test -race -count=1 ./...

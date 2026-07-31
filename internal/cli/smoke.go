@@ -19,7 +19,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// newSmokeCmd builds `forge smoke <env>` — a post-deploy ingress
+// newSmokeCmd builds `forge env smoke <env>` — a post-deploy ingress
 // verification probe. forge holds the whole ingress graph in its model
 // (Gateways / HTTPRoutes / GRPCRoutes / Frontends) but deploy never
 // VERIFIES it; this command renders the env's Bundle, resolves each
@@ -31,7 +31,7 @@ import (
 //
 // Deploy-gate hook point (not wired here, by design): runDeploy in
 // deploy.go could call runSmoke(ctx, env, smokeOptions{}) as a final
-// post-rollout step behind a `forge deploy --smoke` flag — the rollout
+// post-rollout step behind a `forge env deploy --smoke` flag — the rollout
 // already waits for Ready, so the gateway addresses are populated by the
 // time smoke runs. Keeping it a standalone command first lets the
 // classification mature against real envs before it blocks deploys.
@@ -54,7 +54,7 @@ were only caught in a browser: a gateway with a stuck cert (TLS handshake
 dropped -> ERR_CONNECTION_CLOSED), a route pointing at a backend that
 404s the path, and an API route missing CORS for the frontend origin.
 
-smoke renders the env's KCL (same path forge deploy uses), resolves each
+smoke renders the env's KCL (same path forge env deploy uses), resolves each
 Gateway's live external IP from its status, and probes every route
 through that IP via a curl --resolve-style dial (host:443 -> gatewayIP),
 setting the TLS ServerName + Host header to the route host so it works
@@ -74,9 +74,9 @@ before DNS cutover. Each route is classified:
 Exits non-zero if any route FAILs, so it can gate a deploy or CI run.
 
 Examples:
-  forge smoke preprod                 # probe every preprod route
-  forge smoke prod --json             # machine-readable output for CI
-  forge smoke staging --tag v1.2.3    # (tag reserved; render is tag-agnostic)`,
+  forge env smoke preprod                 # probe every preprod route
+  forge env smoke prod --json             # machine-readable output for CI
+  forge env smoke staging --tag v1.2.3    # (tag reserved; render is tag-agnostic)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSmoke(cmd.Context(), args[0], smokeOptions{
@@ -146,7 +146,7 @@ func runSmokeWith(ctx context.Context, env string, opts smokeOptions, resolve ga
 	projectDir := projectDirForKCL()
 	entities, err := RenderKCL(ctx, projectDir, env)
 	if err != nil {
-		return fmt.Errorf("smoke %s: render KCL: %w\n  fix: confirm deploy/kcl/%s/ exists and renders (try `forge deploy %s --dry-run`)", env, err, env, env)
+		return fmt.Errorf("smoke %s: render KCL: %w\n  fix: confirm deploy/kcl/%s/ exists and renders (try `forge env deploy %s --dry-run`)", env, err, env, env)
 	}
 
 	// App-flow checks run regardless of the route topology: they assert an
@@ -187,7 +187,7 @@ func runSmokeWith(ctx context.Context, env string, opts smokeOptions, resolve ga
 	// only READS Gateway status, so a wrong-cluster query is harmless. It
 	// also covers envs where the render doesn't surface a cluster-typed
 	// service's K8sCluster.cluster to firstK8sClusterField (the same blind
-	// spot `forge deploy <env> --explain` reports as "not declared").
+	// spot `forge env deploy <env> --explain` reports as "not declared").
 	kubeContext := opts.contextOverride
 	if kubeContext == "" {
 		kubeContext = firstK8sClusterField(ctx, env, "cluster")
@@ -263,7 +263,7 @@ func reportFlowOnlySmoke(out io.Writer, env string, opts smokeOptions, flowResul
 			return err
 		}
 	} else {
-		_, _ = fmt.Fprintf(out, "forge smoke %s\n", env)
+		_, _ = fmt.Fprintf(out, "forge env smoke %s\n", env)
 		_, _ = fmt.Fprintln(out, "  no host-bearing routes / dev ports to probe — checking declared app-flow endpoints only.")
 		writeFlowCheckSection(out, flowResults)
 		writeSmokeOverallVerdict(out, summary, len(flowResults))
@@ -444,7 +444,7 @@ func smokeHTTPClient(host, gatewayIP string, timeout time.Duration) *http.Client
 // --- output -------------------------------------------------------------
 
 func writeSmokeTable(out io.Writer, env, kubeContext, namespace string, gatewayIPs map[string]string, results []smokeRouteResult, summary smokeSummary) {
-	_, _ = fmt.Fprintf(out, "forge smoke %s\n", env)
+	_, _ = fmt.Fprintf(out, "forge env smoke %s\n", env)
 	if kubeContext != "" {
 		_, _ = fmt.Fprintf(out, "  context: %s   namespace: %s\n", kubeContext, emptyAs(namespace, "(default)"))
 	}

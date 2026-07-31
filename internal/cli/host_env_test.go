@@ -6,7 +6,6 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 )
 
@@ -143,7 +142,7 @@ STRIPE_SECRET_KEY=sk_test_xxx
 
 // TestHostEnvComposition_SecretsMissingIsWarnNotError: a missing
 // secrets file is non-fatal — the runner warns and continues.
-// `forge run` / `forge up` should still launch the subprocess.
+// `forge run` / `forge env up` should still launch the subprocess.
 func TestHostEnvComposition_SecretsMissingIsWarnNotError(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "does-not-exist.secrets")
@@ -186,54 +185,6 @@ func TestHostEnvComposition_SecretsUnreadable(t *testing.T) {
 	}
 }
 
-// TestLoadProjectConfigEnv_ProjectsForgeYAMLConfig confirms the sibling
-// `config.<env>.yaml` file is read and projected to env-var strings —
-// the layer downstream cp-forge flagged as missing from the host-mode
-// runner. snake_case keys are uppercased to SCREAMING_SNAKE when no
-// proto descriptor is available (the common fresh-project case).
-func TestLoadProjectConfigEnv_ProjectsForgeYAMLConfig(t *testing.T) {
-	dir := t.TempDir()
-	yamlContent := `name: testproj
-module_path: github.com/example/testproj
-version: "0.1.0"
-binary: shared
-`
-	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write forge.yaml: %v", err)
-	}
-	writeComponentsJSON(t, dir, config.ComponentConfig{
-		Name:  "api",
-		Kind:  "server",
-		Path:  "handlers/api",
-		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}},
-	})
-	siblingContent := `environment: development
-log_format: text
-log_level: debug
-`
-	if err := os.WriteFile(filepath.Join(dir, "config.dev-host.yaml"), []byte(siblingContent), 0o644); err != nil {
-		t.Fatalf("write sibling config: %v", err)
-	}
-	t.Chdir(dir)
-
-	cfg, err := loadProjectConfig()
-	if err != nil {
-		t.Fatalf("loadProjectConfig: %v", err)
-	}
-
-	got := loadProjectConfigEnv(cfg, "dev-host")
-	want := map[string]string{
-		"ENVIRONMENT": "development",
-		"LOG_FORMAT":  "text",
-		"LOG_LEVEL":   "debug",
-	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("got[%q] = %q, want %q (full=%v)", k, got[k], v, got)
-		}
-	}
-}
-
 // TestLoadProjectConfigEnv_UnknownEnvReturnsEmpty: missing env name
 // yields an empty map (not an error) so the caller can pass the result
 // straight to LayerHostEnv without guarding.
@@ -247,12 +198,7 @@ binary: shared
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
-	writeComponentsJSON(t, dir, config.ComponentConfig{
-		Name:  "api",
-		Kind:  "server",
-		Path:  "handlers/api",
-		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}},
-	})
+	markServiceProject(t, dir)
 	t.Chdir(dir)
 
 	cfg, err := loadProjectConfig()

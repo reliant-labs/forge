@@ -244,11 +244,11 @@ func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
 // contract: a service that IS in the current env (it reached the
 // dispatcher) but whose build_cwd is missing must FAIL the build (a
 // buildResult with err set), not skip. Skipping reported success while
-// producing no image, so a following `forge deploy` referenced an
+// producing no image, so a following `forge env deploy` referenced an
 // unpushed tag → ImagePullBackOff.
 //
 // Critically: a FAILED build must NOT write a state file either — that
-// would still let a downstream `forge deploy` pin a tag for an image
+// would still let a downstream `forge env deploy` pin a tag for an image
 // that was never pushed.
 func TestBuildExternalServices_FailsWhenCwdMissing(t *testing.T) {
 	projDir := t.TempDir()
@@ -280,7 +280,7 @@ func TestBuildExternalServices_FailsWhenCwdMissing(t *testing.T) {
 		t.Errorf("kind: got %q, want external (a real failure, not external-skip)", r.kind)
 	}
 	// Failed builds MUST NOT write a state file — that would let a
-	// downstream `forge deploy` pin a tag for an image that was never
+	// downstream `forge env deploy` pin a tag for an image that was never
 	// pushed.
 	statePath := filepath.Join(projDir, ".forge", "state", "build-dev-edge.json")
 	if _, err := os.Stat(statePath); err == nil {
@@ -417,7 +417,7 @@ func TestResolveExternalBuildTargetArch_Precedence(t *testing.T) {
 // TestBuildExternalServices_CapturesDigest pins the external-build half of
 // deploy-by-digest: when the pushed ref resolves to a content-addressed
 // manifest digest, that digest lands in BOTH the per-service State file
-// (forge audit/doctor) AND the deploy-readable aggregate build-<env>.json
+// (forge project audit/doctor) AND the deploy-readable aggregate build-<env>.json
 // (what resolveDeployImageTag reads) — so reliant/workspace-base get pinned
 // to `<image>@sha256:...` instead of the mutable env tag. The resolver is
 // faked so the test never shells out to docker; it also asserts the resolver

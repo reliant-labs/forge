@@ -185,7 +185,7 @@ func TestExpand_UnknownTokensEmpty(t *testing.T) {
 // TestExpand_UserEnvAvailable confirms BuildEnv keys land in the
 // substitution map alongside the built-ins — same shape External's
 // `env` block carries. Lets users pass deploy-target-specific knobs
-// (region, profile, tenant) into their build_cmd without env-var
+// (region, profile, stage) into their build_cmd without env-var
 // gymnastics.
 func TestExpand_UserEnvAvailable(t *testing.T) {
 	spec := Spec{
@@ -194,11 +194,11 @@ func TestExpand_UserEnvAvailable(t *testing.T) {
 		Tag:     "v1",
 		BuildEnv: map[string]string{
 			"REGION": "us-east-1",
-			"TENANT": "acme",
+			"STAGE":  "acme",
 		},
 	}
-	got := Expand("build --region ${REGION} --tenant ${TENANT}", spec)
-	want := "build --region us-east-1 --tenant acme"
+	got := Expand("build --region ${REGION} --stage ${STAGE}", spec)
+	want := "build --region us-east-1 --stage acme"
 	if got != want {
 		t.Errorf("user env: want %q, got %q", want, got)
 	}
@@ -368,7 +368,7 @@ func TestBuild_EmptyBuildCmdIsDispatcherBug(t *testing.T) {
 
 // TestWriteAndReadState round-trips a State through disk to confirm
 // the per-service file layout and JSON shape. Pins the path so a
-// future refactor of statePath catches the consumer (forge deploy
+// future refactor of statePath catches the consumer (forge env deploy
 // reads the file by path and would silently miss a relocation).
 func TestWriteAndReadState(t *testing.T) {
 	projDir := t.TempDir()

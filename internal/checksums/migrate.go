@@ -2,7 +2,7 @@
 // (.forge/checksums.json) onto self-certifying files.
 //
 // Runs automatically (and loudly) on the first `forge generate` /
-// `forge upgrade` in a project that still carries the legacy manifest.
+// `forge project upgrade` in a project that still carries the legacy manifest.
 // Per legacy Tier-1 entry, in order:
 //
 //   - on-disk bytes match the entry's recorded hash OR any hash in its
@@ -17,7 +17,7 @@
 //     compare bodies — a match proves pristineness and stamps the file),
 //     and everything unrescued is stamped with the UnverifiedMarkerValue
 //     sentinel so the stomp guard names it on every run until the user
-//     resolves it (--force to regenerate, `forge disown` to keep).
+//     resolves it (--force to regenerate, `forge project disown` to keep).
 //
 // Disowned (and legacy forked) entries convert to .forge/disowned.json.
 // Plain Tier-2 entries are dropped — scaffold-once files are user-owned
@@ -123,7 +123,7 @@ func (o *MigrationOutcome) Total() int {
 //
 // The caller decides what to do with Unverified paths — the pipeline
 // runs the side-render rescue then stamps survivors with
-// StampUnverified; `forge upgrade` stamps them immediately.
+// StampUnverified; `forge project upgrade` stamps them immediately.
 func MigrateLegacyManifest(root string, cs *FileChecksums, currentTier1 func(string) bool) (*MigrationOutcome, error) {
 	legacy, err := LoadLegacyManifest(root)
 	if err != nil || legacy == nil {
@@ -160,7 +160,13 @@ func MigrateLegacyManifest(root string, cs *FileChecksums, currentTier1 func(str
 			if at == "" {
 				at = nowRFC3339()
 			}
-			reason := "migrated from legacy .forge/checksums.json (disowned there; original reason in .forge/friction.jsonl if recorded)"
+			// No original reason survives the legacy manifest: it recorded a
+			// bare `disowned: true` flag and nothing else. Say that plainly
+			// rather than pointing at a log — an earlier version of this
+			// message referred the reader to `.forge/friction.jsonl`, whose
+			// writer has since been deleted, so it sent them to a file that
+			// no longer receives anything.
+			reason := "migrated from legacy .forge/checksums.json (disowned there; the legacy manifest recorded no reason)"
 			if entry.Forked {
 				reason = "migrated from legacy .forge/checksums.json (legacy fork-era entry; the fork state was removed)"
 			}

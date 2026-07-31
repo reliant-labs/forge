@@ -13,8 +13,7 @@ func TestFrontendPackageJson_NoWorkspaceDepsByDefault(t *testing.T) {
 	data := FrontendTemplateData{
 		FrontendName: "web",
 		ProjectName:  "myapp",
-		ApiUrl:       "http://localhost:8080",
-		ApiPort:      "8080",
+		APIURL:       "http://localhost:8080",
 		Module:       "example.com/myapp",
 		// Workspaces left zero — this is the default snapshot mode.
 	}
@@ -44,11 +43,10 @@ func TestFrontendPackageJson_WorkspaceDepsWhenEnabled(t *testing.T) {
 	data := FrontendTemplateData{
 		FrontendName: "web",
 		ProjectName:  "myapp",
-		ApiUrl:       "http://localhost:8080",
-		ApiPort:      "8080",
+		APIURL:       "http://localhost:8080",
 		Module:       "example.com/myapp",
 		Workspaces:   true,
-		ApiPackage:   "@myapp/api",
+		APIPackage:   "@myapp/api",
 		HooksPackage: "@myapp/hooks",
 	}
 
@@ -77,11 +75,10 @@ func TestReactNativePackageJson_UINativeWorkspaceDep(t *testing.T) {
 	data := FrontendTemplateData{
 		FrontendName:    "mobile",
 		ProjectName:     "myapp",
-		ApiUrl:          "http://localhost:8080",
-		ApiPort:         "8080",
+		APIURL:          "http://localhost:8080",
 		Module:          "example.com/myapp",
 		Workspaces:      true,
-		ApiPackage:      "@myapp/api",
+		APIPackage:      "@myapp/api",
 		HooksPackage:    "@myapp/hooks",
 		UINativePackage: "@myapp/ui-native",
 	}
@@ -105,8 +102,7 @@ func TestReactNativePackageJson_NoUINativeByDefault(t *testing.T) {
 	data := FrontendTemplateData{
 		FrontendName: "mobile",
 		ProjectName:  "myapp",
-		ApiUrl:       "http://localhost:8080",
-		ApiPort:      "8080",
+		APIURL:       "http://localhost:8080",
 		Module:       "example.com/myapp",
 	}
 	out, err := FrontendTemplates().Render("react-native/package.json.tmpl", data)
@@ -126,11 +122,10 @@ func TestReactNativeIndexScreen_UsesUINativeWhenEnabled(t *testing.T) {
 	data := FrontendTemplateData{
 		FrontendName:    "mobile",
 		ProjectName:     "myapp",
-		ApiUrl:          "http://localhost:8080",
-		ApiPort:         "8080",
+		APIURL:          "http://localhost:8080",
 		Module:          "example.com/myapp",
 		Workspaces:      true,
-		ApiPackage:      "@myapp/api",
+		APIPackage:      "@myapp/api",
 		HooksPackage:    "@myapp/hooks",
 		UINativePackage: "@myapp/ui-native",
 	}
@@ -156,8 +151,7 @@ func TestReactNativeIndexScreen_BareWhenDisabled(t *testing.T) {
 	data := FrontendTemplateData{
 		FrontendName: "mobile",
 		ProjectName:  "myapp",
-		ApiUrl:       "http://localhost:8080",
-		ApiPort:      "8080",
+		APIURL:       "http://localhost:8080",
 		Module:       "example.com/myapp",
 	}
 	out, err := FrontendTemplates().Render("react-native/app/index.tsx.tmpl", data)
@@ -181,11 +175,10 @@ func TestFrontendConnect_ImportsWorkspaceHooks(t *testing.T) {
 	data := FrontendTemplateData{
 		FrontendName: "web",
 		ProjectName:  "myapp",
-		ApiUrl:       "http://localhost:8080",
-		ApiPort:      "8080",
+		APIURL:       "http://localhost:8080",
 		Module:       "example.com/myapp",
 		Workspaces:   true,
-		ApiPackage:   "@myapp/api",
+		APIPackage:   "@myapp/api",
 		HooksPackage: "@myapp/hooks",
 	}
 
@@ -214,8 +207,7 @@ func TestFrontendConnect_NoWorkspaceImportsByDefault(t *testing.T) {
 	data := FrontendTemplateData{
 		FrontendName: "web",
 		ProjectName:  "myapp",
-		ApiUrl:       "http://localhost:8080",
-		ApiPort:      "8080",
+		APIURL:       "http://localhost:8080",
 		Module:       "example.com/myapp",
 	}
 

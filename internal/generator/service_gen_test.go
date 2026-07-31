@@ -15,7 +15,7 @@ import (
 // the canonical function.
 
 // TestGenerateServiceFilesMultiWordKebabName_ScaffoldsSnakeDir is the
-// regression guard for the pre-2026-06-08 bug where `forge add service
+// regression guard for the pre-2026-06-08 bug where `forge scaffold service
 // admin-server` (or any multi-word kebab/PascalCase service name)
 // scaffolded `handlers/adminserver/` (compact, separator-stripped) which
 // collided with the universal snake_case proto layout convention. Post-
@@ -25,14 +25,13 @@ import (
 func TestGenerateServiceFilesMultiWordKebabName_ScaffoldsSnakeDir(t *testing.T) {
 	root := t.TempDir()
 
-	if err := GenerateServiceFiles(root, "example.com/myapp", "admin-server", "myapp", 8090); err != nil {
+	if err := GenerateServiceFiles(root, "example.com/myapp", "admin-server", "myapp"); err != nil {
 		t.Fatalf("GenerateServiceFiles(admin-server) error = %v", err)
 	}
 
 	// Snake_case handler dir + proto path.
 	for _, want := range []string{
 		"internal/handlers/admin_server/service.go",
-		"internal/handlers/admin_server/authorizer.go",
 		"proto/services/admin_server/v1/admin_server.proto",
 	} {
 		if _, err := os.Stat(filepath.Join(root, want)); err != nil {
@@ -58,14 +57,13 @@ func TestGenerateServiceFilesMultiWordKebabName_ScaffoldsSnakeDir(t *testing.T) 
 func TestGenerateServiceFilesCreatesExpectedFiles(t *testing.T) {
 	root := t.TempDir()
 
-	if err := GenerateServiceFiles(root, "example.com/myapp", "orders", "myapp", 8081); err != nil {
+	if err := GenerateServiceFiles(root, "example.com/myapp", "orders", "myapp"); err != nil {
 		t.Fatalf("GenerateServiceFiles() error = %v", err)
 	}
 
 	// Verify all expected files exist
 	expectedFiles := []string{
 		"internal/handlers/orders/service.go",
-		"internal/handlers/orders/authorizer.go",
 		"proto/services/orders/v1/orders.proto",
 	}
 	for _, f := range expectedFiles {
@@ -84,7 +82,7 @@ func TestGenerateServiceFilesCreatesExpectedFiles(t *testing.T) {
 func TestGenerateServiceFilesServiceGoUsesTemplates(t *testing.T) {
 	root := t.TempDir()
 
-	if err := GenerateServiceFiles(root, "example.com/myapp", "orders", "myapp", 8081); err != nil {
+	if err := GenerateServiceFiles(root, "example.com/myapp", "orders", "myapp"); err != nil {
 		t.Fatalf("GenerateServiceFiles() error = %v", err)
 	}
 
@@ -108,14 +106,13 @@ func TestGenerateServiceFilesServiceGoUsesTemplates(t *testing.T) {
 	}
 }
 
-// TestGenerateServiceFilesProtoHasServiceOption is the F3 authz-completeness
-// regression: the scaffolded proto must carry the (forge.v1.service) option
-// block WITH default_roles (so RPCs added later by `forge add entity` inherit
-// an authz floor instead of failing the authz-completeness lint), plus the
-// forge/v1/forge.proto import the option extension needs.
+// TestGenerateServiceFilesProtoHasServiceOption verifies the scaffolded
+// proto carries the (forge.v1.service) option block (name/version/description)
+// plus the forge/v1/forge.proto import the option extension needs. The option
+// carries no access-control annotations — forge generates none.
 func TestGenerateServiceFilesProtoHasServiceOption(t *testing.T) {
 	root := t.TempDir()
-	if err := GenerateServiceFiles(root, "example.com/myapp", "orders", "myapp", 8081); err != nil {
+	if err := GenerateServiceFiles(root, "example.com/myapp", "orders", "myapp"); err != nil {
 		t.Fatalf("GenerateServiceFiles() error = %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(root, "proto", "services", "orders", "v1", "orders.proto"))
@@ -126,7 +123,8 @@ func TestGenerateServiceFilesProtoHasServiceOption(t *testing.T) {
 	for _, want := range []string{
 		`import "forge/v1/forge.proto";`,
 		"option (forge.v1.service) = {",
-		`default_roles: ["member"]`,
+		`name: "OrdersService"`,
+		`version: "1.0.0"`,
 		"service OrdersService {",
 	} {
 		if !strings.Contains(proto, want) {
@@ -148,7 +146,7 @@ func TestGenerateServiceFilesProtoSkipsExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := GenerateServiceFiles(root, "example.com/myapp", "orders", "myapp", 8081); err != nil {
+	if err := GenerateServiceFiles(root, "example.com/myapp", "orders", "myapp"); err != nil {
 		t.Fatalf("GenerateServiceFiles() error = %v", err)
 	}
 
@@ -164,7 +162,7 @@ func TestGenerateServiceFilesProtoSkipsExisting(t *testing.T) {
 
 // TestGenerateServiceFilesResumeSkipsExisting verifies that ScaffoldResume
 // preserves every pre-existing output file and reports skips. The recovery
-// scenario this guards: a partial `forge add service` run wrote service.go
+// scenario this guards: a partial `forge scaffold service` run wrote service.go
 // but `buf generate` failed mid-pipeline; the user re-runs with --resume
 // expecting service.go to stay untouched.
 func TestGenerateServiceFilesResumeSkipsExisting(t *testing.T) {
@@ -174,10 +172,8 @@ func TestGenerateServiceFilesResumeSkipsExisting(t *testing.T) {
 	// would never produce. If --resume erroneously rewrites them, this
 	// content disappears.
 	preExisting := map[string]string{
-		"internal/handlers/orders/service.go":                "// user edits to service.go\npackage orders\n",
-		"internal/handlers/orders/authorizer.go":             "// user edits to authorizer.go\npackage orders\n",
-		"internal/handlers/orders/handlers_scaffold_test.go": "// user edits to scaffold tests\npackage orders\n",
-		"proto/services/orders/v1/orders.proto":              "syntax = \"proto3\";\n// user-edited proto\n",
+		"internal/handlers/orders/service.go":   "// user edits to service.go\npackage orders\n",
+		"proto/services/orders/v1/orders.proto": "syntax = \"proto3\";\n// user-edited proto\n",
 	}
 	for rel, content := range preExisting {
 		full := filepath.Join(root, rel)
@@ -190,7 +186,7 @@ func TestGenerateServiceFilesResumeSkipsExisting(t *testing.T) {
 	}
 
 	var progress bytes.Buffer
-	if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp", 8081,
+	if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp",
 		ScaffoldResume, &progress); err != nil {
 		t.Fatalf("GenerateServiceFilesWithMode(resume) error = %v", err)
 	}
@@ -219,10 +215,10 @@ func TestGenerateServiceFilesForceOverwrites(t *testing.T) {
 	root := t.TempDir()
 
 	// Pre-seed with sentinel content so we can detect overwrites.
+	// No scaffold test here: it is one file per RPC and this path runs
+	// before any RPC exists, so the zero-RPC scaffold writes none.
 	preExisting := []string{
 		"internal/handlers/orders/service.go",
-		"internal/handlers/orders/authorizer.go",
-		"internal/handlers/orders/handlers_scaffold_test.go",
 		"proto/services/orders/v1/orders.proto",
 	}
 	for _, rel := range preExisting {
@@ -236,7 +232,7 @@ func TestGenerateServiceFilesForceOverwrites(t *testing.T) {
 	}
 
 	var progress bytes.Buffer
-	if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp", 8081,
+	if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp",
 		ScaffoldForce, &progress); err != nil {
 		t.Fatalf("GenerateServiceFilesWithMode(force) error = %v", err)
 	}
@@ -272,7 +268,7 @@ func TestGenerateServiceFilesFailModeKeepsProto(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp", 8081,
+	if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp",
 		ScaffoldFail, nil); err != nil {
 		t.Fatalf("GenerateServiceFilesWithMode(fail) error = %v", err)
 	}
@@ -365,8 +361,8 @@ func TestGenerateFrontendFilesReactNative(t *testing.T) {
 	// Core files must exist
 	for _, file := range []string{
 		"package.json", "app.json", "tsconfig.json", "babel.config.js",
-		".gitignore", ".env.local", "buf.gen.yaml",
-		"src/lib/connect.ts", "src/lib/query-client.ts",
+		".gitignore", "buf.gen.yaml",
+		"src/lib/connect.ts", "src/lib/apiurl_gen.ts", "src/lib/query-client.ts",
 		"src/hooks/use-api-query.ts", "src/hooks/use-api-mutation.ts",
 		"app/_layout.tsx", "app/index.tsx",
 		"go.mod",
@@ -388,22 +384,27 @@ func TestGenerateFrontendFilesReactNative(t *testing.T) {
 		t.Error("package.json should contain expo dependency")
 	}
 
-	// .env.local should contain EXPO_PUBLIC_API_URL
-	envContent, err := os.ReadFile(filepath.Join(feDir, ".env.local"))
+	// The dev-URL floor lives in the regenerated apiurl_gen.ts (the
+	// hand-editable .env.local was ripped out); connect.ts imports
+	// DEV_API_URL from it and reads EXPO_PUBLIC_API_URL for overrides.
+	apiURLGen, err := os.ReadFile(filepath.Join(feDir, "src", "lib", "apiurl_gen.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(envContent), "EXPO_PUBLIC_API_URL=http://localhost:8080") {
-		t.Errorf(".env.local should contain EXPO_PUBLIC_API_URL, got:\n%s", string(envContent))
+	if !strings.Contains(string(apiURLGen), `DEV_API_URL = "http://localhost:8080"`) {
+		t.Errorf("apiurl_gen.ts should bake the dev API URL, got:\n%s", string(apiURLGen))
 	}
 
-	// connect.ts should use EXPO_PUBLIC_API_URL
+	// connect.ts should use EXPO_PUBLIC_API_URL and the apiurl_gen floor.
 	connectTS, err := os.ReadFile(filepath.Join(feDir, "src", "lib", "connect.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(connectTS), "EXPO_PUBLIC_API_URL") {
 		t.Error("connect.ts should reference EXPO_PUBLIC_API_URL")
+	}
+	if !strings.Contains(string(connectTS), "DEV_API_URL") {
+		t.Error("connect.ts should import DEV_API_URL from apiurl_gen")
 	}
 
 	// go.mod should declare nested module
@@ -433,15 +434,15 @@ func TestGenerateFrontendFilesViteSPA(t *testing.T) {
 	// Core scaffold files must exist.
 	for _, file := range []string{
 		"package.json", "vite.config.ts", "tsconfig.json", "tsconfig.node.json",
-		"index.html", ".gitignore", ".env.local", "buf.gen.yaml",
+		"index.html", ".gitignore", "buf.gen.yaml",
 		"eslint.config.mjs",
 		"src/main.tsx", "src/App.tsx", "src/routes.tsx", "src/index.css",
 		"src/vite-env.d.ts",
 		"src/stores/ui-store.ts",
-		"src/lib/connect.ts", "src/lib/query-client.ts",
+		"src/lib/connect.ts", "src/lib/apiurl_gen.ts", "src/lib/query-client.ts",
 		"src/lib/events.ts", "src/lib/event-context.tsx",
 		"src/lib/search-schemas.ts", "src/lib/format-utils.ts",
-		"src/lib/auth/provider.ts", "src/lib/auth/stub-provider.ts",
+		"src/lib/auth/provider.ts", "src/lib/auth/session-provider.ts",
 		"src/lib/auth/context.tsx",
 		"src/hooks/use-api-query.ts", "src/hooks/use-api-mutation.ts",
 		"src/lib/test-utils.tsx",
@@ -486,14 +487,15 @@ func TestGenerateFrontendFilesViteSPA(t *testing.T) {
 		t.Error("package.json should contain @tanstack/react-router")
 	}
 
-	// .env.local should contain VITE_API_URL (Vite exposes import.meta.env
-	// vars prefixed with VITE_).
-	envContent, err := os.ReadFile(filepath.Join(feDir, ".env.local"))
+	// The dev-URL floor lives in the regenerated apiurl_gen.ts (the
+	// hand-editable .env.local was ripped out); connect.ts imports
+	// DEV_API_URL from it and reads VITE_API_URL for overrides.
+	apiURLGen, err := os.ReadFile(filepath.Join(feDir, "src", "lib", "apiurl_gen.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(envContent), "VITE_API_URL=http://localhost:8080") {
-		t.Errorf(".env.local should contain VITE_API_URL, got:\n%s", string(envContent))
+	if !strings.Contains(string(apiURLGen), `DEV_API_URL = "http://localhost:8080"`) {
+		t.Errorf("apiurl_gen.ts should bake the dev API URL, got:\n%s", string(apiURLGen))
 	}
 
 	// connect.ts should use VITE_API_URL (not NEXT_PUBLIC_API_URL).

@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newPromoteCmd is `forge promote <version> --to <env>`: bind an env to a
+// newPromoteCmd is `forge env promote <version> --to <env>`: bind an env to a
 // release. This is the "promote, don't rebuild" half of the build-once model —
 // a pure pointer move. It reads the release ledger `forge build --release`
 // wrote, resolves each image's digest, and records env→release in the binding
@@ -23,21 +23,21 @@ func newPromoteCmd() *cobra.Command {
 
 ` + "`forge build --release <version>`" + ` builds the env-agnostic images ONCE,
 captures their content-addressed digests, and writes a release ledger at
-.forge/releases/<version>.json. ` + "`forge promote`" + ` advances that release to
+.forge/releases/<version>.json. ` + "`forge env promote`" + ` advances that release to
 an environment BY REFERENCE: it records env → release (with the resolved
 per-image digests snapshotted) in .forge/env-releases.json. No image is rebuilt
 — the exact bytes cut as <version> are what the env ships.
 
-` + "`forge deploy <env>`" + ` then pins those SAME digests, so every env promoted
+` + "`forge env deploy <env>`" + ` then pins those SAME digests, so every env promoted
 to the same release deploys byte-identical images. This eliminates the per-env
 rebuild that re-cross-compiles (and can drift arch/tag) for every environment.
 
 Examples:
   forge build --release v1.4.0 --push ghcr.io/acme   # build once, cut the release
-  forge promote v1.4.0 --to staging                  # bind staging → v1.4.0
-  forge deploy staging                               # ships v1.4.0's digests
-  forge promote v1.4.0 --to prod                     # same digests advance to prod
-  forge deploy prod                                  # the bytes that passed staging`,
+  forge env promote v1.4.0 --to staging                  # bind staging → v1.4.0
+  forge env deploy staging                               # ships v1.4.0's digests
+  forge env promote v1.4.0 --to prod                     # same digests advance to prod
+  forge env deploy prod                                  # the bytes that passed staging`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if toEnv == "" {
@@ -103,6 +103,6 @@ func runPromote(version, env string) error {
 		fmt.Printf("  %-20s %s\n", name, resolved[name])
 	}
 	fmt.Printf("  Binding: %s\n", envReleasesPath(projectDir))
-	fmt.Printf("  Deploy:  forge deploy %s\n", env)
+	fmt.Printf("  Deploy:  forge env deploy %s\n", env)
 	return nil
 }

@@ -176,15 +176,20 @@ _bundle = forge.Bundle {
 output = forge.render(_bundle)
 ```
 
-```yaml
-# config.prod.yaml (sibling file next to forge.yaml)
-log_level: warn
-database_url: ${prod-db-credentials}
+```kcl
+# deploy/kcl/prod/config.k — per-env app config VALUES (typed AppConfig)
+import config_schema
+
+app_config: config_schema.AppConfig = {
+    log_level = "warn"
+    # sensitive fields point at a Secret via ConfigSecretRef, e.g.:
+    #   some_api_key = config_schema.ConfigSecretRef { name = "prod-secrets", key = "some-api-key" }
+}
 ```
 
 ```yaml
 # forge.yaml — environments[] block removed entirely.
-# Per-env config now lives in config.<env>.yaml sibling files.
+# Per-env config now lives in deploy/kcl/<env>/config.k.
 ```
 
 Repeat for every env (dev, staging, prod, …).
@@ -213,7 +218,7 @@ What user code / config might need to change:
 - **Per-env config (`environments[].config`).** Move the map to a
   sibling `config.<env>.yaml` file at the project root. Forge reads
   `config.<env>.yaml` automatically for the per-env ConfigMap
-  projection AND for `forge up --env=<env>` host-mode env injection.
+  projection AND for `forge env up <env>` host-mode env injection.
 
 - **CI workflows that read `environments[]` to gate deploy jobs.**
   Update them to source the env list from the filesystem
@@ -223,7 +228,7 @@ What user code / config might need to change:
 
 - **Per-env cluster guard.** Pre-v2 the guard read
   `environments[<env>].cluster` to know which context
-  `forge deploy <env>` was supposed to land in. v2 reads it from
+  `forge env deploy <env>` was supposed to land in. v2 reads it from
   `K8sCluster.cluster` instead. Forge no longer reads
   `environments[].cluster` at all.
 
@@ -235,10 +240,10 @@ for env in deploy/kcl/*/; do
     kcl run "$env" --format json > /dev/null && echo "$env: OK" || echo "$env: FAIL"
 done
 
-# Confirm forge deploy --dry-run still produces the same manifests.
-forge deploy dev --dry-run > /tmp/v2-dev.yaml
+# Confirm forge env deploy --dry-run still produces the same manifests.
+forge env deploy dev --dry-run > /tmp/v2-dev.yaml
 git stash
-forge deploy dev --dry-run > /tmp/v1-dev.yaml
+forge env deploy dev --dry-run > /tmp/v1-dev.yaml
 git stash pop
 diff /tmp/v1-dev.yaml /tmp/v2-dev.yaml  # should be empty
 
@@ -254,8 +259,8 @@ If the v2 shape breaks something:
 # Restore forge.yaml and deploy/kcl/ from git.
 git checkout HEAD -- forge.yaml deploy/kcl/ config.*.yaml
 
-# Downgrade the CLI binary via forge upgrade.
-forge upgrade --to <prior-v1-version>
+# Downgrade the CLI binary via forge project upgrade.
+forge project upgrade --to <prior-v1-version>
 ```
 
 The v1 shape works unchanged in v1. The schema change is one-way

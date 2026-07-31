@@ -26,6 +26,7 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", ".next-prod/types/**/*.ts"],
-  "exclude": ["node_modules", ".next-prod/standalone"]
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+  "// exclude note": "Exclude the Next build dirs wholesale (not just subpaths). Next writes per-route type stubs under .next{,-prod}/types that import the route module by path; deleting a scaffolded route leaves a STALE stub whose import now dangles, so `tsc --noEmit` would spew TS2307 for a route that no longer exists. .next-prod is forge's production distDir (see next.config.ts). Excluding both wins even when `next dev`/`next build` re-adds .next/types/**/*.ts to `include` (TypeScript's exclude beats include).",
+  "exclude": ["node_modules", ".next", ".next-prod"]
 }

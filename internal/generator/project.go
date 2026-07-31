@@ -33,9 +33,9 @@ type ProjectGenerator struct {
 	Binary             string   // binary mode: "per-service" (default), "shared" — emit one Go binary with cobra subcommand per service when shared
 	ServiceName        string   // initial service name (empty if none specified)
 	AdditionalServices []string // additional service names beyond ServiceName — only consumed by binary=shared scaffolds; per-service mode adds these post-scaffold
-	ServicePort        int      // initial service port (default: 8080)
+	ServicePort        int      // scaffold artifact port (devcontainer/vscode); the dev backend's real bind port is allocated at runtime — see resolveEphemeralHostPorts
 	FrontendName       string   // optional initial Next.js frontend name
-	FrontendPort       int      // frontend port (default: 3000)
+	FrontendPort       int      // frontend port; 0 = ephemeral (forge run/up allocates a free port at launch and reports it)
 	// FrontendWorkspaces opts the project into the pnpm-workspaces
 	// layout: emit a root pnpm-workspace.yaml + packages/api +
 	// packages/hooks, frontends consume @<scope>/api / @<scope>/hooks
@@ -99,7 +99,7 @@ func (g *ProjectGenerator) hasCmd() bool { return !g.isLibrary() }
 // package identifier — the package clause inside is `package main`
 // regardless), and the primary dir mirroring the project/module name is the
 // established convention every existing project + generated Dockerfile
-// already uses. Secondary binaries (`forge add binary`) DO sanitize, because
+// already uses. Secondary binaries (`forge scaffold binary`) DO sanitize, because
 // they are named after a Go component, not the project. The deploy-side
 // build declaration must therefore also target the raw primary path — see
 // codegen.GenerateComponentsJSON (the F5 fix aligned it to this).
@@ -110,16 +110,31 @@ func (g *ProjectGenerator) binaryName() string {
 // NewProjectGenerator creates a new project generator
 func NewProjectGenerator(name, path, modulePath string) *ProjectGenerator {
 	return &ProjectGenerator{
-		Name:         name,
-		Path:         path,
-		ModulePath:   modulePath,
-		ServicePort:  8080,
-		FrontendPort: 3000,
+		Name:       name,
+		Path:       path,
+		ModulePath: modulePath,
+		// ServicePort feeds a few scaffold artifacts (devcontainer forwards,
+		// the vscode launch PORT), but the backend's ACTUAL dev bind port is
+		// NOT this value: forge strips per-service ports from forge.yaml
+		// (components ship `ports: []`) and the dev backend binds the
+		// architectural default (config_schema.k `port: int = 8080` /
+		// defaultDevAPIPort). De-colliding the dev backend is therefore a
+		// RUNTIME concern — `forge run` / `forge env up --host-only` allocate a
+		// free port per project (see resolveEphemeralHostPorts in run.go) —
+		// not a scaffold constant.
+		ServicePort: 8080,
+		// Frontend: 0 = ephemeral. The scaffolded forge.yaml omits the
+		// frontend port (FrontendConfig.Port is omitempty); `forge run` /
+		// `forge env up` allocate a free OS port at launch and print it in
+		// the summary. Teaches the "discover the dev port from forge's output,
+		// don't hardcode 3000" pattern and removes the frontend port-collision
+		// that made two dev stacks fight on one host.
+		FrontendPort: 0,
 	}
 }
 
 // Generate creates the project structure.
-func (g *ProjectGenerator) Generate() error {
+func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the scaffold pipeline: one gated step per emitted artifact family. The gates are flat and independent; the order is the contract.
 	// CLI/library kinds force-disable a number of features so the rest of
 	// the generator (which uses Features.*Enabled() to gate server-shaped
 	// emission) does not have to learn about Kind. This keeps the gate in
@@ -162,7 +177,7 @@ func (g *ProjectGenerator) Generate() error {
 	// user has a complete starting point. The deploy feature itself
 	// derives from kind (deploy ⇔ service), so the generate pipeline's
 	// deploy steps run against this tree by default; an explicit
-	// `features.deploy: false` turns them (and `forge deploy`) off.
+	// `features.deploy: false` turns them (and `forge env deploy`) off.
 	if g.isService() {
 		dirs = append(dirs, "deploy/kcl")
 	}
@@ -191,8 +206,10 @@ func (g *ProjectGenerator) Generate() error {
 	// Go code (hyphens in CLI names become underscores on disk).
 	if g.ServiceName != "" {
 		svcPkg := naming.ServicePackage(g.ServiceName)
-		dirs = append(dirs, fmt.Sprintf("internal/handlers/%s", svcPkg))
-		dirs = append(dirs, fmt.Sprintf("proto/services/%s/v1", svcPkg))
+		dirs = append(dirs,
+			fmt.Sprintf("internal/handlers/%s", svcPkg),
+			fmt.Sprintf("proto/services/%s/v1", svcPkg),
+		)
 	}
 
 	// Add frontend directory if specified
@@ -244,21 +261,19 @@ func (g *ProjectGenerator) Generate() error {
 	}
 
 	// All per-field derivations (protoName, servicePackage, the goVersion
-	// family, the forge/pkg dep + its LocalForgePkgVendored gate, the
-	// migrations-off ConfigFields pruning) live in ForScaffold so the
-	// scaffold and upgrade lanes share one named render type. See
-	// project_template_data.go.
-	templateData := g.ForScaffold()
+	// family, the forge/pkg version pin, the migrations-off ConfigFields
+	// pruning) live in forScaffold so the scaffold and upgrade lanes share
+	// one named render type. See project_template_data.go.
+	templateData := g.forScaffold()
 
 	if g.Features.CodegenEnabled() {
 		if err := g.copyForgeV1Proto(); err != nil {
 			return err
 		}
-		if g.ServiceName != "" {
-			if err := g.createExampleProto(templateData); err != nil {
-				return err
-			}
-		}
+		// No example RPC surface is shipped: a fresh `--service X` gets an
+		// empty service proto stub (written by GenerateServiceFiles, with the
+		// (forge.v1.service) option block but zero RPCs) plus the wired
+		// handler dir. Author your own messages/RPCs, then `forge generate`.
 		if err := g.createConfigProto(templateData); err != nil {
 			return err
 		}
@@ -335,29 +350,30 @@ func (g *ProjectGenerator) Generate() error {
 	switch {
 	case g.isService():
 		// The command tree lives under cmd/<bin>/cmd as a real cobra package,
-		// dir-nested by category (devspace idiom). cmd/<bin>/main.go is a thin
-		// cmd.Execute() that blank-imports the group subpackages so their
-		// commands self-register. binary=shared only changes the DEPLOY story
-		// (one image serving many services via cobra subcommands); the command
-		// tree itself is identical in both modes, so both use the same thin
-		// main (the cmd-main.go.tmpl doc text already covers the shared story).
+		// dir-nested by category (devspace idiom). cmd/<bin>/main.go is the
+		// composition root: it NAMES every group constructor and hands them to
+		// cmd.Execute. binary=shared only changes the DEPLOY story (the per-env
+		// main.k gives each component its own `/app/<project> <name>` command);
+		// the command tree itself is identical in both modes, so both use the
+		// same main (cmd-main.go.tmpl covers the shared story).
 		bin := g.binaryName()
 		cmdDir := filepath.Join("cmd", bin)
 		treeDir := filepath.Join(cmdDir, "cmd")
 		// NOTE: cmd/<bin>/main.go (the composition root) is NOT rendered here.
 		// It names every group constructor explicitly, so it is inventory-
-		// dependent and owned by the codegen pipeline (GenerateCmdGroups below),
-		// exactly like the per-component group files — not the project-level
-		// scaffold data, which has no service list yet.
-		files = append(files,
-			struct{ template, dest string }{"cmd-tree-root.go.tmpl", filepath.Join(treeDir, "root.go")},
-			struct{ template, dest string }{"cmd-tree-version.go.tmpl", filepath.Join(treeDir, "version.go")},
-		)
+		// dependent and written by the codegen pipeline's cmd-group step
+		// (codegen.GenerateCmdGroups), exactly like the per-component group
+		// files — not from the project-level scaffold data, which has no
+		// service list yet.
 		// cmd/<bin>/cmd/commands.go — the user-owned cobra extension point
 		// newRootCmd consumes (userCommands(deps)). Scaffolded once here;
 		// the generate pipeline re-ensures it for older projects but never
 		// overwrites an existing copy.
-		files = append(files, struct{ template, dest string }{"cmd-tree-commands.go.tmpl", filepath.Join(treeDir, "commands.go")})
+		files = append(files,
+			struct{ template, dest string }{"cmd-tree-root.go.tmpl", filepath.Join(treeDir, "root.go")},
+			struct{ template, dest string }{"cmd-tree-version.go.tmpl", filepath.Join(treeDir, "version.go")},
+			struct{ template, dest string }{"cmd-tree-commands.go.tmpl", filepath.Join(treeDir, "commands.go")},
+		)
 	case g.isCLI():
 		// CLI binaries get their own root.go + version.go under
 		// cmd/<binary>/ so multi-binary projects extend cleanly later.
@@ -368,9 +384,20 @@ func (g *ProjectGenerator) Generate() error {
 		)
 	}
 
-	// cmd/<bin>/cmd/{serve,server,db}.go import pkg/config and pkg/app
+	// cmd/<bin>/cmd/{server,db}.go import pkg/config and pkg/app
 	// which are only generated by the codegen pipeline. They are
 	// service-shaped, so CLI/library kinds never emit them.
+	//
+	// cmd/<bin>/cmd/serve.go is NOT written here, for exactly the reason
+	// cmd/<bin>/main.go is not (see the bootstrap note in cli/new.go): it
+	// is scaffold-once and user-owned, so the FIRST writer wins forever.
+	// This lane only has the DEFAULT config field set; the codegen pipeline
+	// has the project's real one, parsed from proto/config. Birthing it
+	// here would permanently freeze a serve.go whose ConfigFields-gated
+	// blocks disagree with the config the project actually has, and
+	// nothing would ever correct it. So the codegen lane births it
+	// (GenerateCmdServerWithFields), and a failed bootstrap is recoverable
+	// by re-running rather than baked in.
 	//
 	// OTel is owned by serverkit now (it calls observe.Setup internally from
 	// the projected serverkit.Config OTLPEndpoint + ServiceName); there is
@@ -379,7 +406,6 @@ func (g *ProjectGenerator) Generate() error {
 		bin := g.binaryName()
 		treeDir := filepath.Join("cmd", bin, "cmd")
 		files = append(files,
-			struct{ template, dest string }{"cmd-tree-serve.go.tmpl", filepath.Join(treeDir, "serve.go")},
 			struct{ template, dest string }{"cmd-tree-server.go.tmpl", filepath.Join(treeDir, "server.go")},
 		)
 		// cmd/<bin>/cmd/db.go (migrate CLI) depends on both pkg/config and
@@ -391,14 +417,18 @@ func (g *ProjectGenerator) Generate() error {
 
 	// Service-kind scaffolds always get Dockerfile / .dockerignore — see
 	// the note on the `deploy/kcl` dirs block above. The runtime gate
-	// lives on the `forge deploy` command itself.
+	// lives on the `forge env deploy` command itself.
 	if g.isService() {
-		files = append(files, struct{ template, dest string }{".dockerignore", ".dockerignore"})
-		files = append(files, struct{ template, dest string }{"Dockerfile.tmpl", "Dockerfile"})
+		files = append(files,
+			struct{ template, dest string }{".dockerignore", ".dockerignore"},
+			struct{ template, dest string }{"Dockerfile.tmpl", "Dockerfile"},
+		)
 	}
 	if g.isService() && g.Features.HotReloadEnabled() {
-		files = append(files, struct{ template, dest string }{"air.toml.tmpl", ".air.toml"})
-		files = append(files, struct{ template, dest string }{"air-debug.toml.tmpl", ".air-debug.toml"})
+		files = append(files,
+			struct{ template, dest string }{"air.toml.tmpl", ".air.toml"},
+			struct{ template, dest string }{"air-debug.toml.tmpl", ".air-debug.toml"},
+		)
 	}
 
 	for _, file := range files {
@@ -408,39 +438,40 @@ func (g *ProjectGenerator) Generate() error {
 		}
 	}
 
-	// cmd/<bin>/main.go — the composition root. Always scaffolded for service
-	// kind, even features.codegen=false (which skips the codegen block below):
-	// a bare cmd.Execute() so the initial tree exists. The codegen pipeline
-	// (GenerateCmdGroups) re-renders it with the full service/worker/operator
-	// constructor list once proto is compiled. Requires go.mod, written in the
-	// file loop above.
-	if g.isService() {
+	// cmd/<bin>/main.go — the composition root — is written EXACTLY ONCE, and
+	// only where the service list is already known. It NAMES every group
+	// constructor (services.New<Svc>Cmd), so a write from here — before proto
+	// is compiled — could only ever produce a bare cmd.Execute(), and being
+	// write-if-absent OWNED code it would then be the FINAL content: every
+	// generated per-service subcommand would stay unreferenced forever.
+	//
+	// So for a codegen project the write belongs to the pass that has the
+	// inventory: GenerateCmdGroups, run by the generate pipeline's cmd-group
+	// step, which `forge project new` invokes immediately via
+	// bootstrapGeneratedCode (and which any later `forge generate` re-runs, so
+	// a project whose bootstrap failed still gets a correct root).
+	//
+	// features.codegen=false has no such pass and no services to name — the
+	// bare root IS the finished answer there, so it is written here.
+	// Requires go.mod, written in the file loop above.
+	if g.isService() && !g.Features.CodegenEnabled() {
 		if err := codegen.GenerateCmdMainRoot(g.Path, g.binaryName(), nil); err != nil {
 			return fmt.Errorf("failed to scaffold cmd/<bin>/main.go: %w", err)
 		}
 	}
 
-	// cmd/commands.go — the user-owned cobra extension point the
-	// generated cmd/main.go consumes (userCommands()). Scaffolded once so
-	// the initial build compiles. The REAL per-service subcommands
-	// (cmd/services_gen.go — one first-class cobra command per service,
-	// each delegating to runServer with its own name pre-selected over the
-	// data-only internal/app Inventory) are emitted by the generate
-	// pipeline's internal/app composition step, which the service-kind
-	// scaffold runs immediately via bootstrapGeneratedCode.
+	// cmd/<bin>/cmd/commands.go — the user-owned cobra extension point the
+	// generated root.go consumes (userCommands()). Scaffolded once here so the
+	// root command compiles.
+	//
+	// The command-group subpackages (cmd/<bin>/cmd/{services,workers,operators})
+	// are NOT anchored here. They are written by the same GenerateCmdGroups call
+	// that writes the composition root, so main.go and the packages it imports
+	// can never appear one without the other. Nothing else imports them, so
+	// there is no window in which the tree references an empty group dir.
 	if g.isService() && g.Features.CodegenEnabled() {
 		if err := codegen.GenerateCmdCommands(g.Path, g.binaryName()); err != nil {
 			return fmt.Errorf("failed to scaffold cmd/<bin>/cmd/commands.go: %w", err)
-		}
-		// Emit the command-group anchors (services/workers/operators
-		// register_gen.go) with ZERO items so the group subpackages exist from
-		// the first scaffold — an empty (Go-file-less) group dir would make
-		// `go mod tidy` 404 a local import. GenerateCmdGroups also (re)writes
-		// cmd/<bin>/main.go — a bare cmd.Execute() at scaffold, then the full
-		// constructor list once proto is compiled and the composition step
-		// re-emits these alongside the per-item files.
-		if err := codegen.GenerateCmdGroups(codegen.CmdServiceGroupInput{Bin: g.binaryName()}, g.Path, nil); err != nil {
-			return fmt.Errorf("failed to scaffold cmd/<bin>/cmd group anchors: %w", err)
 		}
 	}
 
@@ -454,7 +485,7 @@ func (g *ProjectGenerator) Generate() error {
 	// Tier-2 frozen files (e.g. .golangci.yml via generateGolangciLint)
 	// are written later in Generate(). Recording at this earlier point
 	// silently skipped them via os.IsNotExist, leaving them with no
-	// recorded checksum — which made `forge upgrade` flag them as
+	// recorded checksum — which made `forge project upgrade` flag them as
 	// user-modified on a fresh scaffold. The call is now at the end of
 	// Generate so every managed file exists when its checksum is taken.
 
@@ -490,7 +521,7 @@ func (g *ProjectGenerator) Generate() error {
 	if g.isService() {
 		// Generate KCL deploy files. Always emitted for service-kind so
 		// the scaffold ships a complete project shape — the runtime
-		// gate lives on `forge deploy` itself (features.deploy, derived
+		// gate lives on `forge env deploy` itself (features.deploy, derived
 		// on for service kind).
 		if err := g.generateKCLDeploy(); err != nil {
 			return fmt.Errorf("failed to generate KCL deploy files: %w", err)
@@ -591,7 +622,7 @@ func (g *ProjectGenerator) Generate() error {
 	}
 
 	// Record checksums for frozen (Tier-2) files now that every managed
-	// file has been written. `forge upgrade` uses these checksums to
+	// file has been written. `forge project upgrade` uses these checksums to
 	// distinguish stale codegen from user edits.
 	if err := g.recordFrozenChecksums(); err != nil {
 		return fmt.Errorf("failed to record frozen file checksums: %w", err)
@@ -649,7 +680,7 @@ package %s
 }
 
 // ApplyKindFeatureDefaults is the public entry point invoked by
-// `forge new` after parsing the --kind flag. It delegates to the
+// `forge project new` after parsing the --kind flag. It delegates to the
 // private applyKindFeatureDefaults helper so the scaffold-time
 // matrix lives in one place. Exposed publicly so other callers
 // (tests, sibling tools) can derive the same defaults from a kind
@@ -697,13 +728,6 @@ func (g *ProjectGenerator) applyKindFeatureDefaults() {
 	if g.Features.HotReload == nil {
 		g.Features.HotReload = off()
 	}
-	// Packs target server-shaped projects. CLI and library kinds get
-	// no useful work out of packs: they install auth middleware, audit
-	// interceptors, payment integrations (all service-shape). Disabling
-	// at scaffold time matches the per-kind --kind matrix in the prompt.
-	if g.Features.Packs == nil {
-		g.Features.Packs = off()
-	}
 	// Deploy derives from kind (deploy ⇔ service) at load time, but
 	// generators consult g.Features before any forge.yaml exists, so
 	// record the explicit false here like the other service-shaped
@@ -741,19 +765,8 @@ func (g *ProjectGenerator) createConfigProto(data interface{}) error {
 	return assets.WriteTemplateWithData("config.proto.tmpl", destPath, data)
 }
 
-func (g *ProjectGenerator) createExampleProto(data interface{}) error {
-	svcName := g.ServiceName
-	if svcName == "" {
-		svcName = g.Name
-	}
-	// Proto package segments require [a-z][a-z0-9_]*, so use the Go-package form.
-	svcPkg := naming.ServicePackage(svcName)
-	destPath := filepath.Join(g.Path, "proto", "services", svcPkg, "v1", fmt.Sprintf("%s.proto", svcPkg))
-	return assets.WriteExampleProto(svcName, destPath, data)
-}
-
 func (g *ProjectGenerator) generateServiceFiles() error {
-	return GenerateServiceFiles(g.Path, g.ModulePath, g.ServiceName, g.Name, g.ServicePort)
+	return GenerateServiceFiles(g.Path, g.ModulePath, g.ServiceName, g.Name)
 }
 
 // generatePkgAppConventions writes pkg/app/CONVENTIONS.md, the canonical
@@ -784,11 +797,11 @@ func (g *ProjectGenerator) generateFrontendFiles() error {
 	if err := WriteFrontendWorkspaceFiles(g.Path, g.Name, g.FrontendWorkspaces); err != nil {
 		return fmt.Errorf("write frontend workspace files: %w", err)
 	}
-	// `forge new` doesn't currently support scaffolding an RN frontend
+	// `forge project new` doesn't currently support scaffolding an RN frontend
 	// as the initial one (the FrontendName path always uses Next.js —
 	// kind="" → frontendTemplateDir returns "nextjs"). So WriteUINativePackageFiles
 	// isn't reachable here in practice; users add the RN frontend via
-	// `forge add frontend --kind mobile` which already wires it up.
+	// `forge scaffold frontend --kind mobile` which already wires it up.
 	// If the initial-RN-frontend path ever lands, gate the call here
 	// the same way add.go does.
 	return GenerateFrontendFilesWithOptions(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort, "", FrontendGenOptions{

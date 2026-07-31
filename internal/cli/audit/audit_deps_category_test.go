@@ -13,7 +13,7 @@ import (
 // These two tests exercise the AUDIT roll-up categories auditConfigDeps /
 // auditOptionalDepsGuard, which consume the exported lint collectors
 // (lint.CollectConfigDepsFindings / lint.CollectOptionalDepsGuardFindings).
-// They moved here with `forge audit` into internal/cli/audit. The fixtures
+// They moved here with `forge project audit` into internal/cli/audit. The fixtures
 // are local copies of the lint-package fixtures (the lint tests keep their
 // own).
 

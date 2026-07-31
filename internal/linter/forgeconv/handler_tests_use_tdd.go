@@ -16,7 +16,7 @@
 // The lint is advisory (warning, not error) — projects that pre-date the
 // scaffold default may legitimately ship the hand-rolled shape until the
 // project owner decides to migrate. The codemod
-// `forge test migrate-tdd` converts most files in one shot.
+// `forge project migrate tdd` converts most files in one shot.
 //
 // Detection criteria, evaluated per test file under handlers/<svc>/:
 //
@@ -185,7 +185,7 @@ func findHandRolledTable(fset *token.FileSet, file *ast.File, path, relRoot stri
 			File:     rel,
 			Line:     pos.Line,
 			Message: "use `tdd.RunRPCCases` for per-RPC table tests — see migrations/v0.x-to-tdd-rpccases skill " +
-				"or run `forge test migrate-tdd` to convert this file automatically.",
+				"or run `forge project migrate tdd` to convert this file automatically.",
 			Remediation: "import \"github.com/reliant-labs/forge/pkg/tdd\" and replace the `tests := []struct{name, call}` " +
 				"slice with one `func TestXxx_Generated(t *testing.T)` per RPC delegating to `tdd.RunRPCCases`.",
 		}

@@ -6,10 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // Windows has no POSIX process groups in the kill(2) sense. forge's dev
-// loop (`forge up`) is Unix-first — k3d, air, docker — so these are
+// loop (`forge env up`) is Unix-first — k3d, air, docker — so these are
 // best-effort no-op / single-process fallbacks that keep the build green
 // on Windows rather than a full job-object implementation.
 
@@ -42,12 +43,17 @@ func killProcessTree(pid int, sig syscall.Signal) {
 	_ = signalProcessGroup(pid, sig)
 }
 
-// ppidMap / listPIDs / portListenerPID: the marker-based ownership
-// reclaim (up_reclaim.go) is Unix-first. On Windows these return empty so
-// ownership resolution degrades to "unidentifiable → foreign" — never a
-// misfire — keeping the build green without a tasklist/netstat port.
+// ppidMap / portListenerPID: the marker-based ownership reclaim
+// (up_reclaim.go) is Unix-first. On Windows these return empty so ownership
+// resolution degrades to "unidentifiable → foreign" — never a misfire —
+// keeping the build green without a tasklist/netstat port. An empty ppidMap
+// also empties osProcFacts.pidList, so every marker sweep finds nothing and
+// teardown falls back to the recorded pids (see stackTeardownRoots).
 func ppidMap() map[int]int { return nil }
 
-func listPIDs() []int { return nil }
-
 func portListenerPID(_ int) int { return 0 }
+
+// procStartTimes: `forge env status` build-freshness is Unix-first. On Windows
+// this returns empty so freshness degrades to whatever the platform can supply
+// (nothing here) without misfiring.
+func procStartTimes(_ []int) map[int]time.Time { return map[int]time.Time{} }

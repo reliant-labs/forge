@@ -27,7 +27,7 @@ import "google/protobuf/duration.proto";
 //
 // The component then takes `Cfg config.TraderConfig` in its Deps and
 // internal/app/compose.go (NewComponents) wires it from the loaded Config.
-// Per-env values go in config.<env>.yaml under the leaf name (max_per_tick: 50).
+// Per-env values go in deploy/kcl/<env>/config.k under the leaf name (max_per_tick = 50).
 // Never put scalars (string/int/bool/duration) directly in Deps.
 message AppConfig {
   int32 port = 1 [(forge.v1.config) = {
@@ -47,14 +47,16 @@ message AppConfig {
   string database_url = 3 [(forge.v1.config) = {
     env_var: "DATABASE_URL",
     flag: "database-url",
-    description: "PostgreSQL connection string"
+    required: true,
+    sensitive: true,
+    description: "PostgreSQL connection string. SENSITIVE — it embeds the database password, so it is NEVER an inline value in a rendered manifest: the deploy projection binds it to valueFrom.secretKeyRef (the project's <name>-secrets Secret, key database_url) in every environment. Values come from the env's secret provider (dev: the gitignored .env.dev, from which forge renders the Secret for local clusters; staging/prod: an out-of-band Secret forge never sees). Required: the server refuses to start without it (config.checkRequired fires before bind)."
   }];
 
   string cors_origins = 4 [(forge.v1.config) = {
     env_var: "CORS_ORIGINS",
     flag: "cors-origins",
     role: CONFIG_FIELD_ROLE_CORS_ORIGINS,
-    description: "Comma-separated list of allowed CORS origins. The CONFIG_FIELD_ROLE_CORS_ORIGINS annotation — not this field's name — is what makes config.Validate reject a wildcard ('*') combined with credentials."
+    description: "Comma-separated list of allowed CORS origins, applied in every DEPLOYED environment — empty there means no CORS layer at all. Leave it empty for local development: ENVIRONMENT=development already runs an origin-reflecting dev policy that ignores this list, so a scaffolded frontend needs nothing set here. The CONFIG_FIELD_ROLE_CORS_ORIGINS annotation — not this field's name — is what makes config.Validate reject a wildcard ('*') combined with credentials."
   }];
 
   bool cors_allow_credentials = 15 [(forge.v1.config) = {
@@ -118,7 +120,7 @@ message AppConfig {
     flag: "environment",
     default_value: "production",
     role: CONFIG_FIELD_ROLE_MODE,
-    description: "Runtime environment (production, development). In development, some defaults are permissive (e.g. authz allow-all) for local ergonomics — never use development in production. The CONFIG_FIELD_ROLE_MODE annotation — NOT this field's name — is what makes config.Mode()/DevAuthBypass() read it; rename freely, the behavior follows the annotation."
+    description: "Runtime environment (production, development). Exactly \"development\" (not \"dev\", not \"Development\") relaxes two things, and nothing else: CORS runs with an origin-reflecting allow-all policy even when CORS_ORIGINS is empty, so this app's own browser frontend reaches its API with no manual step; and HSTS is not emitted. Every other value — including unset — is a deployed environment and stays closed. NEVER use development in production. The CONFIG_FIELD_ROLE_MODE annotation — NOT this field's name — is what makes config.Mode() read it; rename freely, the behavior follows the annotation."
   }];
 
   int32 rate_limit_rps = 7 [(forge.v1.config) = {
@@ -180,6 +182,110 @@ message AppConfig {
     env_var: "OTEL_EXPORTER_OTLP_ENDPOINT",
     flag: "otlp-endpoint",
     description: "OTLP/gRPC collector endpoint for traces and metrics (e.g. http://localhost:4317). Empty disables OTLP export; the always-on Prometheus /metrics endpoint is unaffected."
+  }];
+
+  // Connect payload caps. These are a SECURITY control, not a tuning knob:
+  // the server buffers and decodes an entire request body before any
+  // interceptor (auth, rate limit, protovalidate) can reject it, so an
+  // uncapped handler lets one anonymous request allocate several times the
+  // body size and OOMKill the pod. Rate limiting does not help — it counts
+  // requests, not bytes. Raise these only for endpoints that genuinely
+  // accept large payloads, and prefer a dedicated upload path instead.
+  int32 read_max_bytes = 23 [(forge.v1.config) = {
+    env_var: "READ_MAX_BYTES",
+    flag: "read-max-bytes",
+    default_value: "4194304",
+    description: "Maximum size in bytes of a single inbound Connect request payload (default 4 MiB). Requests larger than this are rejected before the handler runs. 0 is not 'unlimited' here: it is replaced by the 4 MiB default at startup."
+  }];
+
+  int32 send_max_bytes = 24 [(forge.v1.config) = {
+    env_var: "SEND_MAX_BYTES",
+    flag: "send-max-bytes",
+    default_value: "4194304",
+    description: "Maximum size in bytes of a single outbound Connect response payload (default 4 MiB). A handler that would exceed it fails rather than streaming an unbounded body. 0 is replaced by the 4 MiB default at startup."
+  }];
+
+  // ── Authentication ────────────────────────────────────────────────────
+  //
+  // The bearer-token validator internal/app/auth.go (SetupAuth) builds reads
+  // these five and nothing else. They are ordinary config fields on purpose:
+  // WHICH validator to build is code (swap auth.NewValidator for auth.Clerk
+  // and this block goes unread), but WHERE this deployment's issuer lives is
+  // a per-environment value, and every per-environment value in a forge app
+  // is declared here. Pin them in deploy/kcl/<env>/config.k; the secret
+  // rides the env's secret provider.
+
+  string jwt_signing_method = 25 [(forge.v1.config) = {
+    env_var: "JWT_SIGNING_METHOD",
+    flag: "jwt-signing-method",
+    default_value: "RS256",
+    description: "Expected JWT `alg` — HS256/HS384/HS512 (shared secret), RS256/RS384/RS512 or ES256/ES384/ES512 (public key or JWKS). A token whose alg differs is rejected however good its signature is, so this must AGREE with the key material: jwt_secret holding a shared secret means HS*, jwt_secret holding a PEM public key or a jwt_jwks_url means RS*/ES*."
+  }];
+
+  string jwt_issuer = 26 [(forge.v1.config) = {
+    env_var: "JWT_ISSUER",
+    flag: "jwt-issuer",
+    description: "Token issuer (`iss`) to enforce. Empty accepts any issuer — set it in every deployed environment so a token minted by a DIFFERENT instance of the same IdP is rejected."
+  }];
+
+  string jwt_audience = 27 [(forge.v1.config) = {
+    env_var: "JWT_AUDIENCE",
+    flag: "jwt-audience",
+    description: "Audience (`aud`) to enforce. Empty accepts any audience — set it so a token minted for another API of the same issuer cannot be replayed against this one."
+  }];
+
+  string jwt_jwks_url = 28 [(forge.v1.config) = {
+    env_var: "JWT_JWKS_URL",
+    flag: "jwt-jwks-url",
+    description: "The issuer's JWKS endpoint (e.g. https://<issuer>/.well-known/jwks.json). This is the standard OIDC path — Auth0, Keycloak, Zitadel, Okta, Supabase, Clerk, Firebase. Keys are fetched at boot (an unreachable endpoint REFUSES TO START, with the URL in the message) and refreshed in the background, so issuer key rotation needs no redeploy. Mutually exclusive with jwt_secret: two key sources for one validator is a configuration error, not a precedence puzzle."
+  }];
+
+  string jwt_secret = 29 [(forge.v1.config) = {
+    env_var: "JWT_SECRET",
+    flag: "jwt-secret",
+    sensitive: true,
+    description: "The static signing key: an HS* SHARED SECRET, or a PEM-encoded RS*/ES* PUBLIC key. SENSITIVE — an HS* value verifies AND mints, so it is never an inline manifest value: the deploy projection binds it to valueFrom.secretKeyRef in every environment (dev: the gitignored .env.dev; staging/prod: an out-of-band Secret forge never sees). Leave it empty when jwt_jwks_url is set. Empty in both means the service can verify nothing and every credential it is shown is rejected — which is the correct closed state, not a bug."
+  }];
+
+  // ── OIDC browser sign-in (the PUBLIC/PKCE client) ─────────────────────
+  //
+  // These describe the client that runs in a BROWSER and obtains tokens
+  // (forge/pkg/oauth2: RFC 7636 PKCE + authorization-code exchange). They
+  // are read by whatever performs the flow — the frontend, or a CLI — and
+  // are NOT read by the token validator above: this server validates
+  // bearer tokens statelessly and is not a participant in the flow.
+  //
+  // NONE of them is a secret, and none is marked sensitive. A PUBLIC PKCE
+  // client HAS no client secret — that is the entire point of PKCE, which
+  // replaces the secret with a per-attempt code verifier so a credential
+  // that cannot be kept secret in a browser is not needed at all. There is
+  // deliberately no oidc_client_secret field here: a confidential client
+  // (a server-side web app) would add one AS SENSITIVE, but the browser
+  // flow these fields describe would not use it.
+  //
+  // These are the whole set — the token endpoint, the authorization
+  // endpoint and the JWKS URI are DERIVED, not configured: one issuer plus
+  // oauth2.Discover(ctx, client, issuer) yields all three from
+  // /.well-known/openid-configuration, so three more fields would be three
+  // more things to keep consistent with each other.
+
+  string oidc_client_id = 30 [(forge.v1.config) = {
+    env_var: "OIDC_CLIENT_ID",
+    flag: "oidc-client-id",
+    description: "The OIDC client (application) ID of the browser client, as registered with the issuer. NOT a secret and deliberately NOT `sensitive`: it ships inside the JS bundle and travels in the query string of every authorization request, so it is public by construction. Binding it to a secretKeyRef would claim a confidentiality it does not have and demand a Secret entry to boot. It is an IDENTIFIER, not a credential — a caller who knows it still cannot obtain a token, because PKCE requires the code verifier and the issuer requires a registered redirect URI."
+  }];
+
+  string oidc_redirect_uri = 31 [(forge.v1.config) = {
+    env_var: "OIDC_REDIRECT_URI",
+    flag: "oidc-redirect-uri",
+    description: "Where the issuer sends the user agent back with the authorization code (e.g. http://localhost:3000/callback in dev). It must match a redirect URI registered with the issuer EXACTLY — the issuer compares it literally, so a trailing slash or a kernel-assigned port is a rejected login, which is why a dev IdP's ports are pinned rather than dynamic. This is a security control, not a routing detail: the registered-URI allow-list is what stops an attacker redirecting a code to a host they own."
+  }];
+
+  string oidc_scopes = 32 [(forge.v1.config) = {
+    env_var: "OIDC_SCOPES",
+    flag: "oidc-scopes",
+    default_value: "openid,profile,email,offline_access",
+    description: "Comma-separated scopes to request in the authorization request. `openid` is what makes the request OIDC rather than bare OAuth 2.0 and must be present. `offline_access` is what earns a refresh token, and without it the access token simply dies after its hour and signs the user out mid-session — so it is a default, not an add-on. Note that the scope ALONE is not enough: OIDC Core §11 requires `prompt=consent` alongside it, and a server that does not see the prompt drops the scope SILENTLY (no error, no refresh token). The frontend derives that prompt from these scopes, so the two cannot drift; see promptFor() in src/lib/auth/oidc-provider.ts. Drop `offline_access` if you want sessions to end hard at token expiry. Comma-separated here because that is how this config system carries lists; the flow joins them with SPACES, which is what RFC 6749 §3.3 puts on the wire."
   }];
 
   // NOTE: there is intentionally NO `service_name` config field. The OTel

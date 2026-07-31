@@ -1,25 +1,26 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
 //
-// Auto-scaffolded happy-path tests for {{.ServiceName}} hooks.
+// Happy-path tests for the generated {{.ServiceName}} hooks. Written once, when
+// no sibling test existed; this file is YOURS from here — forge never
+// regenerates it, so edit freely (delete it and re-run `forge generate` to
+// get a fresh one).
 //
-// This file landed with a `.starter` suffix because forge `generate`
-// only emits a starter test when no sibling test exists; rename
-// `<svc>-hooks.test.tsx.starter` to `<svc>-hooks.test.tsx` to activate.
-// Once activated, this file is yours — forge will not regenerate it.
-//
-// Each test covers the happy path of one RPC. Extend with error /
-// loading / empty cases as you build the page. See the
-// `frontend-testing` skill for the four-state coverage rule.
+// Each test covers the happy path of one RPC: the hook resolves against the
+// mock transport, which is the floor that catches a renamed schema, a broken
+// transport wiring, or a hook that no longer compiles. Extend with error /
+// loading / empty cases as you build the page — see the `frontend-testing`
+// skill for the four-state coverage rule.
 
-import { describe, it, expect } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { renderHook, waitFor } from "@testing-library/react";
+import { describe, it, expect } from "vitest";
 
-import { mockTransport } from "@/lib/test-utils";
 import { setTransport } from "@/lib/connect";
+import { mockTransport } from "@/lib/test-utils";
 {{range .HookImports}}import { {{.Symbol}} } from "./{{.Module}}";
 {{end}}
+import type { ReactNode } from "react";
+
 
 function wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({

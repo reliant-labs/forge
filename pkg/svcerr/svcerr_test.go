@@ -311,3 +311,84 @@ func TestWrapped_EmptyDetail(t *testing.T) {
 		t.Fatalf("NotFound(\"\") = %v, want ErrNotFound sentinel", err)
 	}
 }
+
+// TestWithReason_MetadataRoundTrip verifies a reason code annotated via
+// WithReason surfaces as Connect error metadata under ReasonHeader while
+// leaving the mapped Connect code intact, and that a plain error carries
+// no such metadata.
+func TestWithReason_MetadataRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	// With a reason: the code rides through Wrap to ReasonHeader metadata.
+	err := svcerr.WithReason(
+		svcerr.FailedPrecondition("no active subscription"),
+		"no_active_subscription",
+	)
+	wrapped := svcerr.Wrap(err)
+	var ce *connect.Error
+	if !errors.As(wrapped, &ce) {
+		t.Fatalf("Wrap(WithReason(...)) is not *connect.Error; type = %T", wrapped)
+	}
+	if ce.Code() != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %v, want CodeFailedPrecondition", ce.Code())
+	}
+	if got := ce.Meta().Get(svcerr.ReasonHeader); got != "no_active_subscription" {
+		t.Fatalf("%s = %q, want %q", svcerr.ReasonHeader, got, "no_active_subscription")
+	}
+
+	// Without a reason: no ReasonHeader metadata (behavior unchanged).
+	plain := svcerr.Wrap(svcerr.FailedPrecondition("no active subscription"))
+	var pce *connect.Error
+	if !errors.As(plain, &pce) {
+		t.Fatalf("Wrap(FailedPrecondition) is not *connect.Error; type = %T", plain)
+	}
+	if got := pce.Meta().Get(svcerr.ReasonHeader); got != "" {
+		t.Fatalf("no-reason path set %s = %q, want empty", svcerr.ReasonHeader, got)
+	}
+}
+
+// TestWithReason_PreservesSemantics verifies WithReason is transparent to
+// the sentinel/Code machinery: errors.Is still matches the wrapped
+// sentinel and svcerr.Code still resolves through the annotation, even
+// when the WithReason error is further wrapped with fmt.Errorf.
+func TestWithReason_PreservesSemantics(t *testing.T) {
+	t.Parallel()
+
+	err := svcerr.WithReason(svcerr.NotFound("thing"), "thing_missing")
+	if !errors.Is(err, svcerr.ErrNotFound) {
+		t.Fatalf("errors.Is(WithReason(NotFound), ErrNotFound) = false, want true")
+	}
+	if got := svcerr.Code(err); got != connect.CodeNotFound {
+		t.Fatalf("Code = %v, want CodeNotFound", got)
+	}
+
+	// Extra wrapping around the reason annotation stays transparent.
+	deeper := fmt.Errorf("service X: %w", err)
+	ce := svcerr.ToConnect(deeper)
+	if ce.Code() != connect.CodeNotFound {
+		t.Fatalf("wrapped code = %v, want CodeNotFound", ce.Code())
+	}
+	if got := ce.Meta().Get(svcerr.ReasonHeader); got != "thing_missing" {
+		t.Fatalf("wrapped %s = %q, want %q", svcerr.ReasonHeader, got, "thing_missing")
+	}
+}
+
+// TestWithReason_NilAndEmpty covers the contract corners.
+func TestWithReason_NilAndEmpty(t *testing.T) {
+	t.Parallel()
+
+	if got := svcerr.WithReason(nil, "code"); got != nil {
+		t.Fatalf("WithReason(nil, _) = %v, want nil", got)
+	}
+
+	// Empty code returns the input unchanged (no annotation, no metadata).
+	base := svcerr.FailedPrecondition("nope")
+	got := svcerr.WithReason(base, "")
+	if got != base {
+		t.Fatalf("WithReason(err, \"\") = %v, want the input error unchanged", got)
+	}
+	ce := svcerr.ToConnect(got)
+	if v := ce.Meta().Get(svcerr.ReasonHeader); v != "" {
+		t.Fatalf("empty-code path set %s = %q, want empty", svcerr.ReasonHeader, v)
+	}
+}

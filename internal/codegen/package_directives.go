@@ -39,6 +39,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -49,7 +50,243 @@ const (
 	directiveExcludeContract    = "forge:exclude-contract"
 	directiveExternalComponent  = "forge:external-component"
 	directiveExternalComponent2 = "forge:provided"
+
+	// directiveServiceMarker / directiveContractMarker sit on an INTERFACE's
+	// doc (or inline) comment and declare it the package's Service contract
+	// under a NON-canonical name. They free the friction the strict
+	// contract-name rule imposed: an author who names an adapter interface
+	// role-orientedly (Gateway / Provider / Dispatcher — which the adapter
+	// skill itself encourages) no longer hits a hard lint + a multi-file
+	// rename. Both spellings mean the same thing; `contract` reads better on
+	// a non-adapter package, `service` on a service-shaped one.
+	directiveServiceMarker  = "forge:service"
+	directiveContractMarker = "forge:contract"
+
+	// directiveConstructorMarker sits on the package constructor's (`func New`)
+	// doc comment. It is the Phase-2 opt-in signal for the generated
+	// observability decorator (middleware_gen.go) — the marker anchors both
+	// the decorator generation and, later, the constructor-unexport lint.
+	// Scaffolds stamp it by default so a generated package is born instrumented.
+	directiveConstructorMarker = "forge:constructor"
+
+	// directiveNoObserve is the observability opt-out. It has TWO scopes:
+	//
+	//   - PACKAGE-level — on the constructor's doc, the package doc, or the
+	//     Service/marked contract interface's doc (i.e. on contract.go / New).
+	//     Skips the decorator entirely (compose falls back to the unwrapped
+	//     construction; the stale _gen decorator is removed).
+	//   - METHOD-level — on a single interface method's doc comment. The
+	//     decorator still wraps the type, but THAT method delegates directly
+	//     without routing through the chain (MethodDef.SkipObserve; handled in
+	//     the contract decorator generator, NOT here).
+	//
+	// observePackageDecision consults only the PACKAGE-level slots — it never
+	// reads an interface method's doc, so a method-level opt-out is never
+	// mistaken for a package-level one.
+	directiveNoObserve = "forge:no-observe"
 )
+
+// observePackageDecision scans the package rooted at dir for the two
+// PACKAGE-level observability markers, returning them in one AST walk:
+//
+//   - hasConstructorMarker: `// forge:constructor` on the constructor's doc
+//     (any name — see IsComponentConstructor) — the
+//     opt-in signal for the generated decorator.
+//   - hasNoObserve: `// forge:no-observe` on the constructor's doc, the package
+//     doc comment, or the contract interface's doc — the package-level opt-out.
+//
+// METHOD-level `// forge:no-observe` (on an interface method field) is
+// deliberately NOT consulted here: those slots are the method fields' own doc
+// comments, which this walk never inspects, so the two scopes can never be
+// conflated. Non-test, non-generated files only; both spaced (`// forge:x`)
+// and unspaced (`//forge:x`) forms are recognized, and the marker must be the
+// whole comment line.
+func observePackageDecision(dir string) (hasConstructorMarker, hasNoObserve bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, false
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") ||
+			strings.HasSuffix(name, "_test.go") || strings.HasSuffix(name, "_gen.go") {
+			continue
+		}
+		file, perr := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments|parser.SkipObjectResolution)
+		if perr != nil {
+			continue
+		}
+		// Package doc comment — a package-level opt-out may live on contract.go.
+		if anyCommentGroupHasDirective(directiveNoObserve, file.Doc) {
+			hasNoObserve = true
+		}
+		for _, decl := range file.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				// The package constructor's doc anchors both markers.
+				if !IsComponentConstructor(d) {
+					continue
+				}
+				if anyCommentGroupHasDirective(directiveConstructorMarker, d.Doc) {
+					hasConstructorMarker = true
+				}
+				if anyCommentGroupHasDirective(directiveNoObserve, d.Doc) {
+					hasNoObserve = true
+				}
+			case *ast.GenDecl:
+				if d.Tok != token.TYPE {
+					continue
+				}
+				for _, spec := range d.Specs {
+					ts, ok := spec.(*ast.TypeSpec)
+					if !ok {
+						continue
+					}
+					// Only the INTERFACE type-decl doc slots — never a method
+					// field's doc, so a method-level opt-out is not seen here.
+					if _, isIface := ts.Type.(*ast.InterfaceType); !isIface {
+						continue
+					}
+					if anyCommentGroupHasDirective(directiveNoObserve, d.Doc, ts.Doc, ts.Comment) {
+						hasNoObserve = true
+					}
+				}
+			}
+		}
+	}
+	return hasConstructorMarker, hasNoObserve
+}
+
+// HasConstructorMarker reports whether the package rooted at dir carries the
+// `// forge:constructor` marker on its `func New` doc comment — the opt-in
+// signal for the generated observability decorator.
+func HasConstructorMarker(dir string) bool {
+	m, _ := observePackageDecision(dir)
+	return m
+}
+
+// HasPackageNoObserveDirective reports whether the package rooted at dir opts
+// OUT of observability at the PACKAGE level via `// forge:no-observe` (on the
+// constructor, package doc, or contract interface). Method-level opt-outs are
+// not reported here — see MethodDef.SkipObserve.
+func HasPackageNoObserveDirective(dir string) bool {
+	_, n := observePackageDecision(dir)
+	return n
+}
+
+// anyCommentGroupHasDirective reports whether any of the given comment groups
+// carries a comment whose whole text (after stripping comment markers +
+// whitespace) equals needle. Mirrors HasServiceContractMarker's rule so prose
+// that merely mentions a directive is never a false match; recognizes both the
+// spaced and unspaced forms.
+func anyCommentGroupHasDirective(needle string, groups ...*ast.CommentGroup) bool {
+	for _, cg := range groups {
+		if cg == nil {
+			continue
+		}
+		for _, c := range cg.List {
+			if commentEquals(c, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// HasServiceContractMarker reports whether any of the given comment groups
+// carries the `//forge:service` or `//forge:contract` marker. The marker
+// must be the WHOLE comment line (after stripping comment syntax +
+// whitespace), matching every other forge directive, so prose that merely
+// mentions it is never a false match. Both spaced (`// forge:service`) and
+// unspaced (`//forge:service`) forms are recognized. Shared by
+// DetectServiceInterfaceName (codegen) and the contract-name lint
+// (contractcheck) so the two never drift on what counts as marked.
+func HasServiceContractMarker(groups ...*ast.CommentGroup) bool {
+	for _, cg := range groups {
+		if cg == nil {
+			continue
+		}
+		for _, c := range cg.List {
+			switch trimCommentMarkers(c.Text) {
+			case directiveServiceMarker, directiveContractMarker:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// DetectServiceInterfaceName returns the name of the package's Service
+// contract interface — the type key a consumer's by-type Deps field is
+// matched against, and the interface the contract-name lint accepts:
+//
+//   - "Service"  — a type named `Service` exists (interface OR struct):
+//     the zero-annotation canonical path, unchanged and always preferred.
+//   - <name>     — no `Service` type, but an interface carries the
+//     `//forge:service` / `//forge:contract` marker: the marker frees the
+//     interface's name (Gateway / Provider / Dispatcher …).
+//   - ""         — neither; the caller defaults to "Service".
+//
+// The canonical `Service` always wins over a marker (a package with both
+// keeps `Service`), so existing projects are byte-for-byte unaffected.
+// Among multiple marked interfaces the first in deterministic order (file
+// name, then source position) is chosen; marking two interfaces is a user
+// error the lint can surface separately. Non-test, non-generated files
+// only. Unreadable/unparseable dirs return "".
+func DetectServiceInterfaceName(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") ||
+			strings.HasSuffix(n, "_test.go") || strings.HasSuffix(n, "_gen.go") {
+			continue
+		}
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	fset := token.NewFileSet()
+	marked := ""
+	for _, n := range names {
+		file, perr := parser.ParseFile(fset, filepath.Join(dir, n), nil, parser.ParseComments|parser.SkipObjectResolution)
+		if perr != nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				// Canonical `Service` (interface OR struct) always wins.
+				if ts.Name.Name == "Service" {
+					return "Service"
+				}
+				if _, isIface := ts.Type.(*ast.InterfaceType); !isIface {
+					continue
+				}
+				if marked != "" {
+					continue
+				}
+				// The doc slot can live on the grouped GenDecl (`type (…)`)
+				// or the spec itself; the inline slot on the spec.
+				if HasServiceContractMarker(genDecl.Doc, ts.Doc, ts.Comment) {
+					marked = ts.Name.Name
+				}
+			}
+		}
+	}
+	return marked
+}
 
 // HasExcludeContractDirective reports whether the package rooted at dir
 // declares `//forge:exclude-contract` in any of its non-test .go files.
@@ -57,6 +294,18 @@ const (
 // per-package equivalent of forge.yaml `contracts.exclude`.
 func HasExcludeContractDirective(dir string) bool {
 	return packageHasDirective(dir, directiveExcludeContract)
+}
+
+// HasOutboundIODirective reports whether the package rooted at dir declares
+// `//forge:outbound-io` in any of its non-test .go files — the marker the
+// adapter scaffold stamps on contract.go. It asserts one property: this
+// package calls OUT to a third-party system and nothing calls in. Two
+// mechanisms read it — the outbound-io-no-rpc contract check (an inbound
+// handler contradicts the claim) and the enforce-component-observe lint's
+// I/O heuristic (an outbound boundary does I/O by definition, so a component
+// depending on one touches I/O).
+func HasOutboundIODirective(dir string) bool {
+	return packageHasDirective(dir, "forge:outbound-io")
 }
 
 // HasExternalComponentDirective reports whether the package rooted at dir

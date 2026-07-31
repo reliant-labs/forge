@@ -113,7 +113,7 @@ func TestSkillTemplatesReferOnlyToRealCommands(t *testing.T) {
 			// leftover may contain trailing positional args; strip any
 			// that aren't recognized subcommands of `found`. We allow
 			// leftover tokens here because many skills write things
-			// like `forge deploy prod` where `prod` is a positional
+			// like `forge env deploy prod` where `prod` is a positional
 			// arg, not a subcommand. The invariant we want is: every
 			// token that IS a command name resolved to a real command.
 			// So: check that Find walked as deep as possible, meaning

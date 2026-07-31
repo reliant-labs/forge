@@ -192,24 +192,24 @@ func TestApplyDisableFlags_MixedValidAndInvalid(t *testing.T) {
 	}
 }
 
-// TestApplyDisableFlags_NewFeatures covers the build/packs/starters
+// TestApplyDisableFlags_NewFeatures covers the build
 // names added by the features-block work — they must be valid
 // --disable values and resolve to disabling the matching flag on
 // the generator's FeaturesConfig.
 func TestApplyDisableFlags_NewFeatures(t *testing.T) {
 	gen := newTestGen()
-	if err := applyDisableFlags(gen, []string{"build", "packs"}); err != nil {
+	if err := applyDisableFlags(gen, []string{"build", "deploy"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gen.Features.BuildEnabled() {
 		t.Error("expected build to be disabled")
 	}
-	if gen.Features.PacksEnabled() {
-		t.Error("expected packs to be disabled")
+	if gen.Features.DeployEnabled() {
+		t.Error("expected deploy to be disabled")
 	}
 	// Unrelated stable features still enabled (nil default).
 	if !gen.Features.FrontendEnabled() {
-		t.Error("expected frontend to remain enabled (only build/packs disabled)")
+		t.Error("expected frontend to remain enabled (only build/deploy disabled)")
 	}
 }
 

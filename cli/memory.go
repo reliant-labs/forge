@@ -16,7 +16,7 @@ import (
 // error when forge.yaml is missing or unreadable, or when the template
 // cannot be rendered.
 //
-// The template is read from the same embedded source that `forge new`
+// The template is read from the same embedded source that `forge project new`
 // writes for non-reliant harnesses, so the in-memory and on-disk paths
 // stay byte-identical.
 func RenderProjectMemory(projectRoot string) ([]byte, error) {

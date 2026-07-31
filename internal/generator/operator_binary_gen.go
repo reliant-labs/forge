@@ -13,13 +13,13 @@ import (
 )
 
 // GenerateOperatorBinaryOnly scaffolds an operator package WITHOUT a
-// placeholder CRD. CRDs are added via `forge add crd <name>` instead,
+// placeholder CRD. CRDs are added via `forge scaffold crd <name>` instead,
 // which produces per-CRD shims that delegate to forge/pkg/controller.
 //
 // The generator emits two files:
 //
 //   - internal/operators/<package>/doc.go — package documentation that explains
-//     the operator's role and points users at `forge add crd`.
+//     the operator's role and points users at `forge scaffold crd`.
 //
 //   - internal/operators/<package>/operator.go — the wiring symbols
 //     (Controller, Deps, New, AddToScheme) that the bootstrap
@@ -48,7 +48,7 @@ func GenerateOperatorBinaryOnly(root, modulePath, name, group, version string) e
 	//
 	// This is intentionally narrow: we only skip when the *operator* shape
 	// is already present. A sibling <crd>_controller.go added via
-	// `forge add crd` is fine — those don't declare a top-level Controller
+	// `forge scaffold crd` is fine — those don't declare a top-level Controller
 	// type or AddToScheme, only a per-CRD reconciler type. The scan is
 	// AST-based rather than grep-based so a comment that mentions
 	// "Controller" doesn't trigger the skip.
@@ -68,7 +68,7 @@ func GenerateOperatorBinaryOnly(root, modulePath, name, group, version string) e
 //
 // To add a CRD scaffold to this operator, run:
 //
-//   forge add crd <Name> --operator %s
+//   forge scaffold crd <Name> --operator %s
 //
 // That command emits:
 //
@@ -96,8 +96,8 @@ package %s
 	op := fmt.Sprintf(`// yours: scaffolded once, never touched again — forge will not overwrite this file
 //
 // Wire your operator's manager-level dependencies here. Per-CRD
-// reconcilers live in <crd>_controller.go (added via 'forge add crd').
-package %s
+// reconcilers live in <crd>_controller.go (added via 'forge scaffold crd').
+package %[1]s
 
 import (
 	"log/slog"
@@ -108,7 +108,18 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// Deps contains manager-level dependencies for the %s operator.
+// APIGroup and APIVersion are this operator's CRD API coordinates — the
+// group/version 'forge scaffold crd' defaults a new CRD to. They live in
+// the operator package because the package IS the declaration: forge derives
+// its component inventory from real sources, not from a manifest, so these
+// constants are how a later 'forge scaffold crd --operator %[2]s' knows the
+// group you chose. Pass --group/--version to that command to override per-CRD.
+const (
+	APIGroup   = %[3]q
+	APIVersion = %[4]q
+)
+
+// Deps contains manager-level dependencies for the %[2]s operator.
 // Per-CRD reconcilers carry their own deps as fields on the embedding
 // controller type.
 type Deps struct {
@@ -117,25 +128,25 @@ type Deps struct {
 
 // Controller is the operator's manager-level handle. It is
 // constructed by pkg/app/bootstrap.go and consumed by
-// cmd/%s/main.go which wires per-CRD reconcilers to the
+// cmd/%[1]s/main.go which wires per-CRD reconcilers to the
 // controller-runtime manager.
 //
 // You can extend Controller with additional fields (DB handle, NATS
 // publisher, etc.) and propagate them to per-CRD reconcilers in
-// cmd/%s/main.go's manager setup.
+// cmd/%[1]s/main.go's manager setup.
 type Controller struct {
 	Deps Deps
 
 	// Reconcilers is the list of per-CRD reconcilers wired to the
 	// manager when SetupWithManager is invoked. Populate this slice
-	// in cmd/%s/main.go (or in pkg/app/setup.go) before the
+	// in cmd/%[1]s/main.go (or in pkg/app/setup.go) before the
 	// manager is started — typically by appending each CRD's
 	// New<Type>Controller() result.
 	Reconcilers []ManagerSetup
 }
 
 // ManagerSetup is the contract every per-CRD reconciler implements.
-// 'forge add crd' generates a SetupWithManager method on each
+// 'forge scaffold crd' generates a SetupWithManager method on each
 // reconciler that satisfies this interface; the operator's Controller
 // holds them in a slice and forwards SetupWithManager to all of them.
 type ManagerSetup interface {
@@ -143,11 +154,11 @@ type ManagerSetup interface {
 }
 
 // Name returns the operator's identifier.
-func (c *Controller) Name() string { return %q }
+func (c *Controller) Name() string { return %[2]q }
 
 // SetupWithManager registers every Reconciler in c.Reconcilers with
-// the manager. Per-CRD reconcilers (added via 'forge add crd') append
-// themselves to c.Reconcilers in cmd/%s/main.go.
+// the manager. Per-CRD reconcilers (added via 'forge scaffold crd') append
+// themselves to c.Reconcilers in cmd/%[1]s/main.go.
 func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
 	for _, r := range c.Reconcilers {
 		if err := r.SetupWithManager(mgr); err != nil {
@@ -170,7 +181,7 @@ func New(deps Deps) *Controller {
 
 // AddToScheme registers all CRD types reconciled by this operator
 // onto the supplied scheme. The default scaffold registers
-// client-go's stock types; per-CRD 'forge add crd' runs append
+// client-go's stock types; per-CRD 'forge scaffold crd' runs append
 // their AddToScheme calls below this line. The marker
 // "+forge:operator-scheme" is recognised by 'forge generate' for
 // idempotent re-registration.
@@ -180,7 +191,7 @@ func AddToScheme(scheme *runtime.Scheme) error {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	return nil
 }
-`, operatorPackage, name, operatorPackage, operatorPackage, operatorPackage, name, operatorPackage)
+`, operatorPackage, name, group, version)
 
 	opPath := filepath.Join(operatorDir, "operator.go")
 	if err := os.WriteFile(opPath, []byte(op), 0644); err != nil {
@@ -202,7 +213,7 @@ func AddToScheme(scheme *runtime.Scheme) error {
 // This matches the v0 controller-IS-the-reconciler shape (where
 // `controller.go` carries `type Controller struct { ... }` plus
 // `SetupWithManager`) without false-positives on per-CRD reconciler files
-// scaffolded by `forge add crd` (those declare a per-CRD type like
+// scaffolded by `forge scaffold crd` (those declare a per-CRD type like
 // `WorkspaceController`, not bare `Controller`, and don't declare
 // `AddToScheme`).
 //

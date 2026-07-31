@@ -52,8 +52,22 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Go tests
-        run: go test -race -count=1 ./...
+      # Task is the single definition of the test suite: this job, the local
+      # edit loop, and `task test:all` all run the same commands out of
+      # Taskfile.yml. The workflow deliberately does NOT re-spell `go test`
+      # here — that is how the two drifted apart before (CI ran a bare
+      # `go test ./...` that skipped the frontend lane entirely, so a broken
+      # frontend test could merge green).
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tests
+        # GOTESTRACE carries forge.yaml's `ci.test.race` through to the
+        # Taskfile, which is the one place the `go test` flags are spelled.
+        # Without the pass-through the key would go silently dead the moment
+        # the test command moved out of this workflow.
+        run: task test
 
   build:
     name: Build

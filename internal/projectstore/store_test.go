@@ -14,17 +14,8 @@ func sampleConfig() *config.ProjectConfig {
 		ModulePath:   "github.com/acme/demo",
 		Kind:         "service",
 		Binary:       "shared",
-		Version:      "1.2.3",
 		ForgeVersion: "0.9.0",
-		Components: []config.ComponentConfig{
-			{Name: "api", Kind: "server", Path: "handlers/api", Ports: map[string]config.PortSpec{"http": {Port: 8080}}},
-			{Name: "sweeper", Kind: "worker", Path: "workers/sweeper"},
-			{Name: "nightly", Kind: "cron", Schedule: "0 0 * * *"},
-			{Name: "ctrl", Kind: "operator", Group: "acme.dev", Version: "v1"},
-			{Name: "tool", Kind: "binary", Path: "cmd/tool.go"},
-		},
-		Packs:    []string{"audit"},
-		Database: config.DatabaseConfig{Driver: "postgres"},
+		Database:     config.DatabaseConfig{Driver: "postgres"},
 	}
 }
 
@@ -48,40 +39,6 @@ func TestMetaMirrorsConfig(t *testing.T) {
 	}
 }
 
-func TestComponentViewKinds(t *testing.T) {
-	s := New(sampleConfig())
-	comps := s.Components()
-	if len(comps) != 5 {
-		t.Fatalf("want 5 components, got %d", len(comps))
-	}
-	byName := map[string]Component{}
-	for _, c := range comps {
-		byName[c.Name] = c
-	}
-	if !byName["api"].IsServer() || byName["api"].PrimaryPort() != 8080 {
-		t.Fatalf("server view wrong: %+v", byName["api"])
-	}
-	if !byName["sweeper"].IsWorker() {
-		t.Fatalf("worker view wrong")
-	}
-	if !byName["nightly"].IsCron() || byName["nightly"].Schedule != "0 0 * * *" {
-		t.Fatalf("cron view wrong")
-	}
-	if !byName["ctrl"].IsOperator() {
-		t.Fatalf("operator view wrong")
-	}
-	if !byName["tool"].IsBinary() {
-		t.Fatalf("binary view wrong")
-	}
-}
-
-func TestEmptyKindDefaultsToServer(t *testing.T) {
-	s := New(&config.ProjectConfig{Components: []config.ComponentConfig{{Name: "x"}}})
-	if !s.Components()[0].IsServer() {
-		t.Fatalf("empty kind should be server")
-	}
-}
-
 func TestFeaturesMirror(t *testing.T) {
 	cfg := sampleConfig()
 	cfg.Features.Deploy = boolp(false)
@@ -91,26 +48,11 @@ func TestFeaturesMirror(t *testing.T) {
 	}
 }
 
-func TestAppendComponent(t *testing.T) {
-	cfg := sampleConfig()
-	s := New(cfg)
-	s.AppendComponent(config.ComponentConfig{Name: "new", Kind: "server"})
-	if len(cfg.Components) != 6 {
-		t.Fatalf("append did not reach underlying config: %d", len(cfg.Components))
-	}
-	if len(s.Components()) != 6 {
-		t.Fatalf("store view did not reflect append")
-	}
-}
-
 func TestSectionAccessors(t *testing.T) {
 	cfg := sampleConfig()
 	s := New(cfg)
 	if s.Database().Driver != "postgres" {
 		t.Fatalf("database accessor wrong")
-	}
-	if len(s.Packs()) != 1 || s.Packs()[0] != "audit" {
-		t.Fatalf("packs accessor wrong")
 	}
 	if s.Config() != cfg {
 		t.Fatalf("Config() should return the underlying pointer")

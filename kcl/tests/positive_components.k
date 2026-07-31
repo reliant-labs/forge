@@ -28,6 +28,7 @@ _components = [
 
 _env = fc.ComponentEnv {
     namespace = "demo-dev"
+    project = "demo"
     registry = "localhost:5050"
     image_tag = "latest"
     network_policies = False
@@ -68,3 +69,42 @@ assert_binary_no_service = len([m for m in manifests if m.kind == "Service" and 
 assert_operator_clusterrole = len([m for m in manifests if m.kind == "ClusterRole" and m.metadata.name == "controller-clusterrole"]) == 1
 _op_deploy = [m for m in manifests if m.kind == "Deployment" and m.metadata.name == "controller"][0]
 assert_operator_service_account = _op_deploy.spec.template.spec.serviceAccountName == "controller"
+
+# Every workload binds its OWN ServiceAccount. Unbound, the pod runs as
+# the namespace `default` SA — indistinguishable from every other
+# workload in audit logs and in any identity-based policy.
+_bound = [m.spec.template.spec.serviceAccountName for m in manifests if m.kind == "Deployment"]
+assert_every_deployment_binds_an_sa = len(_bound) == 4 and len([s for s in _bound if not s]) == 0
+_sa_names = [m.metadata.name for m in manifests if m.kind == "ServiceAccount"]
+assert_bound_sas_exist = len([s for s in _bound if s not in _sa_names]) == 0
+
+# No workload SA mounts an API token: forge Servers/Workers/Crons read
+# their config from the container env, never from the API.
+_workload_sas = [m for m in manifests if m.kind == "ServiceAccount" and m.metadata.name != "controller"]
+assert_no_token_automount = len(_workload_sas) > 0 and \
+    len([s for s in _workload_sas if s.automountServiceAccountToken != False]) == 0
+
+# ...and none of them ships a Role granting blanket access to Secrets.
+# A Role that reads every Secret in the namespace, bound to a workload
+# that never calls the API, is pure blast radius dressed as security.
+_workload_roles = [m for m in manifests if m.kind in ["Role", "ClusterRole"] and m.metadata.name != "controller-clusterrole"]
+_secret_grants = [m for m in _workload_roles if len([r for r in m.rules if "secrets" in r.resources]) > 0]
+assert_no_blanket_secret_reads = len(_secret_grants) == 0
+
+# `app.kubernetes.io/part-of` names the PROJECT, not the component.
+# A CD pipeline selects one release's objects with
+# `-l app.kubernetes.io/part-of=<project>`; when every object labelled
+# itself, that selector matched nothing and the post-deploy rollout /
+# health loops iterated an EMPTY list and passed vacuously.
+_labelled = [m for m in manifests if "labels" in m.metadata and m.metadata.labels]
+assert_part_of_is_project = len(_labelled) > 0 and len([
+    m for m in _labelled
+    if "app.kubernetes.io/part-of" in m.metadata.labels and \
+        m.metadata.labels["app.kubernetes.io/part-of"] != "demo"
+]) == 0
+# Pod templates carry the same label, so a Deployment's pods are
+# selectable by project too.
+assert_pod_template_part_of = _api_deploy.spec.template.metadata.labels["app.kubernetes.io/part-of"] == "demo"
+# `app.kubernetes.io/name` still identifies the COMPONENT — the two
+# labels must not collapse into one another.
+assert_name_is_component = _api_deploy.metadata.labels["app.kubernetes.io/name"] == "api"

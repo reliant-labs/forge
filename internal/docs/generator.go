@@ -50,7 +50,7 @@ type Context struct {
 // ContractInfo holds a parsed contract with its package path.
 type ContractInfo struct {
 	PackageName string
-	Contract    *contract.ContractFile
+	Contract    *contract.File
 }
 
 // Registry holds named generators that can be selectively enabled.
@@ -99,9 +99,12 @@ func Run(projectDir string, cfg *config.ProjectConfig, overrides *Overrides) err
 		overrides.Apply(&docsCfg)
 	}
 
+	// Disabled is a refusal, not a no-op. `forge docs generate` has exactly
+	// one caller — a user who just typed it — so returning nil here printed
+	// an informational line under a "✅ complete!" trailer and exited 0
+	// having written nothing. Name the switch instead.
 	if !docsCfg.IsEnabled() {
-		fmt.Println("  ℹ️  Documentation generation is disabled")
-		return nil
+		return fmt.Errorf("documentation generation is disabled (docs.enabled: false in forge.yaml) — set it to true to generate docs")
 	}
 
 	ctx, err := buildContext(projectDir, cfg, docsCfg)
@@ -110,7 +113,10 @@ func Run(projectDir string, cfg *config.ProjectConfig, overrides *Overrides) err
 	}
 
 	registry := DefaultRegistry()
-	enabledGenerators := resolveGenerators(registry, docsCfg.Generators)
+	enabledGenerators, err := resolveGenerators(registry, docsCfg.Generators)
+	if err != nil {
+		return err
+	}
 
 	var allDocs []GeneratedDoc
 	for _, g := range enabledGenerators {
@@ -166,7 +172,7 @@ func buildContext(projectDir string, cfg *config.ProjectConfig, docsCfg config.D
 	}
 
 	// Parse proto services
-	servicesDir := filepath.Join(projectDir, "proto/services")
+	servicesDir := filepath.Join(projectDir, "proto", "services")
 	if dirExists(servicesDir) {
 		services, err := codegen.ParseServicesFromProtos(servicesDir, projectDir)
 		if err != nil {
@@ -177,7 +183,7 @@ func buildContext(projectDir string, cfg *config.ProjectConfig, docsCfg config.D
 	}
 
 	// Parse config protos
-	configDir := filepath.Join(projectDir, "proto/config")
+	configDir := filepath.Join(projectDir, "proto", "config")
 	if dirExists(configDir) {
 		messages, err := codegen.ParseConfigProtosFromDir(configDir)
 		if err != nil {
@@ -218,22 +224,45 @@ func buildContext(projectDir string, cfg *config.ProjectConfig, docsCfg config.D
 
 // resolveGenerators returns the generators to run, filtering by the enabled list.
 // If enabledNames is empty, all registered generators are returned.
-func resolveGenerators(registry *Registry, enabledNames []string) []Generator {
+// resolveGenerators maps the configured/`--generators` names onto registered
+// generators. An unknown name is an ERROR, not a silent drop: dropping it
+// selected zero generators, wrote zero files, and still printed "Generated 0
+// doc file(s)" followed by "Documentation generation complete!" — success for
+// a run that produced nothing, and no way for the caller to tell a typo from a
+// project that genuinely has nothing to document.
+func resolveGenerators(registry *Registry, enabledNames []string) ([]Generator, error) {
 	if len(enabledNames) == 0 {
 		var all []Generator
 		for _, name := range registry.Names() {
 			all = append(all, registry.Get(name))
 		}
-		return all
+		return all, nil
 	}
 
-	var result []Generator
+	var (
+		result  []Generator
+		unknown []string
+	)
 	for _, name := range enabledNames {
-		if g := registry.Get(name); g != nil {
-			result = append(result, g)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
 		}
+		g := registry.Get(name)
+		if g == nil {
+			unknown = append(unknown, name)
+			continue
+		}
+		result = append(result, g)
 	}
-	return result
+	if len(unknown) > 0 {
+		return nil, fmt.Errorf("unknown doc generator(s) %s; available: %s",
+			strings.Join(unknown, ", "), strings.Join(registry.Names(), ", "))
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no doc generators selected; available: %s", strings.Join(registry.Names(), ", "))
+	}
+	return result, nil
 }
 
 // writeDocs writes generated doc files to the output directory.
@@ -253,22 +282,23 @@ func writeDocs(docs []GeneratedDoc, outputDir string) error {
 // renderDocTemplate renders an embedded doc template, with optional user override.
 func renderDocTemplate(name string, data any, customDir string) ([]byte, error) {
 	var tmplContent []byte
-	var err error
 
-	// Check for user override first
+	// A user override wins when it is present. A missing or unreadable
+	// override is not an error — customDir is an optional directory that
+	// need only hold the templates the user chose to override, so any
+	// read failure falls through to the embedded copy below.
 	if customDir != "" {
-		customPath := filepath.Join(customDir, name)
-		if tmplContent, err = os.ReadFile(customPath); err == nil {
-			// User override found
+		if override, readErr := os.ReadFile(filepath.Join(customDir, name)); readErr == nil {
+			tmplContent = override
 		}
 	}
 
-	// Fall back to embedded template
 	if tmplContent == nil {
-		tmplContent, err = docsTemplateFS.ReadFile(filepath.Join("templates", name))
+		embedded, err := docsTemplateFS.ReadFile(filepath.Join("templates", name))
 		if err != nil {
 			return nil, fmt.Errorf("read doc template %s: %w", name, err)
 		}
+		tmplContent = embedded
 	}
 
 	funcMap := templates.FuncMap()

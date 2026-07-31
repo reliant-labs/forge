@@ -60,7 +60,7 @@ func WhereIsNotNull(column string) QueryOption {
 // inventing a phantom `search` column.
 //
 // The OR group is grouped with WhereGroup so it composes correctly with
-// surrounding AND clauses (tenant scope, soft-delete, pagination cursor).
+// surrounding AND clauses (soft-delete, pagination cursor).
 func WhereILikeAny(columns []string, value any) QueryOption {
 	return func(q *bun.SelectQuery) {
 		if len(columns) == 0 {

@@ -9,7 +9,7 @@ import (
 // TestKCLBuildPlanHelpers covers the small helpers that runBuild uses
 // to drive the docker-skip set and the platform override from a parsed
 // KCL entity set. The runBuild path itself is exercised end-to-end by
-// the cp-forge smoke (post-agent-A) — these unit tests guard the
+// the cp-forge env smoke (post-agent-A) — these unit tests guard the
 // dispatch / accessor invariants.
 func TestKCLBuildPlanHelpers(t *testing.T) {
 	entities, err := parseKCLEntities([]byte(sampleKCLJSON))

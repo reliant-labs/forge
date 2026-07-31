@@ -29,9 +29,9 @@ func guardTemplateMode(g config.ConfigGuardConfig) string {
 // scaffold lane) and a hand-mirrored upgradeTemplateData (the upgrade /
 // regenerate lane). The two drifted field-by-field and reimplemented the
 // same per-field derivations (protoName, goVersionMinor,
-// dockerBuilderGoVersion, NormalizeAuthProvider). Promoting to one named
-// type with two constructors — ForScaffold (from a *ProjectGenerator) and
-// ForUpgrade (from a *config.ProjectConfig) — keeps the field set in one
+// dockerBuilderGoVersion). Promoting to one named
+// type with two constructors — forScaffold (from a *ProjectGenerator) and
+// forUpgrade (from a *config.ProjectConfig) — keeps the field set in one
 // place; snapshot tests guard that both lanes still emit identical output.
 //
 // The type is a superset: a handful of fields are populated by exactly one
@@ -39,9 +39,9 @@ func guardTemplateMode(g config.ConfigGuardConfig) string {
 // managed templates that render in BOTH lanes never branch on a
 // lane-specific field:
 //
-//   - ServicePackage / ForgePkgVersion / ForgePkgDevReplace — scaffold-only.
-//     Consumed by scaffold-only templates (user-example.proto.tmpl,
-//     config.proto.tmpl, go.mod.tmpl) that the upgrade lane never renders.
+//   - ServicePackage / ForgePkgVersion — scaffold-only.
+//     Consumed by scaffold-only templates (config.proto.tmpl, go.mod.tmpl)
+//     that the upgrade lane never renders.
 //   - Services — upgrade-only. Consumed by alloy-config.alloy.tmpl, which
 //     the scaffold lane renders through a separate local struct
 //     (generateAlloyConfig), so the scaffold payload never needs it.
@@ -59,46 +59,21 @@ type projectTemplateData struct {
 	GoVersionMinor         string
 	DockerBuilderGoVersion string
 	// Services lists (name, port) pairs for templates like alloy-config.
-	// Populated by ForUpgrade only — the scaffold lane renders alloy-config
-	// through its own local struct, so ForScaffold leaves this nil.
+	// Populated by forUpgrade only — the scaffold lane renders alloy-config
+	// through its own local struct, so forScaffold leaves this nil.
 	Services     []ServiceInfo
 	ConfigFields map[string]bool
-	// LocalForgePkgVendored indicates whether <projectDir>/.forge-pkg/
-	// holds a vendored copy of forge/pkg (sibling-checkout dev mode).
-	// At scaffold time this is normally false; the Dockerfile template uses
-	// it to gate the COPY .forge-pkg/ ./.forge-pkg/ line. The upgrade lane
-	// detects it from the presence of .forge-pkg/go.mod on disk.
-	LocalForgePkgVendored bool
 	// RESTEnabled mirrors the `api.rest` toggle in forge.yaml. At scaffold
 	// time this is always false (REST is opt-in via a post-scaffold edit),
 	// but the field is declared here so buf.yaml's dep gate has a known
 	// input shape; the upgrade lane reads the live forge.yaml api.rest value.
 	RESTEnabled bool
-	// ForgePkgVersion / ForgePkgDevReplace drive the forge/pkg dependency
-	// block in go.mod.tmpl. Exactly one (or neither) is non-empty — see
-	// resolveForgePkgDep in project_pkgdep.go and docs/pkg-versioning.md
-	// for the dev-vs-release model. Populated by ForScaffold only (go.mod
-	// is not an upgrade-managed file).
-	ForgePkgVersion    string
-	ForgePkgDevReplace string
-	// ForgePkgGenReplace is the forge/pkg replace target the gen/ submodule's
-	// go.mod must carry in dev mode. The root replace (ForgePkgDevReplace)
-	// lives in the ROOT module and does not cascade into the separate gen/
-	// submodule, so gen/go.mod needs its own depth-corrected replace or
-	// `go mod tidy` in gen/ can't resolve the unpublished forge/pkg. At
-	// scaffold time ForgePkgDevReplace is a host-absolute sibling path, which
-	// is depth-independent — so this is the same absolute path (or empty in
-	// release / no-sibling mode). The generate pipeline's ensure-gen-module
-	// step later reconciles this against the root replace's final form (e.g.
-	// after vendoring rewrites the root to ./.forge-pkg). Populated by
-	// ForScaffold only — gen/go.mod is not an upgrade-managed file.
-	ForgePkgGenReplace string
-	// AuthProvider / AuthProviderExternal gate cmd-server.go.tmpl's
-	// generated-auth call site. Always zero at scaffold time (forge new
-	// never configures an auth provider); the upgrade lane derives them
-	// from the live forge.yaml auth.provider via NormalizeAuthProvider.
-	AuthProvider         string
-	AuthProviderExternal bool
+	// ForgePkgVersion is the published forge/pkg version go.mod.tmpl and
+	// gen-go.mod.tmpl pin (`require github.com/reliant-labs/forge/pkg
+	// <version>`, no replace). See resolveForgePkgVersion in
+	// project_pkgdep.go for the release-stamp-vs-default resolution.
+	// Populated by forScaffold only (go.mod is not an upgrade-managed file).
+	ForgePkgVersion string
 	// VersionVar mirrors forge.yaml build.version_var. The Dockerfile
 	// template stamps an extra `-X <VersionVar>=${FORGE_VERSION}` when set;
 	// empty (the default) renders nothing, preserving main.version-only
@@ -129,10 +104,20 @@ type projectTemplateData struct {
 	// Enumerated from disk (not the component list) so it captures every
 	// real cmd/<bin>/ — including binaries that predate the component
 	// registry or were added by hand. At scaffold time only the primary
-	// exists; ForUpgrade re-scans so a project that ran `forge add binary`
+	// exists; forUpgrade re-scans so a project that ran `forge scaffold binary`
 	// gets every entrypoint built. Falls back to just the primary when the
 	// cmd/ tree can't be read.
 	Binaries []BinaryBuild
+	// HasMigrations reports whether db/migrations/ holds at least one .sql
+	// file, read from DISK via codegen.ProjectHasSQLMigrations — the same
+	// predicate that decides whether db/embed.go (forgedb.MigrationsFS)
+	// exists. cmd-tree-db.go.tmpl gates on it: `db migrate` applies the
+	// EMBEDDED migration set, so the template may only reference forgedb
+	// when that package variable is actually emitted. A fresh scaffold has
+	// none (db/migrations holds only .gitkeep); the Tier-1 regeneration
+	// lane re-reads disk, so the first `forge db migration new` + `forge
+	// generate` flips it on.
+	HasMigrations bool
 }
 
 // BinaryBuild is one buildable entrypoint: the cmd/<Dir>/ leaf, which is
@@ -199,12 +184,12 @@ func discoverBinaries(projectDir, primary string) []BinaryBuild {
 	return bins
 }
 
-// ForScaffold builds the render payload for the `forge new` scaffold lane
+// forScaffold builds the render payload for the `forge project new` scaffold lane
 // from a *ProjectGenerator. It reproduces, verbatim, the derivations the
 // old inline anonymous struct performed (protoName via hyphen→underscore,
 // servicePackage via naming.ServicePackage, the goVersion family, the
-// forge/pkg dep resolution and its LocalForgePkgVendored gate).
-func (g *ProjectGenerator) ForScaffold() projectTemplateData {
+// forge/pkg version pin).
+func (g *ProjectGenerator) forScaffold() projectTemplateData {
 	goVersion := g.resolveGoVersion()
 
 	// Sanitize name for proto files (no hyphens allowed). Use underscores
@@ -236,9 +221,10 @@ func (g *ProjectGenerator) ForScaffold() projectTemplateData {
 		GoVersionMinor:         goVersionMinor(goVersion),
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
 		ConfigFields:           codegen.DefaultConfigFieldNames(),
-		// false by default — only flipped below after the forge/pkg dep is
-		// resolved and dev-mode vendoring is known to run.
-		LocalForgePkgVendored: false,
+		// forge/pkg is a published module — pin its version, no replace, no
+		// vendoring. resolveForgePkgVersion uses this binary's release stamp
+		// or the latest published tag.
+		ForgePkgVersion: resolveForgePkgVersion(),
 		// REST is off at scaffold time; users opt-in post-scaffold by
 		// editing forge.yaml's `api.rest:` and re-running `forge generate`
 		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
@@ -253,30 +239,13 @@ func (g *ProjectGenerator) ForScaffold() projectTemplateData {
 		TypedAccessGuard: guardTemplateMode(config.ConfigGuardConfig{EnforceTypedAccess: config.EnforceTypedAccessError}),
 		LoaderPackage:    config.DefaultLoaderPackage,
 		// At scaffold time the cmd/ tree isn't written yet, so this resolves
-		// to the primary alone — exactly right for a fresh `forge new`. Once
-		// the user runs `forge add binary`, the upgrade/regenerate lane
-		// (ForUpgrade) re-scans cmd/ and the Dockerfile picks up every binary.
+		// to the primary alone — exactly right for a fresh `forge project new`. Once
+		// the user runs `forge scaffold binary`, the upgrade/regenerate lane
+		// (forUpgrade) re-scans cmd/ and the Dockerfile picks up every binary.
 		Binaries: discoverBinaries(g.Path, g.binaryName()),
-	}
-	data.ForgePkgVersion, data.ForgePkgDevReplace = resolveForgePkgDep(g.Path)
-	// The scaffold's forge/pkg dev replace is a host-absolute sibling path,
-	// which resolves identically from any directory depth — so the gen/
-	// submodule's replace is the same absolute path. Empty in release /
-	// no-sibling mode, where gen/ resolves forge/pkg from the proxy like the
-	// root. The first `forge generate` (run by `forge new`) reconciles this
-	// to the root replace's post-vendoring form via reconcileGenForgePkgReplace.
-	if data.ForgePkgVersion == "" {
-		data.ForgePkgGenReplace = data.ForgePkgDevReplace
-	}
-	// When the scaffold emits a dev-mode forge/pkg replace AND codegen is
-	// on, the `forge generate` run that `forge new` performs immediately
-	// after will vendor the target into ./.forge-pkg/ — so the Dockerfile
-	// (Tier 2: never auto-regenerated later) must carry the COPY line
-	// from the start or docker builds diverge from host builds. Without
-	// codegen there is no generate run to create the vendor dir, so the
-	// COPY line would reference a missing path; keep it off.
-	if data.ForgePkgDevReplace != "" && g.Features.CodegenEnabled() {
-		data.LocalForgePkgVendored = true
+		// A fresh scaffold ships no .sql yet — db/embed.go is not written,
+		// so the db command tree must not reference forgedb.
+		HasMigrations: codegen.ProjectHasSQLMigrations(g.Path),
 	}
 
 	// Strip migration-related config fields when migrations are disabled.
@@ -295,31 +264,34 @@ func (g *ProjectGenerator) ForScaffold() projectTemplateData {
 	return data
 }
 
-// ForUpgrade builds the render payload for the upgrade / Tier-1
+// forUpgrade builds the render payload for the upgrade / Tier-1
 // regeneration lane from a *config.ProjectConfig. It reproduces, verbatim,
 // the derivations the old buildTemplateData performed.
 //
 // projectDir (when non-empty) is used to read the project's go.mod `go`
 // directive so upgrade doesn't silently retarget the project to the host's
-// Go version, to parse proto/config for the live ConfigFields set, and to
-// detect the dev-mode .forge-pkg/ vendoring state. When projectDir is
-// empty or go.mod can't be parsed, we fall back to the host's detected
-// version.
-func ForUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateData {
+// Go version, and to parse proto/config for the live ConfigFields set. When
+// projectDir is empty or go.mod can't be parsed, we fall back to the host's
+// detected version.
+func forUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateData {
 	goVersion := goVersionFromGoMod(projectDir)
 	if goVersion == "" {
 		goVersion = detectGoVersion()
 	}
 	protoName := strings.ReplaceAll(cfg.Name, "-", "_")
 
-	servers := cfg.Servers()
+	// The servers are read off the project, not off cfg: a forge.yaml carries
+	// no component list, so the proto descriptor + package tree under
+	// projectDir is the only thing that knows what this project serves. An
+	// empty projectDir (no tree to read) leaves the "api" default below.
+	//
+	// The port is the same for all of them: every service in the binary mounts
+	// onto one Connect mux and the process listens once (config.DefaultServePort).
+	servers := codegen.DiscoverProjectComponents(projectDir, cfg.Name).OfKind(config.ComponentKindServer)
 	serviceName := "api"
-	servicePort := 8080
+	servicePort := config.DefaultServePort
 	if len(servers) > 0 {
 		serviceName = servers[0].Name
-		if p := servers[0].PrimaryPort(); p != 0 {
-			servicePort = p
-		}
 	}
 
 	frontendName := ""
@@ -339,38 +311,20 @@ func ForUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 		if i == 0 {
 			name = "app" // docker-compose service name for the primary service
 		}
-		port := svc.PrimaryPort()
-		if port == 0 {
-			port = 8080
-		}
-		services = append(services, ServiceInfo{Name: name, Port: port})
+		services = append(services, ServiceInfo{Name: name, Port: config.DefaultServePort})
 	}
 	if len(services) == 0 {
-		services = []ServiceInfo{{Name: "app", Port: 8080}}
+		services = []ServiceInfo{{Name: "app", Port: config.DefaultServePort}}
 	}
 
 	// Parse config fields from proto/config/ so templates can conditionally
 	// include code blocks that reference specific config fields.
 	configFields := codegen.DefaultConfigFieldNames()
 	if projectDir != "" {
-		if msgs, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config")); err == nil && len(msgs) > 0 {
+		if msgs, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config")); err == nil && len(msgs) > 0 {
 			configFields = codegen.ConfigFieldNamesFromMessages(msgs)
 		}
 	}
-
-	// Detect whether the project is in the dev-mode local-vendor state for
-	// forge/pkg. The Dockerfile template gates its COPY .forge-pkg/ line on
-	// this so production-published projects (no .forge-pkg/ on disk) keep
-	// their canonical Dockerfile and dev-mode projects get the COPY line
-	// without the user editing the file by hand.
-	localForgePkgVendored := false
-	if projectDir != "" {
-		if _, err := os.Stat(filepath.Join(projectDir, ".forge-pkg", "go.mod")); err == nil {
-			localForgePkgVendored = true
-		}
-	}
-
-	authProvider, authExternal := codegen.NormalizeAuthProvider(cfg.Auth.Provider)
 
 	return projectTemplateData{
 		Name:                   cfg.Name,
@@ -386,10 +340,7 @@ func ForUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
 		Services:               services,
 		ConfigFields:           configFields,
-		LocalForgePkgVendored:  localForgePkgVendored,
 		RESTEnabled:            cfg.API.REST,
-		AuthProvider:           authProvider,
-		AuthProviderExternal:   authExternal,
 		// The forge.yaml `build:` block is gone; the Dockerfile's
 		// extra-version-stamp escape hatch is now user-owned (edit the
 		// generated Dockerfile's -ldflags directly, or stamp the extra -X
@@ -403,8 +354,11 @@ func ForUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 		TypedAccessGuard: guardTemplateMode(cfg.Config),
 		LoaderPackage:    cfg.Config.EffectiveLoaderPackage(),
 		// Re-scan the cmd/ tree so the Dockerfile builds EVERY entrypoint
-		// the project has grown (server + every `forge add binary`), each
+		// the project has grown (server + every `forge scaffold binary`), each
 		// into /app/<bin> in the single image.
 		Binaries: discoverBinaries(projectDir, cfg.Name),
+		// Re-read disk: the first migration a project writes flips this on,
+		// and db.go + db/embed.go are regenerated together on the same run.
+		HasMigrations: codegen.ProjectHasSQLMigrations(projectDir),
 	}
 }

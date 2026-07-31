@@ -1,6 +1,6 @@
 // Package cluster owns the render-KCL → kubectl-apply → wait-rollouts
-// pipeline that `forge deploy`, `forge cluster reload`, and the
-// deploy phase of `forge up` all execute. Before this package existed,
+// pipeline that `forge env deploy`, `forge cluster reload`, and the
+// deploy phase of `forge env up` all execute. Before this package existed,
 // the pipeline was duplicated across three call sites:
 //
 //   - runDeploy           (internal/cli/deploy.go)
@@ -90,7 +90,7 @@ type ApplyOpts struct {
 	// DryRun skips kubectl apply and prints the rendered manifests
 	// instead. With DryRunFramed, the output is wrapped in
 	// "--- Generated Manifests (dry-run) ---" / "--- End Manifests ---"
-	// markers (the forge deploy convention). Without it, raw manifests
+	// markers (the forge env deploy convention). Without it, raw manifests
 	// are printed (the forge cluster reload convention).
 	DryRun       bool
 	DryRunFramed bool
@@ -138,7 +138,7 @@ type ApplyOpts struct {
 	// invocation in the apply/wait path runs against — passed as
 	// `--context <ctx>` per command rather than mutating the global
 	// active context (`kubectl config use-context`). This is what makes
-	// concurrent multi-cluster `forge deploy` safe: two deploys sharing
+	// concurrent multi-cluster `forge env deploy` safe: two deploys sharing
 	// one kubeconfig but targeting different clusters no longer race on
 	// the single global context. Empty = use kubectl's current/default
 	// context (unchanged for single-cluster users).
@@ -168,7 +168,7 @@ type ApplyOpts struct {
 	// iff (no Targets) OR (its Name ∈ Targets), the identical rule every other
 	// manifest obeys (each chart's manifests are stamped
 	// `app.kubernetes.io/name = Name`). There is NO chart opt-in special case
-	// — a bare `forge deploy <env>` (no Targets) reconciles every declared
+	// — a bare `forge env deploy <env>` (no Targets) reconciles every declared
 	// platform dep too. Apply renders each selected chart, stamps every
 	// manifest with its group, and applies it in CRD-first order (the chart's
 	// forge-supplied CRDs → wait Established → the chart's controllers) so the
@@ -239,7 +239,7 @@ type GroupScope struct {
 // SelectManifestsByGroup is therefore a pure mechanical include filter —
 // keep iff group ∈ targets — with no Go-side "always keep shared infra"
 // policy. An ungrouped manifest matches no service `--target`, so it applies
-// only on a bare `forge deploy` (no `--target`). To make a manifest ride a
+// only on a bare `forge env deploy` (no `--target`). To make a manifest ride a
 // service's `--target`, declare it on that service's `manifests`.
 const appNameLabel = "app.kubernetes.io/name"
 
@@ -308,7 +308,7 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	// here — the secondary cluster gets only its services' workloads (+ its
 	// Namespace), the primary gets everything else. nil = single-cluster
 	// (whole bundle), unchanged. Applied AFTER the --target filter so a
-	// `forge deploy <env> --target <svc>` in a multi-cluster env still scopes
+	// `forge env deploy <env> --target <svc>` in a multi-cluster env still scopes
 	// to the right cluster.
 	if opts.ClusterScope != nil {
 		manifests = ScopeManifestsToGroup(manifests, *opts.ClusterScope)
@@ -365,7 +365,7 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 
 	// Apply the platform deps FIRST: a `--target=<platform>` apply must
 	// leave the cluster with the chart's CRDs Established + controllers
-	// Deployed (so a later `forge deploy` app finds the CRDs present). Each
+	// Deployed (so a later `forge env deploy` app finds the CRDs present). Each
 	// chart applies in CRD-first order (forge-supplied CRDs → wait
 	// Established → the --skip-crds controllers). When this apply also
 	// carries app manifests (a mixed --target), the charts land before them.
@@ -584,7 +584,7 @@ func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string, im
 	if env != "" {
 		dArgs = append(dArgs, "env="+strconv.Quote(env))
 	}
-	// image_digests is the per-image name→digest map forge deploy pins so
+	// image_digests is the per-image name→digest map forge env deploy pins so
 	// each service resolves to ITS image's digest (not one env-wide digest
 	// stamped onto every image). Passed as a QUOTED JSON string so KCL types
 	// it as `str`; `forge.image_digests()` json.decodes it. Omitted entirely
@@ -651,7 +651,7 @@ func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, 
 //
 // Both are part of the documented dual-output contract, so `output` is
 // silently skipped here rather than warned about — emitting a warning
-// on every `forge deploy` / `forge up` for a sibling that the forge
+// on every `forge env deploy` / `forge env up` for a sibling that the forge
 // pipeline itself produces just trains users to ignore warnings. Any
 // OTHER unexpected top-level var still warns.
 func extractManifests(kclOutput []byte) (string, error) {
@@ -694,7 +694,7 @@ func extractManifests(kclOutput []byte) (string, error) {
 // when kctx is non-empty, and returns the args unchanged otherwise.
 // Threading the context PER COMMAND (rather than mutating the global
 // active context via `kubectl config use-context`) is what makes
-// concurrent multi-cluster `forge deploy` safe — two deploys sharing
+// concurrent multi-cluster `forge env deploy` safe — two deploys sharing
 // one kubeconfig can target different clusters without racing on the
 // single global context. An empty kctx means "use kubectl's
 // current/default context", the unchanged single-cluster behaviour.

@@ -37,19 +37,24 @@ The matching convention for end-to-end tests is `//go:build e2e`.
 ## Running
 
 ```bash
-forge test integration              # runs all integration tests
-forge test integration --service <name>  # one service only
-forge test --coverage               # includes integration in coverage
+task test:integration                                   # all integration tests
+task test:integration -- ./internal/handlers/<name>/... # one service only
+task test:all                                           # unit + frontend + integration
 ```
 
-The `forge test integration` command automatically adds `-tags integration` to the Go test invocation.
+`task test:integration` adds `-tags integration` to the `go test` invocation for
+you; it is defined in the project's `Taskfile.yml`.
+
+Note that `task coverage` does **not** include this lane — it profiles the
+untagged suite only. Integration tests are excluded from `task test` by the
+build tag, which means they are never compiled there, not skipped at runtime.
 
 ## Prerequisites
 
 Integration tests require a running Postgres instance via docker-compose. If you're already running the stack, you're set:
 
 ```bash
-forge up --env=dev    # starts the full stack including postgres
+forge env up dev    # starts the full stack including postgres
 ```
 
 ## Harness primitives: don't hand-roll the DB setup

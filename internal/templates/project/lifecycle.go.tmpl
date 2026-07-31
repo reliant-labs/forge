@@ -1,8 +1,15 @@
-// forge-scaffold (USER-OWNED): forge writes this file ONCE (write-if-absent),
-// then NEVER regenerates or overwrites it. The command tree + component wiring is
-// owned code — add a component by hand-editing here (or via `forge add`), never a
-// re-derivation. Delete the file + re-run `forge generate` to re-scaffold from template.
-// Source: internal/{workers,operators}/<x>/contract.go + forge.yaml.
+// forge-scaffold (USER-OWNED, ADDITIVELY RECONCILED): forge writes this file
+// ONCE (write-if-absent) and NEVER re-renders it wholesale — the OperatorEntry
+// shape and RunOperators' body are per-app policy and stay yours. What forge
+// DOES keep in sync is the projection: a worker/operator discovered under
+// internal/{workers,operators}/ that has no Worker<X>() / Operator<X>()
+// accessor here gets one appended, and the matching All* aggregate gains its
+// entry — because the per-component subcommand forge scaffolds
+// (cmd/<bin>/cmd/workers/<name>.go) calls that accessor directly. Rewrite an
+// All* body into anything other than the plain accessor list and forge leaves
+// it exactly as you wrote it. `forge project disown internal/app/lifecycle.go`
+// stops even the additive pass.
+// Source: internal/{workers,operators}/<x>/ package dirs.
 //
 // The SUPERVISED-component surface. Where mounts_services.go is the HTTP-mount
 // surface (which Connect services to mount), this file is the workers and
@@ -18,7 +25,7 @@
 // type-switch, the operator/controller-manager bridge) lives in
 // forge/pkg/lifecyclekit. This file is per-app DATA only — one accessor per
 // component plus the aggregate All* lists — dispatching into the lib. To
-// customize (a late-bound worker cross-edge), `forge disown
+// customize (a late-bound worker cross-edge), `forge project disown
 // internal/app/lifecycle.go` and own the bytes.
 package app
 
@@ -117,6 +124,14 @@ func HasOperators(c *Components) bool { return len(c.AllOperators()) > 0 }
 // lifecyclekit.Run (over operatorkit). Blocks until ctx cancels — the caller
 // (serverkit, via the Server.RunOperators closure Serve wires from the same
 // entries) runs it in a goroutine.
+//
+// Options is the WHOLE input: operatorkit reads no environment variable, so
+// anything the manager does differently in one deployment is a value passed
+// here. A lease name that varies per environment, a lease namespace (needed
+// to run the manager from a host process, outside the cluster), or non-default
+// leader-election timings are config fields — declare them in
+// proto/config/v1/config.proto, thread cfg into this function, and set the
+// matching Options field.
 func RunOperators(ctx context.Context, logger *slog.Logger, healthProbeAddr string, ops []OperatorEntry) error {
 	controllers := make([]lifecyclekit.Controller, 0, len(ops))
 	for _, op := range ops {

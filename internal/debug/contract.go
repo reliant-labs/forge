@@ -1,5 +1,5 @@
 // Package debug wraps a Delve debugger so forge can drive a debugging
-// session from the CLI / MCP layers.
+// session from the CLI layer.
 //
 // The package exposes two complementary surfaces:
 //

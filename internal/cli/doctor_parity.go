@@ -1,7 +1,7 @@
 // Package cli — `forge doctor parity <svc>` subcommand.
 //
 // Detects when a service's effective env+config diverges between
-// host-mode (`forge run <svc>`) and cluster-mode (`forge deploy <env>`)
+// host-mode (`forge run <svc>`) and cluster-mode (`forge env deploy <env>`)
 // projection — the "local wasn't representative of prod" class of bug
 // that surfaces as a deploy failure on Friday afternoon.
 //
@@ -56,10 +56,10 @@ type parityValueSource int
 const (
 	// parityUnset — key not present in this mode at all.
 	parityUnset parityValueSource = iota
-	// parityForgeYAMLConfig — value comes from forge.yaml
-	// environments[<env>].config (i.e. config.LoadEnvironmentConfig).
-	// Host AND cluster both consult this — divergences here are
-	// usually a forge.yaml typo.
+	// parityForgeYAMLConfig — value comes from the per-env KCL config
+	// (deploy/kcl/<env>/config.k, projected via appConfigEnvMap). Host AND
+	// cluster both derive from it — divergences here are usually a config.k
+	// typo. (The JSON kind string is kept stable for consumers.)
 	parityForgeYAMLConfig
 	// parityHostKCLEnvVar — KCL HostDeploy.env_vars entry with an
 	// inline `value` set (host-mode only channel).
@@ -77,8 +77,8 @@ const (
 	// parityKCLConfigMapRef — cluster-mode KCL EnvVar with
 	// config_map_ref + config_map_key set.
 	parityKCLConfigMapRef
-	// paritySecretRefPlaceholder — forge.yaml config carrying a
-	// ${SECRET_NAME} placeholder. Host-mode treats this as "user's
+	// paritySecretRefPlaceholder — per-env KCL config carrying a
+	// secret-backed value (from_secret). Host-mode treats this as "user's
 	// env supplies it"; cluster-mode resolves via its own channel.
 	paritySecretRefPlaceholder
 )
@@ -117,7 +117,7 @@ type parityValue struct {
 	// the key isn't present on this side at all.
 	Source parityValueSource `json:"source_kind"`
 	// SourceLabel is the human-readable file/field attribution
-	// (e.g. "forge.yaml environments[dev].config",
+	// (e.g. "deploy/kcl/dev/config.k",
 	// "KCL secret_ref name=tasks-secrets key=stripe").
 	SourceLabel string `json:"source"`
 	// Value is the resolved literal where one exists. For projected
@@ -180,14 +180,14 @@ func (r *parityReport) bugDivergences() []parityDivergence {
 
 // parityInputs is the pure-function input to diffParity. Each map
 // carries already-resolved key→parityValue pairs for the relevant
-// channel. The cobra path builds these from RenderKCL +
-// config.LoadEnvironmentConfig + the project's secrets_file path;
+// channel. The cobra path builds these from RenderKCL + the per-env KCL
+// config (deploy/kcl/<env>/config.k) + the project's secrets_file path;
 // tests construct them directly to exercise the diff logic
 // hermetically.
 type parityInputs struct {
 	Service       string
 	Env           string
-	ForgeYAMLEnv  map[string]parityValue // both modes consult — forge.yaml environments[<env>].config
+	ForgeYAMLEnv  map[string]parityValue // both modes derive from it — deploy/kcl/<env>/config.k
 	HostKCL       map[string]parityValue // KCL HostDeploy.env_vars
 	HostSecrets   map[string]parityValue // declared keys in secrets_file (never loaded — names only when supplied)
 	ClusterKCL    map[string]parityValue // KCL K8sCluster.env_vars (inline values)
@@ -435,7 +435,7 @@ func newDoctorParityCmd() *cobra.Command {
 		Use:   "parity <service>",
 		Short: "Diff a service's host-mode vs cluster-mode env+config",
 		Long: `Compare what env vars and config a named service WOULD see in host-mode
-(forge run <svc>) vs cluster-mode (forge deploy <env>) projection.
+(forge run <svc>) vs cluster-mode (forge env deploy <env>) projection.
 
 Surfaces "local wasn't representative of prod" divergences statically
 without running anything — no docker, no kubectl, no Secret reads.
@@ -480,26 +480,22 @@ func runDoctorParity(ctx context.Context, serviceName, env string, jsonOutput bo
 	projectDir := filepath.Dir(projectPath)
 
 	// Inventory is enumerated from the REAL sources (proto descriptor +
-	// owned worker/operator files + cmd/ binaries), not the removed
-	// components.json manifest — see codegen.IntrospectComponents.
+	// owned worker/operator files + cmd/ binaries) — see
+	// codegen.IntrospectComponents.
 	comps := codegen.IntrospectComponents(projectDir)
 	if !serviceDeclared(comps, serviceName) {
 		return cliutil.UserErr(ctxLabel,
 			fmt.Sprintf("service %q not found; available: %s", serviceName, strings.Join(declaredServiceNames(comps), ", ")),
 			"",
-			fmt.Sprintf("check the spelling, or add the service with `forge add service %s`", serviceName))
+			fmt.Sprintf("check the spelling, or add the service with `forge scaffold service %s`", serviceName))
 	}
 
-	// forge.yaml environments[<env>].config — both modes consult this.
-	envCfg, err := config.LoadEnvironmentConfig(projectDir, env)
-	if err != nil {
-		// Soft-fail: a project that never declared a per-env config
-		// file is still parity-checkable from KCL alone. Emit a
-		// debug-level note via stderr but proceed with an empty
-		// projection map.
-		envCfg = map[string]any{}
-	}
-	yamlVals := buildForgeYAMLValues(envCfg, projectPath, env)
+	// Per-env KCL config (deploy/kcl/<env>/config.k) — both modes derive
+	// from it. Soft-fail: a project that can't render its config is still
+	// parity-checkable from the rendered KCL alone, so proceed with an empty
+	// projection map on error.
+	configSrcs, _ := loadProjectConfigEnvMap(projectDir, env)
+	yamlVals := buildForgeConfigValues(configSrcs, env)
 
 	// KCL render — gives us the host + cluster env_vars for the
 	// named service.
@@ -558,8 +554,7 @@ var errParityDivergent = fmt.Errorf("doctor parity reported divergences; see rep
 
 // serviceDeclared reports whether a component with the given name exists
 // in the enumerated inventory (proto descriptor + owned worker/operator
-// files + cmd/ binaries — see codegen.IntrospectComponents), not the
-// removed components.json.
+// files + cmd/ binaries — see codegen.IntrospectComponents).
 func serviceDeclared(comps []config.ComponentConfig, name string) bool {
 	for _, c := range comps {
 		if c.Name == name {
@@ -569,50 +564,29 @@ func serviceDeclared(comps []config.ComponentConfig, name string) bool {
 	return false
 }
 
-// buildForgeYAMLValues turns the per-env config map into the
-// key→parityValue projection both modes consult. We re-use
-// envConfigToEnvVars (which honors proto-side env_var:/sensitive
-// annotations) and then re-attach the source label. Strings shaped
-// like ${SECRET_NAME} are noted as secret_ref_placeholder rather than
-// inline values — host-mode skips them too.
-func buildForgeYAMLValues(envCfg map[string]any, projectConfigPath, env string) map[string]parityValue {
-	flat := envConfigToEnvVars(envCfg, projectConfigPath)
-	out := make(map[string]parityValue, len(flat))
-	for k, v := range flat {
-		src := parityForgeYAMLConfig
-		if _, isPlaceholder := parseLooseSecretRef(v); isPlaceholder {
-			src = paritySecretRefPlaceholder
-		}
-		label := fmt.Sprintf("forge.yaml environments[%s].config", env)
-		out[k] = parityValue{
-			Source:      src,
-			SourceLabel: label,
-			Value:       v,
-		}
-	}
-	// Also surface keys that envConfigToEnvVars skipped because
-	// they're sensitive=true or ${SECRET_REF} placeholders — for
-	// parity purposes we still want to know the host MAY get a value
-	// from this channel, but we never carry the secret-literal
-	// through. Walk the raw envCfg and add the missing keys with a
-	// placeholder source. Honor the same proto annotations as
-	// envConfigToEnvVars so the resulting env-var name matches.
-	annotations := loadConfigAnnotations(filepath.Dir(projectConfigPath))
-	for key := range envCfg {
-		envVar := strings.ToUpper(key)
-		if ann, ok := annotations[key]; ok && ann.EnvVar != "" {
-			envVar = ann.EnvVar
-		}
-		if _, already := out[envVar]; already {
+// buildForgeConfigValues turns the per-env KCL config projection
+// (config_projection.appConfigEnvMap, ENV_VAR-keyed) into the
+// key→parityValue projection both modes derive from. An inline `value`
+// entry carries through as a resolved value; a `from_secret` entry is a
+// secret-backed value — noted as secret_ref_placeholder rather than an
+// inline value, since host-mode can't dereference it either.
+func buildForgeConfigValues(srcs map[string]kclEnvSource, env string) map[string]parityValue {
+	out := make(map[string]parityValue, len(srcs))
+	label := fmt.Sprintf("deploy/kcl/%s/config.k", env)
+	for name, src := range srcs {
+		if src.Value != nil {
+			out[name] = parityValue{
+				Source:      parityForgeYAMLConfig,
+				SourceLabel: label,
+				Value:       *src.Value,
+			}
 			continue
 		}
-		// envConfigToEnvVars skipped this key — must be sensitive
-		// or a ${SECRET_REF}. Record it with the placeholder
-		// source so the diff knows the host has a (deferred)
-		// channel for it.
-		out[envVar] = parityValue{
+		// from_secret (or any non-inline channel): the host has a deferred
+		// channel for it, but no literal to compare.
+		out[name] = parityValue{
 			Source:      paritySecretRefPlaceholder,
-			SourceLabel: fmt.Sprintf("forge.yaml environments[%s].config (sensitive/secret ref)", env),
+			SourceLabel: label + " (secret ref)",
 			Value:       "",
 		}
 	}
@@ -646,7 +620,7 @@ func extractKCLEnvVars(entities *KCLEntities, serviceName string) (hostKCL, clus
 		// mode-specific OVERRIDES (rare in practice). Without this top-
 		// level read the parity check silently misses every env_var
 		// most projects actually declare — surfaced during e2e
-		// validation on a fresh `forge new` project.
+		// validation on a fresh `forge project new` project.
 		for _, ev := range svc.EnvVars {
 			if ev.Name == "" {
 				continue

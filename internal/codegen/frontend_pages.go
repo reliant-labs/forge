@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -79,20 +81,134 @@ type PageTemplateData struct {
 	Columns []EntityPageField
 	// SearchFields are the camelCase string-typed fields client-side
 	// search filters over. Empty → the list page omits the search box.
+	//
+	// DEPRECATED for the list page: the born list page now filters
+	// SERVER-SIDE via the List RPC's own filter fields (SearchFilterField /
+	// ExactFilterFields below), so it no longer client-side-filters a single
+	// fetched page. SearchFields is retained because DisplayField derivation
+	// shares this pass and older tooling still reads it.
 	SearchFields []string
-	// DisplayField is the camelCase string field used as the human title
-	// ("name", then "title"); empty when the entity has neither.
+	// DisplayField is the camelCase string field used as the human title.
+	// See deriveDisplayField for the ranking and for what is deliberately
+	// left out; empty when the entity carries no whole-label column, and
+	// every reader then falls back to the primary key.
 	DisplayField string
 	// PkFieldCamel is the camelCase primary-key field ("id").
 	PkFieldCamel string
 	// HasBadgeColumns reports whether any column renders as a Badge —
-	// gates the Badge / enumBadgeVariant imports in page templates.
+	// gates the Badge / enumBadgeVariant / humanizeEnum imports in page
+	// templates.
 	HasBadgeColumns bool
+	// HasMoneyColumns reports whether any column is an integer-cents money
+	// field — gates the formatMoneyCents import in page templates.
+	HasMoneyColumns bool
 	// HasDateCreateFields / HasDateUpdateFields gate the timestamp
 	// conversion imports (timestampFromDate / toDatetimeLocal) in the
 	// create and edit form templates.
 	HasDateCreateFields bool
 	HasDateUpdateFields bool
+	// CreateEnumImports / UpdateEnumImports are the `import { X } from
+	// "path"` lines the create/edit form pages need for their enum-typed
+	// fields (one entry per _pb module, type names deduped and sorted).
+	// Precomputed here because the templates render each page's import
+	// block once while the fields repeat per input.
+	CreateEnumImports []PageEnumImport
+	UpdateEnumImports []PageEnumImport
+
+	// ── List-page server-side filter + cursor-pagination projection ──
+	// The born list page adopts the forge frontend runtime <Resource>
+	// container: filtering and pagination happen SERVER-SIDE via the List
+	// RPC's own request fields (the same filter fields the backend CRUD op
+	// filters on), instead of fetching one capped page and filtering it in
+	// the browser. These fields drive that projection.
+
+	// SearchFilterField is the camelCase List-request field wired to the
+	// <Resource> debounced search box — a "search"/"query"/"q" filter the
+	// backend turns into an ILIKE across the entity's string columns. Empty
+	// when the List request declares no free-text search filter.
+	SearchFilterField string
+	// ExactFilterFields are the List request's discrete (non-search) filter
+	// fields — enum, bool, or plain scalar — rendered as filter controls
+	// that feed the List RPC server-side. Empty → the page renders no
+	// discrete filter controls (it still paginates + shows the tristate).
+	ExactFilterFields []ListFilterField
+	// ListFilterEnumImports are the `import { X } from "path"` lines the enum
+	// filter <select>s need (deduped + sorted, like Create/UpdateEnumImports).
+	ListFilterEnumImports []PageEnumImport
+	// HasScalarExactFilter is true when any ExactFilterField is a plain
+	// text/number scalar — those inputs are debounced (useDebouncedValue), so
+	// the list page imports the hook and holds a raw-input/debounced-value
+	// pair per scalar filter.
+	HasScalarExactFilter bool
+	// ColumnEnumImports are the `import { X } from "path"` lines the enum
+	// BADGE COLUMNS need, because the cell passes the enum OBJECT itself to
+	// <StatusBadge enumType={EnumType}>. Used by the detail page and merged
+	// into ListEnumImports for the list page. Deduped + sorted.
+	ColumnEnumImports []PageEnumImport
+	// ListEnumImports is the merged, deduped set of enum imports the LIST page
+	// needs — filter <select>s (ListFilterEnumImports) plus badge columns
+	// (ColumnEnumImports) — so an enum that is both a filter and a column is
+	// imported exactly once (a duplicate import is a TS error).
+	ListEnumImports []PageEnumImport
+	// HasCursorPagination is true when the List REQUEST carries a page_token
+	// field AND the List RESPONSE carries next_page_token — the cursor pair
+	// the <Resource> Prev/Next footer walks. When false the page renders the
+	// server's first/only page with no pager (graceful degrade).
+	HasCursorPagination bool
+	// HasPageSize is true when the List request carries a page_size field —
+	// gates passing PAGE_SIZE in the request init.
+	HasPageSize bool
+	// NextTokenField is the camelCase response field holding the forward
+	// cursor ("nextPageToken"); empty when the response declares none.
+	NextTokenField string
+	// HasTotalCount / TotalCountField expose the camelCase response count
+	// field ("totalCount") — wave 4 populates it server-side — so the list
+	// reports the real total instead of the current page's length.
+	HasTotalCount   bool
+	TotalCountField string
+}
+
+// ListFilterField is one discrete (non-search) server-side filter control
+// projected from a List RPC request field. The born list page holds a piece
+// of state per field and threads its value into the List call, so filtering
+// is done by the backend query — never by fetching a page and filtering it
+// in the browser.
+type ListFilterField struct {
+	Name       string // camelCase request field: "status", "active"
+	NamePascal string // "Status", "Active" — the React setter is set<NamePascal>
+	Label      string // display label: "Status", "Active"
+	// Kind selects the control the template renders and how the value is
+	// coerced into the request: "enum" (typed <select>), "bool" (tri-state
+	// All/Yes/No <select>), "text" (string exact input), "number".
+	Kind string
+	// IsBigInt is true for a "number" filter over a 64-bit int field
+	// (int64/uint64/…) — protobuf-es types those as bigint, so the request
+	// value is BigInt(...) not Number(...).
+	IsBigInt bool
+	// EnumType / EnumImport / EnumValues are populated only for Kind "enum":
+	// the protobuf-es TS enum identifier, the _pb module to import it from,
+	// and the <option> refs/labels.
+	EnumType   string
+	EnumImport string
+	EnumValues []PageEnumValue
+}
+
+// PageEnumImport is one `import { A, B } from "path"` line a form page
+// needs for its enum-typed fields.
+type PageEnumImport struct {
+	Path  string   // TS module: "@/gen/services/brand/v1/brand_pb"
+	Types []string // enum type identifiers, sorted: ["BrandStatus"]
+}
+
+// PageEnumValue is one option of a generated enum <select>.
+type PageEnumValue struct {
+	// Ref is the full protobuf-es TS member reference the option's value
+	// uses ("BrandStatus.ACTIVE"). Member names mirror protobuf-es's
+	// local-name rule: the enum-name prefix is stripped from the proto
+	// value name when every value carries it.
+	Ref string
+	// Label is the humanized display text ("Active", "In Review").
+	Label string
 }
 
 // EntityPageField is one renderable entity field for list columns /
@@ -101,6 +217,32 @@ type EntityPageField struct {
 	Name    string // camelCase TS field name: "createdAt"
 	Label   string // display label: "Created At"
 	IsBadge bool   // render as a status Badge (enum kind or enum-like string name)
+	// EnumType / EnumImportPath are set ONLY for real protobuf enum columns
+	// (FieldKindEnum). protobuf-es enums are NUMBERS at runtime — a raw
+	// item.status renders "2" — so the cell hands the enum OBJECT to
+	// <StatusBadge value={item.field} enumType={EnumType}>, which resolves the
+	// value to its member name once for BOTH the label and the colour. Empty
+	// for enum-LIKE string columns (already a string) and non-enum columns.
+	EnumType       string
+	EnumImportPath string
+	// IsMoney marks integer minor-unit (cents) columns — proto field name
+	// ends in "_cents". The cell formats them as currency (formatMoneyCents)
+	// instead of printing the raw bigint digits.
+	IsMoney bool
+	// CurrencyField is the camelCase name of a sibling ISO-4217 currency
+	// field ("currency" / "currencyCode") on the SAME entity, set ONLY for
+	// money columns whose entity carries one. The money cell passes it as
+	// formatMoneyCents' currency arg so a JPY row renders "¥180", not
+	// "$180". Empty → the entity has no currency field, so the cell keeps
+	// the formatter's USD default.
+	CurrencyField string
+	// FK is non-nil when the column is a FOREIGN KEY onto another CRUD
+	// entity. The DETAIL page then resolves it through <EntityName> — one
+	// row, one lookup — instead of printing a UUID. The LIST page keeps
+	// printing the raw id on purpose: resolving names per row costs a
+	// request per distinct id, and the right fix there is a server-side
+	// join the application owns. See AttachForeignKeys.
+	FK *PageFieldFK
 }
 
 // PageField represents a form field derived from a proto message field.
@@ -113,18 +255,79 @@ type PageField struct {
 	ProtoName string
 	Required  bool
 	ProtoType string // original proto type for reference
-	// IsBigInt marks 64-bit integer fields — protobuf-es types them as
-	// bigint, so form submissions convert the zod number before mutate().
-	IsBigInt bool
 	// IsRepeated marks repeated scalar fields (descriptor ProtoType
 	// "[]string" etc.). The form renders a comma-separated text input and
 	// the submit handler splits it back into the array the RPC expects —
 	// without the split, the generated page assigned a string to a
 	// string[] request field and failed the TypeScript build.
 	IsRepeated bool
-	// RepeatedNumeric marks repeated numeric fields whose elements need
-	// Number() conversion after the comma split.
-	RepeatedNumeric bool
+	// TSType is the TypeScript type protobuf-es declares for this field's
+	// ELEMENT ("string", "boolean", "number", "bigint", "Uint8Array"), from
+	// the one projection in frontend_ts_scalars.go. Empty for enums,
+	// timestamps and anything else with no scalar projection. It is what
+	// ZodExpr / SubmitExpr / PrefillExpr are derived from, so a kind the
+	// emitters have never seen cannot quietly be treated as a string.
+	TSType string
+	// ZodExpr is the whole zod schema expression for this field —
+	// `z.coerce.number().gte(0)`, `z.string().min(1, "Required")`,
+	// `z.string().regex(/^(-?\d+)?$/, "expected a whole number")`. The
+	// create form appends the enum `.refine` that rejects the UNSPECIFIED
+	// zero; nothing else is added at render time.
+	//
+	// It is one string rather than a branch chain in each template because
+	// there are FOUR page templates (Next.js and Vite × create and edit)
+	// and the chain has to agree with SubmitExpr in every one of them: the
+	// zod line declares the type the submit expression consumes. Six
+	// divergent copies of that agreement is how the form came to feed
+	// number[] into bigint[].
+	ZodExpr string
+	// SubmitExpr is the TypeScript expression the submit handler assigns
+	// to this field, over the form's `values`. Empty when the zod value IS
+	// already the wire type (a plain string, a number, a checkbox boolean,
+	// a typed enum select) and the `...values` spread carries it.
+	SubmitExpr string
+	// SubmitNote is a one-line comment the submit handler emits above
+	// SubmitExpr when the conversion is not self-evident. Empty for none.
+	SubmitNote string
+	// PrefillExpr is the TypeScript expression the EDIT form's `values:`
+	// block reads out of the fetched entity (`item`) to seed this input.
+	// It is the inverse of SubmitExpr and must land on the zod schema's
+	// type, not the wire type.
+	PrefillExpr string
+	// IsEnum marks fields that render as a typed <select> over the
+	// enum's declared values (Type "select"). The zod schema validates
+	// the coerced option value as an enum member
+	// (z.coerce.number().pipe(z.nativeEnum(X))) so the submitted form
+	// value IS the protobuf-es TS enum — spreading it into
+	// mutation.mutate() satisfies MessageInit without casts. Enum fields
+	// that can't be resolved to a typed select (cross-package enums, old
+	// descriptors without the deep schema) are EXCLUDED from forms
+	// entirely: the pre-fix z.string() text-input projection guaranteed
+	// a frontend type error at the mutate() call.
+	IsEnum bool
+	// EnumType is the TS enum identifier ("BrandStatus", or
+	// "Brand_Status" for an enum nested in a message).
+	EnumType string
+	// EnumValues are the select options in proto declaration order.
+	EnumValues []PageEnumValue
+	// EnumImportPath is the _pb module declaring the enum; page-level
+	// import lines are aggregated from it (Create/UpdateEnumImports).
+	EnumImportPath string
+	// ZodChain is the trailing zod validator chain projected from the
+	// field's protovalidate rules (e.g. ".gte(0).lte(100)" or
+	// ".min(2).max(64).email()"). Empty when the field carries no
+	// projected rules. The form template appends it to the base builder
+	// (z.coerce.number() / z.string()) — see the create/edit page
+	// templates. The SAME rules are enforced on the wire by the
+	// protovalidate interceptor.
+	ZodChain string
+	// FK is non-nil when this field is a FOREIGN KEY onto another CRUD
+	// entity in the same project — `patient_id` on Order pointing at
+	// Patient. The form then renders an <EntityPicker> over the referent's
+	// generated List hook instead of a raw text input for a UUID. Resolved
+	// by AttachForeignKeys; see frontend_pages_fk.go for the (deliberately
+	// conservative) resolution rule.
+	FK *PageFieldFK
 }
 
 // isRepeatedScalarProtoType reports whether a descriptor message-field
@@ -136,17 +339,6 @@ func isRepeatedScalarProtoType(protoType string) bool {
 		return false
 	}
 	return base != "message" && base != "enum"
-}
-
-// isRepeatedNumericProtoType reports whether the repeated element type is
-// numeric (form values need Number() conversion after the comma split).
-func isRepeatedNumericProtoType(protoType string) bool {
-	switch strings.TrimPrefix(protoType, "[]") {
-	case "int32", "int64", "uint32", "uint64", "sint32", "sint64",
-		"fixed32", "fixed64", "sfixed32", "sfixed64", "float", "double":
-		return true
-	}
-	return false
 }
 
 // isFormFieldRequired determines whether a form field should be marked as required.
@@ -166,25 +358,22 @@ func isFormFieldRequired(f MessageFieldDef) bool {
 	return true
 }
 
-// protoTypeToFormField maps proto field types to HTML form input types.
+// protoTypeToFormField maps proto field types to the form control the
+// page templates render. Scalars route through the one TypeScript
+// projection so a control is chosen for the type the field ACTUALLY has;
+// the remaining arm is the timestamp well-known type.
 func protoTypeToFormField(protoType string) string {
 	// Repeated scalars render as a comma-separated text input; the page's
 	// submit handler splits the value back into the array.
 	if strings.HasPrefix(protoType, "[]") {
 		return "text"
 	}
+	if ts, ok := protoScalarTSType(protoType); ok {
+		return tsFormControl(ts)
+	}
 	switch protoType {
-	case "bool":
-		return "checkbox"
-	case "int32", "int64", "uint32", "uint64", "sint32", "sint64",
-		"fixed32", "fixed64", "sfixed32", "sfixed64":
-		return "number"
-	case "float", "double":
-		return "number"
 	case "google.protobuf.Timestamp", "Timestamp":
 		return "date"
-	case "bytes":
-		return "textarea"
 	default:
 		return "text"
 	}
@@ -244,23 +433,414 @@ var createFieldSkipList = map[string]bool{
 	"delete_time": true,
 }
 
+// formFieldDef is a message field enriched for form projection: the
+// shallow MessageFieldDef shape both extraction sources normalize to,
+// plus the fully-qualified enum type for enum-typed fields (only the
+// deep Schemas source carries it — MessageFieldDef.MessageType is
+// message-only by contract).
+type formFieldDef struct {
+	MessageFieldDef
+	EnumTypeFQ string
+	// ServerSet carries the entity field's `// forge:server-set` marker
+	// (deep Schemas source only). The edit form skips these — a
+	// server-authoritative field must not become an editable input whose
+	// value would be named in the update_mask and clobber the server's.
+	ServerSet bool
+}
+
+// schemaFieldToFormFieldDef converts one deep-schema field into the
+// same encoding extractMessageFields produces for the shallow Messages
+// map (repeated fields carry a "[]" ProtoType prefix; maps collapse to
+// a bare "message"), so the form projection treats both sources
+// identically.
+func schemaFieldToFormFieldDef(d SchemaFieldDef) formFieldDef {
+	fd := MessageFieldDef{Name: d.Name, IsOptional: d.Optional}
+	var enumFQ string
+	switch d.Kind {
+	case "message":
+		fd.ProtoType = "message"
+		if d.Repeated {
+			fd.ProtoType = "[]message"
+		}
+		fd.MessageType = d.TypeName
+	case "map":
+		// Maps are repeated entry messages under the hood, but the
+		// shallow encoding records them as a bare "message" (the "[]"
+		// prefix explicitly excludes maps).
+		fd.ProtoType = "message"
+	case "enum":
+		fd.ProtoType = "enum"
+		if d.Repeated {
+			fd.ProtoType = "[]enum"
+		}
+		enumFQ = d.TypeName
+	default: // scalar kinds
+		fd.ProtoType = d.Kind
+		if d.Repeated {
+			fd.ProtoType = "[]" + d.Kind
+		}
+	}
+	return formFieldDef{MessageFieldDef: fd, EnumTypeFQ: enumFQ, ServerSet: d.ServerSet}
+}
+
+// formFieldsForMessage resolves a message's fields for form projection.
+// It prefers the deep Schemas map (keyed by fully-qualified name): the
+// shallow Messages map only carries DIRECT RPC inputs/outputs, so the
+// AIP-134 update request's wrapped entity message — and every enum's
+// type name — exist only in Schemas. Falls back to Messages for older
+// descriptors (and fixtures) that predate the deep graph. ok=false when
+// neither source knows the message.
+func formFieldsForMessage(svc ServiceDef, shortName, fqName string) ([]formFieldDef, bool) {
+	if fqName != "" {
+		if defs, ok := svc.Schemas[fqName]; ok && defs != nil {
+			out := make([]formFieldDef, 0, len(defs))
+			for _, d := range defs {
+				out = append(out, schemaFieldToFormFieldDef(d))
+			}
+			return out, true
+		}
+	}
+	defs, ok := svc.Messages[shortName]
+	if !ok {
+		return nil, false
+	}
+	out := make([]formFieldDef, 0, len(defs))
+	for _, d := range defs {
+		out = append(out, formFieldDef{MessageFieldDef: d})
+	}
+	return out, true
+}
+
+// protobufESEnumSharedPrefix mirrors protobuf-es's findEnumSharedPrefix
+// (names.ts): the prefix — the enum's short name as lower_snake_case
+// plus "_" — is stripped from TS enum member names ONLY when every
+// declared value carries it and no stripped remainder is empty or
+// starts with a digit. Returns "" when the prefix must be kept. The
+// generated <select> references these members, so this MUST match what
+// protobuf-es emits or the born page doesn't compile.
+func protobufESEnumSharedPrefix(enumShortName string, valueNames []string) string {
+	var b strings.Builder
+	for i, r := range enumShortName {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			b.WriteByte('_')
+		}
+		b.WriteRune(r)
+	}
+	prefix := strings.ToLower(b.String()) + "_"
+	for _, v := range valueNames {
+		if !strings.HasPrefix(strings.ToLower(v), prefix) {
+			return ""
+		}
+		short := v[len(prefix):]
+		if short == "" {
+			return ""
+		}
+		if short[0] >= '0' && short[0] <= '9' {
+			return ""
+		}
+	}
+	return prefix
+}
+
+// formEnumMeta is the resolved TS projection of one enum type.
+type formEnumMeta struct {
+	TSType     string
+	ImportPath string
+	Values     []PageEnumValue
+}
+
+// resolveFormEnum resolves an enum-typed form field to its protobuf-es
+// TS surface: the exported enum identifier, the _pb module to import it
+// from, and the member references/labels for the <select> options.
+// ok=false means there is no projection the generated page could
+// compile against — the caller excludes the field from the form.
+//
+//   - Top-level same-package enums import from the ENTITY message's
+//     declaring module. That is where the proto conventions (proto
+//     skill "Enum Conventions", entity birth's same-package rule) place
+//     an entity field's enum — adjacent to the entity message.
+//   - Enums nested in a same-package message export as Parent_Enum from
+//     the parent's declaring module (known exactly via SchemaFiles).
+//   - Cross-package enums are not resolved: entity birth TODO-skips
+//     those columns, so a form input for one would have no backing
+//     column anyway.
+func resolveFormEnum(svc ServiceDef, entityName, enumFQ string) (formEnumMeta, bool) {
+	if enumFQ == "" || svc.Package == "" {
+		return formEnumMeta{}, false
+	}
+	valueNames := svc.Enums[enumFQ]
+	if len(valueNames) == 0 {
+		return formEnumMeta{}, false
+	}
+	pkgPrefix := svc.Package + "."
+	if !strings.HasPrefix(enumFQ, pkgPrefix) {
+		return formEnumMeta{}, false
+	}
+	local := strings.TrimPrefix(enumFQ, pkgPrefix)
+	segs := strings.Split(local, ".")
+
+	var declFile, tsType, shortName string
+	switch len(segs) {
+	case 1:
+		shortName = segs[0]
+		tsType = segs[0]
+		declFile = svc.SchemaFiles[pkgPrefix+entityName]
+		if declFile == "" {
+			// Older descriptor without SchemaFiles — single-file layout.
+			declFile = svc.ProtoFile
+		}
+	case 2:
+		parentFile, ok := svc.SchemaFiles[pkgPrefix+segs[0]]
+		if !ok || parentFile == "" {
+			return formEnumMeta{}, false
+		}
+		shortName = segs[1]
+		tsType = segs[0] + "_" + segs[1]
+		declFile = parentFile
+	default:
+		return formEnumMeta{}, false
+	}
+
+	meta := formEnumMeta{
+		TSType:     tsType,
+		ImportPath: "@/gen/" + ProtoFileToTSImportPath(declFile),
+	}
+	prefix := protobufESEnumSharedPrefix(shortName, valueNames)
+	for _, v := range valueNames {
+		member := v
+		if prefix != "" {
+			member = v[len(prefix):]
+		}
+		meta.Values = append(meta.Values, PageEnumValue{
+			Ref:   tsType + "." + member,
+			Label: fieldNameToLabel(strings.ToLower(member)),
+		})
+	}
+	return meta, true
+}
+
+// formPageField projects one message field into a form field; ok=false
+// when the field has no COMPILABLE form representation and must be
+// excluded (nested messages/maps, repeated enums, unresolvable enums).
+// Exclusion is the fail-safe: the pre-fix behavior rendered these as
+// z.string() text inputs, which guaranteed the born page failed the
+// frontend type-check at mutation.mutate({...values}).
+func formPageField(svc ServiceDef, entityName string, f formFieldDef) (PageField, bool) {
+	base := strings.TrimPrefix(f.ProtoType, "[]")
+	repeated := strings.HasPrefix(f.ProtoType, "[]")
+	switch base {
+	case "message":
+		// Only a singular Timestamp has a form control (datetime-local);
+		// other nested messages, maps, and repeated messages don't.
+		if repeated || f.MessageType != "google.protobuf.Timestamp" {
+			return PageField{}, false
+		}
+	case "enum":
+		if repeated {
+			return PageField{}, false
+		}
+		meta, ok := resolveFormEnum(svc, entityName, f.EnumTypeFQ)
+		if !ok {
+			return PageField{}, false
+		}
+		pf := pageFieldFromMessageField(f.MessageFieldDef)
+		pf.Type = "select"
+		pf.IsEnum = true
+		pf.EnumType = meta.TSType
+		pf.EnumValues = meta.Values
+		pf.EnumImportPath = meta.ImportPath
+		return pf, true
+	}
+	pf := pageFieldFromMessageField(f.MessageFieldDef)
+	// A repeated scalar whose elements have no lossless text spelling gets
+	// no control at all. `repeated bool` is the case: the comma-separated
+	// input is TEXT, and text → bool has no honest cast — "1", "yes" and
+	// "TRUE" all silently become false while the form reports success.
+	// Excluding it is the same answer forge already gives a repeated enum
+	// and a nested message, and the same answer dead263b gave a lossy
+	// pairing on the Go side.
+	if repeated && !repeatedScalarHasForm(pf.TSType) {
+		return PageField{}, false
+	}
+	return pf, true
+}
+
+// collectEnumImports aggregates the per-field enum import needs of one
+// form into sorted, deduped import lines.
+func collectEnumImports(fields []PageField) []PageEnumImport {
+	byPath := map[string]map[string]bool{}
+	for _, f := range fields {
+		if !f.IsEnum || f.EnumImportPath == "" || f.EnumType == "" {
+			continue
+		}
+		if byPath[f.EnumImportPath] == nil {
+			byPath[f.EnumImportPath] = map[string]bool{}
+		}
+		byPath[f.EnumImportPath][f.EnumType] = true
+	}
+	if len(byPath) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(byPath))
+	for p := range byPath {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	out := make([]PageEnumImport, 0, len(paths))
+	for _, p := range paths {
+		types := make([]string, 0, len(byPath[p]))
+		for tn := range byPath[p] {
+			types = append(types, tn)
+		}
+		sort.Strings(types)
+		out = append(out, PageEnumImport{Path: p, Types: types})
+	}
+	return out
+}
+
+// attachListMeta projects the List RPC's request/response shape onto the
+// list page so filtering + pagination happen SERVER-SIDE through the forge
+// runtime <Resource> container:
+//
+//   - the List request's own filter fields become the page's filter state
+//     (a "search"/"query"/"q" field drives the <Resource> debounced box;
+//     enum/bool/plain-scalar fields become discrete filter controls) — the
+//     SAME filter fields the backend CRUD op filters on, so the browser
+//     never fetches one capped page and filters it locally;
+//   - page_token (request) + next_page_token (response) wire the cursor
+//     the <Resource> Prev/Next footer walks;
+//   - total_count (response) reports the real total.
+//
+// The deep Schemas source is preferred (it carries each enum filter's type
+// name, needed for the typed <select>); the shallow Messages map is the
+// fallback for older descriptors. An enum filter that can't be resolved to
+// a typed select is DROPPED rather than fabricated as an untyped control.
+func attachListMeta(page *PageTemplateData, svc ServiceDef, entityName, listReq, listReqFQ, listResp string) {
+	hasPageToken := false
+	if listReq != "" { //nolint:nestif // List-RPC shape derivation: one arm per request-field form the page model can consume.
+		if fields, ok := formFieldsForMessage(svc, listReq, listReqFQ); ok {
+			for _, f := range fields {
+				switch f.Name {
+				case "page_token":
+					hasPageToken = true
+					continue
+				case "page_size":
+					page.HasPageSize = true
+					continue
+				case "order_by":
+					continue
+				}
+				if classifySkipField(f.Name) {
+					continue
+				}
+				base := strings.TrimPrefix(f.ProtoType, "[]")
+				repeated := strings.HasPrefix(f.ProtoType, "[]")
+				if repeated || base == "message" {
+					// No discrete control for repeated / nested-message filters.
+					continue
+				}
+				// A free-text search filter drives the <Resource> debounced
+				// search box (the backend spans the entity's string columns).
+				if base == "string" {
+					switch f.Name {
+					case "search", "query", "q":
+						page.SearchFilterField = fieldNameToCamel(f.Name)
+						continue
+					}
+				}
+				camel := fieldNameToCamel(f.Name)
+				lf := ListFilterField{
+					Name:       camel,
+					NamePascal: upperFirst(camel),
+					Label:      fieldNameToLabel(f.Name),
+				}
+				switch {
+				case base == "enum":
+					meta, ok := resolveFormEnum(svc, entityName, f.EnumTypeFQ)
+					if !ok {
+						// Can't type the <select> against the enum — drop the
+						// filter rather than emit an untyped, uncompilable control.
+						continue
+					}
+					lf.Kind = "enum"
+					lf.EnumType = meta.TSType
+					lf.EnumImport = meta.ImportPath
+					lf.EnumValues = meta.Values
+				case base == "bool":
+					lf.Kind = "bool"
+				case base == "string":
+					lf.Kind = "text"
+					page.HasScalarExactFilter = true
+				case isNumericProtoScalar(base):
+					lf.Kind = "number"
+					lf.IsBigInt = isBigIntProtoType(base)
+					page.HasScalarExactFilter = true
+				default:
+					continue
+				}
+				page.ExactFilterFields = append(page.ExactFilterFields, lf)
+			}
+		}
+	}
+
+	// Enum-filter <select> imports (deduped + sorted), reusing the same
+	// aggregation the create/edit forms use.
+	if len(page.ExactFilterFields) > 0 {
+		asPageFields := make([]PageField, 0, len(page.ExactFilterFields))
+		for _, lf := range page.ExactFilterFields {
+			if lf.Kind != "enum" {
+				continue
+			}
+			asPageFields = append(asPageFields, PageField{
+				IsEnum:         true,
+				EnumType:       lf.EnumType,
+				EnumImportPath: lf.EnumImport,
+			})
+		}
+		page.ListFilterEnumImports = collectEnumImports(asPageFields)
+	}
+
+	// Response-side cursor + count fields. Read from the shallow Messages
+	// map (the same source crudMethodFacts uses to detect total_count).
+	hasNextToken := false
+	if listResp != "" && svc.Messages != nil {
+		if outFields, ok := svc.Messages[listResp]; ok {
+			for _, f := range outFields {
+				switch f.Name {
+				case "next_page_token":
+					hasNextToken = true
+					page.NextTokenField = fieldNameToCamel(f.Name)
+				case "total_count":
+					page.HasTotalCount = true
+					page.TotalCountField = fieldNameToCamel(f.Name)
+				}
+			}
+		}
+	}
+	page.HasCursorPagination = hasPageToken && hasNextToken
+}
+
 // ExtractCRUDEntities analyzes a service's methods and returns PageTemplateData
 // for each entity that has CRUD-pattern RPCs.
-func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
+func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,funlen // proto -> page-model derivation: one branch per RPC shape and per field kind, all flat.
 	// Group methods by entity name
 	type entityMethods struct {
-		listRPC    string
-		getRPC     string
-		createRPC  string
-		updateRPC  string
-		deleteRPC  string
-		listResp   string
-		getResp    string
-		createReq  string
-		createResp string
-		updateReq  string
-		getReq     string
-		deleteReq  string
+		listRPC     string
+		getRPC      string
+		createRPC   string
+		updateRPC   string
+		deleteRPC   string
+		listReq     string
+		listReqFQ   string
+		listResp    string
+		getResp     string
+		createReq   string
+		createReqFQ string
+		createResp  string
+		updateReq   string
+		updateReqFQ string
+		getReq      string
+		deleteReq   string
 	}
 
 	entities := make(map[string]*entityMethods)
@@ -292,6 +872,8 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 		switch op {
 		case "list":
 			em.listRPC = m.Name
+			em.listReq = m.InputType
+			em.listReqFQ = m.InputTypeFQ
 			em.listResp = m.OutputType
 		case "get":
 			em.getRPC = m.Name
@@ -300,10 +882,12 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 		case "create":
 			em.createRPC = m.Name
 			em.createReq = m.InputType
+			em.createReqFQ = m.InputTypeFQ
 			em.createResp = m.OutputType
 		case "update":
 			em.updateRPC = m.Name
 			em.updateReq = m.InputType
+			em.updateReqFQ = m.InputTypeFQ
 		case "delete":
 			em.deleteRPC = m.Name
 			em.deleteReq = m.InputType
@@ -357,14 +941,28 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 			DeleteRequestType:  em.deleteReq,
 		}
 
-		// Extract form fields from the create request message
-		if em.createReq != "" && svc.Messages != nil {
-			if fields, ok := svc.Messages[em.createReq]; ok {
+		// protovalidate rules are declared ONCE on the entity message; the
+		// create request flattens the entity's fields (losing the options)
+		// and the update request wraps the entity, so we project the zod
+		// validators from the entity's own constraints, matched by proto
+		// field name onto whichever form carries the field.
+		entityConstraints := entityConstraintMap(svc, entityName)
+
+		// Extract form fields from the create request message. The deep
+		// Schemas source (formFieldsForMessage) carries each enum field's
+		// type name, which the typed-select projection needs; the shallow
+		// Messages fallback covers older descriptors.
+		if em.createReq != "" {
+			if fields, ok := formFieldsForMessage(svc, em.createReq, em.createReqFQ); ok {
 				for _, f := range fields {
 					if createFieldSkipList[f.Name] {
 						continue
 					}
-					pf := pageFieldFromMessageField(f)
+					pf, ok := formPageField(svc, entityName, f)
+					if !ok {
+						continue
+					}
+					finalizePageField(&pf, entityConstraints)
 					if pf.Type == "date" {
 						data.HasDateCreateFields = true
 					}
@@ -382,17 +980,24 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 		// server's update clobbers every column the form doesn't carry).
 		// A flat request (id + scalar fields) keeps the legacy top-level
 		// spread with no mask.
-		if em.updateReq != "" && svc.Messages != nil {
-			if fields, ok := svc.Messages[em.updateReq]; ok {
+		//
+		// The entity message is resolved through the DEEP Schemas map:
+		// it is never a direct RPC input/output, so the shallow Messages
+		// map doesn't carry it — the old Messages-only lookup silently
+		// bailed out here and birthed a completely EMPTY edit form
+		// (z.object({}), values {}, mask paths []) for every AIP-134
+		// entity while the create form carried all the fields.
+		if em.updateReq != "" { //nolint:nestif // Update-RPC shape derivation (22): one arm per field-mask/entity spelling; each maps to a different emitted form.
+			if fields, ok := formFieldsForMessage(svc, em.updateReq, em.updateReqFQ); ok {
 				formFields := fields
 				for _, f := range fields {
-					if isFieldMaskField(f) {
+					if isFieldMaskField(f.MessageFieldDef) {
 						data.UpdateMaskFieldCamel = fieldNameToCamel(f.Name)
 						continue
 					}
-					if fieldMatchesEntity(f, entityName) {
+					if fieldMatchesEntity(f.MessageFieldDef, entityName) {
 						data.UpdateEntityFieldCamel = fieldNameToCamel(f.Name)
-						if entityFields, ok := svc.Messages[localMessageName(f.MessageType)]; ok {
+						if entityFields, ok := formFieldsForMessage(svc, localMessageName(f.MessageType), f.MessageType); ok {
 							formFields = entityFields
 						}
 					}
@@ -405,21 +1010,28 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 					if f.Name == "id" {
 						continue
 					}
+					// `// forge:server-set` fields are server-authoritative:
+					// keep them off the edit form, so they're never named in
+					// the update_mask and the server's value is never clobbered.
+					// (The create form reads the CreateRequest, which already
+					// omits them, so only the entity-driven edit form needs this.)
+					if f.ServerSet {
+						continue
+					}
 					// Never render the mask or the entity wrapper itself
 					// as form inputs (pre-AIP-134 pages did, producing a
 					// dead "Update Mask" text box).
-					if isFieldMaskField(f) {
+					if isFieldMaskField(f.MessageFieldDef) {
 						continue
 					}
-					if data.UpdateEntityFieldCamel != "" && fieldMatchesEntity(f, entityName) {
+					if data.UpdateEntityFieldCamel != "" && fieldMatchesEntity(f.MessageFieldDef, entityName) {
 						continue
 					}
-					// Nested messages (other than timestamps) have no form
-					// input representation.
-					if f.MessageType != "" && f.MessageType != "google.protobuf.Timestamp" {
+					pf, ok := formPageField(svc, entityName, f)
+					if !ok {
 						continue
 					}
-					pf := pageFieldFromMessageField(f)
+					finalizePageField(&pf, entityConstraints)
 					if pf.Type == "date" {
 						data.HasDateUpdateFields = true
 					}
@@ -427,6 +1039,15 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 				}
 			}
 		}
+
+		data.CreateEnumImports = collectEnumImports(data.CreateFields)
+		data.UpdateEnumImports = collectEnumImports(data.UpdateFields)
+
+		// Project the List RPC's server-side filter fields + cursor /
+		// total-count response shape onto the list page (the <Resource>
+		// container consumes them). Reads the SAME List-request filter
+		// fields the backend CRUD op filters on.
+		attachListMeta(&data, svc, entityName, em.listReq, em.listReqFQ, em.listResp)
 
 		pages = append(pages, data)
 	}
@@ -457,6 +1078,59 @@ func listItemsField(svc ServiceDef, listResp, plural string) string {
 	return ToCamelCaseFromPascalExport(plural)
 }
 
+// entityConstraintMap indexes an entity message's protovalidate rules by
+// proto field name, so the create form (which flattens the entity's
+// fields) and the edit form (which wraps it) both project the same zod
+// validators. Empty when the entity has no fields in the deep schema or
+// carries no rules.
+func entityConstraintMap(svc ServiceDef, entityName string) map[string]*FieldConstraints {
+	defs, ok := svc.Schemas[svc.Package+"."+entityName]
+	if !ok {
+		return nil
+	}
+	out := make(map[string]*FieldConstraints)
+	for _, d := range defs {
+		if d.Validate.HasAny() {
+			out[d.Name] = d.Validate
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// applyZodChain attaches the projected zod validator chain to a form field
+// from the matching entity constraint. Only plain scalar text/number/date
+// inputs receive it — enum selects, checkboxes, and repeated (comma-joined
+// text) inputs have no single-value zod base to refine.
+//
+// The two ENCODED controls — base64 for `bytes`, digit text for a 64-bit
+// integer — are excluded for the same reason: the zod value there is a
+// text encoding of the field, not the field. A bytes rule's min_len counts
+// BYTES while the value is base64 (a third longer), and an int64's
+// gte/lte are numeric bounds while zod's .min() on that digit string would
+// measure LENGTH. Either projection rejects values the wire accepts. See
+// tsZodBase, which decides the same question for the base expression.
+func applyZodChain(pf *PageField, constraints map[string]*FieldConstraints) {
+	if constraints == nil || pf.IsEnum || pf.IsRepeated {
+		return
+	}
+	if _, allowChain := tsZodBase(pf.TSType); !allowChain {
+		return
+	}
+	c := constraints[pf.ProtoName]
+	if !c.HasAny() {
+		return
+	}
+	switch pf.Type {
+	case "number":
+		pf.ZodChain = c.ZodChain("number")
+	case "text", "date":
+		pf.ZodChain = c.ZodChain(pf.Type)
+	}
+}
+
 // pageFieldFromMessageField builds the form-field projection of one proto
 // message field. Timestamp message fields map to a date input via their
 // MessageType (descriptors collapse every message field's ProtoType to the
@@ -466,17 +1140,150 @@ func pageFieldFromMessageField(f MessageFieldDef) PageField {
 	if f.MessageType == "google.protobuf.Timestamp" {
 		effectiveType = f.MessageType
 	}
-	return PageField{
-		Name:            fieldNameToCamel(f.Name),
-		Label:           fieldNameToLabel(f.Name),
-		Type:            protoTypeToFormField(effectiveType),
-		ProtoName:       f.Name,
-		Required:        isFormFieldRequired(f),
-		ProtoType:       f.ProtoType,
-		IsBigInt:        isBigIntProtoType(f.ProtoType),
-		IsRepeated:      isRepeatedScalarProtoType(f.ProtoType),
-		RepeatedNumeric: isRepeatedNumericProtoType(f.ProtoType),
+	elemTS, _ := protoScalarTSType(strings.TrimPrefix(f.ProtoType, "[]"))
+	pf := PageField{
+		Name:       fieldNameToCamel(f.Name),
+		Label:      fieldNameToLabel(f.Name),
+		Type:       protoTypeToFormField(effectiveType),
+		ProtoName:  f.Name,
+		Required:   isFormFieldRequired(f),
+		ProtoType:  f.ProtoType,
+		TSType:     elemTS,
+		IsRepeated: isRepeatedScalarProtoType(f.ProtoType),
 	}
+	return pf
+}
+
+// finalizePageField completes a form field once its enum projection is
+// resolved: the projected protovalidate chain, the zod schema line, and
+// the two TypeScript expressions that move the value between the form and
+// the wire. The three have to agree — the zod line declares the type the
+// submit expression consumes and the prefill expression must produce —
+// so one function owns all three.
+func finalizePageField(pf *PageField, constraints map[string]*FieldConstraints) {
+	applyZodChain(pf, constraints)
+	attachTSConversions(pf)
+	attachZodExpr(pf)
+}
+
+// attachTSConversions fills in the two TypeScript expressions the form
+// pages need for a field: how a submitted zod value becomes the wire
+// value (SubmitExpr) and how a fetched wire value seeds the input
+// (PrefillExpr). Both are functions of the field's TypeScript type, so
+// they live here — beside the projection that states it — rather than as
+// a branch chain repeated across the Next.js and Vite create/edit
+// templates. Six copies of that chain is how `repeated int64` came to
+// submit number[] into a bigint[] field: `.map(Number)` was the only
+// element conversion any of them knew.
+func attachTSConversions(pf *PageField) {
+	n := pf.Name
+	switch {
+	case pf.Type == "date":
+		pf.SubmitExpr = fmt.Sprintf("values.%s ? timestampFromDate(new Date(values.%s)) : undefined", n, n)
+		pf.PrefillExpr = fmt.Sprintf("toDatetimeLocal(item.%s)", n)
+	case pf.IsEnum:
+		// The zod value IS the protobuf-es TS enum (a nativeEnum pipe),
+		// so the spread carries it unconverted.
+		if len(pf.EnumValues) > 0 {
+			pf.PrefillExpr = fmt.Sprintf("item.%s ?? %s", n, pf.EnumValues[0].Ref)
+		}
+	case pf.IsRepeated:
+		mapCall := ""
+		if conv, _ := tsFromFormString(pf.TSType); conv != "" {
+			mapCall = fmt.Sprintf(".map((s) => %s)", conv)
+		}
+		pf.SubmitExpr = fmt.Sprintf(`values.%s.split(",").map((s) => s.trim()).filter(Boolean)%s`, n, mapCall)
+		pf.SubmitNote = "Repeated scalar: comma-separated text input → the array the RPC expects."
+		if back := tsToFormString(pf.TSType); back != "" {
+			pf.PrefillExpr = fmt.Sprintf(`(item.%s ?? []).map((v) => %s).join(", ")`, n, back)
+		} else {
+			pf.PrefillExpr = fmt.Sprintf(`(item.%s ?? []).join(", ")`, n)
+		}
+	default:
+		switch pf.TSType {
+		case "bigint":
+			// String in, String out: the digit text IS the integer, so
+			// nothing rounds. Going through Number() here — which an
+			// <input type="number"> would force — turns a stored
+			// 9007199254740993 into 9007199254740992 on a save that
+			// changed nothing.
+			pf.SubmitExpr = fmt.Sprintf("BigInt(values.%s)", n)
+			pf.PrefillExpr = fmt.Sprintf("String(item.%s ?? 0n)", n)
+		case "number":
+			pf.PrefillExpr = fmt.Sprintf("Number(item.%s ?? 0)", n)
+		case "boolean":
+			pf.PrefillExpr = fmt.Sprintf("Boolean(item.%s)", n)
+		case "Uint8Array":
+			pf.SubmitExpr = fmt.Sprintf("base64Decode(values.%s)", n)
+			pf.PrefillExpr = fmt.Sprintf("base64Encode(item.%s ?? new Uint8Array())", n)
+		default:
+			pf.PrefillExpr = fmt.Sprintf(`String(item.%s ?? "")`, n)
+		}
+	}
+}
+
+// attachZodExpr builds the field's whole zod schema expression.
+//
+// `.min(1, "Required")` is a LENGTH check, so it is appended only where
+// the zod value is a string. A required number carries no such suffix —
+// on z.coerce.number() the same call would mean "at least 1", which is a
+// different claim about the domain.
+func attachZodExpr(pf *PageField) {
+	required := ""
+	if pf.Required {
+		required = `.min(1, "Required")`
+	}
+	// A projected protovalidate rule says more than "not empty" does, so
+	// it replaces the required check where both would apply.
+	textSuffix := required
+	if pf.ZodChain != "" {
+		textSuffix = pf.ZodChain
+	}
+
+	switch {
+	case pf.IsEnum:
+		// The select's value coerces to a number that must be a declared
+		// member, so the submitted value IS the protobuf-es TS enum and
+		// mutate({...values}) type-checks without a cast.
+		pf.ZodExpr = fmt.Sprintf("z.coerce.number().pipe(z.nativeEnum(%s))", pf.EnumType)
+	case pf.Type == "date", pf.IsRepeated:
+		// A datetime-local value and a comma-separated list are both plain
+		// text; the conversion happens in the submit handler.
+		pf.ZodExpr = "z.string()" + textSuffix
+	default:
+		base, allowChain := tsZodBase(pf.TSType)
+		switch {
+		case pf.TSType == "boolean":
+			pf.ZodExpr = base // a checkbox is never "required"; unchecked is false
+		case pf.TSType == "number":
+			pf.ZodExpr = base + pf.ZodChain
+		case !allowChain:
+			// bigint and bytes: the zod value is a TEXT ENCODING of the
+			// field, so only the emptiness check transfers.
+			pf.ZodExpr = base + required
+		default:
+			pf.ZodExpr = base + textSuffix
+		}
+	}
+}
+
+// HasCreateBytesFields / HasUpdateBytesFields report whether a form
+// carries any `bytes`-typed field. A bytes column is edited as base64 —
+// the encoding it already has on the wire — so those forms import
+// protobuf-es's own base64 codec; every other form must not, or the
+// pristine scaffold ships an unused import.
+func (p PageTemplateData) HasCreateBytesFields() bool { return anyBytesField(p.CreateFields) }
+
+// HasUpdateBytesFields is HasCreateBytesFields for the edit form.
+func (p PageTemplateData) HasUpdateBytesFields() bool { return anyBytesField(p.UpdateFields) }
+
+func anyBytesField(fields []PageField) bool {
+	for _, f := range fields {
+		if f.TSType == "Uint8Array" {
+			return true
+		}
+	}
+	return false
 }
 
 // isFieldMaskField reports whether a message field is an AIP-134
@@ -520,8 +1327,11 @@ func isEnumLikeFieldName(name string) bool {
 // from the matched proto entity definition. The page generator calls this
 // after pairing a CRUD RPC group with its EntityDef — the same pairing
 // that gates page emission — so templates can emit fully typed columns,
-// search fields, and detail rows.
-func AttachEntityMeta(page *PageTemplateData, entity EntityDef) {
+// search fields, and detail rows. svc supplies the deep type graph needed to
+// resolve enum COLUMNS to their protobuf-es TS type (which the badge cell
+// passes to StatusBadge); an unresolvable enum column degrades to the
+// enum-like string path (String(item.field)).
+func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) {
 	importSource := entity.ProtoFile
 	if importSource == "" {
 		// Entity declared in the service's proto file.
@@ -534,6 +1344,10 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef) {
 	if page.PkFieldCamel == "" {
 		page.PkFieldCamel = "id"
 	}
+
+	// Sibling currency field (if any) — money columns render currency-aware
+	// against it. Resolved once per entity, not per money column.
+	currencyField := entityCurrencyField(entity)
 
 	for _, f := range entity.Fields {
 		switch f.Kind {
@@ -549,31 +1363,174 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef) {
 		}
 
 		camel := fieldNameToCamel(f.Name)
-		isBadge := f.Kind == FieldKindEnum || (f.ProtoType == "string" && isEnumLikeFieldName(f.Name))
+		// A badge shows ONE value: <StatusBadge value=…> takes a
+		// `string | number`, so a repeated enum handed to it is a type
+		// error on both the list and the detail page. Repeated columns
+		// render through formatValue like any other array.
+		repeated := isRepeatedEntityField(f)
+		isBadge := (f.Kind == FieldKindEnum && !repeated) ||
+			(f.ProtoType == "string" && !repeated && isEnumLikeFieldName(f.Name))
 		if isBadge {
 			page.HasBadgeColumns = true
 		}
-		page.Columns = append(page.Columns, EntityPageField{
+		isMoney := isMoneyFieldName(f.Name) && isNumericProtoScalar(f.ProtoType)
+		if isMoney {
+			page.HasMoneyColumns = true
+		}
+		col := EntityPageField{
 			Name:    camel,
 			Label:   fieldNameToLabel(f.Name),
 			IsBadge: isBadge,
-		})
+			IsMoney: isMoney,
+		}
+		// A money column renders currency-aware only when its entity has a
+		// sibling currency field; otherwise the cell keeps the USD default.
+		if isMoney {
+			col.CurrencyField = currencyField
+		}
+		// Real protobuf enum column: resolve its TS type + import so the badge
+		// cell can hand the enum object to StatusBadge. The FQ
+		// enum name rides on EntityField.MessageType (schemaFieldToEntityField
+		// records it). Unresolvable (cross-package / old descriptor) → leave
+		// EnumType empty and fall back to the String() path.
+		if f.Kind == FieldKindEnum && !repeated && f.MessageType != "" {
+			if meta, ok := resolveFormEnum(svc, entity.Name, f.MessageType); ok {
+				col.EnumType = meta.TSType
+				col.EnumImportPath = meta.ImportPath
+			}
+		}
+		page.Columns = append(page.Columns, col)
 
 		if f.ProtoType == "string" {
 			page.SearchFields = append(page.SearchFields, camel)
 		}
-		if page.DisplayField == "" && f.ProtoType == "string" && (f.Name == "name" || f.Name == "title") {
-			page.DisplayField = camel
-		}
 	}
 
-	// Prefer "name" over "title" when both exist.
+	page.DisplayField = deriveDisplayField(entity)
+
+	// Enum-column import lines (detail page) + the merged set the list page
+	// needs (filter <select>s + badge columns, deduped so a field that is both
+	// a filter and a column imports its enum exactly once).
+	page.ColumnEnumImports = collectColumnEnumImports(page.Columns)
+	page.ListEnumImports = mergeEnumImports(page.ListFilterEnumImports, page.ColumnEnumImports)
+}
+
+// deriveDisplayField picks the string column that is this entity's HUMAN NAME
+// — what a detail page is titled with, what a breadcrumb reads, and what the
+// foreign-key picker labels its options with. "" when the entity has none, in
+// which case every one of those falls back to the primary key.
+//
+// The fallback is the whole reason this is ranked rather than a two-name
+// equality test. `name` and `title` alone meant an entity spelling it
+// `full_name` — the single most common spelling for a person — got NOTHING,
+// so its picker listed forty ULIDs and nobody could pick a row. Widening the
+// rule fixes the picker, the detail title and the breadcrumb at once, because
+// all three read this one field.
+//
+// The set is deliberately closed to spellings that name the WHOLE label:
+//
+//	name · title · display_name · full_name · <entity>_name · <entity>_title
+//
+// `first_name` is excluded on purpose. It is human-readable, which is exactly
+// what makes it dangerous: a picker showing forty rows called "John" looks
+// like it works and silently drops the surname, where a ULID at least
+// announces that the generator could not tell. An entity outside this set
+// keeps the id and the emitted call site carries the comment naming the prop
+// to retarget — a visible gap the user closes in one line.
+func deriveDisplayField(entity EntityDef) string {
+	self := naming.ToSnakeCase(entity.Name)
+	ranked := []string{
+		"name",
+		"title",
+		"display_name",
+		"full_name",
+		self + "_name",
+		self + "_title",
+	}
+	strs := map[string]bool{}
 	for _, f := range entity.Fields {
-		if f.Name == "name" && f.ProtoType == "string" {
-			page.DisplayField = fieldNameToCamel(f.Name)
-			break
+		if f.ProtoType == "string" && f.Kind != FieldKindEnum {
+			strs[strings.ToLower(f.Name)] = true
 		}
 	}
+	for _, want := range ranked {
+		if strs[want] {
+			return fieldNameToCamel(want)
+		}
+	}
+	return ""
+}
+
+// isMoneyFieldName reports whether a proto field name denotes an integer
+// minor-unit (cents) money column — the "_cents" suffix convention. The
+// camelCase form ("priceCents") derives from this snake_case name, so the
+// snake suffix is the single source of truth.
+func isMoneyFieldName(name string) bool {
+	return strings.HasSuffix(strings.ToLower(name), "_cents")
+}
+
+// entityCurrencyField returns the camelCase name of the entity's sibling
+// ISO-4217 currency field ("currency" or "currency_code"), or "" when the
+// entity has none. Money columns pass it to formatMoneyCents so an amount
+// renders in its row's own currency instead of a hardcoded USD. The field
+// must be a plain string scalar — an enum/message named "currency" isn't a
+// currency-code string the Intl formatter accepts.
+func entityCurrencyField(entity EntityDef) string {
+	for _, f := range entity.Fields {
+		if f.ProtoType != "string" {
+			continue
+		}
+		switch strings.ToLower(f.Name) {
+		case "currency", "currency_code":
+			return fieldNameToCamel(f.Name)
+		}
+	}
+	return ""
+}
+
+// collectColumnEnumImports aggregates the enum-typed badge columns' import
+// needs into sorted, deduped import lines (mirrors collectEnumImports).
+func collectColumnEnumImports(cols []EntityPageField) []PageEnumImport {
+	fields := make([]PageField, 0, len(cols))
+	for _, c := range cols {
+		if c.EnumType == "" || c.EnumImportPath == "" {
+			continue
+		}
+		fields = append(fields, PageField{IsEnum: true, EnumType: c.EnumType, EnumImportPath: c.EnumImportPath})
+	}
+	return collectEnumImports(fields)
+}
+
+// mergeEnumImports unions two enum-import lists, deduping by path+type so the
+// same enum imported for both a filter and a column yields ONE import line.
+func mergeEnumImports(a, b []PageEnumImport) []PageEnumImport {
+	byPath := map[string]map[string]bool{}
+	for _, imp := range append(append([]PageEnumImport{}, a...), b...) {
+		if byPath[imp.Path] == nil {
+			byPath[imp.Path] = map[string]bool{}
+		}
+		for _, t := range imp.Types {
+			byPath[imp.Path][t] = true
+		}
+	}
+	if len(byPath) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(byPath))
+	for p := range byPath {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	out := make([]PageEnumImport, 0, len(paths))
+	for _, p := range paths {
+		types := make([]string, 0, len(byPath[p]))
+		for t := range byPath[p] {
+			types = append(types, t)
+		}
+		sort.Strings(types)
+		out = append(out, PageEnumImport{Path: p, Types: types})
+	}
+	return out
 }
 
 // PascalToKebab converts PascalCase to kebab-case, respecting Go

@@ -82,7 +82,7 @@ func TestExpectedClusterForEnv_DevExplicitOverride(t *testing.T) {
 
 // TestDeployDryRunHelpMentionsGuard documents that dry-run still runs
 // the env-cluster guard — the change in this commit. A user reading
-// `forge deploy --help` should see that.
+// `forge env deploy --help` should see that.
 func TestDeployDryRunHelpMentionsGuard(t *testing.T) {
 	cmd := newDeployCmd()
 	f := cmd.Flags().Lookup("dry-run")
@@ -94,7 +94,7 @@ func TestDeployDryRunHelpMentionsGuard(t *testing.T) {
 	}
 }
 
-// TestDeployTargetArchFlagRegistered confirms `forge deploy
+// TestDeployTargetArchFlagRegistered confirms `forge env deploy
 // --target-arch` is wired so users can cross-compile from a Mac/arm64
 // host onto an amd64 cluster without editing forge.yaml.
 func TestDeployTargetArchFlagRegistered(t *testing.T) {

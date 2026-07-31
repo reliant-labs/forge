@@ -1,6 +1,6 @@
 // Tests for registration-in-code (the user-owned pkg/app/services.go
-// row list): the registry parser + classification chokepoint, the MCP
-// manifest gate, the audit surfaces (shape served:false additive marker
+// row list): the registry parser + classification chokepoint, the audit
+// surfaces (shape served:false additive marker
 // + codegen unregistered_services finding), and the stale-cleanup
 // retirement path. The full end-to-end flow (real `forge generate` on a
 // scaffolded project) lives in serve_types_only_e2e_test.go behind the
@@ -8,7 +8,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,13 +172,6 @@ func TestSplitServiceDefs_AndViews(t *testing.T) {
 		t.Errorf("registered = %+v, want [ApiService]", registered)
 	}
 
-	skips, err := ctx.tombstonedHandlerDirSkips()
-	if err != nil {
-		t.Fatalf("tombstonedHandlerDirSkips: %v", err)
-	}
-	if !skips["project"] || len(skips) != 1 {
-		t.Errorf("skips = %v, want {project:true}", skips)
-	}
 }
 
 func TestAllServiceRuntimeNames(t *testing.T) {
@@ -188,49 +180,6 @@ func TestAllServiceRuntimeNames(t *testing.T) {
 	})
 	if len(got) != 2 || got[0] != "admin-server" || got[1] != "api" {
 		t.Errorf("allServiceRuntimeNames = %v, want [admin-server api]", got)
-	}
-}
-
-// TestStepMCPManifest_ExcludesUnregisteredRPCs drives the real
-// stepMCPManifest against a synthetic pipeline context and asserts the
-// emitted gen/mcp/manifest.json advertises only the registered
-// service's tools — tombstoned AND unlisted services are both excluded
-// (this binary serves neither).
-func TestStepMCPManifest_ExcludesUnregisteredRPCs(t *testing.T) {
-	dir := t.TempDir()
-	writeServiceRegistry(t, dir, registryFixture)
-	ctx := &pipelineContext{
-		ProjectDir: dir,
-		AbsPath:    dir,
-		Services:   serveTestServiceDefs(),
-		Checksums:  &generator.FileChecksums{},
-	}
-	if err := stepMCPManifest(ctx); err != nil {
-		t.Fatalf("stepMCPManifest: %v", err)
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "gen", "mcp", "manifest.json"))
-	if err != nil {
-		t.Fatalf("read manifest: %v", err)
-	}
-	var manifest struct {
-		Tools []struct {
-			Service string `json:"service"`
-			Method  string `json:"method"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		t.Fatalf("unmarshal manifest: %v", err)
-	}
-	if len(manifest.Tools) != 1 {
-		t.Fatalf("tools = %+v, want exactly the registered service's 1 RPC", manifest.Tools)
-	}
-	if manifest.Tools[0].Service != "ApiService" || manifest.Tools[0].Method != "Get" {
-		t.Errorf("tools[0] = %+v, want ApiService/Get", manifest.Tools[0])
-	}
-	for _, absent := range []string{"ProjectService", "LedgerService"} {
-		if strings.Contains(string(data), absent) {
-			t.Errorf("manifest must not advertise unregistered %s:\n%s", absent, data)
-		}
 	}
 }
 

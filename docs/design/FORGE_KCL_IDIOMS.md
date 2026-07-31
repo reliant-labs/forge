@@ -45,7 +45,7 @@ target for free.
 | `env_merge` exists only to dedup a *list*; the render layer *also* has a hidden `_dedup_env_vars` | `kcl/base.k:121–163` (header: *"KCL list `+` CONCATENATES … silently rescued by a HIDDEN `_dedup_env_vars`"*) |
 | Cross-service URLs are hand-typed FQDN strings, duplicated ×5 cluster envs | `WORKSPACE_CONTROLLER_URL …:9191`, `RELIANT_API_URL …:9090` identical in staging/preprod/prod/e2e/dev-k8s `main.k` |
 | forge *validates* hand-typed FQDNs but never *synthesizes* them | `deploy_namespace_check.go` regex-matches `*.<ns>.svc.cluster.local`; namespace is a per-env KCL literal |
-| The service graph (names + ports) is fully known at gen time | `components_gen.json`; `lib/ports.k` (`admin_ports=[8090]`, `proxy_ports=[8080]`, `reliant_api_ports=[9090]`, `daemon_gateway_ports=[9190]`) |
+| The service graph (names) is fully known at gen time; ports are NOT — they are a deploy fact stated in KCL | `components_gen.json` (names/kinds only); `lib/ports.k` (`admin_ports=[8090]`, `proxy_ports=[8080]`, `reliant_api_ports=[9090]`, `daemon_gateway_ports=[9190]`) |
 | AppConfig core / k8s projection split already exists | `config_schema.k` (`schema AppConfig`, Tier-1 forge-owned) vs `config_projection.k` (`appConfigEnvVars` → `[EnvVar]`, Tier-1) |
 | The k8s-only escape hatch is already in use | control-plane `extra_manifests` = PDBs (`lib/pdb.k`), `LimitRange` (`lib/limits.k`), GKE `HealthCheckPolicy` (`lib/infra.k`), netpol (`lib/netpol.k`) |
 | Config codegen ownership tiers | `config_native_emit.go`: `config_schema.k`+`config_projection.k` = `writeForgeOwned` (Tier-1); `<env>/config.k` = `writeUserScaffoldIfAbsent` (user-owned) |
@@ -61,7 +61,7 @@ author writes, target-independent) or a specific adapter (how one target realize
 | Kind | Real control-plane example | CORE owns | ADAPTER owns |
 |---|---|---|---|
 | **App config** | `LOG_LEVEL=warn`, `GITHUB_CLIENT_ID`, `APP_URL`, `IDLE_TIMEOUT` | typed `AppConfig` value (proto) | k8s: `ConfigMap` + `configMapKeyRef` env. compose: inline `environment:` map |
-| **Deployment topology** | `RELIANT_API_URL`, `PROXY_AUTHZ_URL`, `WORKSPACE_CONTROLLER_URL` | *the dependency* ("depends on admin-server") | k8s: resolve to `<name>.<ns>.svc.cluster.local:<port>`. compose: resolve to `<name>:<port>` |
+| **Deployment topology** | `RELIANT_API_URL`, `PROXY_ADMIN_URL`, `WORKSPACE_CONTROLLER_URL` | *the dependency* ("depends on admin-server") | k8s: resolve to `<name>.<ns>.svc.cluster.local:<port>`. compose: resolve to `<name>:<port>` |
 | **Identity / ports** | `OTEL_SERVICE_NAME`, `PORT` | service name + port number | k8s: `Service.spec.ports`, container `containerPort`. compose: `ports:` / `expose:` |
 | **Secrets** | `LITELLM_MASTER_KEY`, `STRIPE_SECRET_KEY` | *abstract ref*: secret name + key | k8s: `secretKeyRef`. compose: `env_file` / compose `secrets:` |
 
@@ -105,7 +105,7 @@ schema EnvSource:
 schema Dependency:
     workload: str                  # "admin-server"
     port?: int                     # which port (defaults to the dep's first)
-    # the env var the resolved address is injected as, e.g. "PROXY_AUTHZ_URL"
+    # the env var the resolved address is injected as, e.g. "PROXY_ADMIN_URL"
     as_env?: str
 
 schema SecretRef:
@@ -223,7 +223,7 @@ fundamental.
 Today (`prod/main.k:140`) the author hand-writes a k8s FQDN:
 
 ```kcl
-forge.EnvVar {name = "PROXY_AUTHZ_URL", value = "http://admin-server." + _namespace + ".svc.cluster.local:8090"}
+forge.EnvVar {name = "PROXY_ADMIN_URL", value = "http://admin-server." + _namespace + ".svc.cluster.local:8090"}
 ```
 
 That string is *three* k8s facts (DNS suffix, namespace, port) the author should never
@@ -231,7 +231,7 @@ handle. In the core it is one abstract dependency:
 
 ```kcl
 # CORE
-depends_on = [Dependency {workload = "admin-server", port = 8090, as_env = "PROXY_AUTHZ_URL"}]
+depends_on = [Dependency {workload = "admin-server", port = 8090, as_env = "PROXY_ADMIN_URL"}]
 ```
 
 Each adapter owns an **endpoint resolver** that turns a `Dependency` into an address for its
@@ -250,9 +250,9 @@ resolve_compose = lambda d: Dependency -> str {
 }
 ```
 
-Same core `depends_on = [{workload="admin-server", port=8090, as_env="PROXY_AUTHZ_URL"}]`
-→ k8s injects `PROXY_AUTHZ_URL=http://admin-server.control-plane-prod.svc.cluster.local:8090`
-→ compose injects `PROXY_AUTHZ_URL=http://admin-server:8090`. The ×5 duplication is deleted
+Same core `depends_on = [{workload="admin-server", port=8090, as_env="PROXY_ADMIN_URL"}]`
+→ k8s injects `PROXY_ADMIN_URL=http://admin-server.control-plane-prod.svc.cluster.local:8090`
+→ compose injects `PROXY_ADMIN_URL=http://admin-server:8090`. The ×5 duplication is deleted
 because the adapter resolver is generated once per target and the core states the dependency
 once per service.
 
@@ -320,12 +320,12 @@ workspace_proxy = Workload {
     env = {
         "OTEL_SERVICE_NAME" = {value = "workspace-proxy"}   # (adapter could derive from name)
         "APP_URL"           = {value = "https://app.reliantlabs.io"}
-        "PROXY_AUTHZ_MODE"  = {value = "rpc"}
+        "PROXY_ADMIN_MODE"  = {value = "rpc"}
         "SUPABASE_URL"      = {value = "https://dash.reliantlabs.io"}
         "NATS_PASSWORD"     = {from_secret = SecretRef {secret = "control-plane-nats", key = "password"}}
     }
     depends_on = [
-        Dependency {workload = "admin-server", port = 8090, as_env = "PROXY_AUTHZ_URL"}
+        Dependency {workload = "admin-server", port = 8090, as_env = "PROXY_ADMIN_URL"}
     ]
 }
 ```
@@ -347,11 +347,11 @@ spec:
           env:                                   # ← MAP projected to LIST + deduped (adapter job)
             - {name: OTEL_SERVICE_NAME, value: workspace-proxy}
             - {name: APP_URL, value: "https://app.reliantlabs.io"}
-            - {name: PROXY_AUTHZ_MODE, value: rpc}
+            - {name: PROXY_ADMIN_MODE, value: rpc}
             - {name: SUPABASE_URL, value: "https://dash.reliantlabs.io"}
             - name: NATS_PASSWORD                # ← from_secret → secretKeyRef
               valueFrom: {secretKeyRef: {name: control-plane-nats, key: password}}
-            - {name: PROXY_AUTHZ_URL,            # ← Dependency → FQDN:port
+            - {name: PROXY_ADMIN_URL,            # ← Dependency → FQDN:port
                value: "http://admin-server.control-plane-prod.svc.cluster.local:8090"}
 ---
 apiVersion: v1
@@ -371,9 +371,9 @@ services:
     environment:                                 # ← MAP stays a MAP, no dedup pass
       OTEL_SERVICE_NAME: workspace-proxy
       APP_URL: "https://app.reliantlabs.io"
-      PROXY_AUTHZ_MODE: rpc
+      PROXY_ADMIN_MODE: rpc
       SUPABASE_URL: "https://dash.reliantlabs.io"
-      PROXY_AUTHZ_URL: "http://admin-server:8090"   # ← Dependency → service:port
+      PROXY_ADMIN_URL: "http://admin-server:8090"   # ← Dependency → service:port
     env_file: [./secrets/control-plane-nats.env]     # ← from_secret → env_file (NATS_PASSWORD)
     depends_on: [admin-server]                        # ← Dependency also drives startup order
 ```
@@ -415,8 +415,9 @@ deploy/kcl/<env>/
 | `deploy/kcl/<env>/config.k` | **User-owned** (already) | per-env values |
 
 Rendering is `forge.render_for(target, workloads, env)` — the target selects the adapter.
-`components_gen.json` already gives forge the names/ports to scaffold `app.k` skeletons and
-to generate the endpoint resolver.
+`components_gen.json` already gives forge the names to scaffold `app.k` skeletons and to
+generate the endpoint resolver; the ports come from the env's own KCL, which is where a
+deploy fact belongs.
 
 ---
 
@@ -541,7 +542,7 @@ out of it.
 
 | Phase | Change | Correctness gate (NOT byte-identity) |
 |---|---|---|
-| **0** | Adopt the AppConfig cutover as core: `main.k` consumes `config.k` + a projection, retire legacy `config_gen.k`/`APP_ENV`. | Each env boots; the process reads the same *values* (spot-check env in a running pod), regardless of `env:` ordering/shape changes. |
+| **0** | Adopt the AppConfig cutover as core: `main.k` consumes `config.k` + the `appConfigEnvMap` projection, retire the legacy per-env `[EnvVar]` lists. | Each env boots; the process reads the same *values* (spot-check env in a running pod), regardless of `env:` ordering/shape changes. |
 | **1** | Introduce the core `Workload` + `{str: EnvSource}` map + `Dependency`; move `env_merge`/`_dedup_env_vars`/endpoint-resolver into `adapters/k8s.k`; delete hand-typed FQDNs. | Rendered k8s manifests are *semantically* equivalent: same containers, same resolved env values, deps reachable. Reviewed by behavior, not `git diff`. |
 | **2** | Ship `adapters/compose.k`; render one env (dev-k8s or a new `dev-compose`) to compose from the same core. | The compose stack comes up and passes the same smoke/e2e flow the k8s dev env does. |
 | **3** | Rich core (`resources`/`replicas`/`volumes`/`health`) + keyed-map intermediates + the narrow `svc.k8s` block (option B); migrate control-plane's PDB/kata/HealthCheckPolicy into `svc.k8s`. | k8s render unchanged in behavior; a service with no `.k8s` block renders to compose too. |

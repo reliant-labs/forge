@@ -89,7 +89,7 @@ func identityStack(next http.Handler) http.Handler { return next }
 // mount loop is a programming error caught at boot, not a recoverable
 // runtime condition. It then calls Register(mux, opts...), threading the
 // caller's shared opts through UNCHANGED (mountkit adds no interceptors of
-// its own — see the package doc on authz).
+// its own — see the package doc).
 //
 // After the required Connect registration, RegisterService type-asserts
 // each OPTIONAL capability (HTTPRegistrar, WebhookRegistrar) and invokes

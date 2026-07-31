@@ -5,14 +5,11 @@ description: Proto file reference — annotations, CRUD conventions, field rules
 
 # Proto File Reference
 
-This skill is the annotation + naming reference. The structural conventions
-that drive codegen (one service per file, CRUD method shapes) are
-**enforced reactively** by `forge lint --conventions` — this skill is the
-proactive companion.
+Annotation + naming reference. Structural conventions (one service per file,
+CRUD method shapes) are enforced reactively by `forge lint --conventions`.
 
-Proto is the **wire truth**: services, RPCs, and messages. It is NOT the
-schema language — the database schema lives in `db/migrations/` (see the
-`db` skill). The two halves meet at entity detection, below.
+Proto is the **wire truth**: services, RPCs, messages. It is NOT the schema
+language — the schema lives in `db/migrations/` (see `db`).
 
 ## Where Proto Files Live
 
@@ -22,9 +19,10 @@ proto/forge/v1/forge.proto                     # Forge annotations (vendored, ne
 proto/shared/v1/types.proto                    # Cross-service shared messages (optional)
 ```
 
-One service per `.proto` file. The package path is `<project>.services.<service>.v1`.
-Cross-service references go through `proto/shared/v1/types.proto` — never
-import another service's proto.
+One service per `.proto` file. The proto package mirrors the file's path under
+`proto/`, with no project prefix: `services.<service>.v1`. (`buf lint`'s
+`PACKAGE_DIRECTORY_MATCH` rejects any other form.) Cross-service references go
+through `proto/shared/v1/types.proto` — never import another service's proto.
 
 **Enforced by:** `forge lint --conventions` → `forgeconv-one-service-per-file`.
 
@@ -34,17 +32,13 @@ import another service's proto.
 forge generate && forge lint && forge build
 ```
 
-Rebuilds `gen/` (Go stubs, TypeScript clients, mocks, wiring) and verifies
-the build. Generated code is overwritten — fix issues in `.proto`, never in
-`gen/`.
+Rebuilds `gen/` (Go stubs, TypeScript clients, mocks, wiring) and verifies the
+build. Generated code is overwritten — fix issues in `.proto`, never in `gen/`.
 
-### `forge generate` is the canonical entry — not `buf generate` alone
-
-`buf generate` only emits the `.pb.go` / `_pb.ts` stubs. The forge
-descriptors, schema-driven ORM, mocks, frontend hooks, CRUD wiring, and
-bootstrap codegen are produced by `forge generate`'s post-buf passes.
-Running `buf generate` by itself leaves those projections stale.
-**Always run `forge generate`** — it invokes `buf generate` internally.
+`forge generate` is the canonical entry, never `buf generate` alone: buf emits
+only the `.pb.go` / `_pb.ts` stubs, while the descriptors, schema-driven ORM,
+mocks, frontend hooks and CRUD wiring come from forge's post-buf passes.
+`forge generate` runs `buf generate` internally.
 
 ## No Backwards Compatibility
 
@@ -65,29 +59,102 @@ service TaskService {
   option (forge.v1.service) = { name: "tasks" version: "v1" };
 
   rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse) {
-    option (forge.v1.method) = { auth_required: true };
+    option (forge.v1.method) = {
+      auth_required: true
+      idempotency_key: true
+    };
   }
 }
 ```
 
-| Method option | Type | Purpose |
-|---------------|------|---------|
-| `auth_required` | bool | Require authentication |
-| `idempotent` | bool | Mark as idempotent (safe to retry) |
-| `timeout` | Duration | Server-side timeout: `timeout: { seconds: 30 }` |
-| `idempotency_key` | bool | Expect `Idempotency-Key` header |
-| `errors` | string list | Declared Connect error codes (`"NotFound"`, `"InvalidArgument"`) |
+`forge scaffold entity` writes exactly this onto every scaffolded CRUD RPC
+(`auth_required: true` + `idempotency_key` on the mutating verbs).
+
+**Don't guess the option surface — dump it.** `forge project annotations` emits
+the authoritative spec (every `forge:*` marker, the proto→column mapping, the
+projected `buf.validate` rules, and every `(forge.v1.service)` /
+`(forge.v1.method)` option with its type, effect, and default) straight from
+forge's compiled descriptors and recognizers, so it cannot drift:
+
+```bash
+forge project annotations --kind method          # readable table
+forge project annotations --kind service --json  # machine-readable
+forge project annotations --json                 # everything
+```
+
+Two semantics worth memorizing:
+
+- `auth_required` is **fail-closed and per-rpc** — auth is required even when the
+  option is unset, and `auth_required: false` publishes *that one rpc* to
+  unauthenticated callers while its siblings stay closed. There is no
+  service-wide posture to set: the reachability of each rpc is decided on that
+  rpc, in the proto, when the rpc is authored — not later, elsewhere. It declares
+  only *whether a caller must be authenticated*; what an authenticated caller may
+  then do is not expressible in proto — it is handler logic against
+  `middleware.GetUser(ctx)`, checked against the row's own owner column (see
+  `auth`, and `db` for where that column comes from).
+- `timeout` takes a Duration literal: `timeout: { seconds: 30 }`.
 
 ### Retired: entity / field annotations
 
-`(forge.v1.entity)` and `(forge.v1.field)` are **retired and ignored**.
-The option definitions remain in `forge/v1/forge.proto` only as deprecated
-tombstones so legacy protos keep compiling; `forge generate` prints a
-one-line notice for any message still carrying them. Entities are
-projections of the applied `db/migrations/` schema now — there is no
-proto-side schema declaration. If your project still has annotated entity
-messages (or a `proto/db/` directory), see the
-`migrations/proto-entities-to-schema-truth` skill for the flip.
+`(forge.v1.entity)` and `(forge.v1.field)` are **retired and ignored** —
+deprecated tombstones in `forge/v1/forge.proto` so legacy protos keep compiling;
+`forge generate` prints a one-line notice per message still carrying them.
+Entities are projections of the applied `db/migrations/` schema now; there is no
+proto-side schema declaration. Still have annotated entity messages (or a
+`proto/db/` directory)? See `migrations/proto-entities-to-schema-truth`.
+
+There is likewise **no `forge:default` annotation** — a column's default is
+plain SQL (`NOT NULL DEFAULT <expr>`) in the birth migration, adjustable there.
+
+### Birth markers — the `// forge:*` comments
+
+You author an entity's proto message and birth it with `forge scaffold` (or
+`forge scaffold entity <name> --from-proto <svc>` for one named message) —
+that is the only birth path forge has. **Comment markers** shape what birth
+emits. Ordinary `//` comments — not
+`(forge.v1.*)` options — read by the raw-proto scanner at birth only; inert once
+the table exists. Message-level markers go in the leading comment; field-level
+markers take a leading comment **or** a trailing one after the field's `;`
+(inline `[...]` options in between are fine).
+
+**Managed fields are declared, not assumed.** Birth writes `id`, `created_at`
+and `updated_at` (plus `deleted_at` under `forge:soft-delete`) into your message,
+in your file, at field numbers above its high-water mark — one time, then they
+are yours like everything else it injects. Declare them yourself if you prefer;
+birth leaves a field the message already has alone. Either way the message
+describes its own shape, which is what the ORM row type, the CRUD envelopes and
+the generated edit pages all project.
+
+Run `forge project annotations --kind entity` / `--kind field` for the current
+marker list and what each emits. In practice: `forge:entity` tablizes a message;
+`forge:soft-delete` and `forge:append-only` tablize *and* shape the lifecycle
+(opt-in soft delete; an immutable ledger with no Update/Delete);
+`forge:server-set` and `forge:secret` trim a field off the born write and read
+sides respectively.
+
+```proto
+// forge:soft-delete
+message Product {
+  string name = 1;
+  double price = 2 [(buf.validate.field).double.gte = 0];  // forge:server-set
+  string api_token = 3;      // forge:secret
+  bool requires_prescription = 4;
+  // birth appends: id, created_at, updated_at, deleted_at
+}
+```
+
+Storage-side semantics (what each marker adds to the owned migration, the
+proto→column type mapping, and the entity-shaping flags `--soft-delete` /
+`--no-timestamps` / `--table`) live in `db`.
+
+### The fast way to get annotation syntax right: run `forge generate`
+
+It's a fast, exact oracle. Draft the proto (for a new entity, mark it
+`// forge:entity` and let `forge scaffold` write the migration), run it, read
+the error, fix, repeat. It fails **loudly** on a bad List filter (a field naming no
+real column), a missing import, a malformed message, or a migration postgres
+rejects. Don't plan the annotation surface up front.
 
 ## CRUD RPC Naming Convention — the wire half of an entity
 
@@ -98,17 +165,16 @@ An entity exists when **both halves** exist:
    pluralized snake_case of the entity name (**storage truth**).
 
 CRUD RPCs without a table generate honest nothing (Unimplemented stubs, no
-pages, no ORM). Tables without CRUD RPCs are plain schema for hand-written
-code. `forge add entity` scaffolds both halves in one step; the messages
-and RPCs it writes into the service proto are yours afterwards — the wire
-contract evolves independently of the schema.
+pages, no ORM). Tables without CRUD RPCs are plain schema for hand-written code.
+`forge scaffold entity` scaffolds both halves in one step; the messages and
+RPCs it writes into the service proto are yours afterwards — the wire contract
+evolves independently of the schema.
 
-Use these exact prefixes. For matching methods (with the matching table),
-forge generates the per-RPC op constructors and the
-`<entity>ToProto` / `<entity>FromProto` conversions in
-`handlers_crud_ops_gen.go` (Tier-1, regenerated every run) and scaffolds a
-thin delegation into the user-owned `handlers_crud.go`
-(`return crud.HandleCreate(s.crudCreateItemOp())(ctx, req)`):
+Use these exact prefixes. For matching methods (with the matching table), forge
+generates the per-RPC op constructors and the `<entity>ToProto` /
+`<entity>FromProto` conversions in `handlers_crud_ops_gen.go` (Tier-1,
+regenerated every run) and scaffolds a thin delegation into the user-owned
+`handlers_crud.go` (`return crud.HandleCreate(s.crudCreateItemOp())(ctx, req)`):
 
 | RPC Name | Generated behavior |
 |----------|--------------------|
@@ -122,24 +188,21 @@ The generated conversions map the **intersection** of wire fields and
 columns by name: a wire-only field never reaches the DB, a column-only
 field never leaks onto the wire. Add wire-only fields freely.
 
-Hand-written handler methods always win — the generator skips anything
-you've already implemented. To customize a generated CRUD RPC, replace
-the delegation body in `handlers_crud.go` directly (the file is yours;
-new CRUD RPCs are appended, existing content is never modified).
+Hand-written handler methods always win — the generator skips anything you've
+already implemented. To customize a generated CRUD RPC, replace the delegation
+body in `handlers_crud.go` (the file is yours; new CRUD RPCs are appended,
+existing content never modified).
 
-When a request/response shape deliberately deviates from these
-conventions (a list keyed by `ticker`+`limit` instead of AIP-158, say),
-forge scaffolds an Unimplemented stub into `handlers_crud.go` carrying a
-`forge:custom-read-shape: <reason>` comment (including the observed
-field list). That is the system working, not an error — the custom
-shape is a domain decision and the body is yours to implement, composing
-the `pkg/crud`/`pkg/orm` helpers (cursor encode/decode, `WhereEq`/
-`WhereILikeAny` filters, column-allowlisted order-by). `forge generate`
-prints one warning line per stub it scaffolds, and `forge audit` reports
-each under `crud_stubs` until the body lands (the RPC returns
-`CodeUnimplemented` until then). Markers written by older forge versions
-spell it `FORGE_CRUD_SHAPE_MISMATCH`; audit recognizes both for one
-release.
+When a request/response shape deliberately deviates (a list keyed by
+`ticker`+`limit` instead of AIP-158, say), forge scaffolds an Unimplemented stub
+into `handlers_crud.go` carrying a `forge:custom-read-shape: <reason>` comment
+(including the observed field list). That is the system working, not an error —
+the body is yours to implement, composing the `pkg/crud`/`pkg/orm` helpers
+(cursor encode/decode, `WhereEq`/`WhereILikeAny` filters, column-allowlisted
+order-by). `forge generate` prints one warning line per stub it scaffolds, and
+`forge project audit` reports each under `crud_stubs` until the body lands (the
+RPC returns `CodeUnimplemented` until then). Older forge versions spell the
+marker `FORGE_CRUD_SHAPE_MISMATCH`; audit recognizes both for one release.
 
 ### List Request Conventions (AIP-158)
 
@@ -170,6 +233,22 @@ fails loudly otherwise. A user-supplied `order_by` is validated against
 the table's declared-column allowlist (`<Entity>Columns`); an undeclared
 column returns `InvalidArgument`, not a silent no-op.
 
+**The request's fields ARE the filter surface.** To filter or scope a list by
+anything else — an enum `status`, a foreign key, an owner `<owner>_id` — add
+that field to the List request naming the real column, and forge wires it end
+to end:
+
+```proto
+// added by hand to the scaffolded ListPrescriptionsRequest:
+optional string status = 3;      // enum facet — exact-match on the status column
+optional string patient_id = 4;  // FK / owner scope — exact-match on patient_id
+```
+
+Never fetch a page and filter client-side — that truncates past the page cap.
+(`forge scaffold entity` scaffolds `page_size`/`page_token`/`search`/`bool`
+facets/`order_by`/`descending` automatically; you add enum/FK/owner facets like
+these by hand.)
+
 ## Enum Conventions
 
 ```proto
@@ -182,23 +261,15 @@ enum TaskStatus {
 
 - First value **must** be `0` and named `<ENUM_NAME>_UNSPECIFIED`.
 - All values **must** be prefixed with the enum name in UPPER_SNAKE_CASE.
-- Proto fields stay `snake_case` (`created_at`, `org_id`); proto messages / RPCs / services stay `PascalCase`. For the full Go ↔ proto ↔ TS ↔ `forge.yaml` casing table, see **Naming conventions** in `architecture`.
+- Proto fields stay `snake_case` (`created_at`, `org_id`); messages / RPCs / services stay `PascalCase`. Full casing table: **Naming conventions** in `architecture`.
 
 ## RPCs owned by another service/repo — import, don't re-scaffold
 
-The protos above are the ones **your** service owns. For an RPC owned by
-*another* service or repo (you're a client of it, not its implementer), the
-remote proto is the single source of truth — **import it and generate only a
-CLIENT.** Pull it in via a pinned `task protos` copy or a buf BSR dependency;
-regenerate the client when the upstream version bumps.
-
-Never hand-copy the remote `.proto` into your `proto/services/` and let forge
-scaffold a server for it. That produces a dead handler package: every method
-is `CodeUnimplemented`, `Deps` holds only `Logger`/`Config` with no domain
-collaborators, and the wiring boots a service nobody calls. If you find
-yourself staring at that shape — an all-`Unimplemented` handler for RPCs you
-never meant to serve — you meant to *import the upstream proto and generate a
-client*, not own the server.
+For an RPC owned by *another* service or repo you are a client, not its
+implementer: the remote proto is the source of truth — **import it (pinned
+`task protos` copy or a buf BSR dep) and generate only a CLIENT.** Never
+hand-copy it into `proto/services/` and scaffold a server: every method
+`CodeUnimplemented` and a `Deps` holding only `Logger`/`Config` is the tell.
 
 ## Common Mistakes
 
@@ -207,25 +278,22 @@ client*, not own the server.
 3. **Enum values without prefix** — Use `TASK_STATUS_ACTIVE`, not `ACTIVE`. Proto enums share a namespace.
 4. **Non-optional filter fields** — List request filter fields must be `optional`.
 5. **Reusing field numbers** — Mark removed fields as `reserved`, never reuse.
-6. **Multiple services per file** — Lint-rejected. Use `proto-split`.
+6. **Multiple services per file** — Lint-rejected (`forgeconv-one-service-per-file`). Use `proto-split`.
 7. **Cross-service proto imports** — Hoist shared messages into `proto/shared/v1/types.proto`.
-8. **Declaring schema in proto** — There is no entity annotation. Columns come from `db/migrations/`; if a CRUD RPC has no matching table, nothing is generated. Use `forge add entity` (or write the migration) first.
+8. **Declaring schema in proto** — There is no entity *annotation*; the `// forge:entity` marker is a birth instruction, not a schema declaration. Columns come from `db/migrations/`; if a CRUD RPC has no matching table, nothing is generated. Mark the message and run `forge scaffold` (or write the migration) first.
+9. **`min_len == max_len` on a fixed-length code** — `buf lint` rejects it (exit 100). A fixed length takes `string.len = N` (ISO currency 3, country 2, NPI 10), which still projects to `CHECK (char_length(col) = N)` at birth; a single fixed literal takes `string.const = "X"`, which is wire-only. Reserve `min_len`/`max_len` for a genuine range.
 
 ## Rules
 
-- One service per `.proto` file. **Enforced by `forgeconv-one-service-per-file`.**
+- **Draft, then `forge generate`** — the fast, exact oracle; read its error and fix. Never reverse-engineer forge's source for syntax.
 - Proto declares the wire; `db/migrations/` declares the schema. Entity = CRUD RPCs + matching table.
-- Filter fields on List requests are always `optional`.
-- Removed fields become `reserved`. Never reuse a number.
-- Cross-service shared messages live in `proto/shared/v1/types.proto`.
 - RPCs owned by another repo: **import the upstream proto and generate a client** — never hand-copy it and scaffold a server you won't implement.
-- Run `forge generate && forge lint` after every proto edit.
-- Fix issues in proto, not in `gen/` — generated code is overwritten.
+- Run `forge generate && forge lint` after every proto edit; fix issues in proto, not in `gen/` — generated code is overwritten.
 
 ## When this skill is not enough
 
-- **Splitting a multi-service file** — see `proto-split`.
-- **Designing the Go service surface** behind the proto — see `service-layer`.
-- **Handler implementation patterns** — see `api`.
-- **DB schema lifecycle** (migrations, conventions, the portable subset) — see `db`.
-- **Retiring legacy entity annotations** — see `migrations/proto-entities-to-schema-truth`.
+- Splitting a multi-service file — `proto-split`.
+- Designing the Go service surface behind the proto — `service-layer`.
+- Handler implementation patterns — `api`.
+- DB schema lifecycle (migrations, conventions, the portable subset) — `db`.
+- Retiring legacy entity annotations — `migrations/proto-entities-to-schema-truth`.

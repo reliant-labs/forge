@@ -1,12 +1,13 @@
 ---
 name: v0.x-to-observe-libs
 description: Migrate from per-internal-package middleware/tracing/metrics codegen to forge/pkg/observe Connect interceptors + opt-in helpers. Mock stays codegen.
+detection: find internal -name middleware_gen.go -o -name tracing_gen.go -o -name metrics_gen.go 2>/dev/null | grep -q .
 relevance: migration
 ---
 
 # Migrating from per-package wrapper codegen to `forge/pkg/observe`
 
-Use this skill when `forge upgrade` reports a jump across the version that
+Use this skill when `forge project upgrade` reports a jump across the version that
 ships `forge/pkg/observe` (typically `1.6.x → 1.7.x`). It supersedes the
 `v0.x-to-contractkit` skill for the middleware/tracing/metrics rows; the
 mock side is unchanged.
@@ -138,7 +139,7 @@ grep "DefaultMiddlewares" cmd/server.go    # should be present
 ls internal/*/{middleware,tracing,metrics}_gen.go 2>&1 | head    # should be empty
 ```
 
-If all three pass, `forge upgrade` will bump `forge_version` in
+If all three pass, `forge project upgrade` will bump `forge_version` in
 `forge.yaml` to the target version automatically.
 
 ## 6. Rollback
@@ -147,7 +148,7 @@ If something breaks:
 
 ```bash
 git revert <forge-generate-commit>      # undo the regen
-forge upgrade --to 1.6.x                # pin back to the prior version
+forge project upgrade --to 1.6.x                # pin back to the prior version
 ```
 
 `--to 1.6.x` requires having the older forge build on `PATH` first;

@@ -1,299 +1,190 @@
 ---
 name: auth
-description: Authentication, authorization, and multi-tenancy — forge.yaml config, JWT, API keys, RBAC, dev mode, and tenant scoping.
+description: Authentication — the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, api-keys.
 ---
 
-# Authentication & Authorization
+# Authentication
 
-Forge generates a layered auth system from proto annotations and `forge.yaml` config. Authentication (who are you?) is handled by interceptors; authorization (can you do this?) is handled by per-service authorizers.
+Authentication is a **middleware, nothing more**: an interceptor validates the bearer token and puts `*Claims` on the context, **fail-closed** — no token, or an invalid one, is rejected before any handler runs. Forge scaffolds the validator choice in OWNED code (`SetupAuth`) and wires the interceptor.
 
-## Auth Providers
+**Which RPCs are callable without credentials is declared in the proto**, per rpc, with `option (forge.v1.method) = { auth_required: false }` — projected into `pkg/middleware/procedures_gen.go`, which the interceptor reads. No second list to keep in step.
 
-Set the provider in `forge.yaml`:
+Everything downstream reads the context: `middleware.GetUser(ctx)` answers **who the caller is**. What that caller may DO, and which rows they may see, is application policy no annotation can express.
 
-```yaml
-auth:
-  provider: jwt       # "jwt", "api_key", "both", "none"
-  jwt:
-    signing_method: RS256
-    jwks_url: "https://your-idp.com/.well-known/jwks.json"
-    issuer: "https://your-idp.com/"
-    audience: "your-api"
-  api_key:
-    header: X-API-Key  # default
-```
+Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/dev-loop`** (a token locally, the opt-in dev IdP), **`auth/frontend`** (`AuthProvider`, PKCE), **`auth/api-keys`**.
 
-- **jwt** — Validates Bearer tokens from the Authorization header using JWKS. Install the `jwt-auth` pack for production-ready validation.
-- **api_key** — Validates API keys from a custom header (default `X-API-Key`). Install the `api-key` pack for key lifecycle management.
-- **both** — Accepts either JWT or API key per request. The interceptor tries JWT first, then falls back to API key.
-- **none** — No authentication. All requests proceed unauthenticated.
+## Choosing the validator (owned code, not config)
 
-## The Claims Struct
-
-`Claims` is the canonical auth payload, defined in `forge/pkg/auth` and aliased in `internal/middleware/middleware.go` (the thin user-owned auth-policy file — it also owns the claims context key):
+Authentication is CODE, not a `forge.yaml` provider enum. Each service scaffolds one editable file, `internal/app/auth.go`, whose `SetupAuth` returns the validator `cmd serve.go` mounts. Picking a validator is a wiring choice; WHERE this deployment's issuer lives is per-environment DATA on the typed config (declared in `proto/config/v1/config.proto`, pinned in `deploy/kcl/<env>/config.k`). **`SetupAuth` reads no environment variable** — the app has one configuration channel.
 
 ```go
-// internal/middleware/middleware.go (user-owned, scaffolded once)
-package middleware
-
-import "github.com/reliant-labs/forge/pkg/auth"
-
-type Claims = auth.Claims
-```
-
-```go
-// forge/pkg/auth/auth.go
-type Claims struct {
-    UserID string   `json:"user_id"`
-    Email  string   `json:"email"`
-    OrgID  string   `json:"org_id"`
-    Role   string   `json:"role"`
-    Roles  []string `json:"roles"`
+// internal/app/auth.go — YOURS (scaffolded once, never regenerated).
+func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), error) {
+	jwksURL := cfg.JwtJwksUrl
+	// Issuer but no explicit JWKS URL: ask the issuer where its keys are.
+	if jwksURL == "" && cfg.JwtIssuer != "" && cfg.JwtSecret == "" {
+		meta, err := oauth2.Discover(ctx, nil, cfg.JwtIssuer)
+		if err != nil { return nil, fmt.Errorf("discover OIDC issuer %q: %w", cfg.JwtIssuer, err) }
+		jwksURL = meta.JWKSURI
+	}
+	validator, err := auth.NewValidator(auth.Config{
+		Provider: "jwt",
+		JWT: auth.JWTConfig{
+			SigningMethod: cfg.JwtSigningMethod,
+			Issuer: cfg.JwtIssuer, Audience: cfg.JwtAudience,
+			JWKSURL: jwksURL, Secret: cfg.JwtSecret,
+		},
+	})
+	if err != nil { return nil, fmt.Errorf("build JWT validator: %w", err) }
+	return validator.Validate, nil
 }
 ```
 
-Retrieve claims in handlers:
+**Nothing in the scaffold names an identity provider** — no vendor branch, no default endpoint. Every issuer arrives as a URL on the typed config.
+
+- **Set `jwt_issuer` alone and the JWKS endpoint is DISCOVERED** from `/.well-known/openid-configuration` — one URL instead of two that must agree. Set `jwt_jwks_url` too and it WINS, which is what a containerized dev IdP needs.
+- **Keys are fetched at BOOT** and refreshed in the background, so rotation needs no redeploy — and an unreachable issuer or JWKS endpoint REFUSES TO START, naming the URL. Never soften that into a warning: "boots, accepts nothing, reports healthy" is the worst of both.
+- **`jwt_jwks_url` and `jwt_secret` are mutually exclusive** — one validator, one key source; both is rejected at startup, not resolved by precedence. For several issuers at once (an IdP migration), compose `auth.Config.TokenValidators`.
+- **`jwt_secret` is `sensitive`** — it projects as a `secretKeyRef`, never an inline manifest value: an HS\* value both verifies AND mints. The OIDC client fields are NOT secrets (see the `auth/frontend` skill).
+- **`jwt_signing_method` and the key must agree.** Default `RS256`, so a shared-secret `jwt_secret` needs `HS256` — otherwise a correctly-signed token is rejected on `alg` alone, which reads as a bad secret and is not.
+- **Swap the validator freely** — arbitrary code, not a fixed enum. A nil validator makes the server **refuse to start**.
+
+### Swapping the IdP
+
+**Most swaps are a CONFIG change, not a code change.** Any standards-compliant issuer — Auth0, Keycloak, Zitadel, Okta, Supabase, a local dev IdP — needs no constructor: point `jwt_issuer` (plus `jwt_jwks_url` if discovery cannot describe it) at the new issuer and the default validator validates against its keys.
+
+Only a NON-STANDARD claim shape needs code — edit `internal/app/auth.go` and return a different validator's `.Validate`:
 
 ```go
-claims, ok := middleware.ClaimsFromContext(ctx)
-if !ok {
-    return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("no claims"))
-}
+// Clerk — JWKS + Clerk's org/session claim shape (sub / org_id / org_role → Claims).
+// Email isn't in a Clerk token by default; sync it via webhook.
+validator, err := auth.Clerk(auth.ClerkOpts{JWKSURL: cfg.JwtJwksUrl, Issuer: cfg.JwtIssuer})
+
+// Firebase — Google's JWKS + Firebase shape (sub = uid); token must match a project's
+// aud AND issuer. Add a `firebase_project_ids` config field for the list.
+validator, err := auth.Firebase(auth.FirebaseOpts{ProjectIDs: strings.Split(cfg.FirebaseProjectIds, ",")})
 ```
 
-If you need additional claim DATA, prefer the `enrichClaims` hook in `internal/middleware/middleware.go` — it runs after token validation and can hydrate roles/org/flags onto the validated claims before handlers see them. If you need additional claim FIELDS, add them to `forge/pkg/auth.Claims` so library code (auth interceptor, tenant interceptor) and project code share one type. Project-local extensions are not supported by the alias-based wiring; if you must, replace the `type Claims = auth.Claims` line with a struct that embeds `auth.Claims` and update the callbacks the file passes to the forge libraries.
+A constructor needing a value the config lacks gets a config field, never an `os.Getenv`. Other non-standard shapes ride `UserResolver`. Change the frontend `AuthProvider` to match — both halves must name the same issuer.
 
-## The thin policy file (internal/middleware/middleware.go)
+## The Claims struct
 
-The auth MECHANISM (mode resolution, refusal-to-start, allow-list gate, Bearer parsing, claims plumbing) lives in `forge/pkg/authn`; the authorization interceptor in `forge/pkg/authz`; commodity middlewares (CORS, security headers, request-id, rate limit, idempotency, HTTP stack, audit) in `forge/pkg/middleware`. The project keeps ONE scaffolded-once file, `internal/middleware/middleware.go`, wiring the four things projects actually customize:
+`Claims` is the canonical auth payload — `UserID` / `Email` / `OrgID` / `Role` / `Roles` — defined in `forge/pkg/auth` and aliased in the owned `pkg/middleware/middleware.go` (`type Claims = auth.Claims`), so library and project code name ONE type.
 
-1. **Token validator** — passed EXPLICITLY into `NewAuthInterceptor(AuthDeps{Validate: fn})`; there is no package-global slot. The composition root (`OpenInfra` in `internal/app/providers.go`, or the generated `auth_gen.go`) builds the validator and the generated `cmd serve.go` threads it into `AuthDeps.Validate` before the interceptor chain is assembled.
-2. **Identity enricher** — `enrichClaims(ctx, claims)` runs after validation; hydrate roles/org membership/feature flags from your DB here. Errors reject the request.
-3. **Allow-list** — `unauthenticatedProcedures`, exact full-procedure strings only.
-4. **Dev claims** — `devClaims()` returns the synthetic principal attached while auth is off (dev mode / `AUTH_MODE=none`). The scaffolded default is a fixed dev user (`UserID: "dev-user"`, `Email: "dev@localhost"`, `Role: "admin"`) so claim-demanding handlers (generated CRUD calls `GetUser`) work in dev with zero config; return nil to keep dev passthrough claim-free. Ignored entirely in validate/external-auth modes.
+Read it with `middleware.ClaimsFromContext(ctx)` (`(*Claims, ok)`) on an RPC that may be anonymous, or `middleware.GetUser(ctx)` (`(*Claims, error)` — `CodeUnauthenticated` when none) on one that requires a principal. Additional claim DATA rides the `enrichClaims` hook; additional claim FIELDS go on `forge/pkg/auth.Claims`, never a parallel type.
 
-The file also owns `Claims`, the claims context key (`ClaimsFromContext` / `ContextWithClaims`), and the `Authorizer` interface + `DevAuthorizer` that generated code references — so regenerating never churns your handler-facing surface.
+## The wiring file + interceptor chain
 
-Auth mode resolution (in `forge/pkg/authn`, decided ONCE at interceptor construction): `AuthDeps.Validate` non-nil → validate every non-allow-listed request; `AuthDeps.ExternalAuth` true (a header-carried provider or a pack mounts its own interceptor) → passthrough; `AUTH_MODE=none` → passthrough; dev mode (`AuthDeps.DevMode`, injected from `config.DevAuthBypass(cfg)`) → passthrough; otherwise **the server refuses to start**.
+The auth MECHANISM (mode resolution, refusal-to-start, allow-list gate, Bearer parsing, claims plumbing) lives in `forge/pkg/authn`. The project keeps ONE scaffolded-once file, `pkg/middleware/middleware.go`, wiring the two things projects customize: the **token validator** (passed EXPLICITLY into `NewAuthInterceptor(AuthDeps{Validate: fn})` — no package global) and the **identity enricher** `enrichClaims`. It also owns `Claims`, the claims context key, and `GetUser`. The allow-list is not among them — it is generated into `procedures_gen.go`.
 
-## How auth wiring works
+**How to tell from SOURCE whether this server authenticates** — two facts, both in the repo, neither of them runtime state:
 
-When forge.yaml declares `auth.provider`, the generated
-`internal/middleware/auth_gen.go` is a thin shim over `forge/pkg/auth`.
-The generated `cmd serve.go` calls `middleware.InstallGeneratedAuth()`
-as it wires the interceptor chain and threads the result into
-`middleware.AuthDeps`, except under an auth bypass
-(`config.DevAuthBypass(cfg)` — the dev-claims passthrough applies
-instead). The auth provider is wired EXPLICITLY where the chain is
-composed — not via a package-global setter and not via a post-bootstrap
-hook reading off an `App` value.
+1. the generated `cmd serve.go` builds `middleware.AuthDeps{AnonymousOK: false}` and threads the OWNED `app.SetupAuth(cfg)` validator into `AuthDeps.Validate`;
+2. the exempt RPCs are `procedures_gen.go`, projected from the protos' `auth_required` declarations.
 
-- **`provider: jwt`** — `InstallGeneratedAuth` constructs the
-  `pkg/auth` validator from the forge.yaml config and RETURNS its
-  `Validate` func, which the generated `cmd serve.go` threads into
-  `AuthDeps.Validate`; it also merges the proto-annotated
-  `auth_required = false` procedures into `unauthenticatedProcedures`.
-  The user-owned policy surface (enrichClaims, allow-list, dev claims)
-  stays fully in the loop; there is no parallel interceptor.
-- **`provider: api_key` / `both`** — API keys arrive in a header, not
-  a bearer token, so `InstallGeneratedAuth` returns a nil validator and
-  the generated `cmd serve.go` sets `AuthDeps.ExternalAuth = true` and
-  mounts the header-aware `middleware.GeneratedAuthInterceptor()`.
-  API-key requests FAIL CLOSED until you implement `KeyValidator`
-  (`internal/middleware/auth_validator.go`) and install it from
-  `OpenInfra` in `internal/app/providers.go`:
+Mode resolution happens ONCE at construction: a validator → enforce; `ExternalAuth` → passthrough (another interceptor owns identity); neither → **refuse to start**. **No environment variable can run a forge service without authentication**, and no config value can either — which is why the answer is readable in a diff rather than only observable in production.
 
-```go
-// internal/app/providers.go — in OpenInfra, before the chain is built
-middleware.SetGeneratedKeyValidator(&DBKeyValidator{db: repo})
-```
+Chain order (`observe.Chain`): **recovery → request-id → logging → tracing → metrics**, then **auth → audit → rate-limit**. Auth after observability is deliberate — operators see auth failures in the same dashboards as successful traffic.
 
-`KeyValidator` is aliased to `auth.KeyValidator`; implement `ValidateKey(ctx, key) (*Claims, error)` against your storage.
+### Publishing one RPC (per-RPC allow-list)
 
-The library reads `JWT_SECRET` from the environment when `JWTConfig.Secret` is empty (preserves the legacy template behaviour).
-
-## Where the auth interceptor sits in the chain
-
-The interceptor chain is assembled **explicitly in the generated
-`cmd serve.go`** via `observe.Chain(observe.Deps{…})`, with the
-application interceptors handed in BY NAMED FIELD (no `Set*` package
-globals). The canonical forge order is the code's, not a side effect of
-registration order: **recovery → request-id → logging → tracing →
-metrics** (the observability layer), then **auth → audit → rate-limit**
-(the application layer); `otelconnect` rides `Extras` (outermost of the
-application layer).
-
-Auth is one of those named fields, so failures from the auth interceptor
-are still observable (counted, traced, logged). The auth interceptor is
-built UP FRONT from an explicit `AuthDeps` — an unconfigured auth
-provider is a startup error, not a per-request surprise — then passed
-into `observe.Chain`:
-
-```go
-// In cmd serve.go. AuthDeps carries the explicit policy (DevMode +
-// the validator/external signal); NewAuthInterceptor REFUSES TO START
-// a production server that has no auth provider.
-authDeps := middleware.AuthDeps{DevMode: config.DevAuthBypass(cfg)}
-// (auth_gen.go threads the forge.yaml provider's validator into authDeps here)
-authInterceptor, err := middleware.NewAuthInterceptor(authDeps)
-if err != nil {
-    return fmt.Errorf("auth configuration: %w", err)
-}
-
-chainDeps := observe.Deps{
-    Logger: logger,
-    Auth:   authInterceptor,                                          // ← auth, named field
-    Audit:  fmw.AuditInterceptor(logger, middleware.ClaimsFromContext),
-    // RateLimit: fmw.RateLimitInterceptor(...),  // when configured
-}
-opts := []connect.HandlerOption{
-    connect.WithInterceptors(observe.Chain(chainDeps)...),
-}
-```
-
-The ordering puts auth-after-observability deliberately — operators want
-auth failures in the same dashboards as successful traffic. See
-`forge/pkg/observe/middleware.go` for the full ordering rationale.
-
-## Unauthenticated Endpoints
-
-The auth interceptor checks an allow-list before requiring auth (exact procedure match only — the gate lives in `forge/pkg/authn`). To allow additional unauthenticated endpoints, add them to the `unauthenticatedProcedures` map in `internal/middleware/middleware.go`:
-
-```go
-var unauthenticatedProcedures = map[string]struct{}{
-    "/grpc.health.v1.Health/Check": {},
-    "/grpc.health.v1.Health/Watch": {},
-    "/myapp.v1.PublicService/GetStatus": {},  // add here
-}
-```
-
-## RBAC via Proto Annotations
-
-Annotate RPC methods with `auth_required` in your proto (there is no
-`required_roles` annotation — role logic is code, not proto):
+`auth_required: false` publishes ONE rpc to unauthenticated callers. It is
+per-rpc, not a service posture, and the default is closed.
 
 ```proto
-rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {
-  option (forge.v1.method) = {
-    auth_required: true
-  };
+service Status {
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse) {
+    option (forge.v1.method) = { auth_required: false };  // published deliberately
+  }
+  rpc GetDetail(GetDetailRequest) returns (GetDetailResponse) {}  // no annotation = closed
 }
 ```
 
-`forge generate` produces `internal/handlers/<svc>/authorizer_gen.go` with the per-method policy table (auth-required flags and declared error codes). Customize access control — including role checks — in `internal/handlers/<svc>/authorizer.go` (yours to edit; delegates to the generated authorizer by default). The generated and owned files co-locate in the one `internal/handlers/<svc>/` directory.
+Opening an rpc is not the only way to serve a second audience: forge declares
+multiple frontends and multiple services in `forge.yaml`, so separate audiences
+can have separate applications against separate rpcs.
 
-**No auth-by-omission.** An RPC with no `(forge.v1.method)` annotation has no declared auth posture. `forge lint` flags this and the policy table defaults the method to **deny** until you annotate it — a missing annotation must never silently generate an unauthenticated endpoint.
+Each lands in the generated set as connect's own `…Procedure` constant, matched EXACTLY — never by substring, so a `HealthReport` rpc cannot ride along with the health probes. An unannotated rpc defaults to `auth_required: true`: silence never publishes an endpoint. The gRPC probes are always allowed; they run before anything can authenticate.
 
-## Dev Mode
-
-`forge up --env=dev` defaults the children to `ENVIRONMENT=development` when nothing else sets it (per-env config or your shell always wins), so the canonical dev command never boots the server in production mode — where an unconfigured auth provider would refuse to start.
-
-In dev mode (or `AUTH_MODE=none`) the auth interceptor runs in passthrough and attaches the synthetic principal from `devClaims()` in `internal/middleware/middleware.go` to every request, so handlers and generated CRUD that demand claims via `middleware.GetUser` work with zero auth config. To disable, return `nil` from `devClaims()` — dev requests then carry no claims and claim-demanding RPCs return Unauthenticated. The dev principal is only consulted in passthrough mode; installing a validator or registering external auth makes `pkg/authn` ignore it.
-
-Note the split: the `jwt-auth` pack is for REAL JWT validation (JWKS, issuer/audience checks) — it is not part of the dev path. You do not need any pack to develop locally.
-
-In development (`cfg.Environment == "development"`), `Build` also wires a `DevAuthorizer` that allows all requests. This is logged with a WARN at startup. Never use `DevAuthorizer` in production.
-
-## Multi-Tenant Config
-
-Enable row-level tenant isolation in `forge.yaml`:
-
-```yaml
-auth:
-  provider: jwt
-  multi_tenant:
-    enabled: true
-    claim_field: org_id    # JWT claim to extract tenant ID from (default: "org_id")
-    column_name: org_id    # DB column for tenant scoping (default: "org_id")
-```
-
-Run `forge generate` after changing this config.
-
-**How it works at runtime:** The `TenantInterceptor` (runs after `AuthInterceptor`) extracts the tenant ID from claims and injects it into context. Use `middleware.RequireTenantID(ctx)` or `middleware.TenantIDFromContext(ctx)` in handlers.
-
-| claim_field | Claims field used |
-|-------------|-------------------|
-| `org_id` (default) | `claims.OrgID` |
-| `user_id` / `sub` | `claims.UserID` |
-| `email` | `claims.Email` |
-
-When multi-tenant is enabled, entities with a field explicitly marked `tenant: true` (the `(forge.v1.field)` annotation) are automatically scoped — generated CRUD handlers include `WHERE <tenant_col> = $tenantID` in every query. The `tenant` annotation must be set explicitly; field names like `org_id` or `tenant_id` are NOT auto-detected.
-
-## Frontend wiring (auth-ui pack)
-
-The `auth-ui` frontend pack pairs with each auth backend pack to install
-opinionated login / signup / session UI. Pick the backend first, then
-pick the matching `--config provider=…`:
-
-```bash
-# Default — pairs with the jwt-auth backend pack
-forge pack install auth-ui                       # provider defaults to jwt-auth
-
-# Pair with the clerk backend pack (pulls in @clerk/nextjs)
-forge pack install auth-ui --config provider=clerk
-
-# Pair with the firebase-auth backend pack (pulls in firebase)
-forge pack install auth-ui --config provider=firebase-auth
-```
-
-The pack installs into every frontend declared in `forge.yaml` at
-`src/components/auth/`. It ships:
-
-- `LoginForm` — email/password form (or Clerk/Firebase wrapper) with
-  `react-hook-form` + `zod` validation.
-- `SignupForm` — registration form, where supported by the provider.
-- `SessionNav` — header avatar dropdown with sign-out and an optional
-  tenant switcher.
-- `DevModeBanner` — visible warning when
-  `NEXT_PUBLIC_AUTH_DEV_MODE=true`, mirroring the backend pack's
-  `dev_mode: true` setting.
-- `auth-store.ts` — Zustand store: `{user, session, isLoading,
-  isAuthenticated}`. Subscribe to slices, never the whole store.
-
-Wire in `src/app/layout.tsx`:
-
-```tsx
-import { DevModeBanner, SessionNav } from "@/components/auth";
-
-export default function RootLayout({ children }) {
-  return (
-    <html><body>
-      <DevModeBanner />
-      <header className="flex items-center justify-between border-b px-6 py-3">
-        <span className="font-bold">My App</span>
-        <SessionNav />
-      </header>
-      <main>{children}</main>
-    </body></html>
-  );
-}
-```
-
-For the `jwt-auth` variant, also rehydrate the persisted token at app
-boot — see the rendered `src/components/auth/README.md` for the
-`HydrateAuth` snippet. Clerk and Firebase variants manage rehydration
-internally.
-
-## Testing Auth
-
-Inject claims into context directly in tests:
+**A public handler gets NO claims — not even from a caller who presented a valid token.** The allow-list is checked BEFORE the Authorization header is read, so the validator is not consulted at all. Handle the anonymous case explicitly:
 
 ```go
-ctx := middleware.ContextWithClaims(context.Background(), &middleware.Claims{
-    UserID: "user-1",
-    Email:  "test@example.com",
-    OrgID:  "tenant-123",
-    Role:   "admin",
-})
+if claims, ok := middleware.ClaimsFromContext(ctx); ok {
+    return s.listFor(ctx, claims.UserID) // personalized
+}
+return s.listPublic(ctx)                 // anonymous — the normal case here
 ```
 
-For tenant context: `ctx = middleware.ContextWithTenantID(ctx, "tenant-123")`.
+Two ways to get this wrong. `middleware.GetUser(ctx)` returns a `CodeUnauthenticated` **error** (it does not panic), so calling it here 401s every anonymous caller and defeats the annotation. And `claims, _ := ClaimsFromContext(ctx)` followed by `claims.UserID` **nil-panics** on every anonymous call — check `ok`.
+
+To personalize for callers who DO present a token, validate it in the handler, or keep the RPC authenticated and add a separate public one. Not `AnonymousOK: true`: that makes auth non-gating service-wide, so `auth_required: true` gates nothing.
+
+## Forge authenticates; it does not authorize
+
+**`auth_required: true` answers "is this caller signed in", never "may they touch
+THIS row".** The interceptor rejects callers with no valid token and then treats
+every authenticated caller alike — two users with valid tokens are
+indistinguishable to it. An authenticated rpc that reads an id from the request
+and returns the row is therefore reachable by every signed-in user, and on update
+a caller who supplies the whole message can also reassign the row to themselves.
+
+Ownership is a property of the row, so the check goes where the row is:
+
+```go
+claims, err := middleware.GetUser(ctx)
+if err != nil { return nil, err }
+rec, err := s.records.ByID(ctx, req.Msg.GetId())
+if err != nil { return nil, err }
+if rec.OwnerID != claims.UserID {
+    return nil, connect.NewError(connect.CodeNotFound, errors.New("record not found"))
+}
+```
+
+`NotFound` over `PermissionDenied` — confirming a row exists but is not yours is
+itself a disclosure. Filter LIST inside the query, not after it, or the total
+leaks what the page hides.
+
+Generated CRUD delegations are the common miss: they compile, pass their tests,
+and read as finished. `auth_required: true` on an update means someone
+is signed in. It does not mean the row is theirs.
+
+## Making a principal an application principal: the `Enrich` seam
+
+The token says who the caller is; your database says what they are. `enrichClaims(ctx, claims)` runs AFTER validation and BEFORE any handler sees the claims — the one chokepoint where an IdP identity becomes an application principal. Hydrate roles/org by `claims.UserID` (the IdP `sub`), never by email.
+
+**`Enrich` can REJECT**, and it is the earliest place you can: a `connect.Error` keeps its code verbatim (`PermissionDenied` stays `PermissionDenied`), a plain error becomes `Unauthenticated`. Right for whole-principal facts (suspended, no local account); wrong for per-resource decisions, which need the row and belong in the handler.
+
+**Request VALIDATION is not its job.** Field rules are enforced separately and earlier by protovalidate, from `buf.validate` annotations on your protos — a malformed request is `InvalidArgument` before any handler or enricher runs. Field checks here would run only on authenticated requests and report a bad email as an auth failure.
+
+**Provisioning is yours too** — your IdP does not populate your `users` table. `auth/authorization` has the enricher recipe with its error codes, plus the public `Register` RPC that inserts on the IdP-verified `sub`, never a body field.
+
+## API keys
+
+A bearer credential you own end to end: your table, your store, `forge/pkg/apikey`'s primitives (SHA-256 hash + indexed prefix + constant-time verify), and an `auth.KeyValidator` wired into `SetupAuth` with `Provider: "both"` to accept a JWT OR a key. Recipe: `auth/api-keys`.
+
+## Dev mode
+
+Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors) — **authentication is enforced in every mode**, and no environment variable turns it off. A local call to a protected RPC needs a real token: mint one against an HS256 `jwt_secret` in `.env.dev`, or bring up the **opt-in** dev IdP container (`docker-compose.yml` gates it behind a compose profile, off by default so a project with no browser does not pay for it).
+
+Load `auth/dev-loop` before debugging a local 401: it covers the two traps that are not your wiring — a containerized IdP has two hostnames (set `jwt_issuer` AND `jwt_jwks_url`), and some IdPs issue opaque access tokens no JWKS can validate.
+
+## Frontend wiring
+
+**Forge issues no tokens, so it ships no login form** — no `/auth/login` route, no `/login` page. Identity plugs into two seams: `SetupAuth` validates on the server, `AuthProvider` (`src/lib/auth/provider.ts`) supplies on the client. The PKCE browser flow (`forge/pkg/oauth2`) and its public, non-secret config (`oidc_client_id`, `oidc_redirect_uri`, `oidc_scopes`) are in `auth/frontend`.
+
+## Testing auth
+
+Inject claims: `middleware.ContextWithClaims(ctx, &middleware.Claims{UserID: "user-1", Role: "admin"})`, or `app.AuthedContext(t, testkit.WithUserID(...))`. Omit them to assert the `GetUser` 401 on a handler that requires identity — and that a PUBLIC handler still answers.
 
 ## Rules
 
-- Never bypass auth by removing the interceptor — add procedures to the allow-list instead.
-- Extend the `Claims` struct for custom fields; do not create parallel claim types.
-- `authorizer_gen.go` is regenerated on every `forge generate` — customize auth logic in `authorizer.go`.
-- Always use `connect.CodeUnauthenticated` for missing/invalid credentials and `connect.CodePermissionDenied` for insufficient roles.
-- `TenantInterceptor` must come AFTER `AuthInterceptor` in the interceptor chain.
-- `tenant_gen.go` is regenerated by `forge generate` — do not hand-edit.
+- Authentication is **fail-closed** (`AnonymousOK: false`): no token, or an invalid one, is rejected before the handler. A nil validator makes the server **refuse to start**.
+- **Whether this server authenticates is answerable FROM SOURCE** — `AuthDeps{AnonymousOK: false}` in the generated serve wiring plus the protos' `auth_required` declarations, both readable in a diff. No env var, no config field, and no runtime condition may decide it: an opt-out settable from a shell cannot be reviewed.
+- `auth_required: false` on the rpc is the ONE way to publish an endpoint; it is enforced, not documentation. Never bypass auth by removing the interceptor.
+- **A public handler gets NO claims, even from a caller who offered a token** — the allow-list is checked before any credential is. Handle both cases: `ClaimsFromContext` and check `ok`, never a blind deref.
+- On an authenticated RPC, `middleware.GetUser` gives you the principal to scope rows to — not proof of authentication, which the interceptor already established.
+- Custom claim DATA rides `enrichClaims`, not a parallel claim type. Hydrate by the IdP `sub`, never by email.
+- **Input validation is protovalidate's job**, via `buf.validate` rules on the proto — not `enrichClaims`, which runs only on authenticated requests and reports failures as auth errors.
+- Pin the dev IdP's image to an exact version; a moving tag makes "login broke today" unattributable.
+- **Forge validates tokens; it never issues them.** No login/signup/logout route belongs in a service — implement `AuthProvider` against your IdP. Provisioning is yours: a public `Register` RPC that trusts the verified `sub`, never a body field.
+- This skill ends at identity. **Authorization is application code** — what a caller may do is yours to design and enforce. See the `security-review` skill for the review bar.

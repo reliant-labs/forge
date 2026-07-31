@@ -15,24 +15,24 @@ export default function GlobalError({
 
   return (
     <html lang="en">
-      <body className="font-sans antialiased">
+      <body className="bg-surface font-sans text-ink antialiased">
         <main className="flex flex-1 flex-col items-center justify-center p-8">
           <div className="max-w-md text-center">
             <h1 className="mb-4 text-3xl font-bold tracking-tight">
               Application error
             </h1>
-            <p className="mb-6 text-gray-600">
+            <p className="mb-6 text-ink-muted">
               A critical error occurred and the app could not recover.
             </p>
             {error.digest ? (
-              <p className="mb-6 font-mono text-xs text-gray-500">
+              <p className="mb-6 font-mono text-xs text-ink-muted">
                 Error ID: {error.digest}
               </p>
             ) : null}
             <button
               type="button"
               onClick={reset}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover"
             >
               Try again
             </button>

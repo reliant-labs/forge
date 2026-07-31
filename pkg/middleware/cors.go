@@ -3,6 +3,8 @@ package middleware
 import (
 	"net/http"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // CORSMiddleware returns an HTTP middleware that applies the CORS policy
@@ -65,7 +67,67 @@ func CORSMiddleware(allowOrigins []string, allowCredentials bool) func(http.Hand
 			if allowCredentials {
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 			}
-			w.Header().Set("Access-Control-Expose-Headers", "Connect-Protocol-Version")
+			// Expose Connect-Protocol-Version AND the forge error-reason
+			// header cross-origin. The generated frontend runtime keys
+			// `error.reason` off svcerr.ReasonHeader ("x-forge-error-reason");
+			// without it in Expose-Headers the browser hides the header and
+			// the typed-error runtime reads null on every cross-origin
+			// response.
+			w.Header().Set("Access-Control-Expose-Headers", "Connect-Protocol-Version, "+svcerr.ReasonHeader)
+
+			if r.Method == http.MethodOptions {
+				writePreflightHeaders(w)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// DevCORSMiddleware returns an HTTP middleware that reflects ANY request
+// Origin back to the caller — an allow-all CORS policy intended for LOCAL
+// DEVELOPMENT ONLY. It exists so a freshly-forged product's browser frontend
+// works cross-origin out of the box, without the author first hand-curating a
+// CORS_ORIGINS allow-list.
+//
+// Why this instead of passing "*" to CORSMiddleware:
+//
+//   - Credential-safe. It always echoes the CONCRETE request Origin into
+//     Access-Control-Allow-Origin (never the literal "*"), so pairing it with
+//     Access-Control-Allow-Credentials: true stays spec-valid. The "*" path in
+//     CORSMiddleware, by contrast, panics when credentials are enabled (the
+//     wildcard+credentials combination is spec-invalid and rejected in prod).
+//
+//   - Unambiguously dev-scoped. The generated server selects it ONLY when
+//     ENVIRONMENT=development, so the permissive behavior can never leak into a
+//     production build the way a stray "*" in a prod allow-list could.
+//
+// It MUST NOT be wired outside development. Reflecting every origin (especially
+// with credentials) is exactly the footgun CORSMiddleware guards against for
+// real deployments.
+func DevCORSMiddleware(allowCredentials bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				// Same-origin or non-browser client: no CORS headers.
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Responses differ by origin (we echo it), so cache on Origin.
+			w.Header().Add("Vary", "Origin")
+
+			// Allow-all: reflect whatever origin asked. Echoing the concrete
+			// value (rather than "*") keeps credentialed requests spec-valid.
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			if allowCredentials {
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
+			// Same expose-header contract as CORSMiddleware so the generated
+			// frontend's typed-error runtime can read x-forge-error-reason
+			// cross-origin.
+			w.Header().Set("Access-Control-Expose-Headers", "Connect-Protocol-Version, "+svcerr.ReasonHeader)
 
 			if r.Method == http.MethodOptions {
 				writePreflightHeaders(w)

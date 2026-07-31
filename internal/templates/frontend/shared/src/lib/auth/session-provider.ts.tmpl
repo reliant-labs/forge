@@ -1,0 +1,120 @@
+import type { AuthProvider, AuthUser } from "./provider";
+
+/**
+ * The scaffolded {@link AuthProvider} — the one the app runs on until you
+ * wire your IdP. It has exactly two states, and which one it is in is
+ * decided by what it was actually given, never by a "pretend I'm logged in"
+ * switch:
+ *
+ *  1. **Mock mode.** Every RPC is answered locally, so there is no server to
+ *     authenticate to. The session is a FIXTURE — it exists so scaffolded UI
+ *     has a user to render — and `login()`/`logout()` move it for real, so a
+ *     signed-out-first product can build its public/gated routes against it.
+ *
+ *  2. **A real backend.** Signed out, no credential, and a warning on first
+ *     use: this bundle is driving a real server with nothing to present, so
+ *     anything gated on identity will 401. That is the honest state, not a
+ *     bug — forge issues no tokens, so it ships no session.
+ *
+ * There is no persistence and no token in this file. A fixture session
+ * restored across a reload would still be a fixture, and a real credential
+ * inlined into a bundle would be a credential in the repo.
+ *
+ * ── Wiring real sign-in ──────────────────────────────────────────────
+ * This file's ROLE is the seam, not its contents: implement
+ * {@link AuthProvider} over your IdP's SDK (Clerk `useAuth().getToken`,
+ * Firebase `getIdToken`, an OIDC client's access token) and pass it to
+ * `<AuthContextProvider provider={...}>` in `src/app/providers.tsx`.
+ * Everything downstream — the Connect transport's bearer token, the session
+ * UI — already reads that one object, so nothing else changes. Point the
+ * backend's `jwt_jwks_url` at the same issuer and both halves agree.
+ */
+{{- if eq .Platform "vite-spa"}}
+const MOCK_MODE = import.meta.env.VITE_MOCK_API;
+{{- else if eq .Platform "react-native"}}
+// No "hybrid" here: the scenario-backed mock transport is browser-only
+// (`forge generate` emits src/lib/mock-transport.ts for the Next.js and Vite
+// trees), so React Native is either pure mock or a real backend.
+const MOCK_MODE = process.env.EXPO_PUBLIC_MOCK_API;
+{{- else}}
+const MOCK_MODE = process.env.NEXT_PUBLIC_MOCK_API;
+{{- end}}
+
+// "true"   — pure mock: every RPC is answered locally, so the fixture token
+//            is never shown to a server.
+// "hybrid" — scenario handlers overlay a real backend and unmatched RPCs are
+//            forwarded. Those DO need a credential this provider does not
+//            have, so the fixture session renders but nothing is sent.
+const IS_PURE_MOCK = MOCK_MODE === "true";
+const IS_MOCKED = IS_PURE_MOCK || MOCK_MODE === "hybrid";
+
+// A stand-in session for mock mode, where nothing reaches the network. It is
+// not a credential and no server accepts it — it exists so scaffolded UI has
+// a user to render while the mock transport answers.
+const MOCK_USER: AuthUser = {
+  id: "mock-user-1",
+  email: "dev@localhost",
+  name: "Dev User",
+};
+const MOCK_TOKEN = "mock-token-dev";
+
+export function createSessionAuthProvider(): AuthProvider {
+  // The session this provider can offer at all. Null against a real backend.
+  const fixtureUser: AuthUser | null = IS_MOCKED ? MOCK_USER : null;
+
+  // Start signed in when there is something to be signed in WITH. The value
+  // is inlined into the bundle at build time, so the server render and the
+  // first client render agree and there is no hydration mismatch.
+  let current: AuthUser | null = fixtureUser;
+  const listeners = new Set<(user: AuthUser | null) => void>();
+
+  const emit = (next: AuthUser | null) => {
+    current = next;
+    for (const cb of listeners) cb(next);
+  };
+
+  // Warn on first use, not at construction: <AuthContextProvider> builds this
+  // as its fallback even when the app passes a real provider, so an eager
+  // warning would fire at apps that wired auth correctly.
+  let warned = false;
+  const warnUnwired = () => {
+    if (fixtureUser || warned) return;
+    warned = true;
+    console.warn(
+      "[auth] No credential: this bundle is driving a real backend with nothing to present, " +
+        "so every request that needs identity will 401. Implement AuthProvider over your IdP " +
+        "and pass it to <AuthContextProvider> in src/app/providers.tsx."
+    );
+  };
+
+  return {
+    // Only pure mock hands out the fixture token, and only the mock transport
+    // ever sees it. In hybrid mode a forwarded request goes out with no
+    // Authorization header rather than one no server would accept.
+    getToken: async () => {
+      warnUnwired();
+      return current && IS_PURE_MOCK ? MOCK_TOKEN : null;
+    },
+    getUser: () => {
+      warnUnwired();
+      return current;
+    },
+    isAuthenticated: () => {
+      warnUnwired();
+      return current !== null;
+    },
+    isLoading: () => false,
+    login: async () => {
+      if (!fixtureUser) {
+        warnUnwired();
+        return;
+      }
+      emit(fixtureUser);
+    },
+    logout: async () => emit(null),
+    onAuthStateChange: (cb) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  };
+}

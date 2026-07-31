@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-strict-contract-names
 description: Internal-package contract.go files must declare `type Service interface`, `type Deps struct`, and `func New(Deps) (Service, error)` (or the legacy single-result `func New(Deps) Service`). The convention is now lint-enforced; non-canonical names previously produced silently-broken bootstrap codegen.
+detection: find internal -name contract.go -not -path '*/testdata/*' -exec grep -LE "type Service interface|//forge:(service|contract)" {} + 2>/dev/null | grep -q .
 relevance: migration
 ---
 
@@ -9,7 +10,7 @@ relevance: migration
 > **Canonical New signature.** The current scaffold and the canonical
 > shape is the two-result form: `func New(Deps) (Service, error)`. The
 > single-result form `func New(Deps) Service` is still accepted by the
-> linter for backward compatibility, but the `forge add package` and
+> linter for backward compatibility, but the `forge scaffold package` and
 > `forge generate` scaffolds emit the two-result form and the
 > `contract_test.go` auto-scaffold targets it. If you write the
 > single-result form, you keep ownership of `contract_test.go` (forge
@@ -108,7 +109,7 @@ For each violating package:
    intentionally rejected (`func New(*Deps) Service`) — the bootstrap
    template emits a value, not a pointer.
 
-   Canonical two-result form (matches the `forge add package` scaffold):
+   Canonical two-result form (matches the `forge scaffold package` scaffold):
    ```diff
    -func NewSender(_ Config) Sender                 { return &svc{} }
    +func New(_ Deps) (Service, error)               { return &svc{}, nil }
@@ -127,7 +128,7 @@ For each violating package:
 
 5. **Re-run** `forge generate && go build ./...`.
 
-`forge upgrade` will run the lint pass automatically and surface the
+`forge project upgrade` will run the lint pass automatically and surface the
 list of files that need renaming, but the renames themselves are
 manual — they touch the interface's method set, which forge can't
 safely rewrite.

@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-middleware-lib
-description: Migrate pkg/middleware from ~25 scaffolded mechanism files to the forge libraries (pkg/authn, pkg/authz, pkg/middleware, pkg/observe) plus ONE thin user-owned policy file. Optional — old copies keep working; adopt to start receiving security fixes.
+description: Migrate pkg/middleware from ~25 scaffolded mechanism files to the forge libraries (pkg/authn, pkg/middleware, pkg/observe) plus ONE thin user-owned policy file. Optional — old copies keep working; adopt to start receiving security fixes.
+detection: test -f pkg/middleware/auth.go || test -f pkg/middleware/cors.go || test -f pkg/middleware/ratelimit.go
 relevance: migration
 ---
 
@@ -23,24 +24,22 @@ versions are versioned with forge and keep getting fixes.
 Fresh scaffolds now emit exactly TWO files under `pkg/middleware/`:
 
 - `middleware.go` — the thin, user-owned auth-policy file. It wires the
-  four things projects actually customize: the token validator
-  (`SetTokenValidator` / `ValidateToken`), the identity enricher
-  (`enrichClaims`), the unauthenticated allow-list
-  (`unauthenticatedProcedures`), and dev-claims behaviour
-  (`devClaims`). It also owns `Claims` (alias of `auth.Claims`), the
-  claims context key, and the `Authorizer` interface + `DevAuthorizer`.
+  two things projects actually customize: the token validator
+  (`SetTokenValidator` / `ValidateToken`) and the identity enricher
+  (`enrichClaims`). It also owns `Claims` (alias of `auth.Claims`) and the
+  claims context key. The unauthenticated allow-list is NOT here: it is
+  generated into `procedures_gen.go` from the protos''' `auth_required`
+  declarations.
 - `middleware_test.go` — tests for that policy wiring only.
 
-(The codegen siblings `auth_gen.go` / `tenant_gen.go` /
-`auth_validator.go` are unchanged — still regenerated from forge.yaml.)
+(The codegen sibling `auth_validator.go` is unchanged — still
+regenerated from forge.yaml.)
 
 The mechanisms moved into libraries:
 
 | Old project file | Library replacement |
 |------------------|---------------------|
-| `auth.go` (interceptor, modes, refusal) | `forge/pkg/authn` — `authn.NewInterceptor(authn.Policy{...})`; the thin file's `NewAuthInterceptor(devMode)` calls it |
-| `authz.go` `AuthzInterceptor` | `forge/pkg/authz` — `authz.Interceptor(checker)`; the `Authorizer` interface + `GetUser` + `Action*` consts stay in the thin file |
-| `permissive_authz.go` | `DevAuthorizer` in the thin file |
+| `auth.go` (interceptor, modes, refusal) | `forge/pkg/authn` — `authn.NewInterceptor(authn.Policy{...})`; the thin file's `NewAuthInterceptor(AuthDeps{...})` calls it |
 | `claims.go` | `Claims` alias + context key in the thin file |
 | `cors.go` | `forge/pkg/middleware.CORSMiddleware` |
 | `security_headers.go` | `forge/pkg/middleware.SecurityHeadersMiddleware` + `DefaultSecurityHeadersConfig` |
@@ -54,7 +53,7 @@ The mechanisms moved into libraries:
 
 Claims-aware library pieces take YOUR `middleware.ClaimsFromContext`
 as a callback — the claims context key stays project-owned, so
-generated handlers and authorizers keep compiling unchanged.
+generated handlers keep compiling unchanged.
 
 ## 2. Detection
 
@@ -73,11 +72,11 @@ grep -l "forge/pkg/authn" pkg/middleware/middleware.go
    policy: a custom validator install site, claims enrichment, extra
    allow-list entries, dev-claims injection. Note them.
 2. **Scaffold the thin file.** Copy `middleware.go` +
-   `middleware_test.go` from a fresh `forge new` scaffold (or run
+   `middleware_test.go` from a fresh `forge project new` scaffold (or run
    `forge generate` after bumping forge — the scaffold writes them only
-   if absent). Re-apply your policy: allow-list entries into
-   `unauthenticatedProcedures`, enrichment into `enrichClaims`,
-   dev-claims into `devClaims`.
+   if absent). Re-apply your policy: enrichment into `enrichClaims`, and
+   every old allow-list entry as `auth_required: false` on the rpc that
+   declares it — `forge generate` projects those into `procedures_gen.go`.
 3. **Update call sites** in `cmd/server.go` / `pkg/app/services_gen.go`
    — both are Tier-1 and regenerate to the library calls automatically
    on `forge generate`. Hand-written call sites map per the table above
@@ -91,7 +90,7 @@ grep -l "forge/pkg/authn" pkg/middleware/middleware.go
    ```bash
    go mod tidy        # drops hashicorp/golang-lru + x/time if unused
    go build ./... && go test ./...
-   forge audit        # no orphan warnings; checksums for the new pair
+   forge project audit        # no orphan warnings; checksums for the new pair
    ```
 
 ## 4. Behaviour contracts that must survive
@@ -99,18 +98,20 @@ grep -l "forge/pkg/authn" pkg/middleware/middleware.go
 Verify after migrating (the library tests cover these, but your wiring
 can still break them):
 
-- **Refusal-without-validator** — `ENVIRONMENT=production` + no
-  validator + no pack + no `AUTH_MODE=none` → the server REFUSES to
-  start.
-- **`AUTH_MODE=none`** — explicit opt-out still serves unauthenticated.
+- **Refusal-without-validator** — no validator + no pack + no
+  `AuthDeps.ExternalAuth` → the server REFUSES to start, in every
+  environment.
+- **`AuthDeps.ExternalAuth`** — the only opt-out, and it is a field in your
+  own `pkg/middleware/middleware.go`. Nothing in the process environment
+  serves unauthenticated.
 - **401-on-empty-Authorization** — with a validator installed, a
   missing `Authorization` header on a non-allow-listed procedure is
   `CodeUnauthenticated`, never a silent pass-through.
 - **Allow-list-only-unauthenticated** — exact procedure match only; a
   `HealthReport` RPC must not ride along with `Health/Check`.
-- **Dev mode injection** — dev passthrough is driven by
-  `cfg.Mode().IsDev()` handed to `NewAuthInterceptor`, not by the
-  interceptor re-reading the environment.
+- **Same enforcement in every environment** — `ENVIRONMENT` selects
+  non-security ergonomics only; a token is validated the same way in dev
+  as in prod.
 
 ## 5. Rollback
 

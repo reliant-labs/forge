@@ -96,20 +96,18 @@ The agnostic `Service.env` is a **map** `{str: EnvSource}`; config lowers throug
 the generated `appConfigEnvMap` as `from_config` entries. Control-plane's entire
 env pipeline is the **opposite** shape:
 
-- `deploy/kcl/*/config_gen.k` is `forge generate` output but still the **old
-  `[forge.EnvVar]` shape** — `APP_ENV: [forge.EnvVar]` of `config_map_ref`
-  entries (`prod/config_gen.k:10`), not a map/`appConfigEnvMap`.
+- The generated config already projects as the map-shaped `appConfigEnvMap`
+  (`config_projection.k`) — the agnostic path's `{str: EnvSource}` shape.
 - `lib/env.k` is **~430 lines of `[forge.EnvVar]` + `forge.env_merge`** — every
   role bundle (`shared_env`, `litellm_env`, `reliant_base_env`, the prod tails,
   …) returns `[EnvVar]` and composes with `env_merge` (`env.k:75-331`).
 - `full_stack` threads those lists as `env_vars=` overlays (`stack.k:288-348`).
 
-**Prerequisite:** run `forge generate` so config projects as the map-shaped
-`appConfigEnvMap` the agnostic path consumes (the guard was unblocked — "Finding
-A" — but generate has **not** been run, so `config_gen.k` is still the legacy
-list). Then `lib/env.k`'s helpers must be rewritten to build `{str: EnvSource}`
-and compose with native `|` (last-wins), dropping `env_merge`/`env_project`
-round-trips. This is the **single largest mechanical lift** in the migration and
+**Prerequisite:** `lib/env.k`'s helpers must be rewritten to build
+`{str: EnvSource}` and compose with native `|` (last-wins), dropping
+`env_merge`/`env_project` round-trips, so they meet the map-shaped
+`appConfigEnvMap` the agnostic path consumes. This is the **single largest
+mechanical lift** in the migration and
 gates rows 1-6 — no Service's `env` can be authored until the config map exists.
 
 `forge.env_project` (`core.k:124`) converts map→`[EnvVar]` but there is **no**

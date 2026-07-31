@@ -1,4 +1,4 @@
-// Package cli — `forge audit` external-builds category (Phase 3 of the
+// Package cli — `forge project audit` external-builds category (Phase 3 of the
 // build_cmd / external-build escape-hatch refactor).
 //
 // Surfaces every KCL service whose effective build is a ShellBuild. For

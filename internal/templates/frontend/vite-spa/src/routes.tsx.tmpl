@@ -2,7 +2,7 @@
 //
 // Tanstack-router setup for the {{.FrontendName}} SPA. Forge writes this
 // file once at scaffold time and never overwrites it. New routes added by
-// `forge add page <Entity>` are appended in the marker block below.
+// `forge scaffold page <Entity>` are appended in the marker block below.
 //
 // Routing model
 // -------------
@@ -27,6 +27,9 @@ import {
   createRouter,
   Outlet,
 } from "@tanstack/react-router";
+
+import { AuthCallbackScreen, SignInScreen } from "@/lib/auth/auth-screens";
+import { useAuth } from "@/lib/auth/context";
 
 import App from "./App";
 
@@ -63,7 +66,52 @@ const indexRoute = createRoute({
   },
 });
 
-// ── FORGE-ROUTES: BEGIN (managed by `forge add page` and `forge generate`) ──
+// ── Auth routes ────────────────────────────────────────────────────────
+//
+// The two screens the OIDC authorization-code flow needs. Both render
+// components from `@/lib/auth/auth-screens`, which the Next.js scaffold
+// shares byte-for-byte — only this navigation adapter differs.
+//
+// Delete both routes if your product is gated at the edge and never shows a
+// sign-in page of its own. If you keep them, register
+// `<origin>/auth/callback` as an allowed redirect URI with your IdP.
+const signInRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/auth/sign-in",
+  component: function SignIn() {
+    const { login, isAuthenticated } = useAuth();
+    return (
+      <SignInScreen
+        login={login}
+        isAuthenticated={isAuthenticated}
+        // `replace`: the sign-in page is a waypoint, so Back should not
+        // return a signed-in user to a page that bounces them forward.
+        navigate={(path) => void router.navigate({ to: path, replace: true })}
+      />
+    );
+  },
+});
+
+const authCallbackRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/auth/callback",
+  component: function AuthCallback() {
+    return (
+      <AuthCallbackScreen
+        // Read straight off the URL rather than through validateSearch: the
+        // provider's params (code/state, or error/error_description) are two
+        // mutually exclusive shapes, and the screen has to report a malformed
+        // callback as an error rather than have the router reject the
+        // navigation before it can.
+        search={window.location.search}
+        // `replace`, so Back never returns to a URL holding a spent code.
+        navigate={(path) => void router.navigate({ to: path, replace: true })}
+      />
+    );
+  },
+});
+
+// ── FORGE-ROUTES: BEGIN (managed by `forge scaffold page` and `forge generate`) ──
 // Entity routes are appended below this marker. Hand-editing inside this
 // block is allowed, but `forge generate` may re-stitch entries — keep the
 // markers intact.
@@ -88,7 +136,12 @@ const indexRoute = createRoute({
 const generatedRoutes: any[] = [];
 // ── FORGE-ROUTES: END ──
 
-const routeTree = rootRoute.addChildren([indexRoute, ...generatedRoutes]);
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  signInRoute,
+  authCallbackRoute,
+  ...generatedRoutes,
+]);
 
 export const router = createRouter({ routeTree });
 

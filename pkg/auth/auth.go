@@ -18,7 +18,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -81,9 +80,9 @@ type KeyValidator interface {
 // Config configures a [Validator].
 //
 // Provider selects the authentication scheme. JWT, APIKey and SkipMethods
-// further customize each scheme. The library reads JWT_SECRET from the
-// environment when [JWTConfig.Secret] is empty (preserving the legacy
-// behaviour of the generated auth_gen.go template).
+// further customize each scheme. Every value is supplied by the caller —
+// this package reads no environment variable of its own, so the key a
+// validator trusts is always the key its constructor was handed.
 type Config struct {
 	// Provider is one of "jwt", "api_key", "both", "none". Required.
 	Provider string
@@ -97,7 +96,7 @@ type Config struct {
 	APIKey APIKeyConfig
 
 	// SkipMethods is the list of fully-qualified Connect procedure names
-	// that bypass auth (in addition to the built-in /Health/ skip).
+	// that bypass auth (in addition to the built-in gRPC health-check skip).
 	SkipMethods []string
 
 	// KeyValidator validates API keys. Required when APIKey auth is enabled.
@@ -138,14 +137,22 @@ type JWTConfig struct {
 	// Audience, when set, is enforced via jwt.WithAudience.
 	Audience string
 
-	// JWKSURL, when set, signals JWKS-based key resolution. The current
-	// implementation does not auto-fetch JWKS (matching the legacy template
-	// behaviour) — callers that need JWKS should populate Secret with a
-	// fetched key or supply a KeyFunc.
+	// JWKSURL, when set, is the issuer's JWKS endpoint. [NewValidator]
+	// fetches it ONCE at construction (so an unreachable or malformed
+	// endpoint fails at server boot, not on the first request) and refreshes
+	// it in the background for the life of the process — the same
+	// [JWKSKeyfunc] machinery [Clerk] and [Firebase] use. This is the path
+	// every standard OIDC issuer (Auth0, Keycloak, Zitadel, Supabase, Okta)
+	// takes.
+	//
+	// Mutually exclusive with Secret: two key sources for one validator is a
+	// configuration error, and [NewValidator] rejects it rather than picking
+	// a winner. A service that must genuinely accept tokens from more than
+	// one issuer composes them explicitly via [Config.TokenValidators].
 	JWKSURL string
 
 	// Secret is the symmetric secret (HS*) or PEM-encoded public key
-	// (RS*/ES*). When empty the validator falls back to os.Getenv("JWT_SECRET").
+	// (RS*/ES*). Mutually exclusive with JWKSURL.
 	Secret string
 
 	// KeyFunc, when non-nil, fully overrides key resolution. Useful for tests
@@ -181,15 +188,6 @@ func (a APIKeyConfig) EffectiveHeader() string {
 type InterceptorOptions struct {
 	// SkipMethods overrides Config.SkipMethods when non-nil.
 	SkipMethods []string
-
-	// AllowDevMode, when true, skips real authentication and injects
-	// DevClaims when no Authorization header is present. Only honour this
-	// in non-production builds; the constructor does not gate on env.
-	AllowDevMode bool
-
-	// DevClaims is injected when AllowDevMode is true and the request has
-	// no credentials. Defaults to a non-nil empty *Claims.
-	DevClaims *Claims
 }
 
 // Validator authenticates Connect RPC requests against a configured provider.
@@ -202,6 +200,11 @@ type Validator struct {
 	// place of the legacy single-secret JWT path. Built once at NewValidator
 	// time so per-request authentication is allocation-free.
 	chain TokenValidator
+	// jwtKeyFunc is the resolved single-issuer key source, built ONCE at
+	// NewValidator time. Non-nil when the caller supplied JWT.KeyFunc or a
+	// JWT.JWKSURL; nil when the only key material is the static JWT.Secret
+	// (resolved per request, since it needs the token's alg).
+	jwtKeyFunc jwt.Keyfunc
 }
 
 // NewValidator returns a Validator wired for cfg.Provider.
@@ -235,6 +238,25 @@ func NewValidator(cfg Config) (*Validator, error) {
 			return nil, fmt.Errorf("auth: build validator chain: %w", err)
 		}
 		v.chain = chain
+		return v, nil
+	}
+
+	// Single-issuer key resolution, decided ONCE here rather than per
+	// request. An explicit KeyFunc wins; otherwise a JWKSURL is fetched now
+	// so a typo'd or unreachable endpoint is a boot failure with the URL in
+	// the message, never N confusing 401s at runtime.
+	switch {
+	case cfg.JWT.KeyFunc != nil:
+		v.jwtKeyFunc = cfg.JWT.KeyFunc
+	case cfg.JWT.JWKSURL != "":
+		if cfg.JWT.Secret != "" {
+			return nil, fmt.Errorf("auth: JWT.JWKSURL and JWT.Secret are both set — a validator has ONE key source; drop one, or compose several issuers explicitly via Config.TokenValidators")
+		}
+		kf, err := JWKSKeyfunc(cfg.JWT.JWKSURL)
+		if err != nil {
+			return nil, err
+		}
+		v.jwtKeyFunc = kf
 	}
 	return v, nil
 }
@@ -256,10 +278,17 @@ func (v *Validator) Validate(token string) (*Claims, error) {
 	return v.validateJWT(token)
 }
 
+// healthCheckPrefix is the gRPC health-checking service path. Only its RPCs
+// (Check, Watch) skip authentication by default, matched on the exact service
+// path — never a substring — so an application RPC such as
+// GetPatientHealthRecord is never accidentally exempt.
+const healthCheckPrefix = "/grpc.health.v1.Health/"
+
 // IsUnauthenticatedProcedure reports whether procedure should bypass auth.
-// This includes the built-in /Health/ skip plus any explicit skip list.
+// This includes the built-in gRPC health-check skip plus any explicit skip
+// list.
 func (v *Validator) IsUnauthenticatedProcedure(procedure string, skipMethods []string) bool {
-	if strings.Contains(procedure, "Health") {
+	if strings.HasPrefix(procedure, healthCheckPrefix) {
 		return true
 	}
 	if len(skipMethods) > 0 {
@@ -287,17 +316,9 @@ func (v *Validator) AuthenticateHeaders(ctx context.Context, headers http.Header
 
 	switch provider {
 	case ProviderJWT:
-		c, err := v.authenticateJWT(headers)
-		if err != nil && opts.AllowDevMode && headers.Get("Authorization") == "" {
-			return devClaims(opts), nil
-		}
-		return c, err
+		return v.authenticateJWT(headers)
 	case ProviderAPIKey:
-		c, err := v.authenticateAPIKey(ctx, headers)
-		if err != nil && opts.AllowDevMode && headers.Get(v.cfg.APIKey.EffectiveHeader()) == "" {
-			return devClaims(opts), nil
-		}
-		return c, err
+		return v.authenticateAPIKey(ctx, headers)
 	case ProviderBoth:
 		c, err := v.authenticateJWT(headers)
 		if err == nil {
@@ -306,9 +327,6 @@ func (v *Validator) AuthenticateHeaders(ctx context.Context, headers http.Header
 		c2, kerr := v.authenticateAPIKey(ctx, headers)
 		if kerr == nil {
 			return c2, nil
-		}
-		if opts.AllowDevMode && headers.Get("Authorization") == "" && headers.Get(v.cfg.APIKey.EffectiveHeader()) == "" {
-			return devClaims(opts), nil
 		}
 		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("authentication failed: provide a valid Bearer token or API key"))
 	}
@@ -403,13 +421,6 @@ func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) co
 	})
 }
 
-func devClaims(opts InterceptorOptions) *Claims {
-	if opts.DevClaims != nil {
-		return opts.DevClaims
-	}
-	return &Claims{}
-}
-
 // authenticateJWT extracts and validates a JWT from the Authorization header.
 func (v *Validator) authenticateJWT(headers http.Header) (*Claims, error) {
 	authorization := headers.Get("Authorization")
@@ -452,23 +463,19 @@ func (v *Validator) validateJWT(tokenString string) (*Claims, error) {
 
 	signingMethod := v.cfg.JWT.EffectiveSigningMethod()
 
-	keyFunc := v.cfg.JWT.KeyFunc
+	// jwtKeyFunc is the construction-time resolution (explicit KeyFunc or a
+	// live JWKS client). Only the static-secret case is left to decide here,
+	// because decoding it needs the configured alg.
+	keyFunc := v.jwtKeyFunc
 	if keyFunc == nil {
 		keyFunc = func(token *jwt.Token) (interface{}, error) {
 			if token.Method.Alg() != signingMethod {
 				return nil, fmt.Errorf("unexpected signing method: %s", token.Method.Alg())
 			}
-			secret := v.cfg.JWT.Secret
-			if secret == "" {
-				secret = os.Getenv("JWT_SECRET")
+			if v.cfg.JWT.Secret == "" {
+				return nil, fmt.Errorf("no JWT signing material configured: set JWT.Secret (an HS* shared secret or a PEM public key) or JWT.JWKSURL")
 			}
-			if secret == "" {
-				if v.cfg.JWT.JWKSURL != "" {
-					return nil, fmt.Errorf("JWKS key fetching not yet implemented: set JWT.Secret/JWT_SECRET or supply JWT.KeyFunc (JWKS URL: %s)", v.cfg.JWT.JWKSURL)
-				}
-				return nil, fmt.Errorf("JWT_SECRET environment variable not set")
-			}
-			return decodeJWTKey(signingMethod, secret)
+			return decodeJWTKey(signingMethod, v.cfg.JWT.Secret)
 		}
 	}
 

@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
+	validatepb "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -208,13 +211,8 @@ func applyMethodOptions(method *codegen.Method, mo *forgev1.MethodOptions) {
 	if len(mo.Errors) > 0 {
 		method.Errors = append([]string(nil), mo.Errors...)
 	}
-	// authz_custom delegates the authorization decision to a hand-written
-	// authorizer; the method carries no role allow-list. Carry the flag so the
-	// authorizer generator can emit it FAIL-CLOSED in the role table rather than
-	// with empty roles (which would read as an any-authenticated grant).
-	if mo.GetAuthzCustom() {
-		method.AuthzCustom = true
-	}
+	// auth_required stays as informational metadata above; forge reads no
+	// access-control annotations from the descriptor.
 }
 
 // extractService builds a codegen.ServiceDef from a protogen.Service.
@@ -244,17 +242,6 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 		PkgName:   goPkgName(file),
 		ProtoFile: file.Desc.Path(),
 		Messages:  make(map[string][]codegen.MessageFieldDef),
-	}
-
-	// Read service-level options
-	if svcOpts := svc.Desc.Options(); svcOpts != nil {
-		ext := proto.GetExtension(svcOpts, forgev1.E_Service)
-		if ext != nil {
-			if so, ok := ext.(*forgev1.ServiceOptions); ok && so != nil {
-				// Service options available for future use (auth defaults, etc.)
-				_ = so
-			}
-		}
 	}
 
 	for _, m := range svc.Methods {
@@ -300,7 +287,7 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 
 		// Extract the deep type graph (transitively reachable messages
 		// + enums, keyed by fully-qualified name) for full JSON-Schema
-		// emission in the MCP manifest.
+		// emission.
 		extractMessageSchema(&sd, m.Input)
 		extractMessageSchema(&sd, m.Output)
 	}
@@ -320,7 +307,7 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 //
 // Well-known types (google.protobuf.*) are deliberately NOT recorded:
 // their protojson encodings are fixed (Timestamp → RFC 3339 string,
-// Struct → arbitrary object, ...) and the MCP schema emitter maps them
+// Struct → arbitrary object, ...) and schema emitters map them
 // statically. Recording e.g. Struct's internal fields would describe
 // the proto representation, not the JSON wire shape.
 func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
@@ -394,9 +381,136 @@ func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
 			fd.Kind = protoKindToString(f.Desc.Kind())
 			fd.Repeated = f.Desc.IsList()
 		}
+		fd.Validate = fieldConstraintsFromDescriptor(f.Desc)
+		fd.Secret = fieldHasSecretMarker(f)
+		fd.ServerSet = fieldHasServerSetMarker(f)
 		fields = append(fields, fd)
 	}
 	sd.Schemas[fq] = fields
+}
+
+// secretFieldMarkerRE matches the `forge:secret` field marker inside a
+// proto leading/trailing comment. buf strips the `//` before handing the
+// text to protogen, so — unlike the raw scan's entityMarkerRE — the token
+// is matched WITHOUT the leading slashes. Spacing/prose variants tolerated
+// (`forge:secret`, `  forge:secret — db creds`), any line of a multi-line
+// comment block.
+var secretFieldMarkerRE = regexp.MustCompile(`(?m)^\s*forge:secret(\s|$|[^\w])`)
+
+// fieldHasSecretMarker reports whether a field carries the `// forge:secret`
+// marker as its LEADING comment (the documented site) or a TRAILING one
+// (`string token = 2; // forge:secret` — the natural inline spelling). The
+// marker keeps the column but strips the field from read responses; see
+// SchemaFieldDef.Secret.
+func fieldHasSecretMarker(f *protogen.Field) bool {
+	return secretFieldMarkerRE.MatchString(string(f.Comments.Leading)) ||
+		secretFieldMarkerRE.MatchString(string(f.Comments.Trailing))
+}
+
+// serverSetFieldMarkerRE matches the `forge:server-set` field marker inside
+// a proto leading/trailing comment. Like secretFieldMarkerRE, buf strips the
+// `//` before protogen sees the text, so the token is matched WITHOUT the
+// leading slashes; spacing/prose variants tolerated (`forge:server-set`,
+// `  forge:server-set — set by the server`), any line of a multi-line block.
+var serverSetFieldMarkerRE = regexp.MustCompile(`(?m)^\s*forge:server-set(\s|$|[^\w])`)
+
+// fieldHasServerSetMarker reports whether a field carries the
+// `// forge:server-set` marker as its LEADING comment (the documented site)
+// or a TRAILING one (`string status = 4; // forge:server-set`). The marker
+// keeps the column + read responses but excludes the field from the
+// generated Create/Update request messages; see SchemaFieldDef.ServerSet.
+func fieldHasServerSetMarker(f *protogen.Field) bool {
+	return serverSetFieldMarkerRE.MatchString(string(f.Comments.Leading)) ||
+		serverSetFieldMarkerRE.MatchString(string(f.Comments.Trailing))
+}
+
+// fieldConstraintsFromDescriptor reads a field's protovalidate
+// (buf.validate.field) rules off the compiled descriptor into the
+// projection-ready codegen.FieldConstraints, or nil when the field carries
+// none of the projected rules. The numeric bounds and string rules are
+// read GENERICALLY via protoreflect over the type-specific rules submessage
+// (Int64Rules/StringRules/...) so one code path covers every scalar type
+// and correctly distinguishes an explicit `gte = 0` from an unset bound
+// (both spell GetGte()==0 on the typed getter).
+func fieldConstraintsFromDescriptor(fd protoreflect.FieldDescriptor) *codegen.FieldConstraints {
+	opts := fd.Options()
+	if opts == nil || !proto.HasExtension(opts, validatepb.E_Field) {
+		return nil
+	}
+	fr, ok := proto.GetExtension(opts, validatepb.E_Field).(*validatepb.FieldRules)
+	if !ok || fr == nil {
+		return nil
+	}
+	c := &codegen.FieldConstraints{Required: fr.GetRequired()}
+	m := fr.ProtoReflect()
+	if od := m.Descriptor().Oneofs().ByName("type"); od != nil {
+		if which := m.WhichOneof(od); which != nil && which.Kind() == protoreflect.MessageKind {
+			readNamedValidateRules(m.Get(which).Message(), c)
+		}
+	}
+	if !c.HasAny() {
+		return nil
+	}
+	return c
+}
+
+// readNamedValidateRules pulls the projected rules (gte/gt/lte/lt on
+// numeric submessages; min_len/max_len/len/pattern/email on StringRules)
+// out of a type-specific rules submessage by field NAME, using presence
+// (Has) so an explicit zero bound is not lost. Field names absent on a
+// given submessage (e.g. pattern on Int64Rules) are simply skipped.
+func readNamedValidateRules(rules protoreflect.Message, c *codegen.FieldConstraints) {
+	fields := rules.Descriptor().Fields()
+	numLit := func(name string) (string, bool) {
+		f := fields.ByName(protoreflect.Name(name))
+		if f == nil || !rules.Has(f) {
+			return "", false
+		}
+		v := rules.Get(f)
+		switch f.Kind() {
+		case protoreflect.Int32Kind, protoreflect.Int64Kind, protoreflect.Sint32Kind,
+			protoreflect.Sint64Kind, protoreflect.Sfixed32Kind, protoreflect.Sfixed64Kind:
+			return strconv.FormatInt(v.Int(), 10), true
+		case protoreflect.Uint32Kind, protoreflect.Uint64Kind, protoreflect.Fixed32Kind, protoreflect.Fixed64Kind:
+			return strconv.FormatUint(v.Uint(), 10), true
+		case protoreflect.FloatKind, protoreflect.DoubleKind:
+			return strconv.FormatFloat(v.Float(), 'g', -1, 64), true
+		}
+		return "", false
+	}
+	if s, ok := numLit("gte"); ok {
+		c.Gte = s
+	}
+	if s, ok := numLit("gt"); ok {
+		c.Gt = s
+	}
+	if s, ok := numLit("lte"); ok {
+		c.Lte = s
+	}
+	if s, ok := numLit("lt"); ok {
+		c.Lt = s
+	}
+	uintVal := func(name string) *uint64 {
+		f := fields.ByName(protoreflect.Name(name))
+		if f == nil || !rules.Has(f) {
+			return nil
+		}
+		n := rules.Get(f).Uint()
+		return &n
+	}
+	c.MinLen = uintVal("min_len")
+	c.MaxLen = uintVal("max_len")
+	if c.MinLen == nil && c.MaxLen == nil { // string.len (exact) → min == max
+		if n := uintVal("len"); n != nil {
+			c.MinLen, c.MaxLen = n, n
+		}
+	}
+	if f := fields.ByName("pattern"); f != nil && rules.Has(f) {
+		c.Pattern = rules.Get(f).String()
+	}
+	if f := fields.ByName("email"); f != nil && rules.Has(f) {
+		c.Email = rules.Get(f).Bool()
+	}
 }
 
 // recordEnum stores an enum's declared value names (declaration order)
@@ -430,11 +544,10 @@ func extractMessageFields(messages map[string][]codegen.MessageFieldDef, msg *pr
 	var fields []codegen.MessageFieldDef
 	for _, f := range msg.Fields {
 		// Repeated fields are encoded as "[]<elementKind>" so downstream
-		// codegen (the MCP JSON Schema mapper, frontend hooks, etc.)
+		// codegen (JSON Schema mappers, frontend hooks, etc.)
 		// can distinguish scalar fields from arrays without inspecting
-		// cardinality separately. FRICTION (cp-forge, 2026-06-09):
-		// the MCP Inspector strict-validated structuredContent against
-		// the declared outputSchema and rejected a List response
+		// cardinality separately. FRICTION (cp-forge, 2026-06-09): a
+		// strict JSON-Schema validator rejected a List response
 		// because the schema said `items: object` (singular message
 		// type) while the wire data was `items: [array of objects]`.
 		// Root cause was right here — the descriptor dropped
@@ -518,7 +631,7 @@ func appendConfigMessages(out *[]codegen.ConfigMessage, msg *protogen.Message) {
 //     = 21;` on AppConfig). These need NO annotation of their own; the env
 //     binding lives entirely on the referenced block's leaf fields. They are
 //     recorded with ProtoType "message" + MessageType naming the block so
-//     config_gen can emit a nested struct and wire_gen can resolve Deps
+//     the config loader can emit a nested struct and wire_gen can resolve Deps
 //     fields of the block type to `cfg.<Field>`.
 func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 	var configFields []codegen.ConfigField

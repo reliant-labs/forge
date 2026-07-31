@@ -16,13 +16,11 @@ import (
 
 	// Blank imports: each group's init() self-registers its command factory
 	// with internal/cli/factory (see the file-level comment above).
-	_ "github.com/reliant-labs/forge/internal/cli/add"
 	_ "github.com/reliant-labs/forge/internal/cli/audit"
-	_ "github.com/reliant-labs/forge/internal/cli/backlog"
 	_ "github.com/reliant-labs/forge/internal/cli/component"
 	_ "github.com/reliant-labs/forge/internal/cli/debug"
 	_ "github.com/reliant-labs/forge/internal/cli/lint"
-	_ "github.com/reliant-labs/forge/internal/cli/pack"
+	_ "github.com/reliant-labs/forge/internal/cli/scaffold"
 )
 
 // init wires internal/cli's heavy shared loaders into the factory so the
@@ -37,7 +35,7 @@ func init() {
 		RunPipeline: func(projectDir string) error {
 			generateMu.Lock()
 			defer generateMu.Unlock()
-			return runGeneratePipeline(projectDir, false, false)
+			return runGeneratePipeline(projectDir, false)
 		},
 		RunPipelineBootstrapOnly: func(projectDir string) error {
 			generateMu.Lock()
@@ -53,29 +51,16 @@ func init() {
 		},
 		ServiceRegistryRelPath: serviceRegistryRelPath,
 		IsConnectServiceConfig: isConnectServiceConfig,
-		WriteScenariosIndex:    writeScenariosIndex,
+		WriteScenariosIndex:    generator.WriteScenariosIndex,
 		RunPackageNew:          runPackageNew,
 	})
 	factory.SetAuditAPI(factory.AuditAPI{
 		// KCL-entity-typed categories: computed cli-side (they need the KCL
 		// render + entity structs shared by build/deploy/dev/doctor) and
 		// returned to the audit group as neutral audittype.Category.
-		Ingress:        auditIngress,
-		ExternalBuilds: auditExternalBuilds,
-		Prerequisites:  auditPrerequisites,
-		Friction:       auditFriction,
-		// Registration view: adapt the internal *serviceRegistry onto the
-		// narrow exported factory.ServiceRegistry (reusing the same adapter
-		// the GenAPI uses).
-		LoadServiceRegistry: func(projectDir string) (factory.ServiceRegistry, error) {
-			reg, err := loadServiceRegistry(projectDir)
-			if err != nil {
-				return nil, err
-			}
-			return serviceRegistryAdapter{reg}, nil
-		},
-		IsConnectServiceConfig:        isConnectServiceConfig,
-		ServiceRegistryRelPath:        serviceRegistryRelPath,
+		Ingress:                       auditIngress,
+		ExternalBuilds:                auditExternalBuilds,
+		Prerequisites:                 auditPrerequisites,
 		ListEnvs:                      ListEnvs,
 		ProjectDefinesConnectServices: projectDefinesConnectServices,
 		// scanProjectDrift returns []checksums.Tier1DriftEntry; the audit
@@ -87,8 +72,7 @@ func init() {
 			}
 			return out
 		},
-		DisownFrictionReasons: disownFrictionReasons,
-		LoadProjectStoreFrom:  loadProjectStoreFrom,
+		LoadProjectStoreFrom: loadProjectStoreFrom,
 	})
 }
 

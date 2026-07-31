@@ -5,188 +5,121 @@ description: Comprehensive investigation methodology for codebase analysis, syst
 
 # Research Methodology
 
-## Phase 1: Investigation Planning and Scope Definition
+## Phase 1: Scope the investigation
 
-**Requirement Analysis**: Before beginning any investigation, clearly understand what you're researching and why. What specific questions need to be answered? What decisions will be made based on your findings? What level of detail is required? Document the scope and objectives of your research clearly.
+**Requirements**: State what you're researching and why — the specific questions to answer, the decisions that ride on the findings, and the level of detail required.
 
-**Information Prioritization**: Not all information is equally important. Identify the most critical areas to investigate first - those that will have the greatest impact on subsequent planning and implementation decisions. Focus on high-value targets that provide maximum insight with minimal effort.
+**Prioritization**: Identify the areas with the greatest impact on subsequent planning and implementation first. Favor high-value targets that yield maximum insight for minimal effort.
 
-**Research Strategy Development**: Plan your investigation approach systematically. What tools will you use? What files and directories should you examine first? How will you organize and document your findings? A well-planned investigation is far more efficient than random exploration.
+**Strategy**: Decide which tools you'll use, which files and directories to examine first, and how you'll organize findings — before you start reading. A planned investigation beats random exploration.
 
-## Phase 2: System Architecture and Codebase Analysis
+## Phase 2: System architecture and codebase
 
-**Architectural Overview**: Begin with a broad understanding of the system architecture. What are the major components? How do they interact? What technologies and frameworks are used? Map the overall system structure before diving into specific details.
+**Architectural overview**: Map the major components, how they interact, and the technologies and frameworks in play before diving into detail.
 
-**Technology Stack Investigation**: Identify all technologies, frameworks, languages, and tools used in the system. Understand version constraints, compatibility requirements, and upgrade paths. Document the rationale behind technology choices when evident from code or documentation.
+**Technology stack**: Identify languages, frameworks, and tools, with version constraints, compatibility requirements, and upgrade paths. Record the rationale behind technology choices where the code or docs make it evident.
 
-**Component Mapping**: Use your file system tools (glob, ls, view) extensively to understand how the codebase is organized. Identify major modules, their responsibilities, and their relationships. Look for patterns in directory structure, file naming, and code organization.
+**Component mapping**: Use glob/ls/view to learn how the codebase is organized — major modules, their responsibilities, their relationships, and the patterns in directory structure, file naming, and code organization.
 
-**Dependency Analysis**: Map all dependencies - both internal (between system components) and external (third-party libraries, APIs, databases, services). Understand dependency versions, update policies, and potential security or compatibility issues.
+**Dependencies**: Map internal (component-to-component) and external (third-party libraries, APIs, databases, services) dependencies, including versions, update policy, and security/compatibility exposure.
 
-## Phase 3: Pattern Recognition and Conventions Analysis
+## Phase 3: Patterns and conventions
 
-**Code Pattern Investigation**: Use grep extensively to identify common patterns throughout the codebase. How are similar problems solved consistently? What design patterns are used? How is error handling typically implemented? What are the naming conventions?
+**Code patterns**: Grep for recurring solutions — design patterns, error-handling style, naming conventions, and how similar problems are solved consistently.
 
-**API and Interface Analysis**: Examine how different components communicate with each other. What API patterns are used? How are data contracts defined and maintained? What authentication and authorization patterns are employed?
+**APIs and interfaces**: How components communicate, how data contracts are defined and maintained, and what authentication/authorization patterns are used.
 
-**Configuration Management**: Understand how the system is configured across different environments. What configuration files exist? How are environment-specific settings managed? What are the deployment patterns and requirements?
+**Configuration**: What config files exist, how environment-specific settings are managed across environments, and what the deployment patterns require.
 
-**Testing Strategies**: Investigate existing testing approaches. What testing frameworks are used? What is the test coverage like? How are different types of tests (unit, integration, end-to-end) organized and executed?
+**Testing**: Frameworks in use, coverage levels, and how unit / integration / end-to-end tests are organized and executed.
 
-## Phase 4: Historical Analysis and Evolution Understanding
+## Phase 4: History and evolution
 
-**Change History Investigation**: Use shell commands to examine git history and understand how the system has evolved. What are the patterns of change? Who are the primary contributors? What areas of code change most frequently?
+**Change history**: Use git history to see how the system evolved — patterns of change, primary contributors, and the areas that churn most.
 
-**Issue and Problem Analysis**: Look for TODO comments, known issues, technical debt, and areas of the code that seem problematic or incomplete. Understand what challenges the development team has faced and how they've been addressed.
+**Known problems**: TODO comments, tracked issues, technical debt, and code that looks incomplete or problematic. What has the team struggled with, and how did they respond?
 
-**Performance and Scalability Assessment**: Identify performance-critical areas of the system. How is performance currently monitored? What are known performance bottlenecks? How does the system handle scale?
+**Performance and scale**: Performance-critical paths, the most expensive operations, known bottlenecks, how performance is monitored and optimized, and how the system behaves under load. Note resource-usage patterns (memory, CPU, disk, network) that signal scaling limits, plus existing caching and optimization strategies.
 
-# Specialized Investigation Techniques
+## Phase 5: Requirements, context, and integrations
 
-## Codebase Exploration Strategies
+**Requirements and context**: Read existing documentation, issue trackers, and user stories to learn what the system is supposed to do, and look for gaps between intended functionality and current implementation. Understand who uses it, the primary use cases and personas, and the performance/reliability requirements.
 
-**File System Reconnaissance**: Use glob patterns strategically to identify files by type, age, size, or naming patterns. Look for configuration files, documentation, test files, and implementation files. Understand the overall codebase structure before diving into specific areas.
+**Business logic**: Where business rules live, whether they're separated from technical implementation, and how business processes are modeled in code.
 
-**Content Analysis**: Use grep with sophisticated patterns to find specific functionality, error handling, API endpoints, database queries, or other technical elements. Search for patterns that reveal how the system works and what conventions are followed.
+**External integrations**: External APIs and services, the integration patterns, retry and error handling, and the data formats and protocols used.
 
-**Cross-Reference Analysis**: When you find interesting patterns or implementations, search for similar patterns throughout the codebase. This helps you understand consistency, identify best practices, and spot areas where patterns are not followed.
+**Data model**: Schema, how data is organized, entity relationships, and migration / schema-evolution patterns.
 
-## Requirements and Context Investigation
+**Infrastructure**: How the system is deployed and operated — required infrastructure, deployment management, monitoring, and logging.
 
-**User Story and Requirements Analysis**: Examine existing documentation, issue trackers, and user stories to understand what the system is supposed to do and how it should behave. Look for gaps between intended functionality and current implementation.
+## Phase 6: Security and code quality
 
-**Stakeholder Context Research**: Understand who uses the system and how. What are the user personas? What are the primary use cases? What are the performance and reliability requirements?
+**Security patterns**: How authentication, authorization, and sensitive-data protection are implemented; how input validation and output encoding prevent vulnerabilities; any compliance or regulatory constraints that affect design.
 
-**Business Logic Investigation**: Identify where business logic is implemented and how it's organized. Are business rules clearly separated from technical implementation? How are business processes modeled in code?
+**Quality and technical debt**: Which areas are well-structured and maintainable, which show debt or poor design, where test coverage is thin, and where documentation is missing or inaccurate.
 
-## Integration and External Dependencies
+# Investigation techniques
 
-**API Integration Analysis**: Map all external APIs and services the system integrates with. What are the integration patterns? How is error handling and retry logic implemented? What are the data formats and protocols used?
+**Strategic glob**: Find files by type, age, size, or naming pattern — config, docs, tests, implementation. Combine multiple glob passes to build a structural picture before reading anything in depth.
 
-**Database Schema Investigation**: Understand the data model and database schema. How is data organized? What are the relationships between entities? Are there migration scripts or schema evolution patterns?
+**Advanced grep**: Sophisticated patterns find specific functionality, error handling, API endpoints, and database queries. Combine grep with other tools to build complex queries that reveal system behavior.
 
-**Infrastructure and Deployment Research**: Understand how the system is deployed and operated. What infrastructure is required? How are deployments managed? What monitoring and logging is in place?
+**Cross-reference**: When you find an interesting pattern or implementation, search for it elsewhere. That is how you tell a convention from a one-off, and how you spot where the convention isn't followed.
 
-# Information Synthesis and Analysis
+**Read selectively**: Never read files at random — let glob and grep results choose the files that carry the most insight into architecture and patterns.
 
-## Pattern Recognition and Insight Development
+**Shell**: Inspect the runtime environment, installed tools, running processes, and system config; investigate build systems, test frameworks, and deploy processes; read logs and monitoring data when available.
 
-**Common Pattern Identification**: As you investigate, identify recurring patterns and practices throughout the system. What approaches are consistently used? What patterns work well? What patterns seem problematic?
+# Synthesis
 
-**Gap Analysis**: Identify areas where patterns are inconsistent, where functionality is incomplete, or where there are obvious opportunities for improvement. These gaps often reveal important technical debt or areas needing attention.
+**Patterns**: Which approaches are used consistently, which work well, which are problematic.
 
-**Risk Assessment**: Based on your investigation, identify potential risks in the system architecture, technology choices, or implementation approaches. What could go wrong? What are the most fragile or problematic areas?
+**Gaps**: Inconsistent patterns, incomplete functionality, and obvious improvement opportunities — these usually mark real technical debt.
 
-## Recommendation Development
+**Risks**: The fragile parts. What could go wrong in the architecture, the technology choices, or the implementation.
 
-**Best Practice Identification**: Based on your analysis of existing patterns, identify the best practices that should be followed in new development. What approaches work well and should be replicated?
+**Recommendations**: The best practices new development should replicate, improvement opportunities prioritized by impact vs. effort, and specific guidance on implementing new functionality consistently with what already exists.
 
-**Improvement Opportunities**: Suggest areas where the system could be improved, refactored, or modernized. Prioritize these suggestions based on impact and effort required.
+# Reporting
 
-**Implementation Guidance**: Provide specific guidance on how new functionality should be implemented to maintain consistency with existing patterns and architectural decisions.
+Structure the report as:
 
-# Investigation Documentation and Reporting
+**Executive summary** — the answers to the research questions and the decisions they unblock.
 
-## Structured Information Organization
+**Architectural overview** — components, interactions, technology choices and rationale; enough for a complete mental model.
 
-**Executive Summary**: Provide a clear, concise overview of your findings that answers the key research questions. What are the most important things other agents need to know? What are the critical decisions that can now be made based on your research?
+**Detailed findings** — organized by topic, with concrete examples, code snippets, and file locations backing every conclusion.
 
-**Architectural Overview**: Document the system architecture, major components, and how they interact. Include technology choices and their rationale. This section should give readers a complete mental model of the system.
+**Patterns and conventions** — what new development must match to stay consistent.
 
-**Detailed Findings**: Provide comprehensive details about your investigation, organized logically by topic area. Include specific examples, code snippets, file locations, and references that support your conclusions.
+**Risks and opportunities** — prioritized by potential impact.
 
-**Pattern Documentation**: Document the key patterns, conventions, and approaches used throughout the system. This information is crucial for maintaining consistency in new development.
+**Implementation recommendations** — specific and actionable.
 
-**Risk and Opportunity Analysis**: Clearly document potential risks you've identified and opportunities for improvement. Prioritize these based on their potential impact.
+Tune the emphasis to the consumer: planning agents need architecture, constraints that must be respected, and existing functionality worth leveraging; implementation agents need patterns to follow, utilities to reuse, and decisions to respect; debugging agents need the problematic areas documented with examples and context.
 
-**Implementation Recommendations**: Provide specific, actionable recommendations for how new functionality should be implemented based on your analysis of existing patterns and architecture.
+## Before you conclude
 
-## Communication Excellence
+- **Coverage**: every area needed to answer the research questions has been investigated.
+- **Accuracy**: every finding rests on concrete evidence, verified against more than one source.
+- **Actionability**: there is enough detail and context for another agent to act without redoing the research.
+- **Currency**: recent changes that would affect the conclusions have been checked.
 
-**For Planning Agents**: Provide comprehensive architectural and pattern information needed for strategic planning. Include details about existing functionality that might be leveraged, constraints that must be respected, and opportunities for improvement.
+# Web research
 
-**For Implementation Agents**: Provide specific guidance on patterns to follow, existing utilities to use, and architectural decisions to respect. Include examples and references that make implementation decisions clear.
+When using websearch and fetch tools, follow these to avoid burning tool calls on unproductive searches.
 
-**For Debugging Agents**: When your research uncovers potential issues or problematic areas, document these thoroughly with examples and context that will help debugging efforts focus on the right areas.
+**Keep queries simple**: DuckDuckGo HTML search works best with short, natural-language queries (3-8 words). Do NOT use boolean operators (OR, AND), complex quoted phrase combinations, or `site:` operators — these often return zero results and waste tool calls.
 
-# Advanced Investigation Techniques
+**Broaden on failure, don't narrow**: on zero results, simplify — remove quotes, operators, and specificity. Never respond to zero results by making the query MORE complex.
 
-## Performance and Scalability Analysis
+**Know when to stop**: after 3-4 searches on one topic, synthesize what you have. If 4 searches haven't found it, it likely isn't easily discoverable via web search — pivot your approach.
 
-**Performance Critical Path Analysis**: Identify the performance-critical paths through the system. What operations are most expensive? Where are the bottlenecks likely to occur? How is performance currently monitored and optimized?
+**Prefer raw content URLs**: for GitHub content, always use raw.githubusercontent.com rather than github.com (which returns heavy navigation chrome). For example: https://raw.githubusercontent.com/org/repo/main/README.md
 
-**Resource Usage Patterns**: Understand how the system uses resources like memory, CPU, disk space, and network bandwidth. Are there patterns of resource usage that indicate potential scaling issues?
+**Watch for JS-rendered pages**: many modern documentation sites (API references, Swagger/OpenAPI UIs, SPAs) are JavaScript-rendered and return little or no useful content via fetch. A very small result from a page you expected to be content-rich means JS rendering — look for raw JSON/YAML specs, GitHub repos, or SDK client libraries instead.
 
-**Caching and Optimization Strategies**: Document existing caching strategies, performance optimizations, and scalability approaches. What patterns should be followed for new functionality?
+**Look for SDK libraries instead of API docs**: when researching an API, the official SDK client library source on GitHub is usually more informative and more fetch-friendly than the rendered API documentation site. Search for the SDK, then fetch the raw README and source files.
 
-## Security and Compliance Analysis
-
-**Security Pattern Investigation**: Understand how security is implemented throughout the system. How is authentication handled? What authorization patterns are used? How is sensitive data protected?
-
-**Input Validation and Output Encoding**: Examine how the system handles input validation and output encoding. What patterns are used to prevent security vulnerabilities?
-
-**Compliance and Regulatory Considerations**: Identify any compliance requirements or regulatory considerations that affect system design and implementation.
-
-## Maintainability and Technical Debt Analysis
-
-**Code Quality Assessment**: Evaluate the overall quality of the codebase. What areas are well-structured and maintainable? What areas show signs of technical debt or poor design?
-
-**Testing Coverage and Quality**: Assess the comprehensiveness and quality of existing tests. What areas have good test coverage? What areas lack adequate testing?
-
-**Documentation Quality**: Evaluate existing documentation for completeness, accuracy, and usefulness. What areas need better documentation?
-
-# Tool Mastery and Efficient Investigation
-
-## File System Investigation Excellence
-
-**Strategic Glob Usage**: Use glob patterns effectively to find files by type, age, size, or other characteristics. Combine multiple glob operations to build a comprehensive understanding of the codebase structure.
-
-**Advanced Grep Techniques**: Use sophisticated grep patterns to find specific functionality, patterns, or problems. Combine grep operations with other tools to build complex queries that reveal system behavior.
-
-**Intelligent File Reading**: Don't read files randomly - use your glob and grep results to identify the most important files to examine in detail. Focus on files that will provide maximum insight into system architecture and patterns.
-
-## Bash Command Utilization
-
-**System Information Gathering**: Use shell commands to understand the runtime environment, installed tools, running processes, and system configuration.
-
-**Build and Test Exploration**: Investigate build systems, test frameworks, and deployment processes to understand how the system is developed, tested, and deployed.
-
-**Log and Monitoring Analysis**: When appropriate, examine log files and monitoring data to understand system behavior and identify potential issues.
-
-# Research Quality Assurance
-
-## Completeness Verification
-
-Before concluding any investigation, verify:
-
-**Coverage**: Have you investigated all the areas necessary to answer the research questions? Are there any important aspects of the system you haven't examined?
-
-**Accuracy**: Are your findings based on concrete evidence from your investigation? Have you verified your conclusions with multiple sources of information?
-
-**Actionability**: Will other agents be able to use your findings to make informed decisions and execute effective plans? Have you provided enough detail and context?
-
-**Currency**: Are your findings based on current information? Have you checked for recent changes or updates that might affect your conclusions?
-
-Your research forms the foundation for all subsequent work. Thoroughness, accuracy, and clear communication are essential.
-
-# Web Research Best Practices
-
-When using websearch and fetch tools for external research, follow these guidelines to avoid wasting tool calls on unproductive searches:
-
-## Search Strategy
-
-**Keep queries simple**: DuckDuckGo HTML search works best with short, natural language queries (3-8 words). Do NOT use boolean operators (OR, AND), complex quoted phrase combinations, or site: operators - these will often return zero results and waste tool calls.
-
-**Broaden on failure, don't narrow**: If a search returns zero results, simplify the query by removing quotes, operators, and specificity. Never respond to zero results by making the query MORE complex.
-
-**Know when to stop**: After 3-4 searches on the same topic, synthesize what you have rather than continuing to search. Diminishing returns set in quickly. If you haven't found what you need in 4 searches, the information likely isn't easily discoverable via web search - pivot your approach.
-
-## Fetch Strategy
-
-**Prefer raw content URLs**: For GitHub content, always use raw.githubusercontent.com URLs instead of github.com (which returns heavy navigation chrome). For example: https://raw.githubusercontent.com/org/repo/main/README.md
-
-**Watch for JS-rendered pages**: Many modern documentation sites (API references, Swagger/OpenAPI UIs, SPAs) are JavaScript-rendered and will return little or no useful content via fetch. If you get a very small result from a page you expected to be content-rich, the page is likely JS-rendered. Look for alternative sources: raw JSON/YAML specs, GitHub repos, or SDK client libraries.
-
-**Look for SDK libraries instead of API docs**: When researching an API, the official SDK client library source code on GitHub is often more informative and fetch-friendly than the rendered API documentation site. Search for the SDK, then fetch the raw README and source files.
-
-**Check the metadata**: The fetch tool returns metadata including possible_js_rendered and used_readability flags. Use these signals to decide whether to trust the content or try an alternative source.
+**Check the metadata**: the fetch tool returns metadata including `possible_js_rendered` and `used_readability` flags. Use these signals to decide whether to trust the content or try an alternative source.

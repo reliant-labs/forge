@@ -143,9 +143,21 @@ jobs:
         run: echo "$HOME/.kcl/bin" >> $GITHUB_PATH
 
       - name: Deploy to cluster
+        # `-S manifests` is REQUIRED: `kcl run` alone emits the module's
+        # top-level variables as a YAML mapping, which kubectl rejects
+        # with "apiVersion not set, kind not set". `-S` selects the
+        # manifest list and emits a `---` document stream.
+        #
+        # Every kubectl below is namespace-scoped. The manifests deploy
+        # into <project>-dev, so an unscoped `kubectl wait` matches
+        # nothing in the default namespace and returns immediately —
+        # the tests would then run against a stack that never came up.
         run: |
-          kcl run deploy/kcl/dev/main.k -D image_tag=e2e | kubectl apply -f -
-          kubectl wait --for=condition=available deployment -l app.kubernetes.io/part-of={{.ProjectName}} --timeout=120s
+          set -euo pipefail
+          kcl run deploy/kcl/dev/main.k -D image_tag=e2e -S manifests | kubectl apply -f -
+          kubectl wait --for=condition=available deployment \
+            -n {{.ProjectName}}-dev \
+            -l app.kubernetes.io/part-of={{.ProjectName}} --timeout=120s
 
       - name: Run E2E tests
         run: task test:e2e
@@ -155,8 +167,8 @@ jobs:
       - name: Dump logs on failure
         if: failure()
         run: |
-          kubectl logs -l app.kubernetes.io/part-of={{.ProjectName}} --tail=200 --all-containers
-          kubectl describe pods -l app.kubernetes.io/part-of={{.ProjectName}}
+          kubectl logs -n {{.ProjectName}}-dev -l app.kubernetes.io/part-of={{.ProjectName}} --tail=200 --all-containers
+          kubectl describe pods -n {{.ProjectName}}-dev -l app.kubernetes.io/part-of={{.ProjectName}}
 
       - name: Upload test artifacts
         if: failure()

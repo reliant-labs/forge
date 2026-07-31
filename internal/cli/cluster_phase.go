@@ -1,9 +1,9 @@
-// Package cli — declarative cluster reconcile for `forge up`.
+// Package cli — declarative cluster reconcile for `forge env up`.
 //
 // This file generalizes the dev-only, single-cluster ensureDevCluster
 // bootstrap into a declarative LIST: an env declares
 // `Bundle.clusters = [forge.Cluster {...}, ...]` and forge ensures each
-// exists at the head of `forge up` (create-if-absent, no-op if present).
+// exists at the head of `forge env up` (create-if-absent, no-op if present).
 //
 // Multi-cluster ownership is a REFERENCE. There is no "primary" cluster:
 // a secondary cluster names its `owner` Cluster, and the KCL render layer
@@ -33,7 +33,7 @@ import (
 // network by name, which only exists once the owner is created).
 //
 // A nil/empty list is a no-op: an env that declares no clusters keeps
-// today's behavior (`forge up --env=e2e` ensures nothing; the legacy
+// today's behavior (`forge env up e2e` ensures nothing; the legacy
 // single dev cluster is bootstrapped by ensureDevCluster on the deploy
 // path).
 // projectDir + env are retained for caller signature stability (the deploy
@@ -41,7 +41,7 @@ import (
 // installed imperatively per cluster: the Gateway API controller (Envoy
 // Gateway) + CRDs + the `eg` GatewayClass come from the env's DECLARED
 // `helm_charts` (a forge.HelmChart), rendered and applied by the deploy phase
-// (`forge deploy <env> --target=envoy-gateway`) EXACTLY like the cloud envs —
+// (`forge env deploy <env> --target=envoy-gateway`) EXACTLY like the cloud envs —
 // one declarative model everywhere. This phase only ensures the bare k3d
 // clusters exist (create-if-absent) with their host-port mappings and any
 // nested-secondary node setup.
@@ -96,7 +96,7 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		// the cluster was created (e.g. a listener added to the env's KCL)
 		// is NOT mapped on the live cluster, so its route is silently
 		// unreachable (connection refused on the host port). The host-port
-		// set is DERIVED from the SAME render `forge up` deploys
+		// set is DERIVED from the SAME render `forge env up` deploys
 		// (deploy/k3d.yaml + the generated deploy/k3d-ports.yaml), so we
 		// can detect this: compare the declared set to what the live
 		// serverlb publishes and FAIL CLEARLY telling the user to recreate,
@@ -111,7 +111,7 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		// step is idempotent (a guard check precedes each mutation), so a
 		// cluster whose host-gateway DNS alias or MSS clamp was lost (e.g.
 		// a manual node restart cleared the iptables rule) heals on the
-		// next `forge up`.
+		// next `forge env up`.
 		if isNestedSecondary(c) {
 			if err := setupSecondaryClusterNodeFn(ctx, c); err != nil {
 				return err
@@ -207,7 +207,7 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 	// installed here. A fresh `k3d cluster create` ships none of it, but the
 	// env declares Envoy Gateway as a forge.HelmChart platform dependency —
 	// the deploy phase that follows reconcile renders + applies it
-	// (`forge deploy <env> --target=envoy-gateway`, CRD-first) BEFORE the
+	// (`forge env deploy <env> --target=envoy-gateway`, CRD-first) BEFORE the
 	// project's Gateway/HTTPRoute/GRPCRoute resources, EXACTLY like the cloud
 	// envs. One declarative model everywhere.
 	return nil
@@ -215,7 +215,7 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 
 // checkClusterPortDrift errors when the LIVE cluster is missing host ports
 // the env's RENDERED Gateway listeners now require. The required set is
-// DERIVED from the same render `forge up` deploys (renderedGatewayHostPorts
+// DERIVED from the same render `forge env up` deploys (renderedGatewayHostPorts
 // → the env's Gateway listeners, transform-added ones included), so it is
 // the single source of truth — no static port list to keep in sync. k3d
 // can't add a port map to a running cluster, so the only fix is a recreate;
@@ -246,7 +246,7 @@ func checkClusterPortDrift(ctx context.Context, c ClusterEntity, projectDir, env
 		"cluster %q is missing host-port mapping(s) %s that env %q's rendered Gateway listeners now require — "+
 			"k3d fixes port maps at cluster-create time, so a listener added after the cluster was "+
 			"created is unreachable on the live cluster. Recreate it to pick up the new mappings:\n"+
-			"    k3d cluster delete %s && forge up --env=%s\n"+
+			"    k3d cluster delete %s && forge env up %s\n"+
 			"(the required ports are DERIVED from the same render forge deploys — no manual port list to maintain)",
 		c.Name, strings.Join(ports, ", "), env, c.Name, env)
 }

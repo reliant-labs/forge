@@ -28,7 +28,7 @@ released. The implementation lives in:
    go build -trimpath -ldflags "-X main.PkgVersion=vX.Y.Z" -o bin/forge ./cmd/forge
    ```
 
-4. `forge new` run by such a binary emits a **clean version pin** into
+4. `forge project new` run by such a binary emits a **clean version pin** into
    the project's go.mod — `require github.com/reliant-labs/forge/pkg
    vX.Y.Z` with **no replace directive**. `go mod tidy`, docker builds,
    and CI all resolve it from the module proxy like any other dependency.
@@ -44,7 +44,7 @@ degrades to the dev flow — it can never emit an unresolvable require.
 The pkg module evolves in lockstep with forge HEAD, so there is nothing
 published to pin. Instead:
 
-1. `forge new` looks for a sibling forge checkout
+1. `forge project new` looks for a sibling forge checkout
    (`<parent-of-project>/forge/pkg` declaring the right module path —
    the common `~/src/{forge,myproject}` layout) and, when found, emits a
    host-absolute `replace github.com/reliant-labs/forge/pkg =>

@@ -49,7 +49,6 @@ func validatePolicy(validate func(string) (*auth.Claims, error)) Policy {
 // pack-installed deployments because the stub rejected before the
 // pack's interceptor ran.
 func TestNewInterceptor_UnconfiguredErrors(t *testing.T) {
-	t.Setenv("AUTH_MODE", "")
 	ic, err := NewInterceptor(Policy{})
 	if err == nil {
 		t.Fatal("NewInterceptor must error when unconfigured outside dev mode")
@@ -59,36 +58,32 @@ func TestNewInterceptor_UnconfiguredErrors(t *testing.T) {
 	}
 }
 
-// H2 contract: AUTH_MODE=none is the explicit production opt-out — same
-// passthrough behavior as dev mode, but the operator stated it
-// deliberately rather than relying on the dev-mode default.
-func TestNewInterceptor_AuthModeNoneIsPassthrough(t *testing.T) {
-	t.Setenv("AUTH_MODE", "none")
-	ic, err := NewInterceptor(Policy{})
-	if err != nil {
-		t.Fatalf("NewInterceptor with AUTH_MODE=none must not error: %v", err)
+// Authentication cannot be switched off from the environment. This
+// interceptor once resolved to passthrough when AUTH_MODE=none was set in
+// the process environment — an authentication opt-out settable from any
+// shell, expressible in no config field the app could read, living in a
+// library. Nothing an operator, a wrapper script, a stale Deployment or a
+// CI job exports may decide whether a forge service checks credentials.
+//
+// The disable seam is Policy.ExternalAuth: a field, in the project's own
+// middleware file, visible in code review.
+func TestNewInterceptor_AmbientEnvironmentCannotDisableAuth(t *testing.T) {
+	for _, v := range []string{"none", "NONE", "None"} {
+		t.Setenv("AUTH_MODE", v)
+		ic, err := NewInterceptor(Policy{})
+		if err == nil {
+			t.Fatalf("AUTH_MODE=%s disabled authentication from the environment; construction must still be refused", v)
+		}
+		if ic != nil {
+			t.Fatalf("AUTH_MODE=%s produced an interceptor: %T", v, ic)
+		}
 	}
-	assertPassthroughUnary(t, ic)
-}
-
-// H2 contract: config.Mode injection. Dev mode — injected from the
-// typed config via Policy.DevMode, NOT read from the environment here —
-// is an explicit opt-in to running without an auth provider:
-// construction succeeds and the interceptor is a passthrough.
-func TestNewInterceptor_DevModeIsPassthrough(t *testing.T) {
-	t.Setenv("AUTH_MODE", "")
-	ic, err := NewInterceptor(Policy{DevMode: true})
-	if err != nil {
-		t.Fatalf("NewInterceptor in dev mode must not error: %v", err)
-	}
-	assertPassthroughUnary(t, ic)
 }
 
 // External auth puts the interceptor in passthrough mode — the pack's
 // own interceptor in the chain is the source of truth and this one must
 // not reject or even inspect the Authorization header.
 func TestNewInterceptor_ExternalAuthIsPassthrough(t *testing.T) {
-	t.Setenv("AUTH_MODE", "")
 	ic, err := NewInterceptor(Policy{ExternalAuth: true})
 	if err != nil {
 		t.Fatalf("NewInterceptor with external auth must not error: %v", err)
@@ -121,12 +116,11 @@ func assertPassthroughUnary(t *testing.T, ic connect.Interceptor) {
 }
 
 // When a validator is configured, the interceptor must be the source of
-// truth — NOT a passthrough — even in dev mode or under AUTH_MODE=none
-// (decision order: validator wins).
+// truth — NOT a passthrough — even when the project ALSO set the external
+// -auth opt-out (decision order: validator wins).
 func TestNewInterceptor_ValidatorWinsOverOptOuts(t *testing.T) {
-	t.Setenv("AUTH_MODE", "none")
 	p := validatePolicy(func(string) (*auth.Claims, error) { return &auth.Claims{UserID: "u1"}, nil })
-	p.DevMode = true
+	p.ExternalAuth = true
 	ic, err := NewInterceptor(p)
 	if err != nil {
 		t.Fatalf("NewInterceptor with validator must not error: %v", err)
@@ -139,15 +133,48 @@ func TestNewInterceptor_ValidatorWinsOverOptOuts(t *testing.T) {
 // Validate mode without the claims stash (or validator func) is a
 // construction bug, surfaced at boot.
 func TestNewInterceptor_ValidateModeRequiresHooks(t *testing.T) {
-	t.Setenv("AUTH_MODE", "")
 	if _, err := NewInterceptor(Policy{ValidatorConfigured: true}); err == nil {
 		t.Fatal("ValidatorConfigured without Validate must refuse construction")
 	}
+	// ContextWithClaims is optional now: the library owns a claims stash,
+	// so Validate mode constructs without the project supplying one.
 	if _, err := NewInterceptor(Policy{
 		ValidatorConfigured: true,
 		Validate:            func(string) (*auth.Claims, error) { return nil, nil },
-	}); err == nil {
-		t.Fatal("Validate mode without ContextWithClaims must refuse construction")
+	}); err != nil {
+		t.Fatalf("Validate mode must default ContextWithClaims to the library stash: %v", err)
+	}
+}
+
+// TestNewInterceptor_DefaultStashIsReadableByGetUser is the property that
+// makes ContextWithClaims optional safe: the claims the interceptor installs
+// by default must be the ones GetUser reads back. A defaulted stash whose key
+// GetUser does not share would authenticate the request and then report "no
+// authenticated user" in every handler.
+func TestNewInterceptor_DefaultStashIsReadableByGetUser(t *testing.T) {
+	t.Parallel()
+	want := &auth.Claims{UserID: "u-default"}
+	ic, err := NewInterceptor(Policy{
+		ValidatorConfigured: true,
+		Validate:            func(string) (*auth.Claims, error) { return want, nil },
+	})
+	if err != nil {
+		t.Fatalf("NewInterceptor: %v", err)
+	}
+	a, ok := ic.(*interceptor)
+	if !ok {
+		t.Fatalf("Validate mode must build the validating interceptor, got %T", ic)
+	}
+	ctx, err := a.authenticate(context.Background(), "Bearer tok")
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	got, err := GetUser(ctx)
+	if err != nil {
+		t.Fatalf("GetUser must read the claims the default stash installed: %v", err)
+	}
+	if got.UserID != want.UserID {
+		t.Fatalf("GetUser returned %q, want %q", got.UserID, want.UserID)
 	}
 }
 
@@ -236,6 +263,55 @@ func TestAuthenticate(t *testing.T) {
 	}
 }
 
+// AnonymousOK makes Validate mode NON-GATING: a missing Authorization
+// header proceeds claim-less (a middleware, not a 401-by-annotation), while
+// a PRESENT token is still validated and a present-but-invalid token is
+// still rejected.
+func TestAuthenticate_AnonymousOK(t *testing.T) {
+	t.Parallel()
+
+	validClaims := &auth.Claims{UserID: "user-1"}
+	anonPolicy := func(validate func(string) (*auth.Claims, error)) Policy {
+		p := validatePolicy(validate)
+		p.AnonymousOK = true
+		return p
+	}
+
+	t.Run("missing token proceeds claim-less", func(t *testing.T) {
+		t.Parallel()
+		a := &interceptor{policy: anonPolicy(func(string) (*auth.Claims, error) { return nil, nil })}
+		ctx, err := a.authenticate(context.Background(), "")
+		if err != nil {
+			t.Fatalf("AnonymousOK: missing token must not error, got %v", err)
+		}
+		if got, ok := testClaimsFromContext(ctx); ok || got != nil {
+			t.Fatalf("AnonymousOK: missing token must attach no claims, got %+v", got)
+		}
+	})
+
+	t.Run("present-but-invalid token is still rejected", func(t *testing.T) {
+		t.Parallel()
+		a := &interceptor{policy: anonPolicy(func(string) (*auth.Claims, error) { return nil, errors.New("bad sig") })}
+		_, err := a.authenticate(context.Background(), "Bearer bad")
+		var cerr *connect.Error
+		if !errors.As(err, &cerr) || cerr.Code() != connect.CodeUnauthenticated {
+			t.Fatalf("AnonymousOK: an invalid credential is a real error; want Unauthenticated, got %v", err)
+		}
+	})
+
+	t.Run("valid token still attaches claims", func(t *testing.T) {
+		t.Parallel()
+		a := &interceptor{policy: anonPolicy(func(string) (*auth.Claims, error) { return validClaims, nil })}
+		ctx, err := a.authenticate(context.Background(), "Bearer good")
+		if err != nil {
+			t.Fatalf("AnonymousOK: valid token must not error, got %v", err)
+		}
+		if got, ok := testClaimsFromContext(ctx); !ok || got.UserID != validClaims.UserID {
+			t.Fatalf("AnonymousOK: valid token must attach claims, got %+v", got)
+		}
+	})
+}
+
 // H2 contract: allow-list-only-unauthenticated, exact matching.
 // Substring-containing procedures must not match — the allow-list is
 // deliberately exact to prevent accidental bypass.
@@ -313,55 +389,6 @@ func TestAuthenticate_EnricherHook(t *testing.T) {
 	}
 }
 
-// Dev-claims passthrough: with DevClaims set, dev/AUTH_MODE=none
-// passthrough still invokes next unconditionally but attaches the
-// synthetic principal so claim-reading handlers keep working.
-func TestNewInterceptor_DevClaims(t *testing.T) {
-	t.Setenv("AUTH_MODE", "")
-	dev := &auth.Claims{UserID: "dev-user", Role: "admin"}
-	ic, err := NewInterceptor(Policy{
-		DevMode:           true,
-		DevClaims:         func() *auth.Claims { return dev },
-		ContextWithClaims: testContextWithClaims,
-	})
-	if err != nil {
-		t.Fatalf("NewInterceptor with dev claims must not error: %v", err)
-	}
-
-	var seen *auth.Claims
-	wrapped := ic.WrapUnary(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-		seen, _ = testClaimsFromContext(ctx)
-		return nil, nil
-	})
-	if _, err := wrapped(context.Background(), nil); err != nil {
-		t.Fatalf("dev-claims passthrough must not error: %v", err)
-	}
-	if seen == nil || seen.UserID != "dev-user" {
-		t.Fatalf("dev claims not attached, got %+v", seen)
-	}
-
-	// DevClaims requires the claims stash.
-	if _, err := NewInterceptor(Policy{
-		DevMode:   true,
-		DevClaims: func() *auth.Claims { return dev },
-	}); err == nil {
-		t.Fatal("DevClaims without ContextWithClaims must refuse construction")
-	}
-
-	// External auth ignores DevClaims — the external provider owns claims.
-	ic, err = NewInterceptor(Policy{
-		ExternalAuth:      true,
-		DevClaims:         func() *auth.Claims { return dev },
-		ContextWithClaims: testContextWithClaims,
-	})
-	if err != nil {
-		t.Fatalf("external auth construction failed: %v", err)
-	}
-	if _, ok := ic.(passthrough); !ok {
-		t.Fatalf("external auth must be a pure passthrough, got %T", ic)
-	}
-}
-
 // testDualKey stands in for a project's SECOND identity context (the
 // real-world case is control-plane's internal/auth user-id context that
 // lives alongside the pkg/middleware Claims context).
@@ -372,10 +399,10 @@ func testDualFromContext(ctx context.Context) (string, bool) {
 	return v, ok
 }
 
-type testAuthzHeaderKey struct{}
+type testAuthHeaderKey struct{}
 
-func testAuthzHeaderFromContext(ctx context.Context) (string, bool) {
-	v, ok := ctx.Value(testAuthzHeaderKey{}).(string)
+func testAuthHeaderFromContext(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(testAuthHeaderKey{}).(string)
 	return v, ok
 }
 
@@ -394,7 +421,7 @@ func TestAuthenticate_DecorateHook(t *testing.T) {
 	p.Decorate = func(ctx context.Context, claims *auth.Claims, authorization string) context.Context {
 		sawClaimsUserID = claims.UserID
 		ctx = context.WithValue(ctx, testDualKey{}, claims.UserID)
-		ctx = context.WithValue(ctx, testAuthzHeaderKey{}, authorization)
+		ctx = context.WithValue(ctx, testAuthHeaderKey{}, authorization)
 		return ctx
 	}
 	a := &interceptor{policy: p}
@@ -420,7 +447,7 @@ func TestAuthenticate_DecorateHook(t *testing.T) {
 	}
 
 	// The raw Authorization header was passed through to Decorate.
-	if got, ok := testAuthzHeaderFromContext(ctx); !ok || got != "Bearer good" {
+	if got, ok := testAuthHeaderFromContext(ctx); !ok || got != "Bearer good" {
 		t.Fatalf("Decorate did not receive the raw Authorization header: %q ok=%v", got, ok)
 	}
 }
@@ -445,55 +472,13 @@ func TestAuthenticate_NilDecorateUnchanged(t *testing.T) {
 	}
 }
 
-// Decorate also runs in the dev-claims path (the synthetic principal is
-// passed through, and the project layers its extra context the same way
-// as in Validate mode). This mirrors control-plane's authModeDevClaims,
-// which both synthesizes DevUser AND runs withBothAuthContexts +
-// WithIncomingAuthorization.
-func TestDevClaims_DecorateHook(t *testing.T) {
-	t.Setenv("AUTH_MODE", "")
-	dev := &auth.Claims{UserID: "dev-user", Role: "admin"}
-	var sawClaims, sawAuthz string
-	ic, err := NewInterceptor(Policy{
-		DevMode:           true,
-		DevClaims:         func() *auth.Claims { return dev },
-		ContextWithClaims: testContextWithClaims,
-		Decorate: func(ctx context.Context, claims *auth.Claims, authorization string) context.Context {
-			sawClaims = claims.UserID
-			sawAuthz = authorization
-			return context.WithValue(ctx, testDualKey{}, claims.UserID)
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewInterceptor with dev claims + Decorate must not error: %v", err)
-	}
-	di, ok := ic.(*devClaimsInterceptor)
-	if !ok {
-		t.Fatalf("expected devClaimsInterceptor, got %T", ic)
-	}
-
-	ctx := di.attach(context.Background(), "Bearer mock-token-dev")
-	if sawClaims != "dev-user" {
-		t.Fatalf("Decorate did not receive dev claims, got %q", sawClaims)
-	}
-	if sawAuthz != "Bearer mock-token-dev" {
-		t.Fatalf("Decorate did not receive the raw header in dev-claims path, got %q", sawAuthz)
-	}
-	if got, ok := testClaimsFromContext(ctx); !ok || got.UserID != "dev-user" {
-		t.Fatalf("dev claims stash missing: %+v", got)
-	}
-	if got, ok := testDualFromContext(ctx); !ok || got != "dev-user" {
-		t.Fatalf("Decorate's dual context not applied in dev-claims path: %q ok=%v", got, ok)
-	}
-}
-
 // The MapError hook remaps a validator failure to a project-chosen
 // connect code. It receives the raw error and the library's default
 // envelope; returning nil falls back to the default.
 func TestAuthenticate_MapErrorHook(t *testing.T) {
 	t.Parallel()
 
-	revoked := errors.New("tenant revoked")
+	revoked := errors.New("account revoked")
 	p := validatePolicy(func(string) (*auth.Claims, error) { return nil, revoked })
 
 	var sawErr error

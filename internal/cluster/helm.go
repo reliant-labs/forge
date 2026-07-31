@@ -14,8 +14,8 @@
 // exclusive `--target` axis (SelectManifestsByGroup) selects them with no
 // new tag — a chart is just another manifest group:
 //
-//	forge deploy <env> --target <name>   # render+apply ONLY this group
-//	forge deploy <env>                   # apply EVERYTHING (every group +
+//	forge env deploy <env> --target <name>   # render+apply ONLY this group
+//	forge env deploy <env>                   # apply EVERYTHING (every group +
 //	                                     # every declared platform dep)
 //
 // APPLY ORDERING (the one real problem). A chart's controllers reference
@@ -123,7 +123,7 @@ type renderedChart struct {
 // rule to the platform deps: a chart's NAME is its GROUP, so a chart is
 // rendered iff (no targets) OR (its Name ∈ targets) — the IDENTICAL rule
 // SelectManifestsByGroup applies to every other manifest. There is NO
-// chart opt-in/opt-out asymmetry: a bare `forge deploy <env>` (empty
+// chart opt-in/opt-out asymmetry: a bare `forge env deploy <env>` (empty
 // targets) reconciles every declared platform dep, exactly as it
 // reconciles every app manifest.
 //
@@ -506,7 +506,7 @@ func stampDocAppLabel(doc, name string) string {
 // before the rest of the stream. This is the apply-ordering primitive the
 // helm-as-renderer model needs — a `--target=<platform>` apply must leave
 // the cluster with CRDs Established + controllers Deployed, so a later
-// `forge deploy` (the app) finds the CRDs present.
+// `forge env deploy` (the app) finds the CRDs present.
 //
 // extraCRDs are forge-supplied CRDs (the pinned standard Gateway API CRDs /
 // cert-manager CRDs at the chart version) that must also land + Establish
@@ -603,7 +603,7 @@ func crdNames(manifests string) []string {
 
 // waitCRDsEstablished blocks until every named CRD reports
 // Established=True (or the timeout elapses) — the happens-before that lets
-// the chart's controllers (and any later `forge deploy` referencing the
+// the chart's controllers (and any later `forge env deploy` referencing the
 // CRD's resources) apply against a CRD the apiserver already serves.
 func waitCRDsEstablished(ctx context.Context, kctx string, names []string, timeout time.Duration) error {
 	args := []string{"wait", "--for=condition=Established", "--timeout=" + timeout.String()}

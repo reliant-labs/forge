@@ -1,6 +1,6 @@
 ---
 name: security-review
-description: Security review methodology — vulnerability detection, injection analysis, auth/authz verification, and structured security reporting
+description: Security review methodology — vulnerability detection, injection analysis, authentication and access-control verification, and structured security reporting
 ---
 
 # Security Review
@@ -16,8 +16,17 @@ description: Security review methodology — vulnerability detection, injection 
 - **Command argument injection**: flags/options parsed from user input
 
 ### Authentication vs Authorization (AuthN vs AuthZ)
+
+**Forge provides authentication only — it does not provide authorization.** No
+framework layer decides whether a caller may act; the application implements
+and enforces that itself, in whatever shape the product needs. So authenticating
+a request proves nothing about whether it was allowed. Review accordingly: for
+every protected endpoint, find the check that authorizes the *action* and the
+*specific records* touched. An endpoint that only establishes identity and then
+acts is a finding, not a pass.
+
 - **Permission checks**: missing or incorrect authorization on endpoints/functions
-- **Tenant isolation**: cross-tenant data access, missing tenant filters in queries
+- **Data scoping**: cross-account data access, missing authorization filters in queries
 - **Object-level access control**: can user A access user B's resources?
 - **Privilege escalation**: can regular users access admin functionality?
 - **Session management**: fixation, hijacking, improper invalidation

@@ -9,7 +9,7 @@ relevance: migration
 
 # Migrating HostDeploy env_file → env_vars + secrets_file
 
-Use this skill when `forge upgrade` reports a jump that crosses v0.7.0
+Use this skill when `forge project upgrade` reports a jump that crosses v0.7.0
 and the project's `deploy/kcl/<env>/main.k` declares one or more
 `forge.HostDeploy { env_file = "..." }` blocks.
 
@@ -55,7 +55,7 @@ schema HostDeploy:
     delve_port: int = 2345
 ```
 
-The `forge up --env=<env>` host phase loads `secrets_file` first (if
+The `forge env up <env>` host phase loads `secrets_file` first (if
 set), then layers `env_vars` on top — KCL wins on conflict so
 reproducible config can't drift across machines. Host services compose
 the same `cfg.APP_ENV` / `base.DB_ENV` slices K8sDeploy services use,
@@ -71,7 +71,7 @@ grep -rn "env_file" deploy/kcl/ 2>/dev/null
 grep -rln "secrets_file\|env_vars" deploy/kcl/ 2>/dev/null
 ```
 
-If `forge audit` reports `kcl_schema_alignment` divergence on
+If `forge project audit` reports `kcl_schema_alignment` divergence on
 HostDeploy, that's the same signal.
 
 ## 3. Migration (deterministic part)
@@ -154,10 +154,10 @@ What user code / config might need to change:
 - **CI / local scripts that source `.env.<env>` directly.** Anything
   that did `source .env.dev && go run ...` to pick up DATABASE_URL
   must either source `.env.<env>.secrets` AND wire the KCL env_vars
-  manually, or go through `forge up --env=<env>` which does the
+  manually, or go through `forge env up <env>` which does the
   composition for you.
 - **The old `--env-file` CLI override is gone.** The secrets file is now
-  declared per-service as `HostDeploy.secrets_file` in KCL; the `forge up`
+  declared per-service as `HostDeploy.secrets_file` in KCL; the `forge env up`
   host phase loads it first, then layers KCL `env_vars` on top. Point a
   service at a different dotenv by editing its `secrets_file` in
   `deploy/kcl/<env>/main.k`.
@@ -173,7 +173,7 @@ kcl run deploy/kcl/<env> --format json -S output \
 
 # Bring the loop up. Host services should see the KCL-declared values
 # (set a canary env var in KCL and grep the logs).
-forge up --env=<env>
+forge env up <env>
 ```
 
 ## 6. Rollback
@@ -189,7 +189,7 @@ cat .env.dev.secrets > .env.dev
 # Append the KCL-derived config values manually.
 
 # Downgrade.
-forge upgrade --to <prior-version>
+forge project upgrade --to <prior-version>
 ```
 
 The old shape works unchanged in v0.6 — the schema change is

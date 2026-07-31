@@ -6,35 +6,21 @@ import (
 )
 
 // deriveProjectKindFromSources determines the project kind by reading the
-// project's REAL sources — never a manifest, never an authored forge.yaml
-// bit. The order of signals mirrors what the scaffold actually writes:
+// project's REAL sources on disk — never a manifest, never an authored
+// forge.yaml bit. Every signal is a directory or file the scaffold and the
+// add verbs actually write, so the kind cannot drift from the tree:
 //
-//   - a server-shaped component (from the proto descriptor, threaded in as
-//     `components`) → the project serves Connect RPC → service;
-//   - the KCL deploy tree (deploy/kcl/) or the service composition root /
-//     registry (pkg/app/, pkg/app/services.go) → a service project even
-//     before its first service exists — these are generated only for
-//     services;
+//   - the KCL deploy tree (deploy/kcl/), the service composition root /
+//     registry (pkg/app/), the service implementations
+//     (internal/handlers/), or the service protos (proto/services/) →
+//     service. Any one of them is enough: forge emits them only for service
+//     projects, so even a zero-service scaffold reads as a service, which is
+//     exactly what it is — a shell waiting for `forge scaffold service`.
 //   - otherwise a cmd/<name>/main.go binary → a CLI;
-//   - nothing of the above → a pure library.
+//   - nothing of the above → a pure library (a Go module with no entrypoint).
 //
-// This is the deliberate replacement for the old components.json presence
-// bit: the shape is read from the KCL deployment tree and the service
-// registry (the sources forge already owns) instead of a cached manifest.
 // projectDir is the directory holding forge.yaml.
-func deriveProjectKindFromSources(projectDir string, components []ComponentConfig) string {
-	// A server-shaped component is the strongest, source-of-truth signal.
-	for _, c := range components {
-		if c.EffectiveKind() != ComponentKindBinary {
-			return ProjectKindService
-		}
-	}
-
-	// These directories are emitted only for service projects — the KCL
-	// deploy tree, the pkg/app composition root / service registry, the
-	// service implementations (internal/handlers/<svc>/contract.go), and the
-	// service protos. Any one present makes even a zero-service scaffold read
-	// as a service. A CLI or library carries none of them.
+func deriveProjectKindFromSources(projectDir string) string {
 	serviceSources := []string{
 		filepath.Join(projectDir, "deploy", "kcl"),        // KCL deploy tree
 		filepath.Join(projectDir, "pkg", "app"),           // composition root / registry home
@@ -47,15 +33,10 @@ func deriveProjectKindFromSources(projectDir string, components []ComponentConfi
 		}
 	}
 
-	// Not service-shaped. A cmd/<name>/main.go binary (or a binary-kind
-	// component) is a CLI; anything else is a library.
+	// Not service-shaped. A cmd/<name>/main.go binary is a CLI; anything
+	// else is a library.
 	if hasCmdBinary(projectDir) {
 		return ProjectKindCLI
-	}
-	for _, c := range components {
-		if c.EffectiveKind() == ComponentKindBinary {
-			return ProjectKindCLI
-		}
 	}
 	return ProjectKindLibrary
 }

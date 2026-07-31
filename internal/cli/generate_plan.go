@@ -41,7 +41,7 @@ import (
 // realistic.
 //
 // Hold generateMu around the whole call because we read the .forge state files
-// and forge.yaml — concurrent `forge add` would otherwise see a window
+// and forge.yaml — concurrent `forge scaffold` would otherwise see a window
 // where checksums are loaded but not refreshed.
 func runGeneratePlan(projectDir string, flags pipelineFlags) error {
 	generateMu.Lock()

@@ -11,21 +11,21 @@ E2E tests exercise the **full running stack** — real services, real database, 
 
 ## Prerequisites
 
-The full stack must be running before you execute e2e tests. Don't hand-roll the stack with `kubectl apply` or a bespoke compose file — `forge up --env=<env>` builds every service, brings up the compose-managed infra, and deploys each service to its declared target in one command:
+The full stack must be running before you execute e2e tests. Don't hand-roll the stack with `kubectl apply` or a bespoke compose file — `forge env up <env>` builds every service, brings up the compose-managed infra, and deploys each service to its declared target in one command:
 
 ```bash
-forge up --env=dev     # in one terminal — builds + infra + deploys all services
-forge test e2e         # in another terminal — runs e2e suite
+forge env up dev     # in one terminal — builds + infra + deploys all services
+task test:e2e         # in another terminal — runs e2e suite
 ```
 
-If your services span multiple clusters, you don't script that yourself: each service's `deploy` block names its own `K8sCluster` (the `cluster` field is its kubectl context), and `forge up` routes each service to its context. A cross-cluster e2e flow is just real Connect clients talking to services that happen to live in different contexts.
+If your services span multiple clusters, you don't script that yourself: each service's `deploy` block names its own `K8sCluster` (the `cluster` field is its kubectl context), and `forge env up` routes each service to its context. A cross-cluster e2e flow is just real Connect clients talking to services that happen to live in different contexts.
 
 ## Running
 
 ```bash
-forge test e2e                       # all e2e tests
-forge test e2e --service <name>      # target a specific service's e2e tests
-forge test -V                        # verbose output for debugging
+task test:e2e                          # all e2e tests (already verbose)
+task test:e2e -- ./e2e/<name>/...      # target a specific service's e2e suite
+task test:e2e -- -run TestCheckout ./e2e/...   # one flow
 ```
 
 ## Multi-Service Flow Testing
@@ -38,7 +38,7 @@ E2E tests verify cross-service behavior over **real Connect RPC** calls. A typic
 
 Use real Connect clients pointed at the running stack — mock nothing internal at this level. The only legitimate mock in an e2e test is a third-party boundary you don't own (a payment sandbox, an upstream provider); everything inside your system stays real.
 
-**Auth at the e2e tier:** most flows can ride the dev-auth bypass (a synthetic dev token) to skip the login dance. But if the flow under test IS the auth path — login, token validation, role/tenant gating — turn the bypass off and drive a real token. An auth e2e test that runs under the bypass tests nothing.
+**Auth at the e2e tier:** the stack enforces authentication in every mode, so an e2e flow needs a real token — mint one signed with the key the server validates against (`jwt_secret`, or the IdP behind `jwt_jwks_url`) and reuse it across the flow's clients. Assert the negative too: the same call without a token, or with a tampered one, must come back `Unauthenticated`.
 
 ## Determinism Requirements
 

@@ -385,7 +385,7 @@ func TestParseKCLEntities_OutputWrapper(t *testing.T) {
 // entity echo), so the entity contract — and every cluster-shaped
 // service's K8sCluster.namespace — is absent. The namespace must still
 // be recovered from the rendered objects' metadata.namespace so
-// k8sClusterNamespaceForEnv (forge deploy/smoke/secrets) keeps resolving
+// k8sClusterNamespaceForEnv (forge env deploy/smoke/secrets) keeps resolving
 // without --namespace. The cluster-scoped objects (Namespace, CRD,
 // ClusterRole) carry no namespace and are ignored; the dominant
 // namespaced value wins.

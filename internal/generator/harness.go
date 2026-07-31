@@ -8,6 +8,8 @@ import "fmt"
 // where forge skills should be emitted. The default is "reliant".
 type Harness string
 
+// The harnesses forge can scaffold for. Each maps to a memory-file path
+// and, where the harness has one, a skills directory.
 const (
 	HarnessReliant Harness = "reliant"
 	HarnessClaude  Harness = "claude"
@@ -47,7 +49,7 @@ func (h Harness) MemoryFilePath() string {
 }
 
 // SkillsDir returns the project-root-relative directory where forge
-// skills should be written on `forge new` for this harness, or "" when
+// skills should be written on `forge project new` for this harness, or "" when
 // the harness has no native skills concept. Reliant returns "" because
 // the reliant CLI auto-discovers forge skills via the project's
 // forge.yaml (no on-disk emission needed); copilot/codex return ""

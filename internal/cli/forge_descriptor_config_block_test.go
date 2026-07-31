@@ -169,7 +169,7 @@ func TestExtractConfigMessage_BlockReference(t *testing.T) {
 
 // TestExtractConfigMessage_NestedBlockDeclaration: a block message
 // declared INSIDE AppConfig (nested) is still extracted as its own
-// ConfigMessage so config_gen can emit the struct type.
+// ConfigMessage so the config loader can emit the struct type.
 func TestExtractConfigMessage_NestedBlockDeclaration(t *testing.T) {
 	file := &descriptorpb.FileDescriptorProto{
 		Name:    strPtr("config/v1/config.proto"),

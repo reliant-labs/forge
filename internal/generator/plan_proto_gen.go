@@ -33,7 +33,10 @@ func GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.P
 	handlerName := naming.ToPascalCase(serviceName)
 	needsTimestamp := planRPCsNeedTimestamp(rpcs) || planEntitiesNeedTimestamp(entities)
 	entityImports := planRPCsEntityImports(rpcs)
-	restEnabled := projectAPIRESTEnabled(root)
+	restEnabled := false
+	if cfg, cerr := config.LoadProjectDir(root); cerr == nil {
+		restEnabled = cfg.API.REST
+	}
 
 	// Determine which RPCs get HTTP annotations up-front so we know
 	// whether to import google/api/annotations.proto.
@@ -91,9 +94,6 @@ func GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.P
 		// Emit forge annotations as comments so the entity parser can
 		// reconstruct metadata without proto options.
 		fmt.Fprintf(&b, "// forge:entity\n")
-		if tenantField := planEntityTenantField(ent); tenantField != "" {
-			fmt.Fprintf(&b, "// forge:tenant_key=%s\n", tenantField)
-		}
 		fmt.Fprintf(&b, "message %s {\n", ent.Name)
 		fieldNum := 1
 
@@ -146,17 +146,6 @@ func GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.P
 
 	protoPath := filepath.Join(protoDir, fmt.Sprintf("%s.proto", serviceName))
 	return os.WriteFile(protoPath, []byte(b.String()), 0644)
-}
-
-// planEntityTenantField returns the name of the field explicitly marked as
-// tenant_key in the entity, or empty string if none.
-func planEntityTenantField(ent config.PlanEntity) string {
-	for _, f := range ent.Fields {
-		if f.TenantKey {
-			return f.Name
-		}
-	}
-	return ""
 }
 
 // mapProtoType converts a plan field type to a proto3 type string.
@@ -233,45 +222,6 @@ func planEntitiesNeedTimestamp(entities []config.PlanEntity) bool {
 				return true
 			}
 		}
-	}
-	return false
-}
-
-// projectAPIRESTEnabled is a generator-local copy of the codegen-package
-// helper of the same name. Kept private here to avoid a generator →
-// codegen import (and the resulting cycle through contract.go). The
-// semantics are identical: scan forge.yaml line-by-line for `rest:` inside
-// the `api:` block and return the parsed bool. Empty file / parse error
-// → false.
-func projectAPIRESTEnabled(projectRoot string) bool {
-	data, err := os.ReadFile(filepath.Join(projectRoot, "forge.yaml"))
-	if err != nil {
-		return false
-	}
-	inAPI := false
-	for _, line := range strings.Split(string(data), "\n") {
-		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "api:") {
-				inAPI = true
-				continue
-			}
-			inAPI = false
-			continue
-		}
-		if !inAPI {
-			continue
-		}
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "rest:") {
-			continue
-		}
-		val := strings.TrimSpace(strings.TrimPrefix(trimmed, "rest:"))
-		if idx := strings.Index(val, "#"); idx >= 0 {
-			val = strings.TrimSpace(val[:idx])
-		}
-		val = strings.Trim(val, `"'`)
-		return strings.EqualFold(val, "true")
 	}
 	return false
 }

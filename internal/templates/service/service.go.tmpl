@@ -10,16 +10,14 @@ import (
 	pb "{{.Module}}/gen/{{.ProtoImportPath}}/v1"
 	{{.ProtoConnectPackage}} "{{.Module}}/gen/{{.ProtoImportPath}}/v1/{{.ProtoConnectPackage}}"
 	"{{.Module}}/pkg/config"
-	"{{.Module}}/pkg/middleware"
 )
 
-// Deps holds dependencies for the {{.ServiceName}} service. wire_gen
-// supplies Logger/Config/Authorizer and resolves added fields by name.
+// Deps holds dependencies for the {{.ServiceName}} service. Composition
+// supplies Logger/Config and resolves added fields by name.
 // See the forge `api` / `services` skill.
 type Deps struct {
-	Logger     *slog.Logger
-	Config     *config.Config
-	Authorizer middleware.Authorizer
+	Logger *slog.Logger
+	Config *config.Config
 	// Add your dependencies here (e.g. Repo Repository). Required ones get
 	// a validateDeps() check below. Tag intentionally-optional fields with
 	// the `forge:optional-dep` directive directly above the field.
@@ -33,9 +31,6 @@ func (d Deps) validateDeps() error {
 	}
 	if d.Config == nil {
 		return fmt.Errorf("{{.ServiceName}}: Deps.Config is required")
-	}
-	if d.Authorizer == nil {
-		return fmt.Errorf("{{.ServiceName}}: Deps.Authorizer is required")
 	}
 	// Add checks for your required Deps fields here. Example:
 	//   if d.Repo == nil { return fmt.Errorf("{{.ServiceName}}: Deps.Repo is required") }

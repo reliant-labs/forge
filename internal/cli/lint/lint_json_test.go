@@ -3,9 +3,6 @@ package lint
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/linter/finding"
@@ -99,7 +96,7 @@ func TestLintJSONReportEmptyFindings(t *testing.T) {
 // report full of warnings from advisory linters stays ok=true.
 func TestLintJSONOKIndependentOfWarnings(t *testing.T) {
 	report := buildLintJSONReport([]lintJSONFinding{
-		{Severity: lintSevWarning, Rule: "forge-wire-coverage", Message: "w"},
+		{Severity: lintSevWarning, Rule: "forge-config-deps", Message: "w"},
 		{Severity: lintSevWarning, Rule: "forge-test-conventions", Message: "w"},
 	}, false)
 	if !report.OK {
@@ -181,12 +178,15 @@ func TestExternalLinesToFindings(t *testing.T) {
 }
 
 // TestParseSeverity covers the canonical severity vocabulary that
-// replaced the old normalizeLintSeverity shim. The internal linters now
+// replaced the old normalizeLintSeverity shim. The internal linters
 // emit finding.Severity directly (single spelling), so the only
-// normalization left is parsing free-form forge.yaml rule levels: "warn"
-// is accepted as a legacy alias for "warning", and anything unrecognized
-// returns ("", false) — the disabled-rule sentinel — rather than the old
-// shim's "degrade to warning" fallback (which has been deleted).
+// normalization left is parsing free-form forge.yaml rule levels.
+// Input is lenient — "warn" is the spelling forge.yaml itself uses for
+// the warning level, so it must parse to SeverityWarning; the
+// single-spelling guarantee applies to the parsed OUTPUT. Values
+// outside the vocabulary, including the "off" dial, return ("", false)
+// — the disabled-rule sentinel — rather than the old shim's
+// "degrade to warning" fallback (which has been deleted).
 func TestParseSeverity(t *testing.T) {
 	okCases := []struct {
 		in   string
@@ -203,74 +203,10 @@ func TestParseSeverity(t *testing.T) {
 			t.Errorf("ParseSeverity(%q) = (%q, %v), want (%q, true)", c.in, got, ok, c.want)
 		}
 	}
-	if got, ok := finding.ParseSeverity("WEIRD"); ok {
-		t.Errorf("ParseSeverity(%q) = (%q, true), want (\"\", false)", "WEIRD", got)
-	}
-}
-
-// TestCollectWireCoverageJSON exercises a structured collector end to
-// end against a synthetic project: one wire TODO (warning, no gate) and
-// one unresolved forge:placeholder (error, gates) — mirroring text
-// mode's "TODOs warn, placeholders fail" split.
-func TestCollectWireCoverageJSON(t *testing.T) {
-	root := t.TempDir()
-	appDir := filepath.Join(root, "pkg", "app")
-	if err := os.MkdirAll(appDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	wireGen := `package app
-
-func wireBillingDeps(app *App) billing.Deps {
-	return billing.Deps{
-		Repo: nil, // TODO: wire Repo
-	}
-}
-`
-	extras := `package app
-
-// AppExtras holds user-owned dependency fields.
-type AppExtras struct {
-	// forge:placeholder: billing.Repository
-	Repo any
-}
-`
-	if err := os.WriteFile(filepath.Join(appDir, "wire_gen.go"), []byte(wireGen), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(appDir, "app_extras.go"), []byte(extras), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	findings, gated, err := collectWireCoverageJSON(root)
-	if err != nil {
-		t.Fatalf("collect: %v", err)
-	}
-	if !gated {
-		t.Error("unresolved placeholder must gate (text mode returns an error)")
-	}
-	var warnings, errors int
-	for _, f := range findings {
-		if f.Rule != "forge-wire-coverage" {
-			t.Errorf("unexpected rule %q", f.Rule)
+	for _, bad := range []string{"off", "WEIRD", ""} {
+		if got, ok := finding.ParseSeverity(bad); ok {
+			t.Errorf("ParseSeverity(%q) = (%q, true), want (\"\", false)", bad, got)
 		}
-		switch f.Severity {
-		case lintSevWarning:
-			warnings++
-			if f.File == "" || f.Line == 0 {
-				t.Errorf("TODO finding must be file-scoped, got %+v", f)
-			}
-		case lintSevError:
-			errors++
-			if !strings.Contains(f.Message, "forge:placeholder") {
-				t.Errorf("placeholder finding message drifted: %q", f.Message)
-			}
-		}
-		if f.FixHint == "" {
-			t.Errorf("wire-coverage findings must carry a fix_hint, got %+v", f)
-		}
-	}
-	if warnings != 1 || errors != 1 {
-		t.Errorf("expected 1 warning + 1 error, got %d warnings, %d errors: %+v", warnings, errors, findings)
 	}
 }
 

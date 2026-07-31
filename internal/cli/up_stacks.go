@@ -1,0 +1,503 @@
+// Package cli — the machine-local record of which stacks `forge env up` /
+// `forge run` started, and the teardown that acts on it.
+//
+// Three files are written per (project, env), under
+// $HOME/.cache/forge/up/<project-id>/:
+//
+//	project.json     the project DIRECTORY <project-id> hashes from
+//	<env>.pids       what this run started: "<name>\t<pid>" per line
+//	<env>.env.json   the resolved discovery facts (live ports + DATABASE_URL)
+//
+// The <project-id> segment (see projectIDForDir) is what scopes every record to
+// ONE checkout, so two projects bringing up the same env name never read each
+// other's. Until project.json it was also ALL that was recorded — and a hash
+// cannot be inverted. A stack whose project directory had since been deleted
+// was therefore unreachable by every forge verb: `forge env down` derives the
+// id from the forge.yaml above the working directory, and there was no
+// forge.yaml left to derive it from. Eight rounds of the dogfood loop ended
+// that way, leaving 38 orphaned processes, 7.5 GB resident and 15 listening
+// ports that nothing could name. Recording the path is what makes that set
+// enumerable (`forge env ps`) and stoppable (`forge env down --all`).
+//
+// These files are a RECORD, never an authority. Teardown proves ownership from
+// the LIVE process markers (up_reclaim.go) and signals nothing else: a ledger
+// drifts — a crashed run never persisted one, air re-execs under a new pid, and
+// a pid the OS has since recycled belongs to a stranger — so "this file
+// remembers pid 4242" is not proof that pid 4242 is ours to kill.
+package cli
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+)
+
+// upCacheDir is the machine-local root every stack record lives under.
+func upCacheDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home dir: %w", err)
+	}
+	return filepath.Join(home, ".cache", "forge", "up"), nil
+}
+
+// upProjectCacheDir is the per-project record directory. An empty projectID is
+// an error rather than a shared fallback directory: an unidentifiable project
+// must never read or write another project's records.
+func upProjectCacheDir(projectID string) (string, error) {
+	if projectID == "" {
+		return "", errors.New("no project id: cannot locate this project's stack records")
+	}
+	root, err := upCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, projectID), nil
+}
+
+// upStatePath returns the (project, env) PID ledger:
+//
+//	$HOME/.cache/forge/up/<project-id>/<env>.pids
+//
+// projectID is a parameter, not a global lookup: `forge env down --all` acts on
+// projects OTHER than the one containing the working directory, and every
+// caller that acts on its own project already holds its id.
+func upStatePath(projectID, env string) (string, error) {
+	dir, err := upProjectCacheDir(projectID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, env+".pids"), nil
+}
+
+// upEnvStatePath returns the (project, env) discovery cache:
+//
+//	$HOME/.cache/forge/up/<project-id>/<env>.env.json
+//
+// Sibling of upStatePath's ledger — the resolved name→port map + DATABASE_URL
+// a fresh `forge env status` render cannot recover (see resolvedEnvState).
+func upEnvStatePath(projectID, env string) (string, error) {
+	dir, err := upProjectCacheDir(projectID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, env+".env.json"), nil
+}
+
+// projectRecordPath returns the per-project path record:
+//
+//	$HOME/.cache/forge/up/<project-id>/project.json
+func projectRecordPath(projectID string) (string, error) {
+	dir, err := upProjectCacheDir(projectID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "project.json"), nil
+}
+
+// projectRecord is project.json: the directory <project-id> hashes from, so an
+// enumerator can NAME a stack it did not start — including one whose directory
+// no longer exists, which is exactly the case that had no name at all.
+type projectRecord struct {
+	Dir       string `json:"dir"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// recordProjectDir stamps the project directory alongside the ledger. Written
+// on every persist so a checkout that moved is re-recorded. The stored value is
+// the CANONICAL directory — the same string projectIDForDir hashed — so
+// projectIDForDir(rec.Dir) round-trips back to this id. Best-effort: losing it
+// costs enumeration a name, never the run.
+func recordProjectDir(projectID, dir string) {
+	path, err := projectRecordPath(projectID)
+	if err != nil || dir == "" {
+		return
+	}
+	data, err := json.MarshalIndent(projectRecord{
+		Dir:       canonicalProjectDir(dir),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+	}
+}
+
+// readProjectRecord reads a project's path record. Returns "" when the record
+// is absent or unreadable — enumeration then reports the stack by id alone
+// rather than failing.
+func readProjectRecord(projectID string) string {
+	path, err := projectRecordPath(projectID)
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var rec projectRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return ""
+	}
+	return rec.Dir
+}
+
+// stackKey identifies one stack: the (project, env) pair EVERY ownership
+// decision in forge is keyed on.
+type stackKey struct {
+	projectID string
+	env       string
+}
+
+// discoverMarkedStacks groups every process carrying BOTH ownership markers by
+// the (project, env) pair those markers name. It is markedOrphanRoots' marked
+// pass without the "which stack am I looking for" input — and that inversion is
+// the whole point: a stack can be found without already knowing its project id,
+// which is the only way to reach one whose project directory is gone. A process
+// missing either marker (a pre-marker stack, anything forge did not start) is
+// not grouped and so is never a teardown candidate. Pure over the injected
+// facts.
+func discoverMarkedStacks(pids []int, f procFacts) map[stackKey][]int {
+	out := map[stackKey][]int{}
+	for _, pid := range pids {
+		if pid <= 1 {
+			continue
+		}
+		environ, ok := f.environ(pid)
+		if !ok {
+			continue
+		}
+		envName, _, projectID := markerFields(environ)
+		if envName == "" || projectID == "" {
+			continue
+		}
+		k := stackKey{projectID: projectID, env: envName}
+		out[k] = append(out[k], pid)
+	}
+	return out
+}
+
+// runningStack is one live stack on this machine, as `forge env ps` reports it
+// and `forge env down --all` acts on it.
+type runningStack struct {
+	stackKey
+	// dir is the recorded project directory; "" when no project.json survives
+	// (a stack started by a forge that predates the record).
+	dir string
+	// dirExists distinguishes "you can cd there and run `forge env down`" from
+	// "this stack outlived its project and --all is the only way to reach it".
+	dirExists bool
+	// procs counts every live process carrying this stack's markers. The trees
+	// a teardown signals are NOT recorded here: stopStack re-reads the process
+	// table for each stack it stops, so it acts on the table as it is then, not
+	// as enumeration found it.
+	procs int
+}
+
+// label names a stack for output: its project directory when one was recorded,
+// otherwise the raw id (which is still enough for `--all` to act on).
+func (s runningStack) label() string {
+	if s.dir == "" {
+		return "(unrecorded project " + s.projectID + ")"
+	}
+	if !s.dirExists {
+		return s.dir + "  (directory is gone)"
+	}
+	return s.dir
+}
+
+// discoverRunningStacks enumerates every forge-started stack alive on this
+// machine, from the live process markers — not from the record files, which
+// drift and which a deleted project directory takes with it in spirit if not on
+// disk. The records only supply the NAME (project.json) for what the process
+// table already found. Sorted for stable output.
+func discoverRunningStacks() []runningStack {
+	facts := newOSProcFacts()
+	grouped := discoverMarkedStacks(facts.pidList(), facts)
+	out := make([]runningStack, 0, len(grouped))
+	for key, pids := range grouped {
+		s := runningStack{
+			stackKey: key,
+			dir:      readProjectRecord(key.projectID),
+			procs:    len(pids),
+		}
+		if s.dir != "" {
+			if _, err := os.Stat(filepath.Join(s.dir, defaultProjectConfigFile)); err == nil {
+				s.dirExists = true
+			}
+		}
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].label() != out[j].label() {
+			return out[i].label() < out[j].label()
+		}
+		return out[i].env < out[j].env
+	})
+	return out
+}
+
+// stopStack tears down the (projectID, env) stack and returns the number of
+// process trees it signalled. The records are removed either way: the stack
+// they described is gone.
+func stopStack(projectID, env string) int {
+	facts := newOSProcFacts()
+	roots := stackTeardownRoots(projectID, env, trackedStack(projectID, env), facts.pidList(), processAlive, facts)
+	for _, pid := range roots {
+		fmt.Printf("[up] %s: stopping (pid %d + tree)\n", serviceOfPID(pid, facts), pid)
+	}
+	killTreesAndWait(roots)
+	removeStackRecords(projectID, env)
+	return len(roots)
+}
+
+// stackTeardownRoots is the pure selection core of stopStack: every process
+// tree that belongs to (projectID, env) and must be signalled.
+//
+// The LIVE markers are the authority. The sweep over pids finds exactly the
+// processes that ARE this stack — including ones no ledger ever recorded (the
+// run crashed before it persisted) and ones whose pid has since changed (air
+// re-execs its server), which is why a teardown keyed on remembered pids leaked
+// orphans for as long as it existed.
+//
+// The ledger is the FALLBACK, for when the authority is unavailable: the sweep
+// needs a process table (`ps`) and readable process environments, and an
+// environment can supply neither — a failed `ps`, a sandbox that blocks
+// /proc, the Windows stubs. So one rule, no platform branch:
+//
+//   - a recorded pid that is dead is skipped;
+//   - a recorded pid whose environment IS readable must carry our markers —
+//     otherwise it is a pid the OS recycled into a stranger's process, and
+//     forge does not kill what it cannot prove it owns;
+//   - a recorded pid whose environment cannot be read at all is signalled: the
+//     record is then the only evidence forge has that it started this process,
+//     and refusing to act on it would mean no teardown at all.
+//
+// alive is injected (processAlive in production) so the rule is testable
+// without a real process table.
+func stackTeardownRoots(projectID, env string, tracked []trackedProc, pids []int, alive func(int) bool, f procFacts) []int {
+	roots := markedOrphanRoots(projectID, env, pids, f)
+	seen := make(map[int]bool, len(roots))
+	for _, pid := range roots {
+		seen[pid] = true
+	}
+	for _, t := range tracked {
+		if t.pid <= 1 || seen[t.pid] || !alive(t.pid) {
+			continue
+		}
+		if environ, ok := f.environ(t.pid); ok {
+			if _, matched := markerMatches(environ, projectID, env); !matched {
+				continue // recycled, or another project's — never ours to signal
+			}
+		}
+		seen[t.pid] = true
+		roots = append(roots, t.pid)
+	}
+	return roots
+}
+
+// serviceOfPID reads back the FORGE_UP_SERVICE a process was stamped with, so
+// teardown output names the service instead of a bare pid. Falls back to
+// "process" when the marker is unreadable.
+func serviceOfPID(pid int, f procFacts) string {
+	if environ, ok := f.environ(pid); ok {
+		if _, service, _ := markerFields(environ); service != "" {
+			return service
+		}
+	}
+	return "process"
+}
+
+// removeStackRecords drops the (project, env) ledger + discovery cache, and
+// prunes the project directory once no env under it is still recorded — so the
+// cache does not accumulate one directory per project ever run.
+func removeStackRecords(projectID, env string) {
+	if statePath, err := upStatePath(projectID, env); err == nil {
+		if rerr := os.Remove(statePath); rerr != nil && !os.IsNotExist(rerr) {
+			fmt.Printf("[up] warning: remove state: %v\n", rerr)
+		}
+	}
+	if envPath, err := upEnvStatePath(projectID, env); err == nil {
+		if rerr := os.Remove(envPath); rerr != nil && !os.IsNotExist(rerr) {
+			fmt.Printf("[up] warning: remove env state: %v\n", rerr)
+		}
+	}
+	dir, err := upProjectCacheDir(projectID)
+	if err != nil {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".pids") {
+			return // another env is still recorded here
+		}
+	}
+	_ = os.RemoveAll(dir)
+}
+
+// requireProjectDir resolves the directory of the forge.yaml governing the
+// working directory, and FAILS when there is none.
+//
+// It exists because projectDirForKCL() falls back to "." — harmless for a KCL
+// render (kcl reports the missing file), fatal for a teardown: "." hashes to a
+// project id no stack was ever recorded under, the lookup finds nothing, and
+// `forge env down` prints "no tracked stack" and exits 0. "I cannot tell which
+// project you mean" must never render as "nothing was running" — that is a
+// guard that cannot fail, and it reported success over a machine carrying 38
+// orphaned processes.
+func requireProjectDir(verb string) (string, error) {
+	cfgPath, err := findProjectConfigFile()
+	if err != nil {
+		cwd, _ := os.Getwd()
+		return "", fmt.Errorf("%s: no %s found in %s or any parent — cannot tell which project's stack to act on.\n"+
+			"     run it from inside the project, or reach every forge stack on this machine with:\n"+
+			"       forge env ps          # what is running, and where\n"+
+			"       forge env down --all  # stop all of it",
+			verb, defaultProjectConfigFile, cwd)
+	}
+	return filepath.Dir(cfgPath), nil
+}
+
+// runUpStopAll stops every forge-started stack on this machine, whatever
+// project it belongs to. It is the escape hatch for the one state
+// `forge env down <env>` structurally cannot reach: a stack whose project
+// directory no longer exists, so no forge.yaml can be found to derive its id.
+//
+// It is not a broader authority — only processes carrying forge's OWN ownership
+// markers are ever signalled, exactly as in the single-project path. What
+// changes is enumeration: the stacks are discovered FROM the markers instead of
+// being named by the caller.
+func runUpStopAll() error {
+	stacks := discoverRunningStacks()
+	if len(stacks) == 0 {
+		fmt.Println("[up] no forge stacks are running on this machine.")
+		return nil
+	}
+	total := stopDiscoveredStacks(stacks)
+	fmt.Printf("[up] stopped %d process tree(s) across %d stack(s).\n", total, len(stacks))
+	return nil
+}
+
+// stopDiscoveredStacks tears down each enumerated stack, naming it first, and
+// returns the total number of process trees signalled. Split from
+// runUpStopAll's discovery so the teardown loop is testable against a chosen
+// set of stacks — a test that discovered for itself would tear down every stack
+// on the developer's machine.
+func stopDiscoveredStacks(stacks []runningStack) int {
+	total := 0
+	for _, s := range stacks {
+		fmt.Printf("[up] %s · env=%s\n", s.label(), s.env)
+		total += stopStack(s.projectID, s.env)
+	}
+	return total
+}
+
+// newEnvPsCmd lists every forge stack running on this machine — across ALL
+// projects, including ones whose directory is gone.
+//
+// `forge env status <env>` answers "how is THIS project's env doing" and needs
+// a project to stand in; this answers "what is forge running on this box",
+// which is the question you have when something is holding a port, eating
+// memory, or serving a tree you deleted. It reads the live ownership markers,
+// so it sees stacks no record survived.
+func newEnvPsCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "ps",
+		Short: "List every forge stack running on this machine, across all projects",
+		Args:  cobra.NoArgs,
+		Long: `List every stack ` + "`forge env up`" + ` / ` + "`forge run`" + ` has running on this
+machine, across every project — not just the one in the working directory.
+
+Each row is one (project, env) stack, with the number of live processes and
+the project directory it was started from. A stack whose directory has since
+been DELETED is still listed and still stoppable: it is discovered from the
+ownership markers its processes carry, not from anything on disk.
+
+Stop one:   cd <project> && forge env down <env>
+Stop all:   forge env down --all
+
+Examples:
+  forge env ps
+  forge env ps --json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runEnvPs(jsonOut)
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (project/project_id/env/processes/dir_exists)")
+	return cmd
+}
+
+// envPsStack is one row of the `forge env ps` report. JSON tags are the
+// machine-readable contract; additive only.
+type envPsStack struct {
+	// Project is the recorded project directory; empty when no record survives.
+	Project   string `json:"project,omitempty"`
+	ProjectID string `json:"project_id"`
+	Env       string `json:"env"`
+	Processes int    `json:"processes"`
+	// DirExists is false when the stack outlived its project directory — the
+	// state in which `forge env down <env>` cannot reach it and `--all` must.
+	DirExists bool `json:"dir_exists"`
+}
+
+// envPsReport is the `forge env ps --json` envelope.
+type envPsReport struct {
+	Stacks []envPsStack `json:"stacks"`
+}
+
+func runEnvPs(jsonOut bool) error {
+	stacks := discoverRunningStacks()
+	if jsonOut {
+		rep := envPsReport{Stacks: make([]envPsStack, 0, len(stacks))}
+		for _, s := range stacks {
+			rep.Stacks = append(rep.Stacks, envPsStack{
+				Project:   s.dir,
+				ProjectID: s.projectID,
+				Env:       s.env,
+				Processes: s.procs,
+				DirExists: s.dirExists,
+			})
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep)
+	}
+	if len(stacks) == 0 {
+		fmt.Println("no forge stacks are running on this machine.")
+		return nil
+	}
+	labelW := len("PROJECT")
+	for _, s := range stacks {
+		if len(s.label()) > labelW {
+			labelW = len(s.label())
+		}
+	}
+	fmt.Printf("%-*s  %-8s  %s\n", labelW, "PROJECT", "ENV", "PROCS")
+	for _, s := range stacks {
+		fmt.Printf("%-*s  %-8s  %d\n", labelW, s.label(), s.env, s.procs)
+	}
+	fmt.Println()
+	fmt.Println("stop one:  cd <project> && forge env down <env>")
+	fmt.Println("stop all:  forge env down --all")
+	return nil
+}

@@ -5,17 +5,16 @@ package config
 // This file layers the spec'd public surface — RegisterFlags(cmd, msg),
 // Load(cmd, msg), and the typed Load[T] convenience — over the
 // descriptor-driven primitives in loader.go (RegisterFlagsFor / LoadInto),
-// and adds the role-annotation helpers (Mode, DevAuthBypass).
+// and adds the role-annotation helpers (Mode).
 //
 // The defining property: NONE of these helpers match on a field's NAME.
-// Mode/DevAuthBypass key off the field tagged role=CONFIG_FIELD_ROLE_MODE.
+// Mode keys off the field tagged role=CONFIG_FIELD_ROLE_MODE.
 // Renaming that field changes nothing; naming an UNannotated field
 // "environment" does NOT make it the mode field. Behavior follows the
 // annotation, not the identifier.
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -78,7 +77,7 @@ func LoadTyped[T proto.Message](cmd *cobra.Command) (T, error) {
 type RuntimeMode int
 
 const (
-	// ModeProduction is the zero value: authz enforced, auth required.
+	// ModeProduction is the zero value: full production posture (auth required).
 	ModeProduction RuntimeMode = iota
 	// ModeDevelopment enables local-dev permissiveness. Never set in
 	// deployed environments.
@@ -87,7 +86,7 @@ const (
 
 // IsDev reports whether the mode is ModeDevelopment. It gates NON-SECURITY
 // dev ergonomics only (permissive CORS, verbose errors, dev DB defaults).
-// It MUST NOT gate auth — see DevAuthBypass.
+// It MUST NOT gate authentication — auth is enforced in every mode.
 func (m RuntimeMode) IsDev() bool { return m == ModeDevelopment }
 
 // modeFieldValue returns the string value of the field tagged
@@ -143,20 +142,6 @@ func Mode(msg proto.Message) RuntimeMode {
 		return ModeDevelopment
 	}
 	return ModeProduction
-}
-
-// DevAuthBypass reports whether this server runs with NO real auth: authn
-// passthrough + authz allow-all + synthetic dev claims.
-//
-// It is an EXPLICIT, two-factor opt-in and is NEVER implied by the mode
-// field alone: development mode gives dev ergonomics but KEEPS auth
-// enforced. To actually bypass auth you must ALSO set AUTH_DEV_MODE=true.
-// In production the bypass is impossible — Mode is never dev there.
-func DevAuthBypass(msg proto.Message) bool {
-	if !Mode(msg).IsDev() {
-		return false
-	}
-	return strings.EqualFold(os.Getenv("AUTH_DEV_MODE"), "true")
 }
 
 // Validate runs the cross-field and closed-set config invariants that

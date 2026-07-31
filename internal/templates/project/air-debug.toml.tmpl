@@ -17,7 +17,9 @@ tmp_dir = "tmp"
   exclude_regex = ["_test\\.go$"]
   exclude_unchanged = false
   follow_symlink = false
-  full_bin = "dlv exec --headless --listen=:2345 --api-version=2 --accept-multiclient ./tmp/{{.Name}} -- server"
+  # ENVIRONMENT=development: see .air.toml. A debug session hits the same wall
+  # — the server refuses its own frontend's preflight without it.
+  full_bin = "ENVIRONMENT=development dlv exec --headless --listen=:2345 --api-version=2 --accept-multiclient ./tmp/{{.Name}} -- server"
   include_ext = ["go", "yaml"]
   include_file = []
   kill_delay = "5s"

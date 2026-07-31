@@ -6,14 +6,17 @@ import (
 	"testing"
 )
 
-// TestViteSPATemplatesList confirms the embedded vite-spa template tree
-// carries the files the generator depends on. Missing entries here would
-// silently produce a half-scaffolded SPA where buf / vite / tanstack-router
-// would fail at first run.
+// TestViteSPATemplatesList confirms the composed vite-spa template tree
+// (frontend/shared + frontend/shared-web + frontend/vite-spa) carries the
+// files the generator depends on. Missing entries here would silently
+// produce a half-scaffolded SPA where buf / vite / tanstack-router would
+// fail at first run. Asserting on the COMPOSED tree — not on one
+// directory — is what keeps a mechanism file moving between roots from
+// being a silent scaffold regression.
 func TestViteSPATemplatesList(t *testing.T) {
-	files, err := FrontendTemplates().List("vite-spa")
+	files, err := ListFrontendTree("vite-spa")
 	if err != nil {
-		t.Fatalf("List vite-spa templates: %v", err)
+		t.Fatalf("list vite-spa template tree: %v", err)
 	}
 
 	expected := []string{
@@ -23,7 +26,6 @@ func TestViteSPATemplatesList(t *testing.T) {
 		"tsconfig.node.json",
 		"index.html.tmpl",
 		".gitignore",
-		".env.local.tmpl",
 		"buf.gen.yaml.tmpl",
 		"eslint.config.mjs",
 		"src/main.tsx",
@@ -33,26 +35,38 @@ func TestViteSPATemplatesList(t *testing.T) {
 		"src/vite-env.d.ts",
 		"src/stores/ui-store.ts",
 		"src/lib/connect.ts.tmpl",
+		"src/lib/apiurl_gen.ts.tmpl",
 		"src/lib/query-client.ts",
 		"src/lib/events.ts",
-		"src/lib/event-context.tsx",
+		"src/lib/event-context.tsx.tmpl",
 		"src/lib/search-schemas.ts",
 		"src/lib/format-utils.ts",
 		"src/lib/auth/provider.ts",
-		"src/lib/auth/stub-provider.ts",
-		"src/lib/auth/context.tsx",
+		"src/lib/auth/session-provider.ts.tmpl",
+		"src/lib/auth/context.tsx.tmpl",
 		"src/hooks/use-api-query.ts",
 		"src/hooks/use-api-mutation.ts",
 	}
 
-	fileSet := make(map[string]bool)
+	fileSet := make(map[string]string)
 	for _, f := range files {
-		fileSet[f] = true
+		fileSet[f.Rel] = f.Path
 	}
 
 	for _, e := range expected {
-		if !fileSet[e] {
+		if _, ok := fileSet[e]; !ok {
 			t.Errorf("expected template %s not found in listing", e)
+		}
+	}
+
+	// React Native must NOT pick up the browser-only root.
+	native, err := ListFrontendTree("react-native")
+	if err != nil {
+		t.Fatalf("list react-native template tree: %v", err)
+	}
+	for _, f := range native {
+		if strings.HasPrefix(f.Path, "shared-web/") {
+			t.Errorf("react-native composed a browser-only template: %s", f.Path)
 		}
 	}
 }
@@ -64,24 +78,30 @@ func TestViteSPATemplatesRender(t *testing.T) {
 	data := FrontendTemplateData{
 		FrontendName: "myspa",
 		ProjectName:  "testproject",
-		ApiUrl:       "http://localhost:8080",
-		ApiPort:      "8080",
+		Platform:     "vite-spa",
+		APIURL:       "http://localhost:8080",
 		Module:       "example.com/testproject",
 	}
 
-	files, err := FrontendTemplates().List("vite-spa")
+	files, err := ListFrontendTree("vite-spa")
 	if err != nil {
-		t.Fatalf("List vite-spa templates: %v", err)
+		t.Fatalf("list vite-spa template tree: %v", err)
 	}
 
 	for _, f := range files {
-		t.Run(f, func(t *testing.T) {
-			content, err := FrontendTemplates().Render(filepath.Join("vite-spa", f), data)
+		t.Run(f.Rel, func(t *testing.T) {
+			content, err := FrontendTemplates().Render(f.Path, data)
 			if err != nil {
-				t.Fatalf("render %s: %v", f, err)
+				t.Fatalf("render %s: %v", f.Path, err)
 			}
 			if len(content) == 0 {
-				t.Errorf("rendered %s is empty", f)
+				t.Errorf("rendered %s is empty", f.Path)
+			}
+			// Only the Next.js App Router understands the RSC prologue;
+			// Vite's bundler warns on it and the module is a plain client
+			// module anyway.
+			if strings.HasPrefix(string(content), `"use client"`) {
+				t.Errorf("%s rendered a \"use client\" prologue into a Vite SPA", f.Path)
 			}
 		})
 	}
@@ -106,14 +126,21 @@ func TestViteSPATemplatesRender(t *testing.T) {
 		}
 	})
 
-	t.Run("connect.ts uses VITE_API_URL", func(t *testing.T) {
+	t.Run("connect.ts uses VITE_API_URL and the apiurl_gen floor", func(t *testing.T) {
 		content, _ := FrontendTemplates().Render("vite-spa/src/lib/connect.ts.tmpl", data)
 		s := string(content)
 		if !strings.Contains(s, "VITE_API_URL") {
 			t.Error("connect.ts should reference VITE_API_URL")
 		}
-		if !strings.Contains(s, "http://localhost:8080") {
-			t.Error("connect.ts should contain rendered API URL")
+		// The dev-URL floor moved out of connect.ts (and the deleted
+		// .env.local) into the regenerated apiurl_gen.ts; connect.ts now
+		// imports DEV_API_URL from it rather than baking the literal URL.
+		if !strings.Contains(s, "DEV_API_URL") {
+			t.Error("connect.ts should import DEV_API_URL from apiurl_gen")
+		}
+		gen, _ := FrontendTemplates().Render("vite-spa/src/lib/apiurl_gen.ts.tmpl", data)
+		if !strings.Contains(string(gen), "http://localhost:8080") {
+			t.Error("apiurl_gen.ts should contain the rendered dev API URL")
 		}
 	})
 
@@ -153,7 +180,6 @@ func TestViteSPAPageTemplatesRender(t *testing.T) {
 		"detail-page.tsx.tmpl",
 		"create-page.tsx.tmpl",
 		"edit-page.tsx.tmpl",
-		"oauth-callback-page.tsx.tmpl",
 	}
 
 	// Page templates consume codegen.PageTemplateData, but at the templates
@@ -205,11 +231,6 @@ func TestViteSPAPageTemplatesRender(t *testing.T) {
 			s := string(content)
 			if strings.Contains(s, "next/navigation") || strings.Contains(s, "next/link") {
 				t.Errorf("vite-spa page %s must not import next/* (got next/* reference)", p)
-			}
-			if p == "oauth-callback-page.tsx.tmpl" {
-				if !strings.Contains(s, "@tanstack/react-router") {
-					t.Errorf("%s must import from @tanstack/react-router", p)
-				}
 			}
 		})
 	}

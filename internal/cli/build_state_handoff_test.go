@@ -28,7 +28,7 @@ func TestBuildStateLookupEnvs(t *testing.T) {
 
 // TestResolveDeployImageTag_DefaultFallback proves the handoff that the
 // --push-gate fix enables: `forge build --docker` (no --env) writes the
-// "default" record, and `forge deploy prod` reads it back via the fallback
+// "default" record, and `forge env deploy prod` reads it back via the fallback
 // when there is no prod-specific record.
 func TestResolveDeployImageTag_DefaultFallback(t *testing.T) {
 	dir := t.TempDir()

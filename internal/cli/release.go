@@ -20,10 +20,10 @@ import (
 //	forge build --release v1.4.0   → builds the env-agnostic images ONCE,
 //	                                  records each image's digest in a
 //	                                  Release ledger (.forge/releases/<v>.json).
-//	forge promote v1.4.0 --to prod → records env prod → release v1.4.0 in the
+//	forge env promote v1.4.0 --to prod → records env prod → release v1.4.0 in the
 //	                                  binding ledger (.forge/env-releases.json).
 //	                                  Pure pointer move, no rebuild.
-//	forge deploy prod              → if prod is bound, pins the SAME digests
+//	forge env deploy prod              → if prod is bound, pins the SAME digests
 //	                                  the release captured (build once, promote);
 //	                                  else falls back to today's per-env build
 //	                                  state (full backward compat).
@@ -103,7 +103,7 @@ type ReleaseGit struct {
 	Dirty  bool   `json:"dirty,omitempty"`
 }
 
-// EnvReleases is the env→release binding ledger written by `forge promote`. A
+// EnvReleases is the env→release binding ledger written by `forge env promote`. A
 // binding is a pure pointer: env `<name>` runs release `<version>`. The
 // resolved per-image digests are snapshotted alongside the version so a deploy
 // can pin them without re-reading the (possibly moved/edited) release file, and
@@ -221,7 +221,7 @@ func WriteEnvReleases(projectDir string, er EnvReleases) error {
 }
 
 // boundReleaseForEnv returns the release bound to env, or ("", false) when the
-// env has no binding. This is the gate `forge deploy <env>` uses to choose
+// env has no binding. This is the gate `forge env deploy <env>` uses to choose
 // between the release-pinned digest path and today's per-env build-state path.
 func boundReleaseForEnv(projectDir, envName string) (EnvBinding, bool, error) {
 	er, err := ReadEnvReleases(projectDir)
@@ -343,7 +343,7 @@ func resolveReleaseDigests(r Release) (map[string]string, error) {
 					"  (1) no docker images were built (check --env and that KCL declares services),\n"+
 					"  (2) digests were not captured (re-run the build with --push <registry>), or\n"+
 					"  (3) all external builds were skipped due to a missing build_cwd.\n"+
-					"Inspect the release file with `forge audit` to see what was recorded",
+					"Inspect the release file with `forge project audit` to see what was recorded",
 				r.Version)
 		}
 		// Artifacts exist but none resolved a shared digest — every artifact is

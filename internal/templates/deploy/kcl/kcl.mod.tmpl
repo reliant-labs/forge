@@ -1,14 +1,17 @@
 [package]
-name = "{{.ProjectName}}"
+name = "{{.ProjectName}}-deploy"
 edition = "v0.11.0"
 version = "0.0.1"
 
-# The `forge` KCL module ships the typed schemas this project's
+# The `forge` KCL module ships the typed schemas this package's env
 # main.k files import (Service / Operator / Frontend / CronJob, plus
-# the polymorphic deploy union). Pin a published `kcl-vX.Y.Z` tag.
+# the polymorphic deploy union). Release builds of forge pin a
+# published `kcl-vX.Y.Z` tag here.
 #
-# For local development against a checked-out forge clone, override
-# with: `forge = { path = "../forge/kcl" }` (or pass `-E forge=...`
-# directly to `kcl run`).
+# Dev builds of forge have no published tag; `forge generate`
+# materializes the module embedded in the binary into `.forge-kcl/` at
+# the project root and rewrites this dependency to that relative path
+# (marker-delimited — see the block it maintains). Commit `.forge-kcl/`
+# so containers and CI resolve the same module.
 [dependencies]
 forge = { git = "https://github.com/reliant-labs/forge.git", tag = "kcl-v0.1.0" }

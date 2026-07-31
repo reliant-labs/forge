@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/spf13/cobra"
 )
 
 func TestParseLevel(t *testing.T) {
@@ -63,30 +61,6 @@ func TestContextWithTimeoutFallback(t *testing.T) {
 	}
 }
 
-func TestResolvePrecedence(t *testing.T) {
-	cmd := &cobra.Command{Use: "x"}
-	cmd.Flags().String("dst", "", "")
-
-	// Default when neither flag nor env set.
-	if got := Resolve(cmd, "dst", "CMDKIT_TEST_DST", "fallback"); got != "fallback" {
-		t.Errorf("default precedence: got %q", got)
-	}
-
-	// Env beats default.
-	t.Setenv("CMDKIT_TEST_DST", "from-env")
-	if got := Resolve(cmd, "dst", "CMDKIT_TEST_DST", "fallback"); got != "from-env" {
-		t.Errorf("env precedence: got %q", got)
-	}
-
-	// Explicit flag beats env.
-	if err := cmd.Flags().Set("dst", "from-flag"); err != nil {
-		t.Fatal(err)
-	}
-	if got := Resolve(cmd, "dst", "CMDKIT_TEST_DST", "fallback"); got != "from-flag" {
-		t.Errorf("flag precedence: got %q", got)
-	}
-}
-
 func TestPrintJSON(t *testing.T) {
 	var buf bytes.Buffer
 	if err := PrintJSON(&buf, map[string]int{"n": 3}); err != nil {
@@ -98,15 +72,6 @@ func TestPrintJSON(t *testing.T) {
 	}
 	if out["n"] != 3 {
 		t.Errorf("got %v", out)
-	}
-}
-
-func TestFirstNonEmpty(t *testing.T) {
-	if got := FirstNonEmpty("", "  ", "x", "y"); got != "x" {
-		t.Errorf("got %q", got)
-	}
-	if got := FirstNonEmpty("", "   "); got != "" {
-		t.Errorf("got %q", got)
 	}
 }
 

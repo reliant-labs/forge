@@ -1,4 +1,4 @@
-// Package cli — shared helpers for `forge map` (and formerly `forge audit`,
+// Package cli — shared helpers for `forge project map` (and formerly `forge project audit`,
 // which moved to the internal/cli/audit group). These walk the project tree
 // to classify migrations and forge-generated files. They stay in package cli
 // because map.go consumes them directly; the audit group keeps its own copy

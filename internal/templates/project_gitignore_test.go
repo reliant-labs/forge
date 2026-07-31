@@ -5,7 +5,7 @@
 // state), but two files are shared project state and MUST be negated
 // back into version control:
 //
-//   - disowned.json — one-way ownership transfers (`forge disown`);
+//   - disowned.json — one-way ownership transfers (`forge project disown`);
 //     travels with the repo so forge never regenerates a disowned file
 //     in any clone or worktree
 //   - hashes.json — scoped render hashes for comment-incapable
@@ -61,10 +61,13 @@ func TestProjectGitignore_ForgeStateNegations(t *testing.T) {
 	if has("!.forge/checksums.json") {
 		t.Error(".gitignore template must NOT negate the dead checksums.json manifest back in")
 	}
-	for _, neg := range []string{"!.forge/disowned.json", "!.forge/hashes.json", "!.forge/friction.jsonl"} {
+	for _, neg := range []string{"!.forge/disowned.json", "!.forge/hashes.json"} {
 		if !has(neg) {
 			t.Errorf(".gitignore template must negate %s back into version control", strings.TrimPrefix(neg, "!"))
 		}
+	}
+	if has("!.forge/friction.jsonl") {
+		t.Error(".gitignore template must NOT negate the removed friction log back in")
 	}
 
 	// Order matters for gitignore semantics: a negation only works when
@@ -78,7 +81,7 @@ func TestProjectGitignore_ForgeStateNegations(t *testing.T) {
 		return -1
 	}
 	childRule := idx(".forge/*")
-	for _, neg := range []string{"!.forge/disowned.json", "!.forge/hashes.json", "!.forge/friction.jsonl"} {
+	for _, neg := range []string{"!.forge/disowned.json", "!.forge/hashes.json"} {
 		if n := idx(neg); n >= 0 && n < childRule {
 			t.Errorf("%s must come after the .forge/* ignore rule to take effect", neg)
 		}

@@ -145,6 +145,18 @@ func (t *Tx) QueryRow(ctx context.Context, query string, args ...interface{}) *s
 	return t.tx.Tx.QueryRowContext(ctx, query, args...)
 }
 
+// RunTransaction on a Tx JOINS the transaction already in progress: it
+// runs fn with this same *Tx rather than opening a nested one, which this
+// API cannot express (there are no savepoints here). Commit and rollback
+// stay the outermost caller's decision — an error from fn propagates and
+// the owner of the transaction rolls it back.
+//
+// Without this, an interactor that wraps its work in RunTransaction could
+// not be composed into another interactor that had already opened one.
+func (t *Tx) RunTransaction(ctx context.Context, fn func(Context) error) error {
+	return fn(t)
+}
+
 // BeginTx starts a transaction.
 func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
 	tx, err := c.bun.BeginTx(ctx, opts)

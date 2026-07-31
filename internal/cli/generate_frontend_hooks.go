@@ -5,16 +5,118 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"text/template"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
+
+// mutationMarkerRE matches the `forge:mutation` comment convention. The
+// marker is a plain proto comment (deliberately NOT a proto option) placed in
+// an RPC's leading doc-comment — or trailing on its `rpc` line — to force the
+// hook generator to emit a useMutation wrapper instead of the name-heuristic
+// useQuery.
+//
+// It exists because the RPC-name heuristic (codegen.isQueryMethod) can't be
+// right for every imperative RPC: verbs that happen to start with a query
+// prefix are misclassified as reads — IssueRefund/IssuePrescription ("Is…"),
+// CheckoutCart ("Check…"), CountersignAgreement ("Count…") — and a non-CRUD
+// custom RPC (PlaceOrder, ReviewSubmission) can mutate state the heuristic has
+// no way to know about. The marker is the author's explicit override.
+var mutationMarkerRE = regexp.MustCompile(`forge:mutation\b`)
+
+// rpcDeclRE matches a proto `rpc <Name>(` service-method declaration and
+// captures the method name.
+var rpcDeclRE = regexp.MustCompile(`^\s*rpc\s+([A-Za-z_]\w*)\s*\(`)
+
+// mutationMarkedMethods scans a service's proto source for RPCs carrying the
+// `// forge:mutation` marker and returns the set of marked method names.
+//
+// The marker attaches like a protoc leading doc-comment: it counts when it
+// appears in the contiguous comment block directly above the `rpc` line, or
+// as a trailing comment on the `rpc` line itself. A blank (non-comment) line
+// between a comment and the rpc breaks the attachment, matching how protoc
+// associates leading comments — so a marker can't leak onto an unrelated RPC
+// further down the file.
+//
+// A missing or unreadable proto file is NOT an error: hooks still generate
+// with the heuristic query/mutation classification. (Unit-test ServiceDefs,
+// for one, point at proto paths with no file on disk.)
+func mutationMarkedMethods(protoPath string) map[string]bool {
+	content, err := os.ReadFile(protoPath)
+	if err != nil {
+		return nil
+	}
+	marked := map[string]bool{}
+	pendingMarker := false
+	for _, line := range strings.Split(string(content), "\n") {
+		if m := rpcDeclRE.FindStringSubmatch(line); m != nil {
+			// Marker in the attached comment block above, or trailing on the
+			// rpc line itself, forces mutation semantics for this method.
+			if pendingMarker || mutationMarkerRE.MatchString(line) {
+				marked[m[1]] = true
+			}
+			pendingMarker = false
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "//"),
+			strings.HasPrefix(trimmed, "/*"),
+			strings.HasPrefix(trimmed, "*"):
+			// Comment line within (or opening) the block above the rpc.
+			if mutationMarkerRE.MatchString(trimmed) {
+				pendingMarker = true
+			}
+		case trimmed == "":
+			// Blank line breaks leading-comment attachment.
+			pendingMarker = false
+		default:
+			// Any other statement resets the pending marker.
+			pendingMarker = false
+		}
+	}
+	return marked
+}
+
+// applyMutationMarkers rewrites hook classification for RPCs the proto marked
+// with `// forge:mutation`: each query flips to a mutation hook (useMutation +
+// entity-scoped invalidateQueries) instead of a useQuery. The
+// HasQueries/HasMutations flags — which gate the template's imports — are
+// recomputed from the post-override method set, so a service left with no
+// queries stops importing useQuery/requestKey (and vice versa) and the file
+// still type-checks with no unused imports.
+func applyMutationMarkers(data *codegen.FrontendHookTemplateData, marked map[string]bool) {
+	if len(marked) == 0 {
+		return
+	}
+	changed := false
+	for i := range data.Methods {
+		if marked[data.Methods[i].Name] && data.Methods[i].IsQuery {
+			data.Methods[i].IsQuery = false
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	data.HasQueries = false
+	data.HasMutations = false
+	for _, m := range data.Methods {
+		if m.IsQuery {
+			data.HasQueries = true
+		} else {
+			data.HasMutations = true
+		}
+	}
+}
 
 // generateFrontendHooks generates TypeScript React Query hook files for
 // every Connect-driven service.
@@ -73,6 +175,9 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 			if len(data.Methods) == 0 {
 				continue
 			}
+			// Honor the `// forge:mutation` proto comment marker: flip marked
+			// RPCs to mutation hooks regardless of the RPC-name heuristic.
+			applyMutationMarkers(&data, mutationMarkedMethods(filepath.Join(projectDir, svc.ProtoFile)))
 
 			var buf bytes.Buffer
 			if err := tmpl.Execute(&buf, data); err != nil {
@@ -95,14 +200,12 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 				return fmt.Errorf("write hooks file %s: %w", outPath, err)
 			}
 
-			// Emit a one-shot starter test next to the generated hooks file.
-			// React Native uses a different rendering target (no DOM) and
-			// the test-utils.tsx helper doesn't apply there, so skip for
-			// mobile frontends. The starter is written ONLY when neither
-			// the active test file nor the starter already exists — so
-			// once the user activates the test (by renaming .tsx.starter
-			// to .tsx) or hand-writes their own, regen never overwrites
-			// their work.
+			// Emit a live happy-path test next to the generated hooks
+			// file. React Native uses a different rendering target (no
+			// DOM) and the test-utils.tsx helper doesn't apply there, so
+			// skip for mobile frontends. Scaffold-once: written only when
+			// the user has no test of their own, so regen never
+			// overwrites their work.
 			if isWebFrontendType(fe.Type) {
 				if err := writeHookStarterTest(hooksDir, fileName, svc, data); err != nil {
 					return fmt.Errorf("write hook starter test for %s: %w", svc.Name, err)
@@ -161,7 +264,10 @@ func generateFrontendHooksWorkspace(cfg *config.ProjectConfig, services []codege
 			continue
 		}
 		data.Workspaces = true
-		data.ApiPackage = layout.ApiPackage
+		data.APIPackage = layout.APIPackage
+		// Honor the `// forge:mutation` proto comment marker: flip marked
+		// RPCs to mutation hooks regardless of the RPC-name heuristic.
+		applyMutationMarkers(&data, mutationMarkedMethods(filepath.Join(projectDir, svc.ProtoFile)))
 
 		var buf bytes.Buffer
 		if err := tmpl.Execute(&buf, data); err != nil {
@@ -215,7 +321,7 @@ func writeHooksIndex(path string, hookFiles []hookFileEntry) error {
 
 	var buf bytes.Buffer
 	buf.WriteString("// Code generated by forge. DO NOT EDIT.\n")
-	buf.WriteString("// forge-owned: regenerated every run — do not edit (forge disown to take ownership)\n")
+	buf.WriteString("// forge-owned: regenerated every run — do not edit (forge project disown to take ownership)\n")
 	if len(collisions) > 0 {
 		buf.WriteString("//\n")
 		buf.WriteString("// Mode: namespaced re-exports.\n")
@@ -308,28 +414,65 @@ type hookStarterData struct {
 	Methods     []hookStarterMethod
 }
 
-// writeHookStarterTest emits a `<file>.test.tsx.starter` next to the
-// generated hooks file IF neither the active test (`<file>.test.tsx`)
-// nor the starter is already present. The `.starter` suffix is the
-// activation contract: the user renames it to `.tsx` to opt the test
-// into Vitest's include glob (see vitest.config.ts). Once activated,
-// the file is yours — forge never overwrites it.
+// writeHookStarterTest emits `<file>.test.tsx` next to the generated hooks
+// file IF the user does not already have one. Scaffold-once: written when
+// absent, never overwritten, so hand-edits and hand-written replacements
+// survive every `forge generate`.
 //
-// `fileName` is the hooks filename (e.g. "user-service-hooks.ts"); the
-// starter goes next to it as "user-service-hooks.test.tsx.starter".
+// It USED to be written as `<file>.test.tsx.starter`, inert until someone
+// renamed it. Nobody ever did. The dogfood run shipped a 17 KB generated
+// suite per service that had never executed once, so the layer all sixteen
+// pages sat on had zero active tests while `forge test` reported green. A
+// test disabled by its file extension is decoration; forge's other
+// scaffolded tests (page.test.tsx, status-badge.test.tsx) ship live, and
+// this one now does too. An unrenamed starter left by an older forge is
+// renamed into place rather than left beside the new file.
+//
+// `fileName` is the hooks filename (e.g. "user-service-hooks.ts"); the test
+// goes next to it as "user-service-hooks.test.tsx".
 func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, data codegen.FrontendHookTemplateData) error {
 	base := strings.TrimSuffix(fileName, ".ts")
-	activeTestPath := filepath.Join(hooksDir, base+".test.tsx")
-	starterPath := filepath.Join(hooksDir, base+".test.tsx.starter")
+	testPath := filepath.Join(hooksDir, base+".test.tsx")
+	legacyStarterPath := filepath.Join(hooksDir, base+".test.tsx.starter")
 
-	// Idempotency gate: don't overwrite either the user's active test or
-	// an existing starter. Activated tests stay yours; an unactivated
-	// starter from a previous run stays put so re-running `forge
-	// generate` doesn't churn a file the user is about to rename.
-	if _, err := os.Stat(activeTestPath); err == nil {
+	scaffoldRoot, scaffoldRel, haveLedger := checksums.SplitScaffoldPath(testPath)
+
+	// Scaffold-once, decided by the ledger rather than by presence: the
+	// user's test — hand-written, a scaffold they have since edited, or one
+	// they DELETED because they did not want forge's starter — is theirs
+	// either way. A presence check would read the deletion as "absent, so
+	// write it" and hand the file back on every generate, against the
+	// banner the template carries.
+	// Outside a project root there is no ledger to key, so the decision
+	// degrades to the historical presence check — which still protects an
+	// EXISTING file. It cannot honour a deletion, but a path with no
+	// project around it has no committed state to have recorded one.
+	skip := false
+	if haveLedger {
+		skip = !checksums.ScaffoldOnceDecision(scaffoldRoot, scaffoldRel)
+	} else if _, err := os.Stat(testPath); err == nil {
+		skip = true
+	}
+	if skip {
+		// A leftover .starter beside a live test is dead weight and goes.
+		if _, err := os.Stat(testPath); err == nil {
+			if _, err := os.Stat(legacyStarterPath); err == nil {
+				if err := os.Remove(legacyStarterPath); err != nil {
+					return fmt.Errorf("remove superseded starter test %s: %w", legacyStarterPath, err)
+				}
+			}
+		}
 		return nil
 	}
-	if _, err := os.Stat(starterPath); err == nil {
+
+	// An older forge left an inert starter and no active test: activate it
+	// in place instead of writing a second copy beside it. The user may
+	// have edited it while it sat there.
+	if _, err := os.Stat(legacyStarterPath); err == nil {
+		if err := os.Rename(legacyStarterPath, testPath); err != nil {
+			return fmt.Errorf("activate starter test %s: %w", legacyStarterPath, err)
+		}
+		fmt.Printf("  ✅ Activated %s (it was an inert .starter that never ran)\n", testPath)
 		return nil
 	}
 
@@ -368,10 +511,13 @@ func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, dat
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, starterData); err != nil {
-		return fmt.Errorf("render starter test for %s: %w", svc.Name, err)
+		return fmt.Errorf("render hook test for %s: %w", svc.Name, err)
 	}
-	if err := os.WriteFile(starterPath, buf.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("write starter test %s: %w", starterPath, err)
+	if err := os.WriteFile(testPath, templates.CanonicalTSImportOrder(buf.Bytes()), 0o644); err != nil {
+		return fmt.Errorf("write hook test %s: %w", testPath, err)
+	}
+	if haveLedger {
+		checksums.RecordScaffold(scaffoldRoot, scaffoldRel)
 	}
 	return nil
 }

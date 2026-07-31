@@ -82,6 +82,59 @@ func TestLoadMigrationMetas_FindsVersionDirs(t *testing.T) {
 	}
 }
 
+// TestMigrationSkills_DeclareAGate is the invariant that keeps the worklist
+// honest: every shipped migration must declare at least one gate — a version
+// range, a detection script, retired, or elective. A migration declaring none
+// claims to apply to every project forge ever generated, which is never true;
+// a tree of those turns `forge project upgrade` into a catalogue dump that
+// users learn to scroll past.
+//
+// Declared version bounds must also be orderable, or the gate silently
+// disappears at comparison time.
+func TestMigrationSkills_DeclareAGate(t *testing.T) {
+	metas, err := loadMigrationMetas()
+	if err != nil {
+		t.Fatalf("loadMigrationMetas: %v", err)
+	}
+	if len(metas) == 0 {
+		t.Fatal("no migration skills discovered")
+	}
+	for _, m := range metas {
+		gated := m.Retired || m.Elective ||
+			strings.TrimSpace(m.Detection) != "" ||
+			strings.TrimSpace(m.AppliesFrom) != "" ||
+			strings.TrimSpace(m.AppliesTo) != ""
+		if !gated {
+			t.Errorf("migration %q declares no gate: add applies-from/applies-to, a detection script, or retired/elective to its frontmatter", m.ID)
+		}
+		for label, bound := range map[string]string{"applies-from": m.AppliesFrom, "applies-to": m.AppliesTo} {
+			if strings.TrimSpace(bound) != "" && semverKey(bound) == "" {
+				t.Errorf("migration %q has unorderable %s %q", m.ID, label, bound)
+			}
+		}
+	}
+}
+
+// TestLoadMigrationMetas_TombstoneIsRetired pins the tombstone's frontmatter.
+// v0.1-to-v0.2 migrates toward a DI shape that was itself deleted, so it
+// applies to nothing; `retired: true` is what makes that machine-readable
+// instead of relying on the description starting with the word TOMBSTONE.
+func TestLoadMigrationMetas_TombstoneIsRetired(t *testing.T) {
+	metas, err := loadMigrationMetas()
+	if err != nil {
+		t.Fatalf("loadMigrationMetas: %v", err)
+	}
+	for _, m := range metas {
+		if m.ID == "v0.1-to-v0.2" {
+			if !m.Retired {
+				t.Error("v0.1-to-v0.2 must declare retired: true — its target shape no longer exists")
+			}
+			return
+		}
+	}
+	t.Fatal("v0.1-to-v0.2 not discovered")
+}
+
 // TestParseMigrationFrontmatter_ExtractsAllFields exercises the
 // migration-specific parser. Quoted values must be unquoted; missing
 // fields should leave the meta empty (not error).
@@ -125,6 +178,13 @@ func TestParseMigrationFrontmatter_NoFrontmatter(t *testing.T) {
 
 // TestVersionInRange covers the half-open [from, to) range semantics
 // plus all the empty-bound special cases.
+//
+// versionInRange is pure ordering — it answers "does this version fall in
+// this window" and nothing else. Whether an unorderable or dev-build
+// baseline should see a migration is migrationApplies' business
+// (TestMigrationApplies_*), not something smuggled in here as a special
+// case: conflating the two is what let a dev build be sorted against
+// migrations for releases it was never on.
 func TestVersionInRange(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -133,17 +193,19 @@ func TestVersionInRange(t *testing.T) {
 		to      string
 		want    bool
 	}{
-		// Empty project version means "all migrations apply" — the spec
-		// case: project with no forge_version pin lists everything.
+		// A version we cannot order cannot be excluded by a range.
+		// (Whether an unorderable baseline should see the migration at
+		// all is migrationApplies' call, not this one's.)
 		{"empty project version", "", "v0.5.0", "v0.6.0", true},
-		// "0.0.0" sentinel (EffectiveForgeVersion fallback) treated
-		// like empty for the same reason.
-		{"0.0.0 sentinel", "0.0.0", "v0.5.0", "v0.6.0", true},
-		// Pseudoversion from `go install` against an untagged checkout
-		// — real-world projects like cp-forge are pinned to one of
-		// these. Must surface every migration, not silently filter
-		// them out as "newer than the range".
-		{"go install pseudoversion", "v0.0.0-20260530233501-ec0254f463b3+dirty", "v0.5.0", "v0.6.0", true},
+		{"dev sentinel", "dev", "v0.5.0", "v0.6.0", true},
+		// As a pure version, 0.0.0 orders below v0.5.0.
+		{"0.0.0 orders below the range", "0.0.0", "v0.5.0", "v0.6.0", false},
+		// A dev build's pseudo-version is a pre-release of the next
+		// patch. SemVer places it precisely, so it takes part in
+		// version gating like any other version.
+		{"pseudoversion below range", "v0.0.4-0.20260724212501-dfb85daf8474+dirty", "v0.5.0", "v0.6.0", false},
+		{"pseudoversion inside range", "v0.5.4-0.20260724212501-dfb85daf8474+dirty", "v0.5.0", "v0.6.0", true},
+		{"pseudoversion is a pre-release of its base", "v0.6.0-0.20260724212501-dfb85daf8474", "v0.5.0", "v0.6.0", true},
 		{"in range", "v0.5.0", "v0.5.0", "v0.6.0", true},
 		{"in range mid", "v0.5.3", "v0.5.0", "v0.6.0", true},
 		{"below range", "v0.4.9", "v0.5.0", "v0.6.0", false},
@@ -155,8 +217,12 @@ func TestVersionInRange(t *testing.T) {
 		{"both open", "v0.5.0", "", "", true},
 		// Missing patch component normalises to 0.
 		{"missing patch", "v0.5", "v0.5.0", "v0.6.0", true},
-		// Leading "v" stripped both sides.
+		// Leading "v" optional on both sides.
 		{"unprefixed version", "0.5.0", "v0.5.0", "v0.6.0", true},
+		// Released 0.0.x ordering: the hop forge is actually making.
+		{"0.0.3 inside a 0.0.x window", "v0.0.3", "v0.0.2", "v0.0.5", true},
+		{"0.0.1 below a 0.0.x window", "v0.0.1", "v0.0.2", "v0.0.5", false},
+		{"0.0.5 at a 0.0.x upper bound", "v0.0.5", "v0.0.2", "v0.0.5", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -432,7 +498,7 @@ frontends: []
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), cfg, 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
-	writeComponentsJSON(t, dir)
+	markServiceProject(t, dir)
 	return dir
 }
 
@@ -457,4 +523,210 @@ func withCwd(t *testing.T, dir string, fn func()) {
 		}
 	}()
 	fn()
+}
+
+// TestIsPreV01Baseline pins the baseline classification. Forge has never
+// released v0.1.0, so every real pin in existence — released 0.0.x tags,
+// pseudo-versions from local checkouts, the unpinned sentinel — is below the
+// line. Getting this wrong in either direction is how a project gets handed
+// the migrations of a release it was never on.
+func TestIsPreV01Baseline(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{"", true},        // unpinned
+		{"0.0.0", true},   // unpinned sentinel
+		{"dev", true},     // unorderable sentinel
+		{"(devel)", true}, // unorderable sentinel
+		{"v0.0.3", true},  // released 0.0.x tag
+		{"v0.0.4-0.20260724212501-dfb85daf8474+dirty", true}, // dirty local build
+		{"v0.0.0-20260430002332-8f05b089372c", true},         // untagged-base pseudo-version
+		{"v0.1.0-0.20260724212501-dfb85daf8474", true},       // pre-release OF v0.1.0 is still below it
+		{"v0.1.0", false}, // the first compat tag
+		{"v0.1.3", false},
+		{"v1.4.0", false},
+	}
+	for _, tt := range tests {
+		if got := isPreV01Baseline(tt.version); got != tt.want {
+			t.Errorf("isPreV01Baseline(%q) = %v, want %v", tt.version, got, tt.want)
+		}
+	}
+}
+
+// TestMigrationApplies_RetiredNeverApplies is the regression test for the bug
+// this whole path existed to produce: a project was offered
+// migrations/v0.1-to-v0.2, a tombstone whose target shape had already been
+// deleted. A retired migration applies to nothing, at any baseline, with or
+// without a matching detection script.
+func TestMigrationApplies_RetiredNeverApplies(t *testing.T) {
+	root := t.TempDir()
+	retired := migrationMeta{ID: "v0.1-to-v0.2", Retired: true, Detection: "true"}
+	for _, baseline := range []string{
+		"",
+		"0.0.0",
+		"dev",
+		"v0.0.3",
+		"v0.0.4-0.20260724212501-dfb85daf8474+dirty",
+		"v0.1.0",
+		"v2.0.0",
+	} {
+		if migrationApplies(retired, baseline, root) {
+			t.Errorf("retired migration offered at baseline %q", baseline)
+		}
+	}
+}
+
+// TestMigrationApplies_PreV01BaselineSkipsV01Migrations: a baseline below
+// v0.1.0 must never be handed a migration whose range starts at v0.1.0 —
+// including when the baseline is a dev build's pseudo-version, which is the
+// shape every locally-built forge stamps.
+func TestMigrationApplies_PreV01BaselineSkipsV01Migrations(t *testing.T) {
+	root := t.TempDir()
+	m := migrationMeta{ID: "v0.1-to-v0.2", AppliesFrom: "v0.1.0", AppliesTo: "v0.2.0"}
+	for _, baseline := range []string{
+		"",       // unpinned: no version evidence, and no detection to fall back on
+		"0.0.0",  // unset-field sentinel: same
+		"dev",    // unorderable sentinel: same
+		"v0.0.3", // released 0.0.x tag: ordered below the window
+		"v0.0.4-0.20260724212501-dfb85daf8474+dirty", // dev build: ordered below the window
+		"v0.0.0-20260430002332-8f05b089372c",         // untagged-base pseudo-version: same
+	} {
+		if migrationApplies(m, baseline, root) {
+			t.Errorf("baseline %q (pre-v0.1) was offered a v0.1→v0.2 migration", baseline)
+		}
+	}
+	// A project genuinely at v0.1.x still gets it: fixing the pre-v0.1 case
+	// must not disarm real version gating.
+	if !migrationApplies(m, "v0.1.4", root) {
+		t.Error("a v0.1.4 project must still be offered the v0.1→v0.2 migration")
+	}
+}
+
+// TestMigrationApplies_ReleasedVersionOrdering exercises a real released
+// 0.0.x → 0.0.x hop end to end: three migrations with adjacent windows, one
+// project version, exactly one match. This is the ordering guarantee the
+// upgrade story rests on, at the version range forge actually ships in.
+func TestMigrationApplies_ReleasedVersionOrdering(t *testing.T) {
+	root := t.TempDir()
+	early := migrationMeta{ID: "early", AppliesFrom: "v0.0.1", AppliesTo: "v0.0.3"}
+	current := migrationMeta{ID: "current", AppliesFrom: "v0.0.3", AppliesTo: "v0.0.4"}
+	later := migrationMeta{ID: "later", AppliesFrom: "v0.0.4", AppliesTo: "v0.1.0"}
+
+	got := applicableMigrations([]migrationMeta{later, early, current}, "v0.0.3", root)
+	if len(got) != 1 || got[0].Meta.ID != "current" {
+		var ids []string
+		for _, r := range got {
+			ids = append(ids, r.Meta.ID)
+		}
+		t.Fatalf("v0.0.3 baseline matched %v, want exactly [current]", ids)
+	}
+
+	// Stepping the baseline one release forward moves the window with it.
+	got = applicableMigrations([]migrationMeta{later, early, current}, "v0.0.4", root)
+	if len(got) != 1 || got[0].Meta.ID != "later" {
+		var ids []string
+		for _, r := range got {
+			ids = append(ids, r.Meta.ID)
+		}
+		t.Fatalf("v0.0.4 baseline matched %v, want exactly [later]", ids)
+	}
+}
+
+// TestMigrationApplies_DetectionGatesInsideTheRange: being in range is
+// necessary, not sufficient. The project must actually exhibit the old shape.
+func TestMigrationApplies_DetectionGatesInsideTheRange(t *testing.T) {
+	root := t.TempDir()
+	m := migrationMeta{ID: "shape", AppliesFrom: "v0.0.1", AppliesTo: "v0.1.0", Detection: "test -f old-shape-marker"}
+	if migrationApplies(m, "v0.0.3", root) {
+		t.Error("in-range migration offered to a project that does not exhibit the old shape")
+	}
+	if err := os.WriteFile(filepath.Join(root, "old-shape-marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !migrationApplies(m, "v0.0.3", root) {
+		t.Error("in-range migration withheld from a project that DOES exhibit the old shape")
+	}
+}
+
+// TestMigrationApplies_DevBaselineUsesDetection is the dev-without-a-tag
+// guarantee: a project bridged to a local forge checkout pins a
+// pseudo-version, and that must still produce a correct answer — the boundless
+// shape migrations are gated on what the project actually contains, with no
+// published tag anywhere.
+func TestMigrationApplies_DevBaselineUsesDetection(t *testing.T) {
+	root := t.TempDir()
+	const devPin = "v0.0.4-0.20260724212501-dfb85daf8474+dirty"
+	m := migrationMeta{ID: "v0.x-to-typed-di", Detection: "test -f pkg/app/wire_gen.go"}
+
+	if migrationApplies(m, devPin, root) {
+		t.Error("dev-build baseline offered a migration whose shape the project does not have")
+	}
+	if err := os.MkdirAll(filepath.Join(root, "pkg", "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pkg", "app", "wire_gen.go"), []byte("package app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !migrationApplies(m, devPin, root) {
+		t.Error("dev-build baseline denied a migration the project demonstrably needs")
+	}
+}
+
+// TestMigrationApplies_ElectiveIsNeverPushed: binary=shared is an architecture
+// choice, not drift off a shape forge stopped generating. It stays loadable by
+// name; it never lands in the automatic worklist.
+func TestMigrationApplies_ElectiveIsNeverPushed(t *testing.T) {
+	root := t.TempDir()
+	m := migrationMeta{ID: "v0.x-to-binary-shared", Elective: true, Detection: "true"}
+	if migrationApplies(m, "v0.0.3", root) {
+		t.Error("elective migration pushed into the worklist")
+	}
+}
+
+// TestRunUpgradeApply_RetiredIDRefused: recording a tombstone as "applied"
+// would put a lie in .forge/migrations.json.
+func TestRunUpgradeApply_RetiredIDRefused(t *testing.T) {
+	dir := newTestProject(t)
+	withCwd(t, dir, func() {
+		var buf bytes.Buffer
+		err := runUpgradeApply(&buf, "v0.1-to-v0.2")
+		if err == nil {
+			t.Fatal("expected an error applying a retired migration")
+		}
+		if !strings.Contains(err.Error(), "retired") {
+			t.Errorf("error should say the migration is retired: %v", err)
+		}
+	})
+}
+
+// TestMigrationApplies_UnknownBaselineNeedsDetection: when the project names
+// no version, the version range stops being evidence and a detection script
+// becomes mandatory. Without one, the migration cannot show it applies, so it
+// stays out of the worklist rather than padding it.
+func TestMigrationApplies_UnknownBaselineNeedsDetection(t *testing.T) {
+	root := t.TempDir()
+	rangeOnly := migrationMeta{ID: "range-only", AppliesFrom: "v0.5.0", AppliesTo: "v0.6.0"}
+	detected := migrationMeta{ID: "detected", AppliesFrom: "v0.5.0", AppliesTo: "v0.6.0", Detection: "test -f old-shape-marker"}
+
+	for _, baseline := range []string{"", "0.0.0", "v0.0.0", "dev", "(devel)", "not-a-version"} {
+		if migrationApplies(rangeOnly, baseline, root) {
+			t.Errorf("baseline %q: range-only migration offered with no evidence", baseline)
+		}
+		if migrationApplies(detected, baseline, root) {
+			t.Errorf("baseline %q: detection-gated migration offered before its shape exists", baseline)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "old-shape-marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, baseline := range []string{"", "0.0.0", "dev"} {
+		if !migrationApplies(detected, baseline, root) {
+			t.Errorf("baseline %q: detection matched but the migration was withheld", baseline)
+		}
+		if migrationApplies(rangeOnly, baseline, root) {
+			t.Errorf("baseline %q: range-only migration still has no evidence", baseline)
+		}
+	}
 }

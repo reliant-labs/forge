@@ -168,6 +168,29 @@ func defaultToolChecks() []toolCheck {
 			UpstreamURL: "https://git-scm.com/downloads",
 		},
 		{
+			// task runs the project's Taskfile.yml, which is where the test
+			// suite is DEFINED — `task test` is what the local edit loop and
+			// the generated CI test job both run. That makes it a real
+			// prerequisite, not a convenience: without it there is no way to
+			// run the project's tests as the project defines them.
+			//
+			// requiredAlways because every project kind (service / cli /
+			// library) is scaffolded with a Taskfile. The cloud workspace
+			// image already installs it (control-plane
+			// docker/Dockerfile.workspace-base, TASK_VERSION) — this check is
+			// what makes that image's tool manifest verifiable from forge.
+			Name:        "task",
+			Description: "Task — runs the project's Taskfile.yml (`task test` is the test suite)",
+			Required:    requiredAlways,
+			VersionArgs: []string{"--version"},
+			InstallHints: map[string]string{
+				"darwin":  "brew install go-task/tap/go-task",
+				"linux":   "go install github.com/go-task/task/v3/cmd/task@latest   (or see https://taskfile.dev/installation/)",
+				"windows": "winget install Task.Task   (or `scoop install task`)",
+			},
+			UpstreamURL: "https://taskfile.dev/installation/",
+		},
+		{
 			Name:        "buf",
 			Description: "buf — proto codegen orchestrator (buf.gen.yaml)",
 			Required:    requiredWhen(func(f config.FeaturesConfig) bool { return f.CodegenEnabled() }),
@@ -502,11 +525,15 @@ func parseVersion(s string) ([]int, bool) {
 }
 
 // runToolDoctorChecks is the side-effecting wrapper invoked from
-// runDoctor. Honors the doctor signal filter the same way
-// runIngressDoctorChecks does: only run when signal is empty
-// ("all checks") or equals "tools".
+// runDoctor. It runs only in the unfiltered pass — there is no "tools"
+// signal, and doctor.RunFiltered rejects one before this is reached.
 func runToolDoctorChecks(ctx context.Context, cfg *config.ProjectConfig, projectDir, signal string) []doctor.CheckResult {
-	if signal != "" && signal != "tools" {
+	// Only the unfiltered pass. `--signal` selects among the values
+	// doctor.RunFiltered accepts (metrics/traces/logs/profiles/deploy); it
+	// REJECTS anything else before a check runs, so a guard naming its own
+	// signal here could never be true and advertised a filter that does not
+	// exist.
+	if signal != "" {
 		return nil
 	}
 	return runToolChecks(ctx, defaultToolChecks(), cfg, projectDir, realBinaryLookup, realVersionRunner)

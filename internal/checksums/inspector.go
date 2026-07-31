@@ -82,7 +82,7 @@ func (i *Inspector) IsTracked(relPath string) bool {
 	return ok
 }
 
-// IsDisowned reports whether relPath was `forge disown`-ed: a one-way
+// IsDisowned reports whether relPath was `forge project disown`-ed: a one-way
 // transfer to user ownership recorded in .forge/disowned.json.
 func (i *Inspector) IsDisowned(relPath string) bool {
 	if i == nil || i.cs == nil {

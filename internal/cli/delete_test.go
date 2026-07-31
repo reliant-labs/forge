@@ -10,8 +10,8 @@ import (
 // withDeleteProjectRoot builds a synthetic project with one service:
 // forge.yaml, a handlers/<svc>/ scaffold dir, and a pkg/app/services.go
 // registering the service. The service is DISCOVERED from these real sources
-// (handler impl + registry) — forge no longer authors a components.json
-// manifest. Chdirs in and returns root.
+// (handler impl + registry) — nothing else declares it. Chdirs in and returns
+// root.
 func withDeleteProjectRoot(t *testing.T, svc string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -50,9 +50,8 @@ func pascal(s string) string {
 // TestDeleteService_RemovesDirAndTombstones verifies the full default
 // path: handler dir gone and the services.go serviceRow line replaced by a
 // types-only tombstone comment that the registry classifies as TOMBSTONED.
-// forge no longer maintains a components.json manifest (the inventory is
-// introspected from the real sources), so delete removes the CODE; the
-// service simply stops being discovered on the next load.
+// The inventory is introspected from the real sources, so delete removes the
+// CODE; the service simply stops being discovered on the next load.
 func TestDeleteService_RemovesDirAndTombstones(t *testing.T) {
 	root := withDeleteProjectRoot(t, "reporting")
 
@@ -60,9 +59,8 @@ func TestDeleteService_RemovesDirAndTombstones(t *testing.T) {
 		t.Fatalf("runDeleteService: %v", err)
 	}
 
-	// delete does NOT rewrite components.json — it's no longer a manifest
-	// forge owns. The removed handler dir + services.go tombstone (below) are
-	// what make the service stop being discovered.
+	// The removed handler dir + services.go tombstone (below) are what make
+	// the service stop being discovered — there is nothing else to rewrite.
 
 	// handler dir removed.
 	if _, err := os.Stat(filepath.Join(root, "internal", "handlers", "reporting")); !os.IsNotExist(err) {

@@ -93,7 +93,7 @@ func (r *Registry) RegisterNilDep(component, depName, file string, line int) {
 // Boot emits every registered diagnostic through the supplied
 // Emitter, then a single Summary call. Returns the full slice (in
 // stable order) so callers — typically Bootstrap — can roll the data
-// up into `forge audit --json` without re-walking the registry.
+// up into `forge project audit --json` without re-walking the registry.
 //
 // A nil Emitter is replaced by a NopEmitter; the slice is still
 // returned so consumers that just want the data don't have to wire a

@@ -128,7 +128,7 @@ jobs:
       # quiet skip. The set is enumerated from requireTool call sites plus
       # every exec.LookPath under internal/cli/*_e2e_test.go.
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 

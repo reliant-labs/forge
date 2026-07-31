@@ -1,25 +1,40 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-// Detail page emitted by `forge add page`. See `forge skill load frontend/pages` for canonical patterns.
+//
+// This route is OWNED and DISPOSABLE. forge scaffolds a full CRUD route for
+// EVERY entity, but a purpose-built frontend uses only a fraction — if this
+// entity isn't part of THIS frontend's product surface, delete the route
+// instead of leaving it wired into navigation.
+// Detail page emitted by `forge scaffold page`. See `forge skill load frontend/pages` for canonical patterns.
+{{- /* Import ORDER is derived, not authored: the page writer sorts the
+       imports this render actually emitted into the groups the scaffold's
+       eslint import/order rule expects (templates.CanonicalTSImportOrder).
+       List a new import wherever it reads best. */}}
 {{- if or .HasUpdate .HasDelete}}
 import { {{if .HasDelete}}Trash2{{end}}{{if and .HasDelete .HasUpdate}}, {{end}}{{if .HasUpdate}}SquarePen{{end}}{{if .HasDelete}}, TriangleAlert{{end}} } from "lucide-react";
 {{- end}}
+import { userMessage } from "@reliant-labs/web-runtime";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 {{- if .HasDelete}}
 import { useState } from "react";
 {{- end}}
 
-import AlertBanner from "@/components/ui/alert_banner";
-{{- if .HasBadgeColumns}}
-import Badge from "@/components/ui/badge";
-{{- end}}
+{{if .HasDetailFK}}import { EntityName } from "@/components/entity-name";
+{{end -}}
+{{if .HasBadgeColumns}}import { StatusBadge } from "@/components/status-badge";
+{{end}}import AlertBanner from "@/components/ui/alert_banner";
 import KeyValueList from "@/components/ui/key_value_list";
 {{- if .HasDelete}}
 import Modal from "@/components/ui/modal";
 {{- end}}
 import PageHeader from "@/components/ui/page_header";
 import SkeletonLoader from "@/components/ui/skeleton_loader";
-import { use{{.GetRPC}}{{if .HasDelete}}, use{{.DeleteRPC}}{{end}} } from "{{.HooksImportPath}}";
-import { {{if .HasBadgeColumns}}enumBadgeVariant, {{end}}formatValue, userMessage } from "@/lib/format-utils";
+{{- range .ColumnEnumImports}}
+import { {{range $i, $t := .Types}}{{if $i}}, {{end}}{{$t}}{{end}} } from "{{.Path}}";
+{{- end}}
+{{- range .DetailHookImports}}
+import { {{joinStrings .Symbols ", "}} } from "{{.Module}}";
+{{- end}}
+import { formatValue } from "@/lib/format-utils";
 
 // Route params are validated on the ROUTE in src/routes.tsx via
 // `parseParams: z.object({ id: z.string().min(1) }).parse`. We read the
@@ -47,7 +62,7 @@ export default function {{.EntityName}}DetailPage() {
   if (error) return (
     <div className="px-4 py-8">
       <AlertBanner variant="error" message={userMessage(error)} />
-      <Link to="/{{.EntitySlug}}" className="mt-4 inline-flex text-sm text-blue-600 underline hover:text-blue-800">
+      <Link to="/{{.EntitySlug}}" className="mt-4 inline-flex text-sm text-accent underline hover:text-accent-hover">
         Back to {{.EntityNamePlural | lower}}
       </Link>
     </div>
@@ -65,8 +80,14 @@ export default function {{.EntityName}}DetailPage() {
 {{- range .Columns}}
         {
           label: "{{.Label}}",
-{{- if .IsBadge}}
-          value: <Badge label={String(item.{{.Name}})} variant={enumBadgeVariant(String(item.{{.Name}}))} />,
+{{- if .FK}}
+{{- template "fkNameValue" .}}
+{{- else if .IsBadge}}
+{{- if .EnumType}}
+          value: <StatusBadge value={item.{{.Name}}} enumType={ {{.EnumType}} } />,
+{{- else}}
+          value: <StatusBadge value={item.{{.Name}}} />,
+{{- end}}
 {{- else}}
           value: formatValue(item.{{.Name}}),
 {{- end}}
@@ -117,22 +138,22 @@ export default function {{.EntityName}}DetailPage() {
           <>
             <button
               onClick={() => setShowDeleteConfirm(false)}
-              className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+              className="rounded-lg border border-border bg-surface px-4 py-2 text-sm font-medium text-ink shadow-sm hover:bg-surface-muted"
             >
               Cancel
             </button>
             <button
               onClick={() => deleteMutation.mutate({ id })}
               disabled={deleteMutation.isPending}
-              className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-red-700 disabled:opacity-50"
+              className="rounded-lg bg-danger px-4 py-2 text-sm font-medium text-on-danger shadow-sm hover:bg-danger-hover disabled:opacity-50"
             >
               {deleteMutation.isPending ? "Deleting..." : "Delete"}
             </button>
           </>
         }
       >
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100">
-          <TriangleAlert aria-hidden className="h-5 w-5 text-red-600" strokeWidth={1.5} />
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-danger-surface">
+          <TriangleAlert aria-hidden className="h-5 w-5 text-danger" strokeWidth={1.5} />
         </div>
       </Modal>
       {{- end}}

@@ -1,0 +1,84 @@
+{{if eq .Platform "nextjs"}}"use client";
+
+{{end}}import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+
+{{if eq .Platform "react-native"}}import { createSessionAuthProvider } from "./session-provider";
+
+import type { AuthProvider, AuthUser } from "./provider";
+
+// React Native has no scaffolded OIDC provider: the browser-redirect flow
+// does not exist here (it needs expo-auth-session and a native redirect
+// scheme), so the mock is the only implementation this tree ships. Pass your
+// own AuthProvider to <AuthContextProvider> to wire real sign-in.
+const defaultProvider = createSessionAuthProvider();{{else}}import { selectAuthProvider } from "./oidc-provider";
+
+import type { AuthProvider, AuthUser } from "./provider";
+
+// The default provider is CHOSEN, not hardcoded — see selectAuthProvider() in
+// ./oidc-provider.ts. With an OIDC issuer + client id configured it is the
+// real authorization-code + PKCE provider; in pure-mock mode, or with no IdP
+// configured, it is the mock in ./session-provider.ts.
+//
+// Built lazily so that merely importing this module does not read config or
+// touch storage — which is what lets a test render the tree with its own
+// provider and never construct this one.
+let fallbackProvider: AuthProvider | null = null;
+function defaultAuthProvider(): AuthProvider {
+  fallbackProvider ??= selectAuthProvider();
+  return fallbackProvider;
+}{{end}}
+
+interface AuthContextValue {
+  user: AuthUser | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  login: () => Promise<void>;
+  logout: () => Promise<void>;
+  getToken: () => Promise<string | null>;
+}
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+export function AuthContextProvider({
+  provider,
+  children,
+}: {
+  provider?: AuthProvider;
+  children: ReactNode;
+}) {
+{{- if eq .Platform "react-native"}}
+  const auth = provider ?? defaultProvider;
+{{- else}}
+  // useState's initialiser form, so the default provider is constructed once
+  // per mount rather than on every render.
+  const [fallback] = useState(() => (provider ? null : defaultAuthProvider()));
+  const auth = provider ?? fallback;
+  if (!auth) {
+    throw new Error("useAuth: no auth provider available");
+  }
+{{- end}}
+  const [user, setUser] = useState<AuthUser | null>(auth.getUser());
+
+  useEffect(() => {
+    return auth.onAuthStateChange(setUser);
+  }, [auth]);
+
+  const value: AuthContextValue = {
+    user,
+    isAuthenticated: auth.isAuthenticated(),
+    isLoading: auth.isLoading(),
+    login: () => auth.login(),
+    logout: () => auth.logout(),
+    getToken: () => auth.getToken(),
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (!ctx) {
+    throw new Error("useAuth must be used within an <AuthContextProvider>");
+  }
+  return ctx;
+}

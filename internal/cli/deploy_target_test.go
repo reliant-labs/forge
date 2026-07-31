@@ -7,7 +7,7 @@ import (
 
 // inTargetSet membership semantics (empty filter matches everything;
 // non-empty is an exact-name allowlist) are covered by up_test.go's
-// TestInTargetSet — the helper is shared with `forge up`'s --target.
+// TestInTargetSet — the helper is shared with `forge env up`'s --target.
 
 // TestFilterEntitiesByTarget confirms the entity-layer filter narrows
 // Services, Operators, and Frontends to the targeted names while
@@ -54,7 +54,7 @@ func TestFilterEntitiesByTarget(t *testing.T) {
 
 // TestFilterEntitiesByTarget_Operator confirms that naming an operator
 // keeps just that operator (and drops the services / frontends / other
-// operators), making `forge deploy <env> --target <operator>` deploy
+// operators), making `forge env deploy <env> --target <operator>` deploy
 // only the operator's workload. The K8sCluster manifest filter does the
 // load-bearing scoping via the app label; this entity-layer narrowing is
 // what keeps the operator-derived sets consistent.

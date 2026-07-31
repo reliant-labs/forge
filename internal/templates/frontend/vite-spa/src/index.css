@@ -1,1 +1,101 @@
 @import "tailwindcss";
+
+/*
+ * Tailwind v4 does not scan node_modules. @reliant-labs/web-runtime renders
+ * the SAME semantic utilities declared below (text-ink, bg-danger-surface,
+ * border-border, …), so without this directive every class only the runtime
+ * uses is absent from the built CSS and its components render unstyled.
+ * The path is relative to THIS file: src/ → the frontend root.
+ */
+@source "../node_modules/@reliant-labs/web-runtime";
+
+/*
+ * Semantic theme tokens — the ONE place brand + light/dark live.
+ *
+ * Generated pages, runtime components (<Resource>, error boundary, route
+ * guard), and the component library reference the SEMANTIC utilities these
+ * variables generate — `bg-surface`, `text-ink`, `border-border`,
+ * `bg-accent`, `text-danger`, … — never a raw palette color (`bg-white`,
+ * `text-gray-900`, `bg-blue-600`). Rebranding or adding a theme is therefore
+ * a one-file change: edit the values below.
+ *
+ * Tailwind v4 turns each `--color-<name>` into `bg-<name>` / `text-<name>` /
+ * `border-<name>` / `ring-<name>` utilities. Light values live in `@theme`;
+ * the dark overrides re-declare the SAME variables (unlayered rules beat the
+ * layered `@theme` defaults), so every semantic utility flips automatically.
+ * Dark is driven by the OS preference AND an explicit `data-theme` on
+ * <html> ("dark"/"light"), so a theme toggle can override the OS default.
+ *
+ * NOTE: stylelint-config-standard's `custom-property-empty-line-before` rule
+ * forbids a blank line between consecutive custom properties, so the
+ * surface/ink/accent/danger groups are delimited by the trailing comment on
+ * each group's first token, NOT by blank lines. Do not re-introduce blank
+ * lines between the `--color-*` declarations — the frontend lint lane
+ * (`stylelint`) fails on them as-emitted.
+ */
+@theme {
+  --color-surface: #fff; /* page / card background */
+  --color-surface-muted: #f9fafb; /* subtle fills: table head, hovers */
+  --color-border: #e5e7eb;
+  --color-border-strong: #d1d5db;
+  --color-ink: #111827; /* primary text */
+  --color-ink-muted: #6b7280; /* secondary text */
+  --color-ink-subtle: #9ca3af; /* tertiary / placeholder / icons */
+  --color-accent: #2563eb; /* primary action */
+  --color-accent-hover: #1d4ed8;
+  --color-on-accent: #fff; /* text/icon on an accent fill */
+  --color-danger: #dc2626; /* destructive action / error */
+  --color-danger-hover: #b91c1c;
+  --color-on-danger: #fff; /* text/icon on a danger fill */
+  --color-danger-surface: #fef2f2; /* danger banner background */
+  --color-danger-border: #fecaca;
+  --color-danger-ink: #991b1b; /* danger text on a light surface */
+  --color-warning: #ca8a04; /* caution status: mock-mode banner, badge dot */
+  --color-on-warning: #451a03; /* text/icon on a warning fill (5.1:1) */
+}
+
+/* Dark palette — OS preference, unless data-theme forces light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-surface: #0b0f19;
+    --color-surface-muted: #111827;
+    --color-border: #1f2937;
+    --color-border-strong: #374151;
+    --color-ink: #f9fafb;
+    --color-ink-muted: #9ca3af;
+    --color-ink-subtle: #6b7280;
+    --color-accent: #3b82f6;
+    --color-accent-hover: #60a5fa;
+    --color-on-accent: #0b0f19;
+    --color-danger: #ef4444;
+    --color-danger-hover: #f87171;
+    --color-on-danger: #0b0f19;
+    --color-danger-surface: #1f1315;
+    --color-danger-border: #7f1d1d;
+    --color-danger-ink: #fca5a5;
+    --color-warning: #eab308;
+    --color-on-warning: #451a03;
+  }
+}
+
+/* Explicit opt-in dark (theme toggle), regardless of OS preference. */
+:root[data-theme="dark"] {
+  --color-surface: #0b0f19;
+  --color-surface-muted: #111827;
+  --color-border: #1f2937;
+  --color-border-strong: #374151;
+  --color-ink: #f9fafb;
+  --color-ink-muted: #9ca3af;
+  --color-ink-subtle: #6b7280;
+  --color-accent: #3b82f6;
+  --color-accent-hover: #60a5fa;
+  --color-on-accent: #0b0f19;
+  --color-danger: #ef4444;
+  --color-danger-hover: #f87171;
+  --color-on-danger: #0b0f19;
+  --color-danger-surface: #1f1315;
+  --color-danger-border: #7f1d1d;
+  --color-danger-ink: #fca5a5;
+  --color-warning: #eab308;
+  --color-on-warning: #451a03;
+}

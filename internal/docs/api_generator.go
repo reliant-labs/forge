@@ -8,8 +8,10 @@ import (
 // APIGenerator produces API reference documentation from proto service definitions.
 type APIGenerator struct{}
 
+// Name returns the generator's registry key, 'api'.
 func (g *APIGenerator) Name() string { return "api" }
 
+// Generate produces API reference pages, one per proto service.
 func (g *APIGenerator) Generate(ctx *Context) ([]GeneratedDoc, error) {
 	if len(ctx.Services) == 0 {
 		return nil, nil

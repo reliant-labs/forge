@@ -1,6 +1,7 @@
 ---
 name: v0.1-to-v0.2
 description: TOMBSTONE — retired migration. v0.2's name-matched wire_gen.go DI (pkg/app/{wire_gen,app_gen,app_extras}.go, AppExtras exact-name resolution) was itself removed. Do NOT migrate toward this shape. To arrive at the current explicit composition root, use v0.x-to-typed-di (and v0.x-to-serverkit-composed for the typed-mount cmd layer).
+retired: true
 relevance: migration
 ---
 

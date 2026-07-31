@@ -32,7 +32,7 @@ func TestRollback_RestoresModifiedFileToPreRunBytes(t *testing.T) {
 	}
 
 	ResetSkipWrite()
-	BeginRollbackJournal()
+	BeginRollbackJournal(root)
 	t.Cleanup(CommitRollback)
 
 	// forge regenerates the file (a newer vintage) — this is the write the
@@ -62,7 +62,7 @@ func TestRollback_DeletesNewlyCreatedFileAndPrunesEmptyDirs(t *testing.T) {
 	const rel = "internal/db/widget_orm.go" // dir does NOT exist pre-run
 
 	ResetSkipWrite()
-	BeginRollbackJournal()
+	BeginRollbackJournal(root)
 	t.Cleanup(CommitRollback)
 
 	if _, err := WriteGeneratedFile(root, rel, []byte("package db // fresh\n"), nil, false); err != nil {
@@ -97,7 +97,7 @@ func TestRollback_PruneStopsAtNonEmptyDir(t *testing.T) {
 	}
 
 	ResetSkipWrite()
-	BeginRollbackJournal()
+	BeginRollbackJournal(root)
 	t.Cleanup(CommitRollback)
 
 	const rel = "internal/db/widget_orm.go"
@@ -128,7 +128,7 @@ func TestRollback_FirstCaptureWins(t *testing.T) {
 	}
 
 	ResetSkipWrite()
-	BeginRollbackJournal()
+	BeginRollbackJournal(root)
 	t.Cleanup(CommitRollback)
 
 	// Two writes to the same path in one run (e.g. an emitter then a
@@ -153,7 +153,7 @@ func TestRollback_CommitLeavesWritesStanding(t *testing.T) {
 	const rel = "cmd/services_gen.go"
 
 	ResetSkipWrite()
-	BeginRollbackJournal()
+	BeginRollbackJournal(root)
 
 	if _, err := WriteGeneratedFile(root, rel, []byte("package main // generated\n"), nil, false); err != nil {
 		t.Fatal(err)

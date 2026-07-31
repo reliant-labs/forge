@@ -5,17 +5,20 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/kclvendor"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
 func (g *ProjectGenerator) generateKCLDeploy() error {
 	deployDir := filepath.Join(g.Path, "deploy", "kcl")
 
-	// Generate kcl.mod at project root so KCL imports like
-	// `deploy.kcl.dev.config_gen` resolve. The kcl.mod also declares
-	// the `forge` module dependency that the per-env main.k files
-	// import — the schemas live upstream in `forge/kcl/`, not in
+	// Generate kcl.mod at deploy/kcl/ — the KCL package root for the
+	// deploy manifests, so the env main.k files' package-rooted imports
+	// (`import config_projection`, `import .config`, `import ..ingress`)
+	// resolve. It also declares the `forge` module dependency the env
+	// files import — the schemas live upstream in `forge/kcl/`, not in
 	// the project's tree.
 	kclModData := struct {
 		ProjectName string
@@ -26,8 +29,35 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	if err != nil {
 		return fmt.Errorf("render kcl.mod template: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(g.Path, "kcl.mod"), kclModContent, 0644); err != nil {
+	if err := os.MkdirAll(deployDir, 0755); err != nil {
+		return err
+	}
+	kclModPath := filepath.Join(deployDir, "kcl.mod")
+	if err := os.WriteFile(kclModPath, kclModContent, 0644); err != nil {
 		return fmt.Errorf("write kcl.mod: %w", err)
+	}
+
+	// Dev builds of forge (no ldflags-stamped published forge/pkg
+	// version — the same release/dev discriminator resolveForgePkgDep
+	// uses for go.mod) have no resolvable published `kcl-vX.Y.Z` tag
+	// either. Vendor the binary's embedded copy of the forge KCL module
+	// into `.forge-kcl/` and point the freshly-rendered kcl.mod at it,
+	// so the project is born rendering — the exact mechanism `forge
+	// generate` maintains from here on (internal/cli sync step + the
+	// shared internal/kclvendor patcher).
+	if buildinfo.PkgVersion() == "" {
+		if _, err := kclvendor.Materialize(g.Path); err != nil {
+			return fmt.Errorf("dev-vendor forge KCL module: %w", err)
+		}
+		res, err := kclvendor.EnsureVendorDep(kclModPath, g.Path)
+		if err != nil {
+			return fmt.Errorf("point kcl.mod at %s: %w", kclvendor.VendorDirName, err)
+		}
+		if res.Warning != "" {
+			// Freshly rendered from our own template — a warning here
+			// means the template and patcher drifted apart.
+			return fmt.Errorf("kcl.mod vendor patch: %s", res.Warning)
+		}
 	}
 
 	// The legacy in-tree `deploy/kcl/schema.k` + `base.k` + `render.k`
@@ -68,7 +98,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// the ingress toggle.
 
 	// Ingress is experimental but we still scaffold the wiring files at
-	// `forge new` so the user has a complete starting point. The
+	// `forge project new` so the user has a complete starting point. The
 	// runtime gate (cert-manager install, audit category) lives on the
 	// `forge cluster up` / `forge cluster urls` paths and reads
 	// IngressEnabled() at call time. Setting IngressEnabled: true here
@@ -100,7 +130,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// Gateway API ingress scaffolding. The base topology
 	// (`deploy/kcl/ingress.k`) is user-owned and shared across envs;
 	// each env's `deploy/kcl/<env>/ingress.k` re-exports the base
-	// with optional overrides. Both render once at `forge new`; not
+	// with optional overrides. Both render once at `forge project new`; not
 	// regenerated on subsequent `forge generate` runs.
 	if ingressOn {
 		ingressFiles := []struct {
@@ -128,18 +158,14 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	}
 
 	// DEPLOY-AS-DATA: emit the denormalized component shape the per-env
-	// main.k files load. writeProjectConfig (called just before this in
-	// the scaffold sequence) already wrote forge.yaml + components.json, so
-	// read the components back through ReadProjectConfig (which now sources
-	// them from components.json — the authored per-service SOT). deploy/kcl/
-	// components_gen.json stays a lockfile-class PROJECTION of that source
-	// (regenerated every run, untracked), distinct from the authored
-	// components.json at the project root.
-	cfg, err := ReadProjectConfig(filepath.Join(g.Path, "forge.yaml"))
-	if err != nil {
-		return fmt.Errorf("read project config for components_gen.json: %w", err)
-	}
-	if err := codegen.GenerateComponentsJSON(g.Path, g.Name, cfg.Components, nil); err != nil {
+	// main.k files load. deploy/kcl/components_gen.json is a lockfile-class
+	// PROJECTION of what the tree declares — regenerated every run, untracked
+	// — so it is written from a fresh read of the tree, never from a config
+	// object. At scaffold time the proto descriptor does not exist yet, so
+	// this projection is usually empty; the generate pipeline rewrites it
+	// once the descriptor is extracted.
+	if err := codegen.GenerateComponentsJSON(g.Path, g.Name,
+		codegen.DiscoverProjectComponents(g.Path, g.Name), nil); err != nil {
 		return fmt.Errorf("write components_gen.json: %w", err)
 	}
 

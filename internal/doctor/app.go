@@ -12,24 +12,39 @@ import (
 )
 
 // CheckAppHealth verifies the application's healthz and readyz endpoints.
+//
+// The address is the one the CALLER resolved (RuntimeTarget.HTTP) — this
+// check never guesses a port. When nothing resolved one, the answer is
+// UNDETERMINED, not a skip: "forge could not find the app" and "this project
+// has no app" are different reports and must not render alike.
 func CheckAppHealth(ctx context.Context, env *Environment) CheckResult {
 	addr, ok := env.GetPort("app", 8080)
 	if !ok {
-		return CheckResult{Status: StatusSkip, Message: "app port 8080 not discovered"}
+		return CheckResult{
+			Status: StatusUnknown,
+			Message: "could not resolve an HTTP address for any host service" +
+				" — is the stack up? (`forge env up <env>`)",
+		}
 	}
 
 	client := &http.Client{Timeout: 3 * time.Second}
+	// Name the service that answered. A project runs several host services;
+	// "healthz=ok" without a subject says nothing about which one.
+	subject := addr
+	if env.Target.Service != "" {
+		subject = env.Target.Service + " " + addr
+	}
 
 	// Check /healthz
 	healthzBody, err := httpGetBody(ctx, client, fmt.Sprintf("http://%s/healthz", addr))
 	if err != nil {
-		return CheckResult{Status: StatusFail, Message: fmt.Sprintf("healthz failed: %v", err)}
+		return CheckResult{Status: StatusFail, Message: fmt.Sprintf("%s: healthz failed: %v", subject, err)}
 	}
 	healthzStr := strings.TrimSpace(healthzBody)
 	if healthzStr != "ok" {
 		return CheckResult{
 			Status:   StatusFail,
-			Message:  fmt.Sprintf("healthz returned %q, expected \"ok\"", healthzStr),
+			Message:  fmt.Sprintf("%s: healthz returned %q, expected \"ok\"", subject, healthzStr),
 			Evidence: healthzBody,
 		}
 	}
@@ -37,10 +52,10 @@ func CheckAppHealth(ctx context.Context, env *Environment) CheckResult {
 	// Check /readyz
 	_, err = httpGetBody(ctx, client, fmt.Sprintf("http://%s/readyz", addr))
 	if err != nil {
-		return CheckResult{Status: StatusFail, Message: fmt.Sprintf("readyz failed: %v", err)}
+		return CheckResult{Status: StatusFail, Message: fmt.Sprintf("%s: readyz failed: %v", subject, err)}
 	}
 
-	return CheckResult{Status: StatusPass, Message: "healthz=ok readyz=ok"}
+	return CheckResult{Status: StatusPass, Message: subject + ": healthz=ok readyz=ok"}
 }
 
 // CheckPprof verifies the pprof debug endpoint is reachable and reports
@@ -48,7 +63,11 @@ func CheckAppHealth(ctx context.Context, env *Environment) CheckResult {
 func CheckPprof(ctx context.Context, env *Environment) CheckResult {
 	addr, ok := env.GetPort("app", 6060)
 	if !ok {
-		return CheckResult{Status: StatusSkip, Message: "app port 6060 not discovered"}
+		return CheckResult{
+			Status: StatusUnknown,
+			Message: "could not resolve a pprof address" +
+				" — declare PPROF_ADDR on the host service (serverkit binds pprof on its own listener)",
+		}
 	}
 
 	client := &http.Client{Timeout: 3 * time.Second}

@@ -16,13 +16,15 @@
 // port-forward` directly.
 //
 // Project-specific orchestration (sibling-repo deploys, helm bootstraps,
-// Stripe webhook listeners, per-tenant seeds) is NOT owned by forge —
+// Stripe webhook listeners, project-specific seeds) is NOT owned by forge —
 // projects keep those in scripts/ and Taskfile.yml, composed with the
 // forge cluster primitives. See the `dev` skill for the boundary doc.
 package cli
 
 import (
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 )
 
 // newClusterCmd builds the `forge cluster` parent command. The k3d
@@ -65,7 +67,7 @@ Examples:
 	// Platform dependencies (cert-manager, Envoy Gateway, …) on a cloud
 	// cluster are no longer a bespoke `forge cluster-setup` verb. They are
 	// declarative renderables — KCL forge.HelmChart in the env Bundle —
-	// applied via `forge deploy <env> --target=<platform-name>` (helm-as-a-
+	// applied via `forge env deploy <env> --target=<platform-name>` (helm-as-a-
 	// RENDERER: helm template --skip-crds → the same apply pipeline). There
 	// is no imperative installer to register here.
 
@@ -80,5 +82,5 @@ Examples:
 	cmd.AddCommand(newDevUrlsCmd())
 	cmd.AddCommand(newDevInstancesCmd())
 
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }

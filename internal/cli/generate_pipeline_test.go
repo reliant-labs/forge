@@ -28,8 +28,7 @@ import (
 // TestGenerateStepsPlanStable pins the step order. If a step is added,
 // removed, or reordered, this test fails — an intentional speed bump
 // that forces the change to be reviewed against the goimports-vs-rehash
-// ordering trap and the "auto-enable multi-tenant rewrites forge.yaml
-// mid-pipeline" surprise documented in generate_pipeline.go.
+// ordering trap documented in generate_pipeline.go.
 //
 // Test bodies and downstream consumers (--plan flag, future watch-mode
 // dispatch table) read this list to confirm they're up to date.
@@ -40,7 +39,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"migrate legacy checksums manifest",
 		"check Tier-1 file-stomp guard",
 		"snapshot Tier-1 exports",
-		"sync forge/pkg dev replace",
+		"sync forge KCL module dev vendor",
 		"forge/pkg compatibility handshake",
 		"announce project",
 		"pre-codegen contract check",
@@ -48,7 +47,6 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"ensure gen/go.mod",
 		"buf generate (Go stubs)",
 		"descriptor extraction",
-		"authz completeness gate",
 		"OpenAPI specs (protoc-gen-connect-openapi)",
 		"frontend workspaces scaffold",
 		"TypeScript stubs (frontends)",
@@ -61,13 +59,10 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"service stubs",
 		"internal/db/ ORM (entity-driven)",
 		"CRUD handlers",
-		"authorizer",
 		"service mocks",
 		"internal package contracts",
-		"auth middleware",
-		"tenant middleware (auto-enable + emit)",
+		"open-procedure set (pkg/middleware)",
 		"webhook routes",
-		"MCP manifest",
 		"internal/app composition (hybrid DI)",
 		"go mod tidy (pre-wiring)",
 		"cmd/commands.go (user extension point)",
@@ -76,9 +71,9 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"sqlc generate",
 		"go mod tidy (gen/)",
 		"CI workflows",
-		"pack generate hooks",
 		"regenerate infra files",
 		"cmd command groups (services/workers/operators)",
+		"discover components",
 		"components_gen.json",
 		"per-env deploy config",
 		"ingress k3d ports fragment",
@@ -163,12 +158,11 @@ func TestGenerateStepsGatesAreSideEffectFree(t *testing.T) {
 			Cfg:         &config.ProjectConfig{Name: "sample"},
 			HasServices: true, HasDB: true, HasConfig: true,
 		}},
-		{"with cfg + frontends + packs", &pipelineContext{
+		{"with cfg + frontends", &pipelineContext{
 			ProjectDir: ".", AbsPath: "/abs/.",
 			Cfg: &config.ProjectConfig{
 				Name:      "sample",
 				Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs"}},
-				Packs:     []string{"audit-log"},
 			},
 		}},
 	}
@@ -300,7 +294,6 @@ func TestTemplatesOnlyIncludesTemplateRenderSteps(t *testing.T) {
 		"frontend mocks + transport",
 		"service mocks",
 		"internal package contracts",
-		"authorizer",
 		"CRUD handlers",
 	}
 	for _, name := range mustInclude {

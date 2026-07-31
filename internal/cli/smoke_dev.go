@@ -37,7 +37,7 @@ import (
 // STRETCH — the host->infra hop: the dev host processes reach Postgres /
 // NATS / etc. at localhost:<port> coordinates baked into their KCL env
 // (DATABASE_URL / NATS_URL). We extract those localhost ports and TCP-probe
-// them too, so `forge smoke dev` covers host->infra, not just gateway
+// them too, so `forge env smoke dev` covers host->infra, not just gateway
 // routes.
 
 // devSmokeTarget is one port-based probe: a localhost:<port> endpoint
@@ -345,7 +345,7 @@ func classifyDevTransportError(err error) smokeRouteResult {
 // --- output -------------------------------------------------------------
 
 func writeDevSmokeTable(out io.Writer, env string, targets []devSmokeTarget, results []smokeRouteResult, summary smokeSummary) {
-	_, _ = fmt.Fprintf(out, "forge smoke %s (dev / port-based)\n", env)
+	_, _ = fmt.Fprintf(out, "forge env smoke %s (dev / port-based)\n", env)
 	_, _ = fmt.Fprintln(out, "  probing host-mapped listener ports + host->infra deps on localhost")
 	_, _ = fmt.Fprintln(out)
 

@@ -117,13 +117,13 @@ func (p ExternalProvider) deployOne(ctx context.Context, runner commandRunner, g
 	tag := resolveExternalTag(spec, group)
 	fmt.Printf("  deploying %s via external command (tag %s)...\n", svc.Name, tag)
 
-	// Read the previously-recorded forge deploy so we can (a) hand the
+	// Read the previously-recorded forge env deploy so we can (a) hand the
 	// deploy_cmd the prior tag as ${LAST_TAG} (some scripts label the
 	// outgoing container or keep a rollback pointer), and (b) WARN when
 	// the container forge is about to replace was shipped under a
 	// different tag/pipeline (fr-bde7b7e8e5). The warning makes "what
 	// code is live, and who deployed it?" answerable when a legacy manual
-	// script and `forge deploy` fight over the same container name. A
+	// script and `forge env deploy` fight over the same container name. A
 	// missing/unreadable state file is non-fatal — best-effort context.
 	prevTag := ""
 	if prev, perr := ReadDeployState(p.projectDir(), "external", group.Env, svc.Name); perr == nil && prev != nil {

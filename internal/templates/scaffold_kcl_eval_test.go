@@ -13,10 +13,14 @@ import (
 )
 
 // TestScaffoldedIngressEvaluates scaffolds a fresh service-kind
-// project, points its kcl.mod at the in-tree forge module, and runs
-// `kcl run` over the dev env. The scaffold must produce KCL that
-// evaluates cleanly with empty HTTP_ROUTES/GRPC_ROUTES — every
-// commented-out template route stays commented.
+// project and runs `kcl run` over the dev env. The scaffold must
+// produce KCL that evaluates cleanly with empty HTTP_ROUTES/GRPC_ROUTES
+// — every commented-out template route stays commented.
+//
+// Module resolution needs no rewrite: the test binary is a dev build
+// (no stamped pkg version), so the scaffold is BORN with the embedded
+// forge KCL module vendored into `.forge-kcl/` and deploy/kcl/kcl.mod
+// pointing at it by relative path (internal/kclvendor).
 func TestScaffoldedIngressEvaluates(t *testing.T) {
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH; skipping scaffold KCL eval test")
@@ -29,40 +33,52 @@ func TestScaffoldedIngressEvaluates(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 
-	// Point the project's kcl.mod at the in-tree forge module so the
-	// import resolves without network/git access.
-	wd, _ := os.Getwd()
-	root := wd
-	for range []int{1, 2, 3} {
-		if _, err := os.Stat(filepath.Join(root, "kcl", "kcl.mod")); err == nil {
-			break
-		}
-		root = filepath.Dir(root)
+	// Born-vendored dev scaffold: relative dep + materialized module.
+	kclModPath := filepath.Join(tmp, "deploy", "kcl", "kcl.mod")
+	kclMod, err := os.ReadFile(kclModPath)
+	if err != nil {
+		t.Fatalf("read deploy/kcl/kcl.mod: %v", err)
 	}
-	forgeKCL := filepath.Join(root, "kcl")
-
-	// Rewrite the scaffolded kcl.mod to point at the in-tree forge
-	// module via a local path so `kcl run` resolves without a network
-	// or git-cache fetch of the pinned upstream tag.
-	kclMod := "[package]\nname = \"svc-eval\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \"" + forgeKCL + "\" }\n"
-	if err := os.WriteFile(filepath.Join(tmp, "kcl.mod"), []byte(kclMod), 0644); err != nil {
-		t.Fatalf("rewrite kcl.mod: %v", err)
+	if !strings.Contains(string(kclMod), `forge = { path = "../../.forge-kcl" }`) {
+		t.Fatalf("dev scaffold kcl.mod not vendored:\n%s", kclMod)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".forge-kcl", "kcl.mod")); err != nil {
+		t.Fatalf(".forge-kcl not materialized: %v", err)
 	}
 
-	// Stub the env's auto-generated config_gen.k since `forge generate`
-	// hasn't been run on this scaffold. APP_ENV+CONFIG_MAPS minimal.
-	for _, env := range []string{"dev", "staging", "prod"} {
-		stub := `import forge
-APP_ENV: [forge.EnvVar] = []
-CONFIG_MAPS: [forge.ConfigMap] = []
+	// Stub the pipeline-generated KCL-native config trio (`forge
+	// generate` hasn't run on this bare scaffold): the typed schema,
+	// the projection lambda the env main.k imports, and the per-env
+	// user-owned values instance. Minimal shapes with the exact
+	// names/signatures the generators emit.
+	schemaStub := `schema AppConfig:
+    port: int = 8080
 `
-		if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl", env, "config_gen.k"), []byte(stub), 0644); err != nil {
-			t.Fatalf("write %s stub: %v", env, err)
+	projectionStub := `import forge
+import config_schema
+
+appConfigEnvMap = lambda c: config_schema.AppConfig -> {str: forge.EnvSource} {
+    {"PORT" = {value = str(c.port)}}
+}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl", "config_schema.k"), []byte(schemaStub), 0644); err != nil {
+		t.Fatalf("write config_schema.k stub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl", "config_projection.k"), []byte(projectionStub), 0644); err != nil {
+		t.Fatalf("write config_projection.k stub: %v", err)
+	}
+	for _, env := range []string{"dev", "staging", "prod"} {
+		configStub := `import config_schema
+
+app_config: config_schema.AppConfig = {
+}
+`
+		if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl", env, "config.k"), []byte(configStub), 0644); err != nil {
+			t.Fatalf("write %s config.k stub: %v", env, err)
 		}
 	}
 
-	cmd := exec.Command("kcl", "run",
-		"-E", "forge="+forgeKCL,
+	cmd := exec.CommandContext(t.Context(), "kcl", "run",
 		"-S", "output",
 		"--format", "json",
 		filepath.Join(tmp, "deploy/kcl/dev"))
@@ -98,9 +114,10 @@ CONFIG_MAPS: [forge.ConfigMap] = []
 			t.Errorf("scaffold %s count = %d, want 0\n%s", k, len(arr), out)
 		}
 	}
-	// Sanity: main.k import block references ingress.
+	// Sanity: main.k import block references ingress (relative to the
+	// deploy/kcl package root).
 	mainK, _ := os.ReadFile(filepath.Join(tmp, "deploy/kcl/dev/main.k"))
-	if !strings.Contains(string(mainK), "import deploy.kcl.dev.ingress as ing") {
+	if !strings.Contains(string(mainK), "import .ingress as ing") {
 		t.Errorf("dev/main.k missing ingress import after Generate:\n%s", mainK)
 	}
 }

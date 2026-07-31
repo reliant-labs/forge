@@ -45,7 +45,6 @@ func TestCIWorkflowTemplate_InstallForgeRef(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			data := CIWorkflowData{
 				ProjectName:     "myapp",
-				GoVersion:       "1.26",
 				HasServices:     true,
 				VerifyGenerated: true,
 				PermContents:    "read",
@@ -70,7 +69,6 @@ func TestCIWorkflowTemplate_InstallForgeRef(t *testing.T) {
 func TestCIWorkflowTemplate_AllFeatures(t *testing.T) {
 	data := CIWorkflowData{
 		ProjectName:  "myapp",
-		GoVersion:    "1.26",
 		HasFrontends: true,
 		Frontends: []FrontendCIConfig{
 			{Name: "web", Path: "frontends/web"},
@@ -112,9 +110,36 @@ func TestCIWorkflowTemplate_AllFeatures(t *testing.T) {
 		t.Fatal("missing 'jobs' key")
 	}
 
-	for _, expected := range []string{"lint", "test", "build", "verify-generated", "validate-kcl", "vuln-scan", "docker-build", "e2e"} {
+	for _, expected := range []string{"lint", "test", "build", "verify-generated", "deployability", "vuln-scan", "docker-build", "e2e"} {
 		if _, ok := jobs[expected]; !ok {
 			t.Errorf("missing job %q", expected)
+		}
+	}
+
+	// Every job that runs `forge …` must install it first. A job that
+	// shells a binary it never installed fails on "command not found" —
+	// which is how the KCL validation and vuln-scan jobs shipped.
+	for name, raw := range jobs {
+		job, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		steps, _ := job["steps"].([]interface{})
+		var body strings.Builder
+		for _, s := range steps {
+			step, isMap := s.(map[string]interface{})
+			if !isMap {
+				continue
+			}
+			run, _ := step["run"].(string)
+			body.WriteString(run)
+			body.WriteString("\n")
+		}
+		text := body.String()
+		if strings.Contains(text, "\nforge ") || strings.HasPrefix(text, "forge ") {
+			if !strings.Contains(text, "go install github.com/reliant-labs/forge/cmd/forge@") {
+				t.Errorf("job %q runs forge but never installs it", name)
+			}
 		}
 	}
 }
@@ -138,7 +163,6 @@ func TestProtoBreakingWorkflowTemplate(t *testing.T) {
 func TestCIWorkflowTemplate_Minimal(t *testing.T) {
 	data := CIWorkflowData{
 		ProjectName:     "minimal",
-		GoVersion:       "1.26",
 		LintGolangci:    true,
 		TestRace:        true,
 		PermContents:    "read",
@@ -162,7 +186,7 @@ func TestCIWorkflowTemplate_Minimal(t *testing.T) {
 	}
 
 	// Should NOT have optional jobs
-	for _, absent := range []string{"validate-kcl", "vuln-scan", "e2e"} {
+	for _, absent := range []string{"deployability", "vuln-scan", "e2e"} {
 		if _, ok := jobs[absent]; ok {
 			t.Errorf("job %q should not be present in minimal config", absent)
 		}
@@ -179,7 +203,6 @@ func TestCIWorkflowTemplate_Minimal(t *testing.T) {
 func TestCIWorkflowTemplate_K3dE2E(t *testing.T) {
 	data := CIWorkflowData{
 		ProjectName:     "myapp",
-		GoVersion:       "1.26",
 		LintGolangci:    true,
 		TestRace:        true,
 		PermContents:    "read",

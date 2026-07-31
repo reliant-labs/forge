@@ -26,6 +26,17 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		FieldName string
 		TypeExpr  string
 	}
+	// funcDefault / funcTodo mirror codegen.DepsFuncDefault /
+	// UnresolvedAutoStub for the Clock/IDGen func-seam harness fill. Always
+	// empty at initial scaffold time — the service has no func-typed Deps
+	// yet; the post-codegen GenerateBootstrapTesting pass derives them from
+	// the on-disk Deps once handlers/<svc>/service.go grows such a field.
+	type funcDefault struct {
+		FieldName string
+		Expr      string
+		NeedsTime bool
+		NeedsULID bool
+	}
 	type bootstrapTestService struct {
 		Name                   string
 		Package                string
@@ -36,30 +47,37 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		ProtoConnectPkg        string
 		Fallible               bool
 		HasDB                  bool
-		// HasAuthorizer mirrors codegen.BootstrapTestServiceData: a freshly
-		// scaffolded service's Deps declares an Authorizer (see
-		// templates/service/service.go.tmpl), so the authz-aware test harness
-		// wires it. The post-codegen GenerateBootstrapTesting pass re-derives
-		// this from the on-disk Deps once the service has grown/shrunk fields.
-		HasAuthorizer bool
-		Alias         string
-		VarName       string
+		Alias                  string
+		VarName                string
+		// ConstructorName is the selector the template emits —
+		// `<Alias>.<ConstructorName>(...)`. Mirrors
+		// codegen.BootstrapTestServiceData.ConstructorName, which resolves the
+		// `// forge:constructor` marker; a just-scaffolded service always has
+		// the canonical `New`, and the post-codegen GenerateBootstrapTesting
+		// pass re-renders with whatever the author's marker says.
+		ConstructorName string
 		// AutoStubs is always empty at the project-scaffold step; the
-		// service has no Deps fields beyond the bare-Deps trio at this
+		// service has no Deps fields beyond the bare-Deps pair at this
 		// point. The post-codegen GenerateBootstrapTesting pass populates
 		// it once handlers/<svc>/service.go exists.
 		AutoStubs       []autoStub
 		UnresolvedStubs []unresolvedStub
+		// FuncDefaults / FuncTodos: the Clock/IDGen func-seam harness fill.
+		// Empty at scaffold time (see funcDefault doc); the template ranges
+		// over them so the fields must exist.
+		FuncDefaults []funcDefault
+		FuncTodos    []unresolvedStub
 	}
 
 	type bootstrapPackage struct {
-		Name       string
-		Package    string
-		ImportPath string
-		FieldName  string
-		Fallible   bool
-		Alias      string
-		VarName    string
+		Name            string
+		Package         string
+		ImportPath      string
+		FieldName       string
+		Fallible        bool
+		Alias           string
+		VarName         string
+		ConstructorName string
 	}
 
 	var services []bootstrapTestService
@@ -84,10 +102,12 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 				ProtoServiceName:       protoServiceName,
 				ProtoConnectImportPath: connectImport,
 				ProtoConnectPkg:        connectPkg,
-				// A scaffolded service includes an Authorizer dep by default.
-				HasAuthorizer: true,
-				Alias:         pkg,
-				VarName:       lowerFirstRune(fieldName),
+				Alias:                  pkg,
+				VarName:                lowerFirstRune(fieldName),
+				// Spelled out rather than taken from
+				// codegen.DefaultConstructorName: generator is upstream of
+				// codegen in the build graph (see extraImport below).
+				ConstructorName: "New",
 			},
 		}
 		connectImports = []string{connectImport}
@@ -104,21 +124,23 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 	}
 
 	data := struct {
-		Module             string
-		Services           []bootstrapTestService
-		ConnectImports     []string
-		Packages           []bootstrapPackage
-		MultiTenantEnabled bool
-		AnyServiceHasDB    bool
-		ExtraImports       []extraImport
+		Module              string
+		Services            []bootstrapTestService
+		ConnectImports      []string
+		Packages            []bootstrapPackage
+		AnyServiceHasDB     bool
+		AnyServiceNeedsTime bool
+		AnyServiceNeedsULID bool
+		ExtraImports        []extraImport
 	}{
-		Module:             g.ModulePath,
-		Services:           services,
-		ConnectImports:     connectImports,
-		Packages:           nil,   // No packages at initial project creation
-		MultiTenantEnabled: false, // Multi-tenancy configured post-creation via forge generate
-		AnyServiceHasDB:    false, // DB deps are added later by forge generate
-		ExtraImports:       nil,   // No cross-package auto-stubs at initial scaffold time
+		Module:              g.ModulePath,
+		Services:            services,
+		ConnectImports:      connectImports,
+		Packages:            nil,   // No packages at initial project creation
+		AnyServiceHasDB:     false, // DB deps are added later by forge generate
+		AnyServiceNeedsTime: false, // Clock/IDGen func defaults are derived post-codegen
+		AnyServiceNeedsULID: false, // (GenerateBootstrapTesting) once services declare them
+		ExtraImports:        nil,   // No cross-package auto-stubs at initial scaffold time
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)
@@ -140,7 +162,7 @@ func lowerFirstRune(s string) string {
 	}
 	r := []rune(s)
 	if r[0] >= 'A' && r[0] <= 'Z' {
-		r[0] = r[0] + ('a' - 'A')
+		r[0] += 'a' - 'A'
 	}
 	return string(r)
 }

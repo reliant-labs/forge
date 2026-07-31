@@ -16,6 +16,7 @@ import (
 // UpgradeStatus describes the outcome for each managed file.
 type UpgradeStatus string
 
+// The per-file outcomes an upgrade can report.
 const (
 	UpgradeUpToDate     UpgradeStatus = "up-to-date"
 	UpgradeUpdated      UpgradeStatus = "updated"
@@ -28,7 +29,67 @@ type UpgradeResult struct {
 	Path   string        // relative path in project (e.g. "cmd/server.go")
 	Status UpgradeStatus // what happened
 	Diff   string        // unified-style diff when file changed
+	// Forced is true when this file was (or would be) written only
+	// because the force selection covered it — i.e. the user's edits
+	// were discarded. Refreshing a pristine render never sets it.
+	Forced bool
 }
+
+// ForceSelection names which user-modified files an upgrade run is allowed to
+// overwrite.
+//
+// Force is per-path because adopting a template is per-path. A project
+// accumulates edits at different times for different reasons: one file was
+// customized on purpose, another drifted because its provenance predates the
+// self-certifying marker. A single project-wide switch makes adopting the
+// second impossible without stomping the first, so the only safe move is to
+// run nothing — which is how a project stops upgrading at all.
+//
+// The zero value forces nothing.
+type ForceSelection struct {
+	// all overwrites every user-modified managed file (bare --force).
+	all bool
+	// paths is the explicit set of project-relative paths to overwrite.
+	paths map[string]bool
+}
+
+// ForceNone returns a selection that overwrites nothing the user has touched.
+func ForceNone() ForceSelection { return ForceSelection{} }
+
+// ForceAll returns a selection that overwrites every user-modified managed
+// file — the whole-project meaning of a bare --force.
+func ForceAll() ForceSelection { return ForceSelection{all: true} }
+
+// ForcePaths returns a selection that overwrites exactly the named
+// project-relative paths and nothing else.
+func ForcePaths(paths ...string) ForceSelection {
+	sel := ForceSelection{paths: make(map[string]bool, len(paths))}
+	for _, p := range paths {
+		sel.paths[filepath.Clean(p)] = true
+	}
+	return sel
+}
+
+// Allows reports whether relPath may have the user's edits overwritten.
+func (f ForceSelection) Allows(relPath string) bool {
+	if f.all {
+		return true
+	}
+	return f.paths[filepath.Clean(relPath)]
+}
+
+// Names reports whether relPath was named EXPLICITLY — the whole-project
+// form does not satisfy it.
+//
+// The scaffold-once advisory lane (upgrade_advisory.go) gates adoption on
+// this rather than on Allows. Those files are the user's from birth, so
+// "overwrite everything you have edited" cannot be a statement about them:
+// a flag that names nothing carries no intent about a file forge already
+// handed over. Naming the path is the intent.
+func (f ForceSelection) Names(relPath string) bool { return f.paths[filepath.Clean(relPath)] }
+
+// Any reports whether the selection can overwrite anything at all.
+func (f ForceSelection) Any() bool { return f.all || len(f.paths) > 0 }
 
 // File ownership tiers.
 const (
@@ -86,6 +147,22 @@ func enabledForObservability(cfg *config.ProjectConfig) bool {
 	return cfgIsService(cfg) && cfg != nil && cfg.Features.ObservabilityEnabled()
 }
 
+// enabledForMigrations gates a file on the project being service-kind AND
+// having migrations enabled — the `db migrate` command tree's source file
+// (cmd/<bin>/cmd/db_source.go), whose only consumer is the scaffold-once
+// db.go beside it.
+//
+// A nil cfg means migrations are ON: that is the default the feature resolver
+// returns for an absent flag, and the nil case reaches here from the
+// name-less path-union backstop (UpgradeManagedPaths), which must include the
+// path rather than silently omit it from the stale-sweep exclusions.
+func enabledForMigrations(cfg *config.ProjectConfig) bool {
+	if !cfgIsService(cfg) {
+		return false
+	}
+	return cfg == nil || cfg.Features.MigrationsEnabled()
+}
+
 // fileEnabledByFeatures reports whether a managed file should be included
 // given the current feature flags AND project kind. The decision now lives
 // on the manifest entry's enabledFor predicate; a nil predicate means the
@@ -135,16 +212,15 @@ func cmdTreePath(binName string, segs ...string) string {
 	return filepath.Join(parts...)
 }
 
-
 // managedFilesForCfg is like managedFiles but consults the project
 // config to choose the right per-kind / per-binary templates. Callers
 // that already have the project config should prefer this so the right
-// template is used during forge upgrade and forge generate's Tier-1
+// template is used during forge project upgrade and forge generate's Tier-1
 // regeneration sweep.
 //
 // Kind sensitivity: the Taskfile template differs by kind (service has
 // the full task verb set; CLI has cobra-shaped tasks; library is leaner).
-// Without this, `forge upgrade` on a CLI/library project produced a
+// Without this, `forge project upgrade` on a CLI/library project produced a
 // 100+ line diff that would have replaced the kind-correct Taskfile
 // with the service one — diff was correctly skipped (file was
 // "user-modified" from upgrade's perspective) but the dry-run output
@@ -198,17 +274,58 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// ship the Connect-server stack), gated via enabledForService. OTel is
 		// owned by serverkit now — there is no generated cmd/otel.go shim.
 		// cmd/<bin>/main.go is deliberately absent — see managedFilesForKindBinary.
-		{templateName: "cmd-tree-serve.go.tmpl", destPath: cmdTreePath(binName, "serve.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
-		{templateName: "cmd-tree-server.go.tmpl", destPath: cmdTreePath(binName, "server.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
+		//
+		// FOUR of the command-tree files are deliberately absent, for the
+		// same reason as main.go: they are scaffold-once, USER-OWNED, and
+		// written by the codegen pipeline's writeForgeScaffoldOnce.
+		//
+		//   - serve.go   the serve pipeline. Every statement is a decision:
+		//                the fail-closed auth posture, the interceptor order,
+		//                the payload caps, the CORS policy, the readiness
+		//                set, the teardown.
+		//   - server.go  the all-services ServeSpec — what this process
+		//                mounts and supervises, and whether an unmounted
+		//                declared service fails boot.
+		//   - version.go the three ldflags-stamped variables. `-X` targets a
+		//                variable by package path, so these MUST live in the
+		//                project's tree and renaming one is a build change.
+		//   - db.go      migration policy: fail hard on a dirty schema vs
+		//                auto-force in staging, whether "nothing pending" is
+		//                success, whether `down` is guarded.
+		//
+		// The invariant steps they used to carry moved into pkg/serverkit
+		// (Boot / AutoMigrate / RecordMounted / AddWorkers / RequireComplete /
+		// RESTHandler), pkg/cmdkit (PrintVersion) and pkg/migratekit (the
+		// migrator, the DSN rewrite, the sentinel folding). That is what makes
+		// scaffold-once safe: improvements to them now arrive through a
+		// forge/pkg bump instead of a re-render, so owning these files no
+		// longer costs the user the upgrade path.
+		//
+		// EVERY ONE of them also needs an UpgradeManagedPaths entry — they
+		// were Tier-1 in older projects, so a copy is on disk carrying
+		// forge's certification marker that no run writes anymore. See the
+		// exclusion list there; without it `--force-cleanup` deletes them.
 		{templateName: "cmd-tree-root.go.tmpl", destPath: cmdTreePath(binName, "root.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
-		{templateName: "cmd-tree-db.go.tmpl", destPath: cmdTreePath(binName, "db.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
-		{templateName: "cmd-tree-version.go.tmpl", destPath: cmdTreePath(binName, "version.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
+
+		// cmd/<bin>/cmd/db_source.go — the migration SOURCE, and the only
+		// part of the `db migrate` command that is genuinely re-derived:
+		// db/embed.go (forgedb.MigrationsFS) exists only when db/migrations/
+		// holds at least one .sql, so whether the symbol this file returns is
+		// even referenceable is a fact re-read from disk every run. Splitting
+		// it out of db.go is what lets db.go be owned: the user's policy
+		// edits and this re-derivation never touch the same file.
+		//
+		// Gated on the migrations feature, matching the scaffold-once db.go
+		// beside it: db_source.go's only consumer is db.go's openMigrator, so
+		// a project with migrations off would carry an unused file declaring
+		// an unused const.
+		{templateName: "cmd-tree-db-source.go.tmpl", destPath: cmdTreePath(binName, "db_source.go"), templated: true, tier: Tier1, enabledFor: enabledForMigrations},
 
 		// ── Tier 2: Checksum-protected, committed to git ──
 
 		// buf.yaml is templated against `api.rest` so a PRISTINE copy keeps
 		// the googleapis BSR dep in lockstep with the runtime vanguard wrap:
-		// `forge upgrade` auto-updates it as long as the user hasn't touched
+		// `forge project upgrade` auto-updates it as long as the user hasn't touched
 		// it. But buf.yaml is ALSO the only home for a project's buf `lint`
 		// config — the template body itself documents uncommenting STANDARD
 		// exceptions for migrated protos, and `forge lint --suggest-buf-excepts`
@@ -230,20 +347,16 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 
 		// Middleware — the thin auth-policy file + its policy-wiring
 		// test. Scaffolded once, then owned by the user; committed to
-		// git and protected by checksum so `forge upgrade` leaves user
+		// git and protected by checksum so `forge project upgrade` leaves user
 		// edits alone. The middleware MECHANISMS (auth modes, CORS,
 		// security headers, rate limiting, etc.) live in the forge
-		// libraries (pkg/authn, pkg/authz, pkg/middleware, pkg/observe)
+		// libraries (pkg/authn, pkg/middleware, pkg/observe)
 		// — projects scaffolded before the library split keep their old
 		// pkg/middleware/*.go copies; those files are user-owned and
 		// simply stop being managed here (see the
 		// migrations/v0.x-to-middleware-lib skill for hand-adoption).
 		{templateName: "middleware.go", destPath: "pkg/middleware/middleware.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2, enabledFor: enabledForService},
-		// role_resolver.go — the identity→roles seam for descriptor-driven
-		// authz (forge/pkg/authz). User-owned scaffold-once, same Tier-2
-		// never-clobber treatment as middleware.go.
-		{templateName: "role_resolver.go", destPath: "pkg/middleware/role_resolver.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 
 		// cmd/<bin>/cmd/commands.go — the user-owned cobra extension point the
 		// Tier-1 cmd/<bin>/cmd/root.go consumes (userCommands(deps)).
@@ -258,7 +371,7 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 }
 
 // UpgradeManagedPaths returns the set of project-relative paths that
-// `forge upgrade` (not `forge generate`) is responsible for emitting.
+// `forge project upgrade` (not `forge generate`) is responsible for emitting.
 // Used by `forge generate`'s stale-artifact sweep to exclude these
 // paths from the "stale codegen" candidate list: they're tracked in
 // `.forge/checksums.json` but only re-rendered by upgrade, so seeing
@@ -272,11 +385,11 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 // and means a kind/binary mismatch in detection doesn't accidentally
 // flag a managed file as stale.
 //
-// FRICTION 2026-06-05 (cp-forge audit-cleanup agent): `forge generate`
+// FRICTION 2026-06-05 (cp-forge project audit-cleanup agent): `forge generate`
 // warned 7 "stale" files — .github/CODEOWNERS, .golangci.yml,
 // cmd/main.go, cmd/db.go, cmd/version.go, .github/workflows/e2e.yml,
 // .github/pull_request_template.md — all of which are managed by
-// `forge upgrade`. The user worked around it by hand-flipping
+// `forge project upgrade`. The user worked around it by hand-flipping
 // `forked: true` in checksums.json, which silenced the warnings but
 // also disconnected the files from the upgrade pipeline. The right
 // fix is for the stale-sweep to know about the upgrade-managed set.
@@ -306,13 +419,55 @@ func UpgradeManagedPaths() map[string]bool {
 	for _, p := range []string{
 		// .github/* templates emitted by project_metadata.go's GitHub
 		// scaffold pass — Tier-1 in checksums but `forge generate` never
-		// re-emits them; `forge upgrade` does on version bumps.
+		// re-emits them; `forge project upgrade` does on version bumps.
 		".github/CODEOWNERS",
 		".github/pull_request_template.md",
 		".github/dependabot.yml",
 		".github/workflows/e2e.yml",
+		// The scaffold-once command-tree files — here for a MIGRATION
+		// reason, and they are the dangerous case this whole exclusion list
+		// exists for.
+		//
+		// Each of these used to be Tier-1, so every project scaffolded
+		// before its split has a copy on disk carrying forge's "Code
+		// generated" + forge:hash markers. Each is now scaffold-once and
+		// user-owned, so no `forge generate` run writes it and it never
+		// enters WrittenThisRun. Without these entries the stale sweep sees
+		// a certified file nobody emitted, calls it stale, and
+		// `--force-cleanup` DELETES it — files that, post-split, hold
+		// decisions the user may have edited: the serve pipeline, the
+		// all-services ServeSpec, the ldflags version stamp, and the
+		// migration policy.
+		//
+		// This is data loss, not a warning: the file is pristine (the user
+		// never touched it) in exactly the common case, and pristine is the
+		// condition under which the sweep deletes rather than reports.
+		//
+		// The bare cmd/cmd/<file>.go form is what the name-less union
+		// yields; the sweep compares against that same spelling.
+		cmdTreePath("", "serve.go"),
+		cmdTreePath("", "server.go"),
+		cmdTreePath("", "version.go"),
+		cmdTreePath("", "db.go"),
 	} {
 		out[p] = true
+	}
+	return out
+}
+
+// ManagedPathsFor returns the project-relative paths `forge project upgrade`
+// manages for THIS project, in manifest order.
+//
+// UpgradeManagedPaths is the union over every (kind, binary) combination — the
+// right question for the stale-artifact sweep, which must not flag a file just
+// because detection guessed a different shape. This is the narrower question a
+// user-facing path argument needs: "is this a file upgrade can write HERE",
+// answered against the project's own kind, binary mode, and binary name.
+func ManagedPathsFor(cfg *config.ProjectConfig) []string {
+	files := filterManagedFiles(managedFilesForCfg(cfg), cfg)
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		out = append(out, f.destPath)
 	}
 	return out
 }
@@ -332,7 +487,7 @@ func UpgradeManagedPaths() map[string]bool {
 //     is invariant across the (kind, binary) matrix — only the source
 //     template varies — so the union over combinations is safe (same
 //     posture as UpgradeManagedPaths).
-//   - The one-shot .github scaffolds written once at `forge new` time
+//   - The one-shot .github scaffolds written once at `forge project new` time
 //     (project_ci.go) and never re-emitted by `forge generate`.
 //     CODEOWNERS even carries the `yours: scaffolded once ... (starter)`
 //     banner; recording them as Tier-1 was a historical accident that
@@ -377,7 +532,7 @@ type ServiceInfo struct {
 }
 
 // buildTemplateData constructs the upgrade-lane render payload from a
-// project config. It is a thin alias for ForUpgrade (project_template_data.go),
+// project config. It is a thin alias for forUpgrade (project_template_data.go),
 // kept so existing call sites and tests read naturally in the upgrade lane.
 //
 // projectDir (when non-empty) is used to read the project's go.mod `go`
@@ -385,7 +540,7 @@ type ServiceInfo struct {
 // Go version. When projectDir is empty or go.mod can't be parsed, we fall
 // back to the host's detected version.
 func buildTemplateData(cfg *config.ProjectConfig, projectDir string) projectTemplateData {
-	return ForUpgrade(cfg, projectDir)
+	return forUpgrade(cfg, projectDir)
 }
 
 // renderManagedFile renders a managed file's template content.
@@ -449,19 +604,7 @@ func simpleDiff(path string, old, new []byte) string {
 	buf.WriteString(fmt.Sprintf("--- a/%s\n", path))
 	buf.WriteString(fmt.Sprintf("+++ b/%s\n", path))
 
-	// Simple line-by-line comparison showing context around changes
-	maxLen := len(oldLines)
-	if len(newLines) > maxLen {
-		maxLen = len(newLines)
-	}
-
 	const contextLines = 3
-	type hunk struct {
-		startOld int
-		startNew int
-		old      []string
-		new      []string
-	}
 
 	// Find changed regions
 	type change struct {
@@ -580,7 +723,7 @@ func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
 // RegenerateInfraFilesTracked is RegenerateInfraFiles routed through the
 // checksums chokepoint. With a non-nil cs every Tier-1 infra write:
 //
-//   - honors disowned entries (the user ran `forge disown`: the write
+//   - honors disowned entries (the user ran `forge project disown`: the write
 //     is skipped while the file exists — the raw os.WriteFile path this
 //     replaces violated the "forge never regenerates user-owned files"
 //     contract for cmd/*.go and friends);
@@ -652,8 +795,25 @@ func hasLegacyMiddlewareLayout(projectDir string) bool {
 // and optionally applies updates.
 //
 // When checkOnly is true, no files are written — it only reports what would change.
-// When force is true, user-modified files are overwritten without prompting.
+// When force is true, EVERY user-modified file is overwritten. Callers that
+// want to adopt specific files should use UpgradeSelection.
 func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly bool) ([]UpgradeResult, error) {
+	selection := ForceNone()
+	if force {
+		selection = ForceAll()
+	}
+	return UpgradeSelection(projectDir, cfg, selection, checkOnly)
+}
+
+// UpgradeSelection is Upgrade with a per-path force selection: only the files
+// the selection covers have user edits overwritten, everything else follows
+// the ordinary rules (pristine renders auto-update, user-modified files are
+// reported and skipped).
+//
+// A disowned file is never written regardless of the selection — ownership
+// transfer outranks force, which is the whole reason `forge project disown` is
+// the durable answer to "this file is mine now".
+func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceSelection, checkOnly bool) ([]UpgradeResult, error) {
 	data := buildTemplateData(cfg, projectDir)
 
 	cs, err := LoadChecksums(projectDir)
@@ -665,8 +825,8 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 
 	// Pre-library-split projects still carry the old pkg/middleware
 	// mechanism files (auth.go, claims.go, …). Those declare the same
-	// symbols as the thin policy pair (Claims, NewAuthInterceptor,
-	// Authorizer, …), so dropping middleware.go next to them would stop
+	// symbols as the thin policy pair (Claims, NewAuthInterceptor, …),
+	// so dropping middleware.go next to them would stop
 	// the package compiling. Their copies are user-owned and keep
 	// working; converging on the library is the user-driven
 	// migrations/v0.x-to-middleware-lib path, never an upgrade side
@@ -786,11 +946,12 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 		}
 
 		// User modified the file (or no checksum exists)
-		if force {
+		if force.Allows(f.destPath) {
 			result := UpgradeResult{
 				Path:   f.destPath,
 				Status: UpgradeUpdated,
 				Diff:   diff,
+				Forced: true,
 			}
 			if !checkOnly {
 				if writeErr := writeManagedFile(projectDir, f.destPath, expected, cs); writeErr != nil {

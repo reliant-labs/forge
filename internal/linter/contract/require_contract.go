@@ -55,6 +55,23 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
+	// Skip the app composition seam (internal/app). By forge's architecture
+	// this package is the explicit per-binary composition site — compose.go's
+	// NewComponents bag, the scaffold-once providers.go (*Infra and its
+	// DefaultClient accessor), lifecycle.go's typed Worker/Operator accessors,
+	// and the Tier-1 mounts_services.go Mount<Svc> surface. Its exported
+	// methods are wiring plumbing whose shape forge itself defines and
+	// (partially) regenerates — not a behavioral service contract — so
+	// requiring a contract.go here would demand an interface over forge's own
+	// composition machinery that no caller consumes polymorphically. The
+	// exemption is structural, not a bare path test: it applies only when the
+	// package actually carries the forge seam files (see
+	// isCompositionSeamPackage), so a hand-rolled unrelated `internal/app`
+	// package remains subject to the rule.
+	if isCompositionSeamPackage(pass, pkgPath) {
+		return nil, nil
+	}
+
 	// Honor forge.yaml's contracts.exclude AND the per-package
 	// //forge:exclude-contract header — these packages are intentionally kept
 	// contract-free (utility packages with no behavioral interface), opted out
@@ -64,26 +81,27 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	// Check if any struct has exported methods — but ONLY in hand-written
-	// files. Forge-generated files (e.g. authorizer_gen.go's Can/CanAccess/
-	// NewGeneratedAuthorizer, *_mock.go's mock methods) are the codegen OUTPUT
-	// of a contract, not a hand-authored behavioral surface, so they must not
-	// force a contract.go. A handler package whose only exported methods come
-	// from authorizer_gen.go is contract-defined by its proto service, not by a
-	// Go contract.go. Skipping generated files here keeps the rule pointed at
-	// genuine hand-written service packages.
+	// files. Forge-generated files (e.g. mock_gen.go / *_mock.go's mock
+	// methods) are the codegen OUTPUT of a contract, not a hand-authored
+	// behavioral surface, so they must not force a contract.go. A handler
+	// package whose only exported methods come from generated files is
+	// contract-defined by its proto service, not by a Go contract.go.
+	// Skipping generated files here keeps the rule pointed at genuine
+	// hand-written service packages.
 	//
-	// "Generated" is detected two ways (union): the canonical
-	// `// Code generated ... DO NOT EDIT.` header (ast.IsGenerated), which
-	// covers files like handlers/mocks/*_mock.go that don't use the _gen.go
-	// suffix, AND the `*_gen.go` filename convention as a belt-and-suspenders
-	// fallback.
+	// "Generated" is detected two ways (union): the shared
+	// isForgeGeneratedFile predicate (generated.go — the canonical
+	// `// Code generated ... DO NOT EDIT.` header, which covers files like
+	// handlers/mocks/*_mock.go that don't use the _gen.go suffix, plus the
+	// `// forge:hash=` self-certification marker), AND the `*_gen.go`
+	// filename convention as a belt-and-suspenders fallback.
 	hasExportedMethods := false
 	for _, file := range pass.Files {
 		if hasExportedMethods {
 			break
 		}
 		filename := pass.Fset.Position(file.Pos()).Filename
-		if strings.HasSuffix(filename, "_gen.go") || ast.IsGenerated(file) {
+		if strings.HasSuffix(filename, "_gen.go") || isForgeGeneratedFile(file) {
 			continue
 		}
 		for _, decl := range file.Decls {
@@ -141,4 +159,40 @@ func isInternalPackage(pkgPath string) bool {
 func isHandlerPackage(pkgPath string) bool {
 	return strings.Contains(pkgPath, "/internal/handlers/") ||
 		strings.HasPrefix(pkgPath, "internal/handlers/")
+}
+
+// composeSeamFiles are the forge-defined files of the app composition seam.
+// Their presence is what certifies an `internal/app` package as forge's
+// composition site (vs. a coincidentally-named user package):
+//
+//	compose.go          — the Components bag + NewComponents construction site
+//	providers.go        — the owned *Infra provider set (+ DefaultClient)
+//	mounts_services.go  — the Tier-1 typed Mount<Svc> surface + Inventory
+//	lifecycle.go        — the typed Worker/Operator supervised-surface accessors
+var composeSeamFiles = map[string]bool{
+	"compose.go":         true,
+	"providers.go":       true,
+	"mounts_services.go": true,
+	"lifecycle.go":       true,
+}
+
+// isCompositionSeamPackage reports whether the package under analysis is
+// forge's app composition seam: the module's `internal/app` package AND it
+// actually carries at least one of the forge seam files (composeSeamFiles).
+// Both halves matter — the path anchors the exemption to the one location
+// forge's architecture reserves for composition, and the file check makes it
+// structural rather than a path blacklist: an `internal/app` package that
+// does NOT carry the seam is an ordinary user package and stays subject to
+// the require-contract rule.
+func isCompositionSeamPackage(pass *analysis.Pass, pkgPath string) bool {
+	if pkgPath != "internal/app" && !strings.HasSuffix(pkgPath, "/internal/app") {
+		return false
+	}
+	for _, file := range pass.Files {
+		base := filepath.Base(pass.Fset.Position(file.Pos()).Filename)
+		if composeSeamFiles[base] {
+			return true
+		}
+	}
+	return false
 }

@@ -8,7 +8,7 @@ import (
 )
 
 // resolveImageTag computes the canonical docker-image tag that `forge
-// build --push` would push and that `forge deploy <env>` would reference
+// build --push` would push and that `forge env deploy <env>` would reference
 // when no explicit override and no per-env build-state file is present.
 //
 // The tag mirrors what dockerBuildProject actually tags the image with:
@@ -57,8 +57,8 @@ func resolveImageTag(ctx context.Context, _ string) (string, error) {
 
 // envImageTagFor returns the env's RESOLVED image tag for a given
 // (registry-less) image name, recovered from the rendered KCL manifests
-// (see KCLEntities.ManifestImageTags). This is the tag `forge deploy
-// <env>` references for that image, so `forge build --env <env>` defaults
+// (see KCLEntities.ManifestImageTags). This is the tag `forge env deploy
+// <env>` references for that image, so `forge build <env>` defaults
 // its build tag to it — build and deploy then push/pull the SAME tag by
 // construction.
 //

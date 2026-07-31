@@ -18,7 +18,7 @@
 // pipeline (internal/cli/generate_pipeline.go) — see the comment on each
 // featureDeps entry for the gate/step that justifies it. Adding a new
 // feature edge here is the single place to encode "X needs Y"; the
-// validator, derivation-consistency check, and `forge features` output
+// validator, derivation-consistency check, and `forge project features` output
 // all read from this one registry.
 
 package config
@@ -115,7 +115,7 @@ func hasDatabaseDriver(c *ProjectConfig) bool {
 // a load error naming both sides and the fix. All violations are batched
 // into validationIssues so the caller surfaces the full list at once.
 //
-// Called by LoadStrict AFTER ApplyDerivedDefaults, so the feature
+// Called by LoadProject AFTER ApplyDerivedDefaults, so the feature
 // accessors resolve against the effective (defaulted) shape — derivation
 // and explicit overrides are both folded in by the time we get here.
 func validateFeatureGraph(cfg *ProjectConfig) []validationIssue {
@@ -154,26 +154,12 @@ func validateFeatureGraph(cfg *ProjectConfig) []validationIssue {
 		}
 	}
 
-	// Component-shape → feature edge: an operator-kind component requires
-	// the experimental operators feature. This is shape→feature, not
-	// feature→feature, so it lives here rather than in featureDeps.
-	if !f.OperatorsEnabled() {
-		for i, comp := range cfg.Components {
-			if comp.IsOperator() {
-				out = append(out, validationIssue{
-					msg: fmt.Sprintf("components[%d] %q has kind=operator, which requires the experimental 'operators' feature, currently disabled", i, comp.Name),
-					fix: "set features.experimental.operators: true, or change the component kind",
-				})
-			}
-		}
-	}
-
 	return out
 }
 
 // FeatureDependencies returns the feature-graph edges for name as a flat
 // list of human-readable dependency labels (other feature names and
-// shape preconditions). Stable order. Used by `forge features` to print
+// shape preconditions). Stable order. Used by `forge project features` to print
 // each feature's deps. Returns an empty slice for a feature with no
 // edges.
 func FeatureDependencies(name FeatureName) []string {

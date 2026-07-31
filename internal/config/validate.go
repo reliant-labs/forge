@@ -5,6 +5,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -18,8 +19,8 @@ import (
 
 // configWarningSink is where non-fatal config warnings (deprecated
 // top-level keys) are written. It defaults to os.Stderr so the notice
-// reaches the user on every load path (forge generate / forge upgrade /
-// any caller of LoadStrict|LoadProject) without those callers having to
+// reaches the user on every load path (forge generate / forge project upgrade /
+// any caller of LoadProject) without those callers having to
 // thread a warnings slice through. The config package is otherwise
 // log-free; this is a single, swappable io.Writer rather than a logger so
 // tests can capture it (SetConfigWarningSink).
@@ -68,7 +69,12 @@ func partitionIssues(issues []validationIssue) (errs, warns []validationIssue) {
 // consistent layout. No-op when there are no warnings.
 func flushConfigWarnings(label string, warns []validationIssue) {
 	for _, w := range warns {
-		dedupKey := fmt.Sprintf("%s:%d:%s", label, w.line, w.msg)
+		// Dedup on the file's BASE NAME, not the label as given: a single
+		// command loads the same forge.yaml through several callers, some
+		// passing an absolute path and some the bare "forge.yaml", and keying
+		// on the raw label made those spellings look like different files —
+		// so every retired key printed once per caller.
+		dedupKey := fmt.Sprintf("%s:%d:%s", filepath.Base(label), w.line, w.msg)
 		if emittedConfigWarnings[dedupKey] {
 			continue
 		}
@@ -85,14 +91,20 @@ func flushConfigWarnings(label string, warns []validationIssue) {
 	}
 }
 
-// LoadStrict parses a forge.yaml byte stream into a ProjectConfig with
-// strict validation: unknown keys (typos, dropped fields) and missing
-// required fields are reported in a single error rather than silently
-// succeeding or failing on the first issue.
+// LoadProject is THE forge.yaml loader: it parses a forge.yaml byte stream
+// into a ProjectConfig with strict validation, derives the project kind from
+// the project's real sources, and applies the shape-derived section defaults.
+// Both the CLI loader and the generator's ReadProjectConfig route through it,
+// so the load rules live in exactly one place.
 //
-// path is used purely for error-message context (e.g. "forge.yaml" or
-// the absolute path); it is not opened. Pass an empty string for inline
-// data without a file backing.
+// Unknown keys (typos, dropped fields) and missing required fields are
+// reported in a single error rather than silently succeeding or failing on
+// the first issue.
+//
+// path locates the project on disk: its directory is read to derive the
+// project kind, and it prefixes error messages. It is never opened for the
+// config bytes themselves — the caller supplies those. A path with no
+// on-disk project behind it (byte-only loads) loads as a library.
 //
 // Behaviour:
 //
@@ -109,20 +121,11 @@ func flushConfigWarnings(label string, warns []validationIssue) {
 // All issues across the three phases are batched into a single
 // ValidationError; the caller sees the full list rather than just the
 // first failure.
-// The variadic components argument carries the per-component entities the
-// caller has already parsed from the project-root components.json (see
-// LoadProject). They are no longer part of forge.yaml: the loader injects
-// them into the returned config and DERIVES the project kind from them
-// (DeriveProjectKind) before running shape-derived defaults + the feature
-// graph. Callers with no components (the common test path, or a pure
-// library) pass none — and the project kind derives to library (no
-// components.json signal). Callers that need the empty-service-shell
-// (components.json present but empty → service) must go through LoadProject.
-func LoadStrict(data []byte, path string, components ...ComponentConfig) (*ProjectConfig, error) {
-	return loadStrict(data, path, components, len(components) > 0)
-}
-
-func loadStrict(data []byte, path string, components []ComponentConfig, hasComponentsFile bool) (*ProjectConfig, error) {
+//
+// What a project CONTAINS is not part of this: components are read from the
+// code that declares them (codegen.DiscoverProjectComponents), never from
+// forge.yaml and never from a field on the returned config.
+func LoadProject(data []byte, path string) (*ProjectConfig, error) {
 	label := path
 	if label == "" {
 		label = "forge.yaml"
@@ -163,23 +166,17 @@ func loadStrict(data []byte, path string, components []ComponentConfig, hasCompo
 		}
 	}
 
-	// Inject any component entities and derive the project kind BEFORE
-	// shape-derived defaults run (feature derivation reads kind). Components
-	// carry no YAML position, so their validation issues fall back to the
-	// file root.
-	if len(components) > 0 {
-		cfg.Components = components
-	}
-	// Kind derives from the project's REAL sources — the KCL deploy tree, the
-	// service registry (pkg/app), and the cmd/ binary — read relative to the
-	// forge.yaml directory. There is no components.json manifest and no
-	// authored `kind:`/`services:` bit. When there is no on-disk project to
-	// read (byte-only test loads with a synthetic path), fall back to the
-	// component list alone.
+	// Derive the project kind BEFORE shape-derived defaults run (feature
+	// derivation reads kind). Kind comes from the project's REAL sources —
+	// the KCL deploy tree, the pkg/app composition root, internal/handlers/,
+	// the service protos, and cmd/<name>/main.go — read relative to the
+	// forge.yaml directory. When there is no on-disk project to read
+	// (byte-only loads against a synthetic path) there is nothing to read a
+	// shape off, so the config is a bare module: library.
 	if dir := sourceProjectDir(path); dir != "" {
-		cfg.Kind = deriveProjectKindFromSources(dir, cfg.Components)
+		cfg.Kind = deriveProjectKindFromSources(dir)
 	} else {
-		cfg.Kind = DeriveProjectKind(cfg.Components, hasComponentsFile)
+		cfg.Kind = ProjectKindLibrary
 	}
 
 	// Phase 3: required-field validation. The yaml root is threaded
@@ -187,14 +184,14 @@ func loadStrict(data []byte, path string, components []ComponentConfig, hasCompo
 	// (or the existing-field's own line, when it's present but invalid).
 	// Without this, "module_path is required" reports no location and
 	// the model has to grep — model-friendly file:line:col on every
-	// issue is the goal of the LoadStrict surface.
+	// issue is the goal of the loader surface.
 	issues = append(issues, validateRequired(&cfg, root)...)
 
-	// Phase 4: name-shape validation across services/binaries/frontends.
-	// This catches Go-package collisions and reserved-word/identifier
-	// shapes that would otherwise blow up the generator with a confusing
+	// Phase 4: name-shape validation over the frontends block. This
+	// catches Go-package collisions and reserved-word/identifier shapes
+	// that would otherwise blow up the generator with a confusing
 	// downstream error.
-	issues = append(issues, validateServices(&cfg, root)...)
+	issues = append(issues, validateFrontendNames(&cfg, root)...)
 
 	// Partition non-fatal warnings (deprecated top-level keys) out of the
 	// gating error set. Warnings are flushed to the user unconditionally —
@@ -223,21 +220,6 @@ func loadStrict(data []byte, path string, components []ComponentConfig, hasCompo
 		return nil, &ValidationError{Path: label, Issues: graphIssues}
 	}
 	return &cfg, nil
-}
-
-// LoadProject is the canonical project loader: it parses the global
-// forge.yaml bytes, then runs the full LoadStrict validation + kind
-// derivation + shape-derived defaults. There is no components.json manifest —
-// the component inventory and project kind derive from the project's real
-// sources (proto descriptor, service registry, KCL deploy tree, cmd/
-// binaries) read relative to `path` (see deriveProjectKindFromSources). When
-// `path` points at no on-disk project (byte-only test loads), the kind falls
-// back to library.
-//
-// This is the entry point both the CLI loader and the generator's
-// ReadProjectConfig route through, so the load rules live in one place.
-func LoadProject(forgeYAML []byte, path string) (*ProjectConfig, error) {
-	return loadStrict(forgeYAML, path, nil, false)
 }
 
 // ValidationError aggregates all forge.yaml validation issues into a
@@ -308,31 +290,27 @@ type validationIssue struct {
 	warning bool
 }
 
-// removedKeyHint carries the migration guidance for a forge.yaml key
-// that was deliberately removed from the schema (as opposed to a typo).
-// When strict validation hits one of these, the error message explains
-// what replaced the key instead of emitting a generic
-// "unknown key — did you mean ...?" that would mislead an agent into
-// renaming the key rather than migrating it.
-type removedKeyHint struct {
-	// removedIn names the change that removed the key — a migration /
-	// rework era rather than a semver (forge has no released tags to
-	// pin against). Shown in the error message for context.
-	removedIn string
-	// replacement is the one-line "what to do instead" guidance. It is
-	// emitted as the issue's Fix: hint, so keep it imperative and
-	// self-contained (mention the skill that documents the migration).
-	replacement string
-}
-
-// removedSchemaKeys maps a normalized key path to its migration hint.
+// removedSchemaKeys maps a normalized key path of a forge.yaml key that
+// was deliberately removed from the schema (as opposed to a typo) to the
+// one-line "what to do instead" guidance emitted as the issue's Fix:
+// hint. When validation hits one of these, that hint replaces the generic
+// "unknown key — did you mean ...?", which would otherwise mislead an
+// agent into renaming the key rather than migrating it.
+//
+// A hint is written for someone who has to edit this file right now, so
+// it is imperative, self-contained, and names the skill documenting the
+// migration where one exists. It states the CURRENT model — never why an
+// old key stopped working. Which internal rework retired a key, and
+// whether it was load-bearing before it went, are facts about forge's
+// own history: they belong in the per-entry comments below (and in the
+// audit trail), not in a message a user reads.
 //
 // Path normalization: slice indices are collapsed to "[]" (e.g.
 // "services[3].dev_target" matches the "services[].dev_target" entry),
 // so one entry covers every element of a list. Top-level keys use the
-// bare key name. Map-valued sections (pack_overrides.<name>) carry
-// user-defined segments and so cannot be matched here — no removed key
-// has ever lived under one.
+// bare key name. Keys nested under a user-defined map segment (e.g. a
+// component's `ports.<name>`) cannot be matched here — a removed key
+// must be a fixed schema path, not one below a user-chosen map key.
 //
 // Audit trail (git history of config.go):
 //   - k8s.provider: removed in 01bd491 ("remove dead BinaryConfig.Kind
@@ -349,121 +327,143 @@ type removedKeyHint struct {
 //     because mid-migration projects must still LOAD; it is reported as
 //     a non-fatal WARNING (not silently skipped) so the user migrates it
 //     before the next forge.yaml rewrite drops it.
-var removedSchemaKeys = map[string]removedKeyHint{
-	"k8s.provider": {
-		removedIn: "the deploy-target-architecture rework",
-		replacement: "remove the key — per-environment cluster choice now lives in KCL " +
-			"`forge.K8sCluster` blocks under deploy/kcl/; see `forge skill load migrations/environments-to-kcl`.",
-	},
+var removedSchemaKeys = map[string]string{
+	// The auth VALIDATOR is no longer config — it is owned code. Picking a
+	// validator (JWT/Clerk/Auth0/custom) is a code-wiring choice; the
+	// per-DEPLOYMENT values it reads are typed config fields like every
+	// other per-environment value. Each service scaffolds an editable
+	// internal/app/auth.go whose SetupAuth() the generated cmd serve calls.
+	"auth.provider": "delete the key — the validator is picked in code now. Edit " +
+		"internal/app/auth.go's SetupAuth() (default: JWT); pin jwt_issuer / " +
+		"jwt_audience / jwt_jwks_url in deploy/kcl/<env>/config.k and jwt_secret " +
+		"in the env's secret provider.",
+	"auth.jwt": "delete the block — jwt_issuer / jwt_audience / jwt_jwks_url are " +
+		"typed config fields (proto/config/v1/config.proto), pinned per env in " +
+		"deploy/kcl/<env>/config.k and read by internal/app/auth.go's SetupAuth().",
+	"auth.api_key": "delete the block — auth is owned code now. Build an API-key " +
+		"validator in internal/app/auth.go's SetupAuth() if you need one.",
+	// The whole `auth:` block went with its last field. It survived the
+	// auth-mechanism-to-code move as an empty struct, so a bare `auth:`
+	// parsed clean and configured nothing.
+	"auth": "delete the block — authentication is owned code. Edit " +
+		"internal/app/auth.go's SetupAuth() to pick the validator; pin " +
+		"jwt_issuer / jwt_audience / jwt_jwks_url in deploy/kcl/<env>/config.k " +
+		"and jwt_secret in the env's secret provider.",
+	// version: never read by anything. The binary's version is stamped at
+	// link time from a KCL GoBuild.ldflags `-X` entry, which is per-env and
+	// therefore cannot live in a project-global file.
+	"version": "delete the key — stamp the binary version from a KCL " +
+		"GoBuild.ldflags `-X` entry in deploy/kcl/<env>/main.k, which is where " +
+		"per-environment build facts live.",
+	// hot_reload lived at the top level AND under features:. Only the
+	// features one was ever resolved by a caller.
+	"hot_reload": "move the value to `features.hot_reload`, which is the live switch.",
+	// ci.go_version was written into the workflow template data and read by
+	// no template: every setup-go step pins with `go-version-file: go.mod`,
+	// so the key changed nothing and a project that set it got a CI Go
+	// version it had not asked for, with no warning.
+	"ci.go_version": "delete the key — CI reads the toolchain from go.mod " +
+		"(`go-version-file: go.mod` in every setup-go step), so set the version " +
+		"in go.mod and CI follows.",
+	// ci.extra_jobs was a declared "user extension point" that the workflow
+	// generator never read: the template ranged over a struct field nothing
+	// populated, so every declared job silently vanished.
+	"ci.extra_jobs": "delete the block and add the job directly to .github/workflows/ci.yml — " +
+		"that file is scaffold-once and yours to edit; forge never re-renders it.",
+	// lint.contract had no reader. Whether the contract lint runs is
+	// features.contracts.
+	"lint.contract": "delete the key — set `features.contracts: false` to turn the contract " +
+		"lint off, or list the package under `contracts.exclude` to exempt just that package.",
+	// The contract severity dials had no reader either: the contract rules
+	// are unconditional and the only real escape hatch is contracts.exclude.
+	"contracts.strict": "delete the key — the contract rules are unconditional. Turn the whole " +
+		"lint off with `features.contracts: false`, or exempt one package via `contracts.exclude`.",
+	"contracts.allow_exported_vars": "delete the key — exempt the package via `contracts.exclude`, or opt it out " +
+		"in code with a `// forge:exclude-contract` package-doc directive.",
+	"contracts.allow_exported_funcs": "delete the key — exempt the package via `contracts.exclude`, or opt it out " +
+		"in code with a `// forge:exclude-contract` package-doc directive.",
+	// The pack subsystem was RETIRED wholesale. What packs used to install is
+	// now split across owned scaffold + libraries: frontend components
+	// (the auth UI) are owned scaffold you edit directly, and auth /
+	// audit are code plus the forge/pkg/auth, forge/pkg/apikey, forge/pkg/audit
+	// libraries. There is nothing to re-install and nothing to migrate — the
+	// key simply drops. `features.packs` (the feature that gated the subsystem)
+	// went with it.
+	"packs": "delete the key — packs are no longer supported. Frontend components are owned " +
+		"scaffold (`forge skill load frontend`); auth and audit are code + libraries " +
+		"(`forge skill load auth`).",
+	"pack_overrides": "delete the block — there are no packs to override. " +
+		"Frontend components are owned scaffold and auth/audit are code + libraries (`forge skill load auth`).",
+	"features.packs": "delete the key — the `packs` feature no longer exists. " +
+		"Frontend components are owned scaffold; auth/audit are code + libraries (`forge skill load auth`).",
+	"k8s.provider": "remove the key — per-environment cluster choice now lives in KCL " +
+		"`forge.K8sCluster` blocks under deploy/kcl/; see `forge skill load migrations/environments-to-kcl`.",
 	// deploy.provider was never read: the CI provider lives in `ci.provider`
 	// (generate_ci.go reads cfg.CI.Provider). Removed in the forge.yaml
 	// schema cleanup (FORGE_SHAPE_REDESIGN §4 — deploy is pipeline-control
 	// only; provider belongs to ci).
-	"deploy.provider": {
-		removedIn: "the forge.yaml schema cleanup (deploy is pipeline-control only)",
-		replacement: "delete the key — the CI provider is set via `ci.provider` (github is the " +
-			"default); `deploy.provider` was never read.",
-	},
+	"deploy.provider": "delete the key — the CI provider is set via `ci.provider` (github is the default).",
 	// kind: never lived in forge.yaml. Project kind DERIVES from the
 	// project's real sources — the KCL deploy tree, the service registry, the
 	// service handlers, and cmd/ binaries. There is no manifest.
-	"kind": {
-		removedIn: "the move to real-source derivation (kind is not authored)",
-		replacement: "delete the key — project kind derives from the real sources: the KCL deploy " +
-			"tree (deploy/kcl/), the service registry (pkg/app/services.go), the service handlers " +
-			"(internal/handlers/), or a cmd/ binary.",
-	},
+	"kind": "delete the key — project kind derives from the real sources: the KCL deploy " +
+		"tree (deploy/kcl/), the service registry (pkg/app/services.go), the service handlers " +
+		"(internal/handlers/), or a cmd/ binary.",
 	// components/services/binaries: forge.yaml is GLOBAL-only. Per-service
 	// components are DISCOVERED from real sources (proto descriptor for
 	// services, owned code for workers/operators/binaries), never a manifest.
-	"components": {
-		removedIn: "the move to real-source derivation (forge.yaml is global-only)",
-		replacement: "delete the key — components are discovered from the real sources (proto " +
-			"services, internal/handlers/, cmd/ binaries), not authored in forge.yaml or a manifest.",
-	},
-	"services": {
-		removedIn: "the move to real-source derivation (forge.yaml is global-only)",
-		replacement: "delete the key — services are discovered from the proto descriptor + " +
-			"internal/handlers/; add one with `forge add service <name>`.",
-	},
-	"binaries": {
-		removedIn:   "the move to real-source derivation (forge.yaml is global-only)",
-		replacement: "delete the key — binaries are discovered from their cmd/<name>/main.go; add one with `forge add binary <name>`.",
-	},
+	"components": "delete the key — components are discovered from the real sources (proto " +
+		"services, internal/handlers/, cmd/ binaries), not authored in forge.yaml or a manifest.",
+	"services": "delete the key — services are discovered from the proto descriptor + " +
+		"internal/handlers/; add one with `forge scaffold service <name>`.",
+	// packages: was never a codegen input — the bootstrap/injector pass has
+	// always walked internal/*/contract.go, so a project whose block was
+	// deleted still got every package wired. It steered only the reporters
+	// (`forge project map`, `forge project audit`, the architecture doc),
+	// which made a stale entry name a package that does not exist while
+	// hiding one that does.
+	"packages": "delete the key — an internal package is declared by internal/<name>/contract.go, " +
+		"and its outbound-boundary claim by the `//forge:outbound-io` marker in its own source; " +
+		"add one with `forge scaffold package <name> [--type adapter]`.",
+	"binaries": "delete the key — binaries are discovered from their cmd/<name>/main.go; add one with `forge scaffold binary <name>`.",
 	// test: backed the orphaned `forge test --env=<env>` port-forward flow,
-	// superseded by the `forge up --env=<env> && go test` two-command loop.
+	// superseded by the `forge env up <env> && go test` two-command loop.
 	// The per-env recipe (forwards + env + command) was removed; drive e2e
-	// suites with a plain `go test` after `forge up`.
-	"test": {
-		removedIn: "the removal of the orphaned `forge test --env` flow (use `forge up && go test`)",
-		replacement: "delete the key — bring the env up with `forge up --env=<env>` and run the " +
-			"suite with a plain `go test` (port-forward and env-vars are no longer declared in forge.yaml).",
-	},
-	"components[].type": {
-		removedIn:   "the component-model unification (kind replaces type)",
-		replacement: "delete `type:` and set `kind:` instead (go_service → server).",
-	},
-	"binaries[].kind": {
-		removedIn: "the deploy-target-architecture rework",
-		replacement: "remove the key — binary kinds (cron/oneshot) were never implemented; " +
-			"all `forge add binary` entries are long-running.",
-	},
-	"services[].dev_target": {
-		removedIn: "the KCL polymorphic-deploy migration",
-		replacement: "move host/cluster placement to the per-env `deploy:` field on the KCL " +
-			"`forge.Service` schema; see `forge skill load migrations/dev-target-to-kcl-deploy`.",
-	},
+	// suites with a plain `go test` after `forge env up`.
+	"test": "delete the key — bring the env up with `forge env up <env>` and run the " +
+		"suite with a plain `go test` (port-forward and env-vars are no longer declared in forge.yaml).",
+	"components[].type": "delete `type:` and set `kind:` instead (go_service → server).",
+	"binaries[].kind": "remove the key — every `forge scaffold binary` entry is long-running; " +
+		"there are no binary kinds.",
+	"services[].dev_target": "move host/cluster placement to the per-env `deploy:` field on the KCL " +
+		"`forge.Service` schema; see `forge skill load migrations/dev-target-to-kcl-deploy`.",
 	// serve/served_by shipped only on an unreleased branch (never adopted
 	// downstream) before being replaced by registration-in-code: what a
 	// binary serves is the row list in pkg/app/services.go, not a yaml
 	// knob.
-	"components[].serve": {
-		removedIn: "the registration-in-code rework (what a binary serves is code, not config)",
-		replacement: "delete the key — to stop serving a service from this binary, delete its " +
-			"serviceRow line in pkg/app/services.go and leave a comment naming the binary that " +
-			"serves it; see the `services` skill (Types-Only Services).",
-	},
-	"components[].served_by": {
-		removedIn: "the registration-in-code rework (what a binary serves is code, not config)",
-		replacement: "delete the key — document the serving binary as a comment next to the " +
-			"deleted serviceRow line in pkg/app/services.go; see the `services` skill " +
-			"(Types-Only Services).",
-	},
+	"components[].serve": "delete the key — what a binary serves is code: to stop serving a " +
+		"service from this binary, delete its serviceRow line in pkg/app/services.go and leave a " +
+		"comment naming the binary that serves it; see the `services` skill (Types-Only Services).",
+	"components[].served_by": "delete the key — document the serving binary as a comment next to the " +
+		"deleted serviceRow line in pkg/app/services.go; see the `services` skill " +
+		"(Types-Only Services).",
 	// stack.{backend,database,proto,deploy,ci} were "forward-looking
 	// declarations" that no codegen path ever read — they DUPLICATED the
 	// canonical sources. Removed in the forge.yaml schema cleanup
 	// (FORGE_SHAPE_REDESIGN §4). Only `stack.frontend` survives. Each old
 	// sub-block points the user at the real source of truth.
-	"stack.backend": {
-		removedIn: "the forge.yaml schema cleanup (stack was forward-looking, never consumed)",
-		replacement: "delete the key — backend language/framework is not a codegen input; " +
-			"forge projects are Go + Connect RPC.",
-	},
-	"stack.database": {
-		removedIn:   "the forge.yaml schema cleanup (stack duplicated database.driver)",
-		replacement: "delete the key and set the driver under `database.driver` (postgres | none).",
-	},
-	"stack.proto": {
-		removedIn:   "the forge.yaml schema cleanup (stack.proto was never consumed)",
-		replacement: "delete the key — the proto toolchain is buf; there is no per-project toggle.",
-	},
-	"stack.deploy": {
-		removedIn: "the forge.yaml schema cleanup (stack.deploy duplicated docker.registry + per-env KCL)",
-		replacement: "delete the key — the image registry lives in `docker.registry`, and the " +
-			"deploy target/cluster is declared per-env in `deploy/kcl/<env>/main.k` (forge.K8sCluster).",
-	},
-	"stack.ci": {
-		removedIn:   "the forge.yaml schema cleanup (stack.ci duplicated ci.provider)",
-		replacement: "delete the key and set the CI provider under `ci.provider` (github is the default).",
-	},
+	"stack.backend": "delete the key — backend language/framework is not a codegen input; " +
+		"forge projects are Go + Connect RPC.",
+	"stack.database": "delete the key and set the driver under `database.driver` (postgres | none).",
+	"stack.proto":    "delete the key — the proto toolchain is buf; there is no per-project toggle.",
+	"stack.deploy": "delete the key — the image registry lives in `docker.registry`, and the " +
+		"deploy target/cluster is declared per-env in `deploy/kcl/<env>/main.k` (forge.K8sCluster).",
+	"stack.ci": "delete the key and set the CI provider under `ci.provider` (github is the default).",
 	// deploy graduated from experimental to a stable kind-derived flag in
 	// the front-door rework; projects scaffolded in the experimental
 	// window still carry the old nesting.
-	"features.experimental.deploy": {
-		removedIn: "the deploy-feature graduation (experimental → stable, derived from kind)",
-		replacement: "move the value to `features.deploy` — or delete it entirely if it matches " +
-			"the derived default (true for kind: service).",
-	},
+	"features.experimental.deploy": "move the value to `features.deploy` — or delete it entirely if it matches " +
+		"the derived default (true for kind: service).",
 }
 
 // sliceIndexRe matches "[<digits>]" path segments so removed-key lookup
@@ -493,7 +493,7 @@ func normalizeKeyPath(p string) string {
 //     the `environments-to-kcl` migration skill.
 var deprecatedTopLevelKeys = map[string]string{
 	"environments": "this key is no longer part of the forge.yaml schema and will be DROPPED on the next " +
-		"forge.yaml rewrite (forge generate / forge upgrade re-serialize the file). Migrate per-env config " +
+		"forge.yaml rewrite (forge generate / forge project upgrade re-serialize the file). Migrate per-env config " +
 		"before you lose it: per-env deploy info moves to KCL `forge.K8sCluster` blocks and per-env app config " +
 		"moves to sibling `config.<env>.yaml` files — run `forge skill load migrations/environments-to-kcl`.",
 }
@@ -511,8 +511,8 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	// We only descend into struct mappings here. Map[string]X with
-	// declared key type just accepts anything (e.g. PackOverrides), so
+	// We only descend into struct mappings here. Map[string]X with a
+	// declared key type just accepts anything (user-chosen keys), so
 	// no unknown-key warning at that layer.
 	if t.Kind() != reflect.Struct {
 		return nil
@@ -564,12 +564,12 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 			// the deprecation is visible and self-healing. Genuine typos
 			// (NOT in removedSchemaKeys) stay fatal below — that distinction
 			// is the whole point of the map.
-			if hint, removed := removedSchemaKeys[normalizeKeyPath(full)]; removed {
+			if fix, removed := removedSchemaKeys[normalizeKeyPath(full)]; removed {
 				out = append(out, validationIssue{
 					line:    keyNode.Line,
 					column:  keyNode.Column,
-					msg:     fmt.Sprintf("%q was removed in %s", full, hint.removedIn),
-					fix:     hint.replacement,
+					msg:     fmt.Sprintf("%q is no longer a forge.yaml key", full),
+					fix:     fix,
 					warning: true,
 				})
 				continue
@@ -608,8 +608,8 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 			}
 		case reflect.Map:
 			// Map[string]Struct: descend into each entry's value, where
-			// the key is user-defined (e.g. pack name) so we can't
-			// validate the key itself.
+			// the key is user-defined (e.g. a component's port names) so
+			// we can't validate the key itself.
 			if ft.Elem().Kind() == reflect.Struct && valNode.Kind == yaml.MappingNode {
 				for j := 0; j+1 < len(valNode.Content); j += 2 {
 					entryKey := valNode.Content[j]
@@ -762,7 +762,6 @@ func splitYAMLErrorLines(err error) []string {
 func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	var out []validationIssue
 	out = append(out, validateProjectFields(cfg, root)...)
-	out = append(out, validateComponents(cfg, root)...)
 	out = append(out, validateFrontends(cfg, root)...)
 	out = append(out, validateORMDriver(cfg, root)...)
 	out = append(out, validateConfigGuard(cfg, root)...)
@@ -774,21 +773,39 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 // non-empty value outside {off, warn, error} (case/alias-normalized) is a
 // fatal, clearly-explained error rather than a silently-ignored typo.
 func validateConfigGuard(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
-	raw := strings.TrimSpace(cfg.Config.EnforceTypedAccess)
-	if raw == "" {
-		return nil
+	var out []validationIssue
+
+	if raw := strings.TrimSpace(cfg.Config.EnforceTypedAccess); raw != "" {
+		switch strings.ToLower(raw) {
+		case EnforceTypedAccessOff, EnforceTypedAccessWarn, EnforceTypedAccessError, "warning":
+			// valid
+		default:
+			line, col := findNodePos(root, []string{"config", "enforce_typed_access"})
+			out = append(out, validationIssue{
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("config.enforce_typed_access value %q is invalid", cfg.Config.EnforceTypedAccess),
+				fix:    "use one of: off, warn, error (absent defaults to warn).",
+			})
+		}
 	}
-	switch strings.ToLower(raw) {
-	case EnforceTypedAccessOff, EnforceTypedAccessWarn, EnforceTypedAccessError, "warning":
-		return nil
+
+	if raw := strings.TrimSpace(cfg.Config.EnforceComponentObserve); raw != "" {
+		switch strings.ToLower(raw) {
+		case EnforceComponentObserveOff, EnforceComponentObserveError:
+			// valid
+		default:
+			line, col := findNodePos(root, []string{"config", "enforce_component_observe"})
+			out = append(out, validationIssue{
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("config.enforce_component_observe value %q is invalid", cfg.Config.EnforceComponentObserve),
+				fix:    "use one of: error, off (absent defaults to error).",
+			})
+		}
 	}
-	line, col := findNodePos(root, []string{"config", "enforce_typed_access"})
-	return []validationIssue{{
-		line:   line,
-		column: col,
-		msg:    fmt.Sprintf("config.enforce_typed_access value %q is invalid", cfg.Config.EnforceTypedAccess),
-		fix:    "use one of: off, warn, error (absent defaults to warn).",
-	}}
+
+	return out
 }
 
 // validateProjectFields checks the top-level project identity fields
@@ -830,62 +847,9 @@ func validateProjectFields(cfg *ProjectConfig, root *yaml.Node) []validationIssu
 			fix:    "use a path like 'github.com/<org>/<project>' (must contain a slash, no spaces).",
 		})
 	}
-	// kind is no longer a forge.yaml field — it is DERIVED from the
-	// components (DeriveProjectKind) before validateRequired runs, so it is
-	// always one of the valid values and needs no validation here.
-
-	return out
-}
-
-// validateComponents checks per-component required fields and the
-// enumerated values (name, kind, schedule-for-cron).
-func validateComponents(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
-	var out []validationIssue
-
-	for i, comp := range cfg.Components {
-		prefix := fmt.Sprintf("components[%d]", i)
-		if strings.TrimSpace(comp.Name) == "" {
-			// Position at the parent components[i] mapping so the model
-			// can open the right block and add the missing field.
-			line, col := findNodePos(root, []string{"components", fmt.Sprintf("[%d]", i)})
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("%s.name is required", prefix),
-				fix:    "add a 'name:' for this component entry.",
-			})
-		}
-		// components[].kind selects the scaffold/deploy treatment. Empty
-		// defaults to "server" via EffectiveKind, so only validate a set
-		// value.
-		if k := strings.ToLower(strings.TrimSpace(comp.Kind)); k != "" {
-			switch k {
-			case ComponentKindServer, ComponentKindWorker, ComponentKindCron,
-				ComponentKindOperator, ComponentKindBinary:
-			default:
-				line, col := findNodePos(root, []string{"components", fmt.Sprintf("[%d]", i), "kind"})
-				out = append(out, validationIssue{
-					line:   line,
-					column: col,
-					msg:    fmt.Sprintf("%s.kind value %q is invalid", prefix, comp.Kind),
-					fix:    "use one of: server, worker, cron, operator, binary.",
-				})
-			}
-		}
-		// components[].schedule is required for kind=cron and meaningless
-		// otherwise.
-		if strings.EqualFold(strings.TrimSpace(comp.Kind), ComponentKindCron) && strings.TrimSpace(comp.Schedule) == "" {
-			line, col := findNodePos(root, []string{"components", fmt.Sprintf("[%d]", i)})
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("%s.schedule is required for kind=cron", prefix),
-				fix:    "add a 5-field cron expression, e.g. schedule: \"*/5 * * * *\".",
-			})
-		}
-		// components[].path is intentionally not required: the cli loader
-		// applies a kind-derived default when the user omits it.
-	}
+	// kind is not a forge.yaml field — it is DERIVED from the project's real
+	// sources (deriveProjectKindFromSources) before validateRequired runs, so
+	// it is always one of the valid values and needs no validation here.
 
 	return out
 }
@@ -1106,24 +1070,22 @@ var goReservedWords = map[string]bool{
 	"iota": true, "init": true,
 }
 
-// validateServices walks services / binaries / frontends and rejects
-// name shapes that would silently break codegen downstream:
+// validateFrontendNames rejects frontend name shapes that would silently
+// break codegen downstream:
 //
 //   - empty name (or name that normalises to empty)
 //   - non-Go-legal package shape after normalisation (starts with a
 //     digit, contains punctuation/space that survives `ServicePackage`)
-//   - normalisation collisions across the same slice (e.g.
-//     `admin-server` and `admin_server` both → `admin_server` since
-//     hyphens normalise to underscores) AND across slices (a service
-//     and a binary with the same canonical form would write to the same
-//     scaffold directory)
+//   - normalisation collisions (e.g. `admin-server` and `admin_server`
+//     both → `admin_server` since hyphens normalise to underscores)
 //   - the canonical form lands on a Go reserved word / predeclared
 //     identifier (e.g. "select", "type"), which would compile-fail
 //
 // The lint is name-shape-only — it does not look at config semantics.
 // Returning the issues batched lets ValidationError surface every
-// problem in one go.
-func validateServices(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+// problem in one go. Component names go through the same rules at
+// `forge scaffold` time, where the name is actually chosen.
+func validateFrontendNames(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	var out []validationIssue
 
 	// Track canonical -> first-seen-source so collisions can name both
@@ -1182,9 +1144,6 @@ func validateServices(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 		seen[canonical] = source
 	}
 
-	for i, comp := range cfg.Components {
-		check(comp.Name, fmt.Sprintf("components[%d]", i), []string{"components", fmt.Sprintf("[%d]", i), "name"})
-	}
 	for i, fe := range cfg.Frontends {
 		check(fe.Name, fmt.Sprintf("frontends[%d]", i), []string{"frontends", fmt.Sprintf("[%d]", i), "name"})
 	}

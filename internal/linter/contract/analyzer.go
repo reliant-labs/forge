@@ -106,11 +106,22 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	nodeFilter := []ast.Node{(*ast.FuncDecl)(nil)}
 
+	// Methods declared in generated files are exempt (see generated.go):
+	// codegen output (mock methods, observability wrappers) is forge's
+	// responsibility — the user cannot durably remove a method the next
+	// `forge generate` re-emits. Hand-written methods on the same types
+	// are still enforced.
+	genFiles := generatedFilenames(pass)
+
 	insp.Preorder(nodeFilter, func(n ast.Node) {
 		funcDecl := n.(*ast.FuncDecl)
 
 		// Only care about methods (has receiver).
 		if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+			return
+		}
+
+		if genFiles[pass.Fset.Position(funcDecl.Pos()).Filename] {
 			return
 		}
 

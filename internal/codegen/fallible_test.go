@@ -160,10 +160,9 @@ func TestDetectDepsDBField_HasDB(t *testing.T) {
 import "github.com/reliant-labs/forge/pkg/orm"
 
 type Deps struct {
-	Logger     interface{}
-	Config     interface{}
-	Authorizer interface{}
-	DB         orm.Context
+	Logger interface{}
+	Config interface{}
+	DB     orm.Context
 }
 `
 	if err := os.WriteFile(filepath.Join(dir, "service.go"), []byte(src), 0644); err != nil {
@@ -184,9 +183,8 @@ func TestDetectDepsDBField_NoDB(t *testing.T) {
 	src := `package api
 
 type Deps struct {
-	Logger     interface{}
-	Config     interface{}
-	Authorizer interface{}
+	Logger interface{}
+	Config interface{}
 }
 `
 	if err := os.WriteFile(filepath.Join(dir, "service.go"), []byte(src), 0644); err != nil {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/docs"
 )
@@ -27,7 +28,7 @@ Examples:
 	}
 
 	cmd.AddCommand(newDocsGenerateCmd())
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 func newDocsGenerateCmd() *cobra.Command {
@@ -64,12 +65,14 @@ Customize output by providing your own templates via the custom_templates_dir co
 				}
 			}
 
-			if err := docs.Run(".", store.Config(), overrides); err != nil {
-				return err
-			}
-
-			fmt.Println("\n✅ Documentation generation complete!")
-			return nil
+			// docs.Run prints the one line that carries proof — the file
+			// count and the output directory. The unconditional "✅
+			// Documentation generation complete!" that used to follow it
+			// claimed success even for `--generators=bogus` (zero
+			// generators selected, zero files written) and for a project
+			// with docs.enabled: false. Both are errors now, and the
+			// count line is the whole report.
+			return docs.Run(".", store.Config(), overrides)
 		},
 	}
 

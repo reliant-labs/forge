@@ -112,6 +112,9 @@ func WorkerDataFromNames(names []string, projectDir string) ([]BootstrapWorkerDa
 	return WorkerDataFromSpecs(specs, projectDir)
 }
 
+// BootstrapOperatorData is the operator spelling of BootstrapComponentData.
+// Operators and workers render from the same shape; the alias keeps the
+// operator-side call sites reading as operator code.
 type BootstrapOperatorData = BootstrapComponentData
 
 // OperatorDataFromSpecs is the operator-side analog of WorkerDataFromSpecs —
@@ -156,7 +159,7 @@ func OperatorDataFromNames(names []string, projectDir string) ([]BootstrapOperat
 // synthesis fallback.
 func componentDataFromSpec(name, explicitPath, projectDir, roleRoot string) (BootstrapComponentData, error) {
 	var res ResolvedComponent
-	if explicitPath != "" {
+	if explicitPath != "" { //nolint:nestif // explicit `path:` resolution: the arms are the disk-first fallback order, and flattening them loses which rule matched.
 		leaf := filepath.Base(filepath.FromSlash(explicitPath))
 		res = ResolvedComponent{
 			Dir:         filepath.Join(projectDir, roleRoot, leaf),
@@ -183,17 +186,20 @@ func componentDataFromSpec(name, explicitPath, projectDir, roleRoot string) (Boo
 	}
 	fieldName := naming.ToPascalCase(name)
 	fallible := false
+	ctor := DefaultConstructorName
 	if res.FromDisk {
 		fallible, _ = DetectFallibleConstructor(res.Dir)
+		ctor = DetectConstructorName(res.Dir)
 	}
 	return BootstrapComponentData{
-		Name:       name,
-		Package:    res.PackageName,
-		ImportPath: res.ImportLeaf,
-		FieldName:  fieldName,
-		VarName:    lowerFirst(fieldName),
-		Fallible:   fallible,
-		Alias:      res.PackageName,
+		Name:        name,
+		Package:     res.PackageName,
+		ImportPath:  res.ImportLeaf,
+		FieldName:   fieldName,
+		VarName:     lowerFirst(fieldName),
+		Fallible:    fallible,
+		Constructor: ctor,
+		Alias:       res.PackageName,
 	}, nil
 }
 
@@ -369,17 +375,21 @@ func PackageDataFromNames(names []string, projectDir string) ([]BootstrapPackage
 			fieldName = naming.ToPascalCase(fieldNameSrc)
 		}
 		fallible := false
+		ctor := DefaultConstructorName
 		if projectDir != "" {
-			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "internal", filepath.FromSlash(importPath)))
+			pkgDir := filepath.Join(projectDir, "internal", filepath.FromSlash(importPath))
+			fallible, _ = DetectFallibleConstructor(pkgDir)
+			ctor = DetectConstructorName(pkgDir)
 		}
 		pkgs = append(pkgs, BootstrapPackageData{
-			Name:       name,
-			Package:    leaf,
-			ImportPath: importPath,
-			FieldName:  fieldName,
-			VarName:    lowerFirst(fieldName),
-			Fallible:   fallible,
-			Alias:      leaf,
+			Name:        name,
+			Package:     leaf,
+			ImportPath:  importPath,
+			FieldName:   fieldName,
+			VarName:     lowerFirst(fieldName),
+			Fallible:    fallible,
+			Constructor: ctor,
+			Alias:       leaf,
 		})
 	}
 	return pkgs, nil

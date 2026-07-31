@@ -14,12 +14,92 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// GenerateServiceStub generates service.go and handlers.go for a new service
-// using the embedded FS templates. crudMethodNames lists methods that CRUD gen
-// will implement; these are excluded from the initial handlers.go stubs.
+// ReconcileScaffoldTestHelperName re-points the born scaffold tests'
+// references to the forge-generated `app.NewTest<X>` / `app.With<X>Deps`
+// factories at the collision-aware helper name pkg/app/testing.go actually
+// emits for this service, and reports whether it rewrote anything.
+//
+// It sweeps every scaffold test in the directory (IsScaffoldTestFile), not
+// one fixed filename: the scaffold is one file per RPC.
+//
+// GenerateServiceStub writes the scaffold test ONCE, at `forge project new` /
+// `forge scaffold service`, using whatever ComputeTestHelperName resolved
+// THEN — before any same-named domain package exists, so the plain form
+// (`NewTestWidget`). When the RPC-vertical sweep later creates the
+// `internal/<svc>` domain package, GenerateBootstrapTesting / ComputeTestHelperName
+// flip the factory to the Svc-prefixed form (`NewTestSvcWidget`) to disambiguate
+// it from the domain package's own `NewTestPkg<X>` factory — but the
+// scaffold-once test is frozen on the stale name, an undefined reference that
+// fails `go vet` on the very next generate. Reconciling ONLY these forge-owned
+// factory identifiers on every generate keeps the owned scaffold test in
+// lockstep with the regenerated testing.go, without touching the user's own
+// test logic. It is idempotent (a no-op once the names already agree) and
+// symmetric — it also rewrites back to the plain form if the domain package is
+// later removed.
+func ReconcileScaffoldTestHelperName(projectDir, servicePkg, targetDir string) (bool, error) {
+	entries, err := os.ReadDir(targetDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	current := ComputeTestHelperName(servicePkg, projectDir)
+	pascal := naming.ToPascalCase(servicePkg)
+	// A service's factory name is either the plain pascal or the "Svc"-prefixed
+	// collision form; the stale name is whichever the current one is not.
+	stale := "Svc" + pascal
+	if current == stale {
+		stale = pascal
+	}
+	if stale == current { // degenerate (empty servicePkg) — nothing to reconcile
+		return false, nil
+	}
+
+	rewroteAny := false
+	for _, e := range entries {
+		if e.IsDir() || !IsScaffoldTestFile(e.Name()) {
+			continue
+		}
+		path := filepath.Join(targetDir, e.Name())
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rewroteAny, rerr
+		}
+
+		// The two prefix rewrites cover every forge-owned factory identifier
+		// the scaffold references: `NewTest<X>` (the service under test) and
+		// `With<X>Deps` (named in the override comment). `NewTest<X>` also
+		// subsumes any `NewTest<X>Server`.
+		out := strings.ReplaceAll(string(src), "NewTest"+stale, "NewTest"+current)
+		out = strings.ReplaceAll(out, "With"+stale+"Deps", "With"+current+"Deps")
+		if out == string(src) {
+			continue
+		}
+
+		formatted, ferr := format.Source([]byte(out))
+		if ferr != nil {
+			// A pure identifier rename never breaks the parse; if it somehow
+			// did, leave the file untouched rather than write unparseable Go.
+			continue
+		}
+		if werr := os.WriteFile(path, formatted, 0o644); werr != nil {
+			return rewroteAny, werr
+		}
+		rewroteAny = true
+	}
+	return rewroteAny, nil
+}
+
+// GenerateServiceStub generates service.go plus one handler file per custom
+// RPC (RPCHandlerFileName) for a new service, using the embedded FS
+// templates. crudMethodNames lists methods that CRUD gen will implement;
+// these are excluded from the initial stubs.
 func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...map[string]bool) error {
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return err
@@ -40,7 +120,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...ma
 		return err
 	}
 
-	// For handlers.go, filter out methods that CRUD gen will implement.
+	// For the handler stubs, filter out methods that CRUD gen will implement.
 	var crudNames map[string]bool
 	if len(crudMethodNames) > 0 {
 		crudNames = crudMethodNames[0]
@@ -56,52 +136,23 @@ func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...ma
 		handlersData.Methods = nonCRUD
 	}
 
-	// Render handlers.go from embedded template only when there are real methods
-	// to implement. With zero methods, handlers.go would just be a placeholder
-	// comment; skip it and let the user (or subsequent forge generate runs) create
-	// it with actual content.
-	if len(handlersData.Methods) > 0 {
-		handlersContent, err := templates.ServiceTemplates().Render("handlers.go.tmpl", handlersData)
-		if err != nil {
-			return fmt.Errorf("render handlers.go.tmpl: %w", err)
-		}
-		if err := writeUserScaffold(filepath.Join(targetDir, "handlers.go"), handlersContent); err != nil {
-			return err
-		}
+	// One handler file per custom RPC. Zero methods writes zero files — the
+	// loop is the guard, so a service with no custom RPCs gets no empty
+	// placeholder to delete.
+	if err := writeRPCHandlerStubs(targetDir, handlersData); err != nil {
+		return err
 	}
 
-	// Render handlers_scaffold_test.go from embedded template (same filter as handlers.go — skip CRUD methods).
-	// The qualified filename frees the canonical handlers_test.go slot for user-owned tests; forge never
-	// touches handlers_test.go.
-	unitTestContent, err := templates.ServiceTemplates().Render("unit_test.go.tmpl", handlersData)
-	if err != nil {
-		return fmt.Errorf("render unit_test.go.tmpl: %w", err)
-	}
-	if err := writeUserScaffold(filepath.Join(targetDir, "handlers_scaffold_test.go"), unitTestContent); err != nil {
+	// One scaffold test file per RPC (same filter as the stubs — skip CRUD
+	// methods). The qualified filenames free the canonical handlers_test.go
+	// slot for user-owned tests; forge never touches handlers_test.go.
+	if err := writeScaffoldTests(targetDir, handlersData); err != nil {
 		return err
 	}
 
 	// NOTE: no one-shot integration_test.go scaffold is emitted — see
 	// GenerateMissingHandlerStubs for the rationale (one test philosophy
 	// per service).
-
-	// Render authorizer.go from embedded template
-	authzData := struct {
-		Package     string
-		ServiceName string
-		Module      string
-	}{
-		Package:     data.ServiceName,
-		ServiceName: data.HandlerName,
-		Module:      data.Module,
-	}
-	authzContent, err := templates.ServiceTemplates().Render("authorizer.go.tmpl", authzData)
-	if err != nil {
-		return fmt.Errorf("render authorizer.go.tmpl: %w", err)
-	}
-	if err := writeUserScaffold(filepath.Join(targetDir, "authorizer.go"), authzContent); err != nil {
-		return err
-	}
 
 	return nil
 }
@@ -127,38 +178,31 @@ type MissingHandlerResult struct {
 
 // GenerateMissingHandlerStubs scans the existing service directory for implemented
 // methods on *Service, compares against the proto ServiceDef, and scaffolds stubs
-// only for missing (non-CRUD, not-yet-implemented) methods directly into the
-// USER-OWNED handlers.go — "scaffold and forget", not a forge-owned holding pen.
+// only for missing (non-CRUD, not-yet-implemented) methods into their own
+// USER-OWNED per-RPC files — "scaffold and forget", not a forge-owned holding pen.
 // If all methods are already implemented, it returns AllUpToDate=true.
 //
-// Append semantics:
-//   - handlers.go absent: render the full handlers.go.tmpl for the missing
-//     methods and write it via writeUserScaffold (same as the initial scaffold).
-//   - handlers.go present: render a method-only fragment for the missing methods,
-//     append it to the file, then re-parse + ensure the required imports
-//     (context, fmt, connect, pb) are present and gofmt the whole file. The
-//     appended stubs land on *Service, so the next `forge generate` sees them as
-//     implemented (scanExistingMethods) and won't re-stub them.
+// One RPC, one file (RPCHandlerFileName) — see writeRPCHandlerStubs for the
+// per-file write semantics and why the layout is the way it is.
 //
-// If the user deletes handlers.go, forge re-scaffolding the missing stubs on the
-// next run is acceptable/desired. There is no more handlers_gen.go — ever.
+// If the user deletes an RPC's file, forge re-scaffolding that stub on the next
+// run is acceptable/desired. There is no more handlers_gen.go — ever.
 //
 // crudMethodNames optionally lists method names that CRUD gen will implement;
 // stubs are skipped for these even if they don't exist yet in the package.
 //
 // cs (the project checksum tracker) is retained for signature stability; the
-// user-owned handlers.go is deliberately NOT checksum-tracked. The
-// placeholder-replacement of handlers_scaffold_test.go likewise records no
-// checksum: it becomes user-owned once the placeholder is filled in. The
-// canonical handlers_test.go filename is reserved for the user. A nil cs is
-// tolerated.
+// user-owned handler files are deliberately NOT checksum-tracked. The
+// per-RPC scaffold tests likewise record no checksum: they become user-owned
+// once the placeholder is filled in. The canonical handlers_test.go filename
+// is reserved for the user. A nil cs is tolerated.
 func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, crudMethodNames map[string]bool, cs *checksums.FileChecksums) (*MissingHandlerResult, error) {
-	existing, err := scanExistingMethods(targetDir, false)
+	existing, err := ScanExistingMethods(targetDir, false)
 	if err != nil {
 		return nil, fmt.Errorf("scan existing methods: %w", err)
 	}
 
-	// handlers_crud.go is skipped by scanExistingMethods so its delegating
+	// handlers_crud.go is skipped by ScanExistingMethods so its delegating
 	// CRUD shims don't masquerade as "user implemented this RPC by hand" and
 	// suppress regeneration of the very ops they delegate to. But the file is
 	// also the user's own (the scaffold header says so), and a user can hand-
@@ -168,7 +212,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	// duplicate method and the package fails to compile. Discriminate by name:
 	// a method in handlers_crud.go whose name is NOT a CRUD method is a hand
 	// impl (the CRUD-shaped delegating shims are exactly crudMethodNames).
-	for name := range scanHandlersCrudMethods(targetDir) {
+	for name := range ScanHandlersCrudMethods(targetDir) {
 		if !crudMethodNames[name] {
 			existing[name] = true
 		}
@@ -199,7 +243,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	// scaffolds likewise comes from the real directory name.
 	diskPkg, perr := ParsePackageClause(targetDir)
 	if perr != nil {
-		return nil, fmt.Errorf("resolving handlers.go package clause: %w", perr)
+		return nil, fmt.Errorf("resolving handler package clause: %w", perr)
 	}
 	applyDiskIdentity := func(d *ServiceTemplateData) {
 		d.ServicePackage = diskPkg
@@ -208,15 +252,14 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	}
 	applyDiskIdentity(&data)
 
-	handlersPath := filepath.Join(targetDir, "handlers.go")
-	if err := scaffoldHandlerStubs(handlersPath, data); err != nil {
+	if err := writeRPCHandlerStubs(targetDir, data); err != nil {
 		return nil, err
 	}
 
 	// If integration_test.go / handlers_scaffold_test.go are still placeholders (no RPCs when
 	// first generated), regenerate them with actual test scaffolding now that RPCs exist.
 	// These files become user-owned after the placeholder is filled in, so we
-	// don't checksum them — we want forge audit to leave them alone.
+	// don't checksum them — we want forge project audit to leave them alone.
 	fullData := mapServiceDefToTemplateData(svc, projectDir)
 	applyDiskIdentity(&fullData)
 
@@ -237,20 +280,30 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	}
 
 	// NOTE: forge no longer emits a one-shot integration_test.go scaffold.
-	// One test philosophy per service: the unit scaffold
-	// (handlers_scaffold_test.go) owns per-RPC self-destructing rows, and
-	// handlers_crud_integration_test.go owns the DB-bound CRUD surface.
+	// One test philosophy per service: the per-RPC unit scaffolds
+	// (handlers_scaffold_<rpc>_test.go) own the self-destructing rows, and
+	// handlers_crud_test.go owns the DB-bound CRUD surface.
 	// Existing user-owned integration_test.go files are left untouched.
-
-	handlersTestPath := filepath.Join(targetDir, "handlers_scaffold_test.go")
-	if isPlaceholderUnitTest(handlersTestPath) {
-		testContent, err := templates.ServiceTemplates().Render("unit_test.go.tmpl", unitTestData)
-		if err != nil {
-			return nil, fmt.Errorf("render unit_test.go.tmpl: %w", err)
+	//
+	// The scaffold test lands in the same pass that wrote the RPC's
+	// Unimplemented stub, and only for the RPCs this pass stubbed — the
+	// scaffold row asserts CodeUnimplemented, so offering it for an RPC
+	// somebody has already implemented would hand them a red suite. Absent
+	// file + fresh stub is the whole condition; there is no marker comment
+	// deciding whether forge may overwrite your file.
+	missingNames := make(map[string]bool, len(missing))
+	for _, m := range missing {
+		missingNames[m.Name] = true
+	}
+	var freshlyStubbed []MethodTemplateData
+	for _, m := range unitTestData.Methods {
+		if missingNames[m.Name] {
+			freshlyStubbed = append(freshlyStubbed, m)
 		}
-		if err := writeUserScaffold(handlersTestPath, testContent); err != nil {
-			return nil, fmt.Errorf("write handlers_scaffold_test.go: %w", err)
-		}
+	}
+	unitTestData.Methods = freshlyStubbed
+	if err := writeScaffoldTests(targetDir, unitTestData); err != nil {
+		return nil, err
 	}
 
 	var names []string
@@ -261,23 +314,65 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	return &MissingHandlerResult{NewMethods: names}, nil
 }
 
-// scaffoldHandlerStubs writes stubs for the (already-filtered) missing methods
-// in data.Methods into the user-owned handlers.go at handlersPath.
+// writeRPCHandlerStubs writes ONE FILE PER RPC for the (already-filtered)
+// missing methods in data.Methods, into targetDir.
 //
-//   - When handlers.go does NOT exist, it renders the full handlers.go.tmpl
-//     (package clause + imports + methods) and writes it, exactly like the
-//     initial GenerateServiceStub scaffold path.
-//   - When handlers.go EXISTS, it renders a method-only fragment and APPENDS it,
-//     then re-parses the combined file and ensures the imports the stubs need
-//     (context, fmt, connectrpc.com/connect, and the aliased proto pkg `pb`) are
-//     present before gofmt-ing the whole file. Every stub body references all
-//     four, so none is left unused. Using go/ast + astutil (rather than a
-//     filesystem-scanning goimports pass) keeps the import fix deterministic and
-//     handles the one import goimports cannot infer from an alias: `pb`.
+// WHY ONE FILE PER RPC. A handler package's file layout is invisible to Go
+// and to every reader forge ships (ScanExistingMethods, ScanUnwiredStubMethods,
+// ExciseUnwiredStubs, audit, mock_gen all walk the directory), so the layout is
+// free to be chosen for the ONE thing it does affect: who has to merge with
+// whom. Piling every custom RPC into a single handlers.go makes that file the
+// serialization point for the whole service — two authors implementing two
+// unrelated RPCs collide on it, and any parallel workflow has to hand-split it
+// first, re-emitting each stub byte-identically into its own file before it can
+// start. That is work forge created and then asked the user to undo. The
+// scaffold TESTS were split per RPC for exactly this reason
+// (ScaffoldTestFileName); the stubs they test were the last thing left sharing.
+//
+// It also makes the two scaffold paths agree. `forge scaffold rpc` has always
+// written rpc_<snake>.go for an RPC that is not in the proto yet; declaring the
+// RPC in the proto first and letting `forge generate` emit it used to produce
+// the shared file instead. Same artifact, same marker, two layouts, chosen by
+// the order the user happened to work in.
+//
+// Per file, the two arms are the ones the shared file used to have:
+//
+//   - The RPC's file does NOT exist (the overwhelmingly common case): render
+//     the full handlers.go.tmpl for that one method — package clause, imports,
+//     the method — and write it. A per-RPC file is a complete compilation unit,
+//     not a fragment.
+//   - The RPC's file EXISTS but does not declare the method (the user emptied
+//     it, or renamed the method away and kept the file): render a method-only
+//     fragment and APPEND it, then re-parse and ensure the imports the stub
+//     needs (context, fmt, connectrpc.com/connect, forge/pkg/svcerr, and the
+//     aliased proto pkg `pb`) are present before gofmt-ing the whole file.
+//     Every stub body references all of them, so none is left unused. Using
+//     go/ast + astutil (rather than a filesystem-scanning goimports pass) keeps
+//     the import fix deterministic and handles the one import goimports cannot
+//     infer from an alias: `pb`. Merging rather than skipping matters: skipping
+//     would leave *Service without a method the Connect handler interface
+//     requires, and the package would stop compiling.
+//
+// Overwriting is never an option in either arm — the file is the user's.
 //
 // The result is written via writeUserScaffold (raw os.WriteFile, NOT
 // checksum-tracked): forge scaffolds it once per missing method and then leaves
 // it to the user.
+func writeRPCHandlerStubs(targetDir string, data ServiceTemplateData) error {
+	for _, m := range data.Methods {
+		one := data
+		one.Methods = []MethodTemplateData{m}
+		path := filepath.Join(targetDir, RPCHandlerFileName(m.Name))
+		if err := scaffoldHandlerStubs(path, one); err != nil {
+			return fmt.Errorf("scaffold %s: %w", RPCHandlerFileName(m.Name), err)
+		}
+	}
+	return nil
+}
+
+// scaffoldHandlerStubs renders data.Methods into the user-owned handler file at
+// handlersPath, creating it or merging into it. See writeRPCHandlerStubs — its
+// only caller — for the two arms and why the file layout is per-RPC.
 func scaffoldHandlerStubs(handlersPath string, data ServiceTemplateData) error {
 	if _, statErr := os.Stat(handlersPath); os.IsNotExist(statErr) {
 		content, err := templates.ServiceTemplates().Render("handlers.go.tmpl", data)
@@ -285,7 +380,7 @@ func scaffoldHandlerStubs(handlersPath string, data ServiceTemplateData) error {
 			return fmt.Errorf("render handlers.go.tmpl: %w", err)
 		}
 		if err := writeUserScaffold(handlersPath, content); err != nil {
-			return fmt.Errorf("write handlers.go: %w", err)
+			return fmt.Errorf("write %s: %w", filepath.Base(handlersPath), err)
 		}
 		return nil
 	}
@@ -297,7 +392,7 @@ func scaffoldHandlerStubs(handlersPath string, data ServiceTemplateData) error {
 
 	existing, err := os.ReadFile(handlersPath)
 	if err != nil {
-		return fmt.Errorf("read handlers.go for append: %w", err)
+		return fmt.Errorf("read %s for append: %w", filepath.Base(handlersPath), err)
 	}
 
 	// Concatenate existing file + a blank-line separator + the new methods, then
@@ -312,38 +407,106 @@ func scaffoldHandlerStubs(handlersPath string, data ServiceTemplateData) error {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, handlersPath, combined, parser.ParseComments)
 	if err != nil {
-		return fmt.Errorf("parse appended handlers.go: %w", err)
+		return fmt.Errorf("parse appended %s: %w", filepath.Base(handlersPath), err)
 	}
 
 	// Ensure the stubs' imports exist. AddImport / AddNamedImport are no-ops
 	// when the import (by path, and by name for the alias) is already present —
-	// which it is for any handlers.go that already declares handler methods.
+	// which it is for any handler file that already declares handler methods.
 	astutil.AddImport(fset, file, "context")
 	astutil.AddImport(fset, file, "fmt")
 	astutil.AddImport(fset, file, "connectrpc.com/connect")
+	astutil.AddImport(fset, file, "github.com/reliant-labs/forge/pkg/svcerr")
 	astutil.AddNamedImport(fset, file, "pb", data.Module+"/gen/"+data.ProtoPackage+"/v1")
 
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, file); err != nil {
-		return fmt.Errorf("format appended handlers.go: %w", err)
+		return fmt.Errorf("format appended %s: %w", filepath.Base(handlersPath), err)
 	}
 	if err := writeUserScaffold(handlersPath, buf.Bytes()); err != nil {
-		return fmt.Errorf("write handlers.go: %w", err)
+		return fmt.Errorf("write %s: %w", filepath.Base(handlersPath), err)
 	}
 	return nil
 }
 
-// isPlaceholderUnitTest checks if handlers_scaffold_test.go is still the auto-generated
-// placeholder with no real tests.
-func isPlaceholderUnitTest(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(data), `forge-unit-test-placeholder`)
+// RPCHandlerFileName is the born handler file for one custom RPC —
+// `rpc_<snake_name>.go`.
+//
+// Same rule, same reason, as ScaffoldTestFileName next door: the name is
+// derived from the RPC alone, so the mapping is total and reversible
+// without a manifest, and two authors implementing two RPCs of the same
+// service have nothing to merge. `forge scaffold rpc` has always written
+// this name for an RPC that is not in the proto yet
+// (internal/cli/scaffold/rpc.go); the generate pipeline now writes it too,
+// so the two paths agree instead of disagreeing by which order the user
+// happened to do things in.
+//
+// There is no legacy-name predicate to go with it (no RPCHandlerFile
+// analogue of IsScaffoldTestFile) because nothing needs one: every reader
+// of these files — ScanExistingMethods, ScanUnwiredStubMethods,
+// ExciseUnwiredStubs, `forge project audit`, mock_gen — walks the handler
+// directory and is already indifferent to filenames. Projects born before
+// the split keep their handlers.go and keep working, untouched.
+func RPCHandlerFileName(rpc string) string {
+	return rpcHandlerPrefix + naming.ToSnakeCase(rpc) + ".go"
 }
 
-// scanExistingMethods reads all .go files in dir and returns a set of
+const rpcHandlerPrefix = "rpc_"
+
+// ScaffoldTestFileName is the born unit-test file for one RPC.
+//
+// One RPC per file, and the name is derived from the RPC alone, so the
+// mapping is total and reversible without a manifest: a reader seeing
+// handlers_scaffold_ship_order_test.go knows exactly which RPC it covers,
+// and a second author implementing a different RPC in the same package has
+// nothing to merge.
+//
+// The prefix is stable and is what every consumer matches on
+// (IsScaffoldTestFile) — including the pre-split
+// `handlers_scaffold_test.go` that older projects still carry on disk.
+func ScaffoldTestFileName(rpc string) string {
+	return scaffoldTestPrefix + naming.ToSnakeCase(rpc) + "_test.go"
+}
+
+const scaffoldTestPrefix = "handlers_scaffold_"
+
+// IsScaffoldTestFile reports whether a bare filename is one of forge's
+// born per-RPC scaffold tests. It also accepts the single-file
+// `handlers_scaffold_test.go` that projects born before the per-RPC split
+// still have: that file is on real users' disks and the consumers of this
+// predicate (stale-pb-reference detection, test-helper reconciliation)
+// have to keep working on it.
+func IsScaffoldTestFile(name string) bool {
+	return name == "handlers_scaffold_test.go" ||
+		(strings.HasPrefix(name, scaffoldTestPrefix) && strings.HasSuffix(name, "_test.go"))
+}
+
+// writeScaffoldTests renders one scaffold test file per method in
+// data.Methods, writing each ONLY when it is absent.
+//
+// Absence is the entire ownership rule. There is no marker comment and no
+// "forge refreshes it while you have not touched it" clause: a file that
+// exists is yours, full stop, and the caller decides which RPCs are
+// eligible (the ones it just stubbed). That replaces a mechanism where a
+// comment string in a user-owned file silently controlled whether forge
+// would overwrite it.
+func writeScaffoldTests(targetDir string, data ServiceTemplateData) error {
+	for _, m := range data.Methods {
+		one := data
+		one.Methods = []MethodTemplateData{m}
+		content, err := templates.ServiceTemplates().Render("unit_test.go.tmpl", one)
+		if err != nil {
+			return fmt.Errorf("render unit_test.go.tmpl for %s: %w", m.Name, err)
+		}
+		path := filepath.Join(targetDir, ScaffoldTestFileName(m.Name))
+		if _, err := writeUserScaffoldIfAbsent(path, content); err != nil {
+			return fmt.Errorf("write %s: %w", ScaffoldTestFileName(m.Name), err)
+		}
+	}
+	return nil
+}
+
+// ScanExistingMethods reads all .go files in dir and returns a set of
 // method names that are already implemented on *Service. It uses
 // go/parser so that multi-line receivers, comments, and strings
 // containing "*Service" are handled correctly.
@@ -362,7 +525,10 @@ func isPlaceholderUnitTest(path string) bool {
 // losing dedup means the user's just-written `CreateUser` would be
 // re-stubbed in handlers_gen.go and the package would fail to compile
 // (duplicate method).
-func scanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]bool, error) {
+//
+// Exported for internal/scaffold (the typed RPC vertical shares this
+// hand-implemented-method detection with the stub generator).
+func ScanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]bool, error) {
 	existing := make(map[string]bool)
 
 	entries, err := os.ReadDir(dir)
@@ -397,7 +563,7 @@ func scanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]boo
 			// strand the user with no scaffold regen. See func doc for
 			// the full rationale. Lives in internal/codegen so no
 			// pipelineContext reach.
-			fmt.Fprintf(os.Stderr, "Warning: scanExistingMethods skipping %s (parse error): %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "Warning: ScanExistingMethods skipping %s (parse error): %v\n", path, err)
 			continue
 		}
 
@@ -424,14 +590,14 @@ func scanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]boo
 	return existing, nil
 }
 
-// scanHandlersCrudMethods returns the set of *Service method names declared in
-// handlers_crud.go specifically. scanExistingMethods skips that file wholesale
+// ScanHandlersCrudMethods returns the set of *Service method names declared in
+// handlers_crud.go specifically. ScanExistingMethods skips that file wholesale
 // (its delegating shims must not suppress ops regen); this lets the stub
 // generator look inside it to find HAND-WRITTEN (non-CRUD) impls that DO need
 // to suppress a duplicate stub. Returns an empty set if the file is absent or
 // unparseable — losing this signal only risks a duplicate-method compile error
 // surfacing at the validate step, never a silent wrong result.
-func scanHandlersCrudMethods(dir string) map[string]bool {
+func ScanHandlersCrudMethods(dir string) map[string]bool {
 	out := map[string]bool{}
 	path := filepath.Join(dir, "handlers_crud.go")
 	if _, err := os.Stat(path); err != nil {
@@ -440,7 +606,7 @@ func scanHandlersCrudMethods(dir string) map[string]bool {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: scanHandlersCrudMethods skipping %s (parse error): %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "Warning: ScanHandlersCrudMethods skipping %s (parse error): %v\n", path, err)
 		return out
 	}
 	for _, decl := range file.Decls {

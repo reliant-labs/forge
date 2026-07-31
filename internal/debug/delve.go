@@ -47,7 +47,7 @@ func (d *DelveDebugger) Start(ctx context.Context, binary string, args []string,
 
 // StartWithEnv is Start with extra environment variables layered onto the
 // debugged process's environment (os.Environ() + extraEnv, extraEnv wins).
-// Used to inject the SERVICE_NAME / PORT a forge service binary needs to
+// Used to inject the OTEL_SERVICE_NAME / PORT a forge service binary needs to
 // actually serve.
 func (d *DelveDebugger) StartWithEnv(ctx context.Context, binary string, args []string, extraEnv []string, listenPort int) error {
 	port := listenPort
@@ -74,7 +74,7 @@ func (d *DelveDebugger) StartWithEnv(ctx context.Context, binary string, args []
 
 	d.cmd = exec.CommandContext(ctx, "dlv", dlvArgs...)
 	// dlv exec inherits its environment to the debuggee. Layer extraEnv
-	// (SERVICE_NAME / PORT / ...) on top of the current env, last-wins.
+	// (OTEL_SERVICE_NAME / PORT / ...) on top of the current env, last-wins.
 	if len(extraEnv) > 0 {
 		d.cmd.Env = append(os.Environ(), extraEnv...)
 	}

@@ -28,7 +28,7 @@ import (
 
 // DirRel is the per-project on-disk location, relative to the project
 // root (the directory holding forge.yaml), for forge runtime state that
-// must survive across `forge build` / `forge deploy` invocations. Sits
+// must survive across `forge build` / `forge env deploy` invocations. Sits
 // under .forge/ so the single existing `.forge/` .gitignore rule covers
 // it alongside checksums.json and the ownership state.
 const DirRel = ".forge/state"

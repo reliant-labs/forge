@@ -13,7 +13,7 @@ import (
 
 // renderResolvePort renders a one-line KCL module that resolves a port for
 // `role` (preferred `pref`) through the real plugin seam, returning the
-// resolved port. It mirrors what both `forge up` and `forge deploy` do once
+// resolved port. It mirrors what both `forge env up` and `forge env deploy` do once
 // they've armed the port store.
 func renderResolvePort(t *testing.T, kdir, role string, pref int, dArgs []string) int {
 	t.Helper()
@@ -125,12 +125,12 @@ func TestUpDeployResolveIdenticalPort(t *testing.T) {
 	kdir := t.TempDir()
 	storePath := filepath.Join(proj, ".forge", "ports-dev.json")
 
-	// `forge up`: arm the store, render, allocation persists.
+	// `forge env up`: arm the store, render, allocation persists.
 	restore := kclplugin.UsePortStore(storePath)
 	upPort := renderResolvePort(t, kdir, "reliant-api", 3091, nil)
 	_ = restore // up commits the render; restore only used on rejection
 
-	// `forge deploy`: arm the SAME store path (fresh resolver, reads the
+	// `forge env deploy`: arm the SAME store path (fresh resolver, reads the
 	// persisted file), render. Must land on the identical port.
 	kclplugin.UsePortStore(storePath)
 	deployPort := renderResolvePort(t, kdir, "reliant-api", 3091, nil)

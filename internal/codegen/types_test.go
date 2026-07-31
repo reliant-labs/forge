@@ -18,9 +18,15 @@ func TestDetermineFieldKind(t *testing.T) {
 		{"bool scalar", "bool", "bool", FieldKindScalar},
 		{"float scalar", "float", "float32", FieldKindScalar},
 		{"double scalar", "double", "float64", FieldKindScalar},
-		// bytes has protoType "bytes" but goType "[]byte", which starts with "[]"
-		// so it gets classified as repeated_scalar. This is by design.
-		{"bytes type", "bytes", "[]byte", FieldKindRepeatedScalar},
+		// `bytes` is the one scalar whose Go type is ALREADY a slice, so
+		// the "[]" prefix cannot mean `repeated` for it. A singular bytes
+		// field is ONE value and pairs with a BYTEA column; the repeated
+		// form has an extra slice level and pairs with BYTEA[]. (This case
+		// used to assert repeated_scalar and call it "by design" — it was
+		// unreachable fiction, because ProtoTypeToGoType answered "string"
+		// for bytes and this function was never handed "[]byte".)
+		{"bytes type", "bytes", "[]byte", FieldKindScalar},
+		{"repeated bytes type", "bytes", "[][]byte", FieldKindRepeatedScalar},
 
 		// Enums
 		{"enum field", "enum", "PatientStatus", FieldKindEnum},
@@ -95,15 +101,30 @@ func TestProtoTypeToGoType(t *testing.T) {
 		protoType string
 		want      string
 	}{
+		// The mapping is protoc-gen-go's, not forge's to choose: the pb
+		// package already declares the field, and a projection that
+		// disagrees with it either refuses a legal shape or emits code the
+		// compiler rejects.
 		{"string", "string"},
-		{"int32", "int32"},
-		{"int64", "int64"},
 		{"bool", "bool"},
+		{"bytes", "[]byte"},
 		{"float", "float32"},
 		{"double", "float64"},
-		{"message", "string"}, // unknown falls back to string
-		{"enum", "string"},    // unknown falls back to string
-		{"bytes", "string"},   // not explicitly handled, falls back
+		{"int32", "int32"},
+		{"sint32", "int32"},
+		{"sfixed32", "int32"},
+		{"int64", "int64"},
+		{"sint64", "int64"},
+		{"sfixed64", "int64"},
+		{"uint32", "uint32"},
+		{"fixed32", "uint32"},
+		{"uint64", "uint64"},
+		{"fixed64", "uint64"},
+		// Non-scalar kinds have no scalar Go type; callers branch on them
+		// before reaching here, and "string" is the inert fallback for a
+		// kind that never should have arrived.
+		{"message", "string"},
+		{"enum", "string"},
 	}
 
 	for _, tt := range tests {

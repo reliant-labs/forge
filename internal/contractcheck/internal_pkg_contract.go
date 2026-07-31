@@ -1,22 +1,28 @@
 // File: internal/contractcheck/internal_pkg_contract.go
 //
-// The forgeconv-internal-package-contract-names rule enforces the
-// canonical naming convention every internal-package contract.go must
-// follow:
+// The forgeconv-internal-package-contract-names rule asserts that every
+// internal-package contract.go declares the shape the injector wires:
 //
-//   - `type Service interface { ... }`
+//   - a contract interface — `Service`, or any name carrying
+//     `//forge:service` / `//forge:contract`
 //   - `type Deps struct { ... }`
-//   - `func New(Deps) Service` OR `func New(Deps) (Service, error)`
+//   - a constructor `func(Deps) <Contract>` or `func(Deps) (<Contract>, error)`
+//     — `New`, or any name carrying `// forge:constructor`
 //
-// The bootstrap codegen template (internal/templates/project/bootstrap.go.tmpl)
-// hardcodes references to `<pkg>.Service`, `<pkg>.Deps`, and `<pkg>.New(...)`
-// for every entry under `Packages`. When a contract.go uses a different
-// interface name (e.g. `Sender`, `Manager`, `Handler`) the generated bootstrap
-// references types that don't exist and the project fails to compile —
-// with errors pointing at generated code the user shouldn't touch.
+// The injector (internal/codegen/inject_gen.go) emits
+// `<pkg>.<Constructor>(<pkg>.Deps{...})` and types the field off the
+// contract interface, resolving BOTH names through the same detectors this
+// rule uses (codegen.DetectServiceInterfaceName, codegen.IsComponentConstructor
+// / codegen.DetectConstructorName). Lint and codegen therefore cannot
+// disagree: whatever this rule accepts, generate can wire.
 //
-// This rule surfaces the failure mode as an explicit lint finding before
-// `forge generate` writes the broken bootstrap.
+// The names are free because forcing them is an antipattern — `Service` and
+// `New` are poor names for a mailer or a store, and forge is meant to promote
+// good practice, not conscript packages into bad naming. What is NOT free is
+// the signature: a constructor that doesn't take `Deps` and return the
+// contract has nothing for the injector to bind, so `forge generate` would
+// write a compile-broken internal/app/compose.go pointing the user at
+// generated code they don't own. This rule surfaces that before generate runs.
 //
 // The two-result form `(Service, error)` was introduced in Day-5 polish
 // alongside `validateDeps()` so the bootstrap can surface required-Deps
@@ -39,6 +45,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -48,20 +55,46 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
-// lintInternalContracts walks rootDir/internal/ for contract.go files
-// and asserts the canonical Service/Deps/New(Deps) Service shape. The
-// excludes argument carries module-relative directory paths (matching
-// forge.yaml `contracts.exclude`) that the walk must skip wholesale:
-// those packages are not bootstrap-managed (analyzer sub-packages,
-// embed-only packages, the cli surface itself), and their contract.go
-// files are allowed to declare alternate shapes.
+// internalPackageDirs walks rootDir/internal/ once and returns every
+// package directory the two canonical-shape rules consider, split by
+// whether it declares a contract.go. The split is the ONLY difference
+// between the two rules' inputs: everything else — the testdata/ skip, the
+// forge.yaml `contracts.exclude` list, the per-package
+// `//forge:exclude-contract` directive — is applied here, so a package can
+// never be in scope for one rule and out of scope for the other. Both
+// slices are sorted, so findings come out in deterministic order.
 //
-// Returns findings in deterministic order (file, then position).
-func lintInternalContracts(rootDir string, excludes []string) (forgeconv.Result, error) {
+// The excludes argument carries module-relative directory paths (matching
+// forge.yaml `contracts.exclude`) that the walk must skip wholesale: those
+// packages are not bootstrap-managed (analyzer sub-packages, embed-only
+// packages, the cli surface itself), and their contract.go files are
+// allowed to declare alternate shapes.
+//
+// withoutContract is narrower than withContract in one further way, and the
+// reason is the verb, not the shape. `forge scaffold package <name>` creates
+// `internal/<name>/` and its name validator rejects "/", so an IMMEDIATE
+// child of internal/ is precisely the set of directories that verb owns.
+// Everything deeper belongs to another role — `internal/handlers/<svc>/`,
+// `internal/workers/<pkg>/`, `internal/operators/<pkg>/` are components of
+// their own kind, scaffolded by their own verbs, and they deliberately never
+// carry a contract.go. Measured on control-plane, recursing produced five
+// findings against `internal/handlers/<svc>/service.go` — forge telling the
+// author to run `forge scaffold package` on a file `forge scaffold service`
+// wrote. The day the package verb accepts a nested name, this widens with
+// it. (withContract stays fully recursive: nested contract packages like
+// "mcp/database" ARE discovered and wired by codegen, so the shape rule has
+// to keep judging them.)
+//
+// A directory lands in withoutContract only if it actually holds Go source
+// the shape scan can read — a parent directory that only holds
+// subdirectories (internal/, internal/handlers/) is not a package.
+//
+// A missing rootDir/internal is not an error: CLI and library projects
+// legitimately have none.
+func internalPackageDirs(rootDir string, excludes []string) (withContract, withoutContract []string, err error) {
 	internalDir := filepath.Join(rootDir, "internal")
-	if _, err := os.Stat(internalDir); os.IsNotExist(err) {
-		// No internal/ — nothing to check. Common in CLI/library projects.
-		return forgeconv.Result{}, nil
+	if _, statErr := os.Stat(internalDir); os.IsNotExist(statErr) {
+		return nil, nil, nil
 	}
 
 	// Delegate to the canonical [config.MatchExclude]. Pre-2026-06 this
@@ -77,17 +110,9 @@ func lintInternalContracts(rootDir string, excludes []string) (forgeconv.Result,
 		return config.MatchExclude(excludes, relSlash)
 	}
 
-	// Collect package directories that contain a contract.go. The shape
-	// check itself runs across every non-test .go file in the package
-	// (Service typically lives in contract.go, Deps + New typically live
-	// in service.go / adapter.go / interactor.go / client.go — the
-	// `--kind=client` and `--type=adapter|interactor` scaffolds use this
-	// split). The lint message points at contract.go since that's the
-	// canonical place to document the boundary.
-	var pkgDirs []string
-	walkErr := filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
+	walkErr := filepath.WalkDir(internalDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
 		if !d.IsDir() {
 			return nil
@@ -101,34 +126,224 @@ func lintInternalContracts(rootDir string, excludes []string) (forgeconv.Result,
 		if relErr != nil {
 			return relErr
 		}
-		relSlash := filepath.ToSlash(rel)
-		if isExcluded(relSlash) {
+		if isExcluded(filepath.ToSlash(rel)) {
 			return filepath.SkipDir
 		}
-		contractPath := filepath.Join(path, "contract.go")
-		if _, statErr := os.Stat(contractPath); statErr == nil {
-			// Per-package opt-out: `//forge:exclude-contract` in the
-			// package's source is the local-header equivalent of a
-			// forge.yaml contracts.exclude entry. Union with the central
-			// excludes above: either source opts the package out of the
-			// strict contract-shape rule. This MUST agree with the
-			// generate-time walks (generate_middleware.go's mock walk and
-			// generate_bootstrap.go's discoverPackages) so a header-only
-			// exclude is honored consistently across lint AND codegen —
-			// otherwise a package excluded for codegen would still fail
-			// the pre-codegen shape check.
-			if codegen.HasExcludeContractDirective(path) {
-				return nil
+		// notExcludedByDirective is the per-package opt-out:
+		// `//forge:exclude-contract` in the package's source is the
+		// local-header equivalent of a forge.yaml contracts.exclude entry.
+		// Union with the central excludes above: either source opts the
+		// package out of the canonical shape. It is evaluated only once a
+		// directory is otherwise a candidate — it parses every .go file in
+		// the package, and the walk visits directories that are neither. Do
+		// NOT SkipDir on a hit: descendants may still be components and carry
+		// their own directive. This MUST agree with the generate-time walks
+		// (generate_middleware.go's mock walk and generate_bootstrap.go's
+		// discoverPackages) so a header-only exclude is honored consistently
+		// across lint AND codegen — otherwise a package excluded for codegen
+		// would still fail the pre-codegen shape check.
+		notExcludedByDirective := func() bool { return !codegen.HasExcludeContractDirective(path) }
+
+		_, statErr := os.Stat(filepath.Join(path, "contract.go"))
+		switch {
+		case statErr == nil:
+			if notExcludedByDirective() {
+				withContract = append(withContract, path)
 			}
-			pkgDirs = append(pkgDirs, path)
+		case os.IsNotExist(statErr):
+			if filepath.Dir(path) == internalDir && hasContractScannableSource(path) && notExcludedByDirective() {
+				withoutContract = append(withoutContract, path)
+			}
+		default:
+			return statErr
 		}
 		return nil
 	})
 	if walkErr != nil {
-		return forgeconv.Result{}, fmt.Errorf("walk %s: %w", internalDir, walkErr)
+		return nil, nil, fmt.Errorf("walk %s: %w", internalDir, walkErr)
 	}
 
-	sort.Strings(pkgDirs)
+	sort.Strings(withContract)
+	sort.Strings(withoutContract)
+	return withContract, withoutContract, nil
+}
+
+// hasContractScannableSource reports whether dir holds at least one .go
+// file the shape scan would actually read. The filter matches
+// scanPackageContractShape exactly (non-test, non-generated), so "there is
+// something to judge" and "here is the judgement" can never disagree.
+func hasContractScannableSource(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") ||
+			strings.HasSuffix(n, "_test.go") || strings.HasSuffix(n, "_gen.go") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// lintMissingContract is the complement of [lintInternalContracts]: that
+// rule asks whether a contract.go declares the canonical shape, this one
+// asks whether a package that HAS the shape declares a contract.go at all.
+//
+// The gap it closes is real and was measured. `forge scaffold package`
+// writes contract.go, service.go, contract_test.go and mock_gen.go
+// together; a component created with a raw file write instead has none of
+// them, and every downstream mechanism keys on contract.go —
+// codegen.DiscoverInternalPackages (bootstrap wiring), the mock walk, the
+// observe decorator, `forge project map|graph|audit`. So the package is not
+// half-wired, it is invisible: `forge lint` passed on a hand-written
+// component in a dogfood run and named nothing.
+//
+// # What "looks like a component" means here
+//
+// internal/ legitimately holds packages that are not components —
+// constants, domain errors, pure helpers, an interface plus the one type
+// that implements it — and telling every one of them to run a scaffold verb
+// is how a rule gets muted. So the trigger is not "has behaviour" or "has an
+// interface". It is that the package is already speaking forge's contract
+// VOCABULARY, resolved by the same detector codegen and the shape rule use:
+//
+//   - an interface named `Service`, or one carrying `//forge:service` /
+//     `//forge:contract` (codegen.DetectServiceInterfaceName)
+//   - `type Deps struct`
+//
+// Nobody writes `type Deps struct`, names an interface `Service`, or marks
+// one `//forge:service` by accident. Each is an unambiguous claim to be the
+// thing `forge scaffold package` produces — made without running it.
+//
+// The injector's constructor signature `func(Deps) <Contract>` is NOT a
+// third disjunct, because in any package that compiles it implies a `Deps`
+// type declaration and the second claim has already fired. A branch no
+// realistic package can reach on its own is a branch no test can pin.
+//
+// [shouldSkipContractShapeCheck] is deliberately NOT the gate, and the
+// measurement is why. Its interface-count early-outs are calibrated for a
+// package that already declared itself a contract by WRITING a contract.go;
+// applied to packages that never did, its residue is one shape —
+// `ifaces=1, no Deps, no constructor` — and swept across four real trees
+// (forge, control-plane, peptides-dogfood-r2, reliant) that shape produced
+// 13 findings, every one of them an abstraction seam that correctly wants no
+// contract: localfs.FS, validation.Collector, devautograntplan.PlanAssigner.
+// The existing early-out's own comment gives the reason — the >= 2 threshold
+// exists because "a single interface declaration is more likely an
+// incomplete contract than a deliberate catalogue", and "incomplete
+// contract" is exactly the reading that does not apply to a package with no
+// contract.go. The vocabulary trigger above fires 1 time across those same
+// 95 contract-less packages: reliant's internal/worktree, which declares
+// `type Service interface`, `type service struct` and
+// `NewService(...) (Service, error)` — a hand-built component, correctly
+// named.
+//
+// The same sweep is why the packages from the dogfood run stay silent: both
+// are constants-plus-pure-functions packages (domain reason codes and a
+// ReasonError value type; a handful of stateless policy helpers). Neither
+// speaks any of forge's contract vocabulary, and neither wanted a Service, a
+// Deps or a mock.
+//
+// Severity is WARNING. The rule reasons about intent where the sibling shape
+// rule reasons about a declaration the author already made; warning is also
+// what deps-are-interfaces shipped as until its false-positive rate had been
+// measured on real trees and it was promoted. The same bar applies here.
+func lintMissingContract(rootDir string, excludes []string) (forgeconv.Result, error) {
+	_, pkgDirs, err := internalPackageDirs(rootDir, excludes)
+	if err != nil {
+		return forgeconv.Result{}, err
+	}
+
+	var result forgeconv.Result
+	for _, dir := range pkgDirs {
+		facts, scanErr := scanPackageContractShape(dir)
+		if scanErr != nil {
+			// A package that does not parse is reported by the compiler and
+			// by the shape rule's own parse-error finding path; guessing at
+			// its shape here would just add noise.
+			continue
+		}
+		if !speaksContractVocabulary(facts) {
+			continue
+		}
+		result.Findings = append(result.Findings, missingContractFinding(rootDir, dir, facts))
+	}
+	return result, nil
+}
+
+// speaksContractVocabulary reports whether the package has made one of the
+// two unambiguous claims to be a forge component. See [lintMissingContract]
+// for why these two and not a shape heuristic.
+func speaksContractVocabulary(facts contractShapeFacts) bool {
+	return facts.hasServiceInterface || facts.hasDepsStruct
+}
+
+// missingContractFinding builds the finding for a package that speaks
+// forge's contract vocabulary but has no contract.go. It names WHICH
+// declaration earned the verdict and anchors on that declaration's line —
+// the one the author reads to agree or disagree — never on the contract.go
+// that does not exist, which no editor or LSP could open.
+func missingContractFinding(rootDir, pkgDir string, facts contractShapeFacts) forgeconv.Finding {
+	relDir, err := filepath.Rel(rootDir, pkgDir)
+	if err != nil {
+		relDir = pkgDir
+	}
+	relDir = filepath.ToSlash(relDir)
+	name := path.Base(relDir)
+
+	// Report the stronger claim first: the contract interface names the
+	// boundary, Deps names the wiring.
+	declared, anchor := "a `type Deps struct`", facts.depsPos
+	if facts.hasServiceInterface {
+		declared = fmt.Sprintf("a contract interface `%s`", facts.serviceIfaceName)
+		anchor = facts.serviceIfacePos
+	}
+
+	file, line := relDir, 1
+	if anchor.IsValid() {
+		if rel, relErr := filepath.Rel(rootDir, anchor.Filename); relErr == nil {
+			file = filepath.ToSlash(rel)
+			line = anchor.Line
+		}
+	}
+
+	return forgeconv.Finding{
+		Rule:     string(RuleInternalPackageMissingContract),
+		Severity: forgeconv.SeverityWarning,
+		File:     file,
+		Line:     line,
+		Message: fmt.Sprintf(
+			"forge convention: %s/ declares %s but no contract.go, so forge does not see it as a component "+
+				"at all — no mock is generated for it, the injector does not wire it into "+
+				"internal/app/compose.go, no observability decorator wraps it, and `forge project map|graph` "+
+				"does not list it. This is what a package created with a raw file write instead of "+
+				"`forge scaffold package %s` looks like. See skill: contracts.",
+			relDir, declared, name),
+		Remediation: fmt.Sprintf(
+			"`forge scaffold package %[1]s` writes the shape (contract.go + service.go + contract_test.go + "+
+				"mock_gen.go) and refuses to overwrite an existing directory — move %[2]s/ aside, run the verb, "+
+				"then move your code into the service.go it writes. If this package is deliberately NOT a "+
+				"component (a helper, a constants package, a catalogue of narrow interfaces consumed elsewhere), "+
+				"put `//forge:exclude-contract` at the top of one of its .go files — the same directive that "+
+				"takes a package out of bootstrap wiring and mock generation.",
+			name, relDir),
+	}
+}
+
+// lintInternalContracts asserts the canonical Service/Deps/New(Deps)
+// Service shape on every internal package that declares a contract.go.
+// The package set (and the opt-outs applied to it) comes from
+// [internalPackageDirs].
+//
+// Returns findings in deterministic order (file, then position).
+func lintInternalContracts(rootDir string, excludes []string) (forgeconv.Result, error) {
+	pkgDirs, _, err := internalPackageDirs(rootDir, excludes)
+	if err != nil {
+		return forgeconv.Result{}, err
+	}
 
 	var result forgeconv.Result
 	for _, dir := range pkgDirs {
@@ -171,7 +386,7 @@ func lintInternalContracts(rootDir string, excludes []string) (forgeconv.Result,
 // Pre-2026-05-06 the rule required all three in contract.go itself,
 // which false-positived on packages that split Service into contract.go
 // and Deps + New into a sibling file (the `--kind=client` and
-// `--type=adapter|interactor` scaffolds both do this). The fix moves
+// `--type=adapter` scaffolds both do this). The fix moves
 // detection to package scope while keeping findings anchored on
 // contract.go (so the user knows where the contract is documented).
 //
@@ -201,8 +416,8 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 	if !facts.hasDepsStruct {
 		findings = append(findings, missingDepsFinding(relPath, facts))
 	}
-	if !facts.hasNewFunc {
-		findings = append(findings, missingNewFinding(relPath, facts))
+	if !facts.hasConstructor {
+		findings = append(findings, missingConstructorFinding(relPath, facts))
 	}
 
 	return findings, nil
@@ -210,22 +425,13 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 
 // contractShapeFacts captures everything the canonical-names check needs
 // to know about a package: which of the three canonical declarations are
-// present, opt-out signals (strategy directive, interface count), and the
-// first non-canonical interface/struct/constructor found (so findings can
-// name what the user actually wrote instead).
+// present, the interface count that drives the two shape early-outs, and
+// the first non-canonical interface/struct/constructor found (so findings
+// can name what the user actually wrote instead).
 type contractShapeFacts struct {
 	hasServiceInterface bool
 	hasDepsStruct       bool
-	hasNewFunc          bool
-	// hasStrategyDirective is set when any non-test, non-gen file
-	// in the package carries the `//forge:strategy` marker. The
-	// directive is an explicit opt-out from the canonical
-	// Service/Deps/New shape — strategy registries (pluggable
-	// backends behind a single interface, each impl with its own
-	// constructor and Deps shape) don't have a single `Service` or
-	// `New(Deps)` to bind. See contracts.SKILL.md for the canonical
-	// pattern.
-	hasStrategyDirective bool
+	hasConstructor      bool
 	// interfaceCount counts every interface declaration anywhere in
 	// the package. When >= 2 AND no Deps struct AND no New func, the
 	// package is recognized as an "interface-catalogue" shape — a
@@ -236,6 +442,23 @@ type contractShapeFacts struct {
 	// silence false-positive Service/Deps/New findings.
 	// FRICTION 2026-06-02: cp-forge layer-3 natsio, layer-4 daemonstate.
 	interfaceCount int
+	// serviceIfaceName is the interface name this package's contract is
+	// keyed on: "Service" for the zero-annotation canonical shape, or a
+	// `//forge:service`/`//forge:contract`-marked name (Gateway / Provider
+	// / …). Resolved once per package (codegen.DetectServiceInterfaceName)
+	// BEFORE the decl walk so the interface presence check AND the New
+	// return-type check both accept the same name — an author who marks a
+	// role-oriented interface no longer trips the strict Service/New rule.
+	serviceIfaceName string
+	// Positions of the CANONICAL contract interface and Deps struct, when
+	// present. The missing-contract rule anchors its finding on whichever
+	// one it fired on, so the author lands on the line that earned the
+	// verdict — a real file an editor can open, never the contract.go that
+	// does not exist. (firstIfacePos / firstStructPos / firstCtorPos below
+	// are the opposite: positions of NON-canonical near misses, for the
+	// shape rule's messages.)
+	serviceIfacePos token.Position
+	depsPos         token.Position
 	// Capture the first non-canonical interface and struct names so
 	// the error message can be specific ("found 'Sender'/'Config'/'NewSender'").
 	firstIfaceName  string
@@ -253,6 +476,18 @@ type contractShapeFacts struct {
 // problem rather than a spurious contract-shape finding.
 func scanPackageContractShape(pkgDir string) (contractShapeFacts, error) {
 	var facts contractShapeFacts
+
+	// Resolve the contract interface name ONCE, up front, from the shared
+	// codegen detector (canonical `Service`, else a marked interface, else
+	// ""). The decl walk below keys both the interface-presence check and
+	// the New return-type check off this so a `//forge:service`-marked
+	// interface satisfies BOTH — the same name codegen wires the component's
+	// ServiceTypeKey on, so lint and codegen can never disagree.
+	if n := codegen.DetectServiceInterfaceName(pkgDir); n != "" {
+		facts.serviceIfaceName = n
+	} else {
+		facts.serviceIfaceName = "Service"
+	}
 
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
@@ -282,10 +517,6 @@ func scanPackageContractShape(pkgDir string) (contractShapeFacts, error) {
 			return facts, parseErr
 		}
 
-		if !facts.hasStrategyDirective && fileHasStrategyDirective(file) {
-			facts.hasStrategyDirective = true
-		}
-
 		for _, decl := range file.Decls {
 			scanContractDecl(decl, fset, &facts)
 		}
@@ -311,8 +542,15 @@ func scanContractDecl(decl ast.Decl, fset *token.FileSet, facts *contractShapeFa
 			switch ts.Type.(type) {
 			case *ast.InterfaceType:
 				facts.interfaceCount++
-				if ts.Name.Name == "Service" {
+				// The package's contract interface is `serviceIfaceName` —
+				// "Service" by default, or the marker-freed name. An
+				// interface under that name (canonical or marked) satisfies
+				// the presence check; any other interface is just a
+				// collaborator interface and is recorded only for the
+				// "found X, rename or mark it" message.
+				if ts.Name.Name == facts.serviceIfaceName {
 					facts.hasServiceInterface = true
+					facts.serviceIfacePos = fset.Position(ts.Pos())
 				} else if facts.firstIfaceName == "" {
 					facts.firstIfaceName = ts.Name.Name
 					facts.firstIfacePos = fset.Position(ts.Pos())
@@ -320,6 +558,7 @@ func scanContractDecl(decl ast.Decl, fset *token.FileSet, facts *contractShapeFa
 			case *ast.StructType:
 				if ts.Name.Name == "Deps" {
 					facts.hasDepsStruct = true
+					facts.depsPos = fset.Position(ts.Pos())
 				} else if facts.firstStructName == "" {
 					facts.firstStructName = ts.Name.Name
 					facts.firstStructPos = fset.Position(ts.Pos())
@@ -332,48 +571,54 @@ func scanContractDecl(decl ast.Decl, fset *token.FileSet, facts *contractShapeFa
 		if d.Recv != nil {
 			return
 		}
-		if d.Name.Name == "New" && isNewDepsServiceSignature(d.Type) {
-			facts.hasNewFunc = true
-		} else if facts.firstCtorName == "" && strings.HasPrefix(d.Name.Name, "New") {
+		// The constructor is identified the way CODEGEN identifies it
+		// (codegen.IsComponentConstructor): a `// forge:constructor`-marked
+		// func under any name, else an unmarked `New`. What the rule actually
+		// requires is the SIGNATURE — `func(Deps) <Contract>` — so a package
+		// can call its entry point Open / Connect / NewReadOnly and still wire.
+		isCtor := codegen.IsComponentConstructor(d)
+		if isCtor && isDepsContractSignature(d.Type, facts.serviceIfaceName) {
+			facts.hasConstructor = true
+		} else if facts.firstCtorName == "" && (isCtor || strings.HasPrefix(d.Name.Name, "New")) {
+			// A func that CLAIMS to be the constructor (marked, or New-named)
+			// but whose signature is wrong is the near miss worth naming. Before
+			// this, a marked `Open` with a bad signature reported "no constructor"
+			// and left the author hunting for a func they had already written.
 			facts.firstCtorName = d.Name.Name
 			facts.firstCtorPos = fset.Position(d.Name.NamePos)
 		}
 	}
 }
 
-// shouldSkipContractShapeCheck reports whether the package opts out of the
-// canonical Service/Deps/New shape entirely, via one of three recognized
-// non-Service shapes.
+// shouldSkipContractShapeCheck reports whether the package cannot be a
+// Service-shape package at all, in which case the canonical-names rule has
+// nothing to say about it. Both early-outs are read off the interface
+// count — they are rule predicates, not package categories, and neither
+// needs a name, a marker, or a forge.yaml entry.
+//
+// A package that genuinely has a Service-ish shape and still wants out
+// says so with `//forge:exclude-contract`, the same header directive that
+// takes it out of bootstrap wiring and mock generation. That directive is
+// what the walk in lintInternalContracts honors before this function is
+// ever reached.
 func shouldSkipContractShapeCheck(facts contractShapeFacts) bool {
-	// Strategy-pattern early-out: explicit opt-out via the
-	// `//forge:strategy` directive on any file in the package. Strategy
-	// registries (one Strategy interface + multiple impl structs each
-	// with its own constructor / Deps shape) don't fit Service/Deps/New
-	// because the package's public surface is the interface itself —
-	// the impls are private to the registry. Anything that wants a
-	// single `New(Deps) Service` constructor would force the package
-	// to choose one impl as canonical, which defeats the pattern.
+	// Zero interfaces: the package cannot possibly declare a
+	// `Service interface`, so it isn't a Service-shape package the
+	// bootstrap template binds to. Skip silently.
 	//
-	// FRICTION 2026-06-03: kalshi `internal/algos` shipped as a
-	// strategy registry and required a contracts.exclude entry. The
-	// `//forge:strategy` directive makes that opt-in instead of opt-out.
-	if facts.hasStrategyDirective {
-		return true
-	}
-
-	// Utility-package early-out: when the package declares ZERO
-	// interfaces in non-test, non-gen files, it cannot possibly have a
-	// `Service interface` and so isn't a Service-shape package the
-	// bootstrap template binds to. Skip silently. See
-	// utility_skip.go for the full design rationale.
+	// The criterion is deliberately narrow. We do NOT also require "no
+	// Deps / no New" — a package that has Deps + New but declares no
+	// interface is most likely an incomplete Service, and the canonical
+	// "found no interface — name it 'Service'" finding is the right
+	// action there.
 	//
 	// FRICTION 2026-06-02 / 2026-06-03: cp-forge migration shipped
 	// internal/config, internal/metrics, internal/billing/provideradapters,
 	// internal/db, internal/planlimits, internal/ratelimit (and others)
-	// as constants-and-structs utility packages with no interface
-	// surface. Each required a contracts.exclude entry that this
-	// early-out makes unnecessary.
-	if isUtilityPackage(facts.interfaceCount) {
+	// as constants-and-structs packages with no interface surface. Each
+	// required a contracts.exclude entry that this early-out makes
+	// unnecessary.
+	if facts.interfaceCount == 0 {
 		return true
 	}
 
@@ -394,7 +639,7 @@ func shouldSkipContractShapeCheck(facts contractShapeFacts) bool {
 	// by design) and layer-4 daemonstate (1 data interface + 1 lifecycle
 	// runner) both required `contracts.exclude` entries that this
 	// early-out makes unnecessary.
-	if facts.interfaceCount >= 2 && !facts.hasDepsStruct && !facts.hasNewFunc {
+	if facts.interfaceCount >= 2 && !facts.hasDepsStruct && !facts.hasConstructor {
 		return true
 	}
 
@@ -423,10 +668,13 @@ func missingServiceFinding(relPath string, facts contractShapeFacts) forgeconv.F
 		File:     relPath,
 		Line:     line,
 		Message: fmt.Sprintf(
-			"forge convention: %s. Found %s — rename to 'Service' (or move out of contract.go) so the bootstrap template can wire it. See skill: contracts.",
+			"forge convention: %s. Found %s — name it 'Service', OR keep the name and add a `//forge:service` marker on the line above it, so the bootstrap template can wire it. See skill: contracts.",
 			canonicalContractMessage, found),
-		Remediation: "rename the interface declaration to `type Service interface { ... }`, " +
-			"or move it to a non-contract.go file if it's not the package's primary behavioral surface",
+		Remediation: "either rename the interface to `type Service interface { ... }`, " +
+			"or keep your role-oriented name and mark it: put `//forge:service` (or `//forge:contract`) " +
+			"on the line directly above the interface — the codegen then keys the component's type off that " +
+			"interface under any name. (`Deps` and `New` stay canonical.) " +
+			"Or move it to a non-contract.go file if it's not the package's primary behavioral surface.",
 	}
 }
 
@@ -452,15 +700,27 @@ func missingDepsFinding(relPath string, facts contractShapeFacts) forgeconv.Find
 	}
 }
 
-// missingNewFinding builds the finding emitted when the package has no
-// `func New(Deps) Service`, naming the first non-canonical New-prefixed
-// constructor found (or "no constructor" when the package declares none).
-func missingNewFinding(relPath string, facts contractShapeFacts) forgeconv.Finding {
+// missingConstructorFinding builds the finding emitted when the package declares no
+// constructor with the required SIGNATURE, naming the near miss — the
+// `// forge:constructor`-marked or New-prefixed func the author already wrote
+// (or "no constructor" when the package declares none).
+//
+// The requirement is the signature, never the name. A package that wants to
+// call its entry point Open / Connect / NewReadOnly says so with
+// `// forge:constructor` — the same marker codegen reads to emit
+// `<pkg>.<name>(<pkg>.Deps{...})`. This mirrors `//forge:service` /
+// `//forge:contract` on the interface: forge promotes good practice, it does
+// not conscript every component into being `New` returning `Service`.
+func missingConstructorFinding(relPath string, facts contractShapeFacts) forgeconv.Finding {
 	line := 1
 	found := "no constructor"
 	if facts.firstCtorName != "" {
 		line = facts.firstCtorPos.Line
 		found = fmt.Sprintf("'%s'", facts.firstCtorName)
+	}
+	contract := facts.serviceIfaceName
+	if contract == "" {
+		contract = "Service"
 	}
 	return forgeconv.Finding{
 		Rule:     string(RuleInternalPackageContractNames),
@@ -468,28 +728,40 @@ func missingNewFinding(relPath string, facts contractShapeFacts) forgeconv.Findi
 		File:     relPath,
 		Line:     line,
 		Message: fmt.Sprintf(
-			"forge convention: %s. Found %s — rename to 'New' with signature `func New(Deps) Service` so the bootstrap template can wire it. See skill: contracts.",
-			canonicalContractMessage, found),
-		Remediation: "rename the constructor to `func New(Deps) Service` (the bootstrap template emits `<pkg>.New(<pkg>.Deps{...})`)",
+			"forge convention: the package needs a constructor with the signature `func(Deps) %[1]s` "+
+				"or `func(Deps) (%[1]s, error)`. Found %[2]s — give it that signature; if you want to keep "+
+				"its name, add a `//forge:constructor` marker on the line above it. See skill: contracts.",
+			contract, found),
+		Remediation: fmt.Sprintf(
+			"give the constructor the signature `func(Deps) %[1]s` (or `func(Deps) (%[1]s, error)`). "+
+				"The name is yours: `New` works with no annotation, and any other name — `Open`, `Connect`, "+
+				"`NewReadOnly` — works once you put `//forge:constructor` on the line directly above it, "+
+				"which is the same marker codegen reads to emit `<pkg>.<name>(<pkg>.Deps{...})`.",
+			contract),
 	}
 }
 
-// isNewDepsServiceSignature reports whether ft has either of the canonical
-// `func(Deps) Service` shapes:
+// isDepsContractSignature reports whether ft has either of the canonical
+// `func(Deps) <Service>` shapes, where <Service> is ifaceName — "Service"
+// for the zero-annotation canonical path, or a `//forge:service`-marked
+// interface name:
 //
-//   - `func New(Deps) Service` — pre-Day-5 single-result form
-//   - `func New(Deps) (Service, error)` — Day-5+ form with validateDeps()
+//   - `func New(Deps) <Service>` — pre-Day-5 single-result form
+//   - `func New(Deps) (<Service>, error)` — Day-5+ form with validateDeps()
 //
-// We don't insist on a parameter name; both `func New(Deps) Service` and
-// `func New(d Deps) Service` are accepted. We DO insist on:
+// We don't insist on a parameter name; both `func New(Deps) <Service>` and
+// `func New(d Deps) <Service>` are accepted. We DO insist on:
 //   - exactly one parameter, of type `Deps` (unqualified — same package)
-//   - one result of type `Service`, optionally followed by a second
+//   - one result of type <Service>, optionally followed by a second
 //     result of type `error` (unqualified)
 //
-// Pointer parameters (`func New(*Deps) Service`) are intentionally rejected —
+// Pointer parameters (`func New(*Deps) <Service>`) are intentionally rejected —
 // the bootstrap template emits `<pkg>.New(<pkg>.Deps{...})` (a value), so
 // a pointer receiver shape would compile-fail at the call site.
-func isNewDepsServiceSignature(ft *ast.FuncType) bool {
+func isDepsContractSignature(ft *ast.FuncType, ifaceName string) bool {
+	if ifaceName == "" {
+		ifaceName = "Service"
+	}
 	if ft == nil || ft.Params == nil || ft.Results == nil {
 		return false
 	}
@@ -527,7 +799,7 @@ func isNewDepsServiceSignature(ft *ast.FuncType) bool {
 	if !isIdent(ft.Params.List[0].Type, "Deps") {
 		return false
 	}
-	if !isIdent(resultTypes[0], "Service") {
+	if !isIdent(resultTypes[0], ifaceName) {
 		return false
 	}
 	if len(resultTypes) == 2 && !isIdent(resultTypes[1], "error") {

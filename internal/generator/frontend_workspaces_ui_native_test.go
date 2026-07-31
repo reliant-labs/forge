@@ -10,7 +10,7 @@ import (
 
 // TestNewFrontendWorkspaceLayout_DerivesUINativePackage asserts the
 // UINativePackage field is derived from the project name the same way
-// ApiPackage and HooksPackage are.
+// APIPackage and HooksPackage are.
 func TestNewFrontendWorkspaceLayout_DerivesUINativePackage(t *testing.T) {
 	got := NewFrontendWorkspaceLayout("my-app")
 	if got.UINativePackage != "@my-app/ui-native" {

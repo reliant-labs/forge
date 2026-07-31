@@ -30,6 +30,19 @@ func must(t *testing.T, err error) {
 	}
 }
 
+// readFixture reads a checked-in testdata file, failing the test if it
+// has moved. Tests use it to assert a property OF the fixture (e.g.
+// "this package carries no forge directive") so the fixture can't drift
+// out from under the thing it is meant to prove.
+func readFixture(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", path, err)
+	}
+	return string(b)
+}
+
 // findingsForRule filters a finding slice to a single rule. Keeps tests
 // focused — Inspect runs multiple rules in one pass when called with
 // no Options.Rules filter, so a fixture could surface unrelated findings.

@@ -17,7 +17,10 @@ type MethodTemplateData struct {
 	OutputType      string // proto output message name, e.g. "GetItemResponse"
 	ClientStreaming bool   // true if the client streams requests
 	ServerStreaming bool   // true if the server streams responses
-	AuthRequired    bool   // true if method_options.auth_required is set
+	// AuthRequired mirrors Method.AuthRequired: true unless the proto
+	// explicitly opts out. It carries into CRUDMethodTemplateData, where
+	// it selects the handler comment's wording. It gates nothing.
+	AuthRequired bool
 }
 
 // ServiceTemplateData holds the data shape expected by the embedded service templates.
@@ -206,13 +209,13 @@ type foreignImport struct {
 	Path  string // e.g. "github.com/proj/gen/reliant/v1"
 }
 
-// goPackageForProtoFile derives the generated Go import path for a proto
+// GoPackageForProtoFile derives the generated Go import path for a proto
 // file under the buf module root. The buf module root is "proto/", and the
 // go_package convention forge projects use is `<module>/gen/<dir>` where
 // <dir> is the proto file's directory relative to "proto/" (e.g.
 // "reliant/v1/daemon_registry.proto" → "<module>/gen/reliant/v1"). Returns
 // "" when modulePath is empty or the path has no directory component.
-func goPackageForProtoFile(protoFile, modulePath string) string {
+func GoPackageForProtoFile(protoFile, modulePath string) string {
 	if modulePath == "" || protoFile == "" {
 		return ""
 	}
@@ -260,7 +263,7 @@ func (r *mockTypeResolver) qualify(msgType, fqType, protoFile string) string {
 	if i := strings.LastIndex(short, "."); i >= 0 {
 		short = short[i+1:]
 	}
-	goPkg := goPackageForProtoFile(protoFile, r.svc.ModulePath)
+	goPkg := GoPackageForProtoFile(protoFile, r.svc.ModulePath)
 	// Same-file (or unknown provenance) → the service's own package, `pb`.
 	if protoFile == "" || goPkg == "" || protoFile == r.svc.ProtoFile || goPkg == r.svc.GoPackage {
 		r.needsPb = true

@@ -15,8 +15,6 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
-
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // TestBuildHostServiceCmd covers each runner dispatch — go-run / air /
@@ -151,77 +149,32 @@ func TestEntitiesEmpty(t *testing.T) {
 	}
 }
 
-// TestUpStatePath covers the canonical $HOME/.cache/forge/up/<env>.pids
-// path so the contract with `forge up stop` is stable.
+// TestUpStatePath covers the project-scoped
+// $HOME/.cache/forge/up/<project-id>/<env>.pids path: the <project-id> segment
+// (a hash of the canonical project dir) is what keeps two projects that bring
+// up the same env name from sharing — and tearing down — each other's ledger.
+// The suffix stays /<env>.pids so the per-env contract with `forge env down` is
+// stable within a project.
 func TestUpStatePath(t *testing.T) {
-	got, err := upStatePath("dev")
+	projectID := projectIDForDir(t.TempDir())
+	got, err := upStatePath(projectID, "dev")
 	if err != nil {
 		t.Fatalf("upStatePath: %v", err)
 	}
-	if !strings.HasSuffix(got, "/.cache/forge/up/dev.pids") {
-		t.Errorf("upStatePath: got %q, want suffix /.cache/forge/up/dev.pids", got)
+	wantSuffix := "/.cache/forge/up/" + projectID + "/dev.pids"
+	if !strings.HasSuffix(got, wantSuffix) {
+		t.Errorf("upStatePath: got %q, want suffix %q", got, wantSuffix)
 	}
-}
-
-// TestBuildHostServiceCmd_LayersProjectConfig pins the symmetry with
-// `forge run <svc>`: the sibling `config.<env>.yaml` must reach the
-// host child process via cmd.Env just like the run path does. The host
-// phase previously dropped this layer (the call site took a `_ string`
-// env and passed nil to LayerHostEnv); this test guards against
-// regressing back to that shape.
-func TestBuildHostServiceCmd_LayersProjectConfig(t *testing.T) {
-	dir := t.TempDir()
-	yamlContent := `name: testproj
-module_path: github.com/example/testproj
-version: "0.1.0"
-binary: shared
-`
-	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write forge.yaml: %v", err)
+	// The ledger must live UNDER a project-id segment, never directly at
+	// up/dev.pids — the old, cross-project-colliding shape.
+	if strings.HasSuffix(got, "/.cache/forge/up/dev.pids") {
+		t.Errorf("upStatePath is not project-scoped: %q", got)
 	}
-	writeComponentsJSON(t, dir, config.ComponentConfig{
-		Name:  "api",
-		Kind:  "server",
-		Path:  "handlers/api",
-		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}},
-	})
-	siblingContent := `environment: development
-log_level: debug
-`
-	if err := os.WriteFile(filepath.Join(dir, "config.dev-host.yaml"), []byte(siblingContent), 0o644); err != nil {
-		t.Fatalf("write sibling config: %v", err)
-	}
-	t.Chdir(dir)
-
-	cfg, err := loadProjectConfig()
-	if err != nil {
-		t.Fatalf("loadProjectConfig: %v", err)
-	}
-
-	svc := ServiceEntity{
-		Name: "api",
-		Deploy: DeployConfigEntity{
-			Type: "host",
-			Host: &HostDeploy{Runner: "go-run"},
-		},
-	}
-	cmd, _, err := buildHostServiceCmd(context.Background(), cfg, svc, nil, "dev-host")
-	if err != nil {
-		t.Fatalf("buildHostServiceCmd: %v", err)
-	}
-
-	wantPairs := []string{"ENVIRONMENT=development", "LOG_LEVEL=debug"}
-	for _, p := range wantPairs {
-		found := false
-		for _, e := range cmd.Env {
-			if e == p {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("cmd.Env missing %q. Got env:\n%s", p, strings.Join(cmd.Env, "\n"))
-		}
+	// An unidentifiable project gets an ERROR, never a shared fallback path:
+	// a lookup keyed on nothing would read (and tear down) whatever happened
+	// to be recorded there.
+	if _, err := upStatePath("", "dev"); err == nil {
+		t.Error("upStatePath with no project id: want an error, got a path")
 	}
 }
 
@@ -240,13 +193,13 @@ func TestUpLogPath_Sanitises(t *testing.T) {
 }
 
 // TestUpCmd_NoPortForwardSurface pins the phase-3 ingress refactor:
-// `forge up` no longer mentions port-forward in any user-facing string
+// `forge env up` no longer mentions port-forward in any user-facing string
 // (Short / Long / Example / flag help). Reaching cluster services from
 // the host is the Gateway API ingress path now (forge cluster urls); the
 // orchestrator must not advertise a port-forward phase that doesn't
 // exist.
 func TestUpCmd_NoPortForwardSurface(t *testing.T) {
-	cmd := newUpCmd()
+	cmd := newEnvUpCmd()
 	surfaces := map[string]string{
 		"Short": cmd.Short,
 		"Long":  cmd.Long,
@@ -272,7 +225,7 @@ func TestUpCmd_NoPortForwardSurface(t *testing.T) {
 func TestBuildFrontendCmd_PortFromKCLOverridesParent(t *testing.T) {
 	parent := []string{"PATH=/usr/bin", "PORT=8080", "EDITOR=vim"}
 	fe := FrontendEntity{Name: "web", Path: "frontend", Port: 3000, EnvFile: "/does/not/exist"}
-	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil)
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil, "")
 
 	// PORT=3000 (KCL) must be present, PORT=8080 (parent) must NOT.
 	hasKCLPort := false
@@ -311,7 +264,7 @@ func TestBuildFrontendCmd_KCLEnvVarsInjected(t *testing.T) {
 			{Name: "VITE_API_URL", Value: "http://localhost:3090"},
 		},
 	}
-	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil)
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil, "")
 
 	got := map[string]string{}
 	for _, kv := range cmd.Env {
@@ -339,7 +292,7 @@ func TestBuildFrontendCmd_ParentShellOverridesEnvVars(t *testing.T) {
 	parent := []string{"VITE_ADMIN_URL=http://override"}
 	fe := FrontendEntity{Name: "web", Path: "web", EnvFile: "/does/not/exist",
 		EnvVars: []KCLEnvVar{{Name: "VITE_ADMIN_URL", Value: "http://kcl"}}}
-	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil)
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil, "")
 	for _, kv := range cmd.Env {
 		if kv == "VITE_ADMIN_URL=http://kcl" {
 			t.Errorf("KCL env_var should not override the parent shell; env: %v", cmd.Env)
@@ -354,7 +307,7 @@ func TestBuildFrontendCmd_ParentShellOverridesEnvVars(t *testing.T) {
 func TestBuildFrontendCmd_PortZeroLeavesParentPortAlone(t *testing.T) {
 	parent := []string{"PORT=8080"}
 	fe := FrontendEntity{Name: "web", Path: "frontend", Port: 0, EnvFile: "/does/not/exist"}
-	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil)
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent, nil, "")
 
 	for _, kv := range cmd.Env {
 		if kv == "PORT=0" {
@@ -373,15 +326,15 @@ func TestBuildFrontendCmd_PortZeroLeavesParentPortAlone(t *testing.T) {
 }
 
 // TestUpNoDeployFlag pins Item 5: the --no-deploy flag is registered
-// on `forge up` with the expected help text. The actual short-circuit
+// on `forge env up` with the expected help text. The actual short-circuit
 // behaviour is read straight off opts.noDeploy in runUp (`if !opts.noDeploy`
 // gate around the deploy phase) — this test guards the flag wiring so
 // a future refactor can't quietly delete the surface.
 func TestUpNoDeployFlag(t *testing.T) {
-	cmd := newUpCmd()
+	cmd := newEnvUpCmd()
 	flag := cmd.Flags().Lookup("no-deploy")
 	if flag == nil {
-		t.Fatal("--no-deploy flag missing from forge up")
+		t.Fatal("--no-deploy flag missing from forge env up")
 	}
 	if flag.DefValue != "false" {
 		t.Errorf("--no-deploy default: got %q, want false", flag.DefValue)
@@ -392,7 +345,7 @@ func TestUpNoDeployFlag(t *testing.T) {
 	// Verify the flag actually parses into opts.noDeploy by exercising
 	// the cobra parser. We can't easily run the RunE without a project,
 	// but flag parse is enough to confirm the BoolVar wiring is intact.
-	if err := cmd.ParseFlags([]string{"--env=dev", "--no-deploy"}); err != nil {
+	if err := cmd.ParseFlags([]string{"--no-deploy"}); err != nil {
 		t.Fatalf("parse --no-deploy: %v", err)
 	}
 	got, err := cmd.Flags().GetBool("no-deploy")
@@ -450,18 +403,115 @@ func TestHostEnvPort(t *testing.T) {
 	}
 }
 
+// TestHostEnvPorts is the Gap-A fix: a host service binds EVERY declared
+// <...>_PORT, not just the first/canonical one. Probing only one let a real
+// conflict slip past the pre-flight guard.
+func TestHostEnvPorts(t *testing.T) {
+	eq := func(t *testing.T, got, want []int) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("got %v, want %v", got, want)
+			}
+		}
+	}
+
+	if got := hostEnvPorts("svc", nil); got != nil {
+		t.Errorf("nil host: got %v, want nil", got)
+	}
+
+	// The headline case: one service with several distinct bind ports, each a
+	// <...>_PORT env var. ALL are returned, in declaration order.
+	multi := &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "DATABASE_URL", Value: "postgres://x"},
+		{Name: "API_PORT", Value: "8081"},
+		{Name: "METRICS_PORT", Value: "3091"},
+		{Name: "PPROF_PORT", Value: "6060"},
+	}}
+	eq(t, hostEnvPorts("api", multi), []int{8081, 3091, 6060})
+
+	// Only generic PORT declared → it is the bind port.
+	eq(t, hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "PORT", Value: "8080"},
+	}}), []int{8080})
+
+	// Generic PORT + the service-specific <NAME>_PORT → PORT is a vestigial
+	// default the binary ignores, so it is dropped; the specific one wins.
+	// (Over-detecting a vestigial PORT would mean a false pre-flight conflict
+	// and a readiness gate waiting for a port that never binds.)
+	eq(t, hostEnvPorts("admin-server", &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "PORT", Value: "8080"},
+		{Name: "ADMIN_SERVER_PORT", Value: "8090"},
+	}}), []int{8090})
+
+	// Generic PORT alongside a NON-name-matching *_PORT (e.g. a metrics port):
+	// no service-specific override, so BOTH are real bind ports.
+	eq(t, hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "PORT", Value: "8080"},
+		{Name: "METRICS_PORT", Value: "9090"},
+	}}), []int{9090, 8080})
+
+	// Duplicate values collapse; ref-only ports have no host-side literal and
+	// are skipped.
+	eq(t, hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "API_PORT", Value: "8081"},
+		{Name: "HTTP_PORT", Value: "8081"},                                  // dup value
+		{Name: "GRPC_PORT", ConfigMapRef: "cfg", ConfigMapKey: "GRPC_PORT"}, // ref, no literal
+		{Name: "BAD_PORT", Value: "not-a-number"},                           // unparseable
+	}}), []int{8081})
+
+	// No inline port at all → empty.
+	if got := hostEnvPorts("api", &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "DATABASE_URL", Value: "postgres://x"},
+	}}); got != nil {
+		t.Errorf("no port: got %v, want nil", got)
+	}
+
+	// Explicit listen_ports declared → the env heuristic is skipped entirely.
+	// The env here is the false-positive shape that motivated the field: the
+	// service DIALS temporal at TEMPORAL_PORT and the gateway LB at
+	// WORKSPACE_URL_PORT, and carries a vestigial k8s-convention PORT — none
+	// of which it binds. Only the declared bind ports are checked.
+	eq(t, hostEnvPorts("reliant-api-server", &HostDeploy{
+		ListenPorts: []int{3091, 8081},
+		EnvVars: []KCLEnvVar{
+			{Name: "TEMPORAL_PORT", Value: "7233"},
+			{Name: "WORKSPACE_URL_PORT", Value: "28080"},
+			{Name: "PORT", Value: "8080"},
+		},
+	}), []int{3091, 8081})
+
+	// Declared listen_ports are deduped and bounds-checked.
+	eq(t, hostEnvPorts("api", &HostDeploy{
+		ListenPorts: []int{8081, 8081, 0, 70000, 9090},
+	}), []int{8081, 9090})
+
+	// The singular summary-port helper prefers the first declared listen
+	// port over the env heuristic, so the status/summary URL and probe
+	// target a port the service actually binds.
+	if got := hostEnvPort("reliant-api-server", &HostDeploy{
+		ListenPorts: []int{3091, 8081},
+		EnvVars:     []KCLEnvVar{{Name: "PORT", Value: "8080"}},
+	}); got != "3091" {
+		t.Errorf("listen_ports summary port: got %q, want \"3091\"", got)
+	}
+}
+
 func TestPersistUsesCapturedPid(t *testing.T) {
-	// Regression: `forge up --background` Release()s the child (resetting
+	// Regression: `forge env up --background` Release()s the child (resetting
 	// cmd.Process.Pid to -1), so persist() must use the PID captured at
 	// Start, and skip entries with no usable PID rather than writing -1/0.
 	env := "test-persist-pidcapture"
-	statePath, err := upStatePath(env)
+	t.Setenv("HOME", t.TempDir())
+	statePath, err := upStatePath(testProj, env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(statePath)
 
-	p := newProcRegistry(env)
+	p := newProcRegistry(testProj, t.TempDir(), env)
 	p.processes = []*managedProcess{
 		{name: "svc-a", pid: 4242, cmd: &exec.Cmd{}}, // detached: captured pid, no live handle
 		{name: "svc-b", pid: 0, cmd: &exec.Cmd{}},    // never captured: must be skipped
@@ -583,6 +633,14 @@ func TestConflictingPorts(t *testing.T) {
 			{Name: "admin-server", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
 				EnvVars: []KCLEnvVar{{Name: "ADMIN_SERVER_PORT", Value: "8090"}},
 			}}},
+			// Multi-port host service: three distinct declared bind ports.
+			{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
+				EnvVars: []KCLEnvVar{
+					{Name: "API_PORT", Value: "8081"},
+					{Name: "METRICS_PORT", Value: "3091"},
+					{Name: "PPROF_PORT", Value: "6060"},
+				},
+			}}},
 			{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
 			{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
 		},
@@ -649,6 +707,29 @@ func TestConflictingPorts(t *testing.T) {
 			t.Fatalf("got %v; want none (noport declares no PORT)", names(got))
 		}
 	})
+
+	t.Run("multi-port service surfaces EVERY busy port", func(t *testing.T) {
+		// Gap A: api binds :8081, :3091, :6060. A conflict on any one of them
+		// must be caught — previously only the first was probed, so a stale
+		// stack squatting :3091 slipped past and a second stack launched.
+		got := conflictingPorts(entities, []string{"api"}, true, busy(3091))
+		if g := names(got); len(g) != 1 || g[0] != "api" || got[0].port != 3091 {
+			t.Fatalf("got %v (ports %v); want one api conflict on :3091", g, ports(got))
+		}
+		// Two of its three ports busy → two conflicts, both named api.
+		got = conflictingPorts(entities, []string{"api"}, true, busy(8081, 6060))
+		if len(got) != 2 || got[0].port != 8081 || got[1].port != 6060 {
+			t.Fatalf("got ports %v; want [8081 6060] both on api", ports(got))
+		}
+	})
+}
+
+func ports(cs []portConflict) []int {
+	out := make([]int, len(cs))
+	for i, c := range cs {
+		out[i] = c.port
+	}
+	return out
 }
 
 // TestCollectUpServices verifies the summary/services row collection:
@@ -753,7 +834,7 @@ func TestRenderUpSummary(t *testing.T) {
 		".forge/logs/dev/frontend_reliant-web.log",
 		"Logs   .forge/logs/dev/",
 		"forge cluster urls",
-		"forge up services --env=dev",
+		"forge env status dev",
 		"Host services", "Frontends",
 	} {
 		if !strings.Contains(out, want) {
@@ -762,7 +843,7 @@ func TestRenderUpSummary(t *testing.T) {
 	}
 }
 
-// TestRunUpServices_EndToEnd drives the `forge up services` code path all
+// TestRunUpServices_EndToEnd drives the `forge env status` code path all
 // the way through: render KCL (via the fixture override) → collect rows →
 // probe a real listener → enrich ownership → format. It binds a live
 // socket on the host service's port so the health snapshot reports it
@@ -803,7 +884,7 @@ features:
 
 	// Text output.
 	out := captureStdout(t, func() {
-		if err := runUpServices(context.Background(), "dev", false); err != nil {
+		if err := runUpServices(context.Background(), "dev", false, "", false); err != nil {
 			t.Fatalf("runUpServices: %v", err)
 		}
 	})
@@ -813,7 +894,7 @@ features:
 		"admin-web", "http://localhost:3100",
 		"reliant-web", "http://localhost:3101", // BOTH frontends surfaced
 		"down", // an unbound frontend port
-		"forge up services --env=dev",
+		"forge env status dev",
 		".forge/logs/dev/",
 	} {
 		if !strings.Contains(out, want) {
@@ -826,7 +907,7 @@ features:
 
 	// JSON output.
 	jsonOut := captureStdout(t, func() {
-		if err := runUpServices(context.Background(), "dev", true); err != nil {
+		if err := runUpServices(context.Background(), "dev", true, "", false); err != nil {
 			t.Fatalf("runUpServices json: %v", err)
 		}
 	})
@@ -852,5 +933,258 @@ features:
 	}
 	if r, present := byName["reliant-web"]; !present || r.Listening {
 		t.Errorf("reliant-web json: got %+v (present=%v); want present and not listening", r, present)
+	}
+}
+
+// listeningSet builds an injected `listening` probe for the readiness tests.
+func listeningSet(ports ...int) func(int) bool {
+	set := map[int]bool{}
+	for _, p := range ports {
+		set[p] = true
+	}
+	return func(p int) bool { return set[p] }
+}
+
+// TestClassifyPortReadiness is the Gap-B core: after launch, tell OUR OWN
+// marked child apart from a foreign/stale holder and from nothing-listening.
+// listening / resolvePID / procFacts are all injected — no real sockets or
+// lsof.
+func TestClassifyPortReadiness(t *testing.T) {
+	f := fakeFacts{
+		env: map[int][]string{
+			100: marker("dev", "api"), // our child for env=dev
+			200: {"PATH=/usr/bin"},    // foreign: no marker
+		},
+		ppid: map[int]int{100: 1, 200: 1},
+	}
+	resolve := func(port int) int {
+		switch port {
+		case 8081:
+			return 100 // ours
+		case 3091:
+			return 200 // foreign
+		case 7000:
+			return 0 // listening but holder unresolvable
+		default:
+			return 0
+		}
+	}
+
+	// our-child-bound.
+	if got := classifyPortReadiness(8081, testProj, "dev", listeningSet(8081, 3091, 7000), resolve, f); got != portReadyOurs {
+		t.Errorf("our child bound: got %v, want portReadyOurs", got)
+	}
+	// foreign-holds-port (the stale-holder trap).
+	if got := classifyPortReadiness(3091, testProj, "dev", listeningSet(8081, 3091, 7000), resolve, f); got != portReadyForeign {
+		t.Errorf("foreign holder: got %v, want portReadyForeign", got)
+	}
+	// nothing-listening (silent bind failure).
+	if got := classifyPortReadiness(9999, testProj, "dev", listeningSet(8081, 3091, 7000), resolve, f); got != portReadyNobody {
+		t.Errorf("nothing listening: got %v, want portReadyNobody", got)
+	}
+	// Listening but holder unresolvable (no lsof / Windows) → degrade to
+	// "ours" rather than a FALSE foreign that would fail a healthy run.
+	if got := classifyPortReadiness(7000, testProj, "dev", listeningSet(7000), resolve, f); got != portReadyOurs {
+		t.Errorf("unresolvable holder: got %v, want portReadyOurs (graceful degrade)", got)
+	}
+	// A marker for a DIFFERENT env is foreign to us (mirrors the reclaim
+	// guard's per-env ownership).
+	f2 := fakeFacts{env: map[int][]string{300: marker("staging", "api")}, ppid: map[int]int{300: 1}}
+	if got := classifyPortReadiness(8081, testProj, "dev", listeningSet(8081), func(int) int { return 300 }, f2); got != portReadyForeign {
+		t.Errorf("wrong-env marker: got %v, want portReadyForeign", got)
+	}
+	// A marker for a DIFFERENT project (same env name) is likewise foreign —
+	// the post-launch readiness gate must not paint another project's stack as
+	// "ours" on our port.
+	f3 := fakeFacts{env: map[int][]string{400: markerProj("projB", "dev", "api")}, ppid: map[int]int{400: 1}}
+	if got := classifyPortReadiness(8081, testProj, "dev", listeningSet(8081), func(int) int { return 400 }, f3); got != portReadyForeign {
+		t.Errorf("different-project marker: got %v, want portReadyForeign", got)
+	}
+}
+
+// TestEvalHostReadiness checks the whole-service snapshot: every declared
+// bind port of a multi-port host service is classified, non-host / no-port
+// services contribute nothing, --target scopes the set, and the failure list
+// + error name the offending ports with the right foreign-vs-nobody wording.
+func TestEvalHostReadiness(t *testing.T) {
+	entities := &KCLEntities{
+		Services: []ServiceEntity{
+			{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
+				EnvVars: []KCLEnvVar{
+					{Name: "API_PORT", Value: "8081"},
+					{Name: "METRICS_PORT", Value: "3091"},
+					{Name: "PPROF_PORT", Value: "6060"},
+				},
+			}}},
+			{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
+			{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+		},
+	}
+	// :8081 bound by our child (100, marked dev); :3091 held by a foreign
+	// process (200, unmarked); :6060 nothing listening.
+	f := fakeFacts{
+		env:  map[int][]string{100: marker("dev", "api"), 200: {"PATH=/x"}},
+		ppid: map[int]int{100: 1, 200: 1},
+	}
+	listening := listeningSet(8081, 3091)
+	resolve := func(p int) int {
+		switch p {
+		case 8081:
+			return 100
+		case 3091:
+			return 200
+		default:
+			return 0
+		}
+	}
+
+	rs := evalHostReadiness(entities, testProj, "dev", nil, listening, resolve, f)
+	if len(rs) != 3 { // one per api port; noport + cluster-svc contribute none
+		t.Fatalf("got %d results, want 3 (one per api bind port): %+v", len(rs), rs)
+	}
+	byPort := map[int]portReadyState{}
+	for _, r := range rs {
+		if r.name != "api" {
+			t.Errorf("unexpected service in readiness set: %q", r.name)
+		}
+		byPort[r.port] = r.state
+	}
+	if byPort[8081] != portReadyOurs {
+		t.Errorf(":8081 = %v, want ours", byPort[8081])
+	}
+	if byPort[3091] != portReadyForeign {
+		t.Errorf(":3091 = %v, want foreign", byPort[3091])
+	}
+	if byPort[6060] != portReadyNobody {
+		t.Errorf(":6060 = %v, want nobody", byPort[6060])
+	}
+
+	// Only the not-ours ports keep the gate waiting / name the failure.
+	unready := hostReadyUnready(rs)
+	if len(unready) != 2 {
+		t.Fatalf("unready = %d, want 2 (the foreign + the nobody)", len(unready))
+	}
+	msg := hostReadyError("dev", unready).Error()
+	for _, want := range []string{"api", "3091", "6060", "forge env down dev"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("readiness error missing %q:\n%s", want, msg)
+		}
+	}
+	if !strings.Contains(msg, "stale/foreign") || !strings.Contains(msg, "failed to bind") {
+		t.Errorf("readiness error should distinguish foreign vs nobody:\n%s", msg)
+	}
+	// :8081 (ours) must NOT appear as a failure.
+	if strings.Contains(msg, "8081") {
+		t.Errorf("readiness error names an already-bound port:\n%s", msg)
+	}
+
+	// All ports ours → nothing unready (the healthy pass).
+	allOurs := evalHostReadiness(entities, testProj, "dev", nil, func(int) bool { return true },
+		func(int) int { return 100 }, f)
+	if u := hostReadyUnready(allOurs); len(u) != 0 {
+		t.Errorf("all-ours: want no unready, got %+v", u)
+	}
+
+	// --target scopes the gate: targeting only the no-port service yields
+	// nothing to wait on.
+	if got := evalHostReadiness(entities, testProj, "dev", []string{"noport"}, listening, resolve, f); len(got) != 0 {
+		t.Errorf("target=noport: want 0 results, got %+v", got)
+	}
+}
+
+// TestWaitHostServicesReady_NoPortsIsInstantPass pins the fast path: when no
+// host service declares a bind port there is nothing to gate, so the wrapper
+// returns nil immediately without any real socket/lsof work or polling.
+func TestWaitHostServicesReady_NoPortsIsInstantPass(t *testing.T) {
+	e := &KCLEntities{Services: []ServiceEntity{
+		{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
+		{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+	}}
+	done := make(chan error, 1)
+	go func() { done <- waitHostServicesReady(e, testProj, "dev", nil, hostReadyTimeout, hostReadyPoll) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("no declared ports: want nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitHostServicesReady did not return promptly when no ports are declared")
+	}
+}
+
+// withDevRunDefaults injects the dev-run env defaults (ENVIRONMENT=development,
+// AUTO_MIGRATE=true) at the lowest precedence for a dev env, and passes the
+// project config through untouched for non-dev — so `forge run` boots a
+// migrated schema in dev while production stays unchanged (turnkey dev migrate).
+//
+// ENVIRONMENT carries the CORS story: it is what enables the backend's CORS
+// layer (serverkit.Config.CORSEnabled) and selects the origin-reflecting dev
+// policy. `forge run` therefore synthesizes NO CORS_ORIGINS of its own — it
+// used to derive one from the declared frontend ports purely to trip
+// serverkit's old "origins non-empty" gate, a value the generated factory's
+// dev branch then discarded. That derivation could not work in general
+// anyway: resolveEphemeralFrontendPorts hands a portless frontend a
+// kernel-assigned port, so there is often no origin to name in advance.
+func TestWithDevRunDefaults(t *testing.T) {
+	// Non-dev: passthrough, no dev-run vars injected. A deployed posture owns
+	// its own CORS allow-list and gets no layer without one.
+	base := map[string]string{"LOG_LEVEL": "info"}
+	got := withDevRunDefaults(base, false)
+	if _, ok := got["AUTO_MIGRATE"]; ok {
+		t.Fatalf("non-dev env must not receive AUTO_MIGRATE; got %v", got)
+	}
+	if _, ok := got["CORS_ORIGINS"]; ok {
+		t.Fatalf("non-dev env must not receive a CORS_ORIGINS default; got %v", got)
+	}
+	if got["ENVIRONMENT"] == "development" {
+		t.Fatalf("non-dev env must not be forced to development; got %v", got)
+	}
+
+	// Dev: the pair injected as defaults, project config preserved.
+	got = withDevRunDefaults(map[string]string{"LOG_LEVEL": "debug"}, true)
+	if got["ENVIRONMENT"] != "development" {
+		t.Fatalf("dev env must default ENVIRONMENT=development; got %q", got["ENVIRONMENT"])
+	}
+	if got["AUTO_MIGRATE"] != "true" {
+		t.Fatalf("dev env must default AUTO_MIGRATE=true; got %q", got["AUTO_MIGRATE"])
+	}
+	if got["LOG_LEVEL"] != "debug" {
+		t.Fatalf("existing project config must be preserved; got %v", got)
+	}
+
+	// No CORS_ORIGINS is ever synthesized. The dev posture does not need one,
+	// and inventing an allow-list would be a second, competing answer to a
+	// question ENVIRONMENT already answers.
+	if v, ok := got["CORS_ORIGINS"]; ok {
+		t.Fatalf("dev run must not synthesize CORS_ORIGINS; got %q", v)
+	}
+
+	// An empty projected value must not shadow a dev default: the KCL
+	// projection is total, so a field no config.k pinned arrives as "". For
+	// ENVIRONMENT that absence winning would silently demote the run to a
+	// deployed posture and take dev CORS down with it.
+	got = withDevRunDefaults(map[string]string{"ENVIRONMENT": "", "AUTO_MIGRATE": ""}, true)
+	if got["ENVIRONMENT"] != "development" {
+		t.Fatalf("an unpinned \"\" must not shadow the ENVIRONMENT dev default; got %q", got["ENVIRONMENT"])
+	}
+	if got["AUTO_MIGRATE"] != "true" {
+		t.Fatalf("an unpinned \"\" must not shadow the AUTO_MIGRATE dev default; got %q", got["AUTO_MIGRATE"])
+	}
+
+	// Precedence: an explicit project-config value overrides the dev-run
+	// default (the dev-run defaults are the LOWEST layer).
+	got = withDevRunDefaults(map[string]string{
+		"ENVIRONMENT":  "staging-like",
+		"AUTO_MIGRATE": "false",
+		"CORS_ORIGINS": "https://app.example.com",
+	}, true)
+	if got["ENVIRONMENT"] != "staging-like" {
+		t.Fatalf("project config must override the dev-run default; got %q", got["ENVIRONMENT"])
+	}
+	if got["AUTO_MIGRATE"] != "false" {
+		t.Fatalf("project config must override the AUTO_MIGRATE default; got %q", got["AUTO_MIGRATE"])
+	}
+	if got["CORS_ORIGINS"] != "https://app.example.com" {
+		t.Fatalf("an explicitly configured CORS_ORIGINS must survive; got %q", got["CORS_ORIGINS"])
 	}
 }

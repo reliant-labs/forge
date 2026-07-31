@@ -5,8 +5,14 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+
 	"{{.Module}}/pkg/config"
 )
+
+// tracer is the OTel tracer for this worker, named after the package so
+// spans group cleanly in the trace UI.
+var tracer = otel.Tracer("internal/workers/{{.Name}}")
 
 // Deps contains the dependencies for the {{.Name}} worker.
 type Deps struct {
@@ -52,6 +58,19 @@ func (w *Worker) Start(ctx context.Context) error {
 // runOnce performs a single work cycle. Pass ctx into every context-aware
 // call so a long cycle observes shutdown mid-flight.
 func (w *Worker) runOnce(ctx context.Context) error {
+	// LIFO defer: span.End() runs after recover, so the span records the
+	// panicked state. Nothing above this restarts a poll worker, so a panic
+	// that escaped here would unwind through Start's ticker loop and take
+	// the whole process down; recovering keeps the cadence alive across bad
+	// cycles.
+	ctx, span := tracer.Start(ctx, "worker.{{.Name}}.tick")
+	defer func() {
+		if r := recover(); r != nil {
+			w.deps.Logger.ErrorContext(ctx, "worker cycle panicked", "worker", w.Name(), "panic", r)
+		}
+		span.End()
+	}()
+
 	// TODO: implement your per-cycle work here.
 	w.deps.Logger.InfoContext(ctx, "worker cycle", "worker", w.Name())
 	return nil

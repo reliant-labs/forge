@@ -2,6 +2,57 @@ package buildinfo
 
 import "testing"
 
+// TestIsDevBuildClassification pins the release-vs-dev discriminator the
+// scaffolder relies on before ever writing a local-forge go.work. Only a
+// clean, tagged semver from an unmodified tree counts as a release; "(devel)",
+// pseudo-versions, dirty trees, and garbage are all dev.
+func TestIsDevBuildClassification(t *testing.T) {
+	cases := []struct {
+		name        string
+		mainVersion string
+		vcsModified bool
+		wantDev     bool
+	}{
+		{"release tag clean tree", "v1.2.3", false, false},
+		{"prerelease tag clean tree", "v1.2.3-rc.1", false, false},
+		{"release tag dirty tree is dev", "v1.2.3", true, true},
+		{"devel marker is dev", "(devel)", false, true},
+		{"empty version is dev", "", false, true},
+		{"pseudo-version is dev", "v0.0.0-20260612070344-a3e3b883c97c", false, true},
+		{"pseudo-version on tag base is dev", "v1.2.3-0.20260612070344-a3e3b883c97c", false, true},
+		{"garbage is dev", "latest", false, true},
+		{"missing v prefix is dev", "1.2.3", false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isDevBuildFrom(c.mainVersion, c.vcsModified); got != c.wantDev {
+				t.Errorf("isDevBuildFrom(%q, modified=%v) = %v, want %v", c.mainVersion, c.vcsModified, got, c.wantDev)
+			}
+		})
+	}
+}
+
+// TestIsDevBuildOverride pins the test seam: SetDevBuild wins over the ambient
+// build info, and ClearDevBuild restores the real read.
+func TestIsDevBuildOverride(t *testing.T) {
+	t.Cleanup(ClearDevBuild)
+
+	SetDevBuild(false)
+	if IsDevBuild() {
+		t.Error("SetDevBuild(false): IsDevBuild() = true, want false")
+	}
+	SetDevBuild(true)
+	if !IsDevBuild() {
+		t.Error("SetDevBuild(true): IsDevBuild() = false, want true")
+	}
+	ClearDevBuild()
+	// After clearing, IsDevBuild reads the ambient test binary, which is
+	// always "(devel)" under `go test` → dev.
+	if !IsDevBuild() {
+		t.Error("after ClearDevBuild: IsDevBuild() = false for a (devel) test binary, want true")
+	}
+}
+
 // TestInstallableVersion pins the contract that InstallableVersion()
 // only ever returns a ref `go install ...@<ref>` can resolve from a
 // module proxy: a release tag or a clean pseudo-version, never a
@@ -66,5 +117,43 @@ func TestPkgVersionValidation(t *testing.T) {
 				t.Errorf("SetPkgVersion(%q): PkgVersion() = %q, want %q", c.set, got, c.want)
 			}
 		})
+	}
+}
+
+// TestIsDevVersion pins the identity half of forge versioning: given a
+// version STRING (a forge.yaml pin, a report line), is this a release or a
+// build somebody made locally? Ordering is a separate question answered by
+// SemVer comparison — conflating the two is what made a locally-built forge's
+// pseudo-version indistinguishable from an ancient project.
+func TestIsDevVersion(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		// Released tags.
+		{"v0.0.3", false},
+		{"v0.1.0", false},
+		{"v1.4.2", false},
+		{"0.0.3", false}, // leading "v" optional
+		{"v1.0.0-rc.1", false},
+		// Sentinels.
+		{"", true},
+		{"dev", true},
+		{"(devel)", true},
+		// Go pseudo-versions: an untagged commit, i.e. a build nobody
+		// published.
+		{"v0.0.0-20260430002332-8f05b089372c", true},
+		{"v0.0.4-0.20260724212501-dfb85daf8474", true},
+		// Build metadata is only ever stamped from a modified tree.
+		{"v0.0.4-0.20260724212501-dfb85daf8474+dirty", true},
+		{"v1.4.2+dirty", true},
+		// Not a version at all.
+		{"main", true},
+		{"latest", true},
+	}
+	for _, tt := range tests {
+		if got := IsDevVersion(tt.version); got != tt.want {
+			t.Errorf("IsDevVersion(%q) = %v, want %v", tt.version, got, tt.want)
+		}
 	}
 }

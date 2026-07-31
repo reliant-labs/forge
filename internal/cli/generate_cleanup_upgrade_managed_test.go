@@ -1,12 +1,12 @@
 // File: internal/cli/generate_cleanup_upgrade_managed_test.go
 //
 // Tests that `forge generate`'s stale-artifact sweep does NOT flag
-// files managed by `forge upgrade` as stale. The regression these
+// files managed by `forge project upgrade` as stale. The regression these
 // tests pin: pre-fix, `forge generate` warned that 7 actively-used
 // files (cmd/main.go, .golangci.yml, .github/CODEOWNERS, etc.) were
 // "stale" and would-be-deleted with --force-cleanup. The user's only
 // workaround was hand-flipping `forked: true` in checksums.json, which
-// silenced the warning but also broke `forge upgrade`'s ability to
+// silenced the warning but also broke `forge project upgrade`'s ability to
 // re-emit the file on the next version bump.
 //
 // The fix consults generator.UpgradeManagedPaths() — the union over
@@ -41,8 +41,15 @@ func TestCleanupStaleArtifacts_SkipsUpgradeManagedPaths(t *testing.T) {
 		// The command tree moved to cmd/<bin>/cmd; the name-less union the
 		// cleanup uses yields the bare cmd/cmd/<file>.go form. (main.go is NOT
 		// here — it is scaffold-once OWNED code, not upgrade-managed.)
+		//
+		// db.go and version.go are in this list for the scaffold-once
+		// MIGRATION reason rather than because upgrade emits them: both were
+		// Tier-1 in older projects, so a marker-bearing copy sits in the tree
+		// that no run rewrites. That is precisely the shape the sweep would
+		// otherwise call stale and delete.
 		"cmd/cmd/db.go",
 		"cmd/cmd/version.go",
+		"cmd/cmd/db_source.go",
 		".golangci.yml",
 		".github/CODEOWNERS",
 		".github/pull_request_template.md",
@@ -72,7 +79,7 @@ func TestCleanupStaleArtifacts_SkipsUpgradeManagedPaths(t *testing.T) {
 }
 
 // TestUpgradeManagedPaths_CoversReportedFiles confirms the helper
-// returns at least the 7 paths the cp-forge audit-cleanup agent
+// returns at least the 7 paths the cp-forge project audit-cleanup agent
 // reported as false-positive stale candidates. Pins the contract that
 // these paths are recognized as upgrade-managed (and so cleanup
 // excludes them). If a future refactor moves any of these to be
@@ -89,19 +96,29 @@ func TestUpgradeManagedPaths_CoversReportedFiles(t *testing.T) {
 		// the cleanup sweep never sees a marker on it and there is nothing to
 		// exclude. This reverses the interim registry-kill state that made
 		// main.go a generated/managed file.
-		"cmd/cmd/db.go",
-		"cmd/cmd/version.go",
 		".golangci.yml",
 		".github/CODEOWNERS",
 		".github/pull_request_template.md",
 		".github/workflows/e2e.yml",
 		// Tier-1 command-tree files under upgrade ownership. The tree moved
 		// to cmd/<bin>/cmd; the name-less UpgradeManagedPaths union yields the
-		// bare cmd/cmd/<file>.go form. (serve.go/server.go/root.go stay
-		// upgrade-managed; only main.go became scaffold-once owned.)
+		// bare cmd/cmd/<file>.go form.
+		"cmd/cmd/root.go",
+		"cmd/cmd/db_source.go",
+		// These four are in the set for a DIFFERENT reason than their
+		// neighbours, and the difference is the point. None is
+		// upgrade-managed at all anymore — each became scaffold-once
+		// user-owned when its invariant half moved into a forge library
+		// (pkg/serverkit, pkg/cmdkit, pkg/migratekit). They are listed
+		// because every project scaffolded BEFORE those splits has a copy on
+		// disk still carrying forge's certification markers, and nothing
+		// writes them anymore: the sweep would read "certified, not written
+		// this run" as stale and --force-cleanup would DELETE the user's
+		// serve pipeline, ServeSpec, version stamp and migration policy.
 		"cmd/cmd/serve.go",
 		"cmd/cmd/server.go",
-		"cmd/cmd/root.go",
+		"cmd/cmd/version.go",
+		"cmd/cmd/db.go",
 		// Tier-2 scaffolds also upgrade-managed.
 		"buf.yaml",
 		"Taskfile.yml",
@@ -162,4 +179,4 @@ func TestCleanupStaleArtifacts_StillFlagsRealStaleAfterExclusion(t *testing.T) {
 // is gone with the manifest — there is no record of absent files, so
 // there is no inverse "tracked but missing" finding to exclude
 // upgrade-managed paths from. A missing upgrade-managed file is simply
-// re-emitted by the next `forge upgrade`.
+// re-emitted by the next `forge project upgrade`.

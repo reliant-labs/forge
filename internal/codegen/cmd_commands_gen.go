@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -19,9 +20,12 @@ import (
 func GenerateCmdCommands(targetDir, bin string) error {
 	cmdDir := filepath.Join(targetDir, "cmd", bin, "cmd")
 	dest := filepath.Join(cmdDir, "commands.go")
+	rel := filepath.Join("cmd", bin, "cmd", "commands.go")
 
-	// Never overwrite — this is user-owned code.
-	if _, err := os.Stat(dest); err == nil {
+	// Written once and never again — this is user-owned code, and that
+	// covers deleting it as much as editing it. A project with no extra
+	// cobra commands can remove this file and it stays removed.
+	if !checksums.ScaffoldOnceDecision(targetDir, rel) {
 		return nil
 	}
 
@@ -34,5 +38,9 @@ func GenerateCmdCommands(targetDir, bin string) error {
 		return fmt.Errorf("render cmd-tree-commands.go.tmpl: %w", err)
 	}
 
-	return writeUserScaffold(dest, content)
+	if err := writeUserScaffold(dest, content); err != nil {
+		return err
+	}
+	checksums.RecordScaffold(targetDir, rel)
+	return nil
 }

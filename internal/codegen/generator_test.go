@@ -121,20 +121,21 @@ func TestGenerateServiceStub_WithMethods_IncludesImports(t *testing.T) {
 		t.Error("service.go should import pb")
 	}
 
-	// handlers.go should be generated with method stubs
-	handlersData, err := os.ReadFile(filepath.Join(targetDir, "handlers.go"))
+	// The Echo RPC gets its own file, complete with its own imports.
+	stub := RPCHandlerFileName("Echo")
+	handlersData, err := os.ReadFile(filepath.Join(targetDir, stub))
 	if err != nil {
-		t.Fatalf("ReadFile(handlers.go) error = %v", err)
+		t.Fatalf("ReadFile(%s) error = %v", stub, err)
 	}
 
 	handlersContent := string(handlersData)
 
 	if !strings.Contains(handlersContent, `"context"`) {
-		t.Error("handlers.go with methods should import \"context\"")
+		t.Errorf("%s should import \"context\"", stub)
 	}
 
 	if !strings.Contains(handlersContent, `func (s *Service) Echo(`) {
-		t.Error("handlers.go should contain the Echo RPC stub")
+		t.Errorf("%s should contain the Echo RPC stub", stub)
 	}
 }
 
@@ -616,20 +617,15 @@ func New(deps Deps) Service { return nil }
 func TestGenerateBootstrapTesting_MultipleServices(t *testing.T) {
 	targetDir := t.TempDir()
 
-	// Scaffold real handler dirs whose Deps declare an Authorizer — the normal
-	// forge service shape. The authz-aware test harness only emits the
-	// AuthzInterceptor / permissive-default wiring for services that carry that
-	// dep, so the assertions below need a service that actually has one.
-	authedSvc := func(pkg string) string {
+	// Scaffold real handler dirs with a minimal Deps shape (Logger only) —
+	// the test harness renders one factory per discovered service.
+	svcSrc := func(pkg string) string {
 		return `package ` + pkg + `
 
 import "log/slog"
 
-type Authorizer interface{ Can(string) bool }
-
 type Deps struct {
-	Logger     *slog.Logger
-	Authorizer Authorizer
+	Logger *slog.Logger
 }
 
 type Service struct{ deps Deps }
@@ -637,8 +633,8 @@ type Service struct{ deps Deps }
 func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 `
 	}
-	writeFileT(t, filepath.Join(targetDir, "internal", "handlers", "api", "service.go"), authedSvc("api"))
-	writeFileT(t, filepath.Join(targetDir, "internal", "handlers", "orders", "service.go"), authedSvc("orders"))
+	writeFileT(t, filepath.Join(targetDir, "internal", "handlers", "api", "service.go"), svcSrc("api"))
+	writeFileT(t, filepath.Join(targetDir, "internal", "handlers", "orders", "service.go"), svcSrc("orders"))
 
 	services := []ServiceDef{
 		{Name: "APIService", ModulePath: "example.com/proj"},
@@ -646,12 +642,11 @@ func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 	}
 
 	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
-		GenContext:         GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
-		Services:           services,
-		Packages:           nil,
-		Workers:            nil,
-		Operators:          nil,
-		MultiTenantEnabled: false,
+		GenContext: GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:   services,
+		Packages:   nil,
+		Workers:    nil,
+		Operators:  nil,
 	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting() error = %v", err)
 	}
@@ -706,16 +701,6 @@ func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 		t.Error("testing.go should contain NewTestOrdersServer function")
 	}
 
-	// The test server must mount the production interceptor chain shape:
-	// AuthzInterceptor wired with the effective (default: permissive)
-	// authorizer — never an empty connect.WithInterceptors().
-	if !strings.Contains(content, `middleware.AuthzInterceptor(deps.Authorizer)`) {
-		t.Error("testing.go should mount middleware.AuthzInterceptor in NewTestXxxServer")
-	}
-	if strings.Contains(content, "connect.WithInterceptors()") {
-		t.Error("testing.go must not register with an EMPTY interceptor chain")
-	}
-
 	// AuthedContext re-export: claims-bearing ctx via the project's own
 	// middleware.ContextWithClaims setter.
 	if !strings.Contains(content, `func AuthedContext(t *testing.T, opts ...testkit.ClaimsOption) context.Context`) {
@@ -753,10 +738,6 @@ func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 	if !strings.Contains(content, `testkit.DiscardLogger()`) {
 		t.Error("testing.go should use testkit.DiscardLogger() for default logger")
 	}
-	// Must wire the testkit-backed permissive authorizer.
-	if !strings.Contains(content, `testkit.PermissiveAuthorizer{}`) {
-		t.Error("testing.go should default authz to testkit.PermissiveAuthorizer{}")
-	}
 	// Must import the testkit library.
 	if !strings.Contains(content, `"github.com/reliant-labs/forge/pkg/testkit"`) {
 		t.Error("testing.go should import forge/pkg/testkit")
@@ -775,12 +756,11 @@ func TestGenerateBootstrapTesting_WithPackages(t *testing.T) {
 	}
 
 	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
-		GenContext:         GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
-		Services:           services,
-		Packages:           packages,
-		Workers:            nil,
-		Operators:          nil,
-		MultiTenantEnabled: false,
+		GenContext: GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:   services,
+		Packages:   packages,
+		Workers:    nil,
+		Operators:  nil,
 	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting() error = %v", err)
 	}
@@ -921,12 +901,11 @@ func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 
 	services := []ServiceDef{{Name: "APIService", ModulePath: "example.com/proj"}}
 	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
-		GenContext:         GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
-		Services:           services,
-		Packages:           nil,
-		Workers:            nil,
-		Operators:          nil,
-		MultiTenantEnabled: false,
+		GenContext: GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:   services,
+		Packages:   nil,
+		Workers:    nil,
+		Operators:  nil,
 	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting() error = %v", err)
 	}
@@ -1087,46 +1066,48 @@ func (s *Service) Echo(
 		}
 	}
 
-	// Stubs are appended to the user-owned handlers.go — no handlers_gen.go.
+	// Stubs land in per-RPC user-owned files — no handlers_gen.go.
 	if _, statErr := os.Stat(filepath.Join(targetDir, "handlers_gen.go")); !os.IsNotExist(statErr) {
 		t.Error("handlers_gen.go must never be created (scaffold-and-forget model)")
 	}
 
+	// Each new method gets its OWN file, self-contained: package clause plus
+	// every import its stub body references (the pb alias goimports cannot
+	// infer among them).
+	for _, m := range []string{"Ping", "Health"} {
+		stub := RPCHandlerFileName(m)
+		data, rerr := os.ReadFile(filepath.Join(targetDir, stub))
+		if rerr != nil {
+			t.Fatalf("ReadFile(%s) error = %v", stub, rerr)
+		}
+		content := string(data)
+		mustParseGo(t, stub, data)
+		if !strings.Contains(content, "func (s *Service) "+m+"(") {
+			t.Errorf("%s should contain the %s stub; got:\n%s", stub, m, content)
+		}
+		if !strings.Contains(content, `pb "github.com/test/proj/gen/proto/services/echo/v1"`) {
+			t.Errorf("%s must carry its own pb import; got:\n%s", stub, content)
+		}
+		if !strings.Contains(content, `"fmt"`) {
+			t.Errorf("%s must carry its own fmt import; got:\n%s", stub, content)
+		}
+	}
+
+	// The user's existing handlers.go is left exactly as it was — forge never
+	// appends into a file it did not write for this RPC.
 	data, err := os.ReadFile(filepath.Join(targetDir, "handlers.go"))
 	if err != nil {
 		t.Fatalf("ReadFile(handlers.go) error = %v", err)
 	}
-
-	content := string(data)
-
-	// Should contain new methods appended alongside the existing one.
-	if !strings.Contains(content, "func (s *Service) Ping(") {
-		t.Error("handlers.go should contain appended Ping stub")
-	}
-	if !strings.Contains(content, "func (s *Service) Health(") {
-		t.Error("handlers.go should contain appended Health stub")
-	}
-
-	// Should PRESERVE the existing method (append, not overwrite).
-	if !strings.Contains(content, "func (s *Service) Echo(") {
-		t.Error("handlers.go should still contain the user's existing Echo method")
-	}
-
-	// The appended stubs need fmt + pb imports the original file lacked; the
-	// append path must inject them so the result compiles.
-	mustParseGo(t, "handlers.go", data)
-	if !strings.Contains(content, `pb "github.com/test/proj/gen/proto/services/echo/v1"`) {
-		t.Errorf("append must add the pb import for the new stubs; got:\n%s", content)
-	}
-	if !strings.Contains(content, `"fmt"`) {
-		t.Errorf("append must add the fmt import for the new stubs; got:\n%s", content)
+	if string(data) != existingHandlers {
+		t.Errorf("the user's handlers.go was modified:\n%s", data)
 	}
 }
 
 // TestGenerateMissingHandlerStubs_HandwrittenImplInCrudFile reproduces
 // kalshi fr-fba0c4be8d: a user hand-implements a non-CRUD RPC inside the
 // user-owned handlers_crud.go (the scaffold header says it's their file).
-// scanExistingMethods skips handlers_crud.go wholesale so its delegating
+// ScanExistingMethods skips handlers_crud.go wholesale so its delegating
 // CRUD shims don't suppress ops regen — but that also hid the hand impl,
 // so GenerateMissingHandlerStubs re-emitted a DUPLICATE stub into
 // handlers.go and the package failed to compile. The fix scans
@@ -1198,24 +1179,25 @@ func (s *Service) ListSettlements(
 		t.Fatalf("expected only GetTradeable stubbed, got %v", result.NewMethods)
 	}
 
-	// No handlers.go existed, so the missing GetTradeable stub is scaffolded
-	// into a fresh user-owned handlers.go (never a handlers_gen.go).
+	// The missing GetTradeable stub is scaffolded into its own user-owned
+	// file (never a handlers_gen.go); the two suppressed RPCs get no file
+	// at all.
 	if _, statErr := os.Stat(filepath.Join(targetDir, "handlers_gen.go")); !os.IsNotExist(statErr) {
 		t.Error("handlers_gen.go must never be created (scaffold-and-forget model)")
 	}
-	data, err := os.ReadFile(filepath.Join(targetDir, "handlers.go"))
+	for _, m := range []string{"ListSettlements", "GetSettlement"} {
+		if _, statErr := os.Stat(filepath.Join(targetDir, RPCHandlerFileName(m))); !os.IsNotExist(statErr) {
+			t.Errorf("%s must NOT be re-stubbed — it is already implemented (duplicate method → compile error)",
+				RPCHandlerFileName(m))
+		}
+	}
+	stub := RPCHandlerFileName("GetTradeable")
+	data, err := os.ReadFile(filepath.Join(targetDir, stub))
 	if err != nil {
-		t.Fatalf("ReadFile(handlers.go) error = %v", err)
+		t.Fatalf("ReadFile(%s) error = %v", stub, err)
 	}
-	content := string(data)
-	if strings.Contains(content, "func (s *Service) ListSettlements(") {
-		t.Error("handlers.go must NOT re-stub the hand-written ListSettlements (duplicate method → compile error)")
-	}
-	if strings.Contains(content, "func (s *Service) GetSettlement(") {
-		t.Error("handlers.go must NOT stub the CRUD-owned GetSettlement")
-	}
-	if !strings.Contains(content, "func (s *Service) GetTradeable(") {
-		t.Error("handlers.go should stub the genuinely-missing GetTradeable")
+	if !strings.Contains(string(data), "func (s *Service) GetTradeable(") {
+		t.Errorf("%s should stub the genuinely-missing GetTradeable:\n%s", stub, data)
 	}
 }
 
@@ -1396,15 +1378,17 @@ func TestGenerateMissingHandlerStubs_IgnoresGeneratedStubsWhenDetectingMissing(t
 		t.Fatalf("expected 2 regenerated methods, got %v", result.NewMethods)
 	}
 
-	// scanExistingMethods skips handlers_gen.go, so both RPCs read as missing
-	// and are scaffolded into a fresh user-owned handlers.go.
-	data, err := os.ReadFile(filepath.Join(targetDir, "handlers.go"))
-	if err != nil {
-		t.Fatalf("ReadFile(handlers.go) error = %v", err)
-	}
-	content := string(data)
-	if !strings.Contains(content, "func (s *Service) Echo(") || !strings.Contains(content, "func (s *Service) Ping(") {
-		t.Fatal("handlers.go should be scaffolded with all still-missing methods")
+	// ScanExistingMethods skips handlers_gen.go, so both RPCs read as missing
+	// and each is scaffolded into its own fresh user-owned file.
+	for _, m := range []string{"Echo", "Ping"} {
+		stub := RPCHandlerFileName(m)
+		data, rerr := os.ReadFile(filepath.Join(targetDir, stub))
+		if rerr != nil {
+			t.Fatalf("ReadFile(%s) error = %v", stub, rerr)
+		}
+		if !strings.Contains(string(data), "func (s *Service) "+m+"(") {
+			t.Fatalf("%s should be scaffolded with the still-missing %s:\n%s", stub, m, data)
+		}
 	}
 }
 
@@ -1415,7 +1399,7 @@ func TestGenerateMissingHandlerStubs_IgnoresGeneratedStubsWhenDetectingMissing(t
 // TestGenerateServiceStub_HandlersTestMatchesBootstrapTestingHelper covers
 // the cross-role collision case: when an internal/<svc> directory exists,
 // GenerateBootstrapTesting emits NewTestSvc<Pascal> rather than NewTest<Pascal>.
-// The scaffolded handlers_scaffold_test.go must reference the same identifier.
+// The scaffolded per-RPC test must reference the same identifier.
 func TestGenerateServiceStub_HandlersTestMatchesBootstrapTestingHelper(t *testing.T) {
 	projectDir := t.TempDir()
 	// Simulate the colliding internal package — its presence is what flips
@@ -1441,17 +1425,21 @@ func TestGenerateServiceStub_HandlersTestMatchesBootstrapTestingHelper(t *testin
 		t.Fatalf("GenerateServiceStub: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(targetDir, "handlers_scaffold_test.go"))
+	name := ScaffoldTestFileName("GetBill")
+	if name != "handlers_scaffold_get_bill_test.go" {
+		t.Fatalf("ScaffoldTestFileName(GetBill) = %q", name)
+	}
+	got, err := os.ReadFile(filepath.Join(targetDir, name))
 	if err != nil {
-		t.Fatalf("read handlers_scaffold_test.go: %v", err)
+		t.Fatalf("read %s: %v", name, err)
 	}
 	content := string(got)
 
 	if !strings.Contains(content, "app.NewTestSvcBilling(t)") {
-		t.Errorf("handlers_scaffold_test.go should reference app.NewTestSvcBilling on internal/billing collision, content:\n%s", content)
+		t.Errorf("%s should reference app.NewTestSvcBilling on internal/billing collision, content:\n%s", name, content)
 	}
 	if strings.Contains(content, "app.NewTestBilling(t)") {
-		t.Errorf("handlers_scaffold_test.go should NOT reference app.NewTestBilling on collision, content:\n%s", content)
+		t.Errorf("%s should NOT reference app.NewTestBilling on collision, content:\n%s", name, content)
 	}
 
 	// And the no-collision case: another service without an internal dir
@@ -1471,12 +1459,12 @@ func TestGenerateServiceStub_HandlersTestMatchesBootstrapTestingHelper(t *testin
 	if err := GenerateServiceStub(echoSvc, noCollisionDir); err != nil {
 		t.Fatalf("GenerateServiceStub (echo): %v", err)
 	}
-	echoTest, err := os.ReadFile(filepath.Join(noCollisionDir, "handlers_scaffold_test.go"))
+	echoTest, err := os.ReadFile(filepath.Join(noCollisionDir, ScaffoldTestFileName("Echo")))
 	if err != nil {
-		t.Fatalf("read echo handlers_scaffold_test.go: %v", err)
+		t.Fatalf("read echo scaffold test: %v", err)
 	}
 	if !strings.Contains(string(echoTest), "app.NewTestEcho(t)") {
-		t.Errorf("echo handlers_scaffold_test.go should reference app.NewTestEcho (no collision)")
+		t.Errorf("echo scaffold test should reference app.NewTestEcho (no collision)")
 	}
 }
 
@@ -1514,7 +1502,7 @@ func TestComputeTestHelperName(t *testing.T) {
 }
 
 // TestWorkerDataFromNames_PascalCaseFieldName locks in the
-// snake_case-worker fix: `forge add worker calibrator_refit` must yield
+// snake_case-worker fix: `forge scaffold worker calibrator_refit` must yield
 // the idiomatic Go identifier `CalibratorRefit` for the exported
 // Workers struct field + the `wireWorkerCalibratorRefitDeps` function name,
 // not the underscore-preserving `Calibrator_refit` form that revive /
@@ -1722,10 +1710,14 @@ func TestOperatorDataFromSpecs_HonorsExplicitPath(t *testing.T) {
 // TestGenerateMissingHandlerStubs_UnitTestSkipsCRUDMethods pins the
 // per-RPC test owner-rule: handlers_crud_gen_test.go owns CRUD-method
 // rows (shape-aware: AIP-158 Id/PageSize/update_mask literals), so the
-// regen path of handlers_scaffold_test.go must NOT also emit a
-// Test<CRUDMethod>_Generated row for the same method. Without this
-// filter the user sees two scaffold tests per CRUD RPC, one in each
-// file, and any future shape change has to be applied twice.
+// stub path must NOT also emit a Test<CRUDMethod>_Generated row for the
+// same method. Without this filter the user sees two scaffold tests per
+// CRUD RPC, one in each file, and any future shape change has to be
+// applied twice.
+//
+// It also pins the file split: each non-CRUD RPC gets its OWN
+// handlers_scaffold_<rpc>_test.go, so two owners implementing two RPCs in
+// one package share no file and no package-level helper.
 //
 // Regression guard: the previous implementation passed `fullData` (every
 // RPC) into unit_test.go.tmpl, producing the overlap that this test
@@ -1737,20 +1729,8 @@ func TestGenerateMissingHandlerStubs_UnitTestSkipsCRUDMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Seed a placeholder handlers_scaffold_test.go so the regen branch
-	// (isPlaceholderUnitTest → true) actually fires.
-	placeholder := `// Code generated by forge. DO NOT EDIT.
-package patients_test
-
-// forge-unit-test-placeholder: this file is regenerated once RPCs are
-// defined in the proto file. Run 'forge generate' after adding RPCs.
-`
-	if err := os.WriteFile(filepath.Join(targetDir, "handlers_scaffold_test.go"), []byte(placeholder), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	// Seed a placeholder integration_test.go and a minimal handlers.go so
-	// scanExistingMethods doesn't trip.
+	// ScanExistingMethods doesn't trip.
 	intPlaceholder := `// Code generated by forge. DO NOT EDIT.
 package patients_test
 
@@ -1788,21 +1768,31 @@ package patients_test
 		t.Fatalf("GenerateMissingHandlerStubs() error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(targetDir, "handlers_scaffold_test.go"))
-	if err != nil {
-		t.Fatalf("read handlers_scaffold_test.go: %v", err)
-	}
-	got := string(content)
-
-	// CRUD methods must NOT appear — handlers_crud_gen_test.go owns them.
-	for _, crud := range []string{"TestCreatePatient_Generated", "TestGetPatient_Generated"} {
-		if strings.Contains(got, crud) {
-			t.Errorf("handlers_scaffold_test.go should not contain %s (CRUD methods are owned by handlers_crud_gen_test.go); got:\n%s", crud, got)
+	// CRUD methods get no scaffold test file at all — handlers_crud_test.go
+	// owns them.
+	for _, crud := range []string{"CreatePatient", "GetPatient"} {
+		if _, err := os.Stat(filepath.Join(targetDir, ScaffoldTestFileName(crud))); !os.IsNotExist(err) {
+			t.Errorf("%s must not be born (CRUD rows are owned by handlers_crud_test.go)", ScaffoldTestFileName(crud))
 		}
 	}
-	// Non-CRUD method must still appear — unit_test.go.tmpl owns it.
+
+	// The non-CRUD method gets its own file, named after the RPC alone.
+	echoPath := filepath.Join(targetDir, "handlers_scaffold_echo_test.go")
+	content, err := os.ReadFile(echoPath)
+	if err != nil {
+		t.Fatalf("read handlers_scaffold_echo_test.go: %v", err)
+	}
+	got := string(content)
 	if !strings.Contains(got, "TestEcho_Generated") {
-		t.Errorf("handlers_scaffold_test.go should contain TestEcho_Generated (non-CRUD method); got:\n%s", got)
+		t.Errorf("handlers_scaffold_echo_test.go should contain TestEcho_Generated; got:\n%s", got)
+	}
+	// No package-level helper: `setup` was the identifier two owners
+	// collided on, and it bought exactly one line of typing.
+	if strings.Contains(got, "func setup(") {
+		t.Errorf("the born scaffold test must declare no package-level helper; got:\n%s", got)
+	}
+	if !strings.Contains(got, "svc := app.NewTestPatients(t)") {
+		t.Errorf("the scaffold should construct the service inline; got:\n%s", got)
 	}
 }
 
@@ -1813,11 +1803,9 @@ package patients_test
 // rewritten with a real assertion. The permissive AnyOutcome knob is gone
 // from pkg/tdd entirely; a test that cannot fail teaches green-means-nothing.
 //
-// The scaffold must also:
-//   - emit Ctx: app.AuthedContext(t) so handlers that read claims via
-//     middleware.GetUser see an authenticated context (review F4),
-//   - replace the assertion-free WiresPermissiveAuthorizer shim with a
-//     real authorizer-chain test (deny-all denies, default allows).
+// The scaffold must also emit Ctx: app.AuthedContext(t) so handlers that
+// read claims via middleware.GetUser see an authenticated context
+// (review F4).
 func TestUnitTestScaffold_SelfDestructingRows(t *testing.T) {
 	data := ServiceTemplateData{
 		ServiceName:         "EchoService",
@@ -1848,10 +1836,108 @@ func TestUnitTestScaffold_SelfDestructingRows(t *testing.T) {
 	if !strings.Contains(got, "Ctx:") || !strings.Contains(got, "app.AuthedContext(t)") {
 		t.Errorf("scaffold row must emit Ctx: app.AuthedContext(t); got:\n%s", got)
 	}
-	if strings.Contains(got, "WiresPermissiveAuthorizer") {
-		t.Errorf("assertion-free WiresPermissiveAuthorizer test must be gone; got:\n%s", got)
+}
+
+// TestInspectComponentDepsShape_ORMContextDB asserts that an interactor
+// package declaring `DB orm.Context` gets HasDB=true, so the generated
+// test harness emits `DB: cfg.db` for it.
+//
+// The service factory in the same generated file has always merged the DB
+// in (`if deps.DB == nil { deps.DB = cfg.db }`); the package factory
+// emitted only Logger and Config. A `forge scaffold package --type
+// interactor` whose workflow touches the database therefore got a
+// nil DB from NewTest<Package> and nil-panicked on first use — inside
+// pkg/app/testing.go, a DO NOT EDIT file the author cannot correct.
+//
+// A domain-local DB type must NOT set the flag, for the same reason
+// HasConfig gates on *config.Config: the template would emit `DB: cfg.db`
+// (an orm.Context) into a field of an incompatible type.
+func TestInspectComponentDepsShape_ORMContextDB(t *testing.T) {
+	projectDir := t.TempDir()
+
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(got, "AuthorizerChain") || !strings.Contains(got, "denyAllAuthorizer") {
-		t.Errorf("scaffold must contain the authorizer-chain test (deny-all denied, default allowed); got:\n%s", got)
+	if err := os.WriteFile(filepath.Join(appDir, "app_extras.go"),
+		[]byte("package app\n\ntype AppExtras struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgDir := filepath.Join(projectDir, "internal", "fulfillment")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := `package fulfillment
+
+import (
+	"log/slog"
+
+	"github.com/reliant-labs/forge/pkg/orm"
+)
+
+type Deps struct {
+	DB     orm.Context
+	Logger *slog.Logger
+}
+`
+	if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	components := []BootstrapComponentData{
+		{Name: "fulfillment", Package: "fulfillment", ImportPath: "fulfillment"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if !components[0].HasLogger {
+		t.Error("HasLogger should be true (Logger is *slog.Logger)")
+	}
+	if !components[0].HasDB {
+		t.Error("HasDB must be true when Deps.DB is orm.Context; without it NewTest<Package> builds the interactor with a nil DB and panics on first database call")
+	}
+}
+
+// TestInspectComponentDepsShape_DomainLocalDB is the negative half: a
+// package-local DB type must not trip HasDB, or the generated
+// `DB: cfg.db` would be a type mismatch at codegen time.
+func TestInspectComponentDepsShape_DomainLocalDB(t *testing.T) {
+	projectDir := t.TempDir()
+
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "app_extras.go"),
+		[]byte("package app\n\ntype AppExtras struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgDir := filepath.Join(projectDir, "internal", "ledger")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := `package ledger
+
+import "log/slog"
+
+type DB struct{}
+
+type Deps struct {
+	DB     DB
+	Logger *slog.Logger
+}
+`
+	if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	components := []BootstrapComponentData{
+		{Name: "ledger", Package: "ledger", ImportPath: "ledger"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if components[0].HasDB {
+		t.Error("HasDB must be false for a domain-local DB type; the template would emit `DB: cfg.db` (an orm.Context) into an incompatible field")
 	}
 }

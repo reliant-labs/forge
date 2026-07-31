@@ -1,6 +1,6 @@
-import { createClient, type Transport, type Interceptor } from "@connectrpc/connect";
+import { createClient, type Transport } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
-import { SpanStatusCode, trace, context, propagation } from "@opentelemetry/api";
+import { buildRuntimeInterceptors } from "@reliant-labs/web-runtime";
 
 import { DEV_API_URL } from "./apiurl_gen";
 
@@ -19,44 +19,15 @@ export function setAuthTokenGetter(fn: () => Promise<string | null>) {
   _getToken = fn;
 }
 
-// Auth interceptor that attaches the bearer token to every request.
-const authInterceptor: Interceptor = (next) => async (req) => {
-  const token = await _getToken();
-  if (token) {
-    req.header.set("Authorization", `Bearer ${token}`);
-  }
-  return next(req);
-};
-
-// Tracing interceptor that propagates W3C trace context to backend.
-const tracingInterceptor: Interceptor = (next) => async (req) => {
-  const tracer = trace.getTracer("connect-rpc");
-  const span = tracer.startSpan(`rpc ${req.method.name}`);
-
-  return context.with(trace.setSpan(context.active(), span), async () => {
-    // Inject traceparent header
-    const headers: Record<string, string> = {};
-    propagation.inject(context.active(), headers);
-    for (const [key, value] of Object.entries(headers)) {
-      req.header.set(key, value);
-    }
-
-    try {
-      const res = await next(req);
-      span.end();
-      return res;
-    } catch (err) {
-      const error = err as Error;
-      span.recordException(error);
-      span.setStatus({
-        code: SpanStatusCode.ERROR,
-        message: error.message,
-      });
-      span.end();
-      throw err;
-    }
-  });
-};
+// The forge frontend runtime owns the interceptor stack: auth-token attach,
+// brand headers, W3C traceparent propagation (so backend spans join
+// the same trace — always on, no collector required), typed error
+// normalization, and transient-retry with backoff. It ships as
+// @reliant-labs/web-runtime. The token getter resolves the CURRENT token on
+// every call — the bridge above swaps it after login.
+const interceptors = buildRuntimeInterceptors({
+  getToken: () => _getToken(),
+});
 
 function buildTransport(): Transport {
   // NEXT_PUBLIC_MOCK_API has three modes:
@@ -80,9 +51,10 @@ function buildTransport(): Transport {
   // silently pointing at a hardcoded port nobody is listening on.
   if (!baseUrl) {
     throw new Error(
-      "connect.ts: no API base URL configured. Set NEXT_PUBLIC_API_URL in " +
-        ".env.local, or declare a service in forge.yaml and run `forge generate` " +
-        "(which bakes the dev port into src/lib/apiurl_gen.ts). For UI-only " +
+      "connect.ts: no API base URL configured. Set NEXT_PUBLIC_API_URL " +
+        "(shell env, or the forge.Frontend `config.api_url` KCL knob), or " +
+        "declare a service in forge.yaml and run `forge generate` (which " +
+        "bakes the dev port into src/lib/apiurl_gen.ts). For UI-only " +
         "development set NEXT_PUBLIC_MOCK_API=true.",
     );
   }
@@ -90,7 +62,7 @@ function buildTransport(): Transport {
   if (mode === "hybrid") {
     const real = createConnectTransport({
       baseUrl,
-      interceptors: [authInterceptor, tracingInterceptor],
+      interceptors,
     });
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createMockTransport } = require("@/lib/mock-transport");
@@ -99,7 +71,7 @@ function buildTransport(): Transport {
 
   return createConnectTransport({
     baseUrl,
-    interceptors: [authInterceptor, tracingInterceptor],
+    interceptors,
   });
 }
 
@@ -138,7 +110,7 @@ setApiTransport(transport);
  *
  * Usage:
 {{- if .Workspaces}}
- *   import { UserService } from "{{.ApiPackage}}/services/users/v1/users_pb";
+ *   import { UserService } from "{{.APIPackage}}/services/users/v1/users_pb";
 {{- else}}
  *   import { UserService } from "../gen/user/v1/user_pb";
 {{- end}}

@@ -10,11 +10,11 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cliutil"
@@ -22,9 +22,9 @@ import (
 )
 
 // Migration metadata + state lives alongside the existing template-drift
-// upgrader (upgrade.go). The split is intentional: `forge upgrade` (the
+// upgrader (upgrade.go). The split is intentional: `forge project upgrade` (the
 // existing command) runs deterministic codemods + template-drift rewrites;
-// `forge upgrade list` and `forge upgrade apply <id>` surface the
+// `forge project upgrade list` and `forge project upgrade apply <id>` surface the
 // LLM-readable migration skills under skills/forge/migrations/ and let
 // the user (or an agent) record that a migration has been applied.
 //
@@ -42,6 +42,17 @@ import (
 // the project's pinned forge_version. `detection` is an optional shell
 // snippet — when present, it runs in the project root and the migration
 // is treated as "needed" only if the command exits 0 (matched something).
+//
+// Two further booleans take a migration out of the automatic worklist:
+//
+//	retired:  true   # the target shape no longer exists — never applicable
+//	elective: true   # a valid architecture CHOICE, surfaced only on request
+//
+// Every migration must declare at least one of the four gates
+// (range / detection / retired / elective): a migration that declares
+// none claims to apply to every project ever generated, which is never
+// true and turns the worklist into noise. TestMigrationSkills_DeclareAGate
+// pins that invariant over the shipped set.
 
 // migrationSkillsRoot is the embedded-template path prefix where every
 // migration skill lives. Every direct subdirectory of this root is a
@@ -62,7 +73,7 @@ const migrationsStateFile = ".forge/migrations.json"
 // empty AppliesTo means "applies to any project >= AppliesFrom".
 type migrationMeta struct {
 	// ID is the directory name (e.g. "dev-target-to-kcl-deploy") — the
-	// stable identifier used by `forge upgrade apply <id>` and in the
+	// stable identifier used by `forge project upgrade apply <id>` and in the
 	// applied-state JSON.
 	ID string `json:"id"`
 	// SkillPath is the path you'd pass to `forge skill load` to read
@@ -81,6 +92,17 @@ type migrationMeta struct {
 	// When present, the migration is filtered out unless the command
 	// exits 0 (i.e. found something).
 	Detection string `json:"detection,omitempty"`
+	// Retired marks a tombstoned migration: the shape it migrates TOWARD
+	// no longer exists, so it applies to nothing and must never be
+	// offered. The SKILL.md stays in the tree as the record of what
+	// happened and where to go instead.
+	Retired bool `json:"retired,omitempty"`
+	// Elective marks a migration that is a legitimate architecture CHOICE
+	// rather than drift off a shape forge stopped generating (e.g.
+	// binary=per-service → binary=shared). Elective migrations are never
+	// pushed by the worklist; they are found by reading the skills index
+	// and loaded on purpose.
+	Elective bool `json:"elective,omitempty"`
 }
 
 // migrationsState is the JSON shape written to .forge/migrations.json.
@@ -91,7 +113,7 @@ type migrationsState struct {
 	Applied map[string]string `json:"applied"`
 }
 
-// pendingMigration is one row in `forge upgrade list` output.
+// pendingMigration is one row in `forge project upgrade list` output.
 type pendingMigration struct {
 	Meta    migrationMeta `json:"meta"`
 	Applied bool          `json:"applied"`
@@ -100,9 +122,9 @@ type pendingMigration struct {
 	AppliedAt string `json:"applied_at,omitempty"`
 }
 
-// attachMigrationSubcommands wires `forge upgrade list` and
-// `forge upgrade apply <id>` onto the existing upgrade cobra command.
-// The existing `forge upgrade` (no args) keeps its template-drift +
+// attachMigrationSubcommands wires `forge project upgrade list` and
+// `forge project upgrade apply <id>` onto the existing upgrade cobra command.
+// The existing `forge project upgrade` (no args) keeps its template-drift +
 // codemod behaviour — these subcommands are an additive surface for
 // the migration-skill flow.
 func attachMigrationSubcommands(upgrade *cobra.Command) {
@@ -121,7 +143,7 @@ pinned forge_version and whose detection script (if any) matches.
 Migrations are LLM-readable playbooks under skills/forge/migrations/.
 This command does NOT apply them — it surfaces the worklist so the user
 (or an agent like Claude Code) can load each skill via 'forge skill load'
-and execute the steps. Use 'forge upgrade apply <id>' to record a
+and execute the steps. Use 'forge project upgrade apply <id>' to record a
 migration as applied once you've finished its steps.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pending, err := computePendingMigrations()
@@ -145,7 +167,7 @@ func newUpgradeApplyCmd() *cobra.Command {
 		Short: "Record a migration as applied (writes .forge/migrations.json)",
 		Long: `Mark a migration as applied. This does NOT execute the migration —
 loading the skill and running its steps is the user's (or an agent's)
-job. 'apply' just records the outcome so later 'forge upgrade list'
+job. 'apply' just records the outcome so later 'forge project upgrade list'
 runs hide migrations that have already been worked through.
 
 The migration ID is the directory name under skills/forge/migrations/
@@ -160,37 +182,22 @@ when an out-of-range migration was applied manually).`,
 	}
 }
 
-// computePendingMigrations is the core listing routine. It returns
-// every known migration tagged with whether it has been applied (per
-// .forge/migrations.json), filtered to only those whose:
-//   - applies-from / applies-to range covers the project's effective
-//     forge_version (when both bounds are present), AND
-//   - detection script (when present) exits 0 in the project root.
+// computePendingMigrations is the core listing routine. It returns every
+// migration that migrationApplies accepts for this project, tagged with
+// whether it has already been applied (per .forge/migrations.json).
 //
-// Migrations whose version range or detection script excludes them are
-// simply omitted — the caller doesn't need to reason about why.
+// Migrations that don't apply are simply omitted — the caller doesn't
+// need to reason about why.
 func computePendingMigrations() ([]pendingMigration, error) {
 	projectRoot, err := findProjectRoot()
 	if err != nil {
 		return nil, err
 	}
 	if projectRoot == "" {
-		return nil, cliutil.UserErr("forge upgrade list",
+		return nil, cliutil.UserErr("forge project upgrade list",
 			"no forge project found in this directory or any parent",
 			"",
-			"run 'forge new' to create a project, or cd into one")
-	}
-
-	// Read the project's pinned forge_version when forge.yaml is present.
-	// We tolerate a missing/unparseable forge.yaml here — listing migrations
-	// is useful even before a project has been formally pinned (the spec
-	// explicitly calls out "project with no .forge/version.json lists every
-	// migration as pending").
-	projectVersion := ""
-	if cfgPath, ferr := findProjectConfigFile(); ferr == nil {
-		if store, lerr := loadProjectStoreFrom(cfgPath); lerr == nil {
-			projectVersion = store.Meta().EffectiveForgeVersion()
-		}
+			"run 'forge project new' to create a project, or cd into one")
 	}
 
 	migrations, err := loadMigrationMetas()
@@ -203,25 +210,47 @@ func computePendingMigrations() ([]pendingMigration, error) {
 		return nil, fmt.Errorf("read %s: %w", migrationsStateFile, err)
 	}
 
+	out := applicableMigrations(migrations, projectBaselineVersion(), projectRoot)
+	for i := range out {
+		if ts, ok := state.Applied[out[i].Meta.ID]; ok {
+			out[i].Applied = true
+			out[i].AppliedAt = ts
+		}
+	}
+	return out, nil
+}
+
+// applicableMigrations filters a migration set down to the rows that
+// apply at the given baseline, sorted by ID so human + JSON output stay
+// deterministic across binary builds. Split from computePendingMigrations
+// so both migration surfaces (and their tests) share one filter.
+func applicableMigrations(migrations []migrationMeta, baseline, projectRoot string) []pendingMigration {
 	var out []pendingMigration
 	for _, m := range migrations {
-		if !versionInRange(projectVersion, m.AppliesFrom, m.AppliesTo) {
+		if !migrationApplies(m, baseline, projectRoot) {
 			continue
 		}
-		if !runDetection(projectRoot, m.Detection) {
-			continue
-		}
-		row := pendingMigration{Meta: m}
-		if ts, ok := state.Applied[m.ID]; ok {
-			row.Applied = true
-			row.AppliedAt = ts
-		}
-		out = append(out, row)
+		out = append(out, pendingMigration{Meta: m})
 	}
-	// Stable sort by ID — keeps human + JSON output deterministic
-	// across binary builds.
 	sort.Slice(out, func(i, j int) bool { return out[i].Meta.ID < out[j].Meta.ID })
-	return out, nil
+	return out
+}
+
+// projectBaselineVersion reads the forge_version the project is pinned
+// to, or "" when there is no readable forge.yaml. A missing/unparseable
+// config is tolerated: migrations are worth listing even before a
+// project has been formally pinned, and an unorderable baseline just
+// leaves the detection script as the gate.
+func projectBaselineVersion() string {
+	cfgPath, err := findProjectConfigFile()
+	if err != nil {
+		return ""
+	}
+	store, err := loadProjectStoreFrom(cfgPath)
+	if err != nil {
+		return ""
+	}
+	return store.Meta().EffectiveForgeVersion()
 }
 
 // loadMigrationMetas enumerates every SKILL.md under
@@ -306,109 +335,131 @@ func parseMigrationFrontmatter(content []byte) migrationMeta {
 			m.AppliesTo = v
 		case "detection":
 			m.Detection = v
+		case "retired":
+			m.Retired = v == "true"
+		case "elective":
+			m.Elective = v == "true"
 		}
 	}
 	return m
 }
 
+// migrationApplies is the SINGLE decision about whether a migration is
+// worth putting in front of a project. Every surface that offers
+// migrations — `forge project upgrade`'s pre-flight banner and
+// `forge project upgrade list` — routes through here, so the two can
+// never drift into disagreeing about what applies.
+//
+// The gates, in order:
+//
+//  1. Retired: the target shape no longer exists. Applies to nothing.
+//  2. Elective: a legitimate architecture choice, not drift. Never
+//     pushed; loaded on purpose.
+//  3. Version range: the half-open [applies-from, applies-to) window
+//     over the project's pinned forge_version.
+//  4. Detection: the project must actually EXHIBIT the old shape.
+//
+// When the baseline names no version at all (see baselineIsUnknown) the
+// range gate is skipped and a detection script becomes REQUIRED. An
+// unknown baseline is not evidence of being old — it is the absence of
+// evidence — so answering it from version ordering means inventing a
+// position on the timeline and then filtering against the invention. What
+// the project contains is the only thing left that is actually true.
+//
+// baseline is the project's pinned forge_version (possibly a Go
+// pseudo-version from a dev build); projectRoot is where detection runs.
+func migrationApplies(m migrationMeta, baseline, projectRoot string) bool {
+	if m.Retired || m.Elective {
+		return false
+	}
+	if baselineIsUnknown(baseline) {
+		if strings.TrimSpace(m.Detection) == "" {
+			return false
+		}
+		return runDetection(projectRoot, m.Detection)
+	}
+	if !versionInRange(baseline, m.AppliesFrom, m.AppliesTo) {
+		return false
+	}
+	return runDetection(projectRoot, m.Detection)
+}
+
+// baselineIsUnknown reports whether a project's forge_version names no
+// version at all: absent, one of the "dev"/"(devel)" sentinels, the
+// "0.0.0" stand-in EffectiveForgeVersion returns for an unset field, or
+// anything SemVer cannot place.
+//
+// "0.0.0" is a sentinel, not a measurement — a project can be unpinned
+// and perfectly modern. A REAL pin whose base tag happens to be v0.0.0
+// (the `v0.0.0-<timestamp>-<sha>` pseudo-version `go install` produces
+// against a repo with no tags) is a different thing: it names a specific
+// commit, it is genuinely ancient, and it orders normally.
+func baselineIsUnknown(v string) bool {
+	switch strings.TrimSpace(v) {
+	case "", "dev", "(devel)", "0.0.0", "v0.0.0":
+		return true
+	}
+	return semverKey(v) == ""
+}
+
 // versionInRange reports whether `version` falls in the half-open
-// [from, to) range, with the usual special cases:
-//   - Empty `version` (no project pin): EVERY migration applies. This
-//     matches the spec: "a project with no .forge/version.json lists
-//     every migration as pending".
-//   - Pre-v0.1 baselines per isPreV01Baseline (the "0.0.0" sentinel
-//     OR a "v0.0.0-<timestamp>-<sha>" pseudoversion from `go install`
-//     against an untagged checkout): every migration applies. These
-//     projects predate the formal upgrade story and should see the
-//     full worklist.
+// [from, to) range:
+//
 //   - Empty `from`: range is (-inf, to).
 //   - Empty `to`:   range is [from, +inf).
-//   - Both empty:   migration always applies.
+//   - Both empty:   every version is in range (the migration is gated by
+//     its detection script instead).
 //
-// Versions are compared as SemVer-ish tuples after stripping the
-// leading "v". Non-parseable versions fall through to the cmpVersion
-// fallback, which treats unknown components lexicographically.
+// Ordering is real SemVer precedence (golang.org/x/mod/semver), which
+// matters because the versions forge actually produces are not simple
+// vX.Y.Z triples. A build from a local checkout stamps a Go
+// pseudo-version — `v0.0.4-0.20260724212501-dfb85daf8474+dirty` — and
+// SemVer says that is a PRE-RELEASE of v0.0.4: after v0.0.3, before
+// v0.0.4, and unambiguously below v0.1.0. A component-wise string
+// comparison gets that wrong in both directions, which is how a dev
+// build ends up sorted against migrations it has nothing to do with.
+//
+// A version that cannot be ordered at all (unpinned projects, the "dev"
+// sentinel) is not excluded by the range — the detection script is the
+// only honest gate left for it.
 func versionInRange(version, from, to string) bool {
-	if strings.TrimSpace(version) == "" {
+	v := semverKey(version)
+	if v == "" {
 		return true
 	}
-	// Pre-v0.1 baselines (sentinel + pseudoversions) predate the
-	// codemod chain — see isPreV01Baseline in upgrade.go. Treating
-	// them like "no pin" surfaces every migration so real-world
-	// projects pinned to a pseudoversion (cp-forge, kalshi-trader)
-	// see the full worklist instead of an empty list.
-	if isPreV01Baseline(version) {
-		return true
+	if f := semverKey(from); f != "" && semver.Compare(v, f) < 0 {
+		return false
 	}
-	v := normaliseVersion(version)
-	if from != "" {
-		if cmpVersion(v, normaliseVersion(from)) < 0 {
-			return false
-		}
-	}
-	if to != "" {
-		if cmpVersion(v, normaliseVersion(to)) >= 0 {
-			return false
-		}
+	if t := semverKey(to); t != "" && semver.Compare(v, t) >= 0 {
+		return false
 	}
 	return true
 }
 
-// normaliseVersion strips a leading "v" and trailing whitespace. It
-// does NOT validate — non-parseable strings are passed through; cmpVersion
-// handles the comparison fallback.
-func normaliseVersion(v string) string {
-	v = strings.TrimSpace(v)
-	v = strings.TrimPrefix(v, "v")
-	return v
-}
-
-// cmpVersion compares two SemVer-ish strings ("0.5.0" vs "0.6"). It
-// returns -1/0/1 like strings.Compare. Missing patch components are
-// treated as 0. A non-numeric component compares lexicographically
-// against another non-numeric component, and numerically against a
-// numeric component (after a string-to-int conversion attempt).
+// semverKey canonicalises a SemVer-ish forge version into a string
+// golang.org/x/mod/semver can order, or "" when it is not orderable at
+// all (the "0.0.0" unpinned sentinel is orderable; "dev" is not).
 //
-// This is intentionally simple — full SemVer (pre-release, build) is
-// overkill for the migration-range gate, which only needs to bracket
-// minor versions.
-func cmpVersion(a, b string) int {
-	as := strings.Split(a, ".")
-	bs := strings.Split(b, ".")
-	n := len(as)
-	if len(bs) > n {
-		n = len(bs)
+// Two normalisations: a missing leading "v" is added (forge.yaml pins
+// are written both ways), and build metadata is dropped — SemVer gives
+// build metadata no precedence, so `v0.0.4-…+dirty` orders exactly
+// where `v0.0.4-…` does. Partial versions ("0.5") are accepted and
+// zero-filled by semver itself.
+func semverKey(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
 	}
-	for i := 0; i < n; i++ {
-		// Missing components default to "0" so "0.5" compares equal to
-		// "0.5.0" — SemVer's standard zero-fill convention.
-		ai, bi := "0", "0"
-		if i < len(as) && as[i] != "" {
-			ai = as[i]
-		}
-		if i < len(bs) && bs[i] != "" {
-			bi = bs[i]
-		}
-		// Try numeric compare first; fall back to string.
-		ax, aerr := strconv.Atoi(ai)
-		bx, berr := strconv.Atoi(bi)
-		if aerr == nil && berr == nil {
-			if ax < bx {
-				return -1
-			}
-			if ax > bx {
-				return 1
-			}
-			continue
-		}
-		if ai < bi {
-			return -1
-		}
-		if ai > bi {
-			return 1
-		}
+	if !strings.HasPrefix(v, "v") {
+		v = "v" + v
 	}
-	return 0
+	if i := strings.IndexByte(v, '+'); i >= 0 {
+		v = v[:i]
+	}
+	if !semver.IsValid(v) {
+		return ""
+	}
+	return v
 }
 
 // runDetection runs the migration's detection script (if present) in
@@ -478,7 +529,7 @@ func writeMigrationsState(projectRoot string, state migrationsState) error {
 	return os.WriteFile(p, data, 0o644)
 }
 
-// runUpgradeApply is the body of `forge upgrade apply <id>`.
+// runUpgradeApply is the body of `forge project upgrade apply <id>`.
 //
 // Behaviour:
 //   - Reads the project's current applied-state from .forge/migrations.json.
@@ -496,10 +547,10 @@ func runUpgradeApply(out io.Writer, id string) error {
 		return err
 	}
 	if projectRoot == "" {
-		return cliutil.UserErr("forge upgrade apply",
+		return cliutil.UserErr("forge project upgrade apply",
 			"no forge project found in this directory or any parent",
 			"",
-			"run 'forge new' to create a project, or cd into one")
+			"run 'forge project new' to create a project, or cd into one")
 	}
 
 	known, err := loadMigrationMetas()
@@ -519,15 +570,24 @@ func runUpgradeApply(out io.Writer, id string) error {
 			ids = append(ids, k.ID)
 		}
 		sort.Strings(ids)
-		hint := "run 'forge upgrade list' to see available migration IDs"
+		hint := "run 'forge project upgrade list' to see available migration IDs"
 		if len(ids) > 0 {
 			hint = "available IDs: " + strings.Join(ids, ", ")
 		}
 		return cliutil.UserErr(
-			fmt.Sprintf("forge upgrade apply %s", id),
+			fmt.Sprintf("forge project upgrade apply %s", id),
 			fmt.Sprintf("migration %q not found", id),
 			"",
 			hint,
+		)
+	}
+
+	if found.Retired {
+		return cliutil.UserErr(
+			fmt.Sprintf("forge project upgrade apply %s", id),
+			fmt.Sprintf("migration %q is retired — the shape it migrates toward no longer exists", id),
+			"",
+			fmt.Sprintf("read it with '%s skill load %s'; it names the migration that replaced it", Name(), found.SkillPath),
 		)
 	}
 
@@ -551,7 +611,7 @@ func runUpgradeApply(out io.Writer, id string) error {
 //	    Title: Migrate forge.yaml dev_target → KCL Service.deploy
 //	    Range: v0.5.0 → v0.6.0
 //	    Load: forge skill load migrations/dev-target-to-kcl-deploy
-//	    Apply once done: forge upgrade apply dev-target-to-kcl-deploy
+//	    Apply once done: forge project upgrade apply dev-target-to-kcl-deploy
 //
 // When the list is empty we print "Project is up to date." per the spec.
 func writePendingMigrationsHuman(out io.Writer, pending []pendingMigration) error {
@@ -583,7 +643,7 @@ func writePendingMigrationsHuman(out io.Writer, pending []pendingMigration) erro
 			continue
 		}
 		_, _ = fmt.Fprintf(out, "      To load:     %s skill load %s\n", cliName, p.Meta.SkillPath)
-		_, _ = fmt.Fprintf(out, "      Once done:   %s upgrade apply %s\n", cliName, p.Meta.ID)
+		_, _ = fmt.Fprintf(out, "      Once done:   %s project upgrade apply %s\n", cliName, p.Meta.ID)
 	}
 	return nil
 }

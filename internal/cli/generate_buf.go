@@ -12,6 +12,12 @@ import (
 
 // runBufGenerateGo runs buf generate using the project's buf.gen.yaml for Go stubs.
 func runBufGenerateGo(projectDir string) error {
+	// Vendor buf/validate/validate.proto if the project's protos import it,
+	// so buf can resolve the buf.validate field rules offline.
+	if err := ensureValidateProtoVendored(projectDir); err != nil {
+		return fmt.Errorf("vendor buf/validate/validate.proto: %w", err)
+	}
+
 	// Create a default buf.gen.yaml only if one doesn't exist
 	if _, err := os.Stat(filepath.Join(projectDir, "buf.gen.yaml")); os.IsNotExist(err) {
 		if err := writeDefaultBufGenYaml(projectDir); err != nil {
@@ -53,6 +59,13 @@ func writeDefaultBufGenYaml(projectDir string) error {
 # protoc-gen-connect-openapi via a synthesized template; you do NOT
 # need to add it here. Install with:
 #   ` + openAPIPluginInstallCmd + `
+inputs:
+  - directory: proto
+    exclude_paths:
+      # Vendored annotation protos are COMPILE inputs only — never
+      # code-generated (a local copy would double-register the descriptor).
+      - proto/forge/v1
+      - proto/buf/validate
 plugins:
   - local: protoc-gen-go
     out: gen
@@ -145,6 +158,7 @@ plugins:
 
 	cmd := exec.Command("buf", args...)
 	cmd.Dir = projectDir
+	cmd.Env = withNodeNoDeprecation()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -186,7 +200,7 @@ func runBufGenerateTypeScriptWorkspace(cfg *config.ProjectConfig, projectDir str
 		}
 	}
 	if pluginFrontend == nil {
-		// No TS-capable frontend yet — nothing to generate. forge add
+		// No TS-capable frontend yet — nothing to generate. forge scaffold
 		// frontend will rerun this on a future generate cycle.
 		return nil
 	}
@@ -246,6 +260,7 @@ plugins:
 
 	cmd := exec.Command("buf", args...)
 	cmd.Dir = projectDir
+	cmd.Env = withNodeNoDeprecation()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -253,6 +268,30 @@ plugins:
 	}
 	fmt.Println("  ✅ TypeScript stubs generated into packages/api/src/gen")
 	return nil
+}
+
+// withNodeNoDeprecation returns the current environment with
+// --no-deprecation merged into NODE_OPTIONS (preserving any options the
+// caller already set). buf runs the TypeScript plugin (protoc-gen-es)
+// as a node script, and node's deprecation chatter — a DEP warning plus
+// "(Use `node --trace-warnings ...`)" once per plugin process — is pure
+// noise in `forge generate` output. Only deprecation WARNINGS are
+// silenced; real plugin failures still fail the buf run and stream to
+// stderr untouched.
+func withNodeNoDeprecation() []string {
+	env := os.Environ()
+	const flag = "--no-deprecation"
+	for i, kv := range env {
+		v, ok := strings.CutPrefix(kv, "NODE_OPTIONS=")
+		if !ok {
+			continue
+		}
+		if !strings.Contains(v, flag) {
+			env[i] = "NODE_OPTIONS=" + strings.TrimSpace(v+" "+flag)
+		}
+		return env
+	}
+	return append(env, "NODE_OPTIONS="+flag)
 }
 
 // usesLocalTSPlugin reports whether the frontend buf.gen.yaml at path uses

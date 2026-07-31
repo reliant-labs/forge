@@ -67,13 +67,13 @@ Deprecation isn't always possible:
 
 - **Security.** A field leaking PII; an RPC with a fundamentally unauthenticated path that needs auth.
 - **Type confusion.** A field declared `string` that should have been `bytes`; an enum value with the wrong semantics.
-- **Fundamental redesign.** The old shape is no longer expressible with new requirements (e.g. multi-tenancy retrofit on a single-tenant API).
+- **Fundamental redesign.** The old shape is no longer expressible with new requirements (e.g. a synchronous request/response API becoming event-driven).
 
 For these, **version-rev**:
 
 ```proto
 // proto/services/users/v1/users.proto
-package myproject.services.users.v1;
+package services.users.v1;
 
 service Users {
   // Frozen — maintenance fixes only.
@@ -81,7 +81,7 @@ service Users {
 }
 
 // proto/services/users/v2/users.proto
-package myproject.services.users.v2;
+package services.users.v2;
 
 service Users {
   rpc GetUser(GetUserRequest) returns (GetUserResponse) {}
@@ -196,5 +196,5 @@ Use sparingly — every entry on the ignore list is a permanent exemption, not a
 - **CI workflow generation and tier boundaries** — see `ci`.
 - **Proto file structure, annotations, CRUD conventions** — see `proto`.
 - **Splitting a service's protos into multiple files** — see `proto-split`.
-- **The forge upgrade flow** (when forge itself ships a breaking proto-shape change) — see `migration-upgrade`.
+- **The forge project upgrade flow** (when forge itself ships a breaking proto-shape change) — see `migration-upgrade`.
 <!-- @forge-only:end -->

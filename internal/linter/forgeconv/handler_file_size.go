@@ -14,9 +14,12 @@
 // "this file is too big" warning, not a sub-line-accurate token count.
 //
 // The rule is advisory (warning, not error). The remediation message
-// points at the `forge add handler-file` subcommand — the canonical
-// way to split a fat handlers/<svc>/handlers.go into per-RPC files,
-// which is the move this analyzer exists to nudge.
+// points at the `forge scaffold handler-file` subcommand — the canonical
+// way to split a fat handler file into per-RPC ones, which is the move
+// this analyzer exists to nudge. Freshly scaffolded projects are already
+// there: forge births one `rpc_<name>.go` per custom RPC, so this rule
+// only fires on files a user grew by hand (or on a pre-split project's
+// legacy handlers.go).
 
 package forgeconv
 
@@ -99,10 +102,11 @@ func LintHandlerFileSize(rootDir string, threshold int) (Result, error) {
 			File:     rel,
 			Line:     0, // file-level finding
 			Message: fmt.Sprintf(
-				"handler file is %d > %d lines; consider splitting via 'forge add handler-file' once that subcommand ships",
+				"handler file is %d > %d lines; consider splitting it with 'forge scaffold handler-file'",
 				loc, threshold),
-			Remediation: "extract one or more RPCs into sibling handlers_<rpc>.go files; " +
-				"per-RPC files keep diffs scoped and prevent the all-handlers-in-one-file shape",
+			Remediation: "extract one or more RPCs into sibling rpc_<name>.go files — the same name " +
+				"forge itself births per custom RPC; per-RPC files keep diffs scoped and let two " +
+				"authors work the same service without merging",
 		})
 	}
 

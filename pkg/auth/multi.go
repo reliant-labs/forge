@@ -3,7 +3,6 @@ package auth
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -27,9 +26,9 @@ type TokenValidator interface {
 
 // HMACValidator validates JWTs signed with an HMAC algorithm (HS256/384/512).
 //
-// Zero value is not usable; construct with [NewHMACValidator]. Secret is
-// resolved from SecretEnv at construction time; rotating secrets requires
-// constructing a new validator (which is cheap — no I/O).
+// Zero value is not usable; construct with [NewHMACValidator]. The secret is
+// captured at construction; rotating it means constructing a new validator
+// (which is cheap — no I/O).
 type HMACValidator struct {
 	signingMethod string
 	secret        []byte
@@ -43,16 +42,13 @@ type HMACValidatorConfig struct {
 	// SigningMethod is the expected JWT alg (e.g. "HS256"). Required.
 	SigningMethod string
 
-	// Secret is the symmetric secret. If empty, SecretEnv is consulted; if
-	// SecretEnv is also empty, "JWT_SECRET" is consulted as a last resort.
+	// Secret is the symmetric secret. Required — this package reads no
+	// environment variable of its own, so the key a validator trusts is
+	// always the key its constructor was handed. Pass it from the app's
+	// typed config (declare the field `sensitive: true` and it arrives from
+	// the environment's secret provider, never as an inline manifest
+	// value); an app accepting several issuers passes each their own.
 	Secret string
-
-	// SecretEnv is the environment variable name to read the secret from
-	// when Secret is empty. Useful for the canonical config-file shape:
-	//
-	//   - type: hmac
-	//     secret_env: SUPABASE_JWT_SECRET
-	SecretEnv string
 
 	// Issuer, when set, is enforced via jwt.WithIssuer.
 	Issuer string
@@ -68,8 +64,8 @@ type HMACValidatorConfig struct {
 
 // NewHMACValidator constructs a validator for HMAC-signed JWTs.
 //
-// Returns an error when no secret can be resolved (neither Secret, SecretEnv,
-// nor JWT_SECRET is set) or when SigningMethod is not an HS* algorithm.
+// Returns an error when Secret is empty or SigningMethod is not an HS*
+// algorithm.
 func NewHMACValidator(cfg HMACValidatorConfig) (*HMACValidator, error) {
 	if cfg.SigningMethod == "" {
 		cfg.SigningMethod = "HS256"
@@ -78,14 +74,8 @@ func NewHMACValidator(cfg HMACValidatorConfig) (*HMACValidator, error) {
 		return nil, fmt.Errorf("auth: HMAC validator requires HS* signing method, got %q", cfg.SigningMethod)
 	}
 	secret := cfg.Secret
-	if secret == "" && cfg.SecretEnv != "" {
-		secret = os.Getenv(cfg.SecretEnv)
-	}
 	if secret == "" {
-		secret = os.Getenv("JWT_SECRET")
-	}
-	if secret == "" {
-		return nil, fmt.Errorf("auth: HMAC validator: no secret resolved (Secret/%s/JWT_SECRET all empty)", cfg.SecretEnv)
+		return nil, fmt.Errorf("auth: HMAC validator: Secret is empty — pass the signing key in, from the app's typed config")
 	}
 	return &HMACValidator{
 		signingMethod: cfg.SigningMethod,
@@ -105,7 +95,7 @@ func (v *HMACValidator) ValidateToken(tokenString string) (*Claims, error) {
 
 // JWKSValidator validates JWTs whose signing key comes from a JWKS endpoint
 // (or any other [jwt.Keyfunc] source — the pkg/auth library deliberately does
-// not depend on a JWKS client implementation; the jwt-auth pack supplies one).
+// not depend on a JWKS client implementation; the caller supplies one).
 //
 // Construct via [NewJWKSValidator] with a pre-built [jwt.Keyfunc] (e.g. one
 // returned by github.com/MicahParks/keyfunc/v3.NewDefaultCtx).

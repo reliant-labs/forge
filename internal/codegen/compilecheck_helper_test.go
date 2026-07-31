@@ -15,7 +15,7 @@ import (
 // is a thin shim that imports the project's gen/config/v1 package, so it
 // cannot be standalone-compiled in isolation (the gen package only exists in
 // a real project). The end-to-end compile+boot verification lives in the
-// `forge new` scratch path; here we assert the rendered shim is valid Go and
+// `forge project new` scratch path; here we assert the rendered shim is valid Go and
 // carries the alias cutover invariants.
 func TestGenerateConfigLoader_DefaultScaffoldParses(t *testing.T) {
 	dir := t.TempDir()

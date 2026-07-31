@@ -9,7 +9,7 @@ import (
 )
 
 // TestBuildCmd_RunnerMatrix covers each runner dispatch path. The
-// matrix is the union of `forge run <svc>` and `forge up` host-phase
+// matrix is the union of `forge run <svc>` and `forge env up` host-phase
 // cases from before the collapse — running it once here verifies the
 // shared dispatch hasn't drifted from either historical impl.
 func TestBuildCmd_RunnerMatrix(t *testing.T) {
@@ -367,7 +367,7 @@ func TestLayerHostEnv_ProjectConfigOverriddenBySecrets(t *testing.T) {
 
 // TestLayerHostEnv_NilProjectConfig confirms the new layer is optional
 // — passing nil keeps the legacy two-layer (secrets, envVars) shape so
-// callers that don't surface forge.yaml config (e.g. `forge up` host
+// callers that don't surface forge.yaml config (e.g. `forge env up` host
 // phase before it adopts the new layer) compile and behave unchanged.
 func TestLayerHostEnv_NilProjectConfig(t *testing.T) {
 	base := []string{"PATH=/usr/bin"}

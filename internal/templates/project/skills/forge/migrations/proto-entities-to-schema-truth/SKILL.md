@@ -1,6 +1,7 @@
 ---
 name: proto-entities-to-schema-truth
 description: Migrate a forge project from proto-annotated entities ((forge.v1.entity)/(forge.v1.field), proto/db entity files) to schema-truth entities projected from db/migrations. The annotations are retired and ignored; SQL is the schema language now.
+detection: grep -rq "forge.v1.entity" proto 2>/dev/null || test -d proto/db
 relevance: migration
 ---
 
@@ -32,8 +33,8 @@ the ORM was generated from the proto. After:
   generates nothing.
 - **Behavior comes from real columns, not annotation fields:**
   `deleted_at` ⇒ soft delete, `created_at`+`updated_at` ⇒ managed
-  timestamps, `tenant_id` ⇒ tenant scoping, text columns ⇒ the list
-  `search` filter, every column ⇒ the order_by/filter allowlist.
+  timestamps, text columns ⇒ the list `search` filter, every column ⇒
+  the order_by/filter allowlist.
 - **The entity struct follows the schema:** `time.Time` for timestamp
   columns, pointers for nullable columns, native slices for arrays. The
   generated `<entity>ToProto` / `<entity>FromProto` conversions map the
@@ -67,9 +68,10 @@ ls proto/db 2>/dev/null            # old dedicated entity-proto directory
 
 1. **Make sure every entity's table exists in `db/migrations/`.** For
    long-lived projects it already does. If an entity only ever existed
-   as an annotated proto (no migration), write the create-table
-   migration now — `forge add entity <name> ... --no-rpcs` emits one if
-   the CRUD RPCs already exist.
+   as an annotated proto (no migration), birth the table now —
+   `forge scaffold entity <name> --from-proto <svc>` derives the
+   create-table migration from the message you already have, and leaves
+   an existing CRUD quintet alone.
 2. **Delete the entity annotations** — the `option (forge.v1.entity)`
    blocks and `[(forge.v1.field) = {...}]` field options. Keep the
    messages themselves: they are the wire contract. Keep the

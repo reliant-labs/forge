@@ -12,12 +12,12 @@ import (
 )
 
 // BuildState records what `forge build --push` actually pushed to a
-// registry, so a subsequent `forge deploy <env>` can reference the
+// registry, so a subsequent `forge env deploy <env>` can reference the
 // same tag even when the working tree has changed between phases.
 //
 // The original bug this struct closes: `forge build` tags an image
 // `<reg>/<svc>:<git-describe>` (which includes `-dirty` when the
-// working tree has untracked or modified files), then `forge deploy`
+// working tree has untracked or modified files), then `forge env deploy`
 // independently computes a tag — and the two diverge whenever a
 // working-tree mutation between the two phases flips the dirty bit,
 // or when the two phases use different git commands altogether
@@ -38,7 +38,7 @@ type BuildState struct {
 	// non-registry deploys with no tag to read); push just adds the
 	// registry coordinates.
 	Pushed bool `json:"pushed"`
-	// Git provenance of the build, so `forge deploy` can warn when it's
+	// Git provenance of the build, so `forge env deploy` can warn when it's
 	// about to ship a non-reproducible (dirty / untagged) build. Commit
 	// is the full HEAD sha; GitTag is the exact tag on HEAD (empty when
 	// HEAD isn't tagged); Dirty is true when the working tree had
@@ -58,7 +58,7 @@ type BuildState struct {
 	// build where the digest lookup failed (capture is best-effort and never
 	// fails the build).
 	//
-	// When present, `forge deploy` pins the manifest to `<image>@<Digest>`
+	// When present, `forge env deploy` pins the manifest to `<image>@<Digest>`
 	// instead of the mutable `:Tag` — a digest can't go stale and can't be
 	// re-pointed, so the node-cache / re-tag-didn't-take failure class is
 	// structurally impossible. When empty, deploy falls back to the tag, so
@@ -201,7 +201,7 @@ func gitBuildProvenance(ctx context.Context) (commit, gitTag string, dirty bool)
 // buildStatePath returns the absolute path to the per-env build-state
 // file. One file per environment so `forge build --push --env=dev`
 // and `forge build --push --env=staging` don't clobber each other,
-// and so `forge deploy <env>` can read the right one without a
+// and so `forge env deploy <env>` can read the right one without a
 // separate lookup. When env is empty we use the literal "default"
 // segment to keep the path stable.
 func buildStatePath(projectDir, env string) string {
@@ -214,7 +214,7 @@ func buildStatePath(projectDir, env string) string {
 // WriteBuildState persists a successful `forge build --push` to disk.
 // Called by runBuild after every per-image push succeeds, so the most
 // recent push is always the source of truth a subsequent
-// `forge deploy <env>` consumes.
+// `forge env deploy <env>` consumes.
 //
 // The directory is created lazily — projects that never use --push
 // never grow a .forge/state/ tree. File is 0o644 (world-readable) to
@@ -226,7 +226,7 @@ func WriteBuildState(projectDir, env string, state BuildState) error {
 // ReadBuildState loads the per-env build-state file. Returns
 // (nil, nil) when the file is missing — that's the
 // "deploy-without-build" path (CI with a separate build job, or the
-// user running `forge deploy` on a fresh checkout) and the caller
+// user running `forge env deploy` on a fresh checkout) and the caller
 // falls through to resolveImageTag. Returns (nil, err) for malformed
 // JSON or unreadable files; callers should not silently swallow these
 // because they mean the state file exists but can't be trusted.

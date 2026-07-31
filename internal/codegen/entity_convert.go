@@ -24,6 +24,17 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 		Fields:     make([]config.PlanEntityField, 0, len(entity.Columns)),
 	}
 
+	// A `// forge:secret` marker lives on the WIRE field, not the column
+	// (the column is schema truth and always stores the value). Match wire
+	// secret fields to their column by name so the ORM's Spec.SecretColumns
+	// can preserve them on a maskless full-replace Update.
+	secretCols := make(map[string]bool, len(entity.Fields))
+	for _, f := range entity.Fields {
+		if f.Secret {
+			secretCols[f.Name] = true
+		}
+	}
+
 	for _, c := range entity.Columns {
 		pf := config.PlanEntityField{
 			Name:       c.Name,
@@ -32,9 +43,7 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 			NotNull:    c.NotNull,
 			Default:    c.Default,
 			Generated:  c.IsGenerated,
-		}
-		if entity.HasTenant && c.Name == entity.TenantColumnName {
-			pf.TenantKey = true
+			Secret:     secretCols[c.Name],
 		}
 		pe.Fields = append(pe.Fields, pf)
 	}
@@ -43,21 +52,20 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 }
 
 // planTypeForColumn maps an introspected column to the plan type
-// vocabulary (canonical schema types; see planFieldGoType in
-// internal/generator).
+// vocabulary: the canonical schema type verbatim (schemadef.MapDeclaredType
+// produces the closed set), with a "[]" prefix for an array column.
+//
+// It used to answer "[]string" for every array column that was not
+// BIGINT[], so a BOOLEAN[] / DOUBLE PRECISION[] / BYTEA[] / TIMESTAMPTZ[]
+// column reached the ORM generator claiming to be text. Passing the type
+// through instead of re-deciding it is what makes the ORM struct field and
+// the conversion generator's pairing the same projection (see
+// CanonicalGoTypeOK) rather than two opinions that happen to agree.
 func planTypeForColumn(c EntityColumn) string {
 	if c.IsArray {
-		if c.Type == "int64" {
-			return "[]int64"
-		}
-		return "[]string"
+		return "[]" + c.Type
 	}
-	switch c.Type {
-	case "int64", "float64", "bool", "time", "json", "bytes":
-		return c.Type
-	default:
-		return "string"
-	}
+	return c.Type
 }
 
 // EntityDefsToPlanEntities converts a slice of EntityDef to a slice of PlanEntity.

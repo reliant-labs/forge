@@ -9,7 +9,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/naming"
 )
 
 func (g *ProjectGenerator) writeProjectConfig() error {
@@ -21,21 +20,19 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		binaryYAML = config.ProjectBinaryShared
 	}
 
-	// kind is no longer written to forge.yaml — it DERIVES from the
-	// components.json (and its presence). The scaffold writes the components
-	// (or, for a library, omits the file) so the derived kind matches the
-	// requested --kind. See writeComponentsFile below.
-
-	// The scaffolded forge.yaml is MINIMAL and GLOBAL-only: identity
+	// The scaffolded forge.yaml is MINIMAL and PROJECT-GLOBAL only: identity
 	// (name/module), the forge version pin, frontends, and explicit feature
-	// overrides. The per-service component entities live in components.json
-	// (written below); everything else — the features: block and the
-	// database/ci/lint/contracts/auth/deploy/docker/k8s sections — is derived
-	// from the project shape at load time (config.ApplyDerivedDefaults). Any
-	// of those keys remain valid in forge.yaml as overrides; they're just not
-	// required boilerplate. Explicit user choices (e.g. `forge new --disable
-	// ci`) are recorded in Features below and survive the write-time
-	// normalization because they differ from the derived default.
+	// overrides. What the project CONTAINS is not written here at all — the
+	// scaffold writes the code (protos, handlers, cmd/) and every later read
+	// discovers the components from it. `kind:` is not written either; it
+	// derives from that same tree on load. Everything else — the features:
+	// block and the database/ci/lint/contracts/auth/deploy/docker/k8s
+	// sections — is derived from the project shape at load time
+	// (config.ApplyDerivedDefaults). Any of those keys remain valid in
+	// forge.yaml as overrides; they're just not required boilerplate.
+	// Explicit user choices (e.g. `forge project new --disable ci`) are
+	// recorded in Features below and survive the write-time normalization
+	// because they differ from the derived default.
 	cfg := config.ProjectConfig{
 		Name:         g.Name,
 		ModulePath:   g.ModulePath,
@@ -53,48 +50,11 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		},
 	}
 
-	// Build the components, then write them to components.json. Kind sync:
-	// cfg.Kind is set from the requested kind so NormalizeForWrite's feature
-	// derivation (which reads kind) drops the right kind-default falses.
+	// Kind sync: cfg.Kind is set from the requested kind so
+	// NormalizeForWrite's feature derivation (which reads kind) drops the
+	// right kind-default falses. It is not serialized — the reader derives
+	// kind from the tree this scaffold is writing.
 	cfg.Kind = g.effectiveKind()
-	var components []config.ComponentConfig
-	if g.ServiceName != "" && g.isService() {
-		components = append(components, config.ComponentConfig{
-			Name:  g.ServiceName,
-			Kind:  config.ComponentKindServer,
-			Path:  fmt.Sprintf("internal/handlers/%s", naming.ServicePackage(g.ServiceName)),
-			Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort}},
-		})
-		// In binary=shared, write ALL server components at scaffold time so
-		// the generated bootstrap.go and per-service cobra subcommands see
-		// them immediately. In per-service mode this is done post-scaffold
-		// via AppendServiceToConfig (preserves the additive flow + log output).
-		if g.isBinaryShared() {
-			for i, svcName := range g.AdditionalServices {
-				components = append(components, config.ComponentConfig{
-					Name:  svcName,
-					Kind:  config.ComponentKindServer,
-					Path:  fmt.Sprintf("internal/handlers/%s", naming.ServicePackage(svcName)),
-					Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort + i + 1}},
-				})
-			}
-		}
-	}
-	// A cli project's cobra main IS a binary-kind component: it's what makes
-	// the project derive to "cli" (binary-only) rather than "library" (no
-	// components) on reload. Named after the project, pointing at its cmd
-	// main. Library projects deliberately get NO components — the absence of
-	// components.json is the library signal.
-	if g.isCLI() {
-		components = append(components, config.ComponentConfig{
-			Name: naming.ServicePackage(g.Name),
-			Kind: config.ComponentKindBinary,
-			// The cli main is a standalone cobra binary at cmd/<name>/main.go
-			// (distinct from a `forge add binary` subcommand at cmd/<name>.go).
-			Path: fmt.Sprintf("cmd/%s", naming.ServicePackage(g.Name)),
-		})
-	}
-	cfg.Components = components
 
 	if g.FrontendName != "" {
 		cfg.Frontends = []config.FrontendConfig{
@@ -102,6 +62,11 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 				Name: g.FrontendName,
 				Type: "nextjs",
 				Path: fmt.Sprintf("frontends/%s", g.FrontendName),
+				// g.FrontendPort is 0 for a fresh scaffold (ephemeral): with
+				// FrontendConfig.Port omitempty this writes NO `port:` line, so
+				// `forge run`/`up` allocate a free port at launch and report it
+				// — two dev stacks never fight for the frontend port. An
+				// explicit override (>0) is serialized verbatim.
 				Port: g.FrontendPort,
 			},
 		}
@@ -127,14 +92,17 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	}
 
 	// Prepend a short header. The file is intentionally minimal — the
-	// database/ci/lint/contracts/auth sections and the features: block
-	// are derived from the project shape at load time and only need to
-	// appear here when overriding a default.
+	// database/ci/lint/contracts sections and the features: block are
+	// derived from the project shape at load time and only need to appear
+	// here when overriding a default. Authentication is OWNED CODE, not
+	// config: it is internal/app/auth.go's SetupAuth.
 	header := []byte("# Forge project manifest — see https://github.com/reliant-labs/forge.\n" +
-		"# This file is minimal on purpose: database, ci, lint, contracts,\n" +
-		"# auth and the features: block are derived from the project shape.\n" +
-		"# Add any of those keys only to override a derived default\n" +
-		"# (`forge skill load forge` documents the full schema).\n\n")
+		"# This file is minimal on purpose: database, ci, lint, contracts and\n" +
+		"# the features: block are derived from the project shape. Authentication\n" +
+		"# is owned code, not config — it is internal/app/auth.go's SetupAuth.\n" +
+		"# Add a derived key only to override a default\n" +
+		"# (`forge skill load architecture` documents the schema;\n" +
+		"# `forge skill list` indexes the per-topic skills, e.g. `auth`).\n\n")
 	data = append(header, data...)
 
 	destPath := filepath.Join(g.Path, "forge.yaml")
@@ -142,10 +110,6 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		return err
 	}
 
-	// forge no longer writes a components.json manifest: the component
-	// inventory derives from the real sources (proto for services;
-	// workers/operators are owned code) and the kind derives from forge.yaml's
-	// project-global blocks on reload.
 	return nil
 }
 
@@ -167,21 +131,22 @@ func resolveBinaryName(projectDir string) string {
 // ReadProjectConfig reads a forge.yaml from the given path with strict
 // validation: unknown keys, missing required fields, and type mismatches
 // are surfaced together via config.ValidationError rather than failing
-// fast on the first issue. The per-component entities are read from the
-// project-root components.json sibling of forge.yaml and the project kind
-// is derived from them (see config.LoadProject). See config.LoadStrict for
-// the full validation semantics.
+// fast on the first issue. forge.yaml is project-global only: what the
+// project CONTAINS is read from the code that declares it
+// (codegen.DiscoverProjectComponents), and the project kind is derived from
+// the tree beside forge.yaml (see config.LoadProject). See config.LoadStrict
+// for the full validation semantics.
 func ReadProjectConfig(path string) (*config.ProjectConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read project config: %w", err)
 	}
-	// forge no longer reads a components.json manifest — pass nil; the kind
-	// derives from forge.yaml's project-global blocks (see config.LoadProject).
+	// The path is load-bearing: LoadProject derives the kind from the real
+	// sources sitting beside this forge.yaml (see config.LoadProject).
 	return config.LoadProject(data, path)
 }
 
-// WriteProjectConfig writes a config.ProjectConfig to the given path.
+// WriteProjectConfigFile writes a config.ProjectConfig to the given path.
 // The config is normalized first (config.NormalizeForWrite): values that
 // match their shape-derived defaults are dropped so load → mutate →
 // write round-trips keep forge.yaml minimal instead of materializing
@@ -193,14 +158,6 @@ func WriteProjectConfigFile(cfg *config.ProjectConfig, path string) error {
 		return fmt.Errorf("marshal project config: %w", err)
 	}
 	return os.WriteFile(path, data, 0644)
-}
-
-// AppendServiceToConfig is RETIRED: forge no longer writes a components.json
-// manifest — services are discovered from the proto descriptor. It stays as a
-// no-op because it is part of the ConfigService contract (interface + mock);
-// callers in the add/new flow may still invoke it, but it never touches disk.
-func AppendServiceToConfig(projectRoot, serviceName string, port int) error {
-	return nil
 }
 
 // AppendFrontendToConfig reads the project config at the given project root,
@@ -228,8 +185,6 @@ func AppendFrontendToConfigWithKind(projectRoot, frontendName string, port int, 
 	}
 	return appendToProjectConfigSequence(configPath, "frontends", entry)
 }
-
-func boolPtr(b bool) *bool { return &b }
 
 // appendToProjectConfigSequence appends entry to the YAML sequence at the
 // top-level key on the project config at configPath, preserving any keys,

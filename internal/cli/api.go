@@ -4,10 +4,10 @@
 // for a Connect RPC endpoint. Connect handlers already speak plain HTTP/1.1
 // POST with application/json — no gRPC tooling needed — but the URL shape
 // and Content-Type rules are undocumented in most projects. This command
-// removes the discovery friction: read the service port from forge.yaml,
-// look up the method's input message in forge_descriptor.json, and emit a
-// curl command with a request-body skeleton populated from zero values for
-// each field.
+// removes the discovery friction: look up the method's input message in
+// forge_descriptor.json and emit a curl command with a request-body skeleton
+// populated from zero values for each field, addressed to the conventional
+// local listener (--port overrides).
 //
 // Streaming RPCs are flagged but still printed — the body shape is the same;
 // only the Content-Type changes to application/connect+json. We surface the
@@ -24,9 +24,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // newAPICmd is the parent for `forge api ...` verbs. Today the only verb is
@@ -42,7 +42,7 @@ Content-Type: application/json — no gRPC tooling required.
 Sub-commands surface that capability for ad-hoc debugging from the shell.`,
 	}
 	cmd.AddCommand(newAPICurlCmd())
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 // newAPICurlCmd implements `forge api curl <service.method>`. The command is
@@ -94,7 +94,7 @@ or paste into a debugger / Postman / HTTPie session.`,
 			return nil
 		},
 	}
-	cmd.Flags().IntVar(&port, "port", 0, "Service port (default: from forge.yaml services[].port)")
+	cmd.Flags().IntVar(&port, "port", 0, "Port the app listens on (default 8080; set per-env in deploy/kcl)")
 	cmd.Flags().StringVar(&body, "body", "", "Request body JSON (default: zero-value skeleton from proto fields)")
 	cmd.Flags().StringVar(&host, "host", "localhost", "Host name to embed in the URL")
 	return cmd
@@ -102,7 +102,7 @@ or paste into a debugger / Postman / HTTPie session.`,
 
 // curlOptions captures the flag-tunable inputs to buildCurlCommand.
 // Bundled as a struct so the signature stays stable as we add knobs
-// (e.g. --auth-token, --tenant-header) without churn at every call site.
+// (e.g. --auth-token) without churn at every call site.
 type curlOptions struct {
 	port int
 	body string
@@ -139,12 +139,7 @@ func buildCurlCommand(projectDir, target string, opts curlOptions) (string, erro
 
 	port := opts.port
 	if port == 0 {
-		port = lookupServicePort(projectDir, svc)
-	}
-	if port == 0 {
-		// Last-resort fallback matches `forge add service` default.
-		// Surface the assumption so the user can override via --port.
-		port = 8080
+		port = defaultServePort
 	}
 
 	bodyJSON := opts.body
@@ -272,92 +267,15 @@ func availableServicesHint(services []codegen.ServiceDef) string {
 	return strings.Join(names[:limit], ", ") + fmt.Sprintf(", … (%d more)", len(names)-limit)
 }
 
-// lookupServicePort scans forge.yaml's services[] for a service whose
-// handler directory matches the proto package's service. Today this is a
-// best-effort match by service name (handlers/<pkg> conventional layout);
-// returns 0 when no match is found so the caller can fall back to the
-// default port or surface a useful error.
+// defaultServePort is the port a scaffolded binary listens on: every service
+// in a binary mounts onto the SAME Connect mux and the process listens once,
+// on AppConfig.port (env PORT, default 8080).
 //
-// We intentionally don't error on load failure here — a partly-bootstrapped
-// project may not have forge.yaml yet, in which case the default port +
-// --port override are sufficient.
-func lookupServicePort(projectDir string, svc codegen.ServiceDef) int {
-	// Service inventory comes from the REAL sources (proto descriptor +
-	// owned files), not the removed components.json — see
-	// codegen.IntrospectComponents. Ports are a deploy fact (KCL), so the
-	// introspected components carry none; matchServicePort returns 0 and
-	// the caller falls back to the default port + --port override.
-	return matchServicePort(codegen.IntrospectComponents(projectDir), svc)
-}
-
-// matchServicePort picks the most likely services[] entry for svc. We try
-// two heuristics in order:
-//
-//  1. Service name match: forge.yaml usually scaffolds with
-//     name: <pkg-leaf> for the handler dir. We try several conventional
-//     mappings: the proto package leaf, the lowercased service name with
-//     the trailing "Service" suffix stripped, and the Go package name.
-//  2. First go_service entry: when nothing matches, we pick the first
-//     non-worker, non-operator service. This is the common case in
-//     single-service projects and is safe because the user can always
-//     override via --port.
-//
-// Returns 0 when no service entry has a Port set (rare — `forge add service`
-// always assigns one). Callers fall back to the default port.
-func matchServicePort(comps []config.ComponentConfig, svc codegen.ServiceDef) int {
-	candidates := serviceNameCandidates(svc)
-	for _, name := range candidates {
-		for _, s := range comps {
-			if !s.IsServer() {
-				continue
-			}
-			if strings.EqualFold(s.Name, name) {
-				return s.PrimaryPort()
-			}
-		}
-	}
-
-	// Fallback: first server component.
-	for _, s := range comps {
-		if s.IsServer() {
-			return s.PrimaryPort()
-		}
-	}
-	return 0
-}
-
-// serviceNameCandidates derives plausible forge.yaml service.name values
-// from a ServiceDef. The list is deduped + ordered most-specific first.
-func serviceNameCandidates(svc codegen.ServiceDef) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(s string) {
-		s = strings.ToLower(strings.TrimSpace(s))
-		if s == "" || seen[s] {
-			return
-		}
-		seen[s] = true
-		out = append(out, s)
-	}
-
-	// "users.v1" -> "users"
-	if pkg := svc.Package; pkg != "" {
-		if idx := strings.LastIndex(pkg, "."); idx > 0 {
-			add(pkg[:idx])
-		} else {
-			add(pkg)
-		}
-	}
-
-	// "UserService" -> "user"; strip the conventional Service suffix.
-	name := svc.Name
-	name = strings.TrimSuffix(name, "Service")
-	add(name)
-
-	// "usersv1" -> "usersv1" (last-ditch full match)
-	add(svc.PkgName)
-	return out
-}
+// There is no per-service port to discover. A port is a DEPLOY fact that lives
+// in KCL (deploy/kcl/<env>/config.k), so nothing forge can introspect from the
+// proto descriptor or the owned-file tree carries one. Commands that need a URL
+// assume this default and let --port override it.
+const defaultServePort = 8080
 
 // buildZeroBody renders a JSON object containing each field of the
 // method's input message at its proto zero value. The result is small and
@@ -434,29 +352,46 @@ func renderJSONInOrder(obj map[string]any, order []string) string {
 }
 
 // zeroValueFor returns the proto zero value for a field type. We use Go
-// types that json.Marshal will render correctly: "" for string, 0 for
-// numeric, false for bool, nil for message/bytes/enum (rendered as null,
-// which ProtoJSON accepts for those).
+// types that json.Marshal will render correctly: "" for string and bytes,
+// 0 for numeric, false for bool, nil for message/enum/map (rendered as
+// null, which ProtoJSON accepts for those).
 //
-// For message / bytes / enum we deliberately emit null rather than a nested
+// For message / enum / map we deliberately emit null rather than a nested
 // stub: a recursive walk would balloon the skeleton for deep message graphs
 // and risks infinite loops on self-referential types. null is valid
 // ProtoJSON for any nullable field and a clear "fill me in" signal.
+//
+// The SCALAR half is derived: the kind is projected to its Go type through
+// codegen's closed table and the JSON zero follows from that type's family,
+// so the ten integer widths cannot be named four-of-ten here the way
+// kclTypeForProtoConfig once named them. What made that defect invisible is
+// exactly the shape below's `default` used to have — an unnamed scalar took
+// the non-scalar answer, and a `bytes` field rendered as null is
+// indistinguishable from a message field rendered as null.
 func zeroValueFor(protoType string) any {
-	switch protoType {
+	goType, ok := codegen.ProtoScalarGoType(protoType)
+	if !ok {
+		// message, enum, map, a well-known type name: not a scalar, and
+		// null is the ProtoJSON value for all of them.
+		return nil
+	}
+	switch goType {
 	case "bool":
 		return false
 	case "string":
 		return ""
-	case "int32", "int64", "uint32", "uint64", "sint32", "sint64",
-		"fixed32", "fixed64", "sfixed32", "sfixed64":
+	case "[]byte":
+		// ProtoJSON encodes bytes as base64 text; "" is the empty value.
+		return ""
+	case "int32", "int64", "uint32", "uint64":
 		return 0
-	case "float", "double":
+	case "float32", "float64":
 		return 0.0
-	default:
-		// message, enum, bytes, map, anything we don't recognise.
-		return nil
 	}
+	// A proto scalar whose Go type names no family above — the vocabulary
+	// grew and this projection did not. null would parse, so nothing
+	// downstream would ever report it.
+	panic("cli: no JSON zero value for proto scalar kind " + protoType)
 }
 
 // shellQuoteSingle wraps a string in single quotes for shell embedding,

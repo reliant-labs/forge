@@ -7,12 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // ScaffoldMode controls how scaffolding functions handle pre-existing output
-// files. It exists so `forge add service --resume / --force` can re-run a
+// files. It exists so `forge scaffold service --resume / --force` can re-run a
 // partial scaffold without forcing the user to rm -rf and start over.
 type ScaffoldMode int
 
@@ -40,15 +39,19 @@ const (
 // filesystem directories and Go/proto identifiers. Display strings keep the
 // original spelling.
 //
-// Both the "new project" and "add service" flows delegate here so the
+// Both the "new project" and "scaffold service" flows delegate here so the
 // generated output is always identical.
 //
-// handlers.go is intentionally not emitted at scaffold time: with zero RPC
-// methods there is nothing for it to contain. Once RPCs are added to the
-// proto file, `forge generate` produces handlers_gen.go; the user then moves
-// those stubs to handlers.go (or any other file) as they implement them.
-func GenerateServiceFiles(root, modulePath, serviceName, projectName string, port int) error {
-	return GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName, port, ScaffoldFail, nil)
+// No handler file is emitted at scaffold time: with zero RPC methods there
+// is nothing for one to contain. Once RPCs are added to the proto file,
+// `forge generate` scaffolds each missing stub into its own user-owned
+// rpc_<name>.go (codegen.GenerateMissingHandlerStubs).
+//
+// There is no per-service port: every service mounts onto the one Connect
+// mux the binary serves, and the listener reads the AppConfig `port` field
+// (env PORT, default 8080) set per environment in deploy/kcl/<env>/config.k.
+func GenerateServiceFiles(root, modulePath, serviceName, projectName string) error {
+	return GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName, ScaffoldFail, nil)
 }
 
 // GenerateServiceFilesWithMode is the mode-aware form of GenerateServiceFiles.
@@ -57,7 +60,7 @@ func GenerateServiceFiles(root, modulePath, serviceName, projectName string, por
 // every output file). When non-nil, `progress` receives one human-readable
 // line per scaffolding step so the CLI can render "skipped" / "overwriting"
 // notices without re-implementing the existence check.
-func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName string, port int, mode ScaffoldMode, progress io.Writer) error {
+func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName string, mode ScaffoldMode, progress io.Writer) error {
 	servicePackage := naming.ServicePackage(serviceName)
 	svcDir := filepath.Join(root, "internal", "handlers", servicePackage)
 
@@ -83,7 +86,6 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 		ProtoConnectPackage string
 		ProtoFileSymbol     string
 		HandlerName         string
-		Port                string
 		Methods             []string
 	}{
 		ServiceName:         serviceName,
@@ -93,7 +95,6 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 		ProtoConnectPackage: fmt.Sprintf("%sv1connect", servicePackage),
 		ProtoFileSymbol:     fmt.Sprintf("File_services_%s_v1_%s_proto", servicePackage, servicePackage),
 		HandlerName:         fmt.Sprintf("%sService", handlerName),
-		Port:                fmt.Sprintf("%d", port),
 		Methods:             []string{},
 	}
 
@@ -102,60 +103,26 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 		return err
 	}
 
-	// handlers.go is intentionally not emitted at scaffold (zero RPC methods).
-	// See function docstring for details.
-
-	// -- authorizer.go (via service/authorizer.go.tmpl) --
-	authzData := struct {
-		Package     string
-		ServiceName string
-		Module      string
-	}{
-		Package:     servicePackage,
-		ServiceName: handlerName,
-		Module:      modulePath,
-	}
-
-	authzPath := filepath.Join(svcDir, "authorizer.go")
-	if err := renderAndWriteWithMode(authzPath, "service/authorizer.go.tmpl", authzData, mode, progress); err != nil {
-		return err
-	}
+	// No handler file is emitted at scaffold (zero RPC methods). See the
+	// function docstring for details.
 
 	// -- test templates --
-	// TestHelperName mirrors codegen.ComputeTestHelperName: matches the
-	// `app.NewTest<X>` factory the bootstrap testing generator emits for
-	// this service so the scaffolded handlers_scaffold_test.go compiles even
-	// when internal/<servicePackage> exists and triggers Svc-prefixing.
-	testData := struct {
-		ServiceName         string
-		ServicePackage      string
-		Module              string
-		ProtoPackage        string
-		ProtoImportPath     string
-		ProtoConnectPackage string
-		HandlerName         string
-		TestHelperName      string
-		Methods             []codegen.MethodTemplateData
-	}{
-		ServiceName:         serviceName,
-		ServicePackage:      servicePackage,
-		Module:              modulePath,
-		ProtoPackage:        fmt.Sprintf("services/%s", servicePackage),
-		ProtoImportPath:     fmt.Sprintf("services/%s", servicePackage),
-		ProtoConnectPackage: fmt.Sprintf("%sv1connect", servicePackage),
-		HandlerName:         fmt.Sprintf("%sService", handlerName),
-		TestHelperName:      codegen.ComputeTestHelperName(servicePackage, root),
-		Methods:             []codegen.MethodTemplateData{},
-	}
-
-	unitTestPath := filepath.Join(svcDir, "handlers_scaffold_test.go")
-	if err := renderAndWriteWithMode(unitTestPath, "service/unit_test.go.tmpl", testData, mode, progress); err != nil {
-		return err
-	}
-
-	// No one-shot integration_test.go scaffold: the unit scaffold owns
-	// per-RPC self-destructing rows and handlers_crud_integration_test.go
-	// owns the DB-bound CRUD surface. A second per-RPC file that hardcodes
+	// None here, deliberately. The scaffold test is ONE FILE PER RPC
+	// (handlers_scaffold_<rpc>_test.go), and this path runs before any RPC
+	// exists, so there is nothing to write. Each file is born alongside its
+	// RPC's Unimplemented stub, in GenerateMissingHandlerStubs.
+	//
+	// What used to be here was a file containing only a
+	// `forge-unit-test-placeholder` comment, plus a rule elsewhere that
+	// forge may rewrite the file while that comment survives. That made a
+	// comment string in a user-owned file decide whether forge would
+	// overwrite it — behavior you cannot trace to a call site. Absence is
+	// now the whole ownership rule: no file, no RPC; a file that exists is
+	// yours.
+	//
+	// No one-shot integration_test.go scaffold either: the unit scaffold
+	// owns per-RPC self-destructing rows and handlers_crud_test.go owns the
+	// DB-bound CRUD surface. A second per-RPC file that hardcodes
 	// WantErr for every method goes stale the moment handlers are
 	// implemented and teaches green-means-nothing.
 
@@ -165,18 +132,13 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 	// hand-written RPC definitions). ScaffoldForce overrides that guard for
 	// users who explicitly asked to re-stamp the scaffold.
 	protoPath := filepath.Join(root, "proto", "services", servicePackage, "v1", fmt.Sprintf("%s.proto", servicePackage))
-	// The stub carries the (forge.v1.service) option block WITH default_roles
-	// from birth. Two reasons this must be here, not deferred:
-	//   1. authz completeness — every RPC needs an explicit authz decision
-	//      (per-method required_roles / authz_public / authz_custom) OR a
-	//      service-wide default_roles floor. RPCs scaffolded later by `forge
-	//      add entity` carry auth_required but no required_roles, so without
-	//      this floor the authz lint fails the very next generate.
-	//   2. the forge/v1/forge.proto import is load-bearing for the option
-	//      extension; emitting it now (rather than letting `forge add entity`
-	//      back-fill it) keeps a fresh service buf-valid on its own.
-	// default_roles: ["member"] makes the service fail-closed by default —
-	// a forgotten annotation inherits this floor rather than going open.
+	// The stub carries the (forge.v1.service) option block from birth. The
+	// forge/v1/forge.proto import is load-bearing for the option extension;
+	// emitting it now (rather than letting `forge scaffold entity`
+	// back-fill it) keeps a fresh service buf-valid on its own.
+	//
+	// The stub carries no access-control annotations: access control is
+	// app-owned handler logic.
 	protoContent := fmt.Sprintf(`syntax = "proto3";
 
 package services.%s.v1;
@@ -191,10 +153,6 @@ service %sService {
     name: "%sService"
     version: "1.0.0"
     description: "%s service"
-
-    // Service-wide default authorization floor: every method that declares
-    // no required_roles of its own requires "member". Fail-closed by default.
-    default_roles: ["member"]
   };
 
   // TODO: Add your RPC methods here.

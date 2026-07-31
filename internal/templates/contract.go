@@ -74,8 +74,6 @@ func categoryFor(name string) TemplateCategory {
 		return ServiceTemplates()
 	case "webhook":
 		return WebhookTemplates()
-	case "middleware":
-		return MiddlewareTemplates()
 	case "worker":
 		return WorkerTemplates()
 	case "worker-cron":

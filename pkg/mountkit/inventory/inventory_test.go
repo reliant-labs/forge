@@ -3,7 +3,7 @@ package inventory
 // Tests for the DATA-ONLY ComponentInfo descriptor + reader helpers extracted
 // from the generated inventory_gen.go (lib-boundary extraction —
 // FORGE_SHAPE_REDESIGN §1/§2). The generated `var Inventory =
-// []inventory.ComponentInfo{...}` is data over this type; `forge map` /
+// []inventory.ComponentInfo{...}` is data over this type; `forge project map` /
 // `audit` / `services` read it via these helpers.
 
 import (

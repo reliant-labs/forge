@@ -2,7 +2,6 @@ package codegen
 
 import (
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // This file wires the Service / Parser / Inspector contract methods on
@@ -29,18 +28,6 @@ func (s *svc) GenerateMock(svc ServiceDef, mockDir string) (bool, error) {
 	return GenerateMock(svc, mockDir)
 }
 
-func (s *svc) GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, skipDirs map[string]bool, cs *checksums.FileChecksums) error {
-	return GenerateAuthorizer(services, modulePath, targetDir, skipDirs, cs)
-}
-
-func (s *svc) GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMethods []string, targetDir string, cs *checksums.FileChecksums) error {
-	return GenerateAuthMiddleware(cfg, modulePath, skipMethods, targetDir, cs)
-}
-
-func (s *svc) GenerateTenantMiddleware(mt *config.MultiTenantConfig, targetDir string, cs *checksums.FileChecksums) error {
-	return GenerateTenantMiddleware(mt, targetDir, cs)
-}
-
 func (s *svc) GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
 	return GenerateCRUDHandlers(svc, crudMethods, modulePath, projectDir, cs)
 }
@@ -53,8 +40,8 @@ func (s *svc) GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *
 	return GenerateCmdServer(messages, targetDir, cs)
 }
 
-func (s *svc) GenerateCmdServerWithFields(configFields map[string]bool, authProvider string, targetDir string, cs *checksums.FileChecksums) error {
-	return GenerateCmdServerWithFields(configFields, authProvider, targetDir, cs)
+func (s *svc) GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error {
+	return GenerateCmdServerWithFields(configFields, targetDir, cs)
 }
 
 func (s *svc) GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {

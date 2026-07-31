@@ -17,7 +17,7 @@ import (
 //	go: cannot load module gen listed in go.work file: open gen/go.mod: no such file or directory
 //
 // It is wired into runBuild (the shared build choke point for `forge
-// build` and `forge up`'s build phase) and into runUp's host-only path,
+// build` and `forge env up`'s build phase) and into runUp's host-only path,
 // where the host runners (air / go-run) compile against gen/ too even
 // though the docker build phase is skipped.
 //
@@ -77,6 +77,14 @@ func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
 // the project has no go.work or every listed module is present. A use'd
 // directory without a go.mod is exactly what `go build` rejects with
 // "cannot load module <dir> listed in go.work file".
+//
+// A `use` path may be ABSOLUTE — forge's own dev bridge writes one
+// (`use /path/to/forge/pkg`) so a scaffold compiles against a working-copy
+// forge/pkg. Joining that onto projectDir yields a path that cannot exist,
+// which reported the module missing on every invocation and made `forge run`
+// pay a full regenerate (≈9s and ~60 lines of output) before every single
+// boot. Resolve absolute paths as given; only relative ones hang off the
+// project root.
 func missingGoWorkModule(projectDir string) string {
 	path := filepath.Join(projectDir, "go.work")
 	data, err := os.ReadFile(path)
@@ -92,8 +100,11 @@ func missingGoWorkModule(projectDir string) string {
 		if dir == "." || dir == "" {
 			continue
 		}
-		modPath := filepath.Join(projectDir, dir, "go.mod")
-		if _, err := os.Stat(modPath); err != nil {
+		modDir := dir
+		if !filepath.IsAbs(modDir) {
+			modDir = filepath.Join(projectDir, modDir)
+		}
+		if _, err := os.Stat(filepath.Join(modDir, "go.mod")); err != nil {
 			return dir
 		}
 	}

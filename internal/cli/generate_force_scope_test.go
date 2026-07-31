@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -56,7 +57,7 @@ func TestStepCheckTier1Drift_ForceIsScopedToFlaggedFiles(t *testing.T) {
 	// path through the plain WriteGeneratedFile chokepoint, and --force
 	// must not clobber it.
 	const unflagged = "Taskfile.yml"
-	if !tier2MigratedPaths[unflagged] {
+	if !generator.IsTier2Managed(unflagged) {
 		t.Fatalf("%s is no longer Tier-2-managed; pick another exempt path for this test", unflagged)
 	}
 	const tier2Edit = "# precious user task definitions\n"
@@ -110,7 +111,7 @@ func TestStepCheckTier1Drift_ForceWithNoDriftInstallsEmptyScope(t *testing.T) {
 	// managed) — so the guard flags NOTHING, and the empty force scope
 	// must keep a force=true write away from it.
 	const rel = "Taskfile.yml"
-	if !tier2MigratedPaths[rel] {
+	if !generator.IsTier2Managed(rel) {
 		t.Fatalf("%s is no longer Tier-2-managed; pick another exempt path for this test", rel)
 	}
 	stamped, ok := checksums.StampWithValue(rel,

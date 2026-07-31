@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // startInOwnProcessGroup makes the child the leader of a new process
@@ -98,18 +99,6 @@ func ppidMap() map[int]int {
 	return m
 }
 
-// listPIDs returns every pid in the process table — the scan surface for
-// `forge up stop`'s marker sweep (find every process carrying our
-// FORGE_UP_ENV, whatever port it holds).
-func listPIDs() []int {
-	m := ppidMap()
-	out := make([]int, 0, len(m))
-	for pid := range m {
-		out = append(out, pid)
-	}
-	return out
-}
-
 // portListenerPID returns the pid LISTENing on 127.0.0.1:<port>, or 0 when
 // none is found / the lookup tool is unavailable. Uses lsof (present by
 // default on macOS; commonly on Linux). A 0 return classifies the holder as
@@ -133,6 +122,51 @@ func portListenerPID(port int) int {
 		}
 	}
 	return 0
+}
+
+// procStartTimes returns the wall-clock start time of each requested pid, read
+// from `ps -o lstart=` (works on macOS and Linux without /proc) in ONE call so
+// the whole set costs a single fork. Used by `forge env status` build-freshness
+// to tell a freshly-launched server from a straggler running an older build
+// (its start predates the on-disk binary's mtime). A pid missing from the
+// result had no readable start time (dead, or `ps` unavailable) and the caller
+// omits its started_at.
+func procStartTimes(pids []int) map[int]time.Time {
+	out := map[int]time.Time{}
+	list := make([]string, 0, len(pids))
+	for _, p := range pids {
+		if p > 0 {
+			list = append(list, strconv.Itoa(p))
+		}
+	}
+	if len(list) == 0 {
+		return out
+	}
+	o, err := exec.CommandContext(context.Background(),
+		"ps", "-o", "pid=,lstart=", "-p", strings.Join(list, ",")).Output()
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(o), "\n") {
+		fields := strings.Fields(line)
+		// "<pid> Dow Mon DD HH:MM:SS YYYY" → pid + 5 lstart fields. Fields()
+		// collapses the padded single-digit day, so a single-space layout
+		// parses uniformly.
+		if len(fields) < 6 {
+			continue
+		}
+		pid, perr := strconv.Atoi(fields[0])
+		if perr != nil {
+			continue
+		}
+		ts := strings.Join(fields[1:6], " ")
+		t, terr := time.ParseInLocation("Mon Jan 2 15:04:05 2006", ts, time.Local)
+		if terr != nil {
+			continue
+		}
+		out[pid] = t
+	}
+	return out
 }
 
 // descendantPIDs returns every transitive child of root, reading the

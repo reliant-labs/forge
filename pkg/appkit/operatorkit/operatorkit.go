@@ -47,7 +47,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strconv"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -74,9 +73,9 @@ import (
 // For the common forge shape — a SINGLE-replica controller — fast failover
 // buys nothing (there is no standby to fail over to) while the tight deadline
 // costs a spurious crash. So we triple the timings to a tolerance band that
-// rides out transient API slowness, and keep them env-overridable for ops
-// tuning. These are the conventional hardened values for single-replica
-// controllers on shared/edge clusters.
+// rides out transient API slowness, and let a project that needs different
+// numbers set them on [Options]. These are the conventional hardened values
+// for single-replica controllers on shared/edge clusters.
 const (
 	defaultLeaseDuration = 45 * time.Second
 	defaultRenewDeadline = 30 * time.Second
@@ -111,19 +110,48 @@ type Controller struct {
 // Options carries the per-project manager configuration the generated
 // row table supplies.
 type Options struct {
-	// LeaderElectionID is the lease name used for leader election —
-	// the generated table passes "<module>-leader". The LEADER_ELECTION_ID
-	// env var, when set, overrides this so distinct processes can take
-	// distinct leases (env > this default).
+	// LeaderElectionID is the lease name used for leader election — the
+	// scaffolded RunOperators passes "<module>-leader". Two processes that
+	// both run a manager and share this name contend for the SAME lease, so
+	// a project running more than one gives each its own value here.
 	LeaderElectionID string
+
+	// LeaderElectionNamespace is the namespace holding the lease.
+	//
+	// Empty is correct IN-CLUSTER: controller-runtime infers the namespace
+	// from the ServiceAccount mount. Out of cluster there is nothing to
+	// infer and NewManager hard-errors, so Run treats "reachable cluster,
+	// not in-cluster, no namespace" exactly like no-cluster — it warns and
+	// continues WITHOUT operators rather than dying. Set this to run a
+	// manager from a host process against a dev cluster; the value is the
+	// opt-in.
+	LeaderElectionNamespace string
 
 	// HealthProbeBindAddress, when non-empty, binds a /healthz +
 	// /readyz listener on that address for the controller-runtime
 	// manager. The generated RunOperators forwards it from
-	// serverkit.Config.OperatorHealthProbeAddr. Empty leaves the
-	// manager without a probe listener (the default — vanilla forge
-	// projects don't bind one).
+	// serverkit.Config.OperatorHealthProbeAddr — which is itself projected
+	// from the app's typed config, so a deployment that needs a probe port
+	// declares one field and it arrives here. Empty leaves the manager
+	// without a probe listener (the default — vanilla forge projects don't
+	// bind one).
 	HealthProbeBindAddress string
+
+	// Leader-election timings. Zero takes the hardened defaults documented
+	// at the top of this file (45s/30s/5s), which suit the single-replica
+	// controller a forge project scaffolds. Raise or lower them together —
+	// LeaseDuration > RenewDeadline > RetryPeriod is a controller-runtime
+	// invariant, and a mismatched trio self-terminates a healthy leader.
+	LeaseDuration time.Duration
+	RenewDeadline time.Duration
+	RetryPeriod   time.Duration
+
+	// ClientQPS / ClientBurst raise the manager's own client-side request
+	// ceiling. Zero takes the defaults above (50/100). They only apply when
+	// the resolved rest.Config does not already carry a value, so an
+	// explicit kubeconfig setting still wins.
+	ClientQPS   float32
+	ClientBurst int
 
 	// ByObjectNamespaces scopes the manager cache PER OBJECT TYPE: each entry
 	// maps an object example (e.g. &v1alpha1.Workspace{}) to the ONLY
@@ -176,41 +204,30 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 	// dev-loop shape: admin binary on the laptop, operators deployed
 	// in-cluster) would otherwise get PAST the no-cluster degrade above
 	// and then die in NewManager. Treat "reachable cluster, but not
-	// in-cluster and no LEADER_ELECTION_NAMESPACE" the same way as
-	// no-cluster: warn and continue without operators. Setting
-	// LEADER_ELECTION_NAMESPACE opts a host process back in (e.g. running
-	// an operator from source against a dev cluster).
-	leaderNS := os.Getenv("LEADER_ELECTION_NAMESPACE")
+	// in-cluster and no declared namespace" the same way as no-cluster:
+	// warn and continue without operators. Options.LeaderElectionNamespace
+	// opts a host process back in.
+	leaderNS := opts.LeaderElectionNamespace
 	if leaderNS == "" && !runningInCluster() {
-		logger.Warn("operators disabled: not running in-cluster and LEADER_ELECTION_NAMESPACE is unset; set it to run operators from a host process")
+		logger.Warn("operators disabled: not running in-cluster and Options.LeaderElectionNamespace is empty; set it to run operators from a host process")
 		return nil
 	}
 
-	// Probe-address precedence: explicit Options value (forwarded from
-	// serverkit.Config.OperatorHealthProbeAddr) > HEALTH_PROBE_BIND_ADDRESS
-	// env var (the conventional controller-runtime deploy knob — k8s
-	// manifests set it next to METRICS_BIND_ADDRESS) > none. No hard
-	// default: vanilla forge projects shouldn't surprise-bind a port.
 	probeAddr := opts.HealthProbeBindAddress
-	if probeAddr == "" {
-		probeAddr = os.Getenv("HEALTH_PROBE_BIND_ADDRESS")
-	}
-
-	leaderID := resolveLeaderElectionID(opts.LeaderElectionID)
 
 	// Lift the client's own request ceiling before NewManager derives its
 	// clients from cfg. Only set when unconfigured so an explicit kubeconfig /
 	// caller value still wins. See defaultClientQPS for rationale.
 	if cfg.QPS == 0 {
-		cfg.QPS = envFloat32("OPERATOR_CLIENT_QPS", defaultClientQPS)
+		cfg.QPS = orDefaultFloat32(opts.ClientQPS, defaultClientQPS)
 	}
 	if cfg.Burst == 0 {
-		cfg.Burst = envInt("OPERATOR_CLIENT_BURST", defaultClientBurst)
+		cfg.Burst = orDefaultInt(opts.ClientBurst, defaultClientBurst)
 	}
 
-	leaseDuration := envDuration("OPERATOR_LEASE_DURATION", defaultLeaseDuration)
-	renewDeadline := envDuration("OPERATOR_RENEW_DEADLINE", defaultRenewDeadline)
-	retryPeriod := envDuration("OPERATOR_RETRY_PERIOD", defaultRetryPeriod)
+	leaseDuration := orDefaultDuration(opts.LeaseDuration, defaultLeaseDuration)
+	renewDeadline := orDefaultDuration(opts.RenewDeadline, defaultRenewDeadline)
+	retryPeriod := orDefaultDuration(opts.RetryPeriod, defaultRetryPeriod)
 
 	// Build the manager scheme BEFORE NewManager: client-go's stock types plus
 	// every controller's CRD types. Registration must precede manager creation
@@ -236,9 +253,10 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:           scheme,
 		LeaderElection:   true,
-		LeaderElectionID: leaderID,
+		LeaderElectionID: opts.LeaderElectionID,
 		// Empty in-cluster — controller-runtime infers the namespace from
-		// the ServiceAccount mount. Non-empty only via the env opt-in above.
+		// the ServiceAccount mount. Non-empty only via the
+		// Options.LeaderElectionNamespace opt-in above.
 		LeaderElectionNamespace: leaderNS,
 		// Hardened leader-election timings so a transient API-server latency
 		// spike doesn't trip RenewDeadline and self-terminate a healthy
@@ -313,53 +331,28 @@ func cacheByObject(scopes map[client.Object][]string) map[client.Object]cache.By
 	return byObject
 }
 
-// resolveLeaderElectionID applies the lease-name precedence:
-// LEADER_ELECTION_ID env var > the generated Options.LeaderElectionID
-// default. Without the env override the lease name is hardcoded per
-// project, so two processes that both run the manager (e.g. a catch-all
-// API server and the dedicated operator) contend for the SAME lease even
-// when the deployment sets a distinct LEADER_ELECTION_ID. Honouring the
-// env lets distinct processes take distinct leases. Empty/unset keeps the
-// generated default unchanged.
-func resolveLeaderElectionID(optsID string) string {
-	if envID := os.Getenv("LEADER_ELECTION_ID"); envID != "" {
-		return envID
-	}
-	return optsID
-}
-
-// envDuration returns the duration parsed from the named env var, or def when
-// the var is unset or unparseable. Used for the ops-tunable leader-election
-// timing overrides — a typo'd value falls back to the hardened default rather
-// than silently zeroing a timing (which controller-runtime would then replace
-// with its own short stock default).
-func envDuration(name string, def time.Duration) time.Duration {
-	if v := os.Getenv(name); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			return d
-		}
+// orDefault* apply a declared value when the caller set one, and the
+// hardened default when it left the field zero. A negative value is treated
+// as unset for the same reason a typo'd env var used to be: a zero or
+// negative timing is not a faster controller, it is controller-runtime's own
+// short stock default silently reinstated.
+func orDefaultDuration(v, def time.Duration) time.Duration {
+	if v > 0 {
+		return v
 	}
 	return def
 }
 
-// envFloat32 returns the float32 parsed from the named env var, or def when the
-// var is unset or unparseable.
-func envFloat32(name string, def float32) float32 {
-	if v := os.Getenv(name); v != "" {
-		if f, err := strconv.ParseFloat(v, 32); err == nil && f > 0 {
-			return float32(f)
-		}
+func orDefaultFloat32(v, def float32) float32 {
+	if v > 0 {
+		return v
 	}
 	return def
 }
 
-// envInt returns the int parsed from the named env var, or def when the var is
-// unset or unparseable.
-func envInt(name string, def int) int {
-	if v := os.Getenv(name); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
+func orDefaultInt(v, def int) int {
+	if v > 0 {
+		return v
 	}
 	return def
 }

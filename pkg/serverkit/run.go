@@ -11,7 +11,6 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -39,7 +38,7 @@ import (
 // Run is the only entry point projects call. Every other type and
 // helper exists to shape the Server surface or document the lifecycle.
 func Run(ctx context.Context, cfg Config, srv Server) error {
-	cfg.defaults()
+	cfg.Normalize()
 
 	// Handler is required, but the Mux ergonomics let a composition root
 	// leave it nil and rely on Server.Mux as the handler (the common case:
@@ -61,10 +60,10 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// Fail closed on configured-but-unwired edge layers. CORS and security
 	// headers are SECURITY controls: a composition root that configures
 	// them (origins set, SecurityHeaders=true) but forgets to supply the
-	// factory must NOT silently serve with the layer absent — that's the
-	// same trap as booting with a nil authz policy. Reject loudly instead.
-	if len(cfg.CORSOrigins) > 0 && srv.CORSMiddleware == nil {
-		return fmt.Errorf("serverkit.Run: Config.CORSOrigins is set but Server.CORSMiddleware is nil — refusing to serve with CORS unenforced")
+	// factory must NOT silently serve with the layer absent. Reject
+	// loudly instead.
+	if cfg.CORSEnabled() && srv.CORSMiddleware == nil {
+		return fmt.Errorf("serverkit.Run: CORS is enabled (origins set, or Environment=%s) but Server.CORSMiddleware is nil — refusing to serve with CORS unenforced", EnvDevelopment)
 	}
 	if cfg.SecurityHeaders && srv.SecurityHeadersMiddleware == nil {
 		return fmt.Errorf("serverkit.Run: Config.SecurityHeaders is enabled but Server.SecurityHeadersMiddleware is nil — refusing to serve without security headers")
@@ -79,11 +78,12 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	slog.SetDefault(logger)
 
 	// Warn loudly when running in development mode. Development mode enables
-	// permissive defaults (e.g. authz allow-all) for local ergonomics — this
-	// must never be used in production. The permissive behavior is selected
-	// by the caller (at mount time) based on cfg.Environment.
-	if cfg.Environment == "development" {
-		logger.Warn("running in development mode — permissive authz defaults are enabled. NEVER set ENVIRONMENT=development in production.")
+	// permissive defaults (e.g. origin-reflecting CORS, security headers off)
+	// for local ergonomics — this must never be used in production. The
+	// permissive behavior is selected by the caller (at mount time) based on
+	// cfg.Environment.
+	if cfg.IsDevelopment() {
+		logger.Warn("running in development mode — permissive edge defaults are enabled (CORS reflects any origin, HSTS off). NEVER set ENVIRONMENT=development in production.")
 	}
 
 	// OTel: serverkit OWNS OpenTelemetry setup (the generated cmd/otel.go
@@ -105,8 +105,10 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		logger.Error("failed to initialize OpenTelemetry", "error", otelErr)
 	}
 
-	// Readiness flips AFTER the listener successfully binds (see ln/Serve
-	// below) so /readyz is an accurate signal to load balancers.
+	// Readiness gate: flipped true AFTER the listener binds (see ln/Serve
+	// below) and false again at the top of shutdown. It is only the FIRST
+	// half of /readyz's answer — the dependency checks in srv.ReadyChecks
+	// are the other half, and they run per request.
 	var ready atomic.Bool
 
 	// serverkit no longer owns the service mux, so it can't MOUNT its
@@ -119,10 +121,11 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 
 	// CORS: project-supplied middleware factory keeps the existing
 	// pkg/middleware.CORSMiddleware in charge of the actual matching
-	// logic. serverkit only owns the gating. A configured-but-unwired
-	// factory was already rejected above (fail closed), so a non-nil
-	// CORSMiddleware here is guaranteed when origins are set.
-	if len(cfg.CORSOrigins) > 0 {
+	// logic. serverkit only owns the gating (cfg.CORSEnabled: origins
+	// named, OR development — see the method's doc for why dev needs no
+	// origins). A configured-but-unwired factory was already rejected
+	// above (fail closed), so a non-nil CORSMiddleware here is guaranteed.
+	if cfg.CORSEnabled() {
 		handler = srv.CORSMiddleware(cfg.CORSOrigins, cfg.CORSAllowCredentials)(handler)
 	}
 
@@ -130,8 +133,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// only emitted in production (Environment != "development"). As with
 	// CORS, a configured-but-unwired factory was rejected above.
 	if cfg.SecurityHeaders {
-		production := cfg.Environment != "development"
-		handler = srv.SecurityHeadersMiddleware(production)(handler)
+		handler = srv.SecurityHeadersMiddleware(!cfg.IsDevelopment())(handler)
 	}
 
 	// RequestID runs at the outermost layer so every subsequent
@@ -155,19 +157,16 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
 	})
-	top.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		if !ready.Load() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, "ok\n")
-	})
+	// /readyz is the ROUTABILITY answer: listener bound, not draining, and
+	// every registered dependency reachable. It is what a rolling deploy
+	// believes, so it runs the checks live on each request rather than
+	// reporting a value latched at boot. See readiness.go.
+	top.HandleFunc("/readyz", readyzHandler(&ready, srv.ReadyChecks, cfg.ReadinessTimeout, logger))
 	// /flow-health: the APP-FLOW assertion endpoint. Mounted only when the
 	// caller registered FlowChecks. Like /healthz + /readyz it sits IN FRONT
 	// of the edge (no CORS/auth) and is STATUS-ONLY — 200 when every check
 	// passes, 503 when any fails, plus a terse non-sensitive aggregate. This
-	// is what `forge smoke` curls to catch green-while-broken app flows.
+	// is what `forge env smoke` curls to catch green-while-broken app flows.
 	if len(srv.FlowChecks) > 0 {
 		top.HandleFunc("/flow-health", flowHealthHandler(srv.FlowChecks))
 	}
@@ -327,14 +326,12 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 
 	// Start controller manager for operators (if any).
 	//
-	// Operator gating: the caller already decided WHICH operators to
-	// populate into srv.Operators (the relocated name filter), so
-	// serverkit only honours the process-wide RUN_OPERATORS opt-out.
-	// Setting RUN_OPERATORS=false lets a catch-all API-server process run
-	// no controller manager (and need no operator RBAC) while a separate
-	// process runs the manager. With no operators populated, the manager
-	// never starts — avoiding the misleading "not running in-cluster"
-	// warning on a host process.
+	// Operator gating is the caller's, entirely: whether this process runs
+	// a controller manager is decided by whether it populated
+	// srv.Operators, in the composition root, in code. serverkit adds no
+	// gate of its own — a deployment that must not run a manager runs the
+	// command that populates no operators, so the same binary never
+	// behaves differently for reasons its own source does not show.
 	//
 	// The operator goroutine is supervised on operatorWg — the SAME
 	// WaitGroup pattern as workers — so Run WAITS for RunOperators to drain
@@ -344,7 +341,8 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// failComponent write that lands after the final componentFailure read
 	// would be silently lost.
 	var operatorWg sync.WaitGroup
-	if len(srv.Operators) > 0 && shouldRunOperators() {
+	operatorsSupervised := len(srv.Operators) > 0
+	if operatorsSupervised {
 		operatorWg.Add(1)
 		go func() {
 			defer operatorWg.Done()
@@ -382,9 +380,30 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 
-	// Stop workers first (cancel context + wait + call Stop).
+	// TEARDOWN ORDER, innermost dependency last. Every step below is
+	// something a step ABOVE it may still be using:
+	//
+	//  1. Drain in-flight HTTP. Those requests are still reading the DB and
+	//     handing work to workers, so nothing they depend on may be torn
+	//     down first.
+	//  2. Stop workers, then operators.
+	//  3. OnShutdown — the caller's teardown, which is where the serving
+	//     *sql.DB gets closed. Closing it before (1) would fail the very
+	//     requests the drain exists to complete.
+	//  4. Flush telemetry LAST, so the drain window's own spans, metrics
+	//     and error records are included. Flushing before the drain exported
+	//     everything up to that instant and then discarded whatever the
+	//     shutdown itself produced — precisely the window an operator reads
+	//     when a deploy goes wrong.
+	if shutErr := httpSrv.Shutdown(shutdownCtx); shutErr != nil {
+		logger.Error("server shutdown error", "error", shutErr)
+	}
+
 	workerCancel()
-	workerWg.Wait()
+	if len(srv.Workers) > 0 && !waitWithin(shutdownCtx, &workerWg) {
+		logger.Error("workers did not drain within the shutdown budget",
+			"shutdown_timeout", cfg.ShutdownTimeout)
+	}
 	for _, w := range srv.Workers {
 		if stopErr := w.Stop(shutdownCtx); stopErr != nil {
 			logger.Error("worker stop error", "worker", w.Name(), "error", stopErr)
@@ -396,30 +415,35 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// so RunOperators is unwinding controller-runtime's own ctx-cancel
 	// drain; this Wait ensures Run does not return before that finishes and
 	// that any failComponent write from RunOperators lands before the final
-	// componentFailure read below.
-	operatorWg.Wait()
+	// componentFailure read below. Bounded by shutdownCtx: an operator that
+	// never returns must not hold the process past ShutdownTimeout, because
+	// the platform's own grace period is about to SIGKILL it anyway and a
+	// clean-ish exit beats being shot mid-flush.
+	if operatorsSupervised && !waitWithin(shutdownCtx, &operatorWg) {
+		logger.Error("controller manager did not drain within the shutdown budget",
+			"shutdown_timeout", cfg.ShutdownTimeout)
+	}
 
-	// OnShutdown is the caller-composed teardown (the old
-	// Application.Shutdown). Runs after workers stop, before the OTel flush
-	// and the http.Server shutdown.
+	// OnShutdown is the caller-composed teardown (closing the serving DB
+	// pool, flushing app-owned buffers). Runs after HTTP has drained and
+	// workers have stopped, so nothing it closes is still in use.
 	if srv.OnShutdown != nil {
 		if shutErr := srv.OnShutdown(shutdownCtx); shutErr != nil {
 			logger.Error("shutdown error", "error", shutErr)
 		}
 	}
 
-	// OTel flush — serverkit owns it now (folded out of the cmd shim).
-	if otelShutdown != nil {
-		if shutErr := otelShutdown(shutdownCtx); shutErr != nil {
-			logger.Error("otel shutdown error", "error", shutErr)
-		}
-	}
-	if shutErr := httpSrv.Shutdown(shutdownCtx); shutErr != nil {
-		logger.Error("server shutdown error", "error", shutErr)
-	}
 	if pprofSrv != nil {
 		if shutErr := pprofSrv.Shutdown(shutdownCtx); shutErr != nil {
 			logger.Error("pprof shutdown error", "error", shutErr)
+		}
+	}
+
+	// OTel flush — serverkit owns it now (folded out of the cmd shim). LAST,
+	// so it exports everything the steps above produced.
+	if otelShutdown != nil {
+		if shutErr := otelShutdown(shutdownCtx); shutErr != nil {
+			logger.Error("otel shutdown error", "error", shutErr)
 		}
 	}
 
@@ -432,6 +456,34 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	}
 	componentMu.Unlock()
 	return runErr
+}
+
+// waitWithin blocks until wg drains or ctx expires, reporting whether the
+// drain finished. sync.WaitGroup.Wait takes no context, so a bare Wait sits
+// OUTSIDE ShutdownTimeout entirely: one worker that ignores its cancelled
+// context pins the process until the platform SIGKILLs it, skipping every
+// remaining teardown step — including the telemetry flush that would have
+// explained what happened.
+func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+	}
+	// The deadline can expire in the same instant the group drains, and
+	// select picks a ready case at random. Re-check before reporting a
+	// timeout so a clean shutdown is never logged as a stuck one.
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
 }
 
 // NewLogger builds the slog.Logger serverkit would use from Config:
@@ -452,33 +504,4 @@ func newLogger(cfg Config) *slog.Logger {
 		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})
 	}
 	return slog.New(handler)
-}
-
-// shouldRunOperators decides whether the controller manager should
-// start. Service SELECTION moved above serverkit — the caller only
-// populates Server.Operators for processes that should run the manager —
-// so serverkit's only remaining gate is the process-wide RUN_OPERATORS
-// opt-out.
-//
-// Setting RUN_OPERATORS=false lets a catch-all API-server Deployment run
-// no manager (and need no operator RBAC) even if its build happens to
-// link operators, while a separate operator process runs the manager.
-// Default behaviour is unchanged when the var is unset/empty, so
-// existing projects are unaffected.
-func shouldRunOperators() bool {
-	return runOperatorsEnvDefault()
-}
-
-// runOperatorsEnvDefault reports whether operators are permitted to run
-// at all, honouring the RUN_OPERATORS opt-out. Only an explicit false
-// value ("false"/"0"/"no"/"off", case-insensitive) disables operators;
-// unset/empty/any other value preserves the default-on behaviour so
-// existing deployments are unaffected.
-func runOperatorsEnvDefault() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("RUN_OPERATORS"))) {
-	case "false", "0", "no", "off":
-		return false
-	default:
-		return true
-	}
 }

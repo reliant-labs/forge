@@ -5,12 +5,12 @@ A thin helper for declaring CRDs that an Operator owns. Projects
 either:
 
   1. Reference an `Operator.crds` list of kind names and let forge's
-     `forge add crd` codegen emit a starter CRD manifest into the
+     `forge scaffold crd` codegen emit a starter CRD manifest into the
      project's tree (the legacy + still-supported path).
   2. OR construct CRD dicts directly via `crd(...)` below and append
      them to `Bundle.additional_manifests` for a hand-typed schema.
 
-The starter CRDs `forge add crd` emits use a permissive
+The starter CRDs `forge scaffold crd` emits use a permissive
 `x-kubernetes-preserve-unknown-fields: true` schema so the CRD
 installs immediately; the Go API types in `api/<version>/<lower>_types.go`
 stay the source of truth.

@@ -211,25 +211,38 @@ func TestMapDeclaredType(t *testing.T) {
 		decl  string
 		want  CanonicalType
 		array bool
+		known bool
 	}{
-		{"TEXT", TypeString, false},
-		{"varchar(255)", TypeString, false},
-		{"UUID", TypeString, false},
-		{"BIGSERIAL", TypeInt, false},
-		{"DOUBLE PRECISION", TypeFloat, false},
-		{"NUMERIC(10,2)", TypeFloat, false},
-		{"TIMESTAMPTZ", TypeTime, false},
-		{"timestamp with time zone", TypeTime, false},
-		{"JSONB", TypeJSON, false},
-		{"TEXT[]", TypeString, true},
-		{"BIGINT[]", TypeInt, true},
-		{"mood_enum", TypeString, false}, // unknown → string
-		{"", TypeString, false},          // empty/untyped → string
+		{"TEXT", TypeString, false, true},
+		{"varchar(255)", TypeString, false, true},
+		{"UUID", TypeString, false, true},
+		{"BIGSERIAL", TypeInt, false, true},
+		{"DOUBLE PRECISION", TypeFloat, false, true},
+		{"NUMERIC(10,2)", TypeFloat, false, true},
+		{"TIMESTAMPTZ", TypeTime, false, true},
+		{"timestamp with time zone", TypeTime, false, true},
+		{"JSONB", TypeJSON, false, true},
+		{"BYTEA", TypeBytes, false, true},
+		{"TEXT[]", TypeString, true, true},
+		{"BIGINT[]", TypeInt, true, true},
+
+		// Every one of these falls back to TypeString, and the fallback is
+		// the reason `known` exists: postgres accepts none of them as
+		// arbitrary text, so a caller that cannot tell them from a real
+		// TEXT column projects a wire contract the database will reject.
+		{"mood_enum", TypeString, false, false}, // native pg enum
+		{"MONEY", TypeString, false, false},
+		{"INET", TypeString, false, false},
+		{"INTERVAL", TypeString, false, false},
+		{"TSVECTOR", TypeString, false, false},
+		{"mood_enum[]", TypeString, true, false},
+		{"", TypeString, false, false}, // empty/untyped
 	}
 	for _, c := range cases {
-		got, arr := MapDeclaredType(c.decl)
-		if got != c.want || arr != c.array {
-			t.Errorf("MapDeclaredType(%q) = (%s,%v), want (%s,%v)", c.decl, got, arr, c.want, c.array)
+		got, arr, known := MapDeclaredType(c.decl)
+		if got != c.want || arr != c.array || known != c.known {
+			t.Errorf("MapDeclaredType(%q) = (%s,%v,known=%v), want (%s,%v,known=%v)",
+				c.decl, got, arr, known, c.want, c.array, c.known)
 		}
 	}
 }
@@ -367,7 +380,7 @@ CREATE SCHEMA IF NOT EXISTS controlplane;
 
 CREATE TABLE controlplane.deployments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id TEXT NOT NULL,
+    region TEXT NOT NULL,
     name TEXT NOT NULL DEFAULT '',
     labels TEXT[] NOT NULL DEFAULT '{}'::text[],
     spec JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -375,7 +388,7 @@ CREATE TABLE controlplane.deployments (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at TIMESTAMPTZ
 );
-CREATE INDEX idx_deployments_tenant ON controlplane.deployments (tenant_id);
+CREATE INDEX idx_deployments_region ON controlplane.deployments (region);
 `)
 
 	tables, err := ApplyAndIntrospect(dir)
@@ -391,7 +404,7 @@ CREATE INDEX idx_deployments_tenant ON controlplane.deployments (tenant_id);
 		typ     CanonicalType
 		isArray bool
 	}{
-		"id": {TypeString, false}, "tenant_id": {TypeString, false},
+		"id": {TypeString, false}, "region": {TypeString, false},
 		"name": {TypeString, false}, "labels": {TypeString, true},
 		"spec": {TypeJSON, false}, "created_at": {TypeTime, false},
 		"updated_at": {TypeTime, false}, "deleted_at": {TypeTime, false},
@@ -412,12 +425,12 @@ CREATE INDEX idx_deployments_tenant ON controlplane.deployments (tenant_id);
 	if len(dt.PKCols) != 1 || dt.PKCols[0] != "id" {
 		t.Errorf("PKCols = %v, want [id]", dt.PKCols)
 	}
-	if len(dt.Indexes) != 1 || dt.Indexes[0].Name != "idx_deployments_tenant" {
-		t.Errorf("Indexes = %+v, want idx_deployments_tenant", dt.Indexes)
+	if len(dt.Indexes) != 1 || dt.Indexes[0].Name != "idx_deployments_region" {
+		t.Errorf("Indexes = %+v, want idx_deployments_region", dt.Indexes)
 	}
 	conv := DetectConventions(dt)
-	if !conv.SoftDelete || !conv.Timestamps || !conv.HasTenant {
-		t.Errorf("conventions = %+v, want SoftDelete+Timestamps+HasTenant", conv)
+	if !conv.SoftDelete || !conv.Timestamps {
+		t.Errorf("conventions = %+v, want SoftDelete+Timestamps", conv)
 	}
 }
 

@@ -92,30 +92,11 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 		return nil, fmt.Errorf("failed to read project config: %w", err)
 	}
 
-	// forge no longer reads a components.json manifest: the component
-	// inventory is derived from the real sources (proto descriptor for
-	// services via codegen.IntrospectComponents; workers/operators are owned
-	// code). Pass nil so LoadProject derives kind/features from forge.yaml's
-	// project-global blocks (k8s / frontends / database / packs).
 	parsed, err := config.LoadProject(data, path)
 	if err != nil {
 		return nil, err
 	}
 	cfg := *parsed
-
-	// Apply kind-derived path defaults and normalize the kind enum
-	// casing. An empty kind defaults to "server" (the historical
-	// type: go_service default).
-	for i := range cfg.Components {
-		if cfg.Components[i].Kind == "" {
-			cfg.Components[i].Kind = config.ComponentKindServer
-		} else {
-			cfg.Components[i].Kind = normalizeEnum(cfg.Components[i].Kind)
-		}
-		if cfg.Components[i].Path == "" {
-			cfg.Components[i].Path = defaultServicePath(cfg.Components[i])
-		}
-	}
 
 	// Apply defaults for frontend paths
 	for i := range cfg.Frontends {
@@ -127,24 +108,19 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 			continue
 		}
 		// Frontend type canonical forms are hyphenated ("react-native",
-		// "vite-spa"). Lowercase but keep hyphens; downstream comparisons
-		// use EqualFold against the hyphenated literal.
+		// "vite-spa"). Lowercase and trim; downstream comparisons use
+		// EqualFold against the hyphenated literal.
 		cfg.Frontends[i].Type = strings.ToLower(strings.TrimSpace(cfg.Frontends[i].Type))
-		// Accept legacy snake_case spellings from earlier forge generators.
+		// The snake_case spellings are not valid — the canonical spelling
+		// is hyphenated. Reject them outright rather than silently
+		// rewriting an out-of-date forge.yaml.
 		switch cfg.Frontends[i].Type {
 		case "react_native":
-			cfg.Frontends[i].Type = "react-native"
+			return nil, fmt.Errorf("frontend %q: type \"react_native\" is not valid; use the hyphenated spelling \"react-native\"", cfg.Frontends[i].Name)
 		case "vite_spa":
-			cfg.Frontends[i].Type = "vite-spa"
+			return nil, fmt.Errorf("frontend %q: type \"vite_spa\" is not valid; use the hyphenated spelling \"vite-spa\"", cfg.Frontends[i].Name)
 		}
 	}
 
 	return &cfg, nil
-}
-
-// normalizeEnum canonicalizes an enum-like YAML string value to lowercase
-// snake_case. This lets old projects using upper-case or hyphenated enum
-// spellings continue to work alongside newly generated projects.
-func normalizeEnum(v string) string {
-	return strings.ToLower(strings.ReplaceAll(v, "-", "_"))
 }

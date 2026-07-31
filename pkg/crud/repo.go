@@ -2,6 +2,7 @@ package crud
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"reflect"
 	"sync"
@@ -32,8 +33,6 @@ var repoTracer = otel.Tracer("orm")
 // entity, never in the hot path). Spec carries ONLY the forge conventions
 // Bun cannot infer from struct tags:
 //
-//   - TenantColumn        — the multi-tenancy scoping column ("" = global
-//     entity, no tenant scoping). Bun has no concept of a tenant key.
 //   - Timestamps          — forge's managed created_at/updated_at stamping
 //     (set on Create, re-stamped on every Update/UpdateMasked). Distinct
 //     from a DB DEFAULT: forge stamps in Go so the value is identical
@@ -44,10 +43,21 @@ var repoTracer = otel.Tracer("orm")
 //     NULL filter and the CURRENT_TIMESTAMP stamp (kalshi fr-3fba9166ba).
 //     Bun-native soft delete (proper time deleted_at) is detected from the
 //     schema and needs no flag.
+//   - SecretColumns        — columns carrying the `// forge:secret` marker.
+//     The read path (toProto) never packs them, so a client Get/List always
+//     reads the secret back as "". A maskless full-replace Update built from
+//     that round-tripped entity would therefore overwrite the stored secret
+//     (e.g. an encrypted credential) with "" — silent data loss. These
+//     columns are consequently PRESERVED on a full-replace Update (excluded
+//     from its SET clause, exactly like the PK/created_at columns),
+//     yet stay settable on Create and on an EXPLICIT masked Update that names
+//     the column (deliberate intent — the client is asserting a new value).
+//     Bun cannot infer this from struct tags; the generator threads the
+//     column names from the field's `// forge:secret` marker.
 type Spec struct {
-	TenantColumn        string
 	Timestamps          bool
 	LegacyTextDeletedAt bool
+	SecretColumns       []string
 }
 
 // meta is the reflection-derived, cached half of a Repo's knowledge. It is
@@ -65,15 +75,27 @@ type meta struct {
 	nativeSoftDel bool     // Bun owns soft delete (,soft_delete time column)
 	columns       []string // ordered declared column allowlist
 	hasUpdatedAt  bool     // updated_at column exists (managed-stamp target)
-	arrayCols     []arrayCol
+	nilSliceCols  []sliceCol
 	updatable     []string // columns settable by a full Update (SET clause)
 	updatableSet  map[string]bool
 	stampFields   map[string]stampField // created_at/updated_at → field info
 }
 
-// arrayCol pairs an array column's struct-field index with its SQL name so
-// the repo can nil-normalize it (and, for masked writes, only when named).
-type arrayCol struct {
+// sliceCol pairs a NOT NULL slice-typed column's struct-field index with
+// its SQL name so the repo can nil-normalize it (and, for masked writes,
+// only when named).
+//
+// In Go a nil slice binds as SQL NULL, which a NOT NULL column rejects — so
+// any such column left unset fails the INSERT outright. That is true of the
+// `repeated <scalar>` columns forge has always emitted (`TEXT[] NOT NULL
+// DEFAULT '{}'`) and equally of a `bytes` column (`BYTEA NOT NULL DEFAULT
+// '\x'`), which is a slice field WITHOUT the `,array` tag and so was missed
+// while `bytes` was a shape the generator could not produce at all.
+//
+// Selected on NOT NULL rather than on the tag: for a NULLABLE slice column
+// nil IS the absent value, and normalizing it would erase the distinction
+// between "no value" and "empty value" that the column was declared to keep.
+type sliceCol struct {
 	fieldIndex int
 	column     string
 }
@@ -96,7 +118,7 @@ type stampField struct {
 // FromProto pair, and a single crud.NewRepo[Model](Spec{...}) line.
 //
 // All lifecycle semantics the pre-generic code carried are preserved
-// exactly: tenant scoping, Bun-native + legacy-TEXT soft delete, the
+// exactly: Bun-native + legacy-TEXT soft delete, the
 // deleted_at IS NULL update-guard (Bun auto-scopes SELECT/DELETE to live
 // rows but NOT UPDATE), AIP-134 masked updates with an updatable allowlist
 // → orm.UnknownFieldError, managed-timestamp stamping, server-allocated /
@@ -146,8 +168,8 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 		r.m.stampFields = map[string]stampField{}
 		for _, f := range tbl.Fields {
 			r.m.columns = append(r.m.columns, f.Name)
-			if f.Tag.HasOption("array") {
-				r.m.arrayCols = append(r.m.arrayCols, arrayCol{fieldIndex: f.Index[0], column: f.Name})
+			if f.NotNull && f.IndirectType.Kind() == reflect.Slice {
+				r.m.nilSliceCols = append(r.m.nilSliceCols, sliceCol{fieldIndex: f.Index[0], column: f.Name})
 			}
 			if f.Name == "updated_at" {
 				r.m.hasUpdatedAt = true
@@ -173,17 +195,39 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 			r.m.nativeSoftDel = true
 		}
 
-		// Updatable allowlist: every declared column EXCEPT the PK, the
-		// tenant key, deleted_at, and — under managed timestamps —
+		// Secret columns are settable via an EXPLICIT mask but never written
+		// by a maskless full-replace (see below).
+		secretCols := make(map[string]bool, len(r.spec.SecretColumns))
+		for _, c := range r.spec.SecretColumns {
+			secretCols[c] = true
+		}
+
+		// Two distinct allowlists, both starting from every declared column
+		// EXCEPT the PK, deleted_at, and — under managed timestamps —
 		// created_at and updated_at (the latter is repo-stamped, never
-		// caller-set).
+		// caller-set):
+		//
+		//   - updatableSet — the MASKED-update allowlist: a path an
+		//     update_mask may name. A `:secret` column IS here, because a
+		//     mask that names it is the client deliberately asserting a new
+		//     value (Create's sibling write path).
+		//   - updatable    — the FULL-REPLACE SET list: the columns a maskless
+		//     Update writes. A `:secret` column is EXCLUDED, because the client
+		//     can never have read the real value (the read path strips it to
+		//     ""), so a full replace built from a round-tripped entity would
+		//     clobber the stored secret with "". Preserving it here is the
+		//     data-loss fix; it mirrors how the PK/created_at columns
+		//     are already excluded.
 		r.m.updatableSet = make(map[string]bool, len(tbl.Fields))
 		for _, f := range tbl.Fields {
 			if r.columnExcludedFromSet(f.Name) {
 				continue
 			}
-			r.m.updatable = append(r.m.updatable, f.Name)
 			r.m.updatableSet[f.Name] = true
+			if secretCols[f.Name] {
+				continue
+			}
+			r.m.updatable = append(r.m.updatable, f.Name)
 		}
 	})
 }
@@ -209,9 +253,6 @@ func stampFieldFor(f *schema.Field) (stampField, bool) {
 // that never appear in an UPDATE SET clause.
 func (r *Repo[M]) columnExcludedFromSet(col string) bool {
 	if col == r.m.pkColumn || col == "deleted_at" {
-		return true
-	}
-	if r.spec.TenantColumn != "" && col == r.spec.TenantColumn {
 		return true
 	}
 	if r.spec.Timestamps && (col == "created_at" || col == "updated_at") {
@@ -248,27 +289,28 @@ func recordErr(span trace.Span, err error) {
 	span.SetStatus(codes.Error, err.Error())
 }
 
-// normalizeArrays sets every nil array field to a non-nil empty slice so it
-// binds as `{}` (the NOT NULL DEFAULT '{}' convention) rather than NULL.
+// normalizeArrays sets every nil NOT NULL slice field to a non-nil empty
+// slice so it binds as the empty value the column's DEFAULT already holds
+// (`{}` for an array, `\x` for BYTEA) rather than as NULL.
 func (r *Repo[M]) normalizeArrays(entity *M) {
-	if len(r.m.arrayCols) == 0 {
+	if len(r.m.nilSliceCols) == 0 {
 		return
 	}
 	v := reflect.ValueOf(entity).Elem()
-	for _, ac := range r.m.arrayCols {
-		normalizeSlice(v.Field(ac.fieldIndex))
+	for _, sc := range r.m.nilSliceCols {
+		normalizeSlice(v.Field(sc.fieldIndex))
 	}
 }
 
-// normalizeArraysFor normalizes only the array fields named in mask.
+// normalizeArraysFor normalizes only the slice fields named in mask.
 func (r *Repo[M]) normalizeArraysFor(entity *M, mask map[string]bool) {
-	if len(r.m.arrayCols) == 0 {
+	if len(r.m.nilSliceCols) == 0 {
 		return
 	}
 	v := reflect.ValueOf(entity).Elem()
-	for _, ac := range r.m.arrayCols {
-		if mask[ac.column] {
-			normalizeSlice(v.Field(ac.fieldIndex))
+	for _, sc := range r.m.nilSliceCols {
+		if mask[sc.column] {
+			normalizeSlice(v.Field(sc.fieldIndex))
 		}
 	}
 }
@@ -279,53 +321,9 @@ func normalizeSlice(f reflect.Value) {
 	}
 }
 
-// setTenant writes tenantID onto the entity's tenant column field (string).
-func (r *Repo[M]) setTenant(entity *M, tenantID string) {
-	if r.spec.TenantColumn == "" {
-		return
-	}
-	fv := reflect.ValueOf(entity).Elem().FieldByName(r.tenantGoField())
-	if fv.IsValid() && fv.Kind() == reflect.String && fv.CanSet() {
-		fv.SetString(tenantID)
-	}
-}
-
-// tenantGoField finds the struct field name for the tenant column. The
-// forge convention is tenant_id → TenantId; we resolve it through the same
-// snake→Pascal rule Bun's GoName uses, but fall back to a column scan via
-// reflection tags for safety.
-func (r *Repo[M]) tenantGoField() string {
-	typ := r.modelType()
-	for i := 0; i < typ.NumField(); i++ {
-		f := typ.Field(i)
-		if bunColumnName(f) == r.spec.TenantColumn {
-			return f.Name
-		}
-	}
-	return ""
-}
-
 // pkFieldValue returns the addressable PK struct field of entity.
 func (r *Repo[M]) pkFieldValue(entity *M) reflect.Value {
 	return reflect.ValueOf(entity).Elem().FieldByName(r.m.pkGoField)
-}
-
-// bunColumnName extracts the column name from a struct field's `bun:"..."`
-// tag (the first comma-separated token before any options). Falls back to
-// the lower-cased field name when no tag is present.
-func bunColumnName(f reflect.StructField) string {
-	tag := f.Tag.Get("bun")
-	if tag == "" || tag == "-" {
-		return ""
-	}
-	// The column name is the leading token up to the first comma; it may be
-	// empty (options-only tag) in which case there's no column.
-	for i := 0; i < len(tag); i++ {
-		if tag[i] == ',' {
-			return tag[:i]
-		}
-	}
-	return tag
 }
 
 // ─── Create ────────────────────────────────────────────────────────────
@@ -335,12 +333,10 @@ func bunColumnName(f reflect.StructField) string {
 // a string PK is ULID-generated when empty; a server-allocated integer PK is
 // excluded from the INSERT and read back via RETURNING; managed timestamps
 // are stamped; nil array fields are normalized to {}.
-func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M, tenantID string) error {
+func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M) error {
 	r.ensureMeta(db)
 	ctx, span := r.startSpan(ctx, "Create")
 	defer span.End()
-
-	r.setTenant(entity, tenantID)
 
 	if r.m.pkIsString {
 		pk := r.pkFieldValue(entity)
@@ -373,10 +369,9 @@ func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M, tenantI
 // ─── Get ───────────────────────────────────────────────────────────────
 
 // Get retrieves a row by primary key. A missing row satisfies
-// errors.Is(err, orm.ErrNoRows). Tenant scope and the legacy-TEXT
-// deleted_at filter are applied; Bun-native soft delete auto-excludes
-// tombstones from the SELECT.
-func (r *Repo[M]) Get(ctx context.Context, db orm.Context, id any, tenantID string) (*M, error) {
+// errors.Is(err, orm.ErrNoRows). The legacy-TEXT deleted_at filter is
+// applied; Bun-native soft delete auto-excludes tombstones from the SELECT.
+func (r *Repo[M]) Get(ctx context.Context, db orm.Context, id any) (*M, error) {
 	r.ensureMeta(db)
 	ctx, span := r.startSpan(ctx, "Get", attribute.String("id", fmt.Sprint(id)))
 	defer span.End()
@@ -384,7 +379,7 @@ func (r *Repo[M]) Get(ctx context.Context, db orm.Context, id any, tenantID stri
 	entity := new(M)
 	q := db.Bun().NewSelect().Model(entity).
 		Where("? = ?", bun.Ident(r.m.pkColumn), id).Limit(1)
-	r.scopeRead(q, tenantID)
+	r.scopeRead(q)
 	if err := q.Scan(ctx); err != nil {
 		recordErr(span, err)
 		return nil, fmt.Errorf("get %s by id: %w", r.m.table, err)
@@ -394,17 +389,36 @@ func (r *Repo[M]) Get(ctx context.Context, db orm.Context, id any, tenantID stri
 
 // ─── List / Count / ListAll ──────────────────────────────────────────────
 
+// defaultListLimit is the safety cap List applies when the caller supplies
+// no explicit limit. The RPC List path always passes WithLimit(pageSize+1)
+// (pageSize is itself clamped to MaxPageSize), which OVERRIDES this cap —
+// Bun's Limit is last-wins and the caller's option runs after it — so the
+// RPC path is unchanged. The cap only bounds DIRECT repo callers (a worker, a
+// _repo_ext due-scan) that would otherwise issue an unbounded SELECT over a
+// table that grows without limit and load every row into memory. A caller
+// that genuinely needs more must pass an explicit orm.WithLimit. It is a var,
+// not a const, so tests can lower it without seeding a huge table.
+var defaultListLimit = 10000
+
 // List retrieves rows with optional QueryOption filtering/ordering/limit.
-// Tenant scope and the legacy-TEXT soft-delete filter are applied; Bun's
-// ,soft_delete excludes tombstones natively.
-func (r *Repo[M]) List(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) ([]*M, error) {
+// The legacy-TEXT soft-delete filter is applied; Bun's ,soft_delete excludes
+// tombstones natively.
+//
+// Defense in depth: a default limit (defaultListLimit) is applied BEFORE the
+// caller's options so any explicit orm.WithLimit overrides it; a caller that
+// passes no limit is still bounded rather than scanning an unbounded table.
+func (r *Repo[M]) List(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*M, error) {
 	r.ensureMeta(db)
 	ctx, span := r.startSpan(ctx, "List")
 	defer span.End()
 
 	var results []*M
 	q := db.Bun().NewSelect().Model(&results)
-	r.scopeRead(q, tenantID)
+	r.scopeRead(q)
+	// Applied first so a caller-supplied WithLimit (last-wins in Bun) takes
+	// precedence — the RPC path always supplies one, so its behavior is
+	// unchanged; only limit-less direct callers get the safety cap.
+	q.Limit(defaultListLimit)
 	for _, opt := range opts {
 		opt(q)
 	}
@@ -416,13 +430,13 @@ func (r *Repo[M]) List(ctx context.Context, db orm.Context, tenantID string, opt
 }
 
 // Count returns the number of matching rows under the same scope as List.
-func (r *Repo[M]) Count(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) (int64, error) {
+func (r *Repo[M]) Count(ctx context.Context, db orm.Context, opts ...orm.QueryOption) (int64, error) {
 	r.ensureMeta(db)
 	ctx, span := r.startSpan(ctx, "Count")
 	defer span.End()
 
 	q := db.Bun().NewSelect().Model((*M)(nil))
-	r.scopeRead(q, tenantID)
+	r.scopeRead(q)
 	for _, opt := range opts {
 		opt(q)
 	}
@@ -434,10 +448,10 @@ func (r *Repo[M]) Count(ctx context.Context, db orm.Context, tenantID string, op
 	return int64(n), nil
 }
 
-// ListAll retrieves rows INCLUDING soft-deleted ones (tenant scope still
-// applies). Bun-native soft delete needs an explicit WhereAllWithDeleted to
-// see tombstones; the legacy-TEXT path simply omits the deleted_at filter.
-func (r *Repo[M]) ListAll(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) ([]*M, error) {
+// ListAll retrieves rows INCLUDING soft-deleted ones. Bun-native soft delete
+// needs an explicit WhereAllWithDeleted to see tombstones; the legacy-TEXT
+// path simply omits the deleted_at filter.
+func (r *Repo[M]) ListAll(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*M, error) {
 	r.ensureMeta(db)
 	ctx, span := r.startSpan(ctx, "ListAll")
 	defer span.End()
@@ -446,9 +460,6 @@ func (r *Repo[M]) ListAll(ctx context.Context, db orm.Context, tenantID string, 
 	q := db.Bun().NewSelect().Model(&results)
 	if r.m.nativeSoftDel {
 		q = q.WhereAllWithDeleted()
-	}
-	if r.spec.TenantColumn != "" {
-		q = q.Where("? = ?", bun.Ident(r.spec.TenantColumn), tenantID)
 	}
 	for _, opt := range opts {
 		opt(q)
@@ -460,13 +471,10 @@ func (r *Repo[M]) ListAll(ctx context.Context, db orm.Context, tenantID string, 
 	return results, nil
 }
 
-// scopeRead applies the tenant + soft-delete read filters to a SELECT. Bun
-// owns the native-soft-delete exclusion automatically; only the legacy-TEXT
-// path needs the explicit deleted_at IS NULL filter here.
-func (r *Repo[M]) scopeRead(q *bun.SelectQuery, tenantID string) {
-	if r.spec.TenantColumn != "" {
-		q.Where("? = ?", bun.Ident(r.spec.TenantColumn), tenantID)
-	}
+// scopeRead applies the soft-delete read filter to a SELECT. Bun owns the
+// native-soft-delete exclusion automatically; only the legacy-TEXT path needs
+// the explicit deleted_at IS NULL filter here.
+func (r *Repo[M]) scopeRead(q *bun.SelectQuery) {
 	if r.spec.LegacyTextDeletedAt {
 		q.Where("? IS NULL", bun.Ident("deleted_at"))
 	}
@@ -475,12 +483,16 @@ func (r *Repo[M]) scopeRead(q *bun.SelectQuery, tenantID string) {
 // ─── Update / UpdateMasked ────────────────────────────────────────────────
 
 // Update writes the full updatable column set of an existing row by PK.
-// updated_at is re-stamped under managed timestamps; created_at, the PK, the
-// tenant key, and deleted_at are excluded from the SET clause. The
-// deleted_at IS NULL guard applies to BOTH soft-delete modes: Bun
-// auto-scopes SELECT/DELETE to live rows but NOT UPDATE, so without the
-// guard an UPDATE could mutate a tombstoned row.
-func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, tenantID string) error {
+// updated_at is re-stamped under managed timestamps; created_at, the PK,
+// deleted_at, AND any Spec.SecretColumns are excluded from the
+// SET clause. Secret columns are preserved on this full-replace path because
+// the client can never have read the real value (the read path strips it), so
+// a maskless Update built from a round-tripped entity must not clobber the
+// stored secret with "" — a new value is set only via Create or a masked
+// Update that names the column. The deleted_at IS NULL guard applies to BOTH
+// soft-delete modes: Bun auto-scopes SELECT/DELETE to live rows but NOT
+// UPDATE, so without the guard an UPDATE could mutate a tombstoned row.
+func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M) error {
 	r.ensureMeta(db)
 	if len(r.m.updatable) == 0 {
 		return nil // no updatable fields
@@ -500,10 +512,15 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, tenantI
 	q := db.Bun().NewUpdate().Model(entity).
 		Column(cols...).
 		Where("? = ?", bun.Ident(r.m.pkColumn), r.pkFieldValue(entity).Interface())
-	r.scopeWrite(q, tenantID)
-	if _, err := q.Exec(ctx); err != nil {
+	r.scopeWrite(q)
+	res, err := q.Exec(ctx)
+	if err != nil {
 		recordErr(span, err)
 		return fmt.Errorf("update %s: %w", r.m.table, err)
+	}
+	if err := requireRowTouched(res, "update", r.m.table); err != nil {
+		recordErr(span, err)
+		return err
 	}
 	return nil
 }
@@ -512,7 +529,7 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, tenantI
 // proto field names == column names). Paths outside the updatable allowlist
 // return *orm.UnknownFieldError, which pkg/crud maps to a clean
 // InvalidArgument. updated_at is stamped on masked writes too.
-func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, fields []string, tenantID string) error {
+func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, fields []string) error {
 	r.ensureMeta(db)
 	if len(fields) == 0 {
 		return nil
@@ -549,21 +566,23 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 	q := db.Bun().NewUpdate().Model(entity).
 		Column(cols...).
 		Where("? = ?", bun.Ident(r.m.pkColumn), r.pkFieldValue(entity).Interface())
-	r.scopeWrite(q, tenantID)
-	if _, err := q.Exec(ctx); err != nil {
+	r.scopeWrite(q)
+	res, err := q.Exec(ctx)
+	if err != nil {
 		recordErr(span, err)
 		return fmt.Errorf("update %s: %w", r.m.table, err)
+	}
+	if err := requireRowTouched(res, "update", r.m.table); err != nil {
+		recordErr(span, err)
+		return err
 	}
 	return nil
 }
 
-// scopeWrite applies the tenant + soft-delete guard to an UPDATE.
-func (r *Repo[M]) scopeWrite(q *bun.UpdateQuery, tenantID string) {
+// scopeWrite applies the soft-delete guard to an UPDATE.
+func (r *Repo[M]) scopeWrite(q *bun.UpdateQuery) {
 	if r.m.nativeSoftDel || r.spec.LegacyTextDeletedAt {
 		q.Where("? IS NULL", bun.Ident("deleted_at"))
-	}
-	if r.spec.TenantColumn != "" {
-		q.Where("? = ?", bun.Ident(r.spec.TenantColumn), tenantID)
 	}
 }
 
@@ -586,7 +605,11 @@ func appendCol(cols []string, c string) []string {
 // rows. With legacy-TEXT soft delete the repo hand-rolls the
 // CURRENT_TIMESTAMP stamp + deleted_at IS NULL guard (Bun's time.Time stamp
 // can't round-trip a TEXT column). Otherwise it is a hard DELETE.
-func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any, tenantID string) error {
+//
+// A PK that matched no live row returns orm.ErrNoRows, which pkg/crud maps
+// to CodeNotFound — the same answer Get gives for the same id. See
+// requireRowTouched for why that, and not a silent success.
+func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any) error {
 	r.ensureMeta(db)
 	ctx, span := r.startSpan(ctx, "Delete", attribute.String("id", fmt.Sprint(id)))
 	defer span.End()
@@ -596,12 +619,14 @@ func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any, tenantID s
 			Set("? = CURRENT_TIMESTAMP", bun.Ident("deleted_at")).
 			Where("? = ?", bun.Ident(r.m.pkColumn), id).
 			Where("? IS NULL", bun.Ident("deleted_at"))
-		if r.spec.TenantColumn != "" {
-			q = q.Where("? = ?", bun.Ident(r.spec.TenantColumn), tenantID)
-		}
-		if _, err := q.Exec(ctx); err != nil {
+		res, err := q.Exec(ctx)
+		if err != nil {
 			recordErr(span, err)
 			return fmt.Errorf("delete %s: %w", r.m.table, err)
+		}
+		if err := requireRowTouched(res, "delete", r.m.table); err != nil {
+			recordErr(span, err)
+			return err
 		}
 		return nil
 	}
@@ -610,14 +635,51 @@ func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any, tenantID s
 	// scopes to live rows) AND hard delete share this path.
 	q := db.Bun().NewDelete().Model((*M)(nil)).
 		Where("? = ?", bun.Ident(r.m.pkColumn), id)
-	if r.spec.TenantColumn != "" {
-		q = q.Where("? = ?", bun.Ident(r.spec.TenantColumn), tenantID)
-	}
-	if _, err := q.Exec(ctx); err != nil {
+	res, err := q.Exec(ctx)
+	if err != nil {
 		recordErr(span, err)
 		return fmt.Errorf("delete %s: %w", r.m.table, err)
 	}
+	if err := requireRowTouched(res, "delete", r.m.table); err != nil {
+		recordErr(span, err)
+		return err
+	}
 	return nil
+}
+
+// requireRowTouched turns a write that matched no row into orm.ErrNoRows.
+//
+// UPDATE and DELETE report a row count, not sql.ErrNoRows, so a repository
+// that discards the count cannot tell "row deleted" from "no such row" —
+// and every generated Delete answered a typo'd id with 200 and an empty
+// body while Get answered the same id with 404. Two verbs resolving the
+// same row, by the same PK, under the same soft-delete scoping and the
+// same application-owned filters, must agree about what "this row does not
+// exist" means.
+//
+// NotFound is the answer, not idempotent-200:
+//
+//   - AIP-135, the resource-Delete design this CRUD shape follows, returns
+//     NOT_FOUND unless the request explicitly opts into allow_missing.
+//   - HTTP idempotency (RFC 9110 §9.2.2) is a property of the EFFECT on
+//     server state, not of the status code. A repeated DELETE that answers
+//     404 is still idempotent; nothing about returning 200 is required.
+//   - The 200 was not merely permissive, it was unfalsifiable: a caller
+//     could not distinguish a delete that worked from a wrong id, a row an
+//     application-owned filter excluded, or a row already tombstoned.
+//
+// A project that genuinely wants absent-is-success owns the shim: swallow
+// orm.ErrNoRows in that entity's Persist closure in handlers_crud.go.
+//
+// A driver that cannot report the count is treated as "touched" —
+// inventing a not-found out of a missing count would fail a write that
+// actually succeeded.
+func requireRowTouched(res sql.Result, op, table string) error {
+	n, err := res.RowsAffected()
+	if err != nil || n > 0 {
+		return nil
+	}
+	return fmt.Errorf("%s %s: %w", op, table, orm.ErrNoRows)
 }
 
 // ─── managed-timestamp stamping ──────────────────────────────────────────

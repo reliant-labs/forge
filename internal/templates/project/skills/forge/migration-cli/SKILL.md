@@ -12,7 +12,7 @@ Use this skill when the existing project is a Cobra CLI binary, a code generator
 ## Scaffold
 
 ```bash
-forge new <name>-next --kind cli --mod github.com/<owner>/<name>-next
+forge project new <name>-next --kind cli --mod github.com/<owner>/<name>-next
 ```
 
 `--kind cli` skips the auto-emitted Connect-RPC service, service protos, `deploy/`, and KCL manifests. It does NOT skip config or wiring — config and the composition are app code regardless of kind. You get:
@@ -20,7 +20,7 @@ forge new <name>-next --kind cli --mod github.com/<owner>/<name>-next
 ```
 cmd/<name>-next/main.go    # Cobra root command
 internal/                  # DEFAULT HOME for your packages
-internal/config/           # typed config — generated from proto config blocks
+pkg/config/                # typed config — generated from proto config blocks
 internal/app/              # composition (providers.go owned + compose.go generated)
 forge.yaml                 # Project config (strictly top-level)
 go.work + go.mod           # Workspace + module
@@ -44,15 +44,15 @@ A binary still has a small typed composition for whatever it constructs: the own
 
 ## Adding a second binary
 
-Use `forge add binary <name>`. See the `binaries` skill for the full lifecycle; the short version:
+Use `forge scaffold binary <name>`. See the `binaries` skill for the full lifecycle; the short version:
 
 ```bash
-forge add binary <second-binary>
+forge scaffold binary <second-binary>
 ```
 
 This scaffolds `cmd/<name>.go` (a real, owned Cobra subcommand on the shared root) plus `internal/<name>/{contract.go,<name>.go,<name>_test.go}` and appends a `binaries:` entry to `forge.yaml`. The subcommand is a Go symbol you can jump to with its own flags/help — not a string projected through a registry.
 
-For an admin / inspector CLI that hosts its own child subcommands (e.g. `<binary> dump-state`, `<binary> reset-foo`), `forge add binary` is still the right starting point: the scaffolded `<name>Cmd` Cobra command happily hosts both its own `RunE` body and child commands registered via `<name>Cmd.AddCommand(...)`. Add child subcommands as sibling files under `cmd/<name>_<subcmd>.go`. The `workaround-cmd-not-in-binaries` lint can fire on those sibling files in current forge — a known false-positive on subcommand-glue files; treat it as advisory.
+For an admin / inspector CLI that hosts its own child subcommands (e.g. `<binary> dump-state`, `<binary> reset-foo`), `forge scaffold binary` is still the right starting point: the scaffolded `<name>Cmd` Cobra command happily hosts both its own `RunE` body and child commands registered via `<name>Cmd.AddCommand(...)`. Add child subcommands as sibling files under `cmd/<name>_<subcmd>.go`. The `workaround-cmd-not-in-binaries` lint can fire on those sibling files in current forge — a known false-positive on subcommand-glue files; treat it as advisory.
 
 ## Pure-utility packages — three options
 
@@ -134,7 +134,7 @@ $(go env GOPATH)/bin/<name>-next --help    # smoke
 - CLI/binary kinds use the SAME typed `internal/config` + cmdkit paved path as servers. No raw `os.Getenv`, ad-hoc loggers, or hardcoded timeouts.
 - App code lives under `internal/`. `pkg/` is only for code with real external importers.
 - `contract.go` is optional for a trivial CLI; the config/logger/shutdown paved path is not.
-- Use `forge add binary <name>` for second binaries (real owned Cobra subcommands; see `binaries`). The scaffolded command also hosts child subcommands via `<name>Cmd.AddCommand(...)`.
+- Use `forge scaffold binary <name>` for second binaries (real owned Cobra subcommands; see `binaries`). The scaffolded command also hosts child subcommands via `<name>Cmd.AddCommand(...)`.
 - For pure-utility packages, pick option (A), (B), or (C) explicitly. Don't blanket-apply `forge package new`.
 - `pkg/` sub-module: workspace `use` OR `replace`, not both.
 
@@ -142,4 +142,4 @@ $(go env GOPATH)/bin/<name>-next --help    # smoke
 
 - **Server-shaped projects** — see `migration-service`.
 - **Designing the interface in `contract.go`** for non-trivial packages — see `contracts`.
-- **Pre-flight, module path strategy, halt-and-report rule on forge bugs** — see `migration`.
+- **Pre-flight, module path strategy, what to do when forge itself is wrong** — see `migration`.

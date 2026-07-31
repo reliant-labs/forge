@@ -1,24 +1,24 @@
 ---
 name: v0.x-to-testkit
-description: Move pkg/app/bootstrap_testing.go's inlined sub-helpers (discard logger, in-memory SQLite, httptest harness, permissive authorizer, WithTestTenant) onto forge/pkg/testkit. The wiring shim stays codegen.
+description: Move pkg/app/bootstrap_testing.go's inlined sub-helpers (discard logger, in-memory SQLite, httptest harness) onto forge/pkg/testkit. The wiring shim stays codegen.
+detection: grep -q "func newTestDB" pkg/app/testing.go 2>/dev/null
 relevance: migration
 ---
 
 # Migrating from inlined bootstrap-testing helpers to `forge/pkg/testkit`
 
-Use this skill when `forge upgrade` reports a jump across the version
+Use this skill when `forge project upgrade` reports a jump across the version
 that ships `forge/pkg/testkit`. It is a low-impact migration: the
 generated `pkg/app/testing.go` keeps the per-service `NewTest<Service>`
-and `NewTest<Service>Server` factories, but the four sub-helpers they
+and `NewTest<Service>Server` factories, but the sub-helpers they
 relied on (discard logger, in-memory SQLite ORM context, httptest
-server, permissive authorizer) move into the library.
+server) move into the library.
 
 ## 1. What changed
 
-Prior versions inlined four helpers into every project's
+Prior versions inlined these helpers into every project's
 `pkg/app/testing.go`:
 
-- A `testAuthorizer` struct with no-op `CanAccess` / `Can` methods.
 - A `newTestDB(t *testing.T) orm.Context` function that called
   `sql.Open("sqlite3", ":memory:")` + `orm.NewClientWithDB` + a
   `t.Cleanup` close.
@@ -26,8 +26,6 @@ Prior versions inlined four helpers into every project's
   `defaultTestConfig`.
 - An `httptest.NewServer(mux)` + `t.Cleanup(srv.Close)` pair inside
   every `NewTest<Service>Server`.
-- (Multi-tenant projects only) A `WithTestTenant` helper that called
-  `middleware.ContextWithTenantID(ctx, id)`.
 
 Forge now imports `github.com/reliant-labs/forge/pkg/testkit` and the
 generated file calls into it:
@@ -39,15 +37,9 @@ generated file calls into it:
 - `testkit.NewTestServer(t, register)` runs an `httptest.Server`
   with `register` mounting one or more services on its mux; the
   server is closed via `t.Cleanup`.
-- `testkit.PermissiveAuthorizer{}` is an Authorizer impl that allows
-  every call. It implements the project's `middleware.Authorizer`
-  interface because `middleware.Claims` is a type alias for
-  `auth.Claims`.
-- `testkit.WithTestTenant(ctx, id)` sets the tenant ID via the same
-  context key the production tenant interceptor uses.
 
 The wiring shim — `NewTest<Service>` constructing a per-service
-`Deps`, `WithLogger`/`WithConfig`/`WithAuthorizer`/`WithDB`/`With<Svc>Deps`
+`Deps`, `WithLogger`/`WithConfig`/`WithDB`/`With<Svc>Deps`
 options, and the `NewTest<Service>Server` Connect-client wiring —
 stays in the generated file. None of that compresses into a library:
 each project's per-service Deps shape is different, and the
@@ -57,18 +49,14 @@ The behavioural fingerprint is preserved. Specifically:
 
 - Per-call postgres databases are still isolated.
 - The discard logger drops every record and never errors.
-- `PermissiveAuthorizer` always returns `nil` (matches the previous
-  `testAuthorizer{}`).
-- `WithTestTenant` writes to the same context key as the production
-  tenant interceptor reads from.
 
 ## 2. Detection
 
 How to tell which shape the project currently uses:
 
 ```bash
-# Old shape: testAuthorizer / newTestDB live inline.
-grep -l "func newTestDB\|type testAuthorizer" pkg/app/testing.go 2>/dev/null \
+# Old shape: newTestDB lives inline.
+grep -l "func newTestDB" pkg/app/testing.go 2>/dev/null \
   || echo "NEW SHAPE — sub-helpers already in testkit"
 
 # New shape: testkit imported, four sub-helpers called from defaultTestConfig.
@@ -101,16 +89,6 @@ package automatically.
 
 What user code might need to change:
 
-- **References to the old `testAuthorizer{}` literal.** Search the
-  project for direct uses outside `pkg/app/testing.go`:
-
-  ```bash
-  grep -rn "testAuthorizer\b" --include="*.go" .
-  ```
-
-  Replace with `testkit.PermissiveAuthorizer{}`. The type now lives
-  in `forge/pkg/testkit` and is exported.
-
 - **References to the old `newTestDB(t)` function.** The function
   was unexported and lived in `package app`, so direct external
   references are unlikely, but in-package tests that called it
@@ -132,11 +110,6 @@ What user code might need to change:
 
   Not required — the old pattern still works.
 
-- **The `WithTestTenant` re-export.** Multi-tenant projects keep a
-  thin `app.WithTestTenant(ctx, id)` wrapper around
-  `testkit.WithTestTenant(ctx, id)`. Existing test code that calls
-  `app.WithTestTenant(...)` continues to work without modification.
-
 ## 5. Verification
 
 ```bash
@@ -146,12 +119,12 @@ go build ./... && go test ./... && forge lint
 Plus:
 
 ```bash
-# Confirm the four sub-helpers are now testkit-backed.
-grep "testkit.DiscardLogger\|testkit.NewPostgresDB\|testkit.PermissiveAuthorizer\|testkit.NewTestServer" \
+# Confirm the sub-helpers are now testkit-backed.
+grep "testkit.DiscardLogger\|testkit.NewPostgresDB\|testkit.NewTestServer" \
     pkg/app/testing.go
 
 # Confirm the legacy inlined helpers are gone.
-grep "type testAuthorizer\|func newTestDB" pkg/app/testing.go && \
+grep "func newTestDB" pkg/app/testing.go && \
     echo "WARN: legacy helpers still present"
 ```
 
@@ -161,7 +134,7 @@ If something breaks:
 
 ```bash
 git revert <forge-generate-commit>      # undo the regen
-forge upgrade --to <prior-version>      # pin back to the prior version
+forge project upgrade --to <prior-version>      # pin back to the prior version
 ```
 
 `forge_version` in `forge.yaml` will be reset, so subsequent

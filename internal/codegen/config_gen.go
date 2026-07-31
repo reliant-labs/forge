@@ -98,7 +98,7 @@ type ConfigTemplateData struct {
 	BlockFields []ConfigTemplateBlockField
 	// RoleModeField is the Go field name of the field tagged
 	// role=CONFIG_FIELD_ROLE_MODE, or "" when no field carries it. The
-	// generated Mode()/DevAuthBypass() read THIS field — selected by
+	// generated Mode() reads THIS field — selected by
 	// annotation, never by the name "Environment". Renaming the role field
 	// is a behavior no-op; naming an unannotated field "environment" never
 	// enables dev mode.
@@ -353,22 +353,21 @@ func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
 // CmdServerTemplateData holds the data passed to cmd-server.go.tmpl.
 // It combines project-level data (Module) with config field awareness
 // so the template can conditionally include code that references
-// specific config fields, plus the forge.yaml auth provider so the
-// generated runServer actually CALLS the generated auth wiring
-// (middleware.InstallGeneratedAuth) instead of leaving it decorative.
+// specific config fields. The generated runServer calls the OWNED
+// app.SetupAuth() unconditionally (auth is code now, not config), so no
+// auth-provider field is threaded here.
 type CmdServerTemplateData struct {
 	Module       string
 	ConfigFields map[string]bool
 
-	// AuthProvider is the normalized forge.yaml auth.provider ("jwt",
-	// "api_key", "both"; empty when unset/none). Non-empty emits the
-	// InstallGeneratedAuth call in runServer.
-	AuthProvider string
-
-	// AuthProviderExternal is true for header-carried providers
-	// (api_key/both): the generated header-aware interceptor joins the
-	// project chain and the authn layer runs in passthrough.
-	AuthProviderExternal bool
+	// Name is the primary binary's name — the cmd/<Name>/ leaf. The
+	// scaffold-once command-tree templates reference it when they explain
+	// where a file sits or what a command is invoked as (`<Name> server`,
+	// the `-X <module>/cmd/<Name>/cmd.version=` ldflags path). Derived from
+	// the cmd tree on disk by primaryCmdTreeDir, not re-read from
+	// forge.yaml, so it agrees with the directory the file is written into
+	// even for a project whose binary was renamed.
+	Name string
 
 	// RESTEnabled mirrors forge.yaml `api.rest: true`. When set the cmd
 	// composition site builds a vanguard transcoder over the mounted
@@ -377,31 +376,12 @@ type CmdServerTemplateData struct {
 	RESTEnabled bool
 }
 
-// NormalizeAuthProvider canonicalizes a forge.yaml auth.provider value
-// for the cmd-server template: unset/none collapse to "" (no generated
-// auth wiring); api_key/both additionally report external=true (the
-// header-aware generated interceptor owns authentication).
-func NormalizeAuthProvider(provider string) (normalized string, external bool) {
-	switch provider {
-	case "", "none":
-		return "", false
-	case "api_key", "both":
-		return provider, true
-	default:
-		return provider, false
-	}
-}
-
 // GenerateCmdServer re-renders cmd/server.go with config field awareness.
 // Called during `forge generate` so that cmd/server.go stays in sync with
 // the actual config proto fields.
 //
-// This variant has no project-config access, so it renders WITHOUT the
-// generated-auth call site (AuthProvider empty). The generate pipeline
-// uses GenerateCmdServerWithFields, which threads the provider through.
-//
 // cs is the project's checksum tracker — passing it keeps cmd/server.go
-// out of `forge audit`'s orphan/user-edited lists. A nil cs is tolerated.
+// out of `forge project audit`'s orphan/user-edited lists. A nil cs is tolerated.
 func GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {
 	return generateCmdServerData(CmdServerTemplateData{
 		ConfigFields: ConfigFieldNamesFromMessages(messages),
@@ -410,14 +390,11 @@ func GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums
 
 // GenerateCmdServerWithFields renders cmd/server.go using a pre-built
 // config field map (e.g. with migration fields stripped when the
-// migrations feature is disabled) and the project's forge.yaml
-// auth.provider (any spelling; normalized here).
-func GenerateCmdServerWithFields(configFields map[string]bool, authProvider string, targetDir string, cs *checksums.FileChecksums) error {
-	data := CmdServerTemplateData{
+// migrations feature is disabled).
+func GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error {
+	return generateCmdServerData(CmdServerTemplateData{
 		ConfigFields: configFields,
-	}
-	data.AuthProvider, data.AuthProviderExternal = NormalizeAuthProvider(authProvider)
-	return generateCmdServerData(data, targetDir, cs)
+	}, targetDir, cs)
 }
 
 // generateCmdServerData is the shared render+write tail of the
@@ -430,37 +407,79 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 	data.Module = modulePath
 	data.RESTEnabled = projectAPIRESTEnabled(targetDir)
 
-	// The shared serve pipeline lives under cmd/<bin>/cmd/serve.go (package
-	// cmd, devspace idiom). This config-driven re-render only fires once the
-	// tree already exists, so locate the primary binary's cmd tree by globbing
-	// for the existing serve.go; skip when there isn't one (CLI/library kinds,
-	// or a tree that predates the cmd-layer move and has nothing to re-render).
-	serveDest := primaryCmdServePath(targetDir)
-	if serveDest == "" {
+	// The SCAFFOLD-ONCE half of the command tree. Each of these files is
+	// all decisions and no ceremony, so forge writes each exactly once and
+	// never rewrites it:
+	//
+	//   - serve.go   the serve pipeline (auth posture, interceptor order,
+	//                payload caps, CORS, readiness, teardown)
+	//   - server.go  the all-services ServeSpec (what this process mounts
+	//                and supervises, and whether boot fails on a gap)
+	//   - version.go the ldflags-stamped variables (renaming one changes
+	//                your build's -X targets)
+	//   - db.go      migration policy (fail hard on a dirty schema vs
+	//                auto-force; is "nothing pending" success)
+	//
+	// The invariant steps they used to carry live in pkg/serverkit,
+	// pkg/cmdkit and pkg/migratekit now, which is what keeps an owned copy
+	// on the upgrade path — those improvements arrive by dependency bump,
+	// not re-render.
+	//
+	// These calls therefore only BIRTH a file for a tree that has none yet
+	// (an older project, or one whose cmd layer predates it). An existing
+	// copy is left untouched, edits and all — which is precisely the
+	// migration path for projects whose copies were Tier-1 until now.
+	treeDir := primaryCmdTreeDir(targetDir)
+	if treeDir == "" {
 		return nil
 	}
+	// treeDir is cmd/<bin>/cmd, so the binary name is its grandparent leaf.
+	data.Name = filepath.Base(filepath.Dir(treeDir))
 
-	content, err := templates.ProjectTemplates().Render("cmd-tree-serve.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render cmd-tree-serve.go.tmpl: %w", err)
+	scaffolds := []struct{ tmpl, file string }{
+		{"cmd-tree-serve.go.tmpl", "serve.go"},
+		{"cmd-tree-server.go.tmpl", "server.go"},
+		{"cmd-tree-version.go.tmpl", "version.go"},
+	}
+	// db.go is birthed only when the project HAS a migration story:
+	// cmd/<bin>/cmd/root.go gates its newDBCmd(deps) call on the same
+	// AutoMigrate config field, so emitting one without the other yields
+	// either an unused function or an undefined reference.
+	if data.ConfigFields["AutoMigrate"] {
+		scaffolds = append(scaffolds, struct{ tmpl, file string }{"cmd-tree-db.go.tmpl", "db.go"})
 	}
 
-	if err := writeForgeOwned(targetDir, serveDest, content, cs); err != nil {
-		return fmt.Errorf("write %s: %w", serveDest, err)
+	for _, s := range scaffolds {
+		content, rerr := templates.ProjectTemplates().Render(s.tmpl, data)
+		if rerr != nil {
+			return fmt.Errorf("render %s: %w", s.tmpl, rerr)
+		}
+		dest := filepath.Join(treeDir, s.file)
+		if _, werr := writeForgeScaffoldOnce(targetDir, dest, content); werr != nil {
+			return fmt.Errorf("write %s: %w", dest, werr)
+		}
 	}
 	return nil
 }
 
-// primaryCmdServePath returns the project-relative path of the primary
-// binary's shared serve pipeline (cmd/<bin>/cmd/serve.go), discovered by
-// glob so the config-regen path doesn't need to re-read forge.yaml for the
-// binary name. Returns "" when no such file exists yet.
-func primaryCmdServePath(targetDir string) string {
-	matches, _ := filepath.Glob(filepath.Join(targetDir, "cmd", "*", "cmd", "serve.go"))
+// primaryCmdTreeDir returns the project-relative directory of the primary
+// binary's command tree (cmd/<bin>/cmd), discovered by glob so this path
+// doesn't need to re-read forge.yaml for the binary name.
+//
+// It anchors on root.go, NOT on any of the scaffold-once files that live
+// beside it. Those are write-if-absent, so "it isn't there yet" is precisely
+// the case that still needs a destination — anchoring on a file we might be
+// about to create would make it uncreatable. root.go is the right anchor
+// because it is Tier-1 (regenerated every run, hence always present in a
+// service tree) and lives in exactly the directory they belong to. Returns
+// "" when there is no cmd tree at all — a CLI/library kind, or a project
+// whose tree has not been generated yet.
+func primaryCmdTreeDir(targetDir string) string {
+	matches, _ := filepath.Glob(filepath.Join(targetDir, "cmd", "*", "cmd", "root.go"))
 	if len(matches) == 0 {
 		return ""
 	}
-	rel, err := filepath.Rel(targetDir, matches[0])
+	rel, err := filepath.Rel(targetDir, filepath.Dir(matches[0]))
 	if err != nil {
 		return ""
 	}
@@ -470,7 +489,7 @@ func primaryCmdServePath(targetDir string) string {
 // GenerateConfigLoader generates pkg/config/config.go from parsed config messages.
 //
 // cs is the project's checksum tracker. Passing it ensures the generated
-// pkg/config/config.go is recorded so `forge audit` doesn't flag it as an
+// pkg/config/config.go is recorded so `forge project audit` doesn't flag it as an
 // orphan. A nil cs is tolerated (file is still written).
 func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {
 	// Partition messages into root fields + component config blocks.
@@ -550,12 +569,19 @@ func DefaultConfigMessages() []ConfigMessage {
 					Description:  "Log level (debug, info, warn, error)",
 				},
 				{
-					Name:        "database_url",
-					GoName:      "DatabaseUrl",
-					GoType:      "string",
-					ProtoType:   "string",
-					EnvVar:      "DATABASE_URL",
-					Flag:        "database-url",
+					Name:      "database_url",
+					GoName:    "DatabaseUrl",
+					GoType:    "string",
+					ProtoType: "string",
+					EnvVar:    "DATABASE_URL",
+					Flag:      "database-url",
+					Required:  true,
+					// Mirrors the scaffolded proto (config.proto.tmpl): the DSN
+					// embeds the database password, so it is projected as a Secret
+					// REFERENCE, never an inline manifest value. This fallback set
+					// is what a project with no readable config proto renders from,
+					// so it must not be the lenient one.
+					Sensitive:   true,
 					Description: "PostgreSQL connection string",
 				},
 				{
@@ -644,7 +670,7 @@ func DefaultConfigMessages() []ConfigMessage {
 					Flag:         "environment",
 					DefaultValue: "production",
 					Role:         "CONFIG_FIELD_ROLE_MODE",
-					Description:  "Runtime environment (production, development). In development, some defaults are permissive (e.g. authz allow-all) for local ergonomics — never use development in production.",
+					Description:  "Runtime environment (production, development). In development, some defaults are permissive (e.g. verbose errors, relaxed CORS) for local ergonomics — never use development in production.",
 				},
 				{
 					Name:         "rate_limit_rps",

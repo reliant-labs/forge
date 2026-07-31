@@ -1,0 +1,154 @@
+// internal/app/auth.go — YOURS. forge scaffolds this file once and never
+// rewrites it (there is no _gen twin and no DO-NOT-EDIT banner).
+//
+// Authentication is CODE, not configuration: you pick the validator here.
+// WHERE this deployment's issuer lives is per-environment DATA, and it
+// arrives on the typed config object like every other per-environment value
+// in this app — declared in proto/config/v1/config.proto, pinned per env in
+// deploy/kcl/<env>/config.k, with the secret coming from the env's secret
+// provider. Nothing here reads the environment directly.
+//
+// The generated cmd serve wiring calls SetupAuth and threads the returned
+// validator into the auth interceptor (pkg/middleware AuthDeps.Validate).
+package app
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/reliant-labs/forge/pkg/auth"
+	"github.com/reliant-labs/forge/pkg/oauth2"
+
+	"{{.Module}}/pkg/config"
+)
+
+// discoveryTimeout bounds the one OIDC discovery request SetupAuth makes at
+// boot when the JWKS URL is derived from jwt_issuer rather than configured.
+const discoveryTimeout = 10 * time.Second
+
+// SetupAuth returns the bearer-token validator this service authenticates
+// requests with.
+//
+// Default: validate JWTs using the five typed config fields —
+//
+//	cfg.JwtSigningMethod  expected alg — HS256, RS256, ES256 (default RS256)
+//	cfg.JwtIssuer         token issuer (iss) to enforce
+//	cfg.JwtAudience       audience (aud) to enforce
+//	cfg.JwtJwksUrl        the issuer's JWKS endpoint — the standard OIDC path
+//	cfg.JwtSecret         HS* shared secret, or a PEM public key (sensitive)
+//
+// Point jwt_jwks_url at any OIDC issuer and this validator does real RS256
+// validation against its published keys, refreshed in the background. Set
+// jwt_secret INSTEAD for a static key (HS* shared secret or a pinned PEM);
+// setting both is rejected at startup, because a validator has one key
+// source. To accept several issuers at once — an IdP migration — build them
+// explicitly with auth.Config.TokenValidators.
+//
+// Leave jwt_jwks_url EMPTY and set only jwt_issuer and this function
+// discovers the JWKS endpoint from the issuer's
+// /.well-known/openid-configuration, so a standards-compliant IdP needs one
+// URL rather than two that have to agree.
+//
+// NOTHING HERE IS SPECIFIC TO ANY PROVIDER. There is no vendor name in this
+// function and no default pointing at one: both branches take whatever
+// issuer the config names. The IdP container docker-compose.yml offers
+// behind an opt-in profile reaches this code the same way a hosted provider
+// does — as a URL in jwt_issuer. Swapping IdPs is editing this one function
+// and/or the per-env config, never patching a provider enum.
+//
+// Swap the validator freely — it is arbitrary code, not a fixed enum. Each
+// constructor returns a *auth.Validator; hand back its .Validate method:
+//
+//	// Clerk (JWKS + org/session claim shape):
+//	validator, err := auth.Clerk(auth.ClerkOpts{
+//	    JWKSURL: cfg.JwtJwksUrl,
+//	    Issuer:  cfg.JwtIssuer, // recommended in production
+//	})
+//
+//	// Firebase (Google JWKS, one or more accepted project IDs):
+//	validator, err := auth.Firebase(auth.FirebaseOpts{
+//	    ProjectIDs: strings.Split(cfg.FirebaseProjectIds, ","),
+//	})
+//
+// A constructor that needs a value this config does not carry (Firebase's
+// project IDs, above) gets a new field in proto/config/v1/config.proto —
+// that is the one place per-deployment values are declared.
+//
+// For API keys or a bespoke header scheme, return your own
+// func(token string) (*auth.Claims, error): look the presented key up in
+// your store and verify it with forge/pkg/apikey (see the auth skill's
+// "API keys" recipe).
+//
+// Refuse-to-start: a nil validator makes the server REFUSE TO START — a
+// server with no authenticator is a bug. The default below always returns
+// a validator, so a fresh project does real JWT auth in every environment
+// out of the box, failing closed on every request until signing material
+// (jwt_secret, or a reachable jwt_jwks_url) is configured. To exercise a
+// protected endpoint locally, present a token this validator accepts: sign
+// in through the issuer behind jwt_jwks_url, or set jwt_signing_method to
+// HS256 with a jwt_secret in the env's secret provider and mint a
+// short-lived token signed with it.
+//
+// WHETHER this server authenticates is NOT decided here and cannot be
+// decided by configuration: the generated cmd serve.go builds
+// middleware.AuthDeps{AnonymousOK: false} and the per-RPC allow-list comes
+// from the protos' `auth_required` declarations. This function only decides
+// HOW a presented token is checked. There is no env var, and no value of
+// any field read below, that makes this server serve a protected RPC to an
+// anonymous caller.
+func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), error) {
+	jwksURL := cfg.JwtJwksUrl
+
+	// Convenience, not magic: with an issuer and no explicit JWKS URL,
+	// ask the issuer where its keys are (OIDC Discovery / RFC 8414) so a
+	// standards-compliant IdP needs ONE URL instead of two that must agree.
+	//
+	// jwt_jwks_url WINS when set, and that ordering is load-bearing rather
+	// than a preference. Discovery §4.3 requires a document's `issuer` to
+	// equal the URL it was fetched from, so it cannot describe an issuer
+	// reachable at a DIFFERENT hostname than the one in the tokens — which
+	// is the normal case for a containerized dev IdP (tokens say
+	// localhost, the server-to-server hop says the service name). Those
+	// deployments set both fields explicitly and never reach this branch.
+	if jwksURL == "" && cfg.JwtIssuer != "" && cfg.JwtSecret == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), discoveryTimeout)
+		defer cancel()
+
+		meta, err := oauth2.Discover(ctx, nil, cfg.JwtIssuer)
+		if err != nil {
+			// REFUSE TO START, with the issuer in the message. This is the
+			// same posture an unreachable jwt_jwks_url already has: a
+			// server that cannot learn its issuer's keys cannot
+			// authenticate anyone, so booting anyway would mean 401ing
+			// every request for a reason no log line explains. Do NOT
+			// soften this into a warning — degrading to "accept nothing"
+			// silently converts a typo into a total outage.
+			return nil, fmt.Errorf("discover OIDC issuer %q: %w", cfg.JwtIssuer, err)
+		}
+		// Discover guarantees the authorization and token endpoints, but
+		// jwks_uri is optional in its validation — and an empty one here
+		// would hand auth.NewValidator no key source at all, which builds
+		// a validator that rejects every token. Name the gap instead.
+		if meta.JWKSURI == "" {
+			return nil, fmt.Errorf("OIDC issuer %q publishes no jwks_uri in its discovery document: "+
+				"set jwt_jwks_url explicitly, or jwt_secret for a static key", cfg.JwtIssuer)
+		}
+		jwksURL = meta.JWKSURI
+	}
+
+	validator, err := auth.NewValidator(auth.Config{
+		Provider: "jwt",
+		JWT: auth.JWTConfig{
+			SigningMethod: cfg.JwtSigningMethod,
+			Issuer:        cfg.JwtIssuer,
+			Audience:      cfg.JwtAudience,
+			JWKSURL:       jwksURL,
+			Secret:        cfg.JwtSecret,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build JWT validator: %w", err)
+	}
+	return validator.Validate, nil
+}

@@ -190,7 +190,7 @@ func TestReadBuildState_Malformed(t *testing.T) {
 
 // TestBuildStatePath_EmptyEnv confirms the empty-env fallback uses the
 // literal "default" segment. This keeps single-environment projects
-// (which never call `forge build --env=...`) reading and writing a
+// (which never call `forge build ...`) reading and writing a
 // stable path.
 func TestBuildStatePath_EmptyEnv(t *testing.T) {
 	got := buildStatePath("/proj", "")

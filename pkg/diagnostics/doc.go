@@ -16,40 +16,36 @@
 // noticed.
 //
 // `forge lint --wire-coverage` catches the nil-dep half at develop
-// time. `forge lint --scaffolds` catches `FORGE_SCAFFOLD:` markers at
-// commit time. Neither is visible to the operator watching boot logs
-// in production. This package is the runtime third leg of that stool:
-// a structured boot-time warn surface that emits one log line per
-// unwired scaffold plus a roll-up summary, every time the binary
-// starts.
+// time and `forge lint --scaffolds` catches `FORGE_SCAFFOLD:` markers
+// at commit time. Neither is visible to the operator watching boot
+// logs in production, and this package is the runtime third leg of
+// that stool.
 //
-// # Shape
+// # Status: a library, not yet a pipeline
 //
-// Codegen emits one `pkg/app/diagnostics_gen.go` per project. Its
-// `init()` calls `diagnostics.Default.RegisterStub(...)` and
-// `diagnostics.Default.RegisterNilDep(...)` for every scaffold the
-// codegen detected at generate time. Bootstrap calls `Default.Boot(e)`
-// after `Setup()` returns, where `e` is a `LogEmitter` wrapping the
-// project's `*slog.Logger`. Each diagnostic produces one structured
-// log line at warn level with the stable event name
-// `forge.scaffold.unwired`; the roll-up summary uses
-// `forge.scaffold.unwired.summary`.
+// What is HERE and works: the Diagnostic shape, a Registry to collect
+// diagnostics and Boot them in a stable order, and the emitters
+// (LogEmitter / NopEmitter / MultiEmitter, plus StrictEmitter to turn
+// any of them fatal). A caller that registers diagnostics itself and
+// calls Boot gets exactly the described log lines.
 //
-// # Strict mode
+// What is NOT here: anything that FILLS the registry automatically.
+// Nothing in forge imports this package. In particular there is no
+// codegen step emitting a `pkg/app/diagnostics_gen.go` whose `init()`
+// registers the scaffolds it found, and no Bootstrap call to
+// `Default.Boot`. So a project depending on forge today gets no
+// boot-time warning about its unwired scaffolds — the registry is
+// simply empty, and an empty registry emits nothing.
 //
-// When `forge.yaml: features.strict_wiring: true`, Bootstrap wraps the
-// base emitter with `StrictEmitter`, which calls `log.Fatalf` (and
-// thus exits non-zero) after the summary if any diagnostic was
-// emitted. Default-off: migration paths legitimately ship partial
-// scaffolds, and forcing strict mode on every project would block the
-// very scaffolding the package is designed to make safer to ship.
+// The `features.experimental.strict_wiring` flag exists in
+// `internal/config` and is accepted in forge.yaml, but nothing reads
+// it to construct a StrictEmitter; a project setting it changes no
+// behaviour. `StrictEmitter` is usable directly by a caller that wraps
+// its own emitter.
 //
-// # Acknowledged-stub opt-out
-//
-// Users can mark a Deps field with `// forge:stub-ok reason=...` to
-// suppress the corresponding diagnostic. The marker lives in
-// user-owned code (handlers/<svc>/service.go), so regen never wipes
-// the acknowledgement. Distinct from `// forge:optional-dep`, which
-// also gates validateDeps; `forge:stub-ok` only suppresses the
-// unwired-scaffold diagnostic.
+// Closing the gap means the producer side: detecting stubs and nil
+// Deps at generate time and emitting the registration file, then
+// calling Boot from the generated bootstrap. Until then, treat this
+// package as a library with no callers rather than as a subsystem
+// that is running.
 package diagnostics

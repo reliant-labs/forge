@@ -39,7 +39,7 @@
 // Why this lives in cli/ rather than internal/linter/forgeconv/: same
 // rationale as lint_optional_deps_guard.go — it's a Deps-shape
 // companion sharing the collect/format split so `forge lint --json`
-// and `forge audit --json` reuse one engine.
+// and `forge project audit --json` reuse one engine.
 
 package lint
 
@@ -147,7 +147,7 @@ func formatConfigDeps(w io.Writer, findings []configDepsFinding) {
 }
 
 // collectConfigDepsFindings is the shared engine behind text mode,
-// `forge lint --json`, and `forge audit --json`. Findings come back
+// `forge lint --json`, and `forge project audit --json`. Findings come back
 // sorted by (file, line, col) so output is deterministic.
 func collectConfigDepsFindings(projectDir string) ([]configDepsFinding, error) {
 	var findings []configDepsFinding

@@ -2,8 +2,8 @@
 //
 // A freshly scaffolded forge.yaml is minimal: name, module_path,
 // forge_version, services, frontends. Everything else — the features:
-// block and the section blocks (database, ci, lint, contracts, auth,
-// deploy, docker, k8s) — is DERIVED from the project shape at load time:
+// block and the section blocks (database, ci, lint, deploy, docker,
+// k8s) — is DERIVED from the project shape at load time:
 //
 //   - feature flags derive from kind / database / frontends (see
 //     DeriveFeatureDefaults for the per-flag rule);
@@ -40,7 +40,6 @@ import (
 //	frontend      ⇔ frontends list non-empty
 //	observability ⇔ kind == service
 //	hot_reload    ⇔ kind == service
-//	packs         ⇔ kind == service
 //	deploy        ⇔ kind == service
 //
 // "database driver configured" means Database.Driver after section
@@ -48,7 +47,7 @@ import (
 // explicitly set `database: driver: none`. For the canonical service
 // shape every rule resolves to enabled, matching the historical
 // all-enabled default; for cli/library kinds the rules reproduce the
-// per-kind matrix that `forge new --kind` used to write out explicitly.
+// per-kind matrix that `forge project new --kind` used to write out explicitly.
 //
 // deploy derives from kind, NOT from a deploy/kcl/ directory probe.
 // This is deliberate: derivation is intentionally pure project-shape —
@@ -93,36 +92,23 @@ func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
 		FeatureFrontend:      frontend,
 		FeatureObservability: isService,
 		FeatureHotReload:     isService,
-		FeaturePacks:         isService,
 		FeatureDeploy:        isService,
 	}
-}
-
-// EffectiveHotReload resolves the top-level hot_reload toggle: explicit
-// value wins; absent derives to "on for service kind" (the value the
-// scaffold used to write).
-func (c *ProjectConfig) EffectiveHotReload() bool {
-	if c.HotReload != nil {
-		return *c.HotReload
-	}
-	return c.IsServiceKind()
 }
 
 // sectionDefaults returns the canonical scaffold defaults for every
 // derivable section block, for the given project shape. This is the
 // single source of truth shared by the load-time fill
 // (ApplyDerivedDefaults) and the write-time normalizer
-// (NormalizeForWrite) — and it is exactly what `forge new` used to
+// (NormalizeForWrite) — and it is exactly what `forge project new` used to
 // write into every forge.yaml.
 type sectionDefaultsSet struct {
-	Database  DatabaseConfig
-	CI        CIConfig
-	Deploy    DeployConfig
-	Docker    DockerConfig
-	K8s       K8sConfig
-	Lint      LintConfig
-	Contracts ContractsConfig
-	Auth      AuthConfig
+	Database DatabaseConfig
+	CI       CIConfig
+	Deploy   DeployConfig
+	Docker   DockerConfig
+	K8s      K8sConfig
+	Lint     LintConfig
 }
 
 func sectionDefaults(c *ProjectConfig) sectionDefaultsSet {
@@ -147,21 +133,12 @@ func sectionDefaults(c *ProjectConfig) sectionDefaultsSet {
 			},
 		},
 		Lint: LintConfig{
-			Contract: true,
 			Frontend: FrontendLintConfig{
 				CSSHealth:      hasFrontend,
 				NoImportant:    "warn",
 				NoInlineStyles: "warn",
 			},
 		},
-		// Contracts: strict-by-default — every internal/<pkg>/ that
-		// exposes behavior must declare an interface in contract.go.
-		Contracts: ContractsConfig{
-			Strict:             true,
-			AllowExportedVars:  false,
-			AllowExportedFuncs: false,
-		},
-		Auth: AuthConfig{Provider: "none"},
 	}
 	if isService {
 		// Server-shaped sections only exist for service projects: a CLI
@@ -195,7 +172,7 @@ func sectionDefaults(c *ProjectConfig) sectionDefaultsSet {
 //  2. the features block gets its derivation context attached so the
 //     *Enabled() accessors can resolve absent flags from shape.
 //
-// Called by the loader (LoadStrict) — code that hand-constructs a
+// Called by the loader (LoadProject) — code that hand-constructs a
 // ProjectConfig in tests without calling this keeps the historical
 // zero-value semantics.
 func ApplyDerivedDefaults(c *ProjectConfig) {
@@ -217,12 +194,6 @@ func ApplyDerivedDefaults(c *ProjectConfig) {
 	}
 	if sectionIsZero(c.Lint) {
 		c.Lint = d.Lint
-	}
-	if sectionIsZero(c.Contracts) {
-		c.Contracts = d.Contracts
-	}
-	if sectionIsZero(c.Auth) {
-		c.Auth = d.Auth
 	}
 	// Features derivation runs AFTER the database fill — the orm /
 	// migrations rules read the effective driver.
@@ -257,17 +228,6 @@ func NormalizeForWrite(c *ProjectConfig) *ProjectConfig {
 	}
 	if sectionsEquivalent(out.Lint, d.Lint) {
 		out.Lint = LintConfig{}
-	}
-	if sectionsEquivalent(out.Contracts, d.Contracts) {
-		out.Contracts = ContractsConfig{}
-	}
-	if sectionsEquivalent(out.Auth, d.Auth) {
-		out.Auth = AuthConfig{}
-	}
-
-	// hot_reload: drop when it matches the kind-derived default.
-	if out.HotReload != nil && *out.HotReload == out.IsServiceKind() {
-		out.HotReload = nil
 	}
 
 	// Feature flags: drop every explicit value that matches derivation.

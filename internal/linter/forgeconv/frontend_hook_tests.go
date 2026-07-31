@@ -1,25 +1,20 @@
 // File: internal/linter/forgeconv/frontend_hook_tests.go
 //
 // The forgeconv-frontend-hook-tests analyzer warns when a generated
-// frontend hooks file at frontends/<name>/src/hooks/<svc>-hooks.ts has
-// neither a sibling activated test (<svc>-hooks.test.tsx) nor a
-// generated starter (<svc>-hooks.test.tsx.starter) waiting to be renamed.
+// frontend hooks file at frontends/<name>/src/hooks/<svc>-hooks.ts has no
+// sibling test (<svc>-hooks.test.tsx).
 //
 // The lint mirrors forgeconv-handler-tests-use-tdd's job on the backend:
 // surface drift toward "untested generated surface" before it ossifies.
-// Warning-only — never gates the build. Two situations the rule
-// deliberately tolerates:
+// Warning-only — never gates the build. A frontend with no `src/hooks/`
+// directory at all (no proto-driven services for that frontend) is a no-op.
 //
-//   - A `.tsx.starter` next to the hooks file means the codegen has done
-//     its part and the user just hasn't activated it yet. No warning;
-//     the activation is a one-rename step the agent can take.
-//   - A frontend with no `src/hooks/` directory at all (no proto-driven
-//     services for that frontend) is a no-op for this rule.
-//
-// The rule's purpose is the third situation: hooks.ts present, no
-// sibling test, no starter — meaning the user (or an agent) deleted the
-// starter without writing the activated test, or the generator is older
-// than the starter feature and never emitted one.
+// The rule used to treat an inert `<svc>-hooks.test.tsx.starter` as
+// satisfying it, on the theory that activation was "a one-rename step the
+// agent can take". Nobody ever took it: a whole dogfood run shipped a
+// generated suite per service that had never executed, with this lint
+// silent throughout. `forge generate` now writes the test live, so a
+// missing test means a missing test.
 
 package forgeconv
 
@@ -110,17 +105,13 @@ func shouldSkipFrontendSubdir(name string) bool {
 	return false
 }
 
-// lintFrontendHookFile checks one hooks file for a sibling test or
-// starter. Returns (finding, true) when neither sibling exists.
+// lintFrontendHookFile checks one hooks file for a sibling test.
+// Returns (finding, true) when there isn't one.
 func lintFrontendHookFile(hookPath, relRoot string) (Finding, bool) {
 	base := strings.TrimSuffix(hookPath, ".ts")
 	testPath := base + ".test.tsx"
-	starterPath := base + ".test.tsx.starter"
 
 	if _, err := os.Stat(testPath); err == nil {
-		return Finding{}, false
-	}
-	if _, err := os.Stat(starterPath); err == nil {
 		return Finding{}, false
 	}
 
@@ -130,9 +121,9 @@ func lintFrontendHookFile(hookPath, relRoot string) (Finding, bool) {
 		Severity: SeverityWarning,
 		File:     rel,
 		Line:     1,
-		Message: "generated hooks file has no sibling test (.test.tsx) or starter " +
-			"(.test.tsx.starter) — re-run `forge generate` to scaffold a starter, " +
-			"or write a test using mockTransport/renderWithTransport from src/lib/test-utils.",
+		Message: "generated hooks file has no sibling test (.test.tsx) — re-run " +
+			"`forge generate` to scaffold one, or write a test using " +
+			"mockTransport/renderWithTransport from src/lib/test-utils.",
 		Remediation: "add `" + filepath.Base(base) + ".test.tsx` next to the hooks file. " +
 			"See the `frontend-testing` skill for recipes and the mockTransport seam.",
 	}, true

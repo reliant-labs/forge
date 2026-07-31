@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 )
 
@@ -30,7 +31,7 @@ func newCmd(f *factory.Factory) *cobra.Command {
 	cmd.AddCommand(newListCmd(f))
 	cmd.AddCommand(newSearchCmd(f))
 	cmd.AddCommand(newInstallCmd(f))
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 // detectComponentsDir looks for a frontends/*/src/components/ui/ directory

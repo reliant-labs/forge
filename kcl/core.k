@@ -255,7 +255,7 @@ schema OperatorSpec:
                          from namespaced RBAC to cluster RBAC.
       * `crds`        — the CRD *kind names* this operator owns / serves
                         (e.g. `["Workspace"]`). This is a NAME LIST — the
-                        bridge to `forge add crd` / the Go
+                        bridge to `forge scaffold crd` / the Go
                         `AddToScheme`/`SetupWithManager` wiring — NOT the
                         CRD manifest. The `CustomResourceDefinition` object
                         itself keeps riding `k8s.raw_manifests` (or the
@@ -265,9 +265,11 @@ schema OperatorSpec:
                         this list.
 
     Leader election is deliberately NOT a field here: the pod's Lease is a
-    pure-runtime concern (`operatorkit.Run`), driven by a normal
-    `LEADER_ELECTION_ID` env entry plus a `coordination.k8s.io/leases` rule
-    inside `cluster_rbac`.
+    pure-runtime concern (`operatorkit.Run`). The lease NAME is passed in
+    code, on `lifecyclekit.Options` in the owned `pkg/app/lifecycle.go` —
+    from a typed config field when it varies per deployment, like every
+    other per-environment value. The only k8s-side requirement is a
+    `coordination.k8s.io/leases` rule inside `cluster_rbac`.
     """
     cluster_rbac?: [{str: any}]
     crds?: [str]
@@ -403,6 +405,16 @@ schema HostOverrides:
                             "server","api"]` where the container command is
                             `["reliant","server","api"]`). Unset => reuse the
                             agnostic `command`+`args`.
+      * `listen_ports`    — the host TCP ports this service itself BINDS.
+                            `forge env up`'s port-conflict pre-flight checks
+                            EXACTLY these when declared; when unset it falls
+                            back to inferring bind ports from `*_PORT` env
+                            vars — an inference that misfires on dependency-
+                            address vars (TEMPORAL_PORT, WORKSPACE_URL_PORT,
+                            a leftover k8s-convention PORT) and then refuses
+                            `up` because healthy infra holds those ports.
+                            Declare this on any service whose env mixes bind
+                            ports with dependency ports.
 
     Secrets are NOT a field here: on the host they come from the
     `Bundle.secret_provider` (DotenvSecrets), injected by the CLI — the model
@@ -412,12 +424,16 @@ schema HostOverrides:
     air_config?: str
     working_dir?: str
     command_override?: [str]
+    listen_ports?: [int]
 
     check:
         runner in ["go-run", "air", "binary", "delve"], \
             "HostOverrides.runner must be go-run | air | binary | delve"
         air_config == Undefined or runner == "air", \
             "HostOverrides.air_config is only valid when runner = 'air'"
+        listen_ports == Undefined or all p in listen_ports {
+            p > 0 and p < 65536
+        }, "HostOverrides.listen_ports entries must be 1..65535"
 
 schema SecurityOverrides:
     """Agnostic securityContext DELTAS on a `Service` (`svc.security`).
@@ -805,7 +821,7 @@ _service_to_k8s = lambda svc: Service, target: ClusterTarget -> RenderedWorkload
 # _service_to_host — the HOST adapter, run INSIDE the render pipeline (never
 # by the user). Projects one agnostic `Service` onto the demoted, k8s-shaped
 # `RenderedWorkload{deploy = HostDeploy}` carrier — the SAME carrier + deploy-mode
-# machine the legacy path and the Go `forge up`/`run` host loop already handle
+# machine the legacy path and the Go `forge env up`/`run` host loop already handle
 # (render.k `_render_host_deploy`, internal/cli/run.go `hostEnvVarsToMap`). It
 # is selected by the PRESENCE of `svc.host` (see `_project_workload`), and it
 # reuses `env_project` verbatim — the SAME map->[EnvVar] projection the k8s
@@ -848,7 +864,7 @@ _service_to_host = lambda svc: Service -> RenderedWorkload {
         name = svc.name
         image = svc.image
         command = _command
-        # `build` rides through so `forge up` can build the host binary.
+        # `build` rides through so `forge env up` can build the host binary.
         if svc.build:
             build = svc.build
         deploy = _HostDeployForAdapter {
@@ -861,6 +877,8 @@ _service_to_host = lambda svc: Service -> RenderedWorkload {
                 air_config = _h.air_config
             if _h.working_dir:
                 working_dir = _h.working_dir
+            if _h.listen_ports:
+                listen_ports = _h.listen_ports
         }
     }
 }
@@ -944,7 +962,7 @@ _project_workload = lambda svc: Service, bundle: Bundle -> RenderedWorkload {
 # compose "operator" that starts but reconciles nothing is worse than a clear
 # absence. A real compose adapter's SERVICE-LIST builder therefore OMITS such a
 # workload from the compose stack ENTIRELY (skip, NOT a hard error — a mixed
-# stack still brings up its compose-able half), and `forge audit` surfaces a
+# stack still brings up its compose-able half), and `forge project audit` surfaces a
 # finding for it. The predicate is `svc.k8s.operator != Undefined`. This
 # single-service sketch has no list level to skip from, but it never errors and
 # never renders the operator tail (svc.k8s is unreferenced below).

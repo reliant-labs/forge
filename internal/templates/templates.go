@@ -19,7 +19,7 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-//go:embed all:project all:deploy all:frontend all:ci all:test all:ingress service/*.tmpl middleware/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl worker-cron/*.tmpl operator/*.tmpl crd/*.tmpl
+//go:embed all:project all:deploy all:frontend all:ci all:test all:ingress service/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl worker-cron/*.tmpl operator/*.tmpl crd/*.tmpl
 var templateFS embed.FS
 
 // FuncMap returns the shared template function map used across all templates.
@@ -131,9 +131,6 @@ func ServiceTemplates() TemplateCategory { return TemplateCategory{basePath: "se
 // WebhookTemplates returns the category for webhook-scaffold templates.
 func WebhookTemplates() TemplateCategory { return TemplateCategory{basePath: "webhook"} }
 
-// MiddlewareTemplates returns the category for middleware-scaffold templates.
-func MiddlewareTemplates() TemplateCategory { return TemplateCategory{basePath: "middleware"} }
-
 // WorkerTemplates returns the category for worker-scaffold templates.
 func WorkerTemplates() TemplateCategory { return TemplateCategory{basePath: "worker"} }
 
@@ -243,7 +240,6 @@ func listTemplates(root string, recursive bool) ([]string, error) {
 // CIWorkflowData holds data for the spec-driven CI workflow template.
 type CIWorkflowData struct {
 	ProjectName  string
-	GoVersion    string // e.g. "1.26"
 	HasFrontends bool
 	Frontends    []FrontendCIConfig // from project config
 	HasServices  bool
@@ -293,7 +289,6 @@ type CIWorkflowData struct {
 	// Legacy fields used by other CI templates (build-images, deploy, dependabot)
 	Module       string
 	Registry     string // "ghcr", "gar", "ecr"
-	GithubOrg    string
 	FrontendName string // first frontend name for dependabot
 
 	// GitHubOwner is the inferred GitHub owner for default CODEOWNERS entries.
@@ -369,7 +364,6 @@ type BuildImagesWorkflowData struct {
 // E2EWorkflowData holds data for the standalone E2E test workflow template.
 type E2EWorkflowData struct {
 	ProjectName  string
-	GoVersion    string
 	Runtime      string // "docker-compose" (default) or "k3d"
 	HasFrontends bool
 	// FrontendPath points the setup-node `node-version-file` input at a
@@ -404,6 +398,19 @@ type NavPageData struct {
 	// ItemsField is the camelCase repeated field on the list response
 	// holding the entities ("tasks").
 	ItemsField string
+	// HasTotalCount / TotalCountField expose the List response's server-side
+	// total ("totalCount") when the RPC declares one. The dashboard tile
+	// counts with THIS, never with the length of the page it fetched: a
+	// tile reading `data.tasks.length` reports the page size once the table
+	// outgrows one page ("25" forever), and it is forge's own generated
+	// exemplar that teaches the habit to everything downstream.
+	HasTotalCount   bool
+	TotalCountField string
+	// HasPageSize reports whether the List request carries page_size. The
+	// tile asks for ONE row when it does — the count comes from
+	// total_count, so pulling a full page of entities to display a single
+	// number is waste on every dashboard load.
+	HasPageSize bool
 	// ComponentIdent is a valid TS identifier for per-entity generated
 	// components ("Tasks" → TasksTile).
 	ComponentIdent string
@@ -422,23 +429,37 @@ type NavHookImport struct {
 type FrontendTemplateData struct {
 	FrontendName string
 	ProjectName  string
-	// ApiUrl / ApiPort / ApiPackage are exposed to text/template files
-	// under internal/templates/frontend/. Renaming to APIUrl / APIPort /
-	// APIPackage would force a coordinated rename of dozens of .tmpl
-	// files (vite, react-native, nextjs scaffolds) and break any
-	// downstream project that references {{.ApiUrl}} in a customized
-	// template. Keep the mixed-case field names; the revive var-naming
-	// rule is suppressed on each line.
-	ApiUrl  string //nolint:revive // template field name; see comment above
-	ApiPort string //nolint:revive // template field name; see comment above
-	Module  string
-	Pages   []NavPageData
+	// Platform names the frontend template tree being rendered —
+	// "nextjs", "vite-spa" or "react-native". It exists so a template
+	// under frontend/shared* (rendered into every tree that claims it)
+	// can gate the one or two lines that genuinely differ per platform
+	// instead of being forked into N near-identical copies. Today the
+	// only gate is the Next.js App Router's `"use client"` prologue.
+	//
+	// Set by the frontend scaffolder from the resolved tree name, so it
+	// cannot drift from the roots being composed. Empty when a caller
+	// renders a single per-kind template directly (nav, dashboard,
+	// apiurl_gen, …) — those live under one tree and never gate on it.
+	Platform string
+	// APIURL and APIPackage are exposed to text/template files under
+	// internal/templates/frontend/, so their Go field names are the
+	// template variable names: a customized .tmpl referencing {{.ApiUrl}}
+	// must be updated to {{.APIURL}}. forge carries no backwards
+	// compatibility — the rename is the record.
+	//
+	// (ApiPort was removed when the hand-editable .env.local scaffolds were
+	// ripped out — the only consumers were those templates'
+	// `http://localhost:{{.ApiPort}}` lines; the regenerated apiurl_gen.ts
+	// bakes the full APIURL instead.)
+	APIURL string
+	Module string
+	Pages  []NavPageData
 	// NavHookImports is the per-module aggregation of the list hooks the
 	// dashboard tiles consume. Derived from Pages by the nav generator.
 	NavHookImports []NavHookImport
 	// Workspaces reports whether the project opted into the pnpm-
 	// workspaces layout. When true, frontend templates emit imports
-	// of ApiPackage / HooksPackage instead of relative @/gen and
+	// of APIPackage / HooksPackage instead of relative @/gen and
 	// @/hooks paths, and the per-frontend package.json declares
 	// "workspace:*" deps on those packages.
 	//
@@ -446,10 +467,10 @@ type FrontendTemplateData struct {
 	// single-frontend output — byte-identical to projects scaffolded
 	// before workspaces landed. Snapshot tests rely on this.
 	Workspaces bool
-	// ApiPackage is the npm package name for the shared Connect TS
+	// APIPackage is the npm package name for the shared Connect TS
 	// clients workspace, e.g. "@myapp/api". Empty when Workspaces is
 	// false.
-	ApiPackage string //nolint:revive // template field name; matches ApiUrl above
+	APIPackage string
 	// HooksPackage is the npm package name for the shared React Query
 	// hooks workspace, e.g. "@myapp/hooks". Empty when Workspaces is
 	// false.
@@ -549,7 +570,6 @@ func (e *TemplateEngine) loadTemplates() error {
 	templateFiles := []string{
 		"service/service.go.tmpl",
 		"service/handlers.go.tmpl",
-		"service/authorizer.go.tmpl",
 		"service/unit_test.go.tmpl",
 		"worker/worker.go.tmpl",
 		"worker/worker_test.go.tmpl",

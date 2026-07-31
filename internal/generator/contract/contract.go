@@ -2,7 +2,7 @@
 // tracing, metrics) emitted from a single hand-written contract.go.
 //
 // The behavioural surface is a single Service. Data carriers
-// (ContractFile, InterfaceDef, MethodDef, ParamDef) remain plain types.
+// (File, InterfaceDef, MethodDef, ParamDef) remain plain types.
 package contract
 
 // Service drives contract.go → *_gen.go generation. Generate parses the
@@ -11,7 +11,7 @@ package contract
 // emitting files (e.g. docs).
 type Service interface {
 	Generate(contractPath string) error
-	ParseContract(path string) (*ContractFile, error)
+	ParseContract(path string) (*File, error)
 }
 
 // Deps is the dependency set for the contract Service. Empty today.
@@ -26,6 +26,6 @@ type svc struct{}
 func (s *svc) Generate(contractPath string) error { return Generate(contractPath) }
 
 // ParseContract delegates to the package-level ParseContract helper.
-func (s *svc) ParseContract(path string) (*ContractFile, error) { return ParseContract(path) }
+func (s *svc) ParseContract(path string) (*File, error) { return ParseContract(path) }
 
 var _ Service = (*svc)(nil)

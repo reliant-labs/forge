@@ -187,7 +187,7 @@ env_merge = lambda base: [EnvVar], overrides: [EnvVar] -> [EnvVar] {
 #
 # Passed CONDITIONALLY (only when forge has a value to bind):
 #
-#   image_digests -> JSON name→digest map `forge deploy` pins so each image
+#   image_digests -> JSON name→digest map `forge env deploy` pins so each image
 #                   resolves to ITS content-addressed digest. forge.image_digests().
 #                   Absent on the local-registry / `kcl run` path (→ {}).
 #   registry      -> the image registry. Note: the forge CLI does NOT pass
@@ -195,10 +195,10 @@ env_merge = lambda base: [EnvVar], overrides: [EnvVar] -> [EnvVar] {
 #                   value (a literal or `forge.registry(default)`); the option
 #                   exists so a one-off `kcl run -D registry=…` can override it.
 #
-# Plus EVERY non-sensitive per-env config field (from forge.yaml + the config
-# proto) is passed as its own `-D <FIELD>=<value>` and surfaced through the
-# generated `deploy/kcl/<env>/config_gen.k` (cfg.APP_ENV) — you read those via
-# `cfg.<...>`, not raw `option()`.
+# Per-env app config is NOT passed via `-D`: it lives in the typed AppConfig
+# instance in `deploy/kcl/<env>/config.k` and is projected into each workload's
+# env by `config_projection.appConfigEnvMap` — read config there, not via raw
+# `option()`.
 
 # env() — the current environment name (the `-D env=<name>` binding the forge
 # CLI passes on every render). `default` is used for a plain `kcl run` with no
@@ -251,10 +251,10 @@ image_tag = lambda env: str -> str {
     option("image_tag") or _IMAGE_TAG_DEFAULTS[env] or "latest"
 }
 
-# image_digests() — the per-image content-addressed digest map forge deploy
+# image_digests() — the per-image content-addressed digest map forge env deploy
 # passes on the command line.
 #
-# forge deploy resolves each built image's pushed manifest digest from the
+# forge env deploy resolves each built image's pushed manifest digest from the
 # build state and passes the map as a JSON string:
 #   `kcl run -D image_digests='{"reliant":"sha256:...","control-plane":"sha256:..."}'`
 # keyed on the BARE image name. This helper decodes it to `{str:str}` so a

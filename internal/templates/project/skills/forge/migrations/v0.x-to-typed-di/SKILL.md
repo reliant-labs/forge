@@ -1,12 +1,13 @@
 ---
 name: v0.x-to-typed-di
-description: Migrate DI from wire_gen.go name-matching + the appkit string-keyed DI table to a GENERATED type-topological composition (internal/app/compose.go, func NewComponents(infra) (*Components, error)) that resolves each Deps field BY TYPE from constructed components or fields on an OWNED Infra struct (internal/app/providers.go, OpenInfra). The old pkg/app DI unit is fully removed; a missing required provider is now a loud error (generate-time when provable, compile-time otherwise), not a silent nil. Move setup.go infra construction into Infra/OpenInfra; two-phase setters (e.g. billing.WithReliantAPIKeyIssuer(llm)) are wired by `forge disown internal/app/compose.go` and editing the construction site. Use when bumping across the typed-DI release.
+description: Migrate DI from wire_gen.go name-matching + the appkit string-keyed DI table to a GENERATED type-topological composition (internal/app/compose.go, func NewComponents(infra) (*Components, error)) that resolves each Deps field BY TYPE from constructed components or fields on an OWNED Infra struct (internal/app/providers.go, OpenInfra). The old pkg/app DI unit is fully removed; a missing required provider is now a loud error (generate-time when provable, compile-time otherwise), not a silent nil. Move setup.go infra construction into Infra/OpenInfra; two-phase setters (e.g. billing.WithReliantAPIKeyIssuer(llm)) are wired by `forge project disown internal/app/compose.go` and editing the construction site. Use when bumping across the typed-DI release.
+detection: test -f pkg/app/wire_gen.go
 relevance: migration
 ---
 
 # Migrating to the typed, type-topological DI injector
 
-Use this skill when `forge upgrade` reports a jump across the release that
+Use this skill when `forge project upgrade` reports a jump across the release that
 replaces name-matched `wire_gen.go` + the `appkit` string-keyed DI table with a
 generated **type-topological** injector plus an **owned** provider set. This
 is the DI half of the project-shape redesign; the cmd/selection half is
@@ -42,7 +43,7 @@ DI table is gone). The live DI now lives entirely under `internal/app`:
   name-match. `Components` is a plain typed bag (one field per component), NOT a
   god-struct. This file is **forge-owned and regenerated every run** —
   adding/removing a component is a `forge generate`, never a hand-edit (unless
-  you `forge disown` it, below).
+  you `forge project disown` it, below).
 - **An owned `Infra` struct + `OpenInfra`** in `internal/app/providers.go`.
   `Infra` is a data struct of everything the composition cannot derive — DB pool,
   NATS conn, k8s/third-party clients, adapter-wrapped repos, explicit
@@ -55,7 +56,7 @@ DI table is gone). The live DI now lives entirely under `internal/app`:
   is a DAG, but a few wirings are post-construction setters / cycle back-edges —
   e.g. `billing.WithReliantAPIKeyIssuer(llm)`, `authbridge ← billing`. Pure
   constructor topo-ordering can't place those. There is NO separate `PostBuild`
-  hook: `forge disown internal/app/compose.go` to own the bytes, then add the
+  hook: `forge project disown internal/app/compose.go` to own the bytes, then add the
   setter inline after both endpoints are constructed. (For a back-edge the
   generator detected, the emitted `compose.go` already leaves a `HasCycle`
   comment naming the edge to wire.)
@@ -81,7 +82,7 @@ func NewComponents(infra *Infra) (*Components, error) {
     c := &Components{}
     c.Audit = audit.New(audit.Deps{Repo: infra.Repo})  // infra.Repo satisfies audit.Repository by type
     // … topo order resolved by type, each component constructed once …
-    // After `forge disown`, a two-phase setter lives right here:
+    // After `forge project disown`, a two-phase setter lives right here:
     //   c.Billing.WithReliantAPIKeyIssuer(c.LLM)   // phase 2, explicit + visible
     return c, nil
 }
@@ -151,7 +152,7 @@ This is the real work. control-plane/kalshi run this after the forge/pkg bump.
 2. **Move two-phase setters into a disowned `compose.go`.** Any
    post-construction injection — `billing.WithReliantAPIKeyIssuer(llm)`,
    `authbridge ← billing`, any `X.SetY(z)` that ran in setup.go *after* both X
-   and Y existed — has no separate hook. `forge disown internal/app/compose.go`
+   and Y existed — has no separate hook. `forge project disown internal/app/compose.go`
    and add the setter inline in `NewComponents` after both components are
    constructed onto `c`. (forge flags an unwired cycle back-edge with a
    `HasCycle` comment in the emitted file so you know what to wire.)
@@ -197,9 +198,9 @@ grep -rq "func OpenInfra\|type Infra struct" internal/app/providers.go && echo "
 ! test -f pkg/app/wire_gen.go && ! test -f pkg/app/services_gen.go && echo "old pkg/app DI unit deleted"
 ! grep -rq "appkit.Def\|ServiceDef\|appkit.Run\|Options{Only\|BootstrapOnly" pkg/app/ cmd/ && echo "appkit DI table + string selection gone"
 
-# forge map should now flag cycles and narrow-interface mismatches as
+# forge project map should now flag cycles and narrow-interface mismatches as
 # guardrails — run it and confirm a clean report.
-forge map
+forge project map
 ```
 
 The decisive test: a missing required provider must be **loud**, not a nil at
@@ -212,7 +213,7 @@ merging — that proves the safety property holds.
 ```bash
 git revert <forge-generate-commit>       # undo the regen (restores the old pkg/app DI unit)
 git revert <provider-port-commit>        # undo the setup.go → Infra/OpenInfra move
-forge upgrade --to <prev-version>        # pin back to the prior version
+forge project upgrade --to <prev-version>        # pin back to the prior version
 ```
 
 `--to <prev-version>` requires the prior forge build on `PATH`

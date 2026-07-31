@@ -19,8 +19,8 @@ func (s *svc) GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs [
 	return GeneratePlanProtoFile(root, modulePath, serviceName, rpcs, entities)
 }
 
-func (s *svc) GenerateServiceFiles(root, modulePath, serviceName, projectName string, port int) error {
-	return GenerateServiceFiles(root, modulePath, serviceName, projectName, port)
+func (s *svc) GenerateServiceFiles(root, modulePath, serviceName, projectName string) error {
+	return GenerateServiceFiles(root, modulePath, serviceName, projectName)
 }
 
 func (s *svc) GenerateWorkerFiles(root, modulePath, workerName, kind, schedule string) error {
@@ -45,10 +45,6 @@ func (s *svc) EnsureCoreComponents(frontendDir string) error {
 
 func (s *svc) GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, methods []E2EMethodInfo) error {
 	return GenerateE2ETests(projectDir, serviceName, modulePath, projectName, methods)
-}
-
-func (s *svc) GenerateEntitySeeds(entities []SeedEntity, outputDir string) error {
-	return GenerateEntitySeeds(entities, outputDir)
 }
 
 func (s *svc) GenerateGrafanaDashboards(projectName, projectDir string) error {
@@ -87,10 +83,6 @@ func (c *configSvc) ReadProjectConfig(path string) (*config.ProjectConfig, error
 
 func (c *configSvc) WriteProjectConfigFile(cfg *config.ProjectConfig, path string) error {
 	return WriteProjectConfigFile(cfg, path)
-}
-
-func (c *configSvc) AppendServiceToConfig(projectRoot, serviceName string, port int) error {
-	return AppendServiceToConfig(projectRoot, serviceName, port)
 }
 
 func (c *configSvc) AppendFrontendToConfig(projectRoot, frontendName string, port int) error {

@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"strings"
@@ -38,15 +39,15 @@ func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 			ProtoConnectImportPath, ProtoConnectPkg    string
 			Fallible                                   bool
 			HasDB                                      bool
-			HasAuthorizer                              bool
 		}
 		ConnectImports []string
 		Packages       []struct {
 			Name, Package, FieldName string
 			Fallible                 bool
 		}
-		MultiTenantEnabled bool
-		AnyServiceHasDB    bool
+		AnyServiceHasDB     bool
+		AnyServiceNeedsTime bool
+		AnyServiceNeedsULID bool
 		// ExtraImports lists cross-package auto-stub imports. The
 		// template ranges over it unconditionally; we declare the
 		// field as an empty slice so text/template's struct-field
@@ -142,71 +143,52 @@ func assertQualifiersImported(t *testing.T, src string) {
 // TestDBReadme_HyphenatedPackageIsSnakeCased covers the same stripe-latent
 // bug in the markdown README example, which is rendered into proto/db/README.md
 // at scaffold time (so consumers may copy-paste it into a real proto file).
-func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
-	type tc struct {
-		name        string
-		vendored    bool
-		wantContain string
-		wantAbsent  string
+// TestDockerfile_NeverCopiesForgePkg pins the post-vendoring-removal
+// invariant: the scaffolded Dockerfile NEVER carries a `COPY .forge-pkg`
+// line. forge/pkg is a published module resolved by `go mod download` from
+// the pinned require; there is no vendored directory to copy into the build
+// context.
+func TestDockerfile_NeverCopiesForgePkg(t *testing.T) {
+	data := struct {
+		Name                   string
+		ProtoName              string
+		Module                 string
+		HasDatabase            bool
+		DatabaseDriver         string
+		OrmEnabled             bool
+		ServiceName            string
+		ServicePort            int
+		ProjectName            string
+		FrontendName           string
+		FrontendPort           int
+		GoVersion              string
+		GoVersionMinor         string
+		DockerBuilderGoVersion string
+		VersionVar             string
+		Binaries               []struct {
+			Dir     string
+			Primary bool
+		}
+	}{
+		Name: "demo", ProtoName: "demo", Module: "github.com/example/demo",
+		ServiceName: "api", ServicePort: 8080, ProjectName: "demo",
+		GoVersion: "1.26", GoVersionMinor: "26", DockerBuilderGoVersion: "1.26",
+		Binaries: []struct {
+			Dir     string
+			Primary bool
+		}{{Dir: "demo", Primary: true}},
 	}
-	cases := []tc{
-		{
-			name:       "vendored=false omits COPY .forge-pkg",
-			vendored:   false,
-			wantAbsent: "COPY .forge-pkg/",
-		},
-		{
-			name:        "vendored=true emits COPY .forge-pkg",
-			vendored:    true,
-			wantContain: "COPY .forge-pkg/ ./.forge-pkg/",
-		},
+	out, err := ProjectTemplates().Render("Dockerfile.tmpl", data)
+	if err != nil {
+		t.Fatalf("render Dockerfile.tmpl: %v", err)
 	}
-	for _, c := range cases {
-		c := c
-		t.Run(c.name, func(t *testing.T) {
-			data := struct {
-				Name                   string
-				ProtoName              string
-				Module                 string
-				HasDatabase            bool
-				DatabaseDriver         string
-				OrmEnabled             bool
-				ServiceName            string
-				ServicePort            int
-				ProjectName            string
-				FrontendName           string
-				FrontendPort           int
-				GoVersion              string
-				GoVersionMinor         string
-				DockerBuilderGoVersion string
-				LocalForgePkgVendored  bool
-				VersionVar             string
-				Binaries               []struct {
-					Dir     string
-					Primary bool
-				}
-			}{
-				Name: "demo", ProtoName: "demo", Module: "github.com/example/demo",
-				ServiceName: "api", ServicePort: 8080, ProjectName: "demo",
-				GoVersion: "1.26", GoVersionMinor: "26", DockerBuilderGoVersion: "1.26",
-				LocalForgePkgVendored: c.vendored,
-				Binaries: []struct {
-					Dir     string
-					Primary bool
-				}{{Dir: "demo", Primary: true}},
-			}
-			out, err := ProjectTemplates().Render("Dockerfile.tmpl", data)
-			if err != nil {
-				t.Fatalf("render Dockerfile.tmpl: %v", err)
-			}
-			rendered := string(out)
-			if c.wantContain != "" && !strings.Contains(rendered, c.wantContain) {
-				t.Errorf("expected %q in rendered Dockerfile, got:\n%s", c.wantContain, rendered)
-			}
-			if c.wantAbsent != "" && strings.Contains(rendered, c.wantAbsent) {
-				t.Errorf("did not expect %q in rendered Dockerfile, got:\n%s", c.wantAbsent, rendered)
-			}
-		})
+	rendered := string(out)
+	if strings.Contains(rendered, ".forge-pkg") {
+		t.Errorf("Dockerfile must never reference .forge-pkg, got:\n%s", rendered)
+	}
+	// Sanity: it still downloads modules the normal way.
+	if !strings.Contains(rendered, "RUN go mod download") {
+		t.Errorf("Dockerfile lost `RUN go mod download`, got:\n%s", rendered)
 	}
 }
 
@@ -306,14 +288,12 @@ func TestDockerfile_VersionVarLdflags(t *testing.T) {
 // ServiceName onto skCfg and builds no otel-shutdown closure of its own.
 func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 	data := struct {
-		Module               string
-		HasDatabase          bool
-		DatabaseDriver       string
-		OrmEnabled           bool
-		ConfigFields         map[string]bool
-		AuthProvider         string
-		AuthProviderExternal bool
-		RESTEnabled          bool
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		ConfigFields   map[string]bool
+		RESTEnabled    bool
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{"OtlpEndpoint": true},
@@ -331,12 +311,19 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 		"app.NewComponents(infra)",
 		"observe.Chain(chainDeps)",
 		"serverkit.Server{",
-		"srv.RequireMounted(projectFiles)",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("cmd-tree-serve.go.tmpl must reference %q (explicit composition); rendered output:\n%s", want, rendered)
 		}
 	}
+	// The completeness gate must still run on the all-services path, and it
+	// must be GATED on the ServeSpec asking for it — a per-service subcommand
+	// mounts a subset on purpose, so an unconditional gate would refuse to
+	// boot it. Asserted structurally (a call guarded by spec.RequireComplete)
+	// rather than by matching the gate's current spelling: the scoping half
+	// moved into pkg/serverkit, so the old `srv.RequireMounted(projectFiles)`
+	// text is gone while the property it stood for is not.
+	assertCompletenessGateIsConditional(t, rendered)
 	// The retired by-type injector + two-phase post-build + the old
 	// DefaultMiddlewares chain AND the *Services god-struct are gone.
 	for _, gone := range []string{
@@ -383,6 +370,72 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 	if _, perr := parser.ParseFile(fset, "serve.go", rendered, parser.AllErrors); perr != nil {
 		t.Fatalf("rendered serve.go does not parse:\n%v\n\nSource:\n%s", perr, rendered)
 	}
+}
+
+// assertCompletenessGateIsConditional asserts the boot-time mount-completeness
+// gate is (a) present and (b) reached only when the ServeSpec asks for it.
+//
+// Both halves are load-bearing and neither is visible to a substring match.
+// Dropping the gate lets a half-wired server boot green — the failure the gate
+// exists for. Running it UNCONDITIONALLY is the opposite failure and just as
+// bad: every per-service subcommand mounts a deliberate subset, so an
+// always-on gate makes `myapp <service>` refuse to start.
+//
+// It derives the gate from the guard, not from a name: any call inside an
+// `if` whose condition reads spec.RequireComplete counts. That is exactly the
+// contract — "this runs only when the spec opts in" — and it survives the gate
+// being renamed or moved into a library, which is what happened here.
+func assertCompletenessGateIsConditional(t *testing.T, rendered string) {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "serve.go", rendered, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("rendered serve.go does not parse: %v\n%s", err, rendered)
+	}
+
+	guarded, guards := 0, 0
+	ast.Inspect(file, func(n ast.Node) bool {
+		stmt, ok := n.(*ast.IfStmt)
+		if !ok || !readsSelector(stmt.Cond, "spec", "RequireComplete") {
+			return true
+		}
+		guards++
+		ast.Inspect(stmt.Body, func(inner ast.Node) bool {
+			if _, isCall := inner.(*ast.CallExpr); isCall {
+				guarded++
+			}
+			return true
+		})
+		return true
+	})
+
+	if guards == 0 {
+		t.Errorf("rendered serve.go has NO `if spec.RequireComplete` branch — either the boot-time "+
+			"completeness gate is gone (a half-wired server boots green) or it now runs "+
+			"unconditionally (every per-service subcommand, which mounts a subset on purpose, "+
+			"refuses to start); rendered output:\n%s", rendered)
+		return
+	}
+	if guarded == 0 {
+		t.Errorf("rendered serve.go guards on spec.RequireComplete but CALLS NOTHING inside that "+
+			"branch — the gate is a no-op and a server missing a service still boots; rendered "+
+			"output:\n%s", rendered)
+	}
+}
+
+// readsSelector reports whether expr contains a `recv.field` selector.
+func readsSelector(expr ast.Expr, recv, field string) bool {
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != field {
+			return true
+		}
+		if id, isIdent := sel.X.(*ast.Ident); isIdent && id.Name == recv {
+			found = true
+		}
+		return true
+	})
+	return found
 }
 
 // TestDeadAppSubstrateTemplatesRemoved asserts the retired pkg/app DI

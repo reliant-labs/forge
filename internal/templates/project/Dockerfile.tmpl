@@ -32,21 +32,6 @@ WORKDIR /app
 COPY go.work go.work.sum* ./
 COPY go.mod go.sum ./
 COPY gen/go.mod gen/go.sum ./gen/
-{{- if .LocalForgePkgVendored }}
-
-# ── Dev-mode local forge/pkg vendor ──
-#
-# go.mod has `replace github.com/reliant-labs/forge/pkg => ./.forge-pkg`
-# (a sibling forge checkout vendored in by `forge generate`). Without
-# this COPY the in-container `go mod download` and `go build` would fail
-# because the absolute host path is invisible inside the build context.
-#
-# This block is auto-emitted only while `.forge-pkg/` exists locally.
-# Once the project switches back to a real forge/pkg release tag (no
-# replace), `forge generate` removes the directory and regenerates the
-# Dockerfile without this COPY.
-COPY .forge-pkg/ ./.forge-pkg/
-{{- end }}
 
 RUN go mod download
 
@@ -56,7 +41,7 @@ COPY . .
 # Build with optimizations.
 #
 # ONE image, EVERY binary. Each `cmd/<bin>/` entrypoint (the primary
-# server plus any `forge add binary` siblings — proxy / ctl / worker-style
+# server plus any `forge scaffold binary` siblings — proxy / ctl / worker-style
 # processes) builds into /app/bin/<bin>. The production stage runs the
 # primary by default; secondary binaries are launched by overriding the
 # container command to /app/<bin> per-workload (KCL emits one Deployment

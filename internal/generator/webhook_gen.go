@@ -10,9 +10,13 @@ import (
 )
 
 // GenerateWebhookFiles generates all files for a webhook endpoint within a service:
-//   - internal/handlers/<service>/webhook_<name>.go       (handler + signature verification)
+//   - internal/handlers/<service>/webhook_<name>.go       (handler + signature verification + dedup)
 //   - internal/handlers/<service>/webhook_<name>_test.go   (tests)
-//   - internal/handlers/<service>/webhook_store.go         (idempotency store, only if not present)
+//
+// Every symbol a handler needs is either its own (uniquely named per webhook)
+// or comes from forge/pkg/middleware, so each webhook is one self-contained
+// pair of files and adding a second webhook to a service cannot collide with
+// the first.
 func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) error {
 	svcPkg := naming.ServicePackage(serviceName)
 	svcDir := filepath.Join(root, "internal", "handlers", svcPkg)
@@ -47,18 +51,6 @@ func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) err
 	testPath := filepath.Join(svcDir, fmt.Sprintf("webhook_%s_test.go", webhookName))
 	if err := os.WriteFile(testPath, testContent, 0644); err != nil {
 		return fmt.Errorf("write webhook test: %w", err)
-	}
-
-	// -- webhook store (only create if not already present) --
-	storePath := filepath.Join(svcDir, "webhook_store.go")
-	if _, err := os.Stat(storePath); os.IsNotExist(err) {
-		storeContent, err := templates.WebhookTemplates().Render("webhooks_store.go.tmpl", data)
-		if err != nil {
-			return fmt.Errorf("render webhook store: %w", err)
-		}
-		if err := os.WriteFile(storePath, storeContent, 0644); err != nil {
-			return fmt.Errorf("write webhook store: %w", err)
-		}
 	}
 
 	return nil

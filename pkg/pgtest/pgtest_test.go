@@ -26,12 +26,12 @@ func TestNew_RealPostgres(t *testing.T) {
 		`CREATE SCHEMA controlplane`,
 		`CREATE TABLE controlplane.widget (
 			id BIGSERIAL PRIMARY KEY,
-			tenant_id TEXT NOT NULL,
+			region TEXT NOT NULL,
 			tags TEXT[] NOT NULL DEFAULT '{}'::text[],
 			meta JSONB NOT NULL DEFAULT '{}'::jsonb,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
-		`INSERT INTO controlplane.widget (tenant_id) VALUES ('t1')`,
+		`INSERT INTO controlplane.widget (region) VALUES ('t1')`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {

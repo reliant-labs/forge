@@ -50,6 +50,29 @@ task dev
 
 Stop infra with `task dev-down` when you're done.
 
+### Dev-installing the `forge` CLI
+
+To iterate on the CLI itself, install it from your checkout with the local
+source root stamped in:
+
+```bash
+make dev            # or: task install:dev
+export PATH="$HOME/go/bin:$PATH"   # so the freshly-installed forge is found
+```
+
+`make dev` runs `go install` with an ldflag that records THIS checkout's path
+(`git rev-parse --show-toplevel`) into the binary. The path is discovered at
+build time from your own tree — nothing machine-specific is ever committed to
+forge's source.
+
+Why it matters: `forge/pkg` is a published module, so a plain
+`forge project new` pins the last published tag with no `replace`. A binary
+installed with `make dev` instead writes a **gitignored `go.work`** into each
+new project that `use`s `<this-checkout>/pkg`, so scaffolds build against your
+in-development `forge/pkg` with no manual `go mod edit -replace`. A released
+`forge` (installed via `task install` or `go install …@vX.Y.Z`) omits the
+stamp and never writes that `go.work`.
+
 ## Before opening a PR
 
 Keep the feedback loop tight — run these locally and make sure they're green:

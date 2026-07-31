@@ -7,7 +7,7 @@ renderable with a NAME the EXISTING `--target` axis selects. forge reads
 this `output.helm_charts` list and runs `helm template <chart|oci>
 --version <v> --values <vals> -n <ns> --skip-crds` Go-side, stamping
 `app.kubernetes.io/name = name` on every rendered manifest so
-`forge deploy <env> --target <name>` applies that platform dep.
+`forge env deploy <env> --target <name>` applies that platform dep.
 
 cert-manager + Envoy Gateway are the two motivating deps: one repo chart,
 one OCI chart — both rendered here. HelmChart NEVER appears in

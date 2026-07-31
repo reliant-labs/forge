@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,7 +34,7 @@ func collectCRUDMethodNames(services []codegen.ServiceDef, projectDir string) ma
 // webhook-only — i.e. the forge.yaml service entry has at least one
 // webhook AND every RPC in the proto is a CRUD-shaped placeholder with
 // no backing entity. These services scaffolded a default CRUD proto
-// (Create/Get/Update/Delete/List) at `forge new --service` time, then
+// (Create/Get/Update/Delete/List) at `forge project new --service` time, then
 // later got webhooks added; the original CRUD RPCs are now leak-only
 // stubs that ship as Unimplemented errors but never get called.
 //
@@ -45,7 +46,7 @@ func collectCRUDMethodNames(services []codegen.ServiceDef, projectDir string) ma
 //     from collectCRUDMethodNames does NOT contain the RPC name).
 //
 // When both hold, GenerateMissingHandlerStubs treats the proto's RPCs
-// as logically-absent: no stubs are scaffolded into handlers.go.
+// as logically-absent: no per-RPC handler stubs are scaffolded.
 //
 // The return is keyed by the service's Go name (svc.Name) — the same
 // key used elsewhere in the stub-generation pass.
@@ -104,14 +105,15 @@ func webhookOnlyServiceNames(services []codegen.ServiceDef, projectDir string, c
 	return out
 }
 
-// generateServiceStubs creates service.go, handlers.go, wrapper.go for new services.
+// generateServiceStubs creates service.go, one rpc_<name>.go per custom RPC,
+// and wrapper.go for new services.
 // For existing service directories, it generates stubs only for missing RPC handlers.
 // crudMethodNames contains method names that CRUD gen will implement; stubs are skipped for these.
 //
 // Webhook-only services (forge.yaml `webhooks:` declared, every proto RPC is a
 // CRUD-shaped scaffold-leftover with no entity behind it) get the stub block
 // suppressed entirely — their proto's Create/Get/Update/Delete/List RPCs are
-// the leftover scaffolding from `forge new --service`, never the real handler
+// the leftover scaffolding from `forge project new --service`, never the real handler
 // surface. See FORGE_REVIEW_REBUILD.md §3.5 (admin_server CRUD-stub leak).
 func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, crudMethodNames map[string]bool, cs *generator.FileChecksums) error {
 	fmt.Println("\n🔧 Generating service stubs...")
@@ -155,13 +157,24 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 			}
 		}
 
-		if dirExists(absServiceDir) {
+		if dirExists(absServiceDir) { //nolint:nestif // per-service existence probe: each arm reports a different reason the service dir cannot be generated into.
 			// Incremental: scaffold stubs only for missing RPC methods,
-			// appended to the user-owned handlers.go (no forge-owned gen
-			// file). cs is threaded for signature stability only.
+			// one user-owned rpc_<name>.go each (no forge-owned gen file).
+			// cs is threaded for signature stability only.
 			result, err := codegen.GenerateMissingHandlerStubs(svc, projectDir, absServiceDir, skipNames, cs)
 			if err != nil {
 				return fmt.Errorf("failed to generate missing stubs for %s: %w", svc.Name, err)
+			}
+			// Keep the scaffold test's app.NewTest<X>/With<X>Deps references in
+			// lockstep with the collision-aware factory name pkg/app/testing.go
+			// emits. A domain package registered AFTER the scaffold test was
+			// first written (the RPC-vertical sweep's internal/<svc>) flips that
+			// name (Widget → SvcWidget); without this the frozen scaffold-once
+			// test references an undefined factory and `go vet` breaks.
+			if renamed, rerr := codegen.ReconcileScaffoldTestHelperName(projectDir, res.PackageName, absServiceDir); rerr != nil {
+				return fmt.Errorf("reconcile scaffold test helper name for %s: %w", svc.Name, rerr)
+			} else if renamed {
+				fmt.Printf("  ✅ Re-pointed %s/handlers_scaffold_*_test.go at the collision-aware app.NewTest factory\n", relServiceDir)
 			}
 			if result.AllUpToDate {
 				if webhookOnly[svc.Name] {
@@ -170,7 +183,7 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 					fmt.Printf("  ⏭️  Skipped %s/ (all handlers up to date)\n", relServiceDir)
 				}
 			} else {
-				fmt.Printf("  ✅ Appended %d new handler stub(s) to %s/handlers.go (yours to edit): %s\n",
+				fmt.Printf("  ✅ Scaffolded %d new handler stub(s) under %s/, one file per RPC (yours to edit): %s\n",
 					len(result.NewMethods), relServiceDir, strings.Join(result.NewMethods, ", "))
 				hasNewStubs = true
 			}
@@ -220,9 +233,20 @@ func generateCRUDHandlers(services []codegen.ServiceDef, modulePath string, proj
 		fmt.Printf("  ✅ Generated handlers/%s CRUD wiring (%d methods; ops in handlers_crud_ops_gen.go, shims in user-owned handlers_crud.go)\n", pkg, len(crudMethods))
 
 		if err := codegen.GenerateCRUDTests(svc, crudMethods, modulePath, projectDir, cs); err != nil {
+			// Fixtures the applied schema REJECTS are a hard failure. Every
+			// other scaffold problem stays a warning (a project without a
+			// lifecycle test still generates), but emitting a test forge can
+			// prove its own migration will refuse is the defect this guard
+			// exists to stop — and a warning is what let it ship, surfacing
+			// much later as an unattributed create #1 failure in a
+			// scaffold-once file the author was told not to rewrite.
+			var fce *codegen.FixtureConstraintError
+			if errors.As(err, &fce) {
+				return fmt.Errorf("CRUD test generation for %s: %w", svc.Name, err)
+			}
 			fmt.Fprintf(os.Stderr, "  ⚠️  CRUD test generation for %s failed: %v\n", svc.Name, err)
 		} else {
-			fmt.Printf("  ✅ Generated handlers/%s/handlers_crud_gen_test.go (unit) + handlers_crud_integration_test.go (-tags integration)\n", pkg)
+			fmt.Printf("  ✅ Generated handlers/%s/handlers_crud_test.go (CRUD lifecycle against real postgres — scaffolded once, yours from line one)\n", pkg)
 		}
 		generated++
 	}

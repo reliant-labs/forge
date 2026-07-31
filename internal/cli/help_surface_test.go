@@ -63,13 +63,10 @@ func TestGenerateHelpSurface(t *testing.T) {
 	})
 
 	assertStringSlicesEqual(t, "generate hidden flags", hiddenFlagNames(cmd), []string{
-		"accept",
 		"explain-drift",
 		"force-cleanup",
 		"no-revert",
 		"plan",
-		"reason",
-		"scope", // deprecated alias for --steps; hidden via MarkDeprecated
 		"skip-config-check",
 		"skip-pre-checks",
 		"skip-validate",

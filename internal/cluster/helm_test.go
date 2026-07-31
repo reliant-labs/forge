@@ -102,7 +102,7 @@ func TestSelectHelmChartsByGroup_UniformExclusiveRule(t *testing.T) {
 		{Name: "envoy-gateway"},
 	}
 
-	// No targets → ALL charts (bare `forge deploy <env>` reconciles every
+	// No targets → ALL charts (bare `forge env deploy <env>` reconciles every
 	// declared platform dep — the uniform "no target = everything" rule).
 	sel := selectHelmChartsByGroup(charts, nil)
 	if len(sel) != 2 {
@@ -385,7 +385,7 @@ func fakeKubectlLog(t *testing.T) string {
 // TestApplyCRDsThenRest_OrdersCRDsBeforeRest is the apply-ordering proof:
 // a manifest set whose chart resources reference a CRD must apply the CRDs
 // FIRST, WAIT until Established, and only THEN apply the rest — so a
-// subsequent `forge deploy` (the app) finds the CRDs present. Asserts the
+// subsequent `forge env deploy` (the app) finds the CRDs present. Asserts the
 // kubectl invocation order: apply (CRD) → wait Established → apply (rest).
 func TestApplyCRDsThenRest_OrdersCRDsBeforeRest(t *testing.T) {
 	logPath := fakeKubectlLog(t)

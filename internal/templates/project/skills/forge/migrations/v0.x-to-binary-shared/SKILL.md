@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-binary-shared
 description: Migrate a multi-service forge project from binary=per-service (one Application per service in KCL, one image build per service) to binary=shared (one Go binary, cobra subcommand per service, one Docker image, MultiServiceApplication for KCL deploy). Use when CI image builds dominate cycle time or when services share substantial internal libraries.
+elective: true
 relevance: migration
 ---
 
@@ -96,7 +97,7 @@ Run `forge generate`. The pipeline rewrites:
   `MultiServiceApplication` shape (one `image:`, N
   `SubCommandService` entries via `render.multi_service_apps(multi)`).
 
-`forge upgrade` is the safer command for established projects: it
+`forge project upgrade` is the safer command for established projects: it
 shows a dry-run diff first and prompts before overwriting any
 checksum-protected file. `forge generate` always rewrites the Tier-1
 files (cmd/main.go, internal/cli/*.go, etc.) and leaves Tier-2 alone.
@@ -166,6 +167,6 @@ To go back to `binary: per-service`:
   lives in `internal/app` — upgraders mid-migration may still see the
   old file.)
 - `binaries` — second binaries (non-Connect long-running processes)
-  ride the same shared root: `forge add binary <name>`, or register a
+  ride the same shared root: `forge scaffold binary <name>`, or register a
   hand-rolled command via `userCommands(deps)` in
   `internal/cli/commands.go`.

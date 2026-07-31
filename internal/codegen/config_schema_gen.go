@@ -2,19 +2,15 @@
 // `schema AppConfig` projected from the proto config fields
 // (the `(forge.v1.config)`-annotated fields of proto/config/v1/config.proto).
 //
-// This is the TYPE half of the config-as-KCL story. Where
-// deploy_config_gen.go projects per-env VALUE literals ([forge.EnvVar] +
-// [forge.ConfigMap]) from the sibling `config.<env>.yaml`, this emitter
-// projects the SHAPE: one KCL schema whose fields mirror the proto config
-// fields, so an env authors its config as a typed `AppConfig { ... }`
-// instance in `deploy/kcl/<env>/config.k` and KCL type-checks it against
-// the proto's own contract (required fields, types, defaults) at load time.
+// This is the TYPE half of the config-as-KCL story: it projects the SHAPE —
+// one KCL schema whose fields mirror the proto config fields, so an env authors
+// its config as a typed `AppConfig { ... }` instance in
+// `deploy/kcl/<env>/config.k` and KCL type-checks it against the proto's own
+// contract (required fields, types, defaults) at load time.
 //
-// Phase 1 (this file) is ADDITIVE: it is a standalone emitter + test and
-// is NOT yet wired into the generate pipeline. The runtime Go loader
-// (pkg/config/loader.go), which binds env by each field's `env_var`
-// annotation via descriptor reflection, is unchanged — the KCL schema
-// describes the same fields, so the two stay coherent by construction.
+// The runtime Go loader (pkg/config/loader.go), which binds env by each field's
+// `env_var` annotation via descriptor reflection, describes the same fields, so
+// the two stay coherent by construction.
 package codegen
 
 import (
@@ -43,7 +39,7 @@ const ConfigSchemaModule = "config_schema"
 // extractor as ProtoType == "message" WITH MessageType set to the block's
 // name (e.g. "TraderConfig") and NO env_var of their own. They carry no
 // scalar KCL type and env binds on the referenced message's leaves, so
-// they are skipped in Phase 1 with a comment marking the omission.
+// they are skipped with a comment marking the omission.
 //
 // NOTE the discriminator is MessageType, not ProtoType == "message":
 // forge's extractor (internal/cli/forge_descriptor.go) collapses EVERY
@@ -82,7 +78,7 @@ func GenerateConfigSchemaKCL(fields []ConfigField, projectName string) (string, 
 	for _, f := range fields {
 		if f.MessageType != "" {
 			// Block-reference to a component config message: no scalar
-			// KCL type, env binds on its leaves. Out of scope for Phase 1.
+			// KCL type, env binds on its leaves. Nested schemas are not projected.
 			// (A duration/WKT leaf has ProtoType "message" too but NO
 			// MessageType — it is emitted below as a str.)
 			fmt.Fprintf(&body, "    # (omitted) %s references config message %q — its leaf fields bind env; nested schemas are not yet projected.\n", f.Name, f.MessageType)
@@ -134,31 +130,36 @@ func GenerateConfigSchemaKCL(fields []ConfigField, projectName string) (string, 
 
 // kclTypeForProtoConfig maps a config field's proto type to its KCL type.
 //
-//	string                    -> str
-//	int32/int64/uint32/uint64 -> int
-//	bool                      -> bool
+//	string, bytes             -> str  (bytes is base64, as protojson sends it)
+//	every integer kind        -> int
 //	float/double              -> float
+//	bool                      -> bool
 //	google.protobuf.Duration  -> str  (forge carries durations as strings
 //	                                    like "30m"/"5s")
+//	enum                      -> str  (protojson encodes the value NAME)
 //
-// Unknown scalar spellings fall back to `str` — the conservative choice
-// (any value round-trips through a string) rather than emitting an
-// undefined KCL type.
+// The scalar half routes through the closed table by way of the Go type,
+// not through a list of proto kind names. The Go type is the right key
+// because it is the one that separates `int` from `float`, which the
+// TypeScript projection does not: int32 and double are both `number` there
+// and must not be the same KCL type here.
+//
+// Naming a subset of the kinds is what this used to do — "int32", "int64",
+// "uint32", "uint64" and no others — so the eight remaining integer kinds
+// took the `str` fallback. A `sint64 max_retries` config field was typed
+// `int` on the Go struct and `str` in the emitted KCL schema, and the KCL
+// schema is what validates the operator's values: the fallback did not
+// report a kind it did not know, it answered `str` and looked right.
 func kclTypeForProtoConfig(f ConfigField) string {
 	// Durations render as strings regardless of how the descriptor spells
 	// them (proto message name or the Go time.Duration alias).
 	if f.ProtoType == "google.protobuf.Duration" || f.GoType == "time.Duration" || f.GoType == "*durationpb.Duration" {
 		return "str"
 	}
+	if goType, ok := ProtoScalarGoType(f.ProtoType); ok {
+		return kclTypeForGoScalar(goType)
+	}
 	switch f.ProtoType {
-	case "string":
-		return "str"
-	case "int32", "int64", "uint32", "uint64":
-		return "int"
-	case "bool":
-		return "bool"
-	case "float", "double":
-		return "float"
 	case "message":
 		// A message-typed LEAF that reached here (MessageType unset, so
 		// it's not a block reference) is a well-known scalar-carried type —
@@ -166,8 +167,32 @@ func kclTypeForProtoConfig(f ConfigField) string {
 		// string ("30m"/"5s"). GoType confirms it ("string").
 		return "str"
 	default:
+		// enum, and any non-scalar a descriptor spells by type name.
 		return "str"
 	}
+}
+
+// kclTypeForGoScalar names the KCL type for one Go type in the closed proto
+// scalar projection. It is total over that projection's nine values —
+// TestKCLType_IsTotalOverTheClosedVocabulary pins that every kind in the
+// table lands on a named arm — so the tail is a programming error rather
+// than a config field shape.
+func kclTypeForGoScalar(goType string) string {
+	switch goType {
+	case "string":
+		return "str"
+	case "bool":
+		return "bool"
+	case "float32", "float64":
+		return "float"
+	case "int32", "int64", "uint32", "uint64":
+		return "int"
+	case "[]byte":
+		// No KCL scalar holds bytes; base64 is the encoding the field
+		// already has on the wire.
+		return "str"
+	}
+	panic("codegen: no KCL type for Go scalar type " + goType)
 }
 
 // kclConfigDefaultLiteral returns the KCL default literal for a config

@@ -2,7 +2,7 @@
 Positive tests for forge.Cluster — declared k3d clusters forge ensures
 exist before deploying.
 
-An env declares a LIST of clusters (Bundle.clusters). `forge up`
+An env declares a LIST of clusters (Bundle.clusters). `forge env up`
 reconciles each (create-if-absent, no-op if present). Ownership is a
 REFERENCE: a secondary cluster names its `owner` Cluster instance, and
 forge DERIVES both the joined network (`k3d-<owner.name>`) and the

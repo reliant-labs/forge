@@ -1,0 +1,438 @@
+// Package cli — `forge project libraries`: where forge/pkg actually is on
+// THIS machine, and what each subpackage is for.
+//
+// WHY THIS EXISTS. A dogfood run caught three independent agents running a
+// full-disk `find / -path "*forge/pkg/svcerr*"` in the same session, hunting
+// for library source. Every one of them already knew the package name; what
+// they could not answer was "where is it, and what else is in there". The
+// existing answer — a `forge-libraries` skill — was loaded by nobody, and
+// its hand-written table had drifted anyway: it listed a `pkg/dialects` that
+// does not exist and omitted nine packages that do. A stale index nobody
+// opens is not a routing mechanism.
+//
+// Everything here is ENUMERATED, never transcribed:
+//
+//   - the DIRECTORY comes from `go list -m`, so it is the go toolchain's own
+//     answer for the pkg version THIS project resolves — a go.work replace
+//     in a dev tree, the module cache in a release build, without this code
+//     knowing which.
+//   - the PACKAGE SET is the subdirectories of that directory.
+//   - each PURPOSE is the package's own doc comment, read from that source.
+//
+// So the output cannot drift from the packages, and it describes the
+// version the project actually compiles against rather than whatever the
+// forge binary was built beside.
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"go/parser"
+	"go/token"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/spf13/cobra"
+)
+
+// forgePkgModule is the module path of forge's public runtime libraries.
+const forgePkgModule = "github.com/reliant-labs/forge/pkg"
+
+// LibrarySpec is one forge/pkg subpackage: what to import, where its source
+// is, and the opening line of its own package doc.
+type LibrarySpec struct {
+	Name       string `json:"name"`               // e.g. "svcerr"
+	ImportPath string `json:"import_path"`        // e.g. "github.com/reliant-labs/forge/pkg/svcerr"
+	Dir        string `json:"dir"`                // absolute path to the package source
+	Synopsis   string `json:"synopsis,omitempty"` // first sentence of the package doc
+	// Symbols is the package's exported surface, present only for the
+	// packages --signatures selected. See libraries_signatures.go.
+	Symbols []LibrarySymbol `json:"symbols,omitempty"`
+}
+
+// LibrariesSpec is the whole dump: the resolved Go module and its packages,
+// then the frontend runtime. forge ships two runtime libraries — forge/pkg
+// for Go and @reliant-labs/web-runtime for the web — and a verb that
+// indexed only the first sent every agent looking for the second onto the
+// filesystem.
+type LibrariesSpec struct {
+	Module   string        `json:"module"`
+	Version  string        `json:"version,omitempty"`
+	Dir      string        `json:"dir"`
+	Packages []LibrarySpec `json:"packages,omitempty"`
+	// WebRuntime is nil when no frontend in this project depends on it.
+	WebRuntime *WebRuntimeSpec `json:"web_runtime,omitempty"`
+	// SignatureSelectors echoes what --signatures asked for, so a pasted
+	// brief records which slice of the API it carries — and which it does
+	// not. Empty when signatures were not requested.
+	SignatureSelectors string `json:"signature_selectors,omitempty"`
+}
+
+func newLibrariesCmd() *cobra.Command {
+	var asJSON bool
+	var signatures string
+	cmd := &cobra.Command{
+		Use:   "libraries",
+		Short: "Locate forge/pkg and the web runtime on this machine and say what each is for",
+		Long: `Locate forge's public runtime libraries and summarize each one.
+
+forge ships TWO runtime libraries, and this prints both: forge/pkg for Go
+and @reliant-labs/web-runtime for the frontend. For each it prints the
+absolute source directory on this machine, then one line per Go package or
+per web module and its exported symbols.
+
+Read this BEFORE porting a utility from another codebase, and instead of
+searching the disk for library source. Every field is derived: the Go
+directory from 'go list -m', its package set from that directory, each
+purpose from the package's own doc comment; the web directory from what npm
+installed, its entry points from that package's exports map, its symbols
+from its own public barrel.
+
+--signatures goes a level deeper for the Go packages you name, printing
+their full exported API — every func with its parameters, every struct with
+its fields, every interface with its methods — parsed out of the source
+resolved above. Doc prose is omitted, so the block is the API and nothing
+else. Hand that to somebody who has to WRITE against these packages and
+they need no 'go doc' round trip; the default stays terse for everyone else.
+
+The selector grammar is 'go doc''s, so there is nothing new to learn:
+
+  --signatures=svcerr,tdd            two whole packages
+  --signatures=orm.Context           one type, with its methods
+  --signatures=all                   every package (large — prefer a list)
+
+A selector that names a package or symbol that does not exist is an error
+listing what does, so a briefing script whose list has gone stale fails
+loudly rather than quietly shipping an incomplete API.
+
+For a package you did NOT select, no file reading is needed either:
+
+  go doc github.com/reliant-labs/forge/pkg/svcerr
+  go doc github.com/reliant-labs/forge/pkg/svcerr Wrap
+
+Examples:
+  forge project libraries
+  forge project libraries --json
+  forge project libraries --signatures=svcerr,crud,tdd,testkit,orm.Context`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			spec, err := buildLibrariesSpec(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if err := attachSignatures(&spec, signatures); err != nil {
+				return err
+			}
+			return writeLibraries(cmd.OutOrStdout(), spec, asJSON)
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the inventory as JSON")
+	cmd.Flags().StringVar(&signatures, "signatures", "",
+		"comma-separated forge/pkg selectors whose full exported API to print: `pkg`, `pkg.Symbol`, or `all`")
+	return cmd
+}
+
+// buildLibrariesSpec resolves the forge/pkg module and reads its packages.
+func buildLibrariesSpec(ctx context.Context) (LibrariesSpec, error) {
+	dir, version, err := resolveForgePkgDir(ctx)
+	if err != nil {
+		return LibrariesSpec{}, err
+	}
+	pkgs, err := readForgePkgPackages(dir)
+	if err != nil {
+		return LibrariesSpec{}, err
+	}
+	// Fail loudly rather than print a confident empty list: an empty set
+	// here means the resolution pointed somewhere wrong, and a caller that
+	// believes "forge ships no libraries" writes them all by hand.
+	if len(pkgs) == 0 {
+		return LibrariesSpec{}, fmt.Errorf(
+			"resolved %s to %s but found no subpackages there — the module directory looks wrong or incomplete",
+			forgePkgModule, dir)
+	}
+	spec := LibrariesSpec{Module: forgePkgModule, Version: version, Dir: dir, Packages: pkgs}
+
+	// The frontend half needs a project root: run from outside one — the
+	// forge repo itself, say — the Go inventory still answers.
+	//
+	// Everything past that point fails loudly, for the reason above. A
+	// project with no frontend and one whose node_modules is missing are
+	// both non-errors that buildWebRuntimeSpec reports in the spec itself;
+	// an error here means the package IS installed and could not be read,
+	// and swallowing it would print "no frontend depends on it" over a
+	// frontend that does.
+	if projectDir, perr := projectRootDir(); perr == nil {
+		rt, rerr := buildWebRuntimeSpec(projectDir)
+		if rerr != nil {
+			return LibrariesSpec{}, rerr
+		}
+		spec.WebRuntime = rt
+	}
+	return spec, nil
+}
+
+// projectRootDir finds the project root by walking up for forge.yaml, the
+// same anchor every other project-scoped verb uses.
+func projectRootDir() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, statErr := os.Stat(filepath.Join(dir, "forge.yaml")); statErr == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("no forge.yaml found walking up from %s", currentDirForMessage())
+		}
+		dir = parent
+	}
+}
+
+// resolveForgePkgDir asks the go toolchain where the forge/pkg module lives
+// for the module in the current directory.
+//
+// `go list -m` is the right question to ask because it is the SAME
+// resolution the compiler performs: a `replace` or a go.work `use` pointing
+// at a local checkout resolves to that checkout, and everything else
+// resolves into the module cache. Reimplementing either lookup here would
+// be a second answer that can disagree with the build.
+func resolveForgePkgDir(ctx context.Context) (dir, version string, err error) {
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Dir}}\t{{.Version}}", forgePkgModule)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, runErr := cmd.Output()
+	if runErr != nil {
+		return "", "", fmt.Errorf(
+			"could not resolve %s from %s: %w\n%s\n"+
+				"Run this from inside a forge project (the module that requires forge/pkg).",
+			forgePkgModule, currentDirForMessage(), runErr, strings.TrimSpace(stderr.String()))
+	}
+
+	dir, version, _ = strings.Cut(strings.TrimSpace(string(out)), "\t")
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		// `go list -m` answers with an empty Dir when the module is in the
+		// build list but not extracted locally. Naming the fix matters more
+		// than the diagnosis.
+		return "", "", fmt.Errorf(
+			"%s is required but its source is not on disk yet — run `go mod download %s` first",
+			forgePkgModule, forgePkgModule)
+	}
+	return dir, strings.TrimSpace(version), nil
+}
+
+func currentDirForMessage() string {
+	if wd, err := os.Getwd(); err == nil {
+		return wd
+	}
+	return "the current directory"
+}
+
+// readForgePkgPackages lists the subdirectories of the resolved module that
+// are Go packages, each with the synopsis of its own package doc.
+func readForgePkgPackages(moduleDir string) ([]LibrarySpec, error) {
+	entries, err := os.ReadDir(moduleDir)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", moduleDir, err)
+	}
+
+	var out []LibrarySpec
+	for _, e := range entries {
+		name := e.Name()
+		// Dot- and underscore-prefixed directories are invisible to the go
+		// tool; testdata is data, not a library.
+		if !e.IsDir() || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata" {
+			continue
+		}
+		pkgDir := filepath.Join(moduleDir, name)
+		synopsis, isPkg := packageSynopsis(pkgDir)
+		if !isPkg {
+			continue
+		}
+		out = append(out, LibrarySpec{
+			Name:       name,
+			ImportPath: forgePkgModule + "/" + name,
+			Dir:        pkgDir,
+			Synopsis:   synopsis,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// packageSynopsis reports whether dir holds a non-test Go package and, if
+// so, the first sentence of its package doc comment.
+//
+// The doc comment is the package's OWN description of itself, which is why
+// it is the right source: it is written next to the code, reviewed with the
+// code, and cannot be forgotten in a separate index.
+func packageSynopsis(dir string) (string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	var files []string
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+			continue
+		}
+		files = append(files, n)
+	}
+	if len(files) == 0 {
+		return "", false
+	}
+	// doc.go first when present — the conventional home of a package
+	// comment — then the rest in a stable order.
+	sort.Slice(files, func(i, j int) bool {
+		if (files[i] == "doc.go") != (files[j] == "doc.go") {
+			return files[i] == "doc.go"
+		}
+		return files[i] < files[j]
+	})
+
+	fset := token.NewFileSet()
+	for _, name := range files {
+		f, perr := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.PackageClauseOnly|parser.ParseComments)
+		if perr != nil || f == nil {
+			continue
+		}
+		if f.Doc != nil {
+			if s := firstSentence(f.Doc.Text()); s != "" {
+				return stripPackagePrefix(s), true
+			}
+		}
+	}
+	// A real package with no doc comment is still a package — report it
+	// with an empty synopsis rather than hiding it from the inventory.
+	return "", true
+}
+
+// stripPackagePrefix drops the conventional "Package foo " / "Package foo —
+// " lead-in so the summary carries meaning instead of repeating the name
+// already in the first column.
+//
+// The remainder keeps its original case on purpose. Godoc convention makes
+// it a lowercase verb ("provides …", "is the paved path …"), which reads as
+// a continuation of the name column; force-capitalizing it produced "Is the
+// paved path".
+func stripPackagePrefix(s string) string {
+	rest, ok := strings.CutPrefix(s, "Package ")
+	if !ok {
+		return s
+	}
+	// Drop the package name itself, then any separator that followed it.
+	_, after, found := strings.Cut(rest, " ")
+	if !found {
+		return s
+	}
+	after = strings.TrimLeft(after, " ")
+	for _, sep := range []string{"— ", "-- ", "- ", "– "} {
+		if trimmed, cut := strings.CutPrefix(after, sep); cut {
+			after = trimmed
+			break
+		}
+	}
+	if after == "" {
+		return s
+	}
+	return after
+}
+
+func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
+	if asJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(spec)
+	}
+	p := func(format string, args ...any) error {
+		_, err := fmt.Fprintf(w, format, args...)
+		return err
+	}
+
+	label := spec.Module
+	if spec.Version != "" {
+		label += "@" + spec.Version
+	}
+	if err := p("FORGE LIBRARIES — %s\n", label); err != nil {
+		return err
+	}
+	if err := p("Source on this machine: %s\n\n", spec.Dir); err != nil {
+		return err
+	}
+	for _, l := range spec.Packages {
+		synopsis := l.Synopsis
+		if synopsis == "" {
+			// Say so rather than print a blank column: an undocumented
+			// package is a real (and fixable) state, not a rendering bug.
+			synopsis = "(no package doc — read it with `go doc " + l.ImportPath + "`)"
+		}
+		if err := p("  %-14s %s\n", l.Name, synopsis); err != nil {
+			return err
+		}
+	}
+	if err := p("\nImport as %s/<name>. %s", spec.Module, deeperAPIGuidance(spec)); err != nil {
+		return err
+	}
+	if err := p("Adopt before porting: if a package covers the surface, use it; if it covers\n" +
+		"most of it, extend it project-side rather than forking it. `forge skill load\n" +
+		"forge-libraries` has the when-to-adopt guidance.\n"); err != nil {
+		return err
+	}
+	if err := writeSignatures(w, spec); err != nil {
+		return err
+	}
+	return writeWebRuntime(w, spec.WebRuntime)
+}
+
+// deeperAPIGuidance is the paragraph that tells a reader how to get past a
+// one-line synopsis.
+//
+// It has to change with --signatures, because the untouched version is a
+// measurable liability: it names `go doc .../svcerr` as THE way to see an
+// API, and in a ten-unit wave that instruction was followed 36 times, four
+// of them for svcerr alone. Left unscoped it would keep saying "go look it
+// up" directly above a block that already contains the answer.
+//
+// So: with no selection, keep it — it is still the only route for 24
+// packages — but advertise the one-shot alternative. With a selection,
+// point at the block and reserve `go doc` for what is NOT in it, using a
+// package that really was left out as the example, so the output never
+// tells the reader to fetch something it just printed.
+func deeperAPIGuidance(spec LibrariesSpec) string {
+	if spec.SignatureSelectors == "" {
+		return fmt.Sprintf(
+			"For the full API of one package, read it from the\n"+
+				"toolchain rather than the disk:\n"+
+				"  go doc %s/svcerr\n"+
+				"  go doc %s/svcerr Wrap\n"+
+				"Writing against several at once? `forge project libraries\n"+
+				"--signatures=svcerr,crud,tdd` prints their entire exported API right here,\n"+
+				"in one call, with the doc prose stripped.\n",
+			spec.Module, spec.Module)
+	}
+	example := ""
+	for _, l := range spec.Packages {
+		if len(l.Symbols) == 0 {
+			example = l.ImportPath
+			break
+		}
+	}
+	if example == "" {
+		return fmt.Sprintf("The complete exported API of every package is printed\nbelow (--signatures=%s).\n", spec.SignatureSelectors)
+	}
+	return fmt.Sprintf(
+		"The complete exported API of %s is printed below.\n"+
+			"For a package that is NOT down there, read it from the toolchain rather\n"+
+			"than the disk:\n"+
+			"  go doc %s\n"+
+			"  go doc %s <Symbol>\n",
+		spec.SignatureSelectors, example, example)
+}

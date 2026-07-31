@@ -24,17 +24,25 @@ import (
 // closure that invokes one method and returns (any, error); use Want
 // for direct equality, Check for custom assertions, or WantErr for the
 // error-path.
+//
+// Fill Deps with the MOCKS forge already generated — never a
+// hand-rolled fake. `forge generate` writes one mock per interface in
+// contract.go into mock_gen.go, so a `Store` dep interface has a
+// `{{.Name}}.MockStore` sitting in the file next to this one. Set its
+// `GetFunc` (etc.) to script the case; every call is recorded by the
+// embedded contractkit.Recorder, so `m.Calls("Get")` and
+// `m.CallCount("Get")` assert ordering and short-circuiting without
+// any bookkeeping of your own.
 func TestContract(t *testing.T) {
 	t.Parallel()
 
-	// Construct the implementation. Adjust Deps as your contract grows.
-	// The two-result `(Service, error)` shape matches the canonical
-	// service.go scaffold; if you polish New to do dep validation or
-	// eager init, the err path is already wired.
-	svc, err := {{.Name}}.New({{.Name}}.Deps{})
-	if err != nil {
-		t.Fatalf("{{.Name}}.New: %v", err)
-	}
+	// svc is DECLARED here and CONSTRUCTED below the empty-table skip, so a
+	// package that has not written its first case yet never calls New. That
+	// ordering is what lets you take service.go's advice — grow New into dep
+	// validation or eager initialization — without this born test going red
+	// on an empty `Deps{}` it was never asked to fill. The Call closures
+	// below capture the VARIABLE, so they see the constructed service.
+	var svc {{.Name}}.Service
 
 	cases := []tdd.ContractCase{
 		// {
@@ -52,5 +60,15 @@ func TestContract(t *testing.T) {
 	if len(cases) == 0 {
 		t.Skip("contract_test.go: add cases to exercise the {{.Name}}.Service contract")
 	}
+
+	// Fill Deps with the mocks your cases need. The two-result
+	// `(Service, error)` shape matches the canonical service.go scaffold, so
+	// a dep-validation or eager-init failure is reported right here instead
+	// of surfacing as a nil dereference inside a case.
+	svc, err := {{.Name}}.New({{.Name}}.Deps{})
+	if err != nil {
+		t.Fatalf("{{.Name}}.New: %v", err)
+	}
+
 	tdd.TableContract(t, svc, cases)
 }

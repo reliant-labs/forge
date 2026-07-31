@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -14,11 +15,13 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// generateAuthMiddleware generates pkg/middleware/auth_gen.go from the auth config.
-func generateAuthMiddleware(cfg *config.ProjectConfig, services []codegen.ServiceDef, modulePath string, projectDir string, cs *generator.FileChecksums) error {
-	fmt.Println("🔧 Generating auth middleware...")
+// generateAuthSetup scaffolds the OWNED internal/app/auth.go (SetupAuth)
+// ONCE. Authentication is code now, not forge.yaml config: SetupAuth picks
+// the validator (default JWT from env) and the generated cmd serve wiring
+// calls it. Write-if-absent — the user owns the file after first emit.
+func generateAuthSetup(modulePath string, projectDir string) error {
+	fmt.Println("🔧 Scaffolding auth setup (internal/app/auth.go)...")
 
-	// Resolve module path if not already set
 	modPath := modulePath
 	if modPath == "" {
 		var err error
@@ -28,41 +31,11 @@ func generateAuthMiddleware(cfg *config.ProjectConfig, services []codegen.Servic
 		}
 	}
 
-	// Build the skip list from proto method options.
-	// Default is fail-closed (auth required); only methods that explicitly
-	// set `(forge.v1.method).auth_required = false` join the skip list and
-	// bypass the auth interceptor.
-	var skipMethods []string
-	for _, svc := range services {
-		for _, m := range svc.Methods {
-			if !m.AuthRequired {
-				procedure := fmt.Sprintf("/%s.%s/%s", svc.Package, svc.Name, m.Name)
-				skipMethods = append(skipMethods, procedure)
-			}
-		}
-	}
-
-	if err := codegen.GenerateAuthMiddleware(&cfg.Auth, modPath, skipMethods, projectDir, cs); err != nil {
+	if err := codegen.GenerateAuthSetup(modPath, projectDir); err != nil {
 		return err
 	}
 
-	fmt.Println("  ✅ Generated pkg/middleware/auth_gen.go")
-	if cfg.Auth.Provider == "api_key" || cfg.Auth.Provider == "both" {
-		fmt.Println("  ✅ Generated pkg/middleware/auth_validator.go (if not exists)")
-	}
-
-	return nil
-}
-
-// generateTenantMiddleware generates pkg/middleware/tenant_gen.go from the multi-tenant config.
-func generateTenantMiddleware(cfg *config.ProjectConfig, projectDir string, cs *generator.FileChecksums) error {
-	fmt.Println("🔧 Generating tenant middleware...")
-
-	if err := codegen.GenerateTenantMiddleware(cfg.Auth.MultiTenant, projectDir, cs); err != nil {
-		return err
-	}
-
-	fmt.Println("  ✅ Generated pkg/middleware/tenant_gen.go")
+	fmt.Println("  ✅ Scaffolded internal/app/auth.go (SetupAuth — yours to edit)")
 	return nil
 }
 
@@ -70,7 +43,7 @@ func generateTenantMiddleware(cfg *config.ProjectConfig, projectDir string, cs *
 //
 // cs is the project's checksum tracker — passing it ensures the rendered
 // webhook_routes_gen.go is recorded so it doesn't show up as an orphan
-// in `forge audit`. A nil cs is tolerated.
+// in `forge project audit`. A nil cs is tolerated.
 //
 // reg is the parsed pkg/app/services.go registration view: webhook
 // routes mount on the serving binary's mux, so declaring webhooks on a
@@ -214,7 +187,16 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		// Honor cfg.Contracts.Exclude — skip the directory entirely so neither
 		// it nor its descendants get generated. Excludes apply to nested paths
 		// too (e.g. "internal/linter/contract").
+		//
+		// Skipping is only half the job: retire anything forge emitted here
+		// before the exclude landed, so the exclude is an ownership exit
+		// rather than an abandonment (see contract/retire.go). The whole
+		// subtree is swept because SkipDir means the walk will not visit
+		// the descendants that the exclude also covers.
 		if cfg != nil && cfg.Contracts.IsExcluded(rel) {
+			if retErr := retireExcludedSubtree(path, contractOpts); retErr != nil {
+				return retErr
+			}
 			return filepath.SkipDir
 		}
 
@@ -236,13 +218,54 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		// own directive; only THIS package opts out.
 		if codegen.HasExcludeContractDirective(path) {
 			fmt.Printf("  ⏭️  Skipped contract codegen for %s/ (//forge:exclude-contract)\n", rel)
-			return nil
+			// Retire this package only — the directive opts out exactly the
+			// package that carries it, matching the no-SkipDir note above.
+			return reportRetirement(contract.RetireExcludedArtifacts(path, contractOpts))
 		}
 
 		if genErr := contract.GenerateWithOptions(contractPath, contractOpts); genErr != nil {
 			return fmt.Errorf("generate contract for %s: %w", rel, genErr)
 		}
 		fmt.Printf("  ✅ Generated mock + middleware for %s/\n", rel)
+
+		// Observability decorator. A package opts in via the `// forge:constructor`
+		// marker on its constructor (the Phase-2 signal) OR the legacy owned
+		// observe_chain.go seam — and NOT via a package-level `// forge:no-observe`
+		// opt-out; paired with a New that returns the Service-contract interface,
+		// forge (re)generates the slim middleware_gen.go wrapper from that
+		// interface — the same ParseContract that drove the mock, so the two
+		// never drift. Otherwise remove any stale decorator, so opting out (the
+		// no-observe marker, or deleting both marker and seam) leaves nothing
+		// behind. Handler packages return a concrete *Service and are excluded by
+		// the ctorType==ifaceName gate inside ShouldInstrumentComponent
+		// (otelconnect owns the edge). Method-level `// forge:no-observe` still
+		// generates the decorator; those methods delegate directly (SkipObserve).
+		obsCF, obsErr := contract.ParseContract(contractPath)
+		if obsErr != nil {
+			return fmt.Errorf("parse contract for observability decorator %s: %w", rel, obsErr)
+		}
+		ifaceName := codegen.DetectServiceInterfaceName(path)
+		if ifaceName == "" {
+			ifaceName = "Service"
+		}
+		ctorType, _ := codegen.DetectConstructorType(path)
+		if codegen.ShouldInstrumentComponent(path, ctorType, ifaceName) {
+			// Resolve the wrapper's names off the constructor's concrete return
+			// type (the SAME resolver the compose assembler uses), so the
+			// generated constructor matches the emitted call exactly. opNamespace
+			// stays "<pkg>" for the single-impl package; a multi-wrapped-ctor
+			// package would carry the concrete-type segment.
+			mw := codegen.ResolveMiddlewareWrapper(path, ifaceName)
+			opNamespace := obsCF.Package
+			if mw.OpSegment != "" {
+				opNamespace += "." + mw.OpSegment
+			}
+			if _, decErr := contract.WriteObservedDecorator(obsCF, path, ifaceName, mw.Constructor, mw.Struct, opNamespace, contractOpts); decErr != nil {
+				return fmt.Errorf("generate observability decorator for %s: %w", rel, decErr)
+			}
+		} else if remErr := contract.RemoveObservedDecorator(path); remErr != nil {
+			return fmt.Errorf("remove stale observability decorator for %s: %w", rel, remErr)
+		}
 
 		// Scaffold contract_test.go once. The user owns the file after
 		// the first scaffold — never overwrite.
@@ -260,7 +283,18 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		//     scaffold and let the user write tests by hand (the testing
 		//     skill template covers the multi-interface pattern).
 		testPath := filepath.Join(path, "contract_test.go")
-		if _, statErr := os.Stat(testPath); os.IsNotExist(statErr) {
+		// Scaffold-once, and that includes the user's right to delete it: a
+		// recorded birth with no file on disk is a removal to respect, not
+		// an absence to fill. An existing file is adopted so its LATER
+		// deletion is recognizable as one.
+		testRoot, testRel, testLedger := checksums.SplitScaffoldPath(testPath)
+		if _, statErr := os.Stat(testPath); statErr == nil {
+			if testLedger {
+				checksums.RecordScaffold(testRoot, testRel)
+			}
+		} else if testLedger && checksums.ScaffoldRecorded(testRoot, testRel) {
+			// Deliberately deleted — leave it deleted.
+		} else if os.IsNotExist(statErr) { //nolint:nestif // the create-vs-refresh decision for the born test file: each nested arm is a distinct on-disk state with its own message.
 			cf, parseErr := contract.ParseContract(contractPath)
 			if parseErr != nil {
 				return fmt.Errorf("parse contract for %s: %w", rel, parseErr)
@@ -303,6 +337,9 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 				if writeErr := os.WriteFile(testPath, content, 0644); writeErr != nil {
 					return fmt.Errorf("write contract_test.go for %s: %w", rel, writeErr)
 				}
+				if testLedger {
+					checksums.RecordScaffold(testRoot, testRel)
+				}
 				fmt.Printf("  ✅ Scaffolded contract_test.go for %s/\n", rel)
 			}
 		}
@@ -318,6 +355,46 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		fmt.Printf("🔧 Generated contracts for %d internal package(s)\n", generated)
 	}
 
+	return nil
+}
+
+// retireExcludedSubtree retires the contract-codegen artifacts under an
+// excluded directory AND every package beneath it. A central
+// `contracts.exclude` entry covers the whole subtree, and the caller
+// SkipDirs immediately afterwards, so this is the only pass that will
+// ever see those descendants.
+func retireExcludedSubtree(dir string, opts contract.Options) error {
+	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if d.Name() == "testdata" {
+			return filepath.SkipDir // fixture packages, not real output
+		}
+		return reportRetirement(contract.RetireExcludedArtifacts(path, opts))
+	})
+}
+
+// reportRetirement prints one line per artifact the retirement sweep
+// acted on, and returns its error unchanged so call sites stay a single
+// expression.
+//
+// The kept files get the louder treatment on purpose: forge no longer
+// emits them, so `forge generate` will never resolve them and the drift
+// gate would otherwise name them on every run with no remedy attached.
+func reportRetirement(r contract.Retirement, err error) error {
+	if err != nil {
+		return err
+	}
+	for _, p := range r.Retired {
+		fmt.Printf("  🧹 Retired %s (package opted out of contract codegen)\n", p)
+	}
+	for _, p := range r.Kept {
+		fmt.Fprintf(os.Stderr, "  ⚠️  %s is left over from contract codegen the package has since opted out of, but its bytes differ from forge's render — forge won't delete your edits. Remove it by hand, or `%s project disown %s --reason \"<why>\"` to keep it deliberately.\n", p, Name(), p)
+	}
 	return nil
 }
 
@@ -365,12 +442,10 @@ func packageHasTwoResultNew(dir string) bool {
 // cmd/server.go — when migrations are disabled, migration-related
 // fields (AutoMigrate, DatabaseUrl, pool tuning) are excluded from
 // the server template so it doesn't reference app.AutoMigrate().
-// authProvider (forge.yaml auth.provider, any spelling) gates the
-// generated middleware.InstallGeneratedAuth call site in runServer.
-func generateConfigLoader(projectDir string, features config.FeaturesConfig, authProvider string, cs *generator.FileChecksums) (map[string]bool, error) {
+func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs *generator.FileChecksums) (map[string]bool, error) {
 	fmt.Println("🔧 Generating config loader from proto/config/...")
 
-	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config"))
+	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config protos: %w", err)
 	}
@@ -402,8 +477,8 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, aut
 	}
 
 	// Re-render the primary binary's cmd/<bin>/cmd/serve.go so it stays in
-	// sync with the config fields and the forge.yaml auth provider.
-	if err := codegen.GenerateCmdServerWithFields(configFields, authProvider, projectDir, cs); err != nil {
+	// sync with the config fields.
+	if err := codegen.GenerateCmdServerWithFields(configFields, projectDir, cs); err != nil {
 		return nil, fmt.Errorf("failed to regenerate cmd/<bin>/cmd/serve.go: %w", err)
 	}
 
@@ -411,23 +486,18 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, aut
 	return configFields, nil
 }
 
-// generatePerEnvDeployConfig renders deploy/kcl/<env>/config_gen.k for
-// every environment declared on the filesystem (deploy/kcl/<env>/main.k).
-// It folds together:
+// generatePerEnvDeployConfig emits the KCL config files. It writes the two
+// project-level, forge-owned files ONCE — config_schema.k (the config TYPE) +
+// config_projection.k (the projection BEHAVIOR, appConfigEnvMap) — from the
+// proto config annotations, then scaffolds a user-owned per-env config.k
+// (write-if-absent) from the proto's own defaults for every environment
+// declared on the filesystem (deploy/kcl/<env>/main.k).
 //
-//   - the proto annotations (sensitive, category, env_var) parsed from
-//     proto/config/, and
-//   - the per-env config map loaded from the sibling `config.<env>.yaml`
-//     file.
-//
-// The result is one file per env that the env's hand-edited main.k can
-// import to wire the rendered EnvVar lists into the application's env_vars.
-//
-// This step replaces the hand-curated `<NAME>_ENV` lambdas in
-// deploy/kcl/base.k that projects accumulate as soon as they grow more
-// than a couple of secret-backed knobs.
+// The env's main.k imports config_projection + its own config.k and projects
+// the typed AppConfig into every workload's env via appConfigEnvMap — the one
+// source both host-run and cluster deploy read.
 func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs *generator.FileChecksums) error {
-	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config"))
+	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
 	if err != nil {
 		return fmt.Errorf("parse config protos: %w", err)
 	}
@@ -450,16 +520,11 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	}
 	kclDirAbs := filepath.Join(projectDir, kclDir)
 
-	// KCL-native config (ADDITIVE, alongside the legacy config_gen.k): emit
-	// the two project-level, forge-owned files (config_schema.k +
-	// config_projection.k) ONCE — the config TYPE + the projection BEHAVIOR.
-	// A project opts into the KCL-native path by importing these + a per-env
-	// config.k in its main.k (see the control-plane deploy/kcl/<env>/main.k);
-	// projects still importing config_gen keep working unchanged. Full
-	// retirement of config_gen.k + the Go projector is gated on migrating the
-	// scaffold main.k templates too (they still import config_gen).
+	// Project-level, forge-owned files: the config TYPE (config_schema.k) + the
+	// projection BEHAVIOR (config_projection.k, appConfigEnvMap). Regenerated
+	// from proto on every run.
 	if err := codegen.GenerateConfigNativeShared(fields, cfg.Name, projectDir, kclDirAbs, cs); err != nil {
-		return fmt.Errorf("emit KCL-native shared config: %w", err)
+		return fmt.Errorf("emit KCL config schema + projection: %w", err)
 	}
 
 	envs, lerr := ListEnvs(projectDir)
@@ -467,43 +532,25 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 		return fmt.Errorf("list envs: %w", lerr)
 	}
 	scaffolded := 0
-	legacyEmitted := 0
 	for _, envName := range envs {
-		envCfg, err := config.LoadEnvironmentConfig(projectDir, envName)
-		// The legacy config.<env>.yaml is the ONLY reason to emit config_gen.k.
-		// Its absence means the env has migrated to the KCL-native path
-		// (config.k -> config_projection.appConfigEnvMap, imported by main.k),
-		// where config_gen.k is dead output nothing reads. Retiring it per-env
-		// is as simple as deleting config.<env>.yaml: we must NOT re-emit a
-		// stub, or the deleted file reappears on every `forge generate`.
-		hasLegacyYaml := err == nil
-		if !hasLegacyYaml {
-			envCfg = map[string]any{}
-		}
-		if hasLegacyYaml {
-			if err := codegen.GenerateDeployConfig(codegen.DeployConfigGenInput{
-				GenContext:  codegen.GenContext{ProjectDir: projectDir, Checksums: cs},
-				ProjectName: cfg.Name,
-				EnvName:     envName,
-				KCLDir:      kclDirAbs,
-				Fields:      fields,
-				EnvConfig:   envCfg,
-			}); err != nil {
-				return fmt.Errorf("emit %s config_gen.k: %w", envName, err)
-			}
-			legacyEmitted++
-		}
-		// Scaffold the per-env user-owned config.k (write-if-absent) — the
-		// one-time migration of config.<env>.yaml into a typed AppConfig
-		// instance. Never clobbers an existing (user-edited) file.
-		wrote, cerr := codegen.GenerateConfigKScaffold(fields, envCfg, cfg.Name, kclDirAbs, envName)
+		// Per-env user-owned config.k (write-if-absent) — the typed AppConfig
+		// VALUES instance, scaffolded from proto defaults. Never clobbers an
+		// existing (user-edited) file.
+		wrote, cerr := codegen.GenerateConfigKScaffold(fields, cfg.Name, kclDirAbs, envName)
 		if cerr != nil {
 			return fmt.Errorf("scaffold %s config.k: %w", envName, cerr)
 		}
 		if wrote {
 			scaffolded++
 		}
+		// Per-env, gitignored `.env.<env>` — the VALUES half of every
+		// `sensitive` config field, which config.k deliberately does not
+		// carry. Local envs only (a cloud env's provider is external);
+		// write-if-absent, so a developer's real values are never clobbered.
+		if _, serr := codegen.GenerateEnvSecretsScaffold(fields, cfg.Name, projectDir, envName); serr != nil {
+			return fmt.Errorf("scaffold %s secrets dotenv: %w", envName, serr)
+		}
 	}
-	fmt.Printf("  ✅ Generated deploy/kcl/config_schema.k + config_projection.k (legacy config_gen.k for %d env(s); scaffolded %d new config.k)\n", legacyEmitted, scaffolded)
+	fmt.Printf("  ✅ Generated deploy/kcl/config_schema.k + config_projection.k (scaffolded %d new config.k)\n", scaffolded)
 	return nil
 }

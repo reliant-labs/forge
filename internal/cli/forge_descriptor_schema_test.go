@@ -165,7 +165,7 @@ func buildDemoPlugin(t *testing.T) *protogen.Plugin {
 }
 
 // TestExtractService_DeepSchemaGraph verifies the descriptor side of
-// deep MCP schemas: extractService must record the full reachable type
+// deep schemas: extractService must record the full reachable type
 // graph (keyed by fully-qualified name), enum value lists, oneof
 // membership, optional flags, map key/value typing, and the method's
 // fully-qualified input/output names — while NOT recording well-known

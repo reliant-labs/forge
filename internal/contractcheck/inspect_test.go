@@ -31,10 +31,10 @@ import (
 // of the public contract.
 func TestInspect_AllRulesByDefault(t *testing.T) {
 	t.Parallel()
-	// contracts_bad covers the contract-names rule; adapter_with_rpc
-	// covers adapter-no-rpc; interactor_concrete_deps covers the
-	// interactor rule. We build a composite project by pointing each
-	// rule at its dedicated fixture in turn — Inspect's default-all
+	// contracts_bad covers the contract-names rule; outbound_io_with_rpc
+	// covers outbound-io-no-rpc; deps_concrete covers the deps rule. We
+	// build a composite project by pointing each rule at its dedicated
+	// fixture in turn — Inspect's default-all
 	// path means we DON'T have to enumerate the rules at the call
 	// site. The proof is: each fixture surfaces exactly the rule it
 	// was authored to exercise.
@@ -44,8 +44,8 @@ func TestInspect_AllRulesByDefault(t *testing.T) {
 		wantRule Rule
 	}{
 		{"contract-names fires on bad fixture", "contracts_bad", RuleInternalPackageContractNames},
-		{"adapter-no-rpc fires on adapter_with_rpc", "adapter_with_rpc", RuleAdapterNoRPC},
-		{"interactor-deps fires on concrete_deps", "interactor_concrete_deps", RuleInteractorDepsAreInterfaces},
+		{"outbound-io-no-rpc fires on outbound_io_with_rpc", "outbound_io_with_rpc", RuleOutboundIONoRPC},
+		{"deps-are-interfaces fires on deps_concrete", "deps_concrete", RuleDepsAreInterfaces},
 	}
 
 	for _, tc := range cases {
@@ -73,11 +73,11 @@ func TestInspect_AllRulesByDefault(t *testing.T) {
 // codegen.
 func TestInspect_RuleSubset(t *testing.T) {
 	t.Parallel()
-	// adapter_with_rpc would surface adapter-no-rpc findings under
-	// the all-rules default. Asking for ONLY contract-names must
+	// outbound_io_with_rpc would surface outbound-io-no-rpc findings
+	// under the all-rules default. Asking for ONLY contract-names must
 	// produce zero findings — the fixture has a clean contract.go.
 	fs, err := Inspect(context.Background(),
-		filepath.Join("testdata", "adapter_with_rpc"),
+		filepath.Join("testdata", "outbound_io_with_rpc"),
 		Options{Rules: []Rule{RuleInternalPackageContractNames}},
 	)
 	if err != nil {
@@ -92,7 +92,7 @@ func TestInspect_RuleSubset(t *testing.T) {
 
 // TestInspect_DeterministicOrdering verifies that running Inspect
 // twice over the same fixture produces byte-identical findings
-// slices. The forge audit JSON and the human FormatText output both
+// slices. The forge project audit JSON and the human FormatText output both
 // depend on this stability — a flaky sort would surface as "every CI
 // run says different things changed."
 func TestInspect_DeterministicOrdering(t *testing.T) {

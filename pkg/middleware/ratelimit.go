@@ -32,9 +32,8 @@ type RateLimitOptions struct {
 // ClaimsLookup resolves the authenticated principal from a request
 // context. The claims context key is owned by the project's
 // pkg/middleware, so claims-aware interceptors in this library take the
-// project's ClaimsFromContext as a callback — the same pattern
-// pkg/tenant and pkg/authz use. nil is allowed and means "no claims
-// available" (the interceptors degrade gracefully).
+// project's ClaimsFromContext as a callback. nil is allowed and means
+// "no claims available" (the interceptors degrade gracefully).
 type ClaimsLookup func(ctx context.Context) (*auth.Claims, bool)
 
 // RateLimitInterceptor returns a Connect interceptor that enforces a

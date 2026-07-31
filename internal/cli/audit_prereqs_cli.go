@@ -1,9 +1,9 @@
-// Package cli — `forge audit` prerequisites category.
+// Package cli — `forge project audit` prerequisites category.
 //
 // Surfaces the env's DECLARED external prerequisites (forge.ExternalSecret /
 // forge.DNSRecord on Bundle.required_secrets / required_dns) — the
 // out-of-band facts a deploy depends on but forge does NOT create. Today
-// these prereqs live only in KCL docstrings, so `forge deploy` renders
+// these prereqs live only in KCL docstrings, so `forge env deploy` renders
 // green and THEN cert-manager's ACME challenge or the workspace-proxy DNS
 // hangs silently because the prereq was never satisfied. Modeling them as
 // first-class entities turns the docstring into:
@@ -47,7 +47,7 @@ func auditPrerequisites(cfg *config.ProjectConfig, projectDir string) audittype.
 	// concern — they hang off rendered KCL bundles. A project with no deploy
 	// surface (kind=cli or library has no deploy/kcl/) has nothing to render,
 	// so the dev-KCL prereq is n/a, not a warning. Reporting ✓ n/a here keeps
-	// `forge audit` green for the CLI/library shapes that never deploy.
+	// `forge project audit` green for the CLI/library shapes that never deploy.
 	if cfg.IsCLIKind() || cfg.IsLibraryKind() {
 		return audittype.Category{
 			Status:  audittype.StatusOK,

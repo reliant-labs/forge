@@ -5,14 +5,86 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 
 	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/packs"
 )
+
+// devWorkspaceBridgesExternalModule reports whether the project's go.work
+// bridges a module to a LOCAL directory OUTSIDE the project tree — the
+// signature of a cross-repo dev bridge, which `forge project new` writes on a
+// DEV forge build (`use <local-forge>/pkg`, see writeDevForgeGoWork).
+//
+// It matters for the go-mod-tidy steps: when the workspace deliberately
+// overrides a published `require` with an UNPUBLISHED local checkout, a plain
+// `go mod tidy` cannot succeed — tidy ignores go.work and resolves from the
+// module proxy, so it 404s on the not-yet-published API and (fatally) aborts
+// codegen. `go build`/`go vet` DO honor the workspace, so once tidy is
+// softened the pipeline's final `go build (validate)` still guards
+// correctness. This is a strict no-op for ordinary projects: the scaffold's
+// starter go.work only `use`s `.` and `gen` (both inside the project), and
+// released/CI builds never write an external `use` at all.
+func devWorkspaceBridgesExternalModule(projectDir string) bool {
+	data, err := os.ReadFile(filepath.Join(projectDir, "go.work"))
+	if err != nil {
+		return false
+	}
+	wf, err := modfile.ParseWork("go.work", data, nil)
+	if err != nil {
+		return false
+	}
+	isExternal := func(p string) bool {
+		if p == "" {
+			return false
+		}
+		abs := p
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(projectDir, p)
+		}
+		rel, err := filepath.Rel(projectDir, filepath.Clean(abs))
+		if err != nil {
+			return true // unrelated volume/root → outside the project
+		}
+		return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+	for _, u := range wf.Use {
+		if isExternal(u.Path) {
+			return true
+		}
+	}
+	for _, r := range wf.Replace {
+		// Only filesystem replaces (empty New.Version) point at a local dir.
+		if r.New.Version == "" && isExternal(r.New.Path) {
+			return true
+		}
+	}
+	return false
+}
+
+// syncDevWorkspace runs `go work sync` in place of a proxy-resolving
+// `go mod tidy` when a dev-forge go.work bridge is active. `go work sync`
+// resolves against the workspace (so the local, unpublished bridged module is
+// honored) and writes the go.sum / go.work.sum entries `go build` needs.
+// Best-effort: a sync hiccup must not abort codegen, because the pipeline's
+// final `go build (validate)` step is the real correctness gate under a
+// workspace.
+func syncDevWorkspace(projectDir, label string) error {
+	fmt.Printf("🔗 %s: go.work bridges a local module — running `go work sync` instead of a proxy `go mod tidy`.\n", label)
+	cmd := exec.Command("go", "work", "sync")
+	cmd.Dir = projectDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠️  go work sync failed (continuing; `go build (validate)` still gates correctness): %v\n", err)
+	}
+	return nil
+}
 
 // runSqlcGenerate runs sqlc generate if sqlc.yaml exists.
 func runSqlcGenerate(projectDir string) error {
@@ -44,7 +116,7 @@ func runSqlcGenerate(projectDir string) error {
 
 // ensureGenGoMod bootstraps `gen/go.mod` when it's missing.
 //
-// `forge new` renders gen-go.mod.tmpl as part of the initial scaffold, but a
+// `forge project new` renders gen-go.mod.tmpl as part of the initial scaffold, but a
 // git worktree carved from a checkout that has never run `forge generate`
 // won't have `gen/go.mod` on disk — the file is typically gitignored or has
 // simply not been committed. Every subsequent `go build` / `go test` /
@@ -98,53 +170,19 @@ func ensureGenGoMod(projectDir string) error {
 	if err := os.MkdirAll(genDir, 0o755); err != nil {
 		return fmt.Errorf("create gen/: %w", err)
 	}
-	// Mirror the root module's forge/pkg replace into gen/, rebased for
-	// gen/'s extra directory depth. Without this the gen/ submodule has no
-	// way to resolve the unpublished forge/pkg the root replace points at
-	// (the root replace does not cascade into a separate submodule), so
-	// `go mod tidy` in gen/ fails on the placeholder v0.0.0. Best-effort:
-	// a read error degrades to no gen replace (same as release flow); the
-	// downstream tidy surfaces the canonical resolution error if one remains.
-	genReplace, err := forgePkgGenReplaceTarget(projectDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not derive gen/ forge/pkg replace from root go.mod: %v\n", err)
-		genReplace = ""
-	}
-	// When the root go.mod pins a CONCRETE forge/pkg version (release tag or
-	// a proxy-resolvable pseudo-version) with no replace, mirror that pin into
-	// gen/ so both submodules resolve the SAME forge/pkg. Without this a
-	// bootstrapped gen/go.mod would omit forge/pkg entirely and `go mod tidy`
-	// could drift it to a different version than the root. Only read the pin
-	// when there is no replace to rebase — a replace means the dev-sibling
-	// flow, where the root require is the bare v0.0.0 placeholder the replace
-	// resolves.
-	var forgePkgVersion string
-	if genReplace == "" {
-		if v, verr := rootForgePkgRequireVersion(projectDir); verr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not read root forge/pkg version: %v\n", verr)
-		} else {
-			forgePkgVersion = v
-		}
-	}
 	data := struct {
 		Module    string
 		GoVersion string
-		// ForgePkgVersion mirrors a concrete root pin (release tag or
-		// pseudo-version) so gen/ resolves the same forge/pkg. Empty in the
-		// dev-sibling flow (paired with ForgePkgGenReplace below → template
-		// emits the v0.0.0 placeholder the replace resolves) and in the
-		// local-go.work-no-sibling flow (template omits the require and tidy
-		// resolves from the proxy).
+		// ForgePkgVersion mirrors the root module's forge/pkg pin so both
+		// submodules resolve the SAME published forge/pkg from the proxy.
+		// Empty when the root has no forge/pkg require (the template then
+		// omits the line and `go mod tidy` resolves it if the generated
+		// code imports it).
 		ForgePkgVersion string
-		// ForgePkgGenReplace is the gen-relative forge/pkg replace target
-		// (root replace rebased one dir deeper). Empty in release/no-sibling
-		// mode → template emits no replace and tidy resolves from the proxy.
-		ForgePkgGenReplace string
 	}{
-		Module:             modulePath,
-		GoVersion:          goVersion,
-		ForgePkgVersion:    forgePkgVersion,
-		ForgePkgGenReplace: genReplace,
+		Module:          modulePath,
+		GoVersion:       goVersion,
+		ForgePkgVersion: rootForgePkgVersion(projectDir),
 	}
 	if err := assets.WriteTemplateWithData("gen-go.mod.tmpl", goMod, data); err != nil {
 		return fmt.Errorf("render gen/go.mod: %w", err)
@@ -153,70 +191,27 @@ func ensureGenGoMod(projectDir string) error {
 	return nil
 }
 
-// reconcileGenForgePkgReplace keeps an EXISTING gen/go.mod's forge/pkg
-// replace in sync with the root module's. ensureGenGoMod only bootstraps a
-// MISSING file (and intentionally never touches an existing one — a
-// hand-edited gen/go.mod must survive). But the generate pipeline rewrites
-// the ROOT forge/pkg replace earlier in the run (stepSyncDevForgePkg
-// vendors an absolute sibling path → ./.forge-pkg), and a project scaffolded
-// without a sibling checkout starts with NO gen replace at all. In both
-// cases the on-disk gen/go.mod can carry a stale or absent forge/pkg
-// replace by the time `go mod tidy (gen/)` runs — which then fails to
-// resolve the unpublished forge/pkg. This reconciler rewrites (or inserts)
-// exactly the forge/pkg replace line in gen/go.mod to the rebased root
-// target, leaving every other byte alone so it composes with hand edits.
-//
-// Best-effort and idempotent: no gen/go.mod → no-op (bootstrap handles
-// that); no root replace (release/no-sibling) → leave gen as-is so tidy
-// resolves a published version like the root; an already-correct line →
-// no write.
-func reconcileGenForgePkgReplace(projectDir string) error {
-	genGoMod := filepath.Join(projectDir, "gen", "go.mod")
-	data, err := os.ReadFile(genGoMod)
+// forgePkgRequireRE matches the forge/pkg `require` line in a go.mod —
+// either the block form (`\tgithub.com/reliant-labs/forge/pkg vX.Y.Z`) or
+// the single-line form (`require github.com/... vX.Y.Z`). It does NOT match
+// a `replace` line (module path is not the first token there).
+var forgePkgRequireRE = regexp.MustCompile(
+	`(?m)^[\t ]*(?:require[\t ]+)?github\.com/reliant-labs/forge/pkg[\t ]+(v[^\s]+)[\t ]*$`)
+
+// rootForgePkgVersion returns the forge/pkg version pinned in the project's
+// root go.mod, or "" when the root has no forge/pkg require (or no go.mod).
+// Used to mirror the root pin into a freshly bootstrapped gen/go.mod so the
+// two submodules resolve forge/pkg to the same published version.
+func rootForgePkgVersion(projectDir string) string {
+	data, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // missing → ensureGenGoMod's job, not ours
-		}
-		return fmt.Errorf("read gen/go.mod: %w", err)
+		return ""
 	}
-
-	want, err := forgePkgGenReplaceTarget(projectDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not derive gen/ forge/pkg replace from root go.mod: %v\n", err)
-		return nil
+	m := forgePkgRequireRE.FindSubmatch(data)
+	if m == nil {
+		return ""
 	}
-	if want == "" {
-		// Release / no-sibling flow: the root resolves forge/pkg from the
-		// proxy, so gen/ should too. Don't strip an existing replace — a
-		// user may have added one deliberately — just leave things alone.
-		return nil
-	}
-
-	content := string(data)
-	desired := "replace " + forgePkgModulePath + " => " + want
-	if forgePkgReplaceLineRE.MatchString(content) {
-		updated := forgePkgReplaceLineRE.ReplaceAllString(content, desired)
-		if updated == content {
-			return nil // already correct
-		}
-		if err := os.WriteFile(genGoMod, []byte(updated), 0o644); err != nil {
-			return fmt.Errorf("rewrite gen/go.mod forge/pkg replace: %w", err)
-		}
-		fmt.Printf("  🔧 Synced gen/go.mod forge/pkg replace → %s\n", want)
-		return nil
-	}
-
-	// No existing replace line → append one (with a trailing newline if the
-	// file doesn't end in one).
-	if !strings.HasSuffix(content, "\n") {
-		content += "\n"
-	}
-	content += desired + "\n"
-	if err := os.WriteFile(genGoMod, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("insert gen/go.mod forge/pkg replace: %w", err)
-	}
-	fmt.Printf("  🔧 Added gen/go.mod forge/pkg replace → %s\n", want)
-	return nil
+	return string(m[1])
 }
 
 // goVersionFromProject reads the `go <version>` directive out of the
@@ -251,6 +246,13 @@ func runGoModTidyGen(projectDir string) error {
 		return nil
 	}
 
+	// A dev-forge go.work bridge deliberately overrides a published require
+	// (forge/pkg) with an unpublished local checkout — a proxy `go mod tidy`
+	// would 404 and abort codegen. Sync the workspace instead.
+	if devWorkspaceBridgesExternalModule(projectDir) {
+		return syncDevWorkspace(projectDir, "gen/ tidy")
+	}
+
 	fmt.Println("🔨 Running go mod tidy in gen/...")
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = genDir
@@ -271,6 +273,13 @@ func runGoModTidyRoot(projectDir string) error {
 		return nil
 	}
 
+	// See runGoModTidyGen: under a dev-forge go.work bridge, sync the
+	// workspace instead of a proxy `go mod tidy` that cannot resolve the
+	// unpublished local module.
+	if devWorkspaceBridgesExternalModule(projectDir) {
+		return syncDevWorkspace(projectDir, "root tidy")
+	}
+
 	fmt.Println("🔨 Running go mod tidy in project root...")
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = projectDir
@@ -285,7 +294,21 @@ func runGoModTidyRoot(projectDir string) error {
 	return nil
 }
 
-// runGoimportsOnGenerated runs goimports on generated Go files to fix import grouping.
+// runGoimportsOnGenerated runs goimports over the Go files forge WROTE this
+// run, fixing import grouping in its own output.
+//
+// Scoped to the written set, NOT to the cmd/pkg/gen/internal trees. Passing
+// the directories made `forge generate` rewrite every hand-owned Go file in
+// the project — forge editing what it does not own, which is the one thing the
+// tier model exists to prevent. It is not merely cosmetic either: goimports
+// RESOLVES unknown identifiers by guessing a package, so a file forge has no
+// business touching can silently acquire an import nobody asked for. That is
+// not hypothetical — it happened to a linter fixture in this repo, which
+// gained an `html/template` import purely because `forge generate` ran.
+//
+// checksums.WrittenThisRun is the right scope because every forge write goes
+// through the checksums chokepoint, including the in-place reconcilers that
+// splice into compose.go / lifecycle.go.
 func runGoimportsOnGenerated(projectDir, modulePath string) error {
 	goimportsPath, err := exec.LookPath("goimports")
 	if err != nil {
@@ -294,65 +317,49 @@ func runGoimportsOnGenerated(projectDir, modulePath string) error {
 		return nil
 	}
 
-	dirs := []string{"cmd", "pkg", "gen", "internal"}
-	var targets []string
-	for _, d := range dirs {
-		if dirExists(filepath.Join(projectDir, d)) {
-			targets = append(targets, d)
-		}
-	}
+	targets := writtenGoFiles(projectDir)
 	if len(targets) == 0 {
 		return nil
 	}
 
 	fmt.Println("🔨 Running goimports on generated code...")
-	args := []string{"-local", modulePath, "-w"}
-	args = append(args, targets...)
-	cmd := exec.Command(goimportsPath, args...)
-	cmd.Dir = projectDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("goimports failed: %w", err)
+	// Batch the argv: a large project can write hundreds of files in one run
+	// and the whole set at once risks E2BIG.
+	const batchSize = 200
+	for start := 0; start < len(targets); start += batchSize {
+		end := start + batchSize
+		if end > len(targets) {
+			end = len(targets)
+		}
+		args := append([]string{"-local", modulePath, "-w"}, targets[start:end]...)
+		cmd := exec.Command(goimportsPath, args...)
+		cmd.Dir = projectDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("goimports failed: %w", err)
+		}
 	}
 
 	fmt.Println("  ✅ Imports formatted")
 	return nil
 }
 
-// runPackGenerateHooks processes generate hooks for all installed packs
-// in dependency-respecting order: producers (depended-on packs) before
-// consumers. This matters when one pack's generate hook references
-// another pack's generated output — without the topo sort, hook order
-// is whatever cfg.Packs happens to list and the dependent hook can run
-// against stale (or absent) producer output.
-func runPackGenerateHooks(projectDir string, cfg *config.ProjectConfig, cs *checksums.FileChecksums) error {
-	// Topo-sort first; fall back to cfg.Packs order on any sort error
-	// (a cycle or missing manifest is rare and we don't want to block
-	// generate on it — the dep is still likely to render fine).
-	order, err := packs.SortInstalledByDependencies(cfg.Packs)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ pack dep sort failed (%v); falling back to cfg.Packs order\n", err)
-		order = cfg.Packs
-	}
-
-	for _, name := range order {
-		p, err := packs.GetPack(name)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Warning: installed pack %q not found: %v\n", name, err)
+// writtenGoFiles returns the project-relative .go paths forge wrote this run,
+// sorted so the goimports invocation is deterministic. Paths that no longer
+// exist are dropped: a file can be written and then removed by the cleanup
+// sweep within the same run.
+func writtenGoFiles(projectDir string) []string {
+	var out []string
+	for relPath := range checksums.WrittenThisRun {
+		if filepath.Ext(relPath) != ".go" {
 			continue
 		}
-		if len(p.Generate) == 0 {
+		if _, err := os.Stat(filepath.Join(projectDir, relPath)); err != nil {
 			continue
 		}
-		fmt.Printf("\n🔌 Running generate hooks for pack '%s'...\n", p.Name)
-		// cs threads the checksum ledger so generate-hook output is written
-		// as self-certifying Tier-1 code (forge:hash marker + tracked),
-		// keeping pack-emitted _gen.go files out of the audit orphan bucket.
-		if err := p.RenderGenerateFiles(projectDir, cfg, cs); err != nil {
-			return fmt.Errorf("pack %s generate hooks: %w", p.Name, err)
-		}
+		out = append(out, relPath)
 	}
-	return nil
+	sort.Strings(out)
+	return out
 }

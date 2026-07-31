@@ -1,18 +1,16 @@
-// Package cli — `forge delete service` — the inverse of `forge add service`.
+// Package cli — `forge project delete service` — the inverse of `forge scaffold service`.
 //
-// Where `forge add service` scaffolds a handlers/<svc>/ dir, appends a
-// component to components.json, and (after the user lists its serviceRow
-// line) serves it, `forge delete service` walks that back:
+// Where `forge scaffold service` scaffolds a handlers/<svc>/ dir and (after
+// the user lists its serviceRow line) serves it, `forge project delete service`
+// walks that back:
 //
-//  1. Removes the component from components.json so forge stops treating
-//     it as part of the project shape.
-//  2. Removes the handler scaffold directory (handlers/<svc>/).
-//  3. Leaves a TYPES-ONLY tombstone comment in pkg/app/services.go in
+//  1. Removes the handler scaffold directory (handlers/<svc>/).
+//  2. Leaves a TYPES-ONLY tombstone comment in pkg/app/services.go in
 //     place of the serviceRow line. The comment is load-bearing: the
 //     registry treats any mention of the service name in that file as
 //     "deliberately not served here", so the proto types / Connect client
 //     / frontend hooks keep generating for callers while the handler
-//     scaffold, wiring, MCP tools, and auth registration are gated off.
+//     scaffold, wiring, and auth registration are gated off.
 //     (See generate_serve.go's package doc for the registry semantics.)
 //
 // This addresses the orphan-stub hazard (FORGE_SHAPE_REDESIGN §7f): a
@@ -34,6 +32,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -42,18 +41,18 @@ import (
 func newDeleteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete",
-		Short: "Delete (retire) a service from the project — the inverse of `forge add`",
+		Short: "Delete (retire) a service from the project — the inverse of `forge scaffold service`",
 		Long: `Delete a component from an existing Forge project.
 
 Subcommands:
-  forge delete service <name>   Retire a service: drop it from components.json,
-                                remove the handlers/<name>/ scaffold, and leave a
-                                types-only tombstone in pkg/app/services.go so the
-                                proto types / Connect client keep generating for
-                                callers while the handler is no longer served.`,
+  forge project delete service <name>   Retire a service: remove the handlers/<name>/
+                                scaffold and leave a types-only tombstone in
+                                pkg/app/services.go so the proto types / Connect
+                                client keep generating for callers while the
+                                handler is no longer served.`,
 	}
 	cmd.AddCommand(newDeleteServiceCmd())
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 func newDeleteServiceCmd() *cobra.Command {
@@ -65,11 +64,10 @@ func newDeleteServiceCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "service <name>",
-		Short: "Retire a service (inverse of `forge add service`)",
+		Short: "Retire a service (inverse of `forge scaffold service`)",
 		Long: `Retire a service from this project.
 
 What it does:
-  - removes the service from components.json
   - deletes the handlers/<name>/ scaffold directory
   - leaves a types-only tombstone comment in pkg/app/services.go (so the
     proto types, Connect client, and frontend hooks keep generating for
@@ -83,7 +81,7 @@ This is destructive (it removes a directory). It prompts for confirmation
 unless --yes; --dry-run prints the plan and changes nothing.
 
 Example:
-  forge delete service reporting`,
+  forge project delete service reporting`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDeleteService(args[0], dryRun, assumeYes, keepTypes, cmd.InOrStdin())
@@ -102,8 +100,11 @@ Example:
 // deleteServicePlan is the resolved set of mutations runDeleteService will
 // apply — computed once so dry-run and the real run share one description.
 type deleteServicePlan struct {
-	handlerDir     string // project-relative; "" when no scaffold dir on disk
-	inComponents   bool
+	handlerDir string // project-relative; "" when no scaffold dir on disk
+	// declared reports whether the project's own sources still declare this
+	// component — its proto, worker package or operator package. Deleting the
+	// handler scaffold does not retract that declaration, so the plan says so.
+	declared       bool
 	registryState  serviceRegistration
 	servicesGoPath string // project-relative; "" when no services.go
 }
@@ -111,7 +112,7 @@ type deleteServicePlan struct {
 // runDeleteService is the cobra RunE body, split out so tests drive it
 // directly. `in` is the confirmation-prompt input (cmd.InOrStdin()).
 func runDeleteService(name string, dryRun, assumeYes, keepTypes bool, in io.Reader) error {
-	const ctxLabel = "forge delete service"
+	const ctxLabel = "forge project delete service"
 
 	root, err := projectRoot()
 	if err != nil {
@@ -121,18 +122,12 @@ func runDeleteService(name string, dryRun, assumeYes, keepTypes bool, in io.Read
 	store, err := loadProjectStore()
 	if err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "failed to load project config", "",
-			"verify forge.yaml + components.json are valid", err)
+			"verify forge.yaml is valid YAML", err)
 	}
 	cfg := store.Config()
 
-	// Resolve the service against components.json.
-	idx := -1
-	for i, c := range cfg.Components {
-		if c.Name == name {
-			idx = i
-			break
-		}
-	}
+	// Resolve the service against what the project's sources declare.
+	_, declared := codegen.DiscoverProjectComponents(root, cfg.Name).Named(name)
 
 	// Resolve the on-disk handler dir (disk-first — it may use a spelling
 	// the naming rules wouldn't synthesize).
@@ -154,26 +149,24 @@ func runDeleteService(name string, dryRun, assumeYes, keepTypes bool, in io.Read
 		servicesGoRel = serviceRegistryRelPath
 	}
 
-	if idx < 0 && handlerDirRel == "" {
+	if !declared && handlerDirRel == "" {
 		return cliutil.UserErr(ctxLabel,
-			fmt.Sprintf("service %q not found — it is neither in components.json nor on disk under handlers/", name),
+			fmt.Sprintf("service %q not found — nothing in the project declares it, and there is no scaffold under handlers/", name),
 			"",
-			"run `forge audit` to list the project's services, or check the spelling")
+			"run `forge project audit` to list the project's services, or check the spelling")
 	}
 
 	plan := deleteServicePlan{
 		handlerDir:     handlerDirRel,
-		inComponents:   idx >= 0,
+		declared:       declared,
 		registryState:  regState,
 		servicesGoPath: servicesGoRel,
 	}
 
 	// Describe the plan.
 	fmt.Printf("Plan to delete service %q:\n", name)
-	if plan.inComponents {
-		fmt.Printf("  - remove from components.json\n")
-	} else {
-		fmt.Printf("  - (not in components.json — nothing to remove there)\n")
+	if plan.declared {
+		fmt.Printf("  - the project still declares %q (proto / package); delete that declaration too to retire it fully\n", name)
 	}
 	if plan.handlerDir != "" {
 		fmt.Printf("  - remove scaffold directory %s/\n", plan.handlerDir)
@@ -208,11 +201,11 @@ func runDeleteService(name string, dryRun, assumeYes, keepTypes bool, in io.Read
 		}
 	}
 
-	// forge no longer maintains a components.json manifest — `forge delete`
-	// removes the code (handlers / proto / owned files); the component simply
-	// stops being discovered from the real sources on the next load.
+	// `forge project delete` removes the CODE (handlers / owned files); the
+	// component stops being discovered on the next read because its sources
+	// are gone.
 
-	// 2. services.go — rewrite the serviceRow line into a tombstone (or
+	// services.go — rewrite the serviceRow line into a tombstone (or
 	//    remove it entirely under --keep-types=false). User-owned file, so
 	//    we do a minimal line-targeted edit, never a rewrite.
 	if plan.servicesGoPath != "" {
@@ -241,7 +234,7 @@ func runDeleteService(name string, dryRun, assumeYes, keepTypes bool, in io.Read
 		fmt.Printf("✓ removed %s/\n", plan.handlerDir)
 	}
 
-	fmt.Printf("\nService %q retired. Run `forge generate` to sweep generated artifacts (gen/ types, mocks, wiring) and `forge audit` to confirm.\n", name)
+	fmt.Printf("\nService %q retired. Run `forge generate` to sweep generated artifacts (gen/ types, mocks, wiring) and `forge project audit` to confirm.\n", name)
 	return nil
 }
 
@@ -273,7 +266,7 @@ func rewriteServicesGoForDelete(root, name string, keepTypes bool) (bool, error)
 			changed = true
 			if keepTypes {
 				indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
-				out = append(out, fmt.Sprintf("%s// %s: retired via `forge delete service` — types-only (proto types + Connect client still generate; not served here).", indent, name))
+				out = append(out, fmt.Sprintf("%s// %s: retired via `forge project delete service` — types-only (proto types + Connect client still generate; not served here).", indent, name))
 			}
 			// keepTypes==false: drop the line entirely.
 			continue
@@ -291,7 +284,7 @@ func rewriteServicesGoForDelete(root, name string, keepTypes bool) (bool, error)
 				// Append a tombstone comment at end of file (before any
 				// trailing newline) — harmless and read by the registry.
 				body := strings.TrimRight(string(data), "\n")
-				body += fmt.Sprintf("\n\n// %s: retired via `forge delete service` — types-only (not served here).\n", name)
+				body += fmt.Sprintf("\n\n// %s: retired via `forge project delete service` — types-only (not served here).\n", name)
 				if werr := os.WriteFile(path, []byte(body), 0o644); werr != nil {
 					return false, werr
 				}

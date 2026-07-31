@@ -48,11 +48,11 @@
 //     as a worker-local interface satisfied by a concrete adapter on
 //     AppExtras — the literal kalshi regression shape.
 //
-//   - "zero-service" (TestE2EFixtureCorpusZeroService): bare `forge new`
+//   - "zero-service" (TestE2EFixtureCorpusZeroService): bare `forge project new`
 //     with NO --service. Pins the binary-is-not-an-entity contract:
-//     zero services scaffolded, generate idempotent at zero, no mcp
-//     manifest, zero-component appkit table compiles and boots, and
-//     the documented first step (`forge add service item`) works.
+//     zero services scaffolded, generate idempotent at zero,
+//     zero-component appkit table compiles and boots, and
+//     the documented first step (`forge scaffold service item`) works.
 //
 //   - "frontend-basepath-shaped" (TestE2EFixtureCorpusFrontendBasePath):
 //     1 service + 1 Next.js frontend mounted under base_path /admin.
@@ -76,7 +76,7 @@
 //     it down cleanly within a bounded wait.
 //  5. Disown lifecycle round-trip on pkg/app/wire_gen.go:
 //     hand-edit → generate (drift error with the new option text) →
-//     `forge disown --reason` (one-way transfer) → generate (file left
+//     `forge project disown --reason` (one-way transfer) → generate (file left
 //     alone, zero warnings) → delete + generate (re-adopted to the
 //     pristine render, entry back to Tier-1).
 //
@@ -87,10 +87,16 @@ package cli
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"io/fs"
@@ -106,6 +112,8 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 
 	// postgres driver (database/sql "pgx"): the boot tests apply the
@@ -134,7 +142,7 @@ func TestE2EFixtureCorpusCPForgeShaped(t *testing.T) {
 	start := time.Now()
 
 	// ── Scaffold: 3 services ──────────────────────────────────────────
-	runCmd(t, dir, forgeBin, "new", "cpforge",
+	runCmd(t, dir, forgeBin, "project", "new", "cpforge",
 		"--mod", "example.com/cpforge",
 		"--service", "api,billing,reporting",
 	)
@@ -142,16 +150,16 @@ func TestE2EFixtureCorpusCPForgeShaped(t *testing.T) {
 	addCorpusForgePkgReplace(t, projectDir)
 
 	// Webhook on billing (cheap: scaffold-only, registered in forge.yaml).
-	runCmd(t, projectDir, forgeBin, "add", "webhook", "stripe", "--service", "billing")
+	runCmd(t, projectDir, forgeBin, "scaffold", "webhook", "stripe", "--service", "billing")
 	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "billing", "webhook_stripe.go"))
 
 	// ── Internal packages ─────────────────────────────────────────────
 	// ledger: classic Service/Deps/New package whose Deps references a
 	// repository interface satisfied by a concrete adapter in ANOTHER
 	// package (internal/pgstore) — the deps-matcher killer.
-	runCmd(t, projectDir, forgeBin, "add", "package", "ledger")
+	runCmd(t, projectDir, forgeBin, "scaffold", "package", "ledger")
 	// pgstore: adapter package hosting the concrete *Store.
-	runCmd(t, projectDir, forgeBin, "add", "package", "pgstore", "--type", "adapter")
+	runCmd(t, projectDir, forgeBin, "scaffold", "package", "pgstore", "--type", "adapter")
 
 	// ledger contract: Service + the package-local Repository/Notifier
 	// interfaces. Tier-2 (one-shot) — user edits are the steady state.
@@ -274,20 +282,22 @@ type ReportSource interface {
 }
 `)
 	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "handlers", "reporting", "service.go"),
-		"\tAuthorizer middleware.Authorizer\n\t// Add your dependencies here.",
-		`	Authorizer middleware.Authorizer
+		"\tConfig *config.Config\n",
+		`	Config *config.Config
 	// Store is satisfied by *pgstore.Store via the assignability
 	// matcher (name match, cross-package concrete type).
-	Store ReportSource`)
+	Store ReportSource
+`)
 
 	// api handler: exact-type match against an AppExtras field that
 	// setup.go constructs (ledger.Service on both sides).
 	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "handlers", "api", "service.go"),
-		"\tAuthorizer middleware.Authorizer\n\t// Add your dependencies here.",
-		`	Authorizer middleware.Authorizer
+		"\tConfig *config.Config\n",
+		`	Config *config.Config
 	// Ledger is the ledger package's contract interface, constructed
 	// in pkg/app/setup.go and exact-type-matched by wire_gen.
-	Ledger ledger.Service`)
+	Ledger ledger.Service
+`)
 	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "handlers", "api", "service.go"),
 		"\t\"example.com/cpforge/pkg/config\"",
 		"\t\"example.com/cpforge/internal/ledger\"\n\t\"example.com/cpforge/pkg/config\"")
@@ -389,7 +399,7 @@ func TestE2EFixtureCorpusKalshiShaped(t *testing.T) {
 	dir := t.TempDir()
 	start := time.Now()
 
-	runCmd(t, dir, forgeBin, "new", "kalshishape",
+	runCmd(t, dir, forgeBin, "project", "new", "kalshishape",
 		"--mod", "example.com/kalshishape",
 		"--service", "engine",
 	)
@@ -399,9 +409,9 @@ func TestE2EFixtureCorpusKalshiShaped(t *testing.T) {
 	// ── Workers: snake_case multi-word names, one cron ────────────────
 	// --no-generate: scaffold-only; one explicit generate at the end
 	// (the parallel-agent staging pattern the flag exists for).
-	runCmd(t, projectDir, forgeBin, "add", "worker", "engine_shadow", "--no-generate")
-	runCmd(t, projectDir, forgeBin, "add", "worker", "settlement_processor", "--no-generate")
-	runCmd(t, projectDir, forgeBin, "add", "worker", "book_snapshotter",
+	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "engine_shadow", "--no-generate")
+	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "settlement_processor", "--no-generate")
+	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "book_snapshotter",
 		"--kind", "cron", "--schedule", "0 3 * * *", "--no-generate")
 	for _, w := range []string{"engine_shadow", "settlement_processor", "book_snapshotter"} {
 		assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "workers", w, "worker.go"))
@@ -451,7 +461,7 @@ func (w *Worker) RunContext(ctx context.Context) error {
 
 	// marketfeed: the concrete adapter satisfying the worker-local
 	// interface, living in a third package.
-	runCmd(t, projectDir, forgeBin, "add", "package", "marketfeed", "--type", "adapter")
+	runCmd(t, projectDir, forgeBin, "scaffold", "package", "marketfeed", "--type", "adapter")
 	writeCorpusFile(t, filepath.Join(projectDir, "internal", "marketfeed", "feed.go"), `package marketfeed
 
 import "context"
@@ -544,8 +554,9 @@ type AppExtras struct {
 //	    Link/router handle basePath; bare literals double-prefix or go
 //	    stale the day the mount point moves.
 //
-//	build level (gated: skipped with a logged reason when npm is not on
-//	PATH or FORGE_E2E_SKIP_NPM is set — CI runs it, laptops may not):
+//	build level (gated: the whole test is marked SKIPPED — never passed —
+//	when FORGE_E2E_SKIP_NPM is set; a missing npm is a hard failure under
+//	CI, where provisioning node is the workflow's job):
 //	  - `npm run build` with NEXT_PUBLIC_BASE_PATH explicitly "" must
 //	    FAIL with the template's refusal message (a static export would
 //	    bake root-mounted URLs that 404 behind the proxy);
@@ -564,23 +575,60 @@ func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
 	dir := t.TempDir()
 	start := time.Now()
 
-	runCmd(t, dir, forgeBin, "new", "febp",
+	runCmd(t, dir, forgeBin, "project", "new", "febp",
 		"--mod", "example.com/febp",
 		"--service", "api",
 	)
 	projectDir := filepath.Join(dir, "febp")
 	addCorpusForgePkgReplace(t, projectDir)
 
-	// The scaffold proto is used AS EMITTED — no renames. The scaffold
-	// ships convention-named CRUD RPCs (CreateItem/GetItem/UpdateItem/
-	// DeleteItem/ListItems), so this fixture pins the true out-of-box
-	// experience: a fresh `forge new` project must yield a real "Item"
-	// entity from frontend codegen (nav routes, hooks, mocks, entity
-	// pages). Historically the scaffold used bare verbs (Create/Get/...)
-	// which matched NO entity, and the very first generate produced a
-	// hollow frontend; this fixture is the regression guard.
+	// Author convention-named CRUD RPCs over an UNANNOTATED message. That
+	// combination is the whole point of this fixture, and it has to be
+	// written here: `forge project new` ships an empty service stub (no
+	// example RPC surface since the pb-through collapse), and an empty
+	// service means zero hook files — which would make the prefix-clean
+	// scan below scan nothing at all.
+	//
+	// RPCs but NO `// forge:entity` marker is exactly the F2 shape:
+	//   - hooks/mocks ARE emitted (they follow the RPCs), so there is real
+	//     generated frontend output for the base-path scan to judge;
+	//   - NO entity pages are emitted (they follow the marker), so nav_gen
+	//     must advertise NO routes — the 404-wall pin further down.
+	// Historically the RPCs were bare verbs (Create/Get/...) which matched
+	// no entity at all and produced a hollow frontend; the convention names
+	// here are the regression guard for that.
+	apiProto := filepath.Join(projectDir, "proto", "services", "api", "v1", "api.proto")
+	proto := readFileE2E(t, apiProto)
+	proto = strings.Replace(proto, "  // TODO: Add your RPC methods here.",
+		"  rpc CreateItem(CreateItemRequest) returns (CreateItemResponse);\n"+
+			"  rpc GetItem(GetItemRequest) returns (GetItemResponse);\n"+
+			"  rpc UpdateItem(UpdateItemRequest) returns (UpdateItemResponse);\n"+
+			"  rpc DeleteItem(DeleteItemRequest) returns (DeleteItemResponse);\n"+
+			"  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);", 1)
+	if !strings.Contains(proto, "rpc ListItems(") {
+		t.Fatalf("could not author RPCs into the scaffolded api.proto — the stub's TODO anchor moved:\n%s", proto)
+	}
+	proto += `
+message Item {
+  string id = 1;
+  string name = 2;
+}
+message CreateItemRequest { Item item = 1; }
+message CreateItemResponse { Item item = 1; }
+message GetItemRequest { string id = 1; }
+message GetItemResponse { Item item = 1; }
+message UpdateItemRequest { Item item = 1; }
+message UpdateItemResponse { Item item = 1; }
+message DeleteItemRequest { string id = 1; }
+message DeleteItemResponse {}
+message ListItemsRequest { int32 page_size = 1; string page_token = 2; }
+message ListItemsResponse { repeated Item items = 1; string next_page_token = 2; }
+`
+	if err := os.WriteFile(apiProto, []byte(proto), 0o644); err != nil {
+		t.Fatalf("author api proto: %v", err)
+	}
 
-	// `forge add frontend --base-path` is the user-facing entry point
+	// `forge scaffold frontend --base-path` is the user-facing entry point
 	// for the feature. When npm is on PATH the add also runs
 	// `npm install` in the frontend (forge's own behavior), which lets
 	// `forge generate` exercise the local protoc-gen-es TS-stub pass —
@@ -593,7 +641,7 @@ func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
 	// entity pages, and the fixture's build-level pins (fail-loud
 	// base-path guard, /admin-prefixed out/ export) are static-branch
 	// behavior.
-	runCmd(t, projectDir, forgeBin, "add", "frontend", "console", "--base-path", "/admin", "--output", "static")
+	runCmd(t, projectDir, forgeBin, "scaffold", "frontend", "console", "--base-path", "/admin", "--output", "static")
 	feDir := filepath.Join(projectDir, "frontends", "console")
 	assertPathExistsE2E(t, filepath.Join(feDir, "package.json"))
 
@@ -612,7 +660,7 @@ func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
 	assertGeneratedSrcPrefixClean(t, feDir, "/admin")
 
 	// Honest-routes pin (review F2): nav derives from the SAME entity
-	// set that gates page emission. The scaffold's Item message carries
+	// set that gates page emission. The Item message authored above carries
 	// no (forge.v1.entity) annotation, so NO entity pages are emitted —
 	// and nav_gen must therefore advertise NO routes. The old behavior
 	// (nav claiming "/items" while no page existed) was the 404-wall
@@ -636,14 +684,10 @@ func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
 	t.Logf("frontend-basepath fixture render phase: %s", time.Since(start))
 
 	// ── 3. build-level pins (npm-gated) ──────────────────────────────
-	if reason := corpusNpmSkipReason(); reason != "" {
-		t.Logf("SKIPPING npm build phase: %s", reason)
-		t.Logf("frontend-basepath fixture total: %s", time.Since(start))
-		return
-	}
+	requireCorpusNpm(t, start)
 	npmStart := time.Now()
 
-	// `forge add frontend` already ran an install; re-running is a fast
+	// `forge scaffold frontend` already ran an install; re-running is a fast
 	// no-op that also covers the npm-was-missing-at-add-time case. Same
 	// flags as the scaffold-frontend e2e (forge's canonical install).
 	runCmdTimeout(t, feDir, 5*time.Minute,
@@ -828,17 +872,25 @@ func assertStaticExportPrefixed(t *testing.T, feDir, basePath string) {
 	}
 }
 
-// corpusNpmSkipReason returns a non-empty human-readable reason when the
-// npm build phase should be skipped: explicit env opt-out (laptops) or
-// npm missing from PATH. CI provisions node and runs the full phase.
-func corpusNpmSkipReason() string {
+// requireCorpusNpm gates the corpus's npm build phase.
+//
+// It used to be `if reason := corpusNpmSkipReason(); reason != "" { t.Logf;
+// return }` — a bare return that dropped the entire `next build` phase and
+// left the test reporting PASS. This is the ONE e2e test CI has ever run, so
+// that shape meant a broken setup-node step (or an inherited
+// FORGE_E2E_SKIP_NPM) turned the corpus into a content-assertions-only run
+// with nothing anywhere saying so.
+//
+// Two changes: the opt-out now marks the test SKIPPED rather than passed, so
+// it is visible in every report; and a MISSING npm goes through requireTool,
+// which is a hard failure under CI — provisioning node is the workflow's job.
+func requireCorpusNpm(t *testing.T, start time.Time) {
+	t.Helper()
 	if os.Getenv("FORGE_E2E_SKIP_NPM") != "" {
-		return "FORGE_E2E_SKIP_NPM is set"
+		t.Logf("frontend-basepath fixture render phase total: %s", time.Since(start))
+		t.Skip("FORGE_E2E_SKIP_NPM is set — npm build phase not run")
 	}
-	if _, err := exec.LookPath("npm"); err != nil {
-		return "npm not on PATH"
-	}
-	return ""
+	requireTool(t, "npm")
 }
 
 // runCorpusCmdEnv runs a command with extra environment entries and a
@@ -860,7 +912,7 @@ func runCorpusCmdEnv(dir string, timeout time.Duration, extraEnv []string, name 
 // ───────────────────── fixture 4: zero-service scaffold ─────────────────────
 
 // TestE2EFixtureCorpusZeroService pins the bare-scaffold contract: a
-// binary is a deployment unit, NOT a domain entity, so `forge new`
+// binary is a deployment unit, NOT a domain entity, so `forge project new`
 // without --service must invent NO service from the binary name (the
 // cp-forge field report: an admin-server binary grew an
 // admin_server.v1.AdminServerService with five generic CRUD RPCs, zero
@@ -868,18 +920,15 @@ func runCorpusCmdEnv(dir string, timeout time.Duration, extraEnv []string, name 
 //
 // Asserts, in order:
 //
-//  1. Bare `forge new zerosvc` scaffolds zero services: forge.yaml has
-//     `services: []`, no proto/services/zerosvc/, no handlers/zerosvc/,
-//     no frontend (hence no nav route anywhere), and no file in the
-//     tree mentions a zerosvc.v1 proto package.
+//  1. Bare `forge project new zerosvc` scaffolds zero services: no
+//     proto/services/zerosvc/, no handlers/zerosvc/, no frontend (hence no
+//     nav route anywhere), and no file in the tree mentions a zerosvc.v1
+//     proto package. forge.yaml stays project-global, and the shell still
+//     derives to the "service" kind off its on-disk sources.
 //  2. `forge generate` is clean AND idempotent at zero services.
-//  3. gen/mcp/manifest.json is ABSENT — mcp_gen's
-//     no-file-for-zero-services semantics (the manifest's absence is
-//     the "publishes zero tools" signal; an empty file would be a
-//     weaker claim).
-//  4. The zero-component appkit table compiles (`go build ./...`) and
+//  3. The zero-component appkit table compiles (`go build ./...`) and
 //     BOOTS: /healthz 200, clean SIGTERM shutdown.
-//  5. The documented first step actually works: `forge add service
+//  4. The documented first step actually works: `forge scaffold service
 //     item` on the same project → generate → build.
 func TestE2EFixtureCorpusZeroService(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
@@ -889,7 +938,7 @@ func TestE2EFixtureCorpusZeroService(t *testing.T) {
 
 	// Bare scaffold: no --service. (--skip-tools: plugin install is
 	// covered elsewhere; this fixture stays cheap.)
-	runCmd(t, dir, forgeBin, "new", "zerosvc",
+	runCmd(t, dir, forgeBin, "project", "new", "zerosvc",
 		"--mod", "example.com/zerosvc",
 		"--skip-tools",
 	)
@@ -898,15 +947,24 @@ func TestE2EFixtureCorpusZeroService(t *testing.T) {
 
 	// ── 1. zero-service shape: nothing named after the binary ────────
 	assertZeroServiceShape(t, projectDir, "zerosvc")
-	// Components live in components.json now (forge.yaml is global-only). A
-	// bare service shell writes an EMPTY components.json — its presence (not
-	// absence) is what makes the project derive to "service" rather than
-	// "library". forge.yaml must NOT carry a components block.
-	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "components.json")), "\"components\": []") {
-		t.Fatalf("bare scaffold components.json must declare an empty components list")
-	}
+	// forge.yaml is project-global only: it never lists what the project
+	// contains (that is read from the code — codegen.DiscoverProjectComponents)
+	// and it never declares the kind. The kind is read off the TREE, so a bare
+	// shell with zero services still derives to "service": the scaffold wrote
+	// the KCL deploy tree and the pkg/app composition root, which forge emits
+	// only for service projects.
 	if strings.Contains(readFileE2E(t, filepath.Join(projectDir, "forge.yaml")), "components:") {
 		t.Fatalf("forge.yaml must be global-only (no components: block)")
+	}
+	assertPathExistsE2E(t, filepath.Join(projectDir, "deploy", "kcl"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "pkg", "app"))
+	bareCfg, err := generator.ReadProjectConfig(filepath.Join(projectDir, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig on the bare scaffold: %v", err)
+	}
+	if bareCfg.EffectiveKind() != config.ProjectKindService {
+		t.Fatalf("bare scaffold EffectiveKind() = %q, want %q — the on-disk service sources are what derive it",
+			bareCfg.EffectiveKind(), config.ProjectKindService)
 	}
 
 	// ── 2. generate ×2 — clean and idempotent at zero services ───────
@@ -916,19 +974,14 @@ func TestE2EFixtureCorpusZeroService(t *testing.T) {
 	// pass, cleanup pass all ran).
 	assertZeroServiceShape(t, projectDir, "zerosvc")
 
-	// ── 3. mcp manifest absence semantics ────────────────────────────
-	if _, err := os.Stat(filepath.Join(projectDir, "gen", "mcp", "manifest.json")); !os.IsNotExist(err) {
-		t.Errorf("gen/mcp/manifest.json must NOT exist for a zero-service project (absence == publishes zero tools); stat err=%v", err)
-	}
-
-	// ── 4. compiles + boots: /healthz 200, clean SIGTERM ─────────────
+	// ── 3. compiles + boots: /healthz 200, clean SIGTERM ─────────────
 	runCmd(t, projectDir, "go", "build", "./...")
 	bootHealthzAndShutdown(t, projectDir)
 
-	// ── 5. documented first step: forge add service item ─────────────
-	// (`forge add service` runs the generate pipeline itself; the
+	// ── 4. documented first step: forge scaffold service item ─────────────
+	// (`forge scaffold service` runs the generate pipeline itself; the
 	// explicit generate after it pins that a follow-up run is clean.)
-	runCmd(t, projectDir, forgeBin, "add", "service", "item")
+	runCmd(t, projectDir, forgeBin, "scaffold", "service", "item")
 	assertPathExistsE2E(t, filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "item", "service.go"))
 	out := runCorpusCmdOK(t, projectDir, forgeBin, "generate")
@@ -1007,12 +1060,12 @@ func addCorpusForgePkgReplace(t *testing.T, projectDir string) {
 	t.Helper()
 	repoRoot := findRepoRoot(t)
 
-	// Pre-vendor forge/pkg into <project>/.forge-pkg — the canonical
-	// state `forge generate`'s vendor-sync would converge to anyway.
-	// Doing it up front (a) keeps the replace target relative so the
-	// workspace never sees conflicting absolute/vendored targets, and
-	// (b) keeps generate run 1 vs run 2 byte-identical for the tree-
-	// hash idempotency assertion (no mid-run go.mod rewrite).
+	// Copy forge/pkg into <project>/.forge-pkg as this test's OWN local
+	// bridge to the unpublished in-tree pkg (the maintainer dev-loop, done
+	// in-test — forge itself no longer vendors; it pins a published
+	// version). A relative replace keeps the workspace off any absolute
+	// path and keeps generate run 1 vs run 2 byte-identical for the
+	// tree-hash idempotency assertion.
 	vendorCorpusForgePkg(t, repoRoot, projectDir)
 
 	// Root module: vendored pkg replace (relative to project root).
@@ -1050,8 +1103,9 @@ func addReplaceLines(t *testing.T, path string, lines ...string) {
 	}
 }
 
-// vendorCorpusForgePkg copies <repo>/pkg into <project>/.forge-pkg,
-// mirroring forge's own vendor-sync (which skips .git/ and testdata/).
+// vendorCorpusForgePkg copies <repo>/pkg into <project>/.forge-pkg as this
+// test's in-tree bridge to the unpublished forge/pkg (skips .git/ and
+// testdata/). This is the TEST's local dev-loop, not a forge feature.
 func vendorCorpusForgePkg(t *testing.T, repoRoot, projectDir string) {
 	t.Helper()
 	src := filepath.Join(repoRoot, "pkg")
@@ -1275,6 +1329,88 @@ func hashProjectTree(t *testing.T, root string) map[string]string {
 	return out
 }
 
+// corpusServerPkg returns the `go build` package pattern for the project's
+// PRIMARY binary — the ONE main package under cmd/ — together with whether
+// the project has a binary to boot at all.
+//
+// `./cmd/...` is NOT that pattern. A service scaffold emits
+// cmd/<bin>/main.go PLUS the cmd/<bin>/cmd/ cobra tree and its
+// services/workers/operators subpackages, so the wildcard matches five
+// packages and `go build -o <file>` refuses them outright:
+//
+//	go: cannot write multiple packages to non-directory .../corpus-server
+//
+// The binary name is DERIVED, never spelled out here: the corpus scaffolds
+// projects under several names, and the derivation mirrors forge's own
+// (generator.resolveBinaryName + codegen.discoverSecondaryBinaries) — the
+// cmd/<name>/ leaves carrying a main.go are the candidates, and when a
+// project has more than one (`forge scaffold binary`) the primary is the
+// one named by forge.yaml.
+//
+// ok=false ONLY for the library kind, which by construction has no cmd/
+// tree; that is the single shape where booting a server is inapplicable. A
+// missing main package under any bootable kind is a scaffold REGRESSION and
+// fails loudly — silently skipping there would recreate exactly the class of
+// dead test this helper exists to kill.
+func corpusServerPkg(t *testing.T, projectDir string) (string, bool) {
+	t.Helper()
+
+	cfg, err := generator.ReadProjectConfig(filepath.Join(projectDir, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("read forge.yaml under %s: %v", projectDir, err)
+	}
+	if cfg.EffectiveKind() == config.ProjectKindLibrary {
+		return "", false
+	}
+
+	mains, err := filepath.Glob(filepath.Join(projectDir, "cmd", "*", "main.go"))
+	if err != nil {
+		t.Fatalf("glob cmd/*/main.go under %s: %v", projectDir, err)
+	}
+	if len(mains) == 0 {
+		t.Fatalf("%s project at %s has no cmd/*/main.go — the scaffold must emit a composition root for a bootable kind",
+			cfg.EffectiveKind(), projectDir)
+	}
+	bins := make([]string, 0, len(mains))
+	for _, m := range mains {
+		bins = append(bins, filepath.Base(filepath.Dir(m)))
+	}
+	sort.Strings(bins)
+	if len(bins) == 1 {
+		return "./cmd/" + bins[0], true
+	}
+
+	// Multiple main packages: the primary binary is the forge.yaml project
+	// name verbatim (hyphens preserved), the same rule the scaffold and the
+	// regenerate lane address cmd/<bin>/ by.
+	primary := cfg.Name
+	if primary == "" {
+		primary = filepath.Base(projectDir)
+	}
+	for _, b := range bins {
+		if b == primary {
+			return "./cmd/" + b, true
+		}
+	}
+	t.Fatalf("project at %s has main packages %v, none named %q — cannot tell which binary serves",
+		projectDir, bins, primary)
+	return "", false
+}
+
+// buildCorpusServer builds the project's primary binary to serverBin. It is
+// the single build entry point every boot helper below goes through, so the
+// package pattern is derived in exactly one place. A library-kind project
+// has nothing to boot, so the fixture skips (see corpusServerPkg — every
+// other shape is a hard failure, not a skip).
+func buildCorpusServer(t *testing.T, projectDir, serverBin string) {
+	t.Helper()
+	pkg, ok := corpusServerPkg(t, projectDir)
+	if !ok {
+		t.Skipf("library-kind project at %s ships no binary — booting a server is inapplicable", projectDir)
+	}
+	runCmd(t, projectDir, "go", "build", "-o", serverBin, pkg)
+}
+
 // bootHealthzAndShutdown builds the server binary, boots it, verifies
 // /healthz returns 200, then SIGTERMs it and requires a clean exit
 // within a bounded wait — the appkit-merge boot recipe.
@@ -1282,20 +1418,42 @@ func hashProjectTree(t *testing.T, root string) map[string]string {
 // The port is allocated via freePortE2E (scaffold_e2e_test.go): the
 // corpus runs t.Parallel(), so a hard-coded per-fixture port would be a
 // collision against any other test (or stray process) on the machine.
+//
+// DATABASE_URL: unless the caller names one, the boot gets its own
+// ephemeral postgres. The scaffolded config declares database_url REQUIRED
+// (config.checkRequired fires before bind) and OpenInfra PINGS the database
+// while wiring infra, so "no database" is not a bootable configuration for
+// any service project — not even a zero-entity one. The database is left
+// empty: a project with no entities has no migrations to apply, and the
+// point of this helper is the boot, not the schema.
 func bootHealthzAndShutdown(t *testing.T, projectDir string, extraEnv ...string) {
 	t.Helper()
 	port := freePortE2E(t)
 
 	serverBin := filepath.Join(projectDir, "corpus-server")
-	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
+	buildCorpusServer(t, projectDir, serverBin)
+
+	dsn := ""
+	for _, kv := range extraEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "DATABASE_URL" {
+			dsn = v
+		}
+	}
+	if dsn == "" {
+		provisioned, cleanup, err := pgtest.NewURL()
+		if err != nil {
+			t.Fatalf("provision boot postgres: %v", err)
+		}
+		defer cleanup()
+		dsn = provisioned
+	}
 
 	cmd := exec.Command(serverBin, "server")
 	cmd.Dir = projectDir
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
-		"DATABASE_URL=",           // health checks must not need a DB (no-entity projects)
-		"ENVIRONMENT=development", // dev authorizer; no real authz backend
-		"AUTH_MODE=none",          // explicit no-auth (NewAuthInterceptor errors at startup otherwise)
+		"DATABASE_URL="+dsn,
+		"ENVIRONMENT=development", // local dev defaults
 	)
 	// Caller overrides REPLACE the defaults (duplicate-env behavior is
 	// platform-dependent, so force-rewrite instead of appending) — the
@@ -1360,7 +1518,7 @@ func bootHealthzAndShutdown(t *testing.T, projectDir string, extraEnv ...string)
 // internal/db/item_orm.go):
 //
 //	hand-edit → generate (drift error, new option text) →
-//	`forge disown --reason` (one-way transfer) → generate leaves the
+//	`forge project disown --reason` (one-way transfer) → generate leaves the
 //	file alone with ZERO warnings → delete + generate re-adopts to the
 //	pristine render (entry back to Tier-1).
 func disownRoundTrip(t *testing.T, forgeBin, projectDir, rel string) {
@@ -1374,8 +1532,13 @@ func disownRoundTrip(t *testing.T, forgeBin, projectDir, rel string) {
 
 	// 1. Plain generate must trip the Tier-1 stomp guard, and the error
 	// must teach the new option set: extension point first, then
-	// --explain-drift / --force / friction, with `forge disown --reason`
-	// as the explicit last-resort one-way door. No fork-era guidance.
+	// --explain-drift / --force, with `forge project disown --reason` last —
+	// described as a RECORDED GAP that freezes the file forever, never as a
+	// sanctioned end state. No fork-era guidance.
+	//
+	// The disown needles mirror generate_drift_hints_test.go, which pins the
+	// same report at unit level; keep the two lists in step so the wording
+	// can only move in one place.
 	out, err := runCorpusCmd(projectDir, forgeBin, "generate")
 	if err == nil {
 		t.Fatalf("generate over a hand-edited Tier-1 file must fail (drift guard); output:\n%s", out)
@@ -1386,18 +1549,19 @@ func disownRoundTrip(t *testing.T, forgeBin, projectDir, rel string) {
 	for _, want := range []string{
 		"extension point",
 		"--explain-drift",
-		"forge friction add",
-		"forge disown <path> --reason",
-		"ONE-WAY",
+		"--force",
+		"forge project disown <path> --reason",
+		"not a solution",
+		"not an end state",
+		"stops updating the file forever",
+		"Expect to delete the entry",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("drift error missing option text %q; got:\n%s", want, out)
 		}
 	}
 	// The old report taught the fork escape hatch; that guidance must be
-	// gone. (Needles are the old option-text phrases, not bare flag
-	// names — cobra's usage dump legitimately lists the deprecated
-	// --accept flag for one release.)
+	// gone. Needles are the old option-text phrases, not bare flag names.
 	for _, stale := range []string{"Re-run with `--accept`", "unfork --merge", "fork the file"} {
 		if strings.Contains(out, stale) {
 			t.Errorf("drift error still teaches fork-era escape hatch %q; got:\n%s", stale, out)
@@ -1405,7 +1569,7 @@ func disownRoundTrip(t *testing.T, forgeBin, projectDir, rel string) {
 	}
 
 	// 2. Disowning requires a reason — refuse without one.
-	out, err = runCorpusCmd(projectDir, forgeBin, "disown", rel)
+	out, err = runCorpusCmd(projectDir, forgeBin, "project", "disown", rel)
 	if err == nil {
 		t.Fatalf("disown without --reason must refuse; output:\n%s", out)
 	}
@@ -1413,9 +1577,9 @@ func disownRoundTrip(t *testing.T, forgeBin, projectDir, rel string) {
 		t.Errorf("reason-less disown should explain the requirement; got:\n%s", out)
 	}
 
-	// 3. `forge disown --reason`: the one-way transfer. Confirms the
+	// 3. `forge project disown --reason`: the one-way transfer. Confirms the
 	// path and documents the delete + generate re-adoption flow.
-	out = runCorpusCmdOK(t, projectDir, forgeBin, "disown", rel,
+	out = runCorpusCmdOK(t, projectDir, forgeBin, "project", "disown", rel,
 		"--reason", "corpus e2e: custom wiring the generated file can't express")
 	if !strings.Contains(out, "disowned "+rel) {
 		t.Errorf("disown should confirm the path; got:\n%s", out)
@@ -1514,13 +1678,36 @@ import (
 	"example.com/crudlife/pkg/middleware"
 )
 
+// corpusProjectRoot walks up from the test's working directory (the package
+// dir) to the directory holding forge.yaml. Counting "../.." is what rotted
+// the first time: this probe lived at internal/<svc>/ when it was written and
+// moved to internal/handlers/<svc>/ later, silently pointing the migrations
+// read at a directory that does not exist. The root is found, not counted.
+func corpusProjectRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, serr := os.Stat(filepath.Join(dir, "forge.yaml")); serr == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("no forge.yaml in any parent of the package dir — cannot locate the project root")
+		}
+		dir = parent
+	}
+}
+
 // corpusMigratedDB builds a real-postgres DB and applies the project's
 // own migration SQL (db/migrations/*.up.sql, in order) — the schema the
 // generated CRUD code is supposed to run against.
 func corpusMigratedDB(t *testing.T) orm.Context {
 	t.Helper()
 	db := testkit.NewPostgresDB(t)
-	migDir := filepath.Join("..", "..", "db", "migrations")
+	migDir := filepath.Join(corpusProjectRoot(t), "db", "migrations")
 	entries, err := os.ReadDir(migDir)
 	if err != nil {
 		t.Fatalf("read project migrations dir: %v", err)
@@ -1696,9 +1883,9 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 //
 // Shape (the schema-is-truth flow — NO entity protos anywhere):
 //
-//  1. `forge new` scaffolds the Item service: CRUD RPCs + wire message,
+//  1. `forge project new` scaffolds the Item service: CRUD RPCs + wire message,
 //     no migration, no entity, no ORM. The schema starts empty.
-//  2. `forge add entity item ...` emits the create-table migration —
+//  2. `forge scaffold entity item ...` emits the create-table migration —
 //     SQL is the schema declaration. The scaffold proto already carries
 //     the Item wire contract, so add-entity leaves it alone.
 //  3. `forge generate` shadow-applies db/migrations, introspects, and
@@ -1706,7 +1893,7 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 //     Conventions come off the columns: deleted_at ⇒ soft delete,
 //     created_at+updated_at ⇒ managed timestamps, text ⇒ searchable.
 //  4. A second entity (bookmark, with a repeated []string field) is
-//     born through the FULL `forge add entity` surface, including the
+//     born through the FULL `forge scaffold entity` surface, including the
 //     one-time schema→wire CRUD scaffold into the service proto.
 //  5. A HAND-WRITTEN migration ladder evolves bookmarks (add column +
 //     data movement splitting a column) and `forge generate` again —
@@ -1732,7 +1919,7 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	start := time.Now()
 
-	runCmd(t, dir, forgeBin, "new", "crudlife",
+	runCmd(t, dir, forgeBin, "project", "new", "crudlife",
 		"--mod", "example.com/crudlife",
 		"--service", "item",
 	)
@@ -1744,16 +1931,30 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	if entries, err := os.ReadDir(filepath.Join(projectDir, "db", "migrations")); err == nil {
 		for _, e := range entries {
 			if strings.HasSuffix(e.Name(), ".sql") {
-				t.Errorf("pristine scaffold ships migration %s — tables must be born via `forge add entity`", e.Name())
+				t.Errorf("pristine scaffold ships migration %s — tables must be born via `forge scaffold entity`", e.Name())
 			}
 		}
 	}
 
-	// Declare the entity: ONE command, SQL out. The wire contract (Item
-	// message + CRUD RPCs) is already in the scaffold proto, which
-	// add-entity detects and leaves alone.
-	runCmd(t, projectDir, forgeBin, "add", "entity", "item",
-		"name:string", "description:string", "active:bool", "--soft-delete")
+	// Declare the entity IN THE PROTO — the only place an entity is
+	// declared. `project new` ships an empty service stub, so the marked
+	// message is authored here; bare `forge scaffold` then births it,
+	// injecting the CRUD quintet forge itself defines (hand-authoring the
+	// request messages would pin a shape forge does not emit).
+	lifecycleProtoPath := filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto")
+	lifecycleProto := readFileE2E(t, lifecycleProtoPath)
+	lifecycleProto += `
+// forge:entity
+// forge:soft-delete
+message Item {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  bool active = 4;
+}
+`
+	writeFileE2E(t, lifecycleProtoPath, lifecycleProto)
+	runCmd(t, projectDir, forgeBin, "scaffold")
 
 	// The boot steps below start the REAL server against a real ephemeral
 	// postgres (pkg/pgtest) so the generated bootstrap's DB+ORM
@@ -1791,13 +1992,21 @@ func itemSeamProbe() string { return "user-owned" }
 	writeCorpusFile(t, repoExtPath, repoExtUserOwned)
 
 	// features.deploy is shape-derived for service projects: the scaffold
-	// ships deploy/kcl/dev/main.k importing deploy.kcl.dev.config_gen, so
-	// a pristine generate MUST emit that file or the scaffold's own KCL
-	// import is unresolvable and `forge run` can't compose per-env config
-	// (the J1 features.deploy catch-22: gate said deploy=false, schema
-	// rejected features.deploy, main.k imported the never-generated file).
-	if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", "dev", "config_gen.k")); err != nil {
-		t.Errorf("pristine generate did not emit deploy/kcl/dev/config_gen.k — the scaffold's own deploy/kcl/dev/main.k import is unresolvable (features.deploy catch-22): %v", err)
+	// ships deploy/kcl/dev/main.k on the KCL-native config path (it
+	// imports `config_projection` + the per-env `.config`), so a pristine
+	// generate MUST emit those files or the scaffold's own KCL imports
+	// are unresolvable and `forge run` can't compose per-env config (the
+	// J1 features.deploy catch-22: gate said deploy=false, schema
+	// rejected features.deploy, main.k imported the never-generated
+	// file).
+	for _, rel := range []string{
+		filepath.Join("deploy", "kcl", "config_schema.k"),
+		filepath.Join("deploy", "kcl", "config_projection.k"),
+		filepath.Join("deploy", "kcl", "dev", "config.k"),
+	} {
+		if _, err := os.Stat(filepath.Join(projectDir, rel)); err != nil {
+			t.Errorf("pristine generate did not emit %s — the scaffold's own deploy/kcl/dev/main.k import is unresolvable (features.deploy catch-22): %v", rel, err)
+		}
 	}
 
 	handlerDir := filepath.Join(projectDir, "internal", "handlers", "item")
@@ -1883,14 +2092,26 @@ func itemSeamProbe() string { return "user-owned" }
 	// bookmark exercises: proto injection (CRUD messages + RPCs into the
 	// service proto), a repeated []string column (native TEXT[] in the
 	// migration, native TEXT[] on postgres), soft delete.
-	runCmd(t, projectDir, forgeBin, "add", "entity", "bookmark",
-		"url:string", "title:string", "tags:[]string", "done:bool", "--soft-delete")
-	itemProto := readFileE2E(t, filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto"))
+	bookmarkProto := readFileE2E(t, lifecycleProtoPath)
+	bookmarkProto += `
+// forge:entity
+// forge:soft-delete
+message Bookmark {
+  string id = 1;
+  string url = 2;
+  string title = 3;
+  repeated string tags = 4;
+  bool done = 5;
+}
+`
+	writeFileE2E(t, lifecycleProtoPath, bookmarkProto)
+	runCmd(t, projectDir, forgeBin, "scaffold")
+	itemProto := readFileE2E(t, lifecycleProtoPath)
 	if !strings.Contains(itemProto, "rpc CreateBookmark(CreateBookmarkRequest)") {
-		t.Fatalf("add entity did not scaffold the Bookmark CRUD RPCs into the service proto")
+		t.Fatalf("scaffold entity did not scaffold the Bookmark CRUD RPCs into the service proto")
 	}
 	if strings.Contains(itemProto, "forge.v1.entity") {
-		t.Errorf("add entity emitted a forge.v1.entity annotation — entity protos are dead, SQL is the schema")
+		t.Errorf("scaffold entity emitted a forge.v1.entity annotation — entity protos are dead, SQL is the schema")
 	}
 	bookmarkMig := readFileE2E(t, filepath.Join(projectDir, "db", "migrations", "00002_create_bookmarks.up.sql"))
 	if !strings.Contains(bookmarkMig, "tags TEXT[] NOT NULL DEFAULT '{}'") {
@@ -1958,7 +2179,16 @@ UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 	// file. Pin the whole path: generate exits 0, the projection keeps
 	// the columns as strings, the project builds, and the executed ORM
 	// stamps real RFC3339Nano text.
-	runCmd(t, projectDir, forgeBin, "add", "entity", "trade", "ticker:string")
+	tradeProto := readFileE2E(t, lifecycleProtoPath)
+	tradeProto += `
+// forge:entity
+message Trade {
+  string id = 1;
+  string ticker = 2;
+}
+`
+	writeFileE2E(t, lifecycleProtoPath, tradeProto)
+	runCmd(t, projectDir, forgeBin, "scaffold")
 	tradeMigPath := filepath.Join(projectDir, "db", "migrations", "00004_create_trades.up.sql")
 	tradeMig := readFileE2E(t, tradeMigPath)
 	tradeMig = strings.ReplaceAll(tradeMig,
@@ -2053,25 +2283,20 @@ UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 	defer bootCleanup()
 	bootHealthzAndShutdown(t, projectDir, "DATABASE_URL="+bootDSN)
 
-	// ── 8b. dev mode is usable with ZERO auth config: a real Connect
-	// CRUD call over HTTP, with NO token, NO auth pack, NO AUTH_MODE —
-	// just ENVIRONMENT=development. The authn passthrough must attach
-	// the project's synthetic dev principal (devClaims hook), so the
-	// auth-required generated CRUD path (middleware.GetUser) succeeds.
-	// This was the J1 day-one rage-quit: forge run + browser = 401 on
-	// every RPC until the user reverse-engineered the jwt-auth pack.
-	bootDevCRUDNoToken(t, projectDir)
+	// ── 8b. JWT validation is REAL end-to-end: over real HTTP, a garbage
+	// bearer token is rejected while a valid RS256 token (validated against
+	// JWT_SECRET) authenticates and the row round-trips. Pins the
+	// real-validation path the generated CRUD runs behind.
+	bootCRUDAuthEnforced(t, projectDir)
 
 	// ── 9. and WITHOUT a database it fails AT BOOT, loudly ───────────
-	// validateDeps (not the first RPC) is the gate: wire_gen passes a
-	// true nil orm.Context via app.ORMContext(), the injected
-	// `Deps.DB is required` check rejects it, and the process exits
-	// non-zero naming DATABASE_URL — never a typed-nil panic mid-request.
+	// The process exits non-zero naming DATABASE_URL before it ever serves
+	// a request — never a typed-nil orm.Context panicking mid-RPC.
 	bootMustFailWithoutDatabase(t, projectDir)
 
 	// ── 10. disown lifecycle on a generated ORM file (M3, kalshi
 	// fr-4dfef712e9, reproduced verbatim): the escape hatch every
-	// *_orm.go header advertises ("forge disown to take ownership")
+	// *_orm.go header advertises ("forge project disown to take ownership")
 	// must actually work. Before M3 the ORM emitter bypassed the
 	// ownership chokepoint (its outputs carried no forge certification),
 	// so disown refused on
@@ -2084,12 +2309,20 @@ UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 
 // bootMustFailWithoutDatabase starts the already-built corpus server
 // with an empty DATABASE_URL and asserts the boot FAILS fast with an
-// actionable message. This is the validateDeps-at-boot pin for projects
-// whose services require the database.
+// actionable message that NAMES the missing setting. The absence must be
+// caught at boot, never as a typed-nil orm.Context panicking on the first
+// RPC.
+//
+// The gate is config.checkRequired: config.proto declares database_url
+// `required: true`, so the process refuses before it binds a port or wires
+// anything — strictly earlier and louder than the injected `Deps.DB is
+// required` check, which this path can no longer reach. The assertion is on
+// the SETTING name, which is what an operator can act on and is stable
+// across whichever layer refuses first.
 func bootMustFailWithoutDatabase(t *testing.T, projectDir string) {
 	t.Helper()
 	serverBin := filepath.Join(projectDir, "corpus-server")
-	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
+	buildCorpusServer(t, projectDir, serverBin)
 
 	cmd := exec.Command(serverBin, "server")
 	cmd.Dir = projectDir
@@ -2097,7 +2330,6 @@ func bootMustFailWithoutDatabase(t *testing.T, projectDir string) {
 		fmt.Sprintf("PORT=%d", freePortE2E(t)),
 		"DATABASE_URL=",
 		"ENVIRONMENT=development",
-		"AUTH_MODE=none",
 	)
 	var out strings.Builder
 	cmd.Stdout = &out
@@ -2110,15 +2342,15 @@ func bootMustFailWithoutDatabase(t *testing.T, projectDir string) {
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Errorf("server BOOTED with no DATABASE_URL while serving DB-backed CRUD — validateDeps must reject at boot\noutput:\n%s", out.String())
+			t.Errorf("server BOOTED with no DATABASE_URL while serving DB-backed CRUD — the absence must be rejected at boot\noutput:\n%s", out.String())
 		}
 	case <-time.After(20 * time.Second):
 		_ = cmd.Process.Kill()
 		<-done
 		t.Fatalf("server still running 20s after boot with no DATABASE_URL — the absence must fail AT BOOT, not on the first RPC\noutput:\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "Deps.DB is required") {
-		t.Errorf("boot failure should name the missing dep (Deps.DB is required); output:\n%s", out.String())
+	if !strings.Contains(out.String(), "DATABASE_URL") {
+		t.Errorf("boot failure must name the missing setting (DATABASE_URL); output:\n%s", out.String())
 	}
 	_ = os.Remove(serverBin)
 }
@@ -2160,19 +2392,75 @@ func applyProjectMigrationsPostgres(t *testing.T, projectDir, dsn string) {
 	}
 }
 
-// bootDevCRUDNoToken boots the corpus server in dev mode (ENVIRONMENT=
-// development, NO AUTH_MODE, no token, no pack) against a real postgres
-// database and makes a real Connect JSON call to an auth-required CRUD RPC.
-// Pins the zero-config dev path end-to-end: authn passthrough attaches
-// the scaffold's synthetic dev principal (the devClaims hook in
-// pkg/middleware), middleware.GetUser finds claims, the dev authorizer
-// allows, and the row round-trips.
-func bootDevCRUDNoToken(t *testing.T, projectDir string) {
+// mintDevJWT generates a throwaway RSA keypair and returns the PEM-encoded
+// public key (for JWT_SECRET) plus a Bearer token string signed with the
+// matching private key. RS256 matches the scaffold's default signing method,
+// so a server started with JWT_SECRET set to this public key validates the
+// token for real — this is the TEST-ONLY way to obtain a genuine principal.
+func mintDevJWT(t *testing.T) (pubPEM string, bearer string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key: %v", err)
+	}
+	pubPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}))
+
+	b64 := func(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+	header := b64([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	// Identity claims ONLY. This test-support minter used to add
+	// org_id=dev-org-001 and role=admin, which is forge inventing a role
+	// vocabulary and a scoping model in the one artifact agents read to
+	// learn what a forge token looks like. What a caller MAY do is
+	// application policy forge does not generate; an app that needs such a
+	// claim puts it in the token its own issuer mints.
+	payloadJSON, err := json.Marshal(map[string]any{
+		"sub":   "dev-user-001",
+		"email": "dev@localhost",
+		"iat":   time.Now().Unix(),
+		"exp":   time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("marshal JWT payload: %v", err)
+	}
+	signingInput := header + "." + b64(payloadJSON)
+	sum := sha256.Sum256([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, sum[:])
+	if err != nil {
+		t.Fatalf("sign JWT: %v", err)
+	}
+	return pubPEM, "Bearer " + signingInput + "." + b64(sig)
+}
+
+// bootCRUDAuthEnforced boots the corpus server against a real postgres
+// database with REAL JWT auth (JWT_SECRET set to a throwaway RS256 public
+// key — no dev-auth bypass) and drives CreateItem over real HTTP three
+// times:
+//   - with NO Authorization header → rejected. CreateItem's proto declares
+//     auth_required: true, and the scaffolded serve.go builds
+//     `middleware.AuthDeps{AnonymousOK: false}`, so the interceptor turns
+//     the caller away before any handler runs.
+//   - with a MALFORMED bearer token → rejected. A present credential is
+//     always validated for real; a bad one is an error, never a silent
+//     downgrade to anonymous.
+//   - with a valid RS256 bearer token → the row is created and round-trips.
+//
+// The token-less leg is the one that could not previously be asserted. The
+// interceptor was non-gating: a request with no Authorization header reached
+// the handler claim-less, enforcing identity was every handler's job, and
+// `auth_required` gated nothing at runtime. One measured app shipped 17 of
+// 20 CRUD RPCs open that way, all 20 of them declaring auth_required: true.
+// The declaration is now projected into pkg/middleware/procedures_gen.go and
+// enforced, so this is a shape forge generates.
+func bootCRUDAuthEnforced(t *testing.T, projectDir string) {
 	t.Helper()
 	port := freePortE2E(t)
 
 	serverBin := filepath.Join(projectDir, "corpus-server")
-	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
+	buildCorpusServer(t, projectDir, serverBin)
 
 	// The generated server does not auto-migrate; give it a postgres
 	// database with the project's own schema applied (same SQL the
@@ -2184,26 +2472,24 @@ func bootDevCRUDNoToken(t *testing.T, projectDir string) {
 	defer devCleanup()
 	applyProjectMigrationsPostgres(t, projectDir, devDSN)
 
+	pubPEM, bearer := mintDevJWT(t)
+
 	cmd := exec.Command(serverBin, "server")
 	cmd.Dir = projectDir
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		"DATABASE_URL="+devDSN,
 		"ENVIRONMENT=development",
-		// Auth bypass is EXPLICIT: ENVIRONMENT=development alone keeps auth
-		// ENFORCED. The dev-claims passthrough is opted into here with
-		// AUTH_DEV_MODE=true — proving that, once bypassed, a tokenless
-		// CreateItem succeeds via the synthetic dev principal.
-		"AUTH_DEV_MODE=true",
+		// Real JWT validation: the scaffold's SetupAuth builds a JWT
+		// validator (default RS256) that reads JWT_SECRET as the PEM public
+		// key. A token is REQUIRED to obtain a principal — there is no bypass.
+		"JWT_SECRET="+pubPEM,
 	)
-	// Force AUTH_MODE empty in case the host shell leaked one — the bypass
-	// is driven by AUTH_DEV_MODE, not AUTH_MODE.
-	cmd.Env = withForcedEnv(cmd.Env, "AUTH_MODE", "")
 	var serverOut strings.Builder
 	cmd.Stdout = &serverOut
 	cmd.Stderr = &serverOut
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("start dev-mode server: %v", err)
+		t.Fatalf("start auth-enforced server: %v", err)
 	}
 	defer func() {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
@@ -2220,23 +2506,68 @@ func bootDevCRUDNoToken(t *testing.T, projectDir string) {
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if !waitForServer(t, base+"/healthz", 15*time.Second) {
-		t.Fatalf("dev-mode server did not become ready\noutput:\n%s", serverOut.String())
+		t.Fatalf("auth-enforced server did not become ready\noutput:\n%s", serverOut.String())
 	}
 
-	resp, err := http.Post(
-		base+"/services.item.v1.ItemService/CreateItem",
-		"application/json",
-		strings.NewReader(`{"name":"dev-claims-proof","description":"no token attached"}`),
-	)
+	createBody := `{"name":"auth-proof","description":"auth-gated create"}`
+	url := base + "/services.item.v1.ItemService/CreateItem"
+
+	// (1) NO credential → rejected before the handler. CreateItem never
+	// declared itself public, so nothing published it.
+	anonReq, err := http.NewRequest(http.MethodPost, url, strings.NewReader(createBody))
 	if err != nil {
-		t.Fatalf("POST CreateItem (no token, dev mode): %v", err)
+		t.Fatalf("build anonymous CreateItem request: %v", err)
+	}
+	anonReq.Header.Set("Content-Type", "application/json")
+	anon, err := http.DefaultClient.Do(anonReq)
+	if err != nil {
+		t.Fatalf("POST CreateItem (no credential): %v", err)
+	}
+	anonBody, _ := io.ReadAll(anon.Body)
+	anon.Body.Close()
+	if anon.StatusCode == http.StatusOK {
+		t.Fatalf("CreateItem with NO Authorization header returned 200 and created a row — the RPC declares "+
+			"auth_required: true and nothing enforced it\nresponse: %s\nserver output:\n%s",
+			anonBody, serverOut.String())
+	}
+
+	// (2) MALFORMED token → rejected. A presented credential is validated
+	// for real against JWT_SECRET; a bad one is an error, never a silent
+	// downgrade to anonymous. This is the leg that proves the validator is
+	// actually wired (AnonymousOK only relaxes the token-LESS case).
+	badReq, err := http.NewRequest(http.MethodPost, url, strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("build bad-token CreateItem request: %v", err)
+	}
+	badReq.Header.Set("Content-Type", "application/json")
+	badReq.Header.Set("Authorization", "Bearer not.a.jwt")
+	bad, err := http.DefaultClient.Do(badReq)
+	if err != nil {
+		t.Fatalf("POST CreateItem (malformed token): %v", err)
+	}
+	badBody, _ := io.ReadAll(bad.Body)
+	bad.Body.Close()
+	if bad.StatusCode == http.StatusOK {
+		t.Fatalf("CreateItem with a MALFORMED bearer token returned 200 — a presented credential must be validated, not ignored\nresponse: %s\nserver output:\n%s",
+			badBody, serverOut.String())
+	}
+
+	// (3) valid bearer token → 200, row round-trips (real JWT validation).
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("build authed CreateItem request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearer)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST CreateItem (bearer token): %v", err)
 	}
 	defer resp.Body.Close()
-	var body strings.Builder
-	_, _ = io.Copy(&body, resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("dev-mode CreateItem without a token = HTTP %d, want 200 — the zero-config dev path is broken (devClaims not attached?)\nresponse: %s\nserver output:\n%s",
-			resp.StatusCode, body.String(), serverOut.String())
+		t.Fatalf("authed CreateItem = HTTP %d, want 200 — the real JWT validation path is broken\nresponse: %s\nserver output:\n%s",
+			resp.StatusCode, body, serverOut.String())
 	}
 	var created struct {
 		Item struct {
@@ -2244,11 +2575,11 @@ func bootDevCRUDNoToken(t *testing.T, projectDir string) {
 			Name string `json:"name"`
 		} `json:"item"`
 	}
-	if err := json.Unmarshal([]byte(body.String()), &created); err != nil {
-		t.Fatalf("parse CreateItem response %q: %v", body.String(), err)
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("parse CreateItem response %q: %v", string(body), err)
 	}
-	if created.Item.Id == "" || created.Item.Name != "dev-claims-proof" {
-		t.Errorf("dev-mode CreateItem response missing the created row: %s", body.String())
+	if created.Item.Id == "" || created.Item.Name != "auth-proof" {
+		t.Errorf("authed CreateItem response missing the created row: %s", body)
 	}
 }
 
@@ -2261,7 +2592,7 @@ func bootCustomReadRPC(t *testing.T, projectDir string) {
 	port := freePortE2E(t)
 
 	serverBin := filepath.Join(projectDir, "corpus-custom-server")
-	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
+	buildCorpusServer(t, projectDir, serverBin)
 
 	dsn, cleanup, err := pgtest.NewURL()
 	if err != nil {
@@ -2270,15 +2601,18 @@ func bootCustomReadRPC(t *testing.T, projectDir string) {
 	defer cleanup()
 	applyProjectMigrationsPostgres(t, projectDir, dsn)
 
+	pubPEM, bearer := mintDevJWT(t)
+
 	cmd := exec.Command(serverBin, "server")
 	cmd.Dir = projectDir
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		"DATABASE_URL="+dsn,
 		"ENVIRONMENT=development",
-		"AUTH_DEV_MODE=true",
+		// Real JWT validation (no bypass): the custom read is auth-gated,
+		// so the call must carry a valid bearer token to reach the handler.
+		"JWT_SECRET="+pubPEM,
 	)
-	cmd.Env = withForcedEnv(cmd.Env, "AUTH_MODE", "")
 	var serverOut strings.Builder
 	cmd.Stdout = &serverOut
 	cmd.Stderr = &serverOut
@@ -2303,11 +2637,17 @@ func bootCustomReadRPC(t *testing.T, projectDir string) {
 		t.Fatalf("custom-read server did not become ready\noutput:\n%s", serverOut.String())
 	}
 
-	resp, err := http.Post(
+	req, err := http.NewRequest(
+		http.MethodPost,
 		base+"/services.item.v1.ItemService/ListItems",
-		"application/json",
 		strings.NewReader(`{}`),
 	)
+	if err != nil {
+		t.Fatalf("build ListItems request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearer)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST ListItems (wired custom read): %v", err)
 	}
@@ -2336,7 +2676,7 @@ func appendToCorpusFile(t *testing.T, path, content string) {
 }
 
 // bookmarkLifecycleProbeSrc exercises the second entity born through
-// the FULL `forge add entity` surface: repeated-field round trip
+// the FULL `forge scaffold entity` surface: repeated-field round trip
 // (tags []string — native TEXT[] on postgres) and the soft-delete
 // conventions read off the deleted_at
 // column (delete is an UPDATE; reads filter; ListAll sees the corpse).

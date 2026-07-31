@@ -5,7 +5,7 @@ Two responsibilities:
 
   1. `render(bundle)` — project a typed `Bundle` to the stable JSON
      contract documented in `schema.k`. This is what the forge CLI
-     (`forge build`, `forge run`, `forge deploy`, etc.) consumes via
+     (`forge build`, `forge run`, `forge env deploy`, etc.) consumes via
      `kcl run deploy/kcl/<env>/ -S output --format json`.
 
   2. `render_manifests(bundle, env)` — emit the Kubernetes manifest
@@ -102,6 +102,7 @@ _render_host_deploy = lambda d: HostDeploy -> any {
         "secrets_file": d.secrets_file if d.secrets_file else None
         "delve_port": d.delve_port
         "working_dir": d.working_dir if d.working_dir else None
+        "listen_ports": d.listen_ports if d.listen_ports else None
     }
 }
 
@@ -346,6 +347,20 @@ _render_frontend_deploy = lambda d: any -> any {
     _render_firebase_hosting(d) if d else None
 }
 
+# Render a FrontendConfig to its stable dict form. Optional string knobs
+# project as `null` when unset so the consumer sees stable keys; `mock`
+# and `telemetry_disabled` always carry their (defaulted) value. An unset
+# `config` block projects as `null` (see _render_frontend).
+_render_frontend_config = lambda c: FrontendConfig -> any {
+    {
+        "api_url": c.api_url if c.api_url else None
+        "mock": c.mock
+        "otel_endpoint": c.otel_endpoint if c.otel_endpoint else None
+        "environment": c.environment if c.environment else None
+        "telemetry_disabled": c.telemetry_disabled
+    }
+}
+
 _render_frontend = lambda f: Frontend -> any {
     {
         "name": f.name
@@ -355,6 +370,7 @@ _render_frontend = lambda f: Frontend -> any {
         "port": f.port
         "env_file": f.env_file if f.env_file else None
         "env_vars": [_render_env_var(e) for e in f.env_vars]
+        "config": _render_frontend_config(f.config) if f.config else None
         "deploy": _render_frontend_deploy(f.deploy)
     }
 }
@@ -821,7 +837,7 @@ _render_config_map_manifest = lambda cm: ConfigMap, namespace: str -> any {
 # render_owned_manifests) inherit THEIR service's name. The env-shared
 # resources (Namespace, RuntimeClass, ConfigMap, NetworkPolicy) and
 # bundle-level `additional_manifests` belong to NO service, so they carry
-# NO `app.kubernetes.io/name` — they apply on a bare `forge deploy` (no
+# NO `app.kubernetes.io/name` — they apply on a bare `forge env deploy` (no
 # `--target`) and are NEVER selected by a service `--target`. There is no
 # synthetic env/namespace group and no Go "keep shared infra" policy: a
 # manifest that needs to ride a service's `--target` is declared on that
@@ -833,7 +849,7 @@ _render_config_map_manifest = lambda cm: ConfigMap, namespace: str -> any {
 # "gvisor"` would otherwise hit "RuntimeClass not found" while
 # kube-apiserver applies the rest of the bundle). They're
 # cluster-scoped (no namespace) so they survive namespace deletes —
-# `forge deploy <env>` is the right owner.
+# `forge env deploy <env>` is the right owner.
 render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_digests: {str:str} = {}, network_policies: bool = True -> [any] {
     _ct = bundle.cluster_target
     _ns = _ct.namespace
@@ -890,8 +906,9 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
 # This is the companion to forge.components.render_components: the
 # deploy-as-data env main.k expands its workloads from
 # components_gen.json (via render_components) and concatenates this
-# helper for the env-owned support resources (the config the
-# config_gen.k file projects, plus the project's ingress topology).
+# helper for the env-owned support resources (the project's ingress
+# topology; per-env app config rides each workload's env via
+# config_projection.appConfigEnvMap, not a standalone resource here).
 # Namespace + network policies are owned by render_components, so they
 # are deliberately omitted here to avoid duplication.
 render_support = lambda bundle: Bundle -> [any] {

@@ -1,8 +1,14 @@
 package codegen
 
 import (
+	"errors"
 	"fmt"
+	"math"
+	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // proto<->entity conversion generation.
@@ -23,37 +29,124 @@ type EntityConvTemplateData struct {
 	FromProtoAssigns []string
 }
 
-// BuildEntityConv builds the conversion data for one entity.
-func BuildEntityConv(svc ServiceDef, entity EntityDef) EntityConvTemplateData {
+// UnmappedField names one (wire field, column) pair the conversion
+// generator cannot map in a direction that round-trips.
+//
+// Such a pair is DEAD over the API: the column exists, the wire field
+// exists, and nothing carries a value between them — the field is created
+// as the column DEFAULT forever and never read back. The generator used to
+// emit an explanatory COMMENT in the generated body for exactly this case,
+// which is a guard that cannot fire: the build stays green, the tests stay
+// green, and the only way to learn about it is to read generated code
+// nobody reads. (Measured: a `repeated OrderLineItem line_items` over a
+// JSONB column — Create accepted line items and stored `[]`, List returned
+// none, forever.) Every one of these now fails the generate instead; see
+// UnmappedFieldsError.
+type UnmappedField struct {
+	Message  string    // wire message name ("Order")
+	Field    string    // proto field name ("line_items")
+	Kind     FieldKind // wire kind ("repeated_message")
+	Table    string    // table name ("orders")
+	Column   string    // column name ("line_items")
+	DeclType string    // declared SQL type ("JSONB")
+	Reason   string    // why the pairing has no conversion
+}
+
+// UnmappedFieldsError renders a set of unmappable pairings as the error
+// `forge generate` fails with. nil for an empty set. Every pair is listed
+// rather than just the first, so one run tells the author about every dead
+// field instead of one per regenerate.
+func UnmappedFieldsError(fields []UnmappedField) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d proto field(s) have a column but no conversion, so they would be silently dropped:\n", len(fields))
+	for _, f := range fields {
+		fmt.Fprintf(&b, "  - %s.%s (%s) <-> %s.%s %s: %s\n",
+			f.Message, f.Field, f.Kind, f.Table, f.Column, f.DeclType, f.Reason)
+	}
+	b.WriteString("Change the column type or the proto field so the pairing is one forge maps, " +
+		"or drop one side. A field forge cannot map is dead over the API.")
+	return errors.New(b.String())
+}
+
+// BuildEntityConv builds the conversion data for one entity, plus every
+// (wire field, column) pair it could not map.
+func BuildEntityConv(svc ServiceDef, entity EntityDef) (EntityConvTemplateData, []UnmappedField) {
 	conv := EntityConvTemplateData{
 		EntityName:  entity.Name,
 		EntityLower: strings.ToLower(entity.Name),
 	}
+	var unmapped []UnmappedField
 	colByName := map[string]EntityColumn{}
 	for _, c := range entity.Columns {
 		colByName[c.Name] = c
 	}
+	enumRepeated := enumRepeatedWireFields(svc, entity.Name)
 	for _, wf := range entity.Fields {
+		wf = promoteOptionalScalar(wf)
+		wf = promoteEnum(wf, svc.Package, enumRepeated[wf.Name])
 		col, ok := colByName[wf.Name]
 		if !ok {
 			conv.ToProtoAssigns = append(conv.ToProtoAssigns,
 				fmt.Sprintf("// %s: wire-only field (no %q column in the applied schema)", wf.GoName, wf.Name))
 			continue
 		}
-		if to, ok := assignToProto("m", "e", wf, col); ok {
-			conv.ToProtoAssigns = append(conv.ToProtoAssigns, to)
-		}
-		if from, ok := assignToDB("e", "m", wf, col); ok {
+		// forge:secret — the column is real and stays WRITABLE (the
+		// FromProto/create path below maps it), but the read path never packs
+		// it: Get/List responses omit the value, and it is never logged via a
+		// packed message. Sensitive columns (credentials, tokens) are stripped
+		// from reads without the app author hand-writing the skip.
+		if wf.Secret {
+			from, why := assignToDB("e", "m", wf, col)
+			if why != "" {
+				unmapped = append(unmapped, unmappedField(entity, wf, col, why))
+				continue
+			}
+			conv.ToProtoAssigns = append(conv.ToProtoAssigns,
+				fmt.Sprintf("// %s: forge:secret — omitted from read responses (never packed onto the wire)", wf.GoName))
 			conv.FromProtoAssigns = append(conv.FromProtoAssigns, from)
+			continue
 		}
+		to, whyTo := assignToProto("m", "e", wf, col)
+		from, whyFrom := assignToDB("e", "m", wf, col)
+		if whyTo != "" || whyFrom != "" {
+			why := whyTo
+			if why == "" {
+				why = whyFrom
+			}
+			unmapped = append(unmapped, unmappedField(entity, wf, col, why))
+			continue
+		}
+		conv.ToProtoAssigns = append(conv.ToProtoAssigns, to)
+		conv.FromProtoAssigns = append(conv.FromProtoAssigns, from)
 	}
-	return conv
+	return conv, unmapped
+}
+
+func unmappedField(entity EntityDef, wf EntityField, col EntityColumn, reason string) UnmappedField {
+	return UnmappedField{
+		Message:  entity.Name,
+		Field:    wf.Name,
+		Kind:     wf.Kind,
+		Table:    entity.TableName,
+		Column:   col.Name,
+		DeclType: col.DeclType,
+		Reason:   reason,
+	}
 }
 
 // ConvNeedsTimestamppb reports whether any assignment uses timestamppb.
+// Comment-only entries (the wire-only and forge:secret explanations) are
+// ignored: a comment naming *timestamppb.Timestamp must not pull in an
+// import no code uses.
 func ConvNeedsTimestamppb(convs []EntityConvTemplateData) bool {
 	for _, c := range convs {
 		for _, a := range c.ToProtoAssigns {
+			if strings.HasPrefix(a, "//") {
+				continue
+			}
 			if strings.Contains(a, "timestamppb.") {
 				return true
 			}
@@ -62,28 +155,182 @@ func ConvNeedsTimestamppb(convs []EntityConvTemplateData) bool {
 	return false
 }
 
-// dbBaseGoType is the NOT NULL Go type of a column on the entity struct.
-func dbBaseGoType(col EntityColumn) string {
-	if col.IsArray {
-		if col.Type == "int64" {
-			return "[]int64"
+// ConvNeedsFmt reports whether any conversion emits a guard that calls
+// fmt.Errorf — the corrupt-enum read, or either half of a json/jsonb
+// pairing. The ops file imports fmt only then; otherwise the import would
+// be unused. (goimports would also correct this post-write, but gating it
+// keeps the rendered file correct on its own.)
+func ConvNeedsFmt(convs []EntityConvTemplateData) bool {
+	return convsContain(convs, "fmt.Errorf")
+}
+
+// ConvNeedsTime reports whether any conversion reaches the stdlib `time`
+// package — today only the legacy-TEXT timestamp pairing, which formats and
+// parses time.RFC3339Nano. Gated for the same reason as ConvNeedsFmt: an
+// entity with no such column must not pull in the import.
+func ConvNeedsTime(convs []EntityConvTemplateData) bool {
+	return convsContain(convs, timeImportToken)
+}
+
+// timeImportToken is the substring that marks a generated assignment as
+// needing the `time` import. Both halves of the legacy-TEXT timestamp
+// pairing spell it, and no other conversion does — timestamppb.New is a
+// different package and does not match.
+const timeImportToken = "time.RFC3339Nano"
+
+// ConvNeedsORM reports whether any conversion calls into pkg/orm — today
+// the json/jsonb encoders. Gated for the same reason as ConvNeedsFmt: an
+// entity with no json column must not pull in the import.
+func ConvNeedsORM(convs []EntityConvTemplateData) bool {
+	return convsContain(convs, "orm.")
+}
+
+// convsContain reports whether any generated assignment, in either
+// direction, contains tok. Comment-only entries (the wire-only and
+// forge:secret explanations) are ignored: a comment naming a package must
+// not pull in an import no code uses.
+func convsContain(convs []EntityConvTemplateData, tok string) bool {
+	for _, c := range convs {
+		for _, a := range append(append([]string{}, c.ToProtoAssigns...), c.FromProtoAssigns...) {
+			if strings.HasPrefix(a, "//") {
+				continue
+			}
+			if strings.Contains(a, tok) {
+				return true
+			}
 		}
-		return "[]string"
 	}
-	switch col.Type {
-	case "int64":
-		return "int64"
-	case "float64":
-		return "float64"
-	case "bool":
-		return "bool"
-	case "time":
-		return "time.Time"
-	case "bytes":
-		return "[]byte"
-	default: // string, json
-		return "string"
+	return false
+}
+
+// AssignsContain reports whether any of the create-path assignments
+// contains tok. The create closure is built per METHOD, not per entity, so
+// its import needs are gated separately from the conversion pair's.
+func AssignsContain(assigns []string, tok string) bool {
+	for _, a := range assigns {
+		if strings.HasPrefix(a, "//") {
+			continue
+		}
+		if strings.Contains(a, tok) {
+			return true
+		}
 	}
+	return false
+}
+
+// promoteOptionalScalar rewrites an explicit-presence (`optional`)
+// proto3 scalar wire field to its pointer shape: protobuf-go generates
+// a *T struct field for optional scalars, so conversions must pair
+// them exactly like wrapper fields (nil-safe pointer handling).
+// Treating them as plain scalars emitted `&v` of an already-pointer
+// (**T) toward the DB and a bare value into a *T wire field toward the
+// proto — neither compiles. Non-scalar kinds (timestamp, message,
+// repeated) pass through untouched: their Go shape is already a
+// pointer/slice and their conversion paths handle presence.
+func promoteOptionalScalar(f EntityField) EntityField {
+	if f.Optional && f.Kind == FieldKindScalar {
+		f.GoType = "*" + f.GoType
+		f.Kind = FieldKindWrapper
+	}
+	return f
+}
+
+// promoteEnum rewrites an enum wire field's GoType to its concrete
+// protobuf-go shape, qualified through the generated pb package the ops
+// file already imports: `pb.<Enum>` plain, `*pb.<Enum>` for explicit
+// presence (`optional`), `[]pb.<Enum>` for `repeated`. Entity birth
+// stores enum columns as TEXT holding the proto enum VALUE NAMES (the
+// CHECK (col IN (...)) vocabulary), so the conversion pairing is
+// name<->number and needs the concrete Go type to spell the
+// pb.<Enum>_value lookup. Without this promotion the raw EntityField
+// carries only the bare proto short name ("OrderStatus") and every enum
+// field fell to the unmapped default — the field was dead over the API
+// (created as UNSPECIFIED forever, updates writing "" into the CHECK).
+//
+// Cross-package enums (whose columns birth TODO-skips — they cannot be
+// referenced through the single pb import) and legacy descriptors that
+// carry no enum type name stay untouched: their GoType keeps no "pb."
+// marker, so the assign functions report the pairing as unmappable. With
+// no column — the normal case, since birth TODO-skips them — the field is
+// simply wire-only; with a hand-written column it fails the generate,
+// because a field forge cannot map is dead over the API.
+func promoteEnum(f EntityField, protoPkg string, repeated bool) EntityField {
+	if f.Kind != FieldKindEnum {
+		return f
+	}
+	name, ok := enumWireGoName(protoPkg, f.MessageType)
+	if !ok {
+		return f
+	}
+	switch {
+	case repeated:
+		f.GoType = "[]pb." + name
+	case f.Optional:
+		f.GoType = "*pb." + name
+	default:
+		f.GoType = "pb." + name
+	}
+	return f
+}
+
+// enumWireGoName maps a fully-qualified SAME-PACKAGE enum name to its
+// protoc-gen-go identifier: strip the proto package, join the remaining
+// declaration path with underscores (top-level "orders.v1.OrderStatus"
+// → "OrderStatus"; nested "orders.v1.Order.Status" → "Order_Status").
+// ok=false for cross-package or unnamed enums — those cannot be
+// referenced through the pb import and stay unmapped.
+func enumWireGoName(protoPkg, fq string) (string, bool) {
+	if protoPkg == "" || !strings.HasPrefix(fq, protoPkg+".") {
+		return "", false
+	}
+	return strings.ReplaceAll(strings.TrimPrefix(fq, protoPkg+"."), ".", "_"), true
+}
+
+// enumWireShape decodes the concrete wire shape promoteEnum stamped onto
+// an enum field's GoType. ok=false when the enum was never resolved to a
+// same-package pb type (cross-package reference, or a legacy descriptor
+// without the deep schema) — such fields have no conversion.
+func enumWireShape(wf EntityField) (pbType string, repeated, optional, ok bool) {
+	t := wf.GoType
+	switch {
+	case strings.HasPrefix(t, "[]pb."):
+		return strings.TrimPrefix(t, "[]"), true, false, true
+	case strings.HasPrefix(t, "*pb."):
+		return strings.TrimPrefix(t, "*"), false, true, true
+	case strings.HasPrefix(t, "pb."):
+		return t, false, false, true
+	}
+	return "", false, false, false
+}
+
+// enumRepeatedWireFields reads the entity wire message's deep schema for
+// the `repeated` cardinality of its enum fields. EntityField collapses a
+// repeated enum to the bare enum kind (GoType keeps no slice marker), but
+// the conversion shape differs entirely: TEXT[] of value names versus a
+// single name. Nil on legacy descriptors without the deep Schemas map —
+// enum fields then stay unmapped (safe: no code that could miscompile).
+func enumRepeatedWireFields(svc ServiceDef, entityName string) map[string]bool {
+	defs, ok := svc.Schemas[svc.Package+"."+entityName]
+	if !ok {
+		return nil
+	}
+	var out map[string]bool
+	for _, d := range defs {
+		if d.Kind == "enum" && d.Repeated {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[d.Name] = true
+		}
+	}
+	return out
+}
+
+// dbBaseGoType is the NOT NULL Go type of a column on the entity struct —
+// the SAME projection internal/generator declares the struct field with, so
+// a pairing this file blesses is one the compiler can typecheck.
+func dbBaseGoType(col EntityColumn) string {
+	return canonicalGoTypeMust(col.Type, col.IsArray)
 }
 
 // dbNullable reports whether the column maps to a pointer struct field.
@@ -94,170 +341,778 @@ func dbNullable(col EntityColumn) bool {
 	return !col.NotNull && !col.IsPK
 }
 
+// jsonVarName spells the local the write path binds the marshalled
+// document to, before assigning it onto the entity struct: "LineItems" ->
+// "lineItemsJSON". Wire field names are unique within a message, so the
+// locals never collide, and the JSON suffix keeps them clear of the
+// single-letter names the surrounding conversions use (e, m, v, t, sv).
+func jsonVarName(goName string) string {
+	if goName == "" {
+		return "valueJSON"
+	}
+	return strings.ToLower(goName[:1]) + goName[1:] + "JSON"
+}
+
+// jsonbPair names the pkg/orm encoder pair for a wire kind stored in a
+// json/jsonb column, or "" when the kind has no round-tripping pairing.
+//
+// The pairings are the JSON shapes a proto field can hold: a repeated
+// message is an array of objects, a singular message is an object, a
+// repeated scalar is an array of scalars, and a map of scalars is an
+// object of scalars. Everything else falls through and fails the generate.
+//
+// A plain `string` wire field is NOT here: over a json column it is the
+// document itself, and the scalar branch already assigns it straight
+// across. That is the passthrough an app uses when it owns the JSON.
+func jsonbPairable(wf EntityField) bool {
+	m, _ := jsonbPair(wf)
+	return m != ""
+}
+
+func jsonbPair(wf EntityField) (marshal, unmarshal string) {
+	switch wf.Kind {
+	case FieldKindRepeatedMessage:
+		return "orm.MarshalJSONBList", "orm.UnmarshalJSONBList"
+	case FieldKindMessage:
+		return "orm.MarshalJSONBMessage", "orm.UnmarshalJSONBMessage"
+	case FieldKindRepeatedScalar:
+		return "orm.MarshalJSONBScalars", "orm.UnmarshalJSONBScalars"
+	case FieldKindMap:
+		// Only a map of SCALARS. A map of messages would store protobuf
+		// struct internals through encoding/json, and a map of enums would
+		// store wire NUMBERS where every other enum column in a forge app
+		// stores value names — a renumber would then silently reinterpret
+		// stored rows. Entity birth TODO-skips both rather than creating a
+		// column for them, so this refusal and that one are the same rule.
+		if isScalarProtoKind(wf.MapValueKind) {
+			return "orm.MarshalJSONBMap", "orm.UnmarshalJSONBMap"
+		}
+	}
+	return "", ""
+}
+
+// isScalarProtoKind reports the proto kinds whose JSON encoding Go's own
+// encoding/json produces correctly, with no proto-specific rules to apply.
+//
+// That is every scalar kind and only those, so it reads the closed table
+// rather than restating its fifteen names: the set this asks about and the
+// set the projections answer for are the same set, by construction.
+func isScalarProtoKind(kind string) bool {
+	return IsProtoScalarKind(kind)
+}
+
+// isJSONColumn reports a scalar json/jsonb column — the shape that holds a
+// JSON document in a single value. A json ARRAY column (jsonb[]) is not one
+// of these: its Go projection is []string, and a wire field over it has no
+// pairing forge maps.
+func isJSONColumn(col EntityColumn) bool { return col.Type == "json" && !col.IsArray }
+
+// assignJSONBToDB emits the write half of a json/jsonb pairing: marshal the
+// wire value, then store the text. A NULLABLE column stores SQL NULL for an
+// absent value rather than a fabricated empty document, so "no value" and
+// "empty value" stay distinguishable in the table.
+func assignJSONBToDB(dst, src string, wf EntityField, col EntityColumn) string {
+	g := wf.GoName
+	d, s := dst+"."+g, src+"."+g
+	marshal, _ := jsonbPair(wf)
+	v := jsonVarName(g)
+	fail := fmt.Sprintf("return nil, fmt.Errorf(%q, err)", wf.Name+": %w")
+
+	if dbNullable(col) {
+		// An absent message / empty list is SQL NULL. `%s != nil` reads the
+		// same for a pointer message and for a nil slice.
+		return fmt.Sprintf(
+			"if %s != nil {\n\t\t%s, err := %s(%s)\n\t\tif err != nil {\n\t\t\t%s\n\t\t}\n\t\t%s = &%s\n\t}",
+			s, v, marshal, s, fail, d, v)
+	}
+	return fmt.Sprintf(
+		"%s, err := %s(%s)\n\tif err != nil {\n\t\t%s\n\t}\n\t%s = %s",
+		v, marshal, s, fail, d, v)
+}
+
+// assignJSONBToProto emits the read half: parse the stored document back
+// onto the wire field. The destination is passed by ADDRESS so pkg/orm
+// allocates the message (or the slice) only when the column holds one.
+func assignJSONBToProto(dst, src string, wf EntityField, col EntityColumn) string {
+	g := wf.GoName
+	d, s := dst+"."+g, src+"."+g
+	_, unmarshal := jsonbPair(wf)
+	fail := fmt.Sprintf("return nil, fmt.Errorf(%q, err)", wf.Name+": %w")
+
+	if dbNullable(col) {
+		return fmt.Sprintf(
+			"if %s != nil {\n\t\tif err := %s(*%s, &%s); err != nil {\n\t\t\t%s\n\t\t}\n\t}",
+			s, unmarshal, s, d, fail)
+	}
+	return fmt.Sprintf(
+		"if err := %s(%s, &%s); err != nil {\n\t\t%s\n\t}",
+		unmarshal, s, d, fail)
+}
+
+// legacyTextTimestamp reports the pairing of a google.protobuf.Timestamp
+// wire field with a TEXT (canonical "string") column.
+//
+// This is NOT a shape entity birth emits — birth writes TIMESTAMPTZ for
+// every Timestamp field. It is a shape forge ADOPTS: the applied schema is
+// the storage truth (db/migrations, whoever wrote them), and a pre-forge
+// table storing its timestamps as text is the case forge already decided to
+// support everywhere else in the pipeline:
+//
+//   - schemadef.DetectConventions counts created_at/updated_at as MANAGED
+//     when they are `time` OR `string` columns, explicitly so the generator
+//     can stamp both;
+//   - pkg/crud's writeStamp stamps a string column as time.RFC3339Nano;
+//   - internal/generator projects the column to a string struct field and
+//     records Timestamps: true on the repo Spec.
+//
+// Without this branch those three halves say "supported" while the
+// conversion generator says "no conversion" — and after the pairing became
+// a hard gate, a schema forge stamps at runtime could not be generated at
+// all. RFC3339Nano is not a choice made here; it is the format pkg/crud
+// writes, so the pairing has to read and write the same one.
+func legacyTextTimestamp(wf EntityField, col EntityColumn) bool {
+	return wf.Kind == FieldKindTimestamp && col.Type == "string" && !col.IsArray
+}
+
+// legacyTextTimestampToProto builds the read half of the legacy-TEXT
+// timestamp pairing. d is the wire field ("m.CreatedAt"), s the entity
+// field ("e.CreatedAt"), col the column name (for the error message).
+//
+// The three outcomes are DISTINCT, mirroring the enum read path:
+//
+//   - empty text          → the field stays absent (a NULL/unstamped row,
+//     not corruption — an adopted TEXT timestamp column typically defaults
+//     to the empty string, which is what an unstamped row holds);
+//   - RFC3339Nano text    → the instant;
+//   - non-empty garbage   → a loud error the ToProto helper returns and the
+//     op turns into CodeInternal.
+//
+// Parsing silently to the zero time is what the comment this replaced did
+// in effect: the field read back as unset and no one learned the column
+// held something else.
+func legacyTextTimestampToProto(d, s, col string, nullable bool) string {
+	// value is the entity field dereferenced to its string; guard is the
+	// "there is something stored here" test. A nullable column projects to
+	// *string, so nil and "" are both absent.
+	value, guard := s, fmt.Sprintf("%s != \"\"", s)
+	if nullable {
+		value = "*" + s
+		guard = fmt.Sprintf("%s != nil && *%s != \"\"", s, s)
+	}
+	// %q on the format string emits it as a Go literal, so the verbs inside
+	// reach the generated code instead of this Sprintf (same construction as
+	// assignJSONBToDB's failure line).
+	fail := fmt.Sprintf("return nil, fmt.Errorf(%q, %s, err)",
+		"unparseable timestamp %q for column "+col+": %w", value)
+	return fmt.Sprintf(
+		"if %s {\n\t\tt, err := time.Parse(time.RFC3339Nano, %s)\n\t\tif err != nil {\n\t\t\t%s\n\t\t}\n\t\t%s = timestamppb.New(t)\n\t}",
+		guard, value, fail, d)
+}
+
 // assignToDB emits "dst.<X> = ..." converting a wire field onto the
-// entity struct. src is the wire message variable.
-func assignToDB(dst, src string, wf EntityField, col EntityColumn) (string, bool) {
+// entity struct. src is the wire message variable. The second return is
+// the REASON the pairing has no conversion, or "" when it mapped — an
+// unmappable pairing fails the generate (see UnmappedField); it never
+// ships as a comment.
+func assignToDB(dst, src string, wf EntityField, col EntityColumn) (string, string) {
 	g := wf.GoName
 	d, s := dst+"."+g, src+"."+g
 	base := dbBaseGoType(col)
 	nullable := dbNullable(col)
 
 	switch {
+	// json/jsonb column: the entity field is the document TEXT, so a
+	// structured wire field pairs through pkg/orm's protojson encoders.
+	// Checked before the kind branches below because a repeated field over
+	// a json column is a JSON array, not a postgres ARRAY.
+	case isJSONColumn(col) && jsonbPairable(wf):
+		return assignJSONBToDB(dst, src, wf, col), ""
+
 	case wf.Kind == FieldKindTimestamp && col.Type == "time":
 		if nullable {
-			return fmt.Sprintf("if %s != nil {\n\t\tt := %s.AsTime()\n\t\t%s = &t\n\t}", s, s, d), true
+			return fmt.Sprintf("if %s != nil {\n\t\tt := %s.AsTime()\n\t\t%s = &t\n\t}", s, s, d), ""
 		}
-		return fmt.Sprintf("if %s != nil {\n\t\t%s = %s.AsTime()\n\t}", s, d, s), true
+		return fmt.Sprintf("if %s != nil {\n\t\t%s = %s.AsTime()\n\t}", s, d, s), ""
+
+	// Legacy TEXT timestamp column — see legacyTextTimestamp. The entity
+	// field is the RFC3339Nano TEXT itself, so the write path formats.
+	case legacyTextTimestamp(wf, col):
+		v := fmt.Sprintf("%s.AsTime().Format(time.RFC3339Nano)", s)
+		if nullable {
+			return fmt.Sprintf("if %s != nil {\n\t\tv := %s\n\t\t%s = &v\n\t}", s, v, d), ""
+		}
+		return fmt.Sprintf("if %s != nil {\n\t\t%s = %s\n\t}", s, d, v), ""
 
 	case wf.Kind == FieldKindRepeatedScalar && col.IsArray:
-		if wf.GoType == base {
-			return fmt.Sprintf("%s = append(%s(nil), %s...)", d, base, s), true
+		wireElem, colElem := elemType(wf.GoType), elemType(base)
+		if wireElem == colElem {
+			return fmt.Sprintf("%s = append(%s(nil), %s...)", d, base, s), ""
 		}
-		if base == "[]int64" && (wf.GoType == "[]int32" || wf.GoType == "[]uint32") {
-			return fmt.Sprintf("for _, v := range %s {\n\t\t%s = append(%s, int64(v))\n\t}", s, d, d), true
+		if !numericPairs(wireElem, colElem) {
+			return "", fmt.Sprintf("no conversion from wire %s to column %s", wf.GoType, col.DeclType)
 		}
-		return fmt.Sprintf("// %s: no conversion from wire %s to column %s", g, wf.GoType, col.DeclType), false
+		guard := numericGuardStmt("v", wireElem, colElem, wf.Name, col, true)
+		return fmt.Sprintf("for _, v := range %s {\n\t\t%s%s = append(%s, %s(v))\n\t}",
+			s, indentBlock(guard), d, d, colElem), ""
 
 	case wf.Kind == FieldKindWrapper && !col.IsArray:
 		elem := strings.TrimPrefix(wf.GoType, "*")
-		cast := func(expr string) string {
-			if elem == base {
-				return expr
+		if elem == base {
+			if nullable {
+				return fmt.Sprintf("if %s != nil {\n\t\tv := *%s\n\t\t%s = &v\n\t}", s, s, d), ""
 			}
-			if isNumericGoType(elem) && isNumericGoType(base) {
-				return base + "(" + expr + ")"
-			}
-			return ""
+			return fmt.Sprintf("if %s != nil {\n\t\t%s = *%s\n\t}", s, d, s), ""
 		}
-		c := cast("*" + s)
-		if c == "" {
-			return fmt.Sprintf("// %s: no conversion from wire %s to column %s", g, wf.GoType, col.DeclType), false
+		if !numericPairs(elem, base) {
+			return "", fmt.Sprintf("no conversion from wire %s to column %s", wf.GoType, col.DeclType)
 		}
+		guard := numericGuardStmt("*"+s, elem, base, wf.Name, col, true)
+		c := base + "(*" + s + ")"
 		if nullable {
-			return fmt.Sprintf("if %s != nil {\n\t\tv := %s\n\t\t%s = &v\n\t}", s, c, d), true
+			return fmt.Sprintf("if %s != nil {\n\t\t%sv := %s\n\t\t%s = &v\n\t}", s, indentBlock(guard), c, d), ""
 		}
-		return fmt.Sprintf("if %s != nil {\n\t\t%s = %s\n\t}", s, d, c), true
+		return fmt.Sprintf("if %s != nil {\n\t\t%s%s = %s\n\t}", s, indentBlock(guard), d, c), ""
 
 	case wf.Kind == FieldKindScalar && !col.IsArray:
-		expr := s
-		if wf.GoType != base {
-			if isNumericGoType(wf.GoType) && isNumericGoType(base) {
-				expr = base + "(" + s + ")"
-			} else {
-				return fmt.Sprintf("// %s: no conversion from wire %s to column %s", g, wf.GoType, col.DeclType), false
+		if wf.GoType == base {
+			if nullable {
+				return fmt.Sprintf("{\n\t\tv := %s\n\t\t%s = &v\n\t}", s, d), ""
 			}
+			return fmt.Sprintf("%s = %s", d, s), ""
 		}
+		if !numericPairs(wf.GoType, base) {
+			return "", fmt.Sprintf("no conversion from wire %s to column %s", wf.GoType, col.DeclType)
+		}
+		guard := stmtPrefix(numericGuardStmt(s, wf.GoType, base, wf.Name, col, true))
+		expr := base + "(" + s + ")"
 		if nullable {
-			return fmt.Sprintf("{\n\t\tv := %s\n\t\t%s = &v\n\t}", expr, d), true
+			return fmt.Sprintf("%s{\n\t\tv := %s\n\t\t%s = &v\n\t}", guard, expr, d), ""
 		}
-		return fmt.Sprintf("%s = %s", d, expr), true
+		return fmt.Sprintf("%s%s = %s", guard, d, expr), ""
+
+	case wf.Kind == FieldKindEnum:
+		// Enum columns store the proto enum VALUE NAMES as TEXT (the
+		// CHECK (col IN (...)) vocabulary birth emitted), so the entity
+		// side takes String() — the declared name. An out-of-range wire
+		// number renders numerically and is rejected by the CHECK: loud,
+		// never silently stored as ''.
+		_, repeated, optional, resolved := enumWireShape(wf)
+		if !resolved || col.Type != "string" || repeated != col.IsArray {
+			break
+		}
+		if repeated {
+			return fmt.Sprintf("for _, v := range %s {\n\t\t%s = append(%s, v.String())\n\t}", s, d, d), ""
+		}
+		return enumSingularAssign(d, s, optional, nullable, col), ""
 	}
-	return fmt.Sprintf("// %s: unmapped (wire kind %s, column %s)", g, wf.Kind, col.DeclType), false
+	return "", fmt.Sprintf("no conversion between wire kind %s and column type %s", wf.Kind, col.DeclType)
+}
+
+// enumSingularAssign emits the write path for a non-repeated enum field.
+//
+// proto3 gives a plain enum field NO presence: a field left unset and a
+// field set to the zero are byte-identical on the wire, so the zero can
+// only mean "the caller did not say". A row, unlike a request, is always
+// in some state — which is why the born CHECK does not admit the zero
+// sentinel (scaffold.bornEnumVocabulary), the seeder will not draw it, the
+// generated fixtures will not use it, and the scaffolded create form will
+// not submit it.
+//
+// Writing `e.Status = req.Status.String()` unconditionally contradicted
+// all of that, and it did something worse than store a non-state: because
+// every INSERT then NAMES the column, the `DEFAULT 'ORDER_STATUS_OPEN'`
+// birth wrote beside the CHECK could never fire. The schema declared what
+// an unsaid value means and the app made the declaration unreachable.
+//
+// So the zero routes to whatever the schema says unset means:
+//
+//   - NOT NULL column with a literal DEFAULT → that DEFAULT, assigned
+//     visibly in code (the same choice, for the same reasons, that
+//     schemaDefaultAssigns makes for columns the request never carried —
+//     no `nullzero`/`default:` tag magic, because Bun cannot tell "unset"
+//     from "zero" and this code can).
+//   - nullable column → left alone, so it stores NULL, which is that
+//     column's own spelling for unset.
+//   - NOT NULL column with NO literal default → unchanged. The schema
+//     declined to say what unset means, so forge invents nothing: the
+//     value goes as sent and the CHECK rejects the sentinel loudly.
+//
+// An `optional` wire field has presence, so it adds one more way to say
+// unset (absent) — both it and an explicit zero take the same route.
+func enumSingularAssign(d, s string, optional, nullable bool, col EntityColumn) string {
+	set := s + " != 0"
+	if optional {
+		set = s + " != nil && *" + s + " != 0"
+	}
+	if nullable {
+		return fmt.Sprintf("if %s {\n\t\tv := %s.String()\n\t\t%s = &v\n\t}", set, s, d)
+	}
+	store := fmt.Sprintf("if %s {\n\t\t%s = %s.String()\n\t}", set, d, s)
+	lit, ok := pgDefaultGoLiteral(col)
+	if !ok { // no DEFAULT, or one no Go literal can spell
+		if optional {
+			return store
+		}
+		return fmt.Sprintf("%s = %s.String()", d, s)
+	}
+	return fmt.Sprintf("%s = %s // %s: an unset enum stores the column DEFAULT\n%s", d, lit, col.Name, store)
 }
 
 // assignToProto emits "dst.<X> = ..." converting an entity struct field
-// onto the wire message. src is the entity variable.
-func assignToProto(dst, src string, wf EntityField, col EntityColumn) (string, bool) {
+// onto the wire message. src is the entity variable. The second return is
+// the REASON the pairing has no conversion, or "" when it mapped.
+func assignToProto(dst, src string, wf EntityField, col EntityColumn) (string, string) {
 	g := wf.GoName
 	d, s := dst+"."+g, src+"."+g
 	base := dbBaseGoType(col)
 	nullable := dbNullable(col)
 
 	switch {
+	// See the matching branch in assignToDB.
+	case isJSONColumn(col) && jsonbPairable(wf):
+		return assignJSONBToProto(dst, src, wf, col), ""
+
 	case wf.Kind == FieldKindTimestamp && col.Type == "time":
 		if nullable {
-			return fmt.Sprintf("if %s != nil {\n\t\t%s = timestamppb.New(*%s)\n\t}", s, d, s), true
+			return fmt.Sprintf("if %s != nil {\n\t\t%s = timestamppb.New(*%s)\n\t}", s, d, s), ""
 		}
-		return fmt.Sprintf("if !%s.IsZero() {\n\t\t%s = timestamppb.New(%s)\n\t}", s, d, s), true
+		return fmt.Sprintf("if !%s.IsZero() {\n\t\t%s = timestamppb.New(%s)\n\t}", s, d, s), ""
+
+	// Legacy TEXT timestamp column — see legacyTextTimestamp.
+	case legacyTextTimestamp(wf, col):
+		return legacyTextTimestampToProto(d, s, col.Name, nullable), ""
 
 	case wf.Kind == FieldKindRepeatedScalar && col.IsArray:
-		if wf.GoType == base {
-			return fmt.Sprintf("%s = append(%s(nil), %s...)", d, wf.GoType, s), true
+		wireElem, colElem := elemType(wf.GoType), elemType(base)
+		if wireElem == colElem {
+			return fmt.Sprintf("%s = append(%s(nil), %s...)", d, wf.GoType, s), ""
 		}
-		if base == "[]int64" && (wf.GoType == "[]int32" || wf.GoType == "[]uint32") {
-			elem := strings.TrimPrefix(wf.GoType, "[]")
-			return fmt.Sprintf("for _, v := range %s {\n\t\t%s = append(%s, %s(v))\n\t}", s, d, d, elem), true
+		if !numericPairs(colElem, wireElem) {
+			return "", fmt.Sprintf("no conversion from column %s to wire %s", col.DeclType, wf.GoType)
 		}
-		return fmt.Sprintf("// %s: no conversion from column %s to wire %s", g, col.DeclType, wf.GoType), false
+		guard := numericGuardStmt("v", colElem, wireElem, wf.Name, col, false)
+		return fmt.Sprintf("for _, v := range %s {\n\t\t%s%s = append(%s, %s(v))\n\t}",
+			s, indentBlock(guard), d, d, wireElem), ""
 
 	case wf.Kind == FieldKindWrapper && !col.IsArray:
 		elem := strings.TrimPrefix(wf.GoType, "*")
-		castVal := func(expr string) string {
-			if elem == base {
-				return expr
-			}
-			if isNumericGoType(elem) && isNumericGoType(base) {
-				return elem + "(" + expr + ")"
-			}
-			return ""
+		if elem != base && !numericPairs(base, elem) {
+			return "", fmt.Sprintf("no conversion from column %s to wire %s", col.DeclType, wf.GoType)
+		}
+		src, guard := s, ""
+		if nullable {
+			src = "*" + s
+		}
+		val := src
+		if elem != base {
+			guard = numericGuardStmt(src, base, elem, wf.Name, col, false)
+			val = elem + "(" + src + ")"
 		}
 		if nullable {
-			c := castVal("*" + s)
-			if c == "" {
-				return fmt.Sprintf("// %s: no conversion from column %s to wire %s", g, col.DeclType, wf.GoType), false
-			}
-			return fmt.Sprintf("if %s != nil {\n\t\tv := %s\n\t\t%s = &v\n\t}", s, c, d), true
+			return fmt.Sprintf("if %s != nil {\n\t\t%sv := %s\n\t\t%s = &v\n\t}", s, indentBlock(guard), val, d), ""
 		}
-		c := castVal(s)
-		if c == "" {
-			return fmt.Sprintf("// %s: no conversion from column %s to wire %s", g, col.DeclType, wf.GoType), false
-		}
-		return fmt.Sprintf("{\n\t\tv := %s\n\t\t%s = &v\n\t}", c, d), true
+		return fmt.Sprintf("%s{\n\t\tv := %s\n\t\t%s = &v\n\t}", stmtPrefix(guard), val, d), ""
 
 	case wf.Kind == FieldKindScalar && !col.IsArray:
-		expr := s
+		if wf.GoType != base && !numericPairs(base, wf.GoType) {
+			return "", fmt.Sprintf("no conversion from column %s to wire %s", col.DeclType, wf.GoType)
+		}
 		if nullable {
-			if wf.GoType != base {
-				if !(isNumericGoType(wf.GoType) && isNumericGoType(base)) {
-					return fmt.Sprintf("// %s: no conversion from column %s to wire %s", g, col.DeclType, wf.GoType), false
-				}
-				return fmt.Sprintf("if %s != nil {\n\t\t%s = %s(*%s)\n\t}", s, d, wf.GoType, s), true
+			if wf.GoType == base {
+				return fmt.Sprintf("if %s != nil {\n\t\t%s = *%s\n\t}", s, d, s), ""
 			}
-			return fmt.Sprintf("if %s != nil {\n\t\t%s = *%s\n\t}", s, d, s), true
+			guard := numericGuardStmt("*"+s, base, wf.GoType, wf.Name, col, false)
+			return fmt.Sprintf("if %s != nil {\n\t\t%s%s = %s(*%s)\n\t}",
+				s, indentBlock(guard), d, wf.GoType, s), ""
 		}
-		if wf.GoType != base {
-			if isNumericGoType(wf.GoType) && isNumericGoType(base) {
-				expr = wf.GoType + "(" + s + ")"
-			} else {
-				return fmt.Sprintf("// %s: no conversion from column %s to wire %s", g, col.DeclType, wf.GoType), false
-			}
+		if wf.GoType == base {
+			return fmt.Sprintf("%s = %s", d, s), ""
 		}
-		return fmt.Sprintf("%s = %s", d, expr), true
+		guard := stmtPrefix(numericGuardStmt(s, base, wf.GoType, wf.Name, col, false))
+		return fmt.Sprintf("%s%s = %s(%s)", guard, d, wf.GoType, s), ""
+
+	case wf.Kind == FieldKindEnum:
+		// The column stores enum VALUE NAMES; pb.<Enum>_value maps a name
+		// back to its wire number. The lookup is comma-ok checked so the
+		// three outcomes are DISTINCT rather than collapsed:
+		//
+		//   - a declared name (including <ENUM>_UNSPECIFIED)  → its number;
+		//   - an empty string                                 → the zero
+		//     value (a NULL/absent enum, not corruption);
+		//   - a NON-EMPTY name absent from the map            → a loud
+		//     "corrupt enum value %q for column" error the packer returns
+		//     and the op turns into CodeInternal.
+		//
+		// The pre-fix `pb.X(pb.X_value[name])` form silently yielded 0
+		// (UNSPECIFIED) for an absent name, so an enum rename or a corrupt
+		// row read back as UNSPECIFIED and was mishandled by state logic
+		// with no error and no log. The read path therefore returns an
+		// error (the ToProto helper's signature is (*pb.<Entity>, error)).
+		pbType, repeated, optional, resolved := enumWireShape(wf)
+		if !resolved || col.Type != "string" || repeated != col.IsArray {
+			break
+		}
+		return enumFromDBAssign(d, s, pbType, col.Name, repeated, optional, nullable), ""
 	}
-	return fmt.Sprintf("// %s: unmapped (wire kind %s, column %s)", g, wf.Kind, col.DeclType), false
+	return "", fmt.Sprintf("no conversion between wire kind %s and column type %s", wf.Kind, col.DeclType)
 }
 
-func isNumericGoType(t string) bool {
-	switch t {
-	case "int32", "int64", "uint32", "uint64", "float32", "float64":
-		return true
+// enumFromDBAssign builds the read-path (DB→wire) conversion for one enum
+// column, comma-ok checked so an unknown non-empty stored name returns a
+// "corrupt enum value" error instead of silently reading back as the zero
+// value (UNSPECIFIED). d is the wire field (e.g. "m.Status"), s the entity
+// field (e.g. "e.Status"), pbType the concrete pb enum type (e.g.
+// "pb.OrderStatus"), col the column name (for the error message). An empty
+// stored string is a legitimately absent enum (NULL / unset) and maps to
+// the zero value, never an error — only a NON-EMPTY name absent from the
+// pb.<Enum>_value map is corruption. The block lives inside the
+// <entity>ToProto helper, whose signature is (*pb.<Entity>, error); the
+// `return nil, ...` on corruption is what makes the op surface CodeInternal.
+func enumFromDBAssign(d, s, pbType, col string, repeated, optional, nullable bool) string {
+	errf := func(nameExpr string) string {
+		return fmt.Sprintf("return nil, fmt.Errorf(\"corrupt enum value %%q for column %s\", %s)", col, nameExpr)
 	}
-	return false
+	switch {
+	case repeated:
+		// s is []string, d is []pb.<Enum>. An empty element is skipped.
+		return fmt.Sprintf(
+			"for _, sv := range %s {\n\t\tif v, ok := %s_value[sv]; ok {\n\t\t\t%s = append(%s, %s(v))\n\t\t} else if sv != \"\" {\n\t\t\t%s\n\t\t}\n\t}",
+			s, pbType, d, d, pbType, errf("sv"))
+	case optional && nullable:
+		// s is *string, d is *pb.<Enum>.
+		return fmt.Sprintf(
+			"if %s != nil {\n\t\tif v, ok := %s_value[*%s]; ok {\n\t\t\tev := %s(v)\n\t\t\t%s = &ev\n\t\t} else if *%s != \"\" {\n\t\t\t%s\n\t\t}\n\t}",
+			s, pbType, s, pbType, d, s, errf("*"+s))
+	case optional:
+		// s is string, d is *pb.<Enum>.
+		return fmt.Sprintf(
+			"if v, ok := %s_value[%s]; ok {\n\t\tev := %s(v)\n\t\t%s = &ev\n\t} else if %s != \"\" {\n\t\t%s\n\t}",
+			pbType, s, pbType, d, s, errf(s))
+	case nullable:
+		// s is *string, d is pb.<Enum>.
+		return fmt.Sprintf(
+			"if %s != nil {\n\t\tif v, ok := %s_value[*%s]; ok {\n\t\t\t%s = %s(v)\n\t\t} else if *%s != \"\" {\n\t\t\t%s\n\t\t}\n\t}",
+			s, pbType, s, d, pbType, s, errf("*"+s))
+	default:
+		// s is string, d is pb.<Enum>.
+		return fmt.Sprintf(
+			"if v, ok := %s_value[%s]; ok {\n\t\t%s = %s(v)\n\t} else if %s != \"\" {\n\t\t%s\n\t}",
+			pbType, s, d, pbType, s, errf(s))
+	}
+}
+
+// ── numeric pairings ────────────────────────────────────────────────────
+//
+// A wire field and its column routinely carry DIFFERENT numeric types:
+// entity birth stores every proto integer kind in a BIGINT and both proto
+// float kinds in a DOUBLE PRECISION, so `uint32 hits` sits over an int64
+// column and `float ratio` over a float64 one. The conversion must cast,
+// and the cast is where values disappear.
+//
+// The rule that shipped blessed every numeric cast unconditionally — if
+// both sides were numeric, the cast was emitted — which accepted three
+// different silent losses:
+//
+//   - SIGN. Postgres BIGINT is signed 64-bit, so `int64(m.Size)` on a
+//     uint64 above 2^63 wraps to a negative and stores it without a word.
+//     (Postgres itself REJECTS that value on the array path — `value
+//     "18446744073709551615" is out of range for type bigint` — so the Go
+//     cast is precisely what turned a loud database error into a quiet
+//     one.)
+//   - WIDTH. A BIGINT column holding 3000000000, read into an `int32` wire
+//     field, is -1294967296.
+//   - FAMILY. `int64(m.Ratio)` over a double drops the fraction of every
+//     value ever written; `float64(m.Count)` over a bigint loses exactness
+//     above 2^53.
+//
+// Family loss has no honest cast in either direction, so those pairings are
+// REFUSED. Sign and width loss do have one: cast, but range-check first and
+// fail loudly with the field, the column and the offending value — the same
+// treatment the enum read path already gives a stored name it does not
+// recognize.
+
+// goNumeric classifies a Go numeric type for the pairing rules.
+type goNumeric struct {
+	unsigned bool
+	isFloat  bool
+	bits     int
+}
+
+var goNumericTypes = map[string]goNumeric{
+	"int32":   {bits: 32},
+	"int64":   {bits: 64},
+	"uint32":  {unsigned: true, bits: 32},
+	"uint64":  {unsigned: true, bits: 64},
+	"float32": {isFloat: true, bits: 32},
+	"float64": {isFloat: true, bits: 64},
+}
+
+// numericPairs reports whether a value of Go type `from` has a conversion
+// to `to` at all. Float and integer are different families: whichever way
+// the value crosses, the round trip does not return what it was given.
+func numericPairs(from, to string) bool {
+	f, okF := goNumericTypes[from]
+	t, okT := goNumericTypes[to]
+	return okF && okT && f.isFloat == t.isFloat
+}
+
+// numericGuardCond renders the condition under which converting expr (of Go
+// type `from`) to `to` loses the value, or "" when the conversion cannot
+// lose anything.
+//
+// float32 <-> float64 is deliberately unguarded. Widening is exact, and
+// narrowing rounds back to precisely what widening produced, so every value
+// THIS seam wrote round-trips. A double written by something else carrying
+// more precision than a float32 holds loses the extra bits — which is what
+// declaring the column REAL would have done anyway, and is a rounding, not
+// a wraparound.
+func numericGuardCond(expr, from, to string) string {
+	f, t := goNumericTypes[from], goNumericTypes[to]
+	if f.isFloat || t.isFloat {
+		return ""
+	}
+	var conds []string
+	if !f.unsigned && (t.unsigned || f.bits > t.bits) {
+		if t.unsigned {
+			conds = append(conds, expr+" < 0")
+		} else {
+			conds = append(conds, fmt.Sprintf("%s < %d", expr, goIntMin(t)))
+		}
+	}
+	if goIntMax(f) > goIntMax(t) {
+		conds = append(conds, fmt.Sprintf("%s > %d", expr, goIntMax(t)))
+	}
+	return strings.Join(conds, " || ")
+}
+
+func goIntMax(n goNumeric) uint64 {
+	switch {
+	case n.unsigned && n.bits == 64:
+		return math.MaxUint64
+	case n.unsigned:
+		return math.MaxUint32
+	case n.bits == 64:
+		return math.MaxInt64
+	default:
+		return math.MaxInt32
+	}
+}
+
+func goIntMin(n goNumeric) int64 {
+	if n.bits == 64 {
+		return math.MinInt64
+	}
+	return math.MinInt32
+}
+
+// numericGuardStmt renders the range check a lossy cast needs: the
+// condition, and a failure naming the field, the column and the value that
+// did not fit. "" when the cast cannot lose anything, so a lossless pairing
+// costs nothing in the generated file.
+//
+// toDB selects the direction, which changes what the message can honestly
+// say: writing, the WIRE supplied a value the column cannot hold; reading,
+// the COLUMN holds a value the wire field cannot represent (a row written
+// by a migration, an import, or another service).
+func numericGuardStmt(expr, from, to, field string, col EntityColumn, toDB bool) string {
+	cond := numericGuardCond(expr, from, to)
+	if cond == "" {
+		return ""
+	}
+	msg := fmt.Sprintf("%s: column %s holds %%d, out of range for the %s wire field",
+		field, colLabel(col), to)
+	if toDB {
+		msg = fmt.Sprintf("%s: wire value %%d does not fit column %s", field, colLabel(col))
+	}
+	// %q emits the message as a Go literal, so the %d verb reaches the
+	// generated code instead of this Sprintf.
+	return fmt.Sprintf("if %s {\n\t\treturn nil, fmt.Errorf(%q, %s)\n\t}", cond, msg, expr)
+}
+
+// colLabel names a column in a runtime error message, with its declared
+// SQL type when the descriptor carries one. The type is what makes the
+// message actionable ("column size (BIGINT)" says why 2^63 did not fit),
+// but a descriptor without it must not render an empty "()".
+func colLabel(col EntityColumn) string {
+	if col.DeclType == "" {
+		return col.Name
+	}
+	return col.Name + " (" + col.DeclType + ")"
+}
+
+// stmtPrefix joins a guard statement to the assignment that follows it, at
+// the indentation the surrounding emissions use. Empty guard, empty prefix.
+func stmtPrefix(guard string) string {
+	if guard == "" {
+		return ""
+	}
+	return guard + "\n\t"
+}
+
+// indentBlock re-indents a guard by one level, for the guards that land
+// inside a nil-check block rather than at statement top level.
+func indentBlock(s string) string {
+	if s == "" {
+		return ""
+	}
+	return strings.ReplaceAll(s, "\n\t", "\n\t\t") + "\n\t\t"
+}
+
+// elemType strips one slice level: the ELEMENT type of a repeated field or
+// an array column. `[][]byte` yields `[]byte`, which is why `bytes` must
+// never be classified as repeated on its singular shape.
+func elemType(sliceType string) string {
+	return strings.TrimPrefix(sliceType, "[]")
 }
 
 // buildCreateAssigns maps the create-request fields onto the entity
 // struct. Request fields are matched to columns by name; unmatched
 // fields are dropped with a comment so the generated code says why.
-func buildCreateAssigns(svc ServiceDef, m Method, entity EntityDef) []string {
+// Columns the request does NOT carry — `// forge:server-set` fields, and
+// anything in the table the wire message never had — are then filled from
+// the schema's own DEFAULT (see schemaDefaultAssigns).
+func buildCreateAssigns(svc ServiceDef, m Method, entity EntityDef) ([]string, []UnmappedField) {
 	wireFields := requestWireFields(svc, m)
 	colByName := map[string]EntityColumn{}
 	for _, c := range entity.Columns {
 		colByName[c.Name] = c
 	}
 	var out []string
+	var unmapped []UnmappedField
+	assigned := make(map[string]bool, len(wireFields))
 	for _, wf := range wireFields {
 		col, ok := colByName[wf.Name]
 		if !ok {
 			out = append(out, fmt.Sprintf("// %s: request-only field (no %q column in the applied schema)", wf.GoName, wf.Name))
 			continue
 		}
-		if a, ok := assignToDB("e", "req", wf, col); ok {
-			out = append(out, a)
-		} else {
-			out = append(out, a)
+		a, why := assignToDB("e", "req", wf, col)
+		if why != "" {
+			// A create-request field with a column and no conversion is the
+			// sharpest form of the dead field: the caller SUPPLIED a value
+			// and the row got the column DEFAULT. Fail the generate.
+			unmapped = append(unmapped, unmappedField(entity, wf, col, why))
+			continue
 		}
+		out = append(out, a)
+		assigned[wf.Name] = true
+	}
+	return append(out, schemaDefaultAssigns(entity, assigned)...), unmapped
+}
+
+// schemaDefaultAssigns fills the entity columns the create request does not
+// carry with the value the SCHEMA says they start at.
+//
+// A `// forge:server-set` column is, by construction, absent from the create
+// request — so the op left the Go field at its zero value and Bun wrote that
+// zero. For a column whose default is NOT the Go zero the row is then
+// invalid on arrival: an enum column born as
+//
+//	tone TEXT NOT NULL DEFAULT 'TONE_WARM' CHECK (tone IN (...))
+//
+// received the empty string and violated the CHECK forge derived from the
+// same proto. (Spelled out rather than as a doubled-apostrophe SQL literal:
+// gofmt normalizes a bare ” in a doc comment into a closing quote.)
+// Every create failed, out of the box, on a marker forge documents.
+//
+// This is also why the birth migration's enum DEFAULT matters and is not
+// cosmetic: whatever literal the schema declares is the literal pasted here.
+// scaffold.bornEnumDefault picks the first REAL enum member for exactly that
+// reason — a server-set column starting at the proto zero would start every
+// row in a state the domain does not have.
+//
+// The obvious-looking fix — `nullzero` / `default:` on the bun tag, letting
+// the DB default fire — is wrong, and plan_orm_gen.go already says why: Bun
+// treats a zero value as "unset" whenever the field carries a default, so a
+// hand-written `active BOOLEAN NOT NULL DEFAULT true` would silently store
+// true for an explicit false. The ORM cannot tell "unset" from "zero"; the
+// create op CAN, because it knows which columns the request never carried.
+// So the value is written here, visibly, in code you can read — no tag magic.
+//
+// Only plain literal defaults project. now() / gen_random_uuid() / nextval()
+// must be produced by the DB; forge has nothing to write for those, and says
+// so in a comment rather than inventing a value.
+func schemaDefaultAssigns(entity EntityDef, assigned map[string]bool) []string {
+	var out []string
+	for _, col := range entity.Columns {
+		if assigned[col.Name] || col.IsPK || col.IsGenerated || !col.NotNull {
+			continue
+		}
+		// Managed timestamps: pkg/crud stamps created_at/updated_at, and the
+		// ORM tag carries `default:` for the rest — a zero time.Time is
+		// already the DB's cue there.
+		if col.Type == "time" || strings.TrimSpace(col.Default) == "" {
+			continue
+		}
+		lit, ok := pgDefaultGoLiteral(col)
+		if !ok {
+			out = append(out, fmt.Sprintf("// %s: not set here — the column DEFAULT (%s) is the DB's to produce",
+				col.Name, strings.TrimSpace(col.Default)))
+			continue
+		}
+		if lit == goZeroLiteral(dbBaseGoType(col)) {
+			continue // Bun writes exactly this anyway
+		}
+		out = append(out, fmt.Sprintf("e.%s = %s // %s: column DEFAULT (not on the create request)",
+			naming.ToProtoPascalCase(col.Name), lit, col.Name))
 	}
 	return out
+}
+
+// pgDefaultCastRE strips the trailing `::type` cast postgres renders on a
+// literal default (`'DRAFT'::text`, `'{}'::jsonb`, `'{}'::text[]`).
+var pgDefaultCastRE = regexp.MustCompile(`::[\w ]+(\[\])?$`)
+
+// pgDefaultGoLiteral renders a column's DEFAULT expression as a Go literal
+// of the column's struct type. ok=false for anything that is not a plain
+// literal, or whose literal does not fit the type.
+func pgDefaultGoLiteral(col EntityColumn) (string, bool) {
+	raw := strings.TrimSpace(pgDefaultCastRE.ReplaceAllString(strings.TrimSpace(col.Default), ""))
+	base := dbBaseGoType(col)
+
+	if len(raw) >= 2 && strings.HasPrefix(raw, "'") && strings.HasSuffix(raw, "'") {
+		s := strings.ReplaceAll(raw[1:len(raw)-1], "''", "'")
+		switch base {
+		case "string": // TEXT, and JSON/JSONB (which project to string)
+			return strconv.Quote(s), true
+		case "[]string", "[]int64":
+			if s == "{}" { // the only array literal worth mechanizing
+				return base + "{}", true
+			}
+		}
+		return "", false
+	}
+	switch base {
+	case "int64":
+		if _, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			return raw, true
+		}
+	case "float64":
+		if _, err := strconv.ParseFloat(raw, 64); err == nil {
+			return raw, true
+		}
+	case "bool":
+		if raw == "true" || raw == "false" {
+			return raw, true
+		}
+	}
+	return "", false
+}
+
+// goZeroLiteral spells the zero value of a struct field type, as the
+// literals pgDefaultGoLiteral produces spell it.
+func goZeroLiteral(base string) string {
+	switch base {
+	case "string":
+		return `""`
+	case "int64":
+		return "0"
+	case "float64":
+		return "0"
+	case "bool":
+		return "false"
+	}
+	return "" // slices/bytes/time: no literal spelling collides with a zero
 }
 
 // requestWireFields extracts a request message's fields, preferring the
@@ -268,13 +1123,11 @@ func requestWireFields(svc ServiceDef, m Method) []EntityField {
 		if defs, ok := svc.Schemas[m.InputTypeFQ]; ok {
 			fields := make([]EntityField, 0, len(defs))
 			for _, d := range defs {
-				f := schemaFieldToEntityField(d)
 				// proto3 optional scalars surface as wrapper-like
-				// pointers on the Go struct.
-				if d.Optional && f.Kind == FieldKindScalar {
-					f.GoType = "*" + f.GoType
-					f.Kind = FieldKindWrapper
-				}
+				// pointers on the Go struct; enums resolve to their
+				// concrete pb.<Enum> shape (see promoteEnum).
+				f := promoteOptionalScalar(schemaFieldToEntityField(d))
+				f = promoteEnum(f, svc.Package, d.Repeated)
 				fields = append(fields, f)
 			}
 			return fields
@@ -286,12 +1139,10 @@ func requestWireFields(svc ServiceDef, m Method) []EntityField {
 	}
 	fields := make([]EntityField, 0, len(defs))
 	for _, d := range defs {
-		f := messageFieldToEntityField(d)
-		if d.IsOptional && f.Kind == FieldKindScalar {
-			f.GoType = "*" + f.GoType
-			f.Kind = FieldKindWrapper
-		}
-		fields = append(fields, f)
+		// The shallow Messages map records no enum type name, so
+		// promoteEnum never fires here — enum fields stay unmapped with
+		// the honest comment (legacy-descriptor degradation).
+		fields = append(fields, promoteOptionalScalar(messageFieldToEntityField(d)))
 	}
 	return fields
 }

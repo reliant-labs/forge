@@ -22,26 +22,26 @@ negative_service_inheritance_missing_required.k.
 import forge
 
 # An app schema that inherits forge.RenderedWorkload and adds its own typed fields.
-schema TenantService(forge.RenderedWorkload):
+schema BillingService(forge.RenderedWorkload):
     # An extra REQUIRED field (no default) — enforced at parse time.
     region: str
     # An extra typed field with an enum constraint.
     tier: "free" | "pro" = "free"
 
     check:
-        region, "TenantService.region is required"
+        region, "BillingService.region is required"
 
 _target = forge.ClusterTarget {
     cluster = "prod-cluster"
-    namespace = "tenants-prod"
+    namespace = "billing-prod"
     registry = "ghcr.io/reliant-labs"
 }
 
 # Construct via the SUBTYPE — sets both forge.RenderedWorkload fields and the app's
 # own extras.
-_svc = TenantService {
-    name = "tenant-api"
-    image = "tenant-api"
+_svc = BillingService {
+    name = "billing-api"
+    image = "billing-api"
     region = "us-east-1"
     tier = "pro"
     deploy = _target.deploy | {ports = [8080]}
@@ -57,11 +57,11 @@ output = forge.render(_bundle)
 # ── 1. renders into the JSON contract exactly like a forge.RenderedWorkload ───
 assert_one_service = len(output.services) == 1
 _s = output.services[0]
-assert_name = _s.name == "tenant-api"
-assert_image = _s.image == "tenant-api"
+assert_name = _s.name == "billing-api"
+assert_image = _s.image == "billing-api"
 # The deploy block projects the SAME shape a plain forge.RenderedWorkload would.
 assert_deploy_type = _s.deploy.type == "cluster"
-assert_deploy_ns = _s.deploy.namespace == "tenants-prod"
+assert_deploy_ns = _s.deploy.namespace == "billing-prod"
 assert_deploy_ports = _s.deploy.ports == [8080]
 # The app's extra fields are NOT in the projected JSON contract — they ride
 # on the typed value but aren't part of the stable forge.RenderedWorkload contract.
@@ -73,5 +73,5 @@ manifests = forge.render_manifests(_bundle, "v1", {}, False)
 _kinds = [m.kind for m in manifests]
 assert_has_deployment = "Deployment" in _kinds
 assert_has_service = "Service" in _kinds
-_dep = [m for m in manifests if m.kind == "Deployment" and m.metadata.name == "tenant-api"][0]
-assert_deployment_named = _dep.metadata.name == "tenant-api"
+_dep = [m for m in manifests if m.kind == "Deployment" and m.metadata.name == "billing-api"][0]
+assert_deployment_named = _dep.metadata.name == "billing-api"

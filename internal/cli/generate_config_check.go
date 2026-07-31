@@ -9,15 +9,16 @@
 //     doesn't exist → generate runs, emits nothing for foo, exits 0.
 //   - proto/services/foo/ exists on disk but forge.yaml lacks an entry →
 //     generate sees the proto but skips bootstrap wiring for it.
-//   - packages[].name=foo but internal/foo/contract.go missing → bootstrap
-//     codegen emits a broken import the validate step fails on, pointing
-//     at generated code instead of the missing contract.
 //
-// This file walks forge.yaml's declarations and the proto/internal trees
-// in parallel and collects every mismatch into a single batched report.
+// This file walks forge.yaml's declarations and the on-disk trees in
+// parallel and collects every mismatch into a single batched report.
 // stepLoadConfig calls validateConfigVsFilesystem after a successful
-// LoadStrict so the user sees the asymmetry the moment they run generate,
+// LoadProject so the user sees the asymmetry the moment they run generate,
 // not three steps deeper at a confusing "missing import" error.
+//
+// Only what forge.yaml still DECLARES can be cross-checked here. Services
+// and internal packages are discovered from their real sources, so there is
+// no second list for them to disagree with — the declaration is the code.
 //
 // Opt-out: --skip-config-check. We expose an opt-out (not opt-in) so the
 // default path is loud — new adopters get the check unconditionally, and
@@ -28,14 +29,12 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // validateConfigVsFilesystem cross-checks forge.yaml declarations against
@@ -54,7 +53,6 @@ func validateConfigVsFilesystem(projectDir string, cfg *config.ProjectConfig) er
 	var findings []string
 
 	findings = append(findings, checkDeclaredFrontends(projectDir, cfg)...)
-	findings = append(findings, checkDeclaredPackages(projectDir, cfg)...)
 
 	if len(findings) == 0 {
 		return nil
@@ -72,24 +70,6 @@ func validateConfigVsFilesystem(projectDir string, cfg *config.ProjectConfig) er
 		"fix the mismatches above, or pass --skip-config-check to bypass for parallel-lane / mid-migration scenarios")
 }
 
-// defaultServicePath returns the conventional on-disk path for a
-// component entry whose `path:` field was omitted. Mirrors the defaulting
-// in loadProjectConfigFrom but expands the rule to cover every kind so
-// the cross-check uses the same conventions as the rest of the pipeline.
-func defaultServicePath(c config.ComponentConfig) string {
-	switch c.EffectiveKind() {
-	case config.ComponentKindWorker, config.ComponentKindCron:
-		return "internal/workers/" + c.Name
-	case config.ComponentKindOperator:
-		return "internal/operators/" + c.Name
-	case config.ComponentKindBinary:
-		// Each binary gets its own cmd/<bin>/ tree (devspace idiom).
-		return filepath.Join("cmd", naming.ServicePackage(c.Name), "main.go")
-	default:
-		return "internal/handlers/" + c.Name
-	}
-}
-
 // checkDeclaredFrontends walks cfg.Frontends and verifies each entry has
 // an on-disk directory at the configured path. Frontends do not have a
 // proto-side requirement (they consume the gen/ts/ stubs from services
@@ -97,7 +77,7 @@ func defaultServicePath(c config.ComponentConfig) string {
 //
 // We skip the check when fe.Path is empty AND the default path doesn't
 // exist either — that's a freshly-scaffolded entry the user has declared
-// but not run `forge add frontend` against yet. Better to let the
+// but not run `forge scaffold frontend` against yet. Better to let the
 // scaffold step handle it than to error out here.
 func checkDeclaredFrontends(projectDir string, cfg *config.ProjectConfig) []string {
 	var out []string
@@ -109,39 +89,9 @@ func checkDeclaredFrontends(projectDir string, cfg *config.ProjectConfig) []stri
 		fullPath := filepath.Join(projectDir, path)
 		if !dirExists(fullPath) {
 			out = append(out, fmt.Sprintf(
-				"frontends[name=%s] (type=%s) declared in forge.yaml but path %q does not exist (expected at %s) — run 'forge add frontend %s' to scaffold it",
+				"frontends[name=%s] (type=%s) declared in forge.yaml but path %q does not exist (expected at %s) — run 'forge scaffold frontend %s' to scaffold it",
 				fe.Name, fe.Type, path, fullPath, fe.Name))
 		}
-	}
-	return out
-}
-
-// checkDeclaredPackages walks cfg.Packages and verifies each entry has a
-// matching internal/<pkg>/contract.go on disk. The bootstrap codegen
-// template hardcodes references to <pkg>.New(...) for every internal
-// package; a missing contract.go produces a bootstrap.go that doesn't
-// compile, with the build error pointing at generated code rather than at
-// the missing source — exactly the failure mode the loud-by-default
-// architecture exists to prevent.
-func checkDeclaredPackages(projectDir string, cfg *config.ProjectConfig) []string {
-	var out []string
-	for _, pkg := range cfg.Packages {
-		// internal/<pkg>/contract.go is the canonical location. The
-		// package-name normalization (kebab vs snake) follows the same
-		// ServicePackage rule.
-		canonical := naming.ServicePackage(pkg.Name)
-		contractPath := filepath.Join(projectDir, "internal", canonical, "contract.go")
-		if _, err := os.Stat(contractPath); err == nil {
-			continue
-		}
-		// Fallback: try the literal name without normalization.
-		rawPath := filepath.Join(projectDir, "internal", pkg.Name, "contract.go")
-		if _, err := os.Stat(rawPath); err == nil {
-			continue
-		}
-		out = append(out, fmt.Sprintf(
-			"packages[name=%s] declared in forge.yaml but contract.go missing (expected at %s) — run 'forge add package %s' to scaffold it",
-			pkg.Name, contractPath, pkg.Name))
 	}
 	return out
 }

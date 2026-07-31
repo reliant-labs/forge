@@ -2,7 +2,7 @@ package doctor
 
 // forks.go — disowned generated-file check.
 //
-// A disowned file (`forge disown`) is a deliberate, one-way transfer of
+// A disowned file (`forge project disown`) is a deliberate, one-way transfer of
 // a generated file to user ownership: forge never regenerates it again.
 // Unlike the old fork limbo this is a legitimate END STATE, so the
 // check is informational — it reports the count and the paths (PASS,

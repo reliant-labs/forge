@@ -1,12 +1,13 @@
 ---
 name: v0.x-to-serverkit
 description: Migrate the generated `cmd/server.go` from the ~520-line inline scaffold to a ~50-line shim over `forge/pkg/serverkit`. The library now owns the HTTP listener, observability chain, healthz/readyz, worker supervisor, operator manager, and graceful-shutdown sequence; the shim only projects config onto serverkit.Config and wires per-project hooks.
+detection: test -f cmd/server.go && ! grep -q serverkit.Run cmd/server.go
 relevance: migration
 ---
 
 # Migrating to the `serverkit` runtime library
 
-Use this skill when `forge upgrade` reports a jump across the version that
+Use this skill when `forge project upgrade` reports a jump across the version that
 ships `forge/pkg/serverkit` (the release that drops the inline `cmd/server.go`
 scaffold). It also covers the bootstrap.go shape change that comes with it.
 
@@ -114,13 +115,12 @@ file is user-owned). You must apply the same shape changes by hand:
    }
    ```
 
-   If your project previously read `HEALTH_PROBE_BIND_ADDRESS` from the
-   environment inside `RunOperators`, switch to reading it in
-   `cmd/server.go` and pass it via
-   `serverkit.Config.OperatorHealthProbeAddr` instead — that keeps the
-   binding decision in one place. (Falling back to the env var inside
-   the hook still works; it just means the value isn't visible to
-   anyone reading the projection.)
+   If your project previously read the probe address out of the environment
+   inside `RunOperators`, declare it as a config field and pass it via
+   `serverkit.Config.OperatorHealthProbeAddr` instead. That is now the only
+   way it can be set: `operatorkit` reads no environment variable, so a
+   value that is not on the projection is a port nothing binds — and a
+   binding decision that is visible to anyone reading the projection.
 
 5. **Type-assert inside the OperatorList iteration in `RunOperators`**.
    Since `OperatorList` now returns `[]serverkit.Operator`, the
@@ -186,14 +186,14 @@ wc -l cmd/server.go                    # should be ~150 lines or fewer
 grep "func (a \*App) RESTHandler() http.Handler" pkg/app/app_gen.go
 ```
 
-If all pass, `forge upgrade` will bump `forge_version` in `forge.yaml`
+If all pass, `forge project upgrade` will bump `forge_version` in `forge.yaml`
 to the target version automatically.
 
 ## 7. Rollback
 
 ```bash
 git revert <forge-generate-commit>      # undo the regen
-forge upgrade --to <prev-version>        # pin back to the prior version
+forge project upgrade --to <prev-version>        # pin back to the prior version
 ```
 
 `--to <prev-version>` requires the prior forge build on `PATH`. Install
@@ -207,4 +207,4 @@ with `go install github.com/reliant-labs/forge/cmd/forge@v<X.Y.Z>`.
   shrinks the "generated runtime" surface in favour of the "consumed
   library" model.
 - `binaries` skill — `cmd/server.go` is still the canonical server
-  entry; `forge add binary` / `forge add worker` haven't changed.
+  entry; `forge scaffold binary` / `forge scaffold worker` haven't changed.

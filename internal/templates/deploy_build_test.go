@@ -92,9 +92,27 @@ func TestDeployTemplate_AllEnvironments(t *testing.T) {
 		t.Error("missing deploy-release job")
 	}
 
-	// Must have migration test for preprod and prod
-	if strings.Count(s, "Test migrations") < 2 {
-		t.Error("expected migration test steps for preprod and prod")
+	// Must dry-run against the live API server before each real apply
+	// (per-env jobs for preprod/prod plus the release job).
+	if strings.Count(s, "Dry-run against the live API server") < 2 {
+		t.Error("expected a server-side dry-run step before each gated deploy")
+	}
+
+	// Every `kcl run` piped into kubectl MUST select the manifest list.
+	// Without `-S manifests` the render root is a YAML mapping
+	// (`manifests:` + `output:`) and kubectl rejects it with
+	// "apiVersion not set, kind not set" — the whole CD path dies.
+	applies := strings.Count(s, "kubectl apply --")
+	selects := strings.Count(s, "-S manifests | \\")
+	if applies == 0 || selects != applies {
+		t.Errorf("every kubectl apply must be fed `-S manifests`: %d applies, %d selectors", applies, selects)
+	}
+
+	// Verification must be namespace-scoped. An unscoped `kubectl get`
+	// queries the kubeconfig's default namespace, matches nothing, and
+	// the loop over it exits 0 — a green deploy that verified nothing.
+	if !strings.Contains(s, `-n "$NAMESPACE"`) {
+		t.Error("post-deploy verification must be scoped to the deploy namespace")
 	}
 
 	// Must have concurrency groups
@@ -107,9 +125,14 @@ func TestDeployTemplate_AllEnvironments(t *testing.T) {
 		t.Error("missing environment protection for prod")
 	}
 
-	// Sequential promotion: preprod needs staging
-	if !strings.Contains(s, "needs: [deploy-staging]") {
-		t.Error("missing sequential dependency: preprod -> staging")
+	// A dispatch-only env must NOT depend on the env before it. Only
+	// the auto-deploy env fires on a workflow_run; on a `workflow_dispatch`
+	// targeted at preprod/prod, deploy-staging's `if:` is false, so it is
+	// SKIPPED — and a skipped dependency skips its dependents. `needs:
+	// [deploy-staging]` on a manual env makes that env unreachable, which
+	// is exactly how the manual prod promotion path died.
+	if strings.Contains(s, "needs: [deploy-staging]") {
+		t.Error("dispatch-only env must not `needs:` the auto env — a skipped dependency skips its dependents")
 	}
 
 	// Frontend retagging

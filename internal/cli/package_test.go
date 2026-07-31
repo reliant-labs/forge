@@ -3,13 +3,13 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
-	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // newTestPackageNewCmd creates a cobra.Command wired to runPackageNew with the
@@ -41,12 +41,7 @@ version: "0.1.0"
 	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
 	}
-	writeComponentsJSON(t, dir, config.ComponentConfig{
-		Name:  "api",
-		Kind:  "server",
-		Path:  "handlers/api",
-		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}},
-	})
+	markServiceProject(t, dir)
 
 	// Run the command
 	cmd := newTestPackageNewCmd("")
@@ -87,20 +82,17 @@ version: "0.1.0"
 		t.Errorf("service.go missing two-result New constructor returning (Service, error), got:\n%s", svc)
 	}
 
-	// Verify forge.yaml was updated
-	cfg, err := generator.ReadProjectConfig("forge.yaml")
-	if err != nil {
-		t.Fatalf("ReadProjectConfig() error = %v", err)
-	}
-	if len(cfg.Packages) != 1 {
-		t.Fatalf("expected 1 package in config, got %d", len(cfg.Packages))
-	}
-	if cfg.Packages[0].Name != "cache" {
-		t.Errorf("expected package name 'cache', got %q", cfg.Packages[0].Name)
-	}
+	// The new package must be DISCOVERABLE — that is the registration, and
+	// the same walk the bootstrap codegen and every reporter resolve through.
+	assertDiscoveredPackages(t, dir, map[string]string{"cache": codegen.InternalPackageService})
+
+	// …and forge.yaml must be untouched. A `packages:` list next to the
+	// contract.go that already declares the package is the second source of
+	// truth this command used to write.
+	assertForgeYAMLUnchanged(t, "forge.yaml", configContent)
 
 	// Regression for kalshi-trader friction round 6:
-	// `forge add package` must emit a stub mock_gen.go off the empty
+	// `forge scaffold package` must emit a stub mock_gen.go off the empty
 	// Service interface. Downstream packages need a real
 	// `<pkg>.MockService` symbol to import without running the whole
 	// generator (which would also stomp wire_gen.go and friends, unsafe
@@ -110,7 +102,7 @@ version: "0.1.0"
 	mockPath := filepath.Join("internal", "cache", "mock_gen.go")
 	mockContent, err := os.ReadFile(mockPath)
 	if err != nil {
-		t.Fatalf("mock_gen.go not created on `forge add package`: %v", err)
+		t.Fatalf("mock_gen.go not created on `forge scaffold package`: %v", err)
 	}
 	mock := string(mockContent)
 	if !strings.Contains(mock, "package cache") {
@@ -204,19 +196,78 @@ version: "0.1.0"
 		t.Error("service.go should not exist for client kind")
 	}
 
-	// Verify forge.yaml was updated with kind
-	cfg, err := generator.ReadProjectConfig("forge.yaml")
+	// The client scaffold is still a plain contract package as far as
+	// discovery is concerned — --kind selects the template tree, it stamps no
+	// role marker, so the discovered type stays "service".
+	assertDiscoveredPackages(t, dir, map[string]string{"stripe": codegen.InternalPackageService})
+	assertForgeYAMLUnchanged(t, "forge.yaml", configContent)
+}
+
+// TestRunPackageNewTypeIsReadOffTheSourceMarker pins that --type is
+// recoverable from the package itself. It used to be recorded in forge.yaml;
+// the adapter scaffold stamps `//forge:outbound-io` on contract.go and
+// discovery reads the claim back off that marker, so it cannot disagree with
+// the code the lints enforce it against.
+func TestRunPackageNewTypeIsReadOffTheSourceMarker(t *testing.T) {
+	for _, tc := range []struct {
+		pkgType  string
+		wantType string
+	}{
+		{"service", codegen.InternalPackageService},
+		{"adapter", codegen.InternalPackageOutboundIO},
+	} {
+		t.Run(tc.pkgType, func(t *testing.T) {
+			dir := t.TempDir()
+			orig, _ := os.Getwd()
+			defer func() { _ = os.Chdir(orig) }()
+			if err := os.Chdir(dir); err != nil {
+				t.Fatal(err)
+			}
+			const configContent = "name: testproject\nmodule_path: example.com/testproject\n"
+			if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := &cobra.Command{Use: "new <name>", Args: cobra.ExactArgs(1), RunE: runPackageNew}
+			cmd.Flags().String("kind", "", "")
+			cmd.Flags().String("type", tc.pkgType, "")
+			if err := cmd.RunE(cmd, []string{"widgets"}); err != nil {
+				t.Fatalf("runPackageNew(--type %s): %v", tc.pkgType, err)
+			}
+
+			assertDiscoveredPackages(t, dir, map[string]string{"widgets": tc.wantType})
+			assertForgeYAMLUnchanged(t, "forge.yaml", configContent)
+		})
+	}
+}
+
+// assertDiscoveredPackages checks that codegen.DiscoverInternalPackages sees
+// exactly want (name -> role) under projectDir.
+func assertDiscoveredPackages(t *testing.T, projectDir string, want map[string]string) {
+	t.Helper()
+	pkgs, err := codegen.DiscoverInternalPackages(projectDir)
 	if err != nil {
-		t.Fatalf("ReadProjectConfig() error = %v", err)
+		t.Fatalf("DiscoverInternalPackages: %v", err)
 	}
-	if len(cfg.Packages) != 1 {
-		t.Fatalf("expected 1 package, got %d", len(cfg.Packages))
+	got := map[string]string{}
+	for _, p := range pkgs {
+		got[p.Name] = p.Type
 	}
-	if cfg.Packages[0].Name != "stripe" {
-		t.Errorf("expected package name 'stripe', got %q", cfg.Packages[0].Name)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("discovered packages = %v, want %v", got, want)
 	}
-	if cfg.Packages[0].Kind != "client" {
-		t.Errorf("expected package kind 'client', got %q", cfg.Packages[0].Kind)
+}
+
+// assertForgeYAMLUnchanged checks that `forge scaffold package` left
+// forge.yaml byte-identical.
+func assertForgeYAMLUnchanged(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(got) != want {
+		t.Errorf("forge.yaml was rewritten by `forge scaffold package`:\n got %q\nwant %q", got, want)
 	}
 }
 
@@ -322,20 +373,11 @@ module_path: example.com/testproject
 		}
 	}
 
-	// Verify both exist in config
-	cfg, err := generator.ReadProjectConfig("forge.yaml")
-	if err != nil {
-		t.Fatalf("ReadProjectConfig() error = %v", err)
-	}
-	if len(cfg.Packages) != 2 {
-		t.Fatalf("expected 2 packages in config, got %d", len(cfg.Packages))
-	}
-	if cfg.Packages[0].Name != "cache" {
-		t.Errorf("expected first package 'cache', got %q", cfg.Packages[0].Name)
-	}
-	if cfg.Packages[1].Name != "notifications" {
-		t.Errorf("expected second package 'notifications', got %q", cfg.Packages[1].Name)
-	}
+	// Both must be discoverable.
+	assertDiscoveredPackages(t, dir, map[string]string{
+		"cache":         codegen.InternalPackageService,
+		"notifications": codegen.InternalPackageService,
+	})
 
 	// Verify both directories exist
 	for _, name := range []string{"cache", "notifications"} {
@@ -370,4 +412,71 @@ module_path: example.com/testproject
 	if err := cmd.RunE(cmd, []string{"mypkg"}); err == nil {
 		t.Fatal("expected error for invalid kind, got nil")
 	}
+}
+
+// TestRunPackageNewScaffoldsObserveChainSeam: every contract package scaffold
+// (default + kind) gets the OWNED observe_chain.go seam — the flavor-
+// independent newObserveChain() builder the composition site detects
+// (DetectObserveChainSeam) and whose per-method wrapper is GENERATED
+// (middleware_gen.go), not scaffolded. The old hand-written observe.go
+// (with flavor-specific wrapper methods) is retired.
+func TestRunPackageNewScaffoldsObserveChainSeam(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	configContent := `name: testproject
+module_path: example.com/testproject
+version: "0.1.0"
+`
+	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	markServiceProject(t, dir)
+
+	assertSeam := func(leaf string) {
+		t.Helper()
+		// The retired hand-written wrapper must NOT be scaffolded.
+		if _, err := os.Stat(filepath.Join("internal", leaf, "observe.go")); err == nil {
+			t.Errorf("%s: legacy observe.go should no longer be scaffolded", leaf)
+		}
+		seam, err := os.ReadFile(filepath.Join("internal", leaf, "observe_chain.go"))
+		if err != nil {
+			t.Fatalf("observe_chain.go not created for %s: %v", leaf, err)
+		}
+		for _, want := range []string{
+			"func newObserveChain() *observe.ComponentChain {",
+			"observe.NewComponentChain(",
+			"yours: scaffolded once",
+		} {
+			if !strings.Contains(string(seam), want) {
+				t.Errorf("%s observe_chain.go missing %q, got:\n%s", leaf, want, seam)
+			}
+		}
+		// The seam holds NO per-method wrappers — those are generated.
+		if strings.Contains(string(seam), "func (o *observed") {
+			t.Errorf("%s observe_chain.go must not carry per-method wrappers (generated):\n%s", leaf, seam)
+		}
+	}
+
+	cmd := newTestPackageNewCmd("")
+	if err := cmd.RunE(cmd, []string{"cache"}); err != nil {
+		t.Fatalf("runPackageNew() error = %v", err)
+	}
+	assertSeam("cache")
+
+	adapterCmd := newTestPackageNewCmd("")
+	adapterCmd.Flags().String("type", "adapter", "")
+	if err := adapterCmd.RunE(adapterCmd, []string{"stripe"}); err != nil {
+		t.Fatalf("runPackageNew(--type adapter) error = %v", err)
+	}
+	assertSeam("stripe")
+
+	busCmd := newTestPackageNewCmd("eventbus")
+	if err := busCmd.RunE(busCmd, []string{"events"}); err != nil {
+		t.Fatalf("runPackageNew(--kind eventbus) error = %v", err)
+	}
+	assertSeam("events")
 }

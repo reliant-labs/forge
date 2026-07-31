@@ -41,8 +41,8 @@ frontend:
   workspaces: true
 ```
 
-Or pass `--frontend-workspaces` to `forge new`. The flag is also
-accepted at `forge add frontend` time — if it was off when you
+Or pass `--frontend-workspaces` to `forge project new`. The flag is also
+accepted at `forge scaffold frontend` time — if it was off when you
 scaffolded but you flip it on later, the next `forge generate` will
 emit the workspace scaffolding without disturbing your existing
 frontend's code.
@@ -163,9 +163,9 @@ frontend tsconfig path mapping redirects the existing
 `@/components/ui/*` imports to the shared package.
 
 The mapping is scoped to `/ui/` deliberately — non-ui local paths
-like the auth-ui pack's `@/components/auth/...` keep resolving
-against the per-frontend `src/` tree, so packs that install their own
-components keep working unchanged.
+like the owned `@/components/nav.tsx` and `@/components/session_nav.tsx`
+keep resolving against the per-frontend `src/` tree, so the components
+each frontend owns keep working unchanged.
 
 ### Ownership rule
 

@@ -3,7 +3,8 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
 //
 // cmd/{{.Name}}/cmd/commands.go is the user-owned cobra extension point —
-// the twin of pkg/app/services.go. newRootCmd (cmd/{{.Name}}/cmd/root.go)
+// the twin of internal/app/providers.go: you write it, forge calls it, and
+// forge never writes over it. newRootCmd (cmd/{{.Name}}/cmd/root.go)
 // calls userCommands(deps) and registers every returned command. Generated
 // per-service subcommands live in the cmd/{{.Name}}/cmd/services/ subpackage
 // (a projection of the proto services); never list services here.

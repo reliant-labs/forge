@@ -135,7 +135,7 @@ func collapseBlankRuns(s string) string {
 }
 
 // skillStyleForHarness maps a Harness to the SkillWriteStyle that should
-// be used when emitting skills on `forge new`. Returns ("", false) for
+// be used when emitting skills on `forge project new`. Returns ("", false) for
 // harnesses with no native skills concept — reliant (auto-discovers via
 // forge.yaml), copilot, codex.
 func skillStyleForHarness(h generator.Harness) (SkillWriteStyle, bool) {
@@ -214,7 +214,7 @@ Note: inside a forge project you don't need this for .claude/skills/ —
 // actually written.
 //
 // Exported so out-of-process callers (the reliant CLI embedding forge,
-// the harness emission in `forge new`) can reuse it.
+// the harness emission in `forge project new`) can reuse it.
 //
 // One-time migration skills (relevance: migration) are excluded — they
 // document version transitions, not steady-state conventions, and bulk

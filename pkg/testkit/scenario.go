@@ -18,7 +18,7 @@ import (
 // # Why a builder when the factories already exist
 //
 // The generated NewTest<Svc>(t, opts...) factories are the composition
-// roots: they fill the cross-cutting trio (logger/config/authz), auto-stub
+// roots: they fill the cross-cutting deps (logger/config), auto-stub
 // required collaborators, and call <svc>.New. ScenarioBuilder does NOT
 // duplicate that — it composes with it. You hand Build the factory (closed
 // over the generated NewTest<Svc> + its With<Svc>Deps option) as the
@@ -34,8 +34,8 @@ import (
 //	    Build(t)
 //
 // Everything not overridden falls through to the generated factory's
-// defaults (discard logger, permissive authorizer, auto-stubbed
-// collaborators), so the mock above is the only thing the test states.
+// defaults (discard logger, auto-stubbed collaborators), so the mock
+// above is the only thing the test states.
 //
 // # Composing with a real DB
 //

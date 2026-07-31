@@ -28,6 +28,9 @@
   that 404 behind the proxy.
 */ -}}
 {{- if eq .Output "static" -}}
+import fs from "node:fs";
+import path from "node:path";
+
 import bundleAnalyzer from "@next/bundle-analyzer";
 
 import type { NextConfig } from "next";
@@ -97,6 +100,10 @@ const nextConfig: NextConfig = {
   // Development: full Next.js dev server (HMR, rewrites). The conditional
   // below keeps `next dev` unchanged when NODE_ENV !== "production".
   ...(process.env.NODE_ENV === "production" ? { output: "export" } : {}),
+  // @reliant-labs/web-runtime ships TypeScript sources, so Next has to run
+  // them through its own compiler instead of treating node_modules as
+  // pre-built JavaScript.
+  transpilePackages: ["@reliant-labs/web-runtime"],
   webpack: (config) => {
     // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').
     // Next.js with moduleResolution: bundler can't resolve .js to .ts files
@@ -104,12 +111,68 @@ const nextConfig: NextConfig = {
     config.resolve.extensionAlias = {
       '.js': ['.ts', '.tsx', '.js', '.jsx'],
     };
+
+    // A dev build of forge bridges @reliant-labs/web-runtime with a `file:`
+    // specifier, which npm materialises as a SYMLINK to the forge checkout.
+    // That checkout is a working tree, so it carries its own node_modules —
+    // and a bundler resolves a module's bare imports by walking up from that
+    // module's own location, not from the app. The runtime's peer
+    // dependencies (@connectrpc/connect, @bufbuild/protobuf,
+    // @opentelemetry/api) therefore resolve out of the forge checkout while
+    // this app's own code resolves them out of node_modules here: two copies
+    // of every shared library in one bundle, each with its own classes,
+    // module-level state and registries, and every byte of them shipped
+    // twice. It typechecks and builds perfectly green, which is why no
+    // type-level or build-level gate can see it.
+    //
+    // peerDependencies already states the contract — "the consuming app
+    // supplies this copy". npm honours it for a registry install (one
+    // hoisted copy at the app root) and CANNOT honour it across a `file:`
+    // link, so honour it in the resolver instead: anything coming from the
+    // linked runtime resolves its bare imports against THIS app's
+    // node_modules first.
+    //
+    // Scoped to the linked runtime deliberately. The same redirect applied
+    // globally (a `resolve.modules` prefix) would also override the nested,
+    // version-pinned copies npm installs beneath other packages — next's own
+    // included.
+    const runtimeLink = path.join(
+      __dirname,
+      "node_modules",
+      "@reliant-labs",
+      "web-runtime",
+    );
+    let runtimeReal = "";
+    try {
+      runtimeReal = fs.realpathSync(runtimeLink);
+    } catch {
+      runtimeReal = ""; // not installed yet — nothing to redirect
+    }
+    // A registry install is a real directory with no node_modules of its own,
+    // so it needs none of this; only the dev bridge does.
+    if (runtimeReal && runtimeReal !== runtimeLink) {
+      config.module.rules.push({
+        // webpack names a module by its real path by default and by its link
+        // path when resolve.symlinks is off — match either spelling.
+        test: (resource: unknown) =>
+          typeof resource === "string" &&
+          (resource.startsWith(runtimeReal + path.sep) ||
+            resource.startsWith(runtimeLink + path.sep)),
+        resolve: {
+          modules: [path.join(__dirname, "node_modules"), "node_modules"],
+        },
+      });
+    }
+
     return config;
   },
 };
 
 export default withBundleAnalyzer(nextConfig);
 {{- else if eq .Output "server" -}}
+import fs from "node:fs";
+import path from "node:path";
+
 import bundleAnalyzer from "@next/bundle-analyzer";
 
 import type { NextConfig } from "next";
@@ -145,9 +208,13 @@ const nextConfig: NextConfig = {
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),
   // Production builds land in .next-prod so `npm run build` can't clobber
   // the dev server's .next directory out from under a live `next dev` /
-  // `forge up --env=dev`. `next start` also runs with NODE_ENV=production, so it
+  // `forge env up dev`. `next start` also runs with NODE_ENV=production, so it
   // serves the same directory the production build wrote.
   distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
+  // @reliant-labs/web-runtime ships TypeScript sources, so Next has to run
+  // them through its own compiler instead of treating node_modules as
+  // pre-built JavaScript.
+  transpilePackages: ["@reliant-labs/web-runtime"],
   webpack: (config) => {
     // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').
     // Next.js with moduleResolution: bundler can't resolve .js to .ts files
@@ -155,12 +222,66 @@ const nextConfig: NextConfig = {
     config.resolve.extensionAlias = {
       '.js': ['.ts', '.tsx', '.js', '.jsx'],
     };
+
+    // A dev build of forge bridges @reliant-labs/web-runtime with a `file:`
+    // specifier, which npm materialises as a SYMLINK to the forge checkout.
+    // That checkout is a working tree, so it carries its own node_modules —
+    // and a bundler resolves a module's bare imports by walking up from that
+    // module's own location, not from the app. The runtime's peer
+    // dependencies (@connectrpc/connect, @bufbuild/protobuf,
+    // @opentelemetry/api) therefore resolve out of the forge checkout while
+    // this app's own code resolves them out of node_modules here: two copies
+    // of every shared library in one bundle, each with its own classes,
+    // module-level state and registries, and every byte of them shipped
+    // twice. It typechecks and builds perfectly green, which is why no
+    // type-level or build-level gate can see it.
+    //
+    // peerDependencies already states the contract — "the consuming app
+    // supplies this copy". npm honours it for a registry install (one
+    // hoisted copy at the app root) and CANNOT honour it across a `file:`
+    // link, so honour it in the resolver instead: anything coming from the
+    // linked runtime resolves its bare imports against THIS app's
+    // node_modules first.
+    //
+    // Scoped to the linked runtime deliberately. The same redirect applied
+    // globally (a `resolve.modules` prefix) would also override the nested,
+    // version-pinned copies npm installs beneath other packages — next's own
+    // included.
+    const runtimeLink = path.join(
+      __dirname,
+      "node_modules",
+      "@reliant-labs",
+      "web-runtime",
+    );
+    let runtimeReal = "";
+    try {
+      runtimeReal = fs.realpathSync(runtimeLink);
+    } catch {
+      runtimeReal = ""; // not installed yet — nothing to redirect
+    }
+    // A registry install is a real directory with no node_modules of its own,
+    // so it needs none of this; only the dev bridge does.
+    if (runtimeReal && runtimeReal !== runtimeLink) {
+      config.module.rules.push({
+        // webpack names a module by its real path by default and by its link
+        // path when resolve.symlinks is off — match either spelling.
+        test: (resource: unknown) =>
+          typeof resource === "string" &&
+          (resource.startsWith(runtimeReal + path.sep) ||
+            resource.startsWith(runtimeLink + path.sep)),
+        resolve: {
+          modules: [path.join(__dirname, "node_modules"), "node_modules"],
+        },
+      });
+    }
+
     return config;
   },
 };
 
 export default withBundleAnalyzer(nextConfig);
 {{- else -}}
+import fs from "node:fs";
 import path from "node:path";
 
 import bundleAnalyzer from "@next/bundle-analyzer";
@@ -193,7 +314,7 @@ const nextConfig: NextConfig = {
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),
   // Production builds land in .next-prod so `npm run build` can't clobber
   // the dev server's .next directory out from under a live `next dev` /
-  // `forge up --env=dev`. `next start` also runs with NODE_ENV=production, so it
+  // `forge env up dev`. `next start` also runs with NODE_ENV=production, so it
   // serves the same directory the production build wrote.
   distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
   // "standalone" (the scaffold default) emits a self-contained Node
@@ -214,6 +335,10 @@ const nextConfig: NextConfig = {
   // `<distDir>/standalone/<relative-path>/server.js`, which the Dockerfile's
   // `COPY --from=builder /app/.next-prod/standalone ./` cannot locate at runtime.
   outputFileTracingRoot: path.join(__dirname),
+  // @reliant-labs/web-runtime ships TypeScript sources, so Next has to run
+  // them through its own compiler instead of treating node_modules as
+  // pre-built JavaScript.
+  transpilePackages: ["@reliant-labs/web-runtime"],
   webpack: (config) => {
     // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').
     // Next.js with moduleResolution: bundler can't resolve .js to .ts files
@@ -221,6 +346,59 @@ const nextConfig: NextConfig = {
     config.resolve.extensionAlias = {
       '.js': ['.ts', '.tsx', '.js', '.jsx'],
     };
+
+    // A dev build of forge bridges @reliant-labs/web-runtime with a `file:`
+    // specifier, which npm materialises as a SYMLINK to the forge checkout.
+    // That checkout is a working tree, so it carries its own node_modules —
+    // and a bundler resolves a module's bare imports by walking up from that
+    // module's own location, not from the app. The runtime's peer
+    // dependencies (@connectrpc/connect, @bufbuild/protobuf,
+    // @opentelemetry/api) therefore resolve out of the forge checkout while
+    // this app's own code resolves them out of node_modules here: two copies
+    // of every shared library in one bundle, each with its own classes,
+    // module-level state and registries, and every byte of them shipped
+    // twice. It typechecks and builds perfectly green, which is why no
+    // type-level or build-level gate can see it.
+    //
+    // peerDependencies already states the contract — "the consuming app
+    // supplies this copy". npm honours it for a registry install (one
+    // hoisted copy at the app root) and CANNOT honour it across a `file:`
+    // link, so honour it in the resolver instead: anything coming from the
+    // linked runtime resolves its bare imports against THIS app's
+    // node_modules first.
+    //
+    // Scoped to the linked runtime deliberately. The same redirect applied
+    // globally (a `resolve.modules` prefix) would also override the nested,
+    // version-pinned copies npm installs beneath other packages — next's own
+    // included.
+    const runtimeLink = path.join(
+      __dirname,
+      "node_modules",
+      "@reliant-labs",
+      "web-runtime",
+    );
+    let runtimeReal = "";
+    try {
+      runtimeReal = fs.realpathSync(runtimeLink);
+    } catch {
+      runtimeReal = ""; // not installed yet — nothing to redirect
+    }
+    // A registry install is a real directory with no node_modules of its own,
+    // so it needs none of this; only the dev bridge does.
+    if (runtimeReal && runtimeReal !== runtimeLink) {
+      config.module.rules.push({
+        // webpack names a module by its real path by default and by its link
+        // path when resolve.symlinks is off — match either spelling.
+        test: (resource: unknown) =>
+          typeof resource === "string" &&
+          (resource.startsWith(runtimeReal + path.sep) ||
+            resource.startsWith(runtimeLink + path.sep)),
+        resolve: {
+          modules: [path.join(__dirname, "node_modules"), "node_modules"],
+        },
+      });
+    }
+
     return config;
   },
 };

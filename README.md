@@ -44,22 +44,22 @@ go run ./cmd/forge version
 
 ```bash
 # Scaffold a new project (service / CLI / library)
-forge new my-app
+forge project new my-app
 cd my-app
 
 # Add a service, then regenerate the stack from proto
-forge add service billing
+forge scaffold service billing
 forge generate
 
 # The triple gate before you call a change done:
 forge generate && forge lint && go build ./... && go test ./...
 
 # Bring the whole local dev loop up (build + deploy + host + frontend)
-forge up
+forge env up
 ```
 
 Run `forge --help` for the full command surface (`add`, `generate`, `db`,
-`deploy`, `migrate`, `pack`, `mcp`, and more), or `forge <command> --help` for
+`deploy`, `migrate`, `pack`, and more), or `forge <command> --help` for
 any one of them.
 
 ## Conventions & skills

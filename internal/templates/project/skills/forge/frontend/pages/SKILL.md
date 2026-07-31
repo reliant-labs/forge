@@ -12,12 +12,12 @@ The example walks through adding `app/users/page.tsx` for a hypothetical `UserSe
 ## Step 1 — scaffold the entity (migration + CRUD RPCs)
 
 The schema lives in `db/migrations/`, not in proto — there is no
-`(forge.v1.entity)` annotation (those are retired and ignored). The
-fastest path is `forge add entity user email:string name:string`, which
-writes the create-table migration and scaffolds the CRUD messages + RPCs
-into the service proto in one step. An entity is a table plus matching
-CRUD RPCs; `forge generate` projects the entity struct, ORM, and these
-pages from the applied schema.
+`(forge.v1.entity)` annotation (those are retired and ignored). Declare the
+message under a leading `// forge:entity` comment and run `forge scaffold`,
+which writes the create-table migration and scaffolds the CRUD messages +
+RPCs in one step. An entity is a table plus matching CRUD RPCs;
+`forge generate` projects the entity struct, ORM, and these pages from the
+applied schema.
 
 The resulting `proto/services/users/v1/users.proto` is a plain message
 plus the CRUD service (no field annotations needed — columns are read off
@@ -25,7 +25,7 @@ the migration):
 
 ```proto
 syntax = "proto3";
-package myproject.services.users.v1;
+package services.users.v1;
 
 import "forge/v1/forge.proto";
 import "google/protobuf/timestamp.proto";
@@ -75,18 +75,21 @@ forge generate
 This produces:
 
 - Go service stubs and CRUD handler wiring (`handlers_crud_ops_gen.go` op constructors plus thin delegations in the user-owned `handlers_crud.go` for matching method names — see `api`).
-- Generated React Query hooks: `useListUsers`, `useGetUser`, `useCreateUser`, `useUpdateUser`, `useDeleteUser` in `frontends/<name>/src/hooks/users-hooks.ts`.
+- Generated React Query hooks: `useListUsers`, `useGetUser`, `useCreateUser`, `useUpdateUser`, `useDeleteUser`. They are emitted per PROTO SERVICE, not per entity — `src/hooks/<service>-service-hooks.ts` — so import from the barrel (`@/hooks`), which re-exports every generated hook file.
 - Generated Connect transport in `src/lib/connect.ts`.
 
 Never hand-edit `*-hooks.ts` — overwritten on next `forge generate`. Add custom hooks in a separate file (`src/hooks/custom-hooks.ts`).
 
 ## Step 3 — build the page
 
+`data_table` is in the component library but is NOT one of the components the
+scaffold installs — run `forge component install data_table` first, or reach
+for `<Resource>` from `@reliant-labs/web-runtime` (see `frontend-runtime`).
+
 ```tsx
 // frontends/web/src/app/users/page.tsx
 "use client";
 
-import { create } from "@bufbuild/protobuf";
 import { useState } from "react";
 
 import {
@@ -94,17 +97,15 @@ import {
   useCreateUser,
   useDeleteUser,
 } from "@/hooks";
-import { CreateUserRequestSchema } from "@/../../gen/myproject/services/users/v1/users_pb";
+import { emitToast } from "@/lib/events";
 
 import DataTable from "@/components/ui/data_table";
 import Button from "@/components/ui/button";
 import Card from "@/components/ui/card";
 import Input from "@/components/ui/input";
-import { useUiStore } from "@/stores/ui-store";
 
 export default function UsersPage() {
   const [search, setSearch] = useState("");
-  const showToast = useUiStore((s) => s.showToast);
 
   const { data, isLoading, error } = useListUsers({
     pageSize: 20,
@@ -114,7 +115,7 @@ export default function UsersPage() {
   const deleteUser = useDeleteUser();
 
   if (isLoading) return <div className="p-8">Loading…</div>;
-  if (error)    return <div className="p-8 text-red-600">Error: {error.message}</div>;
+  if (error)    return <div className="p-8 text-red-600">Error: {userMessage(error)}</div>;
 
   return (
     <div className="p-8 space-y-6">
@@ -122,17 +123,14 @@ export default function UsersPage() {
         <h1 className="text-2xl font-semibold">Users</h1>
         <Button
           onClick={async () => {
-            try {
-              await createUser.mutateAsync(
-                create(CreateUserRequestSchema, {
-                  email: "new@example.com",
-                  name:  "New User",
-                }),
-              );
-              showToast({ kind: "success", message: "User created" });
-            } catch (err) {
-              showToast({ kind: "error", message: (err as Error).message });
-            }
+            // Mutation hooks take the plain request INIT object, not a
+            // create()d message. Errors already surface through the
+            // app-wide MutationCache toast — only success is yours.
+            await createUser.mutateAsync({
+              email: "new@example.com",
+              name:  "New User",
+            });
+            emitToast({ variant: "success", message: "User created" });
           }}
         >
           New user
@@ -174,10 +172,56 @@ export default function UsersPage() {
 A few patterns to copy:
 
 - **`"use client"` only when you need it.** This page uses hooks and event handlers, so client.
-- **`create(Schema, {...})` for proto messages.** Never `new MessageType(...)` — that's protobuf-es v1; we're on v2.
+- **Hooks take a plain init object**, not a constructed message (`mutate({ name })`, not `mutate(create(Schema, { name }))`). Reach for `create(Schema, {...})` only when you need an actual message value — and never `new MessageType(...)`, which is protobuf-es v1.
 - **`useListUsers({ pageSize, search })` direct.** The hook takes a plain object; pass the search filter as `undefined` (not empty string) when not set.
 - **Three states: loading / error / success.** Always.
 - **Forge component library first.** Use `component_library(action="search", query="...")` before hand-rolling. See `frontend`.
+
+## Step 3b — enum fields and foreign-key fields
+
+Two field kinds have a shared component already; both are the ones hand-rolled pages get wrong.
+
+**Proto enums are NUMBERS at runtime.** protobuf-es v2 emits a numeric TS enum, so `order.status === 1`, not `"PENDING"`. Hand the raw field plus the enum OBJECT to the shared components and they reverse-map it:
+
+```tsx
+import { StatusBadge } from "@/components/status-badge";
+import { EnumSelect } from "@/components/enum-select";
+import { OrderStatus } from "@/gen/services/orders/v1/orders_pb";
+
+<StatusBadge value={order.status} enumType={OrderStatus} />   {/* "Pending" */}
+<EnumSelect enumObject={OrderStatus} {...register("status")} />
+```
+
+Passing the type NAME (`enumType="OrderStatus"`) instead of the object cannot reverse an ordinal — the badge renders its unset state rather than the digit. The name form exists only for plain string columns storing `ORDER_STATUS_…`. Register domain colors once with `registerStatusVariants({ payment_captured: "success" })`; never edit the badge.
+
+**A foreign-key field means "search another entity and pick one"** — never a raw text input for a UUID, and never a `<select>` over a preloaded array (the other table is paged and filtered server-side). Drive `<EntityPicker>` with the generated LIST hook, and resolve an id back to a name with `<EntityName>` and the generated GET hook:
+
+```tsx
+<Controller
+  control={control}
+  name="patientId"
+  render={({ field }) => (
+    <EntityPicker
+      useList={useListPatients}
+      buildRequest={(search) => ({ pageSize: 20, search: search || undefined })}
+      itemsOf={(res) => res.patients}
+      hasMoreOf={(res) => Boolean(res.nextPageToken)}
+      optionValue={(p) => p.id}
+      optionLabel={(p) => p.fullName}
+      optionHint={(p) => p.email}
+      value={field.value}
+      onChange={(id) => field.onChange(id ?? "")}
+      aria-label="Patient"
+      selectedLabel={
+        <EntityName id={field.value} useGet={useGetPatient}
+          buildRequest={(id) => ({ id })} nameOf={(res) => res.patient?.fullName} />
+      }
+    />
+  )}
+/>
+```
+
+It is a custom control, so `<Controller>` — `register()` has nothing to attach to. The picker owns the debounce, popover, keyboard nav and loading/error/empty ladder; it queries only while open, and fetches ONE page (search narrows; `hasMoreOf` renders the "keep typing" hint). Do NOT write a `<PatientPicker>` in `_components/` — extend or restyle these instead, and report a genuinely missing shared component rather than forking one per entity.
 
 ## Step 4 — Zustand for client state, if needed
 
@@ -229,7 +273,7 @@ For navigation links, use the project's existing nav component (likely in `src/c
 ## Step 7 — verify visually
 
 ```bash
-forge up --env=dev
+forge env up dev
 ```
 
 Open the page in a browser. Use Chrome DevTools' MCP integration:
@@ -243,18 +287,18 @@ take_screenshot()    # actual rendered pixels
 
 ## Common mistakes
 
-1. **`new CreateUserRequest({...})`** — protobuf-es v1 syntax. Use `create(Schema, {...})`.
+1. **`new CreateUserRequest({...})`** — protobuf-es v1 syntax. Hooks want a plain object; `create(Schema, {...})` when you need a message.
 2. **Copying server data into Zustand.** React Query already caches it. Subscribe to the query, don't duplicate it.
 3. **Using `useState` for form state on a non-trivial form.** Use `react-hook-form` + Zod schema. See `frontend/patterns`.
 4. **Forgetting `"use client"`** on a page that uses hooks. Build error.
-5. **Hand-editing `src/hooks/users-hooks.ts`.** Overwritten on next `forge generate`.
+5. **Hand-editing a generated `*-hooks.ts`.** Overwritten on next `forge generate`.
 6. **Skipping screenshots.** Snapshots compile, tests pass, layout is broken in the browser.
-7. **Hand-rolling mutation error toasts.** Mutation failures already surface through the app-wide chokepoint (`MutationCache.onError` in `src/lib/query-client.ts`). If your page renders the error inline (form banner), pass `meta: { silenceErrorToast: true }` to the mutation so the failure isn't announced twice — and show users `userMessage(err)` (from `@/lib/format-utils`), never raw `err.message`.
+7. **Leaving a scaffolded form on the raw CRUD RPC when a domain verb owns the operation.** The generated create page wires `Create<Entity>`: the generator cannot tell whether `IssuePrescription` creates a row or transitions one, so it never guesses. You can. Point the form at the domain RPC when one exists — that is where the invariants and side effects live. Rewire the mutation hook only.
+8. **Hand-rolling mutation error toasts.** Mutation failures already surface through the app-wide chokepoint (`MutationCache.onError` in `src/lib/query-client.ts`). If your page renders the error inline (form banner), pass `meta: { silenceErrorToast: true }` to the mutation so the failure isn't announced twice — and show users `userMessage(err)` (from `@reliant-labs/web-runtime`), never raw `err.message`.
 
 ## Rules
 
 - Generated hooks (`use<Method>`) come from `forge generate`. Never hand-edit `*-hooks.ts`.
-- Always `create(Schema, {...})` for proto messages.
 - Three states (loading, error, success) on every data-fetching page.
 - Server data lives in React Query; client UI state lives in Zustand. Never mix.
 - Subscribe to Zustand slices, not the whole store.
@@ -267,5 +311,5 @@ take_screenshot()    # actual rendered pixels
 - **State management decision tree** (URL vs Zustand vs query vs ref) — see `frontend/state`.
 - **Component composition / container-presentational patterns** — see `frontend/patterns`.
 - **The proto and codegen side** of the recipe — see `proto` and `api`.
-- **Auth wiring on the frontend** (Auth0, Clerk, Supabase) — see `auth` and `packs`.
+- **Auth wiring on the frontend** (Auth0, Clerk, Supabase) — see `auth` (auth components are owned scaffold under `frontends/<name>/src/`).
 - **Mobile (React Native / Expo)** — see `frontend`. The hook layer is shared; the UI patterns differ.

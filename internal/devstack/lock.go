@@ -14,7 +14,7 @@ const lockRel = ".forge/blocks.lock"
 
 // withLock runs fn while holding the exclusive, cross-process block lock.
 // The lock is advisory (flock(2)) and auto-releases when the holding
-// process exits or the fd closes — so a crashed `forge up` never leaves a
+// process exits or the fd closes — so a crashed `forge env up` never leaves a
 // stale lock the next run has to time out on, unlike an O_EXCL marker file.
 // Blocking (LOCK_EX without LOCK_NB): a second worktree's `up` waits for
 // the first to finish its claim, then proceeds — exactly the serialization

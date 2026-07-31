@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // ForgeDescriptor is the JSON structure written by protoc-gen-forge --mode=descriptor.
@@ -146,83 +148,21 @@ func GetModulePath(dir string) (string, error) {
 	return "", fmt.Errorf("module directive not found in go.mod")
 }
 
-// projectBinaryShared best-effort reads forge.yaml and returns true when
-// the project declares `binary: shared`. Used by the bootstrap generator
-// to lazily construct services in the per-service cobra subcommand path.
-// Empty file / parse error / missing field all fall back to false (the
-// canonical per-service mode), so this is safe to call from any project
-// shape including the initial scaffold pass before forge.yaml is fully
-// populated.
-func projectBinaryShared(projectDir string) bool {
-	path := filepath.Join(projectDir, "forge.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	// Lightweight inline parse so the codegen package doesn't take a
-	// dependency on the `config` package (which would create an import
-	// cycle: config → codegen via descriptor types). The spec is a single
-	// top-level scalar key, so a string scan is sufficient.
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "binary:") {
-			continue
-		}
-		val := strings.TrimSpace(strings.TrimPrefix(trimmed, "binary:"))
-		// Strip trailing comment + quotes.
-		if idx := strings.Index(val, "#"); idx >= 0 {
-			val = strings.TrimSpace(val[:idx])
-		}
-		val = strings.Trim(val, `"'`)
-		return strings.EqualFold(val, "shared")
-	}
-	return false
-}
-
-// projectAPIRESTEnabled best-effort reads forge.yaml and returns true
-// when the project declares `api.rest: true`. Used by the bootstrap
-// generator to wrap the Connect mux with a vanguard REST transcoder and
-// by the CRUD-gen pass to emit `google.api.http` annotations on standard
-// CRUD RPCs. Empty file / parse error / missing field all fall back to
-// false (no REST), so this is safe to call from any project shape
-// including the initial scaffold pass before forge.yaml grows an `api:`
-// block.
+// projectAPIRESTEnabled reports whether the project at projectDir declares
+// `api.rest: true`. The bootstrap generator uses it to wrap the Connect mux
+// with a vanguard REST transcoder, and the CRUD-gen pass uses it to emit
+// `google.api.http` annotations on standard CRUD RPCs.
 //
-// The scan is intentionally line-based to avoid an import cycle through
-// the config package (mirrors projectBinaryShared). We require `rest:`
-// to appear within the `api:` block — a top-level `rest:` key elsewhere
-// is ignored.
+// Best-effort by design: an unreadable or invalid forge.yaml resolves to
+// false (no REST) so this is safe to call from any project shape, including
+// the initial scaffold pass before forge.yaml grows an `api:` block. It goes
+// through the canonical loader rather than scanning lines, so every YAML
+// spelling of the key — flow style, quoted scalar, anchor — reads the same
+// as it does everywhere else in forge.
 func projectAPIRESTEnabled(projectDir string) bool {
-	path := filepath.Join(projectDir, "forge.yaml")
-	data, err := os.ReadFile(path)
+	cfg, err := config.LoadProjectDir(projectDir)
 	if err != nil {
 		return false
 	}
-	inAPI := false
-	for _, line := range strings.Split(string(data), "\n") {
-		// A top-level key (no leading whitespace) closes any prior block.
-		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "api:") {
-				inAPI = true
-				continue
-			}
-			inAPI = false
-			continue
-		}
-		if !inAPI {
-			continue
-		}
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "rest:") {
-			continue
-		}
-		val := strings.TrimSpace(strings.TrimPrefix(trimmed, "rest:"))
-		if idx := strings.Index(val, "#"); idx >= 0 {
-			val = strings.TrimSpace(val[:idx])
-		}
-		val = strings.Trim(val, `"'`)
-		return strings.EqualFold(val, "true")
-	}
-	return false
+	return cfg.API.REST
 }

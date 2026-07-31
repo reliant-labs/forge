@@ -176,7 +176,7 @@ var (
 )
 
 // UseBlockAllocator arms allocate_port with fn for this process. Call once
-// before rendering, on the up/deploy path. Both `forge up` AND `forge
+// before rendering, on the up/deploy path. Both `forge env up` AND `forge
 // deploy` arm the SAME (lock-guarded, persistent) allocator, so the two
 // commands resolve identical ports for a given key — the up-vs-deploy fix.
 func UseBlockAllocator(fn func(base int, key string) (int, error)) {
@@ -201,7 +201,7 @@ func allocatePort(base int, key string) (int, error) {
 // to path (cross-run port stability), making that file the SINGLE SOURCE
 // OF TRUTH for resolve_port: once allocated (availability-checked), a
 // (role) -> port mapping is read back identically on every subsequent
-// render. Both `forge up` AND `forge deploy` call this with the same
+// render. Both `forge env up` AND `forge env deploy` call this with the same
 // instance-scoped path, so the two commands resolve identical ports — the
 // fix for the up-vs-deploy port drift.
 //

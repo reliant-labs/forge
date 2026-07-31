@@ -52,30 +52,36 @@ func TestLintFrontendHookTests_WarnsWhenNoSibling(t *testing.T) {
 	}
 }
 
-// TestLintFrontendHookTests_SilentWhenStarterPresent asserts the rule
-// does NOT fire when a `.tsx.starter` sits next to the hooks file —
-// codegen has already nudged the user; not the lint's job to nag.
-func TestLintFrontendHookTests_SilentWhenStarterPresent(t *testing.T) {
+// TestLintFrontendHookTests_FiresOnAnInertStarter asserts the rule DOES
+// fire when the only thing beside the hooks file is a
+// `<svc>-hooks.test.tsx.starter`.
+//
+// It used to be silent there, on the theory that codegen had nudged the user
+// and activation was a one-rename step. Nobody ever took the step: a whole
+// dogfood run shipped a generated suite per service that had never executed,
+// with this lint quiet throughout. An inert file is not a test, and `forge
+// generate` now writes the test live — so a starter means an OLD project
+// that needs a regen, and the lint says so.
+func TestLintFrontendHookTests_FiresOnAnInertStarter(t *testing.T) {
 	dir := t.TempDir()
 	hooksDir := filepath.Join(dir, "frontends", "admin", "src", "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	mustWrite(t, filepath.Join(hooksDir, "user-service-hooks.ts"), "export const x = 1;")
-	mustWrite(t, filepath.Join(hooksDir, "user-service-hooks.test.tsx.starter"), "// rename me")
+	mustWrite(t, filepath.Join(hooksDir, "user-service-hooks.test.tsx.starter"), "// never ran")
 
 	res, err := LintFrontendHookTests(dir)
 	if err != nil {
 		t.Fatalf("LintFrontendHookTests: %v", err)
 	}
-	if len(res.Findings) != 0 {
-		t.Errorf("expected no findings when starter is present, got: %+v", res.Findings)
+	if len(res.Findings) != 1 {
+		t.Fatalf("expected 1 finding for an inert starter, got: %+v", res.Findings)
 	}
 }
 
 // TestLintFrontendHookTests_SilentWhenActiveTestPresent asserts the
-// rule does NOT fire when the user has activated the test by renaming
-// .starter → .tsx. Their work is the whole point.
+// rule does NOT fire when a live test sits beside the hooks file.
 func TestLintFrontendHookTests_SilentWhenActiveTestPresent(t *testing.T) {
 	dir := t.TempDir()
 	hooksDir := filepath.Join(dir, "frontends", "admin", "src", "hooks")

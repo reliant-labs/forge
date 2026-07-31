@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
       # Fixed, loopback-bound host port so the host-side dev loop
-      # (`forge up --env=dev`, psql, DATABASE_URL) reaches postgres without
+      # (`forge env up dev`, psql, DATABASE_URL) reaches postgres without
       # inspecting `docker compose ps` for a random mapping. Override
       # with POSTGRES_PORT if 5432 is taken.
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
@@ -38,6 +38,28 @@ services:
       LOG_FORMAT: text
       AUTO_MIGRATE: "true"
       PPROF_ADDR: ":6060"
+      # ── Identity (see the `logto` service below) ─────────────────────
+      #
+      # These are PASSTHROUGH with an empty default, and empty is the
+      # CLOSED state, not an off switch: with no key material the
+      # validator SetupAuth builds rejects every credential it is shown.
+      # Nothing here decides WHETHER this server authenticates — that is
+      # AuthDeps{AnonymousOK: false} plus the protos' auth_required
+      # declarations, both in source. There is deliberately no
+      # AUTH_ENABLED.
+      #
+      # JWT_ISSUER and JWT_JWKS_URL are two fields because a dev IdP has
+      # TWO hostnames: the browser reaches Logto at localhost:3001, so
+      # that is the `iss` its tokens carry, while this container reaches
+      # the same server at logto:3001. Discovery cannot bridge that —
+      # OIDC Discovery §4.3 requires the document's issuer to equal the
+      # URL it was fetched from — so the JWKS URL is given literally.
+      JWT_ISSUER: ${JWT_ISSUER-}
+      JWT_JWKS_URL: ${JWT_JWKS_URL-}
+      JWT_AUDIENCE: ${JWT_AUDIENCE-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI-}
+      OIDC_SCOPES: ${OIDC_SCOPES-}
     ports:
       - "0:8080"
       - "0:6060"
@@ -50,6 +72,14 @@ services:
         condition: service_healthy
       lgtm:
         condition: service_started
+      # required: false is LOAD-BEARING, not politeness: a service that
+      # depends on one gated behind a profile makes the WHOLE file
+      # invalid when that profile is off ("service app depends on
+      # undefined service logto: invalid compose project"), so the
+      # default dev stack would stop parsing.
+      logto:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
       interval: 10s
@@ -89,6 +119,99 @@ services:
       start_period: 30s
     profiles:
       - debug
+    networks:
+      - {{.ProjectName}}-net
+
+  # Logto — an OIDC identity provider, so a developer can complete a REAL
+  # browser sign-in locally instead of hand-minting HS256 tokens.
+  #
+  # OPT-IN, via the same `profiles:` mechanism app-debug uses (the file's
+  # existing gating idiom — see app-debug above). Bring it up with:
+  #
+  #     docker compose --profile logto up -d --wait
+  #
+  # Off by default because it is a ~300 MB Node image and a second web
+  # server: a project with no browser (API-key auth, a worker, a service
+  # with no frontend) must not pay for an IdP it never calls. Nothing in
+  # the default stack references it, so `docker compose up` never pulls it.
+  #
+  # The app's identity env stays EMPTY by default rather than defaulting to
+  # these URLs, and that is deliberate: a configured-but-unreachable JWKS
+  # endpoint makes the server REFUSE TO START (pkg/auth fetches keys at
+  # boot), so baking Logto's URL in as a default would break
+  # `docker compose up` for every project that never asked for an IdP.
+  # Empty means "no key material" — closed, and bootable.
+  #
+  # To run the full loop, bring the profile up and hand the app the four
+  # values from Logto's admin console at localhost:3002 (create an app of
+  # type "Single page application" — a PUBLIC client, no secret):
+  #
+  #     docker compose --profile logto up -d --wait
+  #     export JWT_ISSUER=http://localhost:3001/oidc
+  #     export JWT_JWKS_URL=http://logto:3001/oidc/jwks
+  #     export JWT_AUDIENCE=<the API resource indicator you registered>
+  #     export OIDC_CLIENT_ID=<the app id Logto shows you>
+  #     docker compose --profile logto up -d --wait app
+  #
+  # JWT_AUDIENCE is not optional decoration here: Logto issues an OPAQUE
+  # access token unless the client asks for a registered API resource, and
+  # an opaque token is not a JWT and will not validate. Register an API
+  # resource, request it, and the token comes back as a JWT with that
+  # indicator as `aud`.
+  #
+  # Pinned MINOR.PATCH, never `latest`: an IdP that silently changes
+  # version under a dev stack turns "login broke today" into an
+  # archaeology exercise. Bump deliberately.
+  logto:
+    image: svhd/logto:1.41.0
+    profiles:
+      - logto
+    restart: unless-stopped
+    # SHARES the postgres service above, in its OWN `logto` database.
+    #
+    # A second postgres container would cost another ~256 MB and a second
+    # volume to isolate an IdP's tables from an app's — but they are
+    # already isolated: separate databases share no schema, no search
+    # path, and no migration history, and this app's own AUTO_MIGRATE
+    # runs against ${POSTGRES_DB} and cannot see `logto`. What sharing
+    # DOES couple is lifecycle (one restart takes both down) and the
+    # superuser, both of which are fine in dev and neither of which is
+    # what this compose file is for. The check that matters is a name
+    # collision: `logto` is not ${POSTGRES_DB:-{{.ProjectName}}}, and
+    # `forge new` rejects a project named `logto`… so if you DID name it
+    # that, override POSTGRES_DB.
+    #
+    # `db seed --swe` (skip-when-exists) creates the database and schema
+    # on first boot and is a no-op afterwards, so this is idempotent
+    # across restarts.
+    entrypoint: ["sh", "-c", "npm run cli db seed -- --swe && npm start"]
+    environment:
+      DB_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/logto
+      TRUST_PROXY_HEADER: "1"
+      # ENDPOINT is the issuer Logto MINTS TOKENS UNDER, so it must be the
+      # URL the BROWSER uses — a token whose `iss` is http://logto:3001
+      # names a host no browser can resolve, and the app's JWT_ISSUER
+      # check would then have to lie to match it.
+      ENDPOINT: http://localhost:${LOGTO_PORT:-3001}
+      ADMIN_ENDPOINT: http://localhost:${LOGTO_ADMIN_PORT:-3002}
+    ports:
+      # Loopback-bound and fixed, for the same reason postgres is: the
+      # redirect URI registered in Logto is a literal string, so the port
+      # cannot be kernel-assigned.
+      - "127.0.0.1:${LOGTO_PORT:-3001}:3001"
+      - "127.0.0.1:${LOGTO_ADMIN_PORT:-3002}:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # /api/status is Logto's own unauthenticated health route and answers
+      # 204. The image is node:22-alpine — no wget, no curl — so probe with
+      # the node binary that is guaranteed present.
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/api/status',r=>process.exit(r.statusCode===204?0:1)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     networks:
       - {{.ProjectName}}-net
 

@@ -22,7 +22,7 @@ import (
 // The motivating bug: a control-plane operator MOUNTED Secret
 // `cp-daemon-kubeconfig` (a secret volume) but never declared the
 // forge.KubeconfigSecret that mints it. forge minted nothing, the pod stuck
-// ContainerCreating for 15+ minutes, and `forge up` was green. This gate
+// ContainerCreating for 15+ minutes, and `forge env up` was green. This gate
 // fails that bundle at render time with a back-propagated, actionable error.
 //
 // DEMAND (what must be provided): every Secret the rendered workloads mount as

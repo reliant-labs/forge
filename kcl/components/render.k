@@ -35,7 +35,7 @@ import ..lib.netpol as netpol_lib
 # Normalize one raw JSON component dict to the canonical Component
 # shape, filling the overlay defaults a typed Component schema would
 # apply (replicas, leader_election, the empty image/registry/namespace
-# the env overlays). Ports get their protocol/expose defaults.
+# the env overlays).
 #
 # Returns a plain dict — NOT a typed schema literal — because this runs
 # inside a lambda body and KCL v0.11 rejects schema-literal
@@ -44,16 +44,15 @@ import ..lib.netpol as netpol_lib
 # that author components by hand still get the typed Server/Worker/…
 # schemas at module scope.
 _load_one = lambda raw: any -> any {
-    _ports = [{
-        name = p.name
-        port = p.port
-        protocol = p.protocol if "protocol" in p else "tcp"
-        expose = p.expose if "expose" in p else False
-    } for p in raw.ports]
     {
         name = raw.name
         kind = raw.kind
-        ports = _ports
+        # Ports are a DEPLOY fact and components_gen.json carries none —
+        # nothing forge discovers from the tree states a port. The empty
+        # list is the honest base; the env main.k overlays real ports when
+        # a component needs one, and Server's expansion falls back to the
+        # standard :8080 mux when it does not.
+        ports = []
         env = raw.env if "env" in raw else {}
         command = raw.command if "command" in raw else []
         schedule = raw.schedule if "schedule" in raw else ""
@@ -90,6 +89,29 @@ load_project = lambda path: str -> str {
     json.decode(file.read(path)).project
 }
 
+# Read the project-level DEPLOY-TIME migration command from
+# components_gen.json — the argv that applies this release's EMBEDDED
+# schema migrations from inside the runtime image
+# (`/app/<project> db migrate up`).
+#
+# forge emits it only when the project ships db/migrations/*.sql; an
+# empty command is the honest "this project has no migrations" answer and
+# renders NO migration step. A document written before this key existed
+# reads as empty too, so an older components_gen.json is inert rather
+# than a load error.
+#
+# Wire it into the env's ComponentEnv:
+#
+#     _component_env = fc.ComponentEnv {
+#         namespace = "myapp-prod"
+#         migrate = fc.load_migrate(fc.COMPONENTS_GEN)
+#     }
+load_migrate = lambda path: str -> [str] {
+    _doc = json.decode(file.read(path))
+    _m = _doc.migrate if "migrate" in _doc else {}
+    _m.command if _m and "command" in _m else []
+}
+
 # The default location of the generated component data, relative to the
 # project root (forge's kcl invocation cwd).
 COMPONENTS_GEN = "deploy/kcl/components_gen.json"
@@ -100,11 +122,64 @@ schema ComponentEnv:
 
     namespace / registry are the env-wide deploy target; image_tag is
     the per-build override (forge passes `-D image_tag=<sha>`).
+
+    `project` is the PROJECT name every rendered object is labelled
+    with (`app.kubernetes.io/part-of`). It is the handle a CD pipeline
+    uses to find one release's workloads — `kubectl get deploy -n <ns>
+    -l app.kubernetes.io/part-of=<project>` — so it must be the
+    project, not a component name. Defaults to "" (each object falls
+    back to labelling itself), which is why the generated per-env
+    main.k always sets it.
     """
     namespace: str
+    project: str = ""
     registry: str = ""
     image_tag: str = "latest"
     network_policies: bool = True
+
+    # `migrate` is the DEPLOY-TIME migration step: the argv that applies
+    # this release's schema migrations, run as an initContainer on every
+    # Deployment-shaped workload before its app container starts. Set it
+    # from the generated data — `migrate = fc.load_migrate(fc.COMPONENTS_GEN)`
+    # — so it follows the project (empty until the first .sql migration
+    # exists, populated from then on) with no per-env edit.
+    #
+    # WHY an initContainer and not a Job: the ordering guarantee is
+    # Kubernetes' own. It holds under `kubectl apply -f -`, under Argo CD,
+    # under Flux, and under `forge env deploy` alike — no applier has to
+    # cooperate, and there is no Job-name-per-release / Job-immutability
+    # bookkeeping. Replicas racing the same migration are safe:
+    # golang-migrate's postgres driver takes a session ADVISORY LOCK, so
+    # one applies and the rest block, then find nothing to do. A migration
+    # that FAILS wedges the init container, which stalls the rollout with
+    # the old pods still serving — which is the correct outcome: shipping
+    # code that needs a schema the database does not have is worse.
+    #
+    # Empty (the default) renders no init container at all — a migration
+    # step running a command guaranteed to fail is worse than no step.
+    migrate: [str] = []
+
+    # --- NetworkPolicy inputs (read only when network_policies) ---
+    #
+    # `default-deny` blackholes every egress the allow-list misses, so
+    # these are what keep an env's own database, collector and ingress
+    # reachable. They are DECLARED rather than guessed: an empty
+    # namespace omits its policy instead of rendering one against a
+    # namespace that may not exist — a policy allowing traffic from a
+    # namespace nothing runs in is a policy that denies it.
+    #
+    # egress_ports are TCP ports the workload may dial anywhere: 443 for
+    # HTTPS (JWKS, object storage, third-party APIs) and 5432 for a
+    # managed Postgres, which normally lives outside the cluster. Add
+    # the port of any other external dependency (6379, 9092, …).
+    egress_ports: [int] = [443, 5432]
+    # Namespace running the OTLP collector the OTEL_EXPORTER_OTLP_ENDPOINT
+    # points at. Empty when telemetry is not exported off-cluster.
+    telemetry_namespace: str = ""
+    # Namespace running the Gateway API / ingress controller that
+    # terminates public traffic. Must match where the controller for the
+    # env's `gateway_class_name` actually runs, or ingress is denied.
+    ingress_namespace: str = ""
 
     check:
         namespace, "ComponentEnv.namespace is required"
@@ -136,6 +211,8 @@ _render_namespace = lambda env: ComponentEnv -> any {
 # selected by a service `--target`. No synthetic env/namespace group.
 render_components = lambda components: [any], env: ComponentEnv -> [any] {
     [_render_namespace(env)] \
-        + [item for c in components for item in comp_lib.render_component(c, env.namespace, env.registry, env.image_tag)] \
-        + (netpol_lib.render_network_policies(env.namespace) if env.network_policies else [])
+        + [item for c in components for item in comp_lib.render_component(c, env.namespace, env.registry, env.image_tag, env.project, env.migrate)] \
+        + (netpol_lib.render_network_policies(
+            env.namespace, env.egress_ports, env.telemetry_namespace, env.ingress_namespace
+        ) if env.network_policies else [])
 }

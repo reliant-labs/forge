@@ -31,8 +31,10 @@
 package pgtest
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,7 +46,7 @@ import (
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
-	_ "github.com/lib/pq" // postgres driver, registered as "postgres"
+	"github.com/lib/pq" // postgres driver (registered as "postgres") + typed errors
 )
 
 // EnvBaseURL names the env var that, when set, points pgtest at an
@@ -53,13 +55,15 @@ import (
 // pgtest connects to in order to CREATE DATABASE).
 const EnvBaseURL = "FORGE_TEST_POSTGRES_URL"
 
-// server is the lazily-booted shared instance. Exactly one of embedded /
-// baseURL is populated; baseDB is the maintenance connection used to
-// create per-caller databases.
+// server is the lazily-booted shared instance for THIS process. baseURL is
+// the maintenance DSN (an external FORGE_TEST_POSTGRES_URL server, or the
+// cross-process shared embedded instance resolved via AcquireShared); baseDB
+// is this process's maintenance connection used to create per-caller
+// databases. release drops this process's pool reference on Shutdown.
 type server struct {
-	baseURL  string
-	embedded *embeddedpostgres.EmbeddedPostgres
-	baseDB   *sql.DB
+	baseURL string
+	baseDB  *sql.DB
+	release func()
 }
 
 var (
@@ -69,15 +73,21 @@ var (
 	dbCounter  atomic.Uint64
 )
 
-// freePort asks the OS for an unused TCP port. embedded-postgres wants a
-// concrete port; binding :0 and reading it back avoids collisions when
-// several processes boot instances concurrently.
+// freePort asks the OS for an unused TCP port, in the uint32 shape
+// embedded-postgres's Port option takes. Binding :0 and reading it back
+// avoids collisions when several processes boot instances concurrently.
 func freePort() (uint32, error) {
-	return reserveLoopbackPort()
+	p, err := ReserveLoopbackPort()
+	if err != nil {
+		return 0, err
+	}
+	return uint32(p), nil
 }
 
-// boot starts (or connects to) the shared postgres server. Idempotent
-// via sharedOnce.
+// boot resolves this process's shared postgres server. Idempotent via
+// sharedOnce: it acquires exactly ONE cross-process pool reference (or one
+// external-server connection) for the process lifetime, released by
+// Shutdown.
 func boot() (*server, error) {
 	sharedOnce.Do(func() {
 		shared, sharedErr = startServer()
@@ -85,23 +95,64 @@ func boot() (*server, error) {
 	return shared, sharedErr
 }
 
+// startServer binds this process to a base postgres server via AcquireShared
+// — an explicit FORGE_TEST_POSTGRES_URL, else the cross-process SHARED
+// embedded instance — and opens the maintenance connection used to create
+// per-caller scratch databases. It no longer boots a per-process embedded
+// postgres directly: that is what made a parallel fan-out spin up N instances
+// and exhaust the kernel IPC tables. See pool.go.
 func startServer() (*server, error) {
-	if base := os.Getenv(EnvBaseURL); base != "" {
-		db, err := openBase(base)
-		if err != nil {
-			return nil, fmt.Errorf("pgtest: connect to %s=%q: %w", EnvBaseURL, base, err)
-		}
-		return &server{baseURL: base, baseDB: db}, nil
+	baseURL, release, err := AcquireShared()
+	if err != nil {
+		return nil, err
 	}
+	db, err := openBase(baseURL)
+	if err != nil {
+		release()
+		return nil, fmt.Errorf("pgtest: connect to shared postgres: %w", err)
+	}
+	return &server{baseURL: baseURL, baseDB: db, release: release}, nil
+}
 
-	// Reap instances orphaned by SIGKILLed test binaries before booting a
-	// fresh one — otherwise they accumulate across runs and exhaust the
-	// kernel's shared-memory/semaphore tables (see reapStaleInstances).
+// Shutdown releases this process's shared-server reference: it closes the
+// maintenance connection and detaches from the cross-process pool. When this
+// is the LAST live user of the shared embedded instance, the detach tears the
+// server down cleanly (stop + remove data dir + release IPC). It is a cheap
+// no-op when this process never opened a database, and is idempotent.
+//
+// The forge CLI defers Shutdown so every `forge generate` process cleans up
+// its share on exit; ordinary `go test` binaries that never call it are
+// backstopped by reapStaleInstances. (`forge test` used to be the other
+// deferring caller. It is gone — projects run their suite through
+// `task test` — so the per-package `go test` binaries a suite spawns now reach
+// the pool directly, which is the path reapStaleInstances covers.)
+func Shutdown() {
+	if shared == nil {
+		return
+	}
+	if shared.baseDB != nil {
+		_ = shared.baseDB.Close()
+		shared.baseDB = nil
+	}
+	if shared.release != nil {
+		shared.release()
+		shared.release = nil
+	}
+}
+
+// bootEmbedded starts a fresh embedded postgres and returns its maintenance
+// DSN, port, and handle. Only the pool (attachEmbedded) calls it, under the
+// pool lock; every other caller shares the instance it boots. It reaps
+// orphaned instances first so a past crash's leftovers do not accumulate.
+func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedPostgres, err error) {
+	// Reap instances orphaned by SIGKILLed processes before booting a fresh
+	// one — otherwise they accumulate across runs and exhaust the kernel's
+	// shared-memory/semaphore tables (see reapStaleInstances).
 	reapStaleInstances()
 
-	port, err := freePort()
+	port, err = freePort()
 	if err != nil {
-		return nil, fmt.Errorf("pgtest: reserve port: %w", err)
+		return "", 0, nil, fmt.Errorf("pgtest: reserve port: %w", err)
 	}
 
 	const (
@@ -115,9 +166,7 @@ func startServer() (*server, error) {
 		Port(port).
 		RuntimePath(runtimeDir(port)).
 		// Shrink the per-instance footprint and — critically — use
-		// mmap-backed shared memory instead of System V (shmget). The e2e
-		// corpus boots many instances concurrently (every `forge generate`
-		// subprocess spins one up for schema introspection); the default
+		// mmap-backed shared memory instead of System V (shmget). The default
 		// sysv shared memory exhausts the kernel's SHMMNI limit on macOS
 		// ("could not create shared memory segment: No space left on
 		// device"). mmap avoids the sysv segment table entirely. fsync=off
@@ -142,18 +191,21 @@ func startServer() (*server, error) {
 		cfg = cfg.CachePath(cache)
 	}
 
-	ep := embeddedpostgres.NewDatabase(cfg)
+	ep = embeddedpostgres.NewDatabase(cfg)
 	if err := ep.Start(); err != nil {
-		return nil, fmt.Errorf("pgtest: start embedded postgres: %w", err)
+		return "", 0, nil, fmt.Errorf("pgtest: start embedded postgres: %w", err)
 	}
 
 	base := fmt.Sprintf("postgres://%s:%s@localhost:%d/postgres?sslmode=disable", user, pass, port)
+	// Verify reachability once here so a failed boot is reported now, not on
+	// the first CREATE DATABASE. The caller opens its own maintenance pool.
 	db, err := openBase(base)
 	if err != nil {
 		_ = ep.Stop()
-		return nil, fmt.Errorf("pgtest: connect to embedded postgres: %w", err)
+		return "", 0, nil, fmt.Errorf("pgtest: connect to embedded postgres: %w", err)
 	}
-	return &server{baseURL: base, embedded: ep, baseDB: db}, nil
+	_ = db.Close()
+	return base, port, ep, nil
 }
 
 func openBase(dsn string) (*sql.DB, error) {
@@ -203,10 +255,12 @@ const staleInstanceAge = 30 * time.Minute
 // its embedded postgres child is reparented to init and keeps running;
 // across many concurrent gate runs these orphans pile up and exhaust the
 // kernel's SysV shared-memory/semaphore tables, after which EVERY new
-// boot fails with "initdb: exit status 1". Reaping is age-based off each
-// instance's postmaster.pid start time, so a live concurrent instance
-// (recently started) is left untouched; a dead postmaster (pid gone) is
-// reaped regardless of age. Best-effort: every error is ignored.
+// boot fails with "initdb: exit status 1". Reaping is age-based in BOTH
+// states: a live concurrent instance (recent postmaster.pid) is left
+// untouched, and a dir with no postmaster is reaped only once it is
+// older than staleInstanceAge — a young pid-less dir belongs to a
+// sibling process mid-boot (archive extraction, initdb) and reaping it
+// breaks that boot. Best-effort: every error is ignored.
 //
 // Each reap also reclaims the instance's leaked SysV shared-memory segment
 // (reclaimShmSegment) BEFORE removing its dir — the segment is the resource
@@ -235,6 +289,18 @@ func reapStaleInstances() {
 			}
 			if proc, ferr := os.FindProcess(pid); ferr == nil {
 				_ = proc.Signal(syscall.SIGKILL)
+			}
+		} else {
+			// No live postmaster is NOT enough to reap: a sibling process
+			// booting concurrently owns dirs with no postmaster.pid yet —
+			// the embedded-postgres temp_* archive-extraction dir and the
+			// freshly-created runtime dir mid-initdb. Reaping those
+			// mid-boot broke the sibling's extraction ("rename …/temp_…:
+			// no such file or directory") whenever two test binaries
+			// booted pgtest at the same time. Only a dir that has SAT
+			// there past the stale age is genuinely abandoned.
+			if info, statErr := e.Info(); statErr != nil || time.Since(info.ModTime()) < staleInstanceAge {
+				continue
 			}
 		}
 		// Reclaim the leaked shm segment while the pid file (which names it)
@@ -386,6 +452,208 @@ func NewURL() (dsn string, cleanup func(), err error) {
 		_, _ = s.baseDB.Exec("DROP DATABASE IF EXISTS " + name)
 	}
 	return replaceDBName(s.baseURL, name), cleanup, nil
+}
+
+// NewAtURL creates a fresh, uniquely-named, empty database on the
+// ALREADY-RUNNING postgres server addressed by baseURL and returns an
+// open *sql.DB connected to it plus a cleanup that drops it. It is the
+// "give me a scratch database on THIS server" primitive: unlike New it
+// never boots embedded-postgres and never consults FORGE_TEST_POSTGRES_URL
+// — the CALLER has already resolved which server to use (that policy lives
+// above this package; pgtest stays a dumb ephemeral-postgres utility).
+//
+// baseURL is a DSN whose database is the maintenance DB (conventionally
+// "postgres"): NewAtURL connects there to CREATE the scratch database and
+// never touches whatever application database also lives on the server.
+// The scratch database is dropped-if-exists BEFORE creating it, so a
+// leftover from a crashed prior run (same pid+counter) can never wedge a
+// fresh run; cleanup drops it again.
+//
+// Callers own the returned cleanup; the generate pipeline defers it.
+func NewAtURL(baseURL string) (*sql.DB, func(), error) {
+	base, err := openBase(baseURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("pgtest: connect to %s: %w", redactDSN(baseURL), err)
+	}
+	name := fmt.Sprintf("forge_shadow_%d_%d", os.Getpid(), dbCounter.Add(1))
+	// Drop-if-exists first: robust to a leftover database an earlier run
+	// left behind after a crash before its cleanup could drop it.
+	_, _ = base.Exec("DROP DATABASE IF EXISTS " + name)
+	if _, err := base.Exec("CREATE DATABASE " + name); err != nil {
+		_ = base.Close()
+		return nil, nil, fmt.Errorf("pgtest: create database %s: %w", name, err)
+	}
+
+	dropAndClose := func() {
+		_, _ = base.Exec(
+			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", name)
+		_, _ = base.Exec("DROP DATABASE IF EXISTS " + name)
+		_ = base.Close()
+	}
+
+	dsn := replaceDBName(baseURL, name)
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		dropAndClose()
+		return nil, nil, err
+	}
+	if err := pingWithRetry(db); err != nil {
+		_ = db.Close()
+		dropAndClose()
+		return nil, nil, fmt.Errorf("pgtest: ping %s: %w", name, err)
+	}
+
+	cleanup := func() {
+		_ = db.Close()
+		dropAndClose()
+	}
+	return db, cleanup, nil
+}
+
+// EnsureDatabase makes the application database named in appDSN exist,
+// idempotently — the RUNTIME counterpart to NewAtURL's throwaway scratch
+// database. Where NewAtURL creates a uniquely-named database and DROPS it on
+// cleanup (generate-time schema introspection), EnsureDatabase creates the ONE
+// named database the app will actually run against and NEVER drops it: a fresh
+// `forge run` against a scaffolded dev DSN would otherwise die with
+// `FATAL: database "<project>" does not exist (SQLSTATE 3D000)` because nothing
+// had issued CREATE DATABASE.
+//
+// It reuses the SAME maintenance-DB mechanism as NewAtURL: appDSN is reduced to
+// its SERVER coordinates against the maintenance database "postgres" (the app's
+// own database is never opened), a short maintenance connection is opened there
+// (openBase), and CREATE DATABASE is issued only when the target is absent. A
+// concurrent creator winning the race between the existence check and the
+// CREATE (duplicate_database, SQLSTATE 42P04) is a no-op, not an error — the
+// post-condition (the database exists) holds either way.
+//
+// The maintenance connection FAILING (server down, wrong credentials) is a HARD
+// error: the app cannot boot without it, so the caller should surface it loudly
+// rather than let the app fail later with an opaque connect error. appDSN that
+// will not parse, names no host, or names no database is likewise an error.
+func EnsureDatabase(appDSN string) error {
+	name, server, err := splitAppDSN(appDSN)
+	if err != nil {
+		return err
+	}
+	base, err := openBase(server)
+	if err != nil {
+		return fmt.Errorf("pgtest: connect to %s: %w", redactDSN(server), err)
+	}
+	defer func() { _ = base.Close() }()
+
+	var exists bool
+	if err := base.QueryRow(
+		"SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", name,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("pgtest: check database %q: %w", name, err)
+	}
+	if exists {
+		return nil
+	}
+	// CREATE DATABASE takes no parameters, so the name is interpolated; quote it
+	// as an identifier so a name that is not a bare identifier (a project named
+	// "control-plane", say) is created verbatim rather than parsed as SQL.
+	if _, err := base.Exec("CREATE DATABASE " + quoteIdent(name)); err != nil {
+		if isDuplicateDatabaseErr(err) {
+			return nil // concurrent creator won the race — post-condition holds
+		}
+		return fmt.Errorf("pgtest: create database %q: %w", name, err)
+	}
+	return nil
+}
+
+// splitAppDSN splits an application DSN into its database NAME and the
+// maintenance SERVER DSN (same scheme/credentials/host/port, database forced to
+// "postgres" and sslmode defaulted to disable when absent). It mirrors the
+// contract NewAtURL states for its baseURL — connect to the maintenance DB to
+// create ANOTHER database — but derives BOTH the target name and the
+// maintenance URL from one app DSN. A DSN that will not parse, names no host,
+// or names no database yields an error.
+func splitAppDSN(appDSN string) (name, server string, err error) {
+	u, err := url.Parse(appDSN)
+	if err != nil {
+		return "", "", fmt.Errorf("pgtest: parse dsn %s: %w", redactDSN(appDSN), err)
+	}
+	if u.Host == "" {
+		return "", "", fmt.Errorf("pgtest: dsn %s names no host", redactDSN(appDSN))
+	}
+	name = strings.TrimPrefix(u.Path, "/")
+	if name == "" || strings.Contains(name, "/") {
+		return "", "", fmt.Errorf("pgtest: dsn %s names no database", redactDSN(appDSN))
+	}
+	maint := *u
+	maint.Path = "/postgres"
+	q := maint.Query()
+	if q.Get("sslmode") == "" {
+		q.Set("sslmode", "disable")
+		maint.RawQuery = q.Encode()
+	}
+	return name, maint.String(), nil
+}
+
+// quoteIdent double-quotes a postgres identifier, doubling any embedded double
+// quote per postgres' quoting rules, so a database name that is not a bare
+// lowercase identifier is created verbatim.
+func quoteIdent(ident string) string {
+	return `"` + strings.ReplaceAll(ident, `"`, `""`) + `"`
+}
+
+// isDuplicateDatabaseErr reports whether err is postgres' duplicate_database
+// (SQLSTATE 42P04) — a concurrent creator won the race between EnsureDatabase's
+// existence check and its CREATE DATABASE. lib/pq returns a raw *pq.Error from
+// Exec (unwrapped), so a direct type assertion suffices.
+func isDuplicateDatabaseErr(err error) bool {
+	if pqErr, ok := err.(*pq.Error); ok {
+		return pqErr.Code.Name() == "duplicate_database"
+	}
+	return false
+}
+
+// CanReach reports whether a postgres server is reachable at baseURL with
+// working credentials — a fast open/ping/close with a short timeout. It
+// creates and mutates NOTHING; a malformed URL or any connect/ping failure
+// (server down, wrong password, missing role) returns false. Callers use
+// it to pick among candidate servers before committing one to NewAtURL, so
+// an unreachable or wrong-credential candidate is skipped rather than
+// turned into a hard CREATE DATABASE error.
+func CanReach(baseURL string) bool {
+	db, err := sql.Open("postgres", withConnectTimeout(baseURL, 2))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return db.PingContext(ctx) == nil
+}
+
+// withConnectTimeout appends a lib/pq connect_timeout (seconds) to a DSN so
+// a probe against a dead host fails fast instead of hanging on the OS TCP
+// timeout. Appended unconditionally — a duplicate param is harmless (pq
+// takes the last).
+func withConnectTimeout(dsn string, seconds int) string {
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return fmt.Sprintf("%s%sconnect_timeout=%d", dsn, sep, seconds)
+}
+
+// redactDSN masks the password in a DSN for safe inclusion in error
+// messages. A DSN that will not parse is reported opaquely.
+func redactDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "postgres://<unparseable-dsn>"
+	}
+	if u.User != nil {
+		if _, hasPw := u.User.Password(); hasPw {
+			u.User = url.UserPassword(u.User.Username(), "xxxxx")
+		}
+	}
+	return u.String()
 }
 
 // replaceDBName swaps the database segment of a base DSN

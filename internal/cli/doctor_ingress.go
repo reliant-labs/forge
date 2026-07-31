@@ -367,13 +367,19 @@ func buildClusterIssuerCheck(ctx context.Context, issuers, renderReasons []strin
 //
 // `signal` mirrors the existing doctor signal-filter behaviour: only
 // run ingress checks when signal is empty ("all") or equals
-// "ingress". Unknown signals are the doctor.Service's problem; we
-// only see ones the standard checks already accepted.
+// Runs only in the unfiltered pass: unknown signals are rejected by
+// doctor.RunFiltered before this is reached, so we only ever see one of
+// the values it accepts.
 func runIngressDoctorChecks(ctx context.Context, cfg *config.ProjectConfig, projectDir, signal string) []doctor.CheckResult {
 	if cfg == nil || !cfg.Features.IngressEnabled() {
 		return nil
 	}
-	if signal != "" && signal != "ingress" {
+	// Only the unfiltered pass. `--signal` selects among the values
+	// doctor.RunFiltered accepts (metrics/traces/logs/profiles/deploy); it
+	// REJECTS anything else before a check runs, so a guard naming its own
+	// signal here could never be true and advertised a filter that does not
+	// exist.
+	if signal != "" {
 		return nil
 	}
 	classes, issuers, reasons := collectIngressInputsFromKCL(ctx, projectDir)

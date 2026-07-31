@@ -1,7 +1,7 @@
 """
 Positive test — mkcert-mode Gateway emits the Gateway resource but
 NOT a cert-manager Certificate. The Secret is populated host-side by
-`forge dev cluster up`, so cert-manager doesn't need to know about
+`forge cluster up`, so cert-manager doesn't need to know about
 the TLS at all (no annotation, no Certificate manifest).
 """
 

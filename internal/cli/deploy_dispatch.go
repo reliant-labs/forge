@@ -157,7 +157,7 @@ func dispatchDeployGroups(ctx context.Context, registry *deploytarget.Registry, 
 	return nil
 }
 
-// rollbackDeployGroups is the `forge deploy <env> --rollback`
+// rollbackDeployGroups is the `forge env deploy <env> --rollback`
 // dispatcher. For each group it looks up the previously-recorded
 // last-good tag (per service, from .forge/state) and asks the
 // provider to revert there.
@@ -215,7 +215,7 @@ func rollbackDeployGroups(ctx context.Context, registry *deploytarget.Registry, 
 
 // requireRollbackState confirms every service in an external/compose
 // group has a recorded last-good deploy. Surfaces a clear per-service
-// error when one is missing — `forge deploy <env> --rollback` against
+// error when one is missing — `forge env deploy <env> --rollback` against
 // a service that's never deployed should refuse rather than
 // silently no-op or guess.
 func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) error {

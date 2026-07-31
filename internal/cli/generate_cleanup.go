@@ -19,7 +19,7 @@
 //     whose owning step is gated off this run is left in place; that
 //     step wasn't going to write it regardless, so missing-from-
 //     WrittenThisRun is uninformative.
-//   - Upgrade-managed paths. `forge upgrade` is their emitter; `forge
+//   - Upgrade-managed paths. `forge project upgrade` is their emitter; `forge
 //     generate` deliberately leaves them alone.
 //   - Verification. Only PRISTINE markers (certified machine output)
 //     are deleted. A file whose marker fails verification was
@@ -91,7 +91,7 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, handEdite
 			continue
 		}
 		// Upgrade-managed paths: certified, but `forge generate` is not
-		// the emitter — `forge upgrade` writes these on version bumps.
+		// the emitter — `forge project upgrade` writes these on version bumps.
 		if upgradeManagedPaths[rel] {
 			continue
 		}

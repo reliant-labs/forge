@@ -13,7 +13,17 @@ import (
 // with the forge binary so they can be vendored into scaffolded
 // projects without a network fetch.
 //
+// buf/validate/validate.proto is protovalidate's option-definition file
+// (buf.build/bufbuild/protovalidate). Vendoring it locally — exactly as
+// forge/v1/forge.proto is vendored — keeps the no-BSR-dep property: a
+// project can use `[(buf.validate.field)...]` field rules and still
+// `forge generate` offline, with no `buf registry login`. It is a buf
+// COMPILE input only; buf.gen excludes it from Go/TS output and the
+// runtime library (buf.build/go/protovalidate, pulled in by forge/pkg)
+// provides the extension types + the validation interceptor.
+//
 //go:embed proto/forge/v1/forge.proto
+//go:embed proto/buf/validate/validate.proto
 var EmbeddedFiles embed.FS
 
 // WriteTemplate writes a project template to the specified path.
@@ -34,14 +44,36 @@ func WriteTemplateWithData(templateName, destPath string, data any) error {
 	return writeFile(destPath, content)
 }
 
-// WriteExampleProto writes an example proto file with the given service name.
-func WriteExampleProto(serviceName, destPath string, data any) error {
-	return WriteTemplateWithData("user-example.proto.tmpl", destPath, data)
-}
-
 // GetForgeV1Proto returns the unified forge/v1/forge.proto file.
 func GetForgeV1Proto() ([]byte, error) {
 	return EmbeddedFiles.ReadFile("proto/forge/v1/forge.proto")
+}
+
+// ValidateProtoImportPath is the import path a project's protos use to
+// pull in protovalidate's field rules: `import "buf/validate/validate.proto";`.
+const ValidateProtoImportPath = "buf/validate/validate.proto"
+
+// ValidateProtoVendorRelPath is where the vendored validate.proto lives
+// inside a scaffolded project, relative to the project root. buf resolves
+// the import from here because it sits under the `proto` module path.
+const ValidateProtoVendorRelPath = "proto/buf/validate/validate.proto"
+
+// GetValidateProto returns the vendored buf/validate/validate.proto.
+func GetValidateProto() ([]byte, error) {
+	return EmbeddedFiles.ReadFile("proto/buf/validate/validate.proto")
+}
+
+// WriteValidateProto writes the vendored buf/validate/validate.proto into
+// destDir/validate.proto (destDir being <project>/proto/buf/validate).
+// Unlike forge.proto, the go_package is left untouched: buf.gen excludes
+// this path from every language's output, so no Go/TS is ever emitted
+// from it — the protovalidate runtime library supplies the types.
+func WriteValidateProto(destDir string) error {
+	content, err := GetValidateProto()
+	if err != nil {
+		return err
+	}
+	return writeFile(filepath.Join(destDir, "validate.proto"), content)
 }
 
 // goPackageOptionRE matches the file-level go_package option line of the

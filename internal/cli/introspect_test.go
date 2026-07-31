@@ -172,7 +172,7 @@ forge_version: dev
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
-	writeComponentsJSON(t, dir)
+	markServiceProject(t, dir)
 
 	// Synthetic descriptor with two services so we can assert both
 	// the cross-service sort and the within-service method sort.

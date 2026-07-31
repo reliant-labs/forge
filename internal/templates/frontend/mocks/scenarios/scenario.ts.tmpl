@@ -10,7 +10,7 @@
 //
 // To activate this scenario, append `?scenario={{ .Name }}` to the URL.
 //
-// Reference: `forge skill load scenarios` for the full contract.
+// Reference: the handler-override contract in `../scenario-types.ts`.
 
 import { defineScenario } from "../scenario-types";
 
@@ -32,9 +32,5 @@ export default defineScenario({
   // In hybrid mode (VITE_MOCK_API=hybrid), unmatched RPCs hit the real backend.
   // Set to false to fall back to deterministic fixtures instead.
   passthrough: true,
-  // "bypass" sends the dev-auth sentinel token so the backend (when
-  // ENVIRONMENT=development) injects synthetic claims — no login required.
-  // Switch to "required" when debugging the real login flow.
-  auth: "bypass",
   handlers: {},
 });

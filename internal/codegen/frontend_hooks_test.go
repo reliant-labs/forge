@@ -27,11 +27,25 @@ func TestToCamelCaseFromPascal(t *testing.T) {
 func TestIsQueryMethod(t *testing.T) {
 	queries := []string{
 		"GetUser", "ListUsers", "SearchProducts", "FindItem",
-		"CheckPermission", "HasAccess", "IsAdmin", "CountOrders", "ExistsUser",
+		"CheckHealth", "HasFeature", "IsReady", "CountOrders", "ExistsUser",
+		// The verb standing alone is still a read, and so is one followed
+		// by a digit — the boundary rule must not lose these.
+		"List", "Get2FACodes",
 	}
 	mutations := []string{
 		"CreateUser", "UpdateUser", "DeleteUser", "SetConfig",
 		"AddItem", "RemoveItem", "SendNotification",
+		// Writes whose names merely BEGIN WITH the characters of a read
+		// verb. Every one of these was classified as a query while the
+		// match was on characters instead of whole words, and a query hook
+		// for a write replays it on every component remount.
+		// IssuePrescription is the one that shipped.
+		"IssuePrescription", "IssueRefund", // "Is"
+		"CheckoutCart",         // "Check"
+		"CountersignAgreement", // "Count"
+		"ListenForEvents",      // "List"
+		"HashPassword",         // "Has"
+		"FinalizeInvoice",      // "Fin"…, near-miss on "Find"
 	}
 
 	for _, name := range queries {

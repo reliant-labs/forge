@@ -116,7 +116,7 @@ func newDevClusterReloadCmd() *cobra.Command {
 
 This is the inner loop during local development: after editing code or
 KCL, run this to push the change into the cluster without rebuilding the
-docker image (the same code path forge deploy dev uses, but skips the
+docker image (the same code path forge env deploy dev uses, but skips the
 cluster bootstrap).
 
 Examples:
@@ -284,7 +284,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	defer cleanupCfg()
 
 	// Cluster doesn't exist — create from config if present, else use
-	// the same fallback path forge deploy dev has used historically.
+	// the same fallback path forge env deploy dev has used historically.
 	if _, statErr := os.Stat(effective.path); statErr == nil {
 		fmt.Printf("Creating k3d cluster from %s...\n", configPath)
 		if effective.temporary {
@@ -324,7 +324,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	// the `eg` GatewayClass) is NOT installed imperatively here. It is a
 	// DECLARED platform dependency — a forge.HelmChart in the env Bundle's
 	// `helm_charts` — rendered + applied by the deploy phase
-	// (`forge deploy <env> --target=envoy-gateway`, CRD-first) EXACTLY like
+	// (`forge env deploy <env> --target=envoy-gateway`, CRD-first) EXACTLY like
 	// the cloud envs. `forge cluster up` only creates the bare k3d cluster
 	// with the host-port mapping the merged k3d config carries; the
 	// controller arrives with the deploy. One declarative model everywhere.
@@ -403,7 +403,7 @@ func foundOrMissing(b bool) string {
 }
 
 // runDevClusterReload invokes the same KCL render + kubectl apply +
-// wait-rollout code path forge deploy dev uses, with cluster bootstrap
+// wait-rollout code path forge env deploy dev uses, with cluster bootstrap
 // and docker build/push skipped. Pins kubectl context first so a stale
 // non-dev context can't leak the apply somewhere unintended.
 func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace string, dryRun bool) error {

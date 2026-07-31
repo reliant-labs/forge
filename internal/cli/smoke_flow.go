@@ -12,13 +12,13 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// smoke_flow.go — the APP-FLOW CHECK phase of `forge smoke`.
+// smoke_flow.go — the APP-FLOW CHECK phase of `forge env smoke`.
 //
 // WHY THIS EXISTS. The built-in smoke probes (smoke.go cloud routes,
 // smoke_dev.go dev ports) verify TRANSPORT only: a listener answered, a port
 // is bound. That is necessary but NOT sufficient — smoke can be GREEN while
 // the app is functionally broken, because no built-in probe can express an
-// app-specific end-to-end invariant. The motivating case: `forge smoke dev`
+// app-specific end-to-end invariant. The motivating case: `forge env smoke dev`
 // was GREEN while the managed-daemon flow was broken, because forge had no way
 // to assert "every Ready daemon is attached to the gateway".
 //
@@ -26,7 +26,7 @@ import (
 // the invariant and exposes it as an HTTP flow-health endpoint returning 200
 // (healthy) / 503 (unhealthy) — status-only in public so it leaks nothing
 // sensitive. The app DECLARES that endpoint in forge.yaml (`smoke.flow_checks`)
-// and `forge smoke <env>` simply CURLS it, folding the 200/503 into the SAME
+// and `forge env smoke <env>` simply CURLS it, folding the 200/503 into the SAME
 // summary + table + --json + exit logic the route probes use. smoke needs only
 // a URL + reachability — no DB creds, no privileged command, no auth juggling.
 // A 503 (or unreachable) flow endpoint turns smoke RED (exit 1), so a green

@@ -771,7 +771,7 @@ func runPreflightChecks(ctx context.Context, opts PreflightOpts, refs ManifestRe
 	// Secret that NOTHING in the rendered bundle provides (no rendered Secret,
 	// KubeconfigSecret, or ExternalSecret), turning a silent 15-minute
 	// FailedMount rot into a fail-fast block on the no-cluster path
-	// (forge up --env=dev / --dry-run / host-only).
+	// (forge env up dev / --dry-run / host-only).
 	//
 	// It runs ONLY when the LIVE Secret check is NOT active (no SecretGetter or
 	// no context). When a live check IS configured, that check is authoritative

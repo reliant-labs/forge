@@ -18,11 +18,25 @@ import (
 type Status string
 
 // Status enum values.
+//
+// StatusSkip and StatusUnknown are DIFFERENT answers and must never render
+// the same. A check that could not determine its answer used to come out as
+// a gray "–", byte-identical to a check that legitimately does not apply —
+// so `App Health  app port 8080 not discovered` read exactly like
+// `tool: mkcert  not required for this project`. One of those is a hole in
+// the report and the other is a finished answer.
 const (
 	StatusPass Status = "pass"
 	StatusFail Status = "fail"
 	StatusWarn Status = "warn"
+	// StatusSkip — NOT APPLICABLE. The check asked its question and the
+	// project's own shape answers it: there is no cmd/ tree, no
+	// environments declared, no mkcert needed. Nothing is missing.
 	StatusSkip Status = "skip"
+	// StatusUnknown — UNDETERMINED. The check could not obtain a fact it
+	// needed, so it has no answer to give. This is not a pass: it rolls up
+	// to Warn, and the trailer counts it separately.
+	StatusUnknown Status = "unknown"
 )
 
 // CheckResult is the outcome of a single health check.
@@ -76,8 +90,23 @@ type Environment struct {
 	ProjectName string
 	ProjectDir  string // directory containing docker-compose.yml
 
+	// Env is the deploy environment an env-runtime run is about (""
+	// for the project-health set, which spans every environment).
+	Env string
+
+	// Target holds the addresses the CALLER resolved for this run. doctor
+	// discovers no host ports of its own; see [RuntimeTarget].
+	Target RuntimeTarget
+
 	mu    sync.RWMutex
 	Ports map[string]string // "app:8080" -> "0.0.0.0:55010"
+
+	// deployOnce/deployCache memoise the KCL render of every declared
+	// environment. The deploy checks (deploy.go) all run in doctor's
+	// parallel phase and all need the same manifests, so they share one
+	// evaluation instead of paying for it five times.
+	deployOnce  sync.Once
+	deployCache []envRender
 }
 
 // SetPort stores a discovered host:port mapping.
@@ -187,7 +216,10 @@ func (d *doctor) run(ctx context.Context, sequential []string) Report {
 			report.Overall = StatusFail
 			break
 		}
-		if r.Status == StatusWarn && report.Overall == StatusPass {
+		// An undetermined check is not a pass. It is not a failure either —
+		// nothing is known to be broken — so it lands on Warn alongside a
+		// real warning, and printReport names the two separately.
+		if (r.Status == StatusWarn || r.Status == StatusUnknown) && report.Overall == StatusPass {
 			report.Overall = StatusWarn
 		}
 	}
@@ -222,6 +254,10 @@ func statusIcon(s Status) string {
 		return colorYellow + "!" + colorReset
 	case StatusSkip:
 		return colorGray + "–" + colorReset
+	case StatusUnknown:
+		// Deliberately NOT the gray dash: "I could not tell" must be
+		// visually distinct from "does not apply here".
+		return colorYellow + "?" + colorReset
 	default:
 		return "?"
 	}
@@ -246,11 +282,35 @@ func printReport(w io.Writer, report Report, verbose bool) {
 	}
 	_, _ = fmt.Fprintln(w)
 
+	var undetermined, warnings int
+	for _, r := range report.Checks {
+		switch r.Status {
+		case StatusUnknown:
+			undetermined++
+		case StatusWarn:
+			warnings++
+		}
+	}
+
 	switch report.Overall {
 	case StatusPass:
 		_, _ = fmt.Fprintf(w, "  %s All checks passed %s(%s)%s\n", colorGreen+"✓"+colorReset, colorGray, report.Duration.Round(time.Millisecond), colorReset)
 	case StatusWarn:
-		_, _ = fmt.Fprintf(w, "  %s Some checks have warnings %s(%s)%s\n", colorYellow+"!"+colorReset, colorGray, report.Duration.Round(time.Millisecond), colorReset)
+		// Name the undetermined checks in the trailer. Folding them into
+		// "some checks have warnings" is how a hole in the report reads as
+		// a soft pass.
+		var parts []string
+		if undetermined > 0 {
+			parts = append(parts, fmt.Sprintf("%d UNDETERMINED (not a pass — forge could not obtain the facts)", undetermined))
+		}
+		if warnings > 0 {
+			parts = append(parts, fmt.Sprintf("%d warning(s)", warnings))
+		}
+		summary := "Some checks have warnings"
+		if len(parts) > 0 {
+			summary = strings.Join(parts, ", ")
+		}
+		_, _ = fmt.Fprintf(w, "  %s %s %s(%s)%s\n", colorYellow+"!"+colorReset, summary, colorGray, report.Duration.Round(time.Millisecond), colorReset)
 	case StatusFail:
 		var failures int
 		for _, r := range report.Checks {

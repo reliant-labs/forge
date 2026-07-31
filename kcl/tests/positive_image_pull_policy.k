@@ -7,7 +7,7 @@ git-sha image tag when the worktree has uncommitted changes. The SHA
 doesn't move while edits stay uncommitted, so successive rebuilds push
 NEW images under the SAME `<sha>-dirty` tag. With the default
 `IfNotPresent` policy, k3d/containerd sees the tag locally and runs
-the stale layer — `forge deploy` silently lies about what's running.
+the stale layer — `forge env deploy` silently lies about what's running.
 Pinning `Always` for `-dirty` and `:latest` tags makes the dev loop
 correct again.
 

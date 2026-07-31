@@ -9,7 +9,6 @@ import (
 	"testing/fstest"
 
 	"github.com/reliant-labs/forge/pkg/auth"
-	"github.com/reliant-labs/forge/pkg/tenant"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -148,54 +147,6 @@ func TestNewTestServer_ClosedAfterTest(t *testing.T) {
 		// Tolerate any net-error variant — the assertion is just "server
 		// is no longer accepting requests".
 		t.Logf("note: server-closed produced %v", err)
-	}
-}
-
-func TestPermissiveAuthorizer_AllowsEverything(t *testing.T) {
-	t.Parallel()
-	a := testkit.PermissiveAuthorizer{}
-	if err := a.CanAccess(context.Background(), "/svc/Method"); err != nil {
-		t.Fatalf("CanAccess: %v", err)
-	}
-	if err := a.CanAccess(context.Background(), ""); err != nil {
-		t.Fatalf("CanAccess empty: %v", err)
-	}
-	if err := a.Can(context.Background(), nil, "create", "thing"); err != nil {
-		t.Fatalf("Can(nil claims): %v", err)
-	}
-	claims := &auth.Claims{UserID: "u1", Role: "admin"}
-	if err := a.Can(context.Background(), claims, "delete", "thing"); err != nil {
-		t.Fatalf("Can(real claims): %v", err)
-	}
-}
-
-// TestPermissiveAuthorizer_FitsForgeAuthorizerInterface guards the
-// interface fingerprint that the generated middleware.Authorizer
-// shape requires. If the project's interface drifts, this test stops
-// compiling.
-func TestPermissiveAuthorizer_FitsForgeAuthorizerInterface(t *testing.T) {
-	t.Parallel()
-	type Authorizer interface {
-		CanAccess(ctx context.Context, procedure string) error
-		Can(ctx context.Context, claims *auth.Claims, action, resource string) error
-	}
-	var _ Authorizer = testkit.PermissiveAuthorizer{}
-}
-
-func TestWithTestTenant_RoundTrips(t *testing.T) {
-	t.Parallel()
-	ctx := testkit.WithTestTenant(context.Background(), "tenant-xyz")
-	got := tenant.FromContext(ctx)
-	if got != "tenant-xyz" {
-		t.Fatalf("FromContext = %q, want %q", got, "tenant-xyz")
-	}
-}
-
-func TestWithTestTenant_EmptyDoesNotPanic(t *testing.T) {
-	t.Parallel()
-	ctx := testkit.WithTestTenant(context.Background(), "")
-	if got := tenant.FromContext(ctx); got != "" {
-		t.Fatalf("FromContext = %q, want empty", got)
 	}
 }
 

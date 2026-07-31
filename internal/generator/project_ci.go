@@ -28,7 +28,7 @@ func githubOwnerFromModulePath(modulePath string) string {
 	return rest[:slash]
 }
 
-func (g *ProjectGenerator) generateCIFiles() error {
+func (g *ProjectGenerator) generateCIFiles() error { //nolint:funlen // length is embedded GitHub Actions YAML, not control flow.
 	provider := "github"
 
 	hasFrontends := g.FrontendName != ""
@@ -43,7 +43,6 @@ func (g *ProjectGenerator) generateCIFiles() error {
 
 	data := templates.CIWorkflowData{
 		ProjectName:  g.Name,
-		GoVersion:    goVersionMinor(g.resolveGoVersion()),
 		HasFrontends: hasFrontends,
 		Frontends:    frontends,
 		HasServices:  true,
@@ -76,7 +75,6 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		// Legacy fields for other CI templates
 		Module:       g.ModulePath,
 		Registry:     "ghcr",
-		GithubOrg:    g.Name,
 		FrontendName: g.FrontendName,
 		GitHubOwner:  githubOwner,
 
@@ -118,7 +116,6 @@ func (g *ProjectGenerator) generateCIFiles() error {
 	}
 	e2eData := templates.E2EWorkflowData{
 		ProjectName:  g.Name,
-		GoVersion:    goVersionMinor(g.resolveGoVersion()),
 		Runtime:      "docker-compose",
 		HasFrontends: hasFrontends,
 		FrontendPath: e2eFrontendPath,
@@ -205,7 +202,7 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		// they are user-owned from birth — NO forge:hash marker, never
 		// re-emitted while present. Certifying them Tier-1 mis-flagged
 		// every sanctioned edit as `user_edited_gen_files` drift and
-		// pushed users to `forge disown`. This mirrors the PR template /
+		// pushed users to `forge project disown`. This mirrors the PR template /
 		// CODEOWNERS starters written just below.
 		if _, err := checksums.WriteScaffoldIfMissing(g.Path, f.dest, content); err != nil {
 			return fmt.Errorf("write %s: %w", f.dest, err)

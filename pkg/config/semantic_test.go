@@ -130,26 +130,6 @@ func TestMode_NoRoleFieldIsProduction(t *testing.T) {
 	}
 }
 
-// TestDevAuthBypass_RequiresExplicitFlag: dev mode alone does NOT bypass auth;
-// AUTH_DEV_MODE=true is the second factor.
-func TestDevAuthBypass_RequiresExplicitFlag(t *testing.T) {
-	m := buildModeMessage(t, "stage", "other")
-	setStr(t, m, "stage", "development")
-
-	if DevAuthBypass(m.Interface()) {
-		t.Error("dev mode without AUTH_DEV_MODE must NOT bypass auth")
-	}
-	t.Setenv("AUTH_DEV_MODE", "true")
-	if !DevAuthBypass(m.Interface()) {
-		t.Error("dev mode + AUTH_DEV_MODE=true must bypass auth")
-	}
-	// In production AUTH_DEV_MODE is irrelevant — bypass impossible.
-	setStr(t, m, "stage", "production")
-	if DevAuthBypass(m.Interface()) {
-		t.Error("production must never bypass auth, even with AUTH_DEV_MODE=true")
-	}
-}
-
 // TestRegisterFlags_CobraAPI exercises the cobra-facing RegisterFlags/Load
 // wrappers (the spec'd public names) end to end, and confirms a sensitive
 // field gets NO flag.

@@ -61,7 +61,7 @@ func TestNextJSConfig_DefaultsToStandalone(t *testing.T) {
 
 // TestNextJSConfig_StaticOptIn guards the opt-in path. When the user
 // sets `output: static` in forge.yaml (or passes `--output static` to
-// `forge add frontend`), the rendered next.config.ts must emit the
+// `forge scaffold frontend`), the rendered next.config.ts must emit the
 // NODE_ENV-gated static-export spread — production builds emit `out/`
 // for CDN/object-store hosting while `next dev` stays unchanged.
 //

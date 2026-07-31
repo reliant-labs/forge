@@ -9,7 +9,7 @@ import (
 
 func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	dir := newInjectProject(t)
-	writeComponentDeps(t, dir, "internal/handlers", "billing", "billing", "\tAuthorizer middleware.Authorizer")
+	writeComponentDeps(t, dir, "internal/handlers", "billing", "billing", "\tLogger *slog.Logger")
 	writeComponentDeps(t, dir, "internal/handlers", "user", "user", "\tLogger *slog.Logger")
 
 	err := GenerateInventory(InventoryGenInput{
@@ -71,16 +71,6 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	// The descriptor row must NOT carry a Mount closure anymore.
 	if strings.Contains(out, `Mount: func(`) {
 		t.Fatalf("ComponentInfo row must be data-only (no Mount closure):\n%s", out)
-	}
-
-	// The authorizer-bearing service threads its authz interceptor in its
-	// typed mount; the authorizer-free one does not construct an authz var.
-	billingMount := out[strings.Index(out, `func (c *Components) MountBilling`):]
-	if next := strings.Index(billingMount, "func (c *Components) MountUser"); next > 0 {
-		billingMount = billingMount[:next]
-	}
-	if !strings.Contains(billingMount, "AuthzInterceptor(authz)") {
-		t.Fatalf("billing mount should thread authz interceptor:\n%s", billingMount)
 	}
 }
 

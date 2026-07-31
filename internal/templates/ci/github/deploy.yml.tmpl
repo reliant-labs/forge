@@ -64,7 +64,13 @@ jobs:
       group: deploy-{{$env.Name}}
       cancel-in-progress: {{$data.CancelInProgress}}
     {{- end}}
-    {{- if and (gt $i 0) (not $env.Auto)}}
+    {{- if and (gt $i 0) $env.Auto (index $data.Environments (add $i -1)).Auto}}
+    # Ordered promotion within the AUTO chain: both this env and its
+    # predecessor fire on the same workflow_run, so `needs` sequences
+    # them. A manually-dispatched env must NOT depend on the env before
+    # it — that env's `if:` is false on this dispatch, so it is SKIPPED,
+    # and a skipped dependency skips its dependents. Making prod need
+    # staging is what made the manual prod promotion path unreachable.
     needs: [deploy-{{(index $data.Environments (add $i -1)).Name}}]
     {{- end}}
     # Auto-deploy envs (e.g. staging) fire on workflow_run success after
@@ -84,6 +90,13 @@ jobs:
       url: {{$env.URL}}
       {{- end}}
     {{- end}}
+    env:
+      # The namespace the manifests declare. Mirrors `_namespace` in
+      # deploy/kcl/{{$env.Name}}/main.k — change both together. Every
+      # verification step below is namespace-scoped: without it kubectl
+      # queries the kubeconfig's default namespace, finds nothing, and
+      # passes vacuously.
+      NAMESPACE: {{$data.ProjectName}}-{{$env.Name}}
     steps:
       - uses: actions/checkout@v4
 
@@ -122,60 +135,81 @@ jobs:
         run: echo "$HOME/.kcl/bin" >> "$GITHUB_PATH"
       {{- if and $data.MigrationTest (ne $env.Name "staging")}}
 
-      - name: Test migrations
+      - name: Dry-run against the live API server
+        # Renders the same manifests the deploy step applies and pushes
+        # them through server-side validation (admission, CRD presence,
+        # schema) WITHOUT mutating anything. Note this validates the
+        # workload manifests only — forge does not yet render a schema
+        # migration Job, so nothing here exercises the database.
         run: |
-          echo "Running migration dry-run for {{$env.Name}}..."
           kcl run deploy/kcl/{{$env.Name}}/main.k \
             -D image_tag=${{"{{"}} steps.tag.outputs.tag {{"}}"}} \
             -D registry=${{"{{"}} env.REGISTRY {{"}}"}} \
-            -D migration_dry_run=true | \
+            -S manifests | \
             kubectl apply --dry-run=server -f -
       {{- end}}
 
       - name: Deploy to {{$env.Name}}
+        # `-S manifests` is REQUIRED. Without it `kcl run` emits the
+        # module's top-level variables as a YAML MAPPING (`manifests:` +
+        # `output:`), and `kubectl apply` rejects that root with
+        # "apiVersion not set, kind not set". `-S manifests` selects the
+        # manifest list and emits it as a `---`-separated document
+        # stream, which is what kubectl consumes.
         run: |
           kcl run deploy/kcl/{{$env.Name}}/main.k \
             -D image_tag=${{"{{"}} steps.tag.outputs.tag {{"}}"}} \
-            -D registry=${{"{{"}} env.REGISTRY {{"}}"}} | \
+            -D registry=${{"{{"}} env.REGISTRY {{"}}"}} \
+            -S manifests | \
             kubectl apply --server-side -f -
 
       - name: Wait for rollouts
-        run: |
-          for deploy in $(kubectl get deployments -l app.kubernetes.io/part-of=${{"{{"}} env.PROJECT {{"}}"}} -o name); do
-            kubectl rollout status "$deploy" --timeout=300s
-          done
-
-      - name: Verify health endpoints
-        # M-13: previously this step used `curl … || echo Warning` which
-        # always exited 0, silently masking a bad deploy. Now each service
-        # is probed up to 12 times (2 minutes total) and the step exits
-        # non-zero on final failure, failing the workflow as it should.
+        # An EMPTY match is a failure, not a pass: a `for` over no
+        # results exits 0 and reports a green deploy that verified
+        # nothing. The selector must find the objects the apply above
+        # created — same namespace, same `part-of` label the renderer
+        # stamps.
         run: |
           set -euo pipefail
-          failed=0
-          for svc in $(kubectl get svc -l app.kubernetes.io/part-of=${{"{{"}} env.PROJECT {{"}}"}} -o name); do
-            svc_name=$(echo "$svc" | sed 's|service/||')
-            echo "Probing http://$svc_name/healthz ..."
-            attempt_ok=0
-            for i in $(seq 1 12); do
-              if kubectl run health-check-"$svc_name"-"$i" --rm -i --restart=Never \
-                   --image=curlimages/curl:latest -- \
-                   curl -sf "http://$svc_name/healthz"; then
-                echo "  ✓ $svc_name healthy (attempt $i)"
-                attempt_ok=1
-                break
-              fi
-              echo "  attempt $i failed, retrying in 10s..."
-              sleep 10
-            done
-            if [ "$attempt_ok" -ne 1 ]; then
-              echo "  ✗ $svc_name health check failed after 12 attempts" >&2
-              failed=1
-            fi
-          done
-          if [ "$failed" -ne 0 ]; then
+          mapfile -t deploys < <(kubectl get deployments -n "$NAMESPACE" \
+            -l app.kubernetes.io/part-of="$PROJECT" -o name)
+          if [ ${#deploys[@]} -eq 0 ]; then
+            echo "::error::no Deployments matched app.kubernetes.io/part-of=$PROJECT in namespace $NAMESPACE — nothing was verified"
             exit 1
           fi
+          for deploy in "${deploys[@]}"; do
+            kubectl rollout status -n "$NAMESPACE" "$deploy" --timeout=300s
+          done
+
+      - name: Verify service endpoints
+        # The rollout wait above proves every pod reached Ready, i.e.
+        # its readiness probe passed. This proves the Services actually
+        # SELECT those pods: a selector/label mismatch yields Ready pods
+        # behind an endpointless Service — a total outage a rollout wait
+        # cannot see.
+        run: |
+          set -euo pipefail
+          mapfile -t svcs < <(kubectl get svc -n "$NAMESPACE" \
+            -l app.kubernetes.io/part-of="$PROJECT" -o name)
+          if [ ${#svcs[@]} -eq 0 ]; then
+            echo "::error::no Services matched app.kubernetes.io/part-of=$PROJECT in namespace $NAMESPACE — nothing was verified"
+            exit 1
+          fi
+          failed=0
+          for svc in "${svcs[@]}"; do
+            name=${svc#service/}
+            ready=$(kubectl get endpointslices -n "$NAMESPACE" \
+              -l kubernetes.io/service-name="$name" \
+              -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' \
+              | grep -c '^true$' || true)
+            if [ "$ready" -eq 0 ]; then
+              echo "::error::Service $name has no ready endpoints in $NAMESPACE"
+              failed=1
+            else
+              echo "  ✓ $name: $ready ready endpoint(s)"
+            fi
+          done
+          [ "$failed" -eq 0 ]
   {{- end}}
 
   retag-release:
@@ -247,6 +281,10 @@ jobs:
       group: deploy-{{$lastEnv.Name}}
       cancel-in-progress: false
     {{- end}}
+    env:
+      # Mirrors `_namespace` in deploy/kcl/{{$lastEnv.Name}}/main.k —
+      # change both together. See the per-env deploy job above.
+      NAMESPACE: {{.ProjectName}}-{{$lastEnv.Name}}
     steps:
       - uses: actions/checkout@v4
 
@@ -276,58 +314,65 @@ jobs:
         run: echo "$HOME/.kcl/bin" >> "$GITHUB_PATH"
       {{- if .MigrationTest}}
 
-      - name: Test migrations
+      - name: Dry-run against the live API server
+        # See the per-env deploy job: server-side validation of the same
+        # manifests, no mutation. Workload manifests only — forge does
+        # not yet render a schema migration Job.
         run: |
-          echo "Running migration dry-run for {{$lastEnv.Name}}..."
           kcl run deploy/kcl/{{$lastEnv.Name}}/main.k \
             -D image_tag=${{"{{"}} needs.retag-release.outputs.version {{"}}"}} \
             -D registry=${{"{{"}} env.REGISTRY {{"}}"}} \
-            -D migration_dry_run=true | \
+            -S manifests | \
             kubectl apply --dry-run=server -f -
       {{- end}}
 
       - name: Deploy to {{$lastEnv.Name}}
+        # `-S manifests` is REQUIRED — see the per-env deploy job.
         run: |
           kcl run deploy/kcl/{{$lastEnv.Name}}/main.k \
             -D image_tag=${{"{{"}} needs.retag-release.outputs.version {{"}}"}} \
-            -D registry=${{"{{"}} env.REGISTRY {{"}}"}} | \
+            -D registry=${{"{{"}} env.REGISTRY {{"}}"}} \
+            -S manifests | \
             kubectl apply --server-side -f -
 
       - name: Wait for rollouts
         run: |
-          for deploy in $(kubectl get deployments -l app.kubernetes.io/part-of=${{"{{"}} env.PROJECT {{"}}"}} -o name); do
-            kubectl rollout status "$deploy" --timeout=300s
-          done
-
-      - name: Verify health endpoints
-        # M-13: mirror the retry loop used by the per-env deploy job above.
-        # Release deploys must also fail the workflow on a bad rollout —
-        # the previous `|| echo Warning` always exited 0 and let broken
-        # production pushes succeed silently.
-        run: |
           set -euo pipefail
-          failed=0
-          for svc in $(kubectl get svc -l app.kubernetes.io/part-of=${{"{{"}} env.PROJECT {{"}}"}} -o name); do
-            svc_name=$(echo "$svc" | sed 's|service/||')
-            echo "Probing http://$svc_name/healthz ..."
-            attempt_ok=0
-            for i in $(seq 1 12); do
-              if kubectl run health-check-"$svc_name"-"$i" --rm -i --restart=Never \
-                   --image=curlimages/curl:latest -- \
-                   curl -sf "http://$svc_name/healthz"; then
-                echo "  ✓ $svc_name healthy (attempt $i)"
-                attempt_ok=1
-                break
-              fi
-              echo "  attempt $i failed, retrying in 10s..."
-              sleep 10
-            done
-            if [ "$attempt_ok" -ne 1 ]; then
-              echo "  ✗ $svc_name health check failed after 12 attempts" >&2
-              failed=1
-            fi
-          done
-          if [ "$failed" -ne 0 ]; then
+          mapfile -t deploys < <(kubectl get deployments -n "$NAMESPACE" \
+            -l app.kubernetes.io/part-of="$PROJECT" -o name)
+          if [ ${#deploys[@]} -eq 0 ]; then
+            echo "::error::no Deployments matched app.kubernetes.io/part-of=$PROJECT in namespace $NAMESPACE — nothing was verified"
             exit 1
           fi
+          for deploy in "${deploys[@]}"; do
+            kubectl rollout status -n "$NAMESPACE" "$deploy" --timeout=300s
+          done
+
+      - name: Verify service endpoints
+        # Mirrors the per-env deploy job: a release must fail on an
+        # endpointless Service, and must fail rather than pass vacuously
+        # when the selector matches nothing.
+        run: |
+          set -euo pipefail
+          mapfile -t svcs < <(kubectl get svc -n "$NAMESPACE" \
+            -l app.kubernetes.io/part-of="$PROJECT" -o name)
+          if [ ${#svcs[@]} -eq 0 ]; then
+            echo "::error::no Services matched app.kubernetes.io/part-of=$PROJECT in namespace $NAMESPACE — nothing was verified"
+            exit 1
+          fi
+          failed=0
+          for svc in "${svcs[@]}"; do
+            name=${svc#service/}
+            ready=$(kubectl get endpointslices -n "$NAMESPACE" \
+              -l kubernetes.io/service-name="$name" \
+              -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' \
+              | grep -c '^true$' || true)
+            if [ "$ready" -eq 0 ]; then
+              echo "::error::Service $name has no ready endpoints in $NAMESPACE"
+              failed=1
+            else
+              echo "  ✓ $name: $ready ready endpoint(s)"
+            fi
+          done
+          [ "$failed" -eq 0 ]
 {{- end}}

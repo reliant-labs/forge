@@ -1,4 +1,4 @@
-// Package cli — `forge up --env=<env>` orchestrator.
+// Package cli — `forge env up <env>` orchestrator.
 //
 // One command brings the whole loop up:
 //
@@ -44,34 +44,40 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/doctor"
 	"github.com/reliant-labs/forge/internal/envutil"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/secrets"
 )
 
-// upOptions bundles flags for `forge up`.
+// upOptions bundles flags for `forge env up`.
 type upOptions struct {
 	env         string
 	noBuild     bool
 	noDeploy    bool
 	clusterOnly bool // build + deploy cluster manifests, skip host/frontend
 	hostOnly    bool // skip cluster build+deploy, run host + frontend phases only
-	background  bool // detach and write PID files; use `forge up stop --env=<env>` to teardown
+	background  bool // detach and write PID files; use `forge env down <env>` to teardown
 	watch       bool // force supervise (hold + Ctrl-C teardown) even without a TTY
-	restart     bool // stop any stack already running for this env first, then up
 	noGenerate  bool // skip the pre-build "ensure generated code" step (--no-generate)
 	noInstall   bool // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
+	noSeed      bool // skip the first-boot dev auto-seed (--no-seed)
 	// targets, when non-empty, scopes the host + frontend phases to the
-	// named services/frontends — `forge up --target admin-server` is the
+	// named services/frontends — `forge env up --target admin-server` is the
 	// single-service inner loop (combine with --host-only to skip the
 	// cluster build+deploy). Empty means "everything", the default.
 	targets []string
+	// renderOptions are raw `-D name=value` values pushed into the env's KCL
+	// as top-level options. OPAQUE to forge: it validates the name against
+	// what the env declares, relays the value verbatim, and never interprets
+	// either. See internal/cli/up_options.go.
+	renderOptions []string
 	// frontendArgs are passthrough tokens forwarded to each frontend's dev
 	// server command (`npm run dev -- <frontendArgs>`). Not bound to a
-	// `forge up` flag — it's the seam `forge run -- <flags>` sets so the
+	// `forge env up` flag — it's the seam `forge run -- <flags>` sets so the
 	// reliant one-shot's `forge run -- --host 0.0.0.0` reaches Vite. Empty
-	// (the default, and always for `forge up`) is a no-op.
+	// (the default, and always for `forge env up`) is a no-op.
 	frontendArgs []string
 }
 
@@ -89,12 +95,13 @@ func inTargetSet(targets []string, name string) bool {
 	return false
 }
 
-func newUpCmd() *cobra.Command {
+func newEnvUpCmd() *cobra.Command {
 	var opts upOptions
 
 	cmd := &cobra.Command{
-		Use:   "up",
+		Use:   "up <environment>",
 		Short: "Bring the whole dev loop up: build + deploy + host + frontend",
+		Args:  cobra.ExactArgs(1),
 		Long: `Bring the whole dev loop up for an environment.
 
 Reads deploy/kcl/<env>/ to figure out which services run in-cluster vs
@@ -123,7 +130,7 @@ Lifecycle (what happens after host services + frontends start):
   * Without a TTY (agent / CI / piped): forge brings everything up,
     prints the summary (URLs + per-service log paths), and RETURNS,
     leaving the processes running — the same end-state as --background.
-    This is what keeps ` + "`forge up --env=<env>`" + ` from hanging an agent.
+    This is what keeps ` + "`forge env up <env>`" + ` from hanging an agent.
   * --watch forces the hold-and-teardown lifecycle even without a TTY
     (for a human piping the output through a tool).
   * --background always detaches and returns immediately, regardless of
@@ -131,20 +138,47 @@ Lifecycle (what happens after host services + frontends start):
     wins (detach + return).
 
 Either way the long-running children are tracked under
-~/.cache/forge/up/<env>/; stop a detached / non-TTY stack with
-` + "`forge up stop --env=<env>`" + `.
+~/.cache/forge/up/<project-id>/; stop a detached / non-TTY stack with
+` + "`forge env down <env>`" + `.
+
+ONE stack per (project, env). If this project already has a stack running
+for this env — tracked, detached, or orphaned by a crashed run — it is
+STOPPED before the new one starts. It is not adopted: this invocation may
+carry different config, a different allocated port, or reinstalled deps, so
+the old process is not the process you asked for. Only processes carrying
+forge's own ownership markers for THIS project and env are ever signalled;
+a port held by anything else is an error, never a kill.
 
 Examples:
-  forge up --env=dev
-  forge up --env=dev --no-build
-  forge up --env=dev --cluster-only
-  forge up --env=dev --watch        # hold + Ctrl-C teardown even when piped
-  forge up --env=dev --background
-  forge up stop --env=dev`,
+  forge env up dev
+  forge env up dev --no-build
+  forge env up dev --cluster-only
+  forge env up dev --watch        # hold + Ctrl-C teardown even when piped
+  forge env up dev --background
+  forge env down dev
+
+Render options (-D):
+  An env's KCL can declare options for the things you want to vary per run —
+  which runner a host service launches under, whether to point at a remote
+  dependency, anything else the env models. It declares one by reading it:
+
+    _host_runner = option("host_runner", type="str", default="air",
+                          help="Host launch runner: air (default) or go-run")
+
+  and you set it with:
+
+    forge env up dev -D host_runner=go-run
+
+  forge does not interpret these. It checks the NAME against what the env
+  declares (so a typo fails instead of silently doing nothing), relays the
+  value verbatim, and the KCL decides what it means. List what an env
+  declares with ` + "`forge env options <env>`" + `.
+
+  Options forge derives itself (env, namespace, image_tag, image_digests,
+  worktree, branch) are not yours to set and are rejected. -D is accepted on
+  ` + "`env up`" + ` only — a cluster apply must stay reproducible from the repo alone.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if opts.env == "" {
-				return fmt.Errorf("--env is required (e.g. --env=dev)")
-			}
+			opts.env = args[0]
 			if opts.clusterOnly && opts.hostOnly {
 				return fmt.Errorf("--cluster-only and --host-only are mutually exclusive")
 			}
@@ -160,72 +194,94 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment to bring up (e.g. dev, staging) — required")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
 	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend")
 	cmd.Flags().BoolVar(&opts.hostOnly, "host-only", false, "Only run host phases (host + frontend); skip build/deploy")
-	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge up stop --env=<env>`). Beats --watch and the TTY default.")
+	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge env down <env>`). Beats --watch and the TTY default.")
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Force the hold-and-teardown lifecycle (block until Ctrl-C, then cascade-stop) even without a TTY. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
-	cmd.Flags().BoolVar(&opts.restart, "restart", false, "If a stack is already running for this env, stop it (whole process tree) and bring it back up, instead of erroring on the port conflict")
-	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
-	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default `forge up` installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
-	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the host + frontend phases to specific services/frontends by name (repeatable). `forge up --target admin-server --host-only` is the single-service inner loop. Default: everything.")
+	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge env up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
+	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default `forge env up` installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
+	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default `forge run`/`forge env up` seeds a dev database once when it is reachable and all seedable tables are empty.")
+	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the host + frontend phases to specific services/frontends by name (repeatable). `forge env up dev --target admin-server --host-only` is the single-service inner loop. Default: everything.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with `forge env options <env>`.")
 
-	cmd.AddCommand(newUpStopCmd())
-	cmd.AddCommand(newUpServicesCmd())
 	return cmd
 }
 
-// newUpServicesCmd is the retrieve-after-the-fact half of the `forge up`
-// summary: `forge up services --env=<env>` re-derives the same host
+// newEnvStatusCmd is the retrieve-after-the-fact half of the `forge env up`
+// summary: `forge env status <env>` re-derives the same host
 // service + frontend table long after the startup scrollback has scrolled
 // away, so a human (or an agent that reconnected to a running stack) can
 // re-discover every listening URL, its log file, and whether it's actually
-// up — without re-running `forge up`. It renders the env's KCL through the
-// SAME devstack context `forge up` uses (identical ports), probes each
-// declared port for a live listener, and cross-references the ownership
+// up — without re-running `forge env up`. It renders the env's KCL through
+// the SAME devstack context `forge env up` uses (identical ports), probes
+// each declared port for a live listener, and cross-references the ownership
 // markers the reclaim guard stamps so it can tell "our process is up" from
 // "something else grabbed the port".
-func newUpServicesCmd() *cobra.Command {
-	var env string
-	var jsonOut bool
+func newEnvStatusCmd() *cobra.Command {
+	var (
+		jsonOut bool
+		signal  string
+		verbose bool
+	)
 	cmd := &cobra.Command{
-		Use:   "services",
-		Short: "List the host services + frontends `forge up` runs for an env — URLs, log paths, and live listen status",
-		Long: `List every host service and frontend the env's ` + "`forge up`" + ` runs, with:
+		Use:   "status <environment>",
+		Short: "Everything runtime about an env: host services, frontends, compose infra, app health, telemetry",
+		Args:  cobra.ExactArgs(1),
+		Long: `Report the runtime state of an environment.
+
+The TABLE lists every host service and frontend the env's ` + "`forge env up`" + `
+runs, with:
 
   * its browser URL (http://localhost:<port>),
-  * its per-service log file (tail -f / grep target), and
+  * its per-service log file (tail -f / grep target),
   * whether a listener is accepting on the port RIGHT NOW (up/down),
-    including the holder pid and whether that process is forge-owned.
+    including the holder pid and whether that process is forge-owned,
+  * for each host service, the live SERVER process(es) backing it with
+    build-freshness — binary path, its build/mtime, the process start
+    time, and whether it is stale vs the repo HEAD commit, and
+  * a loud DUPLICATE flag when more than one process is serving the same
+    host service (the "air spawned a new worker but didn't reap the old
+    one" symptom — stale and fresh build vintages running at once).
 
-Reads the same rendered KCL + resolved ports ` + "`forge up`" + ` uses, so the
-table matches what ` + "`forge up --env=<env>`" + ` printed — retrievable after
-the startup scrollback is gone. ALL declared frontends are listed (a
+The RUNTIME CHECKS underneath probe the rest of the stack: the compose
+infra, the app's /healthz + /readyz, pprof, the telemetry backends
+(Prometheus, Tempo, Loki, Pyroscope) and Delve. These used to live in
+` + "`forge doctor`" + `, which had to GUESS the app's port and reported the
+miss as a gray dash indistinguishable from "not applicable". They run
+here because this command already resolves the ports the stack actually
+bound. A check that cannot determine its answer says UNDETERMINED — it
+never reads as a pass.
+
+Reads the same rendered KCL + resolved ports ` + "`forge env up`" + ` uses, so
+the table matches what ` + "`forge env up <env>`" + ` printed — retrievable
+after the startup scrollback is gone. ALL declared frontends are listed (a
 project may declare several; each gets its own port row).
 
+Whether the project itself is well-formed — deployability, payload caps,
+tooling, cluster capability — is ` + "`forge doctor`" + `, which takes no env.
+
 Examples:
-  forge up services --env=dev
-  forge up services --env=dev --json   # machine-readable for scripts/agents`,
+  forge env status dev
+  forge env status dev --signal traces   # one runtime signal only
+  forge env status dev --json            # machine-readable for scripts/agents`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if env == "" {
-				return fmt.Errorf("--env is required (e.g. --env=dev)")
-			}
-			return runUpServices(cmd.Context(), env, jsonOut)
+			return runUpServices(cmd.Context(), args[0], jsonOut, signal, verbose)
 		},
 	}
-	cmd.Flags().StringVar(&env, "env", "", "Environment to report (e.g. dev) — required")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (name/kind/url/port/log/listening/pid/owned per service)")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON (name/kind/url/port/log/listening/pid/owned + per-host-service serving[] build-freshness and a duplicate flag, plus the runtime checks)")
+	cmd.Flags().StringVar(&signal, "signal", "", "Run only one runtime signal: app, metrics, traces, logs, profiles (default: all)")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show evidence for all runtime checks (not just failures)")
 	return cmd
 }
 
 // runUpServices renders the env's KCL, probes each declared port, and
 // prints the host-service + frontend table (or JSON). It arms the SAME
-// devstack render context `forge up`/`forge deploy` arm so ports resolve
+// devstack render context `forge env up`/`forge env deploy` arm so ports resolve
 // identically, then restores any resolve_port drift — this is a read-only
 // report and must not shift the stable port assignments a live stack is on.
-func runUpServices(ctx context.Context, env string, jsonOut bool) error {
+func runUpServices(ctx context.Context, env string, jsonOut bool, signal string, verbose bool) error {
 	store, err := loadProjectStore()
 	if err != nil {
 		return err
@@ -239,50 +295,117 @@ func runUpServices(ctx context.Context, env string, jsonOut bool) error {
 	}
 
 	// Honor the frontend feature gate so a frontends-off project's report
-	// doesn't list frontends `forge up` never starts. Use the pure predicate
+	// doesn't list frontends `forge env up` never starts. Use the pure predicate
 	// (not skipFeature) so this read-only report emits no phase-skip log line
 	// — that would pollute the --json output and is meaningless here (the
 	// `services` command runs no phase).
 	frontendsOn := isFeatureEnabled(store, config.FeatureFrontend)
-	rows := collectUpServices(entities, env, nil, frontendsOn, portInUse)
+	// Collect the declared rows WITHOUT probing yet: the fresh render reverts
+	// resolve_port drift, so a service on an ephemeral (bind :0) port renders
+	// with no/wrong port here. Overlay the LIVE ports `forge env up` persisted
+	// at launch, THEN probe — otherwise the probe (and the URL) target a port
+	// the stack never bound.
+	rows := collectUpServices(entities, env, nil, frontendsOn, nil)
+	resolved := loadResolvedEnv(projectIDForDir(projectDir), env)
+	if resolved != nil {
+		overlayResolvedPorts(rows, resolved.Ports)
+	}
+	probeRowsListening(rows, portInUse)
 	// Enrich with the listener pid + forge-ownership marker — the reclaim
 	// guard's signal, reused here to distinguish "our stack is up" from "a
-	// foreign process holds the port".
-	enrichOwnership(rows, env)
+	// foreign process holds the port". Scoped to THIS project so another
+	// project's stack on the same env name reads as unowned, not ours.
+	enrichOwnership(rows, projectIDForDir(projectDir), env)
+	// Enrich each host row with its live server process(es) + build-freshness,
+	// and FLAG the air-leak symptom (more than one server per service). This is
+	// the process-table half of the report: it sweeps for THIS project+env's
+	// ownership marker (not just the port listener), so a duplicate/stale
+	// worker that isn't the current port holder is still caught. headCommit is
+	// the freshness yardstick (empty outside a git repo → no stale flags).
+	headCommit := headCommitTime(projectDir)
+	enrichServing(rows, projectIDForDir(projectDir), env, headCommit)
+
+	// The env-runtime checks that used to live in `forge doctor`. Their
+	// target is DERIVED from the rows above — one resolver for "what port
+	// does this component serve on", and it is this one. See
+	// env_status_checks.go.
+	target := runtimeTargetFor(entities, rows)
 
 	if jsonOut {
-		rep := upServicesReport{Env: env, Services: rows}
+		checks, checkErr := runEnvRuntimeChecks(ctx, store.Meta().Name, projectDir, env, target, signal, true, verbose)
+		if checkErr != nil {
+			return checkErr // a mistyped --signal is a usage error, not a stack state
+		}
+		rep := upServicesReport{Env: env, Services: rows, Checks: checks.Checks}
+		// DATABASE_URL is the other half of the discovery contract: an agent
+		// or script gets this worktree's API port (per-service `port`) AND its
+		// DSN from one call. Sourced from the launch-time persist; empty (and
+		// omitted) when no live stack persisted it.
+		if resolved != nil {
+			rep.DatabaseURL = resolved.DatabaseURL
+		}
+		if !headCommit.IsZero() {
+			rep.HeadCommitAt = headCommit.UTC().Format(time.RFC3339)
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(rep)
 	}
 	if len(rows) == 0 {
 		fmt.Printf("[up] no host services or frontends declared in deploy/kcl/%s/\n", env)
-		return nil
+	} else {
+		// notReadyLabel "down": unlike the immediate post-launch summary (where a
+		// not-yet-listening port means "still booting"), this snapshot runs long
+		// after start, so a dead port is genuinely down.
+		renderUpSummary(os.Stdout, env, rows, "down", true, nil)
 	}
-	// notReadyLabel "down": unlike the immediate post-launch summary (where a
-	// not-yet-listening port means "still booting"), this snapshot runs long
-	// after start, so a dead port is genuinely down.
-	renderUpSummary(os.Stdout, env, rows, "down", true, nil)
-	return nil
+	// Printed AFTER the table: the table is the answer most invocations
+	// want, and the checks read as its detail. A project with no host rows
+	// still gets them — its compose infra is runtime state too.
+	_, err = runEnvRuntimeChecks(ctx, store.Meta().Name, projectDir, env, target, signal, false, verbose)
+	return err
 }
 
-// newUpStopCmd reads the PID files written by `forge up --background`
-// and terminates every tracked process. Idempotent: no-op when nothing
-// is tracked.
-func newUpStopCmd() *cobra.Command {
-	var env string
+// newEnvDownCmd stops a running stack: this project's stack for one
+// environment, or — with --all — every forge stack on the machine.
+//
+// --all is not a bigger hammer, it is the only reachable one for a stack whose
+// project directory has been deleted: the per-project form derives the project
+// id from the forge.yaml above the working directory, and there is none left to
+// derive it from. Either form signals only processes carrying forge's own
+// ownership markers.
+func newEnvDownCmd() *cobra.Command {
+	var all bool
 	cmd := &cobra.Command{
-		Use:   "stop",
-		Short: "Stop background `forge up` processes for an environment",
+		Use:   "down [environment]",
+		Short: "Stop this project's stack for an environment (or --all: every forge stack on this machine)",
+		Args:  cobra.MaximumNArgs(1),
+		Long: `Stop a running ` + "`forge env up`" + ` / ` + "`forge run`" + ` stack.
+
+  forge env down dev     stop THIS project's dev stack
+  forge env down --all   stop every forge stack on this machine, all projects
+
+Only processes forge itself started — the ones carrying its ownership
+markers for the project and environment being stopped — are ever signalled.
+A process forge did not start is never touched by either form.
+
+Use --all when a stack outlived its project directory: without a forge.yaml
+there is no project to scope to, and the per-environment form cannot reach
+it. ` + "`forge env ps`" + ` lists what is running first.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if env == "" {
-				return fmt.Errorf("--env is required")
+			if all {
+				if len(args) > 0 {
+					return fmt.Errorf("--all stops every environment; drop the %q argument", args[0])
+				}
+				return runUpStopAll()
 			}
-			return runUpStop(env)
+			if len(args) == 0 {
+				return errors.New("name the environment to stop (e.g. `forge env down dev`), or pass --all for every forge stack on this machine")
+			}
+			return runUpStop(args[0])
 		},
 	}
-	cmd.Flags().StringVar(&env, "env", "", "Environment whose background processes to stop")
+	cmd.Flags().BoolVar(&all, "all", false, "Stop every forge stack running on this machine, across all projects (the only way to reach a stack whose project directory is gone)")
 	return cmd
 }
 
@@ -322,29 +445,58 @@ func upDeployNamespace(entities *KCLEntities, store metaReader, env string) stri
 // phases 1-2 (no point bringing host processes up against a busted
 // cluster). Phases 3-4 are collected into the running-process set and
 // torn down by the Ctrl-C cleanup cascade on exit.
-func runUp(ctx context.Context, opts upOptions) error {
+func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `forge env up` lifecycle in order: resolve, render, conflict-check, launch, wait. The sequence is the contract.
 	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
 	cfg := store.Config()
 	projectDir := projectDirForKCL()
+	// Stable identity of THIS project, stamped onto every child and required to
+	// match on every reclaim decision below. Keying ownership on (projectID,
+	// env) — not env alone — is what stops the pre-flight reclaim / `env down`
+	// here from reaping another project's stack that shares this env name.
+	projectID := projectIDForDir(projectDir)
 
 	// Arm the parallel-dev-stack render context: push the raw git facts
 	// option("worktree")/option("branch") into KCL, back forge.allocate_port
 	// with the lock-guarded block registry, and activate the resolve_port
-	// store. `forge deploy` arms the SAME inputs, so up and deploy resolve
+	// store. `forge env deploy` arms the SAME inputs, so up and deploy resolve
 	// identical ports — no drift. State is machine-local (.forge/blocks.json,
 	// .forge/ports-*.json are gitignored). restorePortStore reverts the
 	// resolve_port store if the already-running guard below rejects this
 	// render (a rejected attempt must not drift the stable assignments).
 	_, restorePortStore := activateDevStack(projectDir, opts.env)
 
+	// Arm the -D render options BEFORE the first render. Validated against
+	// what the env's KCL declares so a typo'd name fails here rather than
+	// silently rendering the default (an option nothing reads is not an error
+	// in KCL — it is simply unread). Validation degrades permissively if the
+	// project's options can't be discovered; the render still runs.
+	// Parse FIRST: it rejects malformed values and forge-reserved names, which
+	// deserve their own message ("image_tag is set by forge") rather than the
+	// declared-name check's "no such option" — image_tag is a real option, just
+	// not yours.
+	renderDArgs, err := parseRenderOptions(opts.renderOptions)
+	if err != nil {
+		return err
+	}
+	if err := validateRenderOptions(projectDir, opts.env, opts.renderOptions); err != nil {
+		return err
+	}
+	setRenderOptions(renderDArgs)
+
 	fmt.Printf("[up] env=%s\n", opts.env)
 	entities, err := RenderKCL(ctx, projectDir, opts.env)
 	if err != nil {
 		return fmt.Errorf("render KCL: %w", err)
 	}
+	// Frontends are a forge.yaml concept the deploy-as-data env templates
+	// don't project into the KCL `output` contract, so the render carries
+	// none. Bridge cfg.Frontends into the entity set BEFORE the empty-check
+	// and summary so a frontend-only project isn't misread as "nothing
+	// declared" and the frontend phase actually has servers to launch.
+	mergeConfigFrontends(entities, cfg)
 	if entitiesEmpty(entities) {
 		return fmt.Errorf("no services/operators/frontends/cronjobs declared in deploy/kcl/%s/", opts.env)
 	}
@@ -356,6 +508,34 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// where a future entity kind (e.g. Terraform infra) becomes one more
 	// scope field + gated block rather than another scattered conditional.
 	scope := upScope(opts.clusterOnly, opts.hostOnly)
+
+	// Host-only (`forge run` / `--host-only`) runs the project's services
+	// as local `go run` host processes instead of building + deploying them
+	// to the cluster. The rendered services carry their PRODUCTION
+	// deploy.type=="cluster", which upHostServices would skip — so collapse
+	// them to shared-binary host processes here (see the helper for the
+	// one-process-per-binary rationale). Guarded on hostOnly so a full
+	// `forge env up` still deploys cluster services to k8s and runs only
+	// genuinely host-declared services on the host.
+	// apiBaseURL is the ephemeral backend base URL wired into the frontends
+	// (via NEXT_PUBLIC_API_URL / VITE_API_URL / EXPO_PUBLIC_API_URL) so they
+	// reach the backend on its allocated port instead of the baked default.
+	// Empty for a full (cluster) up, where the backend is not host-allocated.
+	apiBaseURL := ""
+	if opts.hostOnly {
+		collapseClusterServicesToHost(entities)
+		// Ephemeral dev ports (host-only dev loop only — a full `forge env up`
+		// leaves cluster/declared ports untouched). Two freshly-scaffolded
+		// stacks otherwise both fall back to backend :8080 and frontend :3000
+		// and fight for them; here each gets a distinct, kernel-assigned free
+		// port, resolved BEFORE the pre-flight conflict guard / readiness gate
+		// / summary / launch so every one of those reads the same value.
+		// resolveEphemeralHostPorts returns the primary backend URL for the
+		// frontend wiring; resolveEphemeralFrontendPorts also mutates cfg so
+		// the backend's dev CORS_ORIGINS allows the frontend's actual origin.
+		apiBaseURL = resolveEphemeralHostPorts(entities)
+		resolveEphemeralFrontendPorts(cfg, entities)
+	}
 
 	// Build the per-env secret provider ONCE for this run (dotenv reads
 	// the file now; external/none are cheap no-ops). Reused for both the
@@ -384,7 +564,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// project's forge.yaml turns either off (`features.build: false`
 	// or `features.deploy: false`), the orchestrator skips the phase
 	// with a one-line log and continues. Direct `forge build` /
-	// `forge deploy` invocations still error — see requireFeature
+	// `forge env deploy` invocations still error — see requireFeature
 	// in feature_gate.go for the strict-gate shape used by the cobra
 	// RunE for those commands.
 	if scope.cluster {
@@ -415,82 +595,20 @@ func runUp(ctx context.Context, opts upOptions) error {
 		}
 	}
 
-	// Pre-flight "already running" guard. Before starting any host
-	// process, check whether the ports the services/frontends THIS run
-	// will start are already bound — a second stack on the same env
-	// would otherwise silently shift resolve_port'd frontends to wrong
-	// ports (persisting the wrong value) and hard-fail fixed-port host
-	// services with "bind: address already in use". Respects --target
-	// (only the services this invocation would start are checked) and
-	// the frontend feature gate. Cluster-only never reaches here.
+	// Pre-flight. Respects --target (only the services this invocation would
+	// start are considered) and the frontend feature gate. Cluster-only never
+	// reaches here.
 	frontendsOn := !skipFeature(store, config.FeatureFrontend, "up:frontend:portcheck")
-	if conflicts := conflictingPorts(entities, opts.targets, frontendsOn, portInUse); len(conflicts) > 0 {
-		// Tell OUR own (possibly orphaned) stack from a FOREIGN port holder by
-		// INSPECTING THE LIVE HOLDER, not by guessing from the bound port and
-		// not by trusting the drift-prone .pids ledger alone. A process
-		// carrying our FORGE_UP_ENV marker — on the holder or any ancestor —
-		// is our orphan even when the ledger is stale/absent (a crash mid-run,
-		// air re-exec under a new pid, or an npm grandchild reparented to
-		// launchd). classifyPortConflicts splits the conflicts accordingly;
-		// the ledger is still consulted as a fast "is a live stack tracked"
-		// hint. Outcomes:
-		//   * ours (marker or ledger) and --restart -> reclaim it (tree-kill,
-		//     which waits for the listeners to free) and continue;
-		//   * ours, no --restart -> a clear error pointing at the unblock that
-		//     actually works (forge up --restart / forge up stop);
-		//   * genuinely foreign (unmarked holder) -> error pointing at lsof.
-		//     A foreign process is NEVER killed.
-		facts := newOSProcFacts()
-		owned, foreign := classifyPortConflicts(opts.env, conflicts, portListenerPID, facts)
-		ours := upStackLive(opts.env) || len(owned) > 0
-
-		if opts.restart && ours {
-			fmt.Printf("\n[up] --restart: reclaiming the running/orphaned env=%s stack first\n", opts.env)
-			if upStackLive(opts.env) {
-				_ = runUpStop(opts.env) // tree-kill ledger pids + wait-for-exit
-			}
-			// Reclaim marker-identified orphans the ledger never recorded (the
-			// common case after a crash: real forge processes, no live ledger).
-			reclaimMarkedOrphans(opts.env, conflicts, portListenerPID, facts)
-			conflicts = conflictingPorts(entities, opts.targets, frontendsOn, portInUse)
-			// Re-classify against a FRESH process snapshot — the reclaim above
-			// changed the table, so the pre-reclaim ppid map is stale.
-			owned, foreign = classifyPortConflicts(opts.env, conflicts, portListenerPID, newOSProcFacts())
-		}
-
-		if len(conflicts) > 0 {
-			var b strings.Builder
-			// Our own (possibly orphaned) stack still holds ports — route to
-			// the "ours" message even when the ledger said nothing, because
-			// the live holder carries our marker.
-			if len(owned) > 0 {
-				_, _ = fmt.Fprintf(&b, "[up] a forge-managed stack for env=%s is still running (possibly orphaned from an earlier run):\n", opts.env)
-				for _, c := range owned {
-					_, _ = fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
-				}
-				_, _ = fmt.Fprintf(&b, "     refresh:  forge up --env=%s --restart\n", opts.env)
-				_, _ = fmt.Fprintf(&b, "     or stop:  forge up stop --env=%s", opts.env)
-			}
-			if len(foreign) > 0 {
-				if b.Len() > 0 {
-					b.WriteString("\n")
-				}
-				_, _ = fmt.Fprintf(&b, "[up] these ports are held by a process forge doesn't manage (env=%s):\n", opts.env)
-				for _, c := range foreign {
-					_, _ = fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
-				}
-				b.WriteString("     free them (lsof -i :<port>, kill the PID) or use --target to start a different service")
-			}
-			// Undo any resolve_port drift this rejected render persisted, so
-			// the next clean run still gets the canonical port assignments.
-			restorePortStore()
-			return errors.New(b.String())
-		}
+	if err := upPreflight(projectID, opts.env, entities, opts.targets, frontendsOn); err != nil {
+		// Undo any resolve_port drift this rejected render persisted, so the
+		// next clean run still gets the canonical port assignments.
+		restorePortStore()
+		return err
 	}
 
 	// Resolve the lifecycle (Part B): supervise (hold + Ctrl-C teardown)
 	// vs once (start, persist PIDs, return). `up`'s default is auto —
-	// resolved here by the TTY check so an agent / CI `forge up` doesn't
+	// resolved here by the TTY check so an agent / CI `forge env up` doesn't
 	// hang on the interactive hold. --background and --watch override the
 	// default (--background wins if somehow both set; rejected upstream).
 	// `detach` collapses the lifecycle to the single behaviour the host
@@ -505,12 +623,28 @@ func runUp(ctx context.Context, opts upOptions) error {
 
 	// Host phases — host services + frontends. These are tracked under
 	// the orchestrator's child-process registry so Ctrl-C tears them
-	// all down together.
-	procs := newProcRegistry(opts.env)
-	defer procs.shutdownOnExit()
+	// all down together. The registry writes its ledger + this project's path
+	// record on every start, so a child is on disk — and therefore reachable by
+	// `forge env down` / `forge env ps` — from the moment it exists, however
+	// this process returns.
+	procs := newProcRegistry(projectID, projectDir, opts.env)
 
 	// Phase 3: host-mode services.
 	if scope.host {
+		// Ensure the dev database the host services are about to dial EXISTS
+		// before they boot — the runtime counterpart to the generate-time
+		// shadow DB, which forge already ensure-creates on the fly. A freshly
+		// scaffolded dev DSN (…:5434/<project>) names a database nothing has
+		// issued CREATE DATABASE for, so the first `forge run` boot would
+		// otherwise die with `FATAL: database "<project>" does not exist` before
+		// AUTO_MIGRATE could apply the schema. Host-run dev loop only
+		// (`forge run` / `--host-only`); a full `forge env up dev` manages its DB
+		// via compose/k8s, not this localhost DSN.
+		if opts.hostOnly {
+			if err := ensureDevDatabase(cfg, entities, opts.env); err != nil {
+				return err
+			}
+		}
 		hostFailures := upHostServices(ctx, cfg, entities, prov, opts.env, detach, opts.targets, procs)
 		if hostFailures > 0 {
 			fmt.Printf("[up] %d host service(s) failed to start (see above)\n", hostFailures)
@@ -521,10 +655,45 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// (with a log line) when features.frontend: false — the orchestrator
 	// otherwise tries to npm-run-dev a tree that the project never scaffolded.
 	if scope.frontend && !skipFeature(store, config.FeatureFrontend, "up:frontend") {
-		feFailures := upFrontends(ctx, entities, opts.env, detach, opts.noInstall, opts.targets, opts.frontendArgs, procs)
+		feFailures := upFrontends(ctx, frontendLaunch{
+			entities: entities, env: opts.env, background: detach,
+			noInstall: opts.noInstall, targets: opts.targets,
+			frontendArgs: opts.frontendArgs, apiBaseURL: apiBaseURL, procs: procs,
+		})
 		if feFailures > 0 {
 			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
 		}
+	}
+
+	// Persist the RESOLVED discovery facts (name→port map + DATABASE_URL)
+	// alongside the PID ledger, BEFORE the readiness gate can return an error.
+	// Ephemeral (bind :0) ports are assigned in THIS process and would otherwise
+	// vanish once the launch scrollback scrolls off: `forge env status`
+	// re-renders the KCL from scratch (and reverts resolve_port drift), so it
+	// can't recover the live port. A failed readiness gate is exactly when
+	// someone needs to know which port the thing that didn't come up was on.
+	persistResolvedEnv(projectID, opts.env, entities, cfg, opts.targets, frontendsOn)
+
+	// Post-launch readiness gate. The host phase only confirmed the runners
+	// FORKED — not that their children actually bound their ports. Before we
+	// paint a (potentially misleading) green summary, wait until OUR OWN
+	// marked child is the listener on every expected host-service port, or
+	// fail loudly. This catches both a silent bind failure (nothing ever
+	// listens) and the stale-holder trap (a foreign/old process still answers
+	// the probe) — either of which the best-effort summary used to show as
+	// "up". Detect and report only: nothing is killed here, and the children
+	// this run started are already tracked, so the next `forge env up` / `forge
+	// run` for this project+env reclaims them and `forge env down` stops them.
+	// Only when this run actually started host services (scope.host); scoped
+	// by --target inside the gate.
+	if scope.host {
+		if err := waitHostServicesReady(entities, projectID, opts.env, opts.targets, hostReadyTimeout, hostReadyPoll); err != nil {
+			return err
+		}
+		// First-boot dev auto-seed. By this point the app's AUTO_MIGRATE has
+		// run (readiness gate passed), so the schema is current. Warn-never-
+		// fatal: a seed failure never breaks the dev loop.
+		maybeAutoSeed(ctx, store, cfg, entities, opts)
 	}
 
 	// Summary box: what's listening where, and where to find each
@@ -534,14 +703,8 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// the summary lists exactly the frontends this run actually started.
 	printUpSummary(entities, opts.env, detach, opts.targets, frontendsOn)
 
-	// Persist the per-env lock (tracked PIDs) for BOTH the supervise and
-	// detach paths, so a concurrent `forge up` for this env detects the
-	// running stack and `forge up stop` works. The supervise path removes
-	// it again on shutdown (procs.shutdown / shutdownOnExit).
-	procs.persist()
-
 	if detach {
-		fmt.Printf("[up] detached %d process(es). Stop with `forge up stop --env=%s`.\n",
+		fmt.Printf("[up] detached %d process(es). Stop with `forge env down %s`.\n",
 			procs.count(), opts.env)
 		return nil
 	}
@@ -559,6 +722,64 @@ func runUp(ctx context.Context, opts upOptions) error {
 	return nil
 }
 
+// upPreflight is everything that must hold before this run starts a process.
+//
+//  1. ONE stack per (project, env). A predecessor — detached, orphaned by a
+//     crash, whatever — is STOPPED, never adopted: this invocation may carry a
+//     different config, a different kernel-assigned port, or reinstalled deps,
+//     so the running process is not the process the caller asked for. The
+//     decision reads the live ownership markers and is entirely
+//     PORT-INDEPENDENT, which is the whole point. It used to hang off a port
+//     conflict, and then ephemeral dev ports arrived: a second stack takes a
+//     free port, collides with nothing, and the reclaim never ran. Eight rounds
+//     of `forge run` left 38 orphaned processes, 7.5 GB resident, on 15 ports.
+//
+//  2. Refuse to start against a port held by something we do NOT own. That is
+//     all the port probe was ever for. After (1) every remaining holder is
+//     foreign by construction — a foreign process is reported, never killed.
+func upPreflight(projectID, env string, e *KCLEntities, targets []string, frontendsOn bool) error {
+	if stopped := stopStack(projectID, env); stopped > 0 {
+		fmt.Printf("[up] stopped %d process tree(s) from the env=%s stack this project was already running\n", stopped, env)
+	}
+	conflicts := conflictingPorts(e, targets, frontendsOn, portInUse)
+	if len(conflicts) == 0 {
+		return nil
+	}
+	// Classified against a FRESH process snapshot — the teardown above changed
+	// the table, so a snapshot taken before it would be stale. Anything still
+	// holding a port is foreign; an `owned` entry here means a tree-kill that
+	// waits for exit did not take, which is a different failure and says so.
+	owned, foreign := classifyPortConflicts(projectID, env, conflicts, portListenerPID, newOSProcFacts())
+	return portHolderError(env, owned, foreign)
+}
+
+// portHolderError renders the refusal when ports this run needs are still
+// held. The two arms are different failures with different remedies: a marked
+// holder survived a teardown that should have taken it (report the pid, do not
+// retry blindly), and a holder forge never started, which forge will not kill.
+func portHolderError(env string, owned, foreign []portConflict) error {
+	var b strings.Builder
+	if len(owned) > 0 {
+		_, _ = fmt.Fprintf(&b, "[up] a forge-managed stack for env=%s still holds these ports after being stopped:\n", env)
+		for _, c := range owned {
+			_, _ = fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
+		}
+		_, _ = fmt.Fprintf(&b, "     inspect:  forge env ps        (what forge is running, machine-wide)\n")
+		_, _ = fmt.Fprintf(&b, "     stop:     forge env down %s", env)
+	}
+	if len(foreign) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		_, _ = fmt.Fprintf(&b, "[up] these ports are held by a process forge doesn't manage (env=%s):\n", env)
+		for _, c := range foreign {
+			_, _ = fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
+		}
+		b.WriteString("     free them (lsof -i :<port>, kill the PID) or use --target to start a different service")
+	}
+	return errors.New(b.String())
+}
+
 // upClusterInput carries the inputs upClusterBringup needs for the cluster
 // phase (cluster ensure + kubeconfig secrets + concurrent compose infra +
 // build + deploy).
@@ -571,7 +792,7 @@ type upClusterInput struct {
 	scope      reconcileScope
 }
 
-// upClusterBringup runs `forge up`'s cluster phases: ensure every declared k3d
+// upClusterBringup runs `forge env up`'s cluster phases: ensure every declared k3d
 // cluster exists (and mint cross-cluster kubeconfig secrets) BEFORE anything
 // builds or deploys, kick off the docker-compose infra concurrently with the
 // build, run the build phase, barrier on the infra pre-warm, then run the
@@ -648,19 +869,19 @@ func upClusterBringup(ctx context.Context, in upClusterInput) error {
 		if !skipFeature(store, config.FeatureDeploy, "up:deploy") {
 			fmt.Println("\n[up] deploy phase")
 			// Cluster reconcile through the SAME named entry point
-			// `forge deploy` uses. `up`'s cluster step carries a
+			// `forge env deploy` uses. `up`'s cluster step carries a
 			// scope-derived deployOptions — instead of a blank
 			// `deployOptions{}` literal standing in for "deploy with no
 			// options."
 			//
 			// skipFrontend: true is the deploy-phase mirror of the build
-			// phase's skipFrontends (upBuildCluster). `forge up` ALWAYS
+			// phase's skipFrontends (upBuildCluster). `forge env up` ALWAYS
 			// dev-serves frontends in its Phase 4 (`npm run dev` =
 			// `next dev` / vite dev server) and NEVER consumes a prod
 			// frontend artifact, so the deploy phase must not run the
 			// `deploy = None` build-only path (dispatchFrontendDeploys →
 			// `npm run build` under NODE_ENV=production). Without this a
-			// bare `forge up --env=dev` would prod-`next build` every
+			// bare `forge env up dev` would prod-`next build` every
 			// host-mode frontend (the static `output: "export"` Next.js
 			// build) right before — and pointlessly alongside — starting
 			// its `next dev` server. The build-only path exists to
@@ -675,7 +896,7 @@ func upClusterBringup(ctx context.Context, in upClusterInput) error {
 }
 
 // upServiceRow is one host service / frontend line shared by the immediate
-// `forge up` summary and the retrieve-after-the-fact `forge up services`
+// `forge env up` summary and the retrieve-after-the-fact `forge env status`
 // output. The JSON tags are the `--json` contract (kept additive so
 // dashboards/agents stay stable as fields are added).
 type upServiceRow struct {
@@ -694,13 +915,105 @@ type upServiceRow struct {
 	// listener, or on platforms where the port→pid lookup is a no-op.
 	PID   int  `json:"pid,omitempty"`
 	Owned bool `json:"owned,omitempty"`
+	// Serving lists the live server process(es) actually running this host
+	// service's binary — the LEAF process under its runner (air / go-run),
+	// discovered by sweeping the process table for this project+env's
+	// ownership marker rather than by the port listener alone (a service may
+	// not listen, and a stale straggler may have lost the port to a rebuild).
+	// Each carries build-freshness: binary path, its mtime, the process start
+	// time, and a stale flag. Normally exactly one; EMPTY for a frontend, a
+	// down/foreign-held service, or a platform without process inspection.
+	// Filled only by the `forge env status` path (enrichServing).
+	Serving []servingProc `json:"serving,omitempty"`
+	// Duplicate is the air-leak alarm: more than one server process is running
+	// THE SAME COMMAND under this row (a rebuild that did not reap its
+	// predecessor, or an orphaned straggler) — len(Duplicates) > 0. Surfaced
+	// as its own bool so a dashboard/agent alerts on it without counting.
+	Duplicate bool `json:"duplicate,omitempty"`
+	// Duplicates names WHICH command is duplicated, one entry per command with
+	// more than one live process. The marker a process is grouped by rides the
+	// environment and so propagates to descendants, which means a row's
+	// processes are not necessarily all the same program; attribution comes
+	// from argv (see attributeDuplicates), so a duplicated `reliant server
+	// worker` is reported as the worker rather than as whichever row it
+	// happened to inherit its marker from.
+	Duplicates []duplicateGroup `json:"duplicates,omitempty"`
+	// AttributionUndetermined is set when this row has several serving
+	// processes and at least one has NO readable argv (a platform with no argv
+	// source, or a process whose cmdline the kernel withholds). The duplicate
+	// question cannot be answered honestly for it, so the report says so
+	// instead of guessing — a confident wrong attribution is the defect this
+	// whole path exists to avoid.
+	AttributionUndetermined bool `json:"attribution_undetermined,omitempty"`
 }
 
-// upServicesReport is the `forge up services --json` envelope. Stable so
-// scripts / sub-agents can consume it.
+// duplicateGroup is one duplicated command under a service row: the argv-derived
+// command identity and every live pid running it. Emitted under
+// upServiceRow.Duplicates; additive JSON contract.
+type duplicateGroup struct {
+	// Command is the argv-derived identity (`reliant server worker`) — what is
+	// actually duplicated, which is not necessarily the row's name.
+	Command string `json:"command"`
+	// PIDs are the live processes running Command, sorted. Always len > 1.
+	PIDs []int `json:"pids"`
+}
+
+// servingProc is one live server process backing a host service, with the
+// build-freshness facts that answer "is this the fresh build?" without ps/stat
+// archaeology. Emitted under upServiceRow.Serving; additive JSON contract.
+type servingProc struct {
+	PID int `json:"pid"`
+	// Path is the executable the process is running (air's built `tmp/main`,
+	// a go-run temp binary, …). On Linux a binary replaced under a running
+	// process shows a trailing " (deleted)" — a straggler tell that is kept,
+	// not stripped.
+	Path string `json:"path,omitempty"`
+	// BuiltAt is the executable's on-disk mtime (RFC3339 UTC); empty when the
+	// path is unstatable or has been deleted out from under the process.
+	BuiltAt string `json:"built_at,omitempty"`
+	// StartedAt is when the process started (RFC3339 UTC). A start that
+	// predates BuiltAt means the process is running an older build than the
+	// one now on disk — the straggler signal behind a duplicate.
+	StartedAt string `json:"started_at,omitempty"`
+	// Argv is the process's command line as the kernel reports it. Empty when
+	// argv is unreadable, which is what makes duplicate attribution report
+	// UNDETERMINED rather than guess.
+	Argv []string `json:"argv,omitempty"`
+	// Command is the argv-derived command identity duplicate attribution groups
+	// by (`reliant server worker`) — see processCommand. Empty exactly when
+	// Argv is.
+	Command string `json:"command,omitempty"`
+	// Stale is true when this process is NOT running current code: its binary
+	// predates the repo HEAD commit, OR the on-disk binary was rebuilt after
+	// the process started, OR the binary was deleted under it.
+	Stale bool `json:"stale,omitempty"`
+}
+
+// upServicesReport is the `forge env status --json` envelope. Stable so
+// scripts / sub-agents can consume it. Fields are additive: a new key never
+// changes the meaning of an existing one, so a consumer that pins to the old
+// shape keeps working.
 type upServicesReport struct {
-	Env      string         `json:"env"`
-	Services []upServiceRow `json:"services"`
+	Env string `json:"env"`
+	// DatabaseURL is the DSN the live stack's services dial, captured by
+	// `forge env up` at launch (resolveSeedDSN) and persisted alongside the
+	// PID ledger. Empty/omitted when no stack has been brought up for this env
+	// in this worktree, or the launch predated this field. One call therefore
+	// yields both this worktree's API port (per-service `port`) and its DSN.
+	DatabaseURL string `json:"database_url,omitempty"`
+	// HeadCommitAt is the repo HEAD commit time (RFC3339 UTC) that per-service
+	// build-freshness is measured against: a serving process whose binary
+	// predates it is flagged stale. Empty when the project dir is not a git
+	// repo / git is unavailable. Omitted so a consumer pinned to the old shape
+	// is unaffected.
+	HeadCommitAt string         `json:"head_commit_at,omitempty"`
+	Services     []upServiceRow `json:"services"`
+	// Checks are the env-runtime health checks (compose infra, app
+	// /healthz, pprof, telemetry backends, Delve) — the set that moved off
+	// `forge doctor` when doctor stopped answering runtime questions.
+	// Additive: a consumer reading only `services` is unaffected. A check
+	// whose status is "unknown" is UNDETERMINED, not a pass.
+	Checks []doctor.CheckResult `json:"checks,omitempty"`
 }
 
 // collectUpServices builds the ordered host-then-frontend rows for env,
@@ -780,7 +1093,7 @@ func probeRowsListening(rows []upServiceRow, probe func(int) bool) {
 // signal the pre-flight reclaim guard uses. Best-effort: on platforms
 // where portListenerPID is a no-op (Windows) PID stays 0 and Owned false,
 // so the report degrades to health-only without misfiring.
-func enrichOwnership(rows []upServiceRow, env string) {
+func enrichOwnership(rows []upServiceRow, projectID, env string) {
 	facts := newOSProcFacts()
 	for i := range rows {
 		if rows[i].Port <= 0 {
@@ -791,13 +1104,13 @@ func enrichOwnership(rows []upServiceRow, env string) {
 			continue
 		}
 		rows[i].PID = pid
-		if _, ok := forgeOwnerOfPID(pid, env, facts); ok {
+		if _, ok := forgeOwnerOfPID(pid, projectID, env, facts); ok {
 			rows[i].Owned = true
 		}
 	}
 }
 
-// printUpSummary prints a compact box of what `forge up` just brought
+// printUpSummary prints a compact box of what `forge env up` just brought
 // up: each host service and frontend, its URL (when a listen port is
 // known), a point-in-time listen check, and the path to its log file —
 // plus where to grep all logs, how to list cluster routes, and how to
@@ -807,7 +1120,7 @@ func enrichOwnership(rows []upServiceRow, env string) {
 //
 // Health here is best-effort: the processes JUST started, so a service
 // still binding its port shows "starting" (not "down"). Use
-// `forge up services --env=<env>` for the settled status.
+// `forge env status <env>` for the settled status.
 func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool) {
 	rows := collectUpServices(e, env, targets, frontendsOn, portInUse)
 	if len(rows) == 0 {
@@ -815,7 +1128,7 @@ func printUpSummary(e *KCLEntities, env string, background bool, targets []strin
 	}
 	trailer := "Ctrl-C to stop."
 	if background {
-		trailer = fmt.Sprintf("Detached — stop with `forge up stop --env=%s`", env)
+		trailer = fmt.Sprintf("Detached — stop with `forge env down %s`", env)
 	}
 	// showOwner=false: the immediate summary stays off the lsof/ps hot path;
 	// notReadyLabel="starting" because a just-launched port not yet bound is
@@ -861,6 +1174,24 @@ func renderUpSummary(w io.Writer, env string, rows []upServiceRow, notReadyLabel
 		fmt.Fprintf(w, "%s  %s %-*s  %-*s  %s\n",
 			bar, statusGlyph(r, notReadyLabel), nameW, r.Name, urlW, urlCell, rowStatus(r, notReadyLabel, showOwner))
 		fmt.Fprintf(w, "%s       ↳ %s\n", bar, r.Log)
+		// Duplicate first — the loud line — then each serving process's
+		// build-freshness so the vintages are visible side by side. Both are
+		// only ever populated on the `forge env status` path (enrichServing).
+		// The command named here is the argv-derived one that is ACTUALLY
+		// duplicated, which is not necessarily this row's name: the ownership
+		// marker propagates to descendants, so a row can carry a process
+		// running a different program.
+		for _, d := range r.Duplicates {
+			fmt.Fprintf(w, "%s       ⚠ DUPLICATE: %d processes running %q (pids %s) — a rebuild likely didn't reap the old one; kill the stale pid\n",
+				bar, len(d.PIDs), d.Command, joinInts(d.PIDs))
+		}
+		if r.AttributionUndetermined {
+			fmt.Fprintf(w, "%s       ⚠ %d processes under this service, but argv was unreadable for at least one — cannot determine which command is duplicated\n",
+				bar, len(r.Serving))
+		}
+		for _, sp := range r.Serving {
+			fmt.Fprintf(w, "%s          %s\n", bar, servingLine(sp))
+		}
 	}
 	printGroup := func(title, kind string) {
 		printed := false
@@ -877,13 +1208,19 @@ func renderUpSummary(w io.Writer, env string, rows []upServiceRow, notReadyLabel
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "╭─ forge up · env=%s ─────────────────────────────────────\n", env)
+	fmt.Fprintf(w, "╭─ forge env up · %s ─────────────────────────────────────\n", env)
+	if anyDuplicateServing(rows) {
+		fmt.Fprintf(w, "%s ⚠ DUPLICATE SERVER PROCESSES DETECTED — see the flagged service(s) below\n", bar)
+	}
+	if anyAttributionUndetermined(rows) {
+		fmt.Fprintf(w, "%s ⚠ SOME PROCESSES COULD NOT BE ATTRIBUTED (argv unreadable) — see the flagged service(s) below\n", bar)
+	}
 	printGroup("Host services", "host")
 	printGroup("Frontends", "frontend")
 	fmt.Fprintf(w, "%s\n", bar)
 	fmt.Fprintf(w, "%s Logs   %s/   — tail -f / grep the per-service *.log here\n", bar, upLogDir(env))
 	fmt.Fprintf(w, "%s Cluster routes:  forge cluster urls\n", bar)
-	fmt.Fprintf(w, "%s Live status:     forge up services --env=%s\n", bar, env)
+	fmt.Fprintf(w, "%s Live status:     forge env status %s\n", bar, env)
 	for _, t := range trailers {
 		fmt.Fprintf(w, "%s %s\n", bar, t)
 	}
@@ -950,6 +1287,14 @@ func hostEnvPort(name string, host *HostDeploy) string {
 	if host == nil {
 		return ""
 	}
+	// Explicit contract first (same preference as hostEnvPorts): the first
+	// declared listen port is the service's canonical/summary port. Falling
+	// through to the env heuristic here would surface a port the service
+	// never binds (e.g. a vestigial k8s-convention PORT), and the summary /
+	// status probe would then report whatever foreign process holds it.
+	if len(host.ListenPorts) > 0 && host.ListenPorts[0] > 0 {
+		return strconv.Itoa(host.ListenPorts[0])
+	}
 	specific := strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_PORT"
 	generic := ""
 	for _, ev := range host.EnvVars {
@@ -966,7 +1311,83 @@ func hostEnvPort(name string, host *HostDeploy) string {
 	return generic
 }
 
-// portConflict names a service/frontend the current `forge up` would
+// hostEnvPorts returns EVERY TCP port a host service will bind, derived
+// from its inline env literals — not just the single canonical one
+// hostEnvPort surfaces for the summary URL. A service commonly binds
+// several ports (an API port, a metrics/pprof port, a debug port), each
+// declared as its own `<...>_PORT` env var; probing only one of them let a
+// real conflict slip past the pre-flight guard, so it launched a second
+// stack on top of a stale one. This enumerates the full set instead.
+//
+// Ports come from:
+//   - every `<...>_PORT`-suffixed env var with an inline value, and
+//   - the generic `PORT`, but ONLY when the service declares no
+//     service-specific `<NAME>_PORT` — a service that declares both binds
+//     the specific one and treats generic PORT as a vestigial default (the
+//     same heuristic hostEnvPort uses). Including a vestigial PORT would
+//     over-detect: a false pre-flight conflict, or a readiness gate waiting
+//     for a port the binary never binds.
+//
+// Only the inline `value` channel is visible host-side; config_map_ref /
+// secret_ref ports carry no literal here and cannot be probed. Returned in
+// declaration order, deduplicated. Empty when nothing declares a port.
+func hostEnvPorts(name string, host *HostDeploy) []int {
+	if host == nil {
+		return nil
+	}
+	// Explicit contract first: a service that declares listen_ports has
+	// stated exactly which host ports it binds — trust it and skip the env
+	// heuristic below entirely. The heuristic sweeps EVERY *_PORT env var,
+	// which misclassifies dependency-address vars (TEMPORAL_PORT,
+	// WORKSPACE_URL_PORT, a leftover k8s-convention PORT) as bind ports and
+	// then refuses `up` because healthy infra (docker temporal, the k3d
+	// gateway LB) legitimately holds them.
+	if len(host.ListenPorts) > 0 {
+		var declared []int
+		seenDeclared := map[int]bool{}
+		for _, p := range host.ListenPorts {
+			if p <= 0 || p >= 65536 || seenDeclared[p] {
+				continue
+			}
+			seenDeclared[p] = true
+			declared = append(declared, p)
+		}
+		return declared
+	}
+	specific := strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_PORT"
+	var ports []int
+	seen := map[int]bool{}
+	add := func(v string) {
+		p, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || p <= 0 || seen[p] {
+			return
+		}
+		seen[p] = true
+		ports = append(ports, p)
+	}
+	hasSpecific := false
+	generic := ""
+	for _, ev := range host.EnvVars {
+		if ev.Value == "" {
+			continue
+		}
+		switch {
+		case ev.Name == specific:
+			hasSpecific = true
+			add(ev.Value)
+		case ev.Name == "PORT":
+			generic = ev.Value // deferred: only the bind port when no <NAME>_PORT
+		case strings.HasSuffix(ev.Name, "_PORT"):
+			add(ev.Value)
+		}
+	}
+	if !hasSpecific && generic != "" {
+		add(generic)
+	}
+	return ports
+}
+
+// portConflict names a service/frontend the current `forge env up` would
 // start whose expected listen port is already bound by something else.
 type portConflict struct {
 	name string
@@ -976,7 +1397,7 @@ type portConflict struct {
 // portInUse reports whether something is already listening on
 // 127.0.0.1:<port>. A successful TCP dial within a short timeout means a
 // listener is accepting connections; "connection refused" (the common
-// free-port case) returns false. Used by the `forge up` pre-flight guard
+// free-port case) returns false. Used by the `forge env up` pre-flight guard
 // to refuse a colliding second stack before any process starts.
 func portInUse(port int) bool {
 	dialer := net.Dialer{Timeout: 300 * time.Millisecond}
@@ -988,18 +1409,20 @@ func portInUse(port int) bool {
 	return true
 }
 
-// conflictingPorts computes the set of services/frontends THIS `forge up`
+// conflictingPorts computes the set of services/frontends THIS `forge env up`
 // invocation would start whose expected listen port is already bound.
 // It is the pure core of the pre-flight guard: probe is injected so the
 // collection logic is testable without real sockets.
 //
-//   - Host services (deploy.Type=="host"): expected port via hostEnvPort
-//     (skipped when the service declares no inline PORT).
+//   - Host services (deploy.Type=="host"): EVERY expected bind port via
+//     hostEnvPorts (skipped when the service declares no inline port). A
+//     multi-port service emits one conflict per busy port, so a collision
+//     on any of its ports is caught — probing only one used to miss it.
 //   - Frontends: fe.Port (skipped when 0, and entirely when frontendsOn
 //     is false — the frontend feature is gated off).
 //
 // Only entities in the --target set are checked (inTargetSet), so
-// `forge up --target reliant-web` next to a running admin-server is fine
+// `forge env up --target reliant-web` next to a running admin-server is fine
 // — the guard only fires for a service THIS run is about to start.
 func conflictingPorts(e *KCLEntities, targets []string, frontendsOn bool, probe func(int) bool) []portConflict {
 	if e == nil {
@@ -1013,16 +1436,10 @@ func conflictingPorts(e *KCLEntities, targets []string, frontendsOn bool, probe 
 		if !inTargetSet(targets, svc.Name) {
 			continue
 		}
-		p := hostEnvPort(svc.Name, svc.Deploy.Host)
-		if p == "" {
-			continue
-		}
-		port, err := strconv.Atoi(p)
-		if err != nil || port <= 0 {
-			continue
-		}
-		if probe(port) {
-			conflicts = append(conflicts, portConflict{name: svc.Name, port: port})
+		for _, port := range hostEnvPorts(svc.Name, svc.Deploy.Host) {
+			if probe(port) {
+				conflicts = append(conflicts, portConflict{name: svc.Name, port: port})
+			}
 		}
 	}
 	if frontendsOn {
@@ -1039,6 +1456,161 @@ func conflictingPorts(e *KCLEntities, targets []string, frontendsOn bool, probe 
 		}
 	}
 	return conflicts
+}
+
+// portReadyState is how a host service's expected bind port resolved on a
+// post-launch readiness check.
+type portReadyState int
+
+const (
+	// portReadyOurs: our own forge-up-marked child is listening — or (the
+	// degrade case) SOMETHING is listening but the holder pid can't be
+	// resolved (no lsof / Windows), so we can't prove it's foreign and don't
+	// misfire. Either way the port is up and this run is not blocked.
+	portReadyOurs portReadyState = iota
+	// portReadyForeign: a resolvable, NON-forge-owned process holds the
+	// port — a stale/old/foreign listener answering the probe, not the child
+	// this run started. The "stale process painted green" trap.
+	portReadyForeign
+	// portReadyNobody: nothing is listening — our child never bound it (a
+	// silent bind failure, or still mid-startup when the grace window ended).
+	portReadyNobody
+)
+
+// classifyPortReadiness resolves who — if anyone — is listening on port and
+// whether it is a child THIS env's `forge env up` started. listening / resolvePID
+// are injected (portInUse / portListenerPID in production) so the classifier
+// is unit-testable without real sockets or an lsof shell-out.
+//
+// It reuses the reclaim guard's ownership resolver (forgeOwnerOfPID): a
+// listener whose ancestry carries FORGE_UP_ENV==env is ours. Because the
+// pre-flight guard has already reclaimed (or errored on) any SAME-env orphan
+// before we start, a marked listener on our port at this point is the child
+// we just launched — not a prior run's orphan.
+func classifyPortReadiness(port int, projectID, envName string, listening func(int) bool, resolvePID func(int) int, f procFacts) portReadyState {
+	if !listening(port) {
+		return portReadyNobody
+	}
+	pid := resolvePID(port)
+	if pid <= 0 {
+		// Something is listening but the holder is unidentifiable (lsof
+		// missing / Windows no-op). Degrade to "up" rather than misfire — we
+		// cannot prove a foreign holder. Mirrors enrichOwnership.
+		return portReadyOurs
+	}
+	if _, ok := forgeOwnerOfPID(pid, projectID, envName, f); ok {
+		return portReadyOurs
+	}
+	return portReadyForeign
+}
+
+// hostReadyResult is one expected host-service bind port and how it resolved.
+type hostReadyResult struct {
+	name  string
+	port  int
+	state portReadyState
+}
+
+// evalHostReadiness classifies EVERY expected bind port of the host services
+// THIS run started (scoped by --target), once, using the injected probes.
+// Pure + snapshot-based → unit-testable; waitHostServicesReady calls it each
+// poll with live probes + a fresh process snapshot. Frontends are out of
+// scope (their ports are resolve_port-dynamic); this gate covers the fixed
+// host-service bind ports the incident was about.
+func evalHostReadiness(e *KCLEntities, projectID, envName string, targets []string, listening func(int) bool, resolvePID func(int) int, f procFacts) []hostReadyResult {
+	if e == nil {
+		return nil
+	}
+	var out []hostReadyResult
+	for _, svc := range e.Services {
+		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
+			continue
+		}
+		if !inTargetSet(targets, svc.Name) {
+			continue
+		}
+		for _, port := range hostEnvPorts(svc.Name, svc.Deploy.Host) {
+			out = append(out, hostReadyResult{
+				name:  svc.Name,
+				port:  port,
+				state: classifyPortReadiness(port, projectID, envName, listening, resolvePID, f),
+			})
+		}
+	}
+	return out
+}
+
+// hostReadyUnready filters a readiness snapshot to the ports NOT yet bound by
+// our own child (foreign holder or nothing listening) — the set that keeps
+// the poll loop going and, at timeout, names the failure.
+func hostReadyUnready(rs []hostReadyResult) []hostReadyResult {
+	var out []hostReadyResult
+	for _, r := range rs {
+		if r.state != portReadyOurs {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// hostReadyError renders the loud failure when the grace window ends with
+// host-service ports still not bound by this run's child. It DETECTS ONLY —
+// nothing is killed here; the started children are already in the ledger, so
+// `forge env down` (which the message points at) reaches them.
+func hostReadyError(envName string, unready []hostReadyResult) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[up] host service(s) never came up under this run (env=%s):\n", envName)
+	for _, r := range unready {
+		reason := "nothing is listening — the service failed to bind its port"
+		if r.state == portReadyForeign {
+			reason = "held by another process — not the child this run started (stale/foreign holder)"
+		}
+		fmt.Fprintf(&b, "       %-14s :%d  %s\n", r.name, r.port, reason)
+	}
+	fmt.Fprintf(&b, "     inspect the log under %s/ (lsof -i :<port> for the holder),\n", upLogDir(envName))
+	fmt.Fprintf(&b, "     stop what this run started with: forge env down %s", envName)
+	return errors.New(b.String())
+}
+
+// hostReadyTimeout / hostReadyPoll bound the post-launch readiness gate: how
+// long to wait for host services to bind, and how often to re-check. Air /
+// go-run compile the binary on start, so the window must outlast a warm
+// incremental build's compile+bind; a genuinely cold first build can exceed
+// it, in which case the gate reports "nothing listening" for a service that
+// was merely slow — the accepted trade for catching the silent-bind and
+// stale-holder failures the summary used to paint green.
+const (
+	hostReadyTimeout = 15 * time.Second
+	hostReadyPoll    = 250 * time.Millisecond
+)
+
+// waitHostServicesReady is the post-launch readiness gate. After the host
+// phase has forked its runners, it polls every expected host-service bind
+// port until OUR OWN marked child is the listener on each, or the grace
+// window elapses — then errors, naming the offending service/port(s). This
+// closes the gap where forge only confirmed the runner FORKED (never that
+// its child actually bound the port) and the best-effort summary could not
+// tell "my new child bound it" from "a stale holder still answers" — so it
+// painted a stale process green. A fresh process snapshot is taken each poll
+// so an air re-exec / late fork is picked up. Nothing is killed: detect and
+// report only. A nil return means every declared host port is bound by us
+// (or nothing declared a port).
+func waitHostServicesReady(e *KCLEntities, projectID, envName string, targets []string, timeout, poll time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		rs := evalHostReadiness(e, projectID, envName, targets, portInUse, portListenerPID, newOSProcFacts())
+		if len(rs) == 0 {
+			return nil // no host service declares a bind port; nothing to gate
+		}
+		unready := hostReadyUnready(rs)
+		if len(unready) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return hostReadyError(envName, unready)
+		}
+		time.Sleep(poll)
+	}
 }
 
 // entitiesEmpty reports whether the entity set has zero declarations
@@ -1095,11 +1667,11 @@ func prewarmComposeInfra(ctx context.Context, env string, entities *KCLEntities)
 }
 
 // reconcileCluster is the cluster-scope reconcile entry point shared by
-// `forge deploy` and `forge up`'s deploy phase: render the env's KCL,
+// `forge env deploy` and `forge env up`'s deploy phase: render the env's KCL,
 // resolve context / namespace / secrets, and apply the in-cluster
 // workloads + External/Compose deploy targets. opts carries the surgical
 // knobs (tag / rollback / prune / dry-run / context override / targets /
-// skip-frontend); `forge deploy` fills it from its flags, `forge up` passes
+// skip-frontend); `forge env deploy` fills it from its flags, `forge env up` passes
 // the zero value (no knobs). Both reach the SAME pipeline — there is no
 // longer a blank-`deployOptions{}` literal hiding the up-vs-deploy seam.
 func reconcileCluster(ctx context.Context, env string, opts deployOptions) error {
@@ -1157,7 +1729,7 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 // backward-compat fallback so projects that haven't adopted a provider
 // keep working.
 //
-// Unlike `forge run <svc>`, `forge up` is strict about unknown runners:
+// Unlike `forge run <svc>`, `forge env up` is strict about unknown runners:
 // a typo in KCL is fail-loud here because the orchestrator owns the
 // whole environment and silent fallback to go-run could mask a deploy
 // pin the user meant to apply. The hostlaunch package itself falls
@@ -1208,15 +1780,122 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 	envVars := hostEnvVarsToMap(host)
 	// projectConfig layer: forge.yaml environments[<env>].config projected
 	// to env-var strings. Same source the cluster ConfigMap projection
-	// uses; layering it here keeps `forge up` host services in sync with
+	// uses; layering it here keeps `forge env up` host services in sync with
 	// `forge run <svc>`. nil cfg / empty env collapses to an empty map.
 	var projectConfigEnv map[string]string
 	if cfg != nil && env != "" {
 		projectConfigEnv = loadProjectConfigEnv(cfg, env)
 	}
+	// Dev-run defaults: on a dev env, `forge run` marks the runtime as
+	// development AND auto-applies migrations on boot, so a fresh dev DB
+	// comes up with its schema without any hand-set env vars. Authentication
+	// is untouched here — a real validator is built in every mode. Lowest
+	// precedence — overridden by project config, secrets,
+	// KCL env_vars, and the shell (see withDevRunDefaults). The env is
+	// classified via the same config source the seed gate reads.
+	dev, _ := seedTargetIsDev(env)
+	projectConfigEnv = withDevRunDefaults(projectConfigEnv, dev)
 	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, secretVals, envVars)
+	cmd.Env = forceHostBindPorts(cmd.Env, svc.Name, envVars)
 
 	return cmd, svc.Name, nil
+}
+
+// forceHostBindPorts makes the port the process BINDS the same port forge
+// PUBLISHED. Every other host env var follows the shell-wins policy
+// LayerHostEnv implements — a dev overriding DATABASE_URL from their shell is
+// the point. A bind port cannot work that way, because forge is not the only
+// reader: the pre-flight port-conflict guard, the readiness gate, the summary
+// URL and the frontend's inlined API URL all read the KCL/allocated value,
+// while only the process reads the environment. Letting an inherited PORT win
+// desynchronizes all five — forge prints and wires one port and the app
+// answers on another, so the frontend bundle points at a dead port and the
+// readiness probe passes against whatever else holds the published one.
+//
+// Only the bind-port names are forced: the generic PORT and any
+// `<...>_PORT`-suffixed var forge declared inline, i.e. exactly the set
+// hostEnvPorts treats as ports this service binds. A shell value that is
+// being overridden is reported rather than dropped in silence.
+func forceHostBindPorts(env []string, svcName string, declared map[string]string) []string {
+	inherited := map[string]string{}
+	for _, kv := range os.Environ() {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			inherited[kv[:i]] = kv[i+1:]
+		}
+	}
+	for _, name := range sortedKeys(declared) {
+		if name != "PORT" && !strings.HasSuffix(name, "_PORT") {
+			continue
+		}
+		value := declared[name]
+		if was, ok := inherited[name]; ok && was != value {
+			fmt.Printf("[up] host %s: %s=%s in the environment ignored — forge publishes %s and the app must bind it\n",
+				svcName, name, was, value)
+		}
+		env = withForcedEnv(env, name, value)
+	}
+	return env
+}
+
+// withDevRunDefaults layers the dev-run environment UNDER the project config
+// when isDev, so `forge run` / `forge env up --host-only` boots a fresh dev
+// app turnkey with zero hand-set env vars:
+//
+//   - ENVIRONMENT=development — marks the runtime as development so dev
+//     ergonomics (permissive CORS, verbose errors) apply. Authentication is
+//     still enforced: SetupAuth builds a real validator in every mode.
+//
+//   - AUTO_MIGRATE=true — the app applies its migrations on boot, so a
+//     freshly-created dev DB has its schema before the host-services
+//     readiness gate + first-boot auto-seed run (maybeAutoSeed assumes the
+//     schema is current — it seeds, it does not migrate). Without this a
+//     `forge run` against an empty DB serves an unmigrated, tableless app.
+//
+// CORS needs no entry here. ENVIRONMENT=development is itself what enables
+// the backend's CORS layer (serverkit.Config.CORSEnabled) and selects the
+// origin-reflecting dev policy, so the dashboard reaches its own API no
+// matter which port the frontend landed on — including a kernel-assigned
+// ephemeral one, which no derived allow-list could have named in advance.
+//
+// It is the LOWEST-precedence layer: project config (returned on top here),
+// then secrets, KCL env_vars, and the developer's shell all override it (see
+// hostlaunch.LayerHostEnv). When isDev is false (prod/staging) the project
+// config passes through untouched, so production behavior is unchanged — a
+// prod deploy still owns its migration story (a Job/initContainer), never an
+// implicit on-boot migrate, and its CORS allow-list stays explicit.
+//
+// An EMPTY project-config value never shadows a dev default. The KCL
+// projection is total — config_projection.k emits one entry per AppConfig
+// field unconditionally (`"CORS_ORIGINS" = {value = c.cors_origins}`), so a
+// field the env's config.k never pinned still arrives here carrying its
+// schema zero value. That "" is an ABSENCE, not a decision, and it is
+// indistinguishable from one at this layer; letting it win would make the
+// dev defaults dead code for every field the scaffold doesn't pin. ENVIRONMENT
+// is the field that makes this rule load-bearing: it is what puts the backend
+// in the development posture, and an unpinned "" arriving from the total
+// projection would silently demote a `forge run` to a deployed posture — a
+// backend that then refuses its own frontend's preflight, so every CRUD page
+// renders "Couldn't load data / Failed to fetch" against a seeded DB.
+// Pin a field in deploy/kcl/<env>/config.k to override for real.
+func withDevRunDefaults(projectConfigEnv map[string]string, isDev bool) map[string]string {
+	if !isDev {
+		return projectConfigEnv
+	}
+	out := map[string]string{
+		"ENVIRONMENT":  devModeValue,
+		"AUTO_MIGRATE": "true",
+	}
+	// Project config overrides the dev-run defaults on key conflict — but only
+	// with a value that says something. See the doc comment.
+	for k, v := range projectConfigEnv {
+		if v == "" {
+			if _, defaulted := out[k]; defaulted {
+				continue
+			}
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // upFrontends starts every declared frontend in its path. DevRunner
@@ -1228,7 +1907,24 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 // fresh checkout doesn't fail with "next: command not found". A failed
 // install counts as a frontend failure (logged, non-fatal) so the rest
 // of the loop still comes up.
-func upFrontends(ctx context.Context, e *KCLEntities, env string, background, noInstall bool, targets, frontendArgs []string, procs *procRegistry) int {
+// frontendLaunch carries the inputs for the frontend half of `forge env up`.
+// A struct rather than nine positionals — `background, noInstall bool` and
+// `targets, frontendArgs []string` are adjacent same-typed pairs, the exact
+// shape a caller silently transposes.
+type frontendLaunch struct {
+	entities     *KCLEntities
+	env          string
+	background   bool
+	noInstall    bool
+	targets      []string
+	frontendArgs []string
+	apiBaseURL   string
+	procs        *procRegistry
+}
+
+func upFrontends(ctx context.Context, fl frontendLaunch) int {
+	e, env, background, noInstall := fl.entities, fl.env, fl.background, fl.noInstall
+	targets, frontendArgs, apiBaseURL, procs := fl.targets, fl.frontendArgs, fl.apiBaseURL, fl.procs
 	failures := 0
 	for _, fe := range e.Frontends {
 		if !inTargetSet(targets, fe.Name) {
@@ -1239,7 +1935,7 @@ func upFrontends(ctx context.Context, e *KCLEntities, env string, background, no
 			failures++
 			continue
 		}
-		cmd := buildFrontendCmd(ctx, fe, env, os.Environ(), frontendArgs)
+		cmd := buildFrontendCmd(ctx, fe, env, os.Environ(), frontendArgs, apiBaseURL)
 		if err := procs.start("frontend:"+fe.Name, cmd, background); err != nil {
 			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
 			failures++
@@ -1324,15 +2020,18 @@ func frontendDepsStale(dir string) bool {
 //     env exported) can't silently shift the bind port out from under
 //     the user. Same precedence as KCL EnvVars on host services.
 //
-// fe.Port == 0 (legacy projects that don't set the field) skips the
-// force-inject so we don't surface a meaningless "PORT=0" line that
-// would crash the dev server.
+// fe.Port == 0 skips the force-inject so we don't surface a meaningless
+// "PORT=0" line that would crash the dev server. In the normal flow an
+// ephemeral (unset) frontend has already been assigned a concrete free port
+// by resolveEphemeralFrontendPorts before we get here, so Port is > 0 and the
+// dev server binds the port forge reported in the summary; Port stays 0 only
+// when that allocation failed, in which case the dev server picks its own.
 //
 // frontendArgs are passthrough tokens forwarded to the dev server after a
 // `--` separator (`npm run dev -- <frontendArgs>`), so `forge run --
-// --host 0.0.0.0` reaches Vite/Next. Empty (the `forge up` default) leaves
+// --host 0.0.0.0` reaches Vite/Next. Empty (the `forge env up` default) leaves
 // the command untouched.
-func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parentEnv, frontendArgs []string) *exec.Cmd {
+func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parentEnv, frontendArgs []string, apiBaseURL string) *exec.Cmd {
 	runner := fe.DevRunner
 	if runner == "" {
 		runner = "npm"
@@ -1358,7 +2057,26 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	// developer's shell can still override, and the KCL port binding wins
 	// last. Missing env-file is non-fatal (nil map collapses to no-op).
 	envFileMap, _ := envutil.ParseDotEnv(envFile)
-	cmd.Env = hostlaunch.LayerHostEnv(parentEnv, envFileMap, nil, kclEnvVarsToMap(fe.EnvVars))
+	// Point the frontend at the backend's ACTUAL (ephemeral) dev port. The
+	// backend no longer binds a fixed :8080 in host-only mode, so the value
+	// forge baked into the frontend (DEV_API_URL) would be stale; inject the
+	// type-appropriate API-URL env var the frontend's dev transport reads
+	// (NEXT_PUBLIC_API_URL / VITE_API_URL / EXPO_PUBLIC_API_URL). Placed in
+	// the LOWEST (env-file) layer so a developer's shell or an explicit KCL
+	// env_var still overrides it. No-op for a full cluster up (apiBaseURL "").
+	if apiBaseURL != "" {
+		if envFileMap == nil {
+			envFileMap = map[string]string{}
+		}
+		envFileMap[frontendAPIURLEnvVar(fe.Type)] = apiBaseURL
+	}
+	// EffectiveEnvVars folds the typed `config` block (mock/api_url/otel/
+	// environment) into the KCL env stream, explicit env_vars winning on a
+	// collision. Placed at the KCL layer (below parentEnv) so a developer's
+	// shell still overrides — a dev can `NEXT_PUBLIC_MOCK_API=true npm run
+	// dev` even when config.mock is off. A config-declared mock=true/hybrid
+	// applies here as the dev-launch default.
+	cmd.Env = hostlaunch.LayerHostEnv(parentEnv, envFileMap, nil, kclEnvVarsToMap(fe.EffectiveEnvVars()))
 
 	if fe.Port > 0 {
 		cmd.Env = withForcedEnv(cmd.Env, "PORT", fmt.Sprintf("%d", fe.Port))
@@ -1384,16 +2102,17 @@ func kclEnvVarsToMap(vars []KCLEnvVar) map[string]string {
 // procRegistry tracks long-running child processes started by the up
 // orchestrator and provides the cleanup cascade for Ctrl-C teardown.
 // Background mode persists PIDs under ~/.cache/forge/up/<env>/ so
-// `forge up stop --env=<env>` can find them.
+// `forge env down <env>` can find them.
 type procRegistry struct {
-	env       string
-	mu        sync.Mutex
-	processes []*managedProcess
-	persisted bool
+	projectID  string
+	projectDir string
+	env        string
+	mu         sync.Mutex
+	processes  []*managedProcess
 }
 
-func newProcRegistry(env string) *procRegistry {
-	return &procRegistry{env: env}
+func newProcRegistry(projectID, projectDir, env string) *procRegistry {
+	return &procRegistry{projectID: projectID, projectDir: projectDir, env: env}
 }
 
 // start launches a child command, captures stdout/stderr with a
@@ -1404,9 +2123,11 @@ func newProcRegistry(env string) *procRegistry {
 func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error {
 	// Stamp forge ownership onto the child (and, via env inheritance, every
 	// descendant) BEFORE it starts. This is the authoritative signal a later
-	// `forge up` uses to recognise its own orphans on a busy port even when
-	// the .pids ledger has drifted — see up_reclaim.go.
-	stampForgeOwnership(cmd, p.env, name)
+	// `forge env up` uses to recognise its OWN orphans (this project + env) on
+	// a busy port even when the .pids ledger has drifted — see up_reclaim.go.
+	// The project marker is what keeps a different project's reclaim off this
+	// child.
+	stampForgeOwnership(cmd, p.projectID, p.env, name)
 	if background {
 		logPath, err := upLogPath(p.env, name)
 		if err != nil {
@@ -1428,7 +2149,7 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 		}
 		// Capture the PID BEFORE Release() — Release resets
 		// cmd.Process.Pid to -1, and persist()/the log line below need the
-		// real PID so `forge up stop` can later SIGTERM it.
+		// real PID so `forge env down` can later SIGTERM it.
 		pid := 0
 		if cmd.Process != nil {
 			pid = cmd.Process.Pid
@@ -1437,6 +2158,7 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 		p.mu.Lock()
 		p.processes = append(p.processes, &managedProcess{name: name, cmd: cmd, pid: pid})
 		p.mu.Unlock()
+		p.persist()
 		fmt.Printf("[up] %s: detached (pid=%d, log=%s)\n", name, pid, logPath)
 		return nil
 	}
@@ -1478,6 +2200,7 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	p.mu.Lock()
 	p.processes = append(p.processes, &managedProcess{name: name, cmd: cmd, pid: cmd.Process.Pid})
 	p.mu.Unlock()
+	p.persist()
 	fmt.Printf("[up] %s: started (pid=%d)\n", name, cmd.Process.Pid)
 	return nil
 }
@@ -1518,18 +2241,24 @@ func (p *procRegistry) count() int {
 	return len(p.processes)
 }
 
-// persist writes the tracked PID set to disk so `forge up stop` can
-// teardown after detach. Each line is `<name>\t<pid>`.
+// persist writes the tracked PID set and this project's path record to disk.
+// Each ledger line is `<name>\t<pid>`.
+//
+// It runs after EVERY start, not once at the end of the launch phases, because
+// any early return between the two loses the record of children that are
+// already running: a failed readiness gate used to return before the single
+// end-of-run persist, leaving every started child alive with no ledger ever
+// written and nothing on disk naming the project they belonged to. Rewriting a
+// hundred bytes per start is cheaper than a class of unreachable orphans.
 func (p *procRegistry) persist() {
-	if p.persisted {
-		return
-	}
-	p.persisted = true
-	statePath, err := upStatePath(p.env)
+	statePath, err := upStatePath(p.projectID, p.env)
 	if err != nil {
 		fmt.Printf("[up] warning: resolve state path: %v\n", err)
 		return
 	}
+	// The path record is what makes this stack nameable by `forge env ps` and
+	// stoppable by `forge env down --all` after the project directory is gone.
+	recordProjectDir(p.projectID, p.projectDir)
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
 		fmt.Printf("[up] warning: mkdir state: %v\n", err)
 		return
@@ -1541,7 +2270,7 @@ func (p *procRegistry) persist() {
 		// the detach path); fall back to the live handle for any process
 		// registered without a captured PID. Skip never-started / already-
 		// released-without-capture entries so we never persist a 0/-1 that
-		// `forge up stop` would try to signal.
+		// `forge env down` would try to signal.
 		pid := mp.pid
 		if pid == 0 && mp.cmd.Process != nil {
 			pid = mp.cmd.Process.Pid
@@ -1553,7 +2282,7 @@ func (p *procRegistry) persist() {
 	}
 	p.mu.Unlock()
 	// Write atomically (temp + rename) so a crash mid-write can't leave a
-	// truncated/corrupt ledger that `forge up stop` would misparse. The temp
+	// truncated/corrupt ledger that `forge env down` would misparse. The temp
 	// lives in the same dir so the rename is a same-filesystem atomic swap.
 	tmp := statePath + ".tmp"
 	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
@@ -1563,6 +2292,97 @@ func (p *procRegistry) persist() {
 	if err := os.Rename(tmp, statePath); err != nil {
 		fmt.Printf("[up] warning: commit state: %v\n", err)
 		_ = os.Remove(tmp)
+	}
+}
+
+// resolvedEnvState is the launch-time discovery snapshot persisted next to
+// the PID ledger (upEnvStatePath). It records the facts a `forge env status`
+// re-render cannot recover on its own: the LIVE name→port map (ephemeral
+// bind-:0 ports are assigned in the up process and reverted by the status
+// render's resolve_port restore) and the resolved DATABASE_URL. The JSON tags
+// are an on-disk cache format, not a public contract — additive changes only.
+type resolvedEnvState struct {
+	Env         string         `json:"env"`
+	DatabaseURL string         `json:"database_url,omitempty"`
+	Ports       map[string]int `json:"ports"` // service/frontend name → live listen port
+	UpdatedAt   string         `json:"updated_at"`
+}
+
+// persistResolvedEnv writes the sibling <env>.env.json discovery cache from
+// the resolved entities `forge env up` just launched: the name→port map (from
+// the same collectUpServices rows the summary printed) and the DATABASE_URL
+// (via resolveSeedDSN, the same source auto-seed uses). Best-effort — a write
+// failure only costs `forge env status` its live-port overlay, never the run.
+func persistResolvedEnv(projectID, env string, entities *KCLEntities, cfg *config.ProjectConfig, targets []string, frontendsOn bool) {
+	path, err := upEnvStatePath(projectID, env)
+	if err != nil {
+		fmt.Printf("[up] warning: resolve env state path: %v\n", err)
+		return
+	}
+	// nil probe: we only want the resolved ports, not a liveness check.
+	rows := collectUpServices(entities, env, targets, frontendsOn, nil)
+	ports := make(map[string]int, len(rows))
+	for _, r := range rows {
+		if r.Port > 0 {
+			ports[r.Name] = r.Port
+		}
+	}
+	st := resolvedEnvState{
+		Env:         env,
+		DatabaseURL: resolveSeedDSN(entities, cfg, env),
+		Ports:       ports,
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+	}
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		fmt.Printf("[up] warning: encode env state: %v\n", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fmt.Printf("[up] warning: mkdir env state: %v\n", err)
+		return
+	}
+	// Atomic temp+rename so a status read never sees a half-written file.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		fmt.Printf("[up] warning: write env state: %v\n", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		fmt.Printf("[up] warning: commit env state: %v\n", err)
+		_ = os.Remove(tmp)
+	}
+}
+
+// loadResolvedEnv reads the sibling <env>.env.json discovery cache. Returns
+// nil (never an error) when absent or unparseable so callers degrade to the
+// re-rendered ports rather than failing a read-only status command.
+func loadResolvedEnv(projectID, env string) *resolvedEnvState {
+	path, err := upEnvStatePath(projectID, env)
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var st resolvedEnvState
+	if err := json.Unmarshal(data, &st); err != nil {
+		return nil
+	}
+	return &st
+}
+
+// overlayResolvedPorts replaces each row's port/URL with the LIVE port the
+// launch persisted (keyed by name), so a status snapshot reports the actual
+// ephemeral port instead of the drift-reverted render value. Rows with no
+// persisted port keep whatever the render produced.
+func overlayResolvedPorts(rows []upServiceRow, ports map[string]int) {
+	for i := range rows {
+		if p, ok := ports[rows[i].Name]; ok && p > 0 {
+			rows[i].Port = p
+			rows[i].URL = fmt.Sprintf("http://localhost:%d", p)
+		}
 	}
 }
 
@@ -1634,39 +2454,24 @@ func (p *procRegistry) shutdown() {
 		<-done
 	}
 
-	statePath, err := upStatePath(p.env)
-	if err == nil {
-		_ = os.Remove(statePath)
-	}
+	removeStackRecords(p.projectID, p.env)
 }
 
-// shutdownOnExit is the defer-friendly shutdown wrapper that only fires
-// when the orchestrator is exiting through a panic / unexpected path.
-// Background mode (procs.persisted == true) skips it — the state file
-// is the contract with `forge up stop`.
-func (p *procRegistry) shutdownOnExit() {
-	if p.persisted {
-		return
-	}
-	// Already torn down by the Ctrl-C handler in runUp — no-op.
-	// Only fires if runUp returned without reaching <-sigCh, which
-	// happens when count()==0 or in test contexts.
-}
-
-// runUpStop reads the persisted state file and SIGTERMs every tracked
-// pid. Missing state file is a friendly no-op so the command is safe
-// to invoke unconditionally on teardown.
-// trackedProc is one (name, pid) entry parsed from an env's lock file.
+// trackedProc is one (name, pid) entry parsed from a stack's PID ledger.
 type trackedProc struct {
 	name string
 	pid  int
 }
 
-// trackedStack parses the env's lock file (~/.cache/forge/up/<env>.pids)
-// into its (name, pid) entries. Returns nil when no lock is present. This
-// is the single source of truth for "what did THIS env's `forge up` start".
-func trackedStack(env string) []trackedProc {
-	statePath, err := upStatePath(env)
+// trackedStack parses a stack's ledger (<project-id>/<env>.pids) into its
+// (name, pid) entries. Returns nil when no ledger is present.
+//
+// It is a RECORD of what this project's `forge env up` started, and teardown's
+// FALLBACK — not its authority. See stackTeardownRoots: a remembered pid is
+// signalled only when the live markers cannot answer at all, because the
+// process wearing that pid today may not be the one forge started.
+func trackedStack(projectID, env string) []trackedProc {
+	statePath, err := upStatePath(projectID, env)
 	if err != nil {
 		return nil
 	}
@@ -1685,8 +2490,6 @@ func trackedStack(env string) []trackedProc {
 			continue
 		}
 		var pid int
-		// A non-positive pid is dropped: signalling 0/-1 is a footgun (on
-		// Unix kill(-1) hits every process the user can reach).
 		if _, err := fmt.Sscanf(parts[1], "%d", &pid); err != nil || pid <= 0 {
 			continue
 		}
@@ -1695,86 +2498,31 @@ func trackedStack(env string) []trackedProc {
 	return out
 }
 
-// upStackLive reports whether the env's tracked stack has at least one live
-// process. Lets the guard tell "re-running my own stack" from "a foreign
-// process is on my port" deterministically, instead of guessing from a bound
-// port. A lock whose PIDs are all dead is stale and treated as "not live".
-func upStackLive(env string) bool {
-	for _, t := range trackedStack(env) {
-		if processAlive(t.pid) {
-			return true
-		}
-	}
-	return false
-}
-
+// runUpStop stops the stack this project is running for env.
+//
+// The project is resolved STRICTLY: without a forge.yaml above the working
+// directory there is no project id, and therefore no way to know whose stack to
+// stop. That must be an error. It used to fall back to hashing "." — which
+// matches no recorded stack — so `forge env down dev` from the wrong directory
+// printed "no tracked stack for env=dev" and exited 0 while the stack it meant
+// to stop kept running. A teardown that cannot fail is not a teardown.
 func runUpStop(env string) error {
-	statePath, err := upStatePath(env)
+	projectDir, err := requireProjectDir("forge env down")
 	if err != nil {
 		return err
 	}
-	// The ledger is a fast index of what THIS env's `forge up` started, but
-	// it drifts (a crashed run never persisted; air re-execs under a new
-	// pid). It is no longer the sole source of truth: after tearing down the
-	// tracked pids we ALSO sweep the process table for anything still
-	// carrying our FORGE_UP_ENV marker, so `forge up stop` is always a clean
-	// unblock even when the ledger is stale or absent.
-	procs := trackedStack(env) // nil when no ledger present
-
-	// SIGTERM each tracked process TREE — the runner plus every transitive
-	// descendant, including the server a runner like Air re-execs in its own
-	// process group. (Signalling only the runner's group left that respawned
-	// child orphaned and squatting its port — the bug we're fixing.)
-	ledgerPIDs := make([]int, 0, len(procs))
-	for _, t := range procs {
-		fmt.Printf("[up] %s: stopping (pid %d + tree)\n", t.name, t.pid)
-		ledgerPIDs = append(ledgerPIDs, t.pid)
-	}
-	// killTreesAndWait SIGTERMs, polls liveness (so a `--restart` caller
-	// knows the listeners are released on return), then SIGKILLs stragglers.
-	killTreesAndWait(ledgerPIDs)
-
-	// Marker sweep: reclaim any forge-owned orphan for this env the ledger
-	// missed. Runs unconditionally (even with no ledger) so a wedged env
-	// always has a clean unblock. Only processes carrying the exact env
-	// marker are ever signalled — an unmarked process is never touched.
-	reclaimed := reclaimAllMarkedOrphans(env, newOSProcFacts())
-
-	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
-		fmt.Printf("[up] warning: remove state: %v\n", err)
-	}
-	total := len(procs) + reclaimed
-	if total == 0 {
-		fmt.Printf("[up] no tracked stack for env=%s.\n", env)
+	projectID := projectIDForDir(projectDir)
+	stopped := stopStack(projectID, env)
+	if stopped == 0 {
+		fmt.Printf("[up] no forge processes running for env=%s in %s.\n", env, projectDir)
 		return nil
 	}
-	fmt.Printf("[up] stopped %d process(es) for env=%s.\n", total, env)
+	fmt.Printf("[up] stopped %d process tree(s) for env=%s.\n", stopped, env)
 	return nil
 }
 
-// upStatePath returns the per-env state file location:
-//
-//	$HOME/.cache/forge/up/<env>.pids
-//
-// Used by --background to persist tracked PIDs and by `forge up stop`
-// to read them back.
-func upStatePath(env string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home dir: %w", err)
-	}
-	return filepath.Join(home, ".cache", "forge", "up", env+".pids"), nil
-}
-
-// upLogPath returns the per-(env,process) log file location for
-// detached children:
-//
-//	$HOME/.cache/forge/up/<env>/<name>.log
-//
-// The `name` is sanitised (slashes → underscores) so it's safe to use
-// as a path component.
 // upLogPath returns the well-known log file for a host service or
-// frontend started by `forge up`. Logs land under the project-relative
+// frontend started by `forge env up`. Logs land under the project-relative
 // .forge/logs/<env>/ directory — gitignored via the `.forge/*` rule, and
 // a stable, greppable location so a human (or an LLM agent working in the
 // repo) can `tail -f` / `grep` one service's output without scraping it

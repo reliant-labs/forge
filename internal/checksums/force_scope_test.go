@@ -6,7 +6,7 @@
 // "force-overwrite anything any emitter touches this run" — so the
 // pipeline now scopes force to the exact path set the guard reported,
 // via SetForceScope. When no scope is installed (non-pipeline callers
-// like `forge upgrade`, or presets that deliberately skip the guard),
+// like `forge project upgrade`, or presets that deliberately skip the guard),
 // force keeps its historical unscoped meaning.
 package checksums
 

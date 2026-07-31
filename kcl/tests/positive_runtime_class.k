@@ -8,7 +8,7 @@ to `runtimeClassName = "gvisor"` because prod GKE has gvisor
 installed. The dev k3d cluster doesn't, so workspace Pods stay
 Pending until someone manually `kubectl apply`s a stub RuntimeClass
 that aliases `gvisor` → the vanilla `runc` handler. Declaring the
-alias here lets `forge deploy dev` own it via the standard
+alias here lets `forge env deploy dev` own it via the standard
 render-and-apply pipeline.
 """
 

@@ -33,7 +33,7 @@
 //   - ComposeProvider    — docker compose pull/up -d. Rollback writes a
 //     generated override file pinning the previous tag.
 //
-// HostDeploy and BuildOnly aren't providers — `forge run` / `forge up`
+// HostDeploy and BuildOnly aren't providers — `forge run` / `forge env up`
 // own the host story, and BuildOnly is consumed by `forge build`.
 // The dispatcher skips both rather than routing them through a Provider.
 //
@@ -53,7 +53,7 @@ import (
 
 // Provider is the dispatch surface for one deploy target type. Each
 // concrete provider owns the pipeline for its target (k8s, external,
-// compose, etc.); the dispatcher in forge deploy hands it a
+// compose, etc.); the dispatcher in forge env deploy hands it a
 // ServiceGroup and the provider does the rest.
 //
 // Rollback is invoked on Deploy failure with the last-known-good tag
@@ -89,7 +89,7 @@ type Provider interface {
 // rather than re-deriving them from each ResolvedService.
 type ServiceGroup struct {
 	// Env is the environment name (matches the deploy/kcl/<env>/
-	// directory name and the `forge deploy <env>` CLI arg).
+	// directory name and the `forge env deploy <env>` CLI arg).
 	Env string
 
 	// ProviderID identifies the provider type — "k8s-cluster",

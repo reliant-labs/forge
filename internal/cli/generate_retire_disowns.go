@@ -1,6 +1,6 @@
 // Auto-retire obsolete disowns.
 //
-// `forge disown` is a last-resort one-way escape hatch: it tells forge
+// `forge project disown` is a last-resort one-way escape hatch: it tells forge
 // "stop regenerating this Tier-1 file, the bytes are mine now". Needing
 // it routinely means a missing extension point. A disown that has become
 // OBSOLETE — forge no longer Tier-1-owns that path — is dead weight: it
@@ -64,8 +64,30 @@ func stepRetireObsoleteDisowns(ctx *pipelineContext) error {
 // A path matching no bucket is treated as NON-targetable (return false):
 // forge can't prove an owning emitter ran, so it keeps the disown — the
 // conservative posture the prompt demands ("when in doubt, keep").
+//
+// Reconciled paths short-circuit ahead of the buckets, because for them the
+// whole premise is wrong rather than merely unproven: forge edits them in
+// place while never listing them as Tier-1 targets, so their absence from the
+// set says nothing about whether the disown still does work.
+// reconciledPaths are scaffold-once files forge EDITS IN PLACE rather than
+// regenerates: it splices new accessors and fields into them as components are
+// discovered. They are never Tier-1 emit targets, so the "absent from the
+// target set ⇒ obsolete" inference does not hold — a disown on one of these is
+// load-bearing, and it is the only thing standing between the reconciler and a
+// composition root the user deliberately took ownership of. Retiring it would
+// hand those bytes back silently.
+var reconciledPaths = []string{
+	"internal/app/compose.go",
+	"internal/app/lifecycle.go",
+}
+
 func retirementTargetable(ctx *pipelineContext) func(string) bool {
 	return func(relPath string) bool {
+		for _, p := range reconciledPaths {
+			if relPath == p {
+				return false
+			}
+		}
 		switch {
 		case strings.HasPrefix(relPath, "frontends/"):
 			// Frontend Tier-1 emitters (hooks, pages, nav) run only when

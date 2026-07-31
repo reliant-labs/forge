@@ -123,16 +123,16 @@ fix.
 <!-- @forge-only:start -->
 ## In a Forge Project
 
-- **Bring the stack up, then test:** `forge up --env=<env>` builds + deploys every
-  service to its declared `K8sCluster` context; `forge test e2e` runs the suite
+- **Bring the stack up, then test:** `forge env up <env>` builds + deploys every
+  service to its declared `K8sCluster` context; `task test:e2e` runs the suite
   against the live multi-cluster stack. See the `forge/testing/e2e` skill.
-- **The pod is still up after a failure** — `forge up` leaves the stack running, so
+- **The pod is still up after a failure** — `forge env up` leaves the stack running, so
   you can `kubectl exec` in without the `E2E_HOLD_ON_FAIL` dance, or
   `forge debug start` to attach Delve. The hold-on-fail flag still earns its keep
   when the suite itself owns short-lived per-test pods it would otherwise reap.
-- **Capture the friction:** if a nested-cluster gotcha cost you real time, run
-  `forge friction add` so the generator can grow a guardrail (e.g. seeding the
-  secondary cluster's CoreDNS or MSS clamp at `forge up`).
+- **Capture the gotcha:** if a nested-cluster gotcha cost you real time, file
+  it upstream so the generator can grow a guardrail (e.g. seeding the
+  secondary cluster's CoreDNS or MSS clamp at `forge env up`).
 
 ### Forge Tooling for a Cross-Cluster App-Flow Bug
 
@@ -159,23 +159,23 @@ one stops short.
    **owner-cluster half**. Set the right context first; for the peer half, run
    `kubectl --context <secondary> -n <ns> logs <peer-pod>` directly.
    ```bash
-   forge cluster logs --service <gateway> --no-follow --tail 200   # owner half
+   forge cluster logs --service <gateway> --follow=false --tail 200   # owner half
    ```
 
-3. **Localize with `forge introspect handlers`.**
+3. **Localize with `forge project introspect handlers`.**
    Prints every RPC path the assembled binary registers. If the failing RPC
    isn't in the list, the fault is a downstream/remote hop, not this binary —
    that alone collapses the search space to the cross-cluster edge.
 
 4. **ASSERT the app-flow invariant with a declarative, exit-coded health check.**
-   A green `forge smoke` / `forge doctor` does **NOT** mean the app flow works:
+   A green `forge env smoke` / `forge env status <env>` does **NOT** mean the app flow works:
    they check listeners, local compose, and telemetry — never app-flow
    invariants. The same is true of `forge cluster status`, which is green when
    every pod is `Running` regardless of whether the cross-cluster dial succeeds.
    Prove the fix with a declarative check that fails non-zero when the invariant
    is violated. Model to copy: a project `doctor:<flow>` task (e.g. the
    daemon-flow pattern — "is a peer actually connected and serving?") plus a full
-   `forge test e2e`. Only those two **prove** the app-flow is healthy; the generic
+   `task test:e2e`. Only those two **prove** the app-flow is healthy; the generic
    forge tools localize, they don't certify.
 
 See also: `forge/debug/reproduce` (runtime evidence), `forge/debug/investigate`

@@ -313,7 +313,7 @@ func collapseSlashes(s string) string {
 
 // devNamespace resolves the namespace forge cluster operates against. Reads
 // the dev environment's namespace from the rendered KCL's K8sCluster
-// when present; falls back to <project>-dev (which matches forge deploy
+// when present; falls back to <project>-dev (which matches forge env deploy
 // dev's behavior).
 func devNamespace(clusterName string) string {
 	store, err := loadProjectStore()

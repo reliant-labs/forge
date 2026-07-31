@@ -143,7 +143,7 @@ func (s FirebaseHostingSpec) hasExplicitTarget() bool {
 // site. It reads the frontends off group.Frontends and the dry-run knob
 // off group.DryRun so the Firebase provider satisfies the same Provider
 // interface as k8s-cluster / external / compose and dispatches through
-// the registry — no bespoke hand-dispatch in forge deploy.
+// the registry — no bespoke hand-dispatch in forge env deploy.
 func (p FirebaseProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	return p.deployFrontends(ctx, group.Frontends, group.DryRun)
 }

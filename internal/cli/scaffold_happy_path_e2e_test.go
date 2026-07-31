@@ -13,15 +13,15 @@ import (
 // each used to break the FIRST `go build` / `forge generate` a new user
 // runs:
 //
-//   - zero-service `forge new` → generate → build failed with
+//   - zero-service `forge project new` → generate → build failed with
 //     `undefined: slog` in pkg/app/testing.go (journey fr-994db53964):
 //     bootstrap_testing.go.tmpl gated the log/slog import on
 //     `or .Services .Packages` while the body used *slog.Logger
 //     unconditionally.
-//   - new → add service → add entity → generate failed in buf with 20x
+//   - new → scaffold service → scaffold entity → generate failed in buf with 20x
 //     "unknown extension forge.v1.method" (journey fr-af7355dd63):
-//     `forge add service` scaffolds an import-less proto and
-//     `forge add entity` injected (forge.v1.method) options without
+//     `forge scaffold service` scaffolds an import-less proto and
+//     `forge scaffold entity` injected (forge.v1.method) options without
 //     ensuring `import "forge/v1/forge.proto"`.
 //
 // Both use the corpus-style local replace (addCorpusForgePkgReplace) so
@@ -37,7 +37,7 @@ func TestE2EZeroServiceScaffoldCompiles(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	runCmd(t, dir, forgeBin, "new", "zerosvc", "--mod", "example.com/zerosvc")
+	runCmd(t, dir, forgeBin, "project", "new", "zerosvc", "--mod", "example.com/zerosvc")
 	projectDir := filepath.Join(dir, "zerosvc")
 	addCorpusForgePkgReplace(t, projectDir)
 
@@ -67,8 +67,8 @@ func TestE2EZeroServiceScaffoldCompiles(t *testing.T) {
 }
 
 // TestE2EAddServiceThenEntityGenerates: the post-scaffold growth path.
-// `forge add service` emits a bare proto (no RPCs, no imports);
-// `forge add entity` injects CRUD RPCs carrying (forge.v1.method)
+// `forge scaffold service` emits a bare proto (no RPCs, no imports);
+// `forge scaffold entity` injects CRUD RPCs carrying (forge.v1.method)
 // options into it; `forge generate` must then succeed — which requires
 // the entity injection to have added the forge/v1/forge.proto import.
 func TestE2EAddServiceThenEntityGenerates(t *testing.T) {
@@ -76,11 +76,11 @@ func TestE2EAddServiceThenEntityGenerates(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	runCmd(t, dir, forgeBin, "new", "growapp", "--mod", "example.com/growapp")
+	runCmd(t, dir, forgeBin, "project", "new", "growapp", "--mod", "example.com/growapp")
 	projectDir := filepath.Join(dir, "growapp")
 	addCorpusForgePkgReplace(t, projectDir)
 
-	runCmd(t, projectDir, forgeBin, "add", "service", "item")
+	runCmd(t, projectDir, forgeBin, "scaffold", "service", "item")
 	protoPath := filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto")
 	assertPathExistsE2E(t, protoPath)
 
@@ -96,15 +96,15 @@ func TestE2EAddServiceThenEntityGenerates(t *testing.T) {
 	// generates and builds (no DB boot), so no database override is
 	// needed.
 
-	runCmd(t, projectDir, forgeBin, "add", "entity", "bookmark",
+	runCmd(t, projectDir, forgeBin, "scaffold", "entity", "bookmark",
 		"url:string", "title:string", "done:bool")
 
 	proto := readFileE2E(t, protoPath)
 	if !strings.Contains(proto, `import "forge/v1/forge.proto";`) {
-		t.Fatalf("add entity injected (forge.v1.method) options without the forge/v1/forge.proto import — the next generate dies in buf with 'unknown extension forge.v1.method':\n%s", proto)
+		t.Fatalf("scaffold entity injected (forge.v1.method) options without the forge/v1/forge.proto import — the next generate dies in buf with 'unknown extension forge.v1.method':\n%s", proto)
 	}
 	if !strings.Contains(proto, "rpc CreateBookmark(CreateBookmarkRequest)") {
-		t.Fatalf("add entity did not scaffold the Bookmark CRUD RPCs into the service proto:\n%s", proto)
+		t.Fatalf("scaffold entity did not scaffold the Bookmark CRUD RPCs into the service proto:\n%s", proto)
 	}
 
 	// The journey's failure point: generate ran buf against the proto

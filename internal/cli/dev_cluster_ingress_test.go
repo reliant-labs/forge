@@ -289,7 +289,7 @@ func TestClusterPortDrift_NoDriftWhenComplete(t *testing.T) {
 // reasons about the RENDERED listeners only — NOT statically pre-mapped
 // parallel-worktree blocks. A live cluster missing such a future-block port
 // (28190) but mapping every CURRENT listener reports NO drift, so a routine
-// `forge up` doesn't force a recreate for ports no current route needs.
+// `forge env up` doesn't force a recreate for ports no current route needs.
 func TestClusterPortDrift_OnlyRenderedListenersFlagged(t *testing.T) {
 	orig := runningClusterHostPortsFn
 	t.Cleanup(func() { runningClusterHostPortsFn = orig })

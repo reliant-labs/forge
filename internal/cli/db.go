@@ -13,6 +13,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/codegen/schemadrift"
 	"github.com/reliant-labs/forge/internal/database"
 )
 
@@ -61,7 +64,89 @@ Forge uses a migration-first database model:
 	cmd.AddCommand(newDBMigrateCommand())
 	cmd.AddCommand(newDBIntrospectCommand())
 	cmd.AddCommand(newDBSquashCommand())
+	cmd.AddCommand(newDBSeedCommand())
+	cmd.AddCommand(newDBCheckCommand())
 
+	return cmdutil.StrictGroup(cmd)
+}
+
+// newDBCheckCommand creates `forge db check`: report where an entity's
+// proto has drifted from its BORN migration since birth. forge freezes
+// proto→schema truth into the migration exactly once and never edits it,
+// so an enum whose values changed, a tightened protovalidate bound, or a
+// newly-added proto field can silently diverge from the CHECK/columns the
+// database enforces. This command PRINTS the divergence plus a suggested
+// ALTER — it never writes a migration. The same notice prints on every
+// `forge generate`; run this to check on demand (e.g. in CI with --strict).
+func newDBCheckCommand() *cobra.Command {
+	var strict bool
+
+	cmd := &cobra.Command{
+		Use:   "check",
+		Short: "Report schema drift between entity protos and their born migrations",
+		Long: `Compare each forge entity's current proto projection against the schema its
+born migration actually enforces (db/migrations, shadow-applied to postgres),
+and print any drift with a copy-pasteable suggested ALTER.
+
+forge projects proto→schema truth into a migration once, at birth, and never
+edits it afterward ("the line is the filesystem"). So a proto that changed
+later — renamed enum values, a tightened (buf.validate.field) bound, an added
+field — can leave the database enforcing the OLD shape. This command finds
+that gap. It only flags things forge itself projects (enum CHECK vocabulary,
+protovalidate CHECKs, added entity fields); hand-added columns, indexes and
+constraints are yours and are never reported.
+
+It never writes a migration. By default it exits 0 (informational). Pass
+--strict to exit non-zero when drift is found (useful as a CI gate).
+
+Examples:
+  forge db check
+  forge db check --strict`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root, err := projectRoot()
+			if err != nil {
+				return err
+			}
+			services, err := codegen.ParseServicesFromProtos("", root)
+			if err != nil {
+				return fmt.Errorf("parse service protos: %w", err)
+			}
+			report, err := schemadrift.Detect(root, services)
+			if err != nil {
+				return fmt.Errorf("detect schema drift: %w", err)
+			}
+			// "No drift" is only a pass if something was compared. Detect
+			// returns a zero-drift report from three paths that examined
+			// NOTHING (no applied schema, no born entity, a projection that
+			// produced no shadow tables) — rendering those as "✅ every
+			// entity's applied schema matches" turned an open question into
+			// a false answer, and `--strict` in CI went green on it.
+			if report.Inconclusive != "" {
+				fmt.Printf("⚠️  Schema drift NOT verified: %s\n", report.Inconclusive)
+				if strict {
+					return fmt.Errorf("schema drift check was inconclusive; --strict requires a conclusive result")
+				}
+				return nil
+			}
+			if report.Empty() {
+				if report.Compared == 0 {
+					fmt.Println("⏭️  No born entities to check — no applied table matches a CRUD entity declared in proto.")
+					return nil
+				}
+				fmt.Printf("✅ No schema drift — %d entit%s compared against the applied schema.\n",
+					report.Compared, plural(report.Compared, "y", "ies"))
+				return nil
+			}
+			fmt.Print(report.String())
+			if strict {
+				return fmt.Errorf("schema drift detected in %d place(s) across %d entit%s",
+					len(report.Drifts), report.Compared, plural(report.Compared, "y", "ies"))
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero when drift is found (CI gate)")
 	return cmd
 }
 
@@ -388,9 +473,10 @@ func newDBMigrationCommand() *cobra.Command {
 		Short: "Create new SQL migration files",
 		Long: `Create a new SQL migration pair in db/migrations/.
 
-This scaffolds timestamped .up.sql and .down.sql files using golang-migrate's
-filename convention. The .up.sql file includes rich schema context so LLMs can
-immediately write the migration SQL.
+This scaffolds sequentially-numbered .up.sql and .down.sql files, continuing
+the project's existing numbering (00001_, 00002_, …) so new migrations stay
+consistent with the scaffold births and never collide. The .up.sql file
+includes rich schema context so LLMs can immediately write the migration SQL.
 
 Context includes:
   - Current schema (parsed from existing migrations, or from DB with --dsn)
@@ -418,7 +504,7 @@ Examples:
 	newCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string for live schema introspection")
 	migrationCmd.AddCommand(newCmd)
 
-	return migrationCmd
+	return cmdutil.StrictGroup(migrationCmd)
 }
 
 // newDBMigrateCommand creates the migrate subcommand.
@@ -449,7 +535,7 @@ Examples:
 	migrateCmd.AddCommand(newDBMigrateVersionCommand())
 	migrateCmd.AddCommand(newDBMigrateForceCommand())
 
-	return migrateCmd
+	return cmdutil.StrictGroup(migrateCmd)
 }
 
 func newDBMigrateUpCommand() *cobra.Command {

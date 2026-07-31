@@ -37,24 +37,12 @@ func (s *Store) Meta() ProjectMeta {
 		ModulePath:   s.cfg.ModulePath,
 		Kind:         s.cfg.Kind,
 		Binary:       s.cfg.Binary,
-		Version:      s.cfg.Version,
 		ForgeVersion: s.cfg.ForgeVersion,
 	}
 }
 
-// Components returns every component in declaration order, as view types.
-func (s *Store) Components() []Component {
-	return toComponents(s.cfg.Components)
-}
-
 // Features returns the resolved (derived + explicit) feature set.
 func (s *Store) Features() FeatureSet { return s.cfg.Features }
-
-// AppendComponent appends a component to the project (the `forge add`
-// server/worker/cron/operator/binary write path).
-func (s *Store) AppendComponent(c config.ComponentConfig) {
-	s.cfg.Components = append(s.cfg.Components, c)
-}
 
 // Frontends returns the declared frontend configs.
 func (s *Store) Frontends() []config.FrontendConfig { return s.cfg.Frontends }
@@ -74,35 +62,6 @@ func (s *Store) Lint() config.LintConfig { return s.cfg.Lint }
 // Contracts returns the `contracts:` section.
 func (s *Store) Contracts() config.ContractsConfig { return s.cfg.Contracts }
 
-// Packs returns the installed-packs list.
-func (s *Store) Packs() []string { return s.cfg.Packs }
-
 // Config returns the underlying project config — the write/marshal +
 // whole-config escape hatch, and the one seam Phase 2 must reconcile.
 func (s *Store) Config() *config.ProjectConfig { return s.cfg }
-
-// toComponent projects one config.ComponentConfig into the view type.
-func toComponent(c config.ComponentConfig) Component {
-	return Component{
-		Name:          c.Name,
-		Kind:          c.Kind,
-		Path:          c.Path,
-		Ports:         c.Ports,
-		Schedule:      c.Schedule,
-		ProtoPackages: c.ProtoPackages,
-		Group:         c.Group,
-		Version:       c.Version,
-		CRDs:          c.CRDs,
-	}
-}
-
-func toComponents(in []config.ComponentConfig) []Component {
-	if in == nil {
-		return nil
-	}
-	out := make([]Component, len(in))
-	for i, c := range in {
-		out[i] = toComponent(c)
-	}
-	return out
-}

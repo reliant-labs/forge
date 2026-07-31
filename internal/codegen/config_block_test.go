@@ -202,49 +202,40 @@ func TestConfigBlock_RegenerateIdempotent(t *testing.T) {
 	}
 }
 
-// TestGenerateDeployConfig_BlockLeafProjection: a per-env value for a
-// block leaf in config.<env>.yaml (flat snake_case key, same namespace
-// as root fields) projects into the generated KCL exactly like a root
-// field — ConfigMap entry + configMapKeyRef EnvVar. The block REFERENCE
-// field (message-typed, no env_var) is skipped.
-func TestGenerateDeployConfig_BlockLeafProjection(t *testing.T) {
+// TestGenerateConfigKScaffold_BlockLeaf: the per-env config.k scaffolder emits
+// only the fields an env must pin (KCL-mandatory + the dev MODE/DSN markers) and
+// skips the block-REFERENCE field (message-typed, no env_var). A block leaf with
+// a schema default is not pinned (it inherits the default), so it does not leak
+// into a non-dev env's config.k.
+func TestGenerateConfigKScaffold_BlockLeaf(t *testing.T) {
 	dir := t.TempDir()
 
-	// Flatten root + block messages the way generatePerEnvDeployConfig
-	// does — block leaves participate via their own ConfigMessage.
+	// Flatten root + block messages the way generatePerEnvDeployConfig does —
+	// block leaves participate via their own ConfigMessage.
 	var fields []ConfigField
 	for _, m := range traderConfigMessages() {
 		fields = append(fields, m.Fields...)
 	}
 
-	err := GenerateDeployConfig(DeployConfigGenInput{
-		ProjectName: "demo",
-		EnvName:     "prod",
-		KCLDir:      filepath.Join(dir, "deploy", "kcl"),
-		Fields:      fields,
-		EnvConfig: map[string]any{
-			"max_per_tick": 50,
-		},
-	})
-	if err != nil {
-		t.Fatalf("GenerateDeployConfig: %v", err)
+	if _, err := GenerateConfigKScaffold(fields, "demo", filepath.Join(dir, "deploy", "kcl"), "prod"); err != nil {
+		t.Fatalf("GenerateConfigKScaffold: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "deploy", "kcl", "prod", "config_gen.k"))
+	data, err := os.ReadFile(filepath.Join(dir, "deploy", "kcl", "prod", "config.k"))
 	if err != nil {
-		t.Fatalf("read config_gen.k: %v", err)
+		t.Fatalf("read config.k: %v", err)
 	}
 	content := string(data)
 
-	if !strings.Contains(content, `forge.EnvVar { name = "TRADER_MAX_PER_TICK", config_map_ref = "demo-prod-config", config_map_key = "TRADER_MAX_PER_TICK" }`) {
-		t.Errorf("expected configMapKeyRef EnvVar for block leaf:\n%s", content)
+	if !strings.Contains(content, "app_config: config_schema.AppConfig = {") {
+		t.Errorf("config.k should declare the typed AppConfig instance:\n%s", content)
 	}
-	if !strings.Contains(content, `"TRADER_MAX_PER_TICK" = "50"`) {
-		t.Errorf("expected ConfigMap data entry for block leaf value:\n%s", content)
+	// The block-reference field carries no env_var and must never be pinned.
+	if strings.Contains(content, "trader ") || strings.Contains(content, "TraderConfig") {
+		t.Errorf("block reference field must not appear in config.k:\n%s", content)
 	}
-	// The block-reference field has no EnvVar and must not leak into
-	// the rendered lists.
-	if strings.Contains(content, "TraderConfig") || strings.Contains(content, `name = ""`) {
-		t.Errorf("block reference field must not render an EnvVar entry:\n%s", content)
+	// max_per_tick has a schema default, so a non-dev env inherits it (no pin).
+	if strings.Contains(content, "max_per_tick") {
+		t.Errorf("defaulted block leaf must inherit its schema default (not pinned):\n%s", content)
 	}
 }

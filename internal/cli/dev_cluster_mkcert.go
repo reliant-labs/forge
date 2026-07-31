@@ -210,7 +210,7 @@ func provisionMkcertSecrets(ctx context.Context, projectDir string) error {
 			return fmt.Errorf("render Secret YAML for %s: %w", spec.SecretName, err)
 		}
 		// Ensure the namespace exists before applying the Secret —
-		// the env's namespace is normally created by forge deploy
+		// the env's namespace is normally created by forge env deploy
 		// dev, but cluster-up runs first so we have to bootstrap it.
 		if err := ensureNamespace(ctx, spec.Namespace); err != nil {
 			return err

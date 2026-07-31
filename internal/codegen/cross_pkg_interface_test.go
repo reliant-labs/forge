@@ -360,12 +360,11 @@ func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
 	}
 
 	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
-		GenContext:         GenContext{ProjectDir: projectRoot, ModulePath: "example.com/proj", Checksums: nil},
-		Services:           services,
-		Packages:           nil,
-		Workers:            nil,
-		Operators:          nil,
-		MultiTenantEnabled: false,
+		GenContext: GenContext{ProjectDir: projectRoot, ModulePath: "example.com/proj", Checksums: nil},
+		Services:   services,
+		Packages:   nil,
+		Workers:    nil,
+		Operators:  nil,
 	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
@@ -444,7 +443,6 @@ func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
 		ProtoServiceName:       "BillingService",
 		ProtoConnectImportPath: "example.com/proj/gen/services/billing/v1/billingv1connect",
 		ProtoConnectPkg:        "billingv1connect",
-		HasAuthorizer:          true,
 		Alias:                  "billing", VarName: "billing",
 		AutoStubs: []DepsAutoStub{{
 			FieldName:          "Users",
@@ -462,14 +460,15 @@ func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
 		}},
 	}
 	data := struct {
-		Module             string
-		Services           []BootstrapTestServiceData
-		ConnectImports     []string
-		Packages           []BootstrapPackageData
-		MultiTenantEnabled bool
-		AnyServiceHasDB    bool
-		HasMigrationsFS    bool
-		ExtraImports       []ExtraImport
+		Module              string
+		Services            []BootstrapTestServiceData
+		ConnectImports      []string
+		Packages            []BootstrapPackageData
+		AnyServiceHasDB     bool
+		AnyServiceNeedsTime bool
+		AnyServiceNeedsULID bool
+		HasMigrationsFS     bool
+		ExtraImports        []ExtraImport
 	}{
 		Module:         "example.com/proj",
 		Services:       []BootstrapTestServiceData{svc},
@@ -515,12 +514,11 @@ type Deps struct {
 		{Name: "BillingService", ModulePath: "example.com/proj"},
 	}
 	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
-		GenContext:         GenContext{ProjectDir: projectRoot, ModulePath: "example.com/proj", Checksums: nil},
-		Services:           services,
-		Packages:           nil,
-		Workers:            nil,
-		Operators:          nil,
-		MultiTenantEnabled: false,
+		GenContext: GenContext{ProjectDir: projectRoot, ModulePath: "example.com/proj", Checksums: nil},
+		Services:   services,
+		Packages:   nil,
+		Workers:    nil,
+		Operators:  nil,
 	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
@@ -528,6 +526,105 @@ type Deps struct {
 	content := string(body)
 	if !strings.Contains(content, "TODO: stub broken.Repository") {
 		t.Errorf("testing.go should carry the TODO comment for an unresolved selector\n--- rendered ---\n%s", content)
+	}
+}
+
+// TestGenerateBootstrapTesting_FuncDefaults is the harness half of the
+// Clock/IDGen fix: a service with a required `func() time.Time` and
+// `func() string` dep gets real defaults injected into NewTest<Svc>
+// (time.Now / ulid), plus the `time` + ulid imports; an un-defaultable
+// func dep (`func(string) error`) surfaces as a TODO instead of a silent
+// nil-func validateDeps failure.
+func TestGenerateBootstrapTesting_FuncDefaults(t *testing.T) {
+	handlerDir := writeTestModule(t, map[string]string{
+		"internal/repo/repo.go": "",
+		"internal/handlers/billing/service.go": `package billing
+
+import (
+	"log/slog"
+	"time"
+)
+
+type Service struct{}
+
+type Deps struct {
+	Logger *slog.Logger
+	Now    func() time.Time
+	NewID  func() string
+	Send   func(msg string) error
+}
+
+func New(d Deps) (*Service, error) { return &Service{}, nil }
+`,
+	})
+	projectRoot := filepath.Dir(filepath.Dir(filepath.Dir(handlerDir)))
+
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext: GenContext{ProjectDir: projectRoot, ModulePath: "example.com/proj", Checksums: nil},
+		Services:   []ServiceDef{{Name: "BillingService", ModulePath: "example.com/proj"}},
+	}); err != nil {
+		t.Fatalf("GenerateBootstrapTesting: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(projectRoot, "pkg", "app", "testing.go"))
+	if err != nil {
+		t.Fatalf("read testing.go: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		"deps.Now = time.Now",
+		"deps.NewID = func() string { return ulid.Make().String() }",
+		`"time"`,
+		`"github.com/oklog/ulid/v2"`,
+		"TODO: no test default for func-typed dep Send",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("testing.go missing %q\n--- rendered ---\n%s\n--- end ---", want, content)
+		}
+	}
+
+	// The generated harness must at least parse — the func defaults and
+	// their imports have to land in a syntactically valid file.
+	if _, perr := parser.ParseFile(token.NewFileSet(), "testing.go", body, parser.AllErrors); perr != nil {
+		t.Fatalf("generated testing.go does not parse: %v\n%s", perr, content)
+	}
+}
+
+// TestComputeFuncDefaults_ClassifiesFuncDeps unit-tests the classifier:
+// Clock/IDGen get real defaults, other func types become TODOs, and an
+// OPTIONAL func dep is skipped entirely (its `//forge:optional-dep`
+// contract says nil is acceptable).
+func TestComputeFuncDefaults_ClassifiesFuncDeps(t *testing.T) {
+	handlerDir := writeTestModule(t, map[string]string{
+		"internal/repo/repo.go": "",
+		"internal/handlers/billing/service.go": `package billing
+
+import "time"
+
+type Deps struct {
+	Now       func() time.Time
+	NewID     func() string
+	Send      func(msg string) error
+	// forge:optional-dep
+	OptClock  func() time.Time
+}
+`,
+	})
+	defaults, todos := computeFuncDefaults(handlerDir)
+	if len(defaults) != 2 {
+		t.Fatalf("want 2 func defaults (Now, NewID), got %d: %+v", len(defaults), defaults)
+	}
+	byField := map[string]DepsFuncDefault{}
+	for _, d := range defaults {
+		byField[d.FieldName] = d
+	}
+	if byField["Now"].Expr != frameworkClockExpr || !byField["Now"].NeedsTime {
+		t.Errorf("Now default = %+v, want time.Now/NeedsTime", byField["Now"])
+	}
+	if byField["NewID"].Expr != frameworkIDGenExpr || !byField["NewID"].NeedsULID {
+		t.Errorf("NewID default = %+v, want ulid/NeedsULID", byField["NewID"])
+	}
+	if len(todos) != 1 || todos[0].FieldName != "Send" {
+		t.Fatalf("want exactly one TODO (Send), got %+v", todos)
 	}
 }
 

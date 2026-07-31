@@ -35,14 +35,13 @@ func newRepoTestDB(t *testing.T) orm.Context {
 	return client
 }
 
-// widget is a tenant-scoped, soft-deleting, timestamped entity with an
-// array column and a server-allocated PK — it touches every Repo code path
-// at once (the lifecycle gate's "maximum coverage in one entity" stance).
+// widget is a soft-deleting, timestamped entity with an array column and a
+// server-allocated PK — it touches every Repo code path at once (the
+// lifecycle gate's "maximum coverage in one entity" stance).
 type widget struct {
 	bun.BaseModel `bun:"table:widgets,alias:widgets"`
 
 	ID        int64      `bun:"id,pk,autoincrement"`
-	TenantID  string     `bun:"tenant_id,notnull"`
 	Name      string     `bun:"name,notnull"`
 	Tags      []string   `bun:"tags,array,notnull"`
 	CreatedAt time.Time  `bun:"created_at,notnull"`
@@ -64,26 +63,22 @@ func TestRepoLifecycle_WidgetFullSurface(t *testing.T) {
 	ctx := context.Background()
 	createWidgetsTable(t, db)
 
-	repo := NewRepo[widget](Spec{TenantColumn: "tenant_id", Timestamps: true})
-	const tenant = "tenant-A"
+	repo := NewRepo[widget](Spec{Timestamps: true})
 
 	// ── Create: server PK populated, timestamps stamped, nil array → {} ──
 	w := &widget{Name: "alpha"} // Tags nil on purpose
-	if err := repo.Create(ctx, db, w, tenant); err != nil {
+	if err := repo.Create(ctx, db, w); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if w.ID == 0 {
 		t.Error("Create did not read back the server-allocated PK")
 	}
-	if w.TenantID != tenant {
-		t.Errorf("Create did not stamp tenant: got %q", w.TenantID)
-	}
 	if w.CreatedAt.IsZero() || w.UpdatedAt.IsZero() {
 		t.Error("Create did not stamp managed timestamps")
 	}
 
-	// Read back: array bound as {} (non-NULL), tenant scope returns the row.
-	got, err := repo.Get(ctx, db, w.ID, tenant)
+	// Read back: array bound as {} (non-NULL).
+	got, err := repo.Get(ctx, db, w.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -91,20 +86,15 @@ func TestRepoLifecycle_WidgetFullSurface(t *testing.T) {
 		t.Error("nil array was not normalized to a non-nil empty slice on insert")
 	}
 
-	// Tenant isolation: a different tenant cannot read the row.
-	if _, err := repo.Get(ctx, db, w.ID, "tenant-B"); !errors.Is(err, orm.ErrNoRows) {
-		t.Errorf("cross-tenant Get should be ErrNoRows, got %v", err)
-	}
-
 	// ── Update (full): updated_at advances, array round-trips ──
 	firstUpdatedAt := got.UpdatedAt
 	time.Sleep(2 * time.Millisecond)
 	got.Name = "alpha-2"
 	got.Tags = []string{"x", "y"}
-	if err := repo.Update(ctx, db, got, tenant); err != nil {
+	if err := repo.Update(ctx, db, got); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	reread, _ := repo.Get(ctx, db, w.ID, tenant)
+	reread, _ := repo.Get(ctx, db, w.ID)
 	if reread.Name != "alpha-2" {
 		t.Errorf("Update did not persist name: %q", reread.Name)
 	}
@@ -117,10 +107,10 @@ func TestRepoLifecycle_WidgetFullSurface(t *testing.T) {
 
 	// ── UpdateMasked: only the named column changes (non-clobber) ──
 	masked := &widget{ID: w.ID, Name: "SHOULD-NOT-WIN", Tags: []string{"only-tags"}}
-	if err := repo.UpdateMasked(ctx, db, masked, []string{"tags"}, tenant); err != nil {
+	if err := repo.UpdateMasked(ctx, db, masked, []string{"tags"}); err != nil {
 		t.Fatalf("UpdateMasked: %v", err)
 	}
-	afterMask, _ := repo.Get(ctx, db, w.ID, tenant)
+	afterMask, _ := repo.Get(ctx, db, w.ID)
 	if afterMask.Name != "alpha-2" {
 		t.Errorf("masked update clobbered an unmasked column: name=%q want alpha-2", afterMask.Name)
 	}
@@ -130,23 +120,23 @@ func TestRepoLifecycle_WidgetFullSurface(t *testing.T) {
 
 	// ── UpdateMasked: unknown / immutable path → UnknownFieldError ──
 	var unknown *orm.UnknownFieldError
-	err = repo.UpdateMasked(ctx, db, masked, []string{"id"}, tenant)
+	err = repo.UpdateMasked(ctx, db, masked, []string{"id"})
 	if !errors.As(err, &unknown) || unknown.Field != "id" {
 		t.Errorf("masked update of PK should be UnknownFieldError{id}, got %v", err)
 	}
 
 	// ── soft delete: row survives with deleted_at set, vanishes from reads ──
-	if err := repo.Delete(ctx, db, w.ID, tenant); err != nil {
+	if err := repo.Delete(ctx, db, w.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := repo.Get(ctx, db, w.ID, tenant); !errors.Is(err, orm.ErrNoRows) {
+	if _, err := repo.Get(ctx, db, w.ID); !errors.Is(err, orm.ErrNoRows) {
 		t.Errorf("soft-deleted row should be invisible to Get, got %v", err)
 	}
-	live, _ := repo.List(ctx, db, tenant)
+	live, _ := repo.List(ctx, db)
 	if len(live) != 0 {
 		t.Errorf("soft-deleted row should be invisible to List, got %d rows", len(live))
 	}
-	all, _ := repo.ListAll(ctx, db, tenant)
+	all, _ := repo.ListAll(ctx, db)
 	if len(all) != 1 {
 		t.Errorf("ListAll should include the tombstone, got %d rows", len(all))
 	}
@@ -154,13 +144,56 @@ func TestRepoLifecycle_WidgetFullSurface(t *testing.T) {
 		t.Error("soft delete did not stamp deleted_at (decorative soft delete)")
 	}
 
-	// ── update-guard: an UPDATE must not resurrect/mutate a tombstone ──
+	// ── update-guard: an UPDATE must not resurrect/mutate a tombstone,
+	//    and must SAY it changed nothing rather than report success ──
 	all[0].Name = "zombie"
-	if err := repo.Update(ctx, db, all[0], tenant); err != nil {
-		t.Fatalf("Update on tombstone: %v", err)
+	if err := repo.Update(ctx, db, all[0]); !errors.Is(err, orm.ErrNoRows) {
+		t.Errorf("Update on a tombstone = %v, want orm.ErrNoRows — the row is not visible to Get either", err)
 	}
-	stillTomb, _ := repo.ListAll(ctx, db, tenant)
+	stillTomb, _ := repo.ListAll(ctx, db)
 	if stillTomb[0].Name == "zombie" {
 		t.Error("UPDATE mutated a soft-deleted row — the deleted_at IS NULL guard is missing")
+	}
+
+	// ── the row is already gone: a second Delete is a miss, not a hit ──
+	if err := repo.Delete(ctx, db, w.ID); !errors.Is(err, orm.ErrNoRows) {
+		t.Errorf("re-deleting a tombstoned row = %v, want orm.ErrNoRows", err)
+	}
+}
+
+// TestRepo_WriteToMissingRowIsNotFound_PG is the real-database half of the
+// Get/Delete agreement. Reading RowsAffected is the only way a repository
+// can tell "row written" from "no such row" — an UPDATE/DELETE never
+// produces sql.ErrNoRows — and without it every generated Delete answered a
+// nonexistent id with 200 and an empty body while Get answered 404.
+func TestRepo_WriteToMissingRowIsNotFound_PG(t *testing.T) {
+	db := newRepoTestDB(t)
+	ctx := context.Background()
+	createWidgetsTable(t, db)
+	repo := NewRepo[widget](Spec{Timestamps: true})
+
+	const missing = int64(987654)
+	if err := repo.Delete(ctx, db, missing); !errors.Is(err, orm.ErrNoRows) {
+		t.Errorf("Delete of an id that never existed = %v, want orm.ErrNoRows", err)
+	}
+	if err := repo.Update(ctx, db, &widget{ID: missing, Name: "x"}); !errors.Is(err, orm.ErrNoRows) {
+		t.Errorf("Update of an id that never existed = %v, want orm.ErrNoRows", err)
+	}
+	if err := repo.UpdateMasked(ctx, db, &widget{ID: missing, Name: "x"}, []string{"name"}); !errors.Is(err, orm.ErrNoRows) {
+		t.Errorf("UpdateMasked of an id that never existed = %v, want orm.ErrNoRows", err)
+	}
+
+	// And the negative: a write that DOES match a row must still succeed.
+	// A guard that fails everything is not a guard.
+	w := &widget{Name: "real"}
+	if err := repo.Create(ctx, db, w); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	w.Name = "real-2"
+	if err := repo.Update(ctx, db, w); err != nil {
+		t.Fatalf("Update of an existing row must succeed: %v", err)
+	}
+	if err := repo.Delete(ctx, db, w.ID); err != nil {
+		t.Fatalf("Delete of an existing row must succeed: %v", err)
 	}
 }

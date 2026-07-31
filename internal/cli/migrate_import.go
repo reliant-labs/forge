@@ -42,9 +42,9 @@ Files with no goose markers are skipped. Files with no Down block get an
 empty .down.sql with a TODO comment.
 
 Examples:
-  forge migrate import --from goose --src-dir ../old-project/migrations
-  forge migrate import --from goose --src-dir ./legacy --dry-run
-  forge migrate import --from goose --src-dir ./legacy --force`,
+  forge project migrate import --from goose --src-dir ../old-project/migrations
+  forge project migrate import --from goose --src-dir ./legacy --dry-run
+  forge project migrate import --from goose --src-dir ./legacy --force`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMigrateImport(migrateImportOptions{
 				From:    from,

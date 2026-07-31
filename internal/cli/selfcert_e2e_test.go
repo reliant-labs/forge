@@ -74,6 +74,42 @@ func initGitRepoE2E(t *testing.T, dir, msg string) {
 	gitE2E(t, dir, "commit", "-q", "-m", msg)
 }
 
+// The self-certification machinery is file-agnostic: these tests need A
+// forge-owned Tier-1 file, not a particular one. Two are named as
+// constants so the whole suite moves in one edit when the generated shape
+// changes again — and so the WHY of each choice is written down.
+//
+//	tier1SelfCertGo   — the §2 successor to pkg/app/wire_gen.go: the
+//	                    generated per-service mount surface. Path does not
+//	                    embed the project or binary name.
+//	tier1SelfCertOther — a NON-Go stamped file, so the "hash marker is
+//	                    present in representative formats" claim is about
+//	                    more than Go comment syntax.
+//
+// Both are asserted to still BE self-certified (assertSelfCertifiedE2E)
+// before anything is concluded from them: if either is retired the way
+// wire_gen.go was, these tests must fail loudly rather than quietly stop
+// exercising the guard.
+const (
+	tier1SelfCertGo    = "internal/app/mounts_services.go"
+	tier1SelfCertOther = "deploy/kcl/config_schema.k"
+)
+
+// assertSelfCertifiedE2E returns rel's bytes, failing the test unless the
+// file exists AND carries the embedded forge:hash marker that makes the
+// stomp guard, the drift report and the rollback have anything to act on.
+func assertSelfCertifiedE2E(t *testing.T, projectDir, rel string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(projectDir, rel))
+	if err != nil {
+		t.Fatalf("read %s: %v\nThis test needs a forge-owned Tier-1 file. If %s was retired, re-point the tier1SelfCert* constants at a current one — do not delete the coverage.", rel, err, rel)
+	}
+	if !strings.Contains(string(data), "forge:hash=") {
+		t.Fatalf("%s carries no forge:hash marker, so it is not self-certifying and every guard assertion below would be vacuous; re-point the tier1SelfCert* constants", rel)
+	}
+	return data
+}
+
 // scaffoldSelfCertProject scaffolds a minimal one-service backend
 // project, wires the local forge/pkg replaces, and runs the first
 // generate. Returns the project dir and the forge binary path.
@@ -81,7 +117,7 @@ func scaffoldSelfCertProject(t *testing.T, name string) (projectDir, forgeBin st
 	t.Helper()
 	forgeBin = buildforgeBinary(t)
 	dir := t.TempDir()
-	runCmd(t, dir, forgeBin, "new", name,
+	runCmd(t, dir, forgeBin, "project", "new", name,
 		"--mod", "example.com/"+name, "--service", "api")
 	projectDir = filepath.Join(dir, name)
 	addCorpusForgePkgReplace(t, projectDir)
@@ -122,12 +158,9 @@ func TestE2ESelfCertCloneReproduces(t *testing.T) {
 	projectDir, forgeBin := scaffoldSelfCertProject(t, "selfcertclone")
 
 	// Hand-edit ONE generated Tier-1 file before committing.
-	const editedRel = "pkg/app/wire_gen.go"
+	const editedRel = tier1SelfCertGo
 	editedPath := filepath.Join(projectDir, editedRel)
-	pristine, err := os.ReadFile(editedPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", editedRel, err)
-	}
+	pristine := assertSelfCertifiedE2E(t, projectDir, editedRel)
 	if err := os.WriteFile(editedPath,
 		append(append([]byte(nil), pristine...), []byte("\n// hand-edit: smuggled past regen\n")...),
 		0o644); err != nil {
@@ -147,8 +180,11 @@ func TestE2ESelfCertCloneReproduces(t *testing.T) {
 		t.Fatalf("guard error must name the hand-edited file %s; output:\n%s", editedRel, out)
 	}
 	// No OTHER generated file may be reported as hand-edited drift: the
-	// committed tree minus the one edit is pristine by construction.
-	for _, mustNotName := range []string{"pkg/app/app_gen.go", "cmd/services_gen.go", "pkg/config/config.go"} {
+	// committed tree minus the one edit is pristine by construction. Each
+	// name below is a file that EXISTS and is stamped — a false-positive
+	// check against a file forge no longer writes proves nothing.
+	for _, mustNotName := range []string{"pkg/app/testing.go", "pkg/app/migrate.go", "pkg/config/config.go", tier1SelfCertOther} {
+		assertSelfCertifiedE2E(t, clone, mustNotName)
 		if strings.Contains(out, mustNotName) {
 			t.Errorf("guard names pristine file %s as drift (manifest-era false positive):\n%s", mustNotName, out)
 		}
@@ -182,7 +218,7 @@ func TestE2ESelfCertParallelLaneSubsetCommit(t *testing.T) {
 	// WIP lane: add a service (changes forge.yaml + proto inputs), then
 	// regenerate. Tier-1 outputs and any forge bookkeeping now describe
 	// the WIP shape.
-	runCmd(t, projectDir, forgeBin, "add", "service", "billing")
+	runCmd(t, projectDir, forgeBin, "scaffold", "service", "billing")
 	if out, err := runGenerate(t, projectDir, forgeBin); err != nil {
 		t.Fatalf("WIP-lane generate failed: %v\n%s", err, out)
 	}
@@ -241,13 +277,13 @@ func TestE2ESelfCertLegacyManifestMigration(t *testing.T) {
 	// Corruption 1 (the different-lane shape): replace the recorded hash
 	// AND history for a pristine file with values from "another lane" —
 	// the committed bytes match nothing in the manifest.
-	const corruptRel = "pkg/app/app_gen.go"
+	const corruptRel = "pkg/app/testing.go"
 	corruptManifestEntry(t, manifestPath, corruptRel)
 
-	// Corruption 2: a real hand-edit the manifest never saw. buf.yaml is
-	// a stampable Tier-1 infra file (CI workflows are now write-once
-	// scaffolds, so they are no longer a valid drift-guard subject).
-	const editedRel = "buf.yaml"
+	// Corruption 2: a real hand-edit the manifest never saw, on a stamped
+	// NON-Go file (CI workflows are write-once scaffolds and buf.yaml is
+	// unstamped, so neither is a valid drift-guard subject).
+	const editedRel = tier1SelfCertOther
 	editedPath := filepath.Join(projectDir, editedRel)
 	ciBytes, err := os.ReadFile(editedPath)
 	if err != nil {
@@ -288,7 +324,7 @@ func TestE2ESelfCertLegacyManifestMigration(t *testing.T) {
 
 	// Post-migration: Tier-1 files are self-certifying — the embedded
 	// hash marker must be present in representative formats.
-	for _, rel := range []string{"pkg/app/wire_gen.go", corruptRel, editedRel} {
+	for _, rel := range []string{tier1SelfCertGo, corruptRel, editedRel} {
 		data, err := os.ReadFile(filepath.Join(projectDir, rel))
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
@@ -444,12 +480,9 @@ func TestE2EGenerateRollbackOnValidateFailure(t *testing.T) {
 	initGitRepoE2E(t, projectDir, "green HEAD")
 
 	// 1. Drift a Tier-1 file so the upcoming --force run rewrites it.
-	const tier1Rel = "pkg/app/wire_gen.go"
+	const tier1Rel = tier1SelfCertGo
 	tier1Path := filepath.Join(projectDir, tier1Rel)
-	pristineTier1, err := os.ReadFile(tier1Path)
-	if err != nil {
-		t.Fatalf("read %s: %v", tier1Rel, err)
-	}
+	pristineTier1 := assertSelfCertifiedE2E(t, projectDir, tier1Rel)
 	if err := os.WriteFile(tier1Path,
 		append(append([]byte(nil), pristineTier1...), []byte("\n// drift: forces a --force rewrite\n")...),
 		0o644); err != nil {

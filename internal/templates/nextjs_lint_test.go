@@ -8,7 +8,7 @@ import (
 
 // TestNextJSESLintConfig_ExemptsScenariosAndConfigs is the regression test
 // for frontend-eslint-warnings-on-scaffold (kalshi-trader friction). A
-// fresh `forge add frontend dashboard` followed by `npm run lint` was
+// fresh `forge scaffold frontend dashboard` followed by `npm run lint` was
 // emitting 70+ warnings against forge-scaffolded files:
 //
 //   - src/mocks/scenarios/<name>.ts and vitest.config.ts hit

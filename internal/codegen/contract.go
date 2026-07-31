@@ -1,5 +1,5 @@
 // Package codegen renders Go source files for the canonical scaffolds
-// forge produces: handler stubs, CRUD handlers, authorizer, auth/tenant
+// forge produces: handler stubs, CRUD handlers, auth
 // middleware, bootstrap wiring, mock services, and config loaders.
 //
 // The behavioural surface is split into three small Services so callers
@@ -17,7 +17,6 @@ package codegen
 
 import (
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // Service is the file-emission surface of the codegen package.
@@ -32,10 +31,10 @@ type Service interface {
 	GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, crudMethodNames map[string]bool, cs *checksums.FileChecksums) (*MissingHandlerResult, error)
 	GenerateMock(svc ServiceDef, mockDir string) (bool, error)
 
-	// Authorization / auth middleware / tenant middleware.
-	GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, skipDirs map[string]bool, cs *checksums.FileChecksums) error
-	GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMethods []string, targetDir string, cs *checksums.FileChecksums) error
-	GenerateTenantMiddleware(mt *config.MultiTenantConfig, targetDir string, cs *checksums.FileChecksums) error
+	// Auth is owned code now (GenerateAuthSetup scaffolds the editable
+	// internal/app/auth.go, a plain package func that writes once and never
+	// regenerates). Access control is handler logic (middleware.GetUser) —
+	// forge generates no access-control artifact, so none appears here.
 
 	// CRUD generation.
 	GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error
@@ -43,7 +42,7 @@ type Service interface {
 
 	// Config loader / cmd-server wiring.
 	GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error
-	GenerateCmdServerWithFields(configFields map[string]bool, authProvider string, targetDir string, cs *checksums.FileChecksums) error
+	GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error
 	GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error
 
 	// pkg/app bootstrap files.

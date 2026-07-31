@@ -1,4 +1,4 @@
-// Package cli — `forge introspect` command group.
+// Package cli — `forge project introspect` command group.
 //
 // Introspect surfaces "what the binary will actually register" without
 // requiring the binary to be running. The current leaf is `handlers`,
@@ -21,6 +21,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
@@ -34,7 +35,7 @@ type HandlerPath struct {
 	Path    string `json:"path"`
 }
 
-// newIntrospectCmd builds the `forge introspect` command group. Today
+// newIntrospectCmd builds the `forge project introspect` command group. Today
 // it has one leaf — `handlers` — but the group exists so other
 // "what would the binary do" inspectors (routes, middleware chain,
 // scheduled workers, …) can live alongside without polluting the root.
@@ -51,13 +52,13 @@ Subcommands:
   handlers   Print every RPC path the binary will register.`,
 	}
 	cmd.AddCommand(newIntrospectHandlersCmd())
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
-// newIntrospectHandlersCmd builds `forge introspect handlers`.
+// newIntrospectHandlersCmd builds `forge project introspect handlers`.
 //
 // Reads the project's proto services via the same descriptor used by
-// `forge generate` / `forge audit`, then emits one line per RPC in the
+// `forge generate` / `forge project audit`, then emits one line per RPC in the
 // canonical Connect path form. Sorted by service then method so output
 // is stable across runs (diffable in CI).
 func newIntrospectHandlersCmd() *cobra.Command {
@@ -75,9 +76,9 @@ RPC in the canonical Connect form: /<package>.<Service>/<Method>.
 Output is sorted by service then method for stable diffs.
 
 Examples:
-  forge introspect handlers
-  forge introspect handlers --format json
-  forge introspect handlers --proto-dir proto/services`,
+  forge project introspect handlers
+  forge project introspect handlers --format json
+  forge project introspect handlers --proto-dir proto/services`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runIntrospectHandlers(cmd.OutOrStdout(), protoDir, format)
 		},

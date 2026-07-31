@@ -1,193 +1,106 @@
 ---
 name: api
-description: Write Connect RPC handlers — proto-driven codegen, the thin-translation handler pattern (validate, extract auth, convert proto↔internal, call service, wrap errors via `svcerr.Wrap`), middleware, and testing. Business logic lives in `internal/handlers/<svc>/contract.go`, never in handlers.
+description: Write Connect RPC handlers — the pb-through model (every RPC is a method on the handler package's `*Service` working with wire types + `s.deps`), CRUD via `// forge:entity` + `pkg/crud`, error handling with `svcerr.Wrap`, and testing.
 ---
 
 # Connect RPC API Handlers
 
-A Connect RPC handler is **wire-format glue**, not business logic. Every handler in a forge project follows the same six-step shape:
+Every RPC is a method on the handler package's `*Service` in `internal/handlers/<svc>/`, working with the generated **wire (pb) types** and `s.deps`. There is ONE shape — "pb-through". A **CRUD** RPC (a `// forge:entity` message with a matching table) delegates to the generic `pkg/crud` runtime through an owned shim; a **custom** RPC is a method you implement in place on `*Service`. Keep it thin and predictable:
 
-1. Validate the request.
-2. Extract auth / user context from the request.
-3. Convert proto → internal input type.
-4. Call the service (this is where the business logic lives).
-5. Convert internal result → proto.
-6. Wrap errors with `svcerr.Wrap`.
+1. Validate the request. 2. Extract auth / user context. 3. Do the work through `s.deps` (the repo, or a domain collaborator for real orchestration). 4. Pack the result into the response proto. 5. Wrap errors with `svcerr.Wrap`.
 
-If a handler grows past those six steps, the extra logic belongs behind the service interface in `internal/handlers/<svc>/contract.go`. See `service-layer` for the other half.
+For a simple RPC, step 3 is a direct `s.deps.Repo` call. When an RPC grows real orchestration you want to unit-test transport-free (or reuse), extract it into a **standalone package** (`forge scaffold package <name>`) called through `s.deps` — forge's by-type DI wires it. There is no per-service domain package and no generated proto↔domain converters; the handler owns any wire→domain mapping explicitly. See `service-layer` and `contracts`.
 
-## Where handlers live, and what codegen gives you for free
+## Where handlers live, and what codegen gives you
 
-Handlers live in `internal/handlers/<svc>/` — the same directory as that service's `contract.go` and its impl. The `handlers/` role subtree is under `internal/`, not top-level; the generated handler files (`handlers_gen.go`, `handlers_crud_ops_gen.go`) and the owned ones (`handlers_crud.go`, `validators.go`, `authorizer.go`) sit beside the service they belong to. Each service struct embeds the generated `Unimplemented*Handler` and implements RPC methods:
+Everything for a service lives in ONE `internal/handlers/<svc>/` directory. The concrete `*Service` + `deps` is in `service.go`; one custom RPC per `rpc_<name>.go`; CRUD delegations in the owned `handlers_crud.go` beside the generated `handlers_crud_ops_gen.go`; `validators.go` is yours. There is no `contract.go` in a handler package — the `*Service` methods **are** the handlers. The struct embeds the generated `Unimplemented*Handler` and carries `deps` (`type Service struct { gen.UnimplementedUserServiceHandler; deps Deps }`).
 
-```go
-type UserService struct {
-    gen.UnimplementedUserServiceHandler
-    deps Deps
-}
-```
+RPCs are defined in `proto/services/<svc>/v1/<svc>.proto`. Naming conventions trigger auto-generated features:
 
-RPCs are defined in `proto/services/<svc>/v1/<svc>.proto`. Naming conventions matter — they trigger auto-generated features:
+- **CRUD methods** (`Create<Entity>`, `Get<Entity>`, `List<Entities>`, `Update<Entity>`, `Delete<Entity>`) whose entity has a matching table → forge generates per-RPC op constructors (request↔entity + filter→column mapping, response packing) in `handlers_crud_ops_gen.go` and scaffolds thin ~3-line delegations into the owned `handlers_crud.go`: `return crud.HandleCreate(s.crudCreateItemOp())(ctx, req)`. The delegations never name entity fields, so schema changes flow through the regenerated ops file and never rot; to customize, replace the delegation right in `handlers_crud.go` (it's yours; `forge generate` only appends shims for new CRUD RPCs). A CRUD RPC with no matching table generates an honest Unimplemented stub — create the table first (`forge scaffold entity`).
+- **AIP-158 pagination fields** (`page_size`, `page_token`, `next_page_token`) → cursor pagination auto-generated. **`idempotency_key`** → signals callers to pass an `Idempotency-Key` header.
+- **`optional` filter fields** on List requests → query filters auto-generated (`search`/`query`/`q` → ILIKE across text columns; any other filter must name a real column or `forge generate` fails loudly). Filter fields must be `optional` in proto, else codegen can't distinguish "not set" from zero.
+- **`auth_required` annotation** → informational metadata only (feeds `forge project map`/`graph`); **it gates nothing at runtime.** The auth interceptor establishes identity; what a caller may then do is handler logic you write against `middleware.GetUser(ctx)`. See `auth`.
 
-- **CRUD methods** (`Create<Entity>`, `Get<Entity>`, `List<Entities>`, `Update<Entity>`, `Delete<Entity>`) whose entity has a matching table in the applied `db/migrations/` schema (pluralized snake_case — the CRUD RPCs are the wire half of entity detection, the table is the storage half) → forge generates per-RPC op constructors (request→entity field mapping via the generated `<entity>ToProto`/`<entity>FromProto` conversions, filter→column mapping, response packing, auth/tenant hooks) in `handlers_crud_ops_gen.go` (Tier-1, regenerated every run) and scaffolds thin ~3-line delegations into the user-owned `handlers_crud.go`: `return crud.HandleCreate(s.crudCreateItemOp())(ctx, req)`. The delegations never name entity fields, so schema changes flow through the regenerated ops file and `handlers_crud.go` never rots. To customize an RPC, replace the delegation right in `handlers_crud.go` — the file is yours; `forge generate` only appends shims for newly added CRUD RPCs and never modifies existing content. CRUD RPCs with no matching table generate honest Unimplemented stubs and nothing else — create the table first (`forge add entity` or a hand-written migration).
-- **AIP-158 pagination fields** (`page_size`, `page_token`, `next_page_token`) → cursor-based pagination is auto-generated.
-- **`optional` filter fields** on List requests → query filters are auto-generated (`search`/`query`/`q` → ILIKE across the table's text columns; any other filter must name a real column of the entity's table or `forge generate` fails loudly). Filter fields must be `optional` in proto, otherwise the generated code can't distinguish "not set" from zero values.
-- **`auth_required` annotation** → the per-method policy table in `authorizer_gen.go` is auto-generated. Custom authorization logic (including role checks) goes in `authorizer.go` — `authorizer_gen.go` is regenerated.
-- **`idempotency_key` annotation** → signals callers to pass an `Idempotency-Key` header.
-
-**Hand-written handler methods always take priority** — the generator skips any method you've already implemented. After any proto change, run `forge generate`; never hand-edit `gen/` or `*_gen.go` files (fix the proto source instead).
-
-Cross-cutting concerns (auth, logging, recovery, request IDs) live in the forge middleware libraries (`forge/pkg/{authn,authz,middleware,observe}`) plus the thin policy file `internal/middleware/middleware.go`, composed in the binary's `Build` and mounted by its cobra subcommand — not in handlers.
+**Hand-written methods always take priority** — the generator skips any method you've implemented. After any proto change run `forge generate`; never hand-edit `gen/` or `*_gen.go`. Cross-cutting concerns (auth, logging, recovery, request IDs) live in the interceptor chain (`observe.Chain`), not in handlers.
 
 ## The canonical handler
 
 ```go
-import (
-    "github.com/reliant-labs/forge/pkg/svcerr"
-)
-
 func (s *Service) DoThing(
-    ctx context.Context,
-    req *connect.Request[apiv1.DoThingRequest],
+    ctx context.Context, req *connect.Request[apiv1.DoThingRequest],
 ) (*connect.Response[apiv1.DoThingResponse], error) {
-    // 1. Validate request
-    if err := validateDoThingRequest(req.Msg); err != nil {
+    if err := validateDoThingRequest(req.Msg); err != nil {          // 1. validate
         return nil, connect.NewError(connect.CodeInvalidArgument, err)
     }
-
-    // 2. Extract auth/user context
-    claims, err := middleware.ClaimsFromContext(ctx)
+    claims, err := middleware.ClaimsFromContext(ctx)                 // 2. extract auth
     if err != nil {
         return nil, connect.NewError(connect.CodeUnauthenticated, err)
     }
-
-    // 3. Convert proto → internal input
-    input := things.DoThingInput{
-        UserID: claims.UserID,
-        Name:   req.Msg.Name,
-    }
-
-    // 4. Call service (business logic)
-    result, err := s.deps.Things.DoThing(ctx, input)
+    result, err := s.deps.Things.DoThing(ctx, things.DoThingInput{   // 3+4. convert + do the work
+        UserID: claims.UserID, Name: req.Msg.Name,
+    })
     if err != nil {
-        return nil, svcerr.Wrap(err)
+        return nil, svcerr.Wrap(err)                                 // 5. wrap errors
     }
-
-    // 5. Convert internal result → proto
-    return connect.NewResponse(&apiv1.DoThingResponse{
-        Id:        result.ID,
-        CreatedAt: timestamppb.New(result.CreatedAt),
+    return connect.NewResponse(&apiv1.DoThingResponse{               // pack the response
+        Id: result.ID, CreatedAt: timestamppb.New(result.CreatedAt),
     }), nil
 }
 ```
 
-That's it. No `db.Begin`, no `slog.Info`, no business decisions. Each step is one or two lines; the whole handler is twenty.
+This delegates to a `Things` domain package; a simpler RPC would query `s.deps.Repo` right here.
 
 ## Error mapping — use `svcerr`, do NOT hand-roll a helper
 
-Every handler uses `svcerr.Wrap(err)` from `github.com/reliant-labs/forge/pkg/svcerr`. The library owns the service-error → connect-error mapping; do **not** re-implement it per service.
+Every handler uses `svcerr.Wrap(err)` from `github.com/reliant-labs/forge/pkg/svcerr`. The library owns the service-error → connect-error mapping; do **not** re-implement it per service. It handles three cases:
+
+| input | result |
+|---|---|
+| a wrapped sentinel (`svcerr.NotFound("user")`) | the matching `*connect.Error`, **message preserved** |
+| an existing `*connect.Error` | passed through untouched |
+| anything else (raw DB / SDK error) | `CodeInternal`, message replaced with `internal server error`, original kept as a server-only cause |
+
+Row 3 is why: `connect.Error.Message()` is literally `err.Error()`, so an error whose text you did not write is text you publish to an anonymous caller — postgres writes things like `relation "accounts" does not exist (SQLSTATE 42P01) dsn=postgres://app:s3cr3t@db:5432/prod`. `svcerr.Wrap` redacts it; the original stays reachable server-side via `svcerr.Cause(err)`, `errors.Is`/`errors.As`, and the logging interceptor logs it with the request id, so do not re-log it at the call site.
+
+To keep a useful client message **and** the diagnostic, use `svcerr.WithCause` — client sees the summary, the log gets the driver error:
 
 ```go
-import "github.com/reliant-labs/forge/pkg/svcerr"
-
-result, err := s.deps.Things.DoThing(ctx, input)
-if err != nil {
-    return nil, svcerr.Wrap(err)
-}
+return nil, svcerr.Wrap(svcerr.WithCause(svcerr.Internal("create thing failed"), err))
 ```
 
-`svcerr.Wrap` does the right thing in three cases:
+Redaction applies only to that fallback: codes you choose (`InvalidArgument`, `NotFound`, …) keep the message you gave them, because it is part of your API. So never put a driver error inside one — `svcerr.InvalidArgument(err.Error())` opts out of every protection above.
 
-- **Service returned a wrapped sentinel** (`return nil, svcerr.NotFound("user")`) — wrapped as the matching `*connect.Error` (here `CodeNotFound`).
-- **Service returned an existing `*connect.Error`** — passed through unchanged.
-- **Anything else** (raw DB error, third-party SDK error, …) — wrapped as `CodeInternal` so internals don't leak to clients. Log the original at the call site if you need it traced.
+`forge lint --conventions` warns (`forgeconv-no-handler-error-mapping`) on a re-rolled per-service mapper.
 
-The package also exposes `svcerr.WithDetail(err, msg)` for the rare case of attaching a structured proto detail to the connect error (e.g., a structured validation-failure description). For the 99% case `svcerr.Wrap(err)` is the only call you make.
+### Domain sentinels
 
-Picking the right code matters to clients: `NotFound` vs `InvalidArgument` vs `Internal` drive different client behavior. Never expose internal details (stack traces, SQL errors) to clients — the unknown-error fall-through lands at `CodeInternal` with a generic message.
+Return domain failures with `svcerr` sentinels (not bespoke ones) — the bare sentinel (`return nil, svcerr.ErrNotFound`) when there's no detail, or the constructor (`svcerr.NotFound("thing")`, `svcerr.FailedPrecondition("no billing account")`) when a human-readable detail belongs in the string. Both preserve the sentinel for `errors.Is` / `svcerr.Code`. The full set covers every `connect.Code`:
 
-### Why no per-service helper
+| svcerr sentinel / constructor | connect.Code + when |
+|---|---|
+| `ErrNotFound` / `NotFound` | `CodeNotFound` — missing, or hidden by row-scoping WHERE |
+| `ErrAlreadyExists` / `AlreadyExists` | `CodeAlreadyExists` — unique constraint, idempotency replay |
+| `ErrPermissionDenied` / `PermissionDenied` | `CodePermissionDenied` — authenticated but not authorized |
+| `ErrUnauthenticated` / `Unauthenticated` | `CodeUnauthenticated` — no valid identity |
+| `ErrInvalidArgument` / `InvalidArgument` | `CodeInvalidArgument` — domain invariants violated post-validation |
+| `ErrFailedPrecondition` / `FailedPrecondition` | `CodeFailedPrecondition` — system not in required state |
+| `ErrAborted` / `Aborted` | `CodeAborted` — concurrency / transactional conflict |
+| `ErrResourceExhausted` / `ResourceExhausted` | `CodeResourceExhausted` — rate-limit / quota / plan-limit |
+| `ErrUnavailable` / `Unavailable` | `CodeUnavailable` — upstream dependency offline |
+| `ErrUnimplemented` / `Unimplemented` | `CodeUnimplemented` — stubbed / feature-flagged |
 
-Pre-1.7 forge prescribed a per-service `mapServiceError` / `toConnectError` helper. Across the cpnext dogfood pass that produced **four byte-identical copies** of the same switch statement in `internal/{billing,daemon,llm_gateway,org}/handlers.go` — each one mapping the same sentinels to the same Connect codes. The skill earned the duplication. The fix is to ship one mapping, in one library, and have every handler call into it.
+Add a new sentinel only when the set has no representative for the code you need. (`context.Canceled`/`DeadlineExceeded` pass through `svcerr.ToConnect`.)
 
-`forge lint --conventions` ships a warning (`forgeconv-no-handler-error-mapping`) that flags any service-package file declaring a function whose name and body shape match the old per-service mapper pattern. If you see that warning, replace the helper with `svcerr.Wrap`.
+### Structured detail and routing codes (both rare)
 
-## Domain sentinels live in the service layer
-
-Define your domain failure categories in `internal/handlers/<svc>/` using `svcerr` sentinels, not bespoke ones. Two equivalent shapes:
-
-**(a)** Return the package-level sentinel directly (use when there's no helpful detail to attach):
-
-```go
-// internal/handlers/things/contract.go
-import "github.com/reliant-labs/forge/pkg/svcerr"
-
-func (s *svc) GetThing(ctx context.Context, id string) (*Thing, error) {
-    row, err := s.db.GetThing(ctx, id)
-    if errors.Is(err, sql.ErrNoRows) {
-        return nil, svcerr.ErrNotFound
-    }
-    if err != nil {
-        return nil, fmt.Errorf("get thing: %w", err)
-    }
-    return row, nil
-}
-```
-
-**(b)** Use the matching constructor when a human-readable detail belongs in the error string:
-
-```go
-return nil, svcerr.NotFound("thing")
-return nil, svcerr.PermissionDenied("requires org owner")
-return nil, svcerr.InvalidArgument("AI access is billed via wallet, not subscription")
-return nil, svcerr.FailedPrecondition("organization has no billing account")
-```
-
-Both forms preserve the sentinel for `errors.Is` and `svcerr.Code` checks, so handler-side and test-side matching keeps working.
-
-The full sentinel set covers every `connect.Code`:
-
-| svcerr sentinel / constructor | connect.Code | When |
-|------------------------------|--------------|------|
-| `ErrNotFound` / `NotFound` | `CodeNotFound` | Resource doesn't exist or is filtered out by tenant scoping |
-| `ErrAlreadyExists` / `AlreadyExists` | `CodeAlreadyExists` | Unique constraint, idempotency replay mismatch |
-| `ErrPermissionDenied` / `PermissionDenied` | `CodePermissionDenied` | Caller is authenticated but not authorized |
-| `ErrUnauthenticated` / `Unauthenticated` | `CodeUnauthenticated` | No valid identity |
-| `ErrInvalidArgument` / `InvalidArgument` | `CodeInvalidArgument` | Domain invariants violated post-validation |
-| `ErrFailedPrecondition` / `FailedPrecondition` | `CodeFailedPrecondition` | System not in required state (e.g. cannot remove last owner) |
-| `ErrAborted` / `Aborted` | `CodeAborted` | Optimistic-concurrency / transactional conflict |
-| `ErrResourceExhausted` / `ResourceExhausted` | `CodeResourceExhausted` | Rate-limit / quota / plan-limit reached |
-| `ErrUnavailable` / `Unavailable` | `CodeUnavailable` | Upstream dependency offline |
-| `ErrUnimplemented` / `Unimplemented` | `CodeUnimplemented` | Stubbed RPC or feature-flagged path |
-| `context.Canceled` / `context.DeadlineExceeded` | passthrough | `svcerr.ToConnect` maps stdlib context errors |
-| anything else | `CodeInternal` | The unknown-error catch-all; opaque to clients |
-
-Add a new sentinel only when the existing set has no representative for the Connect code you need — sentinel sprawl undermines the whole "one mapping, one library" point.
-
-## Attaching structured detail (rare)
-
-When clients legitimately need machine-readable error context — e.g., a validation-failure proto naming the offending field — use `svcerr.WithDetail`:
-
-```go
-import (
-    "github.com/reliant-labs/forge/pkg/svcerr"
-    apiv1 "myproject/gen/things/v1"
-)
-
-return nil, svcerr.WithDetail(
-    svcerr.InvalidArgument("name must be <= 256 chars"),
-    &apiv1.FieldViolation{Field: "name", Reason: "max_length"},
-)
-```
-
-`WithDetail` is built on `connect.NewErrorDetail`; the proto must be a registered message type. Most handlers never need this — `svcerr.Wrap(err)` is enough.
+`svcerr.WithDetail(err, proto)` attaches a machine-readable proto (e.g. a `FieldViolation`) — most handlers never need it. `svcerr.WithReason(err, "no_active_subscription")` attaches a stable snake_case code the frontend ROUTES on (upsell, redirect to billing) instead of brittle message TEXT; `svcerr.Wrap` carries it to the wire as `x-forge-error-reason` metadata. Generated CRUD already stamps one on EVERY error it returns (`duplicate`, `reference_in_use`, `not_found`, … — the `crud.Reason*` constants); reuse those names where the meaning matches. Both preserve `errors.Is`/`svcerr.Code`.
 
 ## Validation helpers
 
-Wire-format validation (required fields, bounds, format) goes in a per-service `validators.go`:
+Wire-format validation (required fields, bounds, format) goes in a per-service `validators.go` as pure functions taking `*apiv1.<Method>Request` and returning `error` — easy to table-test, never touching context, DB, or services:
 
 ```go
-// internal/handlers/things/validators.go
 func validateDoThingRequest(req *apiv1.DoThingRequest) error {
     if req.Name == "" {
         return errors.New("name is required")
@@ -199,172 +112,40 @@ func validateDoThingRequest(req *apiv1.DoThingRequest) error {
 }
 ```
 
-Validators are pure functions taking `*apiv1.<Method>Request` and returning `error`. They are easy to table-test (see `testing/patterns`). They never touch context, DB, or services.
-
-**Domain-level invariants** ("can this user create a thing in this org?") belong in the service, not the validator. Rule of thumb: if checking the rule requires DB access or external state, it's a service concern.
+**Domain-level invariants** ("can this user create a thing in this org?") belong in the service — if checking the rule needs DB access or external state, it's a service concern.
 
 ## When proto and internal types diverge
 
-For a CRUD MVP, proto and internal types often look identical and a tempting shortcut is to pass `req.Msg` straight into the service. **Don't.** At any non-trivial scale they diverge:
+For a CRUD MVP proto and internal types often look identical, and passing `req.Msg` straight into the service is tempting. **Don't** — they diverge at scale (proto `*string`/`page_token`/oneofs vs internal `string`/domain enums; different evolution clocks). Convert at the handler boundary; that translation IS the handler's job. See `service-layer`.
 
-- Proto fields are `*string` / `*int32` / `string`; internal types use `string` / `int` / domain enums.
-- Proto carries wire concerns (`page_token`, `mask`, oneof wrappers); internal types carry business concerns (`AuthorID`, computed defaults).
-- Proto evolves on a wire-compat clock; internal types evolve on a refactor clock.
+`middleware.ClaimsFromContext(ctx)` is the canonical auth extraction: pass the relevant fields (UserID, OrgID, roles) into the service input — never the raw `*Claims`; the service interface should not know your auth provider exists. Unauthenticated RPCs skip step 2.
 
-Convert at the handler boundary. The handler's job is exactly this translation. See `service-layer` for what the internal input/output types should look like.
+## What does NOT belong in a `*Service` method
 
-## Auth context extraction
+A `*Service` method reads and writes its own tables through `s.deps`. Out of the method body:
 
-`middleware.ClaimsFromContext(ctx)` is the canonical extraction. Every authenticated handler does this in step 2 and passes the relevant fields (UserID, OrgID, roles) into the service input — never the raw `*Claims` struct. The service interface should not know your auth provider exists.
-
-For unauthenticated RPCs (health checks, public reads), skip step 2.
-
-## What does NOT belong in a handler
-
-- **DB calls.** No `db.Begin`, no ORM functions, no SQL. Data access (ORM functions from `internal/db/`, transactions for multi-step mutations) lives behind the service — see `service-layer` and `db`.
-- **Business decisions.** "Should this user be allowed to do X?" is a service concern; the handler only knows that auth exists.
-- **A hand-rolled `mapServiceError` / `toConnectError` helper.** Use `svcerr.Wrap(err)`. The lint warns when you re-roll one.
-- **Cross-service orchestration.** "Create a thing AND send an email AND update the audit log" belongs in one service method, not split across the handler.
-- **Logging beyond the unknown-error path.** Structured logging happens in middleware (request log) and in the service's tracing wrapper. Handlers stay quiet.
-- **Retries, transactions, idempotency.** All service concerns.
-- **A server for an RPC another repo owns.** If the RPC is owned by another service/repo and you're only a *client* of it, import the upstream proto and generate a client — don't hand-copy the proto and scaffold a handler. A handler package where every method returns `CodeUnimplemented` and `Deps` carries only `Logger`/`Config` (no domain collaborators) is the tell: you meant to import, not to serve. See the `proto` skill.
+- **Resolving your own dependencies.** Collaborators arrive in `Deps`, filled once by `NewComponents` — never construct a repo, open a pool, or dial another service.
+- **A hand-rolled `mapServiceError` helper** (use `svcerr.Wrap`), and **reaching into another service's storage** (call a peer through its `Deps` interface, never its tables).
+- **Cross-cutting middleware** (auth enforcement, logging, recovery, request IDs) — those live in the interceptor chain; log only on the unknown-error path. **Logic that deserves transport-free tests or reuse** → a standalone package the handler calls via `s.deps`, not a god-method.
+- **A server for an RPC another repo owns.** If you're only a *client*, import the upstream proto and generate a client — never hand-copy it and scaffold a handler. Every method `CodeUnimplemented` with `Deps` carrying only `Logger`/`Config` is the tell. See `proto`.
 
 ## Testing handlers
 
-With this shape, handler unit tests are nearly mechanical:
+The scaffold gives you one test file per RPC (`handlers_scaffold_<rpc>_test.go`, no shared helper) built on `tdd.RunRPCCases` (`pkg/tdd`), run against the real `*Service` wired by the test harness (`app.NewTest<Svc>(t)`) — no mock of the handler itself. Each row declares a request, an expected outcome (`Check` or a `WantErr` code), and an optional setup hook; the scaffold row asserts `CodeUnimplemented` and self-destructs the moment you implement the RPC. When a handler delegates to a domain package, fake that collaborator through its generated `mock_gen.go` (set the `XxxFunc` field), pass it via `app.With<Svc>Deps(...)`, return a `svcerr.Err*` sentinel to exercise error paths, and assert `connect.CodeOf(err)`. Run `task test`. See `testing/patterns` Pattern 1.
 
-- Construct a `MockService` from the generated `internal/handlers/mocks/things_mock.go` (package `mocks`).
-- Set up `mockSvc.On("DoThing", mock.Anything, expectedInput).Return(result, nil)`.
-- Call the handler via the test helper from `internal/app/testing.go`.
-- Assert the response or `connect.CodeOf(err)`.
+## Extending Repository without breaking fakes
 
-For error-path tests, return a `svcerr.Err*` sentinel (or constructor) from the mock and assert `connect.CodeOf(err)` matches the expected code — the wrap is library-tested, you don't have to re-cover it per service.
+Load the `api/role-interface` skill for the opt-in role-interface pattern — adding a `Repository` method in a parallel-migration round without breaking every sibling fake.
 
-See `testing/patterns` Pattern 1 for the table-driven template, and the `tdd.RunRPCCases` runner from `pkg/tdd` for the canonical per-RPC test shape. Integration tests use a real database to verify queries and transactions.
+## Deps: where they come from, and optional fields
 
-```bash
-forge test
-forge test --service users
-```
+The explicit composition (`NewComponents`) fills each `Deps` field as an **interface, resolved by type** — the handler can't tell the real in-process service from a Connect client or a mock (see `architecture` → **The composition root**). Most fields are required — `validateDeps()` rejects nil, so per-RPC `if s.deps.X == nil` checks are dead code (the codemod strips them). A **legitimately optional** field (a NATS publisher used only on the rollback path) is tagged `// forge:optional-dep` directly above the declaration; then `validateDeps()` must NOT check it and its `if s.deps.X != nil { ... }` guards stay. See `service-layer`.
 
-## Rules
+## Adding or customizing an RPC
 
-- Six steps. No business logic in the handler.
-- Validators are pure, testable functions in `internal/handlers/<svc>/validators.go`.
-- Error mapping is `svcerr.Wrap(err)` — always, in every handler. Do not write a per-service helper.
-- Define domain failures with `svcerr` sentinels (`svcerr.ErrNotFound` etc.) or constructors (`svcerr.NotFound("user")`) in `internal/handlers/<svc>/`.
-- Never pass `req.Msg` directly into a service. Always convert to an internal input type.
-- Never expose internal error details (SQL, stack traces) to clients. The unknown-error fall-through lands at `CodeInternal` with a generic message.
-- Never reach into the DB or other services from a handler.
-- Hand-written handler methods take priority over generated CRUD — the generator skips any method you implement. The primary customization path for a CRUD RPC is replacing its delegation in the user-owned `handlers_crud.go`.
-- Run `forge generate` after any proto change; never hand-edit `gen/`, `handlers_crud_ops_gen.go`, or `authorizer_gen.go` (custom authorization goes in `authorizer.go`; CRUD customization goes in `handlers_crud.go`).
-
-## Where a handler's collaborators come from (the composition root)
-
-A handler never resolves its own dependencies. The explicit composition — `NewComponents(infra *Infra) (*Components, error)` in the generated `internal/app/compose.go`, off the owned `internal/app/providers.go` `Infra`/`OpenInfra` seam — constructs every service in type-topological order and hands each one its `Deps` as **interface-typed fields, resolved by type**. A handler's `Deps.Things` is a `things.Service` interface; the handler cannot tell whether `NewComponents` filled it with the real in-process service, a Connect client to another binary, or a mock.
-
-There is no `*App`/`AppExtras` struct, no string-keyed registry, and no name-matched `wire_gen.go`. The Deps fields are filled in exactly one place — `NewComponents` — so the wiring is plain, compile-checked Go:
-
-```go
-// internal/app/compose.go
-c.Things = things.New(things.Deps{Repo: infra.Repo, Logger: infra.Log})
-```
-
-If `infra.Repo` does not satisfy `things.Repository`, it does not compile — there is no name-match layer to silently drop a narrow-interface mismatch.
-
-**Deferred / cross-lane typing is handled by the seam, not by a placeholder marker.** When a collaborator's concrete type lands in a sibling lane that hasn't merged, the handler still depends only on the *interface* (`Things things.Service`). The collaborator interface is the seam: the default fill is the real in-process instance, and splitting the service out later — or swapping in a client or a mock — is a one-line change in `NewComponents`, with the handler untouched:
-
-```go
-// in-process default:
-Things: things.New(things.Deps{Repo: repo}),
-// split to its own Deployment later — handler unchanged:
-Things: thingsclient.New(conn),
-// mock in a test — handler unchanged:
-Things: mockThings,
-```
-
-Because every dep is an interface filled in one place, "run the app with Things mocked" is a few-line call against `NewComponents` (off a test `Infra`) — no framework, no `any`-typed placeholder, no runtime nil hazard. A missing collaborator is a compile error or a loud `validateDeps()` failure at construction, never a typed-zero that quietly no-ops in production.
-
-## Marking optional Deps fields
-
-Most `Deps` fields are required for production traffic — `Build` fills them at construction, `validateDeps()` rejects nil, and per-RPC `if s.deps.X == nil` checks become dead code. The upgrade codemod will strip those checks because they're boilerplate.
-
-A small set of fields are **legitimately optional** — a NATS publisher used only on the rollback path, an audit fallback, an optional gateway feature. For these, tag the field with the `// forge:optional-dep` marker on the line directly above (or as the inline trailing comment after) the declaration:
-
-```go
-type Deps struct {
-    Logger     *slog.Logger
-    Config     *config.Config
-    Authorizer middleware.Authorizer
-    Repo       Repository
-
-    // NATSPublisher publishes domain events; nil disables the rollback path.
-    // forge:optional-dep
-    NATSPublisher EventPublisher
-}
-```
-
-Two things change when the marker is present:
-
-1. **validateDeps()** must NOT include a check for the field. The marker says "nil is OK"; gating it would defeat the design.
-2. **Per-RPC nil-checks** like `if s.deps.NATSPublisher != nil { s.deps.NATSPublisher.Publish(...) }` are idiomatic Go for an optional dep and stay. (For *non*-optional deps, drop these checks — `validateDeps()` already gates non-nil at construction.)
-
-`forge lint --conventions` catches misplaced markers (`forgeconv-optional-dep-marker-position`) — the marker only takes effect when attached to a `Deps` struct field, so a typo on the struct or a function docstring fails loudly.
-
-## Extending Repository without breaking sibling fakes (role-interface pattern)
-
-`Repository` is the canonical name for a service's storage interface. The greenfield convention is "one Repository per service, extend as needed" — a Get<Entity>/Create<Entity>/List<Entity> method per RPC, all on the same interface. That works for a single agent owning the whole package.
-
-In a parallel-migration round it does *not* work. Adding a single method to `Repository` atomically breaks every fake Repository in sibling files (test fakes in `internal/handlers/<svc>/handlers_test.go`, in-memory fakes in `e2e/`, the generated mock in `internal/handlers/mocks/<svc>_mock.go`). Agent A adds `GetModelPerformance`; agent B's fakes — or worse, an in-flight rebase carrying stale Repository methods — instantly fail to compile.
-
-**The recommended shape** when adding a new method to an existing Repository in a parallel-migration round is the **opt-in role interface**: declare a small, narrow interface in the file that consumes it, and have the handler type-assert `s.deps.Repo` to that interface at call time.
-
-```go
-// internal/handlers/api/handlers.go
-
-// ModelPerformanceLister is the narrow read surface for GetModelPerformance.
-// It's declared alongside the consuming method so sibling fakes that don't
-// implement it can still satisfy Repository — adding a method here does
-// NOT break tests that build a *fakeRepo without it.
-type ModelPerformanceLister interface {
-    GetModelPerformance(ctx context.Context, opts ModelPerformanceOpts) ([]*db.ModelPerformance, error)
-}
-
-func (s *Service) GetModelPerformance(
-    ctx context.Context,
-    req *connect.Request[apiv1.GetModelPerformanceRequest],
-) (*connect.Response[apiv1.GetModelPerformanceResponse], error) {
-    lister, ok := s.deps.Repo.(ModelPerformanceLister)
-    if !ok {
-        return nil, connect.NewError(connect.CodeUnimplemented,
-            fmt.Errorf("api.GetModelPerformance: Repo does not implement ModelPerformanceLister"))
-    }
-    rows, err := lister.GetModelPerformance(ctx, ...)
-    ...
-}
-```
-
-Production `*ormRepo` implements both `Repository` and `ModelPerformanceLister`; the assertion is a no-op at runtime. Sibling fakes that haven't grown the new method satisfy the broader `Repository` interface and return `CodeUnimplemented` when the new RPC is called against them — the same outcome as a CRUD shape-mismatch stub.
-
-Once every consumer of the Repository fake adds the new method (or the migration round ends and a polish-round consolidates), promote the role interface back onto the main `Repository` interface: the consuming code stays unchanged, and the type assertion becomes a degenerate `Repository → Repository` that always succeeds.
-
-**When to use this pattern.**
-
-- Adding a method to a Repository that has 2+ fake implementations in sibling lanes.
-- Adding a method whose impl is in-flight in a parallel agent's package.
-- Standing up a new RPC whose storage shape isn't final (the role interface absorbs the churn while the impl evolves).
-
-**When NOT to use it.**
-
-- Greenfield work where you own both the Repository and every fake. The role-interface adds indirection for no benefit.
-- After the migration round ends. Consolidate the role back onto `Repository` so the type assertion goes away.
-
-See `forge lint --conventions` for the matching check that flags a role interface that was added but never promoted — once every consumer implements it the lint surfaces "ready to consolidate" so the indirection doesn't linger.
+- **New custom RPC:** declare it in the proto and run `forge generate` (or `forge scaffold rpc <service> <Name>`, which self-heals a stale descriptor and writes a correctly-signed stub); generate emits a pb-through method returning `CodeUnimplemented` for you to fill in place (no generated `<Name>Input`/`Result` types or converters). After a batch of proto edits, `forge scaffold` does the whole chain in one phased run (`--dry-run` plans).
+- **Customizing a CRUD RPC:** replace its delegation in the owned `handlers_crud.go` — access-control / row-scoping `WHERE` goes there, never in `handlers_crud_ops_gen.go`.
 
 ## When this skill is not enough
 
-- **Designing the service surface** behind the handler — see `service-layer` and `contracts`.
-- **Proto-level concerns** (annotations, CRUD naming, pagination shape) — see `proto`.
-- **Auth wiring and provider choice** — see `auth` and `packs`.
-- **Test patterns** beyond the unit handler test — see `testing/patterns`.
-- **Naming conventions** across Go (`PascalCase` types, `camelCase` locals), proto (`snake_case` fields, `PascalCase` messages), and on-disk paths (`snake_case` service directories under `internal/handlers/`) — see `architecture` → **Naming conventions**.
+A transport-agnostic domain/use-case layer behind the handler → `service-layer`, `contracts`, `interactor`. Proto-level concerns (annotations, CRUD naming, pagination) → `proto`. Auth wiring, access control, row scoping → `auth`. Test patterns → `testing/patterns`. Naming conventions across Go / proto / on-disk paths → `architecture` → **Naming conventions**.

@@ -36,9 +36,9 @@ func isPluginAvailable(pluginName string) bool {
 // subdir under proto/ that contains at least one .proto file. The result
 // is sorted for determinism.
 //
-// This unblocks pack-emitted protos that live outside the canonical
-// proto/{services,api,db,config} layout (e.g. proto/audit/ from the
-// audit-log pack, proto/api_key/ from the api-key pack). Without this,
+// This unblocks scaffolded protos that live outside the canonical
+// proto/{services,api,db,config} layout (e.g. proto/audit/,
+// proto/api_key/). Without this,
 // the descriptor walk and frontend TS generation silently drop those
 // services, which surfaces as "missing useListAuditEvents hook" downstream.
 func discoverProtoSubdirs(projectDir string) []string {
@@ -50,6 +50,13 @@ func discoverProtoSubdirs(projectDir string) []string {
 	var dirs []string
 	for _, e := range entries {
 		if !e.IsDir() {
+			continue
+		}
+		// proto/buf holds the vendored protovalidate option definitions — a
+		// COMPILE-only import buf resolves via the module path. It must NOT
+		// be a codegen TARGET (descriptor/TS --path), so it is skipped here;
+		// the Go buf.gen.yaml excludes it via exclude_paths.
+		if e.Name() == "buf" {
 			continue
 		}
 		sub := filepath.Join("proto", e.Name())
@@ -141,7 +148,9 @@ func protoFileDeclaresService(path string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	// Read-only scan; a Close error on a file that was never written
+	// cannot lose data.
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	// Proto files can have long lines (e.g. inlined options); raise the
 	// token cap so the scan does not silently stop at the default 64 KiB.

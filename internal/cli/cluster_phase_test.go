@@ -73,7 +73,7 @@ func TestParseKCLEntities_NoClusters(t *testing.T) {
 
 // TestReconcileDeclaredClusters_EmptyIsNoop guards the fast path: a nil
 // cluster list never shells out to k3d, so it's safe to call
-// unconditionally at the head of every `forge up` / `forge deploy`.
+// unconditionally at the head of every `forge env up` / `forge env deploy`.
 func TestReconcileDeclaredClusters_EmptyIsNoop(t *testing.T) {
 	if err := reconcileDeclaredClusters(t.Context(), nil, "", ""); err != nil {
 		t.Errorf("empty reconcile should be a no-op, got %v", err)
@@ -87,7 +87,7 @@ func TestReconcileDeclaredClusters_EmptyIsNoop(t *testing.T) {
 // declarative-ingress invariant: reconcile NEVER installs the Gateway API
 // stack imperatively, even for a cluster that still carries the legacy
 // `Ingress` flag. Ingress is a DECLARED forge.HelmChart applied by the
-// deploy phase (`forge deploy <env> --target=envoy-gateway`), so the
+// deploy phase (`forge env deploy <env> --target=envoy-gateway`), so the
 // per-cluster ingress-install seam is gone entirely. A warm reconcile of an
 // already-existing cluster is a pure no-op beyond the secondary-node setup.
 // The clusterExists seam is stubbed so the test never touches k3d/kubectl;

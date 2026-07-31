@@ -19,7 +19,7 @@ import (
 //	npm test
 //	npx tsc --noEmit
 //
-// The CRUD entity (`forge add service item` → Get/List/Create RPCs) is
+// The CRUD entity (`forge scaffold service item` → Get/List/Create RPCs) is
 // load-bearing: it makes `forge generate` emit the dynamic detail route
 // (`src/app/items/[id]/page.tsx`), hooks, and dashboard tiles — the
 // exact generated surface that historically broke a pristine project:
@@ -50,8 +50,11 @@ import (
 //     cases where `next build` might elide typing issues (legacy compat
 //     flags, SWC-only paths).
 //
-// The test skips cleanly if Node isn't installed. In CI, the workflow
-// must provision Node before running -tags=e2e.
+// node/npm are a REQUIREMENT, not a preference: requireTool skips on a
+// laptop that lacks them and FAILS under CI, where provisioning them is
+// .github/workflows/e2e-suite.yml's job. The old spelling skipped in both
+// places, which is how this gate spent its life reporting green from a
+// runner that never had Node.
 //
 // Module wiring uses the corpus-style local replaces
 // (addCorpusForgePkgReplace) rather than requirePublishedForgePkg: the
@@ -62,15 +65,13 @@ import (
 // scaffold e2e tests.
 func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
-	if !toolAvailable("node") || !toolAvailable("npm") {
-		t.Skip("node/npm not available — skipping frontend build check")
-	}
+	requireTool(t, "node", "npm")
 
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
 	runCmd(t, dir, forgeBin,
-		"new", "feapp",
+		"project", "new", "feapp",
 		"--mod", "example.com/feapp",
 		"--frontend", "web",
 	)
@@ -80,13 +81,14 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 
 	// One CRUD entity so the generated frontend surface (dynamic [id]
 	// detail page, list/create pages, hooks, dashboard tiles) exists.
-	// `forge add service` scaffolds an empty proto; the documented flow
+	// `forge scaffold service` scaffolds an empty proto; the documented flow
 	// is user-written CRUD RPCs + a migration owning the schema —
 	// frontend pages are only emitted for entities whose table exists
 	// (codegen.ParseEntityProtos → schemadef.ApplyAndIntrospect).
-	runCmd(t, projectDir, forgeBin, "add", "service", "item")
+	runCmd(t, projectDir, forgeBin, "scaffold", "service", "item")
 	writeFileE2E(t, filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto"), itemCRUDProto)
 	writeFileE2E(t, filepath.Join(projectDir, "db", "migrations", "0001_create_items.up.sql"), itemsTableMigration)
+	writeFileE2E(t, filepath.Join(projectDir, "db", "migrations", "0002_items_scalar_vocabulary.up.sql"), itemsVocabularyMigration)
 
 	// Generate the TypeScript stubs the frontend imports. Without this
 	// step the frontend build fails with "cannot find module" for every
@@ -138,6 +140,20 @@ func writeFileE2E(t *testing.T, path, content string) {
 // Get/List/Create shape forge's own example template documents. It is
 // what makes `forge generate` emit the dynamic `[id]` detail route and
 // the dashboard tile hook — the surfaces this test guards.
+//
+// The Item message carries the WHOLE proto scalar vocabulary — all
+// fifteen kinds, singular and repeated — plus an enum and a repeated
+// enum, because `npx tsc --noEmit` below is the only gate that reads the
+// emitted TypeScript the way a user's build does, and it costs the same
+// whether the entity has four fields or forty.
+//
+// It had four. That is why a virgin scaffold declaring one `bytes`
+// column shipped twelve TypeScript errors before a line of app logic
+// existed (mock literals typed `string` into `Uint8Array`, the create
+// form typed z.string() into the same), and why a full sweep found
+// fifty-seven across `bytes`, `repeated bytes`, `repeated bool`, the
+// repeated 64-bit integers, and `repeated enum`. Every one of them was
+// reachable from this const.
 const itemCRUDProto = `syntax = "proto3";
 
 package services.item.v1;
@@ -158,12 +174,55 @@ service ItemService {
   rpc CreateItem(CreateItemRequest) returns (CreateItemResponse) {}
 }
 
-// Item represents an item entity.
+// ItemTier exercises the enum projections: a singular enum becomes a
+// typed <select>, and a REPEATED enum must not (a badge takes one value).
+enum ItemTier {
+  ITEM_TIER_UNSPECIFIED = 0;
+  ITEM_TIER_BASIC = 1;
+  ITEM_TIER_PRO = 2;
+}
+
+// Item represents an item entity. Every proto scalar kind appears once
+// singular and once repeated — the vocabulary is closed at fifteen, so
+// this is exhaustive rather than a sample.
 message Item {
   string id = 1;
   string name = 2;
   string description = 3;
   google.protobuf.Timestamp created_at = 4;
+
+  bool f_bool = 10;
+  bytes f_bytes = 11;
+  float f_float = 12;
+  double f_double = 13;
+  int32 f_int32 = 14;
+  sint32 f_sint32 = 15;
+  sfixed32 f_sfixed32 = 16;
+  int64 f_int64 = 17;
+  sint64 f_sint64 = 18;
+  sfixed64 f_sfixed64 = 19;
+  uint32 f_uint32 = 20;
+  fixed32 f_fixed32 = 21;
+  uint64 f_uint64 = 22;
+  fixed64 f_fixed64 = 23;
+  ItemTier f_tier = 24;
+
+  repeated string r_string = 30;
+  repeated bool r_bool = 31;
+  repeated bytes r_bytes = 32;
+  repeated float r_float = 33;
+  repeated double r_double = 34;
+  repeated int32 r_int32 = 35;
+  repeated sint32 r_sint32 = 36;
+  repeated sfixed32 r_sfixed32 = 37;
+  repeated int64 r_int64 = 38;
+  repeated sint64 r_sint64 = 39;
+  repeated sfixed64 r_sfixed64 = 40;
+  repeated uint32 r_uint32 = 41;
+  repeated fixed32 r_fixed32 = 42;
+  repeated uint64 r_uint64 = 43;
+  repeated fixed64 r_fixed64 = 44;
+  repeated ItemTier r_tier = 45;
 }
 
 message GetItemRequest {
@@ -184,9 +243,46 @@ message ListItemsResponse {
   string next_page_token = 2;
 }
 
+// The create FORM is projected from this message, so it carries the same
+// vocabulary: a kind that only ever appears on the entity is checked in
+// the table cells and the fixtures but never in a zod schema or a
+// mutate() payload, which is where four of the five defect classes were.
 message CreateItemRequest {
   string name = 1;
   string description = 2;
+
+  bool f_bool = 10;
+  bytes f_bytes = 11;
+  float f_float = 12;
+  double f_double = 13;
+  int32 f_int32 = 14;
+  sint32 f_sint32 = 15;
+  sfixed32 f_sfixed32 = 16;
+  int64 f_int64 = 17;
+  sint64 f_sint64 = 18;
+  sfixed64 f_sfixed64 = 19;
+  uint32 f_uint32 = 20;
+  fixed32 f_fixed32 = 21;
+  uint64 f_uint64 = 22;
+  fixed64 f_fixed64 = 23;
+  ItemTier f_tier = 24;
+
+  repeated string r_string = 30;
+  repeated bool r_bool = 31;
+  repeated bytes r_bytes = 32;
+  repeated float r_float = 33;
+  repeated double r_double = 34;
+  repeated int32 r_int32 = 35;
+  repeated sint32 r_sint32 = 36;
+  repeated sfixed32 r_sfixed32 = 37;
+  repeated int64 r_int64 = 38;
+  repeated sint64 r_sint64 = 39;
+  repeated sfixed64 r_sfixed64 = 40;
+  repeated uint32 r_uint32 = 41;
+  repeated fixed32 r_fixed32 = 42;
+  repeated uint64 r_uint64 = 43;
+  repeated fixed64 r_fixed64 = 44;
+  repeated ItemTier r_tier = 45;
 }
 
 message CreateItemResponse {
@@ -197,12 +293,54 @@ message CreateItemResponse {
 // itemsTableMigration backs the Item entity with a real table —
 // migrations own the schema, and frontend CRUD pages are only emitted
 // for entities whose table exists in the shadow-applied schema.
+//
+// Shared with the runtime e2e test, whose Item declares a subset of these
+// fields; a column with no wire field is simply not converted.
 const itemsTableMigration = `CREATE TABLE items (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+`
+
+// itemsVocabularyMigration adds one column per proto scalar kind, in the
+// exact SQL types entity birth gives them (internal/scaffold's scalarSQL).
+// Any other pairing is refused by the conversion gate, so this table IS
+// the schema half of the closed vocabulary.
+const itemsVocabularyMigration = `ALTER TABLE items
+    ADD COLUMN f_bool BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN f_bytes BYTEA NOT NULL DEFAULT '\x',
+    ADD COLUMN f_float DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ADD COLUMN f_double DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ADD COLUMN f_int32 BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN f_sint32 BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN f_sfixed32 BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN f_int64 BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN f_sint64 BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN f_sfixed64 BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN f_uint32 BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN f_fixed32 BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN f_uint64 BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN f_fixed64 BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN f_tier TEXT NOT NULL DEFAULT 'ITEM_TIER_BASIC'
+        CHECK (f_tier IN ('ITEM_TIER_BASIC', 'ITEM_TIER_PRO')),
+    ADD COLUMN r_string TEXT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_bool BOOLEAN[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_bytes BYTEA[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_float DOUBLE PRECISION[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_double DOUBLE PRECISION[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_int32 BIGINT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_sint32 BIGINT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_sfixed32 BIGINT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_int64 BIGINT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_sint64 BIGINT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_sfixed64 BIGINT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_uint32 BIGINT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_fixed32 BIGINT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_uint64 BIGINT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_fixed64 BIGINT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN r_tier TEXT[] NOT NULL DEFAULT '{}';
 `
 
 // runCmdTimeout is like runCmd but with an explicit timeout. npm install

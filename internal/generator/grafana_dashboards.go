@@ -10,7 +10,7 @@ import (
 )
 
 // GenerateGrafanaDashboards is the standalone entry point callable from both
-// `forge new` (via ProjectGenerator) and `forge generate`. It writes Grafana
+// `forge project new` (via ProjectGenerator) and `forge generate`. It writes Grafana
 // dashboards and provisioning config into deploy/observability/grafana/.
 func GenerateGrafanaDashboards(projectName, projectDir string) error {
 	dashDir := filepath.Join(projectDir, "deploy", "observability", "grafana", "dashboards")
@@ -52,6 +52,26 @@ func GenerateGrafanaDashboards(projectName, projectDir string) error {
 // overviewDashboardJSON is the Grafana dashboard JSON for application overview
 // metrics: request rate, error rate, latency percentiles, per-procedure
 // breakdown, and Go runtime stats.
+//
+// METRIC SOURCE (verified against the runtime, 2026-07): the RED panels
+// query the otelconnect SERVER interceptor's instruments — the only RPC
+// metrics the scaffolded runtime emits. cmd-tree-serve wires
+// otelconnect.NewInterceptor() into the chain (observe.Chain receives no
+// Meter, so observe.MetricsInterceptor is a pass-through), and otelconnect
+// v0.7.x emits `rpc.server.duration` as an Int64Histogram in MILLISECONDS
+// with attributes rpc.system ("connect_rpc" | "grpc" | "grpc_web"),
+// rpc.service, rpc.method, and a per-protocol status attribute:
+//   - connect_rpc: rpc.connect_rpc.error_code (string, ERRORS ONLY;
+//     successes carry no code attribute)
+//   - grpc / grpc_web: rpc.grpc.status_code / rpc.grpc_web.status_code
+//     (int, ALWAYS present; 0 = success)
+//
+// Both ingestion paths (OTLP push -> lgtm collector -> Prometheus, and the
+// /metrics Prometheus-exporter scrape) translate that to
+// `rpc_server_duration_milliseconds_{bucket,sum,count}` with underscored
+// labels; the OTLP path stamps job=<service.name> (the generated
+// ServiceName constant = the project name). The previous queries hit
+// `http_server_request_duration_seconds`, which nothing emits.
 var overviewDashboardJSON = `{
   "uid": "forge-overview",
   "title": "Forge — Application Overview",
@@ -92,7 +112,7 @@ var overviewDashboardJSON = `{
       "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum(rate(http_server_request_duration_seconds_count{job=\"{{PROJECT_NAME}}\"}[5m]))",
+          "expr": "sum(rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\"}[5m]))",
           "legendFormat": "req/s",
           "refId": "A"
         }
@@ -115,8 +135,8 @@ var overviewDashboardJSON = `{
       "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum(rate(http_server_request_duration_seconds_count{job=\"{{PROJECT_NAME}}\",http_response_status_code=~\"5..\"}[5m])) / sum(rate(http_server_request_duration_seconds_count{job=\"{{PROJECT_NAME}}\"}[5m]))",
-          "legendFormat": "5xx %",
+          "expr": "1 - (sum(rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\",rpc_connect_rpc_error_code=\"\",rpc_grpc_status_code=~\"0|\",rpc_grpc_web_status_code=~\"0|\"}[5m])) / sum(rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\"}[5m])))",
+          "legendFormat": "error %",
           "refId": "A"
         }
       ]
@@ -128,7 +148,7 @@ var overviewDashboardJSON = `{
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "ms",
           "color": { "mode": "palette-classic" }
         },
         "overrides": []
@@ -136,17 +156,17 @@ var overviewDashboardJSON = `{
       "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(http_server_request_duration_seconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(rpc_server_duration_milliseconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(rpc_server_duration_milliseconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(http_server_request_duration_seconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(rpc_server_duration_milliseconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -167,14 +187,14 @@ var overviewDashboardJSON = `{
       "options": { "legend": { "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum by (http_route) (rate(http_server_request_duration_seconds_count{job=\"{{PROJECT_NAME}}\"}[5m]))",
-          "legendFormat": "{{ http_route }}",
+          "expr": "sum by (rpc_service, rpc_method) (rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\"}[5m]))",
+          "legendFormat": "{{ rpc_service }}/{{ rpc_method }}",
           "refId": "A"
         }
       ]
     },
     {
-      "title": "Top Errors by Status Code",
+      "title": "Top Errors by Code",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
@@ -188,9 +208,19 @@ var overviewDashboardJSON = `{
       "options": { "legend": { "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum by (http_response_status_code) (rate(http_server_request_duration_seconds_count{job=\"{{PROJECT_NAME}}\",http_response_status_code=~\"[45]..\"}[5m]))",
-          "legendFormat": "{{ http_response_status_code }}",
+          "expr": "sum by (rpc_connect_rpc_error_code) (rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\",rpc_connect_rpc_error_code!=\"\"}[5m]))",
+          "legendFormat": "connect {{ rpc_connect_rpc_error_code }}",
           "refId": "A"
+        },
+        {
+          "expr": "sum by (rpc_grpc_status_code) (rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\",rpc_grpc_status_code!~\"0|\"}[5m]))",
+          "legendFormat": "grpc {{ rpc_grpc_status_code }}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (rpc_grpc_web_status_code) (rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\",rpc_grpc_web_status_code!~\"0|\"}[5m]))",
+          "legendFormat": "grpc-web {{ rpc_grpc_web_status_code }}",
+          "refId": "C"
         }
       ]
     },

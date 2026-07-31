@@ -8,11 +8,6 @@ import (
 	"testing"
 )
 
-// TestE2EScaffoldComplexTypes and TestE2EScaffoldEntityInServiceProto were deleted with the
-// entity-proto subsystem: entity annotations are ignored now; complex-type column conversion is
-// unit-tested in internal/codegen/crud_convert.go and the schema-truth lifecycle gate in
-// fixture_corpus_e2e_test.go supersedes the end-to-end coverage.
-
 // TestE2EScaffoldConfigNaming verifies that the generated config struct
 // field names match what the templates reference. This is a regression test
 // for the DatabaseURL vs DatabaseUrl naming mismatch.
@@ -21,10 +16,9 @@ func TestE2EScaffoldConfigNaming(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
-	linkForgeSibling(t, dir)
 
 	runCmd(t, dir, forgeBin,
-		"new", "cfgtest",
+		"project", "new", "cfgtest",
 		"--mod", "example.com/cfgtest",
 		"--service", "api",
 	)
@@ -78,7 +72,7 @@ func TestE2EScaffoldConfigNaming(t *testing.T) {
 	runCmd(t, projectDir, "go", "build", "./...")
 }
 
-// TestE2EScaffoldNoConflictingProtos verifies that `forge new` does not
+// TestE2EScaffoldNoConflictingProtos verifies that `forge project new` does not
 // scaffold both proto/forge/v1/forge.proto AND proto/forge/options/v1/*.proto,
 // which would produce conflicting extension tag numbers and break buf generate.
 func TestE2EScaffoldNoConflictingProtos(t *testing.T) {
@@ -86,10 +80,9 @@ func TestE2EScaffoldNoConflictingProtos(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
-	linkForgeSibling(t, dir)
 
 	runCmd(t, dir, forgeBin,
-		"new", "protocheck",
+		"project", "new", "protocheck",
 		"--mod", "example.com/protocheck",
 		"--service", "api",
 	)

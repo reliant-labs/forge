@@ -81,6 +81,64 @@ func TestExtractCRUDEntities_FullCRUD(t *testing.T) {
 	}
 }
 
+// TestExtractCRUDEntities_ZodValidators pins the protovalidate → zod
+// projection: rules declared once on the entity message flow onto the
+// create form's fields (matched by proto name), producing the validator
+// chain the template appends to the base builder.
+func TestExtractCRUDEntities_ZodValidators(t *testing.T) {
+	u := func(n uint64) *uint64 { return &n }
+	svc := ServiceDef{
+		Name:      "WidgetService",
+		Package:   "shop.v1",
+		ProtoFile: "proto/services/shop/v1/shop.proto",
+		Methods: []Method{
+			{Name: "CreateWidget", InputType: "CreateWidgetRequest", OutputType: "CreateWidgetResponse"},
+			{Name: "GetWidget", InputType: "GetWidgetRequest", OutputType: "GetWidgetResponse"},
+			{Name: "ListWidgets", InputType: "ListWidgetsRequest", OutputType: "ListWidgetsResponse"},
+		},
+		Messages: map[string][]MessageFieldDef{
+			"CreateWidgetRequest": {
+				{Name: "name", ProtoType: "string"},
+				{Name: "amount_cents", ProtoType: "int64"},
+				{Name: "quantity", ProtoType: "int32"},
+				{Name: "email", ProtoType: "string"},
+			},
+		},
+		Schemas: map[string][]SchemaFieldDef{
+			"shop.v1.Widget": {
+				{Name: "name", Kind: "string", Validate: &FieldConstraints{MinLen: u(2), MaxLen: u(64)}},
+				{Name: "amount_cents", Kind: "int64", Validate: &FieldConstraints{Gte: "0", Lte: "100000"}},
+				{Name: "quantity", Kind: "int32", Validate: &FieldConstraints{Gte: "1", Lte: "99"}},
+				{Name: "email", Kind: "string", Validate: &FieldConstraints{Email: true}},
+			},
+		},
+	}
+	entities := ExtractCRUDEntities(svc)
+	if len(entities) != 1 {
+		t.Fatalf("expected 1 entity, got %d", len(entities))
+	}
+	byName := map[string]PageField{}
+	for _, f := range entities[0].CreateFields {
+		byName[f.ProtoName] = f
+	}
+	want := map[string]string{
+		"name":     ".min(2).max(64)",
+		"quantity": ".gte(1).lte(99)",
+		"email":    ".email()",
+		// A 64-bit integer is edited as digit TEXT — an <input type="number">
+		// is a double and cannot hold every int64 — so the zod value is a
+		// string, and `.gte(0)` does not exist on a zod string. The numeric
+		// bound is REFUSED here rather than emitted onto the wrong type;
+		// the protovalidate interceptor still enforces it on the wire.
+		"amount_cents": "",
+	}
+	for proto, chain := range want {
+		if got := byName[proto].ZodChain; got != chain {
+			t.Errorf("field %q ZodChain = %q, want %q", proto, got, chain)
+		}
+	}
+}
+
 func TestExtractCRUDEntities_ListOnly(t *testing.T) {
 	svc := ServiceDef{
 		Name:      "UserService",
@@ -203,13 +261,28 @@ func TestProtoTypeToFormField(t *testing.T) {
 		{"string", "text"},
 		{"bool", "checkbox"},
 		{"int32", "number"},
-		{"int64", "number"},
+		{"sint32", "number"},
+		{"sfixed32", "number"},
 		{"uint32", "number"},
+		{"fixed32", "number"},
 		{"float", "number"},
 		{"double", "number"},
+		// The 64-bit integers are TEXT. An <input type="number"> is a
+		// JavaScript double: a row holding 9007199254740993 prefills as
+		// 9007199254740992 and a Save that changed nothing writes that
+		// back, and uint64's maximum comes back as 18446744073709551616 —
+		// which the BIGINT column then rejects outright.
+		{"int64", "text"},
+		{"sint64", "text"},
+		{"sfixed64", "text"},
+		{"uint64", "text"},
+		{"fixed64", "text"},
 		{"Timestamp", "date"},
 		{"google.protobuf.Timestamp", "date"},
-		{"bytes", "textarea"},
+		// `bytes` has no native control that produces bytes, so it is
+		// edited as base64 — the encoding the field already has on the
+		// wire, and the only text encoding that can express every byte.
+		{"bytes", "base64"},
 		{"SomeMessage", "text"},
 	}
 

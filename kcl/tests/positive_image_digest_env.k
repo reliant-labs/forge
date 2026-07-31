@@ -1,7 +1,7 @@
 """
 Positive test — PER-IMAGE digest deploy references.
 
-`forge deploy` pins each service's manifest image to ITS OWN
+`forge env deploy` pins each service's manifest image to ITS OWN
 content-addressed digest when the build state captured one. It threads a
 PER-IMAGE name→digest map into render_manifests' image_digests (built Go-side from
 the per-image build-state files); the _image_ref seam looks up
@@ -85,7 +85,7 @@ _bundle = forge.Bundle {
     services = [_cp_svc, _reliant_api_svc, _reliant_worker_svc, _nodigest_svc, _pinned_svc, _vendor_svc]
 }
 
-# The PER-IMAGE digest map — exactly what forge deploy builds from the
+# The PER-IMAGE digest map — exactly what forge env deploy builds from the
 # per-image build-state files. control-plane and reliant carry DIFFERENT
 # digests; no-digest/sidecar/litellm are absent.
 manifests = forge.render_manifests(_bundle, "staging", {

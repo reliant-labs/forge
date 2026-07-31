@@ -20,13 +20,13 @@ import (
 // `deploy.type ∈ {"host","cluster","external","compose","build-only"}`
 // (services only — operators/cronjobs are always cluster-shaped).
 //
-// Callers (`forge build --env`, `forge deploy <env>`, `forge up --env`,
+// Callers (`forge build --env`, `forge env deploy <env>`, `forge env up <env>`,
 // `forge run <svc>`) read this rather than reaching back into forge.yaml
 // because deployment placement is a per-env decision that lives in the
 // KCL layer, not on services[] in the project config.
 type KCLEntities struct {
 	// Clusters are the k3d clusters forge ensures exist at the head of
-	// `forge up` before any workload deploys. Empty for an env that
+	// `forge env up` before any workload deploys. Empty for an env that
 	// declares no clusters (today's no-ensure behavior). Ownership is
 	// implicit via Cluster.Network / Cluster.RegistryMirror — there is
 	// no "primary" cluster.
@@ -70,7 +70,7 @@ type KCLEntities struct {
 	// leaves the entity contract — and therefore every cluster-shaped
 	// service's K8sCluster.namespace — absent. We derive the namespace
 	// from the manifests so the declared-namespace resolution
-	// (k8sClusterNamespaceForEnv → forge deploy/smoke/secrets) keeps
+	// (k8sClusterNamespaceForEnv → forge env deploy/smoke/secrets) keeps
 	// working without forcing the user to echo `output` or pass
 	// --namespace. Empty when the render carries no namespaced manifests.
 	ManifestNamespace string `json:"-"`
@@ -92,7 +92,7 @@ type KCLEntities struct {
 	// recovered from `manifests[].spec.template.spec.containers[].image`.
 	// This is the env's RESOLVED image_tag (the `option("image_tag") or
 	// "<default>"` value baked into the manifest image refs), the exact
-	// tag `forge deploy <env>` will pull. `forge build --env <env>` reads
+	// tag `forge env deploy <env>` will pull. `forge build <env>` reads
 	// it back so its default build tag MATCHES the deploy tag by
 	// construction — closing the build/deploy tag-divergence footgun
 	// where build tagged from git-describe but deploy referenced the
@@ -479,7 +479,7 @@ type ComposeDeploy struct {
 }
 
 // HostDeploy is the deploy block for a service that runs as a host
-// process during `forge up --env=<env>`. The Runner field selects the
+// process during `forge env up <env>`. The Runner field selects the
 // dispatch (go-run / air / binary / delve) and is consumed by
 // [runHostServiceWithRunner] + the up orchestrator.
 //
@@ -505,6 +505,12 @@ type HostDeploy struct {
 	// cross-repo binaries whose runner config (e.g. Air's build_cmd
 	// paths) resolves relative to a sibling repo. Default: project root.
 	WorkingDir string `json:"working_dir,omitempty"`
+	// ListenPorts are the host TCP ports this service itself BINDS. When
+	// declared, the `forge env up` port-conflict pre-flight checks EXACTLY
+	// these instead of inferring bind ports from *_PORT env vars (see
+	// hostEnvPorts) — the inference misfires on dependency-address vars
+	// like TEMPORAL_PORT and then blocks `up` on healthy infra.
+	ListenPorts []int `json:"listen_ports,omitempty"`
 }
 
 // K8sCluster is the deploy block for a cluster-mode service. Mirrors
@@ -584,14 +590,64 @@ type RBACSpec struct{}
 // side; the type discriminator is the only thing the build pipeline
 // needs to make the skip/build decision.
 type FrontendEntity struct {
-	Name      string                `json:"name"`
-	Type      string                `json:"type,omitempty"` // "nextjs" | "vite-spa" | "react-native"
-	Path      string                `json:"path"`
-	DevRunner string                `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
-	Port      int                   `json:"port,omitempty"`
-	EnvFile   string                `json:"env_file,omitempty"`
-	EnvVars   []KCLEnvVar           `json:"env_vars,omitempty"`
-	Deploy    *FrontendDeployEntity `json:"deploy,omitempty"`
+	Name      string      `json:"name"`
+	Type      string      `json:"type,omitempty"` // "nextjs" | "vite-spa" | "react-native"
+	Path      string      `json:"path"`
+	DevRunner string      `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
+	Port      int         `json:"port,omitempty"`
+	EnvFile   string      `json:"env_file,omitempty"`
+	EnvVars   []KCLEnvVar `json:"env_vars,omitempty"`
+	// Config is the typed, well-known knobs block (kcl/schema.k
+	// FrontendConfig). nil when the frontend declares no `config`. forge
+	// expands it into the SAME env stream as EnvVars via frontendConfigEnv,
+	// with explicit EnvVars winning on a variable collision. See
+	// EffectiveEnvVars.
+	Config *FrontendConfigEntity `json:"config,omitempty"`
+	Deploy *FrontendDeployEntity `json:"deploy,omitempty"`
+}
+
+// FrontendConfigEntity mirrors the kcl/schema.k FrontendConfig — the
+// typed, well-known frontend knobs forge maps to framework-specific env
+// var names (NEXT_PUBLIC_* / VITE_* / EXPO_PUBLIC_*, plus Next.js's
+// NEXT_TELEMETRY_DISABLED) and enforces on the build path. Mock is the
+// load-bearing knob: "off" (default) | "true" | "hybrid". See
+// frontendConfigEnv for the field→variable mapping and the build-path
+// mock force in deploy.go.
+type FrontendConfigEntity struct {
+	APIURL            string `json:"api_url,omitempty"`
+	Mock              string `json:"mock,omitempty"`
+	OTELEndpoint      string `json:"otel_endpoint,omitempty"`
+	Environment       string `json:"environment,omitempty"`
+	TelemetryDisabled bool   `json:"telemetry_disabled,omitempty"`
+}
+
+// EffectiveEnvVars is the frontend's env-var stream forge injects at dev
+// launch and build time: the config-derived variables (frontendConfigEnv)
+// with the explicit EnvVars layered OVER them — an explicit entry for the
+// same variable WINS, and forge warns on the collision (the typed config
+// knob is being shadowed). A frontend with no `config` block returns its
+// EnvVars unchanged, so the legacy env_vars-only shape is byte-identical.
+func (f FrontendEntity) EffectiveEnvVars() []KCLEnvVar {
+	base := frontendConfigEnv(f.Type, f.Config)
+	if len(base) == 0 {
+		return f.EnvVars
+	}
+	idx := make(map[string]int, len(base))
+	out := make([]KCLEnvVar, 0, len(base)+len(f.EnvVars))
+	for _, ev := range base {
+		idx[ev.Name] = len(out)
+		out = append(out, ev)
+	}
+	for _, ev := range f.EnvVars {
+		if i, ok := idx[ev.Name]; ok {
+			fmt.Printf("  ⚠️  frontend %s: env_vars sets %q, overriding the typed config value for that variable.\n", f.Name, ev.Name)
+			out[i] = ev
+			continue
+		}
+		idx[ev.Name] = len(out)
+		out = append(out, ev)
+	}
+	return out
 }
 
 // FrontendDeployEntity carries the deploy discriminator for a frontend.
@@ -798,7 +854,14 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	// devstack.ActiveDArgs() pushes option("worktree")/option("branch") when
 	// a parallel dev stack is active (nil → byte-identical default render),
 	// so the entity render sees the same git facts the manifest render does.
+	// activeRenderOptionDArgs() adds the project's own `-D name=value` options
+	// (`forge env up -D …`) — opaque to forge, meaningful only to this env's
+	// KCL. nil unless the caller passed one, so every other render is
+	// unchanged. Deliberately NOT added to the manifest render in
+	// internal/cluster: those options are bound by `env up` only, and a
+	// cluster apply must render from the repo alone.
 	dArgs := append([]string{"env=" + env}, devstack.ActiveDArgs()...)
+	dArgs = append(dArgs, activeRenderOptionDArgs()...)
 	return kclrender.Run(projectDir, kclDir, dArgs)
 }
 
@@ -935,7 +998,7 @@ func manifestNamespaceFromOuter(outer []byte) string {
 // `image_tag = option("image_tag") or "staging"` bakes into the image
 // refs when no `-D image_tag` override is passed (which is exactly how
 // RenderKCL renders: env only, no tag override). It is the tag
-// `forge deploy <env>` pulls, so `forge build --env <env>` defaults its
+// `forge env deploy <env>` pulls, so `forge build <env>` defaults its
 // build tag to it (per image) and the two phases agree by construction.
 //
 // A digest-pinned image ("name@sha256:…") or an untagged image

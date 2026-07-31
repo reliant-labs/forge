@@ -11,7 +11,7 @@
 //     GENERATED (their signatures are a consumed contract) — this package is
 //     NOT involved on the run path.
 //   - DATA-ONLY INVENTORY — introspection ONLY. The generated `Inventory` is
-//     a `[]ComponentInfo` of pure descriptors that `forge map` / `forge
+//     a `[]ComponentInfo` of pure descriptors that `forge project map` / `forge
 //     audit` and the `services` listing read. The descriptor TYPE and its
 //     reader helpers live HERE so the generated file shrinks to data rows.
 //
@@ -22,7 +22,7 @@ package inventory
 
 // ComponentInfo is one mountable service's DATA-ONLY descriptor. It carries
 // NO mount closure — mounting is the typed generated Mount<Svc> methods. This
-// is the introspection surface (`forge map` / `audit` / `services`).
+// is the introspection surface (`forge project map` / `audit` / `services`).
 type ComponentInfo struct {
 	// Name is the runtime kebab name — DISPLAY + selection only.
 	Name string

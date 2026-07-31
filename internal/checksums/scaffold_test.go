@@ -60,11 +60,20 @@ func TestWriteScaffoldIfMissing_NeverOverwritesExisting(t *testing.T) {
 	}
 }
 
-// TestWriteScaffoldIfMissing_DeleteAndRegenerateRefreshes: the documented
-// refresh path — delete the file, regenerate, and the pristine scaffold
-// returns.
-func TestWriteScaffoldIfMissing_DeleteAndRegenerateRefreshes(t *testing.T) {
+// TestWriteScaffoldIfMissing_DeleteIsNotTheRefreshPath: deleting a
+// scaffold is a REMOVAL, not a request for a fresh copy.
+//
+// This test previously asserted delete-and-regenerate as "the documented
+// refresh path". That documentation was the defect — it made the promise
+// in every scaffold's banner ("forge will not overwrite this file") false
+// for the one user action that most clearly expresses not wanting the
+// file. The refresh path is now dropping the path's entry from the birth
+// ledger, which this test also exercises so the fix cannot leave deleted
+// scaffolds permanently unrecoverable.
+func TestWriteScaffoldIfMissing_DeleteIsNotTheRefreshPath(t *testing.T) {
 	ResetSkipWrite()
+	ResetScaffoldLedgerCache()
+	defer ResetScaffoldLedgerCache()
 
 	root := t.TempDir()
 	scaffold := []byte("// v1\npackage svc\n")
@@ -81,8 +90,20 @@ func TestWriteScaffoldIfMissing_DeleteAndRegenerateRefreshes(t *testing.T) {
 
 	refreshed := []byte("// v2\npackage svc\n")
 	wrote, err := WriteScaffoldIfMissing(root, "svc.go", refreshed)
+	if err != nil {
+		t.Fatalf("regenerate after delete: %v", err)
+	}
+	if wrote {
+		t.Fatal("deleting a scaffold must not refresh it — the deletion is the " +
+			"user's decision and forge must leave it standing")
+	}
+
+	// The real reset: forget the birth, and the scaffold returns.
+	ForgetScaffold(root, "svc.go")
+	wrote, err = WriteScaffoldIfMissing(root, "svc.go", refreshed)
 	if err != nil || !wrote {
-		t.Fatalf("refresh after delete: wrote=%v err=%v", wrote, err)
+		t.Fatalf("dropping the ledger entry is the documented refresh path "+
+			"(wrote=%v err=%v)", wrote, err)
 	}
 	got, _ := os.ReadFile(filepath.Join(root, "svc.go"))
 	if string(got) != string(refreshed) {

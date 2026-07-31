@@ -1,4 +1,4 @@
-// Tests for `forge disown <path>... --reason <text>` — see disown.go.
+// Tests for `forge project disown <path>... --reason <text>` — see disown.go.
 //
 // The tests build a synthetic project root (forge.yaml + on-disk files
 // carrying embedded forge:hash markers + saved .forge ownership state),
@@ -54,7 +54,7 @@ func seedDisownFile(t *testing.T, root, rel, content string) {
 
 // seedStampedDisownFile writes content at root/rel with the embedded
 // forge:hash marker stamped in — a forge-certified (Tier-1) file, the
-// only kind `forge disown` accepts.
+// only kind `forge project disown` accepts.
 func seedStampedDisownFile(t *testing.T, root, rel, content string) {
 	t.Helper()
 	stamped, ok := checksums.Stamp(rel, []byte(content))
@@ -123,10 +123,13 @@ func TestDisown_FlipsEntryAndRecordsFriction(t *testing.T) {
 		t.Errorf("disowned content = %q, want the user's content with only the marker removed", onDisk)
 	}
 
-	// Friction entry: area=disown, context names the path, text is the reason.
-	reasons := disownFrictionReasons(root)
-	if reasons[rel] != "custom pool wiring forge can't express" {
-		t.Errorf("friction reason join = %q, want the --reason text", reasons[rel])
+	// Reason lands in the manifest: .forge/disowned.json carries the WHY.
+	csAfter, err := checksums.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := csAfter.Disowned[rel].Reason; got != "custom pool wiring forge can't express" {
+		t.Errorf("manifest reason = %q, want the --reason text", got)
 	}
 }
 
@@ -184,8 +187,8 @@ func TestDisown_DryRunPreservesState(t *testing.T) {
 	if _, hasMarker := checksums.ExtractMarker(onDisk); !hasMarker {
 		t.Errorf("--dry-run stripped the forge:hash marker")
 	}
-	if reasons := disownFrictionReasons(root); len(reasons) != 0 {
-		t.Errorf("--dry-run wrote friction entries: %v", reasons)
+	if csAfter, err := checksums.Load(root); err != nil || len(csAfter.Disowned) != 0 {
+		t.Errorf("--dry-run wrote disowned entries: %v (err=%v)", csAfter.Disowned, err)
 	}
 }
 
@@ -270,39 +273,13 @@ func TestDisownCmd_FlagsAndHelp(t *testing.T) {
 	}
 	for _, flag := range []string{"reason", "dry-run"} {
 		if cmd.Flags().Lookup(flag) == nil {
-			t.Errorf("forge disown is missing --%s flag", flag)
+			t.Errorf("forge project disown is missing --%s flag", flag)
 		}
 	}
 	long := strings.ToLower(cmd.Long)
-	for _, kw := range []string{"one-way", "forge generate", "friction", "extension point"} {
+	for _, kw := range []string{"one-way", "forge generate", "disowned.json", "extension point"} {
 		if !strings.Contains(long, kw) {
-			t.Errorf("forge disown --help long text should mention %q", kw)
+			t.Errorf("forge project disown --help long text should mention %q", kw)
 		}
-	}
-}
-
-// TestAcceptForkCmd_IsDeprecatedDisownAlias: the one-release alias
-// forwards to the disown flow (so it requires --reason too) and is
-// marked Deprecated on the cobra command.
-func TestAcceptForkCmd_IsDeprecatedDisownAlias(t *testing.T) {
-	cmd := newAcceptForkCmd()
-	if cmd.Deprecated == "" {
-		t.Errorf("accept-fork must carry a cobra Deprecated notice")
-	}
-	if !strings.Contains(strings.ToLower(cmd.Deprecated), "disown") {
-		t.Errorf("accept-fork deprecation notice should point at forge disown; got %q", cmd.Deprecated)
-	}
-
-	const rel = "pkg/app/bootstrap.go"
-	root := withDisownProjectRoot(t, &checksums.FileChecksums{})
-	seedStampedDisownFile(t, root, rel, "package app\n")
-
-	cmd.SetArgs([]string{rel, "--reason", "legacy alias path"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("accept-fork alias execute: %v", err)
-	}
-	got, _ := checksums.Load(root)
-	if !got.IsDisowned(rel) {
-		t.Errorf("accept-fork alias did not disown the path; disowned = %+v", got.Disowned)
 	}
 }

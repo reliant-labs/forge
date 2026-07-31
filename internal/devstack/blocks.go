@@ -1,6 +1,6 @@
 // forge:exclude-contract
 // devstack is CLI-internal dev-stack orchestration glue (dev-block wiring,
-// git-facts, lockfile) for `forge up`, not a contract-shaped service the
+// git-facts, lockfile) for `forge env up`, not a contract-shaped service the
 // bootstrap wires. Opt out of the require-contract rule.
 package devstack
 
@@ -40,7 +40,7 @@ const registryRel = ".forge/blocks.json"
 // The registry read-modify-write happens entirely under the file lock, so a
 // concurrent first-`up` of two worktrees cannot race two keys to the same
 // block. Persistence makes the block stable across runs AND identical under
-// both `forge up` and `forge deploy` (both call this through the same
+// both `forge env up` and `forge env deploy` (both call this through the same
 // builtin), which is the permanent up-vs-deploy port fix.
 func AllocatePort(projectDir string, base int, key string) (int, error) {
 	block, err := AllocateBlock(projectDir, key)

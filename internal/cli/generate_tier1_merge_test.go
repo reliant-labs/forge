@@ -81,10 +81,9 @@ func TestDetectGitMergeState_DetectsEachMarker(t *testing.T) {
 // TestStepCheckTier1Drift_MidMergeReturnsTypedError exercises the
 // happy-path: project is mid-merge AND a Tier-1 file has drifted →
 // the step returns the typed errMidMergeTier1Drift carrying both the
-// detected git state and a friendlier message that nudges the user at
-// `--accept`. The default cobra path still prints the message; tools
-// that want to recognize this state (e.g. an LLM agent harness) can
-// type-assert.
+// detected git state and a friendlier message. The default cobra path
+// still prints the message; tools that want to recognize this state
+// (e.g. an LLM agent harness) can type-assert.
 func TestStepCheckTier1Drift_MidMergeReturnsTypedError(t *testing.T) {
 	dir := t.TempDir()
 

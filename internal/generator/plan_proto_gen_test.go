@@ -454,7 +454,7 @@ func TestGeneratePlanProtoFile_RESTEnabled_CRUDAnnotations(t *testing.T) {
 
 // TestUpgradeBufYAML_RESTToggle verifies that buf.yaml switches between the
 // bare default and the googleapis-dep block based on `api.rest`. buf.yaml is
-// a Tier-2 managed file, so it is (re)rendered by `forge upgrade` (Upgrade),
+// a Tier-2 managed file, so it is (re)rendered by `forge project upgrade` (Upgrade),
 // not by the Tier-1-only RegenerateInfraFiles. force=true re-renders it
 // regardless of the pristine/edited check, isolating the api.rest→dep linkage
 // this test cares about: the dep must appear when REST flips on and vanish

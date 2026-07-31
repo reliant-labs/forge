@@ -2,9 +2,8 @@
 // forge-generated bootstrap_testing.go reinvents: a discard logger, a
 // real-postgres ORM context (bare, or with the project's embedded
 // migrations applied), an httptest harness that wraps a Connect-mounted
-// service, a permissive Authorizer for non-authz tests, a claims-bearing
-// AuthedContext for handlers that read the current user, and a
-// tenant-context helper for multi-tenant tests.
+// service, and a claims-bearing AuthedContext for handlers that read the
+// current user.
 //
 // # Why not absorb the whole bootstrap_testing.go?
 //
@@ -22,7 +21,6 @@
 //	cfg := &testConfig{
 //	    logger: testkit.DiscardLogger(),
 //	    cfg:    &config.Config{},
-//	    authz:  testkit.PermissiveAuthorizer{},
 //	    db:     testkit.NewPostgresDB(t), // when AnyServiceHasDB
 //	}
 //
@@ -41,13 +39,10 @@
 // a fresh machine); subsequent calls are cheap per-test databases.
 //
 // And NewTest<Svc>Server delegates to testkit.NewTestServer(t, register),
-// mounting the SAME interceptor chain shape production uses — only the
-// authorizer policy differs (permissive by default):
+// mounting the service bare:
 //
 //	srv := testkit.NewTestServer(t, func(mux *http.ServeMux) {
-//	    svc.Register(mux, connect.WithInterceptors(
-//	        middleware.AuthzInterceptor(deps.Authorizer),
-//	    ))
+//	    svc.Register(mux)
 //	})
 package testkit
 
@@ -67,7 +62,6 @@ import (
 	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/pgtest"
-	"github.com/reliant-labs/forge/pkg/tenant"
 )
 
 // DiscardLogger returns a slog.Logger that drops every record. Use it as
@@ -234,52 +228,6 @@ func NewTestServer(t *testing.T, register func(mux *http.ServeMux)) *httptest.Se
 	return srv
 }
 
-// PermissiveAuthorizer is an Authorizer implementation for use in unit
-// tests. It allows every call. Production authorizers deny by default
-// (fail-closed), but tests typically want to exercise business logic
-// without authz noise — so the generated NewTest<Service> wires this in
-// as the default authz.
-//
-// Tests that need to exercise real authz rules should pass their own
-// Authorizer via WithAuthorizer(...) or supply a full Deps via
-// With<Service>Deps(...).
-//
-// PermissiveAuthorizer satisfies any Authorizer interface with the
-// canonical forge shape:
-//
-//	CanAccess(ctx context.Context, procedure string) error
-//	Can(ctx context.Context, claims *auth.Claims, action, resource string) error
-//
-// In generated projects, the project-local middleware.Authorizer
-// interface uses *middleware.Claims, which is itself a type alias for
-// *auth.Claims, so PermissiveAuthorizer satisfies it without conversion.
-type PermissiveAuthorizer struct{}
-
-// CanAccess always returns nil.
-func (PermissiveAuthorizer) CanAccess(context.Context, string) error { return nil }
-
-// Can always returns nil.
-func (PermissiveAuthorizer) Can(context.Context, *auth.Claims, string, string) error {
-	return nil
-}
-
-// WithTestTenant returns a context with the given tenant ID set, using
-// the same context key that pkg/tenant's interceptor uses in production.
-//
-// Use in multi-tenant unit tests to simulate an authenticated tenant
-// context without going through the full auth + tenant interceptor
-// chain:
-//
-//	ctx := testkit.WithTestTenant(context.Background(), "tenant-123")
-//	resp, err := svc.CreateThing(ctx, ...)
-//
-// Generated projects re-export this as middleware.WithTestTenant /
-// app.WithTestTenant when MultiTenantEnabled is true; calling either
-// resolves to this helper.
-func WithTestTenant(ctx context.Context, tenantID string) context.Context {
-	return tenant.WithTenantID(ctx, tenantID)
-}
-
 // ClaimsOption mutates the default test claims built by [AuthedContext].
 type ClaimsOption func(*auth.Claims)
 
@@ -334,8 +282,8 @@ func WithClaims(claims auth.Claims) ClaimsOption {
 // app.AuthedContext(t, opts...) — prefer that form in project tests.
 //
 // Default claims: UserID "test-user", Email "test-user@example.test",
-// Role/Roles "admin" (permissive against generated RBAC tables, mirroring
-// the permissive default Authorizer). Override via ClaimsOption values.
+// Role/Roles "admin" (a convenient default for handlers that check roles).
+// Override via ClaimsOption values.
 func AuthedContext(t *testing.T, withClaims func(context.Context, *auth.Claims) context.Context, opts ...ClaimsOption) context.Context {
 	t.Helper()
 	claims := &auth.Claims{

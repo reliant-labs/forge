@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
@@ -14,11 +16,13 @@ import (
 // and never re-emitted while the file exists. CI workflows are the
 // canonical hand-edited policy file (add jobs, secrets, custom steps),
 // so certifying them Tier-1 mis-flagged every sanctioned edit as
-// `user_edited_gen_files` drift and pushed users toward `forge disown`.
+// `user_edited_gen_files` drift and pushed users toward `forge project disown`.
 // The derived jobs (frontend lint, KCL-env matrix, verify-generated) are
 // a convenience starting point, not a correctness requirement — a stale
 // workflow still runs, unlike buf.yaml whose derived dep gates the build
-// — so write-once is the right lifecycle. To refresh, delete and re-run.
+// — so write-once is the right lifecycle. Write-once covers deletion too:
+// a repo that manages its own CI removes these and they stay removed. To
+// re-scaffold, drop the path's entry from .forge/scaffolded.json.
 func writeCIScaffold(root, relPath string, content []byte) error {
 	written, err := generator.WriteScaffoldIfMissing(root, relPath, content)
 	if err != nil {
@@ -36,12 +40,12 @@ func writeCIScaffold(root, relPath string, content []byte) error {
 // They are emitted as write-once scaffolds (see writeCIScaffold): the
 // user owns them after the first write and forge never stomps edits.
 //
-// Kind branching mirrors `forge new`'s project_ci.go: service kinds get
+// Kind branching mirrors `forge project new`'s project_ci.go: service kinds get
 // the full set (build-images + deploy + e2e + proto-breaking), while
 // CLI/library kinds only get the buildable subset (ci.yml + dependabot)
 // because they have no Docker images, no k8s deploys, no service to
 // stand up, and (for CLIs) typically no protos. Without this guard,
-// `forge generate` on a CLI project drifts from `forge new`: it would
+// `forge generate` on a CLI project drifts from `forge project new`: it would
 // emit build-images.yml + deploy.yml that reference services and
 // registries the project does not have.
 func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.FileChecksums, force bool) error {
@@ -127,14 +131,12 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 
 // buildCIWorkflowData maps a ProjectConfig to the CI workflow template data.
 func buildCIWorkflowData(cfg *config.ProjectConfig, root string) templates.CIWorkflowData {
-	goVersion := cfg.CI.EffectiveGoVersion()
 	hasFrontends := len(cfg.Frontends) > 0
-	// Services are declared either in forge.yaml components or proto-first
-	// (proto/ service declarations with no components entry). CI workflows
-	// must see the same shape the generate pipeline sees, so consult proto
-	// truth too — otherwise proto-first projects scaffold ci.yml without buf
-	// steps and never get proto-breaking.yml.
-	hasServices := len(cfg.Servers()) > 0 || projectDefinesConnectServices(root)
+	// Services are declared by their protos. CI workflows must see the same
+	// shape the generate pipeline sees, so ask the same source it does —
+	// otherwise a project scaffolds ci.yml without buf steps and never gets
+	// proto-breaking.yml.
+	hasServices := projectDefinesConnectServices(root)
 
 	var frontends []templates.FrontendCIConfig
 	for _, fe := range cfg.Frontends {
@@ -161,7 +163,6 @@ func buildCIWorkflowData(cfg *config.ProjectConfig, root string) templates.CIWor
 
 	return templates.CIWorkflowData{
 		ProjectName:  cfg.Name,
-		GoVersion:    goVersion,
 		HasFrontends: hasFrontends,
 		Frontends:    frontends,
 		HasServices:  hasServices,
@@ -194,7 +195,7 @@ func buildCIWorkflowData(cfg *config.ProjectConfig, root string) templates.CIWor
 		// in CI to catch silent codegen-mock drift (a contract.go grows
 		// a parameter, the mock_gen.go is not refreshed, tests in an
 		// unrelated package fail). On regeneration we want the same
-		// answer `forge new` chose at scaffold time — true regardless
+		// answer `forge project new` chose at scaffold time — true regardless
 		// of project kind. Without this, `forge generate` would
 		// overwrite the scaffold-time CI workflow with a flag-stripped
 		// version (the bug is silent: ci.yml renders fine, just without
@@ -208,6 +209,47 @@ func buildCIWorkflowData(cfg *config.ProjectConfig, root string) templates.CIWor
 		ForgeVersion:   buildinfo.InstallableVersion(),
 		ForgeGitCommit: buildinfo.GitCommit(),
 	}
+}
+
+// promotionRank orders an environment along the promotion path. The
+// deploy workflow assigns meaning by POSITION — envs[0] auto-deploys on
+// every successful image build on main, envs[len-1] is the protected
+// env the `v*` release tag ships to — so the list must be ordered by
+// promotion, never lexically.
+//
+// `ListEnvs` sorts alphabetically, which for the default scaffold
+// (dev/prod/staging) yields [prod, staging]: PROD auto-deployed on
+// every merge to main with no environment protection, staging carried
+// the protection gate, and a `v*` release tag shipped to staging and
+// could never reach prod. Ranking by name is what keeps position and
+// meaning aligned.
+//
+// Unknown env names sort between staging and prod (alphabetically among
+// themselves): a bespoke env is a mid-pipeline stage, and "prod" must
+// stay last so the release tag and the protection gate land on it.
+func promotionRank(name string) int {
+	switch strings.ToLower(name) {
+	case "staging", "stage", "stg":
+		return 10
+	case "preprod", "pre-prod", "preproduction", "uat", "qa", "canary":
+		return 20
+	case "prod", "production":
+		return 30
+	default:
+		return 15
+	}
+}
+
+// sortByPromotionOrder orders envs in place along the promotion path,
+// breaking rank ties by name so the output is deterministic.
+func sortByPromotionOrder(envs []templates.DeployEnv) {
+	sort.SliceStable(envs, func(i, j int) bool {
+		ri, rj := promotionRank(envs[i].Name), promotionRank(envs[j].Name)
+		if ri != rj {
+			return ri < rj
+		}
+		return envs[i].Name < envs[j].Name
+	})
 }
 
 // buildDeployWorkflowData maps a ProjectConfig to the deploy workflow template data.
@@ -241,6 +283,7 @@ func buildDeployWorkflowData(cfg *config.ProjectConfig) templates.DeployWorkflow
 			}
 			envs = append(envs, templates.DeployEnv{Name: name})
 		}
+		sortByPromotionOrder(envs)
 		if len(envs) > 0 {
 			envs[0].Auto = true
 			envs[len(envs)-1].Protection = true
@@ -280,7 +323,6 @@ func buildE2EWorkflowData(cfg *config.ProjectConfig) templates.E2EWorkflowData {
 	}
 	return templates.E2EWorkflowData{
 		ProjectName:  cfg.Name,
-		GoVersion:    cfg.CI.EffectiveGoVersion(),
 		Runtime:      effectiveE2ERuntime(cfg),
 		HasFrontends: len(cfg.Frontends) > 0,
 		FrontendPath: fePath,

@@ -13,14 +13,14 @@
 //
 //	REGISTERED — a serviceRow<X> identifier matching the service is
 //	  referenced in services.go. Full treatment: handlers scaffold,
-//	  CRUD/authorizer/mocks, wire/diagnostics, MCP manifest tools,
+//	  CRUD/mocks, wire/diagnostics,
 //	  auth-middleware skip-list, bootstrap row (via the user's list).
 //	UNLISTED — the service name appears NOWHERE in services.go. Treated
-//	  as newly added (forge add service / hand-edited forge.yaml): the
+//	  as newly added (forge scaffold service / hand-edited forge.yaml): the
 //	  handlers scaffold and row constructor still generate so the user
 //	  can implement-then-register, but the service is NOT served — no
-//	  MCP tools, no auth skip-list entries, `forge run` skips it, and
-//	  `forge audit` warns that the row constructor is unreferenced.
+//	  auth skip-list entries, `forge run` skips it, and
+//	  `forge project audit` warns that the row constructor is unreferenced.
 //	  The registration line is written by the USER (or their agent) —
 //	  forge prints it but never edits the file. That's the design: the
 //	  LLM writes the one decision line; forge generates the guardrails.
@@ -29,7 +29,7 @@
 //	  naming the binary that serves it). Types-only: proto types,
 //	  Connect client, frontend hooks, and descriptor entries still
 //	  generate (callers need them); the handlers/<svc>/ scaffold, row
-//	  constructor, wire/diagnostics, MCP tools, and auth registration
+//	  constructor, wire/diagnostics, and auth registration
 //	  are gated off. The comment is load-bearing — without any mention
 //	  the service reverts to UNLISTED and its scaffold regenerates.
 //
@@ -46,7 +46,7 @@
 // stop writing the tracked Tier-1 files, so they fall out of
 // WrittenThisRun and become report-only removal candidates (deleted
 // under --force-cleanup); Tier-2 user-owned files in the same dir are
-// never candidates. `forge audit` surfaces both halves via the codegen
+// never candidates. `forge project audit` surfaces both halves via the codegen
 // category's unregistered_services finding.
 package cli
 
@@ -207,7 +207,7 @@ func splitServiceDefs(reg *serviceRegistry, services []codegen.ServiceDef) (rows
 
 // rowServiceDefs is the pipeline view over splitServiceDefs' first
 // half: every service that gets generated artifacts on disk this run
-// (handlers scaffold, CRUD, authorizer, mocks, wire/diagnostics, row
+// (handlers scaffold, CRUD, mocks, wire/diagnostics, row
 // constructor, testing helpers).
 func (ctx *pipelineContext) rowServiceDefs() ([]codegen.ServiceDef, error) {
 	reg, err := ctx.serviceRegistry()
@@ -220,7 +220,7 @@ func (ctx *pipelineContext) rowServiceDefs() ([]codegen.ServiceDef, error) {
 
 // registeredServiceDefs is the pipeline view of what this binary
 // SERVES: only REGISTERED services. Steps whose output advertises or
-// mounts the service (MCP manifest, auth-middleware skip-list,
+// mounts the service (auth-middleware skip-list,
 // introspect) consume this; steps that emit caller-side artifacts
 // (frontend hooks/pages/mocks, descriptor) keep reading ctx.Services
 // unfiltered.
@@ -234,27 +234,6 @@ func (ctx *pipelineContext) registeredServiceDefs() ([]codegen.ServiceDef, error
 		if reg.registered(svc.Name) {
 			out = append(out, svc)
 		}
-	}
-	return out, nil
-}
-
-// tombstonedHandlerDirSkips returns the handlers/<dir> leaves (snake
-// package form) of every tombstoned service. GenerateAuthorizer's
-// orphan-dir sweep consults this so a retired-but-still-present handler
-// dir doesn't get its authorizer_gen.go re-emitted (which would re-add
-// the path to WrittenThisRun and hide it from the stale sweep forever).
-func (ctx *pipelineContext) tombstonedHandlerDirSkips() (map[string]bool, error) {
-	reg, err := ctx.serviceRegistry()
-	if err != nil {
-		return nil, err
-	}
-	_, tombstoned := splitServiceDefs(reg, ctx.Services)
-	var out map[string]bool
-	for _, svc := range tombstoned {
-		if out == nil {
-			out = map[string]bool{}
-		}
-		out[naming.ServicePackage(svc.Name)] = true
 	}
 	return out, nil
 }

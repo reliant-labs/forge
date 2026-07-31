@@ -38,7 +38,7 @@ func driftFirstLine(err error) string {
 // TestStepCheckTier1Drift_FirstLineNamesFilesAndRemedies drives the
 // real guard step over a project with two drifted Tier-1 files and
 // requires the error's FIRST line to stand alone: every drifted path
-// and the --force / `forge disown` remedies must appear before the
+// and the --force / `forge project disown` remedies must appear before the
 // first newline.
 func TestStepCheckTier1Drift_FirstLineNamesFilesAndRemedies(t *testing.T) {
 	dir := t.TempDir()
@@ -65,7 +65,7 @@ func TestStepCheckTier1Drift_FirstLineNamesFilesAndRemedies(t *testing.T) {
 	}
 
 	first := driftFirstLine(err)
-	for _, want := range append(drifted, "--force", "forge disown") {
+	for _, want := range append(drifted, "--force", "forge project disown") {
 		if !strings.Contains(first, want) {
 			t.Errorf("guard error first line missing %q.\nfirst line: %s\nfull error:\n%v", want, first, err)
 		}

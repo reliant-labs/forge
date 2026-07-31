@@ -37,12 +37,13 @@
 //
 // The journal is process-global (like the rest of this package's per-run
 // state) and reset by BeginRollbackJournal at the head of each pipeline
-// run. Non-pipeline callers (forge upgrade, project creation) never call
+// run. Non-pipeline callers (forge project upgrade, project creation) never call
 // Begin, so journaling stays OFF and their writes are recorded nowhere —
 // they have their own recovery stories.
 package checksums
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"sort"
@@ -64,12 +65,25 @@ type rollbackEntry struct {
 // the first write that targets it this run.
 var rollbackJournal map[string]rollbackEntry
 
+// rollbackRoot is the project root the current journal is armed for.
+// Needed by RecordPreWriteAbs, whose call sites (the scaffold-once raw
+// writers in internal/codegen) address files by a single joined path and
+// have no separate (root, relPath) pair to hand us. Set by
+// BeginRollbackJournal; cleared with the journal.
+var rollbackRoot string
+
 // BeginRollbackJournal turns journaling ON and clears any prior capture.
 // Called once at the head of a `forge generate` run, before any writer
-// fires. After this, every forge write captures its target's pre-run
-// state (once per path) so RestoreRollback can undo the whole run.
-func BeginRollbackJournal() {
+// fires, with the project root the run operates on. After this, every
+// forge write captures its target's pre-run state (once per path) so
+// RestoreRollback can undo the whole run.
+func BeginRollbackJournal(root string) {
 	rollbackJournal = map[string]rollbackEntry{}
+	if abs, err := filepath.Abs(root); err == nil {
+		rollbackRoot = abs
+	} else {
+		rollbackRoot = root
+	}
 }
 
 // CommitRollback drops the journal without restoring anything — the
@@ -78,6 +92,7 @@ func BeginRollbackJournal() {
 // silently recorded.
 func CommitRollback() {
 	rollbackJournal = nil
+	rollbackRoot = ""
 }
 
 // RollbackEnabled reports whether journaling is currently ON. Exposed so
@@ -123,6 +138,145 @@ func recordPreWrite(root, relPath string) {
 // run. No-op when journaling is OFF or the path was already captured.
 func RecordPreWrite(root, relPath string) { recordPreWrite(root, relPath) }
 
+// RecordPreWriteAbs is RecordPreWrite for call sites that only hold the
+// joined destination path (the scaffold-once raw writers in
+// internal/codegen address files as filepath.Join(projectDir, rel) and
+// never thread the pair through). The path is resolved against the
+// journal's armed root; a path outside that root is not captured — the
+// journal restores relative to the root, so an outside path is not ours
+// to rewind.
+//
+// This closes the defect where a failed generate run reverted the Tier-1
+// files it wrote but left the scaffold-once files written THE SAME RUN
+// (e.g. handlers_crud.go surviving while its handlers_crud_ops_gen.go
+// dependency was rolled back), stranding the tree in a state that
+// compiles against neither the pre-run nor the post-run world.
+func RecordPreWriteAbs(path string) {
+	if rollbackJournal == nil {
+		return
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return
+	}
+	rel, err := filepath.Rel(rollbackRoot, abs)
+	if err != nil || rel == "." || filepath.IsAbs(rel) || hasDotDotPrefix(rel) {
+		return
+	}
+	recordPreWrite(rollbackRoot, rel)
+}
+
+// SnapshotJournalTargets copies the CURRENT on-disk content of every
+// journaled path — i.e. the failed run's output — into preserveDir,
+// mirroring each file's project-relative path. Called BEFORE
+// RestoreRollback on the failure path so the revert (which is the right
+// default: the user's tree must come back clean) does not also destroy
+// the only evidence of WHY the run failed: a `go build` validate error
+// cites file:line coordinates in generated sources, and pre-fix the
+// revert deleted those sources, leaving the user to debug a compiler
+// error against code they could not read.
+//
+// The preserve directory is recreated fresh on every call so successive
+// failures never interleave. Journaled paths whose current bytes equal
+// their captured pre-run bytes are skipped (nothing new to inspect), as
+// are paths that no longer exist. Best-effort per file — a copy failure
+// drops that file from the returned list, never aborts. Returns the
+// sorted relative paths preserved; nil when journaling is OFF, the
+// journal is empty, or nothing qualified.
+func SnapshotJournalTargets(root, preserveDir string) []string {
+	if len(rollbackJournal) == 0 {
+		return nil
+	}
+	if err := os.RemoveAll(preserveDir); err != nil {
+		return nil
+	}
+	preserved := make([]string, 0, len(rollbackJournal))
+	for relPath, entry := range rollbackJournal {
+		current, err := os.ReadFile(filepath.Join(root, relPath))
+		if err != nil {
+			continue // gone or unreadable — nothing to preserve
+		}
+		if entry.existed && bytes.Equal(current, entry.content) {
+			continue // byte-identical to pre-run — the revert won't touch it
+		}
+		dest := filepath.Join(preserveDir, relPath)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			continue
+		}
+		if err := os.WriteFile(dest, current, 0o644); err != nil {
+			continue
+		}
+		preserved = append(preserved, relPath)
+	}
+	if len(preserved) == 0 {
+		return nil
+	}
+	sort.Strings(preserved)
+	return preserved
+}
+
+// WriteSummary is the run's write ledger: what forge's writers actually
+// did to the tree, derived from the same journal the rollback uses.
+//
+// The three fields answer three DIFFERENT questions, and conflating them
+// is what made `✅ Code generation complete!` unfalsifiable:
+//
+//	Touched == 0            no emitter fired at all. The pipeline ran and
+//	                        produced nothing. This is the silent-no-op
+//	                        signature (`--steps mocks` omitting its own
+//	                        emitter printed success from exactly here).
+//	Touched > 0, changed 0  every emitter fired and the bytes already
+//	                        matched — a healthy idempotent re-run.
+//	changed > 0             real work landed; the names are the proof.
+type WriteSummary struct {
+	// Touched is every path a forge writer targeted this run, whether or
+	// not the bytes changed.
+	Touched int
+	// Created are paths that did not exist before the run.
+	Created []string
+	// Updated are paths that existed and whose bytes differ now.
+	Updated []string
+}
+
+// Changed returns the number of paths whose on-disk bytes differ from
+// their pre-run state.
+func (s WriteSummary) Changed() int { return len(s.Created) + len(s.Updated) }
+
+// SummarizeWrites compares every journaled path's CURRENT bytes against
+// the pre-run bytes the journal captured, and reports what changed. It
+// mutates nothing — call it any time before CommitRollback (which drops
+// the journal) to learn what the run actually did.
+//
+// Returns a zero WriteSummary when journaling is OFF, so callers that run
+// outside the pipeline degrade to "no claim" rather than to a false one.
+func SummarizeWrites(root string) WriteSummary {
+	if rollbackJournal == nil {
+		return WriteSummary{}
+	}
+	sum := WriteSummary{Touched: len(rollbackJournal)}
+	for relPath, entry := range rollbackJournal {
+		current, err := os.ReadFile(filepath.Join(root, relPath))
+		if err != nil {
+			// Targeted but not readable now: the write failed, or a later
+			// step removed it. Either way the bytes are not what they
+			// were, and silence would be the wrong answer — but we cannot
+			// call it created or updated, so it stays counted in Touched
+			// only.
+			continue
+		}
+		if !entry.existed {
+			sum.Created = append(sum.Created, relPath)
+			continue
+		}
+		if !bytes.Equal(current, entry.content) {
+			sum.Updated = append(sum.Updated, relPath)
+		}
+	}
+	sort.Strings(sum.Created)
+	sort.Strings(sum.Updated)
+	return sum
+}
+
 // RestoreRollback rewinds every journaled path to its captured pre-run
 // state and returns the sorted list of paths it restored. A path that
 // existed before the run is rewritten with its original bytes + mode; a
@@ -158,10 +312,18 @@ func RestoreRollback(root string) []string {
 		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
 			continue
 		}
+		// A scaffold-once file created THIS run is being un-created, so its
+		// birth record must go with it. Leaving the record behind would make
+		// the failed run consume the path's one and only birth: the ledger
+		// would read "already scaffolded", the file would be gone, and no
+		// later run would ever emit it. No-op for paths that were never
+		// scaffold-once.
+		ForgetScaffold(root, relPath)
 		pruneEmptyParents(root, filepath.Dir(full))
 		restored = append(restored, relPath)
 	}
 	rollbackJournal = nil
+	rollbackRoot = ""
 	sort.Strings(restored)
 	return restored
 }

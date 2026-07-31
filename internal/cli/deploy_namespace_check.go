@@ -187,6 +187,6 @@ func formatMismatchError(hits []envVarHit, resolvedNamespace string) error {
 	b.WriteString("\nFix one of:\n")
 	fmt.Fprintf(&b, "  • Declare `environments[<env>].namespace: %s` in forge.yaml to match the KCL literal.\n", referenced[0])
 	fmt.Fprintf(&b, "  • Update the KCL env_var values to use `*.%s.svc.cluster.local`.\n", resolvedNamespace)
-	b.WriteString("  • Or pass `--namespace` to forge deploy if the override is a one-off.\n")
+	b.WriteString("  • Or pass `--namespace` to forge env deploy if the override is a one-off.\n")
 	return fmt.Errorf("%s", b.String())
 }

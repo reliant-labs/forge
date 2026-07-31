@@ -46,7 +46,7 @@ func UserErr(context, what, at, fix string) error {
 
 // UserErrf is the printf-style sibling of UserErr — `what` is rendered
 // with fmt.Sprintf(format, args...). Use this when the message needs
-// dynamic interpolation (e.g. the failing pack name); use UserErr when
+// dynamic interpolation (e.g. the failing component name); use UserErr when
 // the message is a literal string.
 func UserErrf(context, format string, args ...any) error {
 	return errors.New(formatUserErr(context, fmt.Sprintf(format, args...), "", ""))

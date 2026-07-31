@@ -1,20 +1,22 @@
 ---
 name: v0.x-to-tdd-rpccases
 description: Migrate handlers_crud_gen_test.go from inline per-RPC test boilerplate to thin shims that delegate to forge/pkg/tdd.RunRPCCases.
+detection: find internal handlers -name handlers_crud_gen_test.go -exec grep -L tdd.RunRPCCases {} + 2>/dev/null | grep -q .
 relevance: migration
 ---
 
 # Migrating CRUD test scaffolds to `forge/pkg/tdd.RunRPCCases`
 
-Use this skill when `forge upgrade` reports a jump across the version
+Use this skill when `forge project upgrade` reports a jump across the version
 that ships the `tdd.RPCCase` / `tdd.RunRPCCases` test scaffold shape.
 It only affects projects that have at least one auto-generated CRUD
 RPC and therefore a forge-managed `handlers/<svc>/handlers_crud_gen_test.go`.
 
 > **New scaffold default (post-Day-4 polish).** New services scaffolded
-> by `forge new` / `forge generate` now emit a `handlers_scaffold_test.go`
-> that is itself a `tdd.RunRPCCases` shim — one `Test<Method>_Generated`
-> function per RPC. This skill is the migration path for projects that
+> by `forge project new` / `forge generate` now emit one
+> `handlers_scaffold_<rpc>_test.go` per RPC, each a `tdd.RunRPCCases` shim
+> holding a single `Test<Method>_Generated` function and no package-level
+> helper — so two owners in one package share no file. This skill is the migration path for projects that
 > pre-date that default and were ported by hand into the legacy
 > `tests := []struct{name, call}` shape. The forge lint rule
 > **`forgeconv-handler-tests-use-tdd`** (run via `forge lint --tests`)
@@ -102,14 +104,14 @@ slice fed to a single `for _, tt := range tests` loop. This shape
 predates `tdd.RunRPCCases` and does not benefit from the per-row
 `WantErr` / `Check` ergonomics.
 
-`forge test migrate-tdd` is a codemod that converts the common shape
+`forge project migrate tdd` is a codemod that converts the common shape
 to per-RPC `TestXxx_Generated` functions delegating to
 `tdd.RunRPCCases`. Run from the project root:
 
 ```bash
-forge test migrate-tdd                 # walk handlers/ and rewrite in-place
-forge test migrate-tdd --dry-run       # show what would change without writing
-forge test migrate-tdd --path some/svc # restrict to a subtree
+forge project migrate tdd                 # walk handlers/ and rewrite in-place
+forge project migrate tdd --dry-run       # show what would change without writing
+forge project migrate tdd --path some/svc # restrict to a subtree
 ```
 
 Two input shapes are recognised, picked by the `call` field's
@@ -194,7 +196,7 @@ If something breaks:
 
 ```bash
 git revert <forge-generate-commit>      # undo the regen
-forge upgrade --to <prior-version>      # pin back
+forge project upgrade --to <prior-version>      # pin back
 ```
 
 The behavioural fingerprints (Connect-error code matching, per-row

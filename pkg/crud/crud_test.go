@@ -50,6 +50,7 @@ type listReq struct {
 type listResp struct {
 	Users         []*user
 	NextPageToken string
+	TotalCount    int64
 }
 
 // fakeRepo is the test stand-in for the per-project db.* helpers.
@@ -61,7 +62,6 @@ type fakeRepo struct {
 	updateErr  error
 	deleteErr  error
 	listResult []*user
-	tenantSeen string
 	queryOpts  []orm.QueryOption
 }
 
@@ -75,10 +75,10 @@ func TestHandleCreate_HappyPath(t *testing.T) {
 	repo := newRepo()
 	h := HandleCreate(CreateOp[createReq, createResp, *user]{
 		EntityLower: "user",
-		Entity: func(r *createReq) *user {
-			return &user{Name: r.Name, Email: r.Email}
+		Entity: func(r *createReq) (*user, error) {
+			return &user{Name: r.Name, Email: r.Email}, nil
 		},
-		Persist: func(ctx context.Context, _ string, e *user) error {
+		Persist: func(ctx context.Context, e *user) error {
 			if repo.createErr != nil {
 				return repo.createErr
 			}
@@ -86,7 +86,7 @@ func TestHandleCreate_HappyPath(t *testing.T) {
 			repo.store[e.ID] = e
 			return nil
 		},
-		Pack: func(e *user) *createResp { return &createResp{User: e} },
+		Pack: func(e *user) (*createResp, error) { return &createResp{User: e}, nil },
 	})
 	resp, err := h(context.Background(), connect.NewRequest(&createReq{Name: "Ada", Email: "a@x"}))
 	if err != nil {
@@ -97,52 +97,21 @@ func TestHandleCreate_HappyPath(t *testing.T) {
 	}
 }
 
-func TestHandleCreate_AuthFailure(t *testing.T) {
-	denied := errors.New("nope")
-	h := HandleCreate(CreateOp[createReq, createResp, *user]{
-		EntityLower: "user",
-		Auth:        func(ctx context.Context) error { return denied },
-		Entity:      func(r *createReq) *user { return &user{} },
-		Persist:     func(context.Context, string, *user) error { return nil },
-		Pack:        func(*user) *createResp { return &createResp{} },
-	})
-	_, err := h(context.Background(), connect.NewRequest(&createReq{}))
-	cerr := new(connect.Error)
-	if !errors.As(err, &cerr) || cerr.Code() != connect.CodePermissionDenied {
-		t.Fatalf("want PermissionDenied, got %v", err)
-	}
-}
-
-func TestHandleCreate_TenantFailure(t *testing.T) {
-	h := HandleCreate(CreateOp[createReq, createResp, *user]{
-		EntityLower: "user",
-		Tenant:      func(ctx context.Context) (string, error) { return "", errors.New("no tenant") },
-		Entity:      func(r *createReq) *user { return &user{} },
-		Persist:     func(context.Context, string, *user) error { return nil },
-		Pack:        func(*user) *createResp { return &createResp{} },
-	})
-	_, err := h(context.Background(), connect.NewRequest(&createReq{}))
-	cerr := new(connect.Error)
-	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeUnauthenticated {
-		t.Fatalf("want Unauthenticated, got %v", err)
-	}
-}
-
 func TestHandleCreate_RepoError_WrappedAsInternal(t *testing.T) {
 	repo := newRepo()
 	repo.createErr = errors.New("db down")
 	h := HandleCreate(CreateOp[createReq, createResp, *user]{
 		EntityLower: "user",
-		Entity:      func(r *createReq) *user { return &user{} },
-		Persist:     func(context.Context, string, *user) error { return repo.createErr },
-		Pack:        func(*user) *createResp { return &createResp{} },
+		Entity:      func(r *createReq) (*user, error) { return &user{}, nil },
+		Persist:     func(context.Context, *user) error { return repo.createErr },
+		Pack:        func(*user) (*createResp, error) { return &createResp{}, nil },
 	})
 	_, err := h(context.Background(), connect.NewRequest(&createReq{}))
 	cerr := new(connect.Error)
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
 		t.Fatalf("want Internal, got %v", err)
 	}
-	if !strings.Contains(cerr.Message(), "create user failed: svcerr: internal") {
+	if !strings.Contains(cerr.Message(), "create user failed") {
 		t.Fatalf("error envelope wording changed: %q", cerr.Message())
 	}
 	// Repo error text must never reach the client.
@@ -158,8 +127,8 @@ func TestHandleGet_HappyPath(t *testing.T) {
 	h := HandleGet(GetOp[getReq, getResp, *user]{
 		EntityLower: "user",
 		ID:          func(r *getReq) string { return r.ID },
-		Fetch:       func(context.Context, string, string) (*user, error) { return want, nil },
-		Pack:        func(u *user) *getResp { return &getResp{User: u} },
+		Fetch:       func(context.Context, string) (*user, error) { return want, nil },
+		Pack:        func(u *user) (*getResp, error) { return &getResp{User: u}, nil },
 	})
 	resp, err := h(context.Background(), connect.NewRequest(&getReq{ID: "u1"}))
 	if err != nil {
@@ -174,11 +143,11 @@ func TestHandleGet_NotFound(t *testing.T) {
 	h := HandleGet(GetOp[getReq, getResp, *user]{
 		EntityLower: "user",
 		ID:          func(r *getReq) string { return r.ID },
-		Fetch: func(context.Context, string, string) (*user, error) {
+		Fetch: func(context.Context, string) (*user, error) {
 			// Repos signal a missing row via orm.ErrNoRows (possibly wrapped).
 			return nil, fmt.Errorf("get users by id: %w", orm.ErrNoRows)
 		},
-		Pack: func(u *user) *getResp { return &getResp{User: u} },
+		Pack: func(u *user) (*getResp, error) { return &getResp{User: u}, nil },
 	})
 	_, err := h(context.Background(), connect.NewRequest(&getReq{ID: "nope"}))
 	cerr := new(connect.Error)
@@ -186,7 +155,7 @@ func TestHandleGet_NotFound(t *testing.T) {
 		t.Fatalf("want NotFound, got %v", err)
 	}
 	// Clean svcerr envelope: entity name + not-found, no repo text.
-	if !strings.Contains(cerr.Message(), "user: svcerr: not found") {
+	if !strings.Contains(cerr.Message(), "user not found") {
 		t.Fatalf("error envelope wording changed: %q", cerr.Message())
 	}
 	if strings.Contains(cerr.Message(), "get users by id") {
@@ -200,10 +169,10 @@ func TestHandleGet_SvcerrNotFound(t *testing.T) {
 	h := HandleGet(GetOp[getReq, getResp, *user]{
 		EntityLower: "user",
 		ID:          func(r *getReq) string { return r.ID },
-		Fetch: func(context.Context, string, string) (*user, error) {
+		Fetch: func(context.Context, string) (*user, error) {
 			return nil, svcerr.NotFound("user")
 		},
-		Pack: func(u *user) *getResp { return &getResp{User: u} },
+		Pack: func(u *user) (*getResp, error) { return &getResp{User: u}, nil },
 	})
 	_, err := h(context.Background(), connect.NewRequest(&getReq{ID: "nope"}))
 	cerr := new(connect.Error)
@@ -218,17 +187,17 @@ func TestHandleGet_ArbitraryRepoError_Internal(t *testing.T) {
 	h := HandleGet(GetOp[getReq, getResp, *user]{
 		EntityLower: "user",
 		ID:          func(r *getReq) string { return r.ID },
-		Fetch: func(context.Context, string, string) (*user, error) {
+		Fetch: func(context.Context, string) (*user, error) {
 			return nil, errors.New("boom: SELECT * FROM x")
 		},
-		Pack: func(u *user) *getResp { return &getResp{User: u} },
+		Pack: func(u *user) (*getResp, error) { return &getResp{User: u}, nil },
 	})
 	_, err := h(context.Background(), connect.NewRequest(&getReq{ID: "u1"}))
 	cerr := new(connect.Error)
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
 		t.Fatalf("want Internal, got %v", err)
 	}
-	if !strings.Contains(cerr.Message(), "get user failed: svcerr: internal") {
+	if !strings.Contains(cerr.Message(), "get user failed") {
 		t.Fatalf("error envelope wording changed: %q", cerr.Message())
 	}
 	if strings.Contains(cerr.Message(), "SELECT") {
@@ -242,14 +211,14 @@ func TestHandleUpdate_HappyPath(t *testing.T) {
 	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
 		EntityLower:    "user",
 		EntityFieldLow: "user",
-		Entity: func(r *updateReq) (*user, bool) {
+		Entity: func(r *updateReq) (*user, error) {
 			if r.User == nil {
-				return nil, false
+				return nil, ErrEntityRequired
 			}
-			return r.User, true
+			return r.User, nil
 		},
-		Persist: func(context.Context, string, *user) error { return nil },
-		Pack:    func(u *user) *updateResp { return &updateResp{User: u} },
+		Persist: func(context.Context, *user) error { return nil },
+		Pack:    func(u *user) (*updateResp, error) { return &updateResp{User: u}, nil },
 	})
 	resp, err := h(context.Background(), connect.NewRequest(&updateReq{User: &user{ID: "u1", Name: "B"}}))
 	if err != nil {
@@ -264,9 +233,9 @@ func TestHandleUpdate_NilEntity_InvalidArgument(t *testing.T) {
 	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
 		EntityLower:    "user",
 		EntityFieldLow: "user",
-		Entity:         func(r *updateReq) (*user, bool) { return r.User, r.User != nil },
-		Persist:        func(context.Context, string, *user) error { return nil },
-		Pack:           func(*user) *updateResp { return &updateResp{} },
+		Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
+		Persist:        func(context.Context, *user) error { return nil },
+		Pack:           func(*user) (*updateResp, error) { return &updateResp{}, nil },
 	})
 	_, err := h(context.Background(), connect.NewRequest(&updateReq{}))
 	cerr := new(connect.Error)
@@ -288,19 +257,19 @@ func maskedUpdateOp(fullCalled *bool, maskedFields *[]string, maskedErr error) U
 	return UpdateOp[updateReq, updateResp, *user]{
 		EntityLower:    "user",
 		EntityFieldLow: "user",
-		Entity: func(r *updateReq) (*user, bool) {
-			return r.User, r.User != nil
+		Entity: func(r *updateReq) (*user, error) {
+			return r.User, entityOrRequired(r.User)
 		},
 		Mask: func(r *updateReq) []string { return r.Mask },
-		Persist: func(context.Context, string, *user) error {
+		Persist: func(context.Context, *user) error {
 			*fullCalled = true
 			return nil
 		},
-		PersistMasked: func(_ context.Context, _ string, _ *user, fields []string) error {
+		PersistMasked: func(_ context.Context, _ *user, fields []string) error {
 			*maskedFields = append([]string{}, fields...)
 			return maskedErr
 		},
-		Pack: func(u *user) *updateResp { return &updateResp{User: u} },
+		Pack: func(u *user) (*updateResp, error) { return &updateResp{User: u}, nil },
 	}
 }
 
@@ -369,13 +338,13 @@ func TestHandleUpdate_MaskWithoutPersistMasked_Internal(t *testing.T) {
 	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
 		EntityLower:    "user",
 		EntityFieldLow: "user",
-		Entity:         func(r *updateReq) (*user, bool) { return r.User, r.User != nil },
+		Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
 		Mask:           func(r *updateReq) []string { return r.Mask },
-		Persist: func(context.Context, string, *user) error {
+		Persist: func(context.Context, *user) error {
 			fullCalled = true
 			return nil
 		},
-		Pack: func(u *user) *updateResp { return &updateResp{User: u} },
+		Pack: func(u *user) (*updateResp, error) { return &updateResp{User: u}, nil },
 	})
 	_, err := h(context.Background(), connect.NewRequest(&updateReq{
 		User: &user{ID: "u1"},
@@ -420,12 +389,12 @@ func TestHandleUpdate_NilMaskHook_LegacyFullReplace(t *testing.T) {
 	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
 		EntityLower:    "user",
 		EntityFieldLow: "user",
-		Entity:         func(r *updateReq) (*user, bool) { return r.User, r.User != nil },
-		Persist: func(context.Context, string, *user) error {
+		Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
+		Persist: func(context.Context, *user) error {
 			fullCalled = true
 			return nil
 		},
-		Pack: func(u *user) *updateResp { return &updateResp{User: u} },
+		Pack: func(u *user) (*updateResp, error) { return &updateResp{User: u}, nil },
 	})
 	if _, err := h(context.Background(), connect.NewRequest(&updateReq{
 		User: &user{ID: "u1"},
@@ -444,7 +413,7 @@ func TestHandleDelete_DefaultZeroResp(t *testing.T) {
 	h := HandleDelete(DeleteOp[deleteReq, deleteResp]{
 		EntityLower: "user",
 		ID:          func(r *deleteReq) string { return r.ID },
-		Persist:     func(context.Context, string, string) error { return nil },
+		Persist:     func(context.Context, string) error { return nil },
 	})
 	resp, err := h(context.Background(), connect.NewRequest(&deleteReq{ID: "u1"}))
 	if err != nil {
@@ -459,7 +428,7 @@ func TestHandleDelete_PackOverride(t *testing.T) {
 	h := HandleDelete(DeleteOp[deleteReq, deleteResp]{
 		EntityLower: "user",
 		ID:          func(r *deleteReq) string { return r.ID },
-		Persist:     func(context.Context, string, string) error { return nil },
+		Persist:     func(context.Context, string) error { return nil },
 		Pack:        func() *deleteResp { return &deleteResp{ID: "echoed"} },
 	})
 	resp, _ := h(context.Background(), connect.NewRequest(&deleteReq{ID: "u1"}))
@@ -472,18 +441,67 @@ func TestHandleDelete_RepoError_WrappedInternal(t *testing.T) {
 	h := HandleDelete(DeleteOp[deleteReq, deleteResp]{
 		EntityLower: "user",
 		ID:          func(r *deleteReq) string { return r.ID },
-		Persist:     func(context.Context, string, string) error { return errors.New("fk violation") },
+		Persist:     func(context.Context, string) error { return errors.New("fk violation") },
 	})
 	_, err := h(context.Background(), connect.NewRequest(&deleteReq{ID: "u1"}))
 	cerr := new(connect.Error)
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
 		t.Fatalf("want Internal, got %v", err)
 	}
-	if !strings.Contains(cerr.Message(), "delete user failed: svcerr: internal") {
+	if !strings.Contains(cerr.Message(), "delete user failed") {
 		t.Fatalf("envelope wording changed: %q", cerr.Message())
 	}
 	if strings.Contains(cerr.Message(), "fk violation") {
 		t.Fatalf("repo error leaked into client message: %q", cerr.Message())
+	}
+}
+
+// TestHandleDelete_MissingRow_NotFound pins the half of the contract the
+// library could not express before the repository read RowsAffected: a
+// Delete whose PK matched no row answers exactly as Get does for that same
+// id. The 200-with-an-empty-body it used to return was indistinguishable
+// from a successful delete, so a typo, an id the caller may not see and a
+// real deletion all looked the same on the wire.
+func TestHandleDelete_MissingRow_NotFound(t *testing.T) {
+	h := HandleDelete(DeleteOp[deleteReq, deleteResp]{
+		EntityLower: "user",
+		ID:          func(r *deleteReq) string { return r.ID },
+		Persist: func(context.Context, string) error {
+			return fmt.Errorf("delete users: %w", orm.ErrNoRows)
+		},
+	})
+	_, err := h(context.Background(), connect.NewRequest(&deleteReq{ID: "nope"}))
+	cerr := new(connect.Error)
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeNotFound {
+		t.Fatalf("want NotFound, got %v", err)
+	}
+	// Identical envelope to Get's, so a client can reason about one rule.
+	if cerr.Message() != "user not found" {
+		t.Fatalf("Delete and Get must produce the same not-found envelope; got %q", cerr.Message())
+	}
+	if strings.Contains(cerr.Message(), "delete users") || strings.Contains(cerr.Message(), "no rows") {
+		t.Fatalf("repository/driver text leaked into the client message: %q", cerr.Message())
+	}
+}
+
+// TestHandleUpdate_MissingRow_NotFound is the same hole on the Update leg:
+// HandleUpdate never fetches, so an update of an id that does not exist
+// used to write nothing and return 200 echoing the caller's own entity —
+// a response describing a row the database does not have.
+func TestHandleUpdate_MissingRow_NotFound(t *testing.T) {
+	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
+		EntityLower:    "user",
+		EntityFieldLow: "user",
+		Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
+		Persist: func(context.Context, *user) error {
+			return fmt.Errorf("update users: %w", orm.ErrNoRows)
+		},
+		Pack: func(e *user) (*updateResp, error) { return &updateResp{User: e}, nil },
+	})
+	_, err := h(context.Background(), connect.NewRequest(&updateReq{User: &user{ID: "nope"}}))
+	cerr := new(connect.Error)
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeNotFound {
+		t.Fatalf("want NotFound, got %v", err)
 	}
 }
 
@@ -501,12 +519,12 @@ func TestHandleList_PaginationDefaultsAndTrim(t *testing.T) {
 		HasPagination: true,
 		PageToken:     func(r *listReq) string { return r.PageToken },
 		PageSize:      func(r *listReq) int { return r.PageSize },
-		Query: func(ctx context.Context, _ string, _ []orm.QueryOption) ([]*user, error) {
+		Query: func(ctx context.Context, _ []orm.QueryOption) ([]*user, error) {
 			return all, nil
 		},
 		EntityID: func(u *user) string { return u.ID },
-		Pack: func(items []*user, tok string) *listResp {
-			return &listResp{Users: items, NextPageToken: tok}
+		Pack: func(items []*user, tok string, _ int64) (*listResp, error) {
+			return &listResp{Users: items, NextPageToken: tok}, nil
 		},
 	})
 	resp, err := h(context.Background(), connect.NewRequest(&listReq{}))
@@ -559,12 +577,12 @@ func TestHandleList_PageSizeClampAndCustomMax(t *testing.T) {
 				MaxPageSize:   tc.maxSize,
 				PageToken:     func(r *listReq) string { return "" },
 				PageSize:      func(r *listReq) int { return r.PageSize },
-				Query: func(ctx context.Context, _ string, _ []orm.QueryOption) ([]*user, error) {
+				Query: func(ctx context.Context, _ []orm.QueryOption) ([]*user, error) {
 					return seed, nil
 				},
 				EntityID: func(u *user) string { return u.ID },
-				Pack: func(items []*user, tok string) *listResp {
-					return &listResp{Users: items, NextPageToken: tok}
+				Pack: func(items []*user, tok string, _ int64) (*listResp, error) {
+					return &listResp{Users: items, NextPageToken: tok}, nil
 				},
 			})
 			resp, err := h(context.Background(), connect.NewRequest(&listReq{PageSize: tc.req}))
@@ -585,11 +603,11 @@ func TestHandleList_BadCursor_InvalidArgument(t *testing.T) {
 		HasPagination: true,
 		PageToken:     func(r *listReq) string { return r.PageToken },
 		PageSize:      func(r *listReq) int { return r.PageSize },
-		Query: func(ctx context.Context, _ string, _ []orm.QueryOption) ([]*user, error) {
+		Query: func(ctx context.Context, _ []orm.QueryOption) ([]*user, error) {
 			return nil, nil
 		},
 		EntityID: func(u *user) string { return u.ID },
-		Pack:     func(items []*user, tok string) *listResp { return &listResp{} },
+		Pack:     func(items []*user, tok string, _ int64) (*listResp, error) { return &listResp{}, nil },
 	})
 	_, err := h(context.Background(), connect.NewRequest(&listReq{PageToken: "%%not-base64"}))
 	cerr := new(connect.Error)
@@ -606,12 +624,12 @@ func TestHandleList_NoPagination_NoLimitNoCursor(t *testing.T) {
 	var sawOpts int
 	h := HandleList(ListOp[listReq, listResp, *user]{
 		EntityLower: "user",
-		Query: func(ctx context.Context, _ string, opts []orm.QueryOption) ([]*user, error) {
+		Query: func(ctx context.Context, opts []orm.QueryOption) ([]*user, error) {
 			sawOpts = len(opts)
 			return []*user{{ID: "x"}}, nil
 		},
-		Pack: func(items []*user, tok string) *listResp {
-			return &listResp{Users: items, NextPageToken: tok}
+		Pack: func(items []*user, tok string, _ int64) (*listResp, error) {
+			return &listResp{Users: items, NextPageToken: tok}, nil
 		},
 	})
 	resp, err := h(context.Background(), connect.NewRequest(&listReq{}))
@@ -635,11 +653,11 @@ func TestHandleList_OrderByValidation(t *testing.T) {
 		PageToken:     func(r *listReq) string { return r.PageToken },
 		PageSize:      func(r *listReq) int { return r.PageSize },
 		OrderBy:       func(r *listReq) (string, bool) { return r.OrderBy, r.Descending },
-		Query: func(ctx context.Context, _ string, _ []orm.QueryOption) ([]*user, error) {
+		Query: func(ctx context.Context, _ []orm.QueryOption) ([]*user, error) {
 			return nil, nil
 		},
 		EntityID: func(u *user) string { return u.ID },
-		Pack:     func(items []*user, tok string) *listResp { return &listResp{} },
+		Pack:     func(items []*user, tok string, _ int64) (*listResp, error) { return &listResp{}, nil },
 	})
 	// "; DROP TABLE" should fail validation.
 	_, err := h(context.Background(), connect.NewRequest(&listReq{OrderBy: "name; DROP TABLE x"}))
@@ -661,11 +679,11 @@ func listOrderByOp(columns []string) func(context.Context, *connect.Request[list
 		PageToken:     func(r *listReq) string { return r.PageToken },
 		PageSize:      func(r *listReq) int { return r.PageSize },
 		OrderBy:       func(r *listReq) (string, bool) { return r.OrderBy, r.Descending },
-		Query: func(ctx context.Context, _ string, _ []orm.QueryOption) ([]*user, error) {
+		Query: func(ctx context.Context, _ []orm.QueryOption) ([]*user, error) {
 			return nil, nil
 		},
 		EntityID: func(u *user) string { return u.ID },
-		Pack:     func(items []*user, tok string) *listResp { return &listResp{} },
+		Pack:     func(items []*user, tok string, _ int64) (*listResp, error) { return &listResp{}, nil },
 	})
 }
 
@@ -696,45 +714,249 @@ func TestHandleList_OrderByAllowlist(t *testing.T) {
 	})
 }
 
-func TestHandleList_TenantPropagated(t *testing.T) {
-	var seenTID string
+// --- HandleList: total_count (Count wiring) ---------------------------
+
+// When a Count hook is wired, HandleList runs it over the SAME filters as the
+// list query (but not the page limit/cursor) and hands the total to Pack, so
+// the response's total_count is real instead of the pre-fix constant 0.
+func TestHandleList_TotalCount_PopulatedFromCount(t *testing.T) {
+	var countOpts, listOpts int
 	h := HandleList(ListOp[listReq, listResp, *user]{
 		EntityLower:   "user",
 		PkColumnName:  "id",
 		HasPagination: true,
-		Tenant:        func(ctx context.Context) (string, error) { return "tenant-7", nil },
 		PageToken:     func(r *listReq) string { return r.PageToken },
 		PageSize:      func(r *listReq) int { return r.PageSize },
-		Query: func(ctx context.Context, tid string, _ []orm.QueryOption) ([]*user, error) {
-			seenTID = tid
-			return nil, nil
+		Filters: func(r *listReq) []orm.QueryOption {
+			// One filter opt — must reach BOTH count and list.
+			return []orm.QueryOption{orm.WhereEq("name", "x")}
+		},
+		Query: func(ctx context.Context, opts []orm.QueryOption) ([]*user, error) {
+			listOpts = len(opts)
+			return []*user{{ID: "a"}, {ID: "b"}}, nil
+		},
+		Count: func(ctx context.Context, opts []orm.QueryOption) (int64, error) {
+			countOpts = len(opts)
+			return 42, nil
 		},
 		EntityID: func(u *user) string { return u.ID },
-		Pack:     func(items []*user, tok string) *listResp { return &listResp{} },
+		Pack: func(items []*user, tok string, total int64) (*listResp, error) {
+			return &listResp{Users: items, NextPageToken: tok, TotalCount: total}, nil
+		},
 	})
-	_, err := h(context.Background(), connect.NewRequest(&listReq{}))
+	resp, err := h(context.Background(), connect.NewRequest(&listReq{PageSize: 10}))
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if seenTID != "tenant-7" {
-		t.Fatalf("tenant not propagated: %q", seenTID)
+	if resp.Msg.TotalCount != 42 {
+		t.Fatalf("total_count should come from Count: got %d, want 42", resp.Msg.TotalCount)
+	}
+	// Count sees ONLY the filter opt (no limit/cursor); the list query sees
+	// the filter opt PLUS pagination (limit + order) opts — so strictly more.
+	if countOpts != 1 {
+		t.Fatalf("Count should see exactly the 1 filter opt (no limit/cursor), got %d", countOpts)
+	}
+	if listOpts <= countOpts {
+		t.Fatalf("list query should carry more opts (filter+limit+order) than count (%d), got %d", countOpts, listOpts)
 	}
 }
 
-// Connect errors from hooks should pass through with their code intact
-// (the library only wraps non-connect errors).
-func TestRunAuth_ConnectErrorPassesThrough(t *testing.T) {
-	want := connect.NewError(connect.CodeUnauthenticated, errors.New("missing token"))
-	h := HandleGet(GetOp[getReq, getResp, *user]{
-		EntityLower: "user",
-		Auth:        func(ctx context.Context) error { return want },
-		ID:          func(r *getReq) string { return r.ID },
-		Fetch:       func(context.Context, string, string) (*user, error) { return nil, nil },
-		Pack:        func(*user) *getResp { return &getResp{} },
+// With no Count hook, totalCount is 0 (pre-fix behavior preserved for
+// responses that carry no total_count field).
+func TestHandleList_TotalCount_ZeroWhenCountUnwired(t *testing.T) {
+	h := HandleList(ListOp[listReq, listResp, *user]{
+		EntityLower:   "user",
+		PkColumnName:  "id",
+		HasPagination: true,
+		PageToken:     func(r *listReq) string { return r.PageToken },
+		PageSize:      func(r *listReq) int { return r.PageSize },
+		Query: func(ctx context.Context, _ []orm.QueryOption) ([]*user, error) {
+			return []*user{{ID: "a"}}, nil
+		},
+		EntityID: func(u *user) string { return u.ID },
+		Pack: func(items []*user, tok string, total int64) (*listResp, error) {
+			return &listResp{Users: items, NextPageToken: tok, TotalCount: total}, nil
+		},
 	})
-	_, err := h(context.Background(), connect.NewRequest(&getReq{}))
-	cerr := new(connect.Error)
-	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeUnauthenticated {
-		t.Fatalf("want passthrough Unauthenticated, got %v", err)
+	resp, err := h(context.Background(), connect.NewRequest(&listReq{}))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
 	}
+	if resp.Msg.TotalCount != 0 {
+		t.Fatalf("unwired Count must leave total_count at 0, got %d", resp.Msg.TotalCount)
+	}
+}
+
+// A Count error surfaces as CodeInternal (SQL-free), like any repo error.
+func TestHandleList_TotalCount_CountErrorInternal(t *testing.T) {
+	h := HandleList(ListOp[listReq, listResp, *user]{
+		EntityLower:   "user",
+		PkColumnName:  "id",
+		HasPagination: true,
+		PageToken:     func(r *listReq) string { return r.PageToken },
+		PageSize:      func(r *listReq) int { return r.PageSize },
+		Query: func(ctx context.Context, _ []orm.QueryOption) ([]*user, error) {
+			return nil, nil
+		},
+		Count: func(ctx context.Context, _ []orm.QueryOption) (int64, error) {
+			return 0, errors.New("boom: SELECT count(*)")
+		},
+		EntityID: func(u *user) string { return u.ID },
+		Pack: func(items []*user, tok string, total int64) (*listResp, error) {
+			return &listResp{Users: items, NextPageToken: tok, TotalCount: total}, nil
+		},
+	})
+	_, err := h(context.Background(), connect.NewRequest(&listReq{}))
+	cerr := new(connect.Error)
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
+		t.Fatalf("count error should be Internal, got %v", err)
+	}
+	if strings.Contains(cerr.Message(), "SELECT") {
+		t.Fatalf("count SQL text leaked: %q", cerr.Message())
+	}
+}
+
+// --- reason totality across the handler-level error paths -------------
+
+// TestHandlerErrors_CarryReason covers the classified errors this package
+// raises BEFORE (or beside) a repository call — the ones built directly
+// with connect.NewError rather than routed through mapRepoErr. They are
+// just as much a client contract as a SQLSTATE mapping is, and a frontend
+// switching on `error.reason` must not fall through to null on any of
+// them. Together with TestMapRepoErr_ConstraintViolations this is the
+// totality claim: every error crud puts on the wire names its cause.
+func TestHandlerErrors_CarryReason(t *testing.T) {
+	ctx := context.Background()
+	listOp := func() ListOp[listReq, listResp, *user] {
+		return ListOp[listReq, listResp, *user]{
+			EntityLower:   "user",
+			PkColumnName:  "id",
+			Columns:       []string{"id", "name"},
+			HasPagination: true,
+			HasOrderBy:    true,
+			OrderBy:       func(r *listReq) (string, bool) { return r.OrderBy, r.Descending },
+			PageToken:     func(r *listReq) string { return r.PageToken },
+			PageSize:      func(r *listReq) int { return r.PageSize },
+			Query:         func(context.Context, []orm.QueryOption) ([]*user, error) { return nil, nil },
+			EntityID:      func(u *user) string { return u.ID },
+			Pack:          func([]*user, string, int64) (*listResp, error) { return &listResp{}, nil },
+		}
+	}
+
+	cases := []struct {
+		name       string
+		call       func() error
+		wantCode   connect.Code
+		wantReason string
+	}{
+		{
+			name: "update request missing the entity",
+			call: func() error {
+				h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
+					EntityLower:    "user",
+					EntityFieldLow: "user",
+					Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
+					Persist:        func(context.Context, *user) error { return nil },
+					Pack:           func(*user) (*updateResp, error) { return &updateResp{}, nil },
+				})
+				_, err := h(ctx, connect.NewRequest(&updateReq{}))
+				return err
+			},
+			wantCode:   connect.CodeInvalidArgument,
+			wantReason: ReasonRequiredFieldMissing,
+		},
+		{
+			name: "update_mask received but masked persistence unwired",
+			call: func() error {
+				h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
+					EntityLower:    "user",
+					EntityFieldLow: "user",
+					Entity:         func(r *updateReq) (*user, error) { return r.User, entityOrRequired(r.User) },
+					Mask:           func(r *updateReq) []string { return r.Mask },
+					Persist:        func(context.Context, *user) error { return nil },
+					Pack:           func(u *user) (*updateResp, error) { return &updateResp{User: u}, nil },
+				})
+				_, err := h(ctx, connect.NewRequest(&updateReq{User: &user{ID: "u1"}, Mask: []string{"name"}}))
+				return err
+			},
+			wantCode:   connect.CodeInternal,
+			wantReason: ReasonInternal,
+		},
+		{
+			name: "undecodable page token",
+			call: func() error {
+				_, err := HandleList(listOp())(ctx, connect.NewRequest(&listReq{PageToken: "%%not-base64"}))
+				return err
+			},
+			wantCode:   connect.CodeInvalidArgument,
+			wantReason: ReasonInvalidPageToken,
+		},
+		{
+			name: "order_by names an undeclared column",
+			call: func() error {
+				_, err := HandleList(listOp())(ctx, connect.NewRequest(&listReq{OrderBy: "no_such_column"}))
+				return err
+			},
+			wantCode:   connect.CodeInvalidArgument,
+			wantReason: ReasonInvalidOrderBy,
+		},
+		{
+			name: "page_token combined with a non-keyset order",
+			call: func() error {
+				_, err := HandleList(listOp())(ctx, connect.NewRequest(&listReq{
+					PageToken: orm.EncodeCursor("u1"),
+					OrderBy:   "name",
+				}))
+				return err
+			},
+			wantCode:   connect.CodeInvalidArgument,
+			wantReason: ReasonPageTokenOrderConflict,
+		},
+		{
+			name: "response projection failed",
+			call: func() error {
+				h := HandleGet(GetOp[getReq, getResp, *user]{
+					EntityLower: "user",
+					ID:          func(r *getReq) string { return r.ID },
+					Fetch:       func(context.Context, string) (*user, error) { return &user{ID: "u1"}, nil },
+					Pack: func(*user) (*getResp, error) {
+						return nil, errors.New(`corrupt enum value "LEGACY" for column status`)
+					},
+				})
+				_, err := h(ctx, connect.NewRequest(&getReq{ID: "u1"}))
+				return err
+			},
+			wantCode:   connect.CodeInternal,
+			wantReason: ReasonInternal,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			cerr := new(connect.Error)
+			if !errors.As(err, &cerr) {
+				t.Fatalf("want a connect.Error, got %T: %v", err, err)
+			}
+			if cerr.Code() != tc.wantCode {
+				t.Fatalf("code = %v, want %v", cerr.Code(), tc.wantCode)
+			}
+			got := cerr.Meta().Get(svcerr.ReasonHeader)
+			if got == "" {
+				t.Fatalf("no %s: a frontend switching on error.reason falls through to null here", svcerr.ReasonHeader)
+			}
+			if got != tc.wantReason {
+				t.Fatalf("%s = %q, want %q", svcerr.ReasonHeader, got, tc.wantReason)
+			}
+		})
+	}
+}
+
+// entityOrRequired is the test-side spelling of what the generated update
+// closure does: an absent entity is ErrEntityRequired, anything else is nil.
+func entityOrRequired(u *user) error {
+	if u == nil {
+		return ErrEntityRequired
+	}
+	return nil
 }

@@ -1,5 +1,5 @@
-// Package cli — the shared reconcile spine under `forge up` and
-// `forge deploy`.
+// Package cli — the shared reconcile spine under `forge env up` and
+// `forge env deploy`.
 //
 // Both commands bring an environment toward its declared end-state; they
 // differ on exactly two axes, made explicit here so the up-vs-deploy
@@ -25,25 +25,25 @@
 //	                               pipeline, not a scope field.)
 //
 //	lifecycle — what a run does once everything is started:
-//	              * once      — reconcile and RETURN. `forge deploy` is
-//	                            always `once`; so is the non-TTY `forge up`
+//	              * once      — reconcile and RETURN. `forge env deploy` is
+//	                            always `once`; so is the non-TTY `forge env up`
 //	                            (start host/frontend processes, persist
 //	                            their PIDs, print the summary, return —
-//	                            stop later via `forge up stop`).
+//	                            stop later via `forge env down`).
 //	              * supervise — start the long-lived host/frontend
 //	                            processes, HOLD on a signal channel, and
 //	                            cascade-teardown on Ctrl-C. The interactive
-//	                            `forge up` lifecycle.
+//	                            `forge env up` lifecycle.
 //	              * auto      — defer the once-vs-supervise choice to a
 //	                            TTY check at runtime (resolveUpLifecycle).
-//	                            `forge up`'s default when neither --watch
+//	                            `forge env up`'s default when neither --watch
 //	                            nor --background is given.
 //
 // In this vocabulary:
 //
-//	forge deploy <env>  = scope{cluster} (+ structural Firebase publish),
+//	forge env deploy <env>  = scope{cluster} (+ structural Firebase publish),
 //	                      lifecycle=once, opts=<from flags>
-//	forge up --env=<e>  = scope=all,                     lifecycle=auto,
+//	forge env up <e>  = scope=all,                     lifecycle=auto,
 //	                      opts={}
 //
 // The surgical knobs (tag / rollback / prune / dry-run / context override /
@@ -55,9 +55,9 @@
 package cli
 
 // reconcileScope names which entity kinds a reconcile run acts on. A run
-// touches only the kinds whose field is true. `forge up` derives its scope
+// touches only the kinds whose field is true. `forge env up` derives its scope
 // from the --cluster-only / --host-only flags via upScope (fullUpScope
-// masked to one side of the split); `forge deploy`'s scope (cluster apply +
+// masked to one side of the split); `forge env deploy`'s scope (cluster apply +
 // Firebase frontend publish) is fixed and expressed structurally by the
 // deploy pipeline rather than threaded as a value.
 type reconcileScope struct {
@@ -74,7 +74,7 @@ type reconcileScope struct {
 	frontend bool
 }
 
-// fullUpScope is `forge up`'s whole-dev-loop scope: build+deploy the cluster
+// fullUpScope is `forge env up`'s whole-dev-loop scope: build+deploy the cluster
 // (with the concurrent compose pre-warm) and run host services + frontend
 // dev servers. frontendShip is off: `up` runs dev servers, it does not
 // publish to Firebase. upScope masks this down per --cluster-only/--host-only.
@@ -82,7 +82,7 @@ func fullUpScope() reconcileScope {
 	return reconcileScope{cluster: true, composeInfra: true, host: true, frontend: true}
 }
 
-// upScope derives a `forge up` run's scope from its --cluster-only /
+// upScope derives a `forge env up` run's scope from its --cluster-only /
 // --host-only flags — the single source of truth for which phases runUp
 // executes, replacing the scattered hostOnly/clusterOnly conditionals.
 // Starts from fullUpScope and masks one side of the cluster/host split:
@@ -109,25 +109,25 @@ func upScope(clusterOnly, hostOnly bool) reconcileScope {
 }
 
 // reconcileLifecycle is the post-start behaviour: return immediately (once)
-// or hold + teardown on signal (supervise). `forge up`'s "auto" default —
+// or hold + teardown on signal (supervise). `forge env up`'s "auto" default —
 // supervise in a TTY, once otherwise — is not a third enum value; it is
 // resolved to one of these two by resolveUpLifecycle at the call site before
 // the host phase, so no un-resolved lifecycle ever flows downstream.
 type reconcileLifecycle int
 
 const (
-	// lifecycleOnce reconciles and returns. `forge deploy` always; the
-	// non-TTY `forge up` after persisting PIDs + printing the summary.
+	// lifecycleOnce reconciles and returns. `forge env deploy` always; the
+	// non-TTY `forge env up` after persisting PIDs + printing the summary.
 	lifecycleOnce reconcileLifecycle = iota
 	// lifecycleSupervise holds the foreground on a signal channel and
 	// cascade-tears-down the host/frontend processes on Ctrl-C. The
-	// interactive `forge up`.
+	// interactive `forge env up`.
 	lifecycleSupervise
 )
 
 // resolveUpLifecycle is the pure TTY-aware lifecycle decision for
-// `forge up`. It is the LLM-first fix: an agent / CI invocation of
-// `forge up --env=<env>` must NOT hang on the interactive Ctrl-C hold, so
+// `forge env up`. It is the LLM-first fix: an agent / CI invocation of
+// `forge env up <env>` must NOT hang on the interactive Ctrl-C hold, so
 // the DEFAULT (neither --watch nor --background) supervises only when a TTY
 // is present and otherwise returns after detaching — the same end-state as
 // --background.
@@ -141,7 +141,7 @@ const (
 //     outcome, and matches the flag's long-standing "return immediately"
 //     contract.)
 //   - --watch forces supervise (hold + Ctrl-C teardown) even without a
-//     TTY, for a human who pipes `forge up` output through a tool.
+//     TTY, for a human who pipes `forge env up` output through a tool.
 //   - Otherwise the TTY decides: a terminal → supervise (today's
 //     interactive behaviour); no terminal → once (return after start).
 //

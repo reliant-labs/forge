@@ -64,7 +64,7 @@ func TestListSkillsExcludesMigrationsByDefault(t *testing.T) {
 
 // TestLoadSkillStillServesMigrations pins the load-by-path escape hatch:
 // listings hide migration skills, but LoadSkill must keep serving them
-// (forge upgrade list points agents at exactly these paths).
+// (forge project upgrade list points agents at exactly these paths).
 func TestLoadSkillStillServesMigrations(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	body, err := LoadSkill("", "migrations/v0.x-to-contractkit")

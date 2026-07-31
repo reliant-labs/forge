@@ -15,11 +15,17 @@ import (
 
 var httpClient = &http.Client{Timeout: 5 * time.Second}
 
-// grafanaAddr returns the Grafana host address or a skip result.
+// grafanaAddr returns the Grafana host address, or an UNDETERMINED result
+// when the compose check could not publish one. Undetermined, not skip: the
+// telemetry backends ship in the bundled lgtm container, so a missing port
+// means forge could not look — not that the question does not apply.
 func grafanaAddr(env *Environment) (string, *CheckResult) {
 	addr, ok := env.GetPort("lgtm", 3000)
 	if !ok {
-		return "", &CheckResult{Status: StatusSkip, Message: "Grafana port not discovered (docker check may have failed)"}
+		return "", &CheckResult{
+			Status:  StatusUnknown,
+			Message: "Grafana port not published by the compose stack — could not query this signal",
+		}
 	}
 	return addr, nil
 }

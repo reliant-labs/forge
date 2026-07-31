@@ -66,7 +66,7 @@ description: Code hygiene review methodology — correctness bugs, test quality 
 #### Logging & Observability
 - **Actionable logs**: can you debug with these logs?
 - **Log spam**: excessive logging, logging in hot paths
-- **Useful fields**: request ID, tenant ID, operation context
+- **Useful fields**: request ID, user ID, operation context
 - **Missing error logs**: silent failures
 - **Debug logging left in**: temporary logging not removed
 

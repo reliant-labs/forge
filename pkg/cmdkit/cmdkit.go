@@ -6,11 +6,18 @@
 // serverkit owns the server lifecycle (listener, readiness flip, worker
 // supervision, graceful shutdown). Everything else — a `report`
 // subcommand, a queue drainer, a backfill job, a reverse proxy — got
-// nothing, so each one re-invented the same five things by hand and
-// inconsistently: a timeout literal, a clutch of os.Getenv reads, a
-// freshly-built slog.Logger pointed at the wrong stream, hand-rolled DB
-// open/ping, and fmt.Println for output. cmdkit centralizes exactly
-// those five.
+// nothing, so each one re-invented the same things by hand and
+// inconsistently: a timeout literal, a freshly-built slog.Logger pointed
+// at the wrong stream, hand-rolled DB open/ping, and fmt.Println for
+// output. cmdkit centralizes exactly those four.
+//
+// It deliberately centralizes NO input resolution. A command's inputs come
+// from the generated typed config (config.Load) and its own flags; a helper
+// here that took a variable NAME and read the process environment would let
+// a command configure itself from a value the app declares nowhere — the
+// exact thing the typed loader exists to prevent — while satisfying every
+// lint, because the read would live in this package instead of the
+// command's.
 //
 // Design constraints:
 //

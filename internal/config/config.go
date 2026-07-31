@@ -11,9 +11,8 @@
 //
 // internal/config is a pure schema/data/constants package: it declares the
 // canonical forge.yaml types plus package-level lookup tables (e.g.
-// ExperimentalFeatureNames — the stable display order shared by `forge audit`,
-// the startup warning, and `forge features`). It has no Service seam and no
-// contract.go, so it is not a contract-shaped package. The directive opts it
+// ExperimentalFeatureNames — the stable display order shared by `forge project audit`,
+// the startup warning, and `forge project features`). The directive opts it
 // out of the contract lint rules — specifically the exported-vars rule, which
 // would otherwise demand ExperimentalFeatureNames become a getter. A getter is
 // the ideal fix but its call sites reach into internal/cli (an ordered slice
@@ -21,13 +20,18 @@
 // cross-package change outside this pass. This is the accepted suppression for
 // a genuine data/catalogue package.
 //
+// The directive is a FULL opt-out, not a lint-only one: it also stops
+// contract codegen, so the narrow Service seam in contract.go gets no
+// generated mock. That is the intended trade here — nothing mocks
+// config — but it is the whole cost, so weigh it before adding the
+// directive to a package whose mock anyone compiles against.
+//
 //nolint:revive // max-public-structs: see package doc above.
 package config
 
 import (
+	"path/filepath"
 	"strings"
-
-	"go.yaml.in/yaml/v3"
 )
 
 // ProjectKind identifies the shape of a forge project. The default,
@@ -86,45 +90,51 @@ func EffectiveProjectBinary(binary string) string {
 type ProjectConfig struct {
 	Name       string `yaml:"name"`
 	ModulePath string `yaml:"module_path"`
-	// Kind is the project shape (service|cli|library). It is NO LONGER a
-	// forge.yaml field: as of the ProjectStore Phase-2 data move it DERIVES
-	// from the components (see DeriveProjectKind) — a project with a
-	// server-shaped component is a service, a binary-only project is a cli,
-	// an empty one is a library. The loader sets this field after reading
-	// components.json; the yaml tag is "-" so a stale `kind:` in forge.yaml
-	// is rejected with a migration hint. Every consumer that reads cfg.Kind
-	// is unchanged.
-	Kind    string `yaml:"-"`
-	Binary  string `yaml:"binary,omitempty"` // "per-service" (default), "shared" — one Go binary, cobra subcommand per service
-	Version string `yaml:"version,omitempty"`
+	// Kind is the project shape (service|cli|library). It is not a forge.yaml
+	// field: the loader DERIVES it from the project's real sources — the KCL
+	// deploy tree, the pkg/app composition root, internal/handlers/, the
+	// service protos, and cmd/<name>/main.go (see deriveProjectKindFromSources).
+	// The yaml tag is "-" so a stale `kind:` in forge.yaml is reported with a
+	// migration hint instead of being honored.
+	Kind   string `yaml:"-"`
+	Binary string `yaml:"binary,omitempty"` // "per-service" (default), "shared" — one Go binary, cobra subcommand per service
 	// ForgeVersion records the forge binary version that this project's
 	// generated artifacts were last produced against. It is set at
-	// `forge new` time, bumped after a successful `forge upgrade`, and
+	// `forge project new` time, bumped after a successful `forge project upgrade`, and
 	// consulted by `forge generate` to warn when the forge binary on
 	// PATH has drifted from the version pinned by the project. Empty
 	// (legacy) projects are treated as "0.0.0".
 	ForgeVersion string `yaml:"forge_version,omitempty"`
-	// HotReload toggles the air-based hot-reload dev loop for `forge run`.
-	// *bool so "absent" (nil → derived: on for service kind, off otherwise)
-	// is distinguishable from an explicit `hot_reload: false` opt-out. Use
-	// EffectiveHotReload; don't read the pointer directly.
-	HotReload *bool `yaml:"hot_reload,omitempty"`
-	// Components is the unified list of everything this project builds and
-	// runs: Connect-RPC servers, in-process workers, scheduled crons,
-	// controller-runtime operators, and standalone binaries. The Kind field
-	// on each entry is THE discriminator (server|worker|cron|operator|binary).
+	// NOTE: there is intentionally NO project-level `hot_reload:` field.
+	// The single hot-reload switch is `features.hot_reload`, which the dev
+	// loop and the air-config codegen actually read; a second top-level key
+	// spelled the same way resolved through a different accessor that no
+	// caller ever invoked. A `hot_reload:` key at the top level is reported
+	// with a migration hint (see removedSchemaKeys).
 	//
-	// Components are DERIVED from the project's real sources (proto
-	// descriptor, the pkg/app service registry, the deploy/kcl tree,
-	// internal/handlers, and cmd/ binaries) — NOT authored in forge.yaml.
-	// The yaml tag is therefore "-": forge.yaml can no longer carry a
-	// `components:` block (a stale one is rejected with a migration hint —
-	// see removedSchemaKeys). The loader introspects the real sources and
-	// populates this field, so every consumer that reads cfg.Components (and
-	// the ProjectStore wrapping it) is unchanged.
-	Components []ComponentConfig `yaml:"-"`
-	Packages   []PackageConfig   `yaml:"packages,omitempty"`
-	Frontends  []FrontendConfig  `yaml:"frontends,omitempty"`
+	// NOTE: there is intentionally NO `components:` field, in yaml or in
+	// memory. What a project builds and runs — Connect servers, workers,
+	// crons, operators, secondary binaries — is declared by the code itself
+	// (the proto descriptor, internal/workers/, internal/operators/, cmd/),
+	// and a config object carrying a copy would be a second source of truth
+	// that is empty exactly when nobody remembered to fill it. A caller that
+	// needs the component inventory asks the project for it:
+	// codegen.DiscoverProjectComponents. A `components:` key in forge.yaml is
+	// reported with a migration hint (see removedSchemaKeys).
+	//
+	// NOTE: there is intentionally NO `packages:` field either. An internal
+	// package is declared by internal/<name>/contract.go — the file the
+	// bootstrap/injector codegen has always walked for — and its
+	// outbound-boundary claim by the `//forge:outbound-io` marker in its own
+	// source. The retired list was never a codegen input: deleting it left
+	// every package still imported, constructed and middleware-wrapped in
+	// internal/app/compose.go. It steered only the REPORTERS, so a stale
+	// entry made `forge project map` / `forge project audit` / the
+	// architecture doc name a package that does not exist while hiding one
+	// that does. They now resolve through codegen.DiscoverInternalPackages.
+	// A `packages:` key is reported with a migration hint (see
+	// removedSchemaKeys).
+	Frontends []FrontendConfig `yaml:"frontends,omitempty"`
 	// Frontend holds project-level frontend settings — distinct from
 	// the per-frontend `Frontends []FrontendConfig` slice above. Today
 	// it only carries the opt-in `workspaces:` flag that turns on the
@@ -156,60 +166,37 @@ type ProjectConfig struct {
 	// generated, dependency-injected typed config object. See
 	// [ConfigGuardConfig] for the enforce_typed_access / loader_package
 	// semantics and the absent-key default (warn).
-	Config   ConfigGuardConfig `yaml:"config,omitempty"`
-	Auth     AuthConfig        `yaml:"auth,omitempty"`
-	Docs     DocsConfig        `yaml:"docs,omitempty"`
-	Features FeaturesConfig    `yaml:"features,omitempty"`
-	Stack    StackConfig       `yaml:"stack,omitempty"`
+	Config ConfigGuardConfig `yaml:"config,omitempty"`
+	// NOTE: there is intentionally NO `auth:` block. Authentication is owned
+	// code — internal/app/auth.go's SetupAuth picks the validator, and
+	// issuer/audience/JWKS are per-deployment values that live in env vars
+	// routed through KCL. An `auth:` key is reported with a migration hint
+	// (see removedSchemaKeys).
+	Docs     DocsConfig     `yaml:"docs,omitempty"`
+	Features FeaturesConfig `yaml:"features,omitempty"`
+	Stack    StackConfig    `yaml:"stack,omitempty"`
+	// Observability seeds the OWNED per-package observe_chain.go seam that a
+	// generated component decorator routes through. The values are read at
+	// `forge scaffold` time to stamp the initial chain (log level, etc.);
+	// the seam is user-owned thereafter. See [ObservabilityConfig].
+	Observability ObservabilityConfig `yaml:"observability,omitempty"`
 	// API toggles project-level API protocol skins layered on top of the
 	// Connect mux. Default zero-value leaves both REST and OpenAPI off so
 	// existing projects regenerate identically. See [APIConfig] for the
 	// per-field semantics.
 	API APIConfig `yaml:"api,omitempty"`
-	// Packs lists the installed forge packs by name. Two KINDS of pack are
-	// recorded here, distinguished NOT by a forge.yaml flag but by the
-	// pack's own manifest (see internal/packs Pack.Generate):
-	//
-	//   - ONGOING packs declare a `generate:` block (generate hooks). They
-	//     are re-run on every `forge generate` and stay coupled to the
-	//     project's codegen — listing them here is load-bearing: the
-	//     pipeline replays their hooks. Removing the entry stops the hooks.
-	//   - INSTALL-ONCE starters declare only `files:` (no `generate:`). They
-	//     copy their scaffold in once and the project OWNS the result after;
-	//     the forge.yaml entry is a provenance record, not a re-run trigger.
-	//
-	// The distinction is derivable from the manifest at install/generate
-	// time (a pack with a non-empty Generate is ongoing); it is documented
-	// here rather than encoded as a per-entry field so existing forge.yaml
-	// files keep their plain string list. See the `packs` vs `starters`
-	// skills for the user-facing split.
-	Packs         []string                `yaml:"packs,omitempty"`
-	PackOverrides map[string]PackOverride `yaml:"pack_overrides,omitempty"`
-	// Smoke declares APP-FLOW health checks that `forge smoke <env>` runs in
+	// Smoke declares APP-FLOW health checks that `forge env smoke <env>` runs in
 	// addition to its built-in ingress route / dev-port probes. A route probe
 	// only proves listeners are up; a flow check proves the APP actually works
 	// (an end-to-end invariant only the app can express). See [SmokeConfig].
 	Smoke SmokeConfig `yaml:"smoke,omitempty"`
 }
 
-// PackOverride is a project-level override block for an installed pack,
-// keyed by pack name under `pack_overrides:` in forge.yaml. It lets the
-// project decline pack-shipped artifacts when its own code already
-// supersedes them — e.g. an audit-log pack ships migrations the project
-// has already authored under different names.
-type PackOverride struct {
-	// SkipMigrations skips rendering the pack's `migrations:` block at
-	// install time. Useful when the project's own migrations supersede
-	// the pack's (typical during forge migrations of an existing repo
-	// where the schema is already in place).
-	SkipMigrations bool `yaml:"skip_migrations,omitempty"`
-}
-
 // Component kind constants. Kind is the single discriminator on a
 // [ComponentConfig] — it replaces the old `services[].type` +
 // `services[].kind` pair and the separate `binaries:` block.
 //
-//   - server   — Connect-RPC handlers + authorizer + client + frontend
+//   - server   — Connect-RPC handlers + client + frontend
 //     hooks + bootstrap row + cobra subcommand (was type=go_service).
 //   - worker   — in-process ContextWorker goroutine; bootstrap Workers row.
 //   - cron     — scheduled job; Schedule drives it. In-process scheduled
@@ -226,105 +213,47 @@ const (
 	ComponentKindBinary   = "binary"
 )
 
-// ComponentConfig represents one buildable/runnable unit of a forge
-// project. Its Kind field selects which scaffold + deploy treatment the
-// component receives; see the ComponentKind* constants.
+// ComponentConfig describes one buildable/runnable unit of a forge project
+// — a Connect server, worker, cron, operator or secondary binary. Its Kind
+// field selects which scaffold + deploy treatment the component receives;
+// see the ComponentKind* constants.
 //
-// Host vs cluster placement (was services[].dev_target):
-//
-// An earlier revision (commit cd25640) put per-component host/cluster
-// placement on this struct. The decision moved to the KCL layer in the
-// feat/kcl-orchestration batch: deployment target is an environment
-// concern (which env runs this on the host, which arch, which runner),
-// not a component-shape concern. Per-env placement is now declared in
-// `deploy/kcl/<env>/main.k`.
+// It carries NO struct tags, and that is load-bearing: a component is never
+// serialized to or parsed from a config file. The declaration is the code
+// (the proto descriptor, internal/workers/, internal/operators/, cmd/) and
+// this type is only the in-memory shape codegen.DiscoverProjectComponents
+// hands back after reading it. Per-environment facts (placement, replicas,
+// exposed ports) are declared in `deploy/kcl/<env>/main.k`, not here.
 type ComponentConfig struct {
-	Name string `yaml:"name"`
+	Name string
 	// Kind is THE discriminator: server|worker|cron|operator|binary.
 	// See the ComponentKind* constants.
-	Kind string `yaml:"kind"`
-	Path string `yaml:"path"`
-	// Ports is a named port map (http/grpc/metrics/proxy/…). Each entry
-	// unmarshals from EITHER a scalar int (`http: 8080`) or a struct
-	// (`http: {port: 8080, protocol: tcp, expose: true}`). Consumers
-	// reference ports BY NAME; a server's primary HTTP port is ports.http.
-	Ports         map[string]PortSpec `yaml:"ports,omitempty"`
-	Schedule      string              `yaml:"schedule,omitempty"` // cron expression for kind=cron
-	ProtoPackages []string            `yaml:"proto_packages,omitempty"`
+	Kind          string
+	Path          string
+	Schedule      string // cron expression for kind=cron
+	ProtoPackages []string
 	// Group is the API group for kind=operator components. e.g.
-	// "reliant.dev". Set when scaffolded via `forge add operator`.
-	Group string `yaml:"group,omitempty"`
+	// "reliant.dev". Read from the operator package's APIGroup const.
+	Group string
 	// Version is the API version for kind=operator components. e.g.
-	// "v1alpha1". Set when scaffolded via `forge add operator`.
-	Version string `yaml:"version,omitempty"`
-	// CRDs lists the CRDs reconciled by this operator. Each entry is
-	// a CRD added via `forge add crd <name>` and lives under
-	// operators/<operator>/<crd-name>_controller.go plus
-	// api/<version>/<crd-name>_types.go.
-	CRDs []CRDConfig `yaml:"crds,omitempty"`
+	// "v1alpha1". Read from the operator package's APIVersion const.
+	Version string
+	// CRDs lists the CRDs reconciled by this operator — one per
+	// operators/<operator>/<crd-name>_controller.go on disk.
+	CRDs []CRDConfig
 }
 
-// HTTPPortName is the conventional name for a component's primary HTTP
-// port in the Ports map. Server components serve their Connect mux here.
-const HTTPPortName = "http"
-
-// PortSpec describes one named port. It unmarshals from EITHER a YAML
-// scalar int — `http: 8080` (the common case, Protocol/Expose default) —
-// OR a struct — `http: {port: 8080, protocol: tcp, expose: true}`. See
-// UnmarshalYAML.
-type PortSpec struct {
-	Port     int    `yaml:"port"`
-	Protocol string `yaml:"protocol,omitempty"` // tcp (default), udp
-	Expose   bool   `yaml:"expose,omitempty"`   // surface on the k8s Service / Dockerfile EXPOSE
-}
-
-// UnmarshalYAML accepts a bare scalar int (`http: 8080`) or a full
-// mapping (`http: {port: 8080, protocol: tcp, expose: true}`). The
-// scalar form is sugar for `{port: N}` with default protocol/expose so
-// the common single-port case stays terse.
-func (p *PortSpec) UnmarshalYAML(value *yaml.Node) error {
-	if value.Kind == yaml.ScalarNode {
-		var n int
-		if err := value.Decode(&n); err != nil {
-			return err
-		}
-		p.Port = n
-		return nil
-	}
-	// Avoid infinite recursion: decode into a struct alias without the
-	// custom UnmarshalYAML method.
-	type rawPortSpec PortSpec
-	var raw rawPortSpec
-	if err := value.Decode(&raw); err != nil {
-		return err
-	}
-	*p = PortSpec(raw)
-	return nil
-}
-
-// MarshalYAML emits the terse scalar form (`http: 8080`) when protocol
-// and expose are at their defaults, and the full mapping otherwise. This
-// keeps a freshly-scaffolded forge.yaml's ports: block as terse as the
-// single-port common case allows, while round-tripping the struct form
-// for ports that set protocol/expose.
-func (p PortSpec) MarshalYAML() (any, error) {
-	if p.Protocol == "" && !p.Expose {
-		return p.Port, nil
-	}
-	type rawPortSpec PortSpec
-	return rawPortSpec(p), nil
-}
-
-// PrimaryPort returns the component's primary HTTP port number (the
-// ports.http entry), or 0 when no http port is declared. This is the
-// port a server serves its Connect mux on and the one most consumers
-// (dev loop, frontend nav, readiness) want.
-func (c ComponentConfig) PrimaryPort() int {
-	if c.Ports == nil {
-		return 0
-	}
-	return c.Ports[HTTPPortName].Port
-}
+// DefaultServePort is the ONE port fact forge itself knows: the port a
+// scaffolded binary listens on. Every service in a binary mounts onto the
+// same Connect mux and the process listens exactly once, on AppConfig.port
+// (env PORT, default 8080) — so the port belongs to the BINARY, never to an
+// individual component.
+//
+// Any OTHER port is a deploy fact and lives in `deploy/kcl/<env>/main.k`
+// (forge.components.Component.ports, overlaid per environment). Nothing forge
+// introspects — the proto descriptor, the owned worker/operator files, cmd/ —
+// carries a port, so there is deliberately no per-component port field to read.
+const DefaultServePort = 8080
 
 // EffectiveKind returns the lowercased, trimmed kind, defaulting to
 // "server" for empty input (a component with no kind is a Connect
@@ -352,72 +281,25 @@ func (c ComponentConfig) IsOperator() bool { return c.EffectiveKind() == Compone
 // IsBinary reports whether the component is a standalone binary subcommand.
 func (c ComponentConfig) IsBinary() bool { return c.EffectiveKind() == ComponentKindBinary }
 
-// Servers returns the server-kind components — the Connect-RPC surfaces
-// that get handlers, the served-set registration, and frontend hooks.
-func (c ProjectConfig) Servers() []ComponentConfig {
-	return c.componentsOfKind(ComponentKindServer)
-}
-
-// Workers returns the worker-kind components.
-func (c ProjectConfig) Workers() []ComponentConfig {
-	return c.componentsOfKind(ComponentKindWorker)
-}
-
-// Crons returns the cron-kind components.
-func (c ProjectConfig) Crons() []ComponentConfig {
-	return c.componentsOfKind(ComponentKindCron)
-}
-
-// Operators returns the operator-kind components.
-func (c ProjectConfig) Operators() []ComponentConfig {
-	return c.componentsOfKind(ComponentKindOperator)
-}
-
-// BinaryComponents returns the binary-kind components.
-func (c ProjectConfig) BinaryComponents() []ComponentConfig {
-	return c.componentsOfKind(ComponentKindBinary)
-}
-
-func (c ProjectConfig) componentsOfKind(kind string) []ComponentConfig {
-	var out []ComponentConfig
-	for _, comp := range c.Components {
-		if comp.EffectiveKind() == kind {
-			out = append(out, comp)
-		}
-	}
-	return out
-}
-
-// CRDConfig represents a single Custom Resource Definition reconciled
-// by an operator. CRDs are scaffolded via `forge add crd <name> --operator <op>`.
+// CRDConfig represents a single Custom Resource Definition reconciled by an
+// operator, discovered from the <crd-name>_controller.go shim that
+// `forge scaffold crd <name> --operator <op>` writes. Untagged for the
+// same reason as [ComponentConfig]: it is never serialized.
 type CRDConfig struct {
 	// Name is the PascalCase CRD type name. e.g. "Workspace".
-	Name string `yaml:"name"`
+	Name string
 	// Group is the API group, defaulting to the parent operator's
-	// Group. Stored explicitly so a single operator can manage CRDs
+	// Group. Carried explicitly so a single operator can manage CRDs
 	// from multiple groups.
-	Group string `yaml:"group,omitempty"`
+	Group string
 	// Version is the API version. Defaults to the parent operator's
 	// Version.
-	Version string `yaml:"version,omitempty"`
+	Version string
 	// Shape is the reconciler scaffold style. One of
 	// "state-machine" (phase-driven), "config" (declarative-only,
 	// no state), "composite" (manages sub-resources). Drives which
 	// template is rendered for the controller shim.
-	Shape string `yaml:"shape,omitempty"`
-}
-
-// PackageConfig represents an internal package with a Go interface contract.
-type PackageConfig struct {
-	Name string `yaml:"name"`
-	Kind string `yaml:"kind,omitempty"` // "" (default/generic), "client", "eventbus"
-	// Type captures the hexagonal-architecture role chosen at scaffold
-	// time: "service" (default — bootstrap-wired contract package),
-	// "adapter" (outbound boundary, marked `// forge:adapter`),
-	// "interactor" (use-case orchestrator, marked `// forge:interactor`).
-	// Empty (omitted) is treated as "service" for backward compatibility
-	// with packages scaffolded before the --type flag landed.
-	Type string `yaml:"type,omitempty"`
+	Shape string
 }
 
 // FrontendConfig defines a frontend application (e.g. Next.js, React Native).
@@ -426,7 +308,12 @@ type FrontendConfig struct {
 	Type string `yaml:"type"`           // "nextjs", "react-native", "vite-spa"
 	Kind string `yaml:"kind,omitempty"` // "web" (default/Next.js), "mobile" (React Native), "vite-spa" (Vite + React + tanstack-router)
 	Path string `yaml:"path"`
-	Port int    `yaml:"port"`
+	// Port is the frontend's dev-server listen port. Omitted / 0 means
+	// EPHEMERAL: `forge run` / `forge env up` allocate a free OS port at
+	// launch and report it (see resolveEphemeralFrontendPorts). omitempty so
+	// a scaffolded ephemeral frontend writes no `port:` line at all; an
+	// explicit port is honored verbatim.
+	Port int `yaml:"port,omitempty"`
 	// Output selects the Next.js build/runtime shape for this frontend.
 	// Only meaningful when Type == "nextjs"; ignored for react-native and
 	// vite-spa (those have their own production shapes).
@@ -460,7 +347,7 @@ type FrontendConfig struct {
 	// admin UI that a reverse proxy blends with another app on the same
 	// host. Only meaningful when Type == "nextjs".
 	//
-	// Shape rules (validated by `forge validate` / LoadStrict):
+	// Shape rules (validated by `forge validate` / LoadProject):
 	//   - must start with "/"            ("/admin", "/internal/admin")
 	//   - must not end with "/"          ("/admin/" is rejected)
 	//   - must not be bare "/"           (root mount == leave it empty)
@@ -478,6 +365,50 @@ type FrontendConfig struct {
 	// the ONLY base-path variable forge ever reads or writes. Empty
 	// (the default) means the frontend is served from the host root.
 	BasePath string `yaml:"base_path,omitempty"`
+}
+
+// EffectivePath returns the frontend's directory relative to the project
+// root: the declared `path`, falling back to the conventional
+// `frontends/<name>` layout when it is empty. Every command that shells
+// into a frontend (build, generate, lint) needs this same fallback, so it
+// lives on the config type rather than being re-derived per call site.
+func (f FrontendConfig) EffectivePath() string {
+	if f.Path != "" {
+		return f.Path
+	}
+	return filepath.Join("frontends", f.Name)
+}
+
+// FrontendToolchainDisabled reports whether the project has opted OUT of
+// forge driving a Node toolchain over its frontends, via
+// `stack.frontend.framework: none`. That setting means the frontends build
+// and check out-of-band (deps not installed under forge's control, a
+// non-npm toolchain, a vendored bundle), so forge must not shell into them
+// — not for `npm run build`, and not for a typecheck either. Frontends
+// stay in Frontends for the commands that only need their paths
+// (generate, dev-serve).
+func (c *ProjectConfig) FrontendToolchainDisabled() bool {
+	return c != nil && c.Stack.EffectiveFrontendFramework() == "none"
+}
+
+// ToolchainFrontends returns the frontends forge owns a Node toolchain for:
+// every declared frontend with its path resolved, or nil when the project
+// opted out via `stack.frontend.framework: none`. It is the single
+// project-level answer to "which frontends may forge shell into, and
+// where do they live" — shared by the build target resolution and the
+// lint pipeline's frontend lane so the two can never disagree about the
+// set. Command-specific filters (--target, KCL deploy mode, per-command
+// skips) layer on top of this set; they do not re-derive it.
+func (c *ProjectConfig) ToolchainFrontends() []FrontendConfig {
+	if c == nil || c.FrontendToolchainDisabled() {
+		return nil
+	}
+	out := make([]FrontendConfig, 0, len(c.Frontends))
+	for _, fe := range c.Frontends {
+		fe.Path = fe.EffectivePath()
+		out = append(out, fe)
+	}
+	return out
 }
 
 // FrontendProjectConfig holds project-level frontend settings — fields
@@ -548,6 +479,37 @@ type DatabaseConfig struct {
 	Driver          string                `yaml:"driver"` // "postgres" or "none"
 	MigrationsDir   string                `yaml:"migrations_dir"`
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
+	Seed            SeedConfig            `yaml:"seed,omitempty"`
+}
+
+// SeedConfig controls the deterministic development seed data materialized at
+// runtime by `forge db seed` and `forge run` auto-seed. Seeds are never
+// written into the project as files and never applied to non-dev
+// environments (the applier is CLI-only; see internal/seeddata).
+type SeedConfig struct {
+	// Rows is the default rows per table (default 20 — fills a page and
+	// exercises pagination).
+	Rows int `yaml:"rows,omitempty"`
+	// Salt perturbs synthesis: change for a different-but-stable dataset.
+	Salt int `yaml:"salt,omitempty"`
+	// RowsPerTable overrides Rows for specific tables.
+	RowsPerTable map[string]int `yaml:"rows_per_table,omitempty"`
+	// Auto controls `forge run` first-boot auto-seed. Nil = on by default.
+	Auto *bool `yaml:"auto,omitempty"`
+}
+
+// EffectiveRows returns the default rows-per-table (falls back to 20).
+func (c SeedConfig) EffectiveRows() int {
+	if c.Rows > 0 {
+		return c.Rows
+	}
+	return 20
+}
+
+// AutoEnabled reports whether `forge run` first-boot auto-seed is on. Nil
+// Auto means "on by default".
+func (c SeedConfig) AutoEnabled() bool {
+	return c.Auto == nil || *c.Auto
 }
 
 // MigrationSafetyConfig controls migrationlint's three severity dials
@@ -596,16 +558,27 @@ func effectiveSeverity(value, fallback string) string {
 	}
 }
 
-// CIConfig holds CI/CD settings.
+// CIConfig holds CI/CD settings. Every field here is an input to the
+// ONE-TIME workflow render: .github/workflows/*.yml is scaffold-once,
+// user-owned (Tier-2) and `forge generate` never re-renders it, so editing
+// this block changes nothing until the workflow file is deleted.
+//
+// There is intentionally NO `go_version:` key either: every setup-go step in
+// the generated workflows pins with `go-version-file: go.mod`, so CI tracks
+// the project's own declared toolchain and cannot drift from it.
+//
+// There is intentionally NO `extra_jobs:` key. Adding a job to a YAML file
+// you already own is one edit in .github/workflows/ci.yml; routing it
+// through forge.yaml was a second source of truth that the workflow
+// generator never read (the template's `range .ExtraJobs` was fed from a
+// struct nothing populated), so declared jobs silently vanished.
 type CIConfig struct {
-	Provider    string       `yaml:"provider"`             // "github" (default)
-	GoVersion   string       `yaml:"go_version,omitempty"` // e.g. "1.26"
+	Provider    string       `yaml:"provider"`
 	Lint        CILintConfig `yaml:"lint,omitempty"`
 	Test        CITestConfig `yaml:"test,omitempty"`
 	VulnScan    CIVulnConfig `yaml:"vuln_scan,omitempty"`
 	E2E         CIE2EConfig  `yaml:"e2e,omitempty"`
 	Permissions CIPermConfig `yaml:"permissions,omitempty"`
-	ExtraJobs   []CIExtraJob `yaml:"extra_jobs,omitempty"` // user extension point
 }
 
 // CILintConfig controls which linters run in CI.
@@ -641,29 +614,6 @@ type CIPermConfig struct {
 	Contents string `yaml:"contents,omitempty"` // default "read"
 }
 
-// CIExtraJob defines a user-provided additional CI job.
-type CIExtraJob struct {
-	Name   string           `yaml:"name"`
-	RunsOn string           `yaml:"runs_on,omitempty"` // default "ubuntu-latest"
-	Steps  []CIExtraJobStep `yaml:"steps"`
-}
-
-// CIExtraJobStep defines a single step within a CIExtraJob.
-type CIExtraJobStep struct {
-	Name string            `yaml:"name,omitempty"`
-	Uses string            `yaml:"uses,omitempty"`
-	Run  string            `yaml:"run,omitempty"`
-	With map[string]string `yaml:"with,omitempty"`
-}
-
-// EffectiveGoVersion returns the Go version for CI, defaulting to "1.26".
-func (c *CIConfig) EffectiveGoVersion() string {
-	if c.GoVersion != "" {
-		return c.GoVersion
-	}
-	return "1.26"
-}
-
 // IsLintEnabled returns true if any linter is enabled.
 // Zero value (all false) is treated as "all enabled" (sensible default).
 func (c *CIConfig) IsLintEnabled() bool {
@@ -690,34 +640,23 @@ func (c *CIConfig) EffectivePermContents() string {
 	return "read"
 }
 
-// EffectiveRunsOn returns the runner for an extra job, defaulting to "ubuntu-latest".
-func (j *CIExtraJob) EffectiveRunsOn() string {
-	if j.RunsOn != "" {
-		return j.RunsOn
-	}
-	return "ubuntu-latest"
-}
-
 // DeployConfig holds deployment PIPELINE-CONTROL settings (target_arch,
-// migration_test, concurrency, frontend_deploy). It deliberately does NOT
-// own *where* images go or *which* clusters exist:
+// migration_test, concurrency, frontend_deploy) plus two inputs consumed
+// by the CI-workflow generator (generate_ci.go):
 //
-//   - the CI provider (github/gitlab/…) lives in `ci.provider` — the
-//     dead `deploy.provider` field was removed (see removedSchemaKeys);
-//     nothing ever read it (generate_ci.go reads cfg.CI.Provider).
-//   - the image registry lives in `docker.registry` (build-time) and is
-//     pinned per-env in KCL — `deploy.registry` is being retired in favour
-//     of those two sources (FORGE_SHAPE_REDESIGN §4). It is still read by
-//     the CI generator today, so it is TOLERATED (kept, with this note)
-//     rather than removed in this pass; the CI-data-flow rewire that lets
-//     it go is the deferred half of §4(b).
-//   - the deployable environment set is derived from the on-disk
-//     deploy/kcl/<env>/ directories (see buildDeployWorkflowData's
-//     ListEnvs fallback); `deploy.environments` is the optional override
-//     for auto/protection/url metadata and is likewise tolerated pending
-//     the same rewire.
+//   - the CI provider (github/gitlab/…) lives in `ci.provider`, not here
+//     — the dead `deploy.provider` field was removed (see
+//     removedSchemaKeys); generate_ci.go reads cfg.CI.Provider.
+//   - `deploy.registry` is the image registry stamped into the generated
+//     build-images.yml / deploy.yml workflows (EffectiveRegistry, default
+//     "ghcr"). It overlaps `docker.registry` (the registry `forge build`
+//     uses); the two are independent fields that can disagree.
+//   - `deploy.environments` supplies optional per-env auto/protection/url
+//     metadata for the generated deploy.yml. When empty, the deployable
+//     environment set is derived from the on-disk deploy/kcl/<env>/
+//     directories (buildDeployWorkflowData's ListEnvs fallback).
 type DeployConfig struct {
-	Registry       string            `yaml:"registry,omitempty"` // DEPRECATED: prefer docker.registry + per-env KCL; tolerated pending the §4 CI rewire
+	Registry       string            `yaml:"registry,omitempty"` // image registry for the generated CI workflows; overlaps docker.registry
 	Environments   []DeployEnvConfig `yaml:"environments,omitempty"`
 	Concurrency    DeployConcurrency `yaml:"concurrency,omitempty"`
 	FrontendDeploy string            `yaml:"frontend_deploy,omitempty"` // "firebase", "vercel", "none"
@@ -767,7 +706,7 @@ type DeployConcurrency struct {
 	CancelInProgress bool `yaml:"cancel_in_progress,omitempty"` // default false
 }
 
-// SmokeConfig declares APP-FLOW health checks `forge smoke <env>` probes
+// SmokeConfig declares APP-FLOW health checks `forge env smoke <env>` probes
 // alongside its built-in ingress/dev-port probes. The built-in probes only
 // verify TRANSPORT (a listener answered); they can be GREEN while the app is
 // functionally broken. A flow check lets the app DECLARE an end-to-end
@@ -783,7 +722,7 @@ type DeployConcurrency struct {
 // counts) so it leaks nothing sensitive anonymously; per-entity DETAIL lives
 // behind auth or an internal-only port.
 //
-// The daemon-flow case that motivated this: `forge smoke dev` was GREEN while
+// The daemon-flow case that motivated this: `forge env smoke dev` was GREEN while
 // the managed-daemon flow was broken, because no built-in probe could assert
 // "every Ready daemon is attached to the gateway". reliant's daemon-gateway
 // owns that state, so it exposes `/flow-health` (200/503) and smoke curls it.
@@ -795,7 +734,7 @@ type SmokeConfig struct {
 	FlowChecks []SmokeFlowCheck `yaml:"flow_checks,omitempty"`
 }
 
-// SmokeFlowCheck is one declared app-flow health endpoint `forge smoke <env>`
+// SmokeFlowCheck is one declared app-flow health endpoint `forge env smoke <env>`
 // probes. The owning service asserts the invariant internally and returns 200
 // (healthy) / 503 (unhealthy) at this endpoint; smoke curls it and merges the
 // verdict into its summary + exit logic. It is the HTTP-endpoint analogue of a
@@ -894,12 +833,27 @@ type DockerConfig struct {
 //     but never fail the build. This is the default for an ABSENT `config:`
 //     block, so existing projects upgrade without a flag-day.
 //   - error — emit the forbidigo guardrail as a GATING check: violations
-//     fail `forge lint` / CI. `forge new` scaffolds this for greenfield
+//     fail `forge lint` / CI. `forge project new` scaffolds this for greenfield
 //     projects, which carry no legacy env-reading debt.
 const (
 	EnforceTypedAccessOff   = "off"
 	EnforceTypedAccessWarn  = "warn"
 	EnforceTypedAccessError = "error"
+)
+
+// enforce-component-observe levels for [ConfigGuardConfig.EnforceComponentObserve].
+//
+//   - error — (default) a wired component with a Service interface + a
+//     canonical New(Deps) Service constructor that has made NO observability
+//     decision (neither `// forge:constructor` nor `// forge:no-observe`) fails
+//     `forge lint`. The forcing-function that makes the in-process
+//     observability decision discoverable instead of silently defaulted.
+//   - off   — disable the check entirely.
+//
+// Unlike enforce_typed_access there is no "warn": the whole point is a gate.
+const (
+	EnforceComponentObserveOff   = "off"
+	EnforceComponentObserveError = "error"
 )
 
 // DefaultLoaderPackage is the package path forge's config-loader codegen
@@ -916,18 +870,18 @@ const DefaultLoaderPackage = "pkg/config"
 //
 // The block is OPTIONAL. When absent, EnforceTypedAccess resolves to "warn"
 // (see [EnforceTypedAccessWarn]) so existing projects gain the advisory
-// guardrail without a flag-day; `forge new` writes an explicit
+// guardrail without a flag-day; `forge project new` writes an explicit
 // `enforce_typed_access: error` for greenfield projects.
 //
 // ADOPTION / re-render: the strictness is projected into the generated
 // .golangci.yml (forbidigo in `linters.enable` for error, settings-only for
 // warn, absent for off). That file is a SCAFFOLD-ONCE, user-owned Tier-2
-// artifact — `forge generate` never re-renders it, and `forge upgrade` only
+// artifact — `forge generate` never re-renders it, and `forge project upgrade` only
 // auto-updates it when the on-disk copy is an unedited forge render (a
 // verifying forge:hash marker). A freshly-scaffolded .golangci.yml carries no
 // marker and is "user-owned from birth", so after changing
 // enforce_typed_access in forge.yaml the user must explicitly re-render:
-// `rm .golangci.yml && forge upgrade` (re-scaffold), or `forge upgrade
+// `rm .golangci.yml && forge project upgrade` (re-scaffold), or `forge project upgrade
 // --force` when they have no local .golangci.yml edits. This is the
 // deliberate Tier-2 contract — forge will not silently stomp a hand-tuned
 // linter config — not a bug. The forbidigo `msg`, the template's warn-mode
@@ -943,6 +897,12 @@ type ConfigGuardConfig struct {
 	// Empty resolves to [DefaultLoaderPackage] ("pkg/config"); use
 	// [ConfigGuardConfig.EffectiveLoaderPackage].
 	LoaderPackage string `yaml:"loader_package,omitempty"`
+	// EnforceComponentObserve selects the enforce-component-observe lint
+	// strictness: "error" (default) | "off". Empty resolves to "error" — use
+	// [ConfigGuardConfig.EffectiveEnforceComponentObserve], don't read the raw
+	// string. Unknown values are rejected at load time (validate.go). See the
+	// EnforceComponentObserve* constants for the semantics.
+	EnforceComponentObserve string `yaml:"enforce_component_observe,omitempty"`
 }
 
 // EffectiveEnforceTypedAccess returns the resolved guardrail strictness,
@@ -983,9 +943,30 @@ func (c ConfigGuardConfig) TypedAccessGuardGates() bool {
 	return c.EffectiveEnforceTypedAccess() == EnforceTypedAccessError
 }
 
+// EffectiveEnforceComponentObserve returns the resolved enforce-component-observe
+// strictness, defaulting an absent/empty value to "error" (the check is on by
+// default). Any value other than a case-insensitive "off" resolves to "error";
+// validation (validate.go) has already rejected non-empty non-{off,error}
+// values, so a typo never silently disables the gate.
+func (c ConfigGuardConfig) EffectiveEnforceComponentObserve() string {
+	if strings.EqualFold(strings.TrimSpace(c.EnforceComponentObserve), EnforceComponentObserveOff) {
+		return EnforceComponentObserveOff
+	}
+	return EnforceComponentObserveError
+}
+
+// ComponentObserveGuardEnabled reports whether the enforce-component-observe
+// lint runs at all (true unless the strictness is "off").
+func (c ConfigGuardConfig) ComponentObserveGuardEnabled() bool {
+	return c.EffectiveEnforceComponentObserve() != EnforceComponentObserveOff
+}
+
 // LintConfig holds lint-related settings.
+//
+// There is intentionally NO `contract:` toggle here. Whether the contract
+// lint runs is `features.contracts` — the flag the gate actually resolves;
+// a second `lint.contract` boolean had no reader at all.
 type LintConfig struct {
-	Contract bool               `yaml:"contract"`
 	Frontend FrontendLintConfig `yaml:"frontend,omitempty"`
 	// HandlerFileMaxLOC is the per-file LOC threshold above which the
 	// forgeconv-handler-file-size analyzer warns. Counts non-blank, non-
@@ -1000,7 +981,7 @@ type LintConfig struct {
 // lint.handler_file_max_loc in forge.yaml. Picked at 1000 because that
 // roughly tracks "two screens of any modern editor" plus generous
 // buffer — files past that point materially harm review velocity and
-// almost always benefit from the per-RPC split that `forge add
+// almost always benefit from the per-RPC split that `forge scaffold
 // handler-file` is intended to support.
 const DefaultHandlerFileMaxLOC = 1000
 
@@ -1016,12 +997,31 @@ func (c LintConfig) EffectiveHandlerFileMaxLOC() int {
 
 // FrontendLintConfig configures the frontend slice of `forge lint`:
 // whether the stylelint-backed CSS health checks run, and which
-// severity ("error"/"warn"/"off") the `no-important` and
-// `no-inline-styles` rules use.
+// severity ("error"/"warn"/"off") the `no-important`,
+// `no-inline-styles`, and `typecheck` rules use.
 type FrontendLintConfig struct {
 	CSSHealth      bool   `yaml:"css_health,omitempty"`       // enable stylelint-backed CSS health checks
 	NoImportant    string `yaml:"no_important,omitempty"`     // error, warn, off
 	NoInlineStyles string `yaml:"no_inline_styles,omitempty"` // error, warn, off
+	// Typecheck is the severity of the TypeScript typecheck lane
+	// ("error" | "warn" | "off"); see [FrontendLintConfig.EffectiveTypecheck].
+	Typecheck string `yaml:"typecheck,omitempty"`
+}
+
+// EffectiveTypecheck returns the configured severity for the frontend
+// TypeScript typecheck lane, defaulting to "error" when unset or invalid.
+//
+// The default gates on purpose: a type error is a real defect that the Go
+// half of the pipeline can never see, and shipping it is exactly the class
+// of break this lane exists to catch. Projects that want the signal
+// without the gate set "warn"; "off" removes the lane entirely.
+//
+// Note this dial governs TYPE ERRORS only. A typecheck that could not RUN
+// (deps not installed, no TypeScript resolvable) is always reported as a
+// warning — never silently as a pass — and escalates to an error under
+// `forge lint --strict`.
+func (c FrontendLintConfig) EffectiveTypecheck() string {
+	return effectiveSeverity(c.Typecheck, "error")
 }
 
 // EffectiveNoImportant returns the configured severity for the
@@ -1037,11 +1037,16 @@ func (c FrontendLintConfig) EffectiveNoInlineStyles() string {
 }
 
 // ContractsConfig controls contract enforcement linter behavior.
+//
+// It carries only the two ESCAPE HATCHES the analyzer reads: which
+// packages opt out (`exclude`) and which project-local types the mock
+// generator must treat as interfaces (`interface_types`). The old
+// severity dials (`strict`, `allow_exported_vars`, `allow_exported_funcs`)
+// are gone: the contract rules are unconditional — a package either opts
+// out by path or obeys them — and no analyzer ever read those three
+// booleans. Whether the lint runs at all is `features.contracts`.
 type ContractsConfig struct {
-	Strict             bool     `yaml:"strict"`               // require contract.go for all internal packages with exported methods (default: true)
-	AllowExportedVars  bool     `yaml:"allow_exported_vars"`  // allow exported package vars (default: false)
-	AllowExportedFuncs bool     `yaml:"allow_exported_funcs"` // allow exported funcs without contract (default: true)
-	Exclude            []string `yaml:"exclude"`              // packages that opt out
+	Exclude []string `yaml:"exclude"` // packages that opt out
 	// InterfaceTypes lists additional cross-package interface types (over
 	// and above the built-in list in internal/generator/contract) that the
 	// mock generator should treat as mockable — i.e. emit "nil" as the
@@ -1055,16 +1060,6 @@ type ContractsConfig struct {
 	InterfaceTypes []string `yaml:"interface_types"`
 }
 
-// IsStrict returns whether strict contract enforcement is enabled (default: true).
-// When the config is zero-value (not explicitly set), strict defaults to true.
-func (c ContractsConfig) IsStrict() bool {
-	if !c.Strict && !c.AllowExportedVars && !c.AllowExportedFuncs && len(c.Exclude) == 0 {
-		// Zero-value config — default to strict=true.
-		return true
-	}
-	return c.Strict
-}
-
 // IsExcluded returns true if the given package path matches any
 // exclude pattern. Delegates to [MatchExclude] — the shared matcher
 // used by the contract analyzer and the forgeconv lint surface so all
@@ -1076,8 +1071,8 @@ func (c ContractsConfig) IsExcluded(pkgPath string) bool {
 	return MatchExclude(c.Exclude, pkgPath)
 }
 
-// FeaturesConfig controls which forge features are active. The `features:`
-// block in forge.yaml gates major subsystems (deploy, build, frontend, packs,
+// FeaturesConfig controls which forge project features are active. The `features:`
+// block in forge.yaml gates major subsystems (deploy, build, frontend,
 // ci, docs, observability, ...).
 //
 // THE BLOCK IS AN OVERRIDE SURFACE, NOT REQUIRED CONFIGURATION. Scaffolded
@@ -1103,14 +1098,14 @@ func (c ContractsConfig) IsExcluded(pkgPath string) bool {
 //   - Direct invocations of a disabled subsystem's cobra command return a
 //     clear `feature '<name>' is disabled in forge.yaml. Set
 //     features.<name>: true to enable.` error.
-//   - Implicit invocations from orchestrators (e.g. `forge up` driving
+//   - Implicit invocations from orchestrators (e.g. `forge env up` driving
 //     the build/deploy/frontend phases) log a skip line and continue —
-//     letting `forge up` succeed on whatever subsystems ARE enabled.
+//     letting `forge env up` succeed on whatever subsystems ARE enabled.
 //   - Codegen pipeline steps gated on a feature skip silently when off,
 //     mirroring the existing gate function shape under
 //     internal/cli/generate_pipeline.go.
 //
-// New project scaffolding (`forge new --kind`) sets defaults per kind:
+// New project scaffolding (`forge project new --kind`) sets defaults per kind:
 //
 //   - service (default): all features enabled (preserves today's behavior).
 //   - cli:               build/ci/docs enabled; everything else disabled.
@@ -1126,14 +1121,14 @@ type FeaturesConfig struct {
 	Frontend      *bool `yaml:"frontend,omitempty"`      // frontend scaffolding + codegen
 	Observability *bool `yaml:"observability,omitempty"` // alloy, grafana dashboards, otel wiring
 	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
-	Packs         *bool `yaml:"packs,omitempty"`         // forge packs (install/list/info), pack-generate hooks
 	Deploy        *bool `yaml:"deploy,omitempty"`        // deploy pipeline: KCL render → kubectl apply, per-env deploy config codegen
 
-	// Diagnostics enables runtime emission of pkg/diagnostics records at
-	// Bootstrap time — slog warn lines for every unwired scaffold the
-	// codegen pipeline registered (Tier-1 stubs, nil-wired Deps fields).
-	// Default OFF: existing projects don't suddenly start logging warns on
-	// regen. Opt-in by setting `features.diagnostics: true` in forge.yaml.
+	// Diagnostics was to enable runtime emission of pkg/diagnostics records
+	// at Bootstrap time. Nothing reads it: no codegen path emits the
+	// registration file the runtime would boot from, so the knob drives
+	// nothing today. It stays declared only so a forge.yaml that already
+	// sets it does not trip the unknown-key check — give it a reader or
+	// drop it in a major, but do not add a consumer that pretends it works.
 	Diagnostics *bool `yaml:"diagnostics,omitempty"`
 
 	// Experimental gates surface that hasn't been battle-tested across
@@ -1173,7 +1168,6 @@ func (f *FeaturesConfig) stablePtrs() map[FeatureName]**bool {
 		FeatureFrontend:      &f.Frontend,
 		FeatureObservability: &f.Observability,
 		FeatureHotReload:     &f.HotReload,
-		FeaturePacks:         &f.Packs,
 		FeatureDeploy:        &f.Deploy,
 	}
 }
@@ -1187,7 +1181,7 @@ func (f FeaturesConfig) IsZero() bool {
 	return f.ORM == nil && f.Codegen == nil && f.Migrations == nil &&
 		f.CI == nil && f.Build == nil && f.Contracts == nil &&
 		f.Docs == nil && f.Frontend == nil && f.Observability == nil &&
-		f.HotReload == nil && f.Packs == nil &&
+		f.HotReload == nil &&
 		f.Deploy == nil &&
 		f.Diagnostics == nil && f.Experimental.IsZero()
 }
@@ -1203,7 +1197,7 @@ func (f FeaturesConfig) IsZero() bool {
 //     proven across real cloud providers.
 //   - ExternalBuilds: RETIRED gate (kept as an accepted, inert key for
 //     back-compat). `Service.build_cmd` is the build-side
-//     mirror of `External.deploy_cmd`; since `forge deploy`
+//     mirror of `External.deploy_cmd`; since `forge env deploy`
 //     of an External target never required an opt-in,
 //     gating `forge build` of the same target behind this
 //     flag left the build/deploy pair with mismatched
@@ -1268,7 +1262,7 @@ func (c ProjectConfig) IsBinaryShared() bool {
 // EffectiveForgeVersion returns the forge version pinned by this project,
 // defaulting to "0.0.0" for legacy projects that predate the field.
 // Callers can use the "0.0.0" sentinel to detect "no baseline yet" and
-// nudge the user toward `forge upgrade`.
+// nudge the user toward `forge project upgrade`.
 func (c ProjectConfig) EffectiveForgeVersion() string {
 	if strings.TrimSpace(c.ForgeVersion) == "" {
 		return "0.0.0"
@@ -1321,13 +1315,8 @@ func (f FeaturesConfig) HotReloadEnabled() bool { return f.resolve(FeatureHotRel
 
 // BuildEnabled reports whether `forge build` is enabled (default: on).
 // Direct `forge build` invocations error when off; orchestrators like
-// `forge up` log a skip line and continue.
+// `forge env up` log a skip line and continue.
 func (f FeaturesConfig) BuildEnabled() bool { return f.resolve(FeatureBuild) }
-
-// PacksEnabled reports whether the pack subsystem is enabled (default: on).
-// Disables `forge pack list/info/install/remove` and skips the pack
-// generate-hooks step in the codegen pipeline.
-func (f FeaturesConfig) PacksEnabled() bool { return f.resolve(FeaturePacks) }
 
 // IngressEnabled reports whether Gateway API ingress is wired
 // (default: OFF — opt-in under `features.experimental.ingress: true`).
@@ -1341,7 +1330,7 @@ func (f FeaturesConfig) IngressEnabled() bool { return f.Experimental.Ingress }
 // build path: `build_cmd` is the build-side mirror of `External.deploy_cmd`
 // (which needs no opt-in), so `forge build` of a build_cmd service runs
 // unconditionally (fr-da9a6614fb). The accessor is retained for the
-// startup warning / `forge audit` surface and any consumer still keyed off
+// startup warning / `forge project audit` surface and any consumer still keyed off
 // the flag; the build dispatcher in internal/cli/build.go no longer calls
 // it.
 func (f FeaturesConfig) ExternalBuildsEnabled() bool { return f.Experimental.ExternalBuilds }
@@ -1350,14 +1339,14 @@ func (f FeaturesConfig) ExternalBuildsEnabled() bool { return f.Experimental.Ext
 // + CRD manifest generation is wired (default: OFF — opt-in under
 // `features.experimental.operators: true`). When off, the operator
 // binary codegen + CRD scaffold steps skip silently and
-// `forge add operator` errors.
+// `forge scaffold operator` errors.
 func (f FeaturesConfig) OperatorsEnabled() bool { return f.Experimental.Operators }
 
 // DisabledFeatureError returns the canonical user-facing error for a
 // disabled feature. Centralised so every gate site emits the same
 // wording — sub-agents and humans grepping for the string find one
 // authoritative format. The name argument is the lowercased feature
-// name as it appears in forge.yaml (e.g. "deploy", "build", "packs").
+// name as it appears in forge.yaml (e.g. "deploy", "build", "frontend").
 func DisabledFeatureError(name string) error {
 	return errDisabledFeature{name: name}
 }
@@ -1381,12 +1370,12 @@ func (e errDisabledFeature) Error() string {
 
 // FeatureName is the canonical feature key. Stays a string alias so the
 // constants below are usable directly anywhere the feature name shows up
-// as a config key, a `--disable` flag value, or a `forge audit` field.
+// as a config key, a `--disable` flag value, or a `forge project audit` field.
 type FeatureName = string
 
 // Feature name constants. These are the wire format — both YAML field
 // names under `features:` (top-level) or `features.experimental:`
-// (nested) and the strings emitted by `forge audit --json | jq
+// (nested) and the strings emitted by `forge project audit --json | jq
 // '.features'`. Kept exported so external tooling can match against
 // them without re-encoding the spelling. The Experimental* constants
 // live under the nested block in YAML but flatten back to a single
@@ -1402,7 +1391,6 @@ const (
 	FeatureFrontend      FeatureName = "frontend"
 	FeatureObservability FeatureName = "observability"
 	FeatureHotReload     FeatureName = "hot_reload"
-	FeaturePacks         FeatureName = "packs"
 	FeatureDeploy        FeatureName = "deploy"
 
 	// Experimental feature names — opt-in under
@@ -1415,7 +1403,7 @@ const (
 
 // ExperimentalFeatureNames lists every Feature* constant that lives
 // under `features.experimental:`. Iteration order is the stable display
-// order used by `forge audit`, the startup warning, and `forge features`.
+// order used by `forge project audit`, the startup warning, and `forge project features`.
 var ExperimentalFeatureNames = []FeatureName{
 	FeatureIngress,
 	FeatureExternalBuilds,
@@ -1438,7 +1426,7 @@ func IsExperimentalFeature(name FeatureName) bool {
 
 // EnabledExperimentalFeatures returns the names of experimental
 // features currently turned on, in ExperimentalFeatureNames order.
-// Used by the startup warning and `forge features`.
+// Used by the startup warning and `forge project features`.
 func (f FeaturesConfig) EnabledExperimentalFeatures() []FeatureName {
 	checks := map[FeatureName]bool{
 		FeatureIngress:        f.Experimental.Ingress,
@@ -1456,7 +1444,7 @@ func (f FeaturesConfig) EnabledExperimentalFeatures() []FeatureName {
 }
 
 // EffectiveFeatures projects the resolved enabled/disabled state of
-// every feature into a stable name→bool map. Used by `forge audit` to
+// every feature into a stable name→bool map. Used by `forge project audit` to
 // surface the project's feature configuration at a glance, and by tests
 // to assert per-kind scaffold defaults. The map is keyed by Feature*
 // constants and is safe to JSON-marshal directly. Experimental features
@@ -1475,7 +1463,6 @@ func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
 		FeatureFrontend:       f.FrontendEnabled(),
 		FeatureObservability:  f.ObservabilityEnabled(),
 		FeatureHotReload:      f.HotReloadEnabled(),
-		FeaturePacks:          f.PacksEnabled(),
 		FeatureDeploy:         f.DeployEnabled(),
 		FeatureIngress:        f.IngressEnabled(),
 		FeatureExternalBuilds: f.ExternalBuildsEnabled(),
@@ -1484,27 +1471,11 @@ func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
 	}
 }
 
-// DiagnosticsEnabled reports whether the pkg/diagnostics runtime emit
-// is wired by bootstrap (default: OFF). When OFF, codegen still emits
-// pkg/app/diagnostics_gen.go (so `forge audit` can roll the data up
-// from the file), but Bootstrap does not call diagnostics.Default.Boot
-// — no slog lines, no strict-mode exit.
-//
-// Strict-wiring implies Diagnostics: enabling strict without diagnostics
-// is a no-op, so we treat StrictWiringEnabled as forcing diagnostics on.
-func (f FeaturesConfig) DiagnosticsEnabled() bool {
-	if f.Experimental.StrictWiring {
-		return true
-	}
-	return f.Diagnostics != nil && *f.Diagnostics
-}
-
 // StrictWiringEnabled reports whether the diagnostics strict-mode
 // exit is wired by bootstrap (default: OFF — opt-in under
-// `features.experimental.strict_wiring: true`). Used in tandem with
-// DiagnosticsEnabled — strict-mode wraps the LogEmitter with
-// StrictEmitter so any registered diagnostic terminates the process
-// after the summary line.
+// `features.experimental.strict_wiring: true`) — strict-mode wraps the
+// LogEmitter with StrictEmitter so any registered diagnostic terminates
+// the process after the summary line.
 func (f FeaturesConfig) StrictWiringEnabled() bool {
 	return f.Experimental.StrictWiring
 }
@@ -1520,7 +1491,7 @@ func (f FeaturesConfig) StrictWiringEnabled() bool {
 // with a migration warning (see removedSchemaKeys: stack.backend etc.).
 //
 // Only `stack.frontend.framework` remains: it is genuinely load-bearing
-// (read by `forge add frontend` and the frontend-build skip in build.go to
+// (read by `forge scaffold frontend` and the frontend-build skip in build.go to
 // know whether the project ships a frontend framework at all).
 type StackConfig struct {
 	Frontend StackFrontend `yaml:"frontend,omitempty"`
@@ -1537,45 +1508,6 @@ func (s StackConfig) EffectiveFrontendFramework() string {
 		return s.Frontend.Framework
 	}
 	return "nextjs"
-}
-
-// AuthConfig holds authentication provider settings.
-type AuthConfig struct {
-	Provider    string             `yaml:"provider"` // "jwt", "api_key", "both", "none"
-	JWT         JWTConfig          `yaml:"jwt,omitempty"`
-	APIKey      APIKeyConfig       `yaml:"api_key,omitempty"`
-	MultiTenant *MultiTenantConfig `yaml:"multi_tenant,omitempty"`
-}
-
-// MultiTenantConfig holds multi-tenancy settings for row-level tenant isolation.
-type MultiTenantConfig struct {
-	Enabled    bool   `yaml:"enabled"`
-	ClaimField string `yaml:"claim_field,omitempty"` // JWT claim to extract tenant ID from, default: "org_id"
-	ColumnName string `yaml:"column_name,omitempty"` // DB column name for tenant scoping, default: "org_id"
-}
-
-// EffectiveClaimField returns the claim field, defaulting to "org_id".
-func (m MultiTenantConfig) EffectiveClaimField() string {
-	if m.ClaimField == "" {
-		return "org_id"
-	}
-	return m.ClaimField
-}
-
-// EffectiveColumnName returns the column name, defaulting to "org_id".
-func (m MultiTenantConfig) EffectiveColumnName() string {
-	if m.ColumnName == "" {
-		return "org_id"
-	}
-	return m.ColumnName
-}
-
-// JWTConfig holds JWT-specific authentication settings.
-type JWTConfig struct {
-	Issuer        string `yaml:"issuer,omitempty"`
-	Audience      string `yaml:"audience,omitempty"`
-	JWKSURL       string `yaml:"jwks_url,omitempty"`
-	SigningMethod string `yaml:"signing_method,omitempty"` // HS256, RS256, ES256
 }
 
 // APIConfig holds project-level API protocol-skin toggles. Both fields
@@ -1597,33 +1529,43 @@ type APIConfig struct {
 	OpenAPI bool `yaml:"openapi,omitempty"`
 }
 
-// APIKeyConfig holds API key authentication settings.
-type APIKeyConfig struct {
-	Header string `yaml:"header,omitempty"` // default: "X-API-Key"
-}
-
-// EffectiveAPIKeyHeader returns the API key header, defaulting to "X-API-Key".
-func (a APIKeyConfig) EffectiveAPIKeyHeader() string {
-	if a.Header == "" {
-		return "X-API-Key"
-	}
-	return a.Header
-}
-
-// EffectiveSigningMethod returns the JWT signing method, defaulting to "RS256".
-func (j JWTConfig) EffectiveSigningMethod() string {
-	if j.SigningMethod == "" {
-		return "RS256"
-	}
-	return j.SigningMethod
-}
-
 // K8sConfig holds Kubernetes configuration.
 type K8sConfig struct {
 	KCLDir string `yaml:"kcl_dir"`
 }
 
 // DocsConfig holds documentation generation settings.
+// ObservabilityConfig seeds the OWNED per-package observe_chain.go seam (the
+// in-process component middleware chain the generated decorator routes
+// through). It is a SCAFFOLD-TIME default: `forge scaffold` reads it to
+// stamp the initial chain; the seam is user-owned afterward, so editing this
+// block does not retro-rewrite existing seams — it only changes what newly
+// scaffolded packages start with.
+type ObservabilityConfig struct {
+	// LogLevel is the slog level at which the LogMiddleware records
+	// SUCCESSFUL component calls ("debug" | "info" | "warn" | "error").
+	// Failures always log at Error regardless. Default "debug" keeps
+	// success logging quiet under a production Info handler. An unknown
+	// value falls back to the default.
+	LogLevel string `yaml:"log_level,omitempty"`
+}
+
+// SlogLevelExpr resolves LogLevel to the Go expression for the matching
+// slog.Level constant, used to stamp the observe_chain.go seam. Unknown or
+// empty values default to slog.LevelDebug (quiet-on-success).
+func (o ObservabilityConfig) SlogLevelExpr() string {
+	switch strings.ToLower(strings.TrimSpace(o.LogLevel)) {
+	case "info":
+		return "slog.LevelInfo"
+	case "warn", "warning":
+		return "slog.LevelWarn"
+	case "error":
+		return "slog.LevelError"
+	default:
+		return "slog.LevelDebug"
+	}
+}
+
 type DocsConfig struct {
 	Enabled            *bool    `yaml:"enabled,omitempty"`              // nil = true (enabled by default)
 	OutputDir          string   `yaml:"output_dir,omitempty"`           // default: "docs/generated"

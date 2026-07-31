@@ -98,9 +98,8 @@ message FieldOptions {
   // Mark this field as the primary key.
   bool pk = 1;
 
-  // Mark this field as the tenant key for row-level isolation in
-  // multi-tenant schemas.
-  bool tenant = 2;
+  // Field number 2 is reserved (a removed annotation); never reuse it.
+  reserved 2;
 
   // How to store complex or non-scalar types in the database.
   StoreAs store = 3;
@@ -205,13 +204,8 @@ message ServiceOptions {
   // Authentication configuration for the service.
   AuthConfig auth = 6;
 
-  // Service-wide default authorization roles. A method that declares no
-  // (forge.v1.method).required_roles inherits this list: the caller must
-  // hold at least one of these roles. An empty list here means "no service
-  // default" — every method must then declare its own required_roles (the
-  // authz completeness lint enforces exactly this, so a method can never
-  // silently default to open). See pkg/authz and the `auth` skill.
-  repeated string default_roles = 7;
+  // Field number 7 is reserved (a removed annotation); never reuse it.
+  reserved 7;
 }
 
 // ServiceVisibility determines how a service is exposed.
@@ -273,50 +267,9 @@ message MethodOptions {
   // that handlers can only return declared codes.
   repeated string errors = 6;
 
-  // Per-method authorization role allow-list. The caller must hold AT LEAST
-  // ONE of these roles for the call to be authorized (any-of semantics).
-  // Role implication is applied by pkg/authz at decision time (e.g. "admin"
-  // implies "user" when an implication map is configured), so listing only
-  // the least-privileged sufficient role is the idiom.
-  //
-  // Presence is what the authz completeness lint checks: a method that sets
-  // required_roles (even to a single role) is "explicitly authorized". A
-  // method that wants any-authenticated access with NO role restriction must
-  // say so explicitly via the `authz_public` marker below — an empty
-  // required_roles is treated as "unannotated" and fails the lint, so a
-  // method can never silently default to open. When absent, the service's
-  // (forge.v1.service).default_roles applies; if neither is set the lint
-  // fails the build naming the method.
-  repeated string required_roles = 7;
-
-  // Marks a method as intentionally reachable by ANY caller the auth layer
-  // admits, with no role restriction (e.g. a health check or a public read).
-  // This is the explicit, greppable opt-out that satisfies the authz
-  // completeness lint without granting it by accident: a method is "open"
-  // only when an author typed `authz_public = true`, never by omission.
-  // Mutually exclusive with required_roles (setting both fails the lint).
-  bool authz_public = 8;
-
-  // Marks a method whose authorization is performed by a HAND-WRITTEN
-  // per-service authorizer (middleware.Authorizer), not by the shared
-  // descriptor RoleInterceptor. Use this ONLY when the decision is genuinely
-  // not expressible as a role allow-list — e.g. it gates on a specific
-  // subject/identity, a per-request resource scope, or an out-of-band
-  // (client-only / reverse-proxied) RPC the local server never serves.
-  //
-  // It is the explicit, greppable escape that satisfies the authz
-  // completeness lint for such methods: the build accepts the method as
-  // "intentionally custom-authorized" instead of forcing a role annotation
-  // that would mis-state the real policy. It grants NOTHING — pkg/authz's
-  // descriptor policy builder still leaves the method OUT of the shared
-  // RolePolicy, so if such a method is ever routed through the shared
-  // RoleInterceptor it fail-closes (denied). The service must keep its own
-  // authorizer (and, when served, route through it) — this marker only
-  // records that the proto deliberately delegates the decision to code.
-  //
-  // Mutually exclusive with required_roles and authz_public (setting more
-  // than one fails the lint).
-  bool authz_custom = 9;
+  // Field numbers 7, 8 and 9 are reserved (removed annotations); never
+  // reuse them.
+  reserved 7, 8, 9;
 }
 
 // =============================================================================
@@ -395,8 +348,8 @@ enum ConfigFieldRole {
 
   // CONFIG_FIELD_ROLE_MODE marks the field whose string value selects the
   // runtime mode: "development"/"dev" → development, anything else →
-  // production. config.Mode(msg) and config.DevAuthBypass(msg) key off
-  // THIS field, regardless of its name.
+  // production. config.Mode(msg) keys off THIS field, regardless of its
+  // name.
   CONFIG_FIELD_ROLE_MODE = 1;
 
   // CONFIG_FIELD_ROLE_TLS_CERT and CONFIG_FIELD_ROLE_TLS_KEY mark the two

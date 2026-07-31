@@ -45,10 +45,11 @@
 //
 // Several middlewares read the authenticated principal. The claims
 // CONTEXT KEY is owned by the project (its pkg/middleware), so anything
-// claims-aware takes the project's ClaimsFromContext as a callback —
-// the same pattern pkg/tenant and pkg/authz use. Passing nil degrades
-// gracefully (anonymous audit entries, IP-keyed rate limits).
+// claims-aware takes the project's ClaimsFromContext as a callback.
+// Passing nil degrades gracefully (anonymous audit entries, IP-keyed
+// rate limits).
 //
-// The authentication and authorization mechanisms themselves live in
-// forge/pkg/authn and forge/pkg/authz respectively.
+// The authentication MECHANISM lives in forge/pkg/authn. Access-control
+// decisions and row scoping stay handler logic the project writes (its own
+// ClaimsFromContext helpers + WHERE clauses).
 package middleware

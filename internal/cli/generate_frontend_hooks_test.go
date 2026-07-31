@@ -253,6 +253,157 @@ func TestGenerateFrontendHooks_WorkspaceModeEmitsToSharedDir(t *testing.T) {
 	}
 }
 
+// TestMutationMarkedMethods_RecognizesMarkerShapes asserts the proto-source
+// scanner picks up the `// forge:mutation` marker in every attachment shape it
+// supports (leading line, block doc-comment, trailing on the rpc line) and
+// ignores unmarked RPCs and markers detached by a blank line.
+func TestMutationMarkedMethods_RecognizesMarkerShapes(t *testing.T) {
+	dir := t.TempDir()
+	proto := `syntax = "proto3";
+package orders.v1;
+
+service OrderService {
+  // Issue a refund.
+  //
+  // forge:mutation
+  rpc IssueRefund(IssueRefundRequest) returns (IssueRefundResponse);
+
+  // forge:mutation
+  rpc CheckoutCart(CheckoutCartRequest) returns (CheckoutCartResponse);
+
+  rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse); // forge:mutation
+
+  // Just a plain read, no marker.
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+
+  // forge:mutation
+
+  // A blank line above detaches the marker from this rpc.
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
+}
+`
+	path := filepath.Join(dir, "orders.proto")
+	if err := os.WriteFile(path, []byte(proto), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := mutationMarkedMethods(path)
+	for _, want := range []string{"IssueRefund", "CheckoutCart", "PlaceOrder"} {
+		if !got[want] {
+			t.Errorf("expected %s to be marked as mutation, got %+v", want, got)
+		}
+	}
+	for _, notWant := range []string{"GetOrder", "ListOrders"} {
+		if got[notWant] {
+			t.Errorf("did not expect %s to be marked as mutation, got %+v", notWant, got)
+		}
+	}
+}
+
+// TestMutationMarkedMethods_MissingFileIsNotAnError asserts a proto path with
+// no file on disk yields an empty set rather than failing — hooks fall back to
+// heuristic classification.
+func TestMutationMarkedMethods_MissingFileIsNotAnError(t *testing.T) {
+	if got := mutationMarkedMethods(filepath.Join(t.TempDir(), "nope.proto")); len(got) != 0 {
+		t.Errorf("expected empty set for missing proto, got %+v", got)
+	}
+}
+
+// TestApplyMutationMarkers_FlipsAndRecomputesImportFlags asserts a marked
+// query flips to a mutation and the HasQueries/HasMutations import gates are
+// recomputed. Here the ONLY query flips, so HasQueries must go false.
+func TestApplyMutationMarkers_FlipsAndRecomputesImportFlags(t *testing.T) {
+	data := codegen.FrontendHookTemplateData{
+		HasQueries: true,
+		Methods: []codegen.FrontendHookMethod{
+			{Name: "IssueRefund", IsQuery: true},
+		},
+	}
+	applyMutationMarkers(&data, map[string]bool{"IssueRefund": true})
+
+	if data.Methods[0].IsQuery {
+		t.Error("IssueRefund should have flipped to a mutation")
+	}
+	if data.HasQueries {
+		t.Error("HasQueries should be false after the only query flipped")
+	}
+	if !data.HasMutations {
+		t.Error("HasMutations should be true after a method flipped to mutation")
+	}
+}
+
+// TestGenerateFrontendHooks_MutationMarkerForcesMutationHook is the
+// end-to-end check: an RPC whose name matches a query prefix (IssueRefund →
+// "Is…") but carries `// forge:mutation` in its proto must render as a
+// useMutation hook, while an unmarked GetOrder stays a useQuery.
+func TestGenerateFrontendHooks_MutationMarkerForcesMutationHook(t *testing.T) {
+	dir := t.TempDir()
+	protoRel := "proto/services/orders/v1/orders.proto"
+	protoAbs := filepath.Join(dir, protoRel)
+	if err := os.MkdirAll(filepath.Dir(protoAbs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proto := `syntax = "proto3";
+package orders.v1;
+
+service OrderService {
+  // Issue a refund for an order.
+  //
+  // forge:mutation
+  rpc IssueRefund(IssueRefundRequest) returns (IssueRefundResponse);
+
+  // Fetch an order by id.
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+}
+`
+	if err := os.WriteFile(protoAbs, []byte(proto), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.ProjectConfig{
+		Name:      "myapp",
+		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs", Path: "frontends/web"}},
+	}
+	services := []codegen.ServiceDef{{
+		Name:      "OrderService",
+		ProtoFile: protoRel,
+		Methods: []codegen.Method{
+			{Name: "IssueRefund", InputType: "IssueRefundRequest", OutputType: "IssueRefundResponse"},
+			{Name: "GetOrder", InputType: "GetOrderRequest", OutputType: "GetOrderResponse"},
+		},
+	}}
+	if err := os.MkdirAll(filepath.Join(dir, "frontends/web/src/hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := generateFrontendHooks(cfg, services, dir); err != nil {
+		t.Fatalf("generateFrontendHooks: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "frontends/web/src/hooks/order-service-hooks.ts"))
+	if err != nil {
+		t.Fatalf("read hooks: %v", err)
+	}
+	s := string(got)
+
+	// IssueRefund must be a mutation despite its query-prefix name.
+	if !strings.Contains(s, "export function useIssueRefund(options?: Partial<UseMutationOptions<") {
+		t.Errorf("useIssueRefund should be a mutation hook, got:\n%s", s)
+	}
+	// GetOrder stays a query.
+	if !strings.Contains(s, "export function useGetOrder(req: MessageInitShape<") {
+		t.Errorf("useGetOrder should remain a query hook, got:\n%s", s)
+	}
+	// Both hook families are imported since the service now has one of each.
+	if !strings.Contains(s, "useMutation") || !strings.Contains(s, "useQuery") {
+		t.Errorf("expected both useMutation and useQuery imports, got:\n%s", s)
+	}
+	// A marked mutation must NOT appear in the query-key factory.
+	if strings.Contains(s, "issueRefund: (req:") {
+		t.Errorf("IssueRefund should not have a query-key factory entry, got:\n%s", s)
+	}
+}
+
 // fakeService synthesizes a minimal ServiceDef suitable for hook
 // rendering. The minimum the renderer needs is a name, a proto file
 // (drives the import path), and at least one non-streaming RPC.
@@ -267,11 +418,15 @@ func fakeService(name, protoFile string) codegen.ServiceDef {
 	}
 }
 
-// TestWriteHookStarterTest_EmitsStarterWhenNoSiblingPresent asserts that
-// the starter test scaffolds next to the hooks file with one row per RPC
-// and the right `.starter` suffix. The activation contract is "rename
-// .tsx.starter to .tsx to opt in" — so the suffix must be exact.
-func TestWriteHookStarterTest_EmitsStarterWhenNoSiblingPresent(t *testing.T) {
+// TestWriteHookStarterTest_EmitsLiveTestWhenNoSiblingPresent asserts the
+// generated hook test lands as a LIVE `.test.tsx`, with one row per RPC.
+//
+// It used to land as `<svc>-hooks.test.tsx.starter`, inert until someone
+// renamed it, and the dogfood run proved nobody ever does: a 17 KB
+// generated suite per service that had never executed once, so the layer
+// all sixteen pages sat on had zero active tests while `forge test`
+// reported green. A test disabled by its file extension is decoration.
+func TestWriteHookStarterTest_EmitsLiveTestWhenNoSiblingPresent(t *testing.T) {
 	dir := t.TempDir()
 	svc := codegenServiceDefForStarterTest()
 	data := codegenHookDataForStarterTest()
@@ -280,9 +435,12 @@ func TestWriteHookStarterTest_EmitsStarterWhenNoSiblingPresent(t *testing.T) {
 		t.Fatalf("writeHookStarterTest: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, "user-service-hooks.test.tsx.starter"))
+	if _, err := os.Stat(filepath.Join(dir, "user-service-hooks.test.tsx.starter")); err == nil {
+		t.Error("an inert .starter must not be emitted — vitest never runs it")
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "user-service-hooks.test.tsx"))
 	if err != nil {
-		t.Fatalf("expected starter test to exist: %v", err)
+		t.Fatalf("expected a live test to exist: %v", err)
 	}
 	s := string(got)
 	// Per-RPC rows
@@ -297,14 +455,14 @@ func TestWriteHookStarterTest_EmitsStarterWhenNoSiblingPresent(t *testing.T) {
 		"setTransport",
 	} {
 		if !strings.Contains(s, want) {
-			t.Errorf("starter missing %q, got:\n%s", want, s)
+			t.Errorf("hook test missing %q, got:\n%s", want, s)
 		}
 	}
 }
 
-// TestWriteHookStarterTest_SkipsWhenActiveTestExists asserts the starter
-// is NOT written when the user has already activated `<file>.test.tsx`.
-// Regenerating must not clobber the user's hand-edited tests.
+// TestWriteHookStarterTest_SkipsWhenActiveTestExists asserts the test is
+// NOT rewritten when the user already has `<file>.test.tsx`. Scaffold-once:
+// regenerating must not clobber hand-edited tests.
 func TestWriteHookStarterTest_SkipsWhenActiveTestExists(t *testing.T) {
 	dir := t.TempDir()
 	activePath := filepath.Join(dir, "user-service-hooks.test.tsx")
@@ -332,13 +490,15 @@ func TestWriteHookStarterTest_SkipsWhenActiveTestExists(t *testing.T) {
 	}
 }
 
-// TestWriteHookStarterTest_SkipsWhenStarterExists asserts the starter is
-// NOT overwritten on re-run. An unactivated starter the user is about to
-// rename stays put across regen cycles.
-func TestWriteHookStarterTest_SkipsWhenStarterExists(t *testing.T) {
+// TestWriteHookStarterTest_ActivatesALegacyStarter: a project generated by
+// an older forge carries an inert `.test.tsx.starter` and no live test. The
+// user may have edited it while it sat there, so it is RENAMED into place
+// rather than replaced by a fresh render — and it does not survive as a
+// second, dead copy beside the live one.
+func TestWriteHookStarterTest_ActivatesALegacyStarter(t *testing.T) {
 	dir := t.TempDir()
 	starterPath := filepath.Join(dir, "user-service-hooks.test.tsx.starter")
-	if err := os.WriteFile(starterPath, []byte("// previous starter"), 0o644); err != nil {
+	if err := os.WriteFile(starterPath, []byte("// previous starter, hand-edited"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -348,11 +508,39 @@ func TestWriteHookStarterTest_SkipsWhenStarterExists(t *testing.T) {
 		t.Fatalf("writeHookStarterTest: %v", err)
 	}
 
-	got, err := os.ReadFile(starterPath)
+	if _, err := os.Stat(starterPath); err == nil {
+		t.Error("the inert .starter must not survive activation")
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "user-service-hooks.test.tsx"))
 	if err != nil {
+		t.Fatalf("expected the starter to be activated in place: %v", err)
+	}
+	if string(got) != "// previous starter, hand-edited" {
+		t.Errorf("activation replaced the user's content instead of renaming it: %s", string(got))
+	}
+}
+
+// TestWriteHookStarterTest_RemovesALeftoverStarterBesideALiveTest: once the
+// user has a live test, a dormant starter next to it is dead weight that
+// nothing runs and nothing reads.
+func TestWriteHookStarterTest_RemovesALeftoverStarterBesideALiveTest(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "user-service-hooks.test.tsx"), []byte("// mine"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "// previous starter" {
-		t.Errorf("existing starter was overwritten: %s", string(got))
+	starterPath := filepath.Join(dir, "user-service-hooks.test.tsx.starter")
+	if err := os.WriteFile(starterPath, []byte("// stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeHookStarterTest(dir, "user-service-hooks.ts", codegenServiceDefForStarterTest(), codegenHookDataForStarterTest()); err != nil {
+		t.Fatalf("writeHookStarterTest: %v", err)
+	}
+	if _, err := os.Stat(starterPath); err == nil {
+		t.Error("a leftover .starter beside a live test must be removed")
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "user-service-hooks.test.tsx"))
+	if string(got) != "// mine" {
+		t.Errorf("the user's live test was touched: %s", got)
 	}
 }

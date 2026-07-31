@@ -13,15 +13,16 @@ import (
 )
 
 // TestE2EScaffoldFullSpecProject is the authoritative regression test for
-// `forge new`'s scaffold output. It exercises the exact invocation promised
+// `forge project new`'s scaffold output. It exercises the exact invocation promised
 // in the README:
 //
-//	forge new demo --mod github.com/example/demo --service api --frontend web --license MIT
+//	forge project new demo --mod github.com/example/demo --service api --frontend web --license MIT
 //
 // and then verifies — in order of blast radius —
 //  1. the generated tree compiles, vets, and tests cleanly
 //  2. `go mod tidy` is a no-op (guards against drift in go.mod/go.sum)
-//  3. optional linters (golangci-lint, buf) if installed
+//  3. the linters (golangci-lint, buf) — required, not optional: skipped by
+//     name on a laptop that lacks them, hard failure in CI
 //  4. every file listed in the spec actually exists
 //  5. specific byte-level content guards that protect against known
 //     past regressions (see inline comments on each guard).
@@ -33,12 +34,11 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
-	linkForgeSibling(t, dir)
 
 	// Exact invocation from the spec. Any deviation here reduces the value
 	// of this test as a user-facing regression guard.
 	runCmd(t, dir, forgeBin,
-		"new", "demo",
+		"project", "new", "demo",
 		"--mod", "github.com/example/demo",
 		"--service", "api",
 		"--frontend", "web",
@@ -58,7 +58,7 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	runCmd(t, filepath.Join(projectDir, "gen"), "go", "mod", "tidy")
 
 	// Capture go.mod/go.sum and ensure a second tidy is a no-op. Drift here
-	// means `forge new` emits a go.mod that's not self-consistent, which
+	// means `forge project new` emits a go.mod that's not self-consistent, which
 	// surfaces as "your go.mod is out of sync" on fresh clones.
 	modBefore := readFileE2E(t, filepath.Join(projectDir, "go.mod"))
 	runCmd(t, projectDir, "go", "mod", "tidy")
@@ -73,23 +73,18 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	runCmd(t, projectDir, "go", "vet", "./...")
 	runCmd(t, projectDir, "go", "test", "./...")
 
-	// Optional tools — skip with a log if they're not installed so the
-	// test still works on a minimal dev box.
-	if toolAvailable("golangci-lint") {
-		runCmd(t, projectDir, "golangci-lint", "run", "./...")
-	} else {
-		t.Log("golangci-lint not available — skipping lint check")
-	}
-	if toolAvailable("buf") {
-		runCmd(t, projectDir, "buf", "lint")
-	} else {
-		t.Log("buf not available — skipping proto lint check")
-	}
+	// The golangci-lint / buf lint gates used to sit here, each behind an
+	// `if toolAvailable(...)`. On a box without the tool that is not a
+	// weaker test, it is NO test — the assertion vanished and the function
+	// still reported PASS. They now live at the END of this function behind
+	// requireTool, which fails in CI and skips (loudly, by name) on a
+	// laptop. Moving them there is what makes the laptop skip cheap: every
+	// structural guard below has already run by the time it can fire.
 
 	// ── File-existence guards ──────────────────────────────────────────
 	// Every path here corresponds to an item in the spec. Keep this list
 	// in sync with the scaffold; it's the checklist a user would run
-	// after `forge new` to make sure nothing's missing.
+	// after `forge project new` to make sure nothing's missing.
 	mustExist := []string{
 		// cmd/ — one file per top-level concern
 		"cmd/main.go",
@@ -100,8 +95,8 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 
 		// pkg/middleware — the ONE thin user-owned auth-policy file (plus
 		// its policy test). The security-critical mechanisms (auth modes,
-		// authz interceptor, CORS, recovery, audit, rate limiting, …) live
-		// in forge/pkg/{authn,authz,middleware,observe} and are NOT
+		// auth interceptor, CORS, recovery, audit, rate limiting, …) live
+		// in forge/pkg/{authn,middleware,observe} and are NOT
 		// photocopied into the scaffold anymore.
 		"pkg/middleware/middleware.go",
 		"pkg/middleware/middleware_test.go",
@@ -139,8 +134,9 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		// KCL deploy manifests. Per-env main.k files only — the
 		// shared schemas (Service / Operator / Frontend / CronJob,
 		// deploy union, render layer) live in the upstream `forge`
-		// KCL module pinned via kcl.mod.
-		"kcl.mod",
+		// KCL module declared in deploy/kcl/kcl.mod (the KCL package
+		// root; dev builds vendor the module into .forge-kcl/).
+		"deploy/kcl/kcl.mod",
 		"deploy/kcl/dev/main.k",
 		"deploy/kcl/staging/main.k",
 		"deploy/kcl/prod/main.k",
@@ -195,8 +191,19 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		t.Errorf("pkg/middleware/middleware.go must not use strings.Contains(...Health...) for unauthenticated allow-list; use exact procedure matching instead. Got:\n%s",
 			authGo)
 	}
-	if !strings.Contains(authGo, "unauthenticatedProcedures") {
-		t.Errorf("pkg/middleware/middleware.go must declare the unauthenticatedProcedures allow-list; got:\n%s", authGo)
+	// The allow-list is DERIVED from the protos' auth_required declarations
+	// and lives in the generated procedures_gen.go; the policy file consumes
+	// it. A hand-written copy here would be a second declaration surface for
+	// one fact, able to disagree with the annotation that `forge project
+	// graph` reports.
+	if !strings.Contains(authGo, "Unauthenticated:     UnauthenticatedProcedures") {
+		t.Errorf("pkg/middleware/middleware.go must wire the generated UnauthenticatedProcedures into the interceptor; got:\n%s", authGo)
+	}
+	proceduresGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "middleware", "procedures_gen.go"))
+	for _, probe := range []string{"/grpc.health.v1.Health/Check", "/grpc.health.v1.Health/Watch"} {
+		if !strings.Contains(proceduresGo, probe) {
+			t.Errorf("pkg/middleware/procedures_gen.go must allow %s (probes run before anything can authenticate); got:\n%s", probe, proceduresGo)
+		}
 	}
 
 	configGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "config", "config.go"))
@@ -246,6 +253,13 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		t.Errorf("handlers_gen.go must use lowercase error strings (Go convention); got:\n%s",
 			handlersGen)
 	}
+
+	// ── Lint gates (spec item 3) ───────────────────────────────────────
+	// Last, deliberately: requireTool skips the whole test when the tool is
+	// absent, and by here every guard above has already asserted.
+	requireTool(t, "golangci-lint", "buf")
+	runGolangciLintE2E(t, projectDir, "./...")
+	runCmd(t, projectDir, "buf", "lint")
 }
 
 // assertIncludeImportsPlacement fails the test if `include_imports` appears

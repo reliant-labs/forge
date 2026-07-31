@@ -89,7 +89,7 @@ const markerKey = "forge:hash="
 // any hash the legacy manifest recorded). It never equals a real
 // sha256, so Verify always answers Modified — the stomp guard keeps
 // naming the file until the user resolves it with --force (regenerate)
-// or `forge disown` (keep their bytes).
+// or `forge project disown` (keep their bytes).
 const UnverifiedMarkerValue = "unverified-legacy"
 
 // stampBannerScanLines bounds how far into a file Stamp looks for the
@@ -295,7 +295,7 @@ func isHashValue(s string) bool {
 }
 
 // StripMarker removes every marker line from content (preserving the
-// original line endings everywhere else). Used by `forge disown` (a
+// original line endings everywhere else). Used by `forge project disown` (a
 // user-owned file must not advertise forge certification) and by the
 // Tier-2 reclassification path.
 func StripMarker(content []byte) []byte {

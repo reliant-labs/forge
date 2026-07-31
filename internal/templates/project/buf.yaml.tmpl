@@ -22,6 +22,12 @@ deps:
 lint:
   use:
     - STANDARD
+  ignore:
+    # Vendored protovalidate option definitions (buf.validate field rules,
+    # compiled offline). It is proto2 with an unversioned package, which
+    # trips STANDARD — but it is upstream, not project code, so lint skips
+    # it. Forge vendors it under proto/buf/validate on first use.
+    - proto/buf/validate
   # Common STANDARD rules that legacy protos frequently trip during
   # migration. Uncomment any rule you need to silence for a project
   # that's importing pre-existing .proto files; the forge scaffold

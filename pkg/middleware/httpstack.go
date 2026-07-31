@@ -59,12 +59,12 @@ func HTTPAuth(
 				return
 			}
 
-			authz := r.Header.Get("Authorization")
-			if !strings.HasPrefix(authz, "Bearer ") {
+			authHeader := r.Header.Get("Authorization")
+			if !strings.HasPrefix(authHeader, "Bearer ") {
 				http.Error(w, "missing or invalid Authorization header", http.StatusUnauthorized)
 				return
 			}
-			token := strings.TrimPrefix(authz, "Bearer ")
+			token := strings.TrimPrefix(authHeader, "Bearer ")
 
 			claims, err := authenticate(token)
 			if err != nil {
@@ -118,6 +118,9 @@ func httpLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Int("status", rec.status),
 				slog.Duration("duration", time.Since(start)),
 			}
+			if rid := RequestIDFromContext(r.Context()); rid != "" {
+				attrs = append(attrs, slog.String("request_id", rid))
+			}
 
 			level := slog.LevelInfo
 			if rec.status >= 500 {
@@ -147,6 +150,12 @@ func httpAudit(logger *slog.Logger, claimsFrom ClaimsLookup) func(http.Handler) 
 				slog.Int("status", rec.status),
 				slog.Duration("duration", time.Since(start)),
 				slog.Time("timestamp", start),
+			}
+			// Same join key as the Connect audit record: the id the client
+			// was handed. Without it the audit trail cannot be reached from
+			// the only identifier an incident actually starts with.
+			if rid := RequestIDFromContext(r.Context()); rid != "" {
+				attrs = append(attrs, slog.String("request_id", rid))
 			}
 
 			var identified bool

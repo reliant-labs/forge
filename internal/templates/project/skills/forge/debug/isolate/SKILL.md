@@ -17,9 +17,9 @@ The bug is suspected in a specific area and you need to pin down the exact funct
 4. **Goal**: find the smallest code unit where the bug manifests
 
 ```
-forge test e2e                 # start broad
-forge test --service <name>    # narrow to one service
-forge test --service <name> -V # verbose output for details
+task test:e2e                 # start broad
+task test -- ./internal/handlers/<name>/...    # narrow to one service
+task test -- -v ./internal/handlers/<name>/... # verbose output for details
 ```
 
 ## Mocking Strategy (Critical)
@@ -39,7 +39,7 @@ This is debugging, not normal testing — mocking rules are different:
 4. Run the full suite to check for regressions:
 
 ```
-forge test
+task test
 ```
 
 ## When Your Test Passes But the Bug Persists

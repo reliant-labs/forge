@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -26,38 +25,36 @@ var validPackageKinds = map[string]bool{
 	"client":   true,
 }
 
-// validPackageTypes lists the supported --type values for `forge add package`.
+// validPackageTypes lists the supported --type values for `forge scaffold package`.
 //
-//   - service:    default; classic Service/Deps/New(Deps) Service shape that
-//     codegen wires into bootstrap. The same scaffold used since
-//     the start of forge.
-//   - adapter:    outbound boundary translator (third-party API client,
-//     queue producer, storage gateway). No RPC handlers; expects
-//     to be wired via Setup() and called by interactors/services.
-//     See `forge skill load adapter`.
-//   - interactor: use-case orchestrator that composes 2+ adapters/services
-//     to fulfill a workflow. Deps are interfaces only. Designed
-//     to be unit-tested with all-mock deps.
-//     See `forge skill load interactor`.
+// There are two, because there are only two things forge can tell apart:
+//
+//   - service: default; the Service/Deps/New(Deps) Service shape that
+//     codegen wires. Every internal package is this shape, including the
+//     ones you would call orchestrators or use-case interactors — those
+//     are services whose deps happen to be other services. Nothing in
+//     forge behaves differently for them, so there is no separate flag.
+//   - adapter: the same shape, plus the `// forge:outbound-io` marker,
+//     which asserts the package calls OUT and serves nothing inbound. The
+//     marker is the difference — it is what lint and the observe heuristic
+//     read. See `forge skill load adapter`.
 var validPackageTypes = map[string]bool{
-	"service":    true,
-	"adapter":    true,
-	"interactor": true,
+	"service": true,
+	"adapter": true,
 }
 
 // packageTypeHelp is the long-form help text shown under `--type`.
-const packageTypeHelp = `package shape: service|adapter|interactor (default service)
+const packageTypeHelp = `package shape: service|adapter (default service)
 
   service     Standard internal/<name>/ with Service/Deps/New — wired into
-              bootstrap, callable by handlers. The default.
-  adapter     Outbound boundary (HTTP client, queue producer, storage
-              gateway). No business logic; thin translation to a third-party
-              system. Marked with '// forge:adapter' so lint can keep RPC
-              handlers out. See: forge skill load adapter
-  interactor  Use-case orchestrator composing >=2 adapters/services. Deps
-              MUST be interfaces (lint-enforced) so the workflow is testable
-              with all-mock deps. Marked with '// forge:interactor'.
-              See: forge skill load interactor`
+              the composition, callable by handlers. The default, and the
+              right answer for a use-case orchestrator too: an orchestrator
+              is a service whose Deps are other services' interfaces.
+  adapter     The same shape plus '// forge:outbound-io', which asserts the
+              package calls OUT to a third-party system and serves nothing
+              inbound. Lint keeps RPC handlers out of it and the observe
+              heuristic treats it as doing I/O.
+              See: forge skill load adapter`
 
 func newPackageCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -90,18 +87,17 @@ Example:
   forge package new cache
   forge package new notifications
   forge package new events --kind eventbus
-  forge package new stripe-adapter --type adapter
-  forge package new billing-flow --type interactor`,
+  forge package new stripe-adapter --type adapter`,
 		Args: cobra.ExactArgs(1),
 		RunE: runPackageNew,
 	}
 
 	packageNewCmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
-	packageNewCmd.Flags().String("type", "service", "package shape: service|adapter|interactor (see --help for details)")
+	packageNewCmd.Flags().String("type", "service", "package shape: service|adapter (see --help for details)")
 
 	cmd.AddCommand(packageNewCmd)
 
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 func runPackageNew(cmd *cobra.Command, args []string) error {
@@ -130,9 +126,8 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	}
 
 	// --kind and --type compose only on the default "service" type.
-	// Adapters and interactors get a fixed scaffold; layering an
-	// eventbus/client kind on top would silently overwrite the type
-	// scaffold.
+	// An adapter gets a fixed scaffold; layering an eventbus/client kind
+	// on top would silently overwrite it.
 	if pkgType != "service" && kind != "" {
 		return fmt.Errorf("--kind cannot be combined with --type=%s; the type owns the scaffold shape", pkgType)
 	}
@@ -159,7 +154,9 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Check it doesn't already exist
+	// The directory IS the registry: a package exists because
+	// internal/<name>/ holds a contract.go, which is what both the bootstrap
+	// codegen and every reporter discover it from.
 	pkgDir := filepath.Join(root, "internal", name)
 	if dirExists(pkgDir) {
 		return fmt.Errorf("internal package %q already exists at %s", name, pkgDir)
@@ -169,13 +166,6 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
-	}
-
-	// Check for name conflict in config
-	for _, pkg := range cfg.Packages {
-		if pkg.Name == name {
-			return fmt.Errorf("package %q already exists in forge.yaml", name)
-		}
 	}
 
 	fmt.Printf("Creating internal package '%s'...\n", name)
@@ -189,21 +179,37 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	// new` only accepts flat names (validGoPackageName rejects "/"). When
 	// nested-path support lands, ImportPath should carry the full
 	// module-relative path under internal/ (e.g. "mcp/database").
+	//
+	// Flavor identifies the scaffold shape: the --kind when given, else the
+	// --type ("service" for the default empty-interface scaffold). The owned
+	// observe_chain.go seam is flavor-independent (per-method wrappers live in
+	// the GENERATED decorator, not the seam), so Flavor no longer selects
+	// observe scaffolding — it still routes the contract/service/test tree.
+	flavor := pkgType
+	if kind != "" {
+		flavor = kind
+	}
 	data := struct {
 		Name       string
 		ImportPath string
 		Module     string
+		Flavor     string
+		LogLevel   string
 	}{
 		Name:       name,
 		ImportPath: name,
 		Module:     cfg.ModulePath,
+		Flavor:     flavor,
+		// Seed the owned observe_chain.go seam's success-log level from the
+		// project's observability config (default: slog.LevelDebug).
+		LogLevel: cfg.Observability.SlogLevelExpr(),
 	}
 
-	// Render the scaffold. --type=adapter|interactor and --kind both render a
-	// full template tree from a dedicated subdir under internal-package/; the
-	// default renders the generic contract/service/test set + a stub mock.
+	// Render the scaffold. --type=adapter and --kind both render a full
+	// template tree from a dedicated subdir under internal-package/; the
+	// default renders the generic contract/service/test set.
 	switch {
-	case pkgType == "adapter" || pkgType == "interactor":
+	case pkgType == "adapter":
 		if err := renderPackageKindTree(pkgDir, pkgType, data, true); err != nil {
 			return err
 		}
@@ -212,42 +218,69 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	default:
-		if err := renderDefaultPackageScaffold(pkgDir, name, data); err != nil {
+		if err := renderDefaultPackageScaffold(pkgDir, data); err != nil {
 			return err
 		}
 	}
 
-	// Update forge.yaml. Type is recorded only when non-default so existing
-	// projects don't churn forge.yaml on regenerate (omitempty drops "service").
-	pkgCfg := config.PackageConfig{
-		Name: name,
-		Kind: kind,
-	}
-	if pkgType != "service" {
-		pkgCfg.Type = pkgType
-	}
-	cfg.Packages = append(cfg.Packages, pkgCfg)
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	// EVERY scaffold that produced a contract.go gets its stub mock_gen.go
+	// here, not just the default one. When only the default path emitted it,
+	// an author who scaffolded an adapter or an eventbus opened the directory,
+	// saw no mock, and hand-rolled a fake — which is how a `fakeStore` ends up
+	// in the same package as, and adjacent to, a generated `MockStore`. The
+	// generator mocks EVERY interface in contract.go, so the stub also covers
+	// the dep interfaces declared alongside Service.
+	//
+	// Soft warning rather than a hard error: the canonical fix for any
+	// generator hiccup is to run `forge generate` once the project is
+	// quiescent, and a broken stub should not block package creation.
+	if contractPath := filepath.Join(pkgDir, "contract.go"); fileExists(contractPath) {
+		if err := contract.Generate(contractPath); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not emit stub mock_gen.go for %s: %v\n", name, err)
+			fmt.Fprintln(os.Stderr, "         run `forge generate` to retry.")
+		}
 	}
 
+	// Every contract package ALSO gets the OWNED observability seam
+	// (observe_chain.go: newObserveChain() — the in-process middleware chain
+	// the generated decorator routes through). It is the user's file from day
+	// 0 and is THE extension point (add/drop a middleware, change the log
+	// level). The per-method wrapper itself is GENERATED from the interface
+	// (middleware_gen.go) — adding a Service method regenerates it, no
+	// hand-maintenance. The composition site wires `pkg.New<Concrete>WithForgeMiddleware(pkg.New(...))`
+	// automatically whenever this seam exists and New returns the interface.
+	observeContent, err := templates.InternalPkgTemplates().Render("observe_chain.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render observe_chain.go: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "observe_chain.go"), observeContent, 0o644); err != nil {
+		return fmt.Errorf("write observe_chain.go: %w", err)
+	}
+
+	// forge.yaml is NOT touched. A package is declared by its own source —
+	// internal/<name>/contract.go, plus the `//forge:outbound-io` marker the
+	// adapter scaffold stamps — and that is what codegen wires and what
+	// `forge project map` / `forge project audit` / the architecture doc
+	// report. A `packages:` list next to it could only ever be a copy that
+	// goes stale.
+
 	fmt.Printf("\n✅ Internal package '%s' created!\n", name)
-	// Hint at the next step. As of the kalshi-trader friction round 6
-	// fix, `forge add package` emits contract.go + service.go +
-	// contract_test.go *and* a stub mock_gen.go off the empty Service
-	// interface, so downstream packages can import `<pkg>.MockService`
-	// without running the whole generator. Once you add methods to
-	// Service, `forge generate` regenerates mock_gen.go to match.
-	fmt.Printf("   Next: edit internal/%s/contract.go to declare the Service interface, then run `forge generate` to refresh mock_gen.go to match.\n", name)
+	// Hint at the next step, and name mock_gen.go explicitly: it is emitted
+	// up front so downstream packages can import the mocks without running
+	// the whole generator, and so nobody hand-rolls a fake for an interface
+	// forge already mocked. Every interface in contract.go gets one — the
+	// Service AND each dep interface declared beside it.
+	fmt.Printf("   Next: edit internal/%s/contract.go to declare the Service interface (and any dep interfaces),\n", name)
+	fmt.Printf("         then run `forge generate` to refresh internal/%s/mock_gen.go — one mock per interface, ready for tests.\n", name)
 
 	return nil
 }
 
 // renderPackageKindTree renders every template in the internal-package
-// kindOrType subdir (used for both --type=adapter|interactor and --kind, which
-// share the full-tree shape) into pkgDir, stripping the .tmpl suffix. When
-// requireNonEmpty is set, an empty template set is a hard error (the
-// adapter/interactor path — an empty set there is a forge bug).
+// kindOrType subdir (used for both --type=adapter and --kind, which share the
+// full-tree shape) into pkgDir, stripping the .tmpl suffix. When
+// requireNonEmpty is set, an empty template set is a hard error (the adapter
+// path — an empty set there is a forge bug).
 func renderPackageKindTree(pkgDir, kindOrType string, data any, requireNonEmpty bool) error {
 	tmplFiles, err := templates.InternalPkgKindTemplates(kindOrType).ListFlat("")
 	if err != nil {
@@ -271,16 +304,10 @@ func renderPackageKindTree(pkgDir, kindOrType string, data any, requireNonEmpty 
 }
 
 // renderDefaultPackageScaffold renders the default internal-package set:
-// contract.go, service.go, a once-only contract_test.go (owned by the user
-// after the first scaffold), and a stub mock_gen.go emitted off the empty
-// Service interface so downstream consumers can import `<pkg>.MockService`
-// immediately (the next `forge generate` unconditionally overwrites it).
-//
-// The stub-mock emission is tolerated as a soft warning rather than a hard
-// error: the canonical fix for any generator bug is to run `forge generate`
-// once the project is quiescent, and a broken stub shouldn't block package
-// creation itself.
-func renderDefaultPackageScaffold(pkgDir, name string, data any) error {
+// contract.go, service.go, and a once-only contract_test.go (owned by the
+// user after the first scaffold). The stub mock_gen.go is emitted by the
+// caller, which does it for every scaffold shape rather than just this one.
+func renderDefaultPackageScaffold(pkgDir string, data any) error {
 	contractContent, err := templates.InternalPkgTemplates().Render("contract.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render contract.go: %w", err)
@@ -305,10 +332,5 @@ func renderDefaultPackageScaffold(pkgDir, name string, data any) error {
 		return fmt.Errorf("write contract_test.go: %w", err)
 	}
 
-	contractPath := filepath.Join(pkgDir, "contract.go")
-	if err := contract.Generate(contractPath); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not emit stub mock_gen.go for %s: %v\n", name, err)
-		fmt.Fprintln(os.Stderr, "         run `forge generate` to retry.")
-	}
 	return nil
 }

@@ -125,9 +125,9 @@ whether the step runs at all.
 
 Two common shapes:
 
-1. **Spec-as-artifact**: commit `openapi/` and let
-   `.github/workflows/lint.yml` verify it's up-to-date by running
-   `forge generate` and checking `git diff --exit-code openapi/`.
+1. **Spec-as-artifact**: commit `openapi/` and let the `verify-generated`
+   job in `.github/workflows/ci.yml` catch drift — it already runs
+   `forge generate` and fails on an uncommitted diff.
 2. **Spec-as-build-output**: don't commit `openapi/`; have a publish
    job run `forge generate` and upload to a documentation portal
    (ReadMe.io webhook, S3 bucket behind Redocly, etc.).

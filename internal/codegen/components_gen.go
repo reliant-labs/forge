@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
@@ -16,18 +15,10 @@ import (
 // denormalized component data. The per-env `deploy/kcl/<env>/main.k`
 // loads it (via forge.components.load_components) and lets the forge
 // KCL Component schema hierarchy expand each entry into k8s resources.
-// It is a lockfile-class projection of forge.yaml — regenerated every
-// run, untracked, owned 100% by forge (see GenerateComponentsJSON).
+// It is a lockfile-class projection of the discovered component
+// [Inventory] — regenerated every run, untracked, owned 100% by forge
+// (see GenerateComponentsJSON).
 const ComponentsJSONRelPath = "deploy/kcl/components_gen.json"
-
-// componentPortJSON is the denormalized projection of one named port.
-// KCL's Server subtype maps these to ServicePort + containerPort.
-type componentPortJSON struct {
-	Name     string `json:"name"`
-	Port     int    `json:"port"`
-	Protocol string `json:"protocol"`
-	Expose   bool   `json:"expose"`
-}
 
 // componentJSON is the denormalized BASE shape of one component. It
 // carries ZERO Kubernetes knowledge — no Deployment/Service/CronJob
@@ -40,16 +31,24 @@ type componentPortJSON struct {
 // binary components today — `["/app/<proj>", "<name>"]`, the cobra
 // subcommand the shared image runs. Server/worker/cron run the image's
 // default entrypoint, so their command is empty and KCL fills it.
+//
+// There is no `ports` key, and that is deliberate: a port is a DEPLOY fact.
+// Nothing forge discovers (the proto descriptor, the owned worker/operator
+// files, cmd/) states one, so any port forge emitted here would be invented.
+// Ports are declared where the rest of the per-env deploy shape is declared —
+// `deploy/kcl/<env>/main.k`, on the component overlay
+// (`ports = [fc.ComponentPort {name = "http", port = 9090, expose = True}]`).
+// A server that declares none gets the standard :8080 mux from
+// forge.components' Server expansion.
 type componentJSON struct {
-	Name     string              `json:"name"`
-	Kind     string              `json:"kind"`
-	Ports    []componentPortJSON `json:"ports"`
-	Env      map[string]string   `json:"env"`
-	Command  []string            `json:"command"`
-	Schedule string              `json:"schedule"`
-	Group    string              `json:"group"`
-	Version  string              `json:"version"`
-	CRDs     []string            `json:"crds"`
+	Name     string            `json:"name"`
+	Kind     string            `json:"kind"`
+	Env      map[string]string `json:"env"`
+	Command  []string          `json:"command"`
+	Schedule string            `json:"schedule"`
+	Group    string            `json:"group"`
+	Version  string            `json:"version"`
+	CRDs     []string          `json:"crds"`
 	// Build is the polymorphic build declaration for this component — the
 	// per-component answer to "how is this artifact produced". forge emits
 	// a GoBuild here by default; the forge.components KCL Component schema
@@ -79,53 +78,81 @@ type componentBuildJSON struct {
 	OutputName string `json:"output_name"`
 }
 
+// migrateJSON is the project-level DEPLOY-TIME migration step: the argv
+// that applies this release's schema migrations, or an empty command when
+// the project ships none.
+//
+// It is project-level, not per-component, because it is one fact about the
+// release: this image knows how to migrate itself (`<binary> db migrate
+// up`, over the migrations EMBEDDED in it). The env render turns a non-empty
+// command into a migration initContainer on every Deployment-shaped
+// workload, so the schema is current BEFORE any new pod serves a request —
+// a guarantee Kubernetes enforces itself, not one that depends on which
+// tool ran the apply.
+//
+// The command is EMPTY for a project with no db/migrations/*.sql. An empty
+// command renders no init container: a migration step that runs a command
+// guaranteed to fail is worse than no step at all.
+type migrateJSON struct {
+	Command []string `json:"command"`
+}
+
 // componentsDoc is the top-level shape of components_gen.json.
 type componentsDoc struct {
 	// Project is the project name. Binary components run
 	// `["/app/<project>", "<name>"]`, so KCL needs the project name to
 	// build that command without a second data channel.
-	Project    string          `json:"project"`
+	Project string `json:"project"`
+	// Migrate is the deploy-time migration step (see migrateJSON). Always
+	// emitted — an empty command is the "no migrations" answer — so the KCL
+	// reader sees a stable key.
+	Migrate    migrateJSON     `json:"migrate"`
 	Components []componentJSON `json:"components"`
 }
 
-// ComponentsToJSON projects the forge.yaml component list to the
-// denormalized JSON document. Deterministic: ports are sorted by name
-// and components keep forge.yaml order so re-generation is idempotent.
-func ComponentsToJSON(projectName string, components []config.ComponentConfig) ([]byte, error) {
-	doc := componentsDoc{Project: projectName, Components: []componentJSON{}}
+// MigrateCommand returns the argv that applies a project's embedded
+// migrations from inside its runtime image, or nil when the project ships
+// no .sql migrations.
+//
+// `/app/<project>` is where the generated Dockerfile's production stage
+// puts the primary binary (WORKDIR /app, `COPY --from=builder
+// /app/bin/<project> ./<project>`), and `db migrate up` is the subcommand
+// that applies the EMBEDDED set (cmd-tree-db.go.tmpl). Both halves are
+// generated from the same project name, so the argv cannot drift from the
+// image it runs in.
+func MigrateCommand(projectDir, projectName string) []string {
+	if !ProjectHasSQLMigrations(projectDir) {
+		return nil
+	}
+	return []string{"/app/" + projectName, "db", "migrate", "up"}
+}
+
+// ComponentsToJSON projects a discovered component [Inventory] to the
+// denormalized JSON document. Deterministic: components keep inventory order
+// so re-generation is idempotent.
+//
+// migrateCommand is the project-level deploy-time migration argv (see
+// [MigrateCommand]); nil/empty means the project ships no migrations and
+// the env render emits no migration step.
+func ComponentsToJSON(projectName string, components Inventory, migrateCommand []string) ([]byte, error) {
+	if migrateCommand == nil {
+		migrateCommand = []string{}
+	}
+	doc := componentsDoc{
+		Project:    projectName,
+		Migrate:    migrateJSON{Command: migrateCommand},
+		Components: []componentJSON{},
+	}
 	for _, c := range components {
 		cj := componentJSON{
 			Name:     c.Name,
 			Kind:     c.EffectiveKind(),
-			Ports:    []componentPortJSON{},
 			Env:      map[string]string{},
 			Command:  []string{},
 			Schedule: c.Schedule,
 			Group:    c.Group,
 			Version:  c.Version,
 			CRDs:     []string{},
-		}
-
-		// Ports — emit a stable, name-sorted list. The scalar `protocol`
-		// default ("" in the struct) projects as "tcp" so KCL never has
-		// to special-case the terse scalar form.
-		names := make([]string, 0, len(c.Ports))
-		for name := range c.Ports {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			ps := c.Ports[name]
-			proto := ps.Protocol
-			if proto == "" {
-				proto = "tcp"
-			}
-			cj.Ports = append(cj.Ports, componentPortJSON{
-				Name:     name,
-				Port:     ps.Port,
-				Protocol: proto,
-				Expose:   ps.Expose,
-			})
 		}
 
 		// Binary components are their OWN entrypoint in the shared image —
@@ -153,10 +180,10 @@ func ComponentsToJSON(projectName string, components []config.ComponentConfig) (
 		// The path forms differ by kind on purpose (F5):
 		//   - SECONDARY binary → cmd/<ServicePackage(name)> (hyphens →
 		//     underscores): a secondary binary is named after a Go
-		//     component, and `forge add binary` scaffolds the sanitized dir.
+		//     component, and `forge scaffold binary` scaffolds the sanitized dir.
 		//   - PRIMARY (server/worker/cron/operator) → cmd/<project> VERBATIM
 		//     (hyphens preserved): the primary binary is named after the
-		//     project, and `forge new`'s scaffold + the generated Dockerfile
+		//     project, and `forge project new`'s scaffold + the generated Dockerfile
 		//     both write/build the raw `./cmd/<project>` path. Sanitizing the
 		//     project name here (the historical default) produced a build
 		//     target that pointed at cmd/<project_underscored> while the tree
@@ -194,11 +221,11 @@ func ComponentsToJSON(projectName string, components []config.ComponentConfig) (
 	return out, nil
 }
 
-// GenerateComponentsJSON writes deploy/kcl/components_gen.json from the
-// project's component list.
+// GenerateComponentsJSON writes deploy/kcl/components_gen.json from a
+// discovered component [Inventory].
 //
 // components_gen.json is a LOCKFILE-CLASS artifact: a pure, deterministic
-// projection of forge.yaml's `components:` with ZERO user-editable
+// projection of what the tree declares, with ZERO user-editable
 // surface. forge owns 100% of it and rewrites it byte-for-byte every
 // run. It is therefore NOT registered in `.forge/hashes.json` and NOT
 // subject to the Tier-1 stomp guard — detecting a "hand-edit" to a
@@ -207,14 +234,13 @@ func ComponentsToJSON(projectName string, components []config.ComponentConfig) (
 // TestE2ESelfCertParallelLaneSubsetCommit guards against: a committed
 // `.forge/hashes.json` recording a render that was never committed makes
 // a clean clone of HEAD refuse to regenerate. An always-regenerated,
-// untracked file sidesteps that entirely (same posture gen/mcp/
-// manifest.json gets when its inputs are absent).
+// untracked file sidesteps that entirely.
 //
 // A stale entry under the legacy tracked path is cleared so an upgrade
 // from a tracked-components_gen.json build can't leave a poison hash
 // behind.
-func GenerateComponentsJSON(projectDir, projectName string, components []config.ComponentConfig, cs *checksums.FileChecksums) error {
-	content, err := ComponentsToJSON(projectName, components)
+func GenerateComponentsJSON(projectDir, projectName string, components Inventory, cs *checksums.FileChecksums) error {
+	content, err := ComponentsToJSON(projectName, components, MigrateCommand(projectDir, projectName))
 	if err != nil {
 		return err
 	}

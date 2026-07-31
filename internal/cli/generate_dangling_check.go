@@ -209,7 +209,7 @@ type typeRef struct {
 // types. Composite-literal expressions (`Workers{...}`) are not
 // considered here because they appear in value positions, not type
 // positions — Go would report a different diagnostic for those.
-func extractUnqualifiedTypeRefs(projectDir, relPath string) []typeRef {
+func extractUnqualifiedTypeRefs(projectDir, relPath string) []typeRef { //nolint:gocognit // a hand-rolled scan of Go type expressions: one flat, independent branch per type-expression form.
 	content, err := os.ReadFile(filepath.Join(projectDir, relPath))
 	if err != nil {
 		return nil

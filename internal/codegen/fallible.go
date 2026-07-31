@@ -103,7 +103,7 @@ func DetectConstructorType(dir string) (string, error) {
 		}
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv != nil || fn.Name == nil || fn.Name.Name != "New" {
+			if !ok || !IsComponentConstructor(fn) {
 				continue
 			}
 			if fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
@@ -146,10 +146,7 @@ func DetectFallibleConstructor(dir string) (bool, error) {
 
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv != nil {
-				continue // skip methods
-			}
-			if fn.Name == nil || fn.Name.Name != "New" {
+			if !ok || !IsComponentConstructor(fn) {
 				continue
 			}
 

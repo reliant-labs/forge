@@ -1,7 +1,7 @@
 """
 Positive test — numeric `image_tag` types as `str` (forge-deploy-prod regression).
 
-`forge deploy` passes the image tag to KCL as a `-D image_tag=<tag>`
+`forge env deploy` passes the image tag to KCL as a `-D image_tag=<tag>`
 binding. The tag is a `git describe` value; on prod it is all-digit
 (e.g. "3826648"). A BARE `-D image_tag=3826648` makes KCL coerce the
 value to `int`, which then violates `RenderEnv.image_tag: str` and the

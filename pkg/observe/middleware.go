@@ -25,8 +25,8 @@ type DefaultMiddlewareDeps struct {
 	Meter metric.Meter
 
 	// Extras are appended to the canonical chain in the order supplied
-	// — useful for project-specific interceptors (auth, tenant,
-	// rate-limit, idempotency, audit) that the canonical chain doesn't
+	// — useful for project-specific interceptors (auth, rate-limit,
+	// idempotency, audit) that the canonical chain doesn't
 	// know about. Order is preserved relative to each other and they
 	// run AFTER the observability layer.
 	Extras []connect.Interceptor
@@ -56,7 +56,7 @@ type DefaultMiddlewareDeps struct {
 //
 //  4. TracingInterceptor   — wraps the handler in an OTel span. Inner
 //     to logging so the span name is stable per procedure even when
-//     auth/tenant rewrites context.
+//     auth rewrites context.
 //
 //  5. MetricsInterceptor   — innermost observability layer. Records
 //     calls/errors/duration. Sitting after tracing means the duration
@@ -64,7 +64,7 @@ type DefaultMiddlewareDeps struct {
 //     observability cost), which is the more meaningful number.
 //
 //  6. Extras              — project-specific interceptors. The canonical
-//     position for auth, tenant, rate-limit, idempotency is INNER to
+//     position for auth, rate-limit, idempotency is INNER to
 //     observability (so failures from those layers still get logged,
 //     traced and counted) and OUTER to the handler. DefaultMiddlewares
 //     appends Extras in the order supplied; callers control inter-Extra
@@ -162,8 +162,8 @@ type Deps struct {
 	// out of the chain).
 	RateLimit connect.Interceptor
 
-	// Extras are additional project-specific interceptors (tenant
-	// scoping, idempotency, anything the named fields don't cover),
+	// Extras are additional project-specific interceptors (idempotency,
+	// anything the named fields don't cover),
 	// appended AFTER the named application layer in the order supplied.
 	// Inter-Extra order is the caller's to control.
 	Extras []connect.Interceptor

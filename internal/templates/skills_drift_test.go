@@ -12,8 +12,10 @@ import (
 // TestSkillsDoNotReferenceRemovedGenFiles asserts that the live skill catalog
 // (everything under project/skills/forge/) never names a `*_gen.go` filename
 // that forge no longer emits. This is the meta-test that guards against the
-// `middleware_gen.go` / `tracing_gen.go` / `metrics_gen.go` class of drift the
-// 2026-05-06 dogfood review caught.
+// `tracing_gen.go` / `metrics_gen.go` class of drift the 2026-05-06 dogfood
+// review caught. (`middleware_gen.go` was in that class then, but forge
+// re-introduced it Wave 5 as the component-middleware decorator, so it now
+// lives in allowedGenFiles above.)
 //
 // Migration skills (those under migrations/v0.x-to-*) are allow-listed because
 // their entire job is to describe the OLD shape so users can detect and remove
@@ -28,12 +30,26 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 	allowedGenFiles := map[string]struct{}{
 		// Per-package mock generation off contract.go.
 		"mock_gen.go": {},
+		// Per-package component-middleware decorator, generated off contract.go
+		// (sibling of mock_gen.go): New<Concrete>WithForgeMiddleware wraps New
+		// through the observe.ComponentChain. Re-introduced Wave 5 as the
+		// in-process observability wrapper (its earlier removal is the historical
+		// case the comment below describes).
+		"middleware_gen.go": {},
 		// pkg/app/wire_gen.go — service/worker/operator Deps wiring.
 		"wire_gen.go": {},
+		// pkg/app/seedgraph_gen.go — the generate-time FK-spine seed helper
+		// (app.SeedGraph): baked INSERT SQL per root table, keyed off the applied
+		// schema, so flow tests seed a spine with no runtime seed dependency.
+		"seedgraph_gen.go": {},
 		// pkg/app/services_gen.go — per-service serviceRow constructors
 		// (registration-in-code; the user-owned pkg/app/services.go
 		// picks which rows the binary serves).
 		"services_gen.go": {},
+		// pkg/middleware/procedures_gen.go — the RPCs a caller may reach with
+		// no credentials, projected from the protos' `auth_required: false`
+		// declarations. The interceptor reads it; the proto declares it.
+		"procedures_gen.go": {},
 		// Per-handler-directory codegen off proto descriptors.
 		"handlers_gen.go": {},
 		// Tier-1 per-RPC CRUD op constructors (projection half of the
@@ -45,13 +61,16 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		"handlers_crud_gen.go":      {},
 		"handlers_crud_test_gen.go": {},
 		"handlers_scaffold_test.go": {}, // post-1.x scaffolded test file
-		"authorizer_gen.go":         {},
-		"tenant_gen.go":             {},
 		"webhook_routes_gen.go":     {},
-		// Pack outputs (under pkg/middleware/<pack>/...).
-		"auth_gen.go":     {}, // jwt-auth pack output (see pack-development SKILL.md)
-		"audit_gen.go":    {}, // audit-log pack output
-		"frontend_gen.go": {}, // pack-development SKILL.md references the frontend codegen helper
+		// Retired codegen outputs — forge no longer emits any of these. Auth is
+		// owned code + the forge/pkg/auth + forge/pkg/apikey libraries, audit is
+		// the forge/pkg/audit library, and frontend components are owned
+		// scaffold. Kept because migration skills still name them in
+		// historical/removal context (those skills are exempt from this walk,
+		// but the entries make the intent explicit).
+		"auth_gen.go":     {}, // retired auth codegen (auth is now forge/pkg/auth + owned code)
+		"audit_gen.go":    {}, // retired audit codegen (audit is now forge/pkg/audit)
+		"frontend_gen.go": {}, // retired frontend codegen (components are owned scaffold now)
 		// ORM / entity wrapper generation.
 		"<entity>_orm_gen.go": {}, // placeholder pattern referenced in skills
 		// Generic suffix references like `*_gen.go` are valid family-level
@@ -62,9 +81,8 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 	// in historical / removed context. Mentions outside such context still
 	// fail. Detected by paragraph-scope keyword.
 	historicalOnly := map[string]struct{}{
-		"middleware_gen.go": {},
-		"tracing_gen.go":    {},
-		"metrics_gen.go":    {},
+		"tracing_gen.go": {},
+		"metrics_gen.go": {},
 	}
 	historicalKeywords := []string{
 		"removed",

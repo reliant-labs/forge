@@ -1,5 +1,5 @@
 # Pinned versions for the forge-vendored Envoy Gateway local-dev install.
-# `forge cluster up` / `forge up --env=<env>` install Envoy Gateway into
+# `forge cluster up` / `forge env up <env>` install Envoy Gateway into
 # the local k3d cluster from these pins so EVERY forge env (local k3d AND
 # cloud) runs the SAME single Gateway API controller — Envoy Gateway,
 # controllerName gateway.envoyproxy.io/gatewayclass-controller, GatewayClass

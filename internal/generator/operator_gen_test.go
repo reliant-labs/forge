@@ -163,7 +163,7 @@ func TestGenerateOperatorBinaryOnly_EmitsWhenDirEmpty(t *testing.T) {
 
 // TestGenerateOperatorBinaryOnly_SkipsOnPerCRDOnlyDir verifies that when
 // only per-CRD reconciler files (e.g. <crd>_controller.go from
-// `forge add crd`) exist, the scaffold still emits operator.go: the CRD
+// `forge scaffold crd`) exist, the scaffold still emits operator.go: the CRD
 // files don't declare `Controller`/`New`/`AddToScheme`, only per-CRD
 // reconciler types.
 func TestGenerateOperatorBinaryOnly_EmitsAlongsidePerCRDFiles(t *testing.T) {

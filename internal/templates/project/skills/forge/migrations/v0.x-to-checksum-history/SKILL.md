@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-checksum-history
-description: Migrate `.forge/checksums.json` from the legacy flat shape (path -> hex string) to the structured shape (path -> {hash, history[]}). The new shape lets `forge upgrade` distinguish stale codegen from genuine user edits, eliminating false-positive "user-modified (skipped)" reports on real template upgrades.
+description: Migrate `.forge/checksums.json` from the legacy flat shape (path -> hex string) to the structured shape (path -> {hash, history[]}). The new shape lets `forge project upgrade` distinguish stale codegen from genuine user edits, eliminating false-positive "user-modified (skipped)" reports on real template upgrades.
+detection: grep -qE '"[^"]+": *"[0-9a-f]{64}"' .forge/checksums.json
 relevance: migration
 ---
 
@@ -9,23 +10,23 @@ relevance: migration
 > **SUPERSEDED.** `.forge/checksums.json` no longer exists in either
 > shape: generated files are now self-certifying (each carries an
 > embedded `forge:hash=<sha256>` marker in its DO-NOT-EDIT header), and
-> the first `forge generate` / `forge upgrade` on a legacy project
+> the first `forge generate` / `forge project upgrade` on a legacy project
 > migrates the manifest automatically — pristine files get stamped,
 > disowns move to `.forge/disowned.json`, comment-incapable outputs to
 > `.forge/hashes.json`, and checksums.json is deleted. This skill is
 > kept only as historical context for the intermediate shape.
 
-Use this skill when `forge upgrade` previously flagged Tier-2 files as
+Use this skill when `forge project upgrade` previously flagged Tier-2 files as
 user-modified even though you didn't touch them — the diff just showed a
 template improvement (renamed import, added comment, refactored helper).
 That's the failure mode this change eliminates. Most users will not have
-to do anything: the migration is transparent on the next `forge upgrade`
+to do anything: the migration is transparent on the next `forge project upgrade`
 or `forge generate`.
 
 ## 1. What changed
 
 Forge tracks each generated file's sha256 checksum in
-`.forge/checksums.json` so `forge upgrade` can distinguish "forge
+`.forge/checksums.json` so `forge project upgrade` can distinguish "forge
 generated this; the template moved on" from "the user edited this, leave
 it alone." Before this change, each file had a single recorded checksum:
 
@@ -41,7 +42,7 @@ it alone." Before this change, each file had a single recorded checksum:
 When a template was updated between forge versions, the on-disk file
 (still the prior render) hashed to a value that matched neither the new
 template nor the recorded checksum (because no checksum existed for the
-prior render — the entry only ever held the current). `forge upgrade`
+prior render — the entry only ever held the current). `forge project upgrade`
 took the conservative path and reported the file as user-modified, even
 though forge itself had rendered every byte of it. The user then had to
 diff the file by hand and decide whether to `--force` overwrite or
@@ -86,7 +87,7 @@ jq '.files | to_entries | .[0].value | type' .forge/checksums.json
 
 There's nothing to do — the migration is transparent.
 
-`forge generate` and `forge upgrade` both call `LoadChecksums`, which
+`forge generate` and `forge project upgrade` both call `LoadChecksums`, which
 accepts both shapes. A legacy hex string is promoted to a structured
 entry with `history` seeded by the same hash. The next time forge
 records a checksum for that path, it appends the new hash to history
@@ -102,7 +103,7 @@ forge generate
 ## 4. Migration (manual part)
 
 Nothing — this change has no user-facing API. The only observable
-difference is that `forge upgrade --dry-run` reports cleaner results on
+difference is that `forge project upgrade --dry-run` reports cleaner results on
 real template upgrades:
 
 - **Before:** `pkg/middleware/requestid.go: user-modified (skipped)` —
@@ -110,10 +111,13 @@ real template upgrades:
 - **After:** `pkg/middleware/requestid.go: would update (clean)` — forge
   recognises the on-disk content as a known prior render.
 
-If you previously had a `--force` step in a CI pipeline to work around
-the false-positive flagging, you can drop it. `forge upgrade` (without
-`--force`) will now correctly auto-update stale-codegen files and skip
-genuinely user-edited ones.
+History tells forge that the file is stale codegen rather than your work,
+but it does **not** overwrite it for you: forge still refuses to replace
+content it cannot distinguish from a deliberate revert. It prints
+`⏭️  <path> matches a PRIOR forge render but not the current template —
+left untouched` and names the opt-in. Advancing those files is
+`forge generate --heal` (all of them) or `forge generate --force` /
+`forge project upgrade --force <path>` (that one).
 
 ### Edge cases
 
@@ -127,15 +131,15 @@ genuinely user-edited ones.
   more than 20 times fall off the back of the window. In practice
   template churn doesn't approach that — most files re-render <5 times
   across a project's lifetime.
-- **`--force` still wins.** `forge upgrade --force` overwrites
+- **`--force` still wins.** `forge project upgrade --force` overwrites
   user-modified files unconditionally, same as before.
-- **Healing is loud, and `--no-heal` opts out.** When the on-disk
-  content matches a *prior* render (the auto-heal case), every
-  overwrite prints `♻️  healing stale codegen: <path>` — never silent.
-  If you deliberately reverted a file to content forge once rendered
-  (your edit hash-collides with history), re-run
-  `forge generate --no-heal`: historical matches are then treated as
-  hand-edits — the Tier-1 guard reports them instead of regenerating.
+- **Healing is opt-in, and loud either way.** There is no `--no-heal`:
+  not healing IS the default. A file whose content matches a *prior*
+  render is left alone with a `⏭️` skip notice naming the opt-in, which
+  is exactly the protection you want when you deliberately reverted a
+  file to content forge once rendered. Opting in with
+  `forge generate --heal` prints `♻️  healed stale codegen: <path>` per
+  overwrite — never silent.
 
 ## 5. Verification
 
@@ -144,18 +148,18 @@ genuinely user-edited ones.
 cat .forge/checksums.json | head -20
 # Each entry should be {"hash": "...", "history": ["...", ...]}.
 
-# `forge upgrade --dry-run` on an unmodified project should report no
+# `forge project upgrade --dry-run` on an unmodified project should report no
 # user-modified files.
-forge upgrade --dry-run | grep -E "user-modified" || echo "no false positives"
+forge project upgrade --dry-run | grep -E "user-modified" || echo "no false positives"
 
 # A genuine user edit is still detected:
 echo "// my edit" >> pkg/middleware/requestid.go
-forge upgrade --dry-run | grep -E "requestid.*user-modified"
+forge project upgrade --dry-run | grep -E "requestid.*user-modified"
 # Expect: pkg/middleware/requestid.go: user-modified (skipped)
 
 # Revert the edit and re-run — should be clean.
 git checkout pkg/middleware/requestid.go
-forge upgrade --dry-run
+forge project upgrade --dry-run
 ```
 
 ## 6. Rollback
@@ -164,8 +168,8 @@ If the new shape causes problems (we don't expect any — it's strictly
 additive), revert by:
 
 ```bash
-# Pin to an older forge build that predates this change.
-forge upgrade --to <prior-version>
+# Pin to an older version of forge, from before this change.
+forge project upgrade --to <prior-version>
 ```
 
 The on-disk JSON is forward-compatible: an older forge reading the new
@@ -188,7 +192,7 @@ whichever shape the active forge build produces.
 ## See also
 
 - `migration-upgrade` — the top-level upgrade skill explaining how
-  `forge upgrade` chooses between auto-update and skip.
+  `forge project upgrade` chooses between auto-update and skip.
 - `internal/checksums/checksums.go` — package docs covering the JSON
   format, the `MatchesAnyKnownRender` helper, and the `historyLimit`
   bound.

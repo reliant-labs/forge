@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 )
 
 // frontendTSPluginPackage is the npm package providing the local TS codegen
@@ -58,7 +60,7 @@ Those local plugins must be on PATH; this command installs them.`,
 
 	cmd.AddCommand(newToolsInstallCmd())
 
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 func newToolsInstallCmd() *cobra.Command {

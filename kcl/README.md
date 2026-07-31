@@ -83,7 +83,7 @@ for the common providers.
 | `env_vars`     | KCL (this file)     | Yes — version-controlled |
 | `secrets_file` | gitignored dotenv   | No — per developer |
 
-Forge's `forge up` host phase loads `secrets_file` first
+Forge's `forge env up` host phase loads `secrets_file` first
 (if set), then layers `env_vars` on top so KCL-declared config wins on
 conflict. Host services see the same per-env config source that
 `K8sCluster` services see via the Deployment's `env` block — the split
@@ -108,15 +108,15 @@ base entity:
 ```kcl
 import forge
 
-schema TenantService(forge.Service):
+schema BillingService(forge.Service):
     region: str               # extra REQUIRED field — enforced at parse time
     tier: "free" | "pro" = "free"
 
     check:
-        region, "TenantService.region is required"
+        region, "BillingService.region is required"
 
-_svc = TenantService {
-    name = "tenant-api", image = "tenant-api", region = "us-east-1"
+_svc = BillingService {
+    name = "billing-api", image = "billing-api", region = "us-east-1"
     deploy = _prod.deploy | { ports = [8080] }
 }
 ```
@@ -135,7 +135,7 @@ load, so your domain invariants are enforced the same way forge's are.
 A deploy often depends on out-of-band facts forge does NOT (and must not)
 create: the cert-manager `cloudflare-api-token` Secret, per-host DNS
 A-records, the load-bearing `*.workspaces` wildcard. Left in a docstring,
-`forge deploy` renders green and THEN ACME / DNS hangs silently. Declare
+`forge env deploy` renders green and THEN ACME / DNS hangs silently. Declare
 them as first-class prerequisites on the Bundle so they're MODELED:
 
 ```kcl
@@ -160,8 +160,8 @@ _bundle = forge.Bundle {
 
 What this buys (beyond a comment):
 
-- **Render-time checklist** — `forge deploy` prints the prerequisites
-  every run; `forge audit` surfaces them as the `prerequisites` category.
+- **Render-time checklist** — `forge env deploy` prints the prerequisites
+  every run; `forge project audit` surfaces them as the `prerequisites` category.
 - **Deploy preflight BLOCK** — a declared `ExternalSecret` that's absent
   (or missing a declared key) on the live target FAILS the deploy before
   the first apply, in its OWN declared namespace, reusing the same
@@ -233,9 +233,9 @@ set is discoverable from the `forge` surface:
 | `image_digests` | `forge.image_digests()`   | when deploying | JSON name→digest map (pins each image to its digest) |
 | `registry`      | `forge.registry(default)` | no (override)  | image registry; the per-env literal is yours, `-D registry=` overrides it |
 
-Plus every non-sensitive per-env **config** field is passed as its own
-`-D <FIELD>=` and surfaced through the generated `config_gen.k`
-(`cfg.APP_ENV` / `cfg.CONFIG_MAPS`) — read those via `cfg.<...>`, never raw
+Per-env **config** is NOT passed via `-D`: it lives in the typed `AppConfig`
+instance in `deploy/kcl/<env>/config.k` and is projected into each workload's
+env by `config_projection.appConfigEnvMap` — read config there, never raw
 `option()`.
 
 ### Per-env conditional manifests
@@ -255,32 +255,34 @@ _bundle = forge.Bundle {
 }
 ```
 
-## Secrets — `${NAME#KEY}` config-contract override
+## Secrets — the `ConfigSecretRef` config-contract override
 
 For a SENSITIVE config field (`sensitive: true` in the config proto), forge's
-config codegen emits the `secret_ref` EnvVar for you into
-`deploy/kcl/<env>/config_gen.k`, defaulting to the `<project>-secrets` Secret
-and a `<env_var lowercased>` key. To bind a field to a DIFFERENT existing
-cluster Secret/key, set its value in the per-env `config.<env>.yaml` to a
-reference string:
+config codegen types the field as a `ConfigSecretRef` on the generated
+`AppConfig` schema, defaulting to the `<project>-secrets` Secret and a
+`<env_var lowercased>` key; `config_projection.appConfigEnvMap` projects it to a
+`from_secret` EnvSource. To bind a field to a DIFFERENT existing cluster
+Secret/key, set its `ConfigSecretRef` in the per-env `deploy/kcl/<env>/config.k`:
 
-```yaml
-# config.prod.yaml
-#   "${NAME}"      -> secret_ref = NAME            (key = codegen default)
-#   "${NAME#KEY}"  -> secret_ref = NAME, key = KEY (override both)
-internal_service_secret: "${control-plane-internal#secret}"
+```kcl
+# deploy/kcl/prod/config.k
+app_config: config_schema.AppConfig = {
+    internal_service_secret = config_schema.ConfigSecretRef {
+        name = "control-plane-internal", key = "secret"
+    }
+}
 ```
 
-The `#KEY` form is for cluster secrets whose keys are kebab-case (e.g.
-`"${db-credentials#database-url}"`) and don't match forge's
-lowercase-env-var default. The Secret itself is provisioned out-of-band
-(ESO / sealed-secrets / `kubectl create secret`). Same rule on a hand-written
-`forge.EnvVar` — see the `EnvVar` schema doc in `schema.k`.
+Use a kebab-case `key` for cluster secrets whose keys don't match forge's
+lowercase-env-var default (e.g. `key = "database-url"`). The Secret itself is
+provisioned out-of-band (ESO / sealed-secrets / `kubectl create secret`). Same
+`secret_ref`/`secret_key` fields exist on a hand-written `forge.EnvVar` — see
+the `EnvVar` schema doc in `schema.k`.
 
 ## Versioning
 
 Pin a `kcl-vX.Y.Z` git tag from your project's `kcl.mod`. The forge CLI
-ships migrations per tagged release so `forge upgrade` can bump
+ships migrations per tagged release so `forge project upgrade` can bump
 versions deterministically. See `migration/v0.x-to-kcl-module/SKILL.md`.
 
 ## Layout

@@ -2,6 +2,7 @@ package scaffolds
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -28,7 +29,6 @@ func TestLintWorkaroundsRoot_Firing(t *testing.T) {
 		t.Fatalf("LintWorkaroundsRoot returned error: %v", err)
 	}
 	wantRules := map[string]bool{
-		"workaround-wire-cast-helper":    false,
 		"workaround-testing-extras":      false,
 		"workaround-cmd-not-in-binaries": false,
 	}
@@ -52,77 +52,51 @@ func TestLintWorkaroundsRoot_Firing(t *testing.T) {
 	}
 }
 
-func TestLintWorkaroundsRoot_DevVendorDockerfileMissingCopy(t *testing.T) {
+// TestLintWorkaroundsRoot_TestingExtrasAdviceIsCurrent pins the advice, not
+// just the rule id. The message shipped for a month saying to "remove once
+// `bootstrap_testing.go.tmpl` auto-stubs interface-typed Deps" — future
+// tense — after computeAutoStubs had already landed that exact capability
+// (1b543069, 2026-06-03, extending it to cross-package selector types).
+//
+// Stale advice in a linter is not a cosmetic defect: it reads as an OPEN GAP,
+// and an open gap is the standing justification for keeping an obsolete fork
+// alive. This one was cited as live evidence in an ownership audit, and
+// control-plane disowned pkg/app/testing.go on 2026-07-02 — a month after the
+// fix — on the strength of it. The rule id firing tells us nothing about
+// whether the sentence is still true, so assert the sentence.
+func TestLintWorkaroundsRoot_TestingExtrasAdviceIsCurrent(t *testing.T) {
 	t.Parallel()
-	res, err := LintWorkaroundsRoot(filepath.Join("testdata", "check_workarounds", "devvendor_missing_copy"))
+	res, err := LintWorkaroundsRoot(filepath.Join("testdata", "check_workarounds", "firing"))
 	if err != nil {
 		t.Fatalf("LintWorkaroundsRoot returned error: %v", err)
 	}
-	var fired bool
+	var msg string
 	for _, f := range res.Findings {
-		if f.Rule != "workaround-dev-vendor-dockerfile" {
-			continue
-		}
-		fired = true
-		if f.Severity != SeverityWarning {
-			t.Errorf("expected severity %q, got %q", SeverityWarning, f.Severity)
-		}
-		if f.Path != "Dockerfile" {
-			t.Errorf("expected path Dockerfile, got %q", f.Path)
+		if f.Rule == "workaround-testing-extras" {
+			msg = f.Message
 		}
 	}
-	if !fired {
-		t.Fatalf("expected workaround-dev-vendor-dockerfile to fire, got findings: %+v", res.Findings)
+	if msg == "" {
+		t.Fatalf("workaround-testing-extras did not fire on the firing fixture: %+v", res.Findings)
 	}
-	// The rule is a warning and must never gate the build.
-	if res.HasErrors() {
-		t.Fatal("dev-vendor-dockerfile finding must be a warning, not an error")
+	// The advice must point at the mechanism that EXISTS.
+	for _, want := range []string{
+		"CLOSED",
+		"computeAutoStubs",
+		"With<Svc>Deps",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message must name the shipped mechanism %q\ngot: %s", want, msg)
+		}
 	}
-}
-
-// TestDevVendorDockerfileWarning_Exported pins the single-rule entry
-// point `forge generate` calls (fr-04c408ebbe): it fires on a dev-vendor
-// project whose Dockerfile lacks the COPY line, stays silent when the
-// line is present, and is silent for a non-dev-vendor project.
-func TestDevVendorDockerfileWarning_Exported(t *testing.T) {
-	t.Parallel()
-	base := filepath.Join("testdata", "check_workarounds")
-
-	t.Run("fires when COPY missing", func(t *testing.T) {
-		f, ok := DevVendorDockerfileWarning(filepath.Join(base, "devvendor_missing_copy"))
-		if !ok {
-			t.Fatal("expected the dev-vendor Dockerfile warning to fire")
-		}
-		if f.Rule != "workaround-dev-vendor-dockerfile" {
-			t.Errorf("rule = %q, want workaround-dev-vendor-dockerfile", f.Rule)
-		}
-		if f.Severity != SeverityWarning {
-			t.Errorf("severity = %q, want %q", f.Severity, SeverityWarning)
-		}
-	})
-
-	t.Run("silent when COPY present", func(t *testing.T) {
-		if _, ok := DevVendorDockerfileWarning(filepath.Join(base, "devvendor_has_copy")); ok {
-			t.Error("must not fire when the Dockerfile already has the COPY line")
-		}
-	})
-
-	t.Run("silent for non-dev-vendor project", func(t *testing.T) {
-		if _, ok := DevVendorDockerfileWarning(filepath.Join(base, "clean")); ok {
-			t.Error("must not fire for a project that is not in dev-vendor mode")
-		}
-	})
-}
-
-func TestLintWorkaroundsRoot_DevVendorDockerfileHasCopy(t *testing.T) {
-	t.Parallel()
-	res, err := LintWorkaroundsRoot(filepath.Join("testdata", "check_workarounds", "devvendor_has_copy"))
-	if err != nil {
-		t.Fatalf("LintWorkaroundsRoot returned error: %v", err)
-	}
-	for _, f := range res.Findings {
-		if f.Rule == "workaround-dev-vendor-dockerfile" {
-			t.Fatalf("Dockerfile already has the COPY .forge-pkg/ line; rule must not fire: %+v", f)
+	// And must not describe the closed gap as future work. "once <X> auto-stubs"
+	// is the exact phrasing that rotted.
+	for _, bad := range []string{
+		"remove once",
+		"auto-stubs interface-typed Deps;",
+	} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("message still advertises the closed gap as future work (%q)\ngot: %s", bad, msg)
 		}
 	}
 }

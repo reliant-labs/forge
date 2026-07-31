@@ -19,7 +19,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 			SoftDelete: true,
 			Fields: []config.PlanEntityField{
 				{Name: "id", Type: "string", PrimaryKey: true},
-				{Name: "org_id", Type: "string", TenantKey: true, NotNull: true},
+				{Name: "org_id", Type: "string", NotNull: true},
 				{Name: "name", Type: "string", NotNull: true},
 				{Name: "description", Type: "string"},
 				{Name: "active", Type: "bool", NotNull: true},
@@ -139,43 +139,35 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("no NullTime temp assignment — Bun scans directly into the struct")
 	}
 
-	// CRUD functions (tenant-scoped)
-	if !strings.Contains(code, "func CreateProject(ctx context.Context, db orm.Context, msg *Project, tenantID string) error {") {
-		t.Error("missing CreateProject with tenantID")
+	// CRUD functions
+	if !strings.Contains(code, "func CreateProject(ctx context.Context, db orm.Context, msg *Project) error {") {
+		t.Error("missing CreateProject")
 	}
-	if !strings.Contains(code, "func GetProjectByID(ctx context.Context, db orm.Context, id string, tenantID string) (*Project, error) {") {
-		t.Error("missing GetProjectByID with tenantID")
+	if !strings.Contains(code, "func GetProjectByID(ctx context.Context, db orm.Context, id string) (*Project, error) {") {
+		t.Error("missing GetProjectByID")
 	}
-	if !strings.Contains(code, "func ListProject(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) ([]*Project, error) {") {
-		t.Error("missing ListProject with tenantID")
+	if !strings.Contains(code, "func ListProject(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*Project, error) {") {
+		t.Error("missing ListProject")
 	}
-	if !strings.Contains(code, "func CountProject(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) (int64, error) {") {
-		t.Error("missing CountProject with tenantID")
+	if !strings.Contains(code, "func CountProject(ctx context.Context, db orm.Context, opts ...orm.QueryOption) (int64, error) {") {
+		t.Error("missing CountProject")
 	}
-	if !strings.Contains(code, "func UpdateProject(ctx context.Context, db orm.Context, msg *Project, tenantID string) error {") {
-		t.Error("missing UpdateProject with tenantID")
+	if !strings.Contains(code, "func UpdateProject(ctx context.Context, db orm.Context, msg *Project) error {") {
+		t.Error("missing UpdateProject")
 	}
-	if !strings.Contains(code, "func DeleteProject(ctx context.Context, db orm.Context, id string, tenantID string) error {") {
-		t.Error("missing DeleteProject with tenantID")
+	if !strings.Contains(code, "func DeleteProject(ctx context.Context, db orm.Context, id string) error {") {
+		t.Error("missing DeleteProject")
 	}
 
 	// The lifecycle now lives in the generic forge/pkg/crud.Repo. The
 	// generated file constructs a per-entity repo whose Spec carries only
-	// the conventions Bun can't read off the struct tags. Tenant
-	// enforcement is the repo's job — driven by Spec.TenantColumn, NOT a
-	// hand-rolled `msg.OrgId = tenantID` in Create.
-	if strings.Contains(code, "msg.OrgId = tenantID") {
-		t.Error("tenant enforcement now lives in pkg/crud; Create should not stamp the tenant inline")
-	}
+	// the conventions Bun can't read off the struct tags.
 	if !strings.Contains(code, `var projectRepo = crud.NewRepo[Project](crud.Spec{`) {
 		t.Error("missing per-entity crud.Repo var for Project")
 	}
 	// gofmt aligns the struct literal; collapse whitespace before matching
 	// the Spec fields.
 	collapsedAll := strings.Join(strings.Fields(code), " ")
-	if !strings.Contains(collapsedAll, `TenantColumn: "org_id"`) {
-		t.Error("Project repo Spec should set TenantColumn to the tenant column")
-	}
 	if !strings.Contains(collapsedAll, "Timestamps: true") {
 		t.Error("Project repo Spec should set Timestamps: true (managed timestamps)")
 	}
@@ -183,9 +175,9 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	if !strings.Contains(code, `"github.com/reliant-labs/forge/pkg/crud"`) {
 		t.Error("generated file should import forge/pkg/crud")
 	}
-	// The delegates forward to the repo with the tenant arg.
-	if !strings.Contains(code, "return projectRepo.Create(ctx, db, msg, tenantID)") {
-		t.Error("CreateProject should delegate to projectRepo.Create with tenantID")
+	// The delegates forward to the repo.
+	if !strings.Contains(code, "return projectRepo.Create(ctx, db, msg)") {
+		t.Error("CreateProject should delegate to projectRepo.Create")
 	}
 
 	// Soft delete is Bun-native (proper TIMESTAMPTZ deleted_at): the
@@ -205,7 +197,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	if !strings.Contains(code, "func ListAllProject(") {
 		t.Error("missing ListAllProject")
 	}
-	if !strings.Contains(code, "return projectRepo.ListAll(ctx, db, tenantID, opts...)") {
+	if !strings.Contains(code, "return projectRepo.ListAll(ctx, db, opts...)") {
 		t.Error("ListAllProject should delegate to projectRepo.ListAll")
 	}
 
@@ -251,7 +243,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	}
 }
 
-func TestGeneratePlanORM_NoTenant(t *testing.T) {
+func TestGeneratePlanORM_Minimal(t *testing.T) {
 	root := t.TempDir()
 
 	entities := []config.PlanEntity{
@@ -274,24 +266,24 @@ func TestGeneratePlanORM_NoTenant(t *testing.T) {
 	}
 	code := string(content)
 
-	// No tenantID parameter
+	// Delegate signatures
 	if !strings.Contains(code, "func CreateTag(ctx context.Context, db orm.Context, msg *Tag) error {") {
-		t.Error("CreateTag should not have tenantID")
+		t.Error("wrong CreateTag signature")
 	}
 	if !strings.Contains(code, "func GetTagByID(ctx context.Context, db orm.Context, id string) (*Tag, error) {") {
-		t.Error("GetTagByID should not have tenantID")
+		t.Error("wrong GetTagByID signature")
 	}
 	if !strings.Contains(code, "func ListTag(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*Tag, error) {") {
-		t.Error("ListTag should not have tenantID")
+		t.Error("wrong ListTag signature")
 	}
 	if !strings.Contains(code, "func CountTag(ctx context.Context, db orm.Context, opts ...orm.QueryOption) (int64, error) {") {
-		t.Error("CountTag should not have tenantID")
+		t.Error("wrong CountTag signature")
 	}
 	if !strings.Contains(code, "func UpdateTag(ctx context.Context, db orm.Context, msg *Tag) error {") {
-		t.Error("UpdateTag should not have tenantID")
+		t.Error("wrong UpdateTag signature")
 	}
 	if !strings.Contains(code, "func DeleteTag(ctx context.Context, db orm.Context, id string) error {") {
-		t.Error("DeleteTag should not have tenantID")
+		t.Error("wrong DeleteTag signature")
 	}
 
 	// No soft-delete
@@ -312,26 +304,22 @@ func TestGeneratePlanORM_NoTenant(t *testing.T) {
 		t.Error("should not import timestamppb without timestamp fields")
 	}
 
-	// The lifecycle lives in the generic crud.Repo. A no-tenant entity
-	// emits a repo with an EMPTY Spec (no TenantColumn, no Timestamps) and
-	// every delegate forwards the empty-string tenant arg.
+	// The lifecycle lives in the generic crud.Repo. A minimal entity emits a
+	// repo with an EMPTY Spec (no Timestamps) and every delegate forwards.
 	if !strings.Contains(code, `"github.com/reliant-labs/forge/pkg/crud"`) {
 		t.Error("generated file should import forge/pkg/crud")
 	}
 	if !strings.Contains(code, "var tagRepo = crud.NewRepo[Tag](crud.Spec{") {
 		t.Error("missing per-entity crud.Repo var for Tag")
 	}
-	if strings.Contains(code, "TenantColumn:") {
-		t.Error("no-tenant entity's repo Spec must not set TenantColumn")
+	if !strings.Contains(code, `return tagRepo.Create(ctx, db, msg)`) {
+		t.Error("CreateTag should delegate to tagRepo.Create")
 	}
-	if !strings.Contains(code, `return tagRepo.Create(ctx, db, msg, "")`) {
-		t.Error("CreateTag should delegate to tagRepo.Create with an empty tenant arg")
+	if !strings.Contains(code, `return tagRepo.Delete(ctx, db, id)`) {
+		t.Error("DeleteTag should delegate to tagRepo.Delete")
 	}
-	if !strings.Contains(code, `return tagRepo.Delete(ctx, db, id, "")`) {
-		t.Error("DeleteTag should delegate to tagRepo.Delete with an empty tenant arg")
-	}
-	if !strings.Contains(code, `return tagRepo.Update(ctx, db, msg, "")`) {
-		t.Error("UpdateTag should delegate to tagRepo.Update with an empty tenant arg")
+	if !strings.Contains(code, `return tagRepo.Update(ctx, db, msg)`) {
+		t.Error("UpdateTag should delegate to tagRepo.Update")
 	}
 
 	// The inline Bun query bodies all moved into pkg/crud.
@@ -391,9 +379,9 @@ func TestGeneratePlanORM_SoftDeleteOnly(t *testing.T) {
 	// ListAll is emitted iff SoftDelete and forwards to the repo (the
 	// WhereAllWithDeleted opt-out now lives in pkg/crud.ListAll).
 	if !strings.Contains(code, "func ListAllItem(ctx context.Context, db orm.Context, opts ...orm.QueryOption)") {
-		t.Error("missing ListAllItem without tenant")
+		t.Error("missing ListAllItem")
 	}
-	if !strings.Contains(code, `return itemRepo.ListAll(ctx, db, "", opts...)`) {
+	if !strings.Contains(code, `return itemRepo.ListAll(ctx, db, opts...)`) {
 		t.Error("ListAllItem should delegate to itemRepo.ListAll")
 	}
 
@@ -401,7 +389,7 @@ func TestGeneratePlanORM_SoftDeleteOnly(t *testing.T) {
 	if strings.Contains(code, "db.Bun().NewDelete()") {
 		t.Error("Delete body moved to pkg/crud; no inline NewDelete")
 	}
-	if !strings.Contains(code, `return itemRepo.Delete(ctx, db, id, "")`) {
+	if !strings.Contains(code, `return itemRepo.Delete(ctx, db, id)`) {
 		t.Error("DeleteItem should delegate to itemRepo.Delete")
 	}
 
@@ -456,17 +444,26 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 	entities := []config.PlanEntity{
 		{
 			Name: "Record",
+			// The plan vocabulary is the CANONICAL column vocabulary
+			// (schemadef.MapDeclaredType) with a "[]" prefix for arrays —
+			// there is no "int32"/"float"/"double" column, because
+			// INTEGER/SMALLINT canonicalize to int64 and REAL/FLOAT/NUMERIC
+			// to float64. The proto-type aliases this fixture used to carry
+			// had no producer; they described a shape introspection cannot
+			// hand the generator.
 			Fields: []config.PlanEntityField{
 				{Name: "id", Type: "int64", PrimaryKey: true},
-				{Name: "count", Type: "int32", NotNull: true},
+				{Name: "count", Type: "int64", NotNull: true},
 				{Name: "enabled", Type: "bool", NotNull: true},
-				{Name: "score", Type: "float"},
-				{Name: "price", Type: "double"},
+				{Name: "score", Type: "float64"},
 				{Name: "data", Type: "bytes"},
 				{Name: "label", Type: "string"},
 				{Name: "meta", Type: "json", NotNull: true},
 				{Name: "tags", Type: "[]string", NotNull: true},
 				{Name: "nums", Type: "[]int64"},
+				{Name: "flags", Type: "[]bool", NotNull: true},
+				{Name: "chunks", Type: "[]bytes", NotNull: true},
+				{Name: "marks", Type: "[]time", NotNull: true},
 			},
 		},
 	}
@@ -496,14 +493,23 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 	}
 	// Struct fields are gofmt-aligned; collapse whitespace before matching.
 	collapsedStruct := strings.Join(strings.Fields(code), " ")
-	if !strings.Contains(collapsedStruct, "Score *float32 `bun:\"score\"`") {
-		t.Error("nullable float should be a *float32 struct field")
-	}
-	if !strings.Contains(collapsedStruct, "Price *float64 `bun:\"price\"`") {
-		t.Error("nullable double should be a *float64 struct field")
+	if !strings.Contains(collapsedStruct, "Score *float64 `bun:\"score\"`") {
+		t.Error("nullable float64 should be a *float64 struct field")
 	}
 	if !strings.Contains(collapsedStruct, "Label *string `bun:\"label\"`") {
 		t.Error("nullable string should be a *string struct field")
+	}
+	// Array columns project to NATIVE slices — a BOOLEAN[]/BYTEA[]/
+	// TIMESTAMPTZ[] column is not a []string, and Bun binds each of these
+	// natively (see pkg/orm's TestArrayColumns_RoundTripThroughBunAndPostgres).
+	for _, want := range []string{
+		"Flags []bool `bun:\"flags,array,notnull\"`",
+		"Chunks [][]byte `bun:\"chunks,array,notnull\"`",
+		"Marks []time.Time `bun:\"marks,array,notnull\"`",
+	} {
+		if !strings.Contains(collapsedStruct, want) {
+			t.Errorf("array column projection missing %q", want)
+		}
 	}
 	for _, temp := range []string{"dbScore", "dbPrice", "dbLabel"} {
 		if strings.Contains(code, temp) {
@@ -700,7 +706,7 @@ func TestGeneratePlanORM_References(t *testing.T) {
 	}
 }
 
-func TestGeneratePlanORM_TenantOnlyNoSoftDelete(t *testing.T) {
+func TestGeneratePlanORM_NoSoftDelete(t *testing.T) {
 	root := t.TempDir()
 
 	entities := []config.PlanEntity{
@@ -708,7 +714,6 @@ func TestGeneratePlanORM_TenantOnlyNoSoftDelete(t *testing.T) {
 			Name: "Setting",
 			Fields: []config.PlanEntityField{
 				{Name: "id", Type: "string", PrimaryKey: true},
-				{Name: "tenant_id", Type: "string", TenantKey: true, NotNull: true},
 				{Name: "key", Type: "string", NotNull: true},
 				{Name: "value", Type: "string"},
 			},
@@ -725,18 +730,13 @@ func TestGeneratePlanORM_TenantOnlyNoSoftDelete(t *testing.T) {
 	}
 	code := string(content)
 
-	// Tenant-scoped CRUD
-	if !strings.Contains(code, "func CreateSetting(ctx context.Context, db orm.Context, msg *Setting, tenantID string) error {") {
-		t.Error("missing tenant-scoped Create")
+	if !strings.Contains(code, "func CreateSetting(ctx context.Context, db orm.Context, msg *Setting) error {") {
+		t.Error("wrong CreateSetting signature")
 	}
 
-	// Tenant isolation is driven by the repo Spec's TenantColumn (the
-	// inline id/tenant WHERE clauses moved into pkg/crud). With no soft
-	// delete, the Spec carries no LegacyTextDeletedAt flag and the struct
-	// has no soft_delete tag.
-	if !strings.Contains(strings.Join(strings.Fields(code), " "), `TenantColumn: "tenant_id"`) {
-		t.Error("Setting repo Spec should set TenantColumn to tenant_id")
-	}
+	// With no soft delete, the Spec carries no LegacyTextDeletedAt flag and
+	// the struct has no soft_delete tag; the inline query bodies live in
+	// pkg/crud.
 	if strings.Contains(code, "db.Bun().NewUpdate()") {
 		t.Error("Update body moved to pkg/crud; no inline NewUpdate")
 	}
@@ -747,12 +747,12 @@ func TestGeneratePlanORM_TenantOnlyNoSoftDelete(t *testing.T) {
 		t.Error("no soft-delete tag expected without SoftDelete")
 	}
 
-	// Delegates forward to the repo with the tenant arg.
-	if !strings.Contains(code, "return settingRepo.Update(ctx, db, msg, tenantID)") {
-		t.Error("UpdateSetting should delegate to settingRepo.Update with tenantID")
+	// Delegates forward to the repo.
+	if !strings.Contains(code, "return settingRepo.Update(ctx, db, msg)") {
+		t.Error("UpdateSetting should delegate to settingRepo.Update")
 	}
-	if !strings.Contains(code, "return settingRepo.Delete(ctx, db, id, tenantID)") {
-		t.Error("DeleteSetting should delegate to settingRepo.Delete with tenantID")
+	if !strings.Contains(code, "return settingRepo.Delete(ctx, db, id)") {
+		t.Error("DeleteSetting should delegate to settingRepo.Delete")
 	}
 
 	// No ListAll (no soft-delete)
@@ -828,7 +828,7 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 	if strings.Contains(code, "ulid.Make()") {
 		t.Error("ULID generation lives in pkg/crud; no inline ulid.Make()")
 	}
-	if !strings.Contains(code, `return widgetRepo.Create(ctx, db, msg, "")`) {
+	if !strings.Contains(code, `return widgetRepo.Create(ctx, db, msg)`) {
 		t.Error("CreateWidget should delegate to widgetRepo.Create")
 	}
 }
@@ -842,7 +842,7 @@ func TestGeneratePlanORM_ExplicitPKNotDuplicated(t *testing.T) {
 			Name: "Counter",
 			Fields: []config.PlanEntityField{
 				{Name: "counter_id", Type: "int64", PrimaryKey: true},
-				{Name: "value", Type: "int32", NotNull: true},
+				{Name: "value", Type: "int64", NotNull: true},
 			},
 		},
 	}
@@ -881,7 +881,7 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 			Timestamps: true,
 			Fields: []config.PlanEntityField{
 				{Name: "id", Type: "string", PrimaryKey: true},
-				{Name: "org_id", Type: "string", TenantKey: true, NotNull: true},
+				{Name: "org_id", Type: "string", NotNull: true},
 				{Name: "title", Type: "string", NotNull: true},
 			},
 		},
@@ -897,18 +897,15 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 	}
 	code := string(content)
 
-	// The SET-clause column selection (exclude PK/tenant/created_at/
-	// deleted_at, re-stamp updated_at) now lives in pkg/crud, tested there
-	// against real postgres. The generator's contract is to emit the repo
-	// Spec that drives it and a thin Update delegate that forwards.
+	// The SET-clause column selection (exclude PK/created_at/deleted_at,
+	// re-stamp updated_at) now lives in pkg/crud, tested there against real
+	// postgres. The generator's contract is to emit the repo Spec that drives
+	// it and a thin Update delegate that forwards.
 	collapsed := strings.Join(strings.Fields(code), " ")
-	if !strings.Contains(collapsed, `TenantColumn: "org_id"`) {
-		t.Error("Task repo Spec should set TenantColumn to org_id")
-	}
 	if !strings.Contains(collapsed, "Timestamps: true") {
 		t.Error("Task repo Spec should set Timestamps: true")
 	}
-	if !strings.Contains(code, "return taskRepo.Update(ctx, db, msg, tenantID)") {
+	if !strings.Contains(code, "return taskRepo.Update(ctx, db, msg)") {
 		t.Error("UpdateTask should delegate to taskRepo.Update")
 	}
 	// The Columns var still lists every declared column (it doubles as the
@@ -947,10 +944,9 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 			Fields: []config.PlanEntityField{
 				{Name: "id", Type: "string", PrimaryKey: true},
 				{Name: "title", Type: "string", NotNull: true},
-				// Legacy proto-type alias stays mapped during the transition;
 				// NOT NULL declared timestamps become bare time.Time fields.
-				{Name: "created_at", Type: "google.protobuf.Timestamp", NotNull: true},
-				{Name: "updated_at", Type: "timestamp", NotNull: true},
+				{Name: "created_at", Type: "time", NotNull: true},
+				{Name: "updated_at", Type: "time", NotNull: true},
 				{Name: "deleted_at", Type: "time"},
 			},
 		},
@@ -1024,7 +1020,6 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 			Timestamps: true,
 			Fields: []config.PlanEntityField{
 				{Name: "id", Type: "string", PrimaryKey: true},
-				{Name: "org_id", Type: "string", TenantKey: true, NotNull: true},
 				{Name: "title", Type: "string", NotNull: true},
 				{Name: "url", Type: "string"},
 			},
@@ -1048,9 +1043,8 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 	}
 	task := string(taskSrc)
 
-	// Tenant-scoped signature mirrors UpdateTask: fields slice, then tenantID.
-	if !strings.Contains(task, "func UpdateTaskMasked(ctx context.Context, db orm.Context, msg *Task, fields []string, tenantID string) error {") {
-		t.Error("missing tenant-scoped UpdateTaskMasked signature")
+	if !strings.Contains(task, "func UpdateTaskMasked(ctx context.Context, db orm.Context, msg *Task, fields []string) error {") {
+		t.Error("missing UpdateTaskMasked signature")
 	}
 	maskedIdx := strings.Index(task, "func UpdateTaskMasked(")
 	if maskedIdx == -1 {
@@ -1063,11 +1057,11 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 
 	// The masked-update mechanics (empty-mask no-op, updatable-column
 	// allowlist, UnknownFieldError sentinel, .Column(cols...) SET clause,
-	// updated_at stamp, tenant + soft-delete WHERE) all moved into
+	// updated_at stamp, soft-delete WHERE) all moved into
 	// pkg/crud.UpdateMasked, tested there against real postgres. The
 	// generator's contract is the delegate that forwards to it.
-	if !strings.Contains(masked, "return taskRepo.UpdateMasked(ctx, db, msg, fields, tenantID)") {
-		t.Error("UpdateTaskMasked should delegate to taskRepo.UpdateMasked with the fields slice and tenantID")
+	if !strings.Contains(masked, "return taskRepo.UpdateMasked(ctx, db, msg, fields)") {
+		t.Error("UpdateTaskMasked should delegate to taskRepo.UpdateMasked with the fields slice")
 	}
 	// None of the old inline machinery should survive in the generated file.
 	for _, gone := range []string{"orm.UnknownFieldError", "Column(cols...)", "stampUpdatedAt", `deleted_at\" IS NULL`} {
@@ -1081,9 +1075,8 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 		t.Fatalf("ReadFile error = %v", err)
 	}
 	note := string(noteSrc)
-	// Un-tenanted signature has no tenantID parameter.
 	if !strings.Contains(note, "func UpdateNoteMasked(ctx context.Context, db orm.Context, msg *Note, fields []string) error {") {
-		t.Error("missing un-tenanted UpdateNoteMasked signature")
+		t.Error("missing UpdateNoteMasked signature")
 	}
 }
 
@@ -1318,7 +1311,7 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 	}
 
 	// Create delegates to the repo.
-	if !strings.Contains(code, `return hypothesisRepo.Create(ctx, db, msg, "")`) {
+	if !strings.Contains(code, `return hypothesisRepo.Create(ctx, db, msg)`) {
 		t.Error("CreateHypothesis should delegate to hypothesisRepo.Create")
 	}
 
@@ -1328,47 +1321,71 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 	}
 }
 
-// TestGeneratePlanORM_Int32PKCreate_ServerAllocated pins the non-int64
-// integer PK: like int64, an int32 BIGSERIAL/SERIAL PK is server-allocated
-// — the column is excluded from the INSERT and the database-assigned value
-// is read back via RETURNING into msg.Id. Bun handles the int64→int32
-// conversion at the scan boundary, so no explicit int32(...) conversion is
-// emitted (and there is no LastInsertId fallback — postgres-only RETURNING).
-func TestGeneratePlanORM_Int32PKCreate_ServerAllocated(t *testing.T) {
+// TestGeneratePlanORM_GetClassifiesMissingRow pins the ONE place the
+// generated ORM classifies a storage error: Get.
+//
+// The delegate used to hand back the raw orm.ErrNoRows sentinel, so every
+// hand-written RPC that loads a row re-derived the same three lines —
+// `if errors.Is(err, orm.ErrNoRows) { return svcerr.NotFound("<entity>") }`
+// — once per entity. A real run wrote that block three times in ONE file
+// (loadOrder, loadPrescription, loadProduct). The generated CRUD path never
+// paid it (crud.mapRepoErr classifies), which is what made it invisible;
+// pkg/svcerr's own doc comment cites exactly this per-package duplication as
+// its reason for existing.
+//
+// The asymmetry is deliberate and is asserted here so it cannot be
+// "tidied": Update and Delete keep the sentinel. pkg/crud documents
+// swallowing orm.ErrNoRows in an entity's Persist closure as the supported
+// way to opt into absent-is-success (AIP-135 allow_missing), and classifying
+// it in those delegates would break the one escape hatch forge points users
+// at.
+func TestGeneratePlanORM_GetClassifiesMissingRow(t *testing.T) {
 	root := t.TempDir()
-
-	entities := []config.PlanEntity{
-		{
-			Name: "Tick",
-			Fields: []config.PlanEntityField{
-				{Name: "id", Type: "int32", PrimaryKey: true, NotNull: true},
-				{Name: "label", Type: "string", NotNull: true},
-			},
+	entities := []config.PlanEntity{{
+		Name:       "Prescription",
+		Timestamps: true,
+		Fields: []config.PlanEntityField{
+			{Name: "id", Type: "string", PrimaryKey: true},
+			{Name: "patient_id", Type: "string", NotNull: true},
 		},
+	}}
+	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
+		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
-
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
-		t.Fatalf("error = %v", err)
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "prescription_orm.go"))
+	if err != nil {
+		t.Fatalf("ReadFile prescription_orm.go error = %v", err)
 	}
+	code := string(content)
 
-	code := readGeneratedORM(t, root, "tick_orm.go")
-
-	// Like int64, an int32 SERIAL PK is server-allocated. The exclude/
-	// RETURNING/scan behaviour moved into pkg/crud (detected off Bun's
-	// schema); the generator's contract is the ,pk,autoincrement struct tag.
-	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Id int32 `bun:\"id,pk,autoincrement\"`") {
-		t.Error("server-allocated int32 PK should carry the bun ,pk,autoincrement tag")
+	// The Get delegate classifies the missing row itself.
+	if !strings.Contains(code, "\tif errors.Is(err, orm.ErrNoRows) {\n\t\treturn nil, svcerr.NotFound(\"prescription\")\n\t}") {
+		t.Errorf("GetPrescriptionByID must map the missing row to svcerr.NotFound(%q); got:\n%s",
+			"prescription", code)
 	}
-	// None of the old inline server-allocation machinery survives.
-	for _, gone := range []string{`q.ExcludeColumn("id")`, `Returning(`, "q.Exec(ctx, &msg.Id)", "msg.Id = int32(", "LastInsertId()"} {
-		if strings.Contains(code, gone) {
-			t.Errorf("server-allocation inline %q moved to pkg/crud; should not appear in generated output", gone)
+	// A bare `return prescriptionRepo.Get(...)` is the pre-fix shape: the
+	// sentinel escaping to every caller.
+	if strings.Contains(code, "\treturn prescriptionRepo.Get(ctx, db, id)\n") {
+		t.Error("GetPrescriptionByID must not forward the raw repo error — that is the orm.ErrNoRows leak")
+	}
+	// The classification needs its imports; the type-check test compiles the
+	// result, this names them so a silent drop is legible.
+	for _, imp := range []string{`"errors"`, `"github.com/reliant-labs/forge/pkg/svcerr"`} {
+		if !strings.Contains(code, imp) {
+			t.Errorf("generated ORM file should import %s for the Get classification", imp)
 		}
 	}
 
-	// Get/Delete keep the int32 PK signature.
-	if !strings.Contains(code, "func GetTickByID(ctx context.Context, db orm.Context, id int32)") {
-		t.Error("GetTickByID should take an int32 id")
+	// Write delegates stay on the sentinel — the documented absent-is-success
+	// escape hatch reads it.
+	if !strings.Contains(code, "\treturn prescriptionRepo.Delete(ctx, db, id)\n") {
+		t.Error("DeletePrescription must stay a pure delegate: pkg/crud's Persist-closure escape hatch matches orm.ErrNoRows")
+	}
+	if !strings.Contains(code, "\treturn prescriptionRepo.Update(ctx, db, msg)\n") {
+		t.Error("UpdatePrescription must stay a pure delegate: pkg/crud's Persist-closure escape hatch matches orm.ErrNoRows")
+	}
+	if n := strings.Count(code, "return nil, svcerr.NotFound("); n != 1 {
+		t.Errorf("exactly one delegate (Get) classifies the missing row; got %d svcerr.NotFound call(s)", n)
 	}
 }
 
@@ -1390,5 +1407,32 @@ func TestBunTag_GeneratedColumnScanOnly(t *testing.T) {
 	genArr := bunTag(ormField{columnName: "tags_lc", isGenerated: true, isArray: true})
 	if !strings.Contains(genArr, "array") || !strings.Contains(genArr, "scanonly") {
 		t.Errorf("generated array column should carry both ,array and ,scanonly; got %s", genArr)
+	}
+}
+
+func TestBunTag_DefaultOnlyWhenGoValueCanBeAbsent(t *testing.T) {
+	// A NOT NULL non-timestamp column (e.g. a bool `default:true`) must NOT
+	// carry ,default: — Bun would treat the Go zero (false) as "unset" and
+	// substitute the DB default, silently flipping an intentional false to true.
+	boolDefault := bunTag(ormField{columnName: "is_active", notNull: true, hasDefault: true, columnDef: "true"})
+	if !strings.Contains(boolDefault, "notnull") {
+		t.Errorf("NOT NULL column should carry ,notnull; got %s", boolDefault)
+	}
+	if strings.Contains(boolDefault, "default:") {
+		t.Errorf("NOT NULL non-timestamp column with a DB default must NOT carry ,default:; got %s", boolDefault)
+	}
+
+	// Regression: a nullable column with a DB default still keeps ,default:
+	// (a nil pointer legitimately means "absent" → let the DB default fire).
+	nullableDefault := bunTag(ormField{columnName: "note", notNull: false, hasDefault: true, columnDef: "'n/a'"})
+	if !strings.Contains(nullableDefault, "default:'n/a'") {
+		t.Errorf("nullable column with a DB default should keep ,default:; got %s", nullableDefault)
+	}
+
+	// Regression: a NOT NULL timestamp with a DB default still keeps ,default:
+	// (server-stamped; the zero time.Time legitimately means "let the DB stamp it").
+	tsDefault := bunTag(ormField{columnName: "created_at", notNull: true, isTimestamp: true, hasDefault: true, columnDef: "now()"})
+	if !strings.Contains(tsDefault, "default:now()") {
+		t.Errorf("NOT NULL timestamp with a DB default should keep ,default:; got %s", tsDefault)
 	}
 }

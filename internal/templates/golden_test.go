@@ -74,7 +74,6 @@ func projectData() any {
 		GoVersionMinor         string
 		DockerBuilderGoVersion string
 		CLI                    string
-		LocalForgePkgVendored  bool
 		VersionVar             string
 		Binaries               []struct {
 			Dir     string
@@ -93,7 +92,6 @@ func projectData() any {
 		GoVersionMinor:         "26",
 		DockerBuilderGoVersion: "1.26",
 		CLI:                    "forge",
-		LocalForgePkgVendored:  false,
 		VersionVar:             "",
 		// A fresh scaffold ships only the primary binary; the golden
 		// Dockerfile builds + copies just cmd/demo. Multi-binary projects
@@ -173,14 +171,12 @@ func TestGoldenSnapshots(t *testing.T) {
 			render: func(t *testing.T) []byte {
 				data := CIWorkflowData{
 					ProjectName:         "demo",
-					GoVersion:           "1.26",
 					LintGolangci:        true,
 					LintMigrationSafety: true,
 					TestRace:            true,
 					PermContents:        "read",
 					Module:              "github.com/example/demo",
 					Registry:            "ghcr",
-					GithubOrg:           "example",
 					ForgeVersion:        "v0.0.0-test",
 					HasDocker:           true,
 					VerifyGenerated:     true,
@@ -193,7 +189,6 @@ func TestGoldenSnapshots(t *testing.T) {
 			render: func(t *testing.T) []byte {
 				data := CIWorkflowData{
 					ProjectName:  "demo",
-					GoVersion:    "1.26",
 					HasFrontends: true,
 					Frontends: []FrontendCIConfig{
 						{Name: "web", Path: "frontends/web"},
@@ -219,7 +214,6 @@ func TestGoldenSnapshots(t *testing.T) {
 					Environments:        []string{"dev", "staging", "prod"},
 					Module:              "github.com/example/demo",
 					Registry:            "ghcr",
-					GithubOrg:           "example",
 					FrontendName:        "web",
 					ForgeVersion:        "v0.0.0-test",
 				}

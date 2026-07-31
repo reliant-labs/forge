@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -12,14 +13,21 @@ import (
 // to extract service, entity, and config data from all proto files into forge_descriptor.json.
 func runDescriptorGenerate(projectDir string) error {
 	// Collect every proto/<sub>/ that contains .proto files. This includes
-	// the canonical {services,api,db,config} dirs plus any pack-emitted
-	// proto trees (e.g. proto/audit/ from the audit-log pack). Without
-	// the broader walk, pack services are invisible to the descriptor
+	// the canonical {services,api,db,config} dirs plus any scaffolded
+	// proto trees (e.g. proto/audit/). Without
+	// the broader walk, those services are invisible to the descriptor
 	// and downstream codegen (frontend hooks, mocks, etc).
 	protoPaths := discoverProtoSubdirs(projectDir)
 
 	if len(protoPaths) == 0 {
 		return nil // Nothing to extract
+	}
+
+	// Vendor buf/validate/validate.proto if any proto imports it, so the
+	// descriptor buf run resolves the buf.validate rules the extractor
+	// reads (fieldConstraintsFromDescriptor).
+	if err := ensureValidateProtoVendored(projectDir); err != nil {
+		return fmt.Errorf("vendor buf/validate/validate.proto: %w", err)
 	}
 
 	// Remove stale descriptor + any leftover staging fragments so the
@@ -35,10 +43,10 @@ func runDescriptorGenerate(projectDir string) error {
 
 	fmt.Println("🔨 Running protoc-gen-forge (mode=descriptor) to extract proto metadata...")
 
-	pluginArgs := append(forgeCmd, "protoc-gen-forge")
+	pluginArgs := slices.Concat(forgeCmd, []string{"protoc-gen-forge"})
 	quoted := make([]string, len(pluginArgs))
 	for i, a := range pluginArgs {
-		quoted[i] = fmt.Sprintf(`"%s"`, a)
+		quoted[i] = fmt.Sprintf("%q", a)
 	}
 	pluginCmd := "[" + strings.Join(quoted, ", ") + "]"
 
@@ -81,6 +89,18 @@ plugins:
 	// invocations safe — the merge happens in a single parent process.
 	if err := MergeDescriptorFragments(filepath.Join(projectDir, "gen")); err != nil {
 		return fmt.Errorf("merge descriptor fragments: %w", err)
+	}
+
+	// Post-condition: proto files exist, so the plugin must have run and
+	// the merged descriptor must be on disk (every plugin invocation
+	// creates the staging dir even when its fragment is empty, and the
+	// merge writes the file whenever the staging dir exists). A missing
+	// descriptor here means the self-invoked plugin silently never
+	// executed — fail loudly instead of letting downstream codegen
+	// quietly emit nothing.
+	descPath := filepath.Join(projectDir, "gen", "forge_descriptor.json")
+	if _, err := os.Stat(descPath); err != nil {
+		return fmt.Errorf("buf generate reported success but %s was not produced — protoc-gen-forge (invoked as %s) did not run", descPath, pluginCmd)
 	}
 
 	fmt.Println("  ✅ forge_descriptor.json generated")

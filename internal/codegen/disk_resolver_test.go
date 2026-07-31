@@ -28,16 +28,9 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
-
-// authzFieldRe matches the testConfig authz field declaration regardless
-// of column alignment: the Tier-1 write chokepoint canonical-formats Go
-// output (gofmt), so the field's padding depends on its sibling fields'
-// lengths and is not this test's business.
-var authzFieldRe = regexp.MustCompile(`authz\s+middleware\.Authorizer`)
 
 // scaffoldComponentDir writes <projectDir>/<roleRoot>/<dir>/<file> with a
 // minimal Deps + New shape under the given package clause.
@@ -225,12 +218,11 @@ func TestGenerateBootstrapTesting_SnakeCaseHandlerDir(t *testing.T) {
 
 	services := []ServiceDef{{Name: "EngineShadowService", ModulePath: "example.com/proj"}}
 	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
-		GenContext:         GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
-		Services:           services,
-		Packages:           nil,
-		Workers:            nil,
-		Operators:          nil,
-		MultiTenantEnabled: false,
+		GenContext: GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:   services,
+		Packages:   nil,
+		Workers:    nil,
+		Operators:  nil,
 	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
@@ -255,174 +247,6 @@ func TestGenerateBootstrapTesting_SnakeCaseHandlerDir(t *testing.T) {
 	}
 }
 
-// TestGenerateBootstrapTesting_AuthzAware is the regression for the
-// control-plane disown of pkg/app/testing.go: a service that declares no
-// Authorizer dep (carve-out / external-component / descriptor-authz) must NOT
-// get deps.Authorizer wired in its test factory — that field doesn't exist on
-// its Deps, so emitting it is a compile error. A service that DOES declare the
-// dep keeps the wiring. The signal is the same one inventory_gen reads (a Deps
-// field named "Authorizer"), so the test harness and the run path agree.
-func TestGenerateBootstrapTesting_AuthzAware(t *testing.T) {
-	projectDir := t.TempDir()
-
-	// Service WITH an Authorizer dep — the normal case.
-	authedSrc := `package authed
-
-import "log/slog"
-
-type Authorizer interface{ Can(string) bool }
-
-type Deps struct {
-	Logger     *slog.Logger
-	Authorizer Authorizer
-}
-
-type Service struct{ deps Deps }
-
-func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
-
-func (s *Service) Register(mux interface{ Handle(string, interface{}) }, opts ...interface{}) {}
-`
-	writeFileT(t, filepath.Join(projectDir, "internal", "handlers", "authed", "service.go"), authedSrc)
-
-	// Service WITHOUT an Authorizer dep — carve-out / descriptor-authz shape.
-	carveSrc := `package carve
-
-import "log/slog"
-
-type Deps struct {
-	Logger *slog.Logger
-}
-
-type Service struct{ deps Deps }
-
-func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
-
-func (s *Service) Register(mux interface{ Handle(string, interface{}) }, opts ...interface{}) {}
-`
-	writeFileT(t, filepath.Join(projectDir, "internal", "handlers", "carve", "service.go"), carveSrc)
-
-	services := []ServiceDef{
-		{Name: "AuthedService", ModulePath: "example.com/proj"},
-		{Name: "CarveService", ModulePath: "example.com/proj"},
-	}
-	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
-		GenContext: GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
-		Services:   services,
-	}); err != nil {
-		t.Fatalf("GenerateBootstrapTesting: %v", err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "testing.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(data)
-	mustParseGo(t, "testing.go", data)
-
-	// The authed service keeps its Authorizer wiring.
-	if !strings.Contains(content, "deps.Authorizer = cfg.authz") {
-		t.Errorf("authed service must wire deps.Authorizer:\n%s", content)
-	}
-	// And the file still declares the shared authz scaffolding.
-	for _, want := range []string{"func WithAuthorizer(", "testkit.PermissiveAuthorizer{}"} {
-		if !strings.Contains(content, want) {
-			t.Errorf("testing.go missing %q (an authed service is present):\n%s", want, content)
-		}
-	}
-	if !authzFieldRe.MatchString(content) {
-		t.Errorf("testing.go missing the authz middleware.Authorizer field (an authed service is present):\n%s", content)
-	}
-
-	// The carve service's factory body must NOT wire deps.Authorizer (the
-	// field doesn't exist on its Deps — this is the compile fix).
-	carveDeps := sliceBetween(content, "func newTestCarveDeps(", "return deps")
-	if strings.Contains(carveDeps, "deps.Authorizer") {
-		t.Errorf("carve service (no Authorizer dep) must NOT wire deps.Authorizer:\n%s", carveDeps)
-	}
-	// But the test seam is preserved: NewTestCarveServer still mounts the authz
-	// interceptor — threading the cross-cutting test authorizer (cfg.authz)
-	// directly, NOT the non-existent deps.Authorizer — so WithAuthorizer can
-	// still exercise denials end-to-end for carved services.
-	carveServer := sliceBetween(content, "func NewTestCarveServer(", "return srv, client")
-	if !strings.Contains(carveServer, "middleware.AuthzInterceptor(cfg.authz)") {
-		t.Errorf("carve service server must mount AuthzInterceptor(cfg.authz):\n%s", carveServer)
-	}
-	if strings.Contains(carveServer, "deps.Authorizer") {
-		t.Errorf("carve service server must NOT reference deps.Authorizer:\n%s", carveServer)
-	}
-	// The authed service threads its own deps.Authorizer.
-	authedServer := sliceBetween(content, "func NewTestAuthedServer(", "return srv, client")
-	if !strings.Contains(authedServer, "middleware.AuthzInterceptor(deps.Authorizer)") {
-		t.Errorf("authed service server must mount AuthzInterceptor(deps.Authorizer):\n%s", authedServer)
-	}
-}
-
-// TestGenerateBootstrapTesting_AllCarvedServices pins the all-carve-out case:
-// when NO service declares an Authorizer dep, the shared authz scaffolding
-// (testConfig.authz, WithAuthorizer, the permissive default, the connect
-// import) is STILL emitted — every test server mounts the authz interceptor
-// (threading cfg.authz) to preserve the WithAuthorizer test seam — but no
-// service's factory wires the non-existent deps.Authorizer field, so the file
-// compiles.
-func TestGenerateBootstrapTesting_AllCarvedServices(t *testing.T) {
-	projectDir := t.TempDir()
-	carveSrc := `package carve
-
-import "log/slog"
-
-type Deps struct {
-	Logger *slog.Logger
-}
-
-type Service struct{ deps Deps }
-
-func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
-
-func (s *Service) Register(mux interface{ Handle(string, interface{}) }, opts ...interface{}) {}
-`
-	writeFileT(t, filepath.Join(projectDir, "internal", "handlers", "carve", "service.go"), carveSrc)
-
-	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
-		GenContext: GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
-		Services:   []ServiceDef{{Name: "CarveService", ModulePath: "example.com/proj"}},
-	}); err != nil {
-		t.Fatalf("GenerateBootstrapTesting: %v", err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "testing.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(data)
-	mustParseGo(t, "testing.go", data)
-
-	// Shared authz scaffolding stays (the test seam needs it).
-	for _, want := range []string{
-		"func WithAuthorizer(",
-		"testkit.PermissiveAuthorizer{}",
-		`"connectrpc.com/connect"`,
-		"middleware.AuthzInterceptor(cfg.authz)",
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("all-carve-out project: testing.go must still contain %q:\n%s", want, content)
-		}
-	}
-	if !authzFieldRe.MatchString(content) {
-		t.Errorf("all-carve-out project: testing.go must still declare the authz middleware.Authorizer field:\n%s", content)
-	}
-	// But no service's factory wires deps.Authorizer (the compile fix). Scope
-	// the check to the code bodies, not the doc comments that mention the field.
-	carveDeps := sliceBetween(content, "func newTestCarveDeps(", "return deps")
-	if strings.Contains(carveDeps, "deps.Authorizer") {
-		t.Errorf("all-carve-out project: newTestCarveDeps must NOT wire deps.Authorizer:\n%s", carveDeps)
-	}
-	carveServer := sliceBetween(content, "func NewTestCarveServer(", "return srv, client")
-	if strings.Contains(carveServer, "deps.Authorizer") {
-		t.Errorf("all-carve-out project: NewTestCarveServer must NOT reference deps.Authorizer:\n%s", carveServer)
-	}
-}
-
 // writeFileT writes content to path, creating parent dirs.
 func writeFileT(t *testing.T, path, content string) {
 	t.Helper()
@@ -432,21 +256,6 @@ func writeFileT(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// sliceBetween returns the substring of s from the first occurrence of start
-// up to (and including) the first occurrence of end after it. Empty if either
-// marker is missing — the caller's Contains checks then operate on "".
-func sliceBetween(s, start, end string) string {
-	i := strings.Index(s, start)
-	if i < 0 {
-		return ""
-	}
-	j := strings.Index(s[i:], end)
-	if j < 0 {
-		return ""
-	}
-	return s[i : i+j+len(end)]
 }
 
 // TestWorkerDataFromNames_ConflictingClausesError pins the mismatch
@@ -473,7 +282,7 @@ func TestWorkerDataFromNames_ConflictingClausesError(t *testing.T) {
 }
 
 // TestGenerateMissingHandlerStubs_DiskFirstPackageClause asserts the
-// incremental stub scaffolder stamps handlers.go with the EXISTING
+// incremental stub scaffolder stamps the RPC's file with the EXISTING
 // directory's package clause rather than the synthesized compact form —
 // pre-fix it would write `package engineshadow` into a dir declaring
 // `package engine_shadow`, breaking the build with a mixed-package dir.
@@ -502,16 +311,17 @@ func TestGenerateMissingHandlerStubs_DiskFirstPackageClause(t *testing.T) {
 		t.Fatal("expected Echo stub to be generated")
 	}
 
-	data, err := os.ReadFile(filepath.Join(targetDir, "handlers.go"))
+	stub := RPCHandlerFileName("Echo")
+	data, err := os.ReadFile(filepath.Join(targetDir, stub))
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustParseGo(t, "handlers.go", data)
+	mustParseGo(t, stub, data)
 	if !strings.Contains(string(data), "package engine_shadow\n") {
-		t.Errorf("handlers.go must declare the dir's real clause:\n%s", data)
+		t.Errorf("%s must declare the dir's real clause:\n%s", stub, data)
 	}
 	if strings.Contains(string(data), "package engineshadow") {
-		t.Errorf("handlers.go still declares the synthesized clause:\n%s", data)
+		t.Errorf("%s still declares the synthesized clause:\n%s", stub, data)
 	}
 }
 

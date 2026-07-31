@@ -1,12 +1,13 @@
 ---
 name: v0.x-to-contractkit
 description: Migrate generated mock/middleware/tracing/metrics shape from inline-everything to contractkit shim + library. Forge versions before 1.5 used the old shape; 1.5+ uses contractkit.
+detection: find internal handlers -name mock_gen.go -exec grep -L contractkit. {} + 2>/dev/null | grep -q .
 relevance: migration
 ---
 
 # Migrating from pre-1.5 inline codegen to `forge/pkg/contractkit`
 
-Use this skill when `forge upgrade` reports a jump across forge `1.4.x → 1.5.x`
+Use this skill when `forge project upgrade` reports a jump across forge `1.4.x → 1.5.x`
 (or the broader `0.x → 1.5+` range for legacy projects). It is the canonical
 example of a per-version migration skill — future migrations follow the same
 six-section shape.
@@ -57,7 +58,7 @@ forge generate
 go build ./...
 ```
 
-This part is fully automated by `forge upgrade` itself when it runs
+This part is fully automated by `forge project upgrade` itself when it runs
 `forge generate` after the template upgrade.
 
 ## 4. Migration (manual part)
@@ -86,9 +87,9 @@ What user code might need to change:
 go build ./... && go test ./... && forge lint
 ```
 
-If all three pass, `forge upgrade` will bump `forge_version` in
+If all three pass, `forge project upgrade` will bump `forge_version` in
 `forge.yaml` to the target version automatically. If you're applying
-the migration manually rather than via `forge upgrade`, hand-edit
+the migration manually rather than via `forge project upgrade`, hand-edit
 `forge_version: 1.5.0` (or whatever ships contractkit).
 
 ## 6. Rollback
@@ -97,7 +98,7 @@ If something breaks:
 
 ```bash
 git revert <forge-generate-commit>      # undo the regen
-forge upgrade --to 1.4.x                # pin back to the prior version
+forge project upgrade --to 1.4.x                # pin back to the prior version
 ```
 
 `--to 1.4.x` requires having the older forge build on `PATH` first;

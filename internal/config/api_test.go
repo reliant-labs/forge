@@ -3,7 +3,7 @@ package config
 import "testing"
 
 // TestAPIConfigRoundTrip verifies the new api: block parses correctly
-// under LoadStrict and that an unknown sub-key (e.g. typo) is reported
+// under LoadProject and that an unknown sub-key (e.g. typo) is reported
 // with a suggestion. This is a load-bearing sanity check: forge.yaml
 // validation rides on the reflect walk picking up the APIConfig fields.
 func TestAPIConfigRoundTrip(t *testing.T) {
@@ -14,9 +14,9 @@ api:
   openapi: true
   rest: false
 `)
-	cfg, err := LoadStrict(data, "t.yaml")
+	cfg, err := LoadProject(data, "t.yaml")
 	if err != nil {
-		t.Fatalf("LoadStrict: %v", err)
+		t.Fatalf("LoadProject: %v", err)
 	}
 	if !cfg.API.OpenAPI {
 		t.Errorf("api.openapi = false, want true")
@@ -36,7 +36,7 @@ version: 0.1.0
 api:
   openpi: true
 `)
-	_, err := LoadStrict(data, "t.yaml")
+	_, err := LoadProject(data, "t.yaml")
 	if err == nil {
 		t.Fatal("expected validation error for unknown key 'openpi', got nil")
 	}

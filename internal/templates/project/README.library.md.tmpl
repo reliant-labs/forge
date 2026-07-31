@@ -28,7 +28,7 @@ task fmt    # goimports + go mod tidy
 - **Public API** lives under `pkg/{{.Name}}/`. Anything you want
   importers to use goes here.
 - **Private helpers** live under `internal/`. Use
-  `forge add package <name>` to scaffold a new internal package with
+  `forge scaffold package <name>` to scaffold a new internal package with
   a contract interface and a generated mock.
 - **Tests** live next to the code (`xxx_test.go`). Runnable examples
   go into `Example*` test functions; they show up rendered in

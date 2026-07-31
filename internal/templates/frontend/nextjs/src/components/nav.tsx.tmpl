@@ -51,14 +51,14 @@ export function Nav() {
 
   return (
     <nav
-      className={`flex shrink-0 flex-col border-r border-gray-200 bg-gray-50 transition-[width] duration-200 ${
+      className={`flex shrink-0 flex-col border-r border-border bg-surface-muted transition-[width] duration-200 ${
         collapsed ? "w-16" : "w-60"
       }`}
     >
       {/* Brand */}
-      <div className="flex h-14 items-center border-b border-gray-200 px-5">
+      <div className="flex h-14 items-center border-b border-border px-5">
         {!collapsed && (
-          <span className="text-lg font-bold tracking-tight text-gray-900">
+          <span className="text-lg font-bold tracking-tight text-ink">
             {{.ProjectName}}
           </span>
         )}
@@ -67,7 +67,7 @@ export function Nav() {
       {/* Navigation */}
       <div className="flex-1 overflow-y-auto px-3 py-4">
         {!collapsed && (
-          <p className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-gray-400">
+          <p className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-ink-subtle">
             Navigation
           </p>
         )}
@@ -85,8 +85,8 @@ export function Nav() {
                     collapsed ? "justify-center" : "gap-2.5"
                   } ${
                     isActive
-                      ? "bg-blue-50 font-medium text-blue-700"
-                      : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                      ? "bg-accent-surface font-medium text-accent-ink"
+                      : "text-ink-muted hover:bg-surface-muted hover:text-ink"
                   }`}
                 >
                   <NavIcon type={item.icon} />
@@ -99,10 +99,10 @@ export function Nav() {
       </div>
 
       {/* Collapse toggle */}
-      <div className="border-t border-gray-200 px-3 py-3">
+      <div className="border-t border-border px-3 py-3">
         <button
           onClick={toggleSidebar}
-          className={`flex w-full items-center rounded-md px-3 py-2 text-sm text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 ${
+          className={`flex w-full items-center rounded-md px-3 py-2 text-sm text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink ${
             collapsed ? "justify-center" : "gap-2.5"
           }`}
         >

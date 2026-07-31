@@ -1,12 +1,13 @@
 ---
 name: v0.x-to-crud-lib
 description: Migrate handlers_crud_gen.go from inline lifecycle code to thin per-RPC shims that delegate to forge/pkg/crud.
+detection: find internal handlers -name handlers_crud_gen.go -exec grep -l ValidateOrderBy {} + 2>/dev/null | grep -q .
 relevance: migration
 ---
 
 # Migrating CRUD handlers to `forge/pkg/crud`
 
-Use this skill when `forge upgrade` reports a jump across the version
+Use this skill when `forge project upgrade` reports a jump across the version
 that ships `forge/pkg/crud`. It only affects projects that have at
 least one auto-generated CRUD RPC (`Create<Entity>` /
 `Get<Entity>` / `List<Entities>` / `Update<Entity>` / `Delete<Entity>`).
@@ -14,7 +15,7 @@ least one auto-generated CRUD RPC (`Create<Entity>` /
 ## 1. What changed
 
 Before this release, `handlers/<svc>/handlers_crud_gen.go` inlined the
-entire CRUD lifecycle per RPC: auth check, tenant check, error
+entire CRUD lifecycle per RPC: auth check, error
 wrapping, base64 cursor encode/decode, page-size clamp,
 `orm.ValidateOrderBy`, `+1` fetch + trim — all repeated for every
 generated method.
@@ -26,14 +27,8 @@ The generated handler is now a single delegation per RPC:
 func (s *Service) CreateUser(ctx context.Context, req *connect.Request[pb.CreateUserRequest]) (*connect.Response[pb.CreateUserResponse], error) {
     return crud.HandleCreate(crud.CreateOp[pb.CreateUserRequest, pb.CreateUserResponse, *db.User]{
         EntityLower: "user",
-        Auth: func(ctx context.Context) error {
-            claims, err := middleware.GetUser(ctx)
-            if err != nil { return err }
-            return s.deps.Authorizer.Can(ctx, claims, middleware.ActionCreate, "user")
-        },
-        Tenant:  middleware.RequireTenantID,                                    // omitted when entity isn't tenant-scoped
         Entity:  func(req *pb.CreateUserRequest) *db.User { return &db.User{Name: req.Name, Email: req.Email} },
-        Persist: func(ctx context.Context, tid string, e *db.User) error { return db.CreateUser(ctx, s.deps.DB, e, tid) },
+        Persist: func(ctx context.Context, _ string, e *db.User) error { return db.CreateUser(ctx, s.deps.DB, e) },
         Pack:    func(e *db.User) *pb.CreateUserResponse { return &pb.CreateUserResponse{User: e} },
     })(ctx, req)
 }
@@ -65,7 +60,7 @@ that grep error messages), no edits are needed.
 ## 3. Detection
 
 ```bash
-# Old shape: per-RPC body inlines auth/tenant/cursor logic.
+# Old shape: per-RPC body inlines auth/cursor logic.
 grep -l "base64.RawURLEncoding\|ValidateOrderBy" handlers/*/handlers_crud_gen.go
 
 # New shape: per-RPC body is a single crud.HandleX delegation.
@@ -151,7 +146,7 @@ If something breaks:
 
 ```bash
 git revert <forge-generate-commit>      # undo the regen
-forge upgrade --to <prior-version>      # pin back
+forge project upgrade --to <prior-version>      # pin back
 ```
 
 The behavioural fingerprints (error wording, page-size defaults,

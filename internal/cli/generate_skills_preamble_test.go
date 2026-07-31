@@ -43,7 +43,14 @@ func TestRenderAgentSkillInjectsPreamble(t *testing.T) {
 		"runbook",
 		"Background long-running commands",
 		"gcloud auth login",
-		"project's own skills directory",
+		// The authoritative-source pointer. A delivered render on disk can be
+		// older than the binary reading it, and an agent that trusts the stale
+		// copy burns the run on instructions for a forge that no longer exists
+		// — the single most expensive detour the dogfood exercise has produced.
+		// Pinned as two short phrases rather than a whole sentence: the prose
+		// gets rewritten (and squeezed by the delivery budget), the facts do not.
+		"forge skill load",
+		"overwritten",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("preamble missing expected guidance %q", want)

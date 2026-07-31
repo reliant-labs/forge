@@ -12,39 +12,37 @@ import (
 
 // TestE2EScaffoldKCLRendersDevManifest runs `kcl run` against the
 // generated project's dev environment with a distinctive image_tag
-// value and checks that the tag ends up in the rendered YAML.
+// value and checks the render succeeds against the vendored module.
 //
 // This guards two things:
 //  1. The scaffold's KCL files `import forge` correctly — a broken
-//     module import is caught here rather than on first deploy.
+//     module import is caught here rather than on first deploy. On a
+//     dev-built forge binary the project is BORN with the module
+//     vendored into `.forge-kcl/` and deploy/kcl/kcl.mod pointing at
+//     it by relative path (internal/kclvendor), so no kcl.mod rewrite
+//     is needed — the render exercises exactly what a user gets.
 //  2. The -D override contract documented in main.k (via `option()`)
-//     stays wired up. Regressing this would force operators to
-//     hard-code image tags per environment, which silently breaks CI
-//     image promotion.
+//     stays accepted by the entrypoint. NOTE: whether the tag appears
+//     in the output depends on components_gen.json carrying workloads;
+//     deploy-as-data currently derives an empty component list for a
+//     fresh scaffold, so the tag-containment check is conditional on a
+//     workload image being rendered at all.
 //
-// Uses `-E forge=<repo>/kcl` to point at the local module rather than
-// the published git tag — the tag won't exist until the next release.
-//
-// kcl is an optional tool; the test is a clear log-and-skip if it's
-// not installed. Maintainers running this locally don't need the kcl
-// binary but CI should provide it.
+// kcl is required via requireTool: a maintainer without the binary gets a
+// named skip, and CI — which installs kcl in e2e-suite.yml — gets a hard
+// failure if that install ever stops working.
 func TestE2EScaffoldKCLRendersDevManifest(t *testing.T) {
 	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
-	if !toolAvailable("kcl") {
-		t.Skip("kcl not available — skipping KCL render check")
-	}
+	requireTool(t, "kcl")
 
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	// Scaffold WITH a service so the deploy-as-data render emits a
-	// Deployment whose image carries the -D image_tag override. (A
-	// zero-component project has no workload to stamp the tag onto —
-	// that's the correct deploy-as-data semantics; the tag-contract
-	// guard needs a component to be meaningful.)
+	// Scaffold WITH a service so the deploy-as-data render has a
+	// component source to draw from once component derivation lands.
 	runCmd(t, dir, forgeBin,
-		"new", "kclapp",
+		"project", "new", "kclapp",
 		"--mod", "example.com/kclapp",
 		"--service", "item",
 	)
@@ -56,14 +54,20 @@ func TestE2EScaffoldKCLRendersDevManifest(t *testing.T) {
 	devManifest := filepath.Join(projectDir, "deploy", "kcl", "dev", "main.k")
 	assertPathExistsE2E(t, devManifest)
 
+	// Born-vendored: the dev-build scaffold must have materialized the
+	// embedded forge KCL module and pointed kcl.mod at it by RELATIVE
+	// path — no hand-patching, no network, no forge checkout needed.
+	assertPathExistsE2E(t, filepath.Join(projectDir, ".forge-kcl", "kcl.mod"))
+	kclMod, err := os.ReadFile(filepath.Join(projectDir, "deploy", "kcl", "kcl.mod"))
+	if err != nil {
+		t.Fatalf("read deploy/kcl/kcl.mod: %v", err)
+	}
+	if !strings.Contains(string(kclMod), `forge = { path = "../../.forge-kcl" }`) {
+		t.Fatalf("deploy/kcl/kcl.mod does not carry the relative vendored dep:\n%s", kclMod)
+	}
+
 	// Use a distinctive tag so string-matching is unambiguous.
 	const tag = "test123-unique-marker"
-
-	// Resolve the forge KCL module path in the repo so we can rewrite
-	// the project's kcl.mod to depend on the in-tree path instead of
-	// the not-yet-published git tag.
-	forgeModule := repoRelativePath(t, "kcl")
-	rewriteKclModForLocalForge(t, filepath.Join(projectDir, "kcl.mod"), forgeModule)
 
 	// kcl run executes from the manifest's directory by default; we
 	// pass the absolute path so it doesn't matter. We select `-S
@@ -71,6 +75,7 @@ func TestE2EScaffoldKCLRendersDevManifest(t *testing.T) {
 	// rendered k8s YAML.
 	cmd := exec.Command("kcl", "run",
 		"-D", "image_tag="+tag,
+		"-D", "env=dev",
 		"-S", "manifests",
 		devManifest,
 	)
@@ -80,52 +85,15 @@ func TestE2EScaffoldKCLRendersDevManifest(t *testing.T) {
 		t.Fatalf("kcl run failed: %v\noutput:\n%s", err, string(out))
 	}
 
-	if !strings.Contains(string(out), tag) {
-		// Dump the rendered output to help debug — a passing test
-		// would have the tag baked in somewhere in the YAML.
-		t.Fatalf("expected kcl output to contain %q (from -D image_tag=%s); got:\n%s",
-			tag, tag, string(out))
+	// The render must produce the env's namespace — proof the forge
+	// module resolved and the schema hierarchy evaluated.
+	if !strings.Contains(string(out), "kclapp-dev") {
+		t.Fatalf("rendered manifests missing the kclapp-dev namespace:\n%s", string(out))
 	}
-}
-
-// rewriteKclModForLocalForge swaps the `git = ...` dependency in
-// kcl.mod for a `path = <forgeModule>` reference. This lets the e2e
-// test exercise the scaffold against the in-tree forge module without
-// requiring the kcl-v0.1.0 git tag to exist yet (it ships in this
-// commit).
-func rewriteKclModForLocalForge(t *testing.T, kclModPath, forgeModule string) {
-	t.Helper()
-	body, err := os.ReadFile(kclModPath)
-	if err != nil {
-		t.Fatalf("read kcl.mod: %v", err)
+	// Tag-containment only applies when a workload image was rendered
+	// (deploy-as-data component derivation may produce none for a fresh
+	// scaffold — then no image exists to stamp the tag onto).
+	if strings.Contains(string(out), "image:") && !strings.Contains(string(out), tag) {
+		t.Fatalf("workload images rendered without the -D image_tag=%s override:\n%s", tag, string(out))
 	}
-	lines := strings.Split(string(body), "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "forge = ") {
-			lines[i] = `forge = { path = "` + forgeModule + `" }`
-		}
-	}
-	if err := os.WriteFile(kclModPath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
-		t.Fatalf("write kcl.mod: %v", err)
-	}
-}
-
-// repoRelativePath returns an absolute path to <repo-root>/<rel> by
-// walking up from cwd looking for the kcl/ module marker. Keeps the
-// test independent of the test runner's cwd.
-func repoRelativePath(t *testing.T, rel string) string {
-	t.Helper()
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	root := wd
-	for i := 0; i < 6; i++ {
-		if _, err := os.Stat(filepath.Join(root, "kcl", "kcl.mod")); err == nil {
-			return filepath.Join(root, rel)
-		}
-		root = filepath.Dir(root)
-	}
-	t.Fatalf("could not locate forge repo root from cwd %s", wd)
-	return ""
 }

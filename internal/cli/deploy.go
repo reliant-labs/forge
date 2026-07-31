@@ -19,13 +19,14 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/linter/finding"
+	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/secrets"
 	"github.com/reliant-labs/forge/internal/statefile"
 )
 
 func newDeployCmd() *cobra.Command {
 	var (
-		imageTag      string
 		tag           string
 		dryRun        bool
 		namespace     string
@@ -55,7 +56,7 @@ Supported deploy targets (declared in deploy/kcl/<env>/main.k):
   * forge.Compose    — docker compose pull + up -d.
 
 forge.HostDeploy and forge.BuildOnly are skipped by deploy — those are
-owned by forge run / forge up and forge build respectively.
+owned by forge run / forge env up and forge build respectively.
 
 Safety (declarative context): the kubectl context is read SOLELY from the
 env's KCL — forge.K8sCluster.cluster IS the kubectl context name (e.g.
@@ -98,35 +99,26 @@ service), pass --skip-frontend: the k8s apply runs as normal and the
 Frontend (e.g. Firebase) build+deploy dispatch is skipped.
 
 Examples:
-  forge deploy dev                          # Deploy to dev (local k3d)
-  forge deploy staging --image-tag v1.2     # Deploy to staging with specific tag
-  forge deploy prod --dry-run               # Preview prod manifests (guard runs)
-  forge deploy prod --explain               # Show the declared-cluster guard verdict
-  forge deploy dev --namespace custom-ns    # Override namespace
-  forge deploy dev --target admin-server    # Deploy only the admin-server app
-  forge deploy prod --target workspace-controller # Deploy only that operator
-  forge deploy prod --skip-frontend         # Deploy backend k8s, skip Firebase`,
+  forge env deploy dev                          # Deploy to dev (local k3d)
+  forge env deploy staging --tag v1.2           # Deploy to staging with specific tag
+  forge env deploy prod --dry-run               # Preview prod manifests (guard runs)
+  forge env deploy prod --explain               # Show the declared-cluster guard verdict
+  forge env deploy dev --namespace custom-ns    # Override namespace
+  forge env deploy dev --target admin-server    # Deploy only the admin-server app
+  forge env deploy prod --target workspace-controller # Deploy only that operator
+  forge env deploy prod --skip-frontend         # Deploy backend k8s, skip Firebase`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if explain {
 				return runDeployExplain(cmd.Context(), args[0])
 			}
-			// --tag and --image-tag are interchangeable; --tag is the
-			// canonical name (it matches `forge build --tag`) and
-			// --image-tag is retained for backwards compat with
-			// pre-converged scripts. When both are set, --tag wins.
-			effectiveTag := tag
-			if effectiveTag == "" {
-				effectiveTag = imageTag
-			}
-			// --rollback is mutually exclusive with --tag/--image-tag.
-			// Rollback's whole purpose is to ship the previously-
-			// recorded last-good tag from .forge/state; accepting a
-			// caller-supplied tag alongside it would either override
-			// the recorded value (defeating the rollback) or be
-			// silently ignored (worse: the user thinks they pinned a
-			// tag and they didn't).
-			if rollback && effectiveTag != "" {
+			// --rollback is mutually exclusive with --tag. Rollback's
+			// whole purpose is to ship the previously-recorded last-good
+			// tag from .forge/state; accepting a caller-supplied tag
+			// alongside it would either override the recorded value
+			// (defeating the rollback) or be silently ignored (worse: the
+			// user thinks they pinned a tag and they didn't).
+			if rollback && tag != "" {
 				return errors.New("--rollback and --tag are mutually exclusive")
 			}
 			// --frontends-only is the inverse of --skip-frontend: ship ONLY
@@ -141,7 +133,7 @@ Examples:
 				return errors.New("--frontends-only and --target are mutually exclusive (--frontends-only already scopes to every frontend)")
 			}
 			return runDeploy(cmd.Context(), args[0], deployOptions{
-				imageTag:      effectiveTag,
+				imageTag:      tag,
 				dryRun:        dryRun,
 				namespace:     namespace,
 				targetArch:    targetArch,
@@ -156,7 +148,6 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&imageTag, "image-tag", "", "Image tag (deprecated alias for --tag; default: build-state file, then git describe --tags --always --dirty)")
 	cmd.Flags().StringVar(&tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Override namespace from environment config")
@@ -175,7 +166,7 @@ Examples:
 
 // runDeployExplain prints the resolved kubectl-context guard decision
 // for an environment without doing anything destructive. Useful when
-// debugging why `forge deploy staging` refuses to apply or what context
+// debugging why `forge env deploy staging` refuses to apply or what context
 // staging is expected to live in.
 func runDeployExplain(ctx context.Context, envName string) error {
 	store, err := loadProjectStore()
@@ -186,7 +177,7 @@ func runDeployExplain(ctx context.Context, envName string) error {
 	expected := expectedClusterForEnv(ctx, cfg, envName)
 	current := strings.TrimSpace(currentKubectlContext(ctx))
 
-	fmt.Printf("forge deploy %s — declared-cluster guard\n", envName)
+	fmt.Printf("forge env deploy %s — declared-cluster guard\n", envName)
 	fmt.Printf("  declared context: %s\n", emptyAs(expected, "(not declared)"))
 	fmt.Printf("  current context:  %s  (purely informational — NEVER used; the deploy always applies to the DECLARED context)\n", emptyAs(current, "(none — kubectl not configured)"))
 
@@ -216,7 +207,7 @@ func runDeployExplain(ctx context.Context, envName string) error {
 
 // printDeployExplainHostSkip is a placeholder for the post-orchestration
 // shape: once the KCL-side `deploy: "host"` filter lands (deliverable 4)
-// this helper renders the host-mode service list for `forge deploy <env>
+// this helper renders the host-mode service list for `forge env deploy <env>
 // --explain`. Kept as a stub so the call site keeps compiling while the
 // re-wire is in progress.
 func printDeployExplainHostSkip(_ *config.ProjectConfig, _ string) error {
@@ -232,7 +223,7 @@ func emptyAs(s, alt string) string {
 	return s
 }
 
-// deployOptions bundles the flag values for `forge deploy`. The
+// deployOptions bundles the flag values for `forge env deploy`. The
 // runDeploy function previously took six discrete parameters; growing
 // it to seven tipped revive's argument-limit lint. The struct form
 // makes the call site self-documenting and keeps the per-flag default
@@ -247,7 +238,7 @@ type deployOptions struct {
 	// Opt-in to start: pruning is destructive (deletes resources the
 	// user didn't ask to remove) and surprising behaviour during an
 	// in-progress KCL refactor would be costly to roll back. The dev
-	// loop benefits most — `forge deploy dev` after a host-mode
+	// loop benefits most — `forge env deploy dev` after a host-mode
 	// refactor leaves stale Deployments behind otherwise.
 	prune bool
 
@@ -356,7 +347,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// Arm the parallel-dev-stack render context BEFORE the first render:
 	// push the git facts option("worktree")/option("branch") into KCL, back
 	// forge.allocate_port with the lock-guarded block registry, and activate
-	// the resolve_port store. `forge up` arms the IDENTICAL inputs, so up and
+	// the resolve_port store. `forge env up` arms the IDENTICAL inputs, so up and
 	// deploy resolve the SAME ports for a given key — this is the
 	// kill-the-up-vs-deploy-port-drift fix. Deploy commits its render, so the
 	// restore hook is unused (an applied render's ports are the truth).
@@ -474,7 +465,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	// Platform dependencies (cert-manager, Envoy Gateway, …) are NOT
 	// install-if-missing'd here. They are declarative renderables (KCL
-	// forge.HelmChart) applied EXPLICITLY via `forge deploy <env>
+	// forge.HelmChart) applied EXPLICITLY via `forge env deploy <env>
 	// --target=<platform-name>` — helm-as-a-RENDERER folds the chart's
 	// manifests (and forge-supplied CRDs, CRD-first + Established-gated)
 	// into the same apply pipeline. A `--target=<platform>` apply leaves
@@ -594,7 +585,7 @@ type deployTagResolution struct {
 // opts.imageTag with a "rollback (state file)" source and no digests.
 //
 // Digest resolution precedence (highest first):
-//  1. A bound RELEASE (env promoted via `forge promote`): pins the digests the
+//  1. A bound RELEASE (env promoted via `forge env promote`): pins the digests the
 //     release captured so every env on the same release deploys byte-identical
 //     images. Wins because a deliberate promotion is a stronger signal than the
 //     per-env build state.
@@ -823,22 +814,15 @@ func printDeployBanner(projectName, envName, imageTag, tagSource, namespace stri
 	fmt.Println()
 }
 
-// loadDeployEnvConfigKV resolves the per-env config into the `-D key=value`
-// scalars passed to KCL (they bind to top-level identifiers in main.k).
-// Sensitive fields are emitted as secret refs by the deploy gen pipeline
-// (deploy/kcl/<env>/config_gen.k) and are skipped here. Missing per-env config
-// is non-fatal (returns an empty, non-nil map).
+// loadDeployEnvConfigKV returns the `-D key=value` config scalars passed to the
+// KCL manifest render. On the KCL-native config path there are none: per-env
+// app config lives in deploy/kcl/<env>/config.k and flows into each workload's
+// env through config_projection.appConfigEnvMap during the render itself — the
+// env's main.k reads it directly rather than through top-level `-D` bindings.
+// The empty (non-nil) map keeps the render's `-D` plumbing intact while
+// carrying no config.
 func loadDeployEnvConfigKV(projectDir, envName string) map[string]string {
-	envCfgKV := map[string]string{}
-	if envConfig, lerr := config.LoadEnvironmentConfig(projectDir, envName); lerr == nil {
-		for k, v := range envConfig {
-			if s, ok := v.(string); ok && strings.HasPrefix(strings.TrimSpace(s), "${") {
-				continue // secret refs handled by config_gen.k
-			}
-			envCfgKV[k] = fmt.Sprint(v)
-		}
-	}
-	return envCfgKV
+	return map[string]string{}
 }
 
 // deployClusterInput carries the inputs prepareDeployCluster needs to stand up
@@ -992,19 +976,38 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 	}
 	var fes []deploytarget.FirebaseFrontend
 	var buildOnly []deploytarget.BuildOnlyFrontend
+	var builtDirs []string
 	for _, f := range entities.Frontends {
 		if f.Deploy == nil {
 			// `deploy = None`: build-only. forge builds it (env-injected)
 			// so its output exists on disk before any FirebaseHosting
 			// frontend assembles a bundle that references it. Non-firebase
 			// deploy targets remain a no-op (skipped below).
+			if err := checkDeployableFrontendMock(f); err != nil {
+				return err
+			}
+			builtDirs = append(builtDirs, f.Path)
 			buildOnly = append(buildOnly, frontendToBuildOnly(f))
 			continue
 		}
 		if f.Deploy.Type != "firebase" || f.Deploy.Firebase == nil {
 			continue
 		}
+		if err := checkDeployableFrontendMock(f); err != nil {
+			return err
+		}
+		builtDirs = append(builtDirs, f.Path)
 		fes = append(fes, frontendToFirebase(f))
+	}
+
+	// Build/deploy-path forge-owned dotenv gate: a committed .env.local /
+	// .env* under a frontend forge builds that hard-codes a forge-owned
+	// variable (*_MOCK_API / *_API_URL / *_OTEL_ENDPOINT / *_ENVIRONMENT)
+	// fights the KCL-injected value — and for MOCK_API is the classic
+	// "mock shipped to prod" leak. WARN in `forge lint` (dev); a HARD
+	// ERROR here on the deploy path so it can never reach a shipped build.
+	if err := gateFrontendEnvFiles(projectDir, builtDirs); err != nil {
+		return err
 	}
 
 	// Build-only frontends must build FIRST so their output exists before
@@ -1066,12 +1069,7 @@ func hasFirebaseFrontend(e *KCLEntities) bool {
 // value to inject.
 func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 	fb := f.Deploy.Firebase
-	buildEnv := map[string]string{}
-	for _, ev := range f.EnvVars {
-		if ev.Value != "" {
-			buildEnv[ev.Name] = ev.Value
-		}
-	}
+	buildEnv := frontendBuildEnv(f)
 	bundles := make([]deploytarget.FirebaseBundleSpec, 0, len(fb.Bundle))
 	for _, b := range fb.Bundle {
 		bundles = append(bundles, deploytarget.FirebaseBundleSpec{Src: b.Src, Dest: b.Dest})
@@ -1102,28 +1100,92 @@ func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 // dry-run plan can report the emitted directory; the build itself
 // doesn't depend on it.
 func frontendToBuildOnly(f FrontendEntity) deploytarget.BuildOnlyFrontend {
-	buildEnv := map[string]string{}
-	for _, ev := range f.EnvVars {
-		if ev.Value != "" {
-			buildEnv[ev.Name] = ev.Value
-		}
-	}
 	return deploytarget.BuildOnlyFrontend{
 		Name:      f.Name,
 		Path:      f.Path,
 		DevRunner: f.DevRunner,
-		BuildEnv:  buildEnv,
+		BuildEnv:  frontendBuildEnv(f),
 		PublicDir: inferPublicDir(f.Type),
 	}
+}
+
+// frontendBuildEnv computes the build-time env for a frontend forge builds
+// (Firebase deploy or build-only bundle): the effective env stream (typed
+// `config` folded in, explicit env_vars winning) reduced to inline values,
+// then the mock variable FORCE-set to config.mock.
+//
+// The force is the STRUCTURAL fix for the mock-build leak. The build path
+// injects this map via MergeExtraWins (see deploytarget.runInDir →
+// RunWithEnv), which makes forge win over the shell. Emitting the mock var
+// unconditionally — as "" for the default "off" — means an exported shell
+// NEXT_PUBLIC_MOCK_API=true can no longer reach a deployable build: forge's
+// empty value overrides it and connect.ts reads "" as the real backend.
+// (dispatchFrontendDeploys separately HARD-ERRORS a deployable frontend
+// whose config.mock is true/hybrid, so a mock is never even attempted.)
+func frontendBuildEnv(f FrontendEntity) map[string]string {
+	buildEnv := map[string]string{}
+	for _, ev := range f.EffectiveEnvVars() {
+		if ev.Value != "" {
+			buildEnv[ev.Name] = ev.Value
+		}
+	}
+	// Force LAST so it wins over any explicit env_vars entry AND (downstream,
+	// via MergeExtraWins) any exported shell value. Present-but-empty for the
+	// default "off".
+	buildEnv[frontendMockEnvVar(f.Type)] = frontendConfigMockValue(f.Config)
+	return buildEnv
+}
+
+// checkDeployableFrontendMock hard-errors when a frontend forge is about to
+// BUILD for shipment (a Firebase deploy target, or a build-only bundle
+// assembled into a deployable site) declares config.mock = true / hybrid.
+// A deployable build must never be a mock build — the force in
+// frontendBuildEnv already prevents a shell var from turning mock on, and
+// this closes the other direction: an explicitly-declared mock on a
+// deployable frontend is a configuration error, not something to silently
+// ship. mock=off (the default) is a no-op.
+func checkDeployableFrontendMock(f FrontendEntity) error {
+	if mode := frontendConfigMockValue(f.Config); mode != "" {
+		return fmt.Errorf(
+			"frontend %q is deployable but its config.mock is %q; a deployable build must not be a mock build — set config.mock = \"off\" (or remove it) before deploying",
+			f.Name, mode)
+	}
+	return nil
+}
+
+// gateFrontendEnvFiles runs the forge-owned dotenv rule at ERROR severity
+// over the frontend dirs forge is about to build, and fails the deploy on
+// any finding. This is the build/deploy arm of the severity split: the
+// SAME rule warns (never gates) in `forge lint`. Reuses the forgeconv
+// analyzer so dev-lint and the deploy gate can never diverge.
+func gateFrontendEnvFiles(projectDir string, feDirs []string) error {
+	if len(feDirs) == 0 {
+		return nil
+	}
+	abs := make([]string, 0, len(feDirs))
+	for _, d := range feDirs {
+		if filepath.IsAbs(d) {
+			abs = append(abs, d)
+			continue
+		}
+		abs = append(abs, filepath.Join(projectDir, d))
+	}
+	res := forgeconv.LintFrontendEnvFiles(projectDir, abs, finding.SeverityError)
+	if len(res.Findings) == 0 {
+		return nil
+	}
+	fmt.Print(res.FormatText())
+	return fmt.Errorf("a frontend .env* file hard-codes a forge-owned variable; move it to the frontend's KCL config/env_vars and delete the dotenv line (see the findings above)")
 }
 
 // inferPublicDir returns the conventional build-output dir for a frontend
 // type: Next.js static export emits "out", Vite emits "dist". Used only
 // for build-only dry-run reporting; an unknown type yields "" (no
-// emitted-dir line).
+// emitted-dir line). Accepts both the KCL Frontend.type spellings
+// ("vite") and the scaffold-kind spellings ("vite-spa").
 func inferPublicDir(frontendType string) string {
-	switch frontendType {
-	case "vite-spa":
+	switch strings.ToLower(strings.TrimSpace(frontendType)) {
+	case "vite", "vite-spa":
 		return "dist"
 	case "nextjs", "":
 		return "out"
@@ -1146,7 +1208,7 @@ func inferPublicDir(frontendType string) string {
 // naming an operator scopes the K8sCluster apply to that operator's
 // workload exactly the way a Service target does
 // (cluster.SelectManifestsByGroup is group-label-driven, not kind-driven).
-// Without operators in this set, `forge deploy <env> --target <op>`
+// Without operators in this set, `forge env deploy <env> --target <op>`
 // errored "unknown --target" because operators were absent from the
 // available-groups list — you couldn't deploy just an operator.
 //
@@ -1167,7 +1229,7 @@ func validateDeployTargets(e *KCLEntities, targets []string) error {
 		avail[f.Name] = struct{}{}
 	}
 	// Platform deps (forge.HelmChart) are first-class --target subjects:
-	// `forge deploy <env> --target=<chart>` renders + applies that chart's
+	// `forge env deploy <env> --target=<chart>` renders + applies that chart's
 	// group. A chart NAME is a valid target the same way a service name is —
 	// its rendered manifests carry it as their app.kubernetes.io/name group.
 	for _, h := range e.HelmCharts {
@@ -1202,7 +1264,7 @@ func validateDeployTargets(e *KCLEntities, targets []string) error {
 // Narrowing Operators here (not just Services/Frontends) is what makes
 // an operator a first-class --target. It scopes the entity-derived sets
 // that key off the operator slice — chiefly the frontendOnly gate in
-// runDeploy (which checks len(entities.Operators)) — so `forge deploy
+// runDeploy (which checks len(entities.Operators)) — so `forge env deploy
 // <env> --target <operator>` doesn't accidentally look like a
 // frontend-only env. The K8sCluster apply does the load-bearing scoping
 // at the manifest level: with the operator name in opts.Targets,
@@ -1334,7 +1396,7 @@ func hostDeploymentSkipSetFromKCL(cfg *config.ProjectConfig, e *KCLEntities) map
 	return out
 }
 
-// resolveDeployImageTag is the precedence chain `forge deploy <env>`
+// resolveDeployImageTag is the precedence chain `forge env deploy <env>`
 // runs to pick the image tag for the KCL manifest render. Returns the
 // resolved tag and a human-readable description of where it came from
 // (printed in the deploy summary so users can debug a surprising
@@ -1342,8 +1404,8 @@ func hostDeploymentSkipSetFromKCL(cfg *config.ProjectConfig, e *KCLEntities) map
 //
 // Priority:
 //
-//  1. flagOverride — `--tag` (or its `--image-tag` alias) on the CLI.
-//     CI pipelines that pin a release number land here.
+//  1. flagOverride — `--tag` on the CLI. CI pipelines that pin a release
+//     number land here.
 //  2. .forge/state/build-<env>.json — what `forge build --push` last
 //     pushed for this env. This is the load-bearing path that closes
 //     the build/deploy tag divergence: build records the exact tag it
@@ -1385,7 +1447,7 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 	}
 	// Per-env record first, then the env-agnostic "default" written by a
 	// plain `forge build` (no --env). This is what makes
-	// `forge build --docker && forge deploy prod` work without forcing a
+	// `forge build --docker && forge env deploy prod` work without forcing a
 	// matching --env / --tag on both.
 	for _, key := range buildStateLookupEnvs(envName) {
 		st, berr := ReadBuildState(projectDir, key)
@@ -1514,7 +1576,7 @@ func resolveDeployImageDigests(projectDir, envName string, noDigest bool) (map[s
 //
 // Precedence (highest first):
 //
-//  1. A bound RELEASE (env promoted via `forge promote`). The release's
+//  1. A bound RELEASE (env promoted via `forge env promote`). The release's
 //     resolved digests OVERRIDE the per-env build state per image: a deliberate
 //     promotion is the strongest signal, and pinning the release's digests is
 //     what makes every env on the same release deploy byte-identical images
@@ -1569,7 +1631,7 @@ func buildStateLookupEnvs(envName string) []string {
 }
 
 // checkBuildStateFreshness refuses to deploy a build whose recorded
-// source commit is behind the current git HEAD, so `forge deploy` never
+// source commit is behind the current git HEAD, so `forge env deploy` never
 // silently ships a stale image after a fresh commit/push (fr-02d44d2b03).
 //
 // The check fires ONLY when all of these hold, to keep it a precise
@@ -1800,7 +1862,7 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 	// replace directives resolve in the deploy-time rebuild too. Shares
 	// the build.go helper so the path-resolution + scheme passthrough
 	// semantics stay in lockstep across `forge build --docker` and
-	// `forge deploy`.
+	// `forge env deploy`.
 	buildArgs = appendBuildContexts(buildArgs, cfg, "")
 	buildArgs = append(buildArgs, "-f", dockerfile, ".")
 	buildCmd := exec.CommandContext(ctx, "docker", buildArgs...)
@@ -1829,7 +1891,7 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 //
 // Unlike resolveBuildArch in build.go, this function always falls back
 // to amd64 (i.e. deploy is treated as the docker-context case in
-// build.go). `forge deploy` always builds an image destined for a
+// build.go). `forge env deploy` always builds an image destined for a
 // cluster node, so the "no cross-compile, use host arch" outcome
 // happens only when host == target.
 func resolveDeployArch(cfgArch, flagArch string) string {
@@ -1958,6 +2020,13 @@ func requiredSecretsForPreflight(entities *KCLEntities) []cluster.RequiredSecret
 //     — forge renders + applies these per cluster; recorded as supply for
 //     completeness even though they typically also appear in the manifest
 //     stream.
+//   - dotenv secret_provider Secrets (Type=="dotenv") — forge renders these
+//     CLI-side from the declared cluster refs and applies them BEFORE the
+//     Deployments roll out (see applyK8sSecretsFromProvider), so the mount
+//     resolves on first schedule. They are supply even though they never appear
+//     in the rendered manifest stream: a dotenv provider carries no
+//     SecretProvider.Secrets, so without this the scaffold's own dev bundle
+//     reports every sensitive config field as an undeclared mount.
 //
 // nil entities / no supply => nil (only rendered-stream Secrets then count).
 func secretSupplyForPreflight(entities *KCLEntities) []cluster.SecretSupply {
@@ -1985,6 +2054,21 @@ func secretSupplyForPreflight(entities *KCLEntities) []cluster.SecretSupply {
 				Name: s.Name,
 				Kind: cluster.SupplyRenderedManifest,
 			})
+		}
+		if entities.SecretProvider.Type == "dotenv" {
+			// The refs forge resolves + renders into Secrets at deploy time are
+			// exactly the cluster-service refs; dedupe by Secret name.
+			seen := map[string]bool{}
+			for _, r := range secretRefsForK8sServices(entities) {
+				if r.SecretName == "" || seen[r.SecretName] {
+					continue
+				}
+				seen[r.SecretName] = true
+				out = append(out, cluster.SecretSupply{
+					Name: r.SecretName,
+					Kind: cluster.SupplyGenerated,
+				})
+			}
 		}
 	}
 	return out
@@ -2090,7 +2174,7 @@ func expectedClusterForEnv(ctx context.Context, cfg *config.ProjectConfig, envNa
 		return clusterName
 	}
 	if envName == "dev" && cfg != nil {
-		// Dev's default is the k3d cluster forge deploy dev creates.
+		// Dev's default is the k3d cluster forge env deploy dev creates.
 		return "k3d-" + cfg.Name
 	}
 	return ""

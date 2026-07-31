@@ -6,19 +6,19 @@
 // This RPC diverges from AIP-158 CRUD, so the body is yours to refine.
 // forge scaffolded a WIRED (if naive) {{.EntityName}} query as a starting
 // point. Compose pkg/crud + pkg/orm helpers, or drop to raw SQL via
-// s.deps.DB. `forge audit` lists this under crud_stubs until you finish
+// s.deps.DB. `forge project audit` lists this under crud_stubs until you finish
 // wiring the response (remove the TODO below). See the forge `db` skill.
+//
+// UNSCOPED: the scaffolded query reads the caller's claims nowhere. The
+// interceptor has already enforced this RPC's auth_required declaration;
+// what it cannot know is which rows this caller may see — resolve the
+// principal with {{.AuthSeam}}(ctx) before the query and scope the filters
+// to those claims.
 func (s *Service) {{.MethodName}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType}}],
 ) (*connect.Response[pb.{{.OutputType}}], error) {
 	_ = req
-{{- if .HasTenant}}
-	tenantID, err := middleware.RequireTenantID(ctx)
-	if err != nil {
-		return nil, err
-	}
-{{- end}}
 	// Best-effort filters mapped from the request's scalar fields onto
 	// declared columns. Refine or replace these for your real query.
 	var opts []orm.QueryOption
@@ -50,14 +50,18 @@ func (s *Service) {{.MethodName}}(
 {{- end}}
 {{- end}}
 
-	rows, err := db.List{{.EntityName}}(ctx, s.deps.DB{{if .HasTenant}}, tenantID{{end}}, opts...)
+	rows, err := db.List{{.EntityName}}(ctx, s.deps.DB, opts...)
 	if err != nil {
 		return nil, svcerr.Wrap(err)
 	}
 
 	items := make([]*pb.{{.EntityName}}, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, {{.EntityLower}}ToProto(row))
+		m, err := {{.EntityLower}}ToProto(row)
+		if err != nil {
+			return nil, svcerr.Wrap(err)
+		}
+		items = append(items, m)
 	}
 	_ = items // TODO: refine this query and place items onto pb.{{.OutputType}}.
 
@@ -65,9 +69,22 @@ func (s *Service) {{.MethodName}}(
 }
 {{- else}}
 // {{.MethodName}} handles the {{.MethodName}} RPC (CRUD {{.Operation}}).
-// The lifecycle lives in forge/pkg/crud; entity wiring is generated in
-// handlers_crud_ops_gen.go. To customize, replace this delegation — this
-// file is yours. See the forge `db` / `contracts` skill.
+// forge/pkg/crud does the lifecycle mechanics; entity wiring is generated
+// in handlers_crud_ops_gen.go. To customize, replace this delegation —
+// this file is yours. See the forge `auth` / `db` / `contracts` skill.
+//
+{{- if .AuthRequired}}
+// AUTHENTICATED, UNSCOPED: this RPC's proto declares auth_required: true,
+// so the interceptor rejected any caller without a valid token before this
+// ran. Nothing below reads WHO they are — call {{.AuthSeam}}(ctx) above the
+// delegation and scope the rows it touches to those claims.
+{{- else}}
+// PUBLIC: this RPC's proto declares auth_required: false, so the interceptor
+// lets a credential-less caller through and nothing below reads claims. If
+// that is wrong, the fix is the annotation on the rpc — not a
+// {{.AuthSeam}}(ctx) call here, which would reject callers the proto (and
+// `forge project graph`) advertise as welcome.
+{{- end}}
 {{- if eq .Operation "update"}}
 //
 {{- if .UpdateMaskField}}

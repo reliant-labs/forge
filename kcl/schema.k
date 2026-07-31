@@ -85,28 +85,24 @@ schema EnvVar:
     ----------------------------------------
     You rarely hand-write `secret_ref` for a SENSITIVE config field. Mark
     the field `sensitive: true` in the config proto and forge's config
-    codegen emits the `secret_ref`/`secret_key` EnvVar for you into
-    `deploy/kcl/<env>/config_gen.k`, defaulting to
-    `secret_ref = "<project>-secrets", secret_key = "<env_var lowercased>"`.
+    codegen types it as a `ConfigSecretRef` on the generated `AppConfig`
+    schema, defaulting to
+    `{ name = "<project>-secrets", key = "<env_var lowercased>" }`;
+    `config_projection.appConfigEnvMap` projects it to a `from_secret`
+    EnvSource, which the k8s adapter renders as this schema's
+    `secret_ref`/`secret_key`.
 
     To point a field at a DIFFERENT existing cluster Secret / key, set the
-    field's value in the per-env `config.<env>.yaml` to a DOLLAR-BRACE
-    reference. (Written below as `D{...}` because KCL's docstring lexer reads
-    a literal dollar-brace as string interpolation — in YAML write a real `$`
-    immediately followed by the `{...}`.)
+    field's `ConfigSecretRef` in the per-env `deploy/kcl/<env>/config.k`:
 
-        "D{SECRET_NAME}"         -> secret_ref = "SECRET_NAME"
-                                    (secret_key = codegen default)
-        "D{SECRET_NAME#KEY}"     -> secret_ref = "SECRET_NAME", secret_key = "KEY"
+        internal_service_secret = config_schema.ConfigSecretRef {
+            name = "control-plane-internal", key = "secret"
+        }
 
-    e.g. config.<env>.yaml line
-        internal_service_secret: "D{control-plane-internal#secret}"
-    (with D replaced by `$`) binds that field to the `secret` key of the
-    `control-plane-internal` Secret. The `#KEY` form is for cluster secrets
-    whose keys are kebab-case (e.g. `D{db-credentials#database-url}`) and
-    don't match forge's lowercase-env-var default. The Secret itself is
-    provisioned out-of-band. See kcl/README.md "Secrets" for the copy-paste
-    YAML example (with the real `$`).
+    binds that field to the `secret` key of the `control-plane-internal`
+    Secret. Use a kebab-case `key` for cluster secrets whose keys don't match
+    forge's lowercase-env-var default (e.g. `key = "database-url"`). The
+    Secret itself is provisioned out-of-band. See kcl/README.md "Secrets".
 
     Empty-value rationale: callers use empty strings as "disable"
     sentinels (e.g. RUNTIME_CLASS_NAME="" to skip runtimeClassName on
@@ -132,6 +128,14 @@ schema EnvVar:
         name, "EnvVar.name is required"
         value != Undefined or secret_ref or config_map_ref or field_ref, \
             "EnvVar must set value (empty string is OK), secret_ref, config_map_ref, or field_ref"
+        # EXACTLY one channel. k8s rejects an env entry carrying both
+        # `value` and `valueFrom` ("may not be specified when `value` is
+        # not empty") — and it rejects it only SERVER-side, so
+        # `kubectl apply --dry-run=client` passes and the deploy dies
+        # against the real cluster. Caught here, at the point the
+        # ambiguity is written.
+        len([c for c in [1 if value != Undefined else 0, 1 if secret_ref else 0, 1 if config_map_ref else 0, 1 if field_ref else 0] if c == 1]) == 1, \
+            "EnvVar '${name}' sets more than one source — pick exactly one of value / secret_ref / config_map_ref / field_ref (k8s rejects an env entry with both value and valueFrom)"
 
 schema EnvFromSource:
     """A whole Secret / ConfigMap imported into a container's env — the k8s
@@ -262,7 +266,7 @@ schema RuntimeClass:
     """A node.k8s.io/v1 RuntimeClass declaration.
 
     Bundle.runtime_classes lets a project declare RuntimeClass objects
-    forge applies on `forge deploy`. The two common cases:
+    forge applies on `forge env deploy`. The two common cases:
 
       1. Real handlers in prod/staging (gvisor, kata-qemu, runc): the
          underlying handler binary is installed on cluster nodes by an
@@ -279,7 +283,7 @@ schema RuntimeClass:
 
     Pre-2026-06: cp-forge's dev cluster needed a manual
     `kubectl apply` of a gvisor→runc alias every time the cluster
-    was rebuilt. Declaring it here lets `forge deploy <env>` own the
+    was rebuilt. Declaring it here lets `forge env deploy <env>` own the
     apply via the standard render-and-apply pipeline.
 
     `overhead` is an optional pod overhead spec; `scheduling` is an
@@ -370,15 +374,15 @@ schema ConfigMap:
 # Bundle.
 #
 # The GatewayClass resource is cluster-scoped and NOT rendered here —
-# `forge dev cluster up` applies it (and any provider install YAML,
+# `forge cluster up` applies it (and any provider install YAML,
 # e.g. pinned Traefik) once per cluster. Each Gateway references the
 # GatewayClass by `gateway_class_name`.
 #
 # Routes attach to a Gateway+Listener via the `gateway` (name) +
 # `listener` (section name) fields, mirroring Gateway API's
 # `parentRefs[*].name` + `parentRefs[*].sectionName`. A service with no
-# route is unreachable from the host — that is the v1 contract,
-# `forge dev port-forward` having been retired in favor of this model.
+# route is unreachable from the host — that is the v1 contract, host
+# port-forwarding having been retired in favor of this model.
 # ---------------------------------------------------------------------------
 
 schema GatewayListener:
@@ -423,8 +427,8 @@ schema GatewayTLS:
         writes the cert+key into the Secret. cert_issuer names a
         cluster-scoped ClusterIssuer. secret_name is required.
 
-      * mode = "mkcert" — Secret is populated host-side by `forge dev
-        cluster up`, which shells out to mkcert (host-trusted CA in the
+      * mode = "mkcert" — Secret is populated host-side by
+        `forge cluster up`, which shells out to mkcert (host-trusted CA in the
         OS keychain → browser-trusted certs without `-k` / warnings).
         No Certificate resource is emitted; cert_issuer is unused and
         should be left empty. secret_name is required.
@@ -496,7 +500,7 @@ schema Gateway:
     so one controller covers every forge ingress shape — there is no
     reason for an env to silently pick a second controller.
 
-    `forge cluster up` / `forge up --env=<env>` install the SAME Envoy
+    `forge cluster up` / `forge env up <env>` install the SAME Envoy
     Gateway helm chart into the local k3d cluster that the cloud envs
     run, so the default `eg` is correct EVERYWHERE — no per-env pin, no
     local-dev exception. (Earlier forge installed Traefik for local dev,
@@ -637,7 +641,7 @@ schema SecurityContext:
 schema HostDeploy:
     """Service runs on the developer's host machine (outside k8s).
 
-    Forge's `forge run`/`forge up` loop launches this directly:
+    Forge's `forge run`/`forge env up` loop launches this directly:
       * runner = "go-run" — `go run ./cmd/...`
       * runner = "air"    — `air -c <air_config>` for live-reload
       * runner = "binary" — pre-built binary in ./bin
@@ -660,6 +664,8 @@ schema HostDeploy:
     delve_port: int = 2345
     working_dir?: str
     """Working directory for the launched process. Relative paths are resolved against the project root. Use this for cross-repo binaries whose runner config (e.g. Air's build_cmd paths) resolves relative to a sibling repo. Default: project root."""
+    listen_ports?: [int]
+    """Host TCP ports this service itself BINDS. `forge env up`'s port-conflict pre-flight checks EXACTLY these when declared; when unset it infers bind ports from `*_PORT` env vars, which misfires on dependency-address vars (TEMPORAL_PORT etc.). See HostOverrides.listen_ports."""
 
     check:
         type == "host", "HostDeploy.type must be 'host'"
@@ -669,6 +675,9 @@ schema HostDeploy:
             "HostDeploy.air_config is only valid when runner = 'air'"
         delve_port > 0 and delve_port < 65536, \
             "HostDeploy.delve_port must be 1..65535"
+        listen_ports == Undefined or all p in listen_ports {
+            p > 0 and p < 65536
+        }, "HostDeploy.listen_ports entries must be 1..65535"
 
 schema ClusterTarget:
     """The env-wide Kubernetes facts, stated ONCE.
@@ -852,7 +861,7 @@ schema External:
                         forge-deployed container distinguishable from one a
                         manual script placed under the same name.
       * ${LAST_TAG}     previously deployed tag from the state file (the
-                        prior forge deploy on a deploy; the rollback target
+                        prior forge env deploy on a deploy; the rollback target
                         on a rollback). Empty on the first deploy.
       * ${SERVICE}      Service.name
       * ${ENV}          env name (e.g. dev, staging, prod)
@@ -1040,8 +1049,8 @@ schema TestJWKS:
 schema Cluster:
     """A k3d cluster forge ensures exists before deploying into it.
 
-    An env declares a LIST of these (Bundle.clusters); `forge up
-    --env=<env>` reconciles each at the head of the run: if a cluster
+    An env declares a LIST of these (Bundle.clusters); `forge env up
+    <env>` reconciles each at the head of the run: if a cluster
     of the given `name` is absent, forge runs `k3d cluster create` with
     the declared flags; if present, it's a no-op (idempotent on warm
     runs). This is the declarative replacement for the dev-only,
@@ -1164,7 +1173,7 @@ schema Cluster:
         agents >= 0, "Cluster.agents must be non-negative"
 
 schema KubeconfigSecret:
-    """A cross-cluster kubeconfig, minted FRESH each `forge up` and
+    """A cross-cluster kubeconfig, minted FRESH each `forge env up` and
     stored as a k8s Secret so a workload in one cluster can talk to
     another cluster's API server.
 
@@ -1519,7 +1528,7 @@ schema ShellBuild(Build):
         AND added to the ${X} substitution map (built-ins win on conflict).
       * state/digest — on success forge captures the pushed image's
         content-addressed digest (best-effort) and writes the build-state
-        file so a subsequent `forge deploy <env>` pins the same
+        file so a subsequent `forge env deploy <env>` pins the same
         tag/digest, exactly as the project docker build does.
 
     A no-op ShellBuild (`cmd = "true"`) is the idiomatic way to suppress
@@ -1867,6 +1876,55 @@ schema Operator:
         len(crds) > 0, \
             "Operator.crds must list at least one CRD kind"
 
+schema FrontendConfig:
+    """Typed, well-known frontend knobs forge maps to the framework-specific
+    build/runtime env var names a frontend's transport reads
+    (NEXT_PUBLIC_* / VITE_* / EXPO_PUBLIC_*). This is the DECLARED,
+    forge-enforced surface for the handful of knobs forge owns — mock mode
+    above all — so they no longer live in a hand-editable, drift-prone
+    `.env.local`.
+
+    forge expands `config` into the SAME env-var stream `env_vars` uses,
+    mapping each field to the type-appropriate framework variable:
+
+      * api_url            -> {NEXT_PUBLIC_,VITE_,EXPO_PUBLIC_}API_URL
+      * mock               -> {NEXT_PUBLIC_,VITE_,EXPO_PUBLIC_}MOCK_API
+      * otel_endpoint      -> {NEXT_PUBLIC_,VITE_,EXPO_PUBLIC_}OTEL_ENDPOINT
+      * environment        -> {NEXT_PUBLIC_,VITE_,EXPO_PUBLIC_}ENVIRONMENT
+      * telemetry_disabled -> NEXT_TELEMETRY_DISABLED (Next.js only)
+
+    An explicit `env_vars` entry for the same variable WINS over `config`
+    (forge warns on the collision). `config` is additive/optional — a
+    frontend that declares only `env_vars` renders byte-identically.
+
+    mock is the load-bearing knob. On a deployable frontend (a `deploy`
+    target, or a build-only frontend bundled into a deployable site) forge
+    FORCE-sets the mock variable to `mock` at build time, so an exported
+    shell NEXT_PUBLIC_MOCK_API=true can never bake a mock build (the
+    build-path env merge makes forge win over the shell). The dev launch
+    keeps shell-over-KCL precedence, so a developer can still
+    `NEXT_PUBLIC_MOCK_API=true npm run dev`.
+    """
+    # Base URL the frontend's transport targets. Unset => the framework
+    # falls back to its forge-regenerated dev floor (src/lib/apiurl_gen.ts).
+    api_url?: str
+    # Mock mode: "off" (default — real backend), "true" (pure mock), or
+    # "hybrid" (scenario overlay on the real backend). forge enforces this
+    # on the build path so a mock never ships.
+    mock: str = "off"
+    # Browser OTLP/HTTP trace endpoint. Unset => client telemetry is off.
+    otel_endpoint?: str
+    # Logical environment label the frontend surfaces (banners, Sentry
+    # environment, …). Unset => the framework default.
+    environment?: str
+    # Disable Next.js's build-time CLI telemetry (NEXT_TELEMETRY_DISABLED).
+    # Default True — a forge scaffold opts out. No-op for vite / rn.
+    telemetry_disabled: bool = True
+
+    check:
+        mock in ["off", "true", "hybrid"], \
+            "FrontendConfig.mock must be 'off' | 'true' | 'hybrid'"
+
 schema Frontend:
     """A web or mobile frontend.
 
@@ -1880,7 +1938,7 @@ schema Frontend:
     target the same way Service.deploy does. Today the only variant is
     FirebaseHosting (static export → Firebase Hosting). Omit `deploy`
     to keep the legacy behaviour — the frontend is dev-served / built
-    only, never auto-shipped by `forge deploy`.
+    only, never auto-shipped by `forge env deploy`.
     """
     name: str
     type: str = "nextjs"
@@ -1897,6 +1955,13 @@ schema Frontend:
     # ALSO injected as build-time env (NEXT_PUBLIC_* / VITE_*) so per-env
     # config lives in KCL, not hardcoded in CI.
     env_vars: [EnvVar] = []
+    # Typed, well-known knobs (mock mode, api_url, otel_endpoint,
+    # environment, telemetry) forge maps to framework-specific env var
+    # names and ENFORCES — esp. mock on the build path. Rendered into the
+    # SAME env stream as env_vars; an explicit env_vars entry wins on the
+    # same variable (forge warns). Additive — omit for the legacy
+    # env_vars-only shape. See FrontendConfig.
+    config?: FrontendConfig
     deploy?: FirebaseHosting
 
     check:
@@ -1960,13 +2025,13 @@ schema HelmChart:
     every manifest the chart renders, so the EXISTING `--target` /
     FilterManifestsByApp axis selects it:
 
-        forge deploy <env> --target <name>   # apply ONLY this platform dep
-        forge deploy <env>                   # apply the app (no platform target)
+        forge env deploy <env> --target <name>   # apply ONLY this platform dep
+        forge env deploy <env>                   # apply the app (no platform target)
 
     cert-manager and Envoy Gateway are declared as two such HelmCharts the
     consumer lists per env; applying them with `--target` leaves the
     cluster with their CRDs Established + controllers Deployed, so a
-    subsequent `forge deploy <env>` (the app) finds the CRDs present.
+    subsequent `forge env deploy <env>` (the app) finds the CRDs present.
 
     DECLARATIVE UPGRADES are allowed: bump `version` (or edit `values`)
     and re-apply via `--target`; the render → apply reconciles it. There
@@ -2016,7 +2081,7 @@ schema HelmChart:
     values: {str: any} = {}
     crds: "" | "gateway-api" | "cert-manager" = ""
     # Raw k8s manifests that ride WITH this platform dep: applied (and
-    # excluded from a bare `forge deploy <env>`) on the SAME `--target=<name>`
+    # excluded from a bare `forge env deploy <env>`) on the SAME `--target=<name>`
     # axis as the chart, stamped with the chart's `app.kubernetes.io/name` and
     # applied AFTER the chart's controllers (so a controller is Deployed
     # before its instances). The natural home for the small cluster-scoped
@@ -2024,7 +2089,7 @@ schema HelmChart:
     # ship — e.g. the `eg` GatewayClass for envoy-gateway, or cert-manager
     # ClusterIssuers. UNLIKE Bundle.additional_manifests (which renders into
     # the env's main stream and so DOES apply on a bare app deploy), these are
-    # platform-only: a bare `forge deploy <env>` renders none of them. Each
+    # platform-only: a bare `forge env deploy <env>` renders none of them. Each
     # entry is a raw manifest dict. Empty => none.
     manifests: [any] = []
 
@@ -2043,7 +2108,7 @@ schema HelmChart:
 # create — an out-of-band Secret (the `cloudflare-api-token` in the
 # `cert-manager` namespace), per-host DNS A-records pointing at the
 # ingress load balancer, the load-bearing `*.workspaces` wildcard record.
-# Today these live ONLY in KCL docstrings: `forge deploy` renders
+# Today these live ONLY in KCL docstrings: `forge env deploy` renders
 # successfully, applies, and THEN cert-manager's ACME challenge or the
 # workspace-proxy DNS silently hangs because the prereq was never
 # satisfied. The failure surfaces minutes later, far from its cause, with
@@ -2129,7 +2194,7 @@ schema DNSRecord:
     forge cannot authoritatively verify arbitrary external DNS at deploy
     time (the record may not have propagated; the resolver forge runs under
     may differ from the cluster's), so this is a render-time CHECKLIST entry
-    (and a `forge deploy --check` note), NOT a hard block. The value is
+    (and a `forge env deploy --check` note), NOT a hard block. The value is
     MODELING the requirement: the load-bearing `*.workspaces` wildcard
     A-record — whose omission hangs both the DNS-01 wildcard cert and all
     workspace-proxy traffic — is exactly the silent-failure prereq that
@@ -2168,9 +2233,9 @@ schema Bundle:
     """
     # k3d clusters forge ensures exist before deploying. An env that
     # stands up several clusters (a control-plane cluster + a workload
-    # cluster) declares them here; `forge up` reconciles each at the
+    # cluster) declares them here; `forge env up` reconciles each at the
     # head of the run (create-if-absent, no-op if present). Empty =>
-    # forge ensures no cluster (today's `forge up --env=e2e` behavior,
+    # forge ensures no cluster (today's `forge env up e2e` behavior,
     # or a single dev cluster bootstrapped the legacy way). Ownership is
     # a REFERENCE: a secondary names its `owner` Cluster and forge derives
     # the joined network + registry-inherit from it — there is no
@@ -2185,7 +2250,7 @@ schema Bundle:
     # host-only / External-only Bundle (no in-cluster workloads) need not
     # declare one; `render_manifests` requires it.
     cluster_target?: ClusterTarget
-    # Cross-cluster kubeconfigs minted FRESH each `forge up` and stored
+    # Cross-cluster kubeconfigs minted FRESH each `forge env up` and stored
     # as k8s Secrets (so a workload in one cluster can reach another's
     # API server without a committed, IP-drifting kubeconfig). Minted at
     # the cluster→deploy boundary. Empty => none. See KubeconfigSecret.
@@ -2213,7 +2278,7 @@ schema Bundle:
     # at project level and per-env-overridden in
     # `deploy/kcl/<env>/ingress.k`. Routes attach to a Gateway+listener
     # by name. The GatewayClass is NOT in the Bundle — it's
-    # cluster-scoped and installed by `forge dev cluster up`.
+    # cluster-scoped and installed by `forge cluster up`.
     gateways: [Gateway] = []
     http_routes: [HTTPRoute] = []
     grpc_routes: [GRPCRoute] = []
@@ -2239,8 +2304,8 @@ schema Bundle:
     # Platform dependencies rendered from helm charts (helm-as-a-RENDERER:
     # `helm template --skip-crds` → manifests folded into the normal apply
     # pipeline; NO `helm install`). Each is a renderable with a NAME the
-    # EXISTING `--target` axis selects: `forge deploy <env> --target <name>`
-    # applies that platform dep; `forge deploy <env>` (no platform target)
+    # EXISTING `--target` axis selects: `forge env deploy <env> --target <name>`
+    # applies that platform dep; `forge env deploy <env>` (no platform target)
     # applies the app. cert-manager + Envoy Gateway are declared here per
     # env. See HelmChart. Empty => no platform deps (the app-only default).
     helm_charts: [HelmChart] = []

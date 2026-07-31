@@ -10,25 +10,24 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // TestE2ERegistrationTypesOnlyService drives the real `forge generate`
 // pipeline through the registration-in-code lifecycle (what a binary
 // serves is the row list in the user-owned pkg/app/services.go):
 //
-//	A. newly added (UNLISTED): a "project" service appears in components.json
-//	   + proto but nowhere in services.go → handlers scaffold + row
+//	A. newly added (UNLISTED): a "project" service appears in proto but
+//	   nowhere in services.go → handlers scaffold + row
 //	   constructor generate (the user might be about to implement it),
-//	   but the binary does NOT serve it: no MCP tools, audit warns "row
+//	   but the binary does NOT serve it: audit warns "row
 //	   constructor generated but unreferenced", generate prints the
 //	   exact line to add.
-//	B. registered: the user adds the serviceRowProject line → MCP tools
-//	   appear, audit clears. The opt-in is one line of user-owned code.
+//	B. registered: the user adds the serviceRowProject line → audit
+//	   clears. The opt-in is one line of user-owned code.
 //	C. tombstoned (types-only): the user deletes the row and leaves a
 //	   comment naming the serving binary → handlers Tier-1 stops
-//	   regenerating (stale candidates), MCP excludes, audit warns with
+//	   regenerating (stale candidates), audit warns with
 //	   state=tombstoned.
 //	D. --force-cleanup deletes the tracked generated files but never the
 //	   user-written scaffold files; the user removes the dir.
@@ -59,7 +58,7 @@ func TestE2ERegistrationTypesOnlyService(t *testing.T) {
 	dir := t.TempDir()
 
 	runCmd(t, dir, forgeBin,
-		"new", "tonly",
+		"project", "new", "tonly",
 		"--mod", "github.com/test/tonly",
 		"--service", "api",
 		"--frontend", "web",
@@ -67,15 +66,15 @@ func TestE2ERegistrationTypesOnlyService(t *testing.T) {
 	projectDir := filepath.Join(dir, "tonly")
 	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.yaml"))
 
-	// `forge new` scaffolds the user-owned registration file listing the
+	// `forge project new` scaffolds the user-owned registration file listing the
 	// initial service — the migration contract for fresh projects.
 	registryPath := filepath.Join(projectDir, "pkg", "app", "services.go")
 	registry := readFileE2E(t, registryPath)
 	if !strings.Contains(registry, "serviceRowAPI(app, cfg, logger, opts...),") {
-		t.Fatalf("forge new must scaffold pkg/app/services.go with the api row:\n%s", registry)
+		t.Fatalf("forge project new must scaffold pkg/app/services.go with the api row:\n%s", registry)
 	}
 
-	// Declare the second "project" service: proto + components.json entry.
+	// Declare the second "project" service — the proto IS the declaration.
 	// Its canonical implementation will live in a sibling binary
 	// (control-plane); this repo ends up consuming only types/client.
 	protoDir := filepath.Join(projectDir, "proto", "services", "project", "v1")
@@ -154,7 +153,6 @@ message GetProjectResponse {
 		t.Errorf("bootstrap must carry the registration guard naming the project inventory entry:\n%s", bootstrap)
 	}
 
-	assertMCPManifestServices(t, projectDir, []string{"APIService"}, []string{"ProjectService"})
 	assertAuditRegistration(t, projectDir, forgeBin, false /* served */, "unlisted")
 
 	runCmd(t, projectDir, "go", "build", "./...")
@@ -162,7 +160,6 @@ message GetProjectResponse {
 	// ── Phase B: register — one user-owned line serves the service ──────
 	editServiceRegistry(t, registryPath, registerProjectRow)
 	runCmd(t, projectDir, forgeBin, "generate")
-	assertMCPManifestServices(t, projectDir, []string{"APIService", "ProjectService"}, nil)
 	assertAuditRegistration(t, projectDir, forgeBin, true, "")
 	runCmd(t, projectDir, "go", "build", "./...")
 
@@ -174,26 +171,25 @@ message GetProjectResponse {
 	}
 	// The tracked Tier-1 file under the retired dir is a report-only
 	// stale candidate (the dir itself survives).
-	if !strings.Contains(out, "stale generated file") || !strings.Contains(out, "internal/handlers/project/authorizer_gen.go") {
+	if !strings.Contains(out, "stale generated file") || !strings.Contains(out, "internal/handlers/project/mock_gen.go") {
 		t.Errorf("generate must report the retired tracked files as stale candidates:\n%s", out)
 	}
-	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "project", "authorizer_gen.go"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "project", "mock_gen.go"))
 	rows = readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
 	if strings.Contains(rows, "serviceRowProject") {
 		t.Errorf("tombstoned service must drop out of services_gen.go")
 	}
-	assertMCPManifestServices(t, projectDir, []string{"APIService"}, []string{"ProjectService"})
 	assertAuditRegistration(t, projectDir, forgeBin, false, "tombstoned")
 
 	// ── Phase D: --force-cleanup removes generated files, never user files ─
-	// --skip-validate: the user-owned authorizer.go references the
-	// generated authorizer until the user moves or deletes their code —
-	// exactly what the audit finding instructs.
+	// --skip-validate: the user-owned scaffold files still reference the
+	// generated code until the user moves or deletes them — exactly what
+	// the audit finding instructs.
 	runCmd(t, projectDir, forgeBin, "generate", "--force-cleanup", "--skip-validate")
-	if _, err := os.Stat(filepath.Join(projectDir, "internal", "handlers", "project", "authorizer_gen.go")); !os.IsNotExist(err) {
-		t.Errorf("--force-cleanup must delete the tracked authorizer_gen.go, stat err = %v", err)
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "handlers", "project", "mock_gen.go")); !os.IsNotExist(err) {
+		t.Errorf("--force-cleanup must delete the tracked mock_gen.go, stat err = %v", err)
 	}
-	for _, userFile := range []string{"service.go", "handlers.go"} {
+	for _, userFile := range []string{"service.go", codegen.RPCHandlerFileName("CreateProject")} {
 		if _, err := os.Stat(filepath.Join(projectDir, "internal", "handlers", "project", userFile)); err != nil {
 			t.Errorf("user-written %s must survive --force-cleanup: %v", userFile, err)
 		}
@@ -217,7 +213,6 @@ message GetProjectResponse {
 	assertAuditRegistration(t, projectDir, forgeBin, false, "")
 	firstBootstrap := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
 	firstRows := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
-	firstManifest := readFileE2E(t, filepath.Join(projectDir, "gen", "mcp", "manifest.json"))
 
 	out = runCmdOutput(t, projectDir, forgeBin, "generate")
 	if strings.Contains(out, "stale generated file") {
@@ -229,9 +224,6 @@ message GetProjectResponse {
 	if got := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go")); got != firstRows {
 		t.Errorf("services_gen.go must be byte-stable across repeated generates")
 	}
-	if got := readFileE2E(t, filepath.Join(projectDir, "gen", "mcp", "manifest.json")); got != firstManifest {
-		t.Errorf("MCP manifest must be byte-stable across repeated generates")
-	}
 	runCmd(t, projectDir, "go", "build", "./...")
 
 	// The registration guard is live behavior, not just rendered text:
@@ -239,10 +231,10 @@ message GetProjectResponse {
 	t.Run("server-name-guard", func(t *testing.T) {
 		cmd := exec.Command("go", "run", "./cmd", "server", "project")
 		cmd.Dir = projectDir
-		// AUTH_MODE=none: without it the auth interceptor's missing-
-		// provider panic fires during interceptor construction, before
-		// BootstrapOnly's guard gets a chance to run.
-		cmd.Env = append(os.Environ(), "AUTH_MODE=none", "ENVIRONMENT=development")
+		// The scaffold's own internal/app/auth.go supplies a validator, so
+		// interceptor construction succeeds and BootstrapOnly's guard is
+		// reached. Nothing here disables authentication — nothing can.
+		cmd.Env = append(os.Environ(), "ENVIRONMENT=development")
 		guardOut, runErr := cmd.CombinedOutput()
 		if runErr == nil {
 			t.Fatalf("running the unregistered service name must fail; output:\n%s", guardOut)
@@ -253,18 +245,13 @@ message GetProjectResponse {
 	})
 }
 
-// addProjectServiceEntry appends the "project" service to components.json —
-// a plain entry; serving is decided in pkg/app/services.go, not config.
-// (Components live in components.json now; forge.yaml is global-only.)
+// addProjectServiceEntry is a deliberate no-op: services are discovered from
+// the proto descriptor written above, and what a binary serves is decided by
+// the row list in the user-owned pkg/app/services.go. Nothing else has to be
+// told about the service; the call sites stay so the lifecycle steps in the
+// test read explicitly.
 func addProjectServiceEntry(t *testing.T, projectDir string) {
 	t.Helper()
-	if err := generator.AppendComponentToFile(projectDir, config.ComponentConfig{
-		Name: "project",
-		Kind: config.ComponentKindServer,
-		Path: "internal/handlers/project",
-	}); err != nil {
-		t.Fatalf("append project component to components.json: %v", err)
-	}
 }
 
 type registryEdit int
@@ -305,39 +292,7 @@ func editServiceRegistry(t *testing.T, registryPath string, edit registryEdit) {
 	}
 }
 
-// assertMCPManifestServices asserts gen/mcp/manifest.json advertises
-// tools for every service in want and none for the services in absent.
-func assertMCPManifestServices(t *testing.T, projectDir string, want, absent []string) {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(projectDir, "gen", "mcp", "manifest.json"))
-	if err != nil {
-		t.Fatalf("read MCP manifest: %v", err)
-	}
-	var manifest struct {
-		Tools []struct {
-			Service string `json:"service"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		t.Fatalf("parse MCP manifest: %v", err)
-	}
-	got := map[string]bool{}
-	for _, tool := range manifest.Tools {
-		got[tool.Service] = true
-	}
-	for _, svc := range want {
-		if !got[svc] {
-			t.Errorf("MCP manifest missing tools for registered service %s: %v", svc, got)
-		}
-	}
-	for _, svc := range absent {
-		if got[svc] {
-			t.Errorf("MCP manifest must not advertise unregistered service %s: %v", svc, got)
-		}
-	}
-}
-
-// assertAuditRegistration runs `forge audit --json` and asserts (a) the
+// assertAuditRegistration runs `forge project audit --json` and asserts (a) the
 // shape category carries the served flag for the project service and
 // (b) the codegen category carries (or doesn't) the
 // unregistered_services finding with the expected state ("" = no
@@ -376,9 +331,6 @@ func assertAuditRegistration(t *testing.T, projectDir, forgeBin string, projectS
 				m := r.(map[string]any)
 				if m["served"] != false {
 					t.Errorf("audit shape rpc %v must carry additive served:false", m["name"])
-				}
-				if m["mcp_callable"] != false {
-					t.Errorf("audit shape rpc %v must report mcp_callable:false", m["name"])
 				}
 			}
 		}

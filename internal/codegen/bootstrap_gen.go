@@ -30,7 +30,12 @@ type BootstrapComponentData struct {
 	ImportPath string // e.g. "api" or "mcp/database" (path under internal/, workers/, etc.)
 	FieldName  string // e.g. "API" or "McpDatabase" (exported struct field, must be unique)
 	VarName    string // e.g. "api" or "mcpDatabase" (unique lowerCamel local-var prefix in bootstrap)
-	Fallible   bool   // true if New() returns (T, error)
+	Fallible   bool   // true if the constructor returns (T, error)
+	// Constructor is the component's entry-point func name — `New` unless the
+	// package moved the `// forge:constructor` marker onto a name of its own
+	// (Open / Connect / NewReadOnly). Read through [BootstrapComponentData.ConstructorName]
+	// so a literal built without it still emits the canonical shape.
+	Constructor string
 	// Alias is the import alias used in bootstrap.go for this component's
 	// Go package. Defaults to Package when there are no cross-role
 	// collisions; gets a role-prefixed value (e.g. "svcBilling",
@@ -57,6 +62,14 @@ type BootstrapComponentData struct {
 	// parsed (e.g. just-scaffolded component with no Deps yet).
 	HasLogger bool
 	HasConfig bool
+	// HasDB records whether this component's Deps struct declares a
+	// `DB orm.Context` field. The test-harness template gates `DB: cfg.db`
+	// on it, exactly as HasLogger/HasConfig gate their fields. Without it
+	// NewTest<Package> built the interactor with a nil DB while the
+	// sibling NewTest<Service> in the same generated file merged one in —
+	// so an interactor test that touched the database nil-panicked inside
+	// a DO NOT EDIT file the author cannot fix.
+	HasDB bool
 	// AppFieldRefs lists Deps fields (other than Logger/Config) whose
 	// names AND types match an AppExtras field. Bootstrap emits one
 	// assignment per entry like `<DepsField>: app.<DepsField>`. Without
@@ -115,6 +128,18 @@ type BootstrapComponentData struct {
 // style mismatches).
 type AppFieldRef struct {
 	DepsField string // e.g. "Repo"
+}
+
+// ConstructorName is the constructor selector templates must emit for this
+// component: the detected name, or the canonical `New` when the field was
+// never populated (hand-built literals in tests, pre-disk-resolution paths).
+// Templates call `{{.ConstructorName}}` so an unset field can never render an
+// empty selector.
+func (d BootstrapComponentData) ConstructorName() string {
+	if d.Constructor == "" {
+		return DefaultConstructorName
+	}
+	return d.Constructor
 }
 
 // Type aliases for backward compatibility and readability.
@@ -199,6 +224,21 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 					} else if !f.Optional && !isConfigScalarType(f.Type) {
 						unwiredCollaborators++
 					}
+				}
+			case "DB":
+				// The ORM handle. forge's own CRUD generator injects
+				// `DB orm.Context` into a service's Deps, and an
+				// interactor that reaches the database declares the
+				// same field — so the test harness must supply it for
+				// both. Gate on the declared type matching orm.Context
+				// so a domain-local DB field is left to the name+type
+				// matcher below, the same way Logger/Config do.
+				if f.Type == "" || f.Type == "orm.Context" {
+					components[i].HasDB = true
+				} else if matchedAppField(matcher, roleRoot, components[i].ImportPath, f.Name, f.Type, appFieldTypes) {
+					components[i].AppFieldRefs = append(components[i].AppFieldRefs, AppFieldRef{DepsField: f.Name})
+				} else if !f.Optional && !isConfigScalarType(f.Type) {
+					unwiredCollaborators++
 				}
 			default:
 				// Name-match + assignability check. The legacy version
@@ -458,19 +498,12 @@ type BootstrapTestServiceData struct {
 	ProtoServiceName       string // e.g. "ApiService" (proto service name for connect client)
 	ProtoConnectImportPath string // e.g. "github.com/foo/bar/gen/services/api/v1/apiv1connect"
 	ProtoConnectPkg        string // e.g. "apiv1connect" (Go identifier used at call sites)
-	Fallible               bool   // true if New() returns (T, error)
+	Fallible               bool   // true if the constructor returns (T, error)
 	HasDB                  bool   // true if Deps struct has a DB orm.Context field
-	// HasAuthorizer is true when the service's Deps struct declares an
-	// `Authorizer` field. The test harness only wires the permissive test
-	// authorizer (deps.Authorizer = cfg.authz + the AuthzInterceptor in
-	// NewTest<Svc>Server) for services that actually carry that dep. A
-	// carve-out / `//forge:external-component` / shared-descriptor-authz
-	// service has no Authorizer dep, so emitting deps.Authorizer for it is a
-	// compile error — this gate omits it (mirrors inventory_gen's HasAuthorizer
-	// and the run-path Mount<Svc>, which only thread the authz interceptor
-	// when the service declares the dep). Same signal both halves read: the
-	// presence of a Deps field named "Authorizer".
-	HasAuthorizer bool
+	// Constructor is the handler's entry-point func name — `New` unless the
+	// package moved the `// forge:constructor` marker onto a name of its own.
+	// Read through [BootstrapTestServiceData.ConstructorName].
+	Constructor string
 	// Alias mirrors BootstrapComponentData.Alias — when an internal package
 	// shares its leaf-name with this service's package, both get role-prefixed
 	// aliases ("svcBilling" vs "pkgBilling") so the generated testing.go imports
@@ -497,6 +530,30 @@ type BootstrapTestServiceData struct {
 	// sees a visible reminder to hand-roll an override via
 	// With<Svc>Deps(...). Empty when every selector resolved cleanly.
 	UnresolvedStubs []UnresolvedAutoStub
+	// FuncDefaults lists required func-typed Deps fields the harness fills
+	// with a real framework default (Clock -> time.Now, IDGen -> ulid). A
+	// func value can't be synthesized by the interface auto-stubber, so
+	// without this a required `Now func() time.Time` / `NewID func() string`
+	// would leave NewTest<Svc> constructing with a nil func — validateDeps
+	// (or the first call) then fails. Optional func fields are excluded
+	// (they stay nil by design — the `//forge:optional-dep` contract).
+	FuncDefaults []DepsFuncDefault
+	// FuncTodos lists required func-typed Deps fields the harness has NO
+	// sensible default for (e.g. `Send func(string) error`). Emitted as a
+	// TODO next to NewTest<Svc> so the author overrides via With<Svc>Deps
+	// instead of hitting a silent nil-func validateDeps failure — the
+	// func-typed analog of UnresolvedStubs.
+	FuncTodos []UnresolvedAutoStub
+}
+
+// ConstructorName is the constructor selector the testing.go template must
+// emit for this service — the detected name, or the canonical `New` when the
+// field was never populated.
+func (d BootstrapTestServiceData) ConstructorName() string {
+	if d.Constructor == "" {
+		return DefaultConstructorName
+	}
+	return d.Constructor
 }
 
 // UnresolvedAutoStub is one Deps field whose cross-package selector
@@ -509,6 +566,24 @@ type UnresolvedAutoStub struct {
 	// TypeExpr is the unresolved type expression as written in the
 	// Deps struct (e.g. "external.Client").
 	TypeExpr string
+}
+
+// DepsFuncDefault describes one required func-typed Deps field the test
+// harness fills with a real framework default, so NewTest<Svc> constructs
+// the service without the author hand-rolling a func value (the Clock /
+// IDGen friction). The template emits `if deps.<F> == nil { deps.<F> =
+// <Expr> }` — matching the by-type Clock/IDGen fill compose.go emits on
+// the live path, so tests and production share the same default.
+type DepsFuncDefault struct {
+	// FieldName is the Deps field name as declared (e.g. "Now", "NewID").
+	FieldName string
+	// Expr is the Go expression the harness assigns (e.g. "time.Now" or
+	// the ULID id-generator closure).
+	Expr string
+	// NeedsTime / NeedsULID flag the import the Expr references so the
+	// assembler can gate testing.go's `time` / ulid imports.
+	NeedsTime bool
+	NeedsULID bool
 }
 
 // DepsAutoStub describes one synthesized interface implementation
@@ -554,20 +629,19 @@ type DepsAutoStub struct {
 // GenerateBootstrapTesting generates pkg/app/testing.go from the bootstrap_testing.go.tmpl template.
 //
 // cs is the project's checksum tracker — passing it keeps pkg/app/testing.go
-// recorded so `forge audit` doesn't flag stale state on it. A nil cs is tolerated.
+// recorded so `forge project audit` doesn't flag stale state on it. A nil cs is tolerated.
 //
 // BootstrapTestingGenInput embeds GenContext (ProjectDir / ModulePath /
-// Checksums) and adds the component inventory + multi-tenancy toggle.
+// Checksums) and adds the component inventory.
 // Replaces the prior 8-positional-parameter signature; field names map
 // 1:1 to the old params.
 type BootstrapTestingGenInput struct {
 	GenContext
 
-	Services           []ServiceDef
-	Packages           []BootstrapPackageData
-	Workers            []BootstrapWorkerData
-	Operators          []BootstrapOperatorData
-	MultiTenantEnabled bool
+	Services  []ServiceDef
+	Packages  []BootstrapPackageData
+	Workers   []BootstrapWorkerData
+	Operators []BootstrapOperatorData
 }
 
 func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
@@ -580,7 +654,6 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 	// the body never reads them (it didn't before this struct conversion
 	// either — they were unused positional params).
 	modulePath := in.ModulePath
-	multiTenantEnabled := in.MultiTenantEnabled
 	projectDir := in.ProjectDir
 	cs := in.Checksums
 
@@ -606,36 +679,23 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 		if hasDB {
 			anyServiceHasDB = true
 		}
-		// Authz-aware test harness: only wire the test authorizer for a
-		// service that actually declares the Authorizer Deps field. Carve-out
-		// / external-component / descriptor-authz services don't, so emitting
-		// deps.Authorizer for them is a compile error (control-plane disowned
-		// pkg/app/testing.go for exactly this). Same signal inventory_gen reads
-		// (a Deps field named "Authorizer") so the test harness and the run
-		// path stay in lockstep. ParseServiceDeps failures degrade to "no
-		// authorizer" — the conservative choice (omit rather than miscompile).
-		hasAuthorizer := false
-		if deps, depErr := ParseServiceDeps(handlerDir); depErr == nil {
-			for _, df := range deps {
-				if df.Name == "Authorizer" {
-					hasAuthorizer = true
-					break
-				}
-			}
-		}
 		// Auto-stub: walk the service's Deps fields, find any interface-
 		// typed required fields and queue a synthesized stub. Handles
 		// both locally-declared interfaces AND cross-package selector
 		// types (e.g. repo.Repository) — the selector path loads the
 		// imported package via go/types and walks its method set. The
-		// bare-Deps trio (Logger / Config / Authorizer) and the DB
-		// orm.Context field are handled by the existing default fill
-		// so they're excluded from auto-stubbing here.
+		// bare-Deps pair (Logger / Config) and the DB orm.Context field
+		// are handled by the existing default fill so they're excluded
+		// from auto-stubbing here.
 		//
 		// unresolvedStubs surfaces selector types we couldn't resolve
 		// (package failed to load, alias not in imports, type isn't
 		// an interface) so the template can emit a TODO comment.
 		autoStubs, unresolvedStubs := computeAutoStubs(handlerDir, pkg)
+		// Func-typed required deps: fill Clock/IDGen with real defaults
+		// (time.Now / ulid), TODO the rest — the harness half of the
+		// Clock/IDGen fix. A func value can't be interface-auto-stubbed.
+		funcDefaults, funcTodos := computeFuncDefaults(handlerDir)
 		// Derive Connect package path/name from the proto's declared
 		// go_package + PkgName instead of guessing from the service name.
 		// This is what lets a service whose proto moved (e.g. from
@@ -666,12 +726,14 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			ProtoConnectImportPath: connectImport,
 			ProtoConnectPkg:        connectPkg,
 			Fallible:               fallible,
+			Constructor:            DetectConstructorName(handlerDir),
 			HasDB:                  hasDB,
-			HasAuthorizer:          hasAuthorizer,
 			Alias:                  pkg, // overwritten below if there's a cross-role collision
 			VarName:                pkg, // overwritten below if there's a cross-role collision
 			AutoStubs:              autoStubs,
 			UnresolvedStubs:        unresolvedStubs,
+			FuncDefaults:           funcDefaults,
+			FuncTodos:              funcTodos,
 		})
 	}
 
@@ -796,28 +858,45 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 	// here so the final file stays diff-stable.
 	extraImports := mergeExtraImports(testSvcs)
 
+	// Gate the framework Clock/IDGen imports on whether any service actually
+	// carries a func default of that shape — mirrors AnyServiceHasDB.
+	anyServiceNeedsTime := false
+	anyServiceNeedsULID := false
+	for _, s := range testSvcs {
+		for _, fd := range s.FuncDefaults {
+			if fd.NeedsTime {
+				anyServiceNeedsTime = true
+			}
+			if fd.NeedsULID {
+				anyServiceNeedsULID = true
+			}
+		}
+	}
+
 	data := struct {
-		Module             string
-		Services           []BootstrapTestServiceData
-		ConnectImports     []string
-		Packages           []BootstrapPackageData
-		MultiTenantEnabled bool
-		AnyServiceHasDB    bool
-		HasMigrationsFS    bool
-		ExtraImports       []ExtraImport
+		Module              string
+		Services            []BootstrapTestServiceData
+		ConnectImports      []string
+		Packages            []BootstrapPackageData
+		AnyServiceHasDB     bool
+		AnyServiceNeedsTime bool
+		AnyServiceNeedsULID bool
+		HasMigrationsFS     bool
+		ExtraImports        []ExtraImport
 	}{
-		Module:             modulePath,
-		Services:           testSvcs,
-		ConnectImports:     connectImports,
-		Packages:           packages,
-		MultiTenantEnabled: multiTenantEnabled,
-		AnyServiceHasDB:    anyServiceHasDB,
+		Module:              modulePath,
+		Services:            testSvcs,
+		ConnectImports:      connectImports,
+		Packages:            packages,
+		AnyServiceHasDB:     anyServiceHasDB,
+		AnyServiceNeedsTime: anyServiceNeedsTime,
+		AnyServiceNeedsULID: anyServiceNeedsULID,
 		// Same predicate GenerateMigrate uses for db/embed.go: when the
 		// project carries SQL migrations, emit the opt-in NewMigratedTestDB
 		// helper (testkit.NewMigratedPostgresDB over forgedb.MigrationsFS)
 		// so generated CRUD/handler tests can start with the real schema
 		// instead of the bare default database.
-		HasMigrationsFS: projectHasSQLMigrations(projectDir),
+		HasMigrationsFS: ProjectHasSQLMigrations(projectDir),
 		ExtraImports:    nil, // filled below after duplicate-filtering
 	}
 
@@ -850,6 +929,22 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 	if err := writeForgeOwned(projectDir, filepath.Join("pkg", "app", "testing.go"), content, cs); err != nil {
 		return fmt.Errorf("write pkg/app/testing.go: %w", err)
 	}
+
+	// Emit the project-owned FK-spine seed helper (pkg/app/seedgraph_gen.go)
+	// alongside the test harness. Best-effort: a missing/unreachable shadow DB
+	// just means the helper isn't emitted this run (the flow test then hand-
+	// seeds), so a write/introspection hiccup must never fail the whole generate.
+	if err := GenerateSeedGraph(projectDir, modulePath, cs); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: skipped pkg/app/seedgraph_gen.go: %v\n", err)
+	}
+
+	// Emit the typed New<Entity> test factories (pkg/app/factory_gen.go)
+	// alongside the FK-spine seed helper. Same best-effort contract: a
+	// missing/unreachable shadow DB or an unseedable entity just means the
+	// factory isn't emitted this run, never a failed generate.
+	if err := GenerateEntityFactories(projectDir, modulePath, cs); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: skipped pkg/app/factory_gen.go: %v\n", err)
+	}
 	return nil
 }
 
@@ -872,13 +967,17 @@ func filterExternalComponentPackages(projectDir string, pkgs []BootstrapPackageD
 	return out
 }
 
-// projectHasSQLMigrations reports whether db/migrations/ contains at
-// least one .sql file — the same predicate the CLI uses to decide whether
-// GenerateMigrate embeds db/embed.go's MigrationsFS. Keeping the two in
-// agreement matters: bootstrap_testing.go.tmpl only imports forgedb when
-// this is true, and forgedb.MigrationsFS only exists when GenerateMigrate
-// saw migrations.
-func projectHasSQLMigrations(projectDir string) bool {
+// ProjectHasSQLMigrations reports whether db/migrations/ contains at
+// least one .sql file — the ONE predicate every consumer of "does this
+// project ship migrations" reads, so they cannot disagree:
+//
+//   - GenerateMigrate embeds db/embed.go's MigrationsFS
+//   - bootstrap_testing.go.tmpl imports forgedb (which only exists when
+//     GenerateMigrate saw migrations)
+//   - cmd-tree-db.go.tmpl compiles `db migrate` against the EMBEDDED set
+//   - components_gen.json declares the deploy-path migration step, which
+//     the env render turns into a migration initContainer
+func ProjectHasSQLMigrations(projectDir string) bool {
 	entries, err := os.ReadDir(filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
 		return false
@@ -1093,18 +1192,17 @@ func sortExtraImports(s []ExtraImport) {
 // the list narrow: anything else (Repo, Audit, Stripe, Email, ...)
 // flows through the auto-stub path when its type is a local interface.
 var bareDepsFieldNames = map[string]bool{
-	"Logger":     true,
-	"Config":     true,
-	"Authorizer": true,
-	"DB":         true,
+	"Logger": true,
+	"Config": true,
+	"DB":     true,
 }
 
 // computeAutoStubs walks a service's handler directory, parses its
 // Deps struct + locally-declared interfaces, and returns one
 // DepsAutoStub for every required Deps field whose type is an
 // interface forge can satisfy with a zero-value stub. The bare-Deps
-// trio (Logger / Config / Authorizer) and the optional-dep set are
-// excluded — those are either filled in by the template's existing
+// pair (Logger / Config) and the optional-dep set are excluded —
+// those are either filled in by the template's existing
 // default-merge step or deliberately left nil.
 //
 // Two type shapes are handled:
@@ -1198,27 +1296,49 @@ func computeAutoStubs(handlerDir, _ string) ([]DepsAutoStub, []UnresolvedAutoStu
 	return stubs, unresolved
 }
 
-// hasFallibleConstructor returns true if any service, package, worker, operator, or function has a fallible constructor.
-func hasFallibleConstructor(services []BootstrapServiceData, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData) bool {
-	for _, s := range services {
-		if s.Fallible {
-			return true
+// computeFuncDefaults walks a service's Deps and classifies each REQUIRED
+// (non-`forge:optional-dep`) func-typed field into either a framework
+// default the harness can fill, or a TODO the author must satisfy:
+//
+//   - `func() time.Time` -> `time.Now`   (the Clock seam)
+//   - `func() string`    -> ULID id gen  (the IDGen seam)
+//   - any other `func(...)...`           -> FuncTodos (no sensible default)
+//
+// This is the harness half of the Clock/IDGen fix: it mirrors the by-type
+// fill compose.go emits on the live path, so a service that depends on a
+// deterministic clock / id source constructs in NewTest<Svc> with a real
+// default instead of a nil func. Optional func fields are skipped — the
+// `//forge:optional-dep` contract says nil is acceptable, and the test
+// harness leaves them nil like every other optional dep. The bare-Deps
+// trio + DB are never func-typed, so bareDepsFieldNames membership is
+// checked only for symmetry with computeAutoStubs.
+func computeFuncDefaults(handlerDir string) ([]DepsFuncDefault, []UnresolvedAutoStub) {
+	fields, err := ParseServiceDeps(handlerDir)
+	if err != nil || len(fields) == 0 {
+		return nil, nil
+	}
+	var defaults []DepsFuncDefault
+	var todos []UnresolvedAutoStub
+	for _, f := range fields {
+		if bareDepsFieldNames[f.Name] || f.Optional {
+			continue
+		}
+		t := strings.TrimSpace(f.Type)
+		if !strings.HasPrefix(t, "func(") {
+			continue
+		}
+		switch t {
+		case frameworkClockType:
+			defaults = append(defaults, DepsFuncDefault{
+				FieldName: f.Name, Expr: frameworkClockExpr, NeedsTime: true,
+			})
+		case frameworkIDGenType:
+			defaults = append(defaults, DepsFuncDefault{
+				FieldName: f.Name, Expr: frameworkIDGenExpr, NeedsULID: true,
+			})
+		default:
+			todos = append(todos, UnresolvedAutoStub{FieldName: f.Name, TypeExpr: t})
 		}
 	}
-	for _, p := range packages {
-		if p.Fallible {
-			return true
-		}
-	}
-	for _, w := range workers {
-		if w.Fallible {
-			return true
-		}
-	}
-	for _, o := range operators {
-		if o.Fallible {
-			return true
-		}
-	}
-	return false
+	return defaults, todos
 }

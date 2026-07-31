@@ -116,7 +116,7 @@ func TestListSkillsAtExposesAppliesBounds(t *testing.T) {
 }
 
 // TestMigrationSkillStillLoadableByPath pins the on-demand escape hatch:
-// `forge skill load migrations/<id>` (and forge upgrade list's "To load"
+// `forge skill load migrations/<id>` (and forge project upgrade list's "To load"
 // hint) must keep working even though listings hide migration skills.
 func TestMigrationSkillStillLoadableByPath(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

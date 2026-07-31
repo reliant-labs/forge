@@ -102,17 +102,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Go tests
-        run: go test {{if .TestRace}}-race {{end}}-count=1 ./...
-{{- if .TestCoverage}}
-      - name: Go test coverage
-        run: go test -coverprofile=coverage.out -covermode=atomic ./...
-      - name: Upload coverage
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: coverage.out
-{{- end}}
 {{- if .HasFrontends}}
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -127,10 +116,41 @@ jobs:
             {{.Path}}/package-lock.json
 {{- end}}
 {{- range .Frontends}}
-      - name: Test {{.Name}}
+      # `npm ci` (lockfile-exact install) is CI's job, not the Taskfile's —
+      # the workflow owns how the environment is PREPARED, Taskfile.yml owns
+      # what "the tests" ARE. `task test` below then runs each frontend's own
+      # `npm test` script.
+      - name: Install {{.Name}} dependencies
         working-directory: {{.Path}}
-        run: npm ci && npx vitest run
+        run: npm ci
 {{- end}}
+{{- end}}
+      # Task is the single definition of the test suite: this job, the local
+      # edit loop, and `task test:all` all run the same commands out of
+      # Taskfile.yml. The workflow deliberately does NOT re-spell `go test`
+      # here — that is how the two drifted apart before (CI ran a bare
+      # `go test ./...` that skipped the frontend lane entirely, so a broken
+      # frontend test could merge green).
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
+      - name: Tests
+        # GOTESTRACE carries forge.yaml's `ci.test.race` through to the
+        # Taskfile, which is the one place the `go test` flags are spelled.
+        # Without the pass-through the key would go silently dead the moment
+        # the test command moved out of this workflow.
+        run: task test{{if not .TestRace}} GOTESTRACE={{end}}
+{{- if .TestCoverage}}
+      # `task coverage` (not a second hand-rolled `go test -coverprofile`):
+      # same reason as above, and it keeps the profile flags in one place.
+      - name: Go test coverage
+        run: task coverage
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
 {{- end}}
 
   build:
@@ -209,26 +229,32 @@ jobs:
 {{- end}}
 {{- if .HasKCL}}
 
-  validate-kcl:
-    name: Validate KCL
+  deployability:
+    name: Deployability
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Cache KCL CLI
-        uses: actions/cache@v4
-        id: kcl-cache
+      - uses: actions/setup-go@v5
         with:
-          path: ~/.kcl
-          key: kcl-cli-${{"{{"}} runner.os {{"}}"}}
-
-      - name: Install KCL
-        if: steps.kcl-cache.outputs.cache-hit != 'true'
-        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-
-      - name: Add KCL to PATH
-        run: echo "$HOME/.kcl/bin" >> $GITHUB_PATH
-      - name: Validate KCL manifests
+          go-version-file: go.mod
+      # No KCL CLI install: forge renders through the embedded KCL
+      # runtime, so the toolchain travels with the binary.
+      - name: Ensure modules are ready for forge install
+        run: go mod download
+      - name: Install forge
+{{- template "install-forge" .}}
+      - name: Validate KCL manifests are applyable
+        # Asserts the render is something `kubectl apply` accepts — not
+        # merely that the KCL evaluates. Evaluating was the old bar, and
+        # it reported green over a CD path that died on every apply.
         run: forge ci validate-kcl
+      - name: Deployability checks
+        # Would an SRE let this reach production: probes, resource
+        # requests/limits, credentials sourced from Secrets rather than
+        # literal env values, ServiceAccounts actually bound to pods.
+        # Answered from the rendered manifests, so it needs no cluster
+        # and no image.
+        run: forge doctor --signal deploy
 {{- end}}
 {{- if or .VulnGo .VulnNPM}}
 
@@ -251,10 +277,19 @@ jobs:
         # compromised upstream release silently alter scan results. The
         # Dependabot config watches this file so bumps arrive as PRs.
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      - name: Install forge
+{{- template "install-forge" .}}
       - name: Go vulnerability check
         run: forge ci vuln-scan --go
 {{- end}}
 {{- if and .VulnNPM .HasFrontends}}
+{{- if not .VulnGo}}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install forge
+{{- template "install-forge" .}}
+{{- end}}
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -345,9 +380,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Both runtimes below run the suite through `task test:e2e`, so both
+      # need Go and Task. The e2e suite is Go (`go test -tags=e2e ./e2e/...`)
+      # under every runtime — the runtime only decides what infrastructure it
+      # talks to.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
 {{- if eq .E2ERuntime "docker-compose"}}
       - name: Run E2E tests
-        run: docker compose -f docker-compose.e2e.yml up --abort-on-container-exit --exit-code-from e2e
+        # The generated harness (e2e/<service>/main_test.go) brings its OWN
+        # e2e/<service>/docker-compose.e2e.yml up and tears it down. This step
+        # must therefore NOT start compose itself: doing so raced the harness
+        # for the same ports, and it pointed at a root-level
+        # docker-compose.e2e.yml that forge has never written.
+        run: task test:e2e
       - name: Upload test artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -355,6 +406,16 @@ jobs:
           name: e2e-results
           path: test-results/
 {{- else if eq .E2ERuntime "k3d"}}
+      - name: Install forge
+        # Same pin policy as the verify-generated job — see its comment.
+{{- if and .ForgeVersion (ne .ForgeVersion "dev")}}
+        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeVersion}}
+{{- else if and .ForgeGitCommit (ne .ForgeGitCommit "unknown")}}
+        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeGitCommit}}
+{{- else}}
+        # TODO: regenerate from a tagged forge release to pin this install.
+        run: go install github.com/reliant-labs/forge/cmd/forge@main
+{{- end}}
       - name: Create k3d cluster
         uses: AbsaOSS/k3d-action@v2
         with:
@@ -370,10 +431,18 @@ jobs:
           fi
 {{- end}}
       - name: Deploy and test
+        # Manifests come from `forge env deploy e2e`, which renders
+        # deploy/kcl/e2e/. The previous `kubectl apply -f deploy/k8s/e2e/`
+        # pointed at a directory forge has never produced — it survived the
+        # move to KCL unread, so this job could not have passed.
+        #
+        # This requires the project to declare an `e2e` environment
+        # (deploy/kcl/e2e/main.k). Create one with:
+        #   forge env new e2e --from dev
         run: |
-          kubectl apply -f deploy/k8s/e2e/
+          forge env deploy e2e
           kubectl wait --for=condition=ready pod -l app={{.ProjectName}} --timeout=120s
-          go test -tags=e2e ./test/e2e/...
+          task test:e2e
       - name: Upload test artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -406,5 +475,16 @@ jobs:
       - name: {{.Name}}
         run: {{.Run}}
 {{- end}}
+{{- end}}
+{{- end}}{{- define "install-forge"}}
+        # Pinned to the forge version that generated this project, so CI
+        # runs the same generator, linters and deployability rules the
+        # checkout was built with.
+{{- if and .ForgeVersion (ne .ForgeVersion "dev")}}
+        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeVersion}}
+{{- else if and .ForgeGitCommit (ne .ForgeGitCommit "unknown")}}
+        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeGitCommit}}
+{{- else}}
+        run: go install github.com/reliant-labs/forge/cmd/forge@main
 {{- end}}
 {{- end}}

@@ -15,7 +15,7 @@
 //     pristine and stamped; everything else is stamped with the
 //     unverified-legacy sentinel and reported through the standard
 //     drift error (guard semantics: --force regenerates exactly the
-//     named files, `forge disown` keeps them).
+//     named files, `forge project disown` keeps them).
 //
 // The legacy manifest is deleted by the migration itself — durable even
 // when the run later aborts. The unverified sentinel keeps the guard
@@ -27,6 +27,7 @@ import (
 	"os"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/generator"
 )
 
 // legacyMigrationStampable reports whether the migration may certify a
@@ -36,7 +37,7 @@ import (
 // birth, and a certification marker there would misrepresent
 // sanctioned edits as drift.
 func legacyMigrationStampable(relPath string) bool {
-	return !tier2MigratedPaths[relPath]
+	return !generator.IsTier2Managed(relPath)
 }
 
 // stepMigrateLegacyManifest performs the one-time conversion when a

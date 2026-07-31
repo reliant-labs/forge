@@ -21,21 +21,21 @@ import forge
 # like a plain forge.RenderedWorkload. The render layer is typed on the base schema,
 # so the subtype passes through and projects the same JSON contract; the
 # extra fields ride on the typed value but aren't part of the contract.
-schema TenantService(forge.RenderedWorkload):
+schema BillingService(forge.RenderedWorkload):
     # An extra REQUIRED field (no default) — enforced at parse time.
     region: str
     tier: "free" | "pro" = "free"
 
     check:
-        region, "TenantService.region is required"
+        region, "BillingService.region is required"
 
 _bundle = forge.Bundle {
     services = [
         # An app schema inheriting forge.RenderedWorkload — renders identically to a
         # plain forge.RenderedWorkload (Deployment + Service + RBAC), plus enforces
         # its own required `region` at parse time.
-        TenantService {
-            name = "tenant-api"
+        BillingService {
+            name = "billing-api"
             image = "example"
             region = "us-east-1"
             tier = "pro"
@@ -50,7 +50,7 @@ _bundle = forge.Bundle {
         #
         # env_vars carries reproducible per-env config (DATABASE_URL,
         # LOG_LEVEL, …). secrets_file points at a gitignored dotenv
-        # for STRIPE_*, JWT_*, etc. forge run / forge up load
+        # for STRIPE_*, JWT_*, etc. forge run / forge env up load
         # secrets_file first, then layer env_vars on top so KCL wins.
         forge.RenderedWorkload {
             name = "admin-server"

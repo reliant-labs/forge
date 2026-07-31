@@ -116,14 +116,14 @@ spec" workflow.
 
 - **`google/api/annotations.proto: file does not exist`** — buf.yaml
   is missing the googleapis dep. `forge generate` should add it
-  automatically when `api.rest: true`; if not, run `forge upgrade` or
+  automatically when `api.rest: true`; if not, run `forge project upgrade` or
   add the dep by hand:
   ```yaml
   deps:
     - buf.build/googleapis/googleapis
   ```
 - **REST request returns `404`** — vanguard only routes requests
-  whose path matches an annotation. Check `forge audit` (or `buf
+  whose path matches an annotation. Check `forge project audit` (or `buf
   build`) confirms the annotation parsed.
 - **REST request returns `405`** — method mismatch between request
   (e.g. `POST`) and annotation (e.g. `get:`).

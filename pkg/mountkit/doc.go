@@ -5,8 +5,8 @@
 // Earlier forge versions emitted a per-service Mount closure in the
 // generated inventory: each closure called svc.Register(mux, opts...),
 // then conditionally svc.RegisterHTTP(...) and svc.RegisterWebhookRoutes(...)
-// — the same handful of lines repeated once per service, gated by codegen
-// flags (HasWebhooks, HasAuthorizer). That body is uniform across every
+// — the same handful of lines repeated once per service, gated by a
+// codegen flag (HasWebhooks). That body is uniform across every
 // service and every project, so it belongs in one tested library function
 // rather than in N generated closures.
 //
@@ -19,11 +19,8 @@
 //
 // # What it does NOT do
 //
-// mountkit does not add per-service authorization. In the registry-DI
-// redesign, descriptor-driven authz becomes a single chain-level
-// interceptor applied once when the shared opts are built, ABOVE the
-// per-service mount. RegisterService threads the caller's opts straight
-// through to Register and never appends its own interceptors.
+// mountkit adds no interceptors of its own: RegisterService threads the
+// caller's opts straight through to Register.
 //
 // mountkit does not build the HTTP middleware stack the optional
 // registrars consume — that stack (recovery / logging / audit, e.g.
@@ -53,6 +50,5 @@
 //	}
 //
 // opts is the shared []connect.HandlerOption (observe interceptors,
-// read/send limits, and — once it lands — the single descriptor-driven
-// authz interceptor) already composed once for the whole process.
+// read/send limits) already composed once for the whole process.
 package mountkit

@@ -58,7 +58,7 @@ For each service in forge.yaml with `dev_target: host`:
    ```
 
 5. **Run `forge generate`** to verify the KCL still parses.
-6. **Run `forge up --env=dev`** to verify the new shape works end-to-end.
+6. **Run `forge env up dev`** to verify the new shape works end-to-end.
 
 ## Rollback
 

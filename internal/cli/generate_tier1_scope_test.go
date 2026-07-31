@@ -39,8 +39,7 @@ func TestTier1OwnerGateRegistry(t *testing.T) {
 		// glob entries — exercise the path/filepath.Match wiring.
 		{"internal/handlers/billing/handlers_crud_ops_gen.go", true, "internal/handlers/<svc>/handlers_crud_ops_gen.go is gated on codegen+services"},
 		{"internal/handlers/users/handlers_crud_ops_gen.go", true, "second svc still matches the same glob"},
-		{"pkg/middleware/auth_gen.go", true, "pkg/middleware/*_gen.go is gated on codegen+services"},
-		{"pkg/middleware/tenant_gen.go", true, "second middleware still matches the same prefix"},
+		{"pkg/middleware/auth_gen.go", false, "pkg/middleware has no emitter — no entry, fail-closed in-scope"},
 		{"frontends/admin/src/hooks/users-hooks.ts", true, "frontend hook glob is gated on frontend+services"},
 		// Unknown paths fall through to nil → caller treats as in-scope.
 		// This preserves loud-fail behavior for new emitters until they

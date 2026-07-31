@@ -17,7 +17,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// graph.go — `forge graph`.
+// graph.go — `forge project graph`.
 //
 // Emits a single JSON document describing every resource the project
 // declares and the explicit dependency edges between them. The goal is
@@ -41,7 +41,7 @@ import (
 // to a warning in the top-level `warnings` array rather than failing
 // the whole command. The model can read the warnings.
 
-// graphDoc is the JSON shape emitted by `forge graph`. All slice fields
+// graphDoc is the JSON shape emitted by `forge project graph`. All slice fields
 // are omitempty so a CLI-shaped project with no services produces a
 // compact document. Edges always present (possibly empty).
 type graphDoc struct {
@@ -123,9 +123,10 @@ type graphFrontend struct {
 	Port int    `json:"port,omitempty"`
 }
 
-// graphPackage is one internal Go package — service / adapter /
-// interactor. Type defaults to "service" for forge.yaml entries that
-// pre-date the `type` field.
+// graphPackage is one internal Go package. Both fields come from the
+// package's own source: it exists because internal/<name>/contract.go
+// exists, and its Type is "outbound-io" when it carries the
+// `//forge:outbound-io` marker, "service" when it does not.
 type graphPackage struct {
 	Name string `json:"name"`
 	Type string `json:"type,omitempty"`
@@ -193,8 +194,8 @@ graph as complete.
 Output goes to stdout; warnings and errors to stderr.
 
 Examples:
-  forge graph                 # dev env
-  forge graph --env=staging   # staging KCL render`,
+  forge project graph                 # dev env
+  forge project graph --env=staging   # staging KCL render`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runGraph(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), ".", env)
 		},
@@ -204,7 +205,7 @@ Examples:
 }
 
 // runGraph builds the graph document and writes it as indented JSON to
-// out. Warnings are echoed to errOut so a piped `forge graph | jq`
+// out. Warnings are echoed to errOut so a piped `forge project graph | jq`
 // surfaces them without polluting the JSON.
 func runGraph(ctx context.Context, out, errOut io.Writer, projectDir, env string) error {
 	abs, err := filepath.Abs(projectDir)
@@ -267,17 +268,21 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 		}
 	}
 
-	// Build a lookup of internal package names so service Deps fields
-	// can be matched to a producing package. We use forge.yaml's
-	// declared packages as the source of truth; an unknown type leaves
-	// the package field empty and emits a typeless dep edge.
+	// Build a lookup of internal package names so service Deps fields can be
+	// matched to a producing package. The set is DISCOVERED from the code
+	// (internal/<pkg>/contract.go), which is the same source the bootstrap
+	// codegen wires from — so the graph can never name a package the binary
+	// does not construct, nor omit one it does. An unknown type leaves the
+	// package field empty and emits a typeless dep edge.
 	pkgByName := map[string]graphPackage{}
-	if cfg != nil {
-		for _, p := range cfg.Packages {
-			gp := graphPackage{Name: p.Name, Type: effectivePackageType(p)}
-			pkgByName[p.Name] = gp
-			doc.Packages = append(doc.Packages, gp)
-		}
+	discovered, pkgErr := codegen.DiscoverInternalPackages(projectDir)
+	if pkgErr != nil {
+		doc.Warnings = append(doc.Warnings, fmt.Sprintf("discover internal packages: %v", pkgErr))
+	}
+	for _, p := range discovered {
+		gp := graphPackage{Name: p.Name, Type: p.Type}
+		pkgByName[p.Name] = gp
+		doc.Packages = append(doc.Packages, gp)
 	}
 
 	// Descriptor gives us RPCs + AuthRequired per service. Best-effort:
@@ -384,8 +389,8 @@ func graphAppendServices(doc *graphDoc, cfg *config.ProjectConfig, projectDir st
 		reg = &serviceRegistry{Exists: false}
 	}
 	// Inventory is enumerated from the REAL sources (proto descriptor +
-	// owned worker/operator files + cmd/ binaries), not the removed
-	// components.json manifest — see codegen.IntrospectComponents.
+	// owned worker/operator files + cmd/ binaries) — see
+	// codegen.IntrospectComponents.
 	for _, s := range codegen.IntrospectComponents(projectDir) {
 		// Binary components are inventoried in the Binaries section, not
 		// as graph services.
@@ -496,16 +501,6 @@ func graphAppendRoute(doc *graphDoc, name, kind, gateway, service, host, path st
 			Kind: "attached-to",
 		})
 	}
-}
-
-// effectivePackageType returns the PackageConfig.Type with the
-// historical default ("service") substituted for the empty string,
-// matching how forge.yaml validation treats omitted values.
-func effectivePackageType(p config.PackageConfig) string {
-	if strings.TrimSpace(p.Type) == "" {
-		return "service"
-	}
-	return p.Type
 }
 
 // servicePackageDir returns the on-disk package dir for a component —

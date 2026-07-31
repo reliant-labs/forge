@@ -21,7 +21,7 @@ func TestEffectiveMockProtoType_RepeatedScalar(t *testing.T) {
 	}
 	ef := repeated
 	ef.ProtoType = effectiveMockProtoType(repeated)
-	if v := mockGenerateValue("llm_keys", ef, 0); !strings.HasPrefix(v, "[") || !strings.HasSuffix(v, "]") {
+	if v := mockGenerateValue(nil, "llm_keys", ef, 0, ServiceDef{}); !strings.HasPrefix(v, "[") || !strings.HasSuffix(v, "]") {
 		t.Errorf("mock value = %q, want a TS array literal", v)
 	}
 
@@ -50,7 +50,7 @@ func TestEffectiveMockProtoType_RepeatedMessage(t *testing.T) {
 	}
 	ef := repeated
 	ef.ProtoType = effectiveMockProtoType(repeated)
-	v := mockGenerateValue("orders", ef, 0)
+	v := mockGenerateValue(nil, "orders", ef, 0, ServiceDef{})
 	if !strings.HasPrefix(v, "[") || !strings.HasSuffix(v, "]") {
 		t.Errorf("repeated-message mock value = %q, want a TS array literal", v)
 	}
@@ -61,7 +61,7 @@ func TestEffectiveMockProtoType_RepeatedMessage(t *testing.T) {
 	if got := effectiveMockProtoType(singular); got != "message" {
 		t.Errorf("effectiveMockProtoType(message) = %q, want %q", got, "message")
 	}
-	if v := mockGenerateValue("orders", singular, 0); v != "{}" {
+	if v := mockGenerateValue(nil, "orders", singular, 0, ServiceDef{}); v != "{}" {
 		t.Errorf("singular-message mock value = %q, want %q", v, "{}")
 	}
 

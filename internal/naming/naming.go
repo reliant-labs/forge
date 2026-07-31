@@ -115,7 +115,7 @@ func Pluralize(s string) string {
 //
 // This is the SINGLE source of truth for the entity-carrying field name,
 // shared by three sites that MUST agree or multi-word CRUD silently breaks:
-//   - the entity scaffolder (`forge add entity`) emits `<Entity> <field> = 1;`,
+//   - the entity scaffolder (`forge scaffold entity`) emits `<Entity> <field> = 1;`,
 //   - the CRUD ops emitter references the Go form (ToProtoPascalCase of this),
 //   - the CRUD shape detector (validateCRUDShape) matches the response's
 //     observed snake_case field names against this.

@@ -28,7 +28,7 @@ const openAPIPluginInstallCmd = "go install github.com/sudorandom/protoc-gen-con
 //
 // Always uses a synthesized template (written + removed per run) so
 // the user's hand-edited buf.gen.yaml stays the source of truth for
-// Go stubs. This keeps the openapi step composable with `forge upgrade`
+// Go stubs. This keeps the openapi step composable with `forge project upgrade`
 // flipping the flag on for an existing project — no need to touch the
 // main buf.gen.yaml in that case.
 //
@@ -81,7 +81,7 @@ func runOpenAPIGenerate(projectDir string, cfg *config.ProjectConfig) error {
 		}
 	}
 
-	fmt.Printf("  ✅ OpenAPI specs written to %s/\n", filepath.Join("openapi"))
+	fmt.Println("  ✅ OpenAPI specs written to openapi/")
 	return nil
 }
 

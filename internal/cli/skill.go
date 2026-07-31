@@ -75,7 +75,7 @@ const (
 // listing-time version comparison would silently degrade to "include
 // everything" for most real installs. Proper per-project version-range +
 // detection-script gating for migration skills already exists in
-// `forge upgrade list` (applies-from/applies-to frontmatter,
+// `forge project upgrade list` (applies-from/applies-to frontmatter,
 // upgrade_migrations.go); listings only need the coarse class. The
 // applies-from/applies-to bounds are still parsed and exposed on the
 // metadata so consumers (e.g. reliant) can make their own call.
@@ -87,7 +87,7 @@ const (
 	// past (or before) the transition, so DEFAULT listings and the
 	// project-skill regeneration exclude them. They remain loadable by
 	// exact path (`forge skill load migrations/...`) and are surfaced
-	// with proper version-range gating by `forge upgrade list`.
+	// with proper version-range gating by `forge project upgrade list`.
 	SkillRelevanceMigration SkillRelevance = "migration"
 )
 
@@ -104,7 +104,7 @@ type skillMeta struct {
 	// AppliesFrom / AppliesTo mirror the migration-skill `applies-from:` /
 	// `applies-to:` frontmatter bounds (half-open [from, to) over the
 	// project's pinned forge_version). Informational on listings — the
-	// authoritative range gate lives in `forge upgrade list`.
+	// authoritative range gate lives in `forge project upgrade list`.
 	AppliesFrom string
 	AppliesTo   string
 
@@ -125,6 +125,11 @@ func (m skillMeta) body() ([]byte, error) {
 	return loadForgeShippedSkill(m.Path)
 }
 
+// entryPointSkillPath is the skill that orients a reader before they pick
+// from the rest — the synthetic "forge" parent (skills/forge/SKILL.md).
+// TestSkillListNamesTheEntryPoint pins that it still ships.
+const entryPointSkillPath = "forge"
+
 func newSkillCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skill",
@@ -134,7 +139,7 @@ func newSkillCmd() *cobra.Command {
 	cmd.AddCommand(newSkillLoadCmd())
 	cmd.AddCommand(newSkillWriteCmd())
 	cmd.AddCommand(newSkillSearchCmd())
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 func newSkillListCmd() *cobra.Command {
@@ -150,7 +155,7 @@ func newSkillListCmd() *cobra.Command {
 One-time migration playbooks (relevance: migration — the skills under
 migrations/) are hidden by default; they only matter while crossing a
 specific forge version transition. Pass --include-migrations to list
-them, or use 'forge upgrade list' to see the migrations that actually
+them, or use 'forge project upgrade list' to see the migrations that actually
 apply to this project's pinned forge_version.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skills, err := listSkills()
@@ -165,10 +170,25 @@ apply to this project's pinned forge_version.`,
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "PATH\tSCOPE\tNAME\tDESCRIPTION")
+			entryPoint := false
 			for _, s := range skills {
+				if s.Path == entryPointSkillPath {
+					entryPoint = true
+				}
 				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.Path, s.Scope, s.Name, s.Description)
 			}
-			return w.Flush()
+			if err := w.Flush(); err != nil {
+				return err
+			}
+			// An alphabetical table has no "read this one first", and the
+			// entry-point skill is exactly the one a reader needs before
+			// choosing from the other ninety. Name it, when it is here.
+			if entryPoint {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+					"\nStart with `%s skill load %s` — it names the commands that print forge's whole surface.\n",
+					cmdutil.Name(), entryPointSkillPath)
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output JSON instead of a tab-separated table")
@@ -438,7 +458,7 @@ func ResolveSkillContentAt(projectRoot, skillPath string) ([]byte, SkillScope, e
 	if !isForgeVersionSkew(binaryVersion, projectVersion) {
 		return body, scope, nil
 	}
-	advisory := fmt.Sprintf("Note: this guidance is from forge %s; this project pins forge %s. Prefer `forge map --json`/`forge audit --json` for current project facts.\n",
+	advisory := fmt.Sprintf("Note: this guidance is from forge %s; this project pins forge %s. Prefer `forge project map --json`/`forge project audit --json` for current project facts.\n",
 		binaryVersion, projectVersion)
 	return insertAfterFrontmatter(body, []byte(advisory)), scope, nil
 }
@@ -480,7 +500,7 @@ func runningForgeVersion() string {
 // projectForgeVersionAt reads the forge_version pin from
 // <projectRoot>/forge.yaml. Returns "" when projectRoot is empty, the file
 // is missing/unreadable, or no pin is declared. The parse is intentionally
-// tolerant (single-field unmarshal, not LoadStrict) — version-skew
+// tolerant (single-field unmarshal, not LoadProject) — version-skew
 // annotation must work even across config-schema drift between forge
 // versions.
 func projectForgeVersionAt(projectRoot string) string {

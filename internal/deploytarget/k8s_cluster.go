@@ -14,7 +14,7 @@ import (
 // K8sClusterProvider is the full Go implementation for the
 // K8sCluster deploy target. It wraps internal/cluster.Apply — the
 // existing render-KCL → kubectl-apply → wait-rollouts pipeline that
-// `forge deploy` / `forge cluster reload` / `forge up` share.
+// `forge env deploy` / `forge cluster reload` / `forge env up` share.
 //
 // The provider takes the env-wide knobs off the ServiceGroup (which
 // got them from the first K8sCluster ref in the group). The per-
@@ -29,7 +29,7 @@ type K8sClusterProvider struct {
 	// from the rendered KCL — fields the provider itself doesn't know
 	// about. A nil builder means "use the group's namespace+image tag
 	// and let cluster.Apply default everything else", which is enough
-	// for tests but not for the real forge deploy path.
+	// for tests but not for the real forge env deploy path.
 	ApplyOptsBuilder func(group ServiceGroup) cluster.ApplyOpts
 }
 
@@ -65,7 +65,7 @@ func (p K8sClusterProvider) Deploy(ctx context.Context, group ServiceGroup) erro
 		opts = p.ApplyOptsBuilder(group)
 	} else {
 		// Fallback shape — tests that don't plumb a builder still get
-		// a defensible default. The real forge deploy path always
+		// a defensible default. The real forge env deploy path always
 		// passes a builder.
 		opts = cluster.ApplyOpts{
 			ImageTag:  group.ImageTag,

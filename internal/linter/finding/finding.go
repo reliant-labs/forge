@@ -1,14 +1,14 @@
 // Package finding is the single canonical home for the lint-finding
 // vocabulary shared by every internal linter (forgeconv, scaffolds,
-// migrationlint, frontendpacklint).
+// migrationlint).
 //
 // Before this package existed, each linter re-declared its own
 // Severity/Finding/Result trio, and — worse — the Severity enum values
-// DISAGREED across packages: frontendpacklint spelled its warning level
-// "warn" while every other linter spelled it "warning". That single
-// inconsistency forced `forge lint --json` to carry a
-// normalizeLintSeverity() shim whose only job was to collapse "warn"
-// onto "warning" before emitting the JSON contract.
+// DISAGREED across packages: some linters spelled their warning level
+// "warn" while others spelled it "warning". That single inconsistency
+// forced `forge lint --json` to carry a normalizeLintSeverity() shim
+// whose only job was to collapse "warn" onto "warning" before emitting
+// the JSON contract.
 //
 // Canonicalizing here fixes the spelling at the source: there is exactly
 // ONE Severity type with ONE spelling per level ("error" / "warning" /
@@ -43,10 +43,9 @@ const (
 // Finding is the superset lint diagnostic shared by every internal
 // linter. Each linter populates the subset of fields it produces:
 //
-//   - forgeconv:        Rule, Severity, File, Line, Message, Remediation
-//   - scaffolds:        Rule, Severity, Path, Message
-//   - migrationlint:    Rule, Severity, File, Line, Message
-//   - frontendpacklint: Rule, Severity, File, Line, Message, Pack, Import
+//   - forgeconv:     Rule, Severity, File, Line, Message, Remediation
+//   - scaffolds:     Rule, Severity, Path, Message
+//   - migrationlint: Rule, Severity, File, Line, Message
 //
 // The json tags preserve the historical per-package wire shapes (Path
 // and Remediation/omitempty etc.) so any consumer that ever marshals a
@@ -61,8 +60,6 @@ type Finding struct {
 	Message     string   `json:"message"`
 	Path        string   `json:"path,omitempty"`        // scaffolds: file path (no line)
 	Remediation string   `json:"remediation,omitempty"` // forgeconv: actionable fix hint
-	Pack        string   `json:"pack,omitempty"`        // frontendpacklint: owning pack
-	Import      string   `json:"import,omitempty"`      // frontendpacklint: offending import
 }
 
 // Result aggregates findings from a single lint run. Each linter embeds
@@ -85,9 +82,15 @@ func (r Result) HasErrors() bool {
 
 // ParseSeverity maps a free-form severity string (as it appears in
 // forge.yaml rule config, e.g. migration_safety levels) onto the
-// canonical Severity. It accepts the legacy "warn" spelling as an alias
-// for "warning" so existing project config keeps working. Unrecognized
-// values return ("", false) so callers can treat the rule as disabled.
+// canonical Severity. Input is deliberately lenient: forge.yaml spells
+// the warning level "warn" — that is the spelling forge itself writes
+// into generated config, documents in the MigrationSafetyConfig yaml
+// tags, and normalizes "warning" onto in config.effectiveSeverity — so
+// both spellings parse to SeverityWarning. The single-spelling
+// invariant is a property of the Severity type and the `forge lint
+// --json` contract (the OUTPUT), not of what this parser accepts.
+// Anything unrecognized — including "off" — returns ("", false) so
+// callers can treat the rule as disabled.
 func ParseSeverity(value string) (Severity, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "error":

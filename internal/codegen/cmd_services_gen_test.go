@@ -101,7 +101,7 @@ func TestGenerateCmdGroups(t *testing.T) {
 	// once OWNED code (ScaffoldWorkerCmd/ScaffoldOperatorCmd).
 	for _, absent := range []string{
 		filepath.Join("workers", "reaper.go"),
-		filepath.Join("operators", "tenant.go"),
+		filepath.Join("operators", "syncer.go"),
 	} {
 		if _, err := os.Stat(filepath.Join(base, absent)); err == nil {
 			t.Errorf("GenerateCmdGroups emitted %s — worker/operator subcommands must be scaffold-once, not generated", absent)
@@ -134,7 +134,7 @@ func TestGenerateCmdGroups(t *testing.T) {
 		for _, forbidden := range []string{
 			"DO NOT EDIT",
 			"workers.NewReaperCmd",
-			"operators.NewTenantCmd",
+			"operators.NewSyncerCmd",
 			"func init()",
 			"RegisterServiceCmd",
 			`_ "`,
@@ -148,8 +148,8 @@ func TestGenerateCmdGroups(t *testing.T) {
 
 	// Group anchors exist and parse (so the group packages compile even with
 	// zero items). All three groups are anchored even though workers/operators
-	// have no per-component files yet — main.go's (future) blank/named imports
-	// of those subpackages must resolve.
+	// have no per-component files yet — main.go's (future) named imports of
+	// those subpackages must resolve.
 	for _, anchor := range []struct{ file, pkg string }{
 		{filepath.Join("services", "register_gen.go"), "package services"},
 		{filepath.Join("workers", "register_gen.go"), "package workers"},
@@ -201,7 +201,7 @@ func TestGenerateCmdGroups_MainScaffoldOnce(t *testing.T) {
 }
 
 // TestScaffoldWorkerCmd / TestScaffoldOperatorCmd pin the scaffold-once per-
-// component subcommand files `forge add worker/operator` writes (the work the
+// component subcommand files `forge scaffold worker/operator` writes (the work the
 // retired generate-time cmd-groups loop used to do). One file per component,
 // write-if-absent, typed self-composed supervised subset, no init() registry.
 func TestScaffoldWorkerCmd(t *testing.T) {
@@ -252,21 +252,21 @@ func TestScaffoldOperatorCmd(t *testing.T) {
 	dir := t.TempDir()
 	writeTestGoMod(t, dir, "github.com/example/proj")
 
-	if _, err := ScaffoldOperatorCmd(dir, "proj", "tenant"); err != nil {
+	if _, err := ScaffoldOperatorCmd(dir, "proj", "syncer"); err != nil {
 		t.Fatalf("ScaffoldOperatorCmd: %v", err)
 	}
-	path := filepath.Join(dir, "cmd", "proj", "cmd", "operators", "tenant.go")
+	path := filepath.Join(dir, "cmd", "proj", "cmd", "operators", "syncer.go")
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read tenant.go: %v", err)
+		t.Fatalf("read syncer.go: %v", err)
 	}
 	content := string(raw)
-	for _, want := range []string{"func NewTenantCmd(deps cmd.Deps)", `Use:   "tenant",`, "package operators", "cmd.MountNone", "cmd.ServeSpec{", `[]app.OperatorEntry{c.OperatorTenant()}`} {
+	for _, want := range []string{"func NewSyncerCmd(deps cmd.Deps)", `Use:   "syncer",`, "package operators", "cmd.MountNone", "cmd.ServeSpec{", `[]app.OperatorEntry{c.OperatorSyncer()}`} {
 		if !strings.Contains(content, want) {
-			t.Errorf("tenant.go missing %q\n%s", want, content)
+			t.Errorf("syncer.go missing %q\n%s", want, content)
 		}
 	}
-	assertParses(t, "tenant.go", content)
+	assertParses(t, "syncer.go", content)
 }
 
 // TestGenerateCmdGroups_Reserved: a service whose runtime name collides with

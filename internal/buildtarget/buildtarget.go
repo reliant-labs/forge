@@ -168,7 +168,7 @@ func (execRunner) RunInDir(ctx context.Context, dir string, env map[string]strin
 // model across both escape hatches).
 //
 // Exposed so callers that want to render a preview of the
-// substituted command (forge build --dry-run, forge audit) can reuse
+// substituted command (forge build --dry-run, forge project audit) can reuse
 // the same token map the runner consumes — no risk of the preview
 // drifting from the actual exec.
 func Vars(spec Spec) map[string]string {
@@ -296,7 +296,7 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 		// was expected to run but its required source tree (e.g. a sibling
 		// repo like ../reliant) isn't checked out. Skipping-with-warn here
 		// reported the overall build as SUCCESS while silently producing no
-		// image — so a following `forge deploy` referenced an unpushed tag →
+		// image — so a following `forge env deploy` referenced an unpushed tag →
 		// ImagePullBackOff. Failing loudly, naming the missing path, is the
 		// correct contract: the user either checks out the sibling or removes
 		// the service from this env's KCL.
@@ -347,7 +347,7 @@ type State struct {
 	// from the registry after the user's build_cmd builds+pushes. EMPTY when
 	// the digest couldn't be resolved (local-only ref, registry unreachable,
 	// or buildx/docker absent) — capture never fails the build. Mirrors
-	// internal/cli.BuildState.Digest so `forge deploy` pins the immutable
+	// internal/cli.BuildState.Digest so `forge env deploy` pins the immutable
 	// `<image>@<digest>` reference for external builds too, instead of
 	// falling back to the mutable env tag (the stale-arch-cache footgun).
 	Digest string `json:"digest,omitempty"`
@@ -382,7 +382,7 @@ func statePath(projectDir, env, service string) string {
 
 // WriteState persists a successful Runner.Build to disk. Called from
 // the build dispatcher after every successful per-service build so a
-// subsequent `forge deploy <env>` can pin the same tag. Skipped
+// subsequent `forge env deploy <env>` can pin the same tag. Skipped
 // builds DO NOT call WriteState — there's no successful tag to record.
 //
 // The directory is created lazily so projects that never use the
@@ -403,7 +403,7 @@ func ReadState(projectDir, env, service string) (*State, error) {
 }
 
 // StatePath exposes the per-service state path for callers that want
-// to print it (forge build's summary, forge audit) without re-deriving
+// to print it (forge build's summary, forge project audit) without re-deriving
 // the layout. Kept exported so the path lives in one place.
 func StatePath(projectDir, env, service string) string {
 	return statePath(projectDir, env, service)

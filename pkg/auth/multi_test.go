@@ -92,11 +92,24 @@ func TestMultiValidator_RequiresAtLeastOne(t *testing.T) {
 	}
 }
 
-func TestHMACValidator_SecretEnvFallback(t *testing.T) {
+// A validator trusts exactly the key its constructor was handed. This
+// package used to accept the NAME of an environment variable and read the
+// secret itself, which put the key a service authenticates with outside
+// everything the app declares: the value appears in no config proto, so no
+// deploy renders it, no config validation sees it, and a stale export in the
+// process environment is indistinguishable from a configured issuer.
+//
+// The key is a config field (`sensitive: true`), so it arrives from the
+// environment's secret provider and the app hands it in.
+func TestHMACValidator_TrustsOnlyTheKeyItWasHanded(t *testing.T) {
 	t.Setenv("SUPABASE_JWT_SECRET", "supa-secret")
+	if _, err := NewHMACValidator(HMACValidatorConfig{SigningMethod: "HS256"}); err == nil {
+		t.Fatal("a validator constructed with no Secret must refuse, however many plausible secrets are in the environment")
+	}
+
 	v, err := NewHMACValidator(HMACValidatorConfig{
 		SigningMethod: "HS256",
-		SecretEnv:     "SUPABASE_JWT_SECRET",
+		Secret:        "supa-secret",
 	})
 	if err != nil {
 		t.Fatalf("NewHMACValidator: %v", err)

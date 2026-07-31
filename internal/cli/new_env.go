@@ -15,7 +15,7 @@ import (
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
-// newNewEnvCmd builds `forge new-env <name>` — scaffold a new deploy
+// newNewEnvCmd builds `forge env new <name>` — scaffold a new deploy
 // environment by deriving it from one of the project's EXISTING envs.
 //
 // WHY this command exists (the root-cause fix): authoring a new env is a
@@ -32,14 +32,14 @@ import (
 // environment. Every one of those is a DEPLOY-TIME (or worse, silent runtime)
 // failure today.
 //
-// new-env converts that into an AUTHOR-TIME error: it copies the sibling's
+// `env new` converts that into an AUTHOR-TIME error: it copies the sibling's
 // boilerplate verbatim but REPLACES each dangerous knob's value with a
 // `REPLACE_ME_*` placeholder carrying an inline `# check:` comment explaining
 // what to put there and how to verify it. A forgotten knob is now a visible
 // placeholder, not an inherited-wrong value. The `--check` flag (and the CI
 // guard a project can wire around it) FAILS while any placeholder remains, so
 // an un-filled env can't ship.
-func newNewEnvCmd() *cobra.Command {
+func newEnvNewCmd() *cobra.Command {
 	var (
 		fromEnv string
 		check   bool
@@ -47,7 +47,7 @@ func newNewEnvCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "new-env <name>",
+		Use:   "new <name>",
 		Short: "Scaffold a new deploy environment from an existing one",
 		Long: `Scaffold deploy/kcl/<name>/ for a new environment by deriving it
 from one of the project's existing envs (instead of hand-copying a sibling).
@@ -62,13 +62,13 @@ silently inherited from the wrong environment.
 
 The template env is auto-selected (a cloud-shaped sibling is preferred)
 or chosen explicitly with --from. After filling the placeholders, run
-'forge new-env <name> --check' (or just re-run with --check) to confirm
+'forge env new <name> --check' (or just re-run with --check) to confirm
 no placeholder remains and the env KCL-compiles.
 
 Examples:
-  forge new-env preview                 # derive from an auto-picked cloud sibling
-  forge new-env preview --from staging  # derive explicitly from staging
-  forge new-env preview --check         # verify no REPLACE_ME_* remains + it compiles`,
+  forge env new preview                 # derive from an auto-picked cloud sibling
+  forge env new preview --from staging  # derive explicitly from staging
+  forge env new preview --check         # verify no REPLACE_ME_* remains + it compiles`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runNewEnv(cmd.Context(), args[0], fromEnv, check, force)
@@ -106,10 +106,10 @@ func runNewEnv(ctx context.Context, name, fromEnv string, check, force bool) err
 	}
 
 	if _, err := os.Stat(envDir); err == nil && !force {
-		return cliutil.UserErr("forge new-env",
+		return cliutil.UserErr("forge env new",
 			fmt.Sprintf("deploy/kcl/%s already exists", name),
 			"",
-			fmt.Sprintf("pick a different env name, pass --force to overwrite, or run 'forge new-env %s --check' to verify the existing one", name))
+			fmt.Sprintf("pick a different env name, pass --force to overwrite, or run 'forge env new %s --check' to verify the existing one", name))
 	}
 
 	// Resolve the template env. Auto-pick prefers a cloud-shaped sibling
@@ -118,14 +118,14 @@ func runNewEnv(ctx context.Context, name, fromEnv string, check, force bool) err
 	// host-mode dev fixture.
 	envs, err := ListEnvs(projectDir)
 	if err != nil {
-		return cliutil.WrapUserErr("forge new-env", "list existing envs", "",
+		return cliutil.WrapUserErr("forge env new", "list existing envs", "",
 			"confirm deploy/kcl/<env>/main.k files exist", err)
 	}
 	if len(envs) == 0 {
-		return cliutil.UserErr("forge new-env",
+		return cliutil.UserErr("forge env new",
 			"no existing environments to derive from",
 			"",
-			"author the first env's deploy/kcl/<env>/main.k by hand (or 'forge new' scaffolds a starter env); new-env templates from an existing one")
+			"author the first env's deploy/kcl/<env>/main.k by hand (or 'forge project new' scaffolds a starter env); 'forge env new' templates from an existing one")
 	}
 
 	template, err := resolveTemplateEnv(projectDir, envs, fromEnv, name)
@@ -155,8 +155,8 @@ func runNewEnv(ctx context.Context, name, fromEnv string, check, force bool) err
 	n := Name()
 	fmt.Println("\nNext steps:")
 	fmt.Printf("  1. Edit deploy/kcl/%s/main.k and replace every REPLACE_ME_* with the real value (see the inline 'check:' guidance).\n", name)
-	fmt.Printf("  2. Add the sibling config.%s.yaml app-config (copy config.%s.yaml) and run '%s generate' to emit deploy/kcl/%s/config_gen.k.\n", name, template, n, name)
-	fmt.Printf("  3. Run '%s new-env %s --check' to confirm no placeholder remains and the env KCL-compiles.\n", n, name)
+	fmt.Printf("  2. Run '%s generate' to scaffold deploy/kcl/%s/config.k (the per-env app config) alongside the shared config schema + projection, then edit the values.\n", n, name)
+	fmt.Printf("  3. Run '%s env new %s --check' to confirm no placeholder remains and the env KCL-compiles.\n", n, name)
 
 	return nil
 }
@@ -166,8 +166,8 @@ func runNewEnv(ctx context.Context, name, fromEnv string, check, force bool) err
 // scoped to the deploy/kcl/<env>/ directory contract.
 func validateEnvName(name string) error {
 	if name == "" {
-		return cliutil.UserErr("forge new-env", "env name is required", "",
-			"pass an env name, e.g. 'forge new-env preview'")
+		return cliutil.UserErr("forge env new", "env name is required", "",
+			"pass an env name, e.g. 'forge env new preview'")
 	}
 	// Lowercase letters/digits/hyphen, must start with a letter. This is the
 	// shape of every existing env dir (dev, dev-k8s, e2e, staging, preprod,
@@ -175,7 +175,7 @@ func validateEnvName(name string) error {
 	// hyphens are mapped to underscores.
 	ok := regexp.MustCompile(`^[a-z][a-z0-9-]*$`).MatchString(name)
 	if !ok {
-		return cliutil.UserErr("forge new-env",
+		return cliutil.UserErr("forge env new",
 			fmt.Sprintf("invalid env name %q", name),
 			"",
 			"use lowercase letters, digits, and hyphens, starting with a letter (e.g. staging, preview, eu-west)")
@@ -194,7 +194,7 @@ func resolveTemplateEnv(projectDir string, envs []string, fromEnv, newName strin
 				return e, nil
 			}
 		}
-		return "", cliutil.UserErr("forge new-env",
+		return "", cliutil.UserErr("forge env new",
 			fmt.Sprintf("--from env %q not found", fromEnv),
 			"",
 			fmt.Sprintf("pick one of the existing envs: %s", strings.Join(envs, ", ")))
@@ -220,7 +220,7 @@ func resolveTemplateEnv(projectDir string, envs []string, fromEnv, newName strin
 			return e, nil
 		}
 	}
-	return "", cliutil.UserErr("forge new-env",
+	return "", cliutil.UserErr("forge env new",
 		"no env to derive from (only the new env name itself was found)",
 		"",
 		"pass --from <existing-env>")
@@ -236,14 +236,14 @@ func looksCloudShaped(body string) bool {
 
 // scaffoldEnvFromTemplate copies the template env's authored .k files into
 // the new env dir, applying the per-file knob-neutralizing transform. Returns
-// the list of files written. config_gen.k is DELIBERATELY skipped — it's
-// forge-generated (hash-locked) from the sibling config.<env>.yaml, so we
-// point the author at `forge generate` rather than copying a stale, mislabeled
-// ConfigMap.
+// the list of files written. The per-env config.k is DELIBERATELY skipped — it
+// is user-owned and env-specific (the template env's values, e.g. its database
+// DSN, would be wrong here), so we point the author at `forge generate`, which
+// scaffolds a fresh config.k for the new env from the proto defaults.
 func scaffoldEnvFromTemplate(projectDir, srcDir, envDir, template, name string) ([]string, error) {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
-		return nil, cliutil.WrapUserErr("forge new-env",
+		return nil, cliutil.WrapUserErr("forge env new",
 			fmt.Sprintf("read template env %s", template), "",
 			"confirm the template env directory exists", err)
 	}
@@ -257,10 +257,10 @@ func scaffoldEnvFromTemplate(projectDir, srcDir, envDir, template, name string) 
 		if e.IsDir() || filepath.Ext(e.Name()) != ".k" {
 			continue
 		}
-		// Skip the generated config projection — it's owned by `forge
-		// generate`, not hand-copied (its forge:hash header + env-stamped
-		// ConfigMap name would be wrong for the new env).
-		if e.Name() == "config_gen.k" {
+		// Skip the per-env config values — config.k is user-owned and
+		// env-specific, so `forge generate` scaffolds a fresh one for the new
+		// env rather than copying the template env's (wrong) values.
+		if e.Name() == "config.k" {
 			continue
 		}
 		body, err := os.ReadFile(filepath.Join(srcDir, e.Name()))
@@ -275,7 +275,7 @@ func scaffoldEnvFromTemplate(projectDir, srcDir, envDir, template, name string) 
 		written = append(written, dst)
 	}
 	if len(written) == 0 {
-		return nil, cliutil.UserErr("forge new-env",
+		return nil, cliutil.UserErr("forge env new",
 			fmt.Sprintf("template env %q has no .k files to derive from", template),
 			"",
 			"pick a --from env whose deploy/kcl/<env>/ contains a main.k")
@@ -338,7 +338,7 @@ func transformLine(line, template, name, tIdent, nIdent string) []string {
 			return knobLines(indent, "_registry", `option("registry") or "REPLACE_ME_REGISTRY"`,
 				"the image registry forge PUSHES to and the deploy PULLS from",
 				"a wrong/stale value SILENTLY ImagePullBackOff's at deploy time",
-				`run 'forge build --env `+name+` --push <registry>' and confirm the pushed ref matches the deploy ref`)
+				`run 'forge build `+name+` --push <registry>' and confirm the pushed ref matches the deploy ref`)
 		case "namespace":
 			return knobLines(indent, "_namespace", `option("namespace") or "REPLACE_ME_NAMESPACE"`,
 				"the k8s namespace every workload in this env deploys into",
@@ -427,10 +427,10 @@ func leadingWhitespace(line string) string {
 // into CI to keep a half-authored env from shipping.
 func checkEnv(ctx context.Context, projectDir, name, envDir string) error {
 	if _, err := os.Stat(envDir); err != nil {
-		return cliutil.UserErr("forge new-env --check",
+		return cliutil.UserErr("forge env new --check",
 			fmt.Sprintf("env %q not found (deploy/kcl/%s/ missing)", name, name),
 			"",
-			fmt.Sprintf("scaffold it first: 'forge new-env %s'", name))
+			fmt.Sprintf("scaffold it first: 'forge env new %s'", name))
 	}
 
 	// 1. No placeholders may remain.
@@ -444,7 +444,7 @@ func checkEnv(ctx context.Context, projectDir, name, envDir string) error {
 		for _, o := range offenders {
 			fmt.Fprintf(&b, "\n    %s", o)
 		}
-		return cliutil.UserErr("forge new-env --check",
+		return cliutil.UserErr("forge env new --check",
 			b.String(),
 			"",
 			"replace every REPLACE_ME_* with the real value per its inline 'check:' guidance")
@@ -454,7 +454,7 @@ func checkEnv(ctx context.Context, projectDir, name, envDir string) error {
 	//    deploy/up/build use, so a green check here means the env is
 	//    deployable (modulo runtime), not just placeholder-free.
 	if _, err := kclrender.Run(projectDir, envDir, []string{"env=" + name}); err != nil {
-		return cliutil.WrapUserErr("forge new-env --check",
+		return cliutil.WrapUserErr("forge env new --check",
 			fmt.Sprintf("env %q has no REPLACE_ME_* left but does not KCL-compile", name),
 			"",
 			"fix the KCL error above (a placeholder may have been replaced with a malformed value); then re-run --check",
@@ -467,7 +467,7 @@ func checkEnv(ctx context.Context, projectDir, name, envDir string) error {
 
 // placeholderOffenders returns "file:line: <text>" for each line in the env's
 // .k files that still carries a REPLACE_ME_* token. The guidance-comment lines
-// new-env emits ALSO contain the bare word REPLACE_ME, so we only flag lines
+// env new emits ALSO contain the bare word REPLACE_ME, so we only flag lines
 // where the token appears in a non-comment position (i.e. a real assignment),
 // keeping the gate precise.
 func placeholderOffenders(envDir string) ([]string, error) {
@@ -494,7 +494,7 @@ func placeholderOffenders(envDir string) ([]string, error) {
 }
 
 // lineHasLivePlaceholder reports whether a line carries a REPLACE_ME_* token in
-// an ACTIVE (non-comment) position. The leading `#` guidance comments new-env
+// an ACTIVE (non-comment) position. The leading `#` guidance comments env new
 // stamps mention REPLACE_ME too; those are not offenders. A line is an
 // offender when a placeholder token appears BEFORE any `#`.
 func lineHasLivePlaceholder(line string) bool {

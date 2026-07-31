@@ -40,6 +40,12 @@ type MethodDef struct {
 	Name    string
 	Params  []ParamDef
 	Results []ParamDef
+	// SkipObserve is true when the interface method's doc / inline comment
+	// carries the `// forge:no-observe` marker. The generated observability
+	// decorator still wraps the type, but THIS method delegates DIRECTLY to the
+	// inner implementation without routing through the observe chain. It is the
+	// method-scoped twin of the package-level `// forge:no-observe` opt-out.
+	SkipObserve bool
 }
 
 // ParamDef represents a method parameter or return value.
@@ -49,8 +55,8 @@ type ParamDef struct {
 	Variadic bool
 }
 
-// ContractFile holds everything extracted from a single contract.go.
-type ContractFile struct {
+// File holds everything extracted from a single contract.go.
+type File struct {
 	Package    string
 	Imports    map[string]string // alias/name → import path (e.g. "sql" → "database/sql")
 	Interfaces []InterfaceDef
@@ -94,7 +100,7 @@ type Options struct {
 	// ProjectRoot is the project root (the directory containing .forge/);
 	// relative manifest paths are computed against it. Both fields nil
 	// /empty preserve the legacy raw-os.WriteFile behavior for callers
-	// without a manifest in scope (e.g. the `forge add package` stub
+	// without a manifest in scope (e.g. the `forge scaffold package` stub
 	// emit — its mock is adopted into the manifest on the next full
 	// generate).
 	ProjectRoot string
@@ -160,14 +166,14 @@ func removeLegacyWrappers(dir string) error {
 // emit "nil" for interface-typed returns whose declaration lives outside
 // contract.go (e.g. internal/debug defines Service in contract.go and
 // Debugger in debugger.go).
-func ParseContract(path string) (*ContractFile, error) {
+func ParseContract(path string) (*File, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
 		return nil, fmt.Errorf("parse file: %w", err)
 	}
 
-	cf := &ContractFile{
+	cf := &File{
 		Package:          file.Name.Name,
 		Imports:          make(map[string]string),
 		InterfaceNames:   make(map[string]bool),
@@ -257,8 +263,13 @@ func ParseContract(path string) (*ContractFile, error) {
 			for _, field := range entry.ifaceType.Methods.List {
 				switch ft := field.Type.(type) {
 				case *ast.FuncType:
+					// A method-level `// forge:no-observe` on the field's doc or
+					// inline comment routes this method AROUND the observe chain
+					// in the generated decorator (direct delegation).
+					skip := commentGroupsHaveNoObserve(field.Doc, field.Comment)
 					for _, name := range field.Names {
 						md := extractMethod(name.Name, ft, fset)
+						md.SkipObserve = skip
 						ifaceMethodMap[entry.name] = append(ifaceMethodMap[entry.name], md)
 					}
 				case *ast.Ident:
@@ -389,6 +400,45 @@ func primitiveZero(kind string) (string, bool) {
 	return "", false
 }
 
+// noObserveDirective is the method-level opt-out marker recognized on an
+// interface method's doc / inline comment. Kept in sync with the package-level
+// directive spelling in internal/codegen (directiveNoObserve).
+const noObserveDirective = "forge:no-observe"
+
+// commentGroupsHaveNoObserve reports whether any of the given comment groups
+// carries a comment whose whole text (after stripping comment syntax +
+// whitespace) equals the `forge:no-observe` marker. Both the spaced
+// (`// forge:no-observe`) and unspaced (`//forge:no-observe`) forms match; the
+// marker must be the whole comment line so prose that merely mentions it is
+// never a false positive.
+func commentGroupsHaveNoObserve(groups ...*ast.CommentGroup) bool {
+	for _, cg := range groups {
+		if cg == nil {
+			continue
+		}
+		for _, c := range cg.List {
+			if trimContractCommentMarkers(c.Text) == noObserveDirective {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// trimContractCommentMarkers strips `//`, `/* */`, and surrounding whitespace
+// from a raw comment so a directive can be exact-matched. Local twin of
+// codegen.trimCommentMarkers (kept here to avoid a codegen import cycle).
+func trimContractCommentMarkers(text string) string {
+	text = strings.TrimSpace(text)
+	switch {
+	case strings.HasPrefix(text, "//"):
+		text = strings.TrimPrefix(text, "//")
+	case strings.HasPrefix(text, "/*"):
+		text = strings.TrimSuffix(strings.TrimPrefix(text, "/*"), "*/")
+	}
+	return strings.TrimSpace(text)
+}
+
 // extractMethod builds a MethodDef from a *ast.FuncType.
 func extractMethod(name string, ft *ast.FuncType, fset *token.FileSet) MethodDef {
 	md := MethodDef{Name: name}
@@ -437,7 +487,7 @@ func renderExpr(expr ast.Expr, fset *token.FileSet) string {
 
 // collectImports determines which imports from the source file are needed
 // by the generated code for the given interfaces.
-func collectImports(cf *ContractFile, ifaces []InterfaceDef) []string {
+func collectImports(cf *File, ifaces []InterfaceDef) []string {
 	needed := make(map[string]bool)
 	for _, iface := range ifaces {
 		for _, m := range iface.Methods {
@@ -470,7 +520,10 @@ func collectFromTypeExpr(typeExpr string, importMap map[string]string, needed ma
 	}
 }
 
-// writeMock generates mock_gen.go in dir.
+// renderMock renders the mock_gen.go body for cf — the pure half of
+// writeMock, with no filesystem in it. Split out so the retirement
+// sweep (retire.go) can ask "are these on-disk bytes forge's own current
+// render?" without writing anything.
 //
 // opts.ExtraInterfaceTypes is unioned into the set of interface names the
 // template consults during zero-value emission. The union lets projects
@@ -478,7 +531,7 @@ func collectFromTypeExpr(typeExpr string, importMap map[string]string, needed ma
 // requiring a forge fork; an entry like "billing.MeterClient" flips the
 // zero value for that type from the (invalid) "billing.MeterClient{}" to
 // the canonical "nil".
-func writeMock(cf *ContractFile, dir string, opts Options) error {
+func renderMock(cf *File, opts Options) ([]byte, error) {
 	imports := collectImports(cf, cf.Interfaces)
 	// The mock embeds contractkit.Recorder and uses contractkit.MockNotSet
 	// for error-returning methods. The Recorder embed alone requires the
@@ -511,15 +564,24 @@ func writeMock(cf *ContractFile, dir string, opts Options) error {
 
 	var buf bytes.Buffer
 	if err := mockTmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("execute mock template: %w", err)
+		return nil, fmt.Errorf("execute mock template: %w", err)
 	}
 
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
-		return fmt.Errorf("gofmt mock output: %w\n---\n%s", err, buf.String())
+		return nil, fmt.Errorf("gofmt mock output: %w\n---\n%s", err, buf.String())
+	}
+	return formatted, nil
+}
+
+// writeMock renders and writes mock_gen.go in dir.
+func writeMock(cf *File, dir string, opts Options) error {
+	formatted, err := renderMock(cf, opts)
+	if err != nil {
+		return err
 	}
 
-	mockPath := filepath.Join(dir, "mock_gen.go")
+	mockPath := filepath.Join(dir, mockFileName)
 
 	// Manifest-aware path: when the caller supplied a project root, the
 	// write MUST go through checksums.WriteGeneratedFile so the path
@@ -538,7 +600,7 @@ func writeMock(cf *ContractFile, dir string, opts Options) error {
 		return nil
 	}
 
-	// Legacy path: no manifest in scope (e.g. `forge add package` stub
+	// Legacy path: no manifest in scope (e.g. `forge scaffold package` stub
 	// emit). Raw write; the file is adopted into the manifest by the
 	// next full `forge generate`.
 	return os.WriteFile(mockPath, formatted, 0644)
@@ -689,7 +751,7 @@ func (m MethodDef) ResultNames() string {
 	return strings.Join(parts, ", ")
 }
 
-// ResultNamesReturn returns "r0, r1" or "return r0, r1".
+// HasResults reports whether the method returns anything.
 func (m MethodDef) HasResults() bool {
 	return len(m.Results) > 0
 }
@@ -750,7 +812,7 @@ var qualifiedNamedTypeRe = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]*\.[A-Z][A-Za-z
 // of the invalid composite literal "pkg.T{}".
 //
 // Local interfaces defined in the same contract.go are detected
-// automatically via ContractFile.InterfaceNames — this list only needs
+// automatically via File.InterfaceNames — this list only needs
 // to enumerate types that come from other packages and that contract
 // methods commonly return. Extend as needed; an unrecognized cross-
 // package interface still produces a build error in the generated mock.
@@ -810,7 +872,7 @@ func isInterfaceType(typeExpr string, interfaceNames map[string]bool) bool {
 // zeroValue returns the zero value literal for a Go type expression.
 //
 // interfaceNames is the set of locally-defined interface type names from
-// the parsed ContractFile; types in that set (or in the cross-package
+// the parsed File; types in that set (or in the cross-package
 // allow-list) emit "nil" instead of "T{}" because composite literals are
 // not valid for interface types.
 //

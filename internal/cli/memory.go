@@ -16,7 +16,7 @@ import (
 // CLI) to inject framework context in-memory rather than reading a
 // possibly-stale on-disk reliant.md.
 //
-// The template body is the same one `forge new` writes for non-reliant
+// The template body is the same one `forge project new` writes for non-reliant
 // harnesses, so in-memory and on-disk renderings stay byte-identical.
 //
 // Returns an error when forge.yaml is missing, unreadable, has no
@@ -31,7 +31,7 @@ func RenderProjectMemory(projectRoot string) ([]byte, error) {
 		return nil, fmt.Errorf("read %s: %w", cfgPath, err)
 	}
 	// Minimal parse — only the project name is needed for rendering.
-	// Deliberately avoid LoadStrict here so reliant doesn't transitively
+	// Deliberately avoid LoadProject here so reliant doesn't transitively
 	// reject projects with config issues that don't affect memory.
 	var head struct {
 		Name string `yaml:"name"`

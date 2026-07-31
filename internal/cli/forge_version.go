@@ -17,7 +17,7 @@ import (
 //
 //  1. Project is missing forge_version entirely (legacy / pre-baseline) —
 //     emit the "no forge_version declared" nudge so the user knows to run
-//     `forge upgrade` to set a baseline.
+//     `forge project upgrade` to set a baseline.
 //  2. Project has a forge_version that doesn't equal the binary version —
 //     emit the migration warning.
 //  3. Either side is "dev" / unset / empty / a Go pseudoversion in a way
@@ -38,14 +38,14 @@ func forgeVersionMismatchWarning(yamlVersion, binaryVersion string) string {
 	// Case 1: legacy project, no forge_version pinned. Treat as "0.0.0"
 	// per EffectiveForgeVersion semantics.
 	if yamlVersion == "" {
-		return fmt.Sprintf("⚠️  no forge_version declared in forge.yaml — run '%s upgrade' to set baseline (binary is %s).", Name(), binaryVersion)
+		return fmt.Sprintf("⚠️  no forge_version declared in forge.yaml — run '%s project upgrade' to set baseline (binary is %s).", Name(), binaryVersion)
 	}
 
 	if yamlVersion == binaryVersion {
 		return ""
 	}
 
-	return fmt.Sprintf("⚠️  forge.yaml declares forge_version: %s but binary is %s. Run '%s upgrade' to migrate.", yamlVersion, binaryVersion, Name())
+	return fmt.Sprintf("⚠️  forge.yaml declares forge_version: %s but binary is %s. Run '%s project upgrade' to migrate.", yamlVersion, binaryVersion, Name())
 }
 
 // isUnreleasedBinaryVersion reports whether the binary's reported version

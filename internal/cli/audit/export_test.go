@@ -14,7 +14,7 @@ import (
 )
 
 // The audit command group computes most categories itself and reaches the
-// few it cannot (KCL-entity-typed ingress/external-builds, friction, the
+// few it cannot (KCL-entity-typed ingress/external-builds, the
 // registry/env/drift helpers) through factory.AuditAPI. In package cli the
 // real AuditAPI is registered via groups.go's init(); the audit package
 // can't import cli (cycle), so these tests build a factory.AuditAPI from
@@ -43,27 +43,20 @@ func (r stubRegistry) Tombstoned(name string) bool { return r.tombstoned[name] }
 // AuditAPI. Zero value is a healthy, empty project.
 type auditAPIConfig struct {
 	registry                      factory.ServiceRegistry
-	registryErr                   error
 	isConnectService              func(config.ComponentConfig) bool
 	projectDefinesConnectServices bool
 	scanProjectDriftPaths         []string
-	disownFrictionReasons         map[string]string
 	listEnvs                      []string
 }
 
 // testFactory builds a *factory.Factory whose Audit field is a stub
 // AuditAPI driven by cfg. LoadProjectStoreFrom is a REAL loader (reads
-// forge.yaml + components.json via generator.ReadProjectConfig) so
+// forge.yaml via generator.ReadProjectConfig) so
 // buildAuditReport-level tests load config exactly as production does.
-// Ingress/ExternalBuilds/Friction return ok categories — none of the
+// Ingress/ExternalBuilds return ok categories — none of the
 // audit-package tests assert their content (those stay in package cli with
 // the real KCL render).
 func testFactory(cfg auditAPIConfig) *factory.Factory {
-	reg := cfg.registry
-	isConnect := cfg.isConnectService
-	if isConnect == nil {
-		isConnect = func(config.ComponentConfig) bool { return false }
-	}
 	okCat := func(...any) audittype.Category {
 		return audittype.Category{Status: audittype.StatusOK}
 	}
@@ -75,31 +68,18 @@ func testFactory(cfg auditAPIConfig) *factory.Factory {
 			ExternalBuilds: func(*config.ProjectConfig, string) audittype.Category {
 				return okCat()
 			},
-			Friction: func(string) audittype.Category { return okCat() },
-			LoadServiceRegistry: func(string) (factory.ServiceRegistry, error) {
-				if cfg.registryErr != nil {
-					return nil, cfg.registryErr
-				}
-				if reg == nil {
-					return stubRegistry{exists: false}, nil
-				}
-				return reg, nil
-			},
-			IsConnectServiceConfig:        isConnect,
-			ServiceRegistryRelPath:        "pkg/app/services.go",
 			ListEnvs:                      func(string) ([]string, error) { return cfg.listEnvs, nil },
 			ProjectDefinesConnectServices: func(string) bool { return cfg.projectDefinesConnectServices },
 			ScanProjectDriftPaths: func(string, *generator.FileChecksums) []string {
 				return cfg.scanProjectDriftPaths
 			},
-			DisownFrictionReasons: func(string) map[string]string { return cfg.disownFrictionReasons },
-			LoadProjectStoreFrom:  loadProjectStoreFromTest,
+			LoadProjectStoreFrom: loadProjectStoreFromTest,
 		},
 	}
 }
 
 // loadProjectStoreFromTest mirrors internal/cli's loadProjectStoreFrom for
-// the audit-package tests: read forge.yaml (+ components.json sibling) from
+// the audit-package tests: read forge.yaml from
 // an explicit path, mapping a missing file to cmdutil.ErrProjectConfigNotFound
 // so buildAuditReport's not-a-project branch fires.
 func loadProjectStoreFromTest(path string) (*projectstore.Store, error) {
@@ -113,12 +93,11 @@ func loadProjectStoreFromTest(path string) (*projectstore.Store, error) {
 	return projectstore.New(cfg), nil
 }
 
-// writeComponentsJSONTest makes dir derive to the "service" kind by stamping
-// the pkg/app composition root — forge derives kind + inventory from real
-// sources (proto descriptor, service registry, KCL tree, handler impls), not a
-// components.json manifest. The variadic comps are ignored; the parameter is
-// retained so the call sites don't churn.
-func writeComponentsJSONTest(t *testing.T, dir string, _ ...config.ComponentConfig) {
+// markServiceProject makes dir derive to the "service" kind by stamping the
+// pkg/app composition root. forge derives both kind and inventory from the
+// project's real sources (proto descriptor, service registry, KCL tree,
+// handler impls), so a fixture reads as a service only when it carries one.
+func markServiceProject(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, "pkg", "app"), 0o755); err != nil {
 		t.Fatalf("mark service project (mkdir pkg/app): %v", err)

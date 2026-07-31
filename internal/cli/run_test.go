@@ -63,7 +63,7 @@ func TestRunPassthroughArgs(t *testing.T) {
 // them to vite/next rather than consuming them itself).
 func TestBuildFrontendCmd_ForwardsPassthroughArgs(t *testing.T) {
 	fe := FrontendEntity{Name: "dashboard", Path: "frontends/dashboard", Port: 3000, EnvFile: "/does/not/exist"}
-	cmd := buildFrontendCmd(context.Background(), fe, "dev", nil, []string{"--host", "0.0.0.0"})
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", nil, []string{"--host", "0.0.0.0"}, "")
 
 	want := []string{"run", "dev", "--", "--host", "0.0.0.0"}
 	// cmd.Args[0] is the runner (npm); the rest are the run args.
@@ -73,12 +73,12 @@ func TestBuildFrontendCmd_ForwardsPassthroughArgs(t *testing.T) {
 	}
 }
 
-// TestBuildFrontendCmd_NoPassthroughUnchanged confirms the `forge up`
+// TestBuildFrontendCmd_NoPassthroughUnchanged confirms the `forge env up`
 // default (nil passthrough) leaves the command as the bare `npm run dev`
 // — no trailing `--` that some dev servers choke on.
 func TestBuildFrontendCmd_NoPassthroughUnchanged(t *testing.T) {
 	fe := FrontendEntity{Name: "dashboard", Path: "frontends/dashboard", Port: 3000, EnvFile: "/does/not/exist"}
-	cmd := buildFrontendCmd(context.Background(), fe, "dev", nil, nil)
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", nil, nil, "")
 
 	want := []string{"run", "dev"}
 	got := cmd.Args[1:]

@@ -8,7 +8,7 @@
 // here:
 //
 //   - sanctioned edits to Tier-2-managed starters must not trip the
-//     stomp guard → filterTier2Managed / scanProjectDrift;
+//     stomp guard → generator.FilterTier2Managed / scanProjectDrift;
 //   - legacy forked/disowned manifest entries must convert to
 //     .forge/disowned.json (and pristine Tier-1 entries to embedded
 //     markers) → stepMigrateLegacyManifest + finishLegacyMigration over
@@ -51,7 +51,7 @@ func TestScanProjectDrift_FiltersTier2ManagedPaths(t *testing.T) {
 
 	// Tier-2-managed starter, hand-edited (marker fails verification):
 	// sanctioned — must be filtered out.
-	if !tier2MigratedPaths["Taskfile.yml"] {
+	if !generator.IsTier2Managed("Taskfile.yml") {
 		t.Fatal("Taskfile.yml is no longer Tier-2-managed; pick another exempt path")
 	}
 	writeModified("Taskfile.yml", "# user-tuned tasks\n", "# scaffolded tasks\n")
@@ -69,9 +69,9 @@ func TestScanProjectDrift_FiltersTier2ManagedPaths(t *testing.T) {
 		{Path: "Taskfile.yml"},
 		{Path: "pkg/app/wire_gen.go"},
 	}
-	kept := filterTier2Managed(raw)
+	kept := generator.FilterTier2Managed(raw)
 	if len(kept) != 1 || kept[0].Path != "pkg/app/wire_gen.go" {
-		t.Errorf("filterTier2Managed = %+v, want only wire_gen.go", kept)
+		t.Errorf("FilterTier2Managed = %+v, want only wire_gen.go", kept)
 	}
 }
 
@@ -124,7 +124,7 @@ func TestTier2ManagedPathsContents(t *testing.T) {
 		// hand-edit home (`forge lint --suggest-buf-excepts` prints a snippet
 		// to paste in), so user edits must be respected, not stomped.
 		"buf.yaml",
-		// One-shot .github scaffolds written only at `forge new` time.
+		// One-shot .github scaffolds written only at `forge project new` time.
 		".github/CODEOWNERS",
 		".github/pull_request_template.md",
 	} {

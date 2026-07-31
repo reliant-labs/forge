@@ -47,9 +47,11 @@ schema WorkspaceController(forge.Service):
     # literal.
     ports = [9191]
     env = {
-        # Leader election is a plain env default (operatorkit.Run reads it
-        # at runtime) — NOT a first-class field.
-        "LEADER_ELECTION_ID" = {value = "workspace-controller"}
+        # An ordinary per-deployment env entry, here only to prove an
+        # operator-shaped Service carries `env` like any other Service.
+        # Leader election is NOT one of these: the lease name is passed in
+        # code, on operatorkit.Options, from the app's typed config.
+        "OTEL_SERVICE_NAME" = {value = "workspace-controller"}
     }
     k8s = forge.K8sOverrides {
         operator = forge.OperatorSpec {

@@ -9,6 +9,15 @@ import (
 )
 
 // Deps holds dependencies for the {{.Name}} package.
+//
+// Every field you add must be an INTERFACE, not a concrete type — a
+// dep interface declared in contract.go, or another internal package's
+// Service. `Store *db.PostgresRepository` compiles and then forces
+// every test of this package to open a real database;
+// `Store Store` takes the mock forge already generated. This is
+// lint-enforced (forgeconv-deps-are-interfaces). Logger and Config are
+// the carve-outs: one shared singleton each, supplied by the
+// composition, not worth an interface.
 type Deps struct {
 	Logger *slog.Logger
 	Config *config.Config
@@ -26,6 +35,14 @@ type service struct {
 // or one-time-init failures (missing required deps, bad config, etc.).
 // Scaffolds ship with a no-error path; polish the body when you grow
 // dep validation or eager initialization.
+//
+// forge:constructor
+//
+// The marker above opts this package into the generated observability
+// decorator (span / metrics / structured logging / panic-recovery on every
+// Service method, routed through the owned observe_chain.go seam). Remove it
+// and add `// forge:no-observe` on this line to opt the package out; add
+// `// forge:no-observe` on a single Service method to skip just that method.
 func New(deps Deps) (Service, error) {
 	return &service{deps: deps}, nil
 }

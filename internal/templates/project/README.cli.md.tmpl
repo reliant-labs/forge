@@ -53,7 +53,7 @@ func init() {
 ```
 
 For larger commands, factor logic into `internal/<package>/` and call it
-from the cobra `Run` function. `forge add package <name>` scaffolds an
+from the cobra `Run` function. `forge scaffold package <name>` scaffolds an
 internal package with a contract interface and tests.
 
 ## Task commands
@@ -75,7 +75,7 @@ Run `task --list` (or just `task`) for the full set.
 ```
 {{.Name}}/
 ├── cmd/{{.Name}}/    # Cobra root + subcommands (each in its own file)
-├── internal/         # Application packages (forge add package <name>)
+├── internal/         # Application packages (forge scaffold package <name>)
 ├── pkg/config/       # Configuration types (extend as needed)
 ├── .reliant/         # Forge conventions, skills, project metadata
 ├── docs/adr/         # Architecture Decision Records

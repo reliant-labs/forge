@@ -45,7 +45,7 @@ func captureHealNotices(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
 	origHeal, origSkip := HealNoticeFn, NoHealSkipFn
-	HealNoticeFn = func(relPath string) { got = append(got, relPath) }
+	HealNoticeFn = func(relPath string, _ HealTrigger) { got = append(got, relPath) }
 	NoHealSkipFn = func(string) {} // no-op, never nil
 	t.Cleanup(func() {
 		HealNoticeFn = origHeal
@@ -343,7 +343,7 @@ func TestWriteGeneratedFile_HandEditCollidingWithPriorRender_NotReverted(t *test
 	origSkip, origHeal := NoHealSkipFn, HealNoticeFn
 	NoHealSkipFn = func(p string) { skips = append(skips, p) }
 	var heals []string
-	HealNoticeFn = func(p string) { heals = append(heals, p) }
+	HealNoticeFn = func(p string, _ HealTrigger) { heals = append(heals, p) }
 	t.Cleanup(func() { NoHealSkipFn, HealNoticeFn = origSkip, origHeal })
 
 	ResetSkipWrite()

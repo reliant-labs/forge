@@ -14,16 +14,15 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // writeProjectWithDescriptor lays down a minimal forge project on disk: a
-// forge.yaml carrying the named service+port plus a gen/forge_descriptor.json
-// derived from descServices. Returns the project dir.
+// minimal forge.yaml plus the gen/forge_descriptor.json built from desc.
+// Returns the project dir.
 //
 // Both pieces are required for buildCurlCommand to succeed end-to-end, and
 // constructing them inline in every test would dominate the file.
-func writeProjectWithDescriptor(t *testing.T, services []config.ComponentConfig, desc ForgeDescriptor) string {
+func writeProjectWithDescriptor(t *testing.T, desc ForgeDescriptor) string {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -37,9 +36,7 @@ func writeProjectWithDescriptor(t *testing.T, services []config.ComponentConfig,
 	// forge derives the project kind + component inventory from real sources
 	// (the gen/ descriptor below provides the services), not an authored
 	// manifest. Stamp the pkg/app composition root so the project derives to
-	// service kind rather than library. The services slice is accepted for
-	// call-site compatibility but the inventory comes from the descriptor.
-	_ = services
+	// service kind rather than library.
 	if err := os.MkdirAll(filepath.Join(dir, "pkg", "app"), 0o755); err != nil {
 		t.Fatalf("mark service project (mkdir pkg/app): %v", err)
 	}
@@ -60,10 +57,9 @@ func writeProjectWithDescriptor(t *testing.T, services []config.ComponentConfig,
 // writeForgeDescriptor lays down a minimal gen/forge_descriptor.json whose
 // services carry the given proto service NAMES (e.g. "TasksService"). The
 // introspection consumers (audit / graph / api / doctor) source their service
-// inventory from this descriptor via codegen.IntrospectComponents — NOT the
-// removed components.json — so a test that needs a named server present must
-// write one here. naming.ServicePackage maps "TasksService" → component
-// "tasks".
+// inventory from this descriptor via codegen.IntrospectComponents, so a test
+// that needs a named server present must write one here.
+// naming.ServicePackage maps "TasksService" → component "tasks".
 func writeForgeDescriptor(t *testing.T, dir string, protoServiceNames ...string) {
 	t.Helper()
 	svcs := make([]codegen.ServiceDef, 0, len(protoServiceNames))
@@ -82,12 +78,12 @@ func writeForgeDescriptor(t *testing.T, dir string, protoServiceNames ...string)
 	}
 }
 
-// writeComponentsJSON makes dir derive to the "service" kind by stamping a
-// real service artifact — the pkg/app composition root — since forge derives
-// kind + inventory from real sources (proto descriptor, service registry, KCL
-// tree, handler impls), not a components.json manifest. The variadic comps are
-// ignored; the parameter is retained so the many call sites don't churn.
-func writeComponentsJSON(t *testing.T, dir string, _ ...config.ComponentConfig) {
+// markServiceProject makes dir derive to the "service" kind by stamping a
+// real service artifact — the pkg/app composition root. forge derives both
+// kind and inventory from the project's real sources (proto descriptor,
+// service registry, KCL tree, handler impls), so the only way to make a
+// fixture read as a service is to give it one of those sources.
+func markServiceProject(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, "pkg", "app"), 0o755); err != nil {
 		t.Fatalf("mark service project (mkdir pkg/app): %v", err)
@@ -97,6 +93,12 @@ func writeComponentsJSON(t *testing.T, dir string, _ ...config.ComponentConfig) 
 // TestZeroValueFor pins the proto-zero mapping per scalar kind. nil for
 // non-scalar branches is deliberate — the body builder renders it as
 // JSON null, which ProtoJSON accepts for any nullable field.
+//
+// `bytes` is "" rather than null, and the difference is the point. It used
+// to fall through to the non-scalar arm because the switch named fourteen
+// of the fifteen scalar kinds, so the skeleton for a bytes field was
+// indistinguishable from the skeleton for a message field. ProtoJSON
+// encodes bytes as base64 TEXT, so "" is its zero.
 func TestZeroValueFor(t *testing.T) {
 	cases := []struct {
 		proto string
@@ -104,6 +106,7 @@ func TestZeroValueFor(t *testing.T) {
 	}{
 		{"string", ""},
 		{"bool", false},
+		{"bytes", ""},
 		{"int32", 0},
 		{"int64", 0},
 		{"uint32", 0},
@@ -113,13 +116,39 @@ func TestZeroValueFor(t *testing.T) {
 		{"double", 0.0},
 		{"message", nil},
 		{"enum", nil},
-		{"bytes", nil},
+		{"map", nil},
 		{"unknown-kind", nil},
 	}
 	for _, tc := range cases {
 		got := zeroValueFor(tc.proto)
 		if got != tc.want {
 			t.Errorf("zeroValueFor(%q) = %v, want %v", tc.proto, got, tc.want)
+		}
+	}
+}
+
+// TestZeroValueFor_TotalOverTheScalarVocabulary derives its obligation from
+// codegen.ProtoScalarKinds() — the key set of the one table forge writes
+// the fifteen names down in — so a kind this projection does not name fails
+// here rather than taking the non-scalar `null` answer.
+//
+// A scalar rendered as null is not a parse error: ProtoJSON accepts null
+// for the field, so the skeleton stays valid and nothing downstream ever
+// reports it. That is what hid `bytes` here.
+func TestZeroValueFor_TotalOverTheScalarVocabulary(t *testing.T) {
+	kinds := codegen.ProtoScalarKinds()
+	if len(kinds) == 0 {
+		t.Fatal("codegen.ProtoScalarKinds() is EMPTY — this obligation is derived " +
+			"from it, so an empty set would loop zero times and pass while " +
+			"checking nothing")
+	}
+	if len(kinds) < 15 {
+		t.Fatalf("codegen.ProtoScalarKinds() has %d members, expected 15: %v", len(kinds), kinds)
+	}
+	for _, kind := range kinds {
+		if got := zeroValueFor(kind); got == nil {
+			t.Errorf("zeroValueFor(%q) = nil — a scalar is being rendered as JSON "+
+				"null, the same skeleton a message field gets", kind)
 		}
 	}
 }
@@ -288,87 +317,6 @@ func TestShellQuoteSingle(t *testing.T) {
 	}
 }
 
-// TestMatchServicePort drives the lookupServicePort heuristic against a
-// table of mixed forge.yaml shapes. Worker / operator entries must be
-// skipped; the name-candidate cascade must pick the proto-package leaf
-// over the raw service-name match.
-func TestMatchServicePort(t *testing.T) {
-	svc := codegen.ServiceDef{
-		Name:    "UserService",
-		Package: "users.v1",
-		PkgName: "usersv1",
-	}
-	cases := []struct {
-		name string
-		cfg  *config.ProjectConfig
-		want int
-	}{
-		{
-			name: "matches by package leaf",
-			cfg: &config.ProjectConfig{Components: []config.ComponentConfig{
-				{Name: "users", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8123}}},
-				{Name: "other", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 9000}}},
-			}},
-			want: 8123,
-		},
-		{
-			name: "matches by short service name",
-			cfg: &config.ProjectConfig{Components: []config.ComponentConfig{
-				{Name: "user", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8200}}},
-			}},
-			want: 8200,
-		},
-		{
-			name: "matches by go pkg name",
-			cfg: &config.ProjectConfig{Components: []config.ComponentConfig{
-				{Name: "usersv1", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8300}}},
-			}},
-			want: 8300,
-		},
-		{
-			name: "falls back to first go_service entry",
-			cfg: &config.ProjectConfig{Components: []config.ComponentConfig{
-				{Name: "unrelated", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8400}}},
-			}},
-			want: 8400,
-		},
-		{
-			name: "ignores worker / operator entries",
-			cfg: &config.ProjectConfig{Components: []config.ComponentConfig{
-				{Name: "users", Kind: config.ComponentKindWorker, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 9999}}},
-				{Name: "users-op", Kind: config.ComponentKindOperator, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 9998}}},
-				{Name: "other", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8500}}},
-			}},
-			want: 8500,
-		},
-		{
-			name: "no matching service returns zero",
-			cfg:  &config.ProjectConfig{Components: nil},
-			want: 0,
-		},
-		{
-			name: "nil config returns zero",
-			cfg:  nil,
-			want: 0,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			// matchServicePort now takes the component slice directly (the
-			// inventory is sourced from codegen.IntrospectComponents, not a
-			// *ProjectConfig). The nil-config case maps to a nil slice.
-			var comps []config.ComponentConfig
-			if tc.cfg != nil {
-				comps = tc.cfg.Components
-			}
-			got := matchServicePort(comps, svc)
-			if got != tc.want {
-				t.Errorf("matchServicePort = %d, want %d", got, tc.want)
-			}
-		})
-	}
-}
-
 // TestBuildCurlCommand_HappyPath drives buildCurlCommand end-to-end
 // against a tempdir-shaped project. Asserts the shell text contains the
 // expected URL, port, content-type, and body.
@@ -385,18 +333,15 @@ func TestBuildCurlCommand_HappyPath(t *testing.T) {
 			},
 		},
 	}}}
-	dir := writeProjectWithDescriptor(t, []config.ComponentConfig{
-		{Name: "users", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8123}}},
-	}, desc)
+	dir := writeProjectWithDescriptor(t, desc)
 
 	out, err := buildCurlCommand(dir, "users.v1.UserService.GetUser", curlOptions{})
 	if err != nil {
 		t.Fatalf("buildCurlCommand: %v", err)
 	}
-	// Port is now the sane default (8080): the service inventory is
-	// enumerated from the proto descriptor (codegen.IntrospectComponents),
-	// and ports are a DEPLOY fact (KCL) no longer carried on the component,
-	// so components.json's 8123 is not consulted. `--port` overrides it.
+	// Port is the conventional default: a port is a DEPLOY fact that lives in
+	// KCL, so there is nothing in the project to resolve one from. --port
+	// overrides.
 	wantSubs := []string{
 		"curl -X POST",
 		"-H 'Content-Type: application/json'",
@@ -420,9 +365,7 @@ func TestBuildCurlCommand_PortOverride(t *testing.T) {
 			{Name: "Ping", InputType: "google.protobuf.Empty"},
 		},
 	}}}
-	dir := writeProjectWithDescriptor(t, []config.ComponentConfig{
-		{Name: "users", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8123}}},
-	}, desc)
+	dir := writeProjectWithDescriptor(t, desc)
 
 	out, err := buildCurlCommand(dir, "users.v1.UserService.Ping", curlOptions{port: 9090})
 	if err != nil {
@@ -431,8 +374,8 @@ func TestBuildCurlCommand_PortOverride(t *testing.T) {
 	if !strings.Contains(out, ":9090/") {
 		t.Errorf("--port override not applied; output:\n%s", out)
 	}
-	if strings.Contains(out, ":8123/") {
-		t.Errorf("--port override was supposed to replace 8123; output:\n%s", out)
+	if strings.Contains(out, ":8080/") {
+		t.Errorf("--port override was supposed to replace the 8080 default; output:\n%s", out)
 	}
 }
 
@@ -452,9 +395,7 @@ func TestBuildCurlCommand_BodyOverride(t *testing.T) {
 			},
 		},
 	}}}
-	dir := writeProjectWithDescriptor(t, []config.ComponentConfig{
-		{Name: "users", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8123}}},
-	}, desc)
+	dir := writeProjectWithDescriptor(t, desc)
 
 	custom := `{"name":"alice","age":30}`
 	out, err := buildCurlCommand(dir, "users.v1.UserService.CreateUser", curlOptions{body: custom})
@@ -484,9 +425,7 @@ func TestBuildCurlCommand_StreamingContentType(t *testing.T) {
 			"StreamRequest": {{Name: "id", ProtoType: "string"}},
 		},
 	}}}
-	dir := writeProjectWithDescriptor(t, []config.ComponentConfig{
-		{Name: "echo", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8123}}},
-	}, desc)
+	dir := writeProjectWithDescriptor(t, desc)
 
 	out, err := buildCurlCommand(dir, "echo.v1.EchoService.Stream", curlOptions{})
 	if err != nil {
@@ -500,10 +439,10 @@ func TestBuildCurlCommand_StreamingContentType(t *testing.T) {
 	}
 }
 
-// TestBuildCurlCommand_DefaultPortFallback pins that when forge.yaml has
-// no matching service entry, we fall back to 8080 rather than failing.
-// This keeps the command useful on a half-bootstrapped project where the
-// descriptor has run but forge.yaml hasn't been re-scaffolded.
+// TestBuildCurlCommand_DefaultPortFallback pins the no-flag case: with no
+// --port the command addresses the conventional local listener. A port is a
+// deploy fact that lives in KCL, so there is nothing in the project to
+// resolve one from and the command must stay useful without one.
 func TestBuildCurlCommand_DefaultPortFallback(t *testing.T) {
 	desc := ForgeDescriptor{Services: []codegen.ServiceDef{{
 		Name:    "UserService",
@@ -512,8 +451,7 @@ func TestBuildCurlCommand_DefaultPortFallback(t *testing.T) {
 			{Name: "Ping", InputType: "google.protobuf.Empty"},
 		},
 	}}}
-	// No services in forge.yaml at all.
-	dir := writeProjectWithDescriptor(t, nil, desc)
+	dir := writeProjectWithDescriptor(t, desc)
 
 	out, err := buildCurlCommand(dir, "users.v1.UserService.Ping", curlOptions{})
 	if err != nil {
@@ -542,26 +480,5 @@ func TestBuildCurlCommand_NoDescriptor(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "forge generate") {
 		t.Errorf("error %q should point at the fix (`forge generate`)", err.Error())
-	}
-}
-
-// TestServiceNameCandidates pins the candidate-derivation order so a
-// regression in matchServicePort surfaces here rather than via the
-// downstream port-resolution test alone.
-func TestServiceNameCandidates(t *testing.T) {
-	svc := codegen.ServiceDef{
-		Name:    "UserService",
-		Package: "users.v1",
-		PkgName: "usersv1",
-	}
-	got := serviceNameCandidates(svc)
-	want := []string{"users", "user", "usersv1"}
-	if len(got) != len(want) {
-		t.Fatalf("len = %d, want %d (%v)", len(got), len(want), got)
-	}
-	for i, w := range want {
-		if got[i] != w {
-			t.Errorf("got[%d] = %q, want %q (full=%v)", i, got[i], w, got)
-		}
 	}
 }

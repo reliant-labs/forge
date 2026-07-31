@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -24,15 +23,36 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	// + templates below emit valid empty Build/Inventory/Services/lifecycle so
 	// `go mod tidy` resolves internal/app LOCALLY instead of 404ing.
 	//
-	// NO worker/operator inputs: compose.go + lifecycle.go are SCAFFOLD-ONCE
-	// owned code; generate performs ZERO worker/operator discovery. The initial
-	// scaffold wires only the services/packages known at first emit; workers and
-	// operators are hand-added (via `forge add worker/operator`, which appends to
-	// the owned files). An existing compose.go/lifecycle.go is left untouched.
+	// The supervised set (workers + operators), read from the project's real
+	// sources: the internal/{workers,operators}/<pkg>/ package directories the
+	// add verbs create. compose.go + lifecycle.go stay OWNED — forge never
+	// re-renders them wholesale — but they are reconciled ADDITIVELY against
+	// this set, because the per-component subcommand forge scaffolds
+	// (cmd/<bin>/cmd/workers/<name>.go) calls c.Worker<X>() and the field it
+	// reads lives in compose.go. Without the inventory both files stay frozen
+	// at first-emit and every later `forge scaffold worker|operator` leaves
+	// a tree that does not compile.
+	workers, err := codegen.WorkerDataFromSpecs(codegen.DiscoverWorkerSpecs(projectDir), projectDir)
+	if err != nil {
+		return fmt.Errorf("discover workers: %w", err)
+	}
+	operators, err := codegen.OperatorDataFromSpecs(codegen.DiscoverOperatorSpecs(projectDir), projectDir)
+	if err != nil {
+		return fmt.Errorf("discover operators: %w", err)
+	}
 
 	// Owned, scaffold-once (never overwritten after first emit).
 	if err := codegen.GenerateProviders(modulePath, databaseDriver, ormEnabled, projectDir); err != nil {
 		return fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)
+	}
+
+	// Owned, scaffold-once internal/app/auth.go (SetupAuth). Co-located
+	// with providers.go: both live in package app, import pkg/config, and
+	// exist for exactly the server-shaped trees whose generated cmd serve
+	// calls app.SetupAuth. Authentication is code now, not forge.yaml
+	// config — the user edits SetupAuth to pick the validator.
+	if err := generateAuthSetup(modulePath, projectDir); err != nil {
+		return fmt.Errorf("failed to scaffold internal/app/auth.go: %w", err)
 	}
 
 	// Explicit per-binary component construction site (compose.go: Components +
@@ -43,16 +63,21 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		GenContext: codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
 		Services:   services,
 		Packages:   packages,
+		Workers:    workers,
+		Operators:  operators,
 	}); err != nil {
 		return fmt.Errorf("failed to generate internal/app/compose.go: %w", err)
 	}
 
 	// Supervised-component surface (workers/operators) over *Components —
-	// SCAFFOLD-ONCE owned code. Initial emit has empty AllWorkers/AllOperators.
+	// SCAFFOLD-ONCE owned code, additively reconciled against the discovered
+	// supervised set (see GenerateLifecycle).
 	if err := codegen.GenerateLifecycle(codegen.InjectGenInput{
 		GenContext: codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
 		Services:   services,
 		Packages:   packages,
+		Workers:    workers,
+		Operators:  operators,
 	}); err != nil {
 		return fmt.Errorf("failed to generate internal/app/lifecycle.go: %w", err)
 	}
@@ -70,14 +95,14 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	}
 
 	// NOTE: the REAL per-component cmd-group subcommands (dir-nested under
-	// cmd/<bin>/cmd/{services,workers,operators}) are NOT emitted here. They
-	// are anchored by the dedicated stepCmdGroups pipeline step, which runs
-	// AFTER stepRegenerateInfra has (re)created cmd/<bin>/cmd/serve.go +
-	// cmd/<bin>/main.go. Doing it here would silently no-op on a flat→nested
-	// migration: serve.go doesn't exist yet at composition time, so the group
-	// subpackages would never get anchored — yet the freshly-regenerated
-	// main.go blank-imports them, and the next `go mod tidy` / `go build`
-	// would 404 the empty (Go-file-less) local group dirs. See
+	// cmd/<bin>/cmd/{services,workers,operators}) and the composition root
+	// (cmd/<bin>/main.go) are NOT emitted here. They are written by the
+	// dedicated stepCmdGroups pipeline step, which runs AFTER
+	// stepRegenerateInfra has (re)created cmd/<bin>/cmd/serve.go. Doing it here
+	// would silently no-op on a flat→nested migration: serve.go doesn't exist
+	// yet at composition time, so the group subpackages would never get
+	// anchored — yet main.go imports them, and the next `go mod tidy` /
+	// `go build` would 404 the empty (Go-file-less) local group dirs. See
 	// generateCmdGroups + stepCmdGroups.
 
 	fmt.Println("  ✅ Generated internal/app composition layer (compose.go + mounts_services.go + lifecycle.go)")
@@ -124,7 +149,7 @@ func generateCmdGroups(services []codegen.ServiceDef, projectDir string, cs *che
 	}
 	// No Workers/Operators: cmd groups emit only proto-derived service
 	// subcommands + the anchor files + the scaffold-once main.go. Per-worker /
-	// per-operator subcommands are OWNED code scaffolded once by `forge add`.
+	// per-operator subcommands are OWNED code scaffolded once by `forge scaffold`.
 	if err := codegen.GenerateCmdGroups(codegen.CmdServiceGroupInput{
 		Bin:      bin,
 		Services: names,
@@ -136,7 +161,7 @@ func generateCmdGroups(services []codegen.ServiceDef, projectDir string, cs *che
 }
 
 // generateBootstrapTesting regenerates pkg/app/testing.go with test helpers.
-func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, multiTenantEnabled bool, projectDir string, cs *checksums.FileChecksums) error {
+func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating pkg/app/testing.go...")
 
 	packages, err := discoverPackages(projectDir)
@@ -157,9 +182,8 @@ func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, 
 			ModulePath: modulePath,
 			Checksums:  cs,
 		},
-		Services:           services,
-		Packages:           packages,
-		MultiTenantEnabled: multiTenantEnabled,
+		Services: services,
+		Packages: packages,
 	}); err != nil {
 		return fmt.Errorf("failed to generate bootstrap testing: %w", err)
 	}
@@ -185,17 +209,6 @@ func generateMigrate(projectDir, modulePath string, cs *checksums.FileChecksums)
 	return nil
 }
 
-// discoverPackages returns BootstrapPackageData for internal packages.
-// It walks internal/ recursively to find every directory containing a
-// contract.go (Go interface contract). Names are returned in nested form
-// (e.g. "mcp/database") so PackageDataFromNames can derive a unique
-// FieldName/VarName and the bootstrap template can emit the correct import
-// path. Directories listed in cfg.Contracts.Exclude are skipped wholesale,
-// matching the behavior of generate_middleware.go's contract walk.
-//
-// A walk error is returned so the caller can fail the pipeline rather
-// than silently emit a partial bootstrap (which would surface later as
-// a mysterious "undefined: pkg" go build error in pkg/app/bootstrap.go).
 // bootstrapBinaryName resolves the primary binary name — the cmd/<bin>/
 // directory leaf the command tree lives under. It is the forge.yaml project
 // name; falls back to the project directory's base name when the config is
@@ -211,69 +224,20 @@ func bootstrapBinaryName(projectDir string) string {
 	return filepath.Base(projectDir)
 }
 
+// discoverPackages returns BootstrapPackageData for the project's internal
+// contract packages. The SET comes from codegen.DiscoverInternalPackages —
+// the one walk every forge surface resolves packages through, reporters
+// included — and this adds the naming/fallibility derivation the bootstrap
+// template needs (FieldName, VarName, import path).
+//
+// A walk error is returned so the caller can fail the pipeline rather than
+// silently emit a partial bootstrap (which would surface later as a
+// mysterious "undefined: pkg" go build error in pkg/app/bootstrap.go).
 func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error) {
-	internalDir := filepath.Join(projectDir, "internal")
-	if !dirExists(internalDir) {
-		return nil, nil
+	names, err := codegen.DiscoverInternalPackageNames(projectDir)
+	if err != nil {
+		return nil, err
 	}
-
-	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
-	store, _ := loadProjectStoreFrom(cfgPath) // best-effort; nil store means no excludes
-
-	var names []string
-	walkErr := filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			return nil
-		}
-		// Skip testdata/ subtrees — fixture contracts, not real packages.
-		if d.Name() == "testdata" {
-			return filepath.SkipDir
-		}
-		// Compute module-relative path (e.g. "internal/mcp/database") for
-		// exclude-matching. Use forward slashes regardless of OS so patterns
-		// in forge.yaml stay portable.
-		rel, relErr := filepath.Rel(projectDir, path)
-		if relErr != nil {
-			return relErr
-		}
-		rel = filepath.ToSlash(rel)
-		if store != nil && store.Contracts().IsExcluded(rel) {
-			return filepath.SkipDir
-		}
-		contractPath := filepath.Join(path, "contract.go")
-		if _, statErr := os.Stat(contractPath); os.IsNotExist(statErr) {
-			return nil
-		} else if statErr != nil {
-			return statErr
-		}
-		// Per-package opt-out: `//forge:exclude-contract` in this package's
-		// source is the local-header equivalent of listing it in forge.yaml
-		// contracts.exclude — same effect (the package is NOT a Build
-		// component, so the injector emits no New(Deps) node for it).
-		// Union with the central list above: either source excludes. This
-		// MUST match generate_middleware.go's contract walk so the mock /
-		// middleware walk and the bootstrap/injector walk agree on the
-		// excluded set — otherwise a header-only exclude would drop the
-		// mock yet still feed a non-Service-shaped package into the
-		// type-topological injector (which would emit an uncompilable
-		// pkg.New(pkg.Deps{}) node). Do NOT SkipDir: descendants may still
-		// be Build components and carry their own directive; only THIS
-		// package opts out.
-		if codegen.HasExcludeContractDirective(path) {
-			return nil
-		}
-		// Name is the path under internal/, e.g. "cache" or "mcp/database".
-		name := strings.TrimPrefix(rel, "internal/")
-		names = append(names, name)
-		return nil
-	})
-	if walkErr != nil && !os.IsNotExist(walkErr) {
-		return nil, fmt.Errorf("walking %s: %w", internalDir, walkErr)
-	}
-
 	return codegen.PackageDataFromNames(names, projectDir)
 }
 
@@ -283,7 +247,7 @@ func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error)
 // SET. `forge generate` deliberately never enumerates the worker/operator set:
 // the command tree + wiring are scaffold-once OWNED code, so generate needs to
 // know only *whether* the bootstrap family of steps applies, never *which*
-// workers/operators exist. (Introspection — forge map/graph — walks disk
+// workers/operators exist. (Introspection — forge project map/graph — walks disk
 // read-only, entirely separate from this generate path.)
 func hasComponentDir(projectDir, roleRoot string) bool {
 	rootDir := filepath.Join(projectDir, filepath.FromSlash(roleRoot))
@@ -300,17 +264,16 @@ func hasComponentDir(projectDir, roleRoot string) bool {
 }
 
 // discoverWebhookServices returns a set of snake-case service package
-// names for which forge.yaml declares one or more webhooks. The bootstrap
+// names that carry one or more webhook_<name>.go handlers. The bootstrap
 // template uses this to emit `RegisterWebhookRoutes(mux, stack)` after
 // `RegisterHTTP(...)` so generated webhook routes get auto-mounted on the
 // mux without the user having to hand-edit the user-owned `RegisterHTTP`
 // body in handlers/<svc>/service.go.
 //
-// Keying matches `naming.ServicePackage(svc.Name)` for proto-derived
-// services: forge.yaml's hyphenated CLI name ("admin-server") and the
-// proto's PascalCase form ("AdminServerService") both normalize to
-// "admin_server" (post-2026-06-08 snake-canonicalisation), which is
-// also the directory leaf under handlers/.
+// Keying matches `naming.ServicePackage(comp.Name)`: a hyphenated CLI name
+// ("admin-server") and the proto's PascalCase form ("AdminServerService")
+// both normalize to "admin_server" (post-2026-06-08 snake-canonicalisation),
+// which is also the directory leaf under handlers/.
 func discoverWebhookServices(projectDir string) map[string]bool {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
 	store, err := loadProjectStoreFrom(cfgPath)
@@ -330,7 +293,7 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 	}
 
 	out := map[string]bool{}
-	for _, comp := range cfg.Components {
+	for _, comp := range codegen.DiscoverProjectComponents(projectDir, cfg.Name) {
 		// Webhooks are discovered from the webhook_<name>.go files on disk,
 		// not a declared config list.
 		res, resErr := codegen.ResolveServiceComponent(projectDir, comp.Name)

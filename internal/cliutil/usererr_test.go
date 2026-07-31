@@ -18,8 +18,8 @@ func TestUserErr_AllClauses(t *testing.T) {
 }
 
 func TestUserErr_NoFix(t *testing.T) {
-	err := UserErr("forge new", "project name is required", "", "")
-	want := "forge new: project name is required."
+	err := UserErr("forge project new", "project name is required", "", "")
+	want := "forge project new: project name is required."
 	if err.Error() != want {
 		t.Errorf("got\n  %q\nwant\n  %q", err.Error(), want)
 	}
@@ -39,8 +39,8 @@ func TestUserErr_FixOnly(t *testing.T) {
 }
 
 func TestUserErrf_FormatsArgs(t *testing.T) {
-	err := UserErrf("forge add service", "invalid service name %q: %s", "go", "go is a reserved keyword")
-	if err.Error() != `forge add service: invalid service name "go": go is a reserved keyword.` {
+	err := UserErrf("forge scaffold service", "invalid service name %q: %s", "go", "go is a reserved keyword")
+	if err.Error() != `forge scaffold service: invalid service name "go": go is a reserved keyword.` {
 		t.Errorf("got %q", err.Error())
 	}
 }

@@ -68,7 +68,7 @@ func stepSnapshotTier1Exports(ctx *pipelineContext) error {
 // any) — the user gets a single batched warning instead of discovering
 // each broken caller on the next compile.
 func stepDetectRenamedExports(ctx *pipelineContext) error {
-	if ctx.PriorExports == nil || len(ctx.PriorExports) == 0 {
+	if len(ctx.PriorExports) == 0 {
 		return nil
 	}
 	type renameFinding struct {

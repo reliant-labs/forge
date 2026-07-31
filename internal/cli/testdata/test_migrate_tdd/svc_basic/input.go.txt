@@ -49,11 +49,10 @@ func TestHandlers(t *testing.T) {
 	}
 }
 
-// TestAuthorizerDenyByDefault verifies fail-closed default authz.
-func TestAuthorizerDenyByDefault(t *testing.T) {
+// TestValidateDepsRejectsNilLogger verifies the construction-time gate.
+func TestValidateDepsRejectsNilLogger(t *testing.T) {
 	t.Parallel()
-	a := user.NewAuthorizer()
-	if err := a.Can(context.Background(), nil, "", ""); err == nil {
-		t.Fatal("expected default authorizer to deny")
+	if _, err := user.New(user.Deps{}); err == nil {
+		t.Fatal("expected New to reject a nil Logger")
 	}
 }

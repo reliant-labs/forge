@@ -43,7 +43,7 @@ jobs:
       # setup-go caches GOMODCACHE + GOCACHE keyed on go.sum. The
       # fixture projects' module downloads and build artifacts land in
       # the same caches, so runs after the first are warm.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 

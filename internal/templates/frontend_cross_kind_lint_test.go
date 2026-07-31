@@ -33,7 +33,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/components"
+	"github.com/reliant-labs/forge/pkg/components"
 )
 
 // eslintDirective matches the four in-file suppression spellings —

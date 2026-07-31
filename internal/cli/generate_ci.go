@@ -20,7 +20,9 @@ import (
 // The derived jobs (frontend lint, KCL-env matrix, verify-generated) are
 // a convenience starting point, not a correctness requirement — a stale
 // workflow still runs, unlike buf.yaml whose derived dep gates the build
-// — so write-once is the right lifecycle. To refresh, delete and re-run.
+// — so write-once is the right lifecycle. Write-once covers deletion too:
+// a repo that manages its own CI removes these and they stay removed. To
+// re-scaffold, drop the path's entry from .forge/scaffolded.json.
 func writeCIScaffold(root, relPath string, content []byte) error {
 	written, err := generator.WriteScaffoldIfMissing(root, relPath, content)
 	if err != nil {

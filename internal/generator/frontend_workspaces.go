@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/components"
-	nativecomponents "github.com/reliant-labs/forge/components/native"
+	"github.com/reliant-labs/forge/pkg/components"
+	nativecomponents "github.com/reliant-labs/forge/pkg/components/native"
 )
 
 // Frontend-workspaces emitters.

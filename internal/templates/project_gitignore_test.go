@@ -10,6 +10,11 @@
 //     in any clone or worktree
 //   - hashes.json — scoped render hashes for comment-incapable
 //     generated formats (JSON outputs)
+//   - scaffolded.json — the scaffold-once BIRTH LEDGER: every "yours"
+//     file forge has ever scaffolded here. It is what makes DELETING a
+//     scaffold stick, so it must travel with the repo — a teammate's
+//     fresh clone has to inherit "we removed that file" rather than
+//     re-acquire it on their first `forge generate`
 //   - friction.jsonl — the append-only generator-friction log written
 //     by `forge friction add`; it travels with the repo so captured
 //     friction survives worktrees, clones, and CI checkouts
@@ -32,6 +37,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -61,7 +67,16 @@ func TestProjectGitignore_ForgeStateNegations(t *testing.T) {
 	if has("!.forge/checksums.json") {
 		t.Error(".gitignore template must NOT negate the dead checksums.json manifest back in")
 	}
-	for _, neg := range []string{"!.forge/disowned.json", "!.forge/hashes.json"} {
+	// Derived from the checksums package's own constants rather than
+	// re-typed here: adding a committed state file to that package without
+	// negating it in the template is exactly the silent stranding this
+	// test exists to catch, and a hand-copied list cannot notice it.
+	committedState := []string{
+		"!" + checksums.DisownedFile,
+		"!" + checksums.HashesFile,
+		"!" + checksums.ScaffoldedFile,
+	}
+	for _, neg := range committedState {
 		if !has(neg) {
 			t.Errorf(".gitignore template must negate %s back into version control", strings.TrimPrefix(neg, "!"))
 		}
@@ -81,7 +96,7 @@ func TestProjectGitignore_ForgeStateNegations(t *testing.T) {
 		return -1
 	}
 	childRule := idx(".forge/*")
-	for _, neg := range []string{"!.forge/disowned.json", "!.forge/hashes.json"} {
+	for _, neg := range committedState {
 		if n := idx(neg); n >= 0 && n < childRule {
 			t.Errorf("%s must come after the .forge/* ignore rule to take effect", neg)
 		}

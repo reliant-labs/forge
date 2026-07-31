@@ -123,6 +123,14 @@ tmp/
 #   hashes.json     — scoped render hashes for the few generated files
 #                     whose format cannot carry an embedded marker
 #                     (JSON outputs only).
+#   scaffolded.json — the scaffold-once BIRTH LEDGER: every "yours" file
+#                     forge has ever scaffolded here. It is what makes
+#                     DELETING a scaffold stick — without it, an absent
+#                     file is indistinguishable from one never written
+#                     and the next `forge generate` hands it back. Must
+#                     travel with the repo: a teammate's fresh clone has
+#                     to inherit "we removed that file", not re-acquire
+#                     it on their first generate.
 # Everything else under .forge/ is per-developer state and intentionally
 # excluded by the broad children rule below.
 #
@@ -134,6 +142,7 @@ tmp/
 .forge/*
 !.forge/disowned.json
 !.forge/hashes.json
+!.forge/scaffolded.json
 
 # ── What NOT to ignore ──
 #

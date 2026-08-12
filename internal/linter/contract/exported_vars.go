@@ -114,6 +114,13 @@ func runExportedVars(pass *analysis.Pass) (interface{}, error) {
 					continue
 				}
 
+				// Exception: const-shaped immutable data — a lookup table,
+				// a fixed vocabulary, or a compiled regexp. See
+				// isConstShapedData for why a getter buys nothing here.
+				if isConstShapedData(pass, valueSpec, i) {
+					continue
+				}
+
 				pass.Reportf(name.Pos(),
 					"exported package variable %s should be a method on a struct or a getter function",
 					name.Name)
@@ -257,6 +264,79 @@ func isKubebuilderAPIVar(name string, spec *ast.ValueSpec, idx int) bool {
 		return sel.Sel.Name == "AddToScheme"
 	}
 	return false
+}
+
+// isConstShapedData reports whether the variable at spec.Names[idx] is
+// immutable data that Go simply cannot spell as a const: a slice or map
+// LITERAL of basic values (a fixed vocabulary / lookup table), a
+// package-level compiled `regexp.MustCompile(...)`, or a string built by
+// a call such as fmt.Sprintf over consts.
+//
+// Why these are not what the rule is about. The rule's premise is that a
+// mutable exported global is state a caller can reach behind the API's
+// back, and a method or getter restores the boundary. That reasoning does
+// not transfer here:
+//
+//   - A getter returning a slice or map returns the SAME header. Callers
+//     can still mutate the backing array or the map. It hides nothing;
+//     the only way a getter would help is by deep-copying on every call,
+//     which nobody writes and no caller wants.
+//   - `regexp.MustCompile` cannot be a const, and moving it into a getter
+//     either recompiles the pattern per call or needs a package-level
+//     cache var — the very thing being flagged.
+//
+// Deliberately narrow: only LITERAL composites of basic element types
+// qualify, so a slice of mutable structs, or a map whose values are
+// pointers/interfaces/funcs, is still reported. A var assigned from
+// another variable is not matched either.
+func isConstShapedData(pass *analysis.Pass, spec *ast.ValueSpec, idx int) bool {
+	if idx >= len(spec.Values) {
+		return false // `var X []string` with no initializer: mutable, report it
+	}
+	switch v := spec.Values[idx].(type) {
+	case *ast.CompositeLit:
+		return isBasicElemComposite(pass, v)
+	case *ast.CallExpr:
+		// regexp.MustCompile / regexp.Compile — precompiled patterns.
+		if isCallTo(v, "regexp", "MustCompile") || isCallTo(v, "regexp", "Compile") {
+			return true
+		}
+		// A string assembled from constants (fmt.Sprintf and friends):
+		// const-shaped in every way except that Go will not fold it.
+		return isBasicType(pass.TypesInfo.TypeOf(spec.Values[idx])) &&
+			(isCallTo(v, "fmt", "Sprintf") || isCallTo(v, "strings", "Join"))
+	}
+	return false
+}
+
+// isBasicElemComposite reports whether lit is a slice/array/map literal
+// whose element (and key, for maps) types are basic — string, numeric,
+// bool. That is the "fixed vocabulary" shape; anything holding pointers,
+// interfaces, funcs or mutable structs falls through to the rule.
+func isBasicElemComposite(pass *analysis.Pass, lit *ast.CompositeLit) bool {
+	t := pass.TypesInfo.TypeOf(lit)
+	if t == nil {
+		return false
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Slice:
+		return isBasicType(u.Elem())
+	case *types.Array:
+		return isBasicType(u.Elem())
+	case *types.Map:
+		return isBasicType(u.Key()) && isBasicType(u.Elem())
+	}
+	return false
+}
+
+// isBasicType reports whether t is a basic (string/numeric/bool) type,
+// looking through named types.
+func isBasicType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	_, ok := t.Underlying().(*types.Basic)
+	return ok
 }
 
 // isCallTo checks if a call expression is pkg.funcName(...).

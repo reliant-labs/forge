@@ -10,7 +10,7 @@ import "google/protobuf/duration.proto";
 // AppConfig defines the application's runtime configuration.
 // Each field maps to an environment variable and/or CLI flag via
 // forge.v1.config annotations. Running `forge generate`
-// produces a typed Go config loader in pkg/config/config.go.
+// produces a typed Go config loader in pkg/config/config_gen.go.
 //
 // Component config blocks: a component (worker/service/operator) that
 // needs configuration declares its own message — conventionally
@@ -29,6 +29,41 @@ import "google/protobuf/duration.proto";
 // internal/app/compose.go (NewComponents) wires it from the loaded Config.
 // Per-env values go in deploy/kcl/<env>/config.k under the leaf name (max_per_tick = 50).
 // Never put scalars (string/int/bool/duration) directly in Deps.
+//
+// PER-BINARY CONFIGS. AppConfig below is ONE config every binary loads,
+// which is the right shape for a single-binary project. Once a project has
+// several binaries, that means every process links every field — including
+// credentials it has no business reading — and removing a field for one
+// binary removes it for all of them.
+//
+// To give a binary its own surface, annotate a config message with the
+// cmd/<name> that loads it:
+//
+//   message BaseConfig {                 // a shared DEFINITION, not a binary
+//     int32 port = 1 [(forge.v1.config) = {env_var: "PORT", flag: "port", default_value: "8080"}];
+//     string log_level = 2 [(forge.v1.config) = {env_var: "LOG_LEVEL", flag: "log-level", default_value: "info"}];
+//   }
+//
+//   message AdminConfig {
+//     option (forge.v1.binary_config) = {binary: "admin"};
+//     BaseConfig base = 1;               // composed: admin resolves its OWN values
+//     string admin_api_key = 2 [(forge.v1.config) = {env_var: "ADMIN_API_KEY", sensitive: true}];
+//   }
+//
+// Ownership is then DISJOINT — deleting a field from AdminConfig touches no
+// other binary — while DEFINITIONS stay shared: every binary having a log
+// level is not duplication, they are separate values on separate processes.
+//
+// What forge generates per binary: a typed config + Load in pkg/config, a
+// KCL schema + env projection, and a per-env instance in config.k. Base
+// leaves register as PERSISTENT flags on the root command (so
+// `app --log-level=debug admin` works); the binary's own leaves register as
+// LOCAL flags on its subcommand. Precedence is unchanged
+// (flags > env > config file > proto defaults), and the binary's Deployment
+// carries only ITS env vars.
+//
+// Selection is by ANNOTATION, never by message name — renaming AdminConfig
+// does not re-point it at a different binary.
 message AppConfig {
   int32 port = 1 [(forge.v1.config) = {
     env_var: "PORT",
@@ -49,7 +84,7 @@ message AppConfig {
     flag: "database-url",
     required: true,
     sensitive: true,
-    description: "PostgreSQL connection string. SENSITIVE — it embeds the database password, so it is NEVER an inline value in a rendered manifest: the deploy projection binds it to valueFrom.secretKeyRef (the project's <name>-secrets Secret, key database_url) in every environment. Values come from the env's secret provider (dev: the gitignored .env.dev, from which forge renders the Secret for local clusters; staging/prod: an out-of-band Secret forge never sees). Required: the server refuses to start without it (config.checkRequired fires before bind)."
+    description: "PostgreSQL connection string. SENSITIVE — it embeds the database password, so it is NEVER an inline value in a rendered manifest: the deploy projection binds it to valueFrom.secretKeyRef (the project's <name>-secrets Secret, key database_url) in every environment. Values come from the env's secret provider (dev: the gitignored secrets/dev/ store, from which forge renders the Secret for local clusters; staging/prod: an out-of-band Secret forge never sees). Required: the server refuses to start without it (config.checkRequired fires before bind)."
   }];
 
   string cors_origins = 4 [(forge.v1.config) = {
@@ -244,7 +279,7 @@ message AppConfig {
     env_var: "JWT_SECRET",
     flag: "jwt-secret",
     sensitive: true,
-    description: "The static signing key: an HS* SHARED SECRET, or a PEM-encoded RS*/ES* PUBLIC key. SENSITIVE — an HS* value verifies AND mints, so it is never an inline manifest value: the deploy projection binds it to valueFrom.secretKeyRef in every environment (dev: the gitignored .env.dev; staging/prod: an out-of-band Secret forge never sees). Leave it empty when jwt_jwks_url is set. Empty in both means the service can verify nothing and every credential it is shown is rejected — which is the correct closed state, not a bug."
+    description: "The static signing key: an HS* SHARED SECRET, or a PEM-encoded RS*/ES* PUBLIC key. SENSITIVE — an HS* value verifies AND mints, so it is never an inline manifest value: the deploy projection binds it to valueFrom.secretKeyRef in every environment (dev: the gitignored secrets/dev/ store; staging/prod: an out-of-band Secret forge never sees). Leave it empty when jwt_jwks_url is set. Empty in both means the service can verify nothing and every credential it is shown is rejected — which is the correct closed state, not a bug."
   }];
 
   // ── OIDC browser sign-in (the PUBLIC/PKCE client) ─────────────────────
@@ -278,7 +313,7 @@ message AppConfig {
   string oidc_redirect_uri = 31 [(forge.v1.config) = {
     env_var: "OIDC_REDIRECT_URI",
     flag: "oidc-redirect-uri",
-    description: "Where the issuer sends the user agent back with the authorization code (e.g. http://localhost:3000/callback in dev). It must match a redirect URI registered with the issuer EXACTLY — the issuer compares it literally, so a trailing slash or a kernel-assigned port is a rejected login, which is why a dev IdP's ports are pinned rather than dynamic. This is a security control, not a routing detail: the registered-URI allow-list is what stops an attacker redirecting a code to a host they own."
+    description: "Where the issuer sends the user agent back with the authorization code (e.g. http://localhost:8081/callback in dev). It must match a redirect URI registered with the issuer EXACTLY — the comparison is literal, so a trailing slash or an unexpected port is a login rejected after the user has already typed a password. This is a security control, not a routing detail: the registered-URI allow-list is what stops an attacker redirecting a code to a host they own. The scaffolded DEV IdP is the one exception, and only because it is local: its app runs in dev mode, where the registered URI is matched as a glob, so forge registers http://localhost:*/auth/callback and a dev frontend keeps its kernel-assigned port. Never carry a wildcard to a real issuer."
   }];
 
   string oidc_scopes = 32 [(forge.v1.config) = {

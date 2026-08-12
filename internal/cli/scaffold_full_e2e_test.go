@@ -16,7 +16,7 @@ import (
 // `forge project new`'s scaffold output. It exercises the exact invocation promised
 // in the README:
 //
-//	forge project new demo --mod github.com/example/demo --service api --frontend web --license MIT
+//	forge project new demo --mod github.com/example/demo --service api --frontend web
 //
 // and then verifies — in order of blast radius —
 //  1. the generated tree compiles, vets, and tests cleanly
@@ -42,7 +42,6 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		"--mod", "github.com/example/demo",
 		"--service", "api",
 		"--frontend", "web",
-		"--license", "MIT",
 	)
 
 	projectDir := filepath.Join(dir, "demo")
@@ -142,7 +141,6 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		"deploy/kcl/prod/main.k",
 
 		// Top-level project documentation.
-		"LICENSE",
 		"README.md",
 		"CONTRIBUTING.md",
 		"CHANGELOG.md",
@@ -206,7 +204,7 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		}
 	}
 
-	configGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "config", "config.go"))
+	configGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "config", "config_gen.go"))
 	// Past bug: PORT was parsed with `strconv.Atoi` (int) which accepts
 	// values outside the 16-bit port range (e.g. 99999) and then silently
 	// truncates when assigned. `ParseUint(v, 10, 16)` range-checks at

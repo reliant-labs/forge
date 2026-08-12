@@ -62,7 +62,7 @@ func TestTestJWKSRendersThroughPlugin(t *testing.T) {
 		"_jwks = forge.TestJWKS {\n" +
 		"    name = \"test-jwks\"\n" +
 		"    kid = \"e2e-test-es256\"\n" +
-		"    private_key = forge.DotenvRef { key = \"TEST_JWKS_PEM\" }\n" +
+		"    private_key = forge.StoreRef { key = \"TEST_JWKS_PEM\" }\n" +
 		"}\n\n" +
 		"_jwk = plugin.derive_jwk(_pem, _jwks.kid, _jwks.alg)\n" +
 		"manifests = forge.test_jwks_manifests(_jwks, \"auth\", _jwk)\n"

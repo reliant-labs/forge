@@ -173,9 +173,9 @@ func classifyGeneratedFile(rel, projectDir string, svcByName map[string]codegen.
 			}
 		}
 
-	case strings.HasPrefix(relSlash, "internal/handlers/mocks/") && strings.HasSuffix(relSlash, "_mock.go"):
+	case strings.HasPrefix(relSlash, "internal/handlers/mocks/") && strings.HasSuffix(relSlash, "_mock_gen.go"):
 		kind = "service-mock"
-		base := strings.TrimSuffix(filepath.Base(relSlash), "_mock.go")
+		base := strings.TrimSuffix(filepath.Base(relSlash), "_mock_gen.go")
 		if svc, ok := svcByName[base]; ok {
 			sources = append(sources, svc.ProtoFile)
 		}

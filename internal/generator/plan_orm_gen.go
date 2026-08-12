@@ -3,7 +3,10 @@ package generator
 import (
 	"bytes"
 	"fmt"
+	"go/ast"
 	"go/format"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // GeneratePlanORM writes internal/db/<snake_name>_orm.go for each entity
@@ -51,14 +55,19 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 	// entity disappearing from the projection doesn't change that.
 	// Removed forge-owned files are pruned from the manifest too.
 	expectedFiles := make(map[string]bool)
-	expectedFiles["orm_shared.go"] = true
 	expectedFiles["types.go"] = true
 	for _, ent := range entities {
-		expectedFiles[naming.ToSnakeCase(ent.Name)+"_orm.go"] = true
+		expectedFiles[naming.ToSnakeCase(ent.Name)+"_orm_gen.go"] = true
 	}
 	existing, _ := os.ReadDir(dbDir)
 	for _, e := range existing {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), "_orm.go") || expectedFiles[e.Name()] {
+		// Both spellings are swept: "_orm_gen.go" is the current name and
+		// "_orm.go" the pre-rename one, so an upgrading project's old copies
+		// are reclaimed by the same pass that prunes deleted entities.
+		nm := e.Name()
+		isORM := strings.HasSuffix(nm, "_orm.go") || strings.HasSuffix(nm, "_orm_gen.go") ||
+			nm == "orm_shared.go"
+		if e.IsDir() || !isORM || expectedFiles[nm] {
 			continue
 		}
 		rel := filepath.Join("internal", "db", e.Name())
@@ -85,25 +94,37 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 		}
 	}
 
-	// Write ormTracer var in a shared file (one per project).
-	if err := writeORMFile(root, "orm_shared.go", renderORMShared(), cs); err != nil {
-		return fmt.Errorf("write orm shared: %w", err)
-	}
+	// internal/db/orm_shared_gen.go is RETIRED. It declared exactly one
+	// symbol, `var ormTracer = otel.Tracer("orm")`, left over from the
+	// pre-generic per-entity ORM that opened its own spans. pkg/crud owns
+	// the tracing now and keeps the same tracer name (crud.repoTracer), so
+	// the generated var has had NO referent since the generic Repo landed:
+	// a rendered project compiles with the file deleted.
+	//
+	// It was also byte-identical in every project ever generated — the
+	// tierguard differential render is what surfaced it — so it was library
+	// code, and dead library code at that, sitting in the user's tree
+	// behind a "do not edit" banner.
+	codegen.RetireGenerated(root, filepath.Join("internal", "db", "orm_shared_gen.go"), cs)
 
 	for _, ent := range entities {
-		name := naming.ToSnakeCase(ent.Name) + "_orm.go"
-		if err := writeORMFile(root, name, renderORMEntity(ent), cs); err != nil {
-			return fmt.Errorf("generate ORM for entity %s: %w", ent.Name, err)
-		}
 		// The custom-query seam: a scaffold-once, user-owned sibling file
 		// documenting where hand-written / raw-SQL queries for this entity
-		// go. It reuses the generated <entity>Repo, the package-level
-		// delegates, and db handle. Routed through the write-if-absent
-		// scaffold writer so it's NEVER overwritten after first scaffold
-		// (sibling files in package db survive the *_orm.go regen sweep
-		// above).
+		// go, and carrying the <Entity>Extra computed-field type. It reuses
+		// the generated <entity>Repo, the package-level delegates, and db
+		// handle. Routed through the write-if-absent scaffold writer so
+		// it's NEVER overwritten after first scaffold (sibling files in
+		// package db survive the *_orm.go regen sweep below). Written
+		// BEFORE the entity struct so a same-run birth is visible to the
+		// hasRepoExtExtraType check that follows.
 		if err := writeRepoExtSeam(root, ent, cs); err != nil {
 			return fmt.Errorf("scaffold repo-ext seam for entity %s: %w", ent.Name, err)
+		}
+
+		name := naming.ToSnakeCase(ent.Name) + "_orm_gen.go"
+		hasExtra := hasRepoExtExtraType(root, ent.Name)
+		if err := writeORMFile(root, name, renderORMEntity(ent, hasExtra), cs); err != nil {
+			return fmt.Errorf("generate ORM for entity %s: %w", ent.Name, err)
 		}
 	}
 	return nil
@@ -170,12 +191,72 @@ func renderRepoExtSeam(ent config.PlanEntity) []byte {
 	fmt.Fprintf(&b, "//\tfunc Active%s(ctx context.Context, db orm.Context) ([]*%s, error) {\n", naming.Pluralize(msgName), msgName)
 	fmt.Fprintf(&b, "//\t\treturn List%s(ctx, db, orm.WhereEq(\"%s\", true))\n", msgName, firstNonPKColumn(ent, pkGoType))
 	b.WriteString("//\t}\n")
-	b.WriteString("package db\n")
+	b.WriteString("package db\n\n")
+
+	extraType := entityExtraTypeName(msgName)
+	fmt.Fprintf(&b, "// %s carries fields on %s that are NOT columns — computed\n", extraType, msgName)
+	fmt.Fprintf(&b, "// values, transient state, anything derived rather than stored. %s is\n", msgName)
+	fmt.Fprintf(&b, "// embedded on %s (see %s_orm.go), so a field added here is a field on\n", extraType, naming.ToSnakeCase(msgName))
+	fmt.Fprintf(&b, "// every %s value.\n", msgName)
+	b.WriteString("//\n")
+	b.WriteString("// Every field MUST carry the `bun:\"-\"` tag. Bun otherwise treats an\n")
+	b.WriteString("// embedded struct's fields as columns of the parent table and tries to\n")
+	b.WriteString("// persist them — `bun:\"-\"` is Bun's own idiom for a field it must never\n")
+	b.WriteString("// bind or scan.\n")
+	fmt.Fprintf(&b, "type %s struct {\n", extraType)
+	b.WriteString("}\n")
 
 	if formatted, err := format.Source([]byte(b.String())); err == nil {
 		return formatted
 	}
 	return []byte(b.String())
+}
+
+// entityExtraTypeName is the name of the embedded computed-field carrier
+// for an entity — <Entity>Extra, declared once in <entity>_repo_ext.go and
+// embedded into the generated <entity>_orm.go struct.
+func entityExtraTypeName(msgName string) string { return msgName + "Extra" }
+
+// hasRepoExtExtraType reports whether root's internal/db/<entity>_repo_ext.go
+// already declares <Entity>Extra — the signal that gates the embedded field
+// on the generated entity struct.
+//
+// This is the backward-compatibility seam. <entity>_repo_ext.go is
+// scaffold-once and user-owned from birth (WriteScaffoldIfMissing never
+// rewrites it), so an EXISTING project's seam file predates this type and
+// stays exactly as it is — forge does not, and must not, inject a
+// declaration into a file it no longer touches. Embedding a reference to
+// an undefined type would break that project's build, so the entity
+// struct only gains the embedded field once the type is actually present:
+// for a brand-new entity, that's this same `forge generate` run (the seam
+// is scaffolded with the type just above); for an existing one, it's the
+// moment the user hand-adds the type themselves — an ordinary edit to a
+// file they already own, needing no forge-side migration.
+//
+// Parse errors and a missing file both answer false: an unparseable
+// seam file is not proof the type exists, and the safe default is never
+// to embed a reference to a type we can't confirm.
+func hasRepoExtExtraType(root, entityName string) bool {
+	path := filepath.Join(root, "internal", "db", naming.ToSnakeCase(entityName)+"_repo_ext.go")
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return false
+	}
+	want := entityExtraTypeName(entityName)
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if ok && ts.Name.Name == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // firstNonPKColumn returns a representative non-PK column name for the
@@ -220,19 +301,6 @@ func writeORMFile(root, name string, content []byte, cs *FileChecksums) error {
 	return err
 }
 
-// renderORMShared renders the shared orm_shared.go with the ormTracer var.
-func renderORMShared() []byte {
-	var b strings.Builder
-	b.WriteString("// Code generated by forge. DO NOT EDIT.\n")
-	b.WriteString("// forge-owned: regenerated every run — do not edit (forge project disown to take ownership)\n")
-	b.WriteString("package db\n\n")
-	b.WriteString("import (\n")
-	b.WriteString("\t\"go.opentelemetry.io/otel\"\n")
-	b.WriteString(")\n\n")
-	b.WriteString("var ormTracer = otel.Tracer(\"orm\")\n")
-	return []byte(b.String())
-}
-
 // ormField holds the resolved metadata for a single entity field used during
 // code generation. This mirrors the information in the protoc-based codegen's
 // fieldInfo but is derived directly from PlanEntityField.
@@ -266,6 +334,26 @@ type ormField struct {
 	// round-trip — which reads the secret back as "" — cannot clobber the
 	// stored value. Still settable on Create and on an explicit masked Update.
 	isSecret bool
+	// isImmutable marks a column declared `forge:immutable` in its catalog
+	// comment → Bun's ,skipupdate: a full-replace UPDATE leaves the stored
+	// value alone, an INSERT still writes it.
+	isImmutable bool
+	// isVersion marks a column declared `forge:version` in its catalog
+	// comment: the entity's optimistic-concurrency column. It gets Bun's
+	// ,skipupdate (defense in depth — the generic Repo, not Bun's own
+	// enforcement, owns the increment; see bunTag) PLUS a `forge:"version"`
+	// struct tag in its own namespace, which is the signal
+	// pkg/crud.Repo.ensureMeta reads at runtime to find it (see that
+	// method's doc comment for why a second tag namespace rather than
+	// a Bun option).
+	isVersion bool
+	// isFillULID marks a column declared `forge:fill=ulid` in its catalog
+	// comment: a non-PK column the generic Repo ULID-generates at Create
+	// when left at its Go zero. Like isVersion, this is a fact Bun's own
+	// tag vocabulary has no concept for, so it gets a `forge:"fill=ulid"`
+	// struct tag in forge's own namespace (see structTag) —
+	// pkg/crud.Repo.ensureMeta reads it back the same way it reads version.
+	isFillULID bool
 }
 
 // isBunSoftDeleteTimeType reports whether a deleted_at field's projected
@@ -286,7 +374,7 @@ func (f ormField) structGoType() string {
 	return f.goType
 }
 
-func renderORMEntity(ent config.PlanEntity) []byte {
+func renderORMEntity(ent config.PlanEntity, hasExtra bool) []byte {
 	msgName := ent.Name
 	tableName := ent.TableName
 	if tableName == "" {
@@ -342,7 +430,7 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 	writeORMImports(&b, needsTime)
 
 	// The entity struct: a projection of the APPLIED schema, with Bun tags.
-	writeEntityStruct(&b, msgName, tableName, fields)
+	writeEntityStruct(&b, msgName, tableName, fields, hasExtra)
 
 	// Field name constants. Doc comments start with the declared name so
 	// the emitted file satisfies `revive: exported` — see
@@ -372,35 +460,18 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 	}
 	b.WriteString("}\n\n")
 
-	// Soft-delete mode. With a proper time deleted_at, Bun's built-in
-	// ,soft_delete owns it (detected from the schema by the generic repo). A
-	// legacy TEXT deleted_at can't round-trip Bun's time.Time stamp, so the
-	// repo's Spec.LegacyTextDeletedAt flag opts it into the hand-rolled
-	// filter/stamp path. That flag is the only soft-delete signal the repo
-	// can't infer from the Bun tags.
-	nativeSoftDelete := ent.SoftDelete && entityUsesNativeSoftDelete(fields)
-	legacyTextSoftDelete := ent.SoftDelete && !nativeSoftDelete
-
 	// CRUD: a single generic crud.Repo[<Entity>] owns the lifecycle
 	// (built on Bun, metadata derived from the schema/tags at first use),
 	// and thin package-level delegates preserve the standalone-function API
 	// the handler ops and any user code call. The repo's Spec carries ONLY
 	// the forge conventions Bun can't read off the struct tags: managed
-	// timestamps, the legacy-TEXT deleted_at fallback, and the
-	// `// forge:secret` columns preserved on a maskless full-replace Update.
+	// timestamps and the legacy-TEXT deleted_at fallback.
 	//
-	// `// forge:secret` columns are preserved on a maskless full-replace
-	// Update (Spec.SecretColumns) — the read path strips them, so a client
-	// round-trip reads them back as "" and a full replace would otherwise
-	// clobber the stored value.
-	var secretCols []string
-	for _, f := range fields {
-		if f.isSecret {
-			secretCols = append(secretCols, f.columnName)
-		}
-	}
-	writeORMRepoAndDelegates(&b, msgName, pkGoType, ent.SoftDelete,
-		ent.Timestamps, legacyTextSoftDelete, secretCols)
+	// Per-column write policy is NOT among them: `forge:immutable` becomes a
+	// ,skipupdate tag on the column itself (see bunTag), where Bun enforces
+	// it. A parallel list of column NAMES in the Spec was the same fact
+	// spelled a second way, unchecked against the struct it described.
+	writeORMRepoAndDelegates(&b, msgName, pkGoType, ent.SoftDelete)
 
 	// gofmt the render so struct-tag/const alignment matches what the
 	// project's gofmt/CI check (and the drift guard) expect. The writers
@@ -445,34 +516,18 @@ func writeORMImports(b *strings.Builder, needsTime bool) {
 // keeps compiling unchanged. Spec carries only the conventions Bun's schema
 // can't infer: managed timestamps, legacy-TEXT deleted_at, and
 // the `// forge:secret` columns preserved on a maskless full-replace Update.
-func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, softDelete bool, timestamps, legacyText bool, secretCols []string) {
+func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, softDelete bool) {
 	repoVar := lowerFirst(msgName) + "Repo"
 
-	// The per-entity repo, constructed once at package init. Metadata is
-	// derived from Bun's schema lazily on the first call, so this is a
-	// cheap struct literal here.
+	// The per-entity repo, constructed once at package init. Everything it
+	// needs — managed timestamps, both soft-delete forms, per-column write
+	// policy — is derived from the model's own Bun tags on the first call,
+	// so there is nothing to configure here.
 	fmt.Fprintf(b, "// %s is the generic CRUD repository for %s. It owns the\n", repoVar, msgName)
 	b.WriteString("// lifecycle (soft delete, masked updates, managed\n")
 	b.WriteString("// timestamps, pagination via QueryOption) over Bun; the standalone\n")
 	b.WriteString("// functions below are thin delegates onto it.\n")
-	fmt.Fprintf(b, "var %s = crud.NewRepo[%s](crud.Spec{\n", repoVar, msgName)
-	if timestamps {
-		b.WriteString("\tTimestamps: true,\n")
-	}
-	if legacyText {
-		b.WriteString("\tLegacyTextDeletedAt: true,\n")
-	}
-	if len(secretCols) > 0 {
-		b.WriteString("\tSecretColumns: []string{")
-		for i, c := range secretCols {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			fmt.Fprintf(b, "%q", c)
-		}
-		b.WriteString("},\n")
-	}
-	b.WriteString("})\n\n")
+	fmt.Fprintf(b, "var %s = crud.NewRepo[%s]()\n\n", repoVar, msgName)
 
 	// Create
 	fmt.Fprintf(b, "// Create%s inserts a new %s row (plain INSERT, never an upsert).\n", msgName, msgName)
@@ -615,7 +670,58 @@ func bunTag(f ormField) string {
 		parts = append(parts, "scanonly")
 	}
 
+	// ,skipupdate omits the column from a full-replace UPDATE's SET clause
+	// while leaving it writable on INSERT and on an explicit masked Update.
+	// Three independent declarations project onto it, because all three
+	// describe a column the client could not have sent a value for:
+	//
+	//   - `forge:immutable` in the column's COMMENT — schema truth, a fact
+	//     about the column applied by the migration.
+	//   - `// forge:secret` on the wire field — the read path never packs it,
+	//     so a client Get/List reads it back as "" and a round-tripped entity
+	//     would overwrite the stored credential with that "".
+	//   - `forge:version` in the column's COMMENT — the entity's optimistic-
+	//     concurrency column. pkg/crud.Repo's own SET-clause construction is
+	//     what actually enforces this (it must ALSO exclude the column from
+	//     UpdateMasked's allowlist, which ,skipupdate alone cannot express —
+	//     see meta.versionColumn); the tag here is defense in depth against
+	//     a hand-rolled Bun query bypassing the generic Repo entirely.
+	//
+	// The secret case is the narrower one and predates the marker; it is
+	// folded in here rather than requiring every secret column to ALSO carry
+	// a COMMENT, which would make forgetting one a silent credential wipe.
+	if f.isImmutable || f.isSecret || f.isVersion {
+		parts = append(parts, "skipupdate")
+	}
+
 	return fmt.Sprintf("`bun:%q`", strings.Join(parts, ","))
+}
+
+// structTag returns the full Go struct tag literal for a field — the
+// `bun:"..."` tag bunTag builds, plus a `forge:"version"` or
+// `forge:"fill=ulid"` tag in its OWN namespace for the (at most one, per
+// field) forge-specific column marker.
+//
+// A second tag namespace, not another bun tag option, because Bun has no
+// native concept for either declaration and inventing a private option name
+// (e.g. an unrecognized bun:"...,version" flag) would hit Bun's own
+// unknown-tag-option warning (schema.isKnownFieldOption) on every generated
+// struct carrying one. The `forge:"..."` namespace sits where Bun's tag
+// parser never inspects it, so it is silent to Bun and readable by anyone:
+// pkg/crud.Repo.ensureMeta reads it directly off
+// schema.Field.StructField.Tag (Bun always keeps the raw reflect.StructField
+// alongside its own parsed Tag), and go vet / reflect.StructTag.Lookup see
+// it exactly like any other well-formed struct tag.
+func structTag(f ormField) string {
+	bunPart := strings.Trim(bunTag(f), "`")
+	switch {
+	case f.isVersion:
+		return fmt.Sprintf("`%s forge:%q`", bunPart, "version")
+	case f.isFillULID:
+		return fmt.Sprintf("`%s forge:%q`", bunPart, "fill=ulid")
+	default:
+		return bunTag(f)
+	}
 }
 
 // writeEntityStruct emits the entity row type with Bun struct tags. Field
@@ -623,7 +729,16 @@ func bunTag(f ormField) string {
 // (never timestamppb — the wire seam converts), pointers for nullable
 // columns, native slices for array columns. Bun scans rows straight into
 // this struct via the tags.
-func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []ormField) {
+//
+// hasExtra embeds <Entity>Extra — the user-owned computed-field carrier
+// declared in <entity>_repo_ext.go — when that type actually exists (see
+// hasRepoExtExtraType). An embedded struct whose fields all carry
+// `bun:"-"` contributes nothing to Bun's schema introspection (verified
+// against uptrace/bun's schema.Table.processFields: a `bun:"-"` field is
+// skipped before it ever reaches the embedding walk), so the seam is
+// invisible to every generated CRUD path unless and until the user adds
+// a field to it.
+func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []ormField, hasExtra bool) {
 	fmt.Fprintf(b, "// %s is the %s row type — a projection of the APPLIED schema\n", msgName, tableName)
 	b.WriteString("// (db/migrations). Evolve it by writing migrations; `forge generate`\n")
 	b.WriteString("// regenerates this struct from the introspected schema. The bun tags\n")
@@ -633,7 +748,11 @@ func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []o
 	fmt.Fprintf(b, "type %s struct {\n", msgName)
 	fmt.Fprintf(b, "\tbun.BaseModel `bun:%q`\n", fmt.Sprintf("table:%s,alias:%s", tableName, tableName))
 	for _, f := range fields {
-		fmt.Fprintf(b, "\t%s %s %s\n", f.goName, f.structGoType(), bunTag(f))
+		fmt.Fprintf(b, "\t%s %s %s\n", f.goName, f.structGoType(), structTag(f))
+	}
+	if hasExtra {
+		fmt.Fprintf(b, "\t%s // computed / in-memory-only fields — see %s_repo_ext.go\n",
+			entityExtraTypeName(msgName), naming.ToSnakeCase(msgName))
 	}
 	b.WriteString("}\n\n")
 }
@@ -728,6 +847,9 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 			columnDef:   strings.TrimSpace(e.Default),
 			isGenerated: e.Generated,
 			isSecret:    e.Secret,
+			isImmutable: e.Immutable,
+			isVersion:   e.Version,
+			isFillULID:  e.FillStrategy == schemadef.FillStrategyULID,
 		}
 		// Nullable column → pointer struct field. Arrays and bytes are
 		// reference types already (NULL scans to nil).
@@ -772,7 +894,7 @@ func isTimePlanType(t string) bool { return t == "time" }
 // the "string" answer is a FALLBACK rather than a mapping.
 //
 // The vocabulary is exactly the canonical schema vocabulary
-// (internal/schemadef.MapDeclaredType: string, int64, float64, bool, time,
+// (pkg/schemadef.MapDeclaredType: string, int64, float64, bool, time,
 // json, bytes) with a "[]" prefix for an array column, and the projection
 // is codegen's — the SAME one the CRUD conversion generator pairs a wire
 // field against. Two copies of this table is how a BYTEA[] column came to

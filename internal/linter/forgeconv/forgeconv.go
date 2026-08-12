@@ -6,7 +6,9 @@
 //
 // The full list of rules:
 //
-//	forgeconv-one-service-per-file   one service per .proto, full stop
+//	forgeconv-one-service-per-file      one service per .proto, full stop
+//	forgeconv-service-dir-consistency   proto service name must match its
+//	                                    proto/services/<dir>/ directory
 //
 // `auth_required` stays as informational proto metadata (forge map),
 // lint-free — forge reads no access-control annotations.
@@ -26,6 +28,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
@@ -184,6 +188,7 @@ func lintProtoFile(relPath, content string, opts LintOptions) []Finding {
 	pf := parseProtoFile(relPath, content)
 
 	findings = append(findings, checkOneServicePerFile(pf)...)
+	findings = append(findings, checkServiceDirConsistency(pf)...)
 	_ = opts // reserved: no rule currently escalates on LintOptions.Strict
 
 	return findings
@@ -222,6 +227,38 @@ func serviceList(services []protoService) string {
 		names[i] = s.Name
 	}
 	return strings.Join(names, ", ")
+}
+
+// ─── Rule 2: proto service name must match its directory ───────────────────
+//
+// Only checks files under proto/services/<dir>/ — the layout
+// ServiceNameFromProtoFile recognizes. Flat/multi-service proto
+// packages (proto/controlplane/v1/) have no per-service directory to
+// compare against and are skipped. Delegates the actual identifier
+// comparison to cmdutil.ValidateServiceDirConsistency so `forge lint
+// --conventions` and `forge generate` can never disagree about which
+// proto/directory pairs are compatible.
+func checkServiceDirConsistency(pf parsedProto) []Finding {
+	dir := codegen.ServiceNameFromProtoFile(filepath.ToSlash(pf.Path))
+	if dir == "" {
+		return nil
+	}
+	var findings []Finding
+	for _, svc := range pf.Services {
+		err := cmdutil.ValidateServiceDirConsistency(svc.Name, dir)
+		if err == nil {
+			continue
+		}
+		findings = append(findings, Finding{
+			Rule:        "forgeconv-service-dir-consistency",
+			Severity:    SeverityError,
+			File:        pf.Path,
+			Line:        svc.Line,
+			Message:     err.Error(),
+			Remediation: "rename the proto service or the proto/services/ directory so pascalCase(dir) + \"Service\" == the proto service name",
+		})
+	}
+	return findings
 }
 
 // ─── proto file mini-parser ──────────────────────────────────────────────────

@@ -51,7 +51,7 @@ func TestRepoCreate_NormalizesNilSliceColumns(t *testing.T) {
 		t.Fatalf("create blob_rows: %v", err)
 	}
 
-	repo := NewRepo[blobRow](Spec{})
+	repo := NewRepo[blobRow]()
 
 	// Payload and Tags left nil on purpose: the NOT NULL columns must
 	// receive their empty value, not NULL.
@@ -107,7 +107,7 @@ func TestRepoUpdateMasked_NormalizesOnlyMaskedSliceColumns(t *testing.T) {
 	)`); err != nil {
 		t.Fatalf("create blob_rows: %v", err)
 	}
-	repo := NewRepo[blobRow](Spec{})
+	repo := NewRepo[blobRow]()
 
 	seed := &blobRow{ID: "m1", Payload: []byte{0x01}, Tags: []string{"a"}}
 	if err := repo.Create(ctx, db, seed); err != nil {

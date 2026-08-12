@@ -73,6 +73,22 @@ func TestRequireContract_NotInternal(t *testing.T) {
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "notinternal")
 }
 
+// Regression: a package whose only exported methods satisfy STANDARD-LIBRARY
+// interfaces — String() (fmt.Stringer), Error() (error), MarshalJSON/
+// MarshalText — has no behavioral seam to mock. Those are rendering and
+// marshalling conventions on a data record, and Go requires the exact
+// exported name, so "unexport it" is not an available repair.
+//
+// Measured on forge's own tree, this was 6 of 8 requirecontract findings
+// (deadcodeguard, vacuousguard, tierguard, pkgguard, schemadrift, devpg) —
+// every one a `func (X) String() string` on a Finding/Verdict/Report value.
+// A rule whose only repair is "add an interface nobody consumes" trains
+// people to add exclusions, so the conventions are skipped instead.
+func TestRequireContract_StdlibConventionMethodsOnly(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requirestringer")
+}
+
 // Regression: external test packages (`package <name>_test`) host black-box
 // tests and helper structs that are not part of the package's API surface.
 // Previously the analyzer flagged `package <name>_test` with exported test
@@ -139,6 +155,22 @@ func TestExportedVars_Good(t *testing.T) {
 func TestExportedVars_Bad(t *testing.T) {
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsbad")
+}
+
+// Regression: an immutable lookup table or a compiled regexp is a `var`
+// only because Go has no const slice/map/regexp. The rule's premise —
+// "mutable global state should be behind a method or getter" — does not
+// apply: a getter returning the same slice/map header hides nothing and
+// prevents no mutation, it just adds a call.
+//
+// Measured on forge's own tree this was all 5 exportedvars findings
+// (codegen.KnownProtoMarkers/RemovedProtoMarkers, unwired_stub's
+// MustCompile'd marker regex, kcloptions.Reserved, kclvendor's Sprintf'd
+// dep line) — every one a fixed vocabulary or precompiled pattern that is
+// already documented as the single source of truth for several callers.
+func TestExportedVars_ImmutableDataAndRegexps(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsimmutable")
 }
 
 // Regression: a package carrying the per-package //forge:exclude-contract

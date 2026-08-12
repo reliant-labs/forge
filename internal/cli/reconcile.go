@@ -10,11 +10,13 @@
 //	                               (Deployments / Jobs / operators), the
 //	                               compose deploy targets, and (for deploy)
 //	                               the External dispatch.
-//	              * composeInfra — pre-warm the docker-compose infra
-//	                               (postgres / nats / temporal) concurrent
-//	                               with the build phase. up-only; deploy's
-//	                               cluster apply already drives compose
-//	                               targets through the same provider.
+//	              * infra        — pre-warm the env's declared
+//	                               infrastructure (host-run postgres, and
+//	                               any compose container the env declares)
+//	                               concurrent with the build phase.
+//	                               up-only; deploy's cluster apply already
+//	                               drives those targets through the same
+//	                               providers.
 //	              * host         — start every `deploy: "host"` service as a
 //	                               host process (go-run / air / binary /
 //	                               delve). up-only.
@@ -64,10 +66,11 @@ type reconcileScope struct {
 	// cluster applies the in-cluster workloads + External/Compose deploy
 	// targets (the runDeploy pipeline). Both commands set this.
 	cluster bool
-	// composeInfra pre-warms the docker-compose infra concurrent with the
-	// build phase. up-only — deploy reaches compose targets through the
-	// cluster apply's provider dispatch instead.
-	composeInfra bool
+	// infra pre-warms the env's declared infrastructure — host-run servers
+	// and compose containers alike — concurrent with the build phase.
+	// up-only: deploy reaches those targets through the cluster apply's
+	// provider dispatch instead.
+	infra bool
 	// host starts `deploy: "host"` services as host processes. up-only.
 	host bool
 	// frontend starts each declared frontend's dev server. up-only.
@@ -79,7 +82,7 @@ type reconcileScope struct {
 // dev servers. frontendShip is off: `up` runs dev servers, it does not
 // publish to Firebase. upScope masks this down per --cluster-only/--host-only.
 func fullUpScope() reconcileScope {
-	return reconcileScope{cluster: true, composeInfra: true, host: true, frontend: true}
+	return reconcileScope{cluster: true, infra: true, host: true, frontend: true}
 }
 
 // upScope derives a `forge env up` run's scope from its --cluster-only /
@@ -89,8 +92,10 @@ func fullUpScope() reconcileScope {
 //
 //   - --cluster-only → drop the host + frontend dev phases (CI lanes that
 //     only want the apply).
-//   - --host-only    → drop the cluster build/deploy + compose pre-warm
-//     (iterate host services against an already-deployed cluster).
+//   - --host-only    → drop the cluster build/deploy + the concurrent infra
+//     pre-warm (iterate host services against an already-deployed cluster).
+//     The host phase runs its OWN infra pre-warm instead, serially, before
+//     anything dials it — see runUp.
 //
 // The two flags are mutually exclusive (rejected at flag-parse time), so at
 // most one mask applies; neither set yields the full scope. Pure so the
@@ -99,7 +104,7 @@ func upScope(clusterOnly, hostOnly bool) reconcileScope {
 	s := fullUpScope()
 	if hostOnly {
 		s.cluster = false
-		s.composeInfra = false
+		s.infra = false
 	}
 	if clusterOnly {
 		s.host = false

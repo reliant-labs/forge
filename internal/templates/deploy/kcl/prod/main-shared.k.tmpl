@@ -2,15 +2,22 @@
 Production environment configuration for {{.ProjectName}} (binary=shared).
 
 One image, N Deployments — each runs the shared binary with a
-different cobra subcommand. Workloads are expanded from
-`deploy/kcl/components_gen.json` by the forge.components KCL schema
-hierarchy. See `dev/main.k` for the `manifests` / `output` contract.
+different cobra subcommand. Workloads are expanded from the declarations
+declared in `deploy/kcl/workloads.k` by the forge.workloads KCL schema
+hierarchy.
+
+YOURS: forge scaffolds this file once and never rewrites it. See
+`dev/main.k` for the `manifests` / `output` contract.
 """
 
 import forge
-import forge.components as fc
+import forge.workloads as fw
 
-import config_projection
+# What this project DEPLOYS — user-owned, shared by every env.
+# This file refines what is specific to THIS environment.
+import ..workloads as wl
+
+import config_gen
 import .config as appcfg
 {{- if .IngressEnabled}}
 import .ingress as ing
@@ -31,34 +38,61 @@ _cluster = forge.ClusterTarget {
     registry = _registry
 }
 
-# Base env every component sees, assembled with forge.env_merge (name-keyed,
+# Base env every workload sees, assembled with forge.env_merge (name-keyed,
 # LAST-wins) so a later layer overrides an earlier one by name instead of the
 # `+`-concat footgun (which emits duplicate keys kubectl rejects).
-_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, forge.env_project(config_projection.appConfigEnvMap(appcfg.app_config))), [
+_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, forge.env_project(config_gen.appConfigEnvMap(appcfg.app_config))), [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
 ])
 
-_components = [c | {
+# WHAT THIS ENVIRONMENT DEPLOYS.
+#
+# `wl.ALL` is every workload the project declares. This list is yours:
+# drop one prod does not run, or append a workload only prod has.
+_declared = wl.ALL
+
+# PER-WORKLOAD refinement for prod. Name a workload and state only what
+# differs here; everything else is inherited from its base declaration.
+# Because `|` preserves the schema type, forge.workloads' `check:` rules
+# re-run on the result, so an invalid override fails HERE, in prod.
+#
+#     _declared = [w | {replicas = 5} if w.name == "{{.PrimaryWorkload}}" else w for w in _declared]
+
+# ENV-WIDE PLACEMENT + the prod capacity floor.
+#
+# binary=shared: EVERY workload runs the shared image and selects itself
+# with a cobra subcommand. A workload that already carries its own
+# `command` (a secondary binary) keeps it; the rest get one derived from
+# their name, so one image serves all of them.
+#
+# `replicas` / `resources` are the env-wide FLOOR, and `replicas` is a
+# real one: a workload that refined itself HIGHER keeps its own count,
+# so raising the floor cannot silently scale a workload down. Refine by
+# name in `_declared` above to give one workload more than the floor.
+_workloads = [c | {
     image = "{{.ProjectName}}"
     registry = _registry
     namespace = _namespace
-    replicas = _replicas
+    replicas = c.replicas if c.replicas > _replicas else _replicas
     resources = _resources
     command = c.command if c.command else ["/app/{{.ProjectName}}", c.name]
     env_vars = forge.env_merge(_base_env, [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}])
-} for c in fc.load_components(fc.COMPONENTS_GEN)]
+} for c in _declared]
 
-_component_env = fc.ComponentEnv {
-    # Deploy-time schema migrations. `load_migrate` reads the argv forge
-    # emits into components_gen.json (`/app/<project> db migrate up`, over the
-    # migrations EMBEDDED in the image) — empty until the project ships its
-    # first db/migrations/*.sql, populated from then on with no edit here.
+_workload_env = fw.WorkloadEnv {
+    # Deploy-time schema migrations are NOT configured here. They are an
+    # ordinary workload — the `migrate` one-shot in deploy/kcl/workloads.k,
+    # a `kind = "job"` with `before = [fw.BEFORE_ALL]` — which this env
+    # inherits through `wl.ALL` like everything else it deploys.
     #
-    # It renders as an initContainer on every Deployment-shaped workload, so
-    # the schema is current BEFORE any new pod serves a request and a failed
-    # migration stalls the rollout with the old pods still serving. Concurrent
-    # replicas are safe — golang-migrate takes a postgres advisory lock.
-    migrate = fc.load_migrate(fc.COMPONENTS_GEN)
+    # That job renders as an initContainer on every workload here, so the
+    # schema is current BEFORE any new pod serves a request and a failed
+    # migration stalls the rollout with the old pods still serving.
+    #
+    # If THIS environment migrates out of band, drop the workload from
+    # `_declared` above rather than editing anything in this block:
+    #
+    #     _declared = [w for w in wl.ALL if w.name != "migrate"]
     namespace = _namespace
     project = "{{.ProjectName}}"
     registry = _registry
@@ -95,13 +129,21 @@ _support = forge.Bundle {
 {{- end}}
 }
 
-manifests = fc.render_components(_components, _component_env) \
+manifests = fw.render_workloads(_workloads, _workload_env) \
     + forge.render_support(_support)
 
-_svc_components = [c for c in _components if c.kind in ["server", "worker"]]
-_bin_components = [c for c in _components if c.kind == "binary"]
-_cron_components = [c for c in _components if c.kind == "cron"]
-_op_components = [c for c in _components if c.kind == "operator"]
+_svc_workloads = [c for c in _workloads if c.kind in ["service", "worker"]]
+_tool_workloads = [c for c in _workloads if c.kind == "tool"]
+_cron_workloads = [c for c in _workloads if c.kind == "cron"]
+_op_workloads = [c for c in _workloads if c.kind == "operator"]
+# One-shot jobs (the scaffolded `migrate` step is one). These reach the
+# HOST runner through the bundle: k8s and compose lower `before`
+# themselves — an initContainer, and
+# `depends_on: {condition: service_completed_successfully}` — but the host
+# runner is a process launcher with no orchestrator underneath it, so it
+# has to be TOLD to run the argv and wait for exit 0 before starting the
+# services the job gates.
+_job_workloads = [c for c in _workloads if c.kind == "job"]
 
 _bundle = forge.Bundle {
     cluster_target = _cluster
@@ -110,16 +152,17 @@ _bundle = forge.Bundle {
         image = "{{.ProjectName}}"
         command = c.command
         env_vars = c.env_vars
-        # Ports come from THIS file, never from components_gen.json: a port is a
-        # deploy fact. Add them to the `_components` overlay above
-        # (`ports = [fc.ComponentPort {name = "http", port = 9090, expose = True}]`)
+        # Ports come from the workload declaration in workloads.k, where a
+        # workload states its own ports. An env that genuinely differs refines
+        # not. Add them to the `_workloads` overlay above
+        # (`| {ports = [fw.Port {name = "http", port = 9090, expose = True}]}`)
         # and they flow to both the manifests and this build/dispatch contract.
-        # Empty is the normal case — the Server expansion serves the standard
+        # The scaffolded default is the standard
         # :8080 mux, which is the one port the binary actually binds.
-        deploy = _cluster.deploy | {replicas = _replicas, resources = _resources, ports = [p.port for p in c.ports]}
+        deploy = _cluster.deploy | {replicas = c.replicas if c.replicas > _replicas else _replicas, resources = _resources, ports = [p.port for p in c.ports]}
         if c.build:
             build = forge.build_of(c.build)
-    } for c in _svc_components] + [forge.RenderedWorkload {
+    } for c in _svc_workloads] + [forge.RenderedWorkload {
         name = c.name
         image = "{{.ProjectName}}"
         command = c.command
@@ -127,20 +170,27 @@ _bundle = forge.Bundle {
         deploy = forge.BuildOnly {}
         if c.build:
             build = forge.build_of(c.build)
-    } for c in _bin_components]
+    } for c in _tool_workloads]
     cronjobs = [forge.CronJob {
         name = c.name
         image = "{{.ProjectName}}"
         schedule = c.schedule
         command = c.command
         env_vars = c.env_vars
-    } for c in _cron_components]
+    } for c in _cron_workloads]
     operators = [forge.Operator {
         name = c.name
         image = "{{.ProjectName}}"
         crds = c.crds
         env_vars = c.env_vars
-    } for c in _op_components]
+    } for c in _op_workloads]
+    jobs = [forge.OneShotJob {
+        name = c.name
+        image = "{{.ProjectName}}"
+        command = c.command
+        before = c.before
+        env_vars = c.env_vars
+    } for c in _job_workloads]
     config_maps = []
     # SECRET VALUES for this env come from OUTSIDE forge. Every config field
     # marked `sensitive: true` in proto/config/v1/config.proto projects into

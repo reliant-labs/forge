@@ -25,7 +25,7 @@ forge`).
 KCL union-type dispatch
 =======================
 
-`Service.deploy: HostDeploy | K8sCluster | External | Compose | BuildOnly`.
+`Service.deploy: HostDeploy | K8sCluster | External | Compose | HostInfra | BuildOnly`.
 The discriminator field (`type`) is declared ON each variant subschema,
 so the JSON projection is self-describing — the consumer dispatches
 on `deploy.type` directly. The render lambdas here mirror that
@@ -99,7 +99,6 @@ _render_host_deploy = lambda d: HostDeploy -> any {
         "runner": d.runner
         "air_config": d.air_config if d.air_config else None
         "env_vars": [_render_env_var(e) for e in d.env_vars]
-        "secrets_file": d.secrets_file if d.secrets_file else None
         "delve_port": d.delve_port
         "working_dir": d.working_dir if d.working_dir else None
         "listen_ports": d.listen_ports if d.listen_ports else None
@@ -147,6 +146,33 @@ _render_compose = lambda d: Compose -> any {
         "compose_file": d.compose_file
         "service": d.service if d.service else None
         "env_file": d.env_file if d.env_file else None
+        # The compose PROCESS env — what the compose file's own `${VAR}`
+        # references interpolate from. See Compose.env in schema.k for why
+        # this is distinct from env_file (which only reaches containers).
+        "env": d.env if d.env else {}
+    }
+}
+
+_render_host_infra = lambda d: HostInfra -> any {
+    {
+        "type": "host-infra"
+        "engine": d.engine
+        "port": d.port
+        "database": d.database
+        "user": d.user
+        "password": d.password
+        "data_dir": d.data_dir if d.data_dir else None
+        "version": d.version if d.version else None
+        # engine = "zitadel" only: where the dev IdP keeps its state, and
+        # the declarative bootstrap it converges to. Inert for postgres,
+        # projected unconditionally because this lambda is a whitelist —
+        # a field omitted here does not reach the consumer at all, however
+        # correctly the environment declares it.
+        "idp_database": d.idp_database
+        "idp_database_port": d.idp_database_port if d.idp_database_port else None
+        "idp_masterkey": d.idp_masterkey
+        "idp_steps_file": d.idp_steps_file
+        "idp_pat_path": d.idp_pat_path
     }
 }
 
@@ -158,13 +184,14 @@ _render_build_only = lambda d: BuildOnly -> any {
 }
 
 # Dispatch on the populated deploy's discriminator. Called only when
-# `d` is not Undefined / None. Five branches: host / cluster
-# (K8sCluster) / external / compose / build-only.
+# `d` is not Undefined / None. Six branches: host / cluster (K8sCluster) /
+# external / compose / host-infra / build-only.
 _render_deploy_populated = lambda d: any -> any {
     _render_host_deploy(d) if d.type == "host" else \
         (_render_k8s_cluster(d) if d.type == "cluster" else \
         (_render_external(d) if d.type == "external" else \
-        (_render_compose(d) if d.type == "compose" else _render_build_only(d))))
+        (_render_compose(d) if d.type == "compose" else \
+        (_render_host_infra(d) if d.type == "host-infra" else _render_build_only(d)))))
 }
 
 # Top-level deploy dispatcher. `deploy = None` (or an omitted deploy) is
@@ -178,8 +205,8 @@ _render_deploy = lambda d: any -> any {
     _render_deploy_populated(d) if d else {"type": "build-only", "build_variants": []}
 }
 
-# build_of coerces a plain build dict (the shape components_gen.json
-# emits and a per-env overlay authors) into the right TYPED Build subtype,
+# build_of coerces a plain build dict (the shape a workloads.k entry
+# or a per-env overlay authors) into the right TYPED Build subtype,
 # dispatching on the `type` discriminator. This exists because KCL union
 # coercion is structural-first: a ShellBuild dict ({type=shell, cmd=...})
 # also satisfies GoBuild's required `cmd`, so a bare dict assigned to
@@ -456,6 +483,21 @@ _render_config_map = lambda cm: ConfigMap -> any {
     }
 }
 
+# One-shot job JSON projection. `before` is the ordering the host runner
+# enforces by waiting for exit 0; the k8s and compose lowerings express
+# the same declaration in their own vocabularies (init containers /
+# service_completed_successfully).
+_render_job = lambda j: OneShotJob -> any {
+    {
+        "name": j.name
+        "image": j.image
+        "command": j.command
+        "before": j.before
+        "timeout_seconds": j.timeout_seconds
+        "env_vars": [_render_env_var(e) for e in j.env_vars]
+    }
+}
+
 _render_cronjob = lambda c: CronJob -> any {
     {
         "name": c.name
@@ -513,6 +555,7 @@ _render_cluster = lambda c: Cluster -> any {
         "name": c.name
         "context": c.context
         "config": c.config if c.config else None
+        "image": c.image
         "network": c.network if c.network else None
         "registry_inherit": c.registry_inherit
         "servers": c.servers
@@ -608,7 +651,7 @@ _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
 #     import forge
 #     import kcl_plugin.forge as plugin
 #     _jwks = forge.TestJWKS { name = "auth-jwks", kid = "k1",
-#                              private_key = forge.DotenvRef { key = "JWKS_PEM" } }
+#                              private_key = forge.StoreRef { key = "JWKS_PEM" } }
 #     _jwk  = plugin.derive_jwk(option("jwks_pem"), _jwks.kid, _jwks.alg)
 #     manifests = forge.test_jwks_manifests(_jwks, "auth", _jwk)
 test_jwks_manifests = lambda j: TestJWKS, namespace: str, public_jwk: any -> [any] {
@@ -677,6 +720,7 @@ render = lambda bundle: Bundle -> any {
         "operators": [_render_operator(o) for o in bundle.operators]
         "frontends": [_render_frontend(f) for f in bundle.frontends]
         "cronjobs": [_render_cronjob(c) for c in bundle.cronjobs]
+        "jobs": [_render_job(j) for j in bundle.jobs]
         "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]
         "gateways": [_render_gateway(g) for g in bundle.gateways]
         "http_routes": [_render_http_route(r) for r in bundle.http_routes]
@@ -903,13 +947,13 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
 # (Gateways + Certificates + HTTP/GRPC routes). The workload entities
 # (services / operators / cronjobs) are NOT rendered here.
 #
-# This is the companion to forge.components.render_components: the
-# deploy-as-data env main.k expands its workloads from
-# components_gen.json (via render_components) and concatenates this
+# This is the companion to forge.workloads.render_workloads: the
+# env main.k expands its workloads from the declarations it imports (via
+# render_workloads) and concatenates this
 # helper for the env-owned support resources (the project's ingress
 # topology; per-env app config rides each workload's env via
-# config_projection.appConfigEnvMap, not a standalone resource here).
-# Namespace + network policies are owned by render_components, so they
+# config_gen.appConfigEnvMap, not a standalone resource here).
+# Namespace + network policies are owned by render_workloads, so they
 # are deliberately omitted here to avoid duplication.
 render_support = lambda bundle: Bundle -> [any] {
     _ns = bundle.cluster_target.namespace

@@ -14,6 +14,7 @@ Use this skill whenever you need to introduce a new network-facing service, inte
 | A new network-facing API (Connect RPC)       | `forge scaffold service <name>`     | Proto definition, generated stubs, Go service skeleton |
 | A background worker                          | `forge scaffold worker <name>`      | Worker with Start/Stop lifecycle |
 | A cron-scheduled worker                      | `forge scaffold worker <name> --kind cron --schedule "..."` | Worker with cron scheduler |
+| A one-shot step that must finish before something else starts | declare a `kind = "job"` workload in `deploy/kcl/<env>/main.k` (see below) | Ordering primitive — no scaffold needed |
 | An internal Go package with interface contract | `forge package new <name>`   | Package directory with contract interface and default implementation |
 | A Next.js web frontend                       | `forge scaffold frontend <name>`    | Next.js app wired into the project |
 | A React Native mobile frontend               | `forge scaffold frontend <name> --kind mobile` | Expo app with Connect-web transport |
@@ -21,6 +22,54 @@ Use this skill whenever you need to introduce a new network-facing service, inte
 ## The fast path: scaffold everything the protos imply
 
 The per-component commands above are the granular path. When you author the proto directly, there is a one-command batch alternative: mark each entity message with a leading `// forge:entity` comment, add your custom RPCs, then run **`forge scaffold`**. It births every marked entity (missing CRUD quintet injected + owned create-table migration) and runs generate, which emits a pb-through handler stub for every custom RPC — in one visible, phased run (`--dry-run` plans; a re-run with nothing missing is a clean no-op). In dev the app boots alive: `forge run` auto-seeds a fresh DB from the applied schema. The entity/seed halves live in the `db` skill, the pb-through RPC handlers in `api`, and the standalone domain package (when you extract one) in `service-layer` / `contracts`.
+
+## One-shot steps: the `job` workload kind
+
+When something must **run once to completion before something else starts** —
+register an OAuth client against the IdP, provision a bucket, load a fixture —
+that is a `job`. Every other workload kind is long-running: `service` /
+`worker` / `operator` run forever, `cron` runs on a schedule forever, and a
+`tool` is never scheduled at all. `job` is the one that ends.
+
+Declare it in `deploy/kcl/<env>/main.k`, where the rest of the per-env deploy
+shape lives — ordering is a relation between workloads in ONE environment, so
+it belongs to the env rather than the shared declaration:
+
+```kcl
+import forge.workloads as fw
+import ..workloads as wl
+
+_provision = fw.Workload {
+    name = "provision-idp"
+    kind = "job"
+    image = "myproj"
+    command = ["/app/myproj", "provision-idp"]
+    before = ["api"]          # `api` does not start until this exits 0
+}
+
+_declared = wl.ALL + [_provision]
+```
+
+`before` is the ordering declaration and it is the point — a one-shot with no
+ordering is just a cron that fires once. It lowers honestly to each target:
+
+| target | lowering |
+| ------ | -------- |
+| Kubernetes | an **init container** on each workload named in `before`. This is the only ordering k8s enforces itself, so it holds under `kubectl apply`, Argo CD, Flux and `forge env deploy` alike. A gating job renders **no** standalone `Job` object — that would run the command a second time, unordered, which is the race `before` exists to remove. |
+| Kubernetes, `before` empty | a standalone `batch/v1` Job. Nothing waits on it, and nothing claims to. |
+| docker-compose | a service with `restart: "no"`, plus `depends_on: {<job>: {condition: service_completed_successfully}}` on each dependent. Compose enforces this natively. Render it with `fw.compose_fragment(workloads, image)`. |
+| host (`forge run` / `--host-only`) | the runner executes the command, waits for exit 0, and only then launches the dependents. Declare it as a `forge.OneShotJob` in the bundle's `jobs = [...]`. Fail-closed: a job that exits non-zero stops the up. |
+
+**The job's command must be idempotent.** The k8s lowering fans it out to one
+init container per dependent, and init containers re-run on every pod start,
+every replica and every restart. That is the same contract the deploy-time
+migration step already keeps (golang-migrate takes a postgres advisory lock),
+and a one-shot that is not safe to repeat is unsafe under any retrying
+orchestrator.
+
+Things forge rejects at load time rather than at 3am: a `before` naming a
+component that does not exist, a job with no `command`, a job carrying a
+`schedule` (use `kind = "cron"`), and — on the host path — a cycle in the job graph.
 
 ## Wiring Cycle
 

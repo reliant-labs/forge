@@ -7,7 +7,7 @@ generated `cmd/<bin>/cmd/serve.go` drives:
 ```
 OpenInfra    (internal/app/providers.go — yours, opens DB/NATS/clients)
   → NewComponents (internal/app/compose.go — generated, EXPLICIT inline wiring)
-  → mount/supervise via internal/app/mounts_services.go + lifecycle.go
+  → mount/supervise via internal/app/mounts_services_gen.go + lifecycle.go
   → serverkit.Run
 ```
 
@@ -17,9 +17,14 @@ field type — no string-keyed name match, no hidden construction order.
 
 ## What lives under pkg/app
 
-- `testing.go` (generated) — the per-component test harness (below).
 - `migrate.go` (generated) — embedded-migration support (`AutoMigrate`).
 - `CONVENTIONS.md` (this file).
+
+Note there is no `testing.go` here any more. It was a non-test `.go` file that
+imported `testing`, and `cmd/<proj>` imports `pkg/app` — so every project
+linked package `testing` (and the flags it registers in `init()`) into its
+production binary. The harness now lives beside each component as a
+`_test.go` file; see "Test wiring" below.
 
 To change WHAT fills a component's `Deps` field, edit
 `internal/app/providers.go` (the owned `Infra` + `OpenInfra`). A
@@ -61,9 +66,30 @@ configuration, not collaborators. Declare a config block in
 
 ## Test wiring
 
-`pkg/app/testing.go` emits per-component `NewTest<Svc>(t, ...opts)`
-factories. Tests construct `Deps` directly (filling in only the fields
-they care about; defaults flow in for the bare-Deps trio) and call
+Each component gets its own generated `helpers_gen_test.go`, in that
+component's directory and package — e.g.
+`internal/handlers/order/helpers_gen_test.go`, `package order`. It emits
+`NewTest<Svc>(t, ...opts)`. Tests construct `Deps` directly (filling in only
+the fields they care about; defaults flow in for the bare-Deps trio) and call
 `New` — the production DI graph is bypassed in tests so each test stays
-self-contained. Use `app.With<Svc>Deps(deps)` to override the rich deps.
+self-contained. Use `With<Svc>Deps(deps)` to override the rich deps.
+
+Two properties of that placement are load-bearing:
+
+- The `_test.go` **suffix** is what keeps package `testing` out of the
+  production binary. The toolchain compiles these files only into the
+  package's test binary, so `go list -deps ./cmd/<proj>` never contains
+  `testing`.
+- The **package clause** is the component's own (`package order`), not
+  `order_test`. Go compiles a package's in-package `_test.go` files INTO the
+  package under test, and an external `order_test` package then imports that
+  augmented package — so the helpers are usable from BOTH internal and
+  external test files in that directory, and from nowhere else.
+
+Typed entity factories (`New<Entity>(t, db, …)`) land beside the handler whose
+CRUD RPCs own that entity, as `internal/handlers/<svc>/factories_gen_test.go` —
+same package clause, same visibility rule as the harness above. Tests in that
+directory call `NewItem(t, db)` unqualified; a test elsewhere drives the entity
+through its RPCs rather than seeding rows behind them.
+
 See the `testing/patterns` skill for the canonical patterns.

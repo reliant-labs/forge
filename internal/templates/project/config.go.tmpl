@@ -9,10 +9,17 @@
 // + `forge generate`; the loader reads the field's (forge.v1.config)
 // annotation at runtime — no Go codegen per field.
 //
+{{- if .RootConfigMessage}}
 //   - Config is a type ALIAS to the generated proto message
-//     (gen/config/v1.AppConfig), so every `*config.Config` reference across
+//     (gen/config/v1.{{.RootConfigMessage}}), so every `*config.Config` reference across
 //     the tree keeps compiling while the value carries proto semantics.
-//   - RegisterFlags / Load wrap the library, typed to AppConfig.
+//   - RegisterFlags / Load wrap the library, typed to {{.RootConfigMessage}}.
+{{- else}}
+//   - There is NO root Config type: every config message in this project
+//     carries a (forge.v1.binary_config) annotation, so each binary has its
+//     own type, flags and env surface and there is no project-global config
+//     to alias. See the per-binary section below.
+{{- end}}
 //   - Mode / Validate are FREE FUNCTIONS over the message
 //     (re-exported from the library) — never methods on a generated struct.
 //     They key off field ANNOTATIONS (role=MODE, allowed_values,
@@ -26,12 +33,12 @@ import (
 
 	configv1 "{{.Module}}/gen/config/v1"
 )
-
+{{if .RootConfigMessage}}
 // Config IS the application configuration: a type alias to the proto message
 // generated from proto/config/v1/config.proto. Holding a *config.Config is
-// holding a *configv1.AppConfig — there is no second struct to drift from it.
-type Config = configv1.AppConfig
-
+// holding a *configv1.{{.RootConfigMessage}} — there is no second struct to drift from it.
+type Config = configv1.{{.RootConfigMessage}}
+{{end}}
 // Mode is the typed runtime mode (production/development), re-exported from
 // the library so callers spell it config.Mode. The zero value is production.
 type Mode = forgeconfig.RuntimeMode
@@ -42,7 +49,7 @@ const (
 	// ModeDevelopment enables local-dev permissiveness. Never deployed.
 	ModeDevelopment = forgeconfig.ModeDevelopment
 )
-
+{{if .RootConfigMessage}}
 // RegisterFlags registers one CLI flag per config-bound field (and nested
 // config-block leaf) that carries a `flag:` annotation, with the annotated
 // name, default, and description. Sensitive fields are skipped (env/Secret
@@ -54,7 +61,7 @@ const (
 // never an operator/runtime condition. Failing loud at command construction
 // surfaces the proto bug immediately rather than shipping a broken binary.
 func RegisterFlags(cmd *cobra.Command) {
-	if err := forgeconfig.RegisterFlags(cmd, &configv1.AppConfig{}); err != nil {
+	if err := forgeconfig.RegisterFlags(cmd, &configv1.{{.RootConfigMessage}}{}); err != nil {
 		panic("config: RegisterFlags: " + err.Error())
 	}
 }
@@ -64,7 +71,7 @@ func RegisterFlags(cmd *cobra.Command) {
 // nested config blocks. Malformed values abort startup. Sensitive fields
 // resolve from env / Secret mount only.
 func Load(cmd *cobra.Command) (*Config, error) {
-	return forgeconfig.LoadTyped[*configv1.AppConfig](cmd)
+	return forgeconfig.LoadTyped[*configv1.{{.RootConfigMessage}}](cmd)
 }
 
 // ModeOf derives the runtime mode from the field tagged role=MODE.
@@ -75,3 +82,75 @@ func ModeOf(cfg *Config) Mode { return forgeconfig.Mode(cfg) }
 // string-enum checks). Annotation/TYPE-driven — never keyed on field names.
 // Called by the server entrypoint after Load, before the listener binds.
 func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
+{{- end}}
+{{- if .BinaryConfigs}}
+
+// ── Per-binary configs ────────────────────────────────────────────────────
+//
+// Each config message below carries a (forge.v1.binary_config).binary
+// annotation naming the cmd/<name> whose process loads it, so each binary
+// has its OWN type, flags and env surface. A field on one binary's config is
+// invisible to every other binary — including its secrets, which is why each
+// workload's Deployment carries only the env vars its own process reads.
+//
+// Shared DEFINITIONS stay shared: a config that composes a block (the
+// BaseConfig convention) gets that block's leaves too. Those are separate
+// VALUES on separate processes — two binaries each having a log level is not
+// duplication, and changing one does not change the other. Deleting a field
+// from one binary's message removes it from that binary alone.
+//
+// Flag homes follow the split, which is cobra used as designed rather than
+// routed around:
+//
+//   - Register<Bin>SharedFlags puts the composed block's leaves on the ROOT
+//     command as PERSISTENT flags, so `app --log-level=debug <bin>` works and
+//     one definition serves every subcommand.
+//   - Register<Bin>Flags puts the binary's OWN leaves on its subcommand as
+//     LOCAL flags, so `app <bin> --help` lists exactly what it reads and two
+//     binaries may each declare a --port without colliding.
+//
+// Load<Bin> resolves BOTH halves in one call: cobra merges inherited
+// persistent flags into a subcommand's flag set, so precedence is unchanged
+// (flags > env > config file > proto defaults).
+{{- range .BinaryConfigs}}
+
+// {{.MessageName}} is the {{.Binary}} binary's configuration.
+type {{.MessageName}} = configv1.{{.MessageName}}
+{{- if .SharedFields}}
+
+// Register{{.MessageName}}SharedFlags registers the shared config block(s)
+// {{.MessageName}} composes as PERSISTENT flags on cmd — call it on the ROOT
+// command. Also registers the --config file flag.
+func Register{{.MessageName}}SharedFlags(cmd *cobra.Command) {
+	if err := forgeconfig.RegisterSharedFlags(cmd, &configv1.{{.MessageName}}{}); err != nil {
+		panic("config: Register{{.MessageName}}SharedFlags: " + err.Error())
+	}
+}
+{{- end}}
+
+// Register{{.MessageName}}Flags registers the leaves {{.MessageName}}
+// declares itself as LOCAL flags on cmd — call it on the {{.Binary}}
+// subcommand. Sensitive fields are skipped (env / Secret only).
+func Register{{.MessageName}}Flags(cmd *cobra.Command) {
+	if err := forgeconfig.RegisterOwnFlags(cmd, &configv1.{{.MessageName}}{}); err != nil {
+		panic("config: Register{{.MessageName}}Flags: " + err.Error())
+	}
+}
+
+// Load{{.MessageName}} populates the {{.Binary}} binary's config from CLI
+// flags > environment variables > config file > proto defaults, including the
+// shared block(s) it composes.
+func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
+	return forgeconfig.LoadTyped[*configv1.{{.MessageName}}](cmd)
+}
+
+// ModeOf{{.MessageName}} derives the runtime mode from the field tagged
+// role=MODE on the {{.Binary}} binary's config (typically carried by the
+// shared block it composes).
+func ModeOf{{.MessageName}}(cfg *{{.MessageName}}) Mode { return forgeconfig.Mode(cfg) }
+
+// Validate{{.MessageName}} runs the same cross-field / closed-set invariants
+// Validate runs, against the {{.Binary}} binary's own config.
+func Validate{{.MessageName}}(cfg *{{.MessageName}}) error { return forgeconfig.Validate(cfg) }
+{{- end}}
+{{- end}}

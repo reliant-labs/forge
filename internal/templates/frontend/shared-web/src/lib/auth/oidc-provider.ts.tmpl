@@ -49,9 +49,9 @@
 //
 // Everything else — the authorization endpoint, the token endpoint, the
 // sign-out endpoint — is read from the issuer's OIDC discovery document, so
-// nothing in this file names a provider. Auth0, Clerk, Keycloak, Zitadel,
-// Okta and Logto all work by changing the issuer and client id, with no code
-// change. Register `<origin>/auth/callback` as an allowed redirect URI with
+// nothing in this file names a provider. Auth0, Clerk, Keycloak, Zitadel and
+// Okta all work by changing the issuer and client id, with no code change.
+// Register `<origin>/auth/callback` as an allowed redirect URI with
 // whichever one you use.
 
 import {
@@ -60,6 +60,7 @@ import {
   createVerifier,
   discover,
   exchangeCode,
+  fetchUserinfo,
   OAuthError,
   refreshToken as redeemRefreshToken,
   statesMatch,
@@ -78,22 +79,60 @@ import {
   updateSessionTokens,
 } from "./oidc-storage";
 import { createSessionAuthProvider } from "./session-provider";
-
+{{if .HasTypedConfig}}
+import { loadConfig } from "@/lib/config_gen";
+{{end}}
 import type { AuthProvider, AuthUser } from "./provider";
 
-{{if eq .Platform "vite-spa"}}const env = {
+{{if .HasTypedConfig}}// OIDC settings come from the generated, typed config module — which reads
+// them from the runtime document KCL renders for this environment, NOT from
+// a build-time-inlined env var and NOT from any .env file.
+//
+// That indirection is what keeps the two halves of auth honest. The issuer
+// the browser signs in against and the issuer the backend validates are ONE
+// declared fact, projected to both; they cannot drift into the failure this
+// file's header describes (sign-in succeeds, every RPC 401s).
+//
+// Exposed under the same `env` name the build-time branch below uses, so
+// every read site in this file is identical either way — only the SOURCE of
+// the values changes. Defined as a getter-backed object rather than a plain
+// const because loadConfig() throws on invalid config, and evaluating that
+// at module scope would turn a fixable misconfiguration into a blank page
+// with a stack trace pointing at an import.
+const env = {
+  get issuer(): string | undefined {
+    return loadConfig().OIDC_ISSUER || undefined;
+  },
+  get clientId(): string | undefined {
+    return loadConfig().OIDC_CLIENT_ID || undefined;
+  },
+  get redirectUri(): string | undefined {
+    {{if .HasRedirectURI}}return loadConfig().OIDC_REDIRECT_URI || undefined;{{else}}return undefined;{{end}}
+  },
+  get scopes(): string | undefined {
+    {{if .HasScopes}}return loadConfig().OIDC_SCOPES || undefined;{{else}}return undefined;{{end}}
+  },
+  get resource(): string | undefined {
+    {{if .HasResource}}return loadConfig().OIDC_RESOURCE || undefined;{{else}}return undefined;{{end}}
+  },
+  get mockMode(): string | undefined {
+    {{if .HasMockAPI}}return loadConfig().MOCK_API || undefined;{{else}}return undefined;{{end}}
+  },
+};{{else}}{{if eq .Platform "vite-spa"}}const env = {
   issuer: import.meta.env.VITE_OIDC_ISSUER as string | undefined,
   clientId: import.meta.env.VITE_OIDC_CLIENT_ID as string | undefined,
   redirectUri: import.meta.env.VITE_OIDC_REDIRECT_URI as string | undefined,
   scopes: import.meta.env.VITE_OIDC_SCOPES as string | undefined,
+  resource: import.meta.env.VITE_OIDC_RESOURCE as string | undefined,
   mockMode: import.meta.env.VITE_MOCK_API as string | undefined,
 };{{else}}const env = {
   issuer: process.env.NEXT_PUBLIC_OIDC_ISSUER,
   clientId: process.env.NEXT_PUBLIC_OIDC_CLIENT_ID,
   redirectUri: process.env.NEXT_PUBLIC_OIDC_REDIRECT_URI,
   scopes: process.env.NEXT_PUBLIC_OIDC_SCOPES,
+  resource: process.env.NEXT_PUBLIC_OIDC_RESOURCE,
   mockMode: process.env.NEXT_PUBLIC_MOCK_API,
-};{{end}}
+};{{end}}{{end}}
 
 /**
  * How early to refresh, in milliseconds before the access token expires.
@@ -118,6 +157,24 @@ export interface OidcConfig {
   clientId: string;
   redirectUri: string;
   scopes: string[];
+  /**
+   * The API these tokens are FOR — the RFC 8707 `resource` indicator, and the
+   * value the backend enforces as its audience (`jwt_audience`). Empty when
+   * the provider does not need one.
+   *
+   * This is not decoration. Several providers (Auth0 among them) mint an
+   * OPAQUE access token unless the client names a registered API, and an
+   * opaque token can never validate against a JWKS — the backend rejects it
+   * with "token contains an invalid number of segments" while sign-in itself
+   * appears to have worked perfectly.
+   *
+   * Zitadel (the scaffolded dev IdP) decides it per APPLICATION instead:
+   * an app registered with accessTokenType JWT mints JWTs audienced to its
+   * own client id, and one left on the default mints opaque tokens no
+   * `resource` parameter can fix. Bringing the environment up registers it
+   * the right way and sets this to the same value as `jwt_audience`.
+   */
+  resource: string;
 }
 
 /**
@@ -167,6 +224,10 @@ export function readOidcConfig(): OidcConfig | null {
     scopes: (env.scopes?.trim() || "openid profile email offline_access").split(
       /\s+/,
     ),
+    // No default: an invented indicator is worse than none. A provider that
+    // does not use resource indicators ignores the parameter; one that does
+    // rejects an indicator it has no registered API for.
+    resource: env.resource?.trim() ?? "",
   };
 }
 
@@ -182,10 +243,15 @@ export function readOidcConfig(): OidcConfig | null {
  * `refresh_token` and a granted `scope` that quietly dropped it. Nothing
  * errors. The session then dies an hour later with no clue as to why.
  *
- * Verified against Logto 1.41.0 (whose embedded oidc-provider does exactly
- * this): with `openid profile email offline_access` and no prompt, the token
- * response carried NO refresh token and the granted scope came back as
- * `openid profile email`. Adding `prompt=consent` produced the refresh token.
+ * Providers differ, and the difference is invisible until the session dies.
+ * Zitadel v4.16.2 (the scaffolded dev IdP) is LENIENT — verified: with
+ * `openid profile email offline_access` and no prompt at all, the token
+ * response still carried a refresh token. Providers built on node
+ * oidc-provider follow §11 to the letter and silently drop it.
+ *
+ * Sending the prompt therefore costs nothing where it is not required and is
+ * the difference between a working and a mysteriously expiring session where
+ * it is. Do not delete it because the dev IdP tolerates its absence.
  *
  * So the prompt is DERIVED from the scopes here rather than being a second
  * setting a user must know to turn on. Requesting offline_access without the
@@ -214,6 +280,21 @@ export function promptFor(
  * job — it validates the same token's signature against the issuer's JWKS on
  * every RPC. Never gate anything that matters on a value derived here.
  */
+// Profile claims fetched from the userinfo endpoint, keyed by subject.
+//
+// An id_token is not required to carry name or email — the scaffolded dev IdP
+// returns `sub` alone — so an app that reads only the token shows a raw
+// subject identifier where a name belongs. These are fetched once per session
+// and merged over the token's claims.
+let userinfoClaims: Record<string, unknown> | null = null;
+let userinfoSub = "";
+
+/** Drops cached profile claims. Called whenever the session changes. */
+function clearUserinfo(): void {
+  userinfoClaims = null;
+  userinfoSub = "";
+}
+
 function userFromIdToken(idToken: string | null): AuthUser | null {
   if (!idToken) {
     return null;
@@ -234,15 +315,29 @@ function userFromIdToken(idToken: string | null): AuthUser | null {
     if (!sub) {
       return null;
     }
+    // Profile claims from userinfo win: they are the ones the provider
+    // actually populated. Only merged for the SAME subject, so a stale cache
+    // from a previous session can never label a different user.
+    const merged: Record<string, unknown> =
+      userinfoClaims && userinfoSub === sub
+        ? { ...claims, ...userinfoClaims }
+        : claims;
+
     return {
       id: sub,
-      email: typeof claims["email"] === "string" ? claims["email"] : undefined,
+      email: typeof merged["email"] === "string" ? merged["email"] : undefined,
       name:
-        typeof claims["name"] === "string"
-          ? claims["name"]
-          : typeof claims["preferred_username"] === "string"
-            ? claims["preferred_username"]
+        typeof merged["name"] === "string"
+          ? merged["name"]
+          : typeof merged["preferred_username"] === "string"
+            ? merged["preferred_username"]
             : undefined,
+      // The remaining claims, verbatim. An app needing an issuer-specific one
+      // (org id, role, plan) reads it here instead of decoding the token
+      // again by hand — which is what every app did before, usually without
+      // the padding fix above. Frozen because it is a view of a token, not
+      // app state: mutating it would change nothing on the wire.
+      claims: Object.freeze(merged),
     };
   } catch {
     return null;
@@ -325,13 +420,89 @@ function onRefreshFailed(cause: unknown): void {
  * would add a round trip to every sign-in for a document that does not
  * change.
  */
+/**
+ * Loads `url` in a hidden iframe and resolves with the callback's query string
+ * once the frame lands back on this origin — or null if it does not.
+ *
+ * The frame is same-origin ONLY at the end of the round trip, which is what
+ * makes reading `contentWindow.location` legal: while it sits on the IdP,
+ * every access throws a cross-origin SecurityError, so the poll simply keeps
+ * waiting. That is also why this polls instead of using the `load` event —
+ * `load` fires for the IdP's own page too, where nothing can be read.
+ *
+ * Always resolves, never rejects: a silent check that cannot complete means
+ * "no session", which is not an error condition for the caller.
+ */
+async function runSilentAuthorize(url: string): Promise<{ search: string } | null> {
+  if (typeof document === "undefined") return null;
+
+  return new Promise((resolve) => {
+    const frame = document.createElement("iframe");
+    frame.setAttribute("aria-hidden", "true");
+    frame.setAttribute("title", "silent authentication");
+    frame.style.display = "none";
+
+    let settled = false;
+    const finish = (result: { search: string } | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearInterval(poll);
+      window.clearTimeout(timer);
+      frame.remove();
+      resolve(result);
+    };
+
+    // A provider that never redirects back would otherwise hold the app on a
+    // blank frame forever. Five seconds is far past a cookie-check round trip
+    // and well short of a user noticing.
+    const timer = window.setTimeout(() => finish(null), SILENT_AUTH_TIMEOUT_MS);
+
+    const poll = window.setInterval(() => {
+      let search: string | null = null;
+      try {
+        // Throws while the frame is on the IdP. Only a frame that has come
+        // BACK to this origin can be read, which is exactly the state worth
+        // acting on.
+        const loc = frame.contentWindow?.location;
+        if (loc && loc.origin === window.location.origin && loc.pathname === CALLBACK_PATH) {
+          search = loc.search;
+        }
+      } catch {
+        return; // still cross-origin: keep waiting
+      }
+      if (search !== null) finish({ search });
+    }, 50);
+
+    frame.src = url;
+    document.body.appendChild(frame);
+  });
+}
+
+/** How long a silent check may take before it is treated as "no session". */
+const SILENT_AUTH_TIMEOUT_MS = 5000;
+
 export function createOidcAuthProvider(config: OidcConfig): AuthProvider {
   const listeners = new Set<(user: AuthUser | null) => void>();
   // Seeded from whatever session already exists. A provider constructed
   // AFTER completeLogin() ran — which is what happens when the callback
   // route mounts a fresh tree — must not report signed out.
   let current: AuthUser | null = userFromIdToken(getIdToken());
-  let loading = false;
+  // ── WHY THIS STARTS TRUE ──────────────────────────────────────────────
+  //
+  // Tokens live in memory only (see oidc-storage.ts — a deliberate trade:
+  // nothing persisted is nothing exfiltratable). The cost is that a full page
+  // load starts with no token even for a user who signed in a second ago, and
+  // the IdP's own session cookie is the only thing that still knows better.
+  //
+  // Reporting `isLoading: false` before asking it would be a lie with real
+  // consequences: the route guard reads exactly that, so a signed-in user who
+  // pressed reload would be bounced to the sign-in page and have to click
+  // through a flow they already completed. Starting in the loading state and
+  // resolving it in restoreSession() below is what makes reload survivable.
+  //
+  // With no IdP configured this is unreachable — that path uses the mock
+  // provider, which never constructs this one.
+  let loading = true;
   let metadataPromise: Promise<ProviderMetadata> | null = null;
 
   const metadata = (): Promise<ProviderMetadata> => {
@@ -362,11 +533,15 @@ export function createOidcAuthProvider(config: OidcConfig): AuthProvider {
   // queue because JavaScript is single-threaded: the assignment below happens
   // before any caller can observe a gap.
   //
-  // NOTE for anyone tempted to "improve" this: providers often allow a few
-  // seconds' grace in which a consumed token is still accepted (Logto allows
-  // 3), so REMOVING this will usually appear to work. It fails only when a
-  // straggler lands after the window — under load, in production — and then it
-  // fails by destroying the session rather than by erroring visibly.
+  // NOTE for anyone tempted to "improve" this: some providers allow a few
+  // seconds' grace in which a consumed token is still accepted, so REMOVING
+  // this can appear to work for a while. Zitadel v4.16.2 grants NO grace —
+  // verified: a replayed refresh token is rejected immediately with
+  // Errors.OIDCSession.RefreshTokenInvalid, so the second of two concurrent
+  // refreshes simply fails. (It does not revoke the whole grant, so the
+  // newest token survives; harsher providers treat the replay as theft and
+  // sign the user out entirely.) Either way the coalescing is what keeps
+  // ten concurrent RPCs from racing.
   let refreshInFlight: Promise<string | null> | null = null;
 
   /**
@@ -398,6 +573,10 @@ export function createOidcAuthProvider(config: OidcConfig): AuthProvider {
           endpoint: meta.tokenEndpoint,
           clientId: config.clientId,
           refreshToken: stored,
+          // The SAME resource the original exchange named. Dropping it here
+          // would hand back an opaque token an hour into the session — a
+          // failure that presents as expiry and is not.
+          resource: config.resource || undefined,
         });
         // ROTATION: result.refreshToken is what to present NEXT — the rotated
         // token when the provider sent one, otherwise the one just used. It is
@@ -427,6 +606,7 @@ export function createOidcAuthProvider(config: OidcConfig): AuthProvider {
         // See onRefreshFailed below for the POLICY question (redirect vs.
         // notify) that this scaffold leaves to you.
         clearSession();
+        clearUserinfo();
         emit(null);
         onRefreshFailed(cause);
         return null;
@@ -441,13 +621,121 @@ export function createOidcAuthProvider(config: OidcConfig): AuthProvider {
     return refreshInFlight;
   };
 
+  // ── SILENT RESTORE ────────────────────────────────────────────────────
+  //
+  // Ask the IdP, without showing anything, whether this browser still has a
+  // session — and if it does, get a token for it. This is what makes RELOAD
+  // work when the token itself is deliberately not persisted.
+  //
+  // `prompt=none` is the OIDC-standard form of "answer from the session you
+  // already have, and if you cannot, fail instead of asking the user"
+  // (Core §3.1.2.1). The IIdP either redirects back with a code — same PKCE
+  // exchange as a normal login — or with `error=login_required`, which is a
+  // definitive "nobody is signed in here" and not a fault.
+  //
+  // It runs in a HIDDEN IFRAME rather than by navigating. A top-level
+  // navigation would blank the page on every load for a check that usually
+  // takes a few hundred milliseconds, and would lose the user's scroll
+  // position and in-page state even when it succeeds.
+  //
+  // Third-party-cookie blocking is the known limit: the iframe's request to
+  // the IdP carries the session cookie only where that is permitted. In the
+  // dev loop, app and IdP are both localhost, so it works. Where it does not,
+  // this fails exactly like `login_required` — the user signs in again, which
+  // is precisely the behaviour that existed before this function.
+  const restoreSession = async (): Promise<void> => {
+    try {
+      // Already holding a token (the callback route just completed a login
+      // and mounted a fresh tree): nothing to restore.
+      if (getAccessToken() !== null) return;
+      // The callback route is mid-exchange; a second flow would race it.
+      if (window.location.pathname === CALLBACK_PATH) return;
+
+      const meta = await metadata();
+      const verifier = createVerifier();
+      const state = createState();
+      const { pathname, search } = window.location;
+      storePendingLogin({ verifier, state, returnTo: `${pathname}${search}` });
+
+      const url = buildAuthorizeUrl({
+        endpoint: meta.authorizationEndpoint,
+        clientId: config.clientId,
+        redirectUri: config.redirectUri,
+        scopes: config.scopes,
+        state,
+        challenge: await verifier.challenge(),
+        extra: {
+          ...(config.resource ? { resource: config.resource } : {}),
+          // NOT promptFor() here. That derives `prompt=consent` from
+          // `offline_access`, and `none` cannot be combined with any other
+          // value — OIDC Core §3.1.2.1 makes `none` mutually exclusive. The
+          // trade is that a silently-restored session may come back without a
+          // refresh token; it still has a valid access token, and the next
+          // interactive login re-establishes one.
+          prompt: "none",
+        },
+      });
+
+      const code = await runSilentAuthorize(url);
+      if (code) await completeLogin(config, meta, code.search);
+    } catch {
+      // Every failure here means the same thing to the app: no session could
+      // be restored without asking the user. `login_required`, a blocked
+      // cookie, a timeout, a provider that refuses framing — all resolve to
+      // "signed out", which is the state the app was already in.
+    } finally {
+      // Whatever happened, the question has been answered, so the guard can
+      // stop waiting. Leaving this set would hang the app on a blank frame.
+      loading = false;
+      emit(userFromIdToken(getIdToken()));
+    }
+  };
+
   // The session is module-level state that `completeLogin()` writes without
   // going through this closure, so the provider LISTENS rather than being
   // notified by its caller. That is what makes the callback route's only
   // obligation "call completeLogin and navigate".
   onSessionChange(() => {
     emit(userFromIdToken(getIdToken()));
+    void hydrateProfile();
   });
+
+  // Fetch the profile claims the id_token did not carry, then re-emit so
+  // anything showing the user swaps the subject identifier for a name.
+  //
+  // Deliberately not awaited anywhere: the session is already valid without
+  // it, and blocking sign-in on a decoration would trade a cosmetic problem
+  // for a functional one.
+  async function hydrateProfile(): Promise<void> {
+    const token = getAccessToken();
+    const user = userFromIdToken(getIdToken());
+    if (!token || !user) {
+      clearUserinfo();
+      return;
+    }
+    if (userinfoSub === user.id && userinfoClaims) return; // already have it
+
+    try {
+      const meta = await metadata();
+      const claims = await fetchUserinfo(meta.userinfoEndpoint, token);
+      if (!claims) return;
+      // Re-read: an await is a window in which the user may have signed out
+      // or signed in as someone else, and labelling THIS session with THOSE
+      // claims is the one outcome worse than showing a raw id.
+      const nowUser = userFromIdToken(getIdToken());
+      if (!nowUser || nowUser.id !== user.id) return;
+      userinfoClaims = claims;
+      userinfoSub = user.id;
+      emit(userFromIdToken(getIdToken()));
+    } catch {
+      // Discovery or the endpoint is unavailable — keep the id.
+    }
+  }
+
+  // Fire the restore attempt at construction. Not awaited: the provider must
+  // be usable immediately, and `loading` is what tells the app the answer is
+  // still coming.
+  void restoreSession();
 
   return {
     // Reads the CURRENT token on every call rather than caching one: the
@@ -487,11 +775,37 @@ export function createOidcAuthProvider(config: OidcConfig): AuthProvider {
         // Where to land after the round trip. Captured BEFORE the redirect
         // because it is the page the user was actually on; the callback URL
         // cannot know it.
-        const returnTo =
-          window.location.pathname === CALLBACK_PATH ||
-          window.location.pathname === SIGN_IN_PATH
-            ? "/"
-            : `${window.location.pathname}${window.location.search}`;
+        //
+        // On the sign-in page the current path is NOT the answer — it is the
+        // waypoint. The page the user actually asked for is in the
+        // `returnTo` query param, which is what the route guard puts there
+        // when it bounces an anonymous visitor. Reading it here is what makes
+        // a deep link survive the whole round trip; falling back to "/" keeps
+        // a direct visit to the sign-in page landing somewhere sensible.
+        const returnTo = (() => {
+          const { pathname, search } = window.location;
+          if (pathname === CALLBACK_PATH) return "/";
+          if (pathname === SIGN_IN_PATH) {
+            const requested = new URLSearchParams(search).get("returnTo");
+            // Same-origin, absolute-path only: a `returnTo` is attacker-
+            // supplied input, and handing it to location.assign unchecked is
+            // an open redirect. `//evil.com` is a protocol-relative URL, so
+            // the second character matters as much as the first.
+            //
+            // The null check is spelled out rather than written as
+            // `requested?.startsWith("/")`: optional chaining yields
+            // `boolean | undefined`, which is not a narrowing form, so
+            // `requested` stayed `string | null` at the return below and
+            // tsc rejected it (TS2322). An explicit `!== null` conjunction
+            // is what engages the aliased-condition narrowing.
+            const safe =
+              requested !== null &&
+              requested.startsWith("/") &&
+              !requested.startsWith("//");
+            return safe ? requested : "/";
+          }
+          return `${pathname}${search}`;
+        })();
 
         storePendingLogin({ verifier, state, returnTo });
 
@@ -505,7 +819,15 @@ export function createOidcAuthProvider(config: OidcConfig): AuthProvider {
             challenge: await verifier.challenge(),
             // DERIVED from the scopes rather than configured separately, so
             // the two cannot drift apart. See promptFor().
-            extra: promptFor(config.scopes),
+            //
+            // `resource` rides along here because the provider decides the
+            // access token's FORMAT when it issues the code, not when the
+            // code is redeemed — asking only at the token endpoint is too
+            // late and yields an opaque token.
+            extra: {
+              ...promptFor(config.scopes),
+              ...(config.resource ? { resource: config.resource } : {}),
+            },
           }),
         );
       } catch (err) {
@@ -661,6 +983,7 @@ export async function completeLogin(
     redirectUri: config.redirectUri,
     code,
     verifier: pending.verifier,
+    resource: config.resource || undefined,
   });
 
   setSession({

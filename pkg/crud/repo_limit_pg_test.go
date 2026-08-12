@@ -22,7 +22,7 @@ func TestRepoList_DefaultLimit(t *testing.T) {
 	defaultListLimit = 3
 	t.Cleanup(func() { defaultListLimit = orig })
 
-	repo := NewRepo[widget](Spec{Timestamps: true})
+	repo := NewRepo[widget]()
 	for i := 0; i < 5; i++ {
 		if err := repo.Create(ctx, db, &widget{Name: "w"}); err != nil {
 			t.Fatalf("seed Create: %v", err)

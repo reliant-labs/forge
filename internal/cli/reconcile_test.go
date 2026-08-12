@@ -62,17 +62,17 @@ func TestUpScope(t *testing.T) {
 		{
 			"neither -> whole dev loop",
 			false, false,
-			reconcileScope{cluster: true, composeInfra: true, host: true, frontend: true},
+			reconcileScope{cluster: true, infra: true, host: true, frontend: true},
 		},
 		{
 			"--cluster-only -> apply only, no host/frontend",
 			true, false,
-			reconcileScope{cluster: true, composeInfra: true, host: false, frontend: false},
+			reconcileScope{cluster: true, infra: true, host: false, frontend: false},
 		},
 		{
 			"--host-only -> host+frontend, no cluster build/deploy",
 			false, true,
-			reconcileScope{cluster: false, composeInfra: false, host: true, frontend: true},
+			reconcileScope{cluster: false, infra: false, host: true, frontend: true},
 		},
 	}
 	for _, tc := range cases {

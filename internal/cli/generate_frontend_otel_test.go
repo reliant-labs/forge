@@ -38,10 +38,10 @@ func TestGenerateFrontendNav_EmitsOtel(t *testing.T) {
 		t.Fatalf("generateFrontendNav: %v", err)
 	}
 
-	rel := filepath.Join("frontends", "web", "src", "lib", "otel.ts")
+	rel := filepath.Join("frontends", "web", "src", "lib", "otel_gen.ts")
 	body, err := os.ReadFile(filepath.Join(projectDir, rel))
 	if err != nil {
-		t.Fatalf("expected otel.ts after generate, got: %v", err)
+		t.Fatalf("expected otel_gen.ts after generate, got: %v", err)
 	}
 	s := string(body)
 
@@ -82,10 +82,10 @@ func TestGenerateFrontendNav_OtelSelfHealsAfterDeletion(t *testing.T) {
 	if err := generateFrontendNav(cfg, nil, projectDir, nil, cs); err != nil {
 		t.Fatalf("first generateFrontendNav: %v", err)
 	}
-	abs := filepath.Join(projectDir, "frontends", "web", "src", "lib", "otel.ts")
+	abs := filepath.Join(projectDir, "frontends", "web", "src", "lib", "otel_gen.ts")
 	first, err := os.ReadFile(abs)
 	if err != nil {
-		t.Fatalf("read otel.ts: %v", err)
+		t.Fatalf("read otel_gen.ts: %v", err)
 	}
 	if err := os.Remove(abs); err != nil {
 		t.Fatalf("remove otel.ts: %v", err)
@@ -124,12 +124,12 @@ func TestGenerateFrontendNav_OtelOnlyForNextJS(t *testing.T) {
 	}
 
 	for _, fe := range []string{"admin", "mobile"} {
-		abs := filepath.Join(projectDir, "frontends", fe, "src", "lib", "otel.ts")
+		abs := filepath.Join(projectDir, "frontends", fe, "src", "lib", "otel_gen.ts")
 		if _, err := os.Stat(abs); err == nil {
 			t.Errorf("frontends/%s received otel.ts — the Next.js OpenTelemetry wiring depends on packages only the Next.js scaffold installs", fe)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(projectDir, "frontends", "web", "src", "lib", "otel.ts")); err != nil {
-		t.Errorf("frontends/web did not receive otel.ts: %v", err)
+	if _, err := os.Stat(filepath.Join(projectDir, "frontends", "web", "src", "lib", "otel_gen.ts")); err != nil {
+		t.Errorf("frontends/web did not receive otel_gen.ts: %v", err)
 	}
 }

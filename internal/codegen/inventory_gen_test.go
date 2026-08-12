@@ -22,7 +22,7 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateInventory: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "mounts_services.go"))
+	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "mounts_services_gen.go"))
 	if err != nil {
 		t.Fatalf("read inventory: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	for _, want := range []string{
 		// Descriptor TYPE lives in forge/pkg/mountkit/inventory now.
 		`"github.com/reliant-labs/forge/pkg/mountkit/inventory"`,
-		`var Inventory = []inventory.ComponentInfo{`,
+		`var Inventory = []mountinv.ComponentInfo{`,
 		`Name:        "billing",`,
 		`Name:        "user",`,
 		`BaseService: "billing",`,
@@ -95,7 +95,7 @@ func TestGenerateInventory_VersionMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateInventory: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "mounts_services.go"))
+	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "mounts_services_gen.go"))
 	if err != nil {
 		t.Fatalf("read inventory: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestGenerateInventory_VersionMetadata(t *testing.T) {
 }
 
 // TestGenerateInventory_NoServicesEmptyInventory: with no services, the
-// inventory file is STILL emitted as a valid empty []inventory.ComponentInfo. The
+// inventory file is STILL emitted as a valid empty []mountinv.ComponentInfo. The
 // generated cmd/server.go imports internal/app and references app.Inventory
 // unconditionally, so the symbol must exist even on a service-less tree —
 // otherwise the package would be empty and `go mod tidy` would 404 trying to
@@ -125,12 +125,12 @@ func TestGenerateInventory_NoServicesEmptyInventory(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("GenerateInventory: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "mounts_services.go"))
+	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "mounts_services_gen.go"))
 	if err != nil {
 		t.Fatalf("no-services run should still emit mounts_services.go: %v", err)
 	}
 	out := string(data)
-	if !strings.Contains(out, `var Inventory = []inventory.ComponentInfo{`) {
+	if !strings.Contains(out, `var Inventory = []mountinv.ComponentInfo{`) {
 		t.Fatalf("empty inventory should still declare Inventory:\n%s", out)
 	}
 	// No service rows in the empty case.

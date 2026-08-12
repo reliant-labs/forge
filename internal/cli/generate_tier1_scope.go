@@ -99,25 +99,35 @@ func (e tier1OwnerEntry) match(relPath string) bool {
 // the stomp guard fails loudly on drift, preserving the original
 // behavior. As new friction surfaces, add the relevant emitter here.
 var tier1OwnerRegistry = []tier1OwnerEntry{
-	// pkg/app/migrate.go is emitted by stepBootstrapMigrate, gated on
-	// the project having a database driver configured. A project
-	// without a driver shouldn't see the migrate.go drift block its
-	// `forge generate` runs.
-	{exact: "pkg/app/migrate.go", gate: gateMigrateHasDriver},
+	// db/embed.go is emitted by stepBootstrapMigrate, gated on the project
+	// having a database driver configured. A project without a driver
+	// shouldn't see its drift block `forge generate` runs.
+	//
+	// pkg/app/migrate.go used to be listed here beside it. It is no longer
+	// emitted at all — the migration logic moved to pkg/migratekit and the
+	// step retires the on-disk copy — so there is no gate to register.
+	{exact: "db/embed_gen.go", gate: gateMigrateHasDriver},
 
-	// db/embed.go is emitted alongside migrate.go (same step), gated
-	// on the same predicate.
-	{exact: "db/embed.go", gate: gateMigrateHasDriver},
-
-	// pkg/app/app_gen.go (the minimal *App carrier) + pkg/app/testing.go
-	// are emitted by stepAppSubstrate / stepBootstrapTesting. Both are
-	// gated on the project having at least one entrypoint (services,
-	// workers, operators). A pure-CLI project shouldn't see these
+	// pkg/app/app_gen.go (the minimal *App carrier) is emitted by
+	// stepAppSubstrate, gated on the project having at least one entrypoint
+	// (services, workers, operators). A pure-CLI project shouldn't see it
 	// blocking the guard. (The old name-matched DI files — bootstrap.go,
 	// wire_gen.go, services_gen.go — are retired, FORGE_SHAPE_REDESIGN §2;
 	// the live DI lives under internal/app.)
 	{exact: "pkg/app/app_gen.go", gate: gateCodegenHasAnyEntrypoint},
-	{exact: "pkg/app/testing.go", gate: gateCodegenHasAnyEntrypoint},
+
+	// The per-component test harness, emitted by stepBootstrapTesting as one
+	// helpers_gen_test.go per service / internal package (it replaced the
+	// single pkg/app/testing.go, whose `testing` import reached cmd/ through
+	// pkg/app). Same entrypoint gate as before, now expressed per component.
+	{glob: "internal/handlers/*/helpers_gen_test.go", gate: gateCodegenHasAnyEntrypoint},
+	{glob: "internal/*/helpers_gen_test.go", gate: gateCodegenHasAnyEntrypoint},
+
+	// The typed entity factories, now one factories_gen_test.go per handler
+	// package that owns entities (they were a separate importable package,
+	// internal/testfactory, whose non-test .go file imported `testing`).
+	// Gated on codegen + services: a project with no entities never emits it.
+	{glob: "internal/handlers/*/factories_gen_test.go", gate: gateCodegenHasServices},
 
 	// internal/handlers/<svc>/handlers_crud_ops_gen.go is emitted by
 	// stepCRUDHandlers (the Tier-1 projection half of the CRUD split; the
@@ -132,13 +142,18 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// orphans). When the ORM step is gated off (features.orm=false or
 	// no services), absence from WrittenThisRun is uninformative and
 	// the stale sweep must leave the tracked entity code alone.
-	{exact: "internal/db/orm_shared.go", gate: gateORMHasServices},
-	{glob: "internal/db/*_orm.go", gate: gateORMHasServices},
+	{exact: "internal/db/orm_shared_gen.go", gate: gateORMHasServices},
+	{glob: "internal/db/*_orm_gen.go", gate: gateORMHasServices},
 
 	// frontends/<name>/src/hooks/*-hooks.ts is emitted by
 	// stepFrontendHooks. Gated on frontend feature + HasServices
 	// (no services → no proto → nothing to hook).
 	{glob: "frontends/*/src/hooks/*-hooks.ts", gate: gateFrontendHasServices},
+
+	// packages/hooks/src/generated/*-hooks.ts is the same emitter's
+	// workspace-mode output (cfg.IsFrontendWorkspacesEnabled()) — one
+	// shared file per service instead of one per frontend. Same gate.
+	{glob: "packages/hooks/src/generated/*-hooks.ts", gate: gateFrontendHasServices},
 
 	// internal/<pkg>/mock_gen.go is emitted by stepInternalContracts
 	// (gateContractsEnabled). When features.contracts=false the emitter

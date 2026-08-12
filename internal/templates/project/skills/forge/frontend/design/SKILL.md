@@ -15,7 +15,7 @@ Cover, at minimum:
 
 - **Reference material** — Existing design system? A site, app, or Figma to match? A screenshot? **Never invent an aesthetic without user input.** For greenfield or unbranded work, do not start designing until you have one of: a reference, a brand, or an explicit "decide for me" from the user. Starting without any of the three is how you get slop.
 - **Audience and tone** — Internal admin tool? Consumer landing page? Developer docs? The default visual answers diverge.
-- **Variations** — Variations are a deliverable, not a courtesy. When the brief is open-ended ("design an X") or the user wants options, first ask which dimension to vary — layout, visual treatment, copy, or interaction — then produce **2-3 clearly-labeled options** side by side with stable ids (`A` / `B` / `C`) the user can reference in follow-ups ("go with B but use A's header"). Render them with the `variation_grid` layout (`component_library(action="get", name="variation_grid")`) so each option gets a labeled artboard. Do not hand-roll a comparison div.
+- **Variations** — a deliverable, not a courtesy. When the brief is open-ended ("design an X") or the user wants options, first ask which dimension to vary — layout, visual treatment, copy, or interaction — then produce **2-3 clearly-labeled options** side by side with stable ids (`A` / `B` / `C`) the user can reference in follow-ups ("go with B but use A's header"). Render them with the `variation_grid` layout (`component_library(action="get", name="variation_grid")`); do not hand-roll a comparison div.
 - **Fidelity** — Sketch / wireframe / hi-fi / production code? Don't ship pixel-polish when the user wanted a wireframe.
 - **Content** — Is the copy real or placeholder? If placeholder, will real copy be longer/shorter? Many layouts break when real copy arrives.
 
@@ -24,6 +24,15 @@ Skip the brief only for small tweaks ("change this color", "add this button") or
 ### The "decide for me" fallback
 
 When the user explicitly delegates the aesthetic, don't reach for taste — derive the system from the checkable rules in **Color discipline** and **Type discipline** below: 1-3 fonts as a known-good pairing (one display + one body); neutrals at chroma ≤ 0.02 with hue borrowed from the accent; 0-2 accents sharing lightness and chroma, varying only hue. Then declare the resulting system (see "Declare the system") before writing any component code.
+
+### No user to ask at all
+
+The fallback above requires a user who said "decide for me." Agents frequently run without one — dispatched against a scaffolded frontend with no reference, no brand, and nobody to answer a brief. Don't treat "I can't ask" as license to pick a palette; treat it as the signal to do the work that doesn't require picking one. The line is whether the choice is cheap or expensive to reverse:
+
+- **Safe to do, no brief needed:** information hierarchy (grouping and ordering routes/sections by what the product does, not the order the scaffold generated them in); real copy replacing placeholder copy ("Jobs" instead of "WorkOrders"); folding an entity into its parent's flow when it's only ever reached from there; empty/loading/error states that were designed rather than inherited from the default ladder; accessibility (contrast, focus order, semantic markup); and using the scaffold's already-declared tokens as-is. None of this invents a visual identity; it makes the existing one legible.
+- **Not safe, ever, without a brief:** a new palette, a new font family, or any other choice where the cost of being wrong is that someone has to notice, care, and argue with taste nobody chose before they can replace it. An invented aesthetic is *harder* to remove than a neutral one, which is why forge ships the scaffold neutral.
+
+Deferring the aesthetic is the correct outcome when there's no brief, and it belongs in the report rather than buried in a diff. Say plainly in the final summary: the structural work is done (name what changed), and the visual identity — palette, type, any new motif — is still open and needs a brief. A report that stays silent reads as "done," and the next person inherits placeholder styling believing it was a considered choice.
 
 ## Recreating or extending existing UI? Read the source first
 
@@ -116,80 +125,6 @@ Every element earns its place — one thousand no's for every yes; less is more.
 
 ## Verify visually before declaring done
 
-Code that type-checks and tests that pass do not prove a UI looks right. Before reporting visual work complete:
+Code that type-checks and tests that pass do not prove a UI looks right. Launch the app, load the page you changed, screenshot it and compare against the brief, then check at least one other viewport width. If you cannot run the app, say so explicitly — do not claim visual success from the diff alone.
 
-1. Launch the app and load the page you changed (use the `run` skill if available, or the explicit dev-server command).
-2. Take a screenshot. Look at it. Compare to the brief.
-3. Check at least one other viewport width (mobile if the design is desktop-first, or vice versa).
-4. Run the overflow probe below against the changed surface and read the report.
-5. Check for overflow / text wrap / alignment regressions in the surrounding area, not just the changed component.
-
-If you cannot run the app, say so explicitly — do not claim visual success based on the diff alone.
-
-### Overflow probe
-
-Headlines that escape their card, captions that wrap into a third line, columns that scroll horizontally on tablet — the diff never shows these. This snippet finds them. Run it in the browser via Chrome DevTools MCP (`mcp__chrome-devtools__evaluate_script`) against the root selector of the surface you changed:
-
-```js
-function auditOverflow(rootSelector) {
-  const root = document.querySelector(rootSelector);
-  if (!root) return { error: `no element matches ${rootSelector}` };
-
-  const cssPath = (el) => {
-    const parts = [];
-    while (el && el.nodeType === 1 && parts.length < 6) {
-      let s = el.tagName.toLowerCase();
-      if (el.id) { s += "#" + el.id; parts.unshift(s); break; }
-      if (el.className && typeof el.className === "string") {
-        const cls = el.className.trim().split(/\s+/).slice(0, 2).join(".");
-        if (cls) s += "." + cls;
-      }
-      parts.unshift(s);
-      el = el.parentElement;
-    }
-    return parts.join(" > ");
-  };
-
-  const issues = [];
-  const all = [root, ...root.querySelectorAll("*")];
-
-  // (a) element's own content overflows its box
-  for (const el of all) {
-    if (el.scrollWidth - el.clientWidth > 1) {
-      issues.push({ type: "scroll-x", sel: cssPath(el), over: el.scrollWidth - el.clientWidth, text: (el.innerText || "").slice(0, 80) });
-    }
-    if (el.scrollHeight - el.clientHeight > 1) {
-      issues.push({ type: "scroll-y", sel: cssPath(el), over: el.scrollHeight - el.clientHeight, text: (el.innerText || "").slice(0, 80) });
-    }
-  }
-
-  // (b) descendant's rect escapes a non-`overflow:visible` ancestor's rect
-  function walk(el, parent) {
-    if (parent) {
-      const cr = el.getBoundingClientRect();
-      const pr = parent.getBoundingClientRect();
-      const cs = getComputedStyle(parent);
-      const clipped = cs.overflow !== "visible" || cs.overflowX !== "visible" || cs.overflowY !== "visible";
-      const escapes =
-        cr.right > pr.right + 0.5 || cr.left < pr.left - 0.5 ||
-        cr.bottom > pr.bottom + 0.5 || cr.top < pr.top - 0.5;
-      if (escapes && !clipped) {
-        issues.push({ type: "escapes-parent", sel: cssPath(el), parent: cssPath(parent), text: (el.innerText || el.tagName).slice(0, 80) });
-      }
-    }
-    for (const c of el.children) walk(c, el);
-  }
-  walk(root, null);
-
-  return { rootSelector, count: issues.length, issues: issues.slice(0, 40) };
-}
-
-auditOverflow("main");  // or a tighter selector for the surface you changed
-```
-
-Two classes of finding:
-
-- `scroll-x` / `scroll-y` — an element's own content exceeds its box. Common cause: a long word/URL, a fixed-width child, or a table that doesn't shrink.
-- `escapes-parent` — a child's bounding rect extends past an ancestor that isn't clipping. Common cause: absolute positioning gone wrong, negative margins, or a heading that overflows because its container shrank.
-
-Run it at multiple viewports (resize via `mcp__chrome-devtools__resize_page` first) — a layout that's clean at 1440px often falls apart at 768px or 375px.
+`frontend/design/verify` carries the full checklist and the `auditOverflow` browser probe, which finds the escaped headlines, clipped cards and horizontal scroll a diff never shows.

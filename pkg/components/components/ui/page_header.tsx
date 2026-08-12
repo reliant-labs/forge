@@ -65,13 +65,17 @@ export default function PageHeader({ title, subtitle, breadcrumbs = [], actions 
       )}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-ink">{title}</h1>
+          {/* tracking-tight: display sizes set at default tracking read loose. */}
+          <h1 className="text-2xl font-semibold tracking-tight text-ink">{title}</h1>
           {subtitle ? <p className="mt-1 text-sm text-ink-muted">{subtitle}</p> : null}
         </div>
         {actions.length > 0 && (
           <div className="flex items-center gap-2">
             {actions.map((action, i) => {
-              const cls = `inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 ${variantStyles[action.variant ?? "secondary"]}`;
+              // rounded-md, matching the control radius the theme sets for
+              // buttons — rounded-lg is the CONTAINER radius, and a button
+              // wearing it reads as a small card.
+              const cls = `inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 ${variantStyles[action.variant ?? "secondary"]}`;
               if (action.href) {
                 return (
                   <Link key={i} href={action.href} className={cls}>

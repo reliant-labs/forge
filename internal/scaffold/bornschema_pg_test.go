@@ -5,7 +5,7 @@
 //	FORGE'S GENERATED DATA MUST SATISFY FORGE'S GENERATED SCHEMA.
 //
 // forge emits both halves of a new entity — the CREATE TABLE (this
-// package) and the rows that fill it (internal/seeddata, via `forge db
+// package) and the rows that fill it (pkg/seedplan, via `forge db
 // seed` and `forge run`'s auto-seed). Nothing checked that the two agree.
 // A measured real-workflow run spent roughly a third of its scaffold
 // budget repairing forge's own output before it could start work: born
@@ -49,9 +49,9 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/schemadef"
-	"github.com/reliant-labs/forge/internal/seeddata"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 const bornPkg = "services.clinic.v1"
@@ -206,8 +206,8 @@ func TestBornSchemaAndSeedAgree(t *testing.T) {
 		t.Fatalf("the born migrations do not survive the shadow apply forge generate runs: %v", err)
 	}
 
-	cfg := seeddata.Config{Rows: rows, Salt: 1}
-	plan, err := seeddata.BuildLivePlan(ctx, db, migDir, cfg)
+	cfg := seedplan.Config{Rows: rows, Salt: 1}
+	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, "", cfg)
 	if err != nil {
 		t.Fatalf("BuildLivePlan over the born schema: %v", err)
 	}
@@ -222,9 +222,9 @@ func TestBornSchemaAndSeedAgree(t *testing.T) {
 	// Apply is the assertion. Every constraint in the applied schema —
 	// CHECK, UNIQUE, NOT NULL, foreign key — is enforced by postgres on
 	// every row, so a fixture that contradicts the migration it was born
-	// beside cannot survive this call. seeddata.Apply names the constraint
+	// beside cannot survive this call. seedplan.Apply names the constraint
 	// and prints the offending planned values (see seeddata/explain.go).
-	if _, err := seeddata.Apply(ctx, db, plan); err != nil {
+	if _, err := seedplan.Apply(ctx, db, plan); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -290,27 +290,27 @@ func TestBornSchemaSeedIsIdempotentAndResettable(t *testing.T) {
 	}
 	ctx := context.Background()
 	db, migDir := applyBornCorpus(t)
-	cfg := seeddata.Config{Rows: 4, Salt: 3}
+	cfg := seedplan.Config{Rows: 4, Salt: 3}
 
-	plan, err := seeddata.BuildLivePlan(ctx, db, migDir, cfg)
+	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, "", cfg)
 	if err != nil {
 		t.Fatalf("BuildLivePlan: %v", err)
 	}
-	first, err := seeddata.Apply(ctx, db, plan)
+	first, err := seedplan.Apply(ctx, db, plan)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
 	if first.Total() != int64(4*len(bornCorpus())) {
 		t.Fatalf("first apply inserted %d rows, want %d", first.Total(), 4*len(bornCorpus()))
 	}
-	again, err := seeddata.Apply(ctx, db, plan)
+	again, err := seedplan.Apply(ctx, db, plan)
 	if err != nil {
 		t.Fatalf("re-applying a seeded plan must be a no-op: %v", err)
 	}
 	if again.Total() != 0 {
 		t.Errorf("second apply inserted %d rows, want 0 (ON CONFLICT DO NOTHING)", again.Total())
 	}
-	if _, err := seeddata.Reset(ctx, db, plan); err != nil {
+	if _, err := seedplan.Reset(ctx, db, plan); err != nil {
 		t.Fatalf("reset re-runs every constraint: %v", err)
 	}
 }

@@ -94,6 +94,51 @@ test_jwks_manifests = lambda j: any, namespace: str, public_jwk: any -> [any] {
                                 # well-known dir) in the foreground.
                                 command = ["httpd", "-f", "-p", "8080", "-h", "/www"]
                                 ports = [{containerPort = 8080}]
+                                # This pod is a dependency of every sign-in in
+                                # the environment: a verifier that cannot fetch
+                                # the JWKS rejects every token. Without a
+                                # readiness gate the Service takes endpoints the
+                                # moment the container starts, so a rollout can
+                                # point auth at a pod whose ConfigMap has not
+                                # mounted yet — which surfaces as unexplained
+                                # 401s rather than as a pod that is not ready.
+                                # The probe fetches the actual document, so it
+                                # gates on serving the JWKS rather than on httpd
+                                # merely being alive.
+                                readinessProbe = {
+                                    httpGet = {path = "/.well-known/jwks.json", port = 8080}
+                                    initialDelaySeconds = 1
+                                    periodSeconds = 5
+                                    timeoutSeconds = 2
+                                    failureThreshold = 3
+                                }
+                                # Liveness restarts an httpd that has stopped
+                                # answering at all. It is deliberately far
+                                # slacker than readiness — a static server has
+                                # no dependency that can make it briefly slow,
+                                # so the only thing this should ever catch is a
+                                # genuinely dead process, and a tight liveness
+                                # probe on a healthy pod is an outage mode of
+                                # its own. Both probes are declared because one
+                                # without the other is a half-finished thought:
+                                # readiness alone never restarts a wedged
+                                # process, liveness alone never gates a rollout.
+                                livenessProbe = {
+                                    httpGet = {path = "/.well-known/jwks.json", port = 8080}
+                                    initialDelaySeconds = 10
+                                    periodSeconds = 30
+                                    timeoutSeconds = 5
+                                    failureThreshold = 6
+                                }
+                                # Requests and limits are deliberately tiny —
+                                # busybox httpd serving one small document — but
+                                # present, so the pod is Burstable rather than
+                                # BestEffort and is not the first thing evicted
+                                # under node pressure, taking sign-in with it.
+                                resources = {
+                                    requests = {cpu = "10m", memory = "16Mi"}
+                                    limits = {cpu = "100m", memory = "64Mi"}
+                                }
                                 securityContext = {
                                     runAsNonRoot = True
                                     runAsUser = 65532

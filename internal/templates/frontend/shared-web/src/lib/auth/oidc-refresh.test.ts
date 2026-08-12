@@ -7,10 +7,12 @@
 // a rotation mistake is caught by the endpoint's own bookkeeping rather than by
 // a literal written down here.
 //
-// The endpoint models a real rotating provider, measured against Logto 1.41.0:
-// every refresh consumes the presented token and issues a new one, and
-// re-presenting a consumed token revokes the WHOLE grant. That last part is why
-// single-flight matters — see the header of oidc-provider.ts.
+// The endpoint models a STRICT rotating provider: every refresh consumes the
+// presented token and issues a new one, and re-presenting a consumed token
+// revokes the WHOLE grant. That last part is why single-flight matters — see
+// the header of oidc-provider.ts. It is deliberately harsher than the dev IdP
+// forge scaffolds (Zitadel v4.16.2 rejects the replayed token but spares the
+// grant), because the client must be correct against the harshest case.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -94,8 +96,8 @@ class FakeTokenEndpoint {
       return json(400, { error: "invalid_grant", error_description: "grant revoked" });
     }
     if (this.consumed.has(presented)) {
-      // Reuse detection: kill the whole grant, as Logto does outside its
-      // 3-second grace window.
+      // Reuse detection: kill the whole grant — the strictest behaviour a
+      // client has to survive.
       this.revoked = true;
       return json(400, {
         error: "invalid_grant",

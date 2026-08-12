@@ -33,6 +33,22 @@ type UpgradeResult struct {
 	// because the force selection covered it — i.e. the user's edits
 	// were discarded. Refreshing a pristine render never sets it.
 	Forced bool
+	// Missing and Local size the delta the same way the advisory lane
+	// does (lineDelta): template lines this copy lacks, and lines this
+	// copy has that no template line accounts for.
+	//
+	// They exist so the report can state the SIZE of a difference
+	// without printing the difference. A file two lines behind with
+	// nothing of its own is a one-command adopt; one carrying forty
+	// local lines is a merge done by hand. That gap is the report's
+	// ranking, and it cannot be read off a status word.
+	Missing int
+	Local   int
+	// Absent marks a managed file the template ships that this project
+	// does not have on disk. Adoption is a pure add — it destroys
+	// nothing — which is a different (and cheaper) act than refreshing
+	// a file that exists, so the report ranks it separately.
+	Absent bool
 }
 
 // ForceSelection names which user-modified files an upgrade run is allowed to
@@ -118,6 +134,17 @@ type managedFile struct {
 	// enabledFor gates inclusion of this file for a given project config.
 	// nil ⇒ always included.
 	enabledFor func(cfg *config.ProjectConfig) bool
+	// render, when non-nil, supplies the file's bytes instead of
+	// templateName resolving against the project/ template category.
+	//
+	// It exists for managed files whose template lives in ANOTHER
+	// registry: the per-frontend eslint.config.mjs is one template per
+	// frontend KIND under internal/templates/frontend/<kind>/, written to
+	// one path per FRONTEND. templateName cannot name that (it is not a
+	// project/ template) and destPath cannot be fixed at list-build time
+	// (it depends on which frontends the project declares), so the entries
+	// are generated per frontend with their render attached.
+	render func() ([]byte, error)
 }
 
 // cfgIsService reports whether the project config is a service-kind project
@@ -145,22 +172,6 @@ func enabledForService(cfg *config.ProjectConfig) bool { return cfgIsService(cfg
 // AND having observability enabled (e.g. deploy/alloy-config.alloy).
 func enabledForObservability(cfg *config.ProjectConfig) bool {
 	return cfgIsService(cfg) && cfg != nil && cfg.Features.ObservabilityEnabled()
-}
-
-// enabledForMigrations gates a file on the project being service-kind AND
-// having migrations enabled — the `db migrate` command tree's source file
-// (cmd/<bin>/cmd/db_source.go), whose only consumer is the scaffold-once
-// db.go beside it.
-//
-// A nil cfg means migrations are ON: that is the default the feature resolver
-// returns for an absent flag, and the nil case reaches here from the
-// name-less path-union backstop (UpgradeManagedPaths), which must include the
-// path rather than silently omit it from the stale-sweep exclusions.
-func enabledForMigrations(cfg *config.ProjectConfig) bool {
-	if !cfgIsService(cfg) {
-		return false
-	}
-	return cfg == nil || cfg.Features.MigrationsEnabled()
 }
 
 // fileEnabledByFeatures reports whether a managed file should be included
@@ -228,6 +239,9 @@ func cmdTreePath(binName string, segs ...string) string {
 //
 // Binary-name sensitivity: the command tree lives under cmd/<bin>/, so the
 // project name selects the cmd-tree destPaths (cmdTreePath).
+// Frontend sensitivity: the per-frontend lint config is one managed entry
+// per declared frontend (frontendManagedFiles), so it can only be built
+// from a config that names them.
 func managedFilesForCfg(cfg *config.ProjectConfig) []managedFile {
 	binary := config.ProjectBinaryPerService
 	kind := config.ProjectKindService
@@ -237,7 +251,7 @@ func managedFilesForCfg(cfg *config.ProjectConfig) []managedFile {
 		kind = cfg.EffectiveKind()
 		binName = cfg.Name
 	}
-	return managedFilesForKindBinary(kind, binary, binName)
+	return append(managedFilesForKindBinary(kind, binary, binName), frontendManagedFiles(cfg)...)
 }
 
 // managedFilesFor returns the file plan for an explicit binary mode at
@@ -301,25 +315,36 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// forge/pkg bump instead of a re-render, so owning these files no
 		// longer costs the user the upgrade path.
 		//
+		//   - root.go    the command TREE: its shape, its flags, the Deps
+		//                struct threaded through it. Users customize the
+		//                binary's cobra root, and hash-guarding it made
+		//                every such edit an act of permanent drift. It now
+		//                also carries ServiceName and wires `db migrate`
+		//                directly — see the root_gen.go retirement note.
+		//
 		// EVERY ONE of them also needs an UpgradeManagedPaths entry — they
 		// were Tier-1 in older projects, so a copy is on disk carrying
 		// forge's certification marker that no run writes anymore. See the
 		// exclusion list there; without it `--force-cleanup` deletes them.
-		{templateName: "cmd-tree-root.go.tmpl", destPath: cmdTreePath(binName, "root.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
-
-		// cmd/<bin>/cmd/db_source.go — the migration SOURCE, and the only
-		// part of the `db migrate` command that is genuinely re-derived:
-		// db/embed.go (forgedb.MigrationsFS) exists only when db/migrations/
-		// holds at least one .sql, so whether the symbol this file returns is
-		// even referenceable is a fact re-read from disk every run. Splitting
-		// it out of db.go is what lets db.go be owned: the user's policy
-		// edits and this re-derivation never touch the same file.
 		//
-		// Gated on the migrations feature, matching the scaffold-once db.go
-		// beside it: db_source.go's only consumer is db.go's openMigrator, so
-		// a project with migrations off would carry an unused file declaring
-		// an unused const.
-		{templateName: "cmd-tree-db-source.go.tmpl", destPath: cmdTreePath(binName, "db_source.go"), templated: true, tier: Tier1, enabledFor: enabledForMigrations},
+		// cmd/<bin>/cmd/root_gen.go is RETIRED — there is no generated file in
+		// the command tree anymore. It held three things, and none of them
+		// earned a regenerated file:
+		//
+		//   - ServiceName, the forge.yaml project name. Fixed at scaffold;
+		//     it moves only in a rename the user is performing by hand
+		//     anyway. Now a const in root.go.
+		//   - migrationSource/Dir. The derived half — whether MigrationsFS is
+		//     referenceable at all — is real, but it is a fact about the db
+		//     package, so it lives there now as db.Source() (db/source_gen.go)
+		//     and the command tree just calls it.
+		//   - generatedCommands, which encoded one bit: does this project have
+		//     migrations. root.go is itself rendered with that bit at scaffold
+		//     time (as serve.go and db.go already were), so it wires
+		//     newDBCmd directly.
+		//
+		// The on-disk copy is swept by removeRetiredRootGen; the
+		// UpgradeManagedPaths entry below keeps --force-cleanup from racing it.
 
 		// ── Tier 2: Checksum-protected, committed to git ──
 
@@ -340,6 +365,7 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		{templateName: taskfileTmpl, destPath: "Taskfile.yml", templated: true, tier: Tier2},
 		{templateName: "Dockerfile.tmpl", destPath: "Dockerfile", templated: true, tier: Tier2, enabledFor: enabledForService},
 		{templateName: "docker-compose.yml.tmpl", destPath: "docker-compose.yml", templated: true, tier: Tier2, enabledFor: enabledForService},
+		{templateName: "idp-steps.yaml.tmpl", destPath: "idp-steps.yaml", templated: true, tier: Tier2, enabledFor: enabledForService},
 
 		// Static config files
 		{templateName: "golangci.yml.tmpl", destPath: ".golangci.yml", templated: true, tier: Tier2},
@@ -353,8 +379,8 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// libraries (pkg/authn, pkg/middleware, pkg/observe)
 		// — projects scaffolded before the library split keep their old
 		// pkg/middleware/*.go copies; those files are user-owned and
-		// simply stop being managed here (see the
-		// migrations/v0.x-to-middleware-lib skill for hand-adoption).
+		// simply stop being managed here. Adopting the library
+		// (pkg/authn, pkg/middleware, pkg/observe) is a hand-migration.
 		{templateName: "middleware.go", destPath: "pkg/middleware/middleware.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 
@@ -449,6 +475,14 @@ func UpgradeManagedPaths() map[string]bool {
 		cmdTreePath("", "server.go"),
 		cmdTreePath("", "version.go"),
 		cmdTreePath("", "db.go"),
+		// root.go joined them when the command tree became the user's to
+		// shape. It is the most dangerous entry in this list: EVERY existing
+		// project has a Tier-1 root.go on disk, all of them pristine (there
+		// was no reason to edit a file forge overwrote), and pristine is
+		// exactly the condition under which the sweep deletes rather than
+		// reports. Without this line `--force-cleanup` removes the command
+		// root from every upgraded project.
+		cmdTreePath("", "root.go"),
 	} {
 		out[p] = true
 	}
@@ -547,9 +581,12 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) projectTemp
 func renderManagedFile(f managedFile, data projectTemplateData) ([]byte, error) {
 	var content []byte
 	var err error
-	if f.templated {
+	switch {
+	case f.render != nil:
+		content, err = f.render()
+	case f.templated:
 		content, err = templates.ProjectTemplates().Render(f.templateName, data)
-	} else {
+	default:
 		content, err = templates.ProjectTemplates().Get(f.templateName)
 	}
 	if err != nil {
@@ -593,6 +630,18 @@ func ensureTrailingNewline(b []byte) []byte {
 	copy(out, b[:end])
 	out[end] = '\n'
 	return out
+}
+
+// managedLineDelta sizes a managed file's difference from its template the
+// same way the advisory lane does, with the certification marker removed
+// first.
+//
+// The marker is the one line an on-disk managed file has that no render
+// ever produces. Counting it would give every single managed file a
+// permanent `1 line yours alone`, which is precisely the signal the report
+// ranks on — so a file with no edits at all would sort as customized.
+func managedLineDelta(onDisk, template []byte) (missing, local int) {
+	return lineDelta(checksums.StripMarker(onDisk), checksums.StripMarker(template))
 }
 
 // simpleDiff produces a minimal unified-style diff showing changed lines.
@@ -828,9 +877,8 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 	// symbols as the thin policy pair (Claims, NewAuthInterceptor, …),
 	// so dropping middleware.go next to them would stop
 	// the package compiling. Their copies are user-owned and keep
-	// working; converging on the library is the user-driven
-	// migrations/v0.x-to-middleware-lib path, never an upgrade side
-	// effect.
+	// working; converging on the library is a user-driven hand-migration,
+	// never an upgrade side effect.
 	legacyMiddleware := hasLegacyMiddlewareLayout(projectDir)
 
 	for _, f := range filterManagedFiles(managedFilesForCfg(cfg), cfg) {
@@ -866,10 +914,19 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 		existing, err := os.ReadFile(diskPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				// File doesn't exist — treat as needing update
+				// File doesn't exist — treat as needing update.
+				//
+				// Sized as the pure add it is: the whole template is
+				// "missing" here. Leaving these at zero made a new
+				// managed file report a delta of no lines, which reads
+				// as "nothing to see" for the one case where adoption
+				// is unambiguously safe.
 				result := UpgradeResult{
-					Path:   f.destPath,
-					Status: UpgradeSkipped,
+					Path:    f.destPath,
+					Status:  UpgradeSkipped,
+					Diff:    simpleDiff(f.destPath, nil, expected),
+					Absent:  true,
+					Missing: len(lineBag(expected)),
 				}
 				if !checkOnly {
 					if writeErr := writeManagedFile(projectDir, f.destPath, expected, cs); writeErr != nil {
@@ -898,10 +955,13 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 
 		// Tier 1 files are always overwritten (they're gitignored)
 		if f.tier == Tier1 {
+			missing, local := managedLineDelta(existing, expected)
 			result := UpgradeResult{
-				Path:   f.destPath,
-				Status: UpgradeUpdated,
-				Diff:   simpleDiff(f.destPath, existing, expected),
+				Path:    f.destPath,
+				Status:  UpgradeUpdated,
+				Diff:    simpleDiff(f.destPath, existing, expected),
+				Missing: missing,
+				Local:   local,
 			}
 			if !checkOnly {
 				if writeErr := writeManagedFile(projectDir, f.destPath, expected, cs); writeErr != nil {
@@ -922,6 +982,7 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 		// means user-modified. Comment-incapable formats consult the
 		// scoped .forge/hashes.json record instead.
 		diff := simpleDiff(f.destPath, existing, expected)
+		missing, local := managedLineDelta(existing, expected)
 		matchesKnownRender := checksums.Verify(existing) == checksums.Pristine
 		if !checksums.Stampable(f.destPath) && cs != nil {
 			recorded, tracked := cs.Unstampable[f.destPath]
@@ -932,9 +993,11 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 			// File matches stored checksum or a prior render → user
 			// hasn't modified it → safe to auto-update.
 			result := UpgradeResult{
-				Path:   f.destPath,
-				Status: UpgradeUpdated,
-				Diff:   diff,
+				Path:    f.destPath,
+				Status:  UpgradeUpdated,
+				Diff:    diff,
+				Missing: missing,
+				Local:   local,
 			}
 			if !checkOnly {
 				if writeErr := writeManagedFile(projectDir, f.destPath, expected, cs); writeErr != nil {
@@ -948,10 +1011,12 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 		// User modified the file (or no checksum exists)
 		if force.Allows(f.destPath) {
 			result := UpgradeResult{
-				Path:   f.destPath,
-				Status: UpgradeUpdated,
-				Diff:   diff,
-				Forced: true,
+				Path:    f.destPath,
+				Status:  UpgradeUpdated,
+				Diff:    diff,
+				Forced:  true,
+				Missing: missing,
+				Local:   local,
 			}
 			if !checkOnly {
 				if writeErr := writeManagedFile(projectDir, f.destPath, expected, cs); writeErr != nil {
@@ -961,9 +1026,11 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 			results = append(results, result)
 		} else {
 			results = append(results, UpgradeResult{
-				Path:   f.destPath,
-				Status: UpgradeUserModified,
-				Diff:   diff,
+				Path:    f.destPath,
+				Status:  UpgradeUserModified,
+				Diff:    diff,
+				Missing: missing,
+				Local:   local,
 			})
 		}
 	}

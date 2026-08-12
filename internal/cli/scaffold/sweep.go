@@ -43,6 +43,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -187,6 +188,25 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 	for _, leaf := range svcLeaves {
 		if scan, serr := codegen.ScanRawProtoDir(filepath.Join(root, "proto", "services", leaf)); serr == nil {
 			scans[leaf] = scan
+		}
+	}
+
+	// Pre-flight: a proto service whose name disagrees with its directory
+	// generates two different Go identifiers and cannot build.
+	//
+	// Phase 2 catches this too, but by then phase 1 has already written a
+	// migration pair per birthed entity. The revert is clean and the re-run
+	// is a correct no-op, so nothing breaks — it just costs a full cycle to
+	// learn a fact that is a string comparison over data already in hand.
+	// Checked here, before anything is written.
+	for _, leaf := range svcLeaves {
+		scan := scans[leaf]
+		if scan == nil || scan.ServiceName == "" {
+			continue
+		}
+		if verr := cmdutil.ValidateServiceDirConsistency(scan.ServiceName, leaf); verr != nil {
+			return cliutil.UserErr(ctxLabel, verr.Error(), "",
+				"rename the proto service or the directory so both generators agree, then re-run")
 		}
 	}
 

@@ -81,9 +81,17 @@ func TestBrowserOIDCEnvHasAServerCounterpart(t *testing.T) {
 	browser := browserOIDCEnv(t)
 	server := serverConfigFields(t)
 
-	// The issuer is the one value whose two spellings differ on purpose.
+	// Two values whose spellings differ on purpose, each for the same reason:
+	// the server's validator is provider-agnostic and names the JWT property
+	// it enforces, while the browser names the OAuth parameter it sends.
 	aliases := map[string]string{
+		// A project on a static JWKS has an issuer and no OIDC flow at all.
 		"OIDC_ISSUER": "jwt_issuer",
+		// RFC 8707 calls it `resource` on the wire; what the server checks is
+		// the resulting `aud` claim, so it declares jwt_audience. They must
+		// carry the SAME string — the browser asks for a token FOR this API
+		// and the server admits only tokens minted for it.
+		"OIDC_RESOURCE": "jwt_audience",
 	}
 
 	var orphans []string

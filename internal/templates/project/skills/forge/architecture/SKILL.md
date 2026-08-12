@@ -79,7 +79,7 @@ proto/services/<svc>/v1/<svc>.proto
 db/migrations/*.up.sql (shadow-applied to a real ephemeral postgres, introspected) + CRUD RPC shapes
   → forge generate → internal/db/<entity>_orm.go, internal/handlers/<svc>/handlers_crud_ops_gen.go, frontend pages/nav/mocks
 
-proto/config/v1/config.proto → forge generate → pkg/config/ + deploy/kcl/config_schema.k
+proto/config/v1/config.proto → forge generate → pkg/config/ + deploy/kcl/config_gen.k
 internal/<name>/contract.go (standalone domain packages) → forge generate → internal/<name>/mock_gen.go
 gen/ts/ → forge generate → frontends/<name>/src/hooks/*-hooks.ts
 ```
@@ -153,4 +153,4 @@ This skill is the map. For depth, load: **proto** (annotations, CRUD naming, fie
 
 ## Related skills
 
-Also: getting-started, frontend (state, patterns), frontend-testing, auth, workers, debug.
+Also: forge, frontend (state, patterns), frontend-testing, auth, workers, debug.

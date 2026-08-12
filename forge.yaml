@@ -8,10 +8,19 @@ module_path: github.com/reliant-labs/forge
 # kind is DERIVED, not declared: forge resolves to `cli` because the tree
 # carries a cmd/forge/main.go binary and none of the service sources.
 # forge.yaml is project-global only.
-# forge is its own first user — start at 0.0.0 so `forge project upgrade` surfaces
-# the v0.x→contractkit migration skill (and any future migration skills).
-# `forge project upgrade` bumps this; `forge generate` only reads it.
-forge_version: 0.0.0
+# The pin records which forge templates this tree was last reconciled
+# against; `forge project upgrade` bumps it, `forge generate` only reads it.
+#
+# It sat at 0.0.0 to keep the v0.x→contractkit migration skill surfacing.
+# That migration is done, and a permanent 0.0.0 made every upgrade report
+# the whole template history as "behind", which is noise rather than a
+# signal. Note the pin is WEAK in this repo specifically: forge builds
+# forge, so the templates on disk ARE the templates being compared
+# against, and a dev build stamps a +dirty pseudo-version that changes on
+# every commit. Treat it as a reconciliation marker, not a dependency
+# version — for a downstream project the pin is meaningful; here it only
+# says "the four config files below were last merged at this vintage".
+forge_version: v0.0.4-0.20260807040731-181e67475a43+dirty
 database:
     driver: ""
     migrations_dir: ""

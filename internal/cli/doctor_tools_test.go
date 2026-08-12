@@ -237,6 +237,7 @@ func TestExtractVersion(t *testing.T) {
 		{"Docker version 25.0.3, build 4debf41", "25.0.3"},
 		{"buf 1.34.0", "1.34.0"},
 		{"k3d version v5.6.0", "5.6.0"},
+		{"v4.2.3+g43e8b7f", "4.2.3"},
 		{"git version 2.40.0", "2.40.0"},
 		{"v1.4.4", "1.4.4"},
 		{"10.5.0", "10.5.0"},

@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // repoTracer is the span source for the generic repository. The pre-generic
@@ -25,40 +26,31 @@ import (
 // "orm" tracer and the "orm.<Op><Entity>" span names keep working.
 var repoTracer = otel.Tracer("orm")
 
-// Spec is the IRREDUCIBLE per-entity descriptor the generator emits for a
-// Repo. Everything Bun's own table schema can answer — table name, primary
-// key column + Go field, autoincrement/server-allocated PK, the native
-// (,soft_delete) deleted-at field, the full column set, array columns — is
-// derived by reflection from the Bun-tagged model at first use (once per
-// entity, never in the hot path). Spec carries ONLY the forge conventions
-// Bun cannot infer from struct tags:
+// Everything a Repo needs is DERIVED from the Bun-tagged model at first use
+// (once per entity, never in the hot path): table name, primary key column +
+// Go field, server-allocated PK, soft delete in both its native and legacy
+// forms, managed timestamps, array columns, the full column set, and the
+// per-column write policy carried by Bun's ,skipupdate tag.
 //
-//   - Timestamps          — forge's managed created_at/updated_at stamping
-//     (set on Create, re-stamped on every Update/UpdateMasked). Distinct
-//     from a DB DEFAULT: forge stamps in Go so the value is identical
-//     across the row and visible to the caller without a re-read.
-//   - LegacyTextDeletedAt — soft delete whose deleted_at column is a legacy
-//     TEXT column (Go type string) that Bun's time.Time-based ,soft_delete
-//     cannot round-trip. When true the repo hand-rolls the deleted_at IS
-//     NULL filter and the CURRENT_TIMESTAMP stamp (kalshi fr-3fba9166ba).
-//     Bun-native soft delete (proper time deleted_at) is detected from the
-//     schema and needs no flag.
-//   - SecretColumns        — columns carrying the `// forge:secret` marker.
-//     The read path (toProto) never packs them, so a client Get/List always
-//     reads the secret back as "". A maskless full-replace Update built from
-//     that round-tripped entity would therefore overwrite the stored secret
-//     (e.g. an encrypted credential) with "" — silent data loss. These
-//     columns are consequently PRESERVED on a full-replace Update (excluded
-//     from its SET clause, exactly like the PK/created_at columns),
-//     yet stay settable on Create and on an EXPLICIT masked Update that names
-//     the column (deliberate intent — the client is asserting a new value).
-//     Bun cannot infer this from struct tags; the generator threads the
-//     column names from the field's `// forge:secret` marker.
-type Spec struct {
-	Timestamps          bool
-	LegacyTextDeletedAt bool
-	SecretColumns       []string
-}
+// There is no per-entity descriptor to pass, and that is the point. A
+// descriptor would be a second copy of facts the struct already carries —
+// checked against nothing, silently wrong when the two drifted. The struct
+// tags are the projection of the applied schema, so reading them IS reading
+// the schema.
+//
+// The one thing reflection cannot answer is where a column's write policy
+// comes from: `forge:immutable` is declared in the migration (COMMENT ON
+// COLUMN) and projected onto the tag by the generator. The repo reads that
+// tag itself in ensureMeta rather than letting Bun enforce it at write time —
+// Bun's own enforcement is unconditional and would also block the masked
+// path, which must be able to write the column on an explicit, deliberate
+// mask (see updatable vs updatableSet below).
+//
+// The same is true of `forge:version`, the optimistic-concurrency column,
+// with one extra wrinkle: Bun has no native concept for it at all, so the
+// generator marks it in a SECOND tag namespace (`forge:"version"`) that
+// Bun's tag parser never inspects. See ensureMeta for why that beats
+// inventing a private bun tag option.
 
 // meta is the reflection-derived, cached half of a Repo's knowledge. It is
 // computed once (sync.Once, off the first IDB the repo sees) from Bun's
@@ -66,19 +58,44 @@ type Spec struct {
 // *schema.Table per type, so even the first computation is a single schema
 // build shared process-wide.
 type meta struct {
-	table         string   // SQL table name
-	entityName    string   // model Go type name (for span names)
-	pkColumn      string   // primary-key column name
-	pkGoField     string   // primary-key struct field (Go) name
-	pkAutoInc     bool     // server-allocated PK (SERIAL/IDENTITY) → RETURNING
-	pkIsString    bool     // string PK → ULID-generate when empty on Create
-	nativeSoftDel bool     // Bun owns soft delete (,soft_delete time column)
-	columns       []string // ordered declared column allowlist
-	hasUpdatedAt  bool     // updated_at column exists (managed-stamp target)
-	nilSliceCols  []sliceCol
-	updatable     []string // columns settable by a full Update (SET clause)
-	updatableSet  map[string]bool
-	stampFields   map[string]stampField // created_at/updated_at → field info
+	table         string // SQL table name
+	entityName    string // model Go type name (for span names)
+	pkColumn      string // primary-key column name
+	pkGoField     string // primary-key struct field (Go) name
+	pkAutoInc     bool   // server-allocated PK (SERIAL/IDENTITY) → RETURNING
+	pkIsString    bool   // string PK → ULID-generate when empty on Create
+	nativeSoftDel bool   // Bun owns soft delete (,soft_delete time column)
+	// legacyTextSoftDel: a deleted_at column Bun's ,soft_delete did not
+	// claim (a TEXT column it cannot round-trip a time.Time through), so
+	// the repo hand-rolls the IS NULL filter and the stamp.
+	legacyTextSoftDel bool
+	// timestamps: created_at AND updated_at both exist and both project to
+	// a stampable type — forge's managed-timestamp convention, read off the
+	// columns rather than declared.
+	timestamps   bool
+	columns      []string // ordered declared column allowlist
+	hasUpdatedAt bool     // updated_at column exists (managed-stamp target)
+	nilSliceCols []sliceCol
+	updatable    []string // columns settable by a full Update (SET clause)
+	updatableSet map[string]bool
+	skipUpdate   map[string]int        // ,skipupdate column → struct field index; see UpdateMasked
+	stampFields  map[string]stampField // created_at/updated_at → field info
+	// versionColumn is the SQL name of the `forge:version` column, "" when
+	// the entity declared none. A non-empty value is what switches
+	// Update/UpdateMasked from last-writer-wins to optimistic concurrency
+	// control; an entity without one never builds the predicate and never
+	// issues the disambiguating re-query, so it costs exactly one string
+	// comparison per write.
+	versionColumn string
+	// versionFieldIndex is the struct-field index of that column, used to
+	// read the caller's last-seen value for the WHERE predicate.
+	versionFieldIndex int
+	// fillULIDFields are the struct-field indices of columns declared
+	// `forge:fill=ulid` (a NON-PK column — the PK's own ULID generation is
+	// pkIsString above). Create ULID-generates each when the caller left it
+	// at its Go zero (empty string), the same chokepoint and same
+	// empty-means-unset convention as the PK.
+	fillULIDFields []int
 }
 
 // sliceCol pairs a NOT NULL slice-typed column's struct-field index with
@@ -115,7 +132,7 @@ type stampField struct {
 // Repo per entity replaces the ~250 LOC of per-entity Create/Get/List/
 // Count/ListAll/Update/UpdateMasked/Delete the generator used to emit; the
 // generated code now supplies only the Bun-tagged struct, the ToProto/
-// FromProto pair, and a single crud.NewRepo[Model](Spec{...}) line.
+// FromProto pair, and a single crud.NewRepo[Model]() line.
 //
 // All lifecycle semantics the pre-generic code carried are preserved
 // exactly: Bun-native + legacy-TEXT soft delete, the
@@ -126,16 +143,15 @@ type stampField struct {
 // (orm.QueryOption func(*bun.SelectQuery)) is threaded straight through to
 // List/Count, and bun.IDB (db.Bun()) remains the raw-SQL escape hatch.
 type Repo[M any] struct {
-	spec Spec
 	once sync.Once
 	m    meta
 }
 
 // NewRepo constructs a Repo for model M. Metadata derivation is deferred to
-// the first call (it needs a live bun.IDB to reach the dialect's table
-// cache); spec carries the forge conventions Bun's schema can't infer.
-func NewRepo[M any](spec Spec) *Repo[M] {
-	return &Repo[M]{spec: spec}
+// the first call, which needs a live bun.IDB to reach the dialect's table
+// cache; everything it needs comes off the model's own Bun tags.
+func NewRepo[M any]() *Repo[M] {
+	return &Repo[M]{}
 }
 
 // modelType returns the (dereferenced) struct type of M.
@@ -157,6 +173,31 @@ func (r *Repo[M]) modelType() reflect.Type {
 // for M, the first time the repo is handed a database handle. Bun caches
 // the *schema.Table per type process-wide, so this is one schema build per
 // entity regardless of how many Repos or calls reference it.
+//
+// # Finding the optimistic-concurrency column
+//
+// Every other fact here is read off Bun's own parsed tag, because Bun has
+// a native concept for it (f.SkipUpdate, f.IsPK, tbl.SoftDeleteField).
+// Optimistic concurrency is the one fact Bun has no vocabulary for, so the
+// generator declares it in a SEPARATE struct-tag namespace and this reads
+// it back off the raw reflect.StructField Bun keeps beside its own tag:
+//
+//	Version int64 `bun:"version,notnull,skipupdate" forge:"version"`
+//
+// The alternative — an invented bun option, `bun:"version,occ"` — was
+// rejected because Bun validates its own option vocabulary
+// (schema.isKnownFieldOption) and logs "unknown tag option" for anything
+// outside it, so every generated struct carrying one would print a warning
+// forge cannot suppress and users cannot act on. A separate namespace is
+// also the honest description: this is forge's declaration, not Bun's, and
+// nothing about it should look like a feature of the query engine.
+//
+// Deriving it from the column NAME instead (any column called "version")
+// was rejected for the opposite reason: "version" is an ordinary domain
+// word — a document's revision label, a schema_version, an app's semver
+// string — and silently adding a WHERE predicate to a table because a
+// column's name matched would break writes on schemas that never asked for
+// OCC. The marker is opt-in precisely so it cannot be triggered by accident.
 func (r *Repo[M]) ensureMeta(db orm.Context) {
 	r.once.Do(func() {
 		typ := r.modelType()
@@ -166,6 +207,31 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 		r.m.entityName = typ.Name()
 		r.m.columns = make([]string, 0, len(tbl.Fields))
 		r.m.stampFields = map[string]stampField{}
+
+		// Managed timestamps are a property of the COLUMNS, so they are read
+		// off the columns rather than declared: forge stamps created_at and
+		// updated_at only when both exist AND both project to a type the repo
+		// can actually stamp. An exotic pair (epoch integers, arrays) is plain
+		// schema, and stampFieldFor is the same gate the generator applies.
+		//
+		// Deriving it here rather than accepting it as a flag keeps one answer
+		// to the question. A flag would be a second copy of a fact the struct
+		// already carries, and the two could disagree.
+		var created, updated *schema.Field
+		for _, f := range tbl.Fields {
+			switch f.Name {
+			case "created_at":
+				created = f
+			case "updated_at":
+				updated = f
+			}
+		}
+		if created != nil && updated != nil {
+			_, createdOK := stampFieldFor(created)
+			_, updatedOK := stampFieldFor(updated)
+			r.m.timestamps = createdOK && updatedOK
+		}
+
 		for _, f := range tbl.Fields {
 			r.m.columns = append(r.m.columns, f.Name)
 			if f.NotNull && f.IndirectType.Kind() == reflect.Slice {
@@ -174,57 +240,111 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 			if f.Name == "updated_at" {
 				r.m.hasUpdatedAt = true
 			}
-			if r.spec.Timestamps && (f.Name == "created_at" || f.Name == "updated_at") {
+			if r.m.timestamps && (f.Name == "created_at" || f.Name == "updated_at") {
 				if sf, ok := stampFieldFor(f); ok {
 					r.m.stampFields[f.Name] = sf
 				}
 			}
 		}
-		if len(tbl.PKs) > 0 {
+		switch len(tbl.PKs) {
+		case 1:
 			pk := tbl.PKs[0]
 			r.m.pkColumn = pk.Name
 			r.m.pkGoField = pk.GoName
 			r.m.pkAutoInc = pk.AutoIncrement || pk.Identity
 			r.m.pkIsString = pk.IndirectType.Kind() == reflect.String
-		} else {
+		case 0:
 			r.m.pkColumn = "id"
 			r.m.pkGoField = "Id"
 			r.m.pkIsString = true
+		default:
+			// Composite PK (bun's tbl.PKs has more than one member): auto id
+			// generation and PK-cursor pagination are only meaningful for a
+			// single key column, so both are disabled rather than guessing
+			// off PKs[0]. Guessing is exactly the bug this guards — a table
+			// like PRIMARY KEY (company_id, kind) where company_id is ALSO
+			// a foreign key would otherwise report pkIsString=true for
+			// company_id, and Create's ULID-on-empty branch below would
+			// overwrite the FK with a fresh ULID, silently corrupting the
+			// reference. Leaving pkColumn "" is the existing, correct
+			// escape hatch orderKeysetSafe already treats as "no PK-cursor
+			// pagination" (see pkg/crud/crud.go); pkGoField/pkAutoInc/
+			// pkIsString stay at their zero values so pkFieldValue and the
+			// ULID branch are never reached for these entities.
+			r.m.pkColumn = ""
 		}
 		if tbl.SoftDeleteField != nil {
 			r.m.nativeSoftDel = true
 		}
 
-		// Secret columns are settable via an EXPLICIT mask but never written
-		// by a maskless full-replace (see below).
-		secretCols := make(map[string]bool, len(r.spec.SecretColumns))
-		for _, c := range r.spec.SecretColumns {
-			secretCols[c] = true
+		// A deleted_at column Bun's ,soft_delete did NOT claim is the legacy
+		// TEXT form: Bun stamps a time.Time that a TEXT column cannot
+		// round-trip, so the repo hand-rolls the filter and the stamp. The
+		// repo already derives the native half from tbl.SoftDeleteField; the
+		// legacy half is its complement, so deriving it here replaces a flag
+		// that only ever restated what these two facts already imply.
+		if !r.m.nativeSoftDel {
+			for _, f := range tbl.Fields {
+				if f.Name == "deleted_at" {
+					r.m.legacyTextSoftDel = true
+					break
+				}
+			}
+		}
+
+		// The optimistic-concurrency column, if the entity declared one.
+		// Resolved BEFORE the allowlists below, which exclude it by name
+		// through columnExcludedFromSet.
+		//
+		// Only the FIRST such column is honored. Two version columns cannot
+		// both be authoritative — a write satisfying one predicate and
+		// failing the other has no coherent answer — and silently checking
+		// only one while incrementing both would be worse than either. The
+		// generator cannot produce this shape (a second forge:version marker
+		// is a migration authoring mistake), so the recovery is to pick
+		// deterministically rather than to panic in a library that runs
+		// inside somebody's request path.
+		for _, f := range tbl.Fields {
+			if versionTagged(f) {
+				r.m.versionColumn = f.Name
+				r.m.versionFieldIndex = f.Index[0]
+				break
+			}
+		}
+
+		// forge:fill=ulid columns: every one of them, not just the first —
+		// unlike forge:version (a single predicate slot) there is no
+		// conflict in generating more than one ULID per row (an invite
+		// code AND a share token, say).
+		for _, f := range tbl.Fields {
+			if fillULIDTagged(f) {
+				r.m.fillULIDFields = append(r.m.fillULIDFields, f.Index[0])
+			}
 		}
 
 		// Two distinct allowlists, both starting from every declared column
-		// EXCEPT the PK, deleted_at, and — under managed timestamps —
-		// created_at and updated_at (the latter is repo-stamped, never
-		// caller-set):
+		// EXCEPT the PK, deleted_at, the version column, and — under managed
+		// timestamps — created_at and updated_at (the latter is repo-stamped,
+		// never caller-set):
 		//
 		//   - updatableSet — the MASKED-update allowlist: a path an
-		//     update_mask may name. A `:secret` column IS here, because a
-		//     mask that names it is the client deliberately asserting a new
+		//     update_mask may name. A ,skipupdate column IS here, because a
+		//     mask that names it is the caller deliberately asserting a new
 		//     value (Create's sibling write path).
-		//   - updatable    — the FULL-REPLACE SET list: the columns a maskless
-		//     Update writes. A `:secret` column is EXCLUDED, because the client
-		//     can never have read the real value (the read path strips it to
-		//     ""), so a full replace built from a round-tripped entity would
-		//     clobber the stored secret with "". Preserving it here is the
-		//     data-loss fix; it mirrors how the PK/created_at columns
-		//     are already excluded.
+		//   - updatable    — the FULL-REPLACE SET list. A ,skipupdate column
+		//     is EXCLUDED here: Bun's own ,skipupdate enforcement is
+		//     unconditional (it would drop the column from a masked SET too,
+		//     see UpdateMasked), so the repo applies forge's conditional
+		//     rule itself instead of delegating to Bun.
 		r.m.updatableSet = make(map[string]bool, len(tbl.Fields))
+		r.m.skipUpdate = make(map[string]int)
 		for _, f := range tbl.Fields {
 			if r.columnExcludedFromSet(f.Name) {
 				continue
 			}
 			r.m.updatableSet[f.Name] = true
-			if secretCols[f.Name] {
+			if f.SkipUpdate() {
+				r.m.skipUpdate[f.Name] = f.Index[0]
 				continue
 			}
 			r.m.updatable = append(r.m.updatable, f.Name)
@@ -249,13 +369,53 @@ func stampFieldFor(f *schema.Field) (stampField, bool) {
 	return stampField{}, false
 }
 
+// forgeTagKey is the struct-tag namespace forge uses for declarations Bun
+// has no vocabulary for. Separate from `bun:"..."` so Bun's tag parser
+// never sees it (see ensureMeta).
+const forgeTagKey = "forge"
+
+// versionTagValue is the forge-tag value marking the optimistic-concurrency
+// column. It matches the `forge:version` catalog-comment marker the user
+// writes in the migration (pkg/schemadef.ColumnMarkerVersion), minus
+// the `forge:` prefix the tag namespace already supplies.
+const versionTagValue = "version"
+
+// fillULIDTagValue is the forge-tag value marking a `forge:fill=ulid`
+// column: a non-PK column the generic Repo ULID-generates at Create when
+// the caller left it at its Go zero (empty string), the same convention
+// as the PK's own ULID-on-empty behavior below.
+const fillULIDTagValue = "fill=ulid"
+
+// versionTagged reports whether a Bun field carries forge's version tag.
+// Read off the raw StructField rather than Bun's parsed Tag: the value
+// lives in forge's own tag namespace, which Bun does not parse.
+func versionTagged(f *schema.Field) bool {
+	return f.StructField.Tag.Get(forgeTagKey) == versionTagValue
+}
+
+// fillULIDTagged reports whether a Bun field carries forge's fill=ulid tag.
+func fillULIDTagged(f *schema.Field) bool {
+	return f.StructField.Tag.Get(forgeTagKey) == fillULIDTagValue
+}
+
 // columnExcludedFromSet mirrors the generator's excludedFromSet: columns
-// that never appear in an UPDATE SET clause.
+// that never appear in an UPDATE SET clause a CALLER controls.
+//
+// The version column is excluded for the same reason the PK and created_at
+// are: the repo owns its value. It is stricter than ,skipupdate, which
+// only governs the full-replace path — a version column is barred from the
+// masked path too, so an update_mask naming it is an UnknownFieldError
+// rather than a way to hand-pick the version a write claims to have read.
+// Letting a client set it would make the predicate self-satisfying, which
+// is the whole guarantee gone.
 func (r *Repo[M]) columnExcludedFromSet(col string) bool {
 	if col == r.m.pkColumn || col == "deleted_at" {
 		return true
 	}
-	if r.spec.Timestamps && (col == "created_at" || col == "updated_at") {
+	if r.m.versionColumn != "" && col == r.m.versionColumn {
+		return true
+	}
+	if r.m.timestamps && (col == "created_at" || col == "updated_at") {
 		return true
 	}
 	return false
@@ -326,6 +486,27 @@ func (r *Repo[M]) pkFieldValue(entity *M) reflect.Value {
 	return reflect.ValueOf(entity).Elem().FieldByName(r.m.pkGoField)
 }
 
+// fillULIDColumns generates a ULID for every `forge:fill=ulid` column left
+// at its Go zero (empty string) — the same empty-means-unset convention
+// pkIsString uses for the PK. Called only from Create, matching where the
+// PK's own ULID generation lives: Upsert deliberately does NOT ULID-generate
+// its PK (see that method's doc comment), and the same reasoning against
+// silent rotation applies here — an Upsert whose DO UPDATE branch ran this
+// on every call would stomp an existing row's real token with a fresh one
+// whenever the caller's struct left the field zero.
+func (r *Repo[M]) fillULIDColumns(entity *M) {
+	if len(r.m.fillULIDFields) == 0 {
+		return
+	}
+	v := reflect.ValueOf(entity).Elem()
+	for _, idx := range r.m.fillULIDFields {
+		f := v.Field(idx)
+		if f.Kind() == reflect.String && f.CanSet() && f.String() == "" {
+			f.SetString(ulid.Make().String())
+		}
+	}
+}
+
 // ─── Create ────────────────────────────────────────────────────────────
 
 // Create inserts a new row. Plain INSERT, never an upsert: a duplicate PK is
@@ -344,7 +525,8 @@ func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M) error {
 			pk.SetString(ulid.Make().String())
 		}
 	}
-	if r.spec.Timestamps {
+	r.fillULIDColumns(entity)
+	if r.m.timestamps {
 		r.stampCreate(entity)
 	}
 	r.normalizeArrays(entity)
@@ -364,6 +546,122 @@ func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M) error {
 		return fmt.Errorf("create %s: %w", r.m.table, err)
 	}
 	return nil
+}
+
+// ─── Upsert ────────────────────────────────────────────────────────────
+
+// Upsert writes entity by its primary key: INSERT, or on a PK conflict,
+// UPDATE the existing row. It is Repo's ONLY upsert verb — Create stays a
+// plain INSERT (see its doc comment) for exactly the callers this one is
+// not for: an idempotent ingest, a sync-from-external-system, or a
+// seed-or-update flow that does not know in advance whether the row
+// exists.
+//
+// # Conflict target
+//
+// The conflict target is always the primary key. Upserting on an
+// arbitrary unique index (a natural key distinct from the PK) is a
+// materially bigger design — it needs its own conflict-column parameter,
+// its own EXCLUDED-vs-existing-PK reconciliation, and its own tests — and
+// is out of scope here. A caller that needs it writes the ON CONFLICT
+// query by hand against db.Bun().
+//
+// # SET list
+//
+// The DO UPDATE SET list is r.m.updatable — the SAME allowlist a
+// full-replace Update writes, which already excludes the PK, deleted_at,
+// and (under managed timestamps) created_at/updated_at, plus any
+// ,skipupdate column. An upsert is a write like any other: it must not
+// let a round-tripped entity clobber a server-owned or secret column any
+// more than Update may, so the two share one list rather than each
+// maintaining its own idea of what is writable.
+//
+// # Timestamps
+//
+// created_at is stamped only on the INSERT path (when unset, same as
+// Create); updated_at is stamped on both paths. An upsert that rewrote
+// created_at on a conflict would misreport when the row was actually
+// born — the DO UPDATE SET list never names created_at for exactly that
+// reason.
+//
+// # Soft delete
+//
+// An upsert onto a tombstoned row RESURRECTS it (clears deleted_at along
+// with the rest of the updatable set) rather than silently no-op'ing or
+// erroring. Bun does not auto-scope INSERT the way it scopes SELECT/
+// DELETE, and there is no WHERE clause on an INSERT to guard with the way
+// Update's deleted_at IS NULL guard works — the row does not "exist" from
+// the read side, so an upsert that refused to touch it would look
+// indistinguishable from one that inserted successfully. Resurrection is
+// the one behavior consistent with the verb's own name: the caller
+// asserted "this row should exist with these values", and a soft-deleted
+// row is, for that purpose, an absent one that Upsert is allowed to
+// (re)create. A caller that wants tombstones to stay dead must Get first
+// and branch.
+//
+// # Server-allocated / string PKs
+//
+// A caller supplying an EMPTY PK on a server-allocated (autoincrement)
+// column cannot conflict with anything — there is no matching value to
+// find — so it always inserts a fresh row exactly like Create. The same
+// is true of an empty string PK, except Upsert does NOT ULID-generate one
+// the way Create does: a generated PK can never already be present in the
+// table, so ON CONFLICT could not fire regardless, and doing so would
+// make Upsert silently degrade into Create for its most common accidental
+// misuse (forgetting to set the PK) instead of surfacing the caller's
+// mistake as a NOT NULL violation.
+func (r *Repo[M]) Upsert(ctx context.Context, db orm.Context, entity *M) error {
+	r.ensureMeta(db)
+	ctx, span := r.startSpan(ctx, "Upsert")
+	defer span.End()
+
+	if r.m.timestamps {
+		r.stampCreate(entity)
+	}
+	r.normalizeArrays(entity)
+
+	q := db.Bun().NewInsert().Model(entity).
+		On("CONFLICT (?) DO UPDATE", bun.Ident(r.m.pkColumn))
+	for _, col := range r.m.updatable {
+		q = q.Set("? = EXCLUDED.?", bun.Ident(col), bun.Ident(col))
+	}
+	if r.m.timestamps && r.m.hasUpdatedAt {
+		q = q.Set("? = ?", bun.Ident("updated_at"), r.updatedAtStampValue(entity))
+	}
+	// Resurrection (see the doc comment above): deleted_at is excluded
+	// from r.m.updatable like the PK and the other managed timestamps, so
+	// without an explicit clear here the DO UPDATE branch would leave a
+	// tombstoned row's deleted_at exactly as it was, silently defeating
+	// the documented behavior.
+	if r.m.nativeSoftDel || r.m.legacyTextSoftDel {
+		q = q.Set("? = NULL", bun.Ident("deleted_at"))
+	}
+
+	if r.m.pkAutoInc {
+		q = q.Returning("?", bun.Ident(r.m.pkColumn))
+		pk := r.pkFieldValue(entity)
+		if _, err := q.Exec(ctx, pk.Addr().Interface()); err != nil {
+			recordErr(span, err)
+			return fmt.Errorf("upsert %s: %w", r.m.table, err)
+		}
+		return nil
+	}
+	if _, err := q.Exec(ctx); err != nil {
+		recordErr(span, err)
+		return fmt.Errorf("upsert %s: %w", r.m.table, err)
+	}
+	return nil
+}
+
+// updatedAtStampValue reads back the value stampCreate just wrote to
+// updated_at, so the DO UPDATE branch sets it to the SAME instant as the
+// DO INSERT branch instead of a value from a second, later time.Now()
+// call. EXCLUDED.updated_at would read equally well, but it is excluded
+// from r.m.updatable and therefore not guaranteed to be part of the
+// INSERT's column list in every future refactor of that allowlist.
+func (r *Repo[M]) updatedAtStampValue(entity *M) any {
+	sf := r.m.stampFields["updated_at"]
+	return reflect.ValueOf(entity).Elem().Field(sf.index).Interface()
 }
 
 // ─── Get ───────────────────────────────────────────────────────────────
@@ -475,7 +773,7 @@ func (r *Repo[M]) ListAll(ctx context.Context, db orm.Context, opts ...orm.Query
 // native-soft-delete exclusion automatically; only the legacy-TEXT path needs
 // the explicit deleted_at IS NULL filter here.
 func (r *Repo[M]) scopeRead(q *bun.SelectQuery) {
-	if r.spec.LegacyTextDeletedAt {
+	if r.m.legacyTextSoftDel {
 		q.Where("? IS NULL", bun.Ident("deleted_at"))
 	}
 }
@@ -484,14 +782,18 @@ func (r *Repo[M]) scopeRead(q *bun.SelectQuery) {
 
 // Update writes the full updatable column set of an existing row by PK.
 // updated_at is re-stamped under managed timestamps; created_at, the PK,
-// deleted_at, AND any Spec.SecretColumns are excluded from the
-// SET clause. Secret columns are preserved on this full-replace path because
-// the client can never have read the real value (the read path strips it), so
-// a maskless Update built from a round-tripped entity must not clobber the
-// stored secret with "" — a new value is set only via Create or a masked
-// Update that names the column. The deleted_at IS NULL guard applies to BOTH
-// soft-delete modes: Bun auto-scopes SELECT/DELETE to live rows but NOT
-// UPDATE, so without the guard an UPDATE could mutate a tombstoned row.
+// deleted_at, and any column tagged ,skipupdate — the projection of a
+// `forge:immutable` column declaration — are excluded from r.m.updatable and
+// so never named in the SET clause. That is what keeps a maskless Update
+// built from a round-tripped entity (one whose stripped or server-owned
+// columns came back zero-valued) from writing those zeros over stored data;
+// a new value is set via Create or a masked Update naming the column. The
+// deleted_at IS NULL guard applies to BOTH soft-delete modes: Bun
+// auto-scopes SELECT/DELETE to live rows but NOT UPDATE, so without the
+// guard an UPDATE could mutate a tombstoned row.
+//
+// An entity that declared a `forge:version` column additionally gets
+// optimistic concurrency control: see applyVersionGuard.
 func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M) error {
 	r.ensureMeta(db)
 	if len(r.m.updatable) == 0 {
@@ -500,28 +802,30 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M) error {
 	ctx, span := r.startSpan(ctx, "Update")
 	defer span.End()
 
-	if r.spec.Timestamps {
+	if r.m.timestamps {
 		r.stampUpdated(entity)
 	}
 	r.normalizeArrays(entity)
 
 	cols := r.m.updatable
-	if r.spec.Timestamps && r.m.hasUpdatedAt {
+	if r.m.timestamps && r.m.hasUpdatedAt {
 		cols = appendCol(cols, "updated_at")
 	}
 	q := db.Bun().NewUpdate().Model(entity).
 		Column(cols...).
 		Where("? = ?", bun.Ident(r.m.pkColumn), r.pkFieldValue(entity).Interface())
 	r.scopeWrite(q)
+	r.applyVersionGuard(q, entity)
 	res, err := q.Exec(ctx)
 	if err != nil {
 		recordErr(span, err)
 		return fmt.Errorf("update %s: %w", r.m.table, err)
 	}
-	if err := requireRowTouched(res, "update", r.m.table); err != nil {
+	if err := r.requireWriteLanded(ctx, db, res, entity); err != nil {
 		recordErr(span, err)
 		return err
 	}
+	r.advanceVersion(entity)
 	return nil
 }
 
@@ -529,24 +833,39 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M) error {
 // proto field names == column names). Paths outside the updatable allowlist
 // return *orm.UnknownFieldError, which pkg/crud maps to a clean
 // InvalidArgument. updated_at is stamped on masked writes too.
+//
+// A ,skipupdate column named by the mask is a deliberate assertion (rotating
+// a secret, reassigning an owner) and must be written — the opposite of
+// Update's full-replace rule. Bun's own SET-clause builder applies
+// ,skipupdate unconditionally regardless of which path asked for the
+// column, so such columns are pulled out of Column(...) and set explicitly
+// via SetColumn(...), which Bun does not filter.
+//
+// The `forge:version` column is the exception to that exception: it is
+// excluded from updatableSet entirely, so a mask naming it is an
+// UnknownFieldError rather than a deliberate assertion. A masked write is
+// still version-CHECKED — writing one field of a row someone else has since
+// rewritten is the same lost update as replacing the whole row — so the
+// same predicate and increment apply here. See applyVersionGuard.
 func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, fields []string) error {
 	r.ensureMeta(db)
 	if len(fields) == 0 {
 		return nil
 	}
-	if len(r.m.updatable) == 0 {
+	if len(r.m.updatableSet) == 0 {
 		// A concrete path can only ever be unknown.
 		return &orm.UnknownFieldError{Field: fields[0]}
 	}
 	ctx, span := r.startSpan(ctx, "UpdateMasked")
 	defer span.End()
 
-	stampUpdated := r.spec.Timestamps && r.m.hasUpdatedAt
+	stampUpdated := r.m.timestamps && r.m.hasUpdatedAt
 	if stampUpdated {
 		r.stampUpdated(entity)
 	}
 
 	cols := make([]string, 0, len(fields)+1)
+	var forced []string
 	seen := make(map[string]bool, len(fields))
 	for _, f := range fields {
 		if !r.m.updatableSet[f] {
@@ -556,6 +875,10 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 			continue
 		}
 		seen[f] = true
+		if _, skip := r.m.skipUpdate[f]; skip {
+			forced = append(forced, f)
+			continue
+		}
 		cols = append(cols, f)
 	}
 	r.normalizeArraysFor(entity, seen)
@@ -563,27 +886,169 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 		cols = append(cols, "updated_at")
 	}
 
-	q := db.Bun().NewUpdate().Model(entity).
-		Column(cols...).
-		Where("? = ?", bun.Ident(r.m.pkColumn), r.pkFieldValue(entity).Interface())
+	q := db.Bun().NewUpdate().Model(entity)
+	if len(cols) > 0 {
+		q = q.Column(cols...)
+	}
+	v := reflect.ValueOf(entity).Elem()
+	for _, f := range forced {
+		q = q.SetColumn(f, "?", v.Field(r.m.skipUpdate[f]).Interface())
+	}
+	q = q.Where("? = ?", bun.Ident(r.m.pkColumn), r.pkFieldValue(entity).Interface())
 	r.scopeWrite(q)
+	r.applyVersionGuard(q, entity)
 	res, err := q.Exec(ctx)
 	if err != nil {
 		recordErr(span, err)
 		return fmt.Errorf("update %s: %w", r.m.table, err)
 	}
-	if err := requireRowTouched(res, "update", r.m.table); err != nil {
+	if err := r.requireWriteLanded(ctx, db, res, entity); err != nil {
 		recordErr(span, err)
 		return err
 	}
+	r.advanceVersion(entity)
 	return nil
 }
 
 // scopeWrite applies the soft-delete guard to an UPDATE.
 func (r *Repo[M]) scopeWrite(q *bun.UpdateQuery) {
-	if r.m.nativeSoftDel || r.spec.LegacyTextDeletedAt {
+	if r.m.nativeSoftDel || r.m.legacyTextSoftDel {
 		q.Where("? IS NULL", bun.Ident("deleted_at"))
 	}
+}
+
+// ─── optimistic concurrency control ───────────────────────────────────────
+//
+// Opt-in, per entity, by declaring one column `forge:version` in a
+// migration. An entity without one never reaches any of the code below:
+// versionColumn is "", every function here returns immediately, and the
+// write path is byte-for-byte the last-writer-wins behaviour it always was.
+
+// applyVersionGuard turns an UPDATE into a compare-and-swap: the row is
+// matched only while its stored version still equals the one the caller
+// read, and the same statement increments it.
+//
+// Both halves must be in the ONE statement. Reading the version, comparing
+// it in Go and then writing is the lost update this exists to prevent,
+// merely with a smaller window — the compare and the write have to be a
+// single atomic act, and `WHERE version = $n` + `SET version = version + 1`
+// is that act, enforced by the row lock the UPDATE already takes. It needs
+// no explicit transaction and no isolation level above postgres's default
+// READ COMMITTED: a concurrent writer either committed before this
+// statement acquired the row (the predicate then fails and matches nothing)
+// or after (it finds the incremented value and fails in turn).
+//
+// The increment is expressed as `version = version + 1` — the DATABASE's
+// value plus one, not the in-memory value plus one. They are equal whenever
+// the predicate matches, but writing it as an expression keeps the
+// statement true by construction rather than true by an assumption about
+// what the caller's struct holds.
+func (r *Repo[M]) applyVersionGuard(q *bun.UpdateQuery, entity *M) {
+	if r.m.versionColumn == "" {
+		return
+	}
+	col := bun.Ident(r.m.versionColumn)
+	q.Where("? = ?", col, r.versionFieldValue(entity).Interface())
+	q.Set("? = ? + 1", col, col)
+}
+
+// versionFieldValue is the version column's struct field on entity.
+func (r *Repo[M]) versionFieldValue(entity *M) reflect.Value {
+	return reflect.ValueOf(entity).Elem().Field(r.m.versionFieldIndex)
+}
+
+// advanceVersion mirrors the increment the database just performed onto the
+// caller's in-memory entity, so a caller holding it can issue a SECOND
+// update without re-reading the row.
+//
+// Without this, the write succeeds, the stored version moves to n+1, the
+// struct still says n, and the caller's next Update fails Aborted against a
+// row nobody else touched — a conflict invented by this package. Only ever
+// called after a write that DID land, so it can never advance past a
+// version the database rejected.
+func (r *Repo[M]) advanceVersion(entity *M) {
+	if r.m.versionColumn == "" {
+		return
+	}
+	f := r.versionFieldValue(entity)
+	if !f.CanSet() {
+		return
+	}
+	switch f.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		f.SetInt(f.Int() + 1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		f.SetUint(f.Uint() + 1)
+	}
+	// Any other Go type is left alone rather than guessed at. The column is
+	// meant to be an integer counter; a non-integer one still gets the
+	// database-side `+ 1` (postgres decides whether that is legal for the
+	// type) and simply forces the caller to re-read before writing again.
+}
+
+// requireWriteLanded is requireRowTouched plus the disambiguation optimistic
+// concurrency control forces on it.
+//
+// Zero rows affected used to have exactly one meaning — no such row — and
+// requireRowTouched turned it into orm.ErrNoRows → CodeNotFound. With a
+// version predicate in the WHERE clause it has two, and they are not
+// remotely the same news for a client:
+//
+//   - the row is gone (or was never there, or is soft-deleted): NotFound.
+//     Retrying is pointless; the resource does not exist.
+//   - the row is there but its version moved: somebody else committed a
+//     write between this caller's read and its write. Aborted. Re-read and
+//     retry is not just viable, it is the prescribed recovery — which is
+//     precisely what connect.CodeAborted means, and why it is not
+//     FailedPrecondition (a state the caller must fix) or AlreadyExists.
+//
+// Reporting a conflict as NotFound would tell a client its row had been
+// deleted when it had merely been edited, and a UI acting on that ("this
+// record no longer exists") would be lying about data still sitting in the
+// table. So on zero rows the repo asks ONE narrow follow-up question — does
+// a row with this PK exist at all, ignoring the version — and answers from
+// the result.
+//
+// That re-query is racy in the strict sense: the row could be deleted
+// between the failed UPDATE and this SELECT, turning a genuine conflict
+// into a NotFound. That is acceptable and the ordering makes it honest —
+// the row IS gone by the time the caller is told so, and re-reading (the
+// prescribed response to Aborted) would have discovered exactly that. The
+// converse mistake, calling a deletion a conflict, is equally bounded and
+// equally self-correcting on the caller's re-read.
+//
+// It costs one extra round trip ONLY on the failure path of a
+// version-checked entity: the happy path never reaches it, and an entity
+// with no version column returns from the first branch without ever
+// building the query.
+func (r *Repo[M]) requireWriteLanded(ctx context.Context, db orm.Context, res sql.Result, entity *M) error {
+	if err := requireRowTouched(res, "update", r.m.table); err == nil {
+		return nil
+	}
+	if r.m.versionColumn == "" {
+		return fmt.Errorf("update %s: %w", r.m.table, orm.ErrNoRows)
+	}
+
+	// The version predicate is deliberately absent here: this asks only
+	// whether the ROW exists, which is the single fact that separates the
+	// two answers. The soft-delete scoping stays, so a tombstoned row reads
+	// as absent exactly as it does to Get — the two verbs must keep
+	// agreeing about what "this row does not exist" means.
+	q := db.Bun().NewSelect().Model((*M)(nil)).
+		Where("? = ?", bun.Ident(r.m.pkColumn), r.pkFieldValue(entity).Interface())
+	r.scopeRead(q)
+	exists, err := q.Exists(ctx)
+	if err != nil {
+		// The follow-up query itself failed, so which of the two answers
+		// applies is unknown. Report the query's error rather than pick one:
+		// a guess here would be indistinguishable from a real verdict.
+		return fmt.Errorf("update %s: classify zero-row write: %w", r.m.table, err)
+	}
+	if !exists {
+		return fmt.Errorf("update %s: %w", r.m.table, orm.ErrNoRows)
+	}
+	return svcerr.Aborted(fmt.Sprintf(
+		"%s was modified by another writer; re-read it and retry", r.m.entityName))
 }
 
 func appendCol(cols []string, c string) []string {
@@ -614,7 +1079,7 @@ func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any) error {
 	ctx, span := r.startSpan(ctx, "Delete", attribute.String("id", fmt.Sprint(id)))
 	defer span.End()
 
-	if r.spec.LegacyTextDeletedAt {
+	if r.m.legacyTextSoftDel {
 		q := db.Bun().NewUpdate().Model((*M)(nil)).
 			Set("? = CURRENT_TIMESTAMP", bun.Ident("deleted_at")).
 			Where("? = ?", bun.Ident(r.m.pkColumn), id).

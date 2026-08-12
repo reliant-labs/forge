@@ -182,7 +182,7 @@ func TestCreate_CheckViolationNamesTheConstraintOnTheWire(t *testing.T) {
 	if _, err := db.Bun().ExecContext(context.Background(), ddl); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
-	repo := NewRepo[prescription](Spec{})
+	repo := NewRepo[prescription]()
 
 	mux := http.NewServeMux()
 	mux.Handle(createPrescriptionProcedure, connect.NewUnaryHandler(

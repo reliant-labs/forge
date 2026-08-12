@@ -10,9 +10,9 @@ import (
 
 	"github.com/jinzhu/inflection"
 
-	"github.com/reliant-labs/forge/internal/schemadef"
-	"github.com/reliant-labs/forge/internal/seeddata"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // MockEntityTemplateData holds data for rendering a single entity's TypeScript
@@ -297,11 +297,11 @@ func BuildScenarioRPCData(services []ServiceDef) ScenarioRPCData {
 // and range bounds, the foreign keys, the primary keys — arrives here already
 // resolved, and the two can no longer disagree because there is only one
 // answer. What the seeder refuses to invent, this refuses to invent too: an
-// undeclared column carries seeddata.SyntheticStringPrefix + its own name +
+// undeclared column carries seedplan.SyntheticStringPrefix + its own name +
 // the row number, in both places.
 
 // SeedProjection is the project's dev dataset as the frontend mock generator
-// reads it: the same seeddata.Plan `forge db seed apply` renders, queried
+// reads it: the same seedplan.Plan `forge db seed apply` renders, queried
 // per cell instead of rendered as SQL.
 //
 // A nil *SeedProjection is valid everywhere and means "no dataset to agree
@@ -310,8 +310,8 @@ func BuildScenarioRPCData(services []ServiceDef) ScenarioRPCData {
 // type-correct, self-evidently synthetic literal, which is exactly what the
 // seeder would have written for a column nothing describes.
 type SeedProjection struct {
-	cfg  seeddata.Config
-	plan *seeddata.Plan
+	cfg  seedplan.Config
+	plan *seedplan.Plan
 }
 
 // BuildSeedProjection resolves the project's seed plan from its migrations.
@@ -319,7 +319,7 @@ type SeedProjection struct {
 // the salt and row counts the dev dataset is built with — passed in rather
 // than re-derived here so the mocks and `forge db seed apply` cannot be
 // looking at different plans.
-func BuildSeedProjection(projectDir string, cfg seeddata.Config) *SeedProjection {
+func BuildSeedProjection(projectDir string, cfg seedplan.Config) *SeedProjection {
 	migDir := filepath.Join(projectDir, "db", "migrations")
 	tables, err := schemadef.ApplyAndIntrospectAt(migDir, shadowdb.Resolve(projectDir))
 	if err != nil || len(tables) == 0 {
@@ -327,19 +327,19 @@ func BuildSeedProjection(projectDir string, cfg seeddata.Config) *SeedProjection
 	}
 	// Vocab problems are reported by the seed CLI, which is where a project
 	// asks for its dataset; a bad overlay here just means built-ins.
-	vocab, _ := seeddata.LoadVocab(seeddata.VocabPath(migDir))
+	vocab, _ := seedplan.LoadVocab(seedplan.VocabPath(migDir))
 	return newSeedProjection(tables, cfg, vocab)
 }
 
 // newSeedProjection builds the projection from an already-introspected
 // schema. Split out so the agreement between a mock literal and the seeded
 // cell can be asserted without a database.
-func newSeedProjection(tables []schemadef.Table, cfg seeddata.Config, vocab *seeddata.Vocab) *SeedProjection {
-	plan, err := seeddata.BuildPlan(tables, seeddata.PoolsFromTables(tables), cfg)
+func newSeedProjection(tables []schemadef.Table, cfg seedplan.Config, vocab *seedplan.Vocab) *SeedProjection {
+	plan, err := seedplan.BuildPlan(tables, seedplan.PoolsFromTables(tables), cfg)
 	if err != nil {
 		return nil
 	}
-	plan.SetBounds(seeddata.BoundsFromTables(tables))
+	plan.SetBounds(seedplan.BoundsFromTables(tables))
 	plan.ApplyVocab(vocab)
 	return &SeedProjection{cfg: cfg, plan: plan}
 }
@@ -352,6 +352,39 @@ func (p *SeedProjection) Value(table, column string, row int) (string, bool) {
 		return "", false
 	}
 	return p.plan.SeedValue(table, column, row)
+}
+
+// SeedFingerprint identifies the schema + seed config the project's fixtures
+// are derived FROM, for the generated guard that has to notice when those
+// inputs move without a regenerate.
+//
+// It is deliberately NOT a method on SeedProjection, and that is the whole
+// point of its existence. A projection requires a reachable postgres to
+// build; the fingerprint requires only files on disk. Hanging it off the
+// projection would delete the guard in exactly the case that needs it most —
+// no shadow server, so BuildSeedProjection returns nil, every fixture
+// degrades to a synthetic placeholder, and the project would then also carry
+// no record of which schema those placeholders stood in for. Reading the
+// inputs directly means the fixtures and the claim about them fail
+// independently.
+// It returns BOTH digests, and the caller must keep them straight:
+//
+//   - files hashes the migrations and vocab.yaml only. This is the one a
+//     process with no database can recompute — the emitted TypeScript guard
+//     reads exactly these files.
+//   - withConfig additionally folds in the seed salt and row counts from
+//     forge.yaml, which change every fixture value without touching a
+//     migration, and which nothing outside Go can see.
+//
+// They are returned as a pair rather than selected by a flag because the
+// mistake this API exists to prevent is using one where the other belongs.
+func SeedFingerprint(projectDir string, cfg seedplan.Config) (files, withConfig seedplan.Fingerprint) {
+	// An unreadable input degrades to the empty fingerprint, which every
+	// consumer treats as "cannot verify" rather than "verified fresh".
+	migDir := filepath.Join(projectDir, "db", "migrations")
+	files, _ = seedplan.FingerprintInputs(migDir)
+	withConfig, _ = seedplan.FingerprintWithConfig(migDir, cfg)
+	return files, withConfig
 }
 
 // Rows is how many rows the dataset holds for a table. 0 means "no plan", and
@@ -917,7 +950,7 @@ func mockGenerateIntegerValue(i int) string {
 
 // mockGenerateStringValue is the string a column carries when no dataset
 // answers for it: the seeder's own stamp, the column's name as a LABEL, and
-// the row number — the identical spelling internal/seeddata gives a column
+// the row number — the identical spelling pkg/seedplan gives a column
 // nothing describes, so the two agree even here.
 //
 // It used to dispatch on the column's name into vocabulary pools: `name` drew
@@ -928,5 +961,5 @@ func mockGenerateIntegerValue(i int) string {
 // vocabulary in one place, db/seeds/vocab.yaml, and it arrives here through
 // the plan.
 func mockGenerateStringValue(col string, i int) string {
-	return seeddata.SyntheticStringPrefix + col + "_" + strconv.Itoa(i+1)
+	return seedplan.SyntheticStringPrefix + col + "_" + strconv.Itoa(i+1)
 }

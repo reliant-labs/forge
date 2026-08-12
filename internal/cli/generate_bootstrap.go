@@ -114,9 +114,10 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 // services/<name>.go per service whose RunE calls cmd.Serve() with the TYPED
 // mount method expression (*app.Components).Mount<Svc> (no string selection);
 // one workers/<name>.go and operators/<name>.go per worker/operator
-// (cmd.MountNone + a named supervised subset). Each group also gets a
-// register_gen.go anchor so the subpackage compiles (and main.go's blank
-// import resolves) even with ZERO items.
+// (cmd.MountNone + a named supervised subset). Each group also gets an anchor
+// so the subpackage compiles (and main.go's blank import resolves) even with
+// ZERO items — Tier-1 register_gen.go for services (it projects the built-in
+// collision NOTEs), scaffold-once register.go for workers/operators.
 //
 // Driven by the SAME `services`/`workers`/`operators` rows the composition
 // layer is, so each subcommand lines up with a typed mount / Worker<X>()
@@ -160,9 +161,11 @@ func generateCmdGroups(services []codegen.ServiceDef, projectDir string, cs *che
 	return nil
 }
 
-// generateBootstrapTesting regenerates pkg/app/testing.go with test helpers.
+// generateBootstrapTesting regenerates the per-component test helpers (one
+// internal/handlers/<svc>/helpers_gen_test.go per service, plus one per
+// internal package).
 func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
-	fmt.Println("🔧 Generating pkg/app/testing.go...")
+	fmt.Println("🔧 Generating per-service test helpers...")
 
 	packages, err := discoverPackages(projectDir)
 	if err != nil {
@@ -188,23 +191,26 @@ func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, 
 		return fmt.Errorf("failed to generate bootstrap testing: %w", err)
 	}
 
-	fmt.Println("  ✅ Generated pkg/app/testing.go")
+	fmt.Println("  ✅ Generated per-service test helpers")
 	return nil
 }
 
-// generateMigrate writes pkg/app/migrate.go with embedded migration support.
+// generateMigrate writes db/embed.go — the project's embedded migration set.
+//
+// The migration LOGIC it used to emit beside this (pkg/app/migrate.go) is now
+// pkg/migratekit.AutoMigrate; GenerateMigrate retires any copy still on disk.
 func generateMigrate(projectDir, modulePath string, cs *checksums.FileChecksums) error {
-	fmt.Println("🔧 Generating pkg/app/migrate.go...")
+	fmt.Println("🔧 Generating db/embed.go...")
 
 	has := hasSQLMigrations(projectDir)
 	if err := codegen.GenerateMigrate(projectDir, modulePath, has, cs); err != nil {
-		return fmt.Errorf("failed to generate migrate.go: %w", err)
+		return fmt.Errorf("failed to generate db/embed.go: %w", err)
 	}
 
 	if has {
-		fmt.Println("  ✅ Generated pkg/app/migrate.go (with embedded migrations)")
+		fmt.Println("  ✅ Generated db/embed.go (migrations embedded)")
 	} else {
-		fmt.Println("  ✅ Generated pkg/app/migrate.go (no migrations yet)")
+		fmt.Println("  ⏭️  No migrations yet — nothing to embed")
 	}
 	return nil
 }

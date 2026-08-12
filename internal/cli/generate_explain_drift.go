@@ -87,7 +87,7 @@ func printExplainDriftDiffs(w io.Writer, ctx *pipelineContext) {
 		render := filepath.Join(ctx.AbsPath, checksums.RenderDir, d.Path)
 		fmt.Fprintf(w, "\n── %s ──\n", d.Path)
 		if _, err := os.Stat(render); err != nil {
-			fmt.Fprintf(w, "   (no fresh render was produced this run — the file's emitter step may be gated off or excluded by --steps)\n")
+			fmt.Fprint(w, explainDriftNoRenderNote(d.Path))
 			continue
 		}
 		if !gitAvailable {
@@ -121,6 +121,35 @@ func printExplainDriftDiffs(w io.Writer, ctx *pipelineContext) {
 		}
 	}
 	fmt.Fprintln(w)
+}
+
+// explainDriftNoRenderNote explains why a drifted file has no fresh render
+// to diff against — and, when a diff is genuinely impossible, says so
+// instead of implying one is coming.
+//
+// The two causes look identical on disk (nothing under .forge/render/) but
+// are opposites in what the user should do next, and collapsing them into
+// one message is what made this flag useless exactly when it was needed. A
+// project upgrading across the frontend `_gen` rename ran `--explain-drift`
+// on its dashboard_gen.tsx — the remedy the drift error itself names — and
+// was told the emitter "may be gated off", which sent it looking for a
+// --steps flag it had not passed and a feature it had not disabled. The
+// truth was that forge had STOPPED EMITTING that path (the dashboard became
+// the scaffold-once dashboard.tsx), so there was no render to produce, no
+// flag to change, and nothing the user could do to make the diff appear.
+//
+// Tier1TargetSet is what separates them: every Tier-1 writer records its
+// path there before any ownership check, so a drifted path ABSENT from it
+// is one no emitter even attempted this run.
+func explainDriftNoRenderNote(relPath string) string {
+	if checksums.Tier1TargetSet[relPath] {
+		// An emitter claimed the path but produced no side render: the
+		// step really was skipped this run.
+		return "   (no fresh render this run — the file's emitter step was gated off or excluded by --steps; re-run without `--steps=…` to get a diff)\n"
+	}
+	return fmt.Sprintf("   (forge no longer emits this file, so there is no current render to diff against — nothing you can pass will produce one.\n"+
+		"    It carries a generated banner from an older forge that did emit it. The file is now yours: keep it and remove the stale banner, or delete it if nothing imports it.\n"+
+		"    `forge project disown %s --reason \"<why>\"` records the decision and stops this guard reporting it.)\n", relPath)
 }
 
 // gitNoIndexDiff shells `git diff --no-index` over two absolute paths

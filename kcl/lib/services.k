@@ -595,6 +595,11 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
                     command = cj.command
                 if cj.env_vars:
                     env = [_env_source(e) for e in _dedup_env_vars(cj.env_vars)]
+                # Same defaulting a Service gets: a Job with no resources is
+                # BestEffort and first-evicted, which for the migrate Job this
+                # kind usually expresses means a release half-applying its
+                # schema.
+                resources = _resource_block(cj.resources if cj.resources else _default_resources)
                 securityContext = _default_container_security_context
                 if _volumes:
                     volumeMounts = [_volume_mount(v) for v in _volumes]

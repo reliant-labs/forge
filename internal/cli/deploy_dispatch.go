@@ -111,11 +111,41 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 			raw = append(raw, deploytarget.RawService{
 				Name: svc.Name,
 				Compose: &deploytarget.ComposeSpec{
-					ComposeFile: cm.ComposeFile,
-					Service:     cm.Service,
-					EnvFile:     cm.EnvFile,
+					ComposeFile:        cm.ComposeFile,
+					Service:            cm.Service,
+					EnvFile:            cm.EnvFile,
+					Wait:               cm.Wait,
+					WaitTimeoutSeconds: cm.WaitTimeout,
+					Env:                cm.Env,
 				},
 				Secrets: secretEnv,
+			})
+		case "host-infra":
+			hi := svc.Deploy.HostInfra
+			if hi == nil {
+				continue
+			}
+			// No Secrets layer: a host-infra instance's credentials are the
+			// ones the declaration states, and the app's DSN is composed from
+			// the SAME declaration. Injecting a secret store's values here
+			// would give forge a second, independent opinion about the
+			// password — which is how the two ever disagree.
+			raw = append(raw, deploytarget.RawService{
+				Name: svc.Name,
+				HostInfra: &deploytarget.HostInfraSpec{
+					Engine:          hi.Engine,
+					Port:            hi.Port,
+					Database:        hi.Database,
+					User:            hi.User,
+					Password:        hi.Password,
+					DataDir:         hi.DataDir,
+					Version:         hi.Version,
+					IDPDatabase:     hi.IDPDatabase,
+					IDPDatabasePort: hi.IDPDatabasePort,
+					IDPMasterKey:    hi.IDPMasterKey,
+					IDPStepsFile:    hi.IDPStepsFile,
+					IDPPATPath:      hi.IDPPATPath,
+				},
 			})
 		default:
 			// host, build-only, "" — skipped.

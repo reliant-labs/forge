@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -25,10 +26,11 @@ import (
 	"time"
 )
 
-// reconcileDeclaredClusters ensures every cluster the env declares
-// exists, in declaration order. Idempotent: a cluster that already
-// exists is a no-op (warm-run fast path). The owner cluster must be
-// declared BEFORE any secondary that inherits its network/registry —
+// reconcileDeclaredClusters ensures every cluster the env declares exists
+// and is running, in declaration order. Idempotent: a cluster that already
+// exists and is running is a no-op (warm-run fast path); a preserved but
+// stopped cluster is started before reconciliation continues. The owner
+// cluster must be declared BEFORE any secondary that inherits its network/registry —
 // declaration order is the contract (a secondary references the owner's
 // network by name, which only exists once the owner is created).
 //
@@ -59,18 +61,22 @@ func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, pr
 }
 
 // ensureDeclaredCluster creates one declared k3d cluster if it's absent,
-// applying the declared flags; no-op when it already exists. After a
+// applying the declared flags; starts it when present but stopped; and is a
+// no-op when it already exists and is running. After a
 // fresh create of a cluster with RegistryInherit (an `owner` reference),
 // it mirrors the owner cluster's registries.yaml onto the new node and
 // restarts it to reload.
-// clusterExistsFn / setupSecondaryClusterNodeFn are indirection seams so the
-// reconcile decision logic is unit-testable without shelling out to k3d /
-// kubectl / docker. Production wires them to the real implementations; tests
-// stub them to assert (e.g.) the secondary-node setup runs exactly for the
-// nested-secondary clusters.
+// The indirection seams keep reconcile decisions unit-testable without
+// shelling out to k3d / kubectl / docker. Production wires them to the real
+// implementations; tests pin start/wait/setup ordering.
 var (
-	clusterExistsFn             = clusterExists
-	setupSecondaryClusterNodeFn = setupSecondaryClusterNode
+	clusterRuntimeStateFn         = lookupK3dClusterRuntimeState
+	startDeclaredClusterFn        = startK3dCluster
+	createDeclaredClusterFn       = createK3dCluster
+	waitDeclaredClusterReadyFn    = waitNodeReady
+	ensureRunningClusterHealthyFn = ensureRunningK3dClusterHealthy
+	ensureClusterHostGatewayDNSFn = ensureClusterHostGatewayDNS
+	setupSecondaryClusterNodeFn   = setupSecondaryClusterNode
 )
 
 // isNestedSecondary reports whether a cluster is a SECONDARY joined to an
@@ -84,40 +90,89 @@ func isNestedSecondary(c ClusterEntity) bool {
 	return c.RegistryInherit && c.Network != ""
 }
 
+// clusterCreateFlags builds the `k3d cluster create` flags for a cluster
+// declared WITHOUT a config file, projecting each declared field onto its
+// flag. A cluster that names a config file takes none of these: the config is
+// authoritative for servers/agents/ports/network.
+func clusterCreateFlags(c ClusterEntity) []string {
+	var flags []string
+	if c.Image != "" {
+		flags = append(flags, "--image", c.Image)
+	}
+	flags = append(flags, "--servers", strconv.Itoa(effectiveServers(c)))
+	if c.Agents > 0 {
+		flags = append(flags, "--agents", strconv.Itoa(c.Agents))
+	}
+	if c.Network != "" {
+		flags = append(flags, "--network", c.Network)
+	}
+	if c.APIPort > 0 {
+		// Bind on 0.0.0.0 so a sibling cluster on the same docker
+		// network can reach this API server by host IP if needed.
+		flags = append(flags, "--api-port", fmt.Sprintf("0.0.0.0:%d", c.APIPort))
+	}
+	return flags
+}
+
+// reconcileExistingCluster brings an ALREADY-CREATED cluster up to what the
+// current render declares: start it if it is stopped, fail loudly on host-port
+// drift, and re-apply the secondary-node setup.
+//
+// Every step is idempotent, so this runs on warm and restarted clusters alike
+// — a cluster whose host-gateway DNS alias or MSS clamp was lost (a manual
+// node restart clears the iptables rule) heals on the next `forge env up`.
+func reconcileExistingCluster(ctx context.Context, c ClusterEntity, state k3dClusterRuntimeState, projectDir, env string) error {
+	if state.Running {
+		fmt.Printf("  cluster %q already exists and its containers are running — verifying Kubernetes API...\n", c.Name)
+		if err := ensureRunningClusterHealthyFn(ctx, c); err != nil {
+			return fmt.Errorf("verify running cluster %q: %w", c.Name, err)
+		}
+		fmt.Printf("  cluster %q Kubernetes API and nodes are Ready — no-op\n", c.Name)
+	} else {
+		fmt.Printf("  cluster %q already exists but is stopped — starting...\n", c.Name)
+		if err := startDeclaredClusterFn(ctx, c.Name); err != nil {
+			return err
+		}
+		fmt.Printf("  waiting for cluster %q nodes to report Ready...\n", c.Name)
+		if err := waitDeclaredClusterReadyFn(ctx, c.Name); err != nil {
+			return fmt.Errorf("wait for restarted cluster %q: %w", c.Name, err)
+		}
+	}
+	if err := ensureClusterHostGatewayDNSFn(ctx, c.Name); err != nil {
+		return fmt.Errorf("ensure host-gateway DNS for cluster %q: %w", c.Name, err)
+	}
+
+	// HOST-PORT DRIFT GUARD. k3d fixes a cluster's host-port maps at
+	// create time — a Gateway listener whose host port renders AFTER
+	// the cluster was created (e.g. a listener added to the env's KCL)
+	// is NOT mapped on the live cluster, so its route is silently
+	// unreachable (connection refused on the host port). The host-port
+	// set is DERIVED from the SAME render `forge env up` deploys
+	// (deploy/k3d.yaml + the generated deploy/k3d-ports.yaml), so we
+	// can detect this: compare the declared set to what the live
+	// serverlb publishes and FAIL CLEARLY telling the user to recreate,
+	// rather than leave the route dead. Only meaningful for a
+	// config-driven cluster that maps Gateway host ports (HostPorts).
+	if c.Config != "" && c.HostPorts {
+		if err := checkClusterPortDrift(ctx, c, projectDir, env); err != nil {
+			return err
+		}
+	}
+	if isNestedSecondary(c) {
+		if err := setupSecondaryClusterNodeFn(ctx, c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env string) error {
-	exists, err := clusterExistsFn(ctx, c.Name)
+	state, err := clusterRuntimeStateFn(ctx, c.Name)
 	if err != nil {
 		return err
 	}
-	if exists {
-		fmt.Printf("  cluster %q already exists — no-op\n", c.Name)
-		// HOST-PORT DRIFT GUARD. k3d fixes a cluster's host-port maps at
-		// create time — a Gateway listener whose host port renders AFTER
-		// the cluster was created (e.g. a listener added to the env's KCL)
-		// is NOT mapped on the live cluster, so its route is silently
-		// unreachable (connection refused on the host port). The host-port
-		// set is DERIVED from the SAME render `forge env up` deploys
-		// (deploy/k3d.yaml + the generated deploy/k3d-ports.yaml), so we
-		// can detect this: compare the declared set to what the live
-		// serverlb publishes and FAIL CLEARLY telling the user to recreate,
-		// rather than leave the route dead. Only meaningful for a
-		// config-driven cluster that maps Gateway host ports (HostPorts).
-		if c.Config != "" && c.HostPorts {
-			if err := checkClusterPortDrift(ctx, c, projectDir, env); err != nil {
-				return err
-			}
-		}
-		// Re-run the secondary-cluster node setup on warm runs too. Every
-		// step is idempotent (a guard check precedes each mutation), so a
-		// cluster whose host-gateway DNS alias or MSS clamp was lost (e.g.
-		// a manual node restart cleared the iptables rule) heals on the
-		// next `forge env up`.
-		if isNestedSecondary(c) {
-			if err := setupSecondaryClusterNodeFn(ctx, c); err != nil {
-				return err
-			}
-		}
-		return nil
+	if state.Exists {
+		return reconcileExistingCluster(ctx, c, state, projectDir, env)
 	}
 
 	args := []string{"cluster", "create", c.Name}
@@ -158,26 +213,12 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		}
 		args = append(args, "--config", cfgPath.path)
 	} else {
-		args = append(args, "--servers", strconv.Itoa(effectiveServers(c)))
-		if c.Agents > 0 {
-			args = append(args, "--agents", strconv.Itoa(c.Agents))
-		}
-		if c.Network != "" {
-			args = append(args, "--network", c.Network)
-		}
-		if c.APIPort > 0 {
-			// Bind on 0.0.0.0 so a sibling cluster on the same docker
-			// network can reach this API server by host IP if needed.
-			args = append(args, "--api-port", fmt.Sprintf("0.0.0.0:%d", c.APIPort))
-		}
+		args = append(args, clusterCreateFlags(c)...)
 	}
 
 	fmt.Printf("  creating k3d cluster %q (%s)...\n", c.Name, strings.Join(args[2:], " "))
-	create := exec.CommandContext(ctx, "k3d", args...)
-	create.Stdout = os.Stdout
-	create.Stderr = os.Stderr
-	if err := create.Run(); err != nil {
-		return fmt.Errorf("k3d cluster create: %w", err)
+	if err := createDeclaredClusterFn(ctx, c.Name, args); err != nil {
+		return err
 	}
 
 	if c.RegistryInherit {
@@ -189,6 +230,9 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 		if err := inheritRegistryMirror(ctx, c); err != nil {
 			return fmt.Errorf("inherit registry mirror: %w", err)
 		}
+	}
+	if err := ensureClusterHostGatewayDNSFn(ctx, c.Name); err != nil {
+		return fmt.Errorf("ensure host-gateway DNS for new cluster %q: %w", c.Name, err)
 	}
 
 	// A secondary cluster nested on an owner's docker network needs node
@@ -303,10 +347,31 @@ func inheritRegistryMirror(ctx context.Context, c ClusterEntity) error {
 	if err := dockerRestart(ctx, newNode); err != nil {
 		return fmt.Errorf("restart %s: %w", newNode, err)
 	}
+	// k3d's load balancer resolves the server node name when nginx starts.
+	// If the disposable tools node was removed during hung-client recovery,
+	// restarting the server can reuse that freed IP. Refresh the load balancer
+	// before the readiness probe or it keeps proxying the API port to the old
+	// address until some later manual restart.
+	if err := refreshK3dLoadBalancer(ctx, c.Name); err != nil {
+		return fmt.Errorf("refresh %s load balancer after node restart: %w", c.Name, err)
+	}
 	if err := waitNodeReady(ctx, c.Name); err != nil {
 		return fmt.Errorf("wait %s ready after reload: %w", c.Name, err)
 	}
 	return nil
+}
+
+func refreshK3dLoadBalancer(ctx context.Context, clusterName string) error {
+	lb := "k3d-" + clusterName + "-serverlb"
+	out, err := exec.CommandContext(ctx, "docker", "container", "inspect", lb).CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "No such object") || strings.Contains(string(out), "No such container") {
+			return nil
+		}
+		return fmt.Errorf("inspect %s: %w", lb, err)
+	}
+	fmt.Printf("  refreshing %s after cluster node restart...\n", lb)
+	return dockerRestart(ctx, lb)
 }
 
 // setupSecondaryClusterNode performs the node setup a SECONDARY cluster
@@ -350,6 +415,85 @@ func setupSecondaryClusterNode(ctx context.Context, c ClusterEntity) error {
 		return fmt.Errorf("clamp TCP MSS on %s: %w", node, err)
 	}
 	return nil
+}
+
+const k3dHostGatewayAlias = "host.k3d.internal"
+
+// ensureClusterHostGatewayDNS repairs the host alias k3d injects at cluster
+// creation but can lose when Docker or a k3d node restarts. The host-gateway
+// address is resolved through Docker's own host-gateway token using the
+// already-local k3s node image, so this works without hardcoding a Docker
+// Desktop- or Linux-specific address. Both the node's /etc/hosts and CoreDNS
+// are converged so a later k3s process restart does not immediately lose the
+// repaired record again.
+func ensureClusterHostGatewayDNS(ctx context.Context, clusterName string) error {
+	node := "k3d-" + clusterName + "-server-0"
+	kctx := "k3d-" + clusterName
+
+	currentIP, err := resolveDockerHostGatewayIP(ctx, node)
+	if err != nil {
+		return err
+	}
+
+	nodeHosts, err := readNodeFile(ctx, node, "/etc/hosts")
+	if err != nil {
+		return fmt.Errorf("read %s /etc/hosts: %w", node, err)
+	}
+	if nodeHostsIPFor(string(nodeHosts), k3dHostGatewayAlias) != currentIP {
+		// currentIP is validated by net.ParseIP before it reaches this
+		// fixed shell fragment; the alias is a compile-time constant.
+		upsert := fmt.Sprintf(
+			"tmp=/tmp/forge-hosts.$$; { grep -v '[[:space:]]host[.]k3d[.]internal\\([[:space:]]\\|$\\)' /etc/hosts || true; printf '%%s\\n' '%s %s'; } > \"$tmp\" && cat \"$tmp\" > /etc/hosts; rc=$?; rm -f \"$tmp\"; exit $rc",
+			currentIP, k3dHostGatewayAlias)
+		if err := execNodeShell(ctx, node, upsert); err != nil {
+			return fmt.Errorf("upsert %s in %s /etc/hosts: %w", k3dHostGatewayAlias, node, err)
+		}
+	}
+
+	coreDNSHosts, err := readCoreDNSNodeHosts(ctx, kctx)
+	if err != nil {
+		return err
+	}
+	if nodeHostsIPFor(coreDNSHosts, k3dHostGatewayAlias) == currentIP {
+		fmt.Printf("  %s resolves to Docker host gateway %s in cluster %q — no-op\n",
+			k3dHostGatewayAlias, currentIP, clusterName)
+		return nil
+	}
+
+	newHosts := upsertNodeHostsAlias(coreDNSHosts, k3dHostGatewayAlias, currentIP)
+	fmt.Printf("  restoring %s=%s in cluster %q CoreDNS and bouncing CoreDNS...\n",
+		k3dHostGatewayAlias, currentIP, clusterName)
+	if err := patchCoreDNSNodeHosts(ctx, kctx, newHosts); err != nil {
+		return err
+	}
+	return rolloutRestartCoreDNS(ctx, kctx)
+}
+
+// resolveDockerHostGatewayIP asks the Docker daemon to expand its special
+// host-gateway token. Reusing the node's already-present image keeps this
+// offline and avoids depending on a utility image being installed.
+func resolveDockerHostGatewayIP(ctx context.Context, node string) (string, error) {
+	imageOut, err := exec.CommandContext(ctx, "docker", "container", "inspect", node,
+		"--format", "{{.Config.Image}}").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("inspect image for %s: %w: %s", node, err, strings.TrimSpace(string(imageOut)))
+	}
+	image := strings.TrimSpace(string(imageOut))
+	if image == "" {
+		return "", fmt.Errorf("inspect image for %s returned an empty image", node)
+	}
+
+	out, err := exec.CommandContext(ctx, "docker", "run", "--rm", "--pull=never", "--network", "none",
+		"--add-host", k3dHostGatewayAlias+":host-gateway", "--entrypoint", "grep",
+		image, k3dHostGatewayAlias, "/etc/hosts").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("resolve Docker host-gateway using %s: %w: %s", image, err, strings.TrimSpace(string(out)))
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 || fields[1] != k3dHostGatewayAlias || net.ParseIP(fields[0]) == nil {
+		return "", fmt.Errorf("Docker returned invalid host-gateway record %q", strings.TrimSpace(string(out)))
+	}
+	return fields[0], nil
 }
 
 // ensureHostGatewayDNS copies the `host.k3d.internal` alias from the OWNER
@@ -421,9 +565,13 @@ func ensureMSSClamp(ctx context.Context, node string) error {
 func readCoreDNSNodeHosts(ctx context.Context, kctx string) (string, error) {
 	out, err := exec.CommandContext(ctx, "kubectl", "--context", kctx,
 		"get", "configmap", "coredns", "-n", "kube-system",
-		"-o", "jsonpath={.data.NodeHosts}").Output()
+		"-o", "jsonpath={.data.NodeHosts}").CombinedOutput()
 	if err != nil {
-		return "", err
+		detail := strings.TrimSpace(string(out))
+		if detail != "" {
+			return "", fmt.Errorf("kubectl read %s kube-system/coredns: %w: %s", kctx, err, detail)
+		}
+		return "", fmt.Errorf("kubectl read %s kube-system/coredns: %w", kctx, err)
 	}
 	return string(out), nil
 }
@@ -448,6 +596,38 @@ func nodeHostsLineFor(nodeHosts, alias string) string {
 	return ""
 }
 
+func nodeHostsIPFor(nodeHosts, alias string) string {
+	line := nodeHostsLineFor(nodeHosts, alias)
+	fields := strings.Fields(line)
+	if len(fields) < 2 || net.ParseIP(fields[0]) == nil {
+		return ""
+	}
+	return fields[0]
+}
+
+// upsertNodeHostsAlias replaces any old occurrence of alias while preserving
+// unrelated names and records, then appends one canonical current record.
+func upsertNodeHostsAlias(nodeHosts, alias, ip string) string {
+	lines := make([]string, 0, strings.Count(nodeHosts, "\n")+1)
+	for _, raw := range strings.Split(nodeHosts, "\n") {
+		fields := strings.Fields(raw)
+		if len(fields) < 2 {
+			continue
+		}
+		kept := []string{fields[0]}
+		for _, host := range fields[1:] {
+			if host != alias {
+				kept = append(kept, host)
+			}
+		}
+		if len(kept) > 1 {
+			lines = append(lines, strings.Join(kept, " "))
+		}
+	}
+	lines = append(lines, ip+" "+alias)
+	return strings.Join(lines, "\n") + "\n"
+}
+
 // patchCoreDNSNodeHosts writes newHosts as the coredns ConfigMap's
 // NodeHosts via a strategic-merge patch (avoids a get-mutate-apply race on
 // the rest of the ConfigMap).
@@ -470,7 +650,16 @@ func rolloutRestartCoreDNS(ctx context.Context, kctx string) error {
 	cmd := exec.CommandContext(ctx, "kubectl", "--context", kctx,
 		"rollout", "restart", "deployment/coredns", "-n", "kube-system")
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	out, err := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+		"rollout", "status", "deployment/coredns", "-n", "kube-system",
+		"--timeout=60s").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("wait for %s CoreDNS rollout: %w: %s", kctx, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // execNodeShell runs a /bin/sh -c command inside a k3d node container.

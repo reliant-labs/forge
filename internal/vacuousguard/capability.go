@@ -240,8 +240,7 @@ func abandons(branch ast.Node) bool {
 		return false
 	}
 	found := false
-	var walk func(ast.Node) bool
-	walk = func(n ast.Node) bool {
+	var walk = func(n ast.Node) bool {
 		switch n.(type) {
 		case *ast.FuncLit:
 			return false

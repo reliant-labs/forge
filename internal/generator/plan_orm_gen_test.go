@@ -32,21 +32,18 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 
-	// Check shared file
-	sharedContent, err := os.ReadFile(filepath.Join(root, "internal", "db", "orm_shared.go"))
-	if err != nil {
-		t.Fatalf("ReadFile orm_shared.go error = %v", err)
-	}
-	shared := string(sharedContent)
-	if !strings.Contains(shared, "package db") {
-		t.Error("orm_shared.go: missing package db")
-	}
-	if !strings.Contains(shared, `ormTracer = otel.Tracer("orm")`) {
-		t.Error("orm_shared.go: missing ormTracer")
+	// orm_shared_gen.go is RETIRED and must not come back. Its only symbol
+	// was `var ormTracer = otel.Tracer("orm")`, which pkg/crud now owns
+	// (crud.repoTracer, same tracer name) — so the generated var had no
+	// referent and the file was byte-identical in every project, which is
+	// the definition of library code parked in a user's tree.
+	if _, err := os.Stat(filepath.Join(root, "internal", "db", "orm_shared_gen.go")); err == nil {
+		t.Error("orm_shared_gen.go was re-emitted — the ORM tracer lives in pkg/crud; " +
+			"a constant, referent-less generated file must not return")
 	}
 
 	// Check entity file
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "project_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "project_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile project_orm.go error = %v", err)
 	}
@@ -159,17 +156,21 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing DeleteProject")
 	}
 
-	// The lifecycle now lives in the generic forge/pkg/crud.Repo. The
-	// generated file constructs a per-entity repo whose Spec carries only
-	// the conventions Bun can't read off the struct tags.
-	if !strings.Contains(code, `var projectRepo = crud.NewRepo[Project](crud.Spec{`) {
+	// The lifecycle now lives in the generic forge/pkg/crud.Repo. Everything
+	// it needs — managed timestamps, soft-delete form — is derived from the
+	// entity's own Bun struct tags at first use, so there is nothing left
+	// to configure at construction.
+	if !strings.Contains(code, `var projectRepo = crud.NewRepo[Project]()`) {
 		t.Error("missing per-entity crud.Repo var for Project")
 	}
-	// gofmt aligns the struct literal; collapse whitespace before matching
-	// the Spec fields.
+	// Managed timestamps are no longer declared to the repo: created_at and
+	// updated_at are real columns on the struct, and pkg/crud reads them off
+	// Bun's schema. The struct carrying both columns IS the declaration.
 	collapsedAll := strings.Join(strings.Fields(code), " ")
-	if !strings.Contains(collapsedAll, "Timestamps: true") {
-		t.Error("Project repo Spec should set Timestamps: true (managed timestamps)")
+	for _, want := range []string{"created_at", "updated_at"} {
+		if !strings.Contains(collapsedAll, want) {
+			t.Errorf("Project entity should declare the %s column", want)
+		}
 	}
 	// The generated file imports the generic crud library.
 	if !strings.Contains(code, `"github.com/reliant-labs/forge/pkg/crud"`) {
@@ -260,7 +261,7 @@ func TestGeneratePlanORM_Minimal(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "tag_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "tag_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -304,12 +305,14 @@ func TestGeneratePlanORM_Minimal(t *testing.T) {
 		t.Error("should not import timestamppb without timestamp fields")
 	}
 
-	// The lifecycle lives in the generic crud.Repo. A minimal entity emits a
-	// repo with an EMPTY Spec (no Timestamps) and every delegate forwards.
+	// The lifecycle lives in the generic crud.Repo. Everything the repo
+	// needs is now derived from Tag's own Bun tags at first use, so a
+	// minimal entity with no timestamp/soft-delete columns still just
+	// takes crud.NewRepo[Tag]() — no Spec to leave empty.
 	if !strings.Contains(code, `"github.com/reliant-labs/forge/pkg/crud"`) {
 		t.Error("generated file should import forge/pkg/crud")
 	}
-	if !strings.Contains(code, "var tagRepo = crud.NewRepo[Tag](crud.Spec{") {
+	if !strings.Contains(code, "var tagRepo = crud.NewRepo[Tag]()") {
 		t.Error("missing per-entity crud.Repo var for Tag")
 	}
 	if !strings.Contains(code, `return tagRepo.Create(ctx, db, msg)`) {
@@ -358,7 +361,7 @@ func TestGeneratePlanORM_SoftDeleteOnly(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "item_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "item_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -422,7 +425,7 @@ func TestGeneratePlanORM_TableNameOverride(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "user_profile_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "user_profile_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -472,7 +475,7 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "record_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "record_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -574,7 +577,7 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "event_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "event_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -620,14 +623,20 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 
 	// Managed-timestamp stamping (created_at on insert, updated_at re-stamp
 	// on update) moved into pkg/crud. The generated file no longer inlines
-	// time.Now().UTC(); instead the repo Spec sets Timestamps: true, which
-	// drives the library. The time import survives because the *time.Time
+	// time.Now().UTC(); the library reads the created_at/updated_at columns
+	// off Bun's schema. The time import survives because the *time.Time
 	// struct field needs it.
 	if strings.Contains(code, "time.Now().UTC()") {
 		t.Error("timestamp stamping lives in pkg/crud; no inline time.Now().UTC()")
 	}
-	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Timestamps: true") {
-		t.Error("Event repo Spec should set Timestamps: true (managed timestamps)")
+	// The columns themselves are the declaration; pkg/crud gates stamping on
+	// their projected Go type (stampFieldFor), the same gate the generator
+	// applies.
+	collapsedEvent := strings.Join(strings.Fields(code), " ")
+	for _, want := range []string{"created_at", "updated_at"} {
+		if !strings.Contains(collapsedEvent, want) {
+			t.Errorf("Event entity should declare the %s column", want)
+		}
 	}
 }
 
@@ -662,7 +671,7 @@ func TestGeneratePlanORM_MultipleEntities(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	for _, name := range []string{"org_orm.go", "user_orm.go", "orm_shared.go"} {
+	for _, name := range []string{"org_orm_gen.go", "user_orm_gen.go"} {
 		if _, err := os.Stat(filepath.Join(root, "internal", "db", name)); err != nil {
 			t.Errorf("expected %s to exist", name)
 		}
@@ -687,7 +696,7 @@ func TestGeneratePlanORM_References(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "comment_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "comment_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -724,7 +733,7 @@ func TestGeneratePlanORM_NoSoftDelete(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "setting_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "setting_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -734,9 +743,10 @@ func TestGeneratePlanORM_NoSoftDelete(t *testing.T) {
 		t.Error("wrong CreateSetting signature")
 	}
 
-	// With no soft delete, the Spec carries no LegacyTextDeletedAt flag and
-	// the struct has no soft_delete tag; the inline query bodies live in
-	// pkg/crud.
+	// With no soft delete, there is no deleted_at column at all — pkg/crud's
+	// legacyTextSoftDel derivation (a deleted_at column Bun's ,soft_delete
+	// tag didn't claim) is naturally false with nothing to find. The struct
+	// has no soft_delete tag; the inline query bodies live in pkg/crud.
 	if strings.Contains(code, "db.Bun().NewUpdate()") {
 		t.Error("Update body moved to pkg/crud; no inline NewUpdate")
 	}
@@ -778,7 +788,7 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "widget_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "widget_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -851,7 +861,7 @@ func TestGeneratePlanORM_ExplicitPKNotDuplicated(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "counter_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "counter_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -891,7 +901,7 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "task_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "task_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -899,11 +909,14 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 
 	// The SET-clause column selection (exclude PK/created_at/deleted_at,
 	// re-stamp updated_at) now lives in pkg/crud, tested there against real
-	// postgres. The generator's contract is to emit the repo Spec that drives
-	// it and a thin Update delegate that forwards.
+	// postgres, and it reads the columns off Bun's schema rather than being
+	// told. The generator's contract is to emit the entity and a thin Update
+	// delegate that forwards.
 	collapsed := strings.Join(strings.Fields(code), " ")
-	if !strings.Contains(collapsed, "Timestamps: true") {
-		t.Error("Task repo Spec should set Timestamps: true")
+	for _, want := range []string{"created_at", "updated_at"} {
+		if !strings.Contains(collapsed, want) {
+			t.Errorf("Task entity should declare the %s column", want)
+		}
 	}
 	if !strings.Contains(code, "return taskRepo.Update(ctx, db, msg)") {
 		t.Error("UpdateTask should delegate to taskRepo.Update")
@@ -956,7 +969,7 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "doc_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "doc_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -980,10 +993,14 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 	}
 
 	// Declared timestamps still get the managed-timestamp chokepoints, but
-	// those now live in pkg/crud — driven by the repo Spec's Timestamps
-	// flag. The generated file no longer inlines IsZero/time.Now() stamps.
-	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Timestamps: true") {
-		t.Error("Doc repo Spec should set Timestamps: true (declared managed timestamps)")
+	// those now live in pkg/crud, gated on pkg/crud's own read of the
+	// created_at/updated_at columns off Bun's schema — not a Spec flag.
+	// The generated file no longer inlines IsZero/time.Now() stamps.
+	collapsedDoc := strings.Join(strings.Fields(code), " ")
+	for _, want := range []string{"created_at", "updated_at"} {
+		if !strings.Contains(collapsedDoc, want) {
+			t.Errorf("Doc entity should declare the %s column (declared managed timestamps)", want)
+		}
 	}
 	if strings.Contains(code, "IsZero()") {
 		t.Error("timestamp stamping lives in pkg/crud; no inline IsZero")
@@ -1037,7 +1054,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	taskSrc, err := os.ReadFile(filepath.Join(root, "internal", "db", "task_orm.go"))
+	taskSrc, err := os.ReadFile(filepath.Join(root, "internal", "db", "task_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -1070,7 +1087,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 		}
 	}
 
-	noteSrc, err := os.ReadFile(filepath.Join(root, "internal", "db", "note_orm.go"))
+	noteSrc, err := os.ReadFile(filepath.Join(root, "internal", "db", "note_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -1114,7 +1131,7 @@ func TestGeneratePlanORM_TextTimestamps_Stamping(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	code := readGeneratedORM(t, root, "trade_orm.go")
+	code := readGeneratedORM(t, root, "trade_orm_gen.go")
 
 	// The struct projects the applied schema: TEXT timestamps stay strings.
 	if !strings.Contains(strings.Join(strings.Fields(code), " "), "CreatedAt string") {
@@ -1123,9 +1140,13 @@ func TestGeneratePlanORM_TextTimestamps_Stamping(t *testing.T) {
 
 	// The type-aware stamping (RFC3339Nano text for TEXT columns, branching
 	// on the projected Go type — kalshi fr-3fba9166ba) moved into
-	// pkg/crud, driven by the repo Spec's Timestamps flag.
-	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Timestamps: true") {
-		t.Error("Trade repo Spec should set Timestamps: true (managed TEXT timestamps)")
+	// pkg/crud, gated on stampFieldFor accepting the string-projected
+	// created_at/updated_at columns declared on the struct — no Spec flag.
+	collapsedTrade := strings.Join(strings.Fields(code), " ")
+	for _, want := range []string{"created_at", "updated_at"} {
+		if !strings.Contains(collapsedTrade, want) {
+			t.Errorf("Trade entity should declare the %s column (managed TEXT timestamps)", want)
+		}
 	}
 
 	// With stamping in the library and no time.Time columns, the generated
@@ -1182,14 +1203,17 @@ func TestGeneratePlanORM_NullableTimestamps_PointerSafeStamping(t *testing.T) {
 
 	// The pointer-safe stamping (nil-guard, address-of-local assignment for
 	// nullable *time.Time / *string managed columns) moved into pkg/crud.
-	// The generator's contract is the projected pointer struct field types
-	// plus the repo Spec's Timestamps flag that drives the library.
-	audit := readGeneratedORM(t, root, "audit_orm.go")
-	if !strings.Contains(strings.Join(strings.Fields(audit), " "), "CreatedAt *time.Time") {
+	// The generator's contract is the projected pointer struct field types;
+	// pkg/crud's ensureMeta reads created_at/updated_at (and their pointer
+	// types) straight off Bun's schema, so both columns being present and
+	// stampable IS what used to be the Spec's Timestamps flag.
+	audit := readGeneratedORM(t, root, "audit_orm_gen.go")
+	collapsedAudit := strings.Join(strings.Fields(audit), " ")
+	if !strings.Contains(collapsedAudit, "CreatedAt *time.Time") {
 		t.Fatal("nullable created_at should be *time.Time — precondition for this test")
 	}
-	if !strings.Contains(strings.Join(strings.Fields(audit), " "), "Timestamps: true") {
-		t.Error("Audit repo Spec should set Timestamps: true")
+	if !strings.Contains(collapsedAudit, "UpdatedAt *time.Time") {
+		t.Error("Audit entity should declare a stampable updated_at column")
 	}
 	// No inline stamping survives — neither IsZero (panic on nil) nor a
 	// bare-value assignment to a pointer field (the old compile error).
@@ -1200,12 +1224,13 @@ func TestGeneratePlanORM_NullableTimestamps_PointerSafeStamping(t *testing.T) {
 		t.Error("timestamp stamping lives in pkg/crud; no inline time.Now()")
 	}
 
-	legacy := readGeneratedORM(t, root, "legacy_orm.go")
-	if !strings.Contains(strings.Join(strings.Fields(legacy), " "), "CreatedAt *string") {
+	legacy := readGeneratedORM(t, root, "legacy_orm_gen.go")
+	collapsedLegacy := strings.Join(strings.Fields(legacy), " ")
+	if !strings.Contains(collapsedLegacy, "CreatedAt *string") {
 		t.Fatal("nullable TEXT created_at should be *string — precondition for this test")
 	}
-	if !strings.Contains(strings.Join(strings.Fields(legacy), " "), "Timestamps: true") {
-		t.Error("Legacy repo Spec should set Timestamps: true")
+	if !strings.Contains(collapsedLegacy, "UpdatedAt *string") {
+		t.Error("Legacy entity should declare a stampable updated_at column")
 	}
 	// A *string TEXT-timestamp entity has no time.Time column and no inline
 	// stamping, so the generated file must not import time.
@@ -1238,7 +1263,7 @@ func TestGeneratePlanORM_UnstampableTimestampsSkipped(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	code := readGeneratedORM(t, root, "epoch_orm.go")
+	code := readGeneratedORM(t, root, "epoch_orm_gen.go")
 	if strings.Contains(code, "time.Now()") {
 		t.Error("unstampable timestamp types must not emit time.Now() stamping")
 	}
@@ -1289,7 +1314,7 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
-	code := readGeneratedORM(t, root, "hypothesis_orm.go")
+	code := readGeneratedORM(t, root, "hypothesis_orm_gen.go")
 
 	// The server-allocated-PK behaviour (exclude id from the INSERT, read
 	// the DB-assigned value back via RETURNING) moved into pkg/crud, which
@@ -1352,7 +1377,7 @@ func TestGeneratePlanORM_GetClassifiesMissingRow(t *testing.T) {
 	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "prescription_orm.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "prescription_orm_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile prescription_orm.go error = %v", err)
 	}
@@ -1434,5 +1459,162 @@ func TestBunTag_DefaultOnlyWhenGoValueCanBeAbsent(t *testing.T) {
 	tsDefault := bunTag(ormField{columnName: "created_at", notNull: true, isTimestamp: true, hasDefault: true, columnDef: "now()"})
 	if !strings.Contains(tsDefault, "default:now()") {
 		t.Errorf("NOT NULL timestamp with a DB default should keep ,default:; got %s", tsDefault)
+	}
+}
+
+// TestStructTag_VersionColumn pins the two-namespace projection of a
+// `forge:version` column. The `forge:"version"` half is not decoration: it
+// is the exact string forge/pkg/crud.Repo.ensureMeta reads off the raw
+// StructField to find the optimistic-concurrency column, so a change to
+// either spelling silently disables OCC for every generated entity.
+func TestStructTag_VersionColumn(t *testing.T) {
+	got := structTag(ormField{columnName: "version", notNull: true, isVersion: true})
+	want := "`bun:\"version,notnull,skipupdate\" forge:\"version\"`"
+	if got != want {
+		t.Errorf("version column tag = %s, want %s", got, want)
+	}
+
+	// ,skipupdate is defense in depth here — pkg/crud excludes the column
+	// from both allowlists itself — but it must be present so a hand-rolled
+	// full-struct Bun update outside the generic Repo cannot write it either.
+	if !strings.Contains(got, "skipupdate") {
+		t.Errorf("version column must also carry ,skipupdate; got %s", got)
+	}
+
+	// An ordinary column gains neither tag: entities that did not opt in are
+	// untouched, which is the promise the marker makes.
+	plain := structTag(ormField{columnName: "name", notNull: true})
+	if strings.Contains(plain, "forge:") || strings.Contains(plain, "skipupdate") {
+		t.Errorf("an undeclared column must carry no version tagging; got %s", plain)
+	}
+}
+
+// ── computed-field seam (<Entity>Extra) ────────────────────────────────
+
+func widgetEntity() []config.PlanEntity {
+	return []config.PlanEntity{
+		{
+			Name: "Widget",
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "name", Type: "string", NotNull: true},
+			},
+		},
+	}
+}
+
+// TestGeneratePlanORM_ComputedFieldSeam_FreshEntity pins the birth path: a
+// brand-new entity's scaffolded repo-ext file carries the <Entity>Extra
+// type (with the bun:"-" requirement documented), and the SAME run's
+// entity struct embeds it — the seam and its consumer are born together.
+func TestGeneratePlanORM_ComputedFieldSeam_FreshEntity(t *testing.T) {
+	root := t.TempDir()
+	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", widgetEntity(), nil); err != nil {
+		t.Fatalf("GeneratePlanORM() error = %v", err)
+	}
+
+	seam, err := os.ReadFile(filepath.Join(root, "internal", "db", "widget_repo_ext.go"))
+	if err != nil {
+		t.Fatalf("ReadFile widget_repo_ext.go error = %v", err)
+	}
+	seamSrc := string(seam)
+	if !strings.Contains(seamSrc, "type WidgetExtra struct {") {
+		t.Error("scaffolded repo-ext seam must declare WidgetExtra")
+	}
+	if !strings.Contains(seamSrc, `bun:"-"`) {
+		t.Error("repo-ext seam doc must call out the bun:\"-\" requirement")
+	}
+
+	orm, err := os.ReadFile(filepath.Join(root, "internal", "db", "widget_orm_gen.go"))
+	if err != nil {
+		t.Fatalf("ReadFile widget_orm.go error = %v", err)
+	}
+	if !strings.Contains(collapseSpace(string(orm)), "WidgetExtra //") {
+		t.Errorf("entity struct should embed WidgetExtra when the seam declares it\n--- SOURCE ---\n%s", orm)
+	}
+}
+
+// TestGeneratePlanORM_ComputedFieldSeam_ExistingProjectWithoutExtra is the
+// backward-compat case the task calls out as the hardest part: a project
+// generated before this feature has <entity>_repo_ext.go WITHOUT the Extra
+// type (scaffold-once, never touched again). Regenerating must NOT embed a
+// reference to an undefined type, and must NOT rewrite the user's file.
+func TestGeneratePlanORM_ComputedFieldSeam_ExistingProjectWithoutExtra(t *testing.T) {
+	root := t.TempDir()
+	dbDir := filepath.Join(root, "internal", "db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	preexisting := "// yours: scaffolded once, never touched again — forge will not overwrite this file.\n" +
+		"package db\n"
+	seamPath := filepath.Join(dbDir, "widget_repo_ext.go")
+	if err := os.WriteFile(seamPath, []byte(preexisting), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", widgetEntity(), nil); err != nil {
+		t.Fatalf("GeneratePlanORM() error = %v", err)
+	}
+
+	// The pre-existing seam file is untouched — no Extra type is injected
+	// into a file forge no longer writes.
+	after, err := os.ReadFile(seamPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(after) != preexisting {
+		t.Errorf("pre-existing repo-ext seam without WidgetExtra must be left byte-for-byte alone\nbefore:\n%s\nafter:\n%s", preexisting, after)
+	}
+
+	// The entity struct must NOT reference the undefined type, or the
+	// project fails to compile.
+	orm, err := os.ReadFile(filepath.Join(dbDir, "widget_orm_gen.go"))
+	if err != nil {
+		t.Fatalf("ReadFile widget_orm.go error = %v", err)
+	}
+	if strings.Contains(string(orm), "WidgetExtra") {
+		t.Errorf("entity struct must not embed WidgetExtra when the seam doesn't declare it\n--- SOURCE ---\n%s", orm)
+	}
+}
+
+// TestGeneratePlanORM_ComputedFieldSeam_ExistingProjectAdoptsExtra covers
+// the upgrade path: a user hand-adds WidgetExtra to their existing,
+// untouched repo-ext file. The next `forge generate` must pick it up and
+// embed it on the entity struct — an ordinary edit to a file they already
+// own, needing no forge-side migration step.
+func TestGeneratePlanORM_ComputedFieldSeam_ExistingProjectAdoptsExtra(t *testing.T) {
+	root := t.TempDir()
+	dbDir := filepath.Join(root, "internal", "db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	handAdded := "// yours: scaffolded once, never touched again — forge will not overwrite this file.\n" +
+		"package db\n\n" +
+		"type WidgetExtra struct {\n" +
+		"\tDisplayLabel string `bun:\"-\"`\n" +
+		"}\n"
+	seamPath := filepath.Join(dbDir, "widget_repo_ext.go")
+	if err := os.WriteFile(seamPath, []byte(handAdded), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", widgetEntity(), nil); err != nil {
+		t.Fatalf("GeneratePlanORM() error = %v", err)
+	}
+
+	after, err := os.ReadFile(seamPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(after) != handAdded {
+		t.Error("existing repo-ext seam must not be rewritten once scaffolded, even after adopting WidgetExtra")
+	}
+
+	orm, err := os.ReadFile(filepath.Join(dbDir, "widget_orm_gen.go"))
+	if err != nil {
+		t.Fatalf("ReadFile widget_orm.go error = %v", err)
+	}
+	if !strings.Contains(collapseSpace(string(orm)), "WidgetExtra //") {
+		t.Errorf("entity struct should embed WidgetExtra once the user's seam file declares it\n--- SOURCE ---\n%s", orm)
 	}
 }

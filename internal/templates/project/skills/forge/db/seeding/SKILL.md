@@ -9,6 +9,33 @@ Seed data is not a file in your project — it materializes at runtime,
 deterministically, from the applied schema: FK-coherent, ~20 rows/table,
 idempotent.
 
+## Do this first: fill in `db/seeds/vocab.yaml`
+
+**Write the vocabulary BEFORE the first seed, not after you dislike the rows.**
+It takes about two minutes, it is the step that decides whether seeded data
+reads like your product, and it is the step every hurried run skips — then
+spends longer working around. The full reference is below; the shape is:
+
+```yaml
+pools:
+  product_names: [Chemex Pour-Over, Aeropress Go, Hario Skerton Grinder]
+columns:
+  products.name: {pool: product_names}
+  products.currency: [USD]                              # see the traps below
+  products.price_cents: {min: 1200, max: 24900, step: 100}
+```
+
+Two defaults produce schema-valid data that still breaks a page, and both are
+invisible until you look at the UI:
+
+- **A 3-char `currency` column synthesizes as `"sa5"`** — right length, and a
+  code no currency table recognises. `Intl.NumberFormat` *throws* on it, and
+  the generated product page dies through its error boundary. Pin it:
+  `products.currency: [USD]`.
+- **An undescribed numeric column seeds as the ROW INDEX** (`1, 2, 3 …`), so
+  money renders as fractions of a cent and two numeric columns on one table
+  come out perfectly correlated. Give it a range.
+
 ```
 forge db seed apply    # introspect db/migrations, INSERT deterministic rows (dev only)
 forge db seed status   # per-table seeded-row counts vs the seed model
@@ -48,11 +75,29 @@ context is fresh:**
 ```yaml
 pools:                              # shared pools, referenced by name
   city_names: [Lisbon, Osaka, Nairobi, Montreal, Reykjavik]
-columns:                            # "table.column": inline list or {pool: name}
+columns:                            # "table.column": inline list, {pool: name},
+                                    # {type: name}, or {min: n, max: n}
   warehouses.city: {pool: city_names}
   suppliers.city: {pool: city_names}
   carriers.name: [Northwind Freight, Cordon Logistics, Alto Shipping]
+  shipments.weight_grams: {min: 100, max: 25000, step: 50}
+  carriers.rating: {min: 1.0, max: 5.0, step: 0.5, decimals: 1}
 ```
+
+### Numeric columns take a range
+
+`{min, max}` (optionally `step`, and `decimals` for a fractional column)
+expands to a numeric pool and is drawn from exactly like an authored list.
+**Describe every numeric column that means something.** A numeric column with
+no CHECK and no vocabulary synthesizes as the row index — `1, 2, 3 …` — which
+satisfies the schema, is never warned about, and is wrong in two ways that
+only show up in the UI: a money column renders as a fraction of a cent, and
+any two numeric columns on the same table are perfectly correlated (row 7 is
+`price_cents = 7` *and* `stock_quantity = 7`).
+
+A numeric column that already carries a CHECK — a range (`price_cents >= 0`)
+or an IN-list (`level IN (10, 20, 30)`) — is read off the schema and needs no
+entry here; the range is for the unconstrained ones.
 
 Matched columns draw from your pools (deterministically, like everything
 else); unmatched columns keep built-in synthesis. forge validates every value
@@ -61,6 +106,32 @@ varchar/char_length caps, numeric ranges, and the canonical spelling of a
 `uuid` column — skipping invalid ones with a warning and falling back to
 built-in synthesis for that column. Generated CRUD lifecycle-test fixtures
 reuse the same seed plan, so test parent rows carry the same vocabulary.
+
+### Every column is drawn INDEPENDENTLY — rows will not be coherent
+
+This is the thing that surprises people, and it is visible the moment the data
+reaches a UI. Each column is a separate deterministic pick, so filling three
+pools on one table gives you three unrelated draws per row, not a sensible
+row:
+
+```
+name: "Bluetooth Turntable"   category: PRODUCT_CATEGORY_HOME   emoji: 🧦
+```
+
+Every value is schema-valid and no warning fires — it is a sock-emoji
+turntable filed under home goods. Nothing in vocab.yaml can tie those columns
+together; there is no archetype or row-template concept, by design (the
+column-local hash is what makes a draw stable when you edit a different
+column's pool).
+
+That is fine for what seeds are FOR — FK-coherent volume to exercise CRUD,
+pagination, and constraints, where nobody reads the rows. It is not fine for a
+screenshot, a sales demo, or a dogfooding pass, where incoherent rows read as
+an unfinished product.
+
+**When rows have to make sense, hand-write them in `db/seeds/custom/`** — it is
+applied after the generated dataset and is exactly the seam for this. A dozen
+coherent rows on top of the synthesized volume gets you both.
 
 ### Pinning an exact value
 
@@ -143,11 +214,66 @@ COMMENT ON CONSTRAINT orders_patient_id_fkey ON orders IS
 | `forge:ref authoritative` | this column is the truth; the other edge is narrowed to agree with it |
 | `forge:ref independent` | genuinely unrelated facts (an order shipped to someone else's address) |
 
+**`authoritative` is usually the right answer.** The record states its own
+subject; the longer route is a back-reference. Deriving the other way can
+disagree with a column that already scopes the row — a `company_id` stamped
+from the caller, say — and then the derived value points at a parent outside
+that scope. The rows still satisfy every foreign key, so nothing rejects them:
+that class of bug is found by auditing the data, not by a failing test.
+
+**One shape is not a decision, and forge no longer asks about it:** a NOT NULL
+direct column whose indirect route leaves by a NULLABLE one. A row must always
+name its parent directly and may carry nothing at all on the other route, so
+the optional edge cannot be what determines a column that is never absent —
+`derived-from` would have to invent a parent for every row whose route is NULL.
+Forge resolves those as `authoritative` and stays quiet. What it still refuses
+is the symmetric case, where **both** routes are required and either could
+honestly be the truth. On a wide schema that is the difference between a page
+of refusals and the handful that are real questions.
+
 It lives on the constraint, not in a forge file, because it is a **schema-level
 domain fact** — validation and your own business rules need the same sentence —
 and because plain SQL lands in the postgres catalog where forge, `psql \d+` and
 anything else can read it. Prose in the same comment is fine; only the
 `forge:ref ` clause is read.
+
+### Sweep the schema for diamonds yourself
+
+Declare a diamond when you add the second reference rather than waiting for a
+refusal. The seeder only reports a pair whose two routes ACTUALLY disagree in
+the rows it just planned, so a domain with several diamonds surfaces them a few
+at a time over successive runs. This query reports every one at once:
+
+```sql
+-- every child that reaches one parent BOTH directly and through a sibling FK,
+-- with each route's nullability and whatever is already declared on it
+WITH fks AS (
+  SELECT c.conname, c.conrelid::regclass::text AS child,
+         a.attname AS col, c.confrelid::regclass::text AS parent,
+         a.attnotnull AS required
+  FROM pg_constraint c
+  JOIN unnest(c.conkey) AS k(attnum) ON true
+  JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+  WHERE c.contype = 'f'
+)
+SELECT d.child, d.col AS direct_col, d.parent,
+       s.col AS via_col, s.parent AS via_table,
+       d.required AS direct_required, s.required AS via_required,
+       COALESCE(obj_description(pc.oid, 'pg_constraint'), '(undeclared)') AS declaration
+FROM fks d
+JOIN fks s ON s.child = d.child AND s.col <> d.col
+JOIN fks t ON t.child = s.parent AND t.parent = d.parent
+JOIN pg_constraint pc ON pc.conname = d.conname AND pc.conrelid = d.child::regclass
+ORDER BY 1, 2;
+```
+
+`forge env config <env>` prints the DSN to run it against (see `dev`).
+
+One rule usually settles every row it returns: when the intermediate link is
+REQUIRED and determines the parent (a payment's payer follows from its
+invoice), the parent is `derived-from` that link; when the link is OPTIONAL
+provenance (an estimate records the lead it came from), the row's own column is
+`authoritative`.
 
 ## Hand-authored demo data (`db/seeds/custom/`)
 

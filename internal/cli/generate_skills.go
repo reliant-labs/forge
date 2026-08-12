@@ -13,6 +13,15 @@
 // the embedded skill list. User-created skill directories under
 // `.claude/skills/` are never touched (and never deleted).
 //
+// WHICH projects get that delivery is the harness's call, read from
+// forge.yaml's `harness:` (see harnessSkillsDirFor). Only `claude` has a
+// native on-disk skills concept; the default `reliant` harness reads
+// forge's skills from the binary via `forge skill load`, so it receives
+// NOTHING — no directory, no files, no manifest entries. Delivering to it
+// anyway put 81 hash-guarded SKILL.md files (the large majority of a
+// scaffolded project's Tier-1 surface) into every project and every diff,
+// to hand the harness a staler copy of what it already had.
+//
 // Tier transition: projects that predate this step have skill files
 // that carry no forge:hash certification marker — they froze as
 // Tier-2/legacy scaffold output. Those entries migrate to Tier-1 on the
@@ -32,11 +41,54 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/generator"
 )
 
 // agentSkillsDir is the project-relative directory that receives the
-// forge-shipped skills in Claude Code layout.
+// forge-shipped skills in Claude Code layout. It is the ONLY directory
+// this step ever writes; which projects get it is decided by
+// harnessSkillsDirFor below, from the project's `harness:` setting.
 const agentSkillsDir = ".claude/skills"
+
+// harnessSkillsDirFor resolves the project-relative skills directory this
+// run should deliver into, or "" for "deliver nothing".
+//
+// The harness is the whole decision, and it comes from forge.yaml's
+// `harness:` key (written by `forge project new --harness`). Delivery is
+// exactly generator.Harness.SkillsDir(): `claude` has a native on-disk
+// skills concept and gets .claude/skills/; `reliant` does NOT — the
+// reliant CLI discovers forge's skills through forge.yaml and `forge
+// skill load <name>` prints them straight from the binary, so writing 81
+// hash-guarded SKILL.md files into the tree delivers a second, staler
+// copy of what the harness already has. cursor/copilot/codex have no
+// native skills mechanism and likewise get nothing. That mapping is
+// forge's DOCUMENTED --harness contract; this function only reads it, so
+// the scaffold path (new.go emitHarnessSkills) and the regenerate path
+// can no longer disagree about what a given harness receives.
+//
+// UNSET (legacy project, or a config that failed to load) returns the
+// Claude directory, i.e. "keep doing what forge did before". Every
+// project scaffolded before `harness:` existed got .claude/skills/
+// unconditionally, and some of those readers depend on it. Silently
+// deleting a live skills tree on the first run of a new forge binary
+// would be a destructive answer to a question the project never got
+// asked; leaving the files and continuing to refresh them is the
+// conservative one. Such a project opts out by writing `harness:
+// reliant` into forge.yaml — after which the retirement sweep below
+// removes the now-unwanted copies.
+func harnessSkillsDirFor(ctx *pipelineContext) string {
+	if ctx.Cfg == nil || strings.TrimSpace(ctx.Cfg.Harness) == "" {
+		return agentSkillsDir // legacy/unknown: preserve pre-harness behavior
+	}
+	h, err := generator.ParseHarness(strings.TrimSpace(ctx.Cfg.Harness))
+	if err != nil {
+		// An unrecognized harness is a typo in a hand-edited forge.yaml,
+		// not a licence to delete: same conservative answer as unset.
+		fmt.Fprintf(os.Stderr, "Warning: forge.yaml harness %q not recognized; delivering skills as before (valid: reliant, claude, cursor, copilot, codex)\n", ctx.Cfg.Harness)
+		return agentSkillsDir
+	}
+	return h.SkillsDir()
+}
 
 // skillGeneratedBanner returns the DO-NOT-EDIT banner injected at the
 // top of every regenerated SKILL.md body (immediately after the YAML
@@ -103,9 +155,9 @@ func renderAgentSkill(meta skillMeta, body []byte) []byte {
 // project-relative Claude Code location. Hierarchical skill paths flatten
 // with "-" to match the layout `forge skill write --style claude` used,
 // so existing scaffolded projects migrate in place.
-func agentSkillRelPath(skillPath string) string {
+func agentSkillRelPath(skillsDir, skillPath string) string {
 	flat := strings.ReplaceAll(skillPath, "/", "-")
-	return filepath.Join(agentSkillsDir, flat, "SKILL.md")
+	return filepath.Join(skillsDir, flat, "SKILL.md")
 }
 
 // stepAgentSkills re-renders every forge-shipped skill into
@@ -120,6 +172,17 @@ func agentSkillRelPath(skillPath string) string {
 // delivered copies (and any skill forge has since retired or renamed)
 // are garbage-collected by gcRetiredAgentSkills below.
 func stepAgentSkills(ctx *pipelineContext) error {
+	// Harness gate. A harness with no on-disk skills concept — the default
+	// `reliant`, plus cursor/copilot/codex — gets NOTHING written: no
+	// directory, no files, no manifest entries. The retirement sweep still
+	// runs so a project that switches to such a harness has its previously
+	// delivered copies cleaned up rather than left to rot.
+	skillsDir := harnessSkillsDirFor(ctx)
+	if skillsDir == "" {
+		gcRetiredAgentSkills(ctx, agentSkillsDir, nil)
+		return nil
+	}
+
 	skills, err := listForgeShippedSkills()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: agent skills generation failed: %v\n", err)
@@ -137,7 +200,7 @@ func stepAgentSkills(ctx *pipelineContext) error {
 			continue
 		}
 		content := renderAgentSkill(s, body)
-		rel := agentSkillRelPath(s.Path)
+		rel := agentSkillRelPath(skillsDir, s.Path)
 		expected[rel] = true
 
 		// Tier transition: an on-disk copy WITHOUT a certification
@@ -164,10 +227,10 @@ func stepAgentSkills(ctx *pipelineContext) error {
 		}
 	}
 	if wrote > 0 {
-		fmt.Printf("🧠 Refreshed %d forge skills in %s/ (Tier-1, regenerated every run)\n", wrote, agentSkillsDir)
+		fmt.Printf("🧠 Refreshed %d forge skills in %s/ (Tier-1, regenerated every run)\n", wrote, skillsDir)
 	}
 
-	gcRetiredAgentSkills(ctx, expected)
+	gcRetiredAgentSkills(ctx, skillsDir, expected)
 	return nil
 }
 
@@ -195,13 +258,17 @@ func stepAgentSkills(ctx *pipelineContext) error {
 // general stale sweep only reports them (deletion is gated on
 // --force-cleanup, and the sweep itself is gated on codegen being
 // active), so every regenerated project accumulated dead guidance.
-func gcRetiredAgentSkills(ctx *pipelineContext, expected map[string]bool) {
+func gcRetiredAgentSkills(ctx *pipelineContext, skillsDir string, expected map[string]bool) {
 	cs := ctx.Checksums
 
 	// Enumerate delivered skills from disk: every SKILL.md under
 	// .claude/skills/ that isn't in this version's expected set is a
 	// retirement candidate. Authorship is read from the file itself.
-	skillsRoot := filepath.Join(ctx.AbsPath, agentSkillsDir)
+	// A nil `expected` (the harness no longer takes on-disk delivery at
+	// all) makes EVERY forge-authored copy a candidate — the same
+	// authorship checks below still apply, so a hand-edited or disowned
+	// file is kept and only forge's own renders are withdrawn.
+	skillsRoot := filepath.Join(ctx.AbsPath, skillsDir)
 	dirs, err := os.ReadDir(skillsRoot)
 	if err != nil {
 		return // no skills dir — nothing delivered, nothing retired
@@ -211,7 +278,7 @@ func gcRetiredAgentSkills(ctx *pipelineContext, expected map[string]bool) {
 		if !d.IsDir() {
 			continue
 		}
-		rel := filepath.Join(agentSkillsDir, d.Name(), "SKILL.md")
+		rel := filepath.Join(skillsDir, d.Name(), "SKILL.md")
 		if expected[rel] {
 			continue
 		}
@@ -252,6 +319,14 @@ func gcRetiredAgentSkills(ctx *pipelineContext, expected map[string]bool) {
 		_ = os.Remove(filepath.Dir(full))
 	}
 	if removed > 0 {
-		fmt.Printf("🧹 Removed %d retired skill(s) from %s/ (no longer shipped by this forge version)\n", removed, agentSkillsDir)
+		fmt.Printf("🧹 Removed %d retired skill(s) from %s/ (no longer shipped by this forge version)\n", removed, skillsDir)
+	}
+	// Prune the skills root (and .claude/ itself) once emptied — a harness
+	// that takes no on-disk delivery should leave no husk behind. Both
+	// removes are best-effort and only succeed on an EMPTY directory, so a
+	// project with its own skills, or any other .claude/ content, keeps it.
+	if removed > 0 {
+		_ = os.Remove(skillsRoot)
+		_ = os.Remove(filepath.Dir(skillsRoot))
 	}
 }

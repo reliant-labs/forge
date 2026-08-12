@@ -37,8 +37,13 @@ func TestCompose_Deploy_HappyPath(t *testing.T) {
 		t.Fatalf("Deploy: %v", err)
 	}
 	wantPrefixes := []string{
+		// Version probe first: --wait needs compose v2.17+, and asking
+		// once per group is cheaper than once per service.
+		"docker compose version --short",
 		"docker compose -f docker-compose.yml pull edge",
-		"docker compose -f docker-compose.yml up -d edge",
+		// --wait by default: the deploy blocks on the service's
+		// healthcheck rather than returning at container-create time.
+		"docker compose -f docker-compose.yml up -d --wait edge",
 		"docker compose -f docker-compose.yml ps --status running edge",
 	}
 	if len(r.calls) != len(wantPrefixes) {
@@ -130,11 +135,18 @@ func TestCompose_Deploy_SecretsMergedEnvFileWins(t *testing.T) {
 	if err := p.Deploy(context.Background(), group); err != nil {
 		t.Fatalf("Deploy: %v", err)
 	}
-	// pull is the first RunWithEnv call; its overlay is the merged map.
-	if len(r.envCalls) == 0 || r.envCalls[0] == nil {
-		t.Fatalf("expected a non-nil env overlay on the first RunWithEnv call, got %v", r.envCalls)
+	// The pull call carries the merged overlay. Located by name rather
+	// than by index: the version probe now runs first, and a positional
+	// assertion would re-break every time the call sequence changes.
+	var got map[string]string
+	for i, c := range r.calls {
+		if strings.Contains(c, "pull edge") {
+			got = r.envCalls[i]
+		}
 	}
-	got := r.envCalls[0]
+	if got == nil {
+		t.Fatalf("expected a non-nil env overlay on the pull call, got calls=%v envs=%v", r.calls, r.envCalls)
+	}
 	if got["SHARED"] != "from_file" {
 		t.Errorf("env_file should win on conflict: SHARED = %q, want from_file", got["SHARED"])
 	}
@@ -288,7 +300,7 @@ func TestCompose_Deploy_DryRun(t *testing.T) {
 	}
 	wantLines := []string{
 		"[DRY-RUN] would run: docker compose -f docker-compose.yml pull edge",
-		"[DRY-RUN] would run: docker compose -f docker-compose.yml up -d edge",
+		"[DRY-RUN] would run: docker compose -f docker-compose.yml up -d --wait edge",
 	}
 	for _, want := range wantLines {
 		if !strings.Contains(out, want) {
@@ -381,7 +393,7 @@ func TestCompose_Deploy_EnvFileMerges(t *testing.T) {
 		if strings.Contains(c, "pull edge") {
 			pullEnv = r.envCalls[i]
 		}
-		if strings.Contains(c, "up -d edge") {
+		if strings.Contains(c, "up -d") && strings.HasSuffix(c, "edge") {
 			upEnv = r.envCalls[i]
 		}
 	}
@@ -402,5 +414,162 @@ func TestComposeHasRunningLine_Header(t *testing.T) {
 	}
 	if composeHasRunningLine(out, "missing") {
 		t.Error("should NOT find a service that isn't in body")
+	}
+}
+
+// TestCompose_Deploy_WaitTimeoutCeiling confirms a declared timeout
+// reaches the up command as a CEILING alongside --wait — readiness is
+// still the mechanism, the timeout only bounds a wedged container.
+func TestCompose_Deploy_WaitTimeoutCeiling(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{outputs: map[string]string{
+		"docker compose version --short":          "2.34.0\n",
+		"docker compose -f docker-compose.yml ps": "edge_1   Up\n",
+	}}
+	p := ComposeProvider{ProjectDir: dir, Runner: r}
+	err := p.Deploy(context.Background(), ServiceGroup{
+		Env:        "prod",
+		ProviderID: "compose",
+		Services: []ResolvedService{{
+			Name: "edge",
+			Compose: &ComposeSpec{
+				ComposeFile:        "docker-compose.yml",
+				WaitTimeoutSeconds: 90,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	var upCall string
+	for _, c := range r.calls {
+		if strings.Contains(c, "up -d") {
+			upCall = c
+		}
+	}
+	if !strings.Contains(upCall, "--wait --wait-timeout 90") {
+		t.Errorf("up call should carry --wait --wait-timeout 90, got %q", upCall)
+	}
+}
+
+// TestCompose_Deploy_WaitOptOut confirms `wait = False` in KCL removes
+// the readiness flags entirely — the 20% who want fire-and-forget are
+// not disempowered, and they do not pay the version gate either.
+func TestCompose_Deploy_WaitOptOut(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{outputs: map[string]string{
+		"docker compose -f docker-compose.yml ps": "edge_1   Up\n",
+	}}
+	no := false
+	p := ComposeProvider{ProjectDir: dir, Runner: r}
+	err := p.Deploy(context.Background(), ServiceGroup{
+		Env:        "prod",
+		ProviderID: "compose",
+		Services: []ResolvedService{{
+			Name:    "edge",
+			Compose: &ComposeSpec{ComposeFile: "docker-compose.yml", Wait: &no},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	for _, c := range r.calls {
+		if strings.Contains(c, "--wait") {
+			t.Errorf("wait=false should not pass --wait, got %q", c)
+		}
+		if strings.Contains(c, "compose version") {
+			t.Errorf("wait=false should not probe the compose version, got %q", c)
+		}
+	}
+}
+
+// TestCompose_Deploy_OldComposeFailsLoudly pins the rule that forge
+// REFUSES rather than silently not waiting: a deploy that reports
+// success without the ordering guarantee is the failure mode the wait
+// exists to prevent.
+func TestCompose_Deploy_OldComposeFailsLoudly(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{outputs: map[string]string{
+		"docker compose version --short": "2.5.0\n",
+	}}
+	p := ComposeProvider{ProjectDir: dir, Runner: r}
+	err := p.Deploy(context.Background(), ServiceGroup{
+		Env:        "prod",
+		ProviderID: "compose",
+		Services: []ResolvedService{{
+			Name:    "edge",
+			Compose: &ComposeSpec{ComposeFile: "docker-compose.yml"},
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected an error on a compose too old for --wait")
+	}
+	if !strings.Contains(err.Error(), "v2.17.0") || !strings.Contains(err.Error(), "wait = False") {
+		t.Errorf("error should name the required version and the opt-out, got %v", err)
+	}
+	for _, c := range r.calls {
+		if strings.Contains(c, "up -d") {
+			t.Error("should not have attempted the up after failing the version gate")
+		}
+	}
+}
+
+// TestCompose_Rollback_Waits confirms rollback is readiness-gated too.
+// A rollback is reached for when things are already broken; "the old
+// version is starting" is not the answer, "it is serving" is.
+func TestCompose_Rollback_Waits(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{outputs: map[string]string{"docker compose version --short": "2.34.0\n"}}
+	if _, err := WriteDeployState(dir, "compose", "prod", "edge",
+		DeployState{Tag: "v1.0.0", Image: "ghcr.io/acme/edge"}); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+	p := ComposeProvider{ProjectDir: dir, Runner: r}
+	err := p.Rollback(context.Background(), ServiceGroup{
+		Env:        "prod",
+		ProviderID: "compose",
+		Services: []ResolvedService{{
+			Name:    "edge",
+			Compose: &ComposeSpec{ComposeFile: "docker-compose.yml"},
+		}},
+	}, "v1.0.0")
+	if err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	var upCall string
+	for _, c := range r.calls {
+		if strings.Contains(c, "--force-recreate") {
+			upCall = c
+		}
+	}
+	if !strings.Contains(upCall, "--wait") {
+		t.Errorf("rollback up should carry --wait, got %q", upCall)
+	}
+}
+
+// TestComposeVersionSupportsWait covers the version-string shapes the
+// docker CLI actually emits, including Docker Desktop's build suffix
+// (which semver would otherwise read as a PRE-release, sorting it
+// before the release and rejecting a version that is fine).
+func TestComposeVersionSupportsWait(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{"2.34.0-desktop.1", true},
+		{"v2.17.0", true},
+		{"2.17.0", true},
+		{"2.16.0", false},
+		{"v2.5.0", false},
+		{"Docker Compose version v2.20.2", true},
+		{"  2.18.1\n", true},
+		// Unparseable: assume support rather than refuse to deploy over
+		// a version string forge has never seen.
+		{"garbage", true},
+		{"", true},
+	} {
+		if got := composeVersionSupportsWait(tc.raw); got != tc.want {
+			t.Errorf("composeVersionSupportsWait(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
 	}
 }

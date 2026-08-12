@@ -26,6 +26,8 @@ package scaffolds
 
 import (
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -301,6 +303,17 @@ func bytesContains(haystack, needle []byte) bool {
 // of the marker is broken by the escape sequences, so it doesn't appear
 // at a line start.
 func countScaffoldMarkers(data []byte) int {
+	// Prefer the Go parser: it is the only thing that can tell a real
+	// line COMMENT from the same characters inside a string literal.
+	// Tests legitimately embed scaffold-shaped source as fixture data in
+	// raw (backtick) literals, where the marker does start its line — a
+	// line-prefix scan counts those as pending work that nobody can ever
+	// clear (it fired on internal/cli/scaffold/fixtures_test.go).
+	if n, ok := countScaffoldMarkerComments(data); ok {
+		return n
+	}
+	// Unparseable file (a template, or Go that does not compile): fall
+	// back to the line-prefix scan rather than silently reporting zero.
 	count := 0
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimLeft(line, " \t")
@@ -309,4 +322,24 @@ func countScaffoldMarkers(data []byte) int {
 		}
 	}
 	return count
+}
+
+// countScaffoldMarkerComments counts scaffold markers that the Go parser
+// reports as comments. ok=false when data does not parse as Go, so the
+// caller can fall back.
+func countScaffoldMarkerComments(data []byte) (int, bool) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "src.go", data, parser.ParseComments)
+	if err != nil {
+		return 0, false
+	}
+	count := 0
+	for _, group := range file.Comments {
+		for _, c := range group.List {
+			if strings.HasPrefix(strings.TrimLeft(c.Text, " \t"), scaffoldMarker) {
+				count++
+			}
+		}
+	}
+	return count, true
 }

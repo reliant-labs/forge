@@ -22,7 +22,7 @@ import forge
 _jwks = forge.TestJWKS {
     name = "auth-jwks"
     kid = "k1"
-    private_key = forge.DotenvRef { key = "JWKS_PEM" }
+    private_key = forge.StoreRef { key = "JWKS_PEM" }
 }
 
 # A literal public JWK (in real use: plugin.derive_jwk(pem, kid, alg)).
@@ -62,6 +62,29 @@ assert_svc_selector = _svc.spec.selector["app.kubernetes.io/name"] == "auth-jwks
 # server serves /.well-known/jwks.json.
 assert_mount = _deploy.spec.template.spec.containers[0].volumeMounts[0].mountPath == "/www/.well-known"
 assert_volume_cm = _deploy.spec.template.spec.volumes[0].configMap.name == "auth-jwks-jwks"
+
+# Deployability: this pod gates every sign-in in the environment, so it
+# must carry a readiness probe (or the Service takes endpoints before the
+# ConfigMap has mounted, and auth fails with unexplained 401s) and
+# resources (or it is BestEffort and the first thing evicted under node
+# pressure). `forge doctor` fails a project on both, and a container
+# rendered entirely by forge must not be the thing that fails it — the
+# project has no knob to fix it with.
+_jwks_container = _deploy.spec.template.spec.containers[0]
+assert_readiness_probe = _jwks_container.readinessProbe.httpGet.path == "/.well-known/jwks.json" and \
+    _jwks_container.readinessProbe.httpGet.port == 8080
+# Both probes, because `forge doctor` treats exactly one as a
+# half-finished thought — and it is right: readiness alone never restarts
+# a wedged process, liveness alone never gates a rollout.
+assert_liveness_probe = _jwks_container.livenessProbe.httpGet.path == "/.well-known/jwks.json" and \
+    _jwks_container.livenessProbe.httpGet.port == 8080
+# Liveness must be slacker than readiness, or a momentary slow response
+# restarts a pod that readiness would merely have taken out of rotation.
+assert_liveness_slacker = _jwks_container.livenessProbe.periodSeconds > _jwks_container.readinessProbe.periodSeconds
+assert_resources = _jwks_container.resources.requests.cpu != Undefined and \
+    _jwks_container.resources.requests.memory != Undefined and \
+    _jwks_container.resources.limits.cpu != Undefined and \
+    _jwks_container.resources.limits.memory != Undefined
 
 # Managed-by label on every object.
 assert_labels = _cm.metadata.labels["app.kubernetes.io/managed-by"] == "forge" and \

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // dumpJSON runs the command body in JSON mode for the given kind and decodes
@@ -37,14 +38,18 @@ func TestAnnotations_JSONValidAndComplete(t *testing.T) {
 	}
 	for _, want := range []string{
 		"forge:entity", "forge:soft-delete", "forge:append-only",
-		"forge:server-set", "forge:secret", "forge:mutation",
+		"forge:read-only", "forge:secret", "forge:mutation",
 	} {
 		if !markerNames[want] {
 			t.Errorf("markers missing %q", want)
 		}
 	}
-	if len(spec.Markers) != 6 {
-		t.Errorf("expected 6 markers, got %d", len(spec.Markers))
+	// Seven proto markers plus the three column-comment markers plus the
+	// Go-source markers. The authoritative per-marker pin is
+	// TestAnnotations_MarkerNamesMatchRecognizers and its Go-source twin;
+	// this only guards the full dump against silent loss.
+	if len(spec.Markers) != 19 {
+		t.Errorf("expected 19 markers, got %d", len(spec.Markers))
 	}
 
 	// The proto→column mapping a birth applies: every proto3 scalar kind
@@ -203,6 +208,29 @@ func TestAnnotations_KindFilters(t *testing.T) {
 		t.Errorf("--kind method leaked other sections: %+v", method)
 	}
 
+	// column → only the column-comment markers (forge:immutable, forge:ref,
+	// forge:version), no other section.
+	column := dumpJSON(t, "column")
+	if len(column.FieldTypes) != 0 || len(column.ValidateRules) != 0 ||
+		len(column.MethodOptions) != 0 || len(column.ServiceOptions) != 0 {
+		t.Errorf("--kind column leaked non-marker sections: %+v", column)
+	}
+	columnNames := map[string]bool{}
+	for _, m := range column.Markers {
+		columnNames[m.Name] = true
+		if m.AppliesTo != "column" {
+			t.Errorf("--kind column returned a %s marker: %s", m.AppliesTo, m.Name)
+		}
+	}
+	for _, want := range []string{"forge:immutable", "forge:ref", "forge:version", "forge:fill"} {
+		if !columnNames[want] {
+			t.Errorf("--kind column missing %q", want)
+		}
+	}
+	if len(column.Markers) != 4 {
+		t.Errorf("--kind column returned %d markers, want 4: %+v", len(column.Markers), column.Markers)
+	}
+
 	// bogus → error.
 	if err := runAnnotations(&bytes.Buffer{}, "bogus", true); err == nil {
 		t.Error("--kind bogus should error")
@@ -221,7 +249,7 @@ package services.demo.v1;
 // forge:entity
 message WidgetEntity {
   string id = 1;
-  string status = 2; // forge:server-set
+  string status = 2; // forge:read-only
   string api_token = 3; // forge:secret
 }
 
@@ -253,14 +281,14 @@ message LedgerEntity {
 		t.Error("forge:append-only not recognized by the raw scanner")
 	}
 	widget, _ := scan.MessageByName("WidgetEntity")
-	serverSetSeen := false
+	readOnlySeen := false
 	for _, f := range widget.Fields {
-		if f.Name == "status" && f.ServerSet {
-			serverSetSeen = true
+		if f.Name == "status" && f.ReadOnly {
+			readOnlySeen = true
 		}
 	}
-	if !serverSetSeen {
-		t.Error("forge:server-set not recognized on the field")
+	if !readOnlySeen {
+		t.Error("forge:read-only not recognized on the field")
 	}
 	// buf strips the `//` before protogen sees the comment, so the secret
 	// regex matches the comment text WITHOUT slashes — mirror that form here.
@@ -268,21 +296,62 @@ message LedgerEntity {
 		t.Error("forge:secret regex no longer matches the canonical marker")
 	}
 
-	// The dump lists exactly the five recognized names.
+	// The dump lists exactly the recognized names — the six proto markers,
+	// the four column-comment markers, plus the Go-source markers, each
+	// pinned against its real recognizer below so the catalog cannot
+	// advertise a marker nothing reads.
 	got := map[string]bool{}
 	for _, m := range markerSpecs() {
 		got[m.Name] = true
 	}
 	for _, want := range []string{
 		"forge:entity", "forge:soft-delete", "forge:append-only",
-		"forge:server-set", "forge:secret", "forge:mutation",
+		"forge:read-only", "forge:secret", "forge:mutation",
+		"forge:optional-dep", "forge:optional-checked", "forge:constructor",
+		"forge:no-observe", "forge:service", "forge:exclude-contract",
+		"forge:external-component", "forge:outbound-io",
 	} {
 		if !got[want] {
 			t.Errorf("markerSpecs missing recognized marker %q", want)
 		}
 	}
-	if len(got) != 6 {
-		t.Errorf("expected 6 marker specs, got %d", len(got))
+	if len(got) != 19 {
+		t.Errorf("expected 19 marker specs, got %d", len(got))
+	}
+
+	// Proto markers are pinned against codegen.KnownProtoMarkers — the same
+	// registry the scanners spell their markers from and the
+	// unknown-proto-marker lint check enforces — so the dump, the recognizers
+	// and the lint rule cannot silently diverge. The column-marker pin below
+	// is the identical guarantee one layer down.
+	protoMarkers := map[string]bool{}
+	for _, m := range markerSpecs() {
+		if m.AppliesTo == "entity" || m.AppliesTo == "field" || m.AppliesTo == "method" {
+			protoMarkers[m.Name] = true
+		}
+	}
+	if len(protoMarkers) != len(codegen.KnownProtoMarkers) {
+		t.Errorf("markerSpecs has %d proto markers, codegen.KnownProtoMarkers has %d — these must match exactly",
+			len(protoMarkers), len(codegen.KnownProtoMarkers))
+	}
+	for _, name := range codegen.KnownProtoMarkers {
+		if !protoMarkers[name] {
+			t.Errorf("markerSpecs missing proto marker %q from codegen.KnownProtoMarkers", name)
+		}
+	}
+
+	// Column markers are pinned against schemadef.KnownColumnMarkers — the
+	// same registry the unknown-column-marker lint check reads — so the
+	// dump and the lint rule cannot silently diverge on marker names.
+	columnMarkers := filterMarkers(markerSpecs(), "column")
+	if len(columnMarkers) != len(schemadef.KnownColumnMarkers) {
+		t.Errorf("markerSpecs has %d column markers, schemadef.KnownColumnMarkers has %d — these must match exactly",
+			len(columnMarkers), len(schemadef.KnownColumnMarkers))
+	}
+	for _, name := range schemadef.KnownColumnMarkers {
+		if !got[name] {
+			t.Errorf("markerSpecs missing column marker %q from schemadef.KnownColumnMarkers", name)
+		}
 	}
 
 	// forge:mutation is recognized by the hook generator, not the entity
@@ -311,6 +380,94 @@ service DemoService {
 	}
 	if marked["FindSeat"] {
 		t.Error("forge:mutation leaked onto an unmarked rpc")
+	}
+}
+
+// TestAnnotations_GoMarkerNamesMatchRecognizers is the Go-source half of the
+// pin above. Every marker the catalog advertises for .go files is fed to the
+// REAL recognizer codegen uses, so renaming one in forge breaks this test
+// rather than leaving `forge project annotations --kind go` describing a
+// marker nothing reads.
+func TestAnnotations_GoMarkerNamesMatchRecognizers(t *testing.T) {
+	write := func(t *testing.T, files map[string]string) string {
+		t.Helper()
+		dir := t.TempDir()
+		for name, body := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+
+	// forge:constructor + forge:optional-dep, and the absence of the
+	// package-level opt-out.
+	dir := write(t, map[string]string{
+		"contract.go": "package x\n\ntype Service interface{ Do() error }\n\n" +
+			"type Deps struct {\n\t// forge:optional-dep\n\tStripe Service\n}\n",
+		"service.go": "package x\n\n// New builds it.\n// forge:constructor\n" +
+			"func New(d Deps) (Service, error) { return nil, nil }\n",
+	})
+	if !codegen.HasConstructorMarker(dir) {
+		t.Error("forge:constructor not recognized on the constructor doc")
+	}
+	if codegen.HasPackageNoObserveDirective(dir) {
+		t.Error("forge:no-observe reported for a package that does not carry it")
+	}
+	deps, err := codegen.ParseServiceDeps(dir)
+	if err != nil {
+		t.Fatalf("ParseServiceDeps: %v", err)
+	}
+	optionalSeen := false
+	for _, f := range deps {
+		if f.Name == "Stripe" && f.Optional {
+			optionalSeen = true
+		}
+	}
+	if !optionalSeen {
+		t.Error("forge:optional-dep not recognized on the Deps field")
+	}
+
+	// The package-scoped directives, each in its own package so one
+	// marker cannot mask another.
+	for _, tc := range []struct {
+		marker string
+		body   string
+		got    func(string) bool
+	}{
+		{"forge:no-observe", "// forge:no-observe\npackage x\n", codegen.HasPackageNoObserveDirective},
+		{"forge:exclude-contract", "// forge:exclude-contract\npackage x\n", codegen.HasExcludeContractDirective},
+		{"forge:external-component", "// forge:external-component\npackage x\n", codegen.HasExternalComponentDirective},
+		{"forge:outbound-io", "// forge:outbound-io\npackage x\n", codegen.HasOutboundIODirective},
+	} {
+		if !tc.got(write(t, map[string]string{"doc.go": tc.body})) {
+			t.Errorf("%s not recognized by its own recognizer", tc.marker)
+		}
+	}
+
+	// forge:service names a contract that isn't called Service.
+	named := write(t, map[string]string{
+		"contract.go": "package x\n\n// forge:service\ntype Mailer interface{ Send() error }\n",
+	})
+	if got := codegen.DetectServiceInterfaceName(named); got != "Mailer" {
+		t.Errorf("forge:service should name Mailer as the contract, got %q", got)
+	}
+
+	// Every Go marker in the catalog is covered above. If someone adds one
+	// without a recognizer check, this catches it.
+	covered := map[string]bool{
+		"forge:optional-dep": true, "forge:constructor": true,
+		"forge:no-observe": true, "forge:service": true,
+		"forge:exclude-contract": true, "forge:external-component": true,
+		"forge:outbound-io": true,
+		// Lint-suppression directive: read by the analyzer, not by codegen,
+		// so it has no codegen recognizer to pin here.
+		"forge:optional-checked": true,
+	}
+	for _, m := range filterMarkers(markerSpecs(), "package", "contract", "constructor", "deps-field") {
+		if !covered[m.Name] {
+			t.Errorf("Go marker %q is advertised but has no recognizer check in this test", m.Name)
+		}
 	}
 }
 

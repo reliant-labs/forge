@@ -1,12 +1,14 @@
 package codegen
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -138,14 +140,9 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 // GenerateMock generates a mock file for a service.
 // Services with zero RPCs are skipped — there is nothing to mock.
 // Returns (true, nil) if a file was written, (false, nil) if skipped.
-func GenerateMock(svc ServiceDef, mockDir string) (written bool, err error) {
+func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.FileChecksums) (written bool, err error) {
 	if len(svc.Methods) == 0 {
 		return false, nil
-	}
-
-	// Create mocks directory
-	if err := os.MkdirAll(mockDir, 0755); err != nil {
-		return false, err
 	}
 
 	// Prepare template data
@@ -157,23 +154,30 @@ func GenerateMock(svc ServiceDef, mockDir string) (written bool, err error) {
 		return false, err
 	}
 
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return false, err
+	}
+
 	// Synthesis is safe here: naming.ServicePackage only picks the FILENAME
 	// inside the shared mocks dir. The file's package clause is the
 	// constant "mocks" and its imports come from the proto descriptor's
 	// GoPackage/PkgName — no handler-dir identity is referenced, so the
 	// disk-first resolver isn't needed.
-	mockFile := filepath.Join(mockDir, naming.ServicePackage(svc.Name)+"_mock.go")
-	f, err := os.Create(mockFile)
-	if err != nil {
+	// Renamed <svc>_mock.go → <svc>_mock_gen.go so the name states the tier.
+	// The old spelling read like a hand-written test double, which is exactly
+	// the file a developer would reach for and edit.
+	relPath := filepath.ToSlash(filepath.Join("internal", "handlers", "mocks", naming.ServicePackage(svc.Name)+"_mock_gen.go"))
+	if projectDir != "" {
+		RetireRenamedGenerated(projectDir, filepath.Join("internal", "handlers", "mocks", naming.ServicePackage(svc.Name)+"_mock.go"), cs)
+		return checksums.WriteGeneratedFile(projectDir, relPath, buf.Bytes(), cs, true)
+	}
+
+	mockFile := filepath.Join(mockDir, naming.ServicePackage(svc.Name)+"_mock_gen.go")
+	if err := os.MkdirAll(filepath.Dir(mockFile), 0o755); err != nil {
 		return false, err
 	}
-	defer func() {
-		if cerr := f.Close(); cerr != nil && err == nil {
-			err = cerr
-		}
-	}()
-
-	if err := tmpl.Execute(f, data); err != nil {
+	if err := os.WriteFile(mockFile, buf.Bytes(), 0o644); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -313,6 +317,19 @@ func prepareServiceData(svc ServiceDef) map[string]any {
 		})
 	}
 
+	// A service may declare an RPC called Register — the obvious name for a
+	// sign-up endpoint. The mock's mount helper is called Register too, and
+	// one type cannot carry both, so the template renames the helper when
+	// they would collide. Without this the generated mock does not compile,
+	// and the error names a method the author never wrote.
+	hasRegisterRPC := false
+	for _, m := range svc.Methods {
+		if m.Name == "Register" {
+			hasRegisterRPC = true
+			break
+		}
+	}
+
 	return map[string]any{
 		"ServiceName":    svc.Name,
 		"ServicePackage": naming.ServicePackage(svc.Name),
@@ -321,6 +338,7 @@ func prepareServiceData(svc ServiceDef) map[string]any {
 		"ModulePath":     svc.ModulePath,
 		"Methods":        methods,
 		"HasMethods":     len(svc.Methods) > 0,
+		"HasRegisterRPC": hasRegisterRPC,
 		"NeedsEmptypb":   res.needsEmp,
 		"NeedsPb":        res.needsPb,
 		"ForeignImports": res.imports,

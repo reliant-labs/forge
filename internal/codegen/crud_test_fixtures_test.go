@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/schemadef"
-	"github.com/reliant-labs/forge/internal/seeddata"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // fixtureSchema builds the constraint-heavy shop schema the fixture tests
@@ -69,8 +69,8 @@ func fixtureModel(t *testing.T, tables []schemadef.Table, entityTables ...string
 	}
 	fx := &crudTestFixtures{
 		tables: byName,
-		pools:  seeddata.PoolsFromTables(tables),
-		bounds: seeddata.BoundsFromTables(tables),
+		pools:  seedplan.PoolsFromTables(tables),
+		bounds: seedplan.BoundsFromTables(tables),
 		plans:  map[string]*entitySeedPlan{},
 	}
 	for _, tn := range entityTables {
@@ -283,9 +283,9 @@ func TestCRUDTestFixtures_VocabFlowsIntoParentSeed(t *testing.T) {
 	}
 	fx := &crudTestFixtures{
 		tables: byName,
-		pools:  seeddata.PoolsFromTables(tables),
-		bounds: seeddata.BoundsFromTables(tables),
-		vocab:  &seeddata.Vocab{Columns: map[string][]string{"brands.name": {"VitalPep", "PepCore Labs"}}},
+		pools:  seedplan.PoolsFromTables(tables),
+		bounds: seedplan.BoundsFromTables(tables),
+		vocab:  &seedplan.Vocab{Columns: map[string][]string{"brands.name": {"VitalPep", "PepCore Labs"}}},
 		plans:  map[string]*entitySeedPlan{},
 	}
 	fx.plans["products"] = fx.buildEntitySeedPlan("products")

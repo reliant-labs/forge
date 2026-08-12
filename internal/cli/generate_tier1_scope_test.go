@@ -27,10 +27,11 @@ func TestTier1OwnerGateRegistry(t *testing.T) {
 		wantMapped  bool
 		description string
 	}{
-		{"pkg/app/migrate.go", true, "migrate.go is gated on database driver"},
-		{"db/embed.go", true, "db/embed.go is gated on database driver"},
+		{"pkg/app/migrate.go", false, "migrate.go retired to pkg/migratekit — no entry"},
+		{"db/embed_gen.go", true, "db/embed.go is gated on database driver"},
 		{"pkg/app/app_gen.go", true, "app_gen.go is gated on any entrypoint"},
-		{"pkg/app/testing.go", true, "testing.go is gated on any entrypoint"},
+		{"internal/handlers/order/helpers_gen_test.go", true, "the per-service test harness is gated on any entrypoint"},
+		{"internal/handlers/order/factories_gen_test.go", true, "entity factories are gated on codegen+services"},
 		// The retired name-matched DI files (bootstrap.go/wire_gen.go) have
 		// no registry entry — they fall through to nil so the cleanup sweep
 		// treats stale copies as removable (FORGE_SHAPE_REDESIGN §2).
@@ -78,15 +79,14 @@ func TestFilterTier1DriftInScope_GateOffFiltersDrift(t *testing.T) {
 		t.Fatalf("gateMigrateHasDriver should be false for a cfg with no driver")
 	}
 	drift := []driftStub{
-		{path: "pkg/app/migrate.go"},
-		{path: "db/embed.go"},
+		{path: "db/embed_gen.go"},
 	}
 	inScope, outOfScope := filterTier1DriftInScope(ctx, drift, func(d driftStub) string { return d.path })
 	if len(inScope) != 0 {
 		t.Errorf("inScope = %d entries, want 0 (gated-off emitter shouldn't block stomp guard)", len(inScope))
 	}
-	if len(outOfScope) != 2 {
-		t.Errorf("outOfScope = %d entries, want 2", len(outOfScope))
+	if len(outOfScope) != 1 {
+		t.Errorf("outOfScope = %d entries, want 1", len(outOfScope))
 	}
 }
 

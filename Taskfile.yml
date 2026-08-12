@@ -1,8 +1,16 @@
+# forge:hash=310d0181d3dc3b293633c928921249f9706799b1abb09d07626655dae230c4d3
 version: '3'
 
 # Task wrappers for the forge CLI. Kept intentionally minimal — only
 # the verbs that have an obvious meaning for a single-binary tool (build,
 # test, lint, fmt). Add more as the project grows.
+
+vars:
+  # GOTESTRACE is a TOP-LEVEL var on purpose: only global vars can be
+  # overridden from the command line (`task test GOTESTRACE=`), which is how
+  # the generated CI workflow passes through forge.yaml's `ci.test.race`.
+  # Declared on the task itself it would silently win over the override.
+  GOTESTRACE: '-race'
 
 tasks:
   default:
@@ -53,21 +61,28 @@ tasks:
       - ./scripts/release-pkg.sh {{.CLI_ARGS}}
 
   test:
-    desc: Run Go unit tests in BOTH modules (excludes `//go:build integration` files)
+    # Scoping: `task test -- ./internal/lifecycle/...` runs ONLY those Go
+    # packages; with no `--` args it is the whole module. An unmatched pattern
+    # fails in `go test` itself, so a scoped run can never quietly widen into
+    # a whole-module run that reports success.
+    desc: Run Go unit tests (excludes `//go:build integration` files)
     cmds:
       # `-timeout 120s` matches the global per-package timeout convention so a
       # hung test fails the suite quickly rather than wedging CI. Integration
       # tests use the `integration` build tag and ship their own task below.
-      - go test -race -count=1 -timeout 120s ./...
-      # forge/pkg is a separate module: `./...` from here does not match it,
-      # workspace or no workspace. Run it explicitly or the library that
-      # ships into every generated binary goes untested.
-      - cmd: cd pkg && go test -race -count=1 -timeout 120s ./...
+      - go test {{.GOTESTRACE}} -count=1 -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
+      # THIS REPO ONLY: forge/pkg is a separate module, so `./...` from here
+      # does not match it, workspace or no workspace. Run it explicitly or
+      # the library that ships into every generated binary goes untested.
+      # Skipped when the run is scoped to explicit root-module packages.
+      - cmd: '{{if .CLI_ARGS}}true{{else}}cd pkg && go test {{.GOTESTRACE}} -count=1 -timeout 120s ./...{{end}}'
 
   test:short:
+    # THIS REPO ONLY: the inner-loop tier from reliant.md. Not in the
+    # template because the tiering convention is forge's own.
     desc: "Inner-loop tests: whole repo in seconds (skips/bypasses >2s tests; see reliant.md Testing tiers)"
     cmds:
-      - go test -short -count=1 -timeout 60s ./...
+      - go test -short -count=1 -timeout 60s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
 
   test:integration:
     desc: Run integration tests (build tag `integration`, real dependencies expected)
@@ -76,15 +91,64 @@ tasks:
       # dir, etc.) so they're gated behind the `integration` build tag and
       # excluded from `task test`. Run this in an environment that satisfies
       # the per-test setup contract; see the testing-integration skill.
-      - go test -race -count=1 -timeout 600s -tags=integration ./...
+      - go test {{.GOTESTRACE}} -count=1 -timeout 600s -tags=integration {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
+
+  test:all:
+    # The pre-merge sweep. `task test` stays the fast lane the edit loop and
+    # the CI test job run; this adds the tagged lane.
+    #
+    # The two lanes are separate `go test` invocations ON PURPOSE. Build tags
+    # ADD files rather than filter them, so `-tags=integration` already
+    # recompiles and reruns every untagged test — a single combined pass plus
+    # a plain pass would run the whole unit suite twice for no extra signal.
+    desc: Run the unit and integration suites in order
+    cmds:
+      - task: test
+      - task: test:integration
+
+  coverage:
+    # HTML coverage report at coverage.html. Race testing happens in
+    # `task test`; this task is purely for measuring exercised code.
+    desc: Run unit tests with coverage and emit coverage.html
+    cmds:
+      - go test -coverprofile=coverage.out -timeout 60s ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - cmd: echo "Coverage report written to coverage.html"
+        silent: true
+
+  generate:
+    # CLI/library kinds rarely have proto codegen, but contract-driven
+    # mock generation (`forge generate` emits mock_gen.go for any
+    # package with a contract.go) is universal. This task keeps the
+    # verb consistent across kinds so verify-generate has something
+    # canonical to call.
+    desc: Run forge generate (contract mocks, etc.)
+    cmds:
+      - forge generate
+
+  verify-generate:
+    # CI gate: regenerate everything, then assert nothing changed.
+    # Catches the silent codegen-mock drift class of failure where a
+    # contract gains a parameter and the mock_gen.go is not refreshed
+    # — a recurring pain point when working on contract-pack-style
+    # codegen packages. Mirrors the service-kind Taskfile's verbatim.
+    desc: Verify generated code is committed up-to-date (CI guard)
+    cmds:
+      - task: generate
+      - cmd: |
+          if ! git diff --exit-code; then
+            echo "ERROR: Generated files are out of date. Run 'forge generate' (or 'task generate') and commit the result." >&2
+            exit 1
+          fi
 
   lint:
     desc: Run golangci-lint over BOTH modules
     cmds:
       - golangci-lint run
-      # Same reason as `test`: golangci-lint reads the module of the
-      # directory it runs in, and it discovers pkg/.golangci.yml (which
-      # gates the typed-config guardrail) by walking up from there.
+      # THIS REPO ONLY (same reason as `test`): golangci-lint reads the
+      # module of the directory it runs in, and it discovers
+      # pkg/.golangci.yml (which gates the typed-config guardrail) by
+      # walking up from there.
       - cmd: cd pkg && golangci-lint run
 
   fmt:
@@ -107,4 +171,4 @@ tasks:
     desc: Clean build artifacts
     cmds:
       - rm -rf bin
-      - rm -f coverage.out
+      - rm -f coverage.out coverage.html

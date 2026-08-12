@@ -29,7 +29,7 @@ func TestE2EScaffoldConfigNaming(t *testing.T) {
 	runCmd(t, projectDir, forgeBin, "generate")
 
 	// Read the generated config and all templates that reference config fields.
-	configGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "config", "config.go"))
+	configGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "config", "config_gen.go"))
 
 	// Find all config field names referenced in cmd/ files.
 	cmdFiles := []string{"cmd/server.go", "cmd/db.go"}

@@ -109,7 +109,10 @@ func emittedRoute(path string) bool {
 	if path == "/" {
 		return true
 	}
-	return strings.HasPrefix(path, "/{{")
+	if strings.HasPrefix(path, "/{{") {
+		return true
+	}
+	return strings.HasPrefix(path, "/oidc/") || strings.HasPrefix(path, "/api/")
 }
 
 // TestFrontendTemplates_NoRouteForgeDoesNotEmit walks every root a frontend

@@ -5,7 +5,7 @@ Four typed entities (Service / Operator / Frontend / CronJob) capture
 the orchestration shapes a forge project deploys. Plus six shared
 sub-schemas (EnvVar / Resources / Ingress / ClusterRBAC / HealthCheck /
 BuildVariant / SecurityContext) and a polymorphic deploy union
-(HostDeploy | K8sCluster | External | Compose | BuildOnly) discriminated
+(HostDeploy | K8sCluster | External | Compose | HostInfra | BuildOnly) discriminated
 by a `type` field on the deploy subschema itself — KCL emits the
 discriminator into JSON automatically so the consumer can dispatch
 without a side channel.
@@ -32,7 +32,7 @@ JSON contract (stable; missing optional fields project as `null`):
 For Service.deploy the dispatch keys are:
 
     { "type": "host",       "runner", "air_config",
-                            "env_vars", "secrets_file", "delve_port",
+                            "env_vars", "delve_port",
                             "working_dir" }
     { "type": "cluster",    "replicas", "ingress", "resources", "platform", "ports",
                             "app_protocols", "cluster_rbac", "image_pull_secrets" }
@@ -44,10 +44,9 @@ HostDeploy splits per-env config from secrets:
     NATS_URL, LOG_LEVEL, …). Composes with `base.DB_ENV` /
     `cfg.APP_ENV` the same way K8sCluster services do, so host and
     cluster services see the same per-env config source.
-  * `secrets_file` — path (gitignored) to a `KEY=VALUE` dotenv carrying
-    JUST the secrets (STRIPE_*, SUPABASE_*, JWT_PUBLIC_KEY, …). The
-    forge CLI loads it first, then layers `env_vars` on top — KCL wins
-    on conflict so config is reproducible across machines.
+  Secret VALUES come from the BUNDLE's secret_provider (FileSecrets), not
+  from a per-service file, and only the keys a service DECLARES via
+  `EnvVar.secret_ref` are injected into it.
 
 KCL v0.11 quirk — schema literals in lambda bodies
 ==================================================
@@ -88,14 +87,14 @@ schema EnvVar:
     codegen types it as a `ConfigSecretRef` on the generated `AppConfig`
     schema, defaulting to
     `{ name = "<project>-secrets", key = "<env_var lowercased>" }`;
-    `config_projection.appConfigEnvMap` projects it to a `from_secret`
+    `config_gen.appConfigEnvMap` projects it to a `from_secret`
     EnvSource, which the k8s adapter renders as this schema's
     `secret_ref`/`secret_key`.
 
     To point a field at a DIFFERENT existing cluster Secret / key, set the
     field's `ConfigSecretRef` in the per-env `deploy/kcl/<env>/config.k`:
 
-        internal_service_secret = config_schema.ConfigSecretRef {
+        internal_service_secret = config_gen.ConfigSecretRef {
             name = "control-plane-internal", key = "secret"
         }
 
@@ -633,7 +632,7 @@ schema SecurityContext:
 #
 # The `type` discriminator lives on the deploy subschema so the JSON
 # output is self-describing. KCL union types let `Service.deploy:
-# HostDeploy | K8sCluster | External | Compose | BuildOnly` accept any
+# HostDeploy | K8sCluster | External | Compose | HostInfra | BuildOnly` accept any
 # of the variants at instantiation; the consumer dispatches on
 # `deploy.type`.
 # ---------------------------------------------------------------------------
@@ -651,16 +650,16 @@ schema HostDeploy:
       * `env_vars` — KCL-declared per-env config. Reproducible,
         version-controlled, mergeable with `base.DB_ENV`/`cfg.APP_ENV`.
         Same source K8sCluster services see via the Deployment's `env`.
-      * `secrets_file` — gitignored dotenv with JUST the secrets.
-        Loaded first by the runner; `env_vars` is layered on top
-        (KCL wins on conflict so per-env config can't drift between
-        developer machines).
+      * secrets — from the bundle's secret_provider (FileSecrets),
+        scoped to the keys this service DECLARES via
+        `EnvVar.secret_ref`. Loaded first by the runner; `env_vars`
+        is layered on top (KCL wins on conflict so per-env config
+        can't drift between developer machines).
     """
     type: str = "host"
     runner: str = "go-run"
     air_config?: str
     env_vars: [EnvVar] = []
-    secrets_file?: str
     delve_port: int = 2345
     working_dir?: str
     """Working directory for the launched process. Relative paths are resolved against the project root. Use this for cross-repo binaries whose runner config (e.g. Air's build_cmd paths) resolves relative to a sibling repo. Default: project root."""
@@ -895,31 +894,202 @@ schema External:
 
 schema Compose:
     """Service runs under docker-compose on the target host. forge
-    invokes `docker compose pull` + `docker compose up -d` against the
-    declared compose file. Rollback writes a temporary override file
-    pinning the previous image:tag.
+    invokes `docker compose pull` + `docker compose up -d --wait`
+    against the declared compose file. Rollback writes a temporary
+    override file pinning the previous image:tag.
 
     `service` defaults to the parent Service.name when unset.
+
+    `wait` (default True) makes the deploy READINESS-GATED: compose
+    blocks until the service passes the healthcheck it declares in the
+    compose file, so a workload that depends on this one can be started
+    knowing it is actually serving — not merely created. This is what
+    lets an environment declare `postgres` and an app that dials it as
+    two ordinary services and still get the ordering right.
+
+    A service with NO healthcheck cannot be waited on in any meaningful
+    sense; compose treats "running" as ready and returns immediately, so
+    leaving `wait` on costs such a service nothing. Give a service a
+    `healthcheck:` block in the compose file to make the gate real.
+
+    `wait_timeout` is a CEILING, not the mechanism. Readiness decides
+    when forge proceeds; this only bounds how long it tolerates a
+    service that never gets there, so a wedged container fails loudly
+    instead of hanging the deploy forever. 0 means no explicit ceiling
+    — the healthcheck's own retries x interval bound it.
+
+    Requires docker compose v2.17.0+; older versions fail with an
+    explicit message rather than silently not waiting.
     """
     type: str = "compose"
     compose_file: str = "docker-compose.yml"
     service?: str
     env_file?: str
+    wait: bool = True
+    wait_timeout: int = 0
+    # Values forge puts in the `docker compose` PROCESS environment before
+    # it shells out — which is where compose reads the `${VAR}` references
+    # in the compose file itself from (an --env-file only forwards values
+    # to CONTAINERS; it does not feed the file's own interpolation).
+    #
+    # This is what lets a port be declared ONCE in KCL and reach a
+    # container. `docker-compose.yml` publishes the dev IdP on
+    # `${IDP_PORT:-8080}`; the env that owns the number binds it to a
+    # variable, sets `env = {"IDP_PORT": str(_idp_port)}` here, and hands
+    # the SAME `_idp_port` to everything else that has to agree with it
+    # (the provisioning job's env_vars, the issuer URL both halves of auth
+    # enforce). Before this field the number lived in the compose file's
+    # `:-` default AND in a flag default baked into a generated binary,
+    # with nothing connecting them: moving one moved only one, and the
+    # other kept dialling a port nothing answered on.
+    #
+    # These values WIN over the inherited shell environment, which is the
+    # opposite of how compose resolves its own `${VAR:-default}` — and the
+    # reason is the bug above. A shell override reaches the compose file
+    # but NOT the KCL variable, so honouring it here would move the
+    # container while every other reference to the same port stayed put:
+    # precisely the divergence this field exists to make unrepresentable.
+    # The port is declared in KCL now, so KCL is where it is changed.
+    env?: {str: str}
 
     check:
         type == "compose", "Compose.type must be 'compose'"
+        wait_timeout >= 0, "Compose.wait_timeout must be >= 0 (0 = no explicit ceiling)"
 
-schema DotenvSecrets:
-    """Dev/local secret provider. Values come from a gitignored dotenv
-    (keyed by env-var NAME). forge resolves declared secret_refs from it
-    and, for k8s targets, RENDERS Secret objects from it on the CLI side —
-    so it is for LOCAL clusters only. Prod/staging must use ExternalSecrets.
-    KCL never sees the values; only this declaration is rendered."""
-    type: str = "dotenv"
-    path: str = ".env"
+schema HostInfra:
+    """A third-party server forge runs as a HOST PROCESS — no container,
+    no daemon, nothing to install first.
+
+    This is the DEFAULT shape for a dev dependency, and `Compose` is the
+    opt-in. That ordering is deliberate. Docker is not free: on a small
+    cloud VM — the machine a lot of people actually develop on — a
+    container runtime is a multi-hundred-megabyte resident cost before the
+    project has started, and on some of them it is not installable at all.
+    A dev loop that cannot run without it is a dev loop that excludes
+    those machines, for infrastructure that has a perfectly good native
+    binary. So `forge run` brings the declared HostInfra up directly, and
+    a project that genuinely wants containerized infra keeps saying
+    `forge.Compose {}` — the escape hatch did not go anywhere, it stopped
+    being the only door.
+
+    `engine` selects the implementation forge supervises.
+
+    `postgres` runs a real postgres binary forge downloads once and caches
+    under the user cache dir (the same mechanism that already backs
+    generate-time schema introspection — see pkg/pgtest). It is a REAL
+    postgres, not an emulation: migrations apply verbatim, extensions
+    behave, and the DSN is an ordinary `postgres://localhost:<port>/...`.
+
+    `zitadel` runs the dev IDENTITY PROVIDER the same way — a single static
+    Go binary, pinned and checksum-verified, from the same publisher's
+    release. Its declarative bootstrap is unchanged by running on the host:
+    `idp_steps_file` still describes the instance, org, admin user and
+    service account, and Zitadel still writes that account's PAT to
+    `idp_pat_path` for the idp-provision job to read. It stores its state in
+    postgres — `idp_database` on the server at `idp_database_port`, which is
+    normally the SAME host-native postgres this environment already
+    declares, so one server backs both and the IdP's schema still cannot
+    collide with the app's.
+
+    A zitadel instance's `port` should come from `allocate_port`, not
+    `resolve_port`. Zitadel derives the `iss` claim of every token from the
+    origin it is reached on, and routes by Host header, so a port that
+    quietly moved would invalidate issued tokens and registered redirect
+    URIs alike.
+
+    The DATA DIRECTORY PERSISTS. `data_dir` (default
+    `.forge/hostinfra/<name>`) holds the cluster across runs, so stopping
+    the stack does not drop the developer's rows — the same expectation a
+    compose volume sets. Delete the directory to start clean.
+
+    `port` is the port the server BINDS, and it is the same number the app
+    must dial, so it belongs to the environment that declares both. Give
+    it `forge.resolve_port(...)` when it may float (nothing outside the
+    project knows it) and `forge.allocate_port(...)` when it may not.
+
+    WHAT THIS IS NOT. It is not a way to run YOUR service on the host —
+    that is `HostDeploy`, whose runner compiles and launches this
+    project's own code. HostInfra is for the dependency underneath it: a
+    server forge fetches and supervises but does not build. The split
+    matters because they fail differently, and a single "runs on the host"
+    target would have to guess which failure it was looking at.
+    """
+    type: str = "host-infra"
+    engine: str = "postgres"
+    port: int
+    # The database created on first boot, and the credentials the DSN uses.
+    # Dev-local by construction: this server listens on loopback only.
+    database: str = "postgres"
+    user: str = "postgres"
+    password: str = "postgres"
+    # Where the cluster lives, relative to the project root (absolute
+    # paths pass through). Persists across runs; gitignored.
+    data_dir?: str
+    # Major version of the engine to run. Unset => forge's default, which
+    # tracks the version its own schema introspection uses, so the dev
+    # server and the generate-time shadow agree on behaviour.
+    version?: str
+
+    # ── engine = "zitadel" only ──────────────────────────────────────────
+    # The dev IdP's state lives in postgres. These name WHICH postgres and
+    # WHICH database: normally the host-native instance this same
+    # environment declares, so the port is the same variable the app's DSN
+    # is composed from and one server backs both.
+    idp_database: str = "zitadel"
+    idp_database_port?: int
+    # Zitadel's encryption key for the credentials it stores. Exactly 32
+    # characters. A dev default, committed on purpose — this instance binds
+    # loopback and holds only local test users.
+    idp_masterkey: str = "MasterkeyNeedsToHave32Characters"
+    # The DECLARATIVE bootstrap, passed to Zitadel as `--steps`. This file
+    # is the instance's whole setup: the org, the human you sign in as, and
+    # the service account whose PAT forge uses to register the browser app.
+    idp_steps_file: str = "idp-steps.yaml"
+    # Where Zitadel writes that service account's personal access token on
+    # first boot. Must match what the idp-provision job reads (its
+    # --pat-file default) — the two are ONE declaration.
+    idp_pat_path: str = ".forge/idp/pat.txt"
+
     check:
-        type == "dotenv", "DotenvSecrets.type must be 'dotenv'"
-        path, "DotenvSecrets.path is required"
+        type == "host-infra", "HostInfra.type must be 'host-infra'"
+        engine in ["postgres", "zitadel"], \
+            "HostInfra.engine must be 'postgres' or 'zitadel' (the engines forge supervises natively)"
+        port > 0 and port < 65536, "HostInfra.port must be 1..65535"
+        database, "HostInfra.database is required"
+        user, "HostInfra.user is required"
+        engine != "zitadel" or idp_database_port, \
+            "HostInfra.idp_database_port is required for engine 'zitadel' — the IdP stores its state in postgres, so it must be told which server (normally this environment's own host-infra postgres port)"
+        engine != "zitadel" or len(idp_masterkey) == 32, \
+            "HostInfra.idp_masterkey must be exactly 32 characters (Zitadel's requirement)"
+
+schema FileSecrets:
+    """Dev/local secret provider: a single gitignored YAML file — a flat
+    map of env-var NAME to value. This is the scaffolded default.
+
+    Why not a dotenv: forge handed the WHOLE dotenv to every host service,
+    so adding a line made that value visible everywhere without touching
+    KCL. That is a property of the INJECTION, not the format, and it is
+    fixed by declaration-scoped injection: a value only reaches a service
+    that DECLARES it via `EnvVar.secret_ref`. YAML then buys real quoting
+    and multi-line values (a PEM key, a JSON blob) that a dotenv cannot
+    express without escaping games.
+
+    LOCAL ONLY: forge renders PLAINTEXT k8s Secrets from it, so it is
+    gated to dev/e2e (a check below + a Go guard). staging/prod must use
+    ExternalSecrets.
+
+    Populate with `forge secret set <env> <KEY>` (value on stdin, never
+    argv), or hand-edit the YAML. `forge secret ensure <env>` creates the
+    file and lists every declared ref that has no value yet."""
+    type: str = "file"
+    path: str = "secrets/dev.yaml"
+    check:
+        type == "file", "FileSecrets.type must be 'file'"
+        path, "FileSecrets.path is required"
+        not path.startswith(".env"), \
+            "FileSecrets.path must not be a .env* path — use e.g. 'secrets/<env>.yaml'"
+        option("env") == None or option("env") in ["dev", "e2e"], \
+            "FileSecrets is dev/e2e only (it renders plaintext Secrets); use ExternalSecrets for other envs"
 
 schema ExternalSecrets:
     """Prod/staging secret provider. forge does NOT see values: k8s
@@ -934,27 +1104,31 @@ schema RenderedSecretKey:
     """One key within a RenderedSecrets Secret.
 
     `from` selects the value SOURCE:
-      * "dotenv"  — read the value at apply time from the gitignored
-                    `.env.<env>` (keyed by `key`). The value NEVER enters
-                    KCL render output — only the reference (from + key).
+      * "file"    — read the value at apply time from the env's gitignored
+                    secret FILE (the key named `key`). The value NEVER
+                    enters KCL render output — only the reference. This is
+                    the default.
       * "literal" — an inline literal `value`. GATED to dev/e2e only (a
                     check below + a Go guard) — rejected for any other
                     env. Use for non-sensitive fixed test values
                     (a test JWKS issuer URL, a fixed e2e password) where
-                    a dotenv round-trip is pure friction.
+                    a round-trip through the secret store is pure
+                    friction. A value that is the SAME on every developer
+                    machine is not a secret — declare it here so it stays
+                    in version control.
 
-    A "dotenv" key carries NO value (forge resolves it); a "literal" key
-    carries `value` and NO dotenv `key`.
+    A "file" key carries NO value (forge resolves it); a "literal" key
+    carries `value` and NO `key`.
     """
-    from: str = "dotenv"
+    from: str = "file"
     key?: str
     value?: str
 
     check:
-        from in ["dotenv", "literal"], \
-            "RenderedSecretKey.from must be 'dotenv' or 'literal'"
-        from != "dotenv" or key, \
-            "RenderedSecretKey(from='dotenv') requires `key` (the dotenv key to read)"
+        from in ["file", "literal"], \
+            "RenderedSecretKey.from must be 'file' or 'literal'"
+        from != "file" or key, \
+            "RenderedSecretKey(from='file') requires `key` (the secret name to read)"
         from != "literal" or value != Undefined, \
             "RenderedSecretKey(from='literal') requires `value`"
         from != "literal" or value == Undefined or option("env") in ["dev", "e2e"], \
@@ -973,14 +1147,15 @@ schema RenderedSecret:
 
 schema RenderedSecrets:
     """Dev/e2e secret provider that RENDERS named k8s Secrets from
-    declared sources (a gitignored `.env.<env>` for `from='dotenv'`, or
-    inline literals for `from='literal'`, the latter gated to dev/e2e).
+    declared sources (the env's gitignored secret FILE for
+    `from='file'`, or inline literals for `from='literal'`, the latter
+    gated to dev/e2e).
 
-    Like DotenvSecrets this is for LOCAL clusters only — forge renders
-    PLAINTEXT Secret objects CLI-side. The difference: DotenvSecrets
-    projects the env-var-keyed dotenv onto the secret_refs declared on
-    services; RenderedSecrets declares the Secrets EXPLICITLY (name +
-    keys + per-key source), so per-cluster, multi-Secret seeding is a
+    Like FileSecrets this is for LOCAL clusters only — forge renders
+    PLAINTEXT Secret objects CLI-side. The difference: FileSecrets
+    projects the store onto the secret_refs declared on services;
+    RenderedSecrets declares the Secrets EXPLICITLY (name + keys +
+    per-key source), so per-cluster, multi-Secret seeding is a
     first-class declaration. Each rendered Secret is applied ONLY into
     the cluster(s) whose services reference it — never projected across
     the trust boundary.
@@ -994,19 +1169,19 @@ schema RenderedSecrets:
         type == "rendered", "RenderedSecrets.type must be 'rendered'"
         len(secrets) > 0, "RenderedSecrets.secrets must declare at least one Secret"
 
-schema DotenvRef:
-    """A reference to a value in the gitignored `.env.<env>` (keyed by
-    `key`). The CLI resolves it before render; the VALUE never enters KCL
-    render output (only the reference). Used where a render-time builder
-    needs a secret-sourced value it must NOT echo — e.g. TestJWKS's
-    ES256 private key, which is read to derive the PUBLIC JWK but never
-    published."""
-    from: str = "dotenv"
+schema StoreRef:
+    """A reference to a value in the env's gitignored secret STORE (the
+    key named `key` in secrets/<env>.yaml). The CLI resolves it before
+    render; the VALUE never enters KCL render output (only the
+    reference). Used where a render-time builder needs a secret-sourced
+    value it must NOT echo — e.g. TestJWKS's ES256 private key, which is
+    read to derive the PUBLIC JWK but never published."""
+    from: str = "file"
     key: str
 
     check:
-        from == "dotenv", "DotenvRef.from must be 'dotenv'"
-        key, "DotenvRef.key is required"
+        from == "file", "StoreRef.from must be 'file'"
+        key, "StoreRef.key is required"
 
 schema TestJWKS:
     """An in-cluster JWKS endpoint serving the PUBLIC half of a test
@@ -1018,7 +1193,7 @@ schema TestJWKS:
     The PUBLIC JWK is derived from the ES256 PRIVATE key PEM at render
     time via the `forge.derive_jwk` plugin, so the served JWKS can NEVER
     drift from whatever signs the tokens (same key, two halves). The
-    private key is sourced from `.env.<env>` (DotenvRef) — the CLI reads
+    private key is sourced from the env's secret store (StoreRef) — the CLI reads
     it, passes it to the JWKS builder, and it never appears in the
     rendered output (only the derived public JWK does).
 
@@ -1032,14 +1207,14 @@ schema TestJWKS:
       * `name`        — base name for the ConfigMap / Deployment / Service.
       * `kid`         — the JWK key id (matches the signer's kid).
       * `alg`         — JWK algorithm (default "ES256").
-      * `private_key` — DotenvRef to the ES256 private-key PEM in
+      * `private_key` — StoreRef to the ES256 private-key PEM in
                         `.env.<env>`. Read at render time to derive the
                         public JWK; never published.
     """
     name: str
     kid: str
     alg: str = "ES256"
-    private_key: DotenvRef
+    private_key: StoreRef
 
     check:
         name, "TestJWKS.name is required"
@@ -1101,9 +1276,13 @@ schema Cluster:
                      on an owner cluster.
       * `config`   — path to a k3d Simple-config YAML. When set, forge
                      runs `k3d cluster create --config <config>` and the
-                     servers/agents/api_port/network flags are ignored
+                     image/servers/agents/api_port/network flags are ignored
                      (the config file is authoritative). Relative paths
                      resolve against the project root.
+      * `image`    — k3s node image for a flag-driven cluster. Defaults to
+                     the current Forge-supported Kubernetes release. Pinning
+                     this keeps secondary clusters from silently inheriting
+                     whatever older k3s default happens to ship with k3d.
       * `servers`  — control-plane node count (default 1).
       * `agents`   — worker node count (default 0).
       * `api_port` — host port to bind the cluster's API server to
@@ -1146,6 +1325,7 @@ schema Cluster:
     name: str
     owner?: Cluster
     config?: str
+    image: str = "rancher/k3s:v1.36.3-k3s1"
     servers: int = 1
     agents: int = 0
     api_port?: int
@@ -1169,6 +1349,7 @@ schema Cluster:
 
     check:
         name, "Cluster.name is required"
+        image, "Cluster.image is required"
         servers > 0, "Cluster.servers must be positive"
         agents >= 0, "Cluster.agents must be non-negative"
 
@@ -1717,7 +1898,7 @@ schema RenderedWorkload:
     # Secret/ConfigMap; per-var `env_vars` entries override same-named keys
     # (native k8s precedence). Only meaningful for a K8sCluster deploy.
     env_from: [EnvFromSource] = []
-    deploy?: HostDeploy | K8sCluster | External | Compose | BuildOnly
+    deploy?: HostDeploy | K8sCluster | External | Compose | HostInfra | BuildOnly
     # Polymorphic build declaration — HOW this service's artifact is
     # produced. One of GoBuild | DockerBuild | ShellBuild, discriminated
     # by `build.type` in the rendered JSON (mirrors the deploy union).
@@ -1973,6 +2154,48 @@ schema Frontend:
             "Frontend.dev_runner must be 'npm' | 'pnpm' | 'yarn'"
         port > 0 and port < 65536, "Frontend.port must be 1..65535"
 
+schema OneShotJob:
+    """A ONE-SHOT job in the JSON contract the forge CLI consumes — the
+    bundle-level carrier for the `job` component kind.
+
+    This is the HOST lowering's channel. The k8s lowering happens
+    entirely in KCL (forge.workloads lowers `before` to init containers)
+    and the compose lowering is a document fragment, but the host runner
+    is a Go process launcher: it has to be TOLD "run this argv, wait for
+    exit 0, and only then start these services", because there is no
+    orchestrator underneath it to enforce the ordering.
+
+    `before` names the services that must not launch until this job
+    exits 0. Empty means "run it, don't gate anything".
+
+    Distinct from `CronJob` with an empty schedule, deliberately. A
+    CronJob is a SCHEDULE that happens to have fired once; it carries no
+    ordering and nothing waits for it. Collapsing the two would make
+    "runs on a schedule" and "gates a startup sequence" the same
+    declaration, and they have opposite failure modes: a cron that does
+    not run is a missed tick, a gate that does not hold is a service
+    talking to an unprovisioned world.
+    """
+    name: str
+    image: str
+    # The argv to run to completion. Required — see the KCL component
+    # Job schema for why a one-shot has no sensible default entrypoint.
+    command: [str]
+    # Services that must not start until this job exits 0.
+    before: [str] = []
+    env_vars: [EnvVar] = []
+    # How long the host runner waits for exit 0 before giving up. A
+    # one-shot that never exits would otherwise hang `forge env up`
+    # forever with no signal. 0 => the runner's default ceiling.
+    timeout_seconds: int = 0
+
+    check:
+        name, "OneShotJob.name is required"
+        len(command) > 0, \
+            "OneShotJob.command is required — a one-shot with no command has nothing to run to completion"
+        name not in before, "OneShotJob.before must not name the job itself"
+        timeout_seconds >= 0, "OneShotJob.timeout_seconds must be >= 0 (0 = runner default)"
+
 schema CronJob:
     """A scheduled or one-shot job.
 
@@ -1996,6 +2219,18 @@ schema CronJob:
     # readOnlyRootFilesystem baseline, or config_map / secret
     # projections). Unset => no volumes. See Volume.
     volumes?: [Volume]
+    # CPU / memory requests + limits, in the same neutral units a
+    # Service's deploy.resources takes. Unset => the same defaults a
+    # Service gets (100m/500m, 128Mi/512Mi).
+    #
+    # A Job with NO resources is BestEffort: the first thing the kubelet
+    # evicts under node pressure. That is the wrong QoS for the job this
+    # kind most often expresses — a schema migration gating a release —
+    # where being evicted mid-run is how a deploy half-applies. Defaulting
+    # rather than leaving it absent also stops `forge doctor` failing a
+    # project on a container the project has no knob to size, which is
+    # what happened before this field existed.
+    resources?: Resources
 
     check:
         name, "CronJob.name is required"
@@ -2270,6 +2505,11 @@ schema Bundle:
     operators: [Operator] = []
     frontends: [Frontend] = []
     cronjobs: [CronJob] = []
+    # One-shot jobs (the `job` component kind). Each runs to completion
+    # before the services it names in `before` are launched. Empty => the
+    # env declares none and every consumer behaves exactly as it did
+    # before this bucket existed.
+    jobs: [OneShotJob] = []
     # Generated by `forge generate` from `(forge.v1.config)`-annotated
     # config proto fields and `forge.yaml -> environments[*].config`.
     # Rendered into ConfigMap manifests by `forge.render_manifests`.
@@ -2288,12 +2528,12 @@ schema Bundle:
     # raw manifest dict.
     additional_manifests: [any] = []
     # Per-env secret PROVIDER declaration: WHERE secret values come from.
-    # Absent = today's behavior (no provider). "dotenv" (dev/local) lets
-    # forge resolve declared secret_refs from a gitignored dotenv and
-    # render Secret objects CLI-side; "external" (prod/staging) means
-    # forge never sees values — k8s references pre-existing Secrets.
+    # Absent = no provider. "file" (dev/e2e) lets forge resolve declared
+    # secret_refs from a gitignored secrets/<env>.yaml file and render
+    # Secret objects CLI-side; "external" (prod/staging) means forge never
+    # sees values — k8s references pre-existing Secrets.
     # KCL only emits this DECLARATION; secret VALUES never enter KCL.
-    secret_provider?: DotenvSecrets | ExternalSecrets | RenderedSecrets
+    secret_provider?: FileSecrets | ExternalSecrets | RenderedSecrets
     # Cluster-scoped node.k8s.io/v1 RuntimeClass declarations. Used to
     # bind a workload-facing name ("gvisor", "kata-qemu") to a
     # node-installed handler, OR to declare a dev-cluster alias that

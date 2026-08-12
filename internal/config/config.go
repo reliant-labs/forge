@@ -30,8 +30,12 @@
 package config
 
 import (
+	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
 
 // ProjectKind identifies the shape of a forge project. The default,
@@ -52,8 +56,7 @@ const (
 // KCL. "shared" emits one cobra subcommand per service so callers can
 // invoke `./project <svc>` directly, and KCL emits a single
 // MultiServiceApplication (one image, N Deployments) instead of N
-// Applications. See FORGE_BACKLOG.md "Layer B" + the
-// migrations/v0.x-to-binary-shared/ skill for tradeoffs.
+// Applications. See FORGE_BACKLOG.md "Layer B" for tradeoffs.
 const (
 	ProjectBinaryPerService = "per-service"
 	ProjectBinaryShared     = "shared"
@@ -105,6 +108,21 @@ type ProjectConfig struct {
 	// PATH has drifted from the version pinned by the project. Empty
 	// (legacy) projects are treated as "0.0.0".
 	ForgeVersion string `yaml:"forge_version,omitempty"`
+	// Harness records which AI harness this project was scaffolded for
+	// (`forge project new --harness`). It is the ONLY durable record of that
+	// choice: the flag is read once at scaffold time, and without it on disk
+	// every later `forge generate` has to guess. The skills emitter reads it
+	// to decide whether to deliver on-disk SKILL.md files at all — `claude`
+	// gets .claude/skills/, and the default `reliant` (whose CLI discovers
+	// forge's skills through this same forge.yaml, and whose `forge skill
+	// load <name>` prints them from the binary) gets nothing written.
+	//
+	// Empty means UNSET, not reliant. The two are deliberately distinguished:
+	// a project scaffolded before this field existed may hold delivered
+	// skills that its harness depends on, so absence is read as "leave what
+	// is already there alone" rather than as the default. See
+	// harnessSkillsDirFor in internal/cli/generate_skills.go.
+	Harness string `yaml:"harness,omitempty"`
 	// NOTE: there is intentionally NO project-level `hot_reload:` field.
 	// The single hot-reload switch is `features.hot_reload`, which the dev
 	// loop and the air-config codegen actually read; a second top-level key
@@ -202,6 +220,10 @@ type ProjectConfig struct {
 //   - cron     — scheduled job; Schedule drives it. In-process scheduled
 //     goroutine for dev, CronJob in deploy. First-class (was
 //     worker + kind:cron).
+//   - job      — ONE-SHOT: runs a command to completion, exits 0, and
+//     gates the components named in Before. The portable "do this once,
+//     then proceed" primitive (k8s init container / compose
+//     service_completed_successfully / host run-and-wait).
 //   - operator — controller-runtime manager + CRDs.
 //   - binary   — standalone cobra subcommand cmd/<name>.go (one image,
 //     run `./app <name>`); no bootstrap wiring (was the binaries: block).
@@ -209,6 +231,7 @@ const (
 	ComponentKindServer   = "server"
 	ComponentKindWorker   = "worker"
 	ComponentKindCron     = "cron"
+	ComponentKindJob      = "job"
 	ComponentKindOperator = "operator"
 	ComponentKindBinary   = "binary"
 )
@@ -250,7 +273,7 @@ type ComponentConfig struct {
 // individual component.
 //
 // Any OTHER port is a deploy fact and lives in `deploy/kcl/<env>/main.k`
-// (forge.components.Component.ports, overlaid per environment). Nothing forge
+// (forge.workloads.Workload.ports, refined per environment). Nothing forge
 // introspects — the proto descriptor, the owned worker/operator files, cmd/ —
 // carries a port, so there is deliberately no per-component port field to read.
 const DefaultServePort = 8080
@@ -274,6 +297,9 @@ func (c ComponentConfig) IsWorker() bool { return c.EffectiveKind() == Component
 
 // IsCron reports whether the component is a scheduled cron job.
 func (c ComponentConfig) IsCron() bool { return c.EffectiveKind() == ComponentKindCron }
+
+// IsJob reports whether the component is a one-shot job.
+func (c ComponentConfig) IsJob() bool { return c.EffectiveKind() == ComponentKindJob }
 
 // IsOperator reports whether the component is a controller-runtime operator.
 func (c ComponentConfig) IsOperator() bool { return c.EffectiveKind() == ComponentKindOperator }
@@ -365,6 +391,65 @@ type FrontendConfig struct {
 	// the ONLY base-path variable forge ever reads or writes. Empty
 	// (the default) means the frontend is served from the host root.
 	BasePath string `yaml:"base_path,omitempty"`
+	// Routes restricts which entities this frontend gets generated CRUD
+	// pages for. Entries are route SLUGS as they appear on disk and in the
+	// URL — the plural, kebab-cased entity name ("llm-keys", "usage-events").
+	//
+	// Empty (the default) means EVERY CRUD entity in the project, which is
+	// the right behavior for a project's single frontend and the wrong one
+	// for every frontend after that. forge scaffolds a full list/detail/
+	// create/edit route set per entity, so a purpose-built frontend — an
+	// operator console that wants two of twenty entities — starts by deleting
+	// most of what was just written, and re-deletes anything added later.
+	//
+	// Naming them here is an ALLOWLIST: a new entity added to the project
+	// does not silently appear in this frontend. That is the safer default
+	// for a frontend whose route set is a product decision (an internal
+	// console must not grow a customer-facing page because someone added a
+	// table), and it makes the intended surface readable in forge.yaml
+	// instead of inferable only from which directories survived.
+	//
+	// Unknown slugs are reported by `forge generate` rather than ignored: a
+	// typo'd or renamed entity would otherwise silently yield a frontend
+	// missing the page its author asked for.
+	Routes []string `yaml:"routes,omitempty"`
+	// AuthMode picks how this frontend signs users IN. It does not change
+	// what authentication means anywhere else: the backend validates the
+	// same JWT either way, and forge still issues no tokens.
+	//
+	// "redirect" is the only value, and the default. `login()` sends the
+	// browser to the IdP's own hosted pages, which is portable across
+	// every IdP — and MFA, social sign-in and password reset come for
+	// free because the provider's pages implement them.
+	//
+	// The field is kept (rather than removed) because a first-party
+	// sign-in FORM is a legitimate thing to want, and a project that
+	// builds one against its own IdP's API has somewhere to declare it.
+	// forge does not scaffold one: driving a hosted sign-in from your own
+	// form is provider-proprietary in every case — there is no standard
+	// the way OIDC discovery generalizes the redirect flow — so a
+	// scaffolded implementation is only ever right for one vendor.
+	//
+	// See the `auth/frontend` skill for what a first-party form has to
+	// respect (in particular: the password goes to the IdP, never to your
+	// forge backend, which mints no tokens and has no endpoint for one).
+	AuthMode string `yaml:"auth_mode,omitempty"`
+}
+
+// Auth-mode values for FrontendConfig.AuthMode.
+const (
+	// AuthModeRedirect hands sign-in to the IdP's hosted pages.
+	AuthModeRedirect = "redirect"
+)
+
+// EffectiveAuthMode returns the frontend's sign-in mode, defaulting to the
+// portable redirect flow. Empty means unset, not "no auth" — every mode
+// authenticates; they differ only in where the user types their password.
+func (f FrontendConfig) EffectiveAuthMode() string {
+	if f.AuthMode == "" {
+		return AuthModeRedirect
+	}
+	return f.AuthMode
 }
 
 // EffectivePath returns the frontend's directory relative to the project
@@ -484,8 +569,11 @@ type DatabaseConfig struct {
 
 // SeedConfig controls the deterministic development seed data materialized at
 // runtime by `forge db seed` and `forge run` auto-seed. Seeds are never
-// written into the project as files and never applied to non-dev
-// environments (the applier is CLI-only; see internal/seeddata).
+// written into the project as files, and these settings only ever reach a dev
+// database: `forge db seed apply`/`reset` refuse any other environment, and
+// the migrate path — the one thing that runs against production — has no seed
+// code path at all. The planner itself is a library (pkg/seedplan) that tests
+// may call directly against their own database.
 type SeedConfig struct {
 	// Rows is the default rows per table (default 20 — fills a page and
 	// exercises pagination).
@@ -974,6 +1062,75 @@ type LintConfig struct {
 	// the field unset) is treated as the built-in default — see
 	// [LintConfig.EffectiveHandlerFileMaxLOC] for the canonical value.
 	HandlerFileMaxLOC int `yaml:"handler_file_max_loc,omitempty"`
+
+	// Rules is the repo-wide severity dial for forge-owned lint rules:
+	// rule ID → "off" | "warn" | "error". It is the COARSEST of the
+	// three suppression levels (see internal/linter/suppress) and the
+	// one to reach for last, because — like a path glob in
+	// .golangci.yml — it silently swallows every future finding for
+	// that rule, including the one you would have wanted to see.
+	//
+	// Prefer a file or line directive when the exemption is local. This
+	// map is for rules that genuinely do not apply to the whole project
+	// (a CLI has no handlers; an operator has no frontend), where the
+	// alternative is annotating every file.
+	//
+	// The `warn` setting is the load-bearing one: it lets a project
+	// adopt a newly-added opinionated rule incrementally instead of
+	// choosing between "fails the build today" and "off".
+	//
+	// Only forge's OWN rules are addressable here. golangci-lint,
+	// eslint, stylelint and buf each have their own config file and
+	// their own suppression syntax, and forge deliberately does not
+	// proxy them — a second place to configure the same linter is a
+	// place for the two to disagree.
+	//
+	// The special key "*" applies to every forge rule; an exact rule ID
+	// beats it.
+	Rules map[string]string `yaml:"rules,omitempty"`
+}
+
+// ValidateRules reports rule-severity entries forge cannot interpret.
+//
+// This exists because of the failure mode the Override path itself
+// cannot fix: an unknown key is treated as inert (the rule keeps
+// firing), which is the safe direction to fail but also a silent one.
+// A project that misspells `forgeconv-hadler-file-size: off` would
+// otherwise never learn why the rule kept firing. Validating at
+// config-load time turns that silence into a message.
+//
+// Rule IDs are NOT checked against a registry of known rules — a
+// forge.yaml is shared across forge versions, and a rule that exists in
+// the version your colleague runs but not yours must not fail your
+// build. Only the SEVERITY vocabulary is closed.
+func (c LintConfig) ValidateRules() []string {
+	if len(c.Rules) == 0 {
+		return nil
+	}
+	var problems []string
+	for rule, spec := range c.Rules {
+		if !suppress.ValidSeverity(spec) {
+			problems = append(problems, fmt.Sprintf(
+				"lint.rules[%q]: %q is not a severity — use \"off\", \"warn\", or \"error\"",
+				rule, spec))
+		}
+	}
+	sort.Strings(problems)
+	return problems
+}
+
+// EffectiveRules returns the rule-severity map in the form the linters
+// consume, with keys lowercased so forge.yaml is not case-sensitive
+// about rule IDs.
+func (c LintConfig) EffectiveRules() suppress.RuleSeverities {
+	if len(c.Rules) == 0 {
+		return nil
+	}
+	out := make(suppress.RuleSeverities, len(c.Rules))
+	for rule, spec := range c.Rules {
+		out[strings.ToLower(strings.TrimSpace(rule))] = spec
+	}
+	return out
 }
 
 // DefaultHandlerFileMaxLOC is the built-in threshold used by the

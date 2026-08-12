@@ -85,15 +85,25 @@ pkg/middleware/*_gen.go
 *.swo
 *~
 
+# ── Secrets ──
+# secrets/<env>.yaml is the FileSecrets store deploy/kcl/<env>/main.k
+# declares: a flat YAML map of env-var name to value. forge resolves
+# `sensitive` config fields (DATABASE_URL, …) from it for host runs and for
+# the local-cluster Secret it renders. It must never reach git.
+#
+# Set values with `forge secret set <env> <KEY>` (or hand-edit the YAML). A
+# value only reaches a service that DECLARES it via EnvVar.secret_ref, so a
+# key nothing references is inert; non-secret config belongs in
+# deploy/kcl/<env>/config.k where it stays version-controlled.
+secrets/
+
 # ── Environment ──
-# .env.example is the only env file that should be committed. Everything
-# else matching .env* carries SECRET VALUES: `.env.<env>` is the dotenv
-# secret provider deploy/kcl/<env>/main.k declares, and forge resolves the
-# `sensitive` config fields (DATABASE_URL, …) from it — for host runs and
-# for the local-cluster Secret it renders. It must never reach git.
+# forge projects do NOT use .env files: their contents bypassed KCL (the
+# whole file was injected into every host service), which is what pulled
+# config out of version control. Ignored so a stray one can never be
+# committed; `forge lint` fails on any that appear.
 .env
 .env.*
-!.env.example
 
 # ── OS ──
 .DS_Store

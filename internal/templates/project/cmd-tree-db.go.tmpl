@@ -27,12 +27,12 @@
 // production image migrate itself: the runtime stage copies the binary and
 // nothing else, so there is no db/migrations directory in the container and a
 // filesystem-sourced migrator could only ever fail there. The embedded set
-// comes from db/migrations/*.sql via migrationSource() in db_source.go
+// comes from db/migrations/*.sql via db.Source() in db/source_gen.go
 // (forge-owned — it is the one part of this command that forge re-derives,
-// because whether db/embed.go exists at all depends on whether you have
+// because whether db/embed_gen.go exists at all depends on whether you have
 // written any SQL yet). go:embed re-reads at compile time, so `go run
 // ./cmd/...` picks up a .sql you just wrote; `forge generate` is needed only
-// the FIRST time, to emit db/embed.go.
+// the FIRST time, to emit db/embed_gen.go.
 package cmd
 
 import (
@@ -42,8 +42,17 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/migratekit"
 
+	forgedb "{{.Module}}/db"
 	"{{.Module}}/pkg/config"
 )
+
+// This file is scaffolded only for a project configured for migrations, so it
+// ADDS ITSELF to the command tree rather than being named from root.go: a
+// direct call there would not compile for a project without this file, and a
+// conditional would freeze that decision in a scaffold-once file forever. The
+// set of commands is therefore exactly the set of files present. Delete this
+// file and `db migrate` is gone, with nothing left dangling.
+func init() { registerCommand(newDBCmd) }
 
 // newDBCmd builds the `db` command tree.
 //
@@ -77,7 +86,7 @@ func newDBCmd(deps Deps) *cobra.Command {
 		// This runs unattended (a deploy-time initContainer). A failure must
 		// leave the SQL error at the end of the pod log, not a flag table.
 		SilenceUsage: true,
-		RunE: withMigrator(func(cmd *cobra.Command, m *migratekit.Migrator) error {
+		RunE: withOptionalMigrator(func(cmd *cobra.Command, m *migratekit.Migrator) error {
 			// FAIL HARD ON A DIRTY SCHEMA. Dirty means a previous migration
 			// failed partway; applying more on top compounds the damage. In
 			// an initContainer this stalls the rollout with the old pods
@@ -102,10 +111,10 @@ func newDBCmd(deps Deps) *cobra.Command {
 			// the advisory-lock race to a peer that applied it — neither is
 			// a failure. Invert this to fail when nothing was pending.
 			if !res.Changed {
-				fmt.Fprintf(cmd.OutOrStdout(), "no pending migrations (version=%d)\n", res.After.Version)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "no pending migrations (version=%d)\n", res.After.Version)
 				return nil
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "migrations applied: %d -> %d\n", res.Before.Version, res.After.Version)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "migrations applied: %d -> %d\n", res.Before.Version, res.After.Version)
 			return nil
 		}),
 	})
@@ -124,10 +133,10 @@ func newDBCmd(deps Deps) *cobra.Command {
 				return fmt.Errorf("migrate down: %w", err)
 			}
 			if !res.Changed {
-				fmt.Fprintln(cmd.OutOrStdout(), "nothing to revert")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "nothing to revert")
 				return nil
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "migration reverted: %d -> %d\n", res.Before.Version, res.After.Version)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "migration reverted: %d -> %d\n", res.Before.Version, res.After.Version)
 			return nil
 		}),
 	})
@@ -145,10 +154,10 @@ func newDBCmd(deps Deps) *cobra.Command {
 			// plainly rather than printing "version=0", which reads like a
 			// version that exists.
 			if !state.Applied {
-				fmt.Fprintln(cmd.OutOrStdout(), "no migrations have been applied")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no migrations have been applied")
 				return nil
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "version=%d dirty=%v\n", state.Version, state.Dirty)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "version=%d dirty=%v\n", state.Version, state.Dirty)
 			return nil
 		}),
 	})
@@ -178,10 +187,40 @@ func withMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) func(*cob
 		}
 		defer func() {
 			if cerr := m.Close(); cerr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: close migrator: %v\n", cerr)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: close migrator: %v\n", cerr)
 			}
 		}()
 		return fn(cmd, m)
+	}
+}
+
+// withOptionalMigrator is withMigrator for `migrate up` — the one command
+// that runs UNATTENDED, at every boot, before anything else starts.
+//
+// A binary embedding no migrations is not an error there. A project that has
+// not written its first migration is the state every project starts in, and
+// `forge project new` tells the user to run `forge run` next: a migrate step
+// that hard-fails on an empty db/migrations/ means the scaffold cannot
+// execute its own next step. The job gates every workload in the
+// environment, so nothing started at all — a fresh project could not boot.
+//
+// Skipping is safe precisely because there is nothing to apply. It is NOT
+// extended to the other subcommands: `migrate down`, `status`, `force` and
+// `version` are typed by a human asking a direct question about the schema,
+// and answering "no migrations embedded" with silence would hide a
+// regenerate they need to run. Those keep withMigrator and keep failing.
+//
+// See db/source_gen.go, whose generated doc states this same contract from
+// the other side.
+func withOptionalMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if forgedb.Source() == nil {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(),
+				"no migrations embedded — nothing to apply "+
+					"(write one with `forge db migration new <name>`)")
+			return nil
+		}
+		return withMigrator(fn)(cmd, args)
 	}
 }
 
@@ -201,8 +240,8 @@ func openMigrator(cmd *cobra.Command) (*migratekit.Migrator, error) {
 		return nil, fmt.Errorf("DATABASE_URL (or --database-url) is required")
 	}
 	return migratekit.Open(migratekit.Options{
-		FS:  migrationSource(),
-		Dir: migrationSourceDir,
+		FS:  forgedb.Source(),
+		Dir: forgedb.SourceDir,
 		DSN: cfg.DatabaseUrl,
 	})
 }

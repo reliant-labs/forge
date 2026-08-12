@@ -22,9 +22,10 @@ import (
 // Run renders the KCL at source — a package directory or a single .k
 // file — and returns the raw JSON result.
 //
-// workDir is the process cwd KCL's `file.read` resolves against (the
-// project root for deploy-as-data main.k files that read
-// `deploy/kcl/components_gen.json`), so it is part of the contract.
+// workDir is the process cwd KCL resolves relative reads against, and the
+// directory kpm resolves the package's kcl.mod dependencies from (including
+// the relative `.forge-kcl/` vendor path a dev build points at), so it is
+// part of the contract.
 // dArgs are `-D key=value` top-level option assignments (e.g. "env=dev").
 // kpm progress/diagnostics go to stderr.
 func Run(workDir, source string, dArgs []string) ([]byte, error) {

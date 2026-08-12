@@ -49,6 +49,13 @@
 // excluded too. When the desired projection cannot be
 // computed cleanly, the package says nothing: a false positive erodes trust
 // worse than a missed one.
+
+// forge:exclude-contract
+// schemadrift is a pure comparison function plus its result record: the
+// entry point is a package-level func, and Report's exported methods
+// (Empty, String) are predicates/rendering ON that value. Nothing here
+// holds a dependency or reaches outside the arguments it is given, so
+// there is no seam to inject or fake.
 package schemadrift
 
 import (
@@ -65,8 +72,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/scaffold"
-	"github.com/reliant-labs/forge/internal/schemadef"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // Drift is one forge-owned projection the applied schema no longer matches.

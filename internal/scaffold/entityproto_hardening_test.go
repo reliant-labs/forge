@@ -13,8 +13,8 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/schemadef"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // hardeningSpec is a minimal entity spec used by the hardening tests

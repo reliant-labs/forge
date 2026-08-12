@@ -21,9 +21,13 @@ import (
 type vault struct {
 	bun.BaseModel `bun:"table:vaults,alias:vaults"`
 
-	ID     string `bun:"id,pk"`
-	Name   string `bun:"name,notnull"`
-	Secret string `bun:"secret,notnull"`
+	ID   string `bun:"id,pk"`
+	Name string `bun:"name,notnull"`
+	// The protection now rides on the column: `forge:immutable` on the
+	// migration projects to Bun's ,skipupdate, which drops the column from a
+	// full-replace SET clause. It replaces the Spec column list this test
+	// originally exercised.
+	Secret string `bun:"secret,notnull,skipupdate"`
 }
 
 // dialectOnlyDB is a minimal orm.Context that exposes only a dialect-backed
@@ -64,7 +68,7 @@ func containsCol(cols []string, want string) bool {
 // still include it. This is the whole mechanism, asserted without a database.
 func TestSecretColumnClassification(t *testing.T) {
 	db := dialectOnlyDB{bdb: bun.NewDB(nil, pgdialect.New())}
-	repo := NewRepo[vault](Spec{SecretColumns: []string{"secret"}})
+	repo := NewRepo[vault]()
 	repo.ensureMeta(db)
 
 	// The maskless full-replace SET clause must NOT write the secret column.
@@ -93,7 +97,7 @@ func TestRepoSecretPreservedOnFullReplace(t *testing.T) {
 		t.Fatalf("create vaults table: %v", err)
 	}
 
-	repo := NewRepo[vault](Spec{SecretColumns: []string{"secret"}})
+	repo := NewRepo[vault]()
 
 	// Birth: the client authors the secret on Create — it IS written.
 	v := &vault{ID: "v1", Name: "prod", Secret: "topsecret"}

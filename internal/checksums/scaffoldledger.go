@@ -86,6 +86,12 @@ const ScaffoldedFile = ".forge/scaffolded.json"
 // nothing in the code branches on it.
 type ScaffoldEntry struct {
 	ScaffoldedAt string `json:"scaffolded_at,omitempty"`
+	// BirthHash is the content hash forge wrote, recorded only for the few
+	// scaffolds that keep refreshing while untouched (see
+	// RecordScaffoldWithHash / ScaffoldIsPristine). Empty for the ordinary
+	// write-once scaffolds, which never need to know whether the file still
+	// matches what forge produced.
+	BirthHash string `json:"birth_hash,omitempty"`
 }
 
 // scaffoldedJSON is the wire shape, mirroring disownedJSON / hashesJSON.
@@ -223,6 +229,43 @@ func ScaffoldLedgerPaths(root string) []string {
 	return out
 }
 
+// AbsentScaffolds returns the recorded paths that are NOT on disk, sorted.
+//
+// That set is the ledger's third state made VISIBLE. The ledger exists so a
+// deleted scaffold stays deleted, and the suppression it implements is
+// correct — but it is also completely silent, and silence is how the
+// deletion turns into a defect. A measured run deleted a scaffolded CRUD
+// lifecycle test expecting `forge generate` to re-derive it against the
+// migrations it had just corrected; generate reported success, said
+// nothing, and the file was simply gone. The author spent an hour trying to
+// reproduce the birth condition (copying the project aside, stripping RPCs
+// from the proto, deleting db/migrations) because nothing in forge's output
+// named the file or the one edit that brings it back.
+//
+// The remedy is not to weaken the guarantee — forge must still never
+// resurrect a file the user removed — but to say what it is doing. This is
+// the query the reporting layer needs, and it is deliberately GENERAL: it
+// answers for every scaffold-once path the ledger holds, so a writer added
+// later is covered without being taught about here.
+//
+// Unreadable (as opposed to absent) paths are not reported: a permission
+// error is not evidence of a deletion, and a report that cannot tell the
+// two apart is a report that cries wolf.
+func AbsentScaffolds(root string) []string {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		abs = root
+	}
+	var out []string
+	for p := range loadScaffoldLedger(abs) {
+		if _, serr := os.Stat(filepath.Join(abs, filepath.FromSlash(p))); os.IsNotExist(serr) {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // SplitScaffoldPath resolves an absolute destination path into the
 // (projectRoot, relPath) pair the ledger is keyed on, by walking up to the
 // nearest directory holding a forge.yaml.
@@ -296,4 +339,45 @@ func ScaffoldOnceDecision(root, relPath string) (write bool) {
 	}
 	// Absent: birth iff forge has never scaffolded it here.
 	return !ScaffoldRecorded(root, relPath)
+}
+
+// RecordScaffoldWithHash records a birth AND the content hash forge wrote,
+// for the scaffolds that keep refreshing until the user touches them.
+//
+// Unlike RecordScaffold it overwrites an existing entry's hash: each refresh
+// is a new birth for this purpose, and the recorded hash has to track the
+// bytes currently on disk or the very next run would read the file as edited.
+func RecordScaffoldWithHash(root, relPath string, content []byte) {
+	rel := filepath.ToSlash(relPath)
+	led := loadScaffoldLedger(root)
+	e := led[rel]
+	if e.ScaffoldedAt == "" {
+		e.ScaffoldedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	e.BirthHash = Hash(content)
+	led[rel] = e
+	saveScaffoldLedger(root)
+}
+
+// ScaffoldIsPristine reports whether relPath is still byte-for-byte what
+// forge last wrote there.
+//
+// False when the file is absent, unreadable, was never recorded with a hash,
+// or differs by a single byte — every one of which means "do not touch it".
+// A missing hash reads as edited on purpose: a scaffold born before this
+// bookkeeping existed is one forge has no evidence about, and silently
+// rewriting a file the user may have spent an afternoon on is the failure
+// worth avoiding.
+func ScaffoldIsPristine(root, relPath string) bool {
+	rel := filepath.ToSlash(relPath)
+	led := loadScaffoldLedger(root)
+	e, ok := led[rel]
+	if !ok || e.BirthHash == "" {
+		return false
+	}
+	content, err := os.ReadFile(filepath.Join(root, relPath))
+	if err != nil {
+		return false
+	}
+	return Hash(content) == e.BirthHash
 }

@@ -62,6 +62,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -228,6 +229,20 @@ func frontendAdvisoryFiles(cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
 			Module:       cfg.ModulePath,
 			Workspaces:   workspaces,
 		}
+
+		// The typed-config presence set must match what the scaffold used,
+		// or this lane reports drift on a file forge itself just wrote:
+		// oidc-provider.ts renders one of two forms depending on whether
+		// the frontend has a config message, and a zero value here would
+		// render the build-time env-var form against a scaffold that emitted
+		// the typed-module form — a diff on every fresh project, which is
+		// exactly the false positive this lane must never produce.
+		tc := frontendAdvisoryTypedConfig(cfg, fe.Name)
+		data.HasTypedConfig = tc.Bound
+		data.HasRedirectURI = tc.HasRedirectURI
+		data.HasScopes = tc.HasScopes
+		data.HasResource = tc.HasResource
+		data.HasMockAPI = tc.HasMockAPI
 		if workspaces {
 			data.APIPackage = layout.APIPackage
 			data.HooksPackage = layout.HooksPackage
@@ -235,9 +250,23 @@ func frontendAdvisoryFiles(cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
 			data.UINativePackage = layout.UINativePackage
 		}
 
+		// Per-kind templates read fields the shared ones never do —
+		// next.config.ts renders differently per Output and BasePath — so
+		// the payload has to carry the frontend's own build shape or the
+		// comparison copy differs from what the scaffold wrote.
+		data.Output = frontendAdvisoryOutput(fe)
+		data.BasePath = fe.BasePath
+
 		base := filepath.FromSlash(fe.EffectivePath())
 		for _, file := range files {
-			if !shared[templateRootOf(file.Path)] {
+			root := templateRootOf(file.Path)
+			// A shared root is forge declaring "this file is mechanism I
+			// own the design of". A per-kind root is forge declaring "this
+			// is the platform wiring" — a different statement about
+			// OWNERSHIP, but not about REPORTING: both were written from a
+			// template, so drift in both is reportable. Per-kind files that
+			// a second renderer owns are excluded by name below.
+			if !shared[root] && !perKindAdvisoryEligible(tree, file.Rel) {
 				continue
 			}
 			tmplPath := file.Path
@@ -250,6 +279,48 @@ func frontendAdvisoryFiles(cfg *config.ProjectConfig) ([]AdvisoryFile, error) {
 		}
 	}
 	return out, nil
+}
+
+// frontendAdvisoryTypedConfig reports which typed config fields the named
+// frontend has, for rendering the comparison copy of a shared template.
+//
+// It reads the project's config protos when a descriptor exists, so a
+// project whose frontend config was hand-narrowed compares against the
+// form it actually scaffolded. Before `forge generate` has ever run there
+// is no descriptor — and on a fresh scaffold that is the normal state — so
+// it falls back to the set the scaffolder itself declares, which is what
+// the on-disk file was rendered from.
+//
+// The fallback is keyed on the config proto EXISTING rather than on the
+// descriptor, because the descriptor is derived and the proto is the
+// declaration. A project with no frontend config proto at all (one
+// scaffolded by an older forge) correctly gets the zero value and compares
+// against the build-time env-var form its file still has.
+func frontendAdvisoryTypedConfig(cfg *config.ProjectConfig, frontend string) FrontendTypedConfig {
+	root, err := os.Getwd()
+	if err != nil {
+		return FrontendTypedConfig{}
+	}
+
+	if messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(root, "proto", "config")); err == nil {
+		for _, fc := range codegen.FrontendConfigsFromMessages(messages) {
+			if fc.Frontend != frontend {
+				continue
+			}
+			envVars := make([]string, 0, len(fc.Fields))
+			for _, f := range fc.Fields {
+				if f.EnvVar != "" {
+					envVars = append(envVars, f.EnvVar)
+				}
+			}
+			return FrontendTypedConfigFrom(envVars)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(root, FrontendConfigProtoRelPath(frontend))); err == nil {
+		return ScaffoldedFrontendTypedConfig()
+	}
+	return FrontendTypedConfig{}
 }
 
 // frontendTemplateTreeFor resolves a forge.yaml frontend entry to its
@@ -320,9 +391,14 @@ func InspectAdvisories(projectDir string, cs *FileChecksums, files []AdvisoryFil
 			if !os.IsNotExist(readErr) {
 				return nil, fmt.Errorf("read %s: %w", f.Path, readErr)
 			}
+			// An absent row carries a diff too, so `upgrade --check
+			// <path>` on a file the project does not have shows what
+			// adopting it would add rather than reporting a count and
+			// nothing to look at.
 			res := AdvisoryResult{
 				Path:     f.Path,
 				Status:   AdvisoryAbsent,
+				Diff:     simpleDiff(f.Path, nil, expected),
 				Missing:  len(lineBag(expected)),
 				Selected: selected,
 			}

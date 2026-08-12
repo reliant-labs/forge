@@ -240,7 +240,7 @@ unrelated one.
 ## When this skill is not enough
 
 - **What `forge generate` is doing under the hood** — see
-  `architecture` and the per-version `migrations/v0.x-to-*` skills.
+  `architecture`.
 - **CI workflow generation** (where the audit workflow plugs in) —
   see `ci`.
 - **Tier-1 vs Tier-2 banner classification** — see `architecture`

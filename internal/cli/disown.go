@@ -32,6 +32,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cliutil"
 )
@@ -82,6 +83,29 @@ Example:
 	return cmd
 }
 
+// isVendoredProtoPath reports whether path is one of the files forge
+// COPIES into a project verbatim (assets.VendoredProtoRelPaths): the
+// annotation definitions every project's protos import, and
+// protovalidate's field rules.
+//
+// Those are forge-owned but carry NO forge:hash marker, because the
+// marker is a comment and a comment in these files would be vendored into
+// every project along with them. That combination made them undisownable
+// under the marker rule, which broke a runbook: the vendored-proto-drift
+// lint (internal/cli/lint/lint_vendored_protos.go) reports a customized
+// copy and tells the user to `forge project disown` it — advice this
+// command then refused to take. An escape hatch that does not open is
+// worse than none: the lint stays loud and the user learns to ignore it.
+//
+// This is a NARROW, enumerated exception, deliberately not a general
+// "unmarked files are disownable" rule — an ordinary unmarked file is a
+// scaffold-once "yours" file, already user-owned from birth, with nothing
+// to transfer. The list is shared with the lint rather than duplicated,
+// so the two cannot disagree about which paths it covers.
+func isVendoredProtoPath(path string) bool {
+	return assets.IsVendoredProtoRelPath(filepath.ToSlash(path))
+}
+
 // runDisown is the cobra RunE body, split out so tests can drive it
 // directly with a synthetic args slice + flags.
 func runDisown(args []string, reason string, dryRun bool) error {
@@ -124,7 +148,7 @@ func runDisown(args []string, reason string, dryRun bool) error {
 		}
 		_, hasMarker := checksums.ExtractMarker(content)
 		_, hasFallback := cs.Unstampable[path]
-		if !hasMarker && !hasFallback {
+		if !hasMarker && !hasFallback && !isVendoredProtoPath(path) {
 			unknown = append(unknown, path)
 			continue
 		}

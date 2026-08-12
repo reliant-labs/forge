@@ -63,7 +63,7 @@ func TestRepoLifecycle_WidgetFullSurface(t *testing.T) {
 	ctx := context.Background()
 	createWidgetsTable(t, db)
 
-	repo := NewRepo[widget](Spec{Timestamps: true})
+	repo := NewRepo[widget]()
 
 	// ── Create: server PK populated, timestamps stamped, nil array → {} ──
 	w := &widget{Name: "alpha"} // Tags nil on purpose
@@ -170,7 +170,7 @@ func TestRepo_WriteToMissingRowIsNotFound_PG(t *testing.T) {
 	db := newRepoTestDB(t)
 	ctx := context.Background()
 	createWidgetsTable(t, db)
-	repo := NewRepo[widget](Spec{Timestamps: true})
+	repo := NewRepo[widget]()
 
 	const missing = int64(987654)
 	if err := repo.Delete(ctx, db, missing); !errors.Is(err, orm.ErrNoRows) {
@@ -195,5 +195,102 @@ func TestRepo_WriteToMissingRowIsNotFound_PG(t *testing.T) {
 	}
 	if err := repo.Delete(ctx, db, w.ID); err != nil {
 		t.Fatalf("Delete of an existing row must succeed: %v", err)
+	}
+}
+
+// gadgetExtra stands in for a generated <Entity>Extra type: a computed /
+// in-memory-only field carrier embedded into the generated entity struct.
+// Every field must carry bun:"-" or Bun would try to persist it.
+type gadgetExtra struct {
+	DisplayLabel string `bun:"-"`
+}
+
+// gadget mirrors the shape the generator now emits for an entity whose
+// repo-ext seam declares an Extra type: the ordinary Bun-tagged columns,
+// plus the embedded Extra struct as the LAST field (see writeEntityStruct).
+type gadget struct {
+	bun.BaseModel `bun:"table:gadgets,alias:gadgets"`
+
+	ID   int64  `bun:"id,pk,autoincrement"`
+	Name string `bun:"name,notnull"`
+	gadgetExtra
+}
+
+func createGadgetsTable(t *testing.T, db orm.Context) {
+	t.Helper()
+	_, err := db.Bun().NewCreateTable().Model((*gadget)(nil)).
+		IfNotExists().Exec(context.Background())
+	if err != nil {
+		t.Fatalf("create gadgets table: %v", err)
+	}
+}
+
+// TestRepoLifecycle_ComputedFieldSeamNeverPersistedOrScanned is the
+// runtime half of the computed-field seam: a model with an embedded
+// struct whose fields are all bun:"-" must round-trip through
+// Create/Get/Update completely unaffected, and the computed field must
+// never reach the database — no column, no write, no read.
+func TestRepoLifecycle_ComputedFieldSeamNeverPersistedOrScanned(t *testing.T) {
+	db := newRepoTestDB(t)
+	ctx := context.Background()
+	createGadgetsTable(t, db)
+
+	// The embedded struct must contribute NO column to the actual table —
+	// confirmed against information_schema rather than Bun's in-memory
+	// Table (that would only prove the generator's premise about Bun's
+	// reflection, not that the seam survives an actual CREATE TABLE).
+	var colCount int
+	if err := db.Bun().NewSelect().
+		ColumnExpr("count(*)").
+		Table("information_schema.columns").
+		Where("table_name = ?", "gadgets").
+		Scan(ctx, &colCount); err != nil {
+		t.Fatalf("introspect gadgets columns: %v", err)
+	}
+	if colCount != 2 { // id, name — NOT display_label
+		t.Errorf("gadgets table has %d columns, want 2 (id, name) — the bun:\"-\" computed field must not become a column", colCount)
+	}
+
+	repo := NewRepo[gadget]()
+
+	g := &gadget{Name: "widget-shaped"}
+	g.DisplayLabel = "set before Create"
+	if err := repo.Create(ctx, db, g); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if g.ID == 0 {
+		t.Error("Create did not read back the server-allocated PK")
+	}
+	// The computed field is in-memory only: it survives on the same Go
+	// value (nothing zeroes it), but a fresh read never populates it.
+	if g.DisplayLabel != "set before Create" {
+		t.Errorf("Create must not clear the caller's in-memory computed field, got %q", g.DisplayLabel)
+	}
+
+	got, err := repo.Get(ctx, db, g.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != "widget-shaped" {
+		t.Errorf("Get did not read back Name: %q", got.Name)
+	}
+	if got.DisplayLabel != "" {
+		t.Errorf("Get scanned a value into the computed field %q — it must never be read from the DB", got.DisplayLabel)
+	}
+
+	got.Name = "renamed"
+	got.DisplayLabel = "set before Update"
+	if err := repo.Update(ctx, db, got); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	reread, err := repo.Get(ctx, db, g.ID)
+	if err != nil {
+		t.Fatalf("Get after Update: %v", err)
+	}
+	if reread.Name != "renamed" {
+		t.Errorf("Update did not persist Name: %q", reread.Name)
+	}
+	if reread.DisplayLabel != "" {
+		t.Errorf("Update wrote the computed field to the DB — reread got %q, want empty (never persisted)", reread.DisplayLabel)
 	}
 }

@@ -30,19 +30,40 @@ func TestSkillListNamesTheEntryPoint(t *testing.T) {
 		t.Fatalf("no shipped skill at %q — `forge skill list` would print no entry pointer, and the corpus would have no front door", entryPointSkillPath)
 	}
 
+	// Default (grouped) view: the entry point is no longer a pointer printed
+	// after an alphabetical table — it LEADS, in the START HERE block above
+	// the catalog. Same guarantee, stated where a reader meets it first.
+	got := skillListOutput(t)
+	head, _, ok := strings.Cut(got, "FORGE")
+	if !ok {
+		t.Fatalf("`skill list` has no FORGE catalog section:\n%s", got)
+	}
+	if !strings.Contains(head, entryPointSkillPath) {
+		t.Errorf("`skill list` does not lead with the entry point:\n%s", got)
+	}
+	// The pointer must come with the catalog, not instead of it.
+	if !strings.Contains(got, "db") || !strings.Contains(got, "proto") {
+		t.Errorf("`skill list` lost its catalog:\n%s", got)
+	}
+
+	// --all keeps naming it the old way, after the exhaustive table.
+	all := skillListOutput(t, "--all")
+	if !strings.Contains(all, "skill load "+entryPointSkillPath) {
+		t.Errorf("`skill list --all` does not name the entry point:\n%s", all)
+	}
+	if !strings.Contains(all, "PATH") {
+		t.Errorf("`skill list --all` lost its table:\n%s", all)
+	}
+}
+
+func skillListOutput(t *testing.T, args ...string) string {
+	t.Helper()
 	cmd := newSkillListCmd()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs(nil)
+	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("skill list: %v", err)
+		t.Fatalf("skill list %v: %v", args, err)
 	}
-	got := out.String()
-	if !strings.Contains(got, "skill load "+entryPointSkillPath) {
-		t.Errorf("`skill list` output does not name the entry point:\n%s", got)
-	}
-	// The pointer must come after the table, not instead of it.
-	if !strings.Contains(got, "PATH") || !strings.Contains(got, "db") {
-		t.Errorf("`skill list` lost its table:\n%s", got)
-	}
+	return out.String()
 }

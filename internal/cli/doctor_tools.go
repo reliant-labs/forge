@@ -251,6 +251,19 @@ func defaultToolChecks() []toolCheck {
 			UpstreamURL: "https://k3d.io/#installation",
 		},
 		{
+			Name:        "helm",
+			Description: "Helm — renders declarative platform charts into the forge apply pipeline",
+			Required:    requiredWhen(func(f config.FeaturesConfig) bool { return f.DeployEnabled() }),
+			VersionArgs: []string{"version", "--short"},
+			MinVersion:  "3.0.0",
+			InstallHints: map[string]string{
+				"darwin":  "brew install helm",
+				"linux":   "see https://helm.sh/docs/intro/install/",
+				"windows": "choco install kubernetes-helm   (or `scoop install helm`)",
+			},
+			UpstreamURL: "https://helm.sh/docs/intro/install/",
+		},
+		{
 			Name:        "npm",
 			Description: "npm — frontend package manager (frontends/<name>/, proto-es codegen)",
 			Required:    requiredWhen(func(f config.FeaturesConfig) bool { return f.FrontendEnabled() }),

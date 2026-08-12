@@ -1,48 +1,118 @@
 ---
 name: dev-loop
-description: Getting a token locally — mint one against a shared secret, or run the opt-in dev IdP container for a real browser sign-in; the two-hostname issuer trap and the opaque-vs-JWT access token trap.
+description: Getting a token locally — the dev IdP that comes up with `forge run` for a real browser sign-in (start here), what it declares vs. what a deploy-time job converges and publishes, hand-minting against a shared secret for API-only smoke tests, and the traps that are not your wiring (host-header instance routing, opaque-vs-JWT access tokens).
 ---
 
 # Authenticating locally
 
-Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors). **Authentication is enforced in every mode**: `SetupAuth` builds a real validator whether dev or prod, and no environment variable turns it off. So a local call to a protected RPC needs a real token. Three ways, cheapest first.
+Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors). **Authentication is enforced in every mode**: `SetupAuth` builds a real validator whether dev or prod, and no environment variable turns it off. So a local call to a protected RPC needs a real token.
 
-## 1. Mint one against a shared secret
+**If anything you are building runs in a browser, use the dev IdP (option 1).** The shared-secret path below looks cheaper and is the usual wrong turn: it gets you a token for `curl` and leaves you with no sign-in flow, so a frontend still shows a page of 401s and the next move is hand-rolling a credential-injecting `AuthProvider` that has to be deleted later. The frontend's PKCE provider is already written — it needs configuration, not code.
 
-No IdP, no container. Set `jwt_signing_method: HS256` and put a `jwt_secret` in the env's secret provider (`.env.dev`), then sign a short-lived token with the same secret.
+## 1. A real browser sign-in against the dev IdP (start here)
 
-Fast, and the reason it is not enough on its own: the token has whatever claims you typed, so it never exercises the claim shape your real issuer produces, and it cannot test the sign-in flow at all.
-
-## 2. A real browser sign-in against the dev IdP
-
-`docker-compose.yml` ships an identity-provider container behind an **opt-in compose profile** — the same `profiles:` mechanism that gates `app-debug`. It is OFF by default, deliberately: it is a large image and a second web server, and a project authenticating with API keys, a worker, or a service with no browser must not pay for an IdP it never calls.
+There is nothing to set up:
 
 ```sh
-docker compose --profile <idp-profile> up -d --wait
+forge run
 ```
 
-Then register a client in its admin console (type: **single-page application** — a PUBLIC client, no secret) and hand the app `jwt_issuer`, `jwt_jwks_url` and `jwt_audience`. **Read the comments in `docker-compose.yml`** for this project's actual image version, ports, admin URL and env: they are pinned there and this document will not track a bump.
+**Zitadel is declared infrastructure.** `deploy/kcl/dev/main.k` names this environment's servers — postgres and `idp` — so bringing the environment up brings the IdP up, the same way it brings up the database. Each is READY before anything that dials it starts: forge waits on Zitadel's own `/debug/ready`, which reports CONVERGED rather than merely listening (the first boot runs the whole declarative setup before it serves).
 
-The app's identity env is EMPTY by default rather than pre-pointed at that container, and that is not an oversight. A configured-but-unreachable issuer makes the server refuse to start, so a default pointing at a container nobody started would break `docker compose up` for every project that never wanted an IdP. Empty means no key material: closed, and bootable.
+**Nothing here runs in a container.** Both servers are `forge.HostInfra` declarations, so a scaffolded project starts ZERO containers. Zitadel is a single static Go binary: forge downloads the pinned version once, verifies it against a checksum committed in forge itself, caches it under the user cache dir, and supervises it as a host process. Its state lives in its OWN database on that same postgres, so the two schemas cannot collide.
+
+**The container is still there if you want it.** `docker-compose.yml` still defines `idp` (and the `idp-db` it needs); swap the one `deploy =` line in `deploy/kcl/dev/main.k` for `forge.Compose {service = "idp", env = {"IDP_PORT": str(_idp_port)}}`. Same steps file, same port, same provisioning job.
+
+It is scaffolded only for a project that declares a **frontend** — a project authenticating with API keys, a worker, or a service with no browser never gets it.
+
+**Most of the IdP is DECLARED, not provisioned.** `idp-steps.yaml`, next to the compose file, describes the instance, the organization, the human you sign in as, and a service account; Zitadel converges to it on first boot, writing that service account's personal access token to `.forge/idp/pat.txt`.
+
+The launch banner prints where to sign in and the credentials. The account is the one `idp-steps.yaml` declares — `admin@<project>.localhost`, password `Password1!` — and that file is where you change it. Editing it later does nothing on its own: the steps run ONCE, when the instance is created (the file says how to rebuild).
+
+### The provisioning job publishes what cannot be declared
+
+An OIDC client's `client_id`, and the Zitadel project id that becomes the token audience, are GENERATED by the server when the project and the application are registered, so there is nowhere to write them down in advance. `<project> auth idp-provision` is the convergence step: a one-shot workload (`idp-provision` in `deploy/kcl/workloads.k`, the identity twin of `migrate`) that registers the project and the single-page application over the IdP's own API, authenticated with the PAT above. It ADOPTS an existing registration, so re-running converges instead of stacking duplicates.
+
+There is **no separate bring-up step to remember**: it runs to completion like any other one-shot job before host services start (`forge run` / `forge env up`), or as a Job on `forge env deploy`.
+
+It **publishes** the generated values rather than returning them through a render-time hook:
+
+- on a Kubernetes cluster: a **ConfigMap**, referenced via `configMapKeyRef` — the job's Role (declared alongside it in `workloads.k`) grants exactly the get/create/update/patch it needs.
+- on compose/dev: a committed KCL file, `deploy/kcl/dev/idp_identity_gen.k`, which `config.k` imports directly (`import .idp_identity_gen as idp`) and reads by key (`idp.idp_identity["client_id"]`).
+
+`forge generate` seeds that file with four empty strings the first time, so a fresh clone renders a complete configuration OFFLINE before the job has ever run; the job overwrites it on every successful convergence. **With no IdP ever converged the client id renders EMPTY and the render SUCCEEDS** — empty selects the frontend's no-auth posture, closed but bootable, whereas a wrong client id produces a sign-in that fails at the issuer. The app's identity env is empty in `docker-compose.yml` for the same reason: a configured-but-unreachable issuer makes the server refuse to start. The real values are declared per environment in `deploy/kcl/<env>/config.k` — `jwt_issuer` and `jwt_jwks_url` on the backend side, `OIDC_ISSUER` and `oidc_client_id` on the browser side.
+
+Nothing else is needed on the frontend — `selectAuthProvider()` switches to the real PKCE provider once the issuer and client id are set (see `auth/frontend`).
+
+**To register against an IdP forge did not start**, point the job at yours (`--base` / `IDP_BASE`, or set `IDP_PORT`), or replace the import in `config.k` with a literal client id and drop the `idp-provision` workload from the env's declared list. By hand that means: create a project, add an application of type **User Agent** (a PUBLIC client — auth method NONE, no secret), set its **access token type to JWT** (not optional — see the opaque-token trap below), add `<frontend-origin>/auth/callback` as a redirect URI, and copy the generated client id into `config.k`.
+
+### Ports
+
+**The IdP's port is FIXED, not ephemeral**, because the issuer in every token it mints is derived from it. It is DECLARED ONCE, in `deploy/kcl/dev/main.k`:
+
+```kcl
+_idp_port = plugin.allocate_port(8080, option("worktree") or "")
+_idp_origin = "http://localhost:${_idp_port}"
+```
+
+Everything that has to agree reads that one variable: the IdP binds it (`HostInfra.port`, or `Compose.env`'s `${IDP_PORT}`), and the `idp-provision` job dials and registers it (`IDP_BASE` / `IDP_BROWSER_ORIGIN` in its `env_vars`). `allocate_port` rather than `resolve_port` because a port that stepped off a busy neighbour between runs would invalidate the `iss` of every issued token and the registered redirect URI. **To move it, change the base in that file** — not `IDP_PORT` in your shell, and not the compose file; those move the server alone and leave every other reference on the old port.
+
+**The frontend's port does NOT need pinning.** A frontend that signs in keeps the kernel-assigned dev port forge hands it, so two dev stacks can run and sign in at the same time. That works because what `idp-provision` registers is a **glob**, not a URL: Zitadel matches redirect URIs as patterns whenever the app is in `devMode` (which the job always sets for the dev SPA), so `http://localhost:*/auth/callback` accepts the callback on whatever port this run got. A single `*` spans the port and does not cross a `/`, so a different host or path is still refused. Under a `base_path` the job composes the glob from the origin pattern plus the base path (`http://localhost:*/<base_path>/auth/callback`), and the frontend's `oidc_redirect_uri` in `config.k` stays empty for the browser to fill in at sign-in time.
+
+**This is dev-only, and it is a real widening of a real control.** Wildcard redirect URIs are not permitted by the OIDC standard — the registered-URI allow-list is what stops an authorization code being redirected to a host an attacker owns, and upstream offers the glob only for a client in DevMode. It is defensible for the dev IdP on `localhost` holding accounts that exist only on this machine, and nowhere else.
+
+Pinning a dev port is still available if you want a stable URL — set `port: <n>` in forge.yaml and put the literal URI in `config.k`.
+
+## 2. Mint one against a shared secret — API smoke tests only
+
+No IdP, no container, **and no sign-in flow**. Appropriate for `curl`-ing an RPC or a scripted check; not appropriate for anything with a browser. The token carries whatever claims you typed, so it never exercises the claim shape your real issuer produces.
+
+Set `jwt_signing_method: "HS256"` in `deploy/kcl/dev/config.k` and a `jwt_secret` in the env's secret store (`forge secret set dev JWT_SECRET`), then sign with the same secret:
+
+```go
+// go run ./tmp-token — delete it afterwards; never commit a signer.
+tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+    "sub": "dev-user", "email": "dev@example.com",
+    "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
+})
+s, _ := tok.SignedString([]byte(os.Getenv("JWT_SECRET")))
+fmt.Print(s)
+```
+
+`jwt_signing_method` must AGREE with the key material: an HS* secret means HS256/384/512, and leaving the default `RS256` while setting `jwt_secret` to a shared secret rejects every token you mint.
 
 ## 3. Your real staging IdP
 
 Point `jwt_issuer` at it. Nothing local is needed beyond network reachability, and the claim shape is exactly production's.
 
-## Two traps that are not your wiring
+## Traps that are not your wiring
 
-**A containerized IdP has TWO hostnames.** The browser reaches it at `localhost:<port>`, so that is the issuer it mints tokens under and the `iss` your server enforces; your server reaches the same process at the compose service name. Set BOTH: `jwt_issuer` to the browser URL, `jwt_jwks_url` to the in-network URL.
+**The dev IdP answers to ONE hostname, and it is `localhost`.** Zitadel decides which instance a request is for by matching the request's **Host header** against that instance's registered domains — so a fetch to `http://idp:8080` from inside a compose network is answered `Instance not found`, not served, however correct the URL is. There is no in-network alias to configure around it: `TrustedDomains` in the steps file does not add one (verified), and neither the admin nor the system API exposes one either.
 
-Discovery cannot bridge that gap — OIDC Discovery §4.3 requires a document's `issuer` to equal the URL it was fetched from, so a document fetched in-network either declares the in-network name (and fails the issuer check against the browser-issued tokens) or declares the browser name (and fails the discovery check). This is exactly why `jwt_jwks_url` takes PRECEDENCE over discovery when both are set: the explicit pair is the only consistent answer for a two-hostname deployment.
+On the scaffolded host-process path this simply does not come up: everything — the browser, the app, the `idp-provision` job — reaches the IdP at the same `http://localhost:<idp port>`, so `jwt_issuer` and `jwt_jwks_url` name one origin, they agree with the `iss` in every token, and discovery would work too. The job is handed that origin as both the address it DIALS and the origin it REGISTERS, because on the host those are the same address.
 
-**Some IdPs issue OPAQUE access tokens by default.** An opaque token is a random string, not a JWT, and will never validate against a JWKS however correct everything else is. If sign-in succeeds, a token comes back, and every API call still 401s with a malformed-token error, check that the client requested a **registered API resource / audience** — that is usually what switches the issuer to JWT format — and that `jwt_audience` matches the indicator you registered.
+It comes up the moment something runs in a container. **A project using the dev IdP runs its app with `forge run`, not `docker compose up app`** — a containerized app would reach the IdP only by an in-network name the instance does not know. If you genuinely need that, the escape hatch is a header, not a URL: Zitadel honours `x-zitadel-instance-host: localhost` (verified) for instance selection. Nothing in forge's config sends it — `jwt_jwks_url` is a URL, not a request template — so that path means a custom HTTP client in `SetupAuth`. The job's `--host` / `--browser-origin` flags exist to bridge the same split for a job running inside a compose network.
+
+*(An IdP having two hostnames is the general problem, and `jwt_jwks_url` taking precedence over discovery is forge's general answer to it — OIDC Discovery §4.3 requires a document's `issuer` to equal the URL it was fetched from, so a two-hostname deployment cannot be described by discovery alone.)*
+
+**Some IdPs issue OPAQUE access tokens.** An opaque token is a random string, not a JWT, and will never validate against a JWKS however correct everything else is — the server rejects it with `token contains an invalid number of segments` while sign-in itself looks completely successful.
+
+Zitadel decides this **per application**, not per request: an OIDC app is created with `accessTokenType: OIDC_TOKEN_TYPE_BEARER` (opaque) unless you say `OIDC_TOKEN_TYPE_JWT`. The `idp-provision` job registers it as JWT, and re-running the job converges an app that was registered wrong. Because the choice is on the app, no `resource` parameter on the request can rescue an app left on the default — which is the opposite of the providers where asking for a registered API resource is the fix.
+
+`jwt_audience` must equal what the token actually carries. Zitadel puts the **client id** in `aud` (alongside the project id) — the same `audience` key the job publishes.
+
+**The scaffolded IdP serves the built-in (v1) sign-in pages.** Zitadel v4 defaults `LoginV2.Required` to true, which routes `/oauth/v2/authorize` at a login UI shipped as a SEPARATE artifact; with it absent the sign-in page 404s and the redirect flow dead-ends after an authorization request that looked fine. forge sets it false so one server is the whole IdP. It also turns off the passkey/2FA enrollment NUDGE (`PasswordlessType: 0` **and** `MfaInitSkipLifetime: 0s`) — both are needed, and neither alone is enough to skip the interstitial.
 
 ## Reading the failures
 
 | symptom | cause |
 | --- | --- |
 | Server refuses to start, naming a URL | The issuer or JWKS endpoint is unreachable or wrong. Intended: it fails loudly instead of 401ing every request. |
-| Every call 401s, token looks like a random string | Opaque access token — request an API resource (above). |
+| `Instance not found` from the IdP | Reaching it by a hostname it does not know — almost always the compose service name from inside the network. Use `localhost:<IDP_PORT>` (above). |
+| Every call 401s, token looks like a random string | Opaque access token — the app is registered with the default token type. Re-run `<project> auth idp-provision` to re-converge it. |
 | Every call 401s, `alg` complaint | `jwt_signing_method` disagrees with the key material (HS\* secret vs RS\*/ES\* JWKS). |
-| `iss` mismatch | Two-hostname trap (above), or `jwt_issuer` has a stray trailing slash. |
-| Public RPC works, authenticated one 401s with a valid token | The token is fine; check `jwt_audience` — a token minted for another API of the same issuer is correctly rejected. |
+| `iss` mismatch | `jwt_issuer` has a stray trailing slash, or names a different origin than the browser used. Zitadel's issuer is the bare origin — no path suffix. |
+| Sign-in page 404s after clicking sign in | The v2 login UI is required but not running — see `LoginV2.Required` above. |
+| IdP never comes up, no `.forge/idp/pat.txt` | Read `.forge/hostinfra/idp/zitadel.log` (host path) or `docker compose logs idp` (container path). Most often postgres was not reachable. |
+| Public RPC works, authenticated one 401s with a valid token | The token is fine; check `jwt_audience` — a token minted for another application of the same issuer is correctly rejected. |
+| `redirect_uri` mismatch AFTER typing a password | The frontend serves under a `base_path` the job's registered pattern does not account for — confirm `idp-provision --base-path` matches forge.yaml's `frontends[].base_path`. |

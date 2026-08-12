@@ -283,3 +283,49 @@ func TestDisownCmd_FlagsAndHelp(t *testing.T) {
 		}
 	}
 }
+
+// The VENDORED protos are a third ownership shape the marker rule did not
+// anticipate: forge COPIES them in (proto/forge/v1/forge.proto,
+// proto/buf/validate/validate.proto), so they are forge-owned — but they
+// carry no forge:hash marker, because a `//` header in the annotation
+// definitions would itself be vendored into every project.
+//
+// That made them undisownable, which broke a runbook: the
+// vendored-proto-drift lint tells a project that deliberately customized
+// its copy to run `forge project disown <path>`, and the command refused
+// with "carries no forge certification". A lint whose escape hatch does
+// not exist is a lint people learn to ignore.
+func TestRunDisown_AcceptsVendoredProtoWithoutMarker(t *testing.T) {
+	root := withDisownProjectRoot(t, nil)
+	const rel = "proto/forge/v1/forge.proto"
+	seedDisownFile(t, root, rel, "syntax = \"proto3\";\n// locally customized\n")
+
+	if err := runDisown([]string{rel}, "deliberately customized vendored annotations", false); err != nil {
+		t.Fatalf("runDisown: %v", err)
+	}
+
+	cs, err := checksums.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cs.IsDisowned(rel) {
+		t.Fatalf("expected %s to be disowned; disowned set = %v", rel, cs.Disowned)
+	}
+}
+
+// The marker rule still holds for everything else: an ordinary unmarked
+// file is a scaffold-once "yours" file and there is nothing to disown.
+// The vendored allowance must be a narrow, named exception, not a hole.
+func TestRunDisown_StillRefusesOrdinaryUnmarkedFile(t *testing.T) {
+	root := withDisownProjectRoot(t, nil)
+	const rel = "internal/mine/thing.go"
+	seedDisownFile(t, root, rel, "package mine\n")
+
+	err := runDisown([]string{rel}, "because", false)
+	if err == nil {
+		t.Fatal("expected a refusal for an unmarked, non-vendored file")
+	}
+	if !strings.Contains(err.Error(), "no forge certification") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}

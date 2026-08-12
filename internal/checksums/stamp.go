@@ -242,11 +242,36 @@ func BodyHash(content []byte) string {
 	return Hash(body)
 }
 
+// ExtractMarkerFor is ExtractMarker with the file's path in hand, which
+// lets it reject a marker written in a comment syntax relPath's format
+// cannot produce. Stamp only ever emits styleFor(relPath), so a marker
+// in any OTHER syntax is prose ABOUT the marker — the canonical case
+// being documentation that shows a Go banner inside a ```go fence in a
+// .md file (docs/concepts.md did exactly this, and the plausible-looking
+// example hash hard-blocked `forge generate` on a file forge does not
+// emit). Falls back to the path-less scan for unstampable formats.
+func ExtractMarkerFor(relPath string, content []byte) (string, bool) {
+	style, ok := styleFor(relPath)
+	if !ok {
+		return ExtractMarker(content)
+	}
+	return extractMarker(content, &style)
+}
+
 // ExtractMarker returns the embedded hash value from the first marker
 // line in content, and whether a marker line was found. The value is
 // the token following "forge:hash=" up to whitespace or a comment
 // closer.
+//
+// Prefer ExtractMarkerFor where the path is known: without it this
+// cannot tell a real stamp from a foreign-syntax example of one.
 func ExtractMarker(content []byte) (string, bool) {
+	return extractMarker(content, nil)
+}
+
+// extractMarker is the shared scan. A non-nil style additionally
+// requires the marker to sit in that style's comment syntax.
+func extractMarker(content []byte, style *commentStyle) (string, bool) {
 	norm := normalizeNewlines(content)
 	key := []byte(markerKey)
 	// Scan for the FIRST occurrence whose value is a real certification
@@ -273,10 +298,23 @@ func ExtractMarker(content []byte) (string, bool) {
 		if val := string(rest[:end]); isHashValue(val) || val == UnverifiedMarkerValue {
 			// A real certification hash, or the legacy "unverified" sentinel
 			// (deliberately non-hash so Verify always answers Modified).
-			return val, true
+			if style == nil || markerLineHasStyle(norm[:i+len(key)], *style) {
+				return val, true
+			}
 		}
 		search = rest // advance past this (non-hash) mention and keep looking
 	}
+}
+
+// markerLineHasStyle reports whether the marker occurrence ending
+// upTo (content through the trailing "=" of the matched key) sits in a
+// comment of the given style — i.e. whether the text between the start
+// of the line and the key is exactly the style's prefix. That is the
+// form Stamp emits, so anything else is a mention in some other syntax.
+func markerLineHasStyle(upTo []byte, style commentStyle) bool {
+	lineStart := bytes.LastIndexByte(upTo, '\n') + 1
+	lead := upTo[lineStart : len(upTo)-len(markerKey)]
+	return string(lead) == style.prefix
 }
 
 // isHashValue reports whether s is a forge certification hash: a run of

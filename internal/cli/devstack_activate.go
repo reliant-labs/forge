@@ -25,10 +25,17 @@ import (
 //     .forge/ports-<env>.json store (resolve_port is still availability-
 //     stepping, so its store remains the source of truth).
 //
-// It returns a restore func that reverts the resolve_port store to its
-// pre-render bytes — the up path calls it when its already-running guard
-// rejects a render so a rejected attempt can't drift the stable resolve_port
-// assignments. Deploy ignores it (an applied render's ports ARE the truth).
+// Dev IdP identity is NOT armed here. There is no render-time resolver for
+// it: the `idp-provision` job (deploy/kcl/workloads.k, run as an ordinary
+// one-shot alongside every other job) converges the registration and
+// PUBLISHES the result — a ConfigMap on a cluster target, a committed KCL
+// file on compose/dev — and every render simply reads whatever was last
+// published. See the `auth/dev-loop` skill.
+//
+// It returns a restore func that reverts the port store to its pre-render
+// bytes — the up path calls it when its already-running guard rejects a
+// render, so a rejected attempt can't drift the stable resolve_port
+// assignments. Deploy ignores it (an applied render's values ARE the truth).
 //
 // On the primary checkout with no worktree, option("worktree") is "" so a
 // KCL that keys on it composes the DEFAULT stack — historical names and
@@ -38,8 +45,17 @@ func activateDevStack(projectDir, env string) (devstack.Options, func()) {
 	devstack.SetActive(opts)
 
 	// Back allocate_port with the persistent, lock-guarded block registry.
+	//
+	// Availability-aware on FIRST use only: the registry is per-project, so
+	// two different projects on one machine both ask for the default key's
+	// block 0 and therefore the identical base port. For the dev IdP that is
+	// fatal — forge refuses to adopt an identity provider it did not start
+	// (rightly: it would mint tokens the wrong issuer signed), so the second
+	// project could not bring up sign-in at all. Stepping once, at the moment
+	// the port is first chosen, and memoizing the result keeps every later
+	// run byte-identical, which is the property the issuer actually needs.
 	kclplugin.UseBlockAllocator(func(base int, key string) (int, error) {
-		return devstack.AllocatePort(projectDir, base, key)
+		return devstack.AllocatePortAvoidingForeign(projectDir, base, key, func(p int) bool { return !portInUse(p) })
 	})
 
 	// Keep resolve_port stable + up==deploy via the per-env store.

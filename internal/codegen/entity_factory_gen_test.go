@@ -29,13 +29,16 @@ func TestRenderEntityFactoryFile_ValidGo(t *testing.T) {
 		},
 	}
 
-	out := renderEntityFactoryFile("github.com/acme/shop", specs)
+	out := renderEntityFactoryFile("github.com/acme/shop", "order", specs)
 	if _, err := format.Source(out); err != nil {
-		t.Fatalf("rendered factory_gen.go is not valid Go: %v\n---\n%s", err, out)
+		t.Fatalf("rendered factories_gen_test.go is not valid Go: %v\n---\n%s", err, out)
 	}
 	s := string(out)
 	for _, want := range []string{
-		"package app",
+		// The clause is the HANDLER package's own, not a factory-only
+		// package: that is what makes these visible to both the in-package
+		// and the external `order_test` files in the same directory.
+		"package order",
 		`"github.com/oklog/ulid/v2"`,
 		`db "github.com/acme/shop/internal/db"`,
 		"func seedFactoryParents(t testing.TB, database orm.Context, sql string)",

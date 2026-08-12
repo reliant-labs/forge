@@ -7,9 +7,12 @@
 // that comes back — what login() does, what getToken() returns — rather than
 // from any flag, because the flag is what could be wrong.
 //
-// Env vars are read at module scope in oidc-provider.ts (which is what lets a
+{{if .HasTypedConfig}}// Settings are read through the generated typed config (@/lib/config_gen),
+// which memoizes the validated result at module scope, so each case
+// re-imports the module with the environment it wants via vi.resetModules()
+// — that reset is what drops the memo along with the module.{{else}}// Env vars are read at module scope in oidc-provider.ts (which is what lets a
 // bundler inline them), so each case re-imports the module with the
-// environment it wants via vi.resetModules().
+// environment it wants via vi.resetModules().{{end}}
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -32,7 +35,18 @@ async function loadWithEnv(
   return import("./oidc-provider");
 }
 
-{{if eq .Platform "vite-spa"}}const ISSUER = "VITE_OIDC_ISSUER";
+{{if .HasTypedConfig}}// The typed-config build reads its settings through loadConfig() (@/lib/
+// config_gen), whose server-side branch reads the UNPREFIXED env names —
+// the proto's env_var spelling, the same one a deployed workload receives.
+// These constants must therefore name what config_gen reads, NOT the
+// build-time-inlined NEXT_PUBLIC_/VITE_ names the other branches use: a
+// prefixed key stubbed here would never reach the provider, readOidcConfig()
+// would return null, and every case below would die in setup.
+const ISSUER = "OIDC_ISSUER";
+const CLIENT_ID = "OIDC_CLIENT_ID";
+const REDIRECT_URI = "OIDC_REDIRECT_URI";
+const SCOPES = "OIDC_SCOPES";
+const MOCK = "MOCK_API";{{else}}{{if eq .Platform "vite-spa"}}const ISSUER = "VITE_OIDC_ISSUER";
 const CLIENT_ID = "VITE_OIDC_CLIENT_ID";
 const REDIRECT_URI = "VITE_OIDC_REDIRECT_URI";
 const SCOPES = "VITE_OIDC_SCOPES";
@@ -40,7 +54,7 @@ const MOCK = "VITE_MOCK_API";{{else}}const ISSUER = "NEXT_PUBLIC_OIDC_ISSUER";
 const CLIENT_ID = "NEXT_PUBLIC_OIDC_CLIENT_ID";
 const REDIRECT_URI = "NEXT_PUBLIC_OIDC_REDIRECT_URI";
 const SCOPES = "NEXT_PUBLIC_OIDC_SCOPES";
-const MOCK = "NEXT_PUBLIC_MOCK_API";{{end}}
+const MOCK = "NEXT_PUBLIC_MOCK_API";{{end}}{{end}}
 
 /** Every env key the provider module reads. See loadWithEnv. */
 const ALL_ENV_KEYS = [ISSUER, CLIENT_ID, REDIRECT_URI, SCOPES, MOCK];
@@ -151,7 +165,7 @@ describe("provider selection", () => {
       "https://tenant.us.auth0.com",
       "https://accounts.example.okta.com",
       "https://keycloak.internal/realms/app",
-      "https://logto.example.com/oidc",
+      "https://zitadel.example.com",
     ]) {
       const mod = await loadWithEnv({ [ISSUER]: issuer, [CLIENT_ID]: "c" });
       expect(mod.readOidcConfig()?.issuer).toBe(issuer);
@@ -168,9 +182,9 @@ describe("provider selection", () => {
 // the single-flight oracle: nothing here reads the provider's source or trusts
 // a flag, it counts requests that actually left.
 //
-// The endpoint also rotates and revokes-on-reuse, mirroring Logto 1.41.0 as
-// measured against a live instance, so a missing single-flight does not merely
-// inflate a counter — it destroys the session the way it would in production.
+// The endpoint also rotates and revokes-on-reuse — the strictest provider
+// behaviour in the wild — so a missing single-flight does not merely inflate a
+// counter: it destroys the session the way it would in production.
 
 /**
  * A token endpoint that counts hits, rotates, and revokes on reuse.

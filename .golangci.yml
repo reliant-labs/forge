@@ -18,6 +18,25 @@ version: "2"
 
 run:
   timeout: 5m
+  # golangci-lint takes an exclusive OS file lock on $TMPDIR/golangci-lint.lock
+  # for the whole of a run. That is ONE path shared by every golangci-lint on
+  # the machine — not per-project, and not in the cache directory, so pointing
+  # GOLANGCI_LINT_CACHE elsewhere does nothing. By default it waits five
+  # seconds for the lock and then exits 3 with "parallel golangci-lint is
+  # running".
+  #
+  # Five seconds is no patience at all against a lint that takes tens of
+  # seconds, so ordinary things turn into spurious lint failures: an editor's
+  # golangci-lint LSP firing on save, a CI matrix linting two services at
+  # once, several agents sharing this checkout (which is how `forge lint`
+  # kept failing here with exit 3).
+  #
+  # allow-serial-runners KEEPS the lock and drops only the five-second
+  # deadline: concurrent invocations queue and run one at a time. The lock
+  # exists because golangci-lint is memory-hungry and two full runs at once
+  # can OOM a small machine, which is why allow-parallel-runners (drop the
+  # serialization entirely) is deliberately NOT what this sets.
+  allow-serial-runners: true
 
 issues:
   # Report EVERY finding. golangci-lint defaults to max-issues-per-linter:50

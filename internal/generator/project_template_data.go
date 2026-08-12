@@ -46,15 +46,23 @@ func guardTemplateMode(g config.ConfigGuardConfig) string {
 //     the scaffold lane renders through a separate local struct
 //     (generateAlloyConfig), so the scaffold payload never needs it.
 type projectTemplateData struct {
-	Name                   string
-	ProtoName              string
-	Module                 string
-	ServiceName            string
-	ServicePackage         string
-	ServicePort            int
-	ProjectName            string
-	FrontendName           string
-	FrontendPort           int
+	Name           string
+	ProtoName      string
+	Module         string
+	ServiceName    string
+	ServicePackage string
+	ServicePort    int
+	ProjectName    string
+	FrontendName   string
+	FrontendPort   int
+	// HasFrontend reports whether this project ships a browser at all. It
+	// gates the dev identity provider in docker-compose.yml: an IdP exists
+	// to complete a REAL browser sign-in, so a project with no browser
+	// (a worker, a CLI, an API-key service) must not be handed a second web
+	// server it will never call. Derived — never a flag — from whether the
+	// project declares a frontend, so it follows `forge scaffold frontend`
+	// on the next `forge generate` with nothing for the user to turn on.
+	HasFrontend            bool
 	GoVersion              string
 	GoVersionMinor         string
 	DockerBuilderGoVersion string
@@ -217,6 +225,7 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		ProjectName:            g.Name,
 		FrontendName:           g.FrontendName,
 		FrontendPort:           g.FrontendPort,
+		HasFrontend:            g.Features.FrontendEnabled() && g.FrontendName != "",
 		GoVersion:              goVersion,
 		GoVersionMinor:         goVersionMinor(goVersion),
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
@@ -327,14 +336,18 @@ func forUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 	}
 
 	return projectTemplateData{
-		Name:                   cfg.Name,
-		ProtoName:              protoName,
-		Module:                 cfg.ModulePath,
-		ServiceName:            serviceName,
-		ServicePort:            servicePort,
-		ProjectName:            cfg.Name,
-		FrontendName:           frontendName,
-		FrontendPort:           frontendPort,
+		Name:         cfg.Name,
+		ProtoName:    protoName,
+		Module:       cfg.ModulePath,
+		ServiceName:  serviceName,
+		ServicePort:  servicePort,
+		ProjectName:  cfg.Name,
+		FrontendName: frontendName,
+		FrontendPort: frontendPort,
+		// Read from the LIVE forge.yaml, so a frontend added after
+		// scaffolding brings the IdP with it on the next `forge generate`,
+		// and removing the last one takes it away again.
+		HasFrontend:            len(cfg.Frontends) > 0,
 		GoVersion:              goVersion,
 		GoVersionMinor:         goVersionMinor(goVersion),
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),

@@ -35,7 +35,7 @@ var {{.Name | camelCase}}Dedupe = middleware.NewDedupeStore(middleware.DedupeCon
 // handleWebhook{{.Name | pascalCase}} handles incoming {{.Name}} webhooks.
 //
 // Routes are auto-registered via webhook_routes_gen.go AND auto-wired by
-// internal/app/mounts_services.go (which calls s.RegisterWebhookRoutes(mux, stack)
+// internal/app/mounts_services_gen.go (which calls s.RegisterWebhookRoutes(mux, stack)
 // after the user-owned RegisterHTTP). No manual wiring required.
 func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

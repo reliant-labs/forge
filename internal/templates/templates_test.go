@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -26,84 +27,105 @@ func TestRenderTemplate_StripsBuildIgnoreFromRenderedOutput(t *testing.T) {
 	}
 }
 
-// TestBootstrapTestingTemplate_ZeroServices verifies that bootstrap_testing.go.tmpl
-// renders valid Go when all component lists are empty.
-func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
+// TestComponentTestHelpersTemplate_MinimalService verifies that
+// component_test_helpers.go.tmpl renders valid Go for the leanest component
+// shape: a service with no DB, no migrations, no auto-stubs, no func seams.
+//
+// This replaces TestBootstrapTestingTemplate_ZeroServices, which pinned the
+// zero-COMPONENT state of the retired single-file harness (where every
+// helper, and the `testing` import itself, had to be gated on "are there any
+// components at all"). One file per component makes that state
+// unrepresentable: a component's helper file exists only because the
+// component does, so the file always has exactly one component to serve.
+func TestComponentTestHelpersTemplate_MinimalService(t *testing.T) {
 	data := struct {
-		Module         string
-		HasDatabase    bool
-		DatabaseDriver string
-		OrmEnabled     bool
-		Services       []struct {
-			Name, Package, FieldName, ProtoServiceName string
-			ProtoConnectImportPath, ProtoConnectPkg    string
-			Fallible                                   bool
-			HasDB                                      bool
+		Module    string
+		Package   string
+		Name      string
+		FieldName string
+		IsService bool
+
+		ConstructorName string
+		Fallible        bool
+		HasDB           bool
+		HasLogger       bool
+		HasConfig       bool
+		HasMigrationsFS bool
+		NeedsTime       bool
+		NeedsULID       bool
+
+		ProtoServiceName       string
+		ProtoConnectImportPath string
+		ProtoConnectPkg        string
+		MountMethod            string
+
+		// The template ranges over these; declare them so the struct-field
+		// lookup succeeds. Element types only need the fields the template
+		// reads.
+		AutoStubs       []struct{ FieldName, StubType, InterfaceQualified string }
+		UnresolvedStubs []struct{ FieldName, TypeExpr string }
+		FuncDefaults    []struct {
+			FieldName, Expr      string
+			NeedsTime, NeedsULID bool
 		}
-		ConnectImports []string
-		Packages       []struct {
-			Name, Package, FieldName string
-			Fallible                 bool
-		}
-		AnyServiceHasDB     bool
-		AnyServiceNeedsTime bool
-		AnyServiceNeedsULID bool
-		// ExtraImports lists cross-package auto-stub imports. The
-		// template ranges over it unconditionally; we declare the
-		// field as an empty slice so text/template's struct-field
-		// lookup succeeds. The element type only needs the same
-		// .Alias / .Path fields the production type carries.
-		ExtraImports []struct {
-			Alias, Path string
-		}
+		FuncTodos    []struct{ FieldName, TypeExpr string }
+		ExtraImports []struct{ Alias, Path string }
 	}{
-		Module: "example.com/myproject",
+		Module:                 "example.com/myproject",
+		Package:                "order",
+		Name:                   "order",
+		FieldName:              "Order",
+		IsService:              true,
+		ConstructorName:        "New",
+		ProtoServiceName:       "OrderService",
+		ProtoConnectImportPath: "example.com/myproject/gen/services/order/v1/orderv1connect",
+		ProtoConnectPkg:        "orderv1connect",
+		MountMethod:            "Register",
 	}
 
-	content, err := ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)
+	content, err := ProjectTemplates().Render("component_test_helpers.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("Render bootstrap_testing.go.tmpl: %v", err)
+		t.Fatalf("Render component_test_helpers.go.tmpl: %v", err)
 	}
-
 	rendered := string(content)
 
-	// Must contain basic test helpers
+	// The package clause is the COMPONENT's own, not <pkg>_test: Go compiles
+	// in-package _test.go files INTO the package, which is what lets both
+	// internal and external test files in this dir use these helpers.
+	if !strings.Contains(rendered, "package order\n") {
+		t.Fatalf("helpers must be in `package order`, got:\n%s", rendered)
+	}
 	if !strings.Contains(rendered, "type TestOption func") {
 		t.Fatal("missing TestOption type")
 	}
-	// With zero services and zero packages, defaultTestConfig is dead code
-	// (it's only called from per-service / per-package NewTest helpers, which
-	// aren't emitted). Emitting it would also force a `"testing"` import that
-	// goes unused, breaking compilation. Confirm it is suppressed.
-	if strings.Contains(rendered, "func defaultTestConfig(") {
-		t.Fatal("defaultTestConfig should be suppressed when no services and no packages exist")
+	if !strings.Contains(rendered, "func NewTestOrder(") {
+		t.Fatal("missing NewTestOrder factory")
 	}
-	if strings.Contains(rendered, `"testing"`) {
-		t.Fatal("\"testing\" import should be suppressed when no services and no packages exist")
+	// Unlike the retired shared file, `testing` is ALWAYS imported here —
+	// this file only exists for a component that has a factory, and the file
+	// is a _test.go so the import never reaches the production binary.
+	if !strings.Contains(rendered, `"testing"`) {
+		t.Fatal("a component helper file must import testing")
+	}
+	// Without a DB there must be no orm import and no db field.
+	if strings.Contains(rendered, "orm.Context") {
+		t.Fatalf("no-DB component must not reference orm.Context:\n%s", rendered)
 	}
 
-	// The body uses *slog.Logger unconditionally (testConfig.logger,
-	// WithLogger), so the import must be present even in the
-	// zero-component state. Journey fr-994db53964: zero-service
-	// pkg/app/testing.go failed to compile with `undefined: slog`
-	// because the import was gated on `or .Services .Packages` while
-	// the symbols were not.
+	// The slog gating bug (journey fr-994db53964): the body uses
+	// *slog.Logger unconditionally, so the import must always be present.
 	if strings.Contains(rendered, "slog.") && !strings.Contains(rendered, `"log/slog"`) {
-		t.Fatalf("rendered testing.go references slog without importing log/slog:\n%s", rendered)
+		t.Fatalf("rendered helpers reference slog without importing log/slog:\n%s", rendered)
 	}
 
-	// Verify it parses as valid Go
 	fset := token.NewFileSet()
-	_, parseErr := parser.ParseFile(fset, "testing.go", rendered, parser.AllErrors)
-	if parseErr != nil {
-		t.Fatalf("rendered testing.go does not parse as valid Go:\n%v\n\nSource:\n%s", parseErr, rendered)
+	if _, parseErr := parser.ParseFile(fset, "helpers_gen_test.go", rendered, parser.AllErrors); parseErr != nil {
+		t.Fatalf("rendered helpers do not parse as valid Go:\n%v\n\nSource:\n%s", parseErr, rendered)
 	}
 
 	// Belt-and-braces for the same class of bug on every qualifier the
 	// template can emit: any package qualifier used in the body must
-	// have a matching import. Parse-level only (no type checking), but
-	// it catches gated-import-vs-unconditional-symbol drift for all
-	// branches of the template, not just slog.
+	// have a matching import.
 	assertQualifiersImported(t, rendered)
 }
 
@@ -133,9 +155,26 @@ func assertQualifiersImported(t *testing.T, src string) {
 	for _, imp := range f.Imports {
 		imported[strings.Trim(imp.Path.Value, `"`)] = true
 	}
+	// Match the qualifier as a whole identifier. A plain
+	// strings.Contains(src, qual+".") reports `orderv1connect.NewFooClient`
+	// as a reference to the `connect` package — a false positive that would
+	// demand an import the file neither has nor needs.
 	for qual, path := range qualifierImports {
-		if strings.Contains(src, qual+".") && !imported[path] {
-			t.Errorf("rendered file references %s.* without importing %q", qual, path)
+		re := regexp.MustCompile(`\b` + regexp.QuoteMeta(qual) + `\.`)
+		for _, m := range re.FindAllStringIndex(src, -1) {
+			// \b treats '1' as a word char, so `orderv1connect.` does not
+			// match — but a leading identifier rune still has to be ruled
+			// out for qualifiers that end at a non-word boundary.
+			if m[0] > 0 {
+				prev := rune(src[m[0]-1])
+				if prev == '_' || prev == '.' {
+					continue
+				}
+			}
+			if !imported[path] {
+				t.Errorf("rendered file references %s.* without importing %q", qual, path)
+			}
+			break
 		}
 	}
 }

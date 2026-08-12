@@ -311,14 +311,46 @@ func Version() string {
 	v := version
 	mu.RUnlock()
 
-	if v != "" && v != "dev" {
-		return v
+	info, _ := debug.ReadBuildInfo()
+	return versionFromInfo(info, v)
+}
+
+// versionFromInfo is the pure decision behind Version, split out so the
+// standalone and embedded shapes can both be unit-tested (under `go test`
+// the ambient build info is always the test binary).
+//
+// The embedded case is the reason this is not a one-liner. When forge is
+// compiled INTO another binary, info.Main is the HOST module — reading its
+// version reports e.g. reliant's v1.5.1 as though it were forge's, and the
+// scaffolder then writes that into a new project's forge.yaml as
+// `forge_version`. Forge's identity must always come from the forge module
+// itself: Main when forge IS the main module, the forge DEP otherwise.
+func versionFromInfo(info *debug.BuildInfo, stamped string) string {
+	if stamped != "" && stamped != "dev" {
+		return stamped
+	}
+	if info == nil {
+		return stamped
 	}
 
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
+	if info.Main.Path == forgeCmdModulePath {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			return info.Main.Version
+		}
+		return stamped
 	}
-	return v
+
+	// Embedded: forge is a dependency of some host binary.
+	for _, dep := range info.Deps {
+		if dep == nil || dep.Path != forgeCmdModulePath {
+			continue
+		}
+		if dep.Version != "" && dep.Version != "(devel)" {
+			return dep.Version
+		}
+		break
+	}
+	return stamped
 }
 
 // installableVersionRE matches a forge version string that is a valid

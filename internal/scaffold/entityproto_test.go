@@ -17,7 +17,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/schemadef"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 const entityProtoPkg = "services.tasks.v1"

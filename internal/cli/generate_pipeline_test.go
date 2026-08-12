@@ -66,20 +66,26 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"internal/app composition (hybrid DI)",
 		"go mod tidy (pre-wiring)",
 		"cmd/commands.go (user extension point)",
-		"pkg/app/testing.go",
-		"pkg/app/migrate.go",
+		"per-service test helpers",
+		"db/embed.go (embedded migrations)",
 		"sqlc generate",
 		"go mod tidy (gen/)",
 		"CI workflows",
 		"regenerate infra files",
 		"cmd command groups (services/workers/operators)",
 		"discover components",
-		"components_gen.json",
+		"workloads.k (scaffold once)",
 		"per-env deploy config",
+		// AFTER per-env deploy config: the frontend's runtime document is
+		// rendered from the dev env's KCL, so the generated
+		// frontend_config_gen.k module and the env's config.k instance —
+		// both emitted by the step above — must exist first.
+		"frontend typed config",
 		"ingress k3d ports fragment",
 		"Grafana dashboards",
 		"entity-aware seed data",
 		"frontend mocks + transport",
+		"repoint renamed *_gen frontend imports",
 		"agent skills (.claude/skills)",
 		"go mod tidy (root)",
 		"goimports on generated Go",
@@ -91,6 +97,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"check disowned-sibling dangling refs",
 		"check stale scaffold tests",
 		"go build (validate generated code)",
+		"record generating forge build",
 	}
 
 	steps := generateSteps()
@@ -286,8 +293,8 @@ func TestTemplatesOnlyExcludesCleanupAndValidate(t *testing.T) {
 func TestTemplatesOnlyIncludesTemplateRenderSteps(t *testing.T) {
 	mustInclude := []string{
 		"service stubs",
-		"pkg/app/testing.go",
-		"pkg/app/migrate.go",
+		"per-service test helpers",
+		"db/embed.go (embedded migrations)",
 		"CI workflows",
 		"regenerate infra files",
 		"frontend nav + dashboard",
@@ -339,8 +346,8 @@ func TestTemplatesOnlyFilterShape(t *testing.T) {
 		if !names["service stubs"] {
 			t.Error("--templates-only must keep \"service stubs\" — it's a template-driven render step")
 		}
-		if !names["pkg/app/testing.go"] {
-			t.Error("--templates-only must keep \"pkg/app/testing.go\" — the per-component test harness is template-driven")
+		if !names["per-service test helpers"] {
+			t.Error("--templates-only must keep \"per-service test helpers\" — the per-component test harness is template-driven")
 		}
 		if !names["regenerate infra files"] {
 			t.Error("--templates-only must keep \"regenerate infra files\" — Tier-1 infra is template-driven")
@@ -409,7 +416,7 @@ func TestDeriveOrmEnabledMatrix(t *testing.T) {
 				}
 			}
 			if tc.makeOrmFile {
-				if err := os.WriteFile(filepath.Join(dir, "internal", "db", "users_orm.go"), []byte("package db\n"), 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(dir, "internal", "db", "users_orm_gen.go"), []byte("package db\n"), 0o644); err != nil {
 					t.Fatalf("write users_orm.go: %v", err)
 				}
 			}

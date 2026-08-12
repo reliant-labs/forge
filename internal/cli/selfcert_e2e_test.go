@@ -91,8 +91,8 @@ func initGitRepoE2E(t *testing.T, dir, msg string) {
 // wire_gen.go was, these tests must fail loudly rather than quietly stop
 // exercising the guard.
 const (
-	tier1SelfCertGo    = "internal/app/mounts_services.go"
-	tier1SelfCertOther = "deploy/kcl/config_schema.k"
+	tier1SelfCertGo    = "internal/app/mounts_services_gen.go"
+	tier1SelfCertOther = "deploy/kcl/config_gen.k"
 )
 
 // assertSelfCertifiedE2E returns rel's bytes, failing the test unless the
@@ -183,7 +183,7 @@ func TestE2ESelfCertCloneReproduces(t *testing.T) {
 	// committed tree minus the one edit is pristine by construction. Each
 	// name below is a file that EXISTS and is stamped — a false-positive
 	// check against a file forge no longer writes proves nothing.
-	for _, mustNotName := range []string{"pkg/app/testing.go", "pkg/app/migrate.go", "pkg/config/config.go", tier1SelfCertOther} {
+	for _, mustNotName := range []string{"pkg/app/migrate.go", "pkg/config/config_gen.go", tier1SelfCertOther} {
 		assertSelfCertifiedE2E(t, clone, mustNotName)
 		if strings.Contains(out, mustNotName) {
 			t.Errorf("guard names pristine file %s as drift (manifest-era false positive):\n%s", mustNotName, out)
@@ -277,7 +277,7 @@ func TestE2ESelfCertLegacyManifestMigration(t *testing.T) {
 	// Corruption 1 (the different-lane shape): replace the recorded hash
 	// AND history for a pristine file with values from "another lane" —
 	// the committed bytes match nothing in the manifest.
-	const corruptRel = "pkg/app/testing.go"
+	const corruptRel = "pkg/app/migrate.go"
 	corruptManifestEntry(t, manifestPath, corruptRel)
 
 	// Corruption 2: a real hand-edit the manifest never saw, on a stamped

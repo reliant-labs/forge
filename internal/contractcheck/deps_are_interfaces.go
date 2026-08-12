@@ -299,6 +299,24 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 		if isPrimitiveConfigShape(field.Type) {
 			continue
 		}
+		// A generated CONFIG BLOCK is the shape forge-config-deps demands.
+		//
+		// That rule rejects naked scalars on Deps (`BaseURL string`) and
+		// tells the author to group them into a config message, because a
+		// scalar has no type for the composition to resolve against and
+		// gets silently wired to a zero value. Doing what it says produces
+		// `Cfg *configv1.FooConfig` — which this rule then rejects, because
+		// a protobuf message carries generated getters and so misses the
+		// method-less-data exemption just above. Following either rule
+		// violated the other, with no suppression available on this side.
+		//
+		// The config block is data by construction: its fields are the
+		// scalars the other rule moved there, and its methods are protoc's
+		// accessors, not behavior this package calls. There is nothing to
+		// fake, so there is nothing to gain from an interface.
+		if isGeneratedConfigType(field.Type, fileImports) {
+			continue
+		}
 		// A concrete type that declares NO METHODS is data, not a
 		// collaborator, and there is no interface to extract from it —
 		// an interface over zero methods is the empty interface, which
@@ -471,6 +489,31 @@ func isStdlibType(expr ast.Expr, imports map[string]string) bool {
 	}
 	first, _, _ := strings.Cut(importPath, "/")
 	return !strings.Contains(first, ".")
+}
+
+// isGeneratedConfigType reports whether expr names a type from a project's
+// GENERATED config package — `*configv1.IdpConfig` out of
+// `<module>/gen/config/v1`, or the `pkg/config` alias over it.
+//
+// Matched on the import path rather than the type name so it cannot be
+// spoofed by naming a repository `FooConfig`: the path is what marks it as
+// forge's own projection of proto/config/v1/config.proto, and those messages
+// are exactly the config blocks forge-config-deps asks authors to create.
+func isGeneratedConfigType(expr ast.Expr, imports map[string]string) bool {
+	sel := underlyingSelector(expr)
+	if sel == nil {
+		return false
+	}
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	importPath, ok := imports[pkgIdent.Name]
+	if !ok {
+		return false
+	}
+	return strings.Contains(importPath, "/gen/config/") ||
+		strings.HasSuffix(importPath, "/pkg/config")
 }
 
 // underlyingSelector peels pointer / slice / array / map-value wrappers off

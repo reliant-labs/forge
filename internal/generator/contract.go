@@ -45,12 +45,22 @@ type Service interface { //nolint:interfacebloat // one method per emitted artif
 	SaveChecksums(root string, cs *FileChecksums) error
 }
 
-// ConfigService loads, writes, and mutates the on-disk forge.yaml.
+// ConfigService loads and mutates the on-disk forge.yaml.
+//
+// Every mutation here is SURGICAL — it edits only the bytes it owns and
+// leaves the rest of the document, comments included, untouched. There is
+// deliberately no "write the whole config" method: forge.yaml is
+// hand-authored, and a config.ProjectConfig cannot represent comments, key
+// order, or the sections NormalizeForWrite drops, so marshalling one back
+// silently deletes all three. See the WRITING forge.yaml note in
+// project_config.go.
 type ConfigService interface {
 	ReadProjectConfig(path string) (*config.ProjectConfig, error)
-	WriteProjectConfigFile(cfg *config.ProjectConfig, path string) error
+	SetProjectConfigScalar(path, key string, value any) error
+	SetProjectConfigScalarPath(path string, keys []string, value any) error
 	AppendFrontendToConfig(projectRoot, frontendName string, port int) error
 	AppendFrontendToConfigWithKind(projectRoot, frontendName string, port int, kind string) error
+	AppendFrontendEntryToConfig(configPath string, entry config.FrontendConfig) error
 }
 
 // Deps wires generator's cross-package collaborators. Empty today; the
@@ -60,6 +70,10 @@ type ConfigService interface {
 type Deps struct{}
 
 // New constructs the file-emission Service.
+//
+// forge:no-observe
+// Pure compute: empty Deps; renders templates and writes files during a
+// CLI run. No request lifecycle, no remote dependency.
 func New(_ Deps) Service { return &svc{} }
 
 // NewConfigService constructs the forge.yaml read/write surface.

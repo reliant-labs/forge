@@ -130,7 +130,7 @@ type managedProcess struct {
 }
 
 // loadProjectConfigEnv resolves the per-env app config from
-// deploy/kcl/<env>/config.k — via config_projection.appConfigEnvMap, the SAME
+// deploy/kcl/<env>/config.k — via config_gen.appConfigEnvMap, the SAME
 // projection cluster mode renders into each workload's env — and returns it as
 // env-var strings. Returns an empty map (not nil) on any error so callers can
 // pass the result straight to [hostlaunch.LayerHostEnv] without guarding. A
@@ -206,8 +206,8 @@ func declaredServiceNames(comps []config.ComponentConfig) []string {
 //
 // Frontends are a forge.yaml concept, not a Kubernetes workload: `forge
 // build` and `forge env deploy` read them from cfg.Frontends, and the
-// deploy-as-data env templates project only the k8s workloads
-// (services/workers/crons/operators from components_gen.json) into the
+// env templates project only the k8s workloads
+// (services/workers/crons/operators from deploy/kcl/workloads.k) into the
 // `output` contract — never frontends. So the KCL render always comes back
 // with entities.Frontends empty, and the up/run frontend phase (which
 // iterates entities.Frontends) would start ZERO dev servers. This bridges
@@ -361,6 +361,22 @@ func upsertEnvVarValue(vars []KCLEnvVar, name, value string) []KCLEnvVar {
 	return append(vars, KCLEnvVar{Name: name, Value: value})
 }
 
+// withoutEnvVar returns vars with any entry of that name removed. Used
+// where a value is meaningful in one deploy target and actively wrong in
+// another (see the PORT drop in collapseClusterServicesToHost), so the
+// removal is stated where the reason lives rather than by never carrying
+// the env at all.
+func withoutEnvVar(vars []KCLEnvVar, name string) []KCLEnvVar {
+	out := make([]KCLEnvVar, 0, len(vars))
+	for _, ev := range vars {
+		if ev.Name == name {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
 // frontendEnvPrefix returns the public-env-var prefix a frontend of the
 // given type exposes to its client bundle: Next.js NEXT_PUBLIC_, Vite
 // VITE_, React Native/Expo EXPO_PUBLIC_. Defaults to the Next.js prefix
@@ -482,8 +498,8 @@ func frontendConfigMockValue(cfg *FrontendConfigEntity) string {
 // "detached 0 process(es)" symptom).
 //
 // Collapse semantics: every server/worker/cron/operator component compiles
-// to the SAME shared cmd/<project> binary (see components_gen.go's build
-// contract — build.go dedups the identical build target so it compiles
+// to the SAME shared cmd/<project> binary (the build target each
+// workloads.k entry declares — build.go dedups the identical target so it compiles
 // once), and that binary's `server` subcommand mounts EVERY service and
 // runs all workers/operators in one process. So N cluster components
 // collapse to ONE host process — `go run ./cmd/<project> server` — grouped
@@ -509,6 +525,23 @@ func collapseClusterServicesToHost(e *KCLEntities) {
 	for _, svc := range e.Services {
 		// Genuine host-mode services keep their declared runner + command.
 		if svc.Deploy.Type == "host" && svc.Deploy.Host != nil {
+			kept = append(kept, svc)
+			continue
+		}
+		// INFRASTRUCTURE is not a workload to collapse: these are the
+		// servers the host processes are about to DIAL — postgres, the dev
+		// IdP — not code this project builds and runs. The host phase
+		// brings them up through the same providers the cluster path uses.
+		// Dropping them here would delete the declaration before anything
+		// could act on it, which is exactly what made `forge run` start an
+		// app against whatever happened to be listening on the DSN's port.
+		//
+		// BOTH infrastructure shapes must be listed. `host-infra` is not
+		// covered by the `host` case above (that one is HostDeploy — code
+		// this project compiles) and would otherwise fall through to the
+		// `!= "cluster"` skip below and vanish silently, taking the dev
+		// database with it.
+		if svc.Deploy.Type == "compose" || svc.Deploy.Type == "host-infra" {
 			kept = append(kept, svc)
 			continue
 		}
@@ -545,12 +578,84 @@ func collapseClusterServicesToHost(e *KCLEntities) {
 			continue // shared binary already represented by one host process
 		}
 		seenTarget[target] = true
+		// Carry the service's DECLARED env across the collapse. Building a
+		// bare HostDeploy here would silently drop every value the
+		// environment stated for this workload, so the host process would
+		// boot with LESS configuration than the cluster one — the opposite
+		// of what running it locally is supposed to mean.
+		//
+		// Both sources are merged, deploy-block last, because a workload's
+		// env arrives on two levels: the per-workload stream on the
+		// RenderedWorkload (`env_vars = c.env_vars` in the env's bundle,
+		// which is where the base env and per-env config land) and any
+		// extra the deploy block itself declares. Cluster-side, k8s folds
+		// them into one container `env`; here they have to be folded
+		// explicitly.
+		//
+		// The dev DSN is the case that makes this load-bearing:
+		// deploy/kcl/dev/main.k composes DATABASE_URL from the port it
+		// declares postgres on, so dropping it left the app with no
+		// DATABASE_URL at all — refusing to start on a required config
+		// field, several steps away from the collapse that discarded it.
+		declared := append([]KCLEnvVar(nil), svc.EnvVars...)
+		if c := svc.Deploy.Cluster; c != nil {
+			declared = append(declared, c.EnvVars...)
+		}
+		// PORT is the ONE value that must not cross. In the cluster it is
+		// the port the container binds INSIDE its own network namespace,
+		// where every workload can use 8080 without colliding; on the host
+		// there is one port space shared with every other stack on the
+		// machine, so forge assigns an ephemeral one instead
+		// (resolveEphemeralHostPorts). Carrying the container's value here
+		// reads as "this service declares its own port", suppresses that
+		// allocation, and sends two freshly-scaffolded projects to fight
+		// over 8080 — which on this machine is a port a foreign process
+		// already holds.
+		declared = withoutEnvVar(declared, "PORT")
 		svc.Deploy = DeployConfigEntity{
 			Type: "host",
-			Host: &HostDeploy{Runner: "go-run"},
+			Host: &HostDeploy{Runner: "go-run", EnvVars: declared},
 		}
 		svc.Command = []string{"go", "run", target, "server"}
 		kept = append(kept, svc)
 	}
 	e.Services = kept
+}
+
+// collapseJobsToHost rewrites each one-shot job's argv from the IN-IMAGE
+// form to something runnable on this machine, for the same reason
+// collapseClusterServicesToHost rewrites a service's.
+//
+// A job's `command` is written for the CONTAINER: `/app/<project> db
+// migrate up` is where the Dockerfile's production stage puts the binary.
+// That path does not exist on the developer's laptop, so exec'ing it
+// verbatim fails with "no such file or directory" — naming a path the
+// reader never wrote and cannot find, for a job whose declaration looks
+// completely correct.
+//
+// The translation is the one the host runner already makes for services:
+// the argv's first element is the project binary, and on the host the
+// project binary is `go run ./cmd/<project>`. Everything after argv[0] is
+// the subcommand selection (`db migrate up`) and passes through
+// untouched, because that half means the same thing in both worlds.
+//
+// A job whose argv is NOT the in-image project binary is left ALONE. It
+// is something else the author wired deliberately — a shell script, a
+// vendored tool, an absolute path they meant — and rewriting it would be
+// forge overruling an explicit choice.
+func collapseJobsToHost(e *KCLEntities, projectName string) {
+	if e == nil || projectName == "" {
+		return
+	}
+	inImage := "/app/" + projectName
+	for i := range e.Jobs {
+		cmd := e.Jobs[i].Command
+		if len(cmd) == 0 || cmd[0] != inImage {
+			continue
+		}
+		host := make([]string, 0, 3+len(cmd)-1)
+		host = append(host, "go", "run", "./cmd/"+projectName)
+		host = append(host, cmd[1:]...)
+		e.Jobs[i].Command = host
+	}
 }

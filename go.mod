@@ -5,15 +5,18 @@ go 1.26.2
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260709200747-435963d16310.1
 	connectrpc.com/connect v1.19.1
-	github.com/brianvoe/gofakeit/v7 v7.15.0
+	github.com/evanw/esbuild v0.28.1
+	github.com/fergusstrange/embedded-postgres v1.34.0
 	github.com/fsnotify/fsnotify v1.10.0
 	github.com/go-delve/delve v1.26.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jinzhu/inflection v1.0.0
+	github.com/lib/pq v1.10.9
 	github.com/reliant-labs/forge/pkg v0.0.3
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
+	github.com/tdewolff/parse/v2 v2.8.15
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/mod v0.35.0
 	golang.org/x/sys v0.45.0
@@ -61,6 +64,7 @@ require (
 	github.com/aws/smithy-go v1.22.3 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bgentry/go-netrc v0.0.0-20140422174119-9fd32a8b3d3d // indirect
+	github.com/brianvoe/gofakeit/v7 v7.15.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/chai2010/jsonv v1.1.3 // indirect
@@ -83,7 +87,7 @@ require (
 	github.com/docker/distribution v2.8.3+incompatible // indirect
 	github.com/docker/docker v28.3.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect
-	github.com/docker/go-connections v0.5.0 // indirect
+	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-metrics v0.0.1 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dominikbraun/graph v0.23.0 // indirect
@@ -91,7 +95,6 @@ require (
 	github.com/elliotchance/orderedmap/v2 v2.7.0 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
-	github.com/fergusstrange/embedded-postgres v1.34.0 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.6.2 // indirect
 	github.com/go-git/go-git/v5 v5.16.4 // indirect
@@ -123,7 +126,6 @@ require (
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/kubescape/go-git-url v0.0.31 // indirect
-	github.com/lib/pq v1.10.9 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
@@ -155,7 +157,7 @@ require (
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.49.0 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.60.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
@@ -169,7 +171,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/arch v0.11.0 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
-	golang.org/x/exp v0.0.0-20250813145105-42675adae3e6 // indirect
+	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect

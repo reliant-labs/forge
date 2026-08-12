@@ -336,9 +336,9 @@ var forgeOwnedDirs = map[string]struct {
 }{
 	// forge owns pkg/app: scaffolded files plus `forge generate` outputs.
 	"pkg/app": {policy: filesFixed, files: knownCodegenPkgAppFiles},
-	// pkg/config/config.go is generated from the proto/config annotations
-	// (stepGenerateConfig); nothing else lives there.
-	"pkg/config": {policy: filesFixed, files: map[string]bool{"config.go": true}},
+	// pkg/config/config_gen.go is generated from the proto/config annotations
+	// (stepGenerateConfig). config.go is the CLI-kind hand-owned stub.
+	"pkg/config": {policy: filesFixed, files: map[string]bool{"config_gen.go": true, "config.go": true}},
 	// pkg/middleware ships two scaffold-once files the user owns from line
 	// one and grows — the directory is a claim, its contents are not.
 	"pkg/middleware": {policy: filesMixed},
@@ -423,19 +423,33 @@ var knownGeneratedHandlerFiles = map[string]bool{
 	"handlers_crud_gen.go":      true, // pre-split name; the migration skills that move projects off it still have to say it
 	"handlers_crud_gen_test.go": true, // retired name; the migration skills that move projects off it still have to say it
 	"webhook_routes_gen.go":     true,
+	// The per-service test harness. It replaced the single pkg/app/testing.go,
+	// whose `testing` import reached cmd/ through pkg/app and so shipped in
+	// every scaffolded project's production binary.
+	"helpers_gen_test.go": true,
+	// The typed entity factories, emitted beside the handler package whose
+	// CRUD RPCs own the entity. They replaced internal/testfactory — a
+	// non-test package importing `testing`, kept out of the binary only by
+	// nothing happening to import it.
+	"factories_gen_test.go": true,
+	// The per-service mock, renamed <svc>_mock.go → <svc>_mock_gen.go so its
+	// NAME states that it is hash-guarded (the old spelling read like a
+	// hand-written test double).
+	"things_mock_gen.go": true,
+	"order_mock_gen.go":  true,
 }
 
 // knownCodegenInternalAppFiles are the internal/app/ files forge writes:
 // the forge-owned composition layer (compose.go / lifecycle.go /
-// mounts_services.go) plus the two scaffold-once files the user then owns
+// mounts_services_gen.go) plus the two scaffold-once files the user then owns
 // (providers.go / auth.go). They are absent from a bare scaffold tree
 // because `forge generate` — not `forge project new` — emits them.
 var knownCodegenInternalAppFiles = map[string]bool{
-	"compose.go":         true,
-	"lifecycle.go":       true,
-	"mounts_services.go": true,
-	"providers.go":       true,
-	"auth.go":            true,
+	"compose.go":             true,
+	"lifecycle.go":           true,
+	"mounts_services_gen.go": true,
+	"providers.go":           true,
+	"auth.go":                true,
 }
 
 // knownCodegenPkgAppFiles are pkg/app/ files written by `forge generate`
@@ -449,7 +463,6 @@ var knownCodegenPkgAppFiles = map[string]bool{
 	"bootstrap.go":       true,
 	"testing.go":         true,
 	"app_extras.go":      true,
-	"seedgraph_gen.go":   true,
 	// The user-owned service registry `forge generate` scaffolds and every
 	// serve-decision site reads — see serviceRegistryRelPath in
 	// internal/cli/generate_serve.go.
@@ -1043,11 +1056,11 @@ func TestSkillsValidatorsCatchKnownBadClaims(t *testing.T) {
 	for _, good := range []string{
 		"pkg/app/bootstrap.go",
 		"pkg/app/testing.go",
-		"pkg/config/config.go",
+		"pkg/config/config_gen.go",
 		"pkg/middleware/middleware.go",
 		"internal/app/compose.go",
 		"internal/app/providers.go",
-		"internal/db/user_orm.go",
+		"internal/db/user_orm_gen.go",
 		"internal/handlers/<svc>/handlers_crud_ops_gen.go",
 		"handlers/<svc>/handlers_crud_gen.go",
 		"handlers/users/service.go",

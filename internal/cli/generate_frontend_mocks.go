@@ -28,11 +28,19 @@ import (
 func generateFrontendMocks(cfg *config.ProjectConfig, services []codegen.ServiceDef, entities []codegen.EntityDef, projectDir string, cs *checksums.FileChecksums) error {
 	// The dev dataset every fixture value is read from, resolved once for
 	// all frontends. It is built from the project's OWN seed configuration —
-	// the same seeddata.Config `forge db seed apply` uses — so the mocks and
+	// the same seedplan.Config `forge db seed apply` uses — so the mocks and
 	// the database cannot be looking at different plans. nil (no migrations,
 	// no reachable shadow server) degrades every value to the synthetic
 	// placeholder, which is what the seeder would write too.
-	seed := codegen.BuildSeedProjection(projectDir, seedConfigFromStore(projectstore.New(cfg)))
+	seedCfg := seedConfigFromStore(projectstore.New(cfg))
+	seed := codegen.BuildSeedProjection(projectDir, seedCfg)
+
+	// WHICH schema those fixtures describe. Read from the migration files
+	// directly, not from the projection: the projection needs a reachable
+	// postgres and the fingerprint does not, so the record of what the
+	// fixtures stand for survives the case where the fixtures themselves
+	// degraded to placeholders. See generator.EmitFixtureFreshnessSurface.
+	seedFPFiles, seedFPConfig := codegen.SeedFingerprint(projectDir, seedCfg)
 
 	for _, fe := range cfg.Frontends {
 		if !generator.FrontendTypeHasMockSurface(fe.Type) {
@@ -46,6 +54,10 @@ func generateFrontendMocks(cfg *config.ProjectConfig, services []codegen.Service
 
 		count, err := generator.EmitFrontendMockSurface(projectDir, feDir, services, entities, seed, cs)
 		if err != nil {
+			return err
+		}
+
+		if err := generator.EmitFixtureFreshnessSurface(projectDir, feDir, seedFPFiles, seedFPConfig, cs); err != nil {
 			return err
 		}
 

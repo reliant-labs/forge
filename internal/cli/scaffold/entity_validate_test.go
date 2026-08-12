@@ -32,7 +32,7 @@ import (
 // span of rule spellings an author actually writes: two dotted options on
 // one field, a braced aggregate, a quoted pattern (embedded brackets and a
 // comma — the two characters a naive splitter would break on), a boolean
-// rule, a rule on a server-set field, and a field with no rules at all.
+// rule, a rule on a read-only field, and a field with no rules at all.
 const validateEntityProto = `syntax = "proto3";
 
 package services.catalog.v1;
@@ -55,7 +55,7 @@ message Product {
   int64 price_cents = 3 [(buf.validate.field).int64 = {gte: 1, lte: 1000000}];
   string sku = 4 [(buf.validate.field).string.pattern = "^SKU-[0-9]{2,8}$"];
   string owner_email = 5 [(buf.validate.field).string.email = true];
-  // forge:server-set
+  // forge:read-only
   string internal_status = 6 [(buf.validate.field).string.min_len = 3];
   int64 plain_count = 7;
 }
@@ -125,8 +125,8 @@ func TestCreateRequestCarriesEntityFieldRules(t *testing.T) {
 	createRules := rulesByField(t, scan, "CreateProductRequest")
 
 	// The field set Create is supposed to carry: every entity field except
-	// the managed ones (provided by the CRUD envelopes) and the server-set
-	// one (server-authoritative — the client must not send it).
+	// the managed ones (provided by the CRUD envelopes) and the read-only
+	// one (the client must not send it).
 	wantFields := []string{"name", "price_cents", "sku", "owner_email", "plain_count"}
 	if len(createRules) != len(wantFields) {
 		t.Fatalf("CreateProductRequest carries %d field(s), want %d: %v", len(createRules), len(wantFields), createRules)
@@ -159,28 +159,28 @@ func TestCreateRequestCarriesEntityFieldRules(t *testing.T) {
 	}
 }
 
-// TestCreateRequestExcludesServerSetFieldAndItsRules pins the exclusion:
-// a `// forge:server-set` field is absent from Create, and so is its rule —
+// TestCreateRequestExcludesReadOnlyFieldAndItsRules pins the exclusion:
+// a `// forge:read-only` field is absent from Create, and so is its rule —
 // a rule may never outlive the field it constrains.
-func TestCreateRequestExcludesServerSetFieldAndItsRules(t *testing.T) {
+func TestCreateRequestExcludesReadOnlyFieldAndItsRules(t *testing.T) {
 	scan, text := completeQuintetForTest(t, validateEntityProto)
 
 	createRules := rulesByField(t, scan, "CreateProductRequest")
 	if _, present := createRules["internal_status"]; present {
-		t.Errorf("CreateProductRequest carries the server-set field internal_status: %v", createRules)
+		t.Errorf("CreateProductRequest carries the read-only field internal_status: %v", createRules)
 	}
 
-	// The server-set field's rule (min_len = 3) is unique in this proto, so
+	// The read-only field's rule (min_len = 3) is unique in this proto, so
 	// finding it inside the Create message text means it leaked in detached
 	// from its field.
 	create := messageBlock(t, text, "CreateProductRequest")
 	if strings.Contains(create, "min_len = 3") {
-		t.Errorf("the server-set field's rule leaked into CreateProductRequest:\n%s", create)
+		t.Errorf("the read-only field's rule leaked into CreateProductRequest:\n%s", create)
 	}
 	// It is still declared on the entity — excluded from the request
 	// surface, never deleted from the wire truth.
 	if entityRules := rulesByField(t, scan, "Product"); entityRules["internal_status"] == "" {
-		t.Error("the server-set field lost its rules on the entity message")
+		t.Error("the read-only field lost its rules on the entity message")
 	}
 }
 

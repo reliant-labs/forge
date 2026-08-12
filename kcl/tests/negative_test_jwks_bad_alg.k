@@ -9,5 +9,5 @@ _j = forge.TestJWKS {
     name = "test-jwks"
     kid = "k1"
     alg = "RS256"  # unsupported
-    private_key = forge.DotenvRef { key = "TEST_JWKS_PEM" }
+    private_key = forge.StoreRef { key = "TEST_JWKS_PEM" }
 }

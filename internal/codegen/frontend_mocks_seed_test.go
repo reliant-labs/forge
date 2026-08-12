@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/schemadef"
-	"github.com/reliant-labs/forge/internal/seeddata"
+	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // The frontend mock generator used to invent its own demo vocabulary from
@@ -94,7 +94,7 @@ func mockRecordValue(t *testing.T, rec MockRecord, field string) string {
 // holds what the seed plan writes at the same (table, column, row).
 func TestMockValuesAreTheSeededValues(t *testing.T) {
 	tables := mockTestSchema()
-	seed := newSeedProjection(tables, seeddata.DefaultConfig(), nil)
+	seed := newSeedProjection(tables, seedplan.DefaultConfig(), nil)
 	if seed == nil {
 		t.Fatal("the planner refused this schema — nothing below would be comparing anything")
 	}
@@ -131,7 +131,7 @@ func TestMockValuesAreTheSeededValues(t *testing.T) {
 // usable: a value the mock hands the UI is one the real API would accept.
 func TestMockValuesSatisfyTheirCheckConstraints(t *testing.T) {
 	tables := mockTestSchema()
-	seed := newSeedProjection(tables, seeddata.DefaultConfig(), nil)
+	seed := newSeedProjection(tables, seedplan.DefaultConfig(), nil)
 	if seed == nil {
 		t.Fatal("the planner refused this schema")
 	}
@@ -156,7 +156,7 @@ func TestMockValuesSatisfyTheirCheckConstraints(t *testing.T) {
 // carried and every mock join came back empty.
 func TestMockReferencesResolveWithinTheFixtureSet(t *testing.T) {
 	tables := mockTestSchema()
-	seed := newSeedProjection(tables, seeddata.DefaultConfig(), nil)
+	seed := newSeedProjection(tables, seedplan.DefaultConfig(), nil)
 	if seed == nil {
 		t.Fatal("the planner refused this schema")
 	}
@@ -188,10 +188,10 @@ func TestMockReferencesResolveWithinTheFixtureSet(t *testing.T) {
 // frontend fixtures too. It is the whole reason the mocks have no pools of
 // their own: a project teaches forge its vocabulary once.
 func TestMockValuesCarryTheProjectsVocabulary(t *testing.T) {
-	vocab := &seeddata.Vocab{Columns: map[string][]string{
+	vocab := &seedplan.Vocab{Columns: map[string][]string{
 		"products.name": {"BPC-157", "Semaglutide", "Tirzepatide"},
 	}}
-	seed := newSeedProjection(mockTestSchema(), seeddata.DefaultConfig(), vocab)
+	seed := newSeedProjection(mockTestSchema(), seedplan.DefaultConfig(), vocab)
 	if seed == nil {
 		t.Fatal("the planner refused this schema")
 	}
@@ -225,10 +225,10 @@ func TestMockValuesWithoutADatasetAreSelfEvidentlySynthetic(t *testing.T) {
 			if err != nil {
 				t.Fatalf("row %d: mock %s is not a string literal: %v", i, field, err)
 			}
-			if !strings.HasPrefix(raw, seeddata.SyntheticStringPrefix) {
+			if !strings.HasPrefix(raw, seedplan.SyntheticStringPrefix) {
 				t.Errorf("row %d: mock %s = %q carries no %q stamp — a value that does not announce "+
 					"itself as invented cannot be told apart from one the app produced",
-					i, field, raw, seeddata.SyntheticStringPrefix)
+					i, field, raw, seedplan.SyntheticStringPrefix)
 			}
 		}
 	}
@@ -238,7 +238,7 @@ func TestMockValuesWithoutADatasetAreSelfEvidentlySynthetic(t *testing.T) {
 // rows of the dev database and stop where it stops. Padding past its end would
 // put the two back into disagreement on exactly the rows nobody looked at.
 func TestMockRecordCountFollowsTheDataset(t *testing.T) {
-	cfg := seeddata.DefaultConfig()
+	cfg := seedplan.DefaultConfig()
 	cfg.Rows = 3
 	seed := newSeedProjection(mockTestSchema(), cfg, nil)
 	if seed == nil {
@@ -335,7 +335,7 @@ func mockEnumTestService() ServiceDef {
 // agreement every other kind already had.
 func TestMockBooleansAreTheSeededBooleans(t *testing.T) {
 	tables := mockEnumTestSchema()
-	seed := newSeedProjection(tables, seeddata.DefaultConfig(), nil)
+	seed := newSeedProjection(tables, seedplan.DefaultConfig(), nil)
 	if seed == nil {
 		t.Fatal("the planner refused this schema — nothing below would be comparing anything")
 	}
@@ -367,7 +367,7 @@ func TestMockBooleansAreTheSeededBooleans(t *testing.T) {
 // fixture set could show only two of the four combinations. The seeder's
 // per-cell hash makes them independent; reading it preserves that.
 func TestMockBooleanColumnsVaryIndependently(t *testing.T) {
-	seed := newSeedProjection(mockEnumTestSchema(), seeddata.DefaultConfig(), nil)
+	seed := newSeedProjection(mockEnumTestSchema(), seedplan.DefaultConfig(), nil)
 	if seed == nil {
 		t.Fatal("the planner refused this schema")
 	}
@@ -409,7 +409,7 @@ func TestMockBooleanColumnsVaryIndependently(t *testing.T) {
 // declaration order, never the constant the generator used to emit.
 func TestMockEnumsAreTheSeededEnums(t *testing.T) {
 	svc := mockEnumTestService()
-	seed := newSeedProjection(mockEnumTestSchema(), seeddata.DefaultConfig(), nil)
+	seed := newSeedProjection(mockEnumTestSchema(), seedplan.DefaultConfig(), nil)
 	if seed == nil {
 		t.Fatal("the planner refused this schema")
 	}
@@ -451,7 +451,7 @@ func TestMockEnumsAreTheSeededEnums(t *testing.T) {
 // repeated badge and an enum filter matched all rows or none, whatever the
 // database actually held.
 func TestMockEnumsShowEveryValueTheDatasetShows(t *testing.T) {
-	seed := newSeedProjection(mockEnumTestSchema(), seeddata.DefaultConfig(), nil)
+	seed := newSeedProjection(mockEnumTestSchema(), seedplan.DefaultConfig(), nil)
 	if seed == nil {
 		t.Fatal("the planner refused this schema")
 	}

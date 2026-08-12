@@ -29,8 +29,8 @@ import (
 	"github.com/reliant-labs/forge/internal/database"
 	"github.com/reliant-labs/forge/internal/naming"
 	entityscaffold "github.com/reliant-labs/forge/internal/scaffold"
-	"github.com/reliant-labs/forge/internal/schemadef"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // crudQuintetOps is the full CRUD verb set `forge scaffold entity`
@@ -132,8 +132,9 @@ func runEntityFromProto(args []string, fromProto string, opts entityOpts) error 
 			"--table names one table, but several entities were listed", "",
 			"birth the --table entity in its own invocation")
 	}
+	bc := birthContext{CtxLabel: ctxLabel, Root: root, MigDir: migDir, Service: sd, Applied: applied, FKReg: fkReg}
 	for _, e := range entries {
-		if err := birthListedEntityFromProto(ctxLabel, root, migDir, sd, applied, fkReg, e.msgName, e.name, opts); err != nil {
+		if err := birthListedEntityFromProto(bc, e.msgName, e.name, opts); err != nil {
 			return err
 		}
 	}
@@ -143,10 +144,27 @@ func runEntityFromProto(args []string, fromProto string, opts entityOpts) error 
 	return nil
 }
 
+// birthContext is the per-invocation state every birth in one
+// `forge scaffold entity --from-proto` run shares: where the project is, which
+// service descriptor is being read, and the applied-schema views the
+// one-time-birth guard and FK back-fill consult. It travels as one value
+// because each entity in a listing is born against the SAME context — only
+// the message/entity name pair varies per birth.
+type birthContext struct {
+	CtxLabel string
+	Root     string
+	MigDir   string
+	Service  codegen.ServiceDef
+	Applied  map[string]bool
+	FKReg    *fkRegistry
+}
+
 // birthListedEntityFromProto births ONE explicitly-named entity from the
 // descriptor: migration pair + CRUD-quintet completion. Refusals are
 // hard errors — an explicit listing gets loud refusal, not a silent skip.
-func birthListedEntityFromProto(ctxLabel, root, migDir string, sd codegen.ServiceDef, applied map[string]bool, fkReg *fkRegistry, msgName, name string, opts entityOpts) error {
+func birthListedEntityFromProto(bc birthContext, msgName, name string, opts entityOpts) error {
+	ctxLabel, root, migDir := bc.CtxLabel, bc.Root, bc.MigDir
+	sd, applied, fkReg := bc.Service, bc.Applied, bc.FKReg
 	if err := validateIdentifier(name); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "invalid entity name", "",
 			"use a name starting with a letter, containing letters/digits/_ (e.g. bookmark)", err)
@@ -188,9 +206,13 @@ func birthListedEntityFromProto(ctxLabel, root, migDir string, sd codegen.Servic
 		return nil
 	}
 
-	if err := serverSetMarkerRefusal(scanMessageOrEmpty(scan, msgName)); err != nil {
-		return cliutil.WrapUserErr(ctxLabel, "server-set marker", "",
+	if err := readOnlyMarkerRefusal(scanMessageOrEmpty(scan, msgName)); err != nil {
+		return cliutil.WrapUserErr(ctxLabel, "read-only marker", "",
 			"move the marker onto the field it names", err)
+	}
+	if err := retiredMarkerRefusal(scanMessageOrEmpty(scan, msgName)); err != nil {
+		return cliutil.WrapUserErr(ctxLabel, "retired marker", "",
+			"rewrite the retired marker as its replacement", err)
 	}
 
 	known := fkKnownTables(applied, sd, scan)
@@ -204,23 +226,55 @@ func birthListedEntityFromProto(ctxLabel, root, migDir string, sd codegen.Servic
 	return nil
 }
 
-// serverSetMarkerRefusal refuses a birth whose entity message carries a
-// `// forge:server-set` marker the raw scanner could not attach to a
-// field. The marker's whole job is to keep a server-authoritative field
-// OFF the born Create/Update request; a dropped one ships that field to
-// clients while the author believes it is protected — the worst possible
-// failure mode, and the one this refusal makes impossible. Nothing has
-// been written when it fires: fix the marker, re-run, get the entity.
-func serverSetMarkerRefusal(m codegen.RawProtoMessage) error {
-	if len(m.UnappliedServerSetMarkers) == 0 {
+// readOnlyMarkerRefusal refuses a birth whose entity message carries a
+// `// forge:read-only` marker (either spelling) the raw scanner could not
+// attach to a field. The marker's whole job is to keep a field OFF the born
+// Create/Update request; a dropped one ships that field to clients while the
+// author believes it is protected — the worst possible failure mode, and the
+// one this refusal makes impossible. Nothing has been written when it fires:
+// fix the marker, re-run, get the entity.
+func readOnlyMarkerRefusal(m codegen.RawProtoMessage) error {
+	if len(m.UnappliedReadOnlyMarkers) == 0 {
 		return nil
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "message %s carries a `// forge:server-set` marker that attaches to no field:", m.Name)
-	for _, site := range m.UnappliedServerSetMarkers {
+	fmt.Fprintf(&b, "message %s carries a `// forge:read-only` marker that attaches to no field:", m.Name)
+	for _, site := range m.UnappliedReadOnlyMarkers {
 		fmt.Fprintf(&b, "\n    %s", site)
 	}
 	b.WriteString("\n  put the marker on the field's own line (trailing) or on the line directly above it, and re-run")
+	return errors.New(b.String())
+}
+
+// retiredMarkerRefusal refuses a birth whose entity message carries a
+// `forge:*` spelling forge deliberately RETIRED. Unlike the read-only
+// refusal above — which catches a marker forge recognizes but could not
+// place — this catches a marker forge no longer recognizes at all, and so
+// silently does nothing: the comment reads as prose, the field stays
+// client-writable on Create/Update, and the birth exits zero.
+//
+// This is a HARD refusal rather than the lint check's warning because a
+// retired spelling is not ambiguous the way an unknown one is. An
+// unrecognized marker might be a future forge's, or prose; a retired
+// spelling has a KNOWN prior meaning, a KNOWN replacement, and an author
+// who demonstrably believes it is in force. Warning about it would leave
+// the exact silent failure the refusal exists to prevent, at exactly the
+// moment (birth) when the wrong write surface gets baked into the born
+// Create/Update requests. Nothing has been written when it fires: fix the
+// marker, re-run, get the entity.
+func retiredMarkerRefusal(m codegen.RawProtoMessage) error {
+	if len(m.RetiredMarkers) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	first := m.RetiredMarkers[0]
+	fmt.Fprintf(&b, "message %s carries `%s`, which forge no longer recognizes — it was renamed to `%s`:",
+		m.Name, first.Marker, first.ReplacedBy)
+	for _, site := range m.RetiredMarkers {
+		fmt.Fprintf(&b, "\n    %s", site)
+	}
+	fmt.Fprintf(&b, "\n  as written this comment does NOTHING: the field stays client-writable on the born Create/Update requests.")
+	fmt.Fprintf(&b, "\n  rewrite each marker as `%s` and re-run", first.ReplacedBy)
 	return errors.New(b.String())
 }
 
@@ -303,9 +357,13 @@ func runEntityFromProtoBatch(ctxLabel, root, migDir string, sd codegen.ServiceDe
 		table := naming.Pluralize(naming.ToSnakeCase(msgName))
 		fmt.Printf("\n🔧 Birthing %s → %s ...\n", sd.Package+"."+msgName, table)
 		fields := sd.Schemas[sd.Package+"."+msgName]
-		if err := serverSetMarkerRefusal(scanMessageOrEmpty(scan, msgName)); err != nil {
-			return cliutil.WrapUserErr(ctxLabel, "server-set marker", "",
+		if err := readOnlyMarkerRefusal(scanMessageOrEmpty(scan, msgName)); err != nil {
+			return cliutil.WrapUserErr(ctxLabel, "read-only marker", "",
 				"move the marker onto the field it names", err)
+		}
+		if err := retiredMarkerRefusal(scanMessageOrEmpty(scan, msgName)); err != nil {
+			return cliutil.WrapUserErr(ctxLabel, "retired marker", "",
+				"rewrite the retired marker as its replacement", err)
 		}
 		added, merr := birthManagedFields(scan, msgName,
 			!opts.NoTimestamps, opts.SoftDelete || messageHasField(fields, "deleted_at"))
@@ -544,7 +602,10 @@ type markedBirthReport struct {
 // new message need not be in the descriptor), then CRUD-quintet
 // completion into the service proto.
 func birthMarkedEntity(migDir, root string, scan *codegen.RawProtoScan, m codegen.RawProtoMessage, known map[string]bool, opts entityOpts, fkReg *fkRegistry) (*markedBirthReport, error) {
-	if err := serverSetMarkerRefusal(m); err != nil {
+	if err := readOnlyMarkerRefusal(m); err != nil {
+		return nil, err
+	}
+	if err := retiredMarkerRefusal(m); err != nil {
 		return nil, err
 	}
 
@@ -771,20 +832,6 @@ func markersFromScan(scan *codegen.RawProtoScan, msgName string) entityBirthMark
 		return entityBirthMarkers{AppendOnly: m.AppendOnly, SoftDelete: m.SoftDeleteMarked}
 	}
 	return entityBirthMarkers{}
-}
-
-// appliedTableSet introspects the applied schema, tolerating failure
-// (mirrors runEntity's best-effort table-exists check). When the
-// shadow apply is unavailable (no ephemeral postgres on this machine),
-// it degrades to the lightweight regex migration parser — a weaker but
-// still-real view of the applied tables — so the one-time-birth guard
-// (and the `// forge:entity` inert-marker semantics) keeps holding.
-// Only when both views fail does the write proceed unguarded; the
-// shadow apply on the next `forge generate` surfaces real breakage
-// loudly.
-func appliedTableSet(migDir string) map[string]bool {
-	set, _ := appliedSchema(migDir)
-	return set
 }
 
 // appliedSchema returns both views of the applied schema a birth needs:

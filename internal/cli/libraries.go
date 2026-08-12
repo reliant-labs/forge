@@ -71,6 +71,38 @@ type LibrariesSpec struct {
 	// brief records which slice of the API it carries — and which it does
 	// not. Empty when signatures were not requested.
 	SignatureSelectors string `json:"signature_selectors,omitempty"`
+	// Divergence is non-nil when the module resolution above (the one
+	// the build actually uses) does not match what an OFFLINE `go doc`
+	// consults — a go.work `use`/replace pointing forge/pkg at a local
+	// checkout. nil means the two agree, which is the overwhelmingly
+	// common case and prints nothing extra.
+	Divergence *LibraryDivergence `json:"divergence,omitempty"`
+}
+
+// LibraryDivergence records a resolved-vs-module-cache mismatch for
+// forge/pkg: the version pinned in go.mod (what a `go doc` run against
+// the module cache alone would show) versus the directory this project
+// actually builds against (a go.work `use` or a go.mod `replace`
+// pointing at a local checkout).
+//
+// It exists because `go doc`'s answer depends on ambient state (GOWORK,
+// which directory the invoker's shell happens to be in, whether a
+// subprocess inherited it) in a way the build itself does not: the
+// compiler always resolves through the active workspace/replace, so an
+// API read that skips it is describing a package that is not the one
+// linked into the binary.
+type LibraryDivergence struct {
+	// GoModVersion is the version github.com/reliant-labs/forge/pkg is
+	// pinned to in this project's go.mod requirement.
+	GoModVersion string `json:"go_mod_version"`
+	// ResolvedDir echoes LibrariesSpec.Dir — the directory the build
+	// actually uses. Repeated here so a consumer of just the
+	// divergence field doesn't have to cross-reference the parent.
+	ResolvedDir string `json:"resolved_dir"`
+	// Source names what caused the override: "go.work" when GOWORK
+	// pointed at an active workspace file, "replace" when a go.mod
+	// replace directive did it with no workspace involved.
+	Source string `json:"source"`
 }
 
 func newLibrariesCmd() *cobra.Command {
@@ -156,6 +188,7 @@ func buildLibrariesSpec(ctx context.Context) (LibrariesSpec, error) {
 			forgePkgModule, dir)
 	}
 	spec := LibrariesSpec{Module: forgePkgModule, Version: version, Dir: dir, Packages: pkgs}
+	spec.Divergence = detectLibraryDivergence(ctx, dir)
 
 	// The frontend half needs a project root: run from outside one — the
 	// forge repo itself, say — the Go inventory still answers.
@@ -211,7 +244,7 @@ func resolveForgePkgDir(ctx context.Context) (dir, version string, err error) {
 	if runErr != nil {
 		return "", "", fmt.Errorf(
 			"could not resolve %s from %s: %w\n%s\n"+
-				"Run this from inside a forge project (the module that requires forge/pkg).",
+				"Run this from inside a forge project (the module that requires forge/pkg)",
 			forgePkgModule, currentDirForMessage(), runErr, strings.TrimSpace(stderr.String()))
 	}
 
@@ -233,6 +266,83 @@ func currentDirForMessage() string {
 		return wd
 	}
 	return "the current directory"
+}
+
+// detectLibraryDivergence reports whether resolvedDir — the directory
+// this project's BUILD actually resolves forge/pkg to — sits outside
+// the module cache, meaning a go.work `use`/replace or a go.mod
+// `replace` is overriding the pinned go.mod version.
+//
+// The module cache is the one place `go list -m` and `go doc` are
+// guaranteed to agree: nothing else lives there, and nothing gets
+// there except a real, addressable module version. A resolved
+// directory anywhere else is necessarily an override, so "outside
+// GOMODCACHE" is a sufficient — not just a matching — condition.
+// Errors resolving GOMODCACHE or go.mod's pinned version are
+// swallowed to nil: this is an advisory extra on top of the inventory
+// buildLibrariesSpec already has to have gotten right to reach here,
+// and a detector that can fail the whole command over a second-order
+// check would be a worse trade than silently skipping the notice.
+func detectLibraryDivergence(ctx context.Context, resolvedDir string) *LibraryDivergence {
+	modCache, err := goEnv(ctx, "GOMODCACHE")
+	if err != nil || modCache == "" {
+		return nil
+	}
+	absResolved, err := filepath.Abs(resolvedDir)
+	if err != nil {
+		return nil
+	}
+	rel, err := filepath.Rel(modCache, absResolved)
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		// Resolved dir is inside (or IS) the module cache — no override.
+		return nil
+	}
+
+	goModVersion, gerr := forgePkgVersionInGoMod(ctx)
+	if gerr != nil || goModVersion == "" {
+		return nil
+	}
+
+	source := "replace"
+	if gowork, werr := goEnv(ctx, "GOWORK"); werr == nil && strings.TrimSpace(gowork) != "" {
+		source = "go.work"
+	}
+
+	return &LibraryDivergence{
+		GoModVersion: goModVersion,
+		ResolvedDir:  absResolved,
+		Source:       source,
+	}
+}
+
+// goEnv runs `go env <name>` and returns its trimmed value.
+func goEnv(ctx context.Context, name string) (string, error) {
+	out, err := exec.CommandContext(ctx, "go", "env", name).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// forgePkgVersionInGoMod reads the version github.com/reliant-labs/forge/pkg
+// is pinned to in go.mod's own require directive — the version a bare
+// `go doc` reads when nothing overrides it — by asking the toolchain
+// with GOWORK forced off so a workspace can't shadow the answer. A
+// go.mod `replace` alone (no workspace file) still resolves through
+// this, since GOWORK=off only disables workspace mode; the underlying
+// replace directive still applies. That is intentional: forge/pkg's
+// own repo has exactly that shape (go.mod replaces ./pkg, no separate
+// go.work override on top of it in a release build), and its go.mod
+// pin is still the version a `go doc` run from a directory outside
+// this checkout would show.
+func forgePkgVersionInGoMod(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Version}}", forgePkgModule)
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // readForgePkgPackages lists the subdirectories of the resolved module that
@@ -346,6 +456,31 @@ func stripPackagePrefix(s string) string {
 	return after
 }
 
+// writeLibraryDivergence prints the go.work/go.mod version-skew warning
+// when div is non-nil, and nothing at all otherwise — the healthy
+// steady state (no workspace, no replace override) must stay exactly
+// as quiet as it was before this check existed.
+//
+// The wording is deliberately scoped to what is provable: an OFFLINE
+// `go doc` (GOWORK unset/off, no replace in effect) reads the go.mod
+// pin, and that is a real, reachable failure mode — a subprocess that
+// doesn't inherit GOWORK, a CI job with no workspace file, an agent
+// shelling out from a different directory. It stops short of claiming
+// every `go doc` invocation is wrong, because a bare `go doc` run from
+// inside an active workspace resolves through it same as the compiler
+// does and shows the correct answer.
+func writeLibraryDivergence(w io.Writer, module string, div *LibraryDivergence) error {
+	if div == nil {
+		return nil
+	}
+	_, err := fmt.Fprintf(w,
+		"  resolved: %s   (%s override)\n"+
+			"  go.mod:   %s   ← an offline `go doc` (no %s active) reads THIS\n"+
+			"  ⚠ `go doc %s` run without the %s active shows %s, not what this project builds against — read the resolved source above instead.\n\n",
+		div.ResolvedDir, div.Source, div.GoModVersion, div.Source, module, div.Source, div.GoModVersion)
+	return err
+}
+
 func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
 	if asJSON {
 		enc := json.NewEncoder(w)
@@ -365,6 +500,9 @@ func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
 		return err
 	}
 	if err := p("Source on this machine: %s\n\n", spec.Dir); err != nil {
+		return err
+	}
+	if err := writeLibraryDivergence(w, spec.Module, spec.Divergence); err != nil {
 		return err
 	}
 	for _, l := range spec.Packages {

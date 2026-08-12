@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/statefile"
 )
@@ -54,8 +57,19 @@ type ComposeProvider struct {
 func (ComposeProvider) Name() string { return "compose" }
 
 // Deploy ships every service in the group via docker compose.
+//
+// Services deploy in order and each readiness-gated one BLOCKS until it
+// is healthy, so a group can express "postgres, then the thing that
+// dials postgres" as an ordered list of ordinary services.
 func (p ComposeProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	runner := p.runner()
+	// Probe the compose version ONCE per group rather than per service:
+	// it is a property of the installed CLI, not of any one service, and
+	// re-shelling for every service would add a process per deploy to
+	// re-learn the same answer.
+	if err := p.checkWaitSupport(ctx, runner, group); err != nil {
+		return err
+	}
 	for _, svc := range group.Services {
 		if svc.Compose == nil {
 			return fmt.Errorf("compose %s: Compose spec is nil (group misrouted?)", svc.Name)
@@ -67,12 +81,31 @@ func (p ComposeProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	return nil
 }
 
+// checkWaitSupport verifies the installed docker compose understands
+// the readiness flags, but only when some service in the group actually
+// asks to wait. A group that has opted out entirely should not need a
+// newer compose than the one it was working with before.
+func (p ComposeProvider) checkWaitSupport(ctx context.Context, runner commandRunner, group ServiceGroup) error {
+	if group.DryRun {
+		return nil
+	}
+	for _, svc := range group.Services {
+		if svc.Compose != nil && composeWait(svc.Compose) {
+			return ensureComposeSupportsWait(ctx, runner)
+		}
+	}
+	return nil
+}
+
 // Rollback restarts every service against its previously recorded
 // good tag via a generated override file. Best-effort: per-service
 // failures are joined into the returned error rather than aborting
 // the loop.
 func (p ComposeProvider) Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error {
 	runner := p.runner()
+	if err := p.checkWaitSupport(ctx, runner, group); err != nil {
+		return err
+	}
 	var failures []string
 	for _, svc := range group.Services {
 		if svc.Compose == nil {
@@ -126,6 +159,100 @@ func composeFile(spec *ComposeSpec) string {
 	return "docker-compose.yml"
 }
 
+// composeWait reports whether this deploy should block on readiness.
+// Unset means true: a deploy that returns before the thing it deployed
+// can serve is not a deploy anyone wanted, and every caller that has
+// not thought about it should get the safe behavior.
+func composeWait(spec *ComposeSpec) bool {
+	if spec.Wait == nil {
+		return true
+	}
+	return *spec.Wait
+}
+
+// composeWaitMinVersion is the first docker-compose release carrying
+// `--wait-timeout` (PR docker/compose#10276, shipped in v2.17.0).
+// `--wait` itself is older (v2.1.1), but forge asks for the pair, and
+// gating on the newer of the two keeps one version to explain.
+const composeWaitMinVersion = "v2.17.0"
+
+// composeVersionSupportsWait reports whether the reported docker
+// compose version string is at least composeWaitMinVersion.
+//
+// Docker Desktop appends a build suffix (`2.34.0-desktop.1`), and the
+// CLI prints a leading `v` in some versions and not others; both are
+// normalized before comparison. An UNPARSEABLE version returns true:
+// forge should not refuse to deploy because it failed to recognize a
+// version string it has never seen. In that case the flag either works
+// or docker itself reports the unknown flag, which is a clearer error
+// than forge guessing.
+func composeVersionSupportsWait(raw string) bool {
+	v := strings.TrimSpace(raw)
+	v = strings.TrimPrefix(v, "Docker Compose version ")
+	v = strings.TrimSpace(v)
+	if !strings.HasPrefix(v, "v") {
+		v = "v" + v
+	}
+	// Trim the build suffix Docker Desktop adds (`-desktop.1`) so the
+	// comparison sees a plain semver core. semver treats a `-suffix` as
+	// a PRE-release, which sorts BEFORE the release — that would read
+	// 2.34.0-desktop.1 as older than 2.34.0 and, at the boundary,
+	// reject a version that is actually fine.
+	if canonical := semver.Canonical(strings.SplitN(v, "-", 2)[0]); canonical != "" {
+		v = canonical
+	}
+	if !semver.IsValid(v) {
+		return true
+	}
+	return semver.Compare(v, composeWaitMinVersion) >= 0
+}
+
+// ensureComposeSupportsWait fails with an actionable message when the
+// installed docker compose predates `--wait-timeout`. Silently not
+// waiting would be the worst outcome: the deploy would report success
+// while the ordering guarantee callers rely on had quietly evaporated.
+func ensureComposeSupportsWait(ctx context.Context, runner commandRunner) error {
+	out, err := runner.Output(ctx, "docker", "compose", "version", "--short")
+	if err != nil {
+		// Can't ask — don't block the deploy on a version probe. If
+		// the flag is genuinely missing, the up command below says so.
+		return nil
+	}
+	if composeVersionSupportsWait(string(out)) {
+		return nil
+	}
+	return fmt.Errorf("docker compose %s does not support `up --wait` (need %s or newer); "+
+		"upgrade docker compose, or set `wait = False` on the Compose deploy block to opt out of readiness gating",
+		strings.TrimSpace(string(out)), composeWaitMinVersion)
+}
+
+// appendComposeWaitArgs adds the readiness flags to an `up` invocation.
+//
+// `--wait` blocks until every selected service reports running|healthy.
+// Observed semantics, which the callers depend on:
+//
+//   - service WITH a passing healthcheck: returns when it goes healthy.
+//   - service with NO healthcheck: returns as soon as the container is
+//     running, reporting it "Healthy". It does NOT hang — so adding
+//     --wait to a service that declares no probe is safe, it simply
+//     degrades to today's behavior (created + running) rather than
+//     becoming a readiness gate. That is why forge can pass --wait
+//     unconditionally instead of first inspecting the compose file for
+//     healthcheck blocks.
+//   - service whose healthcheck never passes: compose gives up and
+//     exits 1 with `container <name> is unhealthy`, bounded by the
+//     healthcheck's own retries x interval, or sooner by --wait-timeout.
+func appendComposeWaitArgs(args []string, spec *ComposeSpec) []string {
+	if !composeWait(spec) {
+		return args
+	}
+	args = append(args, "--wait")
+	if spec.WaitTimeoutSeconds > 0 {
+		args = append(args, "--wait-timeout", strconv.Itoa(spec.WaitTimeoutSeconds))
+	}
+	return args
+}
+
 // deployOne ships a single compose service via pull + up -d.
 func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, group ServiceGroup, svc ResolvedService) error {
 	spec := svc.Compose
@@ -143,11 +270,21 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	//    recreate here because the typical case (image tag changed)
 	//    triggers a recreate naturally and forcing it on no-op deploys
 	//    is unnecessary container churn.
+	//
+	//    --wait (default on) makes this call BLOCK until the service is
+	//    ready by its own declared healthcheck. Readiness is the
+	//    mechanism; the timeout is only a ceiling. Without it the
+	//    provider returned the instant the container was created, so
+	//    nothing downstream — the next service in the group, a host
+	//    process about to dial the database — could express "this must
+	//    be usable before I start".
 	upArgs := []string{"compose", "-f", file}
 	if spec.EnvFile != "" {
 		upArgs = append(upArgs, "--env-file", spec.EnvFile)
 	}
-	upArgs = append(upArgs, "up", "-d", target)
+	upArgs = append(upArgs, "up", "-d")
+	upArgs = appendComposeWaitArgs(upArgs, spec)
+	upArgs = append(upArgs, target)
 
 	if group.DryRun {
 		fmt.Printf("  [DRY-RUN] would run: docker %s\n", strings.Join(pullArgs, " "))
@@ -171,17 +308,43 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	// file wins.
 	envOverlay = mergeSecretsUnderEnvFile(svc.Secrets, envOverlay)
 
+	// The KCL-declared `env` goes on TOP, and this is the one layer that
+	// also beats the inherited shell environment (RunWithEnv merges
+	// extra-wins over os.Environ). That is deliberate, and it is the
+	// difference between a value the environment DECLARES and a default
+	// buried in the compose file: a shell `IDP_PORT=…` would move the
+	// container while every KCL reference to that port — the provisioning
+	// job's target, the issuer both halves of auth enforce — stayed
+	// pointing at the old one. See Compose.env in kcl/schema.k.
+	envOverlay = mergeComposeEnv(envOverlay, spec.Env)
+
 	if err := runner.RunWithEnv(ctx, envOverlay, "docker", pullArgs...); err != nil {
 		return fmt.Errorf("compose %s: pull: %w", svc.Name, err)
 	}
 	if err := runner.RunWithEnv(ctx, envOverlay, "docker", upArgs...); err != nil {
+		if composeWait(spec) {
+			// With --wait, an `up` failure most often means the
+			// container came up but never became healthy. Say so —
+			// "up: exit status 1" sends people looking at the wrong
+			// thing (image, ports) when the answer is in the
+			// service's own healthcheck and logs.
+			return fmt.Errorf("compose %s: up: %w (service did not become healthy; "+
+				"check its healthcheck and `docker compose -f %s logs %s`)",
+				svc.Name, err, file, target)
+		}
 		return fmt.Errorf("compose %s: up: %w", svc.Name, err)
 	}
 
 	// 3. Health check — `compose ps --status running` returns a non-
 	//    empty line for running services and empty for failed ones.
+	//
+	//    This runs through runOutputWithEnv, not the bare Output, because
+	//    `compose ps` re-reads and re-interpolates the compose file like
+	//    every other compose subcommand: without the same overlay the up
+	//    used, a project whose ports come from `${VAR}` gets a warning and
+	//    a different resolved config than the one it just deployed.
 	psArgs := []string{"compose", "-f", file, "ps", "--status", "running", target}
-	out, err := runner.Output(ctx, "docker", psArgs...)
+	out, err := outputWithEnv(ctx, runner, envOverlay, "docker", psArgs...)
 	if err != nil {
 		return fmt.Errorf("compose %s: health check: %w", svc.Name, err)
 	}
@@ -201,6 +364,24 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 		return fmt.Errorf("compose %s: record state: %w", svc.Name, err)
 	}
 	return nil
+}
+
+// mergeComposeEnv layers the KCL-declared `env` on top of the overlay
+// already assembled from secrets + env_file. Returns the base untouched
+// when there is nothing declared, so a project that uses none of this
+// keeps exactly the process env it had before the field existed.
+func mergeComposeEnv(base, declared map[string]string) map[string]string {
+	if len(declared) == 0 {
+		return base
+	}
+	merged := make(map[string]string, len(base)+len(declared))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range declared {
+		merged[k] = v // KCL wins — it is the declaration, not a fallback
+	}
+	return merged
 }
 
 // composeHasRunningLine returns true when the `compose ps` output
@@ -265,8 +446,9 @@ func (p ComposeProvider) rollbackOne(ctx context.Context, runner commandRunner, 
 		// override fragment we would have written so the dry-run is
 		// informative.
 		fmt.Printf("  [DRY-RUN] would write override pinning %s to %s:%s\n", composeSvc, imageHint, target)
-		fmt.Printf("  [DRY-RUN] would run: docker compose -f %s -f <override> up -d --force-recreate %s\n",
-			file, composeSvc)
+		dryArgs := appendComposeWaitArgs([]string{"up", "-d", "--force-recreate"}, spec)
+		fmt.Printf("  [DRY-RUN] would run: docker compose -f %s -f <override> %s %s\n",
+			file, strings.Join(dryArgs, " "), composeSvc)
 		return nil
 	}
 
@@ -276,11 +458,21 @@ func (p ComposeProvider) rollbackOne(ctx context.Context, runner commandRunner, 
 	}
 	defer func() { _ = os.Remove(overridePath) }()
 
+	// Rollback waits on the same terms as deploy, and for a stronger
+	// reason. A rollback is what someone reaches for when production is
+	// already broken; "the old version is starting" is not the answer
+	// they need, "the old version is SERVING" is. Returning early here
+	// would report a successful rollback while the previous image was
+	// still booting — or crash-looping, which is the case where the
+	// difference matters most, since the operator would move on
+	// believing they had recovered.
 	upArgs := []string{"compose", "-f", file, "-f", overridePath}
 	if spec.EnvFile != "" {
 		upArgs = append(upArgs, "--env-file", spec.EnvFile)
 	}
-	upArgs = append(upArgs, "up", "-d", "--force-recreate", composeSvc)
+	upArgs = append(upArgs, "up", "-d", "--force-recreate")
+	upArgs = appendComposeWaitArgs(upArgs, spec)
+	upArgs = append(upArgs, composeSvc)
 	envOverlay, ferr := loadExternalEnvFile(spec.EnvFile)
 	if ferr != nil {
 		return fmt.Errorf("env_file: %w", ferr)

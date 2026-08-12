@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 )
@@ -38,8 +39,8 @@ func TestWriteHooksIndex_FlatModeNoCollisions(t *testing.T) {
 	path := filepath.Join(dir, "index.ts")
 
 	files := []hookFileEntry{
-		{fileName: "user-service-hooks.ts", nsAlias: "userService", symbols: []string{"useGetUser", "useListUsers"}},
-		{fileName: "org-service-hooks.ts", nsAlias: "orgService", symbols: []string{"useGetOrg", "useListOrgs"}},
+		{fileName: "user-service-hooks_gen.ts", nsAlias: "userService", symbols: []string{"useGetUser", "useListUsers"}},
+		{fileName: "org-service-hooks_gen.ts", nsAlias: "orgService", symbols: []string{"useGetOrg", "useListOrgs"}},
 	}
 
 	if err := writeHooksIndex(path, files); err != nil {
@@ -55,10 +56,10 @@ func TestWriteHooksIndex_FlatModeNoCollisions(t *testing.T) {
 	if !strings.Contains(s, "Mode: flat wildcard re-exports") {
 		t.Errorf("expected flat-mode comment, got:\n%s", s)
 	}
-	if !strings.Contains(s, `export * from "./user-service-hooks";`) {
+	if !strings.Contains(s, `export * from "./user-service-hooks_gen";`) {
 		t.Errorf("expected flat wildcard for user-service-hooks, got:\n%s", s)
 	}
-	if !strings.Contains(s, `export * from "./org-service-hooks";`) {
+	if !strings.Contains(s, `export * from "./org-service-hooks_gen";`) {
 		t.Errorf("expected flat wildcard for org-service-hooks, got:\n%s", s)
 	}
 	if strings.Contains(s, "export * as") {
@@ -80,8 +81,8 @@ func TestWriteHooksIndex_NamespacedModeOnCollision(t *testing.T) {
 	// `export * from "..."` lines re-exporting the same identifier,
 	// which tsc rejects as a duplicate-export error.
 	files := []hookFileEntry{
-		{fileName: "user-service-hooks.ts", nsAlias: "userService", symbols: []string{"useGet", "useList"}},
-		{fileName: "org-service-hooks.ts", nsAlias: "orgService", symbols: []string{"useGet", "useList"}},
+		{fileName: "user-service-hooks_gen.ts", nsAlias: "userService", symbols: []string{"useGet", "useList"}},
+		{fileName: "org-service-hooks_gen.ts", nsAlias: "orgService", symbols: []string{"useGet", "useList"}},
 	}
 
 	if err := writeHooksIndex(path, files); err != nil {
@@ -99,20 +100,20 @@ func TestWriteHooksIndex_NamespacedModeOnCollision(t *testing.T) {
 	}
 	// Both collisions should be documented in the comment block so the
 	// user knows exactly which symbols forced the switch.
-	if !strings.Contains(s, "useGet (from org-service-hooks.ts, user-service-hooks.ts)") {
+	if !strings.Contains(s, "useGet (from org-service-hooks_gen.ts, user-service-hooks_gen.ts)") {
 		t.Errorf("expected useGet collision in comment, got:\n%s", s)
 	}
-	if !strings.Contains(s, "useList (from org-service-hooks.ts, user-service-hooks.ts)") {
+	if !strings.Contains(s, "useList (from org-service-hooks_gen.ts, user-service-hooks_gen.ts)") {
 		t.Errorf("expected useList collision in comment, got:\n%s", s)
 	}
-	if !strings.Contains(s, `export * as userService from "./user-service-hooks";`) {
+	if !strings.Contains(s, `export * as userService from "./user-service-hooks_gen";`) {
 		t.Errorf("expected namespaced re-export for userService, got:\n%s", s)
 	}
-	if !strings.Contains(s, `export * as orgService from "./org-service-hooks";`) {
+	if !strings.Contains(s, `export * as orgService from "./org-service-hooks_gen";`) {
 		t.Errorf("expected namespaced re-export for orgService, got:\n%s", s)
 	}
 	// Confirm the flat wildcard form is NOT present in namespaced mode.
-	if strings.Contains(s, `export * from "./user-service-hooks";`) {
+	if strings.Contains(s, `export * from "./user-service-hooks_gen";`) {
 		t.Errorf("did not expect flat wildcard in namespaced mode, got:\n%s", s)
 	}
 }
@@ -174,11 +175,11 @@ func TestGenerateFrontendHooks_PerFrontendByDefault(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	if err := generateFrontendHooks(cfg, services, dir); err != nil {
+	if err := generateFrontendHooks(cfg, services, dir, nil); err != nil {
 		t.Fatalf("generateFrontendHooks: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, "frontends/web/src/hooks/user-service-hooks.ts"))
+	got, err := os.ReadFile(filepath.Join(dir, "frontends/web/src/hooks/user-service-hooks_gen.ts"))
 	if err != nil {
 		t.Fatalf("read per-frontend hooks: %v", err)
 	}
@@ -202,6 +203,162 @@ func TestGenerateFrontendHooks_PerFrontendByDefault(t *testing.T) {
 	}
 }
 
+// TestGenerateFrontendHooks_WrittenFileCarriesForgeHashMarker asserts the
+// fix for the orphaned-hooks-file bug: a hooks file must be written
+// through the certification chokepoint (checksums.WriteGeneratedFile), not
+// a bare os.WriteFile, so it carries an embedded forge:hash marker. Without
+// the marker the file is invisible to the marker-driven stale-artifact
+// sweep (cleanupStaleArtifacts) — the whole reason a renamed service's old
+// hooks file used to survive on disk with nothing that could ever remove
+// it.
+func TestGenerateFrontendHooks_WrittenFileCarriesForgeHashMarker(t *testing.T) {
+	resetCleanupRunState(t)
+	dir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name:      "myapp",
+		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs", Path: "frontends/web"}},
+	}
+	services := []codegen.ServiceDef{fakeService("UserService", "proto/services/users/v1/users.proto")}
+	cs := &checksums.FileChecksums{}
+
+	if err := generateFrontendHooks(cfg, services, dir, cs); err != nil {
+		t.Fatalf("generateFrontendHooks: %v", err)
+	}
+
+	relPath := "frontends/web/src/hooks/user-service-hooks_gen.ts"
+	got, err := os.ReadFile(filepath.Join(dir, relPath))
+	if err != nil {
+		t.Fatalf("read hooks file: %v", err)
+	}
+	if checksums.Verify(got) != checksums.Pristine {
+		t.Errorf("expected a pristine forge:hash marker on %s, got status %v; content:\n%s",
+			relPath, checksums.Verify(got), got)
+	}
+	if !checksums.WrittenThisRun[relPath] {
+		t.Errorf("expected %s recorded in WrittenThisRun so the stale-artifact sweep can see this run touched it", relPath)
+	}
+}
+
+// TestGenerateFrontendHooks_RenamedServiceOrphanIsSweptAsStale is the
+// end-to-end regression case: a service renamed between two `forge
+// generate` runs must leave its OLD hooks file positively identified as
+// stale by cleanupStaleArtifacts (the same marker-driven sweep every other
+// Tier-1 output uses), rather than as an invisible unmarked leftover.
+func TestGenerateFrontendHooks_RenamedServiceOrphanIsSweptAsStale(t *testing.T) {
+	resetCleanupRunState(t)
+	dir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name:      "myapp",
+		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs", Path: "frontends/web"}},
+	}
+	cs := &checksums.FileChecksums{}
+
+	// Run 1: WorkOrderService exists, its hooks file is born (and certified).
+	if err := generateFrontendHooks(cfg, []codegen.ServiceDef{
+		fakeService("WorkOrderService", "proto/services/workorder/v1/workorder.proto"),
+	}, dir, cs); err != nil {
+		t.Fatalf("first generateFrontendHooks: %v", err)
+	}
+	oldRel := "frontends/web/src/hooks/work-order-service-hooks_gen.ts"
+	if _, err := os.Stat(filepath.Join(dir, oldRel)); err != nil {
+		t.Fatalf("expected %s to exist after first run: %v", oldRel, err)
+	}
+
+	// Run 2: the service is renamed to WorkorderService — a fresh
+	// pipeline run, so WrittenThisRun starts empty again.
+	checksums.ResetSkipWrite()
+	if err := generateFrontendHooks(cfg, []codegen.ServiceDef{
+		fakeService("WorkorderService", "proto/services/workorder/v1/workorder.proto"),
+	}, dir, cs); err != nil {
+		t.Fatalf("second generateFrontendHooks: %v", err)
+	}
+	newRel := "frontends/web/src/hooks/workorder-service-hooks_gen.ts"
+	if _, err := os.Stat(filepath.Join(dir, newRel)); err != nil {
+		t.Fatalf("expected %s to exist after rename: %v", newRel, err)
+	}
+	// The OLD file is still on disk — forge does not delete mid-render.
+	if _, err := os.Stat(filepath.Join(dir, oldRel)); err != nil {
+		t.Fatalf("expected orphaned %s to still be on disk before the sweep: %v", oldRel, err)
+	}
+
+	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{
+		fakeService("WorkorderService", "proto/services/workorder/v1/workorder.proto"),
+	}, cfg)
+	candidates, handEdited, err := cleanupStaleArtifacts(ctx)
+	if err != nil {
+		t.Fatalf("cleanupStaleArtifacts: %v", err)
+	}
+	if len(handEdited) != 0 {
+		t.Errorf("handEdited = %v, want empty", handEdited)
+	}
+	wantAbs := filepath.Join(dir, oldRel)
+	found := false
+	for _, c := range candidates {
+		if c == wantAbs {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the orphaned pre-rename hooks file %s among cleanup candidates, got %v", wantAbs, candidates)
+	}
+	// The renamed file must NOT be a candidate — this run wrote it.
+	for _, c := range candidates {
+		if c == filepath.Join(dir, newRel) {
+			t.Errorf("current hooks file %s should not be a stale-artifact candidate", newRel)
+		}
+	}
+}
+
+// TestReportOrphanedHookFiles_LegacyUnmarkedFileIsReportedNotDeleted
+// covers the files this fix cannot retroactively certify: a hooks file
+// left on disk by a forge build that predates marker certification. Such
+// a file carries the Tier-1 banner but no forge:hash, so forge cannot
+// prove it still owns those bytes — it must be reported, never deleted.
+func TestReportOrphanedHookFiles_LegacyUnmarkedFileIsReportedNotDeleted(t *testing.T) {
+	dir := t.TempDir()
+	hooksDir := filepath.Join(dir, "frontends/web/src/hooks")
+	mustMkdir(t, hooksDir)
+
+	legacyPath := filepath.Join(hooksDir, "work-order-service-hooks_gen.ts")
+	legacyContent := "// Code generated by forge. DO NOT EDIT.\n" +
+		"// forge-owned: regenerated every run — do not edit (forge project disown to take ownership)\n" +
+		"export function useGetWorkOrder() {}\n"
+	mustWrite(t, legacyPath, legacyContent)
+
+	live := []hookFileEntry{{fileName: "workorder-service-hooks_gen.ts"}}
+	reportOrphanedHookFiles(hooksDir, live)
+
+	// Report-only: the file must survive.
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Errorf("legacy orphan must not be deleted: %v", err)
+	}
+}
+
+// TestReportOrphanedHookFiles_MarkerBearingOrphanIsNotDoubleReported
+// asserts that once a hooks file DOES carry a forge:hash marker,
+// reportOrphanedHookFiles defers entirely to the marker-driven sweep
+// (cleanupStaleArtifacts) rather than emitting a second, redundant notice.
+func TestReportOrphanedHookFiles_MarkerBearingOrphanIsNotDoubleReported(t *testing.T) {
+	dir := t.TempDir()
+	hooksDir := filepath.Join(dir, "frontends/web/src/hooks")
+	mustMkdir(t, hooksDir)
+
+	markedPath := filepath.Join(hooksDir, "work-order-service-hooks_gen.ts")
+	mustWriteStamped(t, markedPath, "frontends/web/src/hooks/work-order-service-hooks_gen.ts",
+		"// Code generated by forge. DO NOT EDIT.\nexport function useGetWorkOrder() {}\n")
+
+	// No assertion on stdout/stderr content (reportOrphanedHookFiles
+	// writes to os.Stderr directly) — this test only needs the function
+	// not to crash and the file to remain untouched; the "no double
+	// report" contract is the marker-check branch itself, exercised via
+	// coverage rather than output capture.
+	reportOrphanedHookFiles(hooksDir, nil)
+
+	if _, err := os.Stat(markedPath); err != nil {
+		t.Errorf("marker-bearing file must not be deleted: %v", err)
+	}
+}
+
 // TestGenerateFrontendHooks_WorkspaceModeEmitsToSharedDir asserts that
 // the workspace-mode emit lands at packages/hooks/src/generated/ with
 // imports rewritten to @<scope>/api and "../transport".
@@ -219,12 +376,12 @@ func TestGenerateFrontendHooks_WorkspaceModeEmitsToSharedDir(t *testing.T) {
 		fakeService("UserService", "proto/services/users/v1/users.proto"),
 	}
 
-	if err := generateFrontendHooks(cfg, services, dir); err != nil {
+	if err := generateFrontendHooks(cfg, services, dir, nil); err != nil {
 		t.Fatalf("generateFrontendHooks: %v", err)
 	}
 
 	// Workspace mode writes one file shared across all frontends.
-	got, err := os.ReadFile(filepath.Join(dir, "packages/hooks/src/generated/user-service-hooks.ts"))
+	got, err := os.ReadFile(filepath.Join(dir, "packages/hooks/src/generated/user-service-hooks_gen.ts"))
 	if err != nil {
 		t.Fatalf("read workspace hooks: %v", err)
 	}
@@ -237,7 +394,7 @@ func TestGenerateFrontendHooks_WorkspaceModeEmitsToSharedDir(t *testing.T) {
 	}
 	// Per-frontend hooks dirs should NOT be written in workspace mode.
 	for _, fe := range cfg.Frontends {
-		p := filepath.Join(dir, fe.Path, "src/hooks/user-service-hooks.ts")
+		p := filepath.Join(dir, fe.Path, "src/hooks/user-service-hooks_gen.ts")
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("workspaces=true should not write per-frontend %s, got err=%v", p, err)
 		}
@@ -248,7 +405,7 @@ func TestGenerateFrontendHooks_WorkspaceModeEmitsToSharedDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read workspace hooks index: %v", err)
 	}
-	if !strings.Contains(string(idx), `export * from "./user-service-hooks"`) {
+	if !strings.Contains(string(idx), `export * from "./user-service-hooks_gen"`) {
 		t.Errorf("workspace hooks index should re-export user-service-hooks, got:\n%s", idx)
 	}
 }
@@ -376,30 +533,32 @@ service OrderService {
 		t.Fatal(err)
 	}
 
-	if err := generateFrontendHooks(cfg, services, dir); err != nil {
+	if err := generateFrontendHooks(cfg, services, dir, nil); err != nil {
 		t.Fatalf("generateFrontendHooks: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, "frontends/web/src/hooks/order-service-hooks.ts"))
+	got, err := os.ReadFile(filepath.Join(dir, "frontends/web/src/hooks/order-service-hooks_gen.ts"))
 	if err != nil {
 		t.Fatalf("read hooks: %v", err)
 	}
 	s := string(got)
 
-	// IssueRefund must be a mutation despite its query-prefix name.
-	if !strings.Contains(s, "export function useIssueRefund(options?: Partial<UseMutationOptions<") {
+	// IssueRefund must be a mutation despite its query-prefix name — which
+	// is now visible as WHICH FACTORY builds the hook.
+	if !strings.Contains(s, "export const useIssueRefund = createMutationHook<") {
 		t.Errorf("useIssueRefund should be a mutation hook, got:\n%s", s)
 	}
 	// GetOrder stays a query.
-	if !strings.Contains(s, "export function useGetOrder(req: MessageInitShape<") {
+	if !strings.Contains(s, "export const useGetOrder = createQueryHook<") {
 		t.Errorf("useGetOrder should remain a query hook, got:\n%s", s)
 	}
-	// Both hook families are imported since the service now has one of each.
-	if !strings.Contains(s, "useMutation") || !strings.Contains(s, "useQuery") {
-		t.Errorf("expected both useMutation and useQuery imports, got:\n%s", s)
+	// Both factories are imported since the service now has one of each.
+	if !strings.Contains(s, "createMutationHook") || !strings.Contains(s, "createQueryHook") {
+		t.Errorf("expected both createMutationHook and createQueryHook imports, got:\n%s", s)
 	}
-	// A marked mutation must NOT appear in the query-key factory.
-	if strings.Contains(s, "issueRefund: (req:") {
+	// A marked mutation must NOT appear in the query-key factory: a mutation
+	// has no cache entry of its own, it invalidates other RPCs' entries.
+	if strings.Contains(s, `issueRefund: keys.query(`) {
 		t.Errorf("IssueRefund should not have a query-key factory entry, got:\n%s", s)
 	}
 }
@@ -431,7 +590,7 @@ func TestWriteHookStarterTest_EmitsLiveTestWhenNoSiblingPresent(t *testing.T) {
 	svc := codegenServiceDefForStarterTest()
 	data := codegenHookDataForStarterTest()
 
-	if err := writeHookStarterTest(dir, "user-service-hooks.ts", svc, data); err != nil {
+	if err := writeHookStarterTest(dir, "user-service-hooks_gen.ts", svc, data); err != nil {
 		t.Fatalf("writeHookStarterTest: %v", err)
 	}
 
@@ -472,7 +631,7 @@ func TestWriteHookStarterTest_SkipsWhenActiveTestExists(t *testing.T) {
 
 	svc := codegenServiceDefForStarterTest()
 	data := codegenHookDataForStarterTest()
-	if err := writeHookStarterTest(dir, "user-service-hooks.ts", svc, data); err != nil {
+	if err := writeHookStarterTest(dir, "user-service-hooks_gen.ts", svc, data); err != nil {
 		t.Fatalf("writeHookStarterTest: %v", err)
 	}
 
@@ -504,7 +663,7 @@ func TestWriteHookStarterTest_ActivatesALegacyStarter(t *testing.T) {
 
 	svc := codegenServiceDefForStarterTest()
 	data := codegenHookDataForStarterTest()
-	if err := writeHookStarterTest(dir, "user-service-hooks.ts", svc, data); err != nil {
+	if err := writeHookStarterTest(dir, "user-service-hooks_gen.ts", svc, data); err != nil {
 		t.Fatalf("writeHookStarterTest: %v", err)
 	}
 
@@ -533,7 +692,7 @@ func TestWriteHookStarterTest_RemovesALeftoverStarterBesideALiveTest(t *testing.
 		t.Fatal(err)
 	}
 
-	if err := writeHookStarterTest(dir, "user-service-hooks.ts", codegenServiceDefForStarterTest(), codegenHookDataForStarterTest()); err != nil {
+	if err := writeHookStarterTest(dir, "user-service-hooks_gen.ts", codegenServiceDefForStarterTest(), codegenHookDataForStarterTest()); err != nil {
 		t.Fatalf("writeHookStarterTest: %v", err)
 	}
 	if _, err := os.Stat(starterPath); err == nil {

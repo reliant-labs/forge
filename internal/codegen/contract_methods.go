@@ -24,8 +24,8 @@ func (s *svc) GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir 
 	return GenerateMissingHandlerStubs(svc, projectDir, targetDir, crudMethodNames, cs)
 }
 
-func (s *svc) GenerateMock(svc ServiceDef, mockDir string) (bool, error) {
-	return GenerateMock(svc, mockDir)
+func (s *svc) GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.FileChecksums) (bool, error) {
+	return GenerateMock(svc, projectDir, mockDir, cs)
 }
 
 func (s *svc) GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {

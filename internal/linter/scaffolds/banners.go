@@ -287,13 +287,17 @@ func isGenSuffix(name string) bool {
 // isKnownTier1 lists templates that are regenerated every `forge generate`
 // run but don't carry a `_gen.*` suffix (legacy naming, special files).
 func isKnownTier1(rel, noTmpl string) bool {
-	// Frontend mocks and hooks: regenerated from the proto descriptor each run.
+	// Frontend mocks and hooks: regenerated from the proto descriptor each
+	// run. These templates render to `*_gen.*` FILES (mock-transport_gen.ts,
+	// otel_gen.ts, <svc>-service-hooks_gen.ts, …); it is only the template
+	// names here that still lack the suffix, because a template's name
+	// describes the module it renders, not the tier of the render.
 	if strings.HasSuffix(rel, "frontend/hooks.ts.tmpl") ||
 		strings.HasSuffix(rel, "frontend/mocks/mock-data.ts.tmpl") ||
 		strings.HasSuffix(rel, "frontend/mocks/mock-transport.ts.tmpl") ||
 		strings.HasSuffix(rel, "frontend/mocks/scenarios/scenario-types.ts.tmpl") ||
 		strings.HasSuffix(rel, "frontend/mocks/scenarios/scenarios-index.ts.tmpl") ||
-		strings.HasSuffix(rel, "frontend/nextjs/src/lib/otel.ts.tmpl") {
+		strings.HasSuffix(rel, "frontend/nextjs/src/lib/otel_gen.ts.tmpl") {
 		return true
 	}
 	// Project-level cmd/ scaffolds: regenerated; they carry the canonical header.
@@ -314,21 +318,29 @@ func isKnownTier1(rel, noTmpl string) bool {
 		// them Tier-1 asked their authors to stamp a "regenerated every run —
 		// do not edit" banner on files forge never regenerates.
 		//
-		// cmd-tree-root.go stays Tier-1 because it really is re-derived: it
-		// declares `const ServiceName = "<project>"` from forge.yaml and gates
-		// its newDBCmd wiring on a config field parsed out of the user's
-		// config proto. cmd-tree-db-source.go likewise — whether
-		// forgedb.MigrationsFS is even referenceable is re-read from
-		// db/migrations/ on every run.
-		"cmd-tree-root.go", "cmd-tree-db-source.go",
-		"cmd-svc-group.go", "cmd-svc-register.go",
+		// The command tree has NO Tier-1 file: cmd-tree-root-gen.go is
+		// retired. Its three facts either stopped being re-derived
+		// (ServiceName, fixed at scaffold; the `db` command, wired directly
+		// in the scaffold-rendered root.go) or moved to the package they are
+		// a fact about (the embedded migration set → db.Source()).
+		// cmd-tree-root.go — the tree's shape and flags — is scaffold-once
+		// and belongs to the user, as does cmd-svc-group.go; the mount
+		// expression the latter calls is re-derived next door in
+		// cmd-svc-mount-gen.go, because a collision rename can change its
+		// spelling after the service is born.
+		"cmd-svc-mount-gen.go",
+		"cmd-svc-register.go",
 		"cmd-worker-register.go", "cmd-operator-register.go",
 		// internal/app/mounts_services.go — the HTTP-mount surface, a pure
 		// projection of the discovered service set (writeForgeOwned).
-		"mounts_services.go":
+		"mounts_services_gen.go":
 		return true
+	// NB: migrate.go is gone, not merely unlisted. It was 86 lines of
+	// golang-migrate ceremony with one project-specific token in it
+	// (forgedb.MigrationsFS) — library code parked in the user's tree — and
+	// now lives in pkg/migratekit.AutoMigrate.
 	case "bootstrap.go", "bootstrap_testing.go",
-		"config.go", "migrate.go",
+		"config.go",
 		"alloy-config.alloy":
 		return true
 	}
@@ -379,8 +391,18 @@ func isKnownTier2(rel, noTmpl string) bool {
 		//   - cmd-tree-db.go      migration policy: dirty-schema fail-hard vs
 		//                         auto-force, is "nothing pending" success
 		//                         → pkg/migratekit
+		//   - cmd-tree-root.go    the command tree's shape: its flags, its
+		//                         Deps struct, which commands hang off the
+		//                         root, and ServiceName. The one derived
+		//                         migration fact lives in db.Source()
+		//                         → pkg/cmdkit
+		//   - cmd-svc-group.go    one service's subcommand — its flags, its
+		//                         RunE, its help text. The typed mount
+		//                         expression it calls is re-derived next
+		//                         door in cmd-svc-mount-gen.go
 		"cmd-tree-serve.go", "cmd-tree-server.go",
 		"cmd-tree-version.go", "cmd-tree-db.go",
+		"cmd-tree-root.go", "cmd-svc-group.go",
 		"compose.go", "lifecycle.go":
 		return true
 	}

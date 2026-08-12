@@ -143,3 +143,82 @@ func TestConcurrentSameKeyOneBlock(t *testing.T) {
 func keyFor(i int) string {
 	return "wt-" + string(rune('a'+i))
 }
+
+// TWO PROJECTS, ONE MACHINE. The block registry is per-project, so the
+// default key is block 0 in every project and each one asks for the same base
+// port. For the dev IdP that was fatal rather than untidy: forge refuses to
+// adopt an identity provider it did not start, so the second project on a
+// machine could not bring up sign-in at all.
+func TestAllocatePortAvoidingForeign(t *testing.T) {
+	t.Run("takes the base port when it is free", func(t *testing.T) {
+		dir := t.TempDir()
+		got, err := AllocatePortAvoidingForeign(dir, 8080, "", func(int) bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 8080 {
+			t.Errorf("port = %d, want 8080 (a free base must not move)", got)
+		}
+	})
+
+	t.Run("steps past a port another stack holds", func(t *testing.T) {
+		dir := t.TempDir()
+		free := func(p int) bool { return p != 8080 }
+		got, err := AllocatePortAvoidingForeign(dir, 8080, "", free)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 8180 {
+			t.Errorf("port = %d, want 8180 (the first free block)", got)
+		}
+	})
+
+	t.Run("memoizes the shifted port even once the base frees up", func(t *testing.T) {
+		// This is the property the issuer actually needs. `iss` and the
+		// registered redirect URI are baked from this port, so it must not
+		// move between runs — a second run that reverted to the now-free base
+		// would invalidate every token the first run minted.
+		dir := t.TempDir()
+		first, err := AllocatePortAvoidingForeign(dir, 8080, "", func(p int) bool { return p != 8080 })
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := AllocatePortAvoidingForeign(dir, 8080, "", func(int) bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first != second {
+			t.Errorf("port moved between runs: %d then %d", first, second)
+		}
+	})
+
+	t.Run("a busy port does not move an already-assigned block", func(t *testing.T) {
+		dir := t.TempDir()
+		first, err := AllocatePortAvoidingForeign(dir, 8080, "", func(int) bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Same project, next run, base momentarily busy — possibly with its
+		// OWN still-running IdP. Stability wins.
+		second, err := AllocatePortAvoidingForeign(dir, 8080, "", func(p int) bool { return p != 8080 })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first != second {
+			t.Errorf("an assigned port moved when it went busy: %d then %d", first, second)
+		}
+	})
+
+	t.Run("falls back to the deterministic port when nothing is free", func(t *testing.T) {
+		// Better to hand back the deterministic answer and let the caller's
+		// own port guard report the collision with real context.
+		dir := t.TempDir()
+		got, err := AllocatePortAvoidingForeign(dir, 8080, "", func(int) bool { return false })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 8080 {
+			t.Errorf("port = %d, want the deterministic 8080 fallback", got)
+		}
+	})
+}

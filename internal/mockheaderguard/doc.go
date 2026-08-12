@@ -5,7 +5,7 @@
 // its values come from. It used to say they mirror `db/fixtures` — a
 // directory `forge project new` has never created — so a reader chasing the
 // provenance of a fixture found nothing. The values in fact come from the
-// project's own seed plan (codegen.SeedProjection over seeddata.Plan), whose
+// project's own seed plan (codegen.SeedProjection over seedplan.Plan), whose
 // on-disk surface is `db/seeds/`.
 //
 // The guard lives in its own package, rather than beside the generator,

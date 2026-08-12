@@ -26,6 +26,12 @@ version: "2"
 
 run:
   timeout: 5m
+  # See the root .golangci.yml for the full rationale: the golangci-lint
+  # lock is one machine-wide path, and its five-second default deadline
+  # turns concurrent runs into spurious exit-3 failures. This module is
+  # linted right after the root one by `task lint`, so it needs the same
+  # setting or the second run races the first.
+  allow-serial-runners: true
 
 issues:
   # Report EVERY finding — golangci-lint otherwise truncates at 50 per

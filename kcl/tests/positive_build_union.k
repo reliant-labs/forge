@@ -75,7 +75,7 @@ _pb = forge.Bundle { services = [_plain] }
 _plain_out = forge.render(_pb)
 assert_plain_build_null = _plain_out.services[0].build == None
 
-# build_of coerces a plain dict (the components_gen.json / overlay shape)
+# build_of coerces a plain dict (the workloads.k / overlay shape)
 # to the right typed Build subtype by discriminator — the bridge path.
 # This is the case that bare-dict union coercion gets wrong (a shell dict
 # also satisfies GoBuild's required cmd), so it must route through build_of.

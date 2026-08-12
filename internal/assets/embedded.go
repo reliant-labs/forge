@@ -49,6 +49,46 @@ func GetForgeV1Proto() ([]byte, error) {
 	return EmbeddedFiles.ReadFile("proto/forge/v1/forge.proto")
 }
 
+// ForgeProtoVendorRelPath is where the vendored forge.proto lives inside
+// a scaffolded project, relative to the project root.
+const ForgeProtoVendorRelPath = "proto/forge/v1/forge.proto"
+
+// VendoredProtoRelPaths is the complete set of files forge COPIES into a
+// project verbatim, rather than rendering from a template — the two
+// embedded protos above, at the project-relative paths scaffold writes
+// them to.
+//
+// It is a declared list because these copies are otherwise UNTRACKED:
+// they are not templates, not Tier-1 (a forge:hash marker is a comment,
+// and a comment here would be vendored into every project along with the
+// file), and absent from .forge/hashes.json — so forge's upgrade path is
+// blind to them and a stale copy diverges silently. Two features depend
+// on knowing exactly which files those are, and MUST agree:
+//
+//   - `forge lint --vendored-protos` reports drift against the embedded
+//     copy (internal/cli/lint/lint_vendored_protos.go).
+//   - `forge project disown` accepts these paths despite the missing
+//     marker, so the lint's escape hatch actually opens.
+//
+// Adding a go:embed'd proto above without adding it here reintroduces the
+// blind spot; a test in internal/cli/lint pins the list against the
+// embedded FS so that cannot happen quietly.
+var VendoredProtoRelPaths = []string{
+	ForgeProtoVendorRelPath,
+	ValidateProtoVendorRelPath,
+}
+
+// IsVendoredProtoRelPath reports whether relPath (slash-separated,
+// project-relative) is one of forge's vendored copies.
+func IsVendoredProtoRelPath(relPath string) bool {
+	for _, p := range VendoredProtoRelPaths {
+		if p == relPath {
+			return true
+		}
+	}
+	return false
+}
+
 // ValidateProtoImportPath is the import path a project's protos use to
 // pull in protovalidate's field rules: `import "buf/validate/validate.proto";`.
 const ValidateProtoImportPath = "buf/validate/validate.proto"

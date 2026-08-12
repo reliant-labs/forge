@@ -35,12 +35,16 @@ type KCLEntities struct {
 	// each up (at the cluster→deploy boundary) and applies as k8s Secrets.
 	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
 	Services          []ServiceEntity          `json:"services,omitempty"`
-	Operators         []OperatorEntity         `json:"operators,omitempty"`
-	Frontends         []FrontendEntity         `json:"frontends,omitempty"`
-	CronJobs          []CronJobEntity          `json:"cronjobs,omitempty"`
-	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
-	HTTPRoutes        []HTTPRouteEntity        `json:"http_routes,omitempty"`
-	GRPCRoutes        []GRPCRouteEntity        `json:"grpc_routes,omitempty"`
+	// Jobs are the env's one-shot components (the `job` component kind).
+	// Each runs to completion before the services it names in Before are
+	// launched. Empty for an env that declares none.
+	Jobs       []JobEntity       `json:"jobs,omitempty"`
+	Operators  []OperatorEntity  `json:"operators,omitempty"`
+	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
+	CronJobs   []CronJobEntity   `json:"cronjobs,omitempty"`
+	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
+	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
+	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
 	// HelmCharts are the env's declared platform deps (forge.HelmChart),
 	// each a renderable with a NAME the `--target` axis selects. forge
 	// expands them via helm-as-a-RENDERER and folds the manifests into the
@@ -150,6 +154,9 @@ type ClusterEntity struct {
 	// re-deriving the prefix.
 	Context string `json:"context,omitempty"`
 	Config  string `json:"config,omitempty"`
+	// Image pins the k3s node image used for flag-driven clusters. Config-driven
+	// clusters declare the image in their authoritative k3d YAML instead.
+	Image string `json:"image,omitempty"`
 	// Network is the derived docker network this cluster joins —
 	// `k3d-<owner.name>` for a secondary, empty for an owner cluster.
 	Network string `json:"network,omitempty"`
@@ -360,6 +367,26 @@ type ServiceEntity struct {
 	Command []string          `json:"command,omitempty"`
 }
 
+// JobEntity is one one-shot job in the rendered contract — the host
+// lowering's channel for the `job` component kind.
+//
+// Before names the services that must not launch until this job has run
+// to completion and exited 0. The host runner enforces that itself
+// (there is no orchestrator underneath it); the k8s and compose
+// lowerings express the same declaration as init containers and
+// `service_completed_successfully` respectively.
+type JobEntity struct {
+	Name    string   `json:"name"`
+	Image   string   `json:"image,omitempty"`
+	Command []string `json:"command,omitempty"`
+	Before  []string `json:"before,omitempty"`
+	// TimeoutSeconds bounds the wait for exit 0. Zero means the runner's
+	// default ceiling — a one-shot that never exits must fail loudly
+	// rather than hang the up forever.
+	TimeoutSeconds int         `json:"timeout_seconds,omitempty"`
+	EnvVars        []KCLEnvVar `json:"env_vars,omitempty"`
+}
+
 // BuildConfigEntity is the dispatched-by-type view of a service's build
 // block — the build-side analogue of [DeployConfigEntity]. The raw JSON
 // is a tagged union; Type carries the tag; exactly one of Go/Docker/Shell
@@ -447,14 +474,15 @@ type ShellBuild struct {
 
 // DeployConfigEntity is the dispatched-by-type view of a service's
 // deploy block. The raw JSON shape is a tagged union — Type carries
-// the tag; exactly one of Host/Cluster/External/Compose/BuildOnly is
-// non-nil after [dispatchServiceDeploy] runs.
+// the tag; exactly one of Host/Cluster/External/Compose/HostInfra/
+// BuildOnly is non-nil after [dispatchServiceDeploy] runs.
 type DeployConfigEntity struct {
-	Type      string           // "host" | "cluster" | "external" | "compose" | "build-only"
+	Type      string           // "host" | "cluster" | "external" | "compose" | "host-infra" | "build-only"
 	Host      *HostDeploy      // populated when Type=="host"
 	Cluster   *K8sCluster      // populated when Type=="cluster"
 	External  *ExternalDeploy  // populated when Type=="external"
 	Compose   *ComposeDeploy   // populated when Type=="compose"
+	HostInfra *HostInfraDeploy // populated when Type=="host-infra"
 	BuildOnly *BuildOnlyDeploy // populated when Type=="build-only"
 }
 
@@ -472,10 +500,45 @@ type ExternalDeploy struct {
 }
 
 // ComposeDeploy is the deploy block for a docker-compose service.
+//
+// Wait is a pointer so "absent from the JSON" is distinguishable from
+// "explicitly False". KCL defaults it to True, but a hand-written or
+// older rendered contract may omit the key entirely, and that case must
+// resolve to the safe default (wait) rather than to the bool zero value.
 type ComposeDeploy struct {
 	ComposeFile string `json:"compose_file,omitempty"`
 	Service     string `json:"service,omitempty"`
 	EnvFile     string `json:"env_file,omitempty"`
+	Wait        *bool  `json:"wait,omitempty"`
+	WaitTimeout int    `json:"wait_timeout,omitempty"`
+	// Env is the KCL-declared map forge puts in the `docker compose`
+	// PROCESS environment — where the compose file's own `${VAR}`
+	// references interpolate from. Distinct from EnvFile, which only
+	// reaches containers. See Compose.env in kcl/schema.k.
+	Env map[string]string `json:"env,omitempty"`
+}
+
+// HostInfraDeploy is the deploy block for a third-party server forge runs
+// as a HOST PROCESS instead of a container — the default shape for dev
+// infrastructure on a machine that cannot afford a container runtime.
+// Mirrors the kcl/schema.k HostInfra schema; see internal/hostinfra for the
+// supervisor and internal/deploytarget.HostInfraProvider for the dispatch.
+type HostInfraDeploy struct {
+	Engine   string `json:"engine,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Database string `json:"database,omitempty"`
+	User     string `json:"user,omitempty"`
+	Password string `json:"password,omitempty"`
+	DataDir  string `json:"data_dir,omitempty"`
+	Version  string `json:"version,omitempty"`
+
+	// engine = "zitadel" only — the dev IdP's backing database and its
+	// declarative bootstrap. See the HostInfra schema in kcl/schema.k.
+	IDPDatabase     string `json:"idp_database,omitempty"`
+	IDPDatabasePort int    `json:"idp_database_port,omitempty"`
+	IDPMasterKey    string `json:"idp_masterkey,omitempty"`
+	IDPStepsFile    string `json:"idp_steps_file,omitempty"`
+	IDPPATPath      string `json:"idp_pat_path,omitempty"`
 }
 
 // HostDeploy is the deploy block for a service that runs as a host
@@ -759,10 +822,17 @@ type kclRenderRaw struct {
 	Operators         []OperatorEntity         `json:"operators,omitempty"`
 	Frontends         []FrontendEntity         `json:"frontends,omitempty"`
 	CronJobs          []CronJobEntity          `json:"cronjobs,omitempty"`
-	Gateways          []GatewayEntity          `json:"gateways,omitempty"`
-	HTTPRoutes        []HTTPRouteEntity        `json:"http_routes,omitempty"`
-	GRPCRoutes        []GRPCRouteEntity        `json:"grpc_routes,omitempty"`
-	HelmCharts        []HelmChartEntity        `json:"helm_charts,omitempty"`
+	// One-shot jobs. Absent here, the `jobs` key rendered by KCL was
+	// silently DROPPED during parse: the host runner received an empty
+	// job list, ran nothing, and started the services a job was supposed
+	// to gate — with no error anywhere, because nothing had asked for the
+	// field. A bucket missing from this struct is not a compile error; it
+	// is a feature that quietly does not happen.
+	Jobs       []JobEntity       `json:"jobs,omitempty"`
+	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
+	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
+	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
+	HelmCharts []HelmChartEntity `json:"helm_charts,omitempty"`
 	// SecretProvider rides alongside services in the entity output; nil
 	// when the bundle declares no provider (KCL omits the key entirely).
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
@@ -916,6 +986,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Operators:            raw.Operators,
 		Frontends:            raw.Frontends,
 		CronJobs:             raw.CronJobs,
+		Jobs:                 raw.Jobs,
 		Gateways:             raw.Gateways,
 		HTTPRoutes:           raw.HTTPRoutes,
 		GRPCRoutes:           raw.GRPCRoutes,
@@ -1140,6 +1211,12 @@ func dispatchServiceDeploy(svcName string, raw json.RawMessage) (DeployConfigEnt
 			return DeployConfigEntity{}, fmt.Errorf("service %q: parse compose deploy: %w", svcName, err)
 		}
 		return DeployConfigEntity{Type: "compose", Compose: &c}, nil
+	case "host-infra":
+		var h HostInfraDeploy
+		if err := json.Unmarshal(raw, &h); err != nil {
+			return DeployConfigEntity{}, fmt.Errorf("service %q: parse host-infra deploy: %w", svcName, err)
+		}
+		return DeployConfigEntity{Type: "host-infra", HostInfra: &h}, nil
 	case "build-only":
 		var b BuildOnlyDeploy
 		if err := json.Unmarshal(raw, &b); err != nil {
@@ -1147,9 +1224,9 @@ func dispatchServiceDeploy(svcName string, raw json.RawMessage) (DeployConfigEnt
 		}
 		return DeployConfigEntity{Type: "build-only", BuildOnly: &b}, nil
 	case "":
-		return DeployConfigEntity{}, fmt.Errorf("service %q: deploy.type missing (expected host/cluster/external/compose/build-only)", svcName)
+		return DeployConfigEntity{}, fmt.Errorf("service %q: deploy.type missing (expected host/cluster/external/compose/host-infra/build-only)", svcName)
 	default:
-		return DeployConfigEntity{}, fmt.Errorf("service %q: unrecognised deploy.type %q (expected host/cluster/external/compose/build-only)", svcName, probe.Type)
+		return DeployConfigEntity{}, fmt.Errorf("service %q: unrecognised deploy.type %q (expected host/cluster/external/compose/host-infra/build-only)", svcName, probe.Type)
 	}
 }
 
@@ -1220,7 +1297,12 @@ func (s ServiceEntity) EffectiveBuild() BuildConfigEntity {
 		return s.Build
 	}
 	switch s.Deploy.Type {
-	case "compose", "external":
+	// Nothing here is built from THIS module's source. A compose or
+	// external service ships an image someone else produced, and a
+	// host-infra instance is a third-party server binary forge downloads —
+	// synthesizing a GoBuild default for any of them would send `forge
+	// build` at a ./cmd/<name> package that does not exist.
+	case "compose", "external", "host-infra":
 		return BuildConfigEntity{}
 	}
 	return BuildConfigEntity{

@@ -17,9 +17,9 @@ import (
 // re-introduced it Wave 5 as the component-middleware decorator, so it now
 // lives in allowedGenFiles above.)
 //
-// Migration skills (those under migrations/v0.x-to-*) are allow-listed because
-// their entire job is to describe the OLD shape so users can detect and remove
-// it. Touching them here would defeat their purpose.
+// Migration skills (those under migrations/) are allow-listed because their
+// entire job is to describe the OLD shape so users can detect and remove it.
+// Touching them here would defeat their purpose.
 //
 // Allowed `*_gen.go` filenames are intentionally listed — when forge starts
 // emitting a new `<X>_gen.go`, add it here. When forge stops emitting one,
@@ -38,10 +38,6 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		"middleware_gen.go": {},
 		// pkg/app/wire_gen.go — service/worker/operator Deps wiring.
 		"wire_gen.go": {},
-		// pkg/app/seedgraph_gen.go — the generate-time FK-spine seed helper
-		// (app.SeedGraph): baked INSERT SQL per root table, keyed off the applied
-		// schema, so flow tests seed a spine with no runtime seed dependency.
-		"seedgraph_gen.go": {},
 		// pkg/app/services_gen.go — per-service serviceRow constructors
 		// (registration-in-code; the user-owned pkg/app/services.go
 		// picks which rows the binary serves).
@@ -73,6 +69,15 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		"frontend_gen.go": {}, // retired frontend codegen (components are owned scaffold now)
 		// ORM / entity wrapper generation.
 		"<entity>_orm_gen.go": {}, // placeholder pattern referenced in skills
+		// The Tier-1 renames: every hash-guarded file now says _gen in its
+		// NAME, so a reader can tell it is un-editable without opening it.
+		"orm_shared_gen.go":      {},
+		"user_orm_gen.go":        {}, // concrete <entity>_orm_gen.go in skill prose
+		"things_mock_gen.go":     {}, // concrete <svc>_mock_gen.go in skill prose
+		"embed_gen.go":           {},
+		"config_gen.go":          {},
+		"mounts_services_gen.go": {},
+		"root_gen.go":            {},
 		// Generic suffix references like `*_gen.go` are valid family-level
 		// references (not specific filenames) — handled below by the regex.
 	}
@@ -94,11 +99,10 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 	// Migration skills are off-limits to this test — they describe historical
 	// shapes by design.
 	migrationAllowlist := []string{
-		// "forge/migrations/v0.x-to-y" template — match any version pair.
-		// Matches v0.1-to-v0.2, v0.2-to-v0.3, etc. The per-pair migration
-		// skills (v0.1-to-v0.2 etc.) describe historical Tier-1 file
-		// shapes (app_gen.go, wire_gen.go) by design.
-		"forge/migrations/v0.",
+		// Every per-release migration skill (migrations/<version>/) is
+		// exempt: describing the Tier-1 file shapes a release moved a
+		// project OFF is the whole content of the document.
+		"forge/migrations/",
 		// The migration-* top-level skills (migration-cli,
 		// migration-service, migration-upgrade) likewise document old
 		// shapes during porting/upgrade work.

@@ -172,6 +172,16 @@ forensics, parallel-lane and migration escape hatches); run
 	// shorthand belongs to the command that actually consumes it.
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print one line per gate-off skipped step ('⏩ skipped: <step name> (<reason>)'). Default is silent skip.")
 	cmd.Flags().BoolVar(&planOnly, "plan", false, "Print the pipeline plan ([RUN]/[SKIP] annotation per step + gate reason) and exit 0 without running any step. Honors --steps and --templates-only.")
+	// --dry-run is the spelling every other forge verb uses for "show me,
+	// don't do it" (`forge scaffold`, `disown`, `secrets`, `project upgrade`).
+	// Without it, the one command people most want to preview answers
+	// `unknown flag` and sends them to --help to learn that this particular
+	// verb spells it differently.
+	//
+	// The description deliberately does NOT name the flag it shares a
+	// variable with: that one is hidden from --help (see help_dev.go), and
+	// naming it here would leak it back into the visible surface.
+	cmd.Flags().BoolVar(&planOnly, "dry-run", false, "Print the pipeline plan ([RUN]/[SKIP] per step + gate reason) and exit without running any step.")
 	cmd.Flags().BoolVar(&skipConfigCheck, "skip-config-check", false, "Bypass the forge.yaml ↔ filesystem cross-check (declared services/frontends/packages must have on-disk backing). Use for parallel-lane / mid-migration scenarios.")
 	cmd.Flags().BoolVar(&heal, "heal", false, "Overwrite on-disk content that matches a PRIOR forge render (an older vintage) with the current template. OFF by default: such content is byte-indistinguishable from a deliberate edit, so forge leaves it untouched and tells you how to proceed rather than silently reverting your work. Pass --heal to advance every such file to the current templates.")
 	cmd.Flags().BoolVar(&noRevert, "no-revert", false, "Diagnostic mode: on a post-write step failure (most often the final 'go build' validate), leave the generated files ON DISK instead of rewinding the tree, so you can inspect the codegen output that failed to build. Default (off) reverts to the clean pre-run tree.")

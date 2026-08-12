@@ -58,15 +58,41 @@ export function AuthContextProvider({
   }
 {{- end}}
   const [user, setUser] = useState<AuthUser | null>(auth.getUser());
+  // isLoading and isAuthenticated are READ during render but live inside the
+  // provider's closure, so React cannot see them change. Mirroring them into
+  // state on every notification is what makes a provider that resolves
+  // asynchronously — a silent session restore on page load, say — actually
+  // re-render the tree.
+  //
+  // Without this, `isLoading` is sampled once at mount and stays true
+  // forever: the route guard renders null waiting for a value that has
+  // already changed, and the app hangs on a blank frame.
+  const [authState, setAuthState] = useState(() => ({
+    isAuthenticated: auth.isAuthenticated(),
+    isLoading: auth.isLoading(),
+  }));
 
   useEffect(() => {
-    return auth.onAuthStateChange(setUser);
+    const sync = (next: AuthUser | null) => {
+      setUser(next);
+      // Read back through the provider rather than deriving from `next`: a
+      // user is not the same fact as a token, and the provider is the only
+      // thing that knows whether one is still in flight.
+      setAuthState({
+        isAuthenticated: auth.isAuthenticated(),
+        isLoading: auth.isLoading(),
+      });
+    };
+    // Sync once on subscribe: the provider may have settled between its
+    // construction and this effect running, and that notification is gone.
+    sync(auth.getUser());
+    return auth.onAuthStateChange(sync);
   }, [auth]);
 
   const value: AuthContextValue = {
     user,
-    isAuthenticated: auth.isAuthenticated(),
-    isLoading: auth.isLoading(),
+    isAuthenticated: authState.isAuthenticated,
+    isLoading: authState.isLoading,
     login: () => auth.login(),
     logout: () => auth.logout(),
     getToken: () => auth.getToken(),

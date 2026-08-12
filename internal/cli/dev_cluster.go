@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -148,7 +149,18 @@ type k3dSimpleConfig struct {
 type k3dClusterListEntry struct {
 	Name           string `json:"name"`
 	ServersRunning int    `json:"serversRunning"`
+	ServersCount   int    `json:"serversCount"`
 	AgentsRunning  int    `json:"agentsRunning"`
+	AgentsCount    int    `json:"agentsCount"`
+}
+
+// k3dClusterRuntimeState distinguishes a cluster that merely exists from
+// one whose declared server/agent containers are all running. k3d keeps
+// stopped clusters in `cluster list`, so presence alone is not sufficient
+// for any subsequent kubectl or docker-exec reconciliation.
+type k3dClusterRuntimeState struct {
+	Exists  bool
+	Running bool
 }
 
 // readK3dClusterName parses the k3d config file and returns the cluster
@@ -202,19 +214,236 @@ func listK3dClusters(ctx context.Context) ([]k3dClusterListEntry, error) {
 	return entries, nil
 }
 
-// clusterExists returns true when a cluster of the given name is listed
-// by k3d.
-func clusterExists(ctx context.Context, name string) (bool, error) {
+// fullyRunning reports whether every k3d server and agent is running. Older
+// k3d versions may omit the total-count fields; in that case, at least one
+// running server is the strongest available signal and preserves backwards
+// compatibility with their JSON shape.
+func (e k3dClusterListEntry) fullyRunning() bool {
+	if e.ServersRunning == 0 {
+		return false
+	}
+	if e.ServersCount > 0 && e.ServersRunning != e.ServersCount {
+		return false
+	}
+	if e.AgentsCount > 0 && e.AgentsRunning != e.AgentsCount {
+		return false
+	}
+	return true
+}
+
+// lookupK3dClusterRuntimeState returns both presence and liveness from one
+// `k3d cluster list` snapshot. A stopped cluster exists but is not running.
+func lookupK3dClusterRuntimeState(ctx context.Context, name string) (k3dClusterRuntimeState, error) {
 	entries, err := listK3dClusters(ctx)
 	if err != nil {
-		return false, err
+		return k3dClusterRuntimeState{}, err
 	}
 	for _, e := range entries {
 		if e.Name == name {
-			return true, nil
+			return k3dClusterRuntimeState{Exists: true, Running: e.fullyRunning()}, nil
 		}
 	}
-	return false, nil
+	return k3dClusterRuntimeState{}, nil
+}
+
+// clusterExists returns true when a cluster of the given name is listed
+// by k3d.
+func clusterExists(ctx context.Context, name string) (bool, error) {
+	state, err := lookupK3dClusterRuntimeState(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	return state.Exists, nil
+}
+
+const k3dClusterStartTimeout = 90 * time.Second
+
+var (
+	runK3dClusterStartCommandFn  = runK3dClusterStartCommand
+	lookupK3dStateAfterStartFn   = lookupK3dClusterRuntimeState
+	cleanupK3dStartToolsFn       = cleanupK3dStartTools
+	runK3dClusterCreateCommandFn = runK3dClusterCreateCommand
+	lookupK3dStateAfterCreateFn  = lookupK3dClusterRuntimeState
+	cleanupK3dCreateToolsFn      = cleanupK3dStartTools
+	mergeK3dKubeconfigFn         = mergeK3dKubeconfig
+	k3dClusterStartPollInterval  = time.Second
+	k3dClusterStartHealthyGrace  = 10 * time.Second
+)
+
+// runK3dClusterStartCommand is split from startK3dCluster so the latter's
+// hung-client recovery is unit-testable without launching Docker.
+func runK3dClusterStartCommand(ctx context.Context, name string) error {
+	cmd := exec.CommandContext(ctx, "k3d", "cluster", "start", name,
+		"--wait", "--timeout", k3dClusterStartTimeout.String())
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// runK3dClusterCreateCommand is split from createK3dCluster for the same
+// reason as the start command: k3d can wedge in its post-start CoreDNS alias
+// injection even though every cluster container is already running.
+func runK3dClusterCreateCommand(ctx context.Context, args []string) error {
+	cmd := exec.CommandContext(ctx, "k3d", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// mergeK3dKubeconfig repairs the finalization step skipped when Forge cancels
+// a wedged create client after the cluster is already running. It is also safe
+// after a normal create: merge is an idempotent update and deliberately does
+// not switch the caller's active context.
+func mergeK3dKubeconfig(ctx context.Context, name string) error {
+	cmd := exec.CommandContext(ctx, "k3d", "kubeconfig", "merge", name,
+		"--kubeconfig-merge-default", "--kubeconfig-switch-context=false")
+	cmd.Stdout = nil
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("merge kubeconfig for k3d cluster %q: %w", name, err)
+	}
+	return nil
+}
+
+// cleanupK3dStartTools removes the disposable helper k3d leaves behind when
+// its start client is cancelled during host-alias injection. Cluster nodes,
+// load balancers, registries, volumes, and networks are untouched.
+func cleanupK3dStartTools(ctx context.Context, name string) error {
+	container := "k3d-" + name + "-tools"
+	out, err := exec.CommandContext(ctx, "docker", "rm", "-f", container).CombinedOutput()
+	if err != nil && !strings.Contains(string(out), "No such container") {
+		return fmt.Errorf("remove temporary container %s: %w", container, err)
+	}
+	return nil
+}
+
+func finishK3dClusterLifecycle(ctx, commandCtx context.Context, name, operation string, commandErr error,
+	lookup func(context.Context, string) (k3dClusterRuntimeState, error),
+	cleanup func(context.Context, string) error,
+) error {
+	if commandErr == nil {
+		if cleanupErr := cleanup(ctx, name); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "  warning: %v\n", cleanupErr)
+		}
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	state, stateErr := lookup(ctx, name)
+	if cleanupErr := cleanup(ctx, name); cleanupErr != nil {
+		fmt.Fprintf(os.Stderr, "  warning: %v\n", cleanupErr)
+	}
+	if stateErr == nil && state.Exists && state.Running {
+		fmt.Fprintf(os.Stderr,
+			"  warning: k3d cluster %s %q returned after the cluster became running (%v) — continuing with readiness checks\n",
+			operation, name, commandErr)
+		return nil
+	}
+	if commandCtx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("k3d cluster %s %q timed out after %s", operation, name, k3dClusterStartTimeout)
+	}
+	if stateErr != nil {
+		return fmt.Errorf("k3d cluster %s %q: %w (state recheck also failed: %v)", operation, name, commandErr, stateErr)
+	}
+	return fmt.Errorf("k3d cluster %s %q: %w", operation, name, commandErr)
+}
+
+func runK3dClusterLifecycle(ctx context.Context, name, operation string,
+	run func(context.Context) error,
+	lookup func(context.Context, string) (k3dClusterRuntimeState, error),
+	cleanup func(context.Context, string) error,
+) error {
+	commandCtx, cancel := context.WithTimeout(ctx, k3dClusterStartTimeout)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(commandCtx)
+	}()
+
+	ticker := time.NewTicker(k3dClusterStartPollInterval)
+	defer ticker.Stop()
+	var runningSince time.Time
+
+	for {
+		select {
+		case commandErr := <-done:
+			return finishK3dClusterLifecycle(ctx, commandCtx, name, operation, commandErr, lookup, cleanup)
+		case <-ticker.C:
+			state, err := lookup(ctx, name)
+			if err != nil || !state.Exists || !state.Running {
+				runningSince = time.Time{}
+				continue
+			}
+			if runningSince.IsZero() {
+				runningSince = time.Now()
+				continue
+			}
+			if time.Since(runningSince) < k3dClusterStartHealthyGrace {
+				continue
+			}
+
+			fmt.Fprintf(os.Stderr,
+				"  warning: k3d cluster %q is fully running but its %s client did not return within %s — cancelling the wedged client\n",
+				name, operation, k3dClusterStartHealthyGrace)
+			cancel()
+			commandErr := <-done
+			if cleanupErr := cleanup(ctx, name); cleanupErr != nil {
+				fmt.Fprintf(os.Stderr, "  warning: %v\n", cleanupErr)
+			}
+			if commandErr != nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return nil
+		case <-commandCtx.Done():
+			commandErr := <-done
+			return finishK3dClusterLifecycle(ctx, commandCtx, name, operation, commandErr, lookup, cleanup)
+		case <-ctx.Done():
+			cancel()
+			<-done
+			if cleanupErr := cleanup(context.Background(), name); cleanupErr != nil {
+				fmt.Fprintf(os.Stderr, "  warning: %v\n", cleanupErr)
+			}
+			return ctx.Err()
+		}
+	}
+}
+
+// startK3dCluster starts a preserved-but-stopped cluster and waits for k3d's
+// servers and load balancer to become ready. k3d v5.8.1 and v5.9.0 can hang
+// after the cluster is already running while injecting host aliases into
+// CoreDNS. Forge polls authoritative state while k3d runs: once every
+// server/agent is up, k3d
+// gets a short grace period to finish normally; a still-wedged client is then
+// cancelled and its disposable tools helper removed. Callers subsequently
+// wait for Kubernetes Nodes and Forge's own DNS/MSS reconciliation.
+func startK3dCluster(ctx context.Context, name string) error {
+	return runK3dClusterLifecycle(ctx, name, "start",
+		func(commandCtx context.Context) error {
+			return runK3dClusterStartCommandFn(commandCtx, name)
+		},
+		lookupK3dStateAfterStartFn,
+		cleanupK3dStartToolsFn,
+	)
+}
+
+// createK3dCluster gives fresh creates the same hung-client recovery as
+// starts. k3d 5.9.0 can reach a fully running cluster and then wedge while
+// injecting CoreDNS host aliases; authoritative running state plus Forge's
+// subsequent readiness/DNS reconciliation is sufficient to continue safely.
+func createK3dCluster(ctx context.Context, name string, args []string) error {
+	if err := runK3dClusterLifecycle(ctx, name, "create",
+		func(commandCtx context.Context) error {
+			return runK3dClusterCreateCommandFn(commandCtx, args)
+		},
+		lookupK3dStateAfterCreateFn,
+		cleanupK3dCreateToolsFn,
+	); err != nil {
+		return err
+	}
+	return mergeK3dKubeconfigFn(ctx, name)
 }
 
 // pinKubectlContext sets the current kubectl context to k3d-<name>.
@@ -242,6 +471,31 @@ func currentKubectlContext(ctx context.Context) string {
 	return strings.TrimSpace(string(out))
 }
 
+// resumeExistingDevCluster handles `forge cluster up` against a cluster that
+// already exists: start it if stopped, then pin the kubectl context (so the
+// kubectl calls that follow cannot land on a stale one) and optionally wait
+// for nodes to report Ready. Creation is the caller's job.
+func resumeExistingDevCluster(ctx context.Context, clusterName string, state k3dClusterRuntimeState, wait bool) error {
+	if state.Running {
+		fmt.Printf("k3d cluster %q already exists and is running — no-op\n", clusterName)
+	} else {
+		fmt.Printf("k3d cluster %q already exists but is stopped — starting...\n", clusterName)
+		if err := startK3dCluster(ctx, clusterName); err != nil {
+			return err
+		}
+	}
+	if err := pinKubectlContext(ctx, clusterName); err != nil {
+		return err
+	}
+	if wait {
+		fmt.Println("Waiting for cluster nodes to report Ready...")
+		if err := waitNodeReady(ctx, clusterName); err != nil {
+			return fmt.Errorf("wait for cluster nodes: %w", err)
+		}
+	}
+	return nil
+}
+
 func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	// Deploy-feature gate: `forge cluster up` boots a k3d cluster
 	// whose only purpose is hosting the project's deploy. A library /
@@ -255,17 +509,12 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		return err
 	}
 
-	exists, err := clusterExists(ctx, clusterName)
+	state, err := lookupK3dClusterRuntimeState(ctx, clusterName)
 	if err != nil {
 		return err
 	}
-	if exists {
-		fmt.Printf("k3d cluster %q already exists — no-op\n", clusterName)
-		// Still pin context so subsequent kubectl calls are safe.
-		if err := pinKubectlContext(ctx, clusterName); err != nil {
-			return err
-		}
-		return nil
+	if state.Exists {
+		return resumeExistingDevCluster(ctx, clusterName, state, wait)
 	}
 
 	// Resolve the effective k3d config. When features.ingress is on
@@ -290,11 +539,9 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		if effective.temporary {
 			fmt.Printf("  (merging deploy/k3d-ports.yaml from project's ingress KCL)\n")
 		}
-		create := exec.CommandContext(ctx, "k3d", "cluster", "create", "--config", effective.path)
-		create.Stdout = os.Stdout
-		create.Stderr = os.Stderr
-		if err := create.Run(); err != nil {
-			return fmt.Errorf("k3d cluster create: %w", err)
+		if err := createK3dCluster(ctx, clusterName,
+			[]string{"cluster", "create", "--config", effective.path}); err != nil {
+			return err
 		}
 	} else {
 		// Reuse the existing ensureDevCluster path so the fallback

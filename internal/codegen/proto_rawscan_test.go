@@ -183,12 +183,12 @@ func TestScanRawProtoDir_MarkersAndFields(t *testing.T) {
 	}
 }
 
-// TestScanRawProtoDir_ServerSetMarker pins the FIELD-level
-// `// forge:server-set` marker on the raw-scan path (the birth truth for a
+// TestScanRawProtoDir_ReadOnlyMarker pins the FIELD-level
+// `// forge:read-only` marker on the raw-scan path (the birth truth for a
 // brand-new `// forge:entity` message): the LEADING full-line spelling, the
 // TRAILING inline spelling, and correct binding on a multi-field inline line.
-// A marked field stays a normal captured field — only its ServerSet bit flips.
-func TestScanRawProtoDir_ServerSetMarker(t *testing.T) {
+// A marked field stays a normal captured field — only its ReadOnly bit flips.
+func TestScanRawProtoDir_ReadOnlyMarker(t *testing.T) {
 	dir := writeRawScanFixture(t, map[string]string{"v1/orders.proto": `syntax = "proto3";
 package services.orders.v1;
 
@@ -196,14 +196,14 @@ package services.orders.v1;
 message Order {
   string id = 1;
   string customer = 2;
-  // forge:server-set
+  // forge:read-only
   string status = 3;
-  int64 amount = 4; // forge:server-set — trailing spelling
+  int64 amount = 4; // forge:read-only — trailing spelling
   string note = 5;
 }
 
 // forge:entity
-message Ledger { string id = 1; string owner = 2; string balance = 3; // forge:server-set
+message Ledger { string id = 1; string owner = 2; string balance = 3; // forge:read-only
 }
 `})
 	scan, err := ScanRawProtoDir(dir)
@@ -214,9 +214,9 @@ message Ledger { string id = 1; string owner = 2; string balance = 3; // forge:s
 	if !ok {
 		t.Fatal("Order not scanned")
 	}
-	serverSet := map[string]bool{}
+	readOnly := map[string]bool{}
 	for _, f := range order.Fields {
-		serverSet[f.Name] = f.ServerSet
+		readOnly[f.Name] = f.ReadOnly
 	}
 	for name, want := range map[string]bool{
 		"id":       false,
@@ -225,25 +225,67 @@ message Ledger { string id = 1; string owner = 2; string balance = 3; // forge:s
 		"amount":   true, // trailing inline marker
 		"note":     false,
 	} {
-		if serverSet[name] != want {
-			t.Errorf("Order field %q: ServerSet = %v, want %v", name, serverSet[name], want)
+		if readOnly[name] != want {
+			t.Errorf("Order field %q: ReadOnly = %v, want %v", name, readOnly[name], want)
 		}
 	}
 
 	// A trailing marker binds to the LAST field on an inline-body line, not
-	// every field: only `balance` is server-set, `id`/`owner` are not.
+	// every field: only `balance` is read-only, `id`/`owner` are not.
 	ledger, ok := scan.MessageByName("Ledger")
 	if !ok {
 		t.Fatal("Ledger not scanned")
 	}
 	lset := map[string]bool{}
 	for _, f := range ledger.Fields {
-		lset[f.Name] = f.ServerSet
+		lset[f.Name] = f.ReadOnly
 	}
 	for name, want := range map[string]bool{"id": false, "owner": false, "balance": true} {
 		if lset[name] != want {
-			t.Errorf("Ledger field %q: ServerSet = %v, want %v", name, lset[name], want)
+			t.Errorf("Ledger field %q: ReadOnly = %v, want %v", name, lset[name], want)
 		}
+	}
+}
+
+// TestScanRawProtoDir_ServerSetIsNotAReadOnlyMarker pins the removal:
+// `// forge:server-set` is not a marker forge knows, so it attaches to
+// nothing and leaves the field client-writable. It is also NOT collected as
+// an unapplied read-only marker — the refusal names markers forge recognizes
+// but could not place, and this is not one of them.
+//
+// The retirement is no longer SILENT, though: the same spelling lands in the
+// separate RetiredMarkers ledger, which birth refuses on. See
+// TestScanRawProtoDir_RetiredMarkerSitesAreCollected — this test pins only
+// that the old marker was not resurrected as an alias.
+func TestScanRawProtoDir_ServerSetIsNotAReadOnlyMarker(t *testing.T) {
+	dir := writeRawScanFixture(t, map[string]string{"v1/orders.proto": `syntax = "proto3";
+package services.orders.v1;
+
+// forge:entity
+message Order {
+  string id = 1;
+  // forge:server-set
+  string status = 2;
+  int64 amount = 3; // forge:server-set
+  string note = 4;
+}
+`})
+	scan, err := ScanRawProtoDir(dir)
+	if err != nil {
+		t.Fatalf("ScanRawProtoDir: %v", err)
+	}
+	order, ok := scan.MessageByName("Order")
+	if !ok {
+		t.Fatal("Order not scanned")
+	}
+	for _, f := range order.Fields {
+		if f.ReadOnly {
+			t.Errorf("field %q: ReadOnly = true, want false — forge:server-set is no longer a marker", f.Name)
+		}
+	}
+	if len(order.UnappliedReadOnlyMarkers) != 0 {
+		t.Errorf("got %d unapplied read-only marker(s), want 0: %+v",
+			len(order.UnappliedReadOnlyMarkers), order.UnappliedReadOnlyMarkers)
 	}
 }
 
@@ -527,5 +569,136 @@ enum Grade {
 	}
 	if len(empty.Messages) != 0 || len(empty.Files) != 0 {
 		t.Errorf("missing dir must scan empty, got %+v", empty)
+	}
+}
+
+// TestScanRawProtoDir_RetiredMarkerSitesAreCollected pins the retired-marker
+// ledger: a spelling forge deliberately REMOVED (codegen.RemovedProtoMarkers)
+// is not a marker any scanner honours, so it attaches to no field — but
+// unlike arbitrary prose it has a definite meaning the author expects and a
+// definite fix, so the scan must surface it rather than drop it.
+//
+// This is the ledger the read-only refusal could never populate: that one
+// collects markers forge RECOGNIZES but could not place, and a retired
+// spelling is recognized by nothing.
+func TestScanRawProtoDir_RetiredMarkerSitesAreCollected(t *testing.T) {
+	dir := writeRawScanFixture(t, map[string]string{"v1/orders.proto": `syntax = "proto3";
+package services.orders.v1;
+
+// forge:entity
+message Order {
+  string id = 1;
+  // forge:server-set
+  string status = 2;
+  int64 amount = 3; // forge:server-set
+  string note = 4;
+}
+`})
+	scan, err := ScanRawProtoDir(dir)
+	if err != nil {
+		t.Fatalf("ScanRawProtoDir: %v", err)
+	}
+	order, ok := scan.MessageByName("Order")
+	if !ok {
+		t.Fatal("Order not scanned")
+	}
+	// Both spellings — leading comment line and trailing inline — are sites.
+	if len(order.RetiredMarkers) != 2 {
+		t.Fatalf("got %d retired marker site(s), want 2: %+v",
+			len(order.RetiredMarkers), order.RetiredMarkers)
+	}
+	for _, site := range order.RetiredMarkers {
+		if site.Marker != "forge:server-set" {
+			t.Errorf("site Marker = %q, want forge:server-set", site.Marker)
+		}
+		if site.ReplacedBy != ProtoMarkerReadOnly {
+			t.Errorf("site ReplacedBy = %q, want %q", site.ReplacedBy, ProtoMarkerReadOnly)
+		}
+		if site.Line == 0 {
+			t.Errorf("site %+v has no line number", site)
+		}
+	}
+	// The retirement itself still holds: nothing became read-only.
+	for _, f := range order.Fields {
+		if f.ReadOnly {
+			t.Errorf("field %q: ReadOnly = true, want false — forge:server-set is retired, not aliased", f.Name)
+		}
+	}
+}
+
+// TestScanRawProtoDir_EveryRetiredMarkerReachesTheLedger pins the registry
+// against the scanner: every entry in RemovedProtoMarkers must actually be
+// collected, so adding a future retirement to the map cannot silently fail
+// to reach birth. Without this pin the map could grow an entry that only the
+// lint check honours — reintroducing, for the new spelling, exactly the
+// silence this ledger closed for forge:server-set.
+func TestScanRawProtoDir_EveryRetiredMarkerReachesTheLedger(t *testing.T) {
+	for retired, replacement := range RemovedProtoMarkers {
+		t.Run(retired, func(t *testing.T) {
+			dir := writeRawScanFixture(t, map[string]string{"v1/x.proto": `syntax = "proto3";
+package services.x.v1;
+
+// forge:entity
+message Thing {
+  string id = 1;
+  // ` + retired + `
+  string status = 2;
+}
+`})
+			scan, err := ScanRawProtoDir(dir)
+			if err != nil {
+				t.Fatalf("ScanRawProtoDir: %v", err)
+			}
+			thing, ok := scan.MessageByName("Thing")
+			if !ok {
+				t.Fatal("Thing not scanned")
+			}
+			if len(thing.RetiredMarkers) != 1 {
+				t.Fatalf("retired marker %q reached the ledger %d time(s), want 1",
+					retired, len(thing.RetiredMarkers))
+			}
+			if got := thing.RetiredMarkers[0].ReplacedBy; got != replacement {
+				t.Errorf("ReplacedBy = %q, want %q", got, replacement)
+			}
+		})
+	}
+}
+
+// TestScanRawProtoDir_RetiredMarkerLedgerIgnoresProse proves the ledger does
+// not fire on the two shapes that must stay silent, which is the risk that
+// matters: a spurious birth refusal breaks every project that builds today.
+//
+//   - Prose that merely CONTAINS `forge:` ("see the forge:read-only docs")
+//     is a comment about forge, not a marker.
+//   - Markers forge legitimately reads elsewhere — forge:mutation (frontend
+//     hook generation, every generate) and forge:secret (descriptor path) —
+//     are never retired spellings, and the raw scanner not consuming them is
+//     not the same as them being wrong.
+func TestScanRawProtoDir_RetiredMarkerLedgerIgnoresProse(t *testing.T) {
+	dir := writeRawScanFixture(t, map[string]string{"v1/orders.proto": `syntax = "proto3";
+package services.orders.v1;
+
+// forge:entity
+// See the forge:read-only docs before editing; the forge:server-set spelling
+// was retired, so do not use it in new protos.
+message Order {
+  string id = 1;
+  // forge:secret
+  string token = 2;
+  int64 amount = 3; // forge:mutation is a method marker, not a field one
+  string note = 4; // a note about forge: markers generally
+}
+`})
+	scan, err := ScanRawProtoDir(dir)
+	if err != nil {
+		t.Fatalf("ScanRawProtoDir: %v", err)
+	}
+	order, ok := scan.MessageByName("Order")
+	if !ok {
+		t.Fatal("Order not scanned")
+	}
+	if len(order.RetiredMarkers) != 0 {
+		t.Errorf("prose and other-pass markers must not populate the retired ledger, got %d: %+v",
+			len(order.RetiredMarkers), order.RetiredMarkers)
 	}
 }

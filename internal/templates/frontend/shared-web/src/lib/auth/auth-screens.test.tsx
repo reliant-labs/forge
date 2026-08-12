@@ -40,18 +40,37 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("SignInScreen", () => {
-  it("hands off to the provider's login() and shows no password field", async () => {
-    // The absence is the point: forge's backend never sees a password, so a
-    // credential form here could only POST somewhere that does not exist.
+  it("redirects to the provider immediately, with nothing to click", async () => {
+    // THE WHOLE POINT OF THIS SCREEN. A signed-out visitor is sent to the IdP
+    // on mount — no interstitial button, because pressing it is the only
+    // thing it could ever do. Hitting a gated URL signed out should land on
+    // the provider's login form, the way every production app behaves.
     const login = vi.fn(async () => undefined);
     render(
       <SignInScreen login={login} isAuthenticated={false} navigate={vi.fn()} />,
     );
 
+    await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
+
+    // No credential form either: forge's backend never sees a password, so a
+    // field here could only POST somewhere that does not exist.
     expect(document.querySelector('input[type="password"]')).toBeNull();
     expect(document.querySelector("input")).toBeNull();
+    // And no button competing with the redirect that is already in flight.
+    expect(screen.queryByRole("button")).toBeNull();
+  });
 
-    screen.getByRole("button", { name: /continue/i }).click();
+  it("fires the redirect once, not twice under StrictMode double-mount", async () => {
+    // A second login() would overwrite the first one's PKCE verifier
+    // mid-flight, and the callback would then fail to redeem its own code.
+    const login = vi.fn(async () => undefined);
+    const { rerender } = render(
+      <SignInScreen login={login} isAuthenticated={false} navigate={vi.fn()} />,
+    );
+    rerender(
+      <SignInScreen login={login} isAuthenticated={false} navigate={vi.fn()} />,
+    );
+
     await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
   });
 
@@ -77,13 +96,17 @@ describe("SignInScreen", () => {
     render(
       <SignInScreen login={login} isAuthenticated={false} navigate={vi.fn()} />,
     );
-    screen.getByRole("button", { name: /continue/i }).click();
 
+    // The redirect fires on its own; when it throws, the screen stops being
+    // a spinner and says what went wrong. A silent failure here would be a
+    // permanently blank page.
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain(
         "crypto.subtle is unavailable",
       );
     });
+    // And offers a way to retry, since the cause may be transient.
+    expect(screen.getByRole("button", { name: /try again/i })).toBeTruthy();
   });
 });
 

@@ -35,8 +35,8 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "docker", "docs", "features", "forge_version",
-				"frontend", "frontends", "k8s", "lint", "module_path", "name",
-				"observability", "smoke", "stack",
+				"frontend", "frontends", "harness", "k8s", "lint",
+				"module_path", "name", "observability", "smoke", "stack",
 			},
 		},
 		{
@@ -60,7 +60,7 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 		{
 			name: "LintConfig",
 			typ:  reflect.TypeFor[LintConfig](),
-			want: []string{"frontend", "handler_file_max_loc"},
+			want: []string{"frontend", "handler_file_max_loc", "rules"},
 		},
 	}
 

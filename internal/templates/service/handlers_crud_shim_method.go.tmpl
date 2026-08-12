@@ -95,10 +95,37 @@ func (s *Service) {{.MethodName}}(
 // `google.protobuf.FieldMask update_mask` for AIP-134 partial updates.
 {{- end}}
 {{- end}}
+{{- if .FillHandlerColumns}}
+//
+// forge:fill=handler: {{range $i, $c := .FillHandlerColumns}}{{if $i}}, {{end}}{{$c}}{{end}} — NOT NULL, no DB
+// DEFAULT, and forge:read-only, so nothing else assigns them. The
+// FORGE_SCAFFOLD marker below fails `forge lint` until each is set.
+func (s *Service) {{.MethodName}}(
+	ctx context.Context,
+	req *connect.Request[pb.{{.InputType}}],
+) (*connect.Response[pb.{{.OutputType}}], error) {
+	op := s.crud{{.MethodName}}Op()
+	build := op.Entity
+	op.Entity = func(r *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
+		e, err := build(r)
+		if err != nil {
+			return nil, err
+		}
+{{- range .FillHandlerColumns}}
+		// FORGE_SCAFFOLD: {{.}} is forge:read-only with no column DEFAULT,
+		// so nothing assigns it and every Create fails the NOT NULL / FK check.
+		// Set it here — typically from {{$.AuthSeam}}(ctx).
+{{- end}}
+		return e, nil
+	}
+	return crud.Handle{{.Operation | title}}(op)(ctx, req)
+}
+{{- else}}
 func (s *Service) {{.MethodName}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType}}],
 ) (*connect.Response[pb.{{.OutputType}}], error) {
 	return crud.Handle{{.Operation | title}}(s.crud{{.MethodName}}Op())(ctx, req)
 }
+{{- end}}
 {{- end}}

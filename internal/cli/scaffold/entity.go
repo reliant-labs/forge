@@ -27,12 +27,19 @@ type entityFieldType struct {
 type entityField struct {
 	Name string // snake_case
 	Type entityFieldType
-	Decl string // the plain scalar kind ("string", "bool"), driving the List filters
-	// ServerSet marks a `// forge:server-set` field: kept on the entity
+	// Decl is the filterable kind driving the List-request affordances:
+	// "string" (spanned by free-text search), "bool", "enum", or "fk" (a
+	// `<stem>_id` reference). Empty for a field that gets no affordance.
+	Decl string
+	// EnumType is the enum's proto type name, set only when Decl == "enum".
+	// The born List facet is typed as the enum rather than a string, so an
+	// invalid value is a compile error at the call site instead of a filter
+	// that silently matches nothing.
+	EnumType string
+	// ReadOnly marks a `// forge:read-only` field: kept on the entity
 	// wire message + Get/List responses, but OMITTED from the born
-	// Create/Update request messages — a server-authoritative value the
-	// client must not set.
-	ServerSet bool
+	// Create/Update request messages — a value the client must not write.
+	ReadOnly bool
 	// ValidateOptions is the field's `(buf.validate.field)` inline-options
 	// block as authored on the entity message, or "" when it carries none.
 	// It is re-emitted on the fields Create<Entity>Request FLATTENS: that
@@ -400,10 +407,10 @@ func buildEntityCRUDMessagePieces(entity string, fields []entityField) []crudPro
 		pieces = append(pieces, crudProtoPiece{name: name, text: text})
 	}
 
-	// Create — `// forge:server-set` fields are OMITTED (the server sets
-	// them; the client must not). They stay on the entity wire message +
-	// Get/List responses, so reads are unaffected. Field numbers stay
-	// contiguous across the omission (a running index, not the slice index).
+	// Create — `// forge:read-only` fields are OMITTED (the client must not
+	// write them). They stay on the entity wire message + Get/List
+	// responses, so reads are unaffected. Field numbers stay contiguous
+	// across the omission (a running index, not the slice index).
 	//
 	// Each carried field ALSO repeats the entity field's
 	// `(buf.validate.field)` options. This request FLATTENS the entity
@@ -412,14 +419,14 @@ func buildEntityCRUDMessagePieces(entity string, fields []entityField) []crudPro
 	// otherwise enforce nothing here: an over-length name would pass the
 	// wire, reach the DB, trip the CHECK, and surface as Internal. The
 	// declaration and its projections stay in lockstep because both the
-	// field and its rules are dropped together: a server-set field's rules
+	// field and its rules are dropped together: a read-only field's rules
 	// leave with the field, and message-level rules (the only shape that
 	// can name a sibling field) are never lifted at all.
 	var create strings.Builder
 	fmt.Fprintf(&create, "message Create%sRequest {\n", entity)
 	n := 0
 	for _, f := range fields {
-		if f.ServerSet {
+		if f.ReadOnly {
 			continue
 		}
 		n++
@@ -442,11 +449,11 @@ func buildEntityCRUDMessagePieces(entity string, fields []entityField) []crudPro
 		fmt.Sprintf("message Get%sResponse {\n  %s %s = 1;\n}\n", entity, entity, naming.EntityFieldName(entity)))
 
 	// Update (AIP-134) — WRAPS the whole entity + an update_mask, so it never
-	// enumerates fields: a `// forge:server-set` field is therefore already
+	// enumerates fields: a `// forge:read-only` field is therefore already
 	// absent from the Update request message text (it lives only on the
 	// wrapped entity, which the marker keeps). Client write-exclusion for it
 	// is enforced downstream — the born edit form and masked-update test skip
-	// server-set fields, so the mask never names one and the value is never
+	// read-only fields, so the mask never names one and the value is never
 	// clobbered from the client.
 	var upd strings.Builder
 	fmt.Fprintf(&upd, "message Update%sRequest {\n", entity)
@@ -475,9 +482,11 @@ func buildEntityCRUDMessagePieces(entity string, fields []entityField) []crudPro
 	// that needs to filter/scope by something new adds a field here rather than
 	// over-fetching and filtering in the client.
 	list.WriteString("// List filters ARE this request's fields: the query filters on the same fields\n")
-	list.WriteString("// declared here. To filter or scope by something else (an enum status, an owner\n")
-	list.WriteString("// <owner>_id, a foreign key), add that field HERE and forge wires it end to end —\n")
-	list.WriteString("// never fetch a page and filter client-side (that truncates past the page cap).\n")
+	list.WriteString("// declared here. Birth scaffolds a facet for every field it can filter\n")
+	list.WriteString("// mechanically — free-text search, each bool, each enum, and each <stem>_id\n")
+	list.WriteString("// reference. To filter by something else, add that field HERE and forge wires\n")
+	list.WriteString("// it end to end — never fetch a page and filter client-side, which silently\n")
+	list.WriteString("// truncates past the page cap. Delete a facet you do not want.\n")
 	fmt.Fprintf(&list, "message List%sRequest {\n", plural)
 	list.WriteString("  int32 page_size = 1;\n")
 	list.WriteString("  string page_token = 2;\n")
@@ -493,8 +502,23 @@ func buildEntityCRUDMessagePieces(entity string, fields []entityField) []crudPro
 		fn++
 	}
 	for _, f := range fields {
-		if f.Decl == "bool" {
+		switch f.Decl {
+		case "bool":
 			fmt.Fprintf(&list, "  optional bool %s = %d;\n", f.Name, fn)
+			fn++
+		case "enum":
+			// Typed as the enum, not a string: an invalid value is then a
+			// compile error at the call site rather than a filter that
+			// matches nothing. Status is the column real callers filter on
+			// more than any other, so a born list that could not express it
+			// was the single biggest gap in the generated API.
+			fmt.Fprintf(&list, "  optional %s %s = %d;\n", f.EnumType, f.Name, fn)
+			fn++
+		case "fk":
+			// Scoping a list to its parent — a customer's jobs, a job's line
+			// items — is the other filter every caller needs, and the one an
+			// unfiltered list makes impossible to do correctly.
+			fmt.Fprintf(&list, "  optional string %s = %d;\n", f.Name, fn)
 			fn++
 		}
 	}
@@ -514,7 +538,3 @@ func buildEntityCRUDMessagePieces(entity string, fields []entityField) []crudPro
 
 	return pieces
 }
-
-
-
-

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/schemadef"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // The managed-timestamp column shape is decided in ONE place —

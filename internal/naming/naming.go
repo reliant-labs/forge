@@ -356,6 +356,23 @@ func GoPackage(name string) string {
 	return normalizeRepeatedUnderscores(strings.ToLower(snake))
 }
 
+// KCLIdentifier returns the KCL variable name a workload is declared
+// under in `deploy/kcl/workloads.k`.
+//
+// The declaration is NAMED — `billing = fw.Workload {...}` rather than an
+// anonymous list entry — because a name is what an environment refines:
+// `wl.billing | {replicas = 3}`. An anonymous entry can only be
+// reconstructed, which is the shape this vocabulary replaced.
+//
+// KCL identifiers follow the same rules as Go's, so this is GoPackage:
+// "billing-admin" -> billing_admin, "BillingService" -> billing_service.
+// Kept as its own function rather than a call to GoPackage at each site
+// so the INTENT is legible (this is a KCL binding, not a Go package) and
+// so the two can diverge if KCL's identifier rules ever do.
+func KCLIdentifier(name string) string {
+	return GoPackage(name)
+}
+
 // ServicePackage is the single canonical Go-package form for a service,
 // binary, frontend, worker, or operator name.
 //
@@ -398,7 +415,12 @@ func ServicePackage(name string) string {
 
 // ServiceHookFile returns the canonical frontend hook filename for a
 // service. Encodes the rule that the hook file is the service name in
-// kebab-case (with initialisms kept glued) suffixed with `-hooks.ts`.
+// kebab-case (with initialisms kept glued) suffixed with `-hooks_gen.ts`.
+//
+// The `_gen` is the convention, not decoration: this file is Tier-1 — it is
+// hash-guarded and rewritten on every `forge generate` — and forge's rule is
+// now mechanical, so that a reader can tell what forge owns from the
+// filename alone rather than by opening the file and reading its banner.
 //
 // All file-emitter sites AND the re-export indexer must go through this
 // function. If a future caller needs a different suffix or extension,
@@ -407,6 +429,15 @@ func ServicePackage(name string) string {
 // filenames because both go through the same canonical splitter
 // (`ToKebabCase`).
 func ServiceHookFile(name string) string {
+	return ToKebabCase(name) + "-hooks_gen.ts"
+}
+
+// ServiceHookFileLegacy returns the PRE-`_gen` hook filename for a service.
+//
+// It exists for exactly one caller: the retirement sweep that deletes the
+// old copy out of a project generated before the rename. Nothing emits this
+// name anymore.
+func ServiceHookFileLegacy(name string) string {
 	return ToKebabCase(name) + "-hooks.ts"
 }
 

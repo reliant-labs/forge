@@ -392,9 +392,13 @@ func writeTableComment(sb *strings.Builder, name string, cols []commentColumn) {
 func writeParsedTableComment(sb *strings.Builder, t ParsedTable) {
 	fmt.Fprintf(sb, "--\n-- TABLE %s (\n", t.Name)
 	for i, c := range t.Columns {
-		line := fmt.Sprintf("--   %s %s", c.Name, strings.ToUpper(c.Type))
+		// The parsed type can still carry the separator it was split on
+		// ("image_url TEXT," with no constraint following), and the loop
+		// below adds its own — which rendered `image_url TEXT,,`. Strip it
+		// so the comment reads as the SQL it is summarizing.
+		line := fmt.Sprintf("--   %s %s", c.Name, strings.TrimRight(strings.ToUpper(c.Type), ","))
 		if c.Constraint != "" {
-			line += " " + c.Constraint
+			line += " " + strings.TrimRight(c.Constraint, ",")
 		}
 		if i < len(t.Columns)-1 {
 			line += ","

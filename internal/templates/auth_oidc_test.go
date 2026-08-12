@@ -1,6 +1,6 @@
 package templates
 
-// Guards for the local OIDC login loop: the opt-in Logto dev service, the
+// Guards for the local OIDC login loop: the opt-in Zitadel dev service, the
 // browser-client config fields, and the property that must survive all of it
 // — whether a generated server authenticates stays determinable FROM SOURCE.
 //
@@ -54,10 +54,27 @@ type composeService struct {
 	Ports []string `yaml:"ports"`
 }
 
-// renderCompose renders the dev compose template and decodes it.
+// renderCompose renders the dev compose template for a project that ships a
+// frontend — the shape most of these guards reason about, since the dev IdP
+// exists to serve a browser — and decodes it.
 func renderCompose(t *testing.T) composeFile {
 	t.Helper()
-	out, err := ProjectTemplates().Render("docker-compose.yml.tmpl", struct{ ProjectName string }{ProjectName: "shopdemo"})
+	return renderComposeFor(t, true)
+}
+
+// renderComposeFor renders the dev compose template for a project that either
+// does or does not declare a frontend, and decodes it.
+//
+// hasFrontend is the ONE input that decides whether an identity provider is
+// scaffolded at all: an IdP exists to complete a real browser sign-in, so a
+// project with no browser must not be handed a second web server. Both arms
+// are exercised below.
+func renderComposeFor(t *testing.T, hasFrontend bool) composeFile {
+	t.Helper()
+	out, err := ProjectTemplates().Render("docker-compose.yml.tmpl", struct {
+		ProjectName string
+		HasFrontend bool
+	}{ProjectName: "shopdemo", HasFrontend: hasFrontend})
 	if err != nil {
 		t.Fatalf("render docker-compose.yml.tmpl: %v", err)
 	}
@@ -97,96 +114,134 @@ func activeServices(cf composeFile, profiles ...string) map[string]bool {
 	return out
 }
 
-// TestDevCompose_IdentityProviderIsOptIn is the cost guard. A project that
-// wants no browser login — api_key auth, a worker, a service with no frontend
-// — must not pay for a ~300 MB IdP container it never calls. The check is
-// structural: the IdP is absent from the DEFAULT service set and present once
-// its profile is selected, computed with compose's activation rule rather
-// than by looking for the word "profiles".
-func TestDevCompose_IdentityProviderIsOptIn(t *testing.T) {
-	cf := renderCompose(t)
+// TestDevCompose_IdentityProviderScaffoldsOnlyForABrowser is the cost guard.
+//
+// A project that wants no browser login — api_key auth, a worker, a service
+// with no frontend — must not pay for a ~300 MB IdP container it never calls.
+// That guarantee used to be a compose PROFILE (present in every project, off
+// unless selected); it is now a scaffolding decision, which is strictly
+// stronger: the service is not written into the file at all.
+//
+// The check is structural, from the parsed graph rather than the text: the
+// `idp` service exists in the frontend render and does not exist in the
+// no-frontend one, and the rest of the dev stack comes up by default in both.
+func TestDevCompose_IdentityProviderScaffoldsOnlyForABrowser(t *testing.T) {
+	withFE := renderCompose(t)
+	if _, ok := withFE.Services["idp"]; !ok {
+		t.Error("a project WITH a frontend gets no `idp` service — a developer cannot complete a real browser sign-in locally")
+	}
 
-	// Derive which services are profile-gated at all, and fail loudly if the
-	// file has stopped gating anything: the `debug` profile has been there
-	// since before this change, so an empty set means the decode is wrong.
-	gated := map[string][]string{}
-	for name, svc := range cf.Services {
-		if len(svc.Profiles) > 0 {
-			gated[name] = svc.Profiles
+	noFE := renderComposeFor(t, false)
+	if _, ok := noFE.Services["idp"]; ok {
+		t.Error("a project with NO frontend is still handed an `idp` service — it would pay for a second web server it never calls")
+	}
+
+	// The IdP must be part of the DEFAULT service set for a project that has
+	// one: it is declared infrastructure now, named directly by
+	// deploy/kcl/dev/main.k, so `forge run` brings it up with no profile to
+	// select and no second command to remember.
+	if !activeServices(withFE)["idp"] {
+		t.Error("the idp service is not active by default — it is declared infrastructure, so bringing the env up must start it")
+	}
+
+	// A gating mistake that took the ordinary dev loop with it would show up
+	// here, in BOTH renders.
+	for label, cf := range map[string]composeFile{"with frontend": withFE, "no frontend": noFE} {
+		def := activeServices(cf)
+		for _, required := range []string{"postgres", "app"} {
+			if !def[required] {
+				t.Errorf("%s: %s is NOT in the default service set — the ordinary dev loop is broken", label, required)
+			}
 		}
-	}
-	if len(gated) == 0 {
-		t.Fatal("no service in the dev compose file is profile-gated — either the decode is broken " +
-			"or the gating idiom this change follows has been removed")
-	}
-
-	idp, ok := cf.Services["logto"]
-	if !ok {
-		t.Fatal("the dev compose file declares no `logto` service — a developer cannot complete a real browser sign-in locally")
-	}
-	if len(idp.Profiles) == 0 {
-		// Fatal, not Error: with no profile there is nothing to select
-		// below, and continuing would panic rather than report.
-		t.Fatal("the logto service is NOT profile-gated, so `docker compose up` pulls a ~300 MB IdP " +
-			"into every project — including ones with no browser at all")
-	}
-
-	def := activeServices(cf)
-	if def["logto"] {
-		t.Error("logto is active with NO profile selected — the IdP must be opt-in")
-	}
-	// The rest of the dev stack must still come up by default; a gating
-	// mistake that took postgres or app with it would be caught here.
-	for _, required := range []string{"postgres", "app"} {
-		if !def[required] {
-			t.Errorf("%s is NOT in the default service set — the ordinary dev loop is broken", required)
-		}
-	}
-
-	with := activeServices(cf, idp.Profiles[0])
-	if !with["logto"] {
-		t.Errorf("selecting profile %q does not activate logto", idp.Profiles[0])
 	}
 }
 
-// TestDevCompose_DefaultStackParsesWithoutTheIdP encodes a compose rule that
-// is easy to get wrong and fails LOUDLY rather than subtly: a service that
-// depends on a profile-gated service makes the WHOLE project invalid when
-// that profile is off ("service app depends on undefined service logto"), so
-// the default dev stack would stop parsing entirely.
+// TestDevCompose_NoAggregator pins the flattening: the dev stack is named
+// service-by-service in KCL, not hidden behind an idle placeholder container
+// whose depends_on graph is the real declaration.
 //
-// Every dependency edge pointing at a profile-gated service must therefore be
-// declared `required: false`.
-func TestDevCompose_DefaultStackParsesWithoutTheIdP(t *testing.T) {
+// The aggregator existed only because the Compose deploy target did not wait
+// for readiness, so compose had to be made to do the waiting forge would not.
+// Now that `up -d --wait` gates on healthchecks, a container that runs nothing
+// is pure indirection — and it made the env's KCL declare one opaque name
+// instead of naming its own infrastructure.
+func TestDevCompose_NoAggregator(t *testing.T) {
+	for label, cf := range map[string]composeFile{
+		"with frontend": renderCompose(t),
+		"no frontend":   renderComposeFor(t, false),
+	} {
+		if _, ok := cf.Services["dev-infra"]; ok {
+			t.Errorf("%s: the `dev-infra` aggregator is back — deploy/kcl/dev/main.k names the real "+
+				"infra services directly, so an idle placeholder container is dead weight", label)
+		}
+	}
+}
+
+// TestDevCompose_DeclaredInfraIsWaitable guards what REPLACED the aggregator.
+//
+// forge brings each infra service up with `docker compose up -d --wait`, which
+// blocks on the service's own healthcheck. That is the entire ordering
+// guarantee now: postgres must be SERVING before the app dials it, and the IdP
+// must be converged before registration runs against it. A service named in
+// dev/main.k that declares no healthcheck silently loses that gate — compose
+// treats "running" as ready — so the healthcheck blocks are asserted here,
+// where their absence is a test failure rather than a race in someone's dev
+// loop.
+func TestDevCompose_DeclaredInfraIsWaitable(t *testing.T) {
 	cf := renderCompose(t)
-
-	gatedSvc := map[string]bool{}
-	for name, svc := range cf.Services {
-		if len(svc.Profiles) > 0 {
-			gatedSvc[name] = true
+	for _, name := range []string{"postgres", "lgtm", "idp"} {
+		svc, ok := cf.Services[name]
+		if !ok {
+			t.Errorf("%s is not defined, but deploy/kcl/dev/main.k names it as a compose service", name)
+			continue
+		}
+		if len(svc.Healthcheck.Test) == 0 {
+			t.Errorf("%s declares no healthcheck, so `up --wait` degrades to "+
+				"\"container is running\" and whatever depends on it can start too early", name)
 		}
 	}
-	if len(gatedSvc) == 0 {
-		t.Fatal("no profile-gated services found — the discovery is broken, so the edges below are unchecked")
-	}
 
-	edges := 0
-	for name, svc := range cf.Services {
-		for dep, spec := range svc.DependsOn {
-			if !gatedSvc[dep] {
-				continue
-			}
-			edges++
-			if spec.Required == nil || *spec.Required {
-				t.Errorf("service %q depends on profile-gated service %q without `required: false` — "+
-					"with that profile off, compose rejects the ENTIRE file as invalid and the default dev stack will not start",
-					name, dep)
+	// A project with no frontend has no IdP at all — so nothing may name it,
+	// in KCL or in a depends_on edge, or the compose file is invalid.
+	if _, ok := renderComposeFor(t, false).Services["idp"]; ok {
+		t.Error("a project with no frontend was handed an idp service")
+	}
+}
+
+// TestDevCompose_EveryDependencyEdgeResolves encodes a compose rule that is
+// easy to get wrong and fails LOUDLY rather than subtly: a depends_on edge
+// pointing at a service that is not defined makes the WHOLE project invalid
+// ("service app depends on undefined service idp"), so the dev stack stops
+// parsing entirely — not just the part that was misconfigured.
+//
+// This is the risk the frontend gate introduces: the `idp` service is
+// scaffolded only for a project that ships a browser, so any edge pointing at
+// it must be gated on exactly the same condition. Both renders are checked,
+// since the no-frontend one is where a missed gate would bite.
+func TestDevCompose_EveryDependencyEdgeResolves(t *testing.T) {
+	for _, tc := range []struct {
+		label       string
+		hasFrontend bool
+	}{
+		{"project with a frontend", true},
+		{"project with no frontend", false},
+	} {
+		cf := renderComposeFor(t, tc.hasFrontend)
+
+		edges := 0
+		for name, svc := range cf.Services {
+			for dep := range svc.DependsOn {
+				edges++
+				if _, defined := cf.Services[dep]; !defined {
+					t.Errorf("%s: service %q depends on %q, which this render does not define — "+
+						"compose rejects the ENTIRE file as invalid and the dev stack will not start",
+						tc.label, name, dep)
+				}
 			}
 		}
-	}
-	if edges == 0 {
-		t.Fatal("no dependency edge points at a profile-gated service — either nothing depends on the IdP " +
-			"(so the app never waits for it) or this discovery matched nothing")
+		if edges == 0 {
+			t.Fatalf("%s: no depends_on edges found at all — the decode matched nothing, so this check is vacuous", tc.label)
+		}
 	}
 }
 
@@ -194,67 +249,91 @@ func TestDevCompose_DefaultStackParsesWithoutTheIdP(t *testing.T) {
 // version underneath it turns "login broke today" into archaeology.
 func TestDevCompose_PinsIdentityProviderVersion(t *testing.T) {
 	cf := renderCompose(t)
-	idp, ok := cf.Services["logto"]
+	idp, ok := cf.Services["idp"]
 	if !ok {
-		t.Fatal("no logto service to check")
+		t.Fatal("no idp service to check")
 	}
 	if idp.Image == "" {
-		t.Fatal("the logto service declares no image")
+		t.Fatal("the idp service declares no image")
 	}
 	_, tag, found := strings.Cut(idp.Image, ":")
 	if !found {
-		t.Fatalf("logto image %q carries no tag, so it resolves to :latest", idp.Image)
+		t.Fatalf("idp image %q carries no tag, so it resolves to :latest", idp.Image)
 	}
 	if tag == "latest" || tag == "edge" {
-		t.Errorf("logto image is pinned to the moving tag %q — pin a MINOR.PATCH version", tag)
+		t.Errorf("idp image is pinned to the moving tag %q — pin a MINOR.PATCH version", tag)
 	}
 	// A bare major ("1") still moves across feature releases.
 	if !strings.Contains(tag, ".") {
-		t.Errorf("logto image tag %q is not specific enough to reproduce a dev stack", tag)
+		t.Errorf("idp image tag %q is not specific enough to reproduce a dev stack", tag)
 	}
 }
 
-// TestDevCompose_IdentityProviderSharesPostgresWithItsOwnDatabase pins the
-// database decision AND the collision that would break it: Logto shares the
-// existing postgres service, in a database that is NOT the app's.
-func TestDevCompose_IdentityProviderSharesPostgresWithItsOwnDatabase(t *testing.T) {
+// TestDevCompose_IdentityProviderHasItsOwnIsolatedDatabase pins the IdP's
+// storage decision and the two ways it can break.
+//
+// The IdP used to share the app's postgres container in a separate
+// `zitadel` database, which was right while both were containers on one
+// compose network. They are not any more: the app's database now runs as a
+// HOST PROCESS by default (deploy/kcl/dev/main.k declares it as
+// `forge.HostInfra`), and a container reaching back out to it would have to
+// cross the docker host gateway — a different address on Linux than on
+// macOS, on a port that moves whenever the declared host port does. So the
+// IdP gets its own small container, `idp-db`, whose address is a compose
+// service name that nothing outside the network resolves.
+//
+// What must hold either way, and is what this test actually asserts:
+//
+//  1. The IdP reaches its database at an IN-NETWORK name, never a host
+//     address — nothing about where the app's postgres lives may be able to
+//     break the sign-in loop.
+//  2. Its data is ISOLATED from the app's, so the app's AUTO_MIGRATE cannot
+//     run over the IdP's schema.
+//  3. The IdP WAITS for that database to be healthy, so it does not start
+//     against one that is not accepting connections yet.
+func TestDevCompose_IdentityProviderHasItsOwnIsolatedDatabase(t *testing.T) {
 	cf := renderCompose(t)
-	idp, ok := cf.Services["logto"]
+	idp, ok := cf.Services["idp"]
 	if !ok {
-		t.Fatal("no logto service to check")
+		t.Fatal("no idp service to check")
 	}
 
-	dbURL := idp.Environment["DB_URL"]
-	if dbURL == "" {
-		t.Fatal("the logto service has no DB_URL — it cannot reach a database")
-	}
-	// It must point at the SHARED postgres service, not a second container.
-	if _, dup := cf.Services["logto-postgres"]; dup {
-		t.Error("a second postgres container was added for the IdP; dev shares the existing one")
-	}
-	if !strings.Contains(dbURL, "@postgres:") {
-		t.Errorf("logto DB_URL %q does not point at the shared `postgres` service", dbURL)
-	}
-	if _, ok := idp.DependsOn["postgres"]; !ok {
-		t.Error("logto does not depend on postgres, so it can start before the database is ready")
+	// Zitadel takes its database as discrete settings rather than a DSN.
+	idpDBHost := idp.Environment["ZITADEL_DATABASE_POSTGRES_HOST"]
+	idpDB := idp.Environment["ZITADEL_DATABASE_POSTGRES_DATABASE"]
+	if idpDBHost == "" || idpDB == "" {
+		t.Fatal("the idp service declares no postgres host/database — it cannot reach a database")
 	}
 
-	// The isolation that makes sharing safe: a DIFFERENT database name than
-	// the app's, so the app's AUTO_MIGRATE cannot see the IdP's tables.
-	// Derive both names from the same rendered file.
-	idpDB := dbURL[strings.LastIndex(dbURL, "/")+1:]
-	idpDB, _, _ = strings.Cut(idpDB, "?")
-	if idpDB == "" {
-		t.Fatalf("could not derive the IdP database name from DB_URL %q", dbURL)
+	// (1) An in-network service name, and one this file actually defines.
+	// A host address here (localhost, host.docker.internal, an IP) would
+	// couple the IdP to wherever the app's database happens to be today.
+	dbSvc, defined := cf.Services[idpDBHost]
+	if !defined {
+		t.Fatalf("the idp points at database host %q, which is not a service in this compose file — "+
+			"it must be an in-network service name, not a host address", idpDBHost)
 	}
-	appDB := cf.Services["app"].Environment["DATABASE_URL"]
-	if appDB == "" {
-		t.Fatal("the app service has no DATABASE_URL to compare against")
+	// (2) Isolation. The IdP's database must not be reachable by the app's
+	// migrations. Its own container is the strongest form of that, so
+	// assert the database it uses is not published to the host at all —
+	// nothing outside the compose network can even address it.
+	if len(dbSvc.Ports) > 0 {
+		t.Errorf("the IdP's database service %q publishes host ports %v — it is reachable only "+
+			"by the IdP and needs none, and publishing one adds a port that can collide", idpDBHost, dbSvc.Ports)
 	}
-	appDBName := appDB[strings.LastIndex(appDB, "/")+1:]
-	appDBName, _, _ = strings.Cut(appDBName, "?")
-	if idpDB == appDBName {
-		t.Errorf("the IdP and the app would share database %q — the app's migrations would run over the IdP's schema", idpDB)
+	// (3) Readiness ordering.
+	if _, waits := idp.DependsOn[idpDBHost]; !waits {
+		t.Errorf("the idp service does not depend on %q, so it can start before its database is ready", idpDBHost)
+	}
+
+	// Belt and braces on isolation: even if a future edit points both at
+	// one server, the database NAMES must differ.
+	if appDB := cf.Services["app"].Environment["DATABASE_URL"]; appDB != "" {
+		appDBName := appDB[strings.LastIndex(appDB, "/")+1:]
+		appDBName, _, _ = strings.Cut(appDBName, "?")
+		if idpDB == appDBName {
+			t.Errorf("the IdP and the app would share database %q — the app's migrations would run over the IdP's schema", idpDB)
+		}
 	}
 }
 
@@ -265,30 +344,39 @@ func TestDevCompose_IdentityProviderSharesPostgresWithItsOwnDatabase(t *testing.
 // naming a host no browser can resolve.
 func TestDevCompose_IdentityProviderIssuerIsBrowserReachable(t *testing.T) {
 	cf := renderCompose(t)
-	idp, ok := cf.Services["logto"]
+	idp, ok := cf.Services["idp"]
 	if !ok {
-		t.Fatal("no logto service to check")
+		t.Fatal("no idp service to check")
 	}
-	endpoint := idp.Environment["ENDPOINT"]
-	if endpoint == "" {
-		t.Fatal("the logto service sets no ENDPOINT, so it mints tokens under a default issuer nobody configured")
+	// Zitadel builds its issuer from ExternalDomain/ExternalPort, and it
+	// ALSO selects the instance by matching a request's Host header against
+	// that domain — so a docker service name here would both mint an `iss`
+	// no browser can resolve and make every in-network call 404.
+	domain := idp.Environment["ZITADEL_EXTERNALDOMAIN"]
+	if domain == "" {
+		t.Fatal("the idp service sets no ZITADEL_EXTERNALDOMAIN, so it mints tokens under a default issuer nobody configured")
 	}
-	// The service NAME is exactly what must not appear here.
 	for svcName := range cf.Services {
-		if strings.Contains(endpoint, "//"+svcName+":") {
-			t.Errorf("ENDPOINT %q names the docker service %q, so minted tokens would carry an `iss` "+
-				"no browser can resolve", endpoint, svcName)
+		if domain == svcName {
+			t.Errorf("ZITADEL_EXTERNALDOMAIN is the docker service name %q, so minted tokens would carry an `iss` "+
+				"no browser can resolve", svcName)
 		}
 	}
-	if !strings.Contains(endpoint, "localhost") && !strings.Contains(endpoint, "127.0.0.1") {
-		t.Errorf("ENDPOINT %q is not browser-reachable", endpoint)
+	if domain != "localhost" && domain != "127.0.0.1" {
+		t.Errorf("ZITADEL_EXTERNALDOMAIN %q is not browser-reachable", domain)
+	}
+	// http, not https: there is no certificate in a local dev loop, and a
+	// mismatch here makes every discovery URL wrong rather than obviously
+	// broken.
+	if sec := idp.Environment["ZITADEL_EXTERNALSECURE"]; sec != "false" {
+		t.Errorf("ZITADEL_EXTERNALSECURE is %q; a local dev IdP with no certificate must be false", sec)
 	}
 
 	// Its host ports must be FIXED, not kernel-assigned: a registered OIDC
 	// redirect URI is compared literally by the issuer, so a moving port is
 	// a login that fails every restart.
 	if len(idp.Ports) == 0 {
-		t.Fatal("the logto service publishes no ports, so a browser cannot reach it")
+		t.Fatal("the idp service publishes no ports, so a browser cannot reach it")
 	}
 	for _, p := range idp.Ports {
 		hostPort := p
@@ -296,7 +384,7 @@ func TestDevCompose_IdentityProviderIssuerIsBrowserReachable(t *testing.T) {
 			hostPort = p[:i]
 		}
 		if strings.HasSuffix(hostPort, ":0") || hostPort == "0" {
-			t.Errorf("logto port mapping %q uses a kernel-assigned host port; a registered redirect URI cannot follow it", p)
+			t.Errorf("idp port mapping %q uses a kernel-assigned host port; a registered redirect URI cannot follow it", p)
 		}
 	}
 }
@@ -476,7 +564,7 @@ func parseSetupAuth(t *testing.T) (*ast.FuncDecl, string) {
 // TestSetupAuth_HardcodesNoIdentityProvider is the swappability property.
 // SetupAuth is the ONE seam a user edits to change IdP, so a vendor name
 // baked into it — a default URL, a provider branch, a special case — would
-// make Logto the thing you fight rather than the thing you replace.
+// make that provider the thing you fight rather than the thing you replace.
 //
 // The check derives every string literal in the function body from the AST
 // and rejects any that names a provider or carries an issuer URL.
@@ -506,7 +594,7 @@ func TestSetupAuth_HardcodesNoIdentityProvider(t *testing.T) {
 	}
 
 	// And no provider may be named ANYWHERE in the file, including comments:
-	// shipped guidance that says "the Logto default" teaches that there is
+	// shipped guidance that says "the Zitadel default" teaches that there is
 	// one, and the whole point is that there is not.
 	vendors := []string{"logto", "auth0", "clerk", "okta", "keycloak", "zitadel", "supabase", "firebase", "cognito"}
 	lower := strings.ToLower(src)

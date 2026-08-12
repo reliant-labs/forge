@@ -155,7 +155,7 @@ internal/handlers/things/     # the pb-through handler package that calls it
   service.go                  #   concrete *Service + Deps (Deps.Things is a things.Service)
   rpc_<name>.go               #   one custom RPC method per file, calling s.deps.Things
   handlers_crud.go            #   owned CRUD delegations; handlers_crud_ops_gen.go is generated
-internal/handlers/mocks/things_mock.go  # generated mock of the Connect RPC surface
+internal/handlers/mocks/things_mock_gen.go  # generated mock of the Connect RPC surface
 ```
 
 `forge generate` reads each domain package's `contract.go`, emits its `mock_gen.go`, and wires the package into the handler **by type** in `NewComponents`. It never generates a `contract.go` — that interface is yours.

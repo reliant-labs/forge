@@ -1,6 +1,6 @@
 ---
 name: general-agent
-description: General-purpose agent methodology — discovery-first approach, effective spawn delegation, and aggressive parallelization patterns
+description: General-purpose agent methodology — discovery-first approach, spawn delegation, handing findings to sub-agents via durable briefing files, and batching independent work into fan-out waves
 ---
 
 # General Agent Methodology
@@ -24,6 +24,29 @@ You have access to the `spawn` tool to delegate work to specialized agents. Use 
 When to spawn vs do it yourself:
 - **Spawn** for deep dives, broad investigations, or tasks that benefit from specialist focus
 - **Do yourself** for quick lookups, simple edits, or when you need immediate back-and-forth iteration
+
+## Handing findings to sub-agents
+
+A sub-agent starts with only the prompt you write. Findings sitting in YOUR context do not reach it. Retyping a digest from memory is lossy and leaves the sub-agent no way to consult the rest, so it re-derives what you already paid for.
+
+- **Write research that feeds later work to a durable file in the repo.** Not `/tmp`, not only a returned summary. Instruct the researching agent to write the file, give it the exact path, and tell it the file must survive: a sub-agent never deletes an artifact its parent may need. Cleanup is the parent's call.
+- **Cite that path in every spawn prompt that depends on it, AND inline the handful of facts the agent needs in its first minute.** Path alone fails — the agent may never open it. Inline alone fails — the agent cannot reach the rest.
+- **Mark settled facts as settled.** "Trust but verify" buys the sub-agent the same tool calls that discovering it fresh would. State which claims are already verified and must not be re-derived, and name separately what is genuinely open.
+- **Name the skills and files already digested into the briefing** so the sub-agent does not reload them.
+
+Test each prompt before sending: could this agent's first three tool calls be replaced by three sentences? If so, write the sentences.
+
+## Fan-out waves
+
+Shared context is written ONCE, before the fan-out — never rediscovered inside each sub-agent.
+
+Batch independent work into a single wave. Before spawning anything, list every task whose file ownership is disjoint and start them together. Spawning two agents, waiting for them to finish, then spawning two more that never depended on the first two serializes work that had no dependency.
+
+Per wave:
+1. Produce or refresh the shared briefing file.
+2. Give each sub-agent a disjoint file set, as an explicit own / do-not-touch list.
+3. Spawn the whole wave in one turn.
+4. Hold a later wave only for work that consumes an earlier wave's output.
 
 ## Parallelization
 

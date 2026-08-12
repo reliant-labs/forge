@@ -1,0 +1,147 @@
+syntax = "proto3";
+
+package config.v1;
+
+option go_package = "{{.Module}}/gen/config/v1;configv1";
+
+import "forge/v1/forge.proto";
+
+// {{.MessageName}} is the PUBLIC runtime configuration for the "{{.Frontend}}"
+// frontend.
+//
+// ── Why this is its own FILE, and why it is the SAME proto package ───────
+//
+// One config.proto per project does not survive contact with a second
+// consumer: each binary and each frontend adds a message, and they arrive
+// from different changes at different times. Splitting per consumer keeps
+// ownership legible — this file is the "{{.Frontend}}" bundle's surface and
+// nothing else's, so adding a field here cannot widen another consumer's,
+// and `forge scaffold frontend` can add a consumer by writing a NEW file
+// rather than editing one that already has content in it.
+//
+// The package stays `config.v1` — the same package config.proto declares —
+// and that is load-bearing rather than incidental:
+//
+//   - buf's STANDARD lint enforces PACKAGE_DIRECTORY_MATCH, so a proto's
+//     package must match its directory. Putting this file in its own
+//     DIRECTORY (proto/config/{{.Frontend}}/v1/) would therefore force its own
+//     PACKAGE, which forces its own Go package (gen/config/{{.Frontend}}/v1) —
+//     and pkg/config/config_gen.go imports exactly ONE generated config
+//     package and refers to every config message through it. A per-consumer
+//     directory breaks that shim's compilation, not just its tidiness.
+//   - Sharing the package means shared DEFINITIONS need no cross-package
+//     import at all: a block declared in config.proto composes onto a
+//     message here by bare name, so one fact (the OIDC issuer both the
+//     browser and the backend need) can be declared once and projected to
+//     both halves, which is the whole point of the composition model.
+//
+// The generators do not care either way — they read config messages from
+// the forge descriptor, which protoc-gen-forge builds by walking every
+// compiled proto — so this layout is chosen for the two constraints above.
+//
+// ── Everything here is PUBLIC ────────────────────────────────────────────
+//
+// These values are delivered to a browser: KCL renders them per environment
+// into config.js, which assigns window.__FORGE_CONFIG__ before the bundle
+// runs, and the generated src/lib/config_gen.ts validates and types them.
+// Anyone who opens devtools can read every one of them.
+//
+// A field marked `sensitive: true` reaching this message is a GENERATE-TIME
+// ERROR, not a warning — a leaked credential cannot be un-shipped, so the
+// only useful moment to refuse is before the value is ever written into a
+// bundle. If the browser needs a capability, it needs a token minted by the
+// backend, not the credential itself: declare the secret on a
+// binary-bound message and let the backend hold it.
+//
+// ── Adding a field ───────────────────────────────────────────────────────
+//
+// Add it here, run `forge generate`, and read it via
+// `loadConfig().<ENV_VAR>` from src/lib/config_gen.ts. Never reach for
+// process.env / import.meta.env: both bundlers inline those at BUILD time,
+// which freezes the value into the artifact and makes the bundle
+// unpromotable between environments. Per-environment values go in
+// deploy/kcl/<env>/config.k as a `{{.MessageName}} { ... }` instance.
+message {{.MessageName}} {
+  option (forge.v1.frontend_config) = {frontend: "{{.Frontend}}"};
+
+  string api_url = 1 [(forge.v1.config) = {
+    env_var: "API_URL",
+    default_value: "http://localhost:{{.APIPort}}",
+    description: "Origin of the Connect RPC endpoint this frontend calls. Every service mounts onto the binary's one Connect mux, so this is one origin for the whole API. Deployed environments pin their own in deploy/kcl/<env>/config.k. IN THE DEV LOOP THIS DEFAULT IS STALE AND MUST NOT BE TRUSTED: `forge run` gives the backend a kernel-assigned port and injects the live origin as NEXT_PUBLIC_API_URL / VITE_API_URL / EXPO_PUBLIC_API_URL, which src/lib/connect.ts prefers over everything here. Build a client from the generated transport rather than reading this value, or you will dial the port the default happens to name — which in a project with a dev IdP is the IdP."
+  }];
+
+  string mock_api = 2 [(forge.v1.config) = {
+    env_var: "MOCK_API",
+    description: "Mock-transport mode: `true` answers every RPC locally from fixtures (and selects the mock auth provider, so no IdP is needed), `hybrid` overlays ?scenario= fixtures over a real backend. Empty means the real backend, which is the deployed value."
+  }];
+
+  string app_version = 3 [(forge.v1.config) = {
+    env_var: "APP_VERSION",
+    description: "Build identifier surfaced in the UI and as a telemetry attribute. Empty renders as a development placeholder."
+  }];
+
+  string otel_endpoint = 4 [(forge.v1.config) = {
+    env_var: "OTEL_ENDPOINT",
+    description: "OTLP/HTTP collector endpoint for BROWSER traces. Empty disables browser telemetry entirely, which is the correct default for local development — there is nothing to export to."
+  }];
+
+  // ── OIDC browser sign-in (the PUBLIC/PKCE client) ──────────────────────
+  //
+  // These describe the client that runs in this BROWSER and obtains tokens
+  // (RFC 7636 PKCE + authorization-code exchange), read by
+  // src/lib/auth/oidc-provider.ts.
+  //
+  // NONE of them is a secret, and none is marked sensitive. A PUBLIC PKCE
+  // client HAS no client secret — that is the point of PKCE, which replaces
+  // the secret with a per-attempt code verifier precisely because a browser
+  // cannot keep one. There is deliberately no oidc_client_secret here.
+  //
+  // The token endpoint, authorization endpoint and JWKS URI are DERIVED,
+  // not configured: one issuer plus OIDC discovery
+  // (/.well-known/openid-configuration) yields all three, so three more
+  // fields would be three more things to keep consistent.
+  //
+  // Declaring the issuer HERE and on the backend's config is what keeps the
+  // two halves of auth honest — they are one fact projected twice, so they
+  // cannot drift into the failure where sign-in succeeds and every RPC 401s.
+
+  string oidc_issuer = 5 [(forge.v1.config) = {
+    env_var: "OIDC_ISSUER",
+    description: "OIDC issuer URL this frontend signs in against. MUST be the BROWSER-facing origin: issuers are compared literally, so an in-cluster service name will not do. Empty selects the no-auth posture rather than a broken one. Must agree with the backend's jwt_issuer."
+  }];
+
+  string oidc_client_id = 6 [(forge.v1.config) = {
+    env_var: "OIDC_CLIENT_ID",
+    description: "The client (application) ID of this browser client, as registered with the issuer. NOT a secret and deliberately not `sensitive`: it ships inside the JS bundle and travels in the query string of every authorization request. It is an IDENTIFIER, not a credential — knowing it does not yield a token, because PKCE requires the code verifier and the issuer requires a registered redirect URI."
+  }];
+
+  string oidc_redirect_uri = 7 [(forge.v1.config) = {
+    env_var: "OIDC_REDIRECT_URI",
+    description: "Where the issuer sends the user agent back with the authorization code. It must match a URI registered with the issuer EXACTLY — the comparison is literal, so a trailing slash or an unexpected port is a rejected login AFTER the user has already typed a password. Empty falls back to <origin>/auth/callback, which is what a DEV frontend wants: it names whatever port this run was assigned, and the idp-provision job registers the matching glob (http://localhost:*/auth/callback) with the dev IdP, whose app runs in dev mode. Pin a literal for a deployed environment, where the origin is a fact about the deployment and the issuer will not glob."
+  }];
+
+  string oidc_scopes = 8 [(forge.v1.config) = {
+    env_var: "OIDC_SCOPES",
+    description: "Space-separated scopes for the authorization request. `openid` is what makes it OIDC rather than bare OAuth 2.0. `offline_access` is what earns a refresh token — without it the access token dies at expiry and signs the user out mid-session. Empty defaults to `openid profile email offline_access` in oidc-provider.ts."
+  }];
+
+  string oidc_resource = 9 [(forge.v1.config) = {
+    env_var: "OIDC_RESOURCE",
+    description: "Optional RFC 8707 resource indicator, requested so the issuer mints an access token whose `aud` is THIS API rather than the client. Needed by issuers that would otherwise return an opaque token or one audienced at the client, which the backend then rejects after an apparently successful sign-in. Empty omits the parameter."
+  }];
+
+  // NEXT_PUBLIC_BASE_PATH is deliberately NOT here, and this is the comment
+  // for whoever is about to add it.
+  //
+  // The base path is genuinely BUILD-time. next.config.ts reads it to set
+  // `basePath` and `assetPrefix`, which determine the paths every emitted
+  // asset is written to and referenced by. A runtime document delivered to
+  // the browser cannot relocate files a build has already written — so a
+  // base_path field here would be a value the app reads and cannot honor,
+  // which is strictly worse than not having it: it would look configurable
+  // and silently disagree with where the assets actually are.
+  //
+  // Change it in forge.yaml (`frontends[].base_path`) and rebuild. The
+  // generated src/lib/basepath_gen.ts carries the same value for code that
+  // needs to join it onto a URL.
+}

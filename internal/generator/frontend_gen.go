@@ -7,8 +7,31 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/pkg/components"
+	"github.com/reliant-labs/forge/pkg/seedplan"
+
+	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/templates"
 )
+
+// refreshedByNavGenerator reports whether a frontend scaffold file is one of
+// the two the nav generator keeps current until the user edits it
+// (internal/cli/generate_frontend_nav.go, emitScaffoldUntilTouched).
+//
+// These two are special because they must EXIST before they can be correct:
+// layout.tsx imports { Nav } and page.tsx imports the dashboard, so both are
+// written here — before any entity exists — and refreshed later as entities
+// arrive. That refresh is gated on the birth hash recorded at this write.
+// Every other file in the frontend tree is either plain scaffold-once or
+// regenerated from its own input, and needs no hash.
+func refreshedByNavGenerator(destFile string) bool {
+	switch filepath.ToSlash(destFile) {
+	case "src/components/nav.tsx", "src/app/dashboard.tsx":
+		return true
+	default:
+		return false
+	}
+}
 
 // frontendTemplateDir returns the per-kind template subdirectory for the
 // given kind. kind="mobile" uses react-native templates; kind="vite-spa"
@@ -75,6 +98,50 @@ type FrontendGenOptions struct {
 	// Empty = served from the host root. Like Output, only the nextjs
 	// template tree reads it.
 	BasePath string
+	// TypedConfig describes the config message bound to THIS frontend by
+	// (forge.v1.frontend_config), when the project declares one. Zero value
+	// means the project has not opted in, and every template renders its
+	// previous env-var form unchanged.
+	TypedConfig FrontendTypedConfig
+}
+
+// FrontendTypedConfig tells the frontend templates which typed config
+// fields exist for the frontend being rendered.
+//
+// It carries per-FIELD presence rather than a bare "has config" flag
+// because the generated TypeScript module's type has exactly the keys the
+// proto declared. A template that reads cfg.OIDC_SCOPES when the proto
+// never declared oidc_scopes produces a frontend that does not type-check —
+// so each read is gated on the field that backs it.
+type FrontendTypedConfig struct {
+	// Bound reports that a config message names this frontend.
+	Bound bool
+
+	HasRedirectURI bool
+	HasScopes      bool
+	HasResource    bool
+	HasMockAPI     bool
+}
+
+// FrontendTypedConfigFrom builds the per-field presence set from the leaf
+// fields of the frontend's config message, keyed on each field's env_var
+// (the one spelling shared by the proto, the KCL projection, the runtime
+// document and the generated module).
+func FrontendTypedConfigFrom(envVars []string) FrontendTypedConfig {
+	out := FrontendTypedConfig{Bound: true}
+	for _, v := range envVars {
+		switch v {
+		case "OIDC_REDIRECT_URI":
+			out.HasRedirectURI = true
+		case "OIDC_SCOPES":
+			out.HasScopes = true
+		case "OIDC_RESOURCE":
+			out.HasResource = true
+		case "MOCK_API":
+			out.HasMockAPI = true
+		}
+	}
+	return out
 }
 
 // GenerateFrontendFiles generates the frontend directory and files.
@@ -135,6 +202,15 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		Workspaces:   opts.Workspaces,
 		Output:       output,
 		BasePath:     opts.BasePath,
+
+		// Typed frontend config, when the project declares a config message
+		// bound to THIS frontend. Gated per-field because a template cannot
+		// read a key the generated module's type does not have.
+		HasTypedConfig: opts.TypedConfig.Bound,
+		HasRedirectURI: opts.TypedConfig.HasRedirectURI,
+		HasScopes:      opts.TypedConfig.HasScopes,
+		HasResource:    opts.TypedConfig.HasResource,
+		HasMockAPI:     opts.TypedConfig.HasMockAPI,
 	}
 	if opts.Workspaces {
 		data.APIPackage = layout.APIPackage
@@ -149,6 +225,20 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	}
 
 	for _, file := range frontendFiles {
+		// nav.tsx and dashboard.tsx ARE emitted here, empty of routes, even
+		// though the entity set that seeds them does not exist yet.
+		//
+		// Withholding them until the first entity was the obvious move and is
+		// wrong: layout.tsx imports { Nav } and page.tsx imports the
+		// dashboard, so `forge scaffold frontend` — which has no generate
+		// pass behind it — would hand back a tree that does not typecheck.
+		// TestFrontendScaffoldImportsResolve pins that invariant.
+		//
+		// The nav generator keeps them current instead, refreshing while the
+		// user has not touched them (emitScaffoldUntilTouched), so the routes
+		// arrive with the first entity and ownership transfers on the first
+		// edit. See internal/cli/generate_frontend_nav.go.
+
 		content, err := templates.FrontendTemplates().Render(file.Path, data)
 		if err != nil {
 			return fmt.Errorf("render frontend template %s: %w", file.Path, err)
@@ -162,6 +252,19 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		}
 		if err := os.WriteFile(destPath, content, 0644); err != nil {
 			return fmt.Errorf("write frontend file %s: %w", destFile, err)
+		}
+		// Record the birth hash for the files the nav generator keeps
+		// current. emitScaffoldUntilTouched refreshes them only while
+		// ScaffoldIsPristine, and that answers false for a path with no
+		// ledger entry — so without this write the two files are frozen as
+		// "user-owned" from birth, and the routes seeded by the first
+		// entity never arrive. Recorded here rather than in the nav
+		// generator because this loop is what writes them first, and the
+		// hash has to match the bytes that actually landed on disk.
+		if rel, relErr := filepath.Rel(root, destPath); relErr == nil {
+			if refreshedByNavGenerator(destFile) {
+				checksums.RecordScaffoldWithHash(root, rel, content)
+			}
 		}
 	}
 
@@ -224,8 +327,19 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		if err != nil {
 			return fmt.Errorf("load ownership state: %w", err)
 		}
-		if _, err := EmitFrontendMockSurface(root, filepath.Join("frontends", frontendName), nil, nil, nil, cs); err != nil {
+		feRel := filepath.Join("frontends", frontendName)
+		if _, err := EmitFrontendMockSurface(root, feRel, nil, nil, nil, cs); err != nil {
 			return fmt.Errorf("emit frontend mock surface: %w", err)
+		}
+		// The freshness guard ships with the frontend from birth, so its
+		// file set does not change shape the first time a migration
+		// lands. At scaffold time the project's schema is whatever is
+		// already on disk — usually nothing, which renders the
+		// no-migrations branch — and the next `forge generate` records
+		// the real fingerprint.
+		fpFiles, fpConfig := codegen.SeedFingerprint(root, seedplan.DefaultConfig())
+		if err := EmitFixtureFreshnessSurface(root, feRel, fpFiles, fpConfig, cs); err != nil {
+			return fmt.Errorf("emit fixture freshness surface: %w", err)
 		}
 		if err := SaveChecksums(root, cs); err != nil {
 			return fmt.Errorf("save ownership state: %w", err)

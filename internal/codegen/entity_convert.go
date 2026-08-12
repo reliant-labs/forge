@@ -24,10 +24,17 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 		Fields:     make([]config.PlanEntityField, 0, len(entity.Columns)),
 	}
 
-	// A `// forge:secret` marker lives on the WIRE field, not the column
-	// (the column is schema truth and always stores the value). Match wire
-	// secret fields to their column by name so the ORM's Spec.SecretColumns
-	// can preserve them on a maskless full-replace Update.
+	// A `// forge:secret` marker lives on the WIRE field, not the column (the
+	// column is schema truth and always stores the value). Match wire secret
+	// fields to their column by name so the read path can strip them.
+	//
+	// This is the ONLY thing the wire message contributes to the ORM
+	// projection, and it is a READ concern. Whether a column may be REWRITTEN
+	// is schema truth, declared in the migration (`forge:immutable`) and read
+	// off the column's own catalog comment below. Absence from the wire is
+	// deliberately not consulted: a column can be absent from the API and
+	// still be ordinary mutable state — an internal score, a denormalized
+	// cache — which is exactly the independence the two clocks are for.
 	secretCols := make(map[string]bool, len(entity.Fields))
 	for _, f := range entity.Fields {
 		if f.Secret {
@@ -37,13 +44,16 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 
 	for _, c := range entity.Columns {
 		pf := config.PlanEntityField{
-			Name:       c.Name,
-			Type:       planTypeForColumn(c),
-			PrimaryKey: c.IsPK,
-			NotNull:    c.NotNull,
-			Default:    c.Default,
-			Generated:  c.IsGenerated,
-			Secret:     secretCols[c.Name],
+			Name:         c.Name,
+			Type:         planTypeForColumn(c),
+			PrimaryKey:   c.IsPK,
+			NotNull:      c.NotNull,
+			Default:      c.Default,
+			Generated:    c.IsGenerated,
+			Secret:       secretCols[c.Name],
+			Immutable:    c.Immutable,
+			Version:      c.Version,
+			FillStrategy: c.FillStrategy,
 		}
 		pe.Fields = append(pe.Fields, pf)
 	}

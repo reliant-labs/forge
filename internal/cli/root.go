@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/pkg/pgtest"
@@ -103,8 +104,11 @@ Connect RPC interfaces, purpose-built for LLM-driven development.
 
 It enables easy mocking, middleware injection, spec-driven development,
 and component swapping - all while maintaining a single, consistent
-interface pattern throughout the entire stack.`,
-		Version: fmt.Sprintf("%s (built %s, commit %s)", version, buildDate, gitCommit),
+interface pattern throughout the entire stack.
+
+New here? Run 'forge start' — the whole path from an empty directory to
+authored protos, in one call.`,
+		Version: versionLine(),
 		// SilenceErrors: cobra never prints the error itself — main()
 		// owns the single, final "Error: ..." line. Without this every
 		// failure printed twice (cobra's copy first, buried under the
@@ -170,6 +174,11 @@ interface pattern throughout the entire stack.`,
 	rootCmd.PersistentFlags().BoolVar(&silenceExperimental, "silence-experimental", false, "suppress the experimental-features warning (also: FORGE_SILENCE_EXPERIMENTAL=1)")
 
 	// Add all commands
+	// `forge start` prints the greenfield brief. It is a top-level verb
+	// rather than a flag on `skill load` because it must be reachable from
+	// the ONE surface an agent that has never seen forge already reads —
+	// the `forge --help` command list.
+	rootCmd.AddCommand(newStartCmd())
 	// `forge run` is the single-command dev runner (alias for
 	// `forge env up --host-only` + dev-server passthrough) — restored for the
 	// reliant one-shot's `reliant forge run -- --host 0.0.0.0` preview flow.
@@ -196,6 +205,7 @@ interface pattern throughout the entire stack.`,
 	// `lint` migrated to the internal/cli/lint group (factory registry).
 	rootCmd.AddCommand(newPackageCmd())
 	// `debug` migrated to the internal/cli/debug group (factory registry).
+	rootCmd.AddCommand(newSecretCmd())
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newVersionCmd())
@@ -248,9 +258,24 @@ interface pattern throughout the entire stack.`,
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print the forge version",
+		Short: "Print the forge version and build identity",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("%s version %s (built %s, commit %s)\n", Name(), version, buildDate, gitCommit)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s version %s\n", Name(), versionLine())
+			fmt.Fprint(cmd.OutOrStdout(), buildinfo.Describe())
 		},
 	}
+}
+
+// versionLine renders this binary's forge identity. It reads from
+// buildinfo, which derives identity from the binary's own
+// runtime/debug build info when no ldflags stamp is present.
+//
+// This is what makes `forge` and `reliant forge` distinguishable. The
+// embedded path (reliant mounting forgecli.NewRootCmd()) never calls
+// SetVersion, so the old fmt.Sprintf over the raw vars rendered
+// "forge version  (built , commit )" — an identity string with no
+// identity in it, and the reason a toolchain mismatch was invisible.
+func versionLine() string {
+	buildinfo.SetBuildDate(buildDate)
+	return buildinfo.Identity()
 }

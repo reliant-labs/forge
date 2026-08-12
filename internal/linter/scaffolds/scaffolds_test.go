@@ -42,6 +42,25 @@ func TestLintRoot_ScaffoldMarkerPresent(t *testing.T) {
 	}
 }
 
+// Regression: a FORGE_SCAFFOLD marker inside a Go STRING LITERAL is
+// fixture data, not a placeholder. The rule already tried to allow this
+// by requiring the marker at the start of a line — but inside a RAW
+// (backtick) literal, which is how tests embed multi-line source, the
+// marker does begin its line, so the line-prefix test saw two real
+// placeholders in internal/cli/scaffold/fixtures_test.go and `forge lint`
+// reported pending work in forge's own repo that nobody could ever clear.
+// Counting only markers that the Go parser reports as COMMENTS fixes it.
+func TestLintRoot_MarkerInsideStringLiteralIsNotPendingWork(t *testing.T) {
+	t.Parallel()
+	res, err := LintRoot(filepath.Join("testdata", "marker_in_string_literal"))
+	if err != nil {
+		t.Fatalf("LintRoot returned error: %v", err)
+	}
+	if findingMatches(res.Findings, "scaffold-not-customized") {
+		t.Fatalf("markers inside a string literal are fixture data, not pending work; got: %+v", res.Findings)
+	}
+}
+
 func TestLintRoot_GenMissingHeader(t *testing.T) {
 	t.Parallel()
 	res, err := LintRoot(filepath.Join("testdata", "gen_missing_header"))

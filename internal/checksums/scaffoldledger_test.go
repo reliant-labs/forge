@@ -328,3 +328,59 @@ func TestScaffoldOnce_SteadyStateWritesNoLedgerChurn(t *testing.T) {
 		t.Fatalf("steady-state re-runs churned the ledger:\nbefore: %s\nafter:  %s", before, after)
 	}
 }
+
+// TestAbsentScaffolds_ReportsTheDeletedOnesOnly is the query behind the
+// generate-time warning. The ledger's suppression of a deleted scaffold is
+// correct and stays; what was missing is any way for forge to SAY it is
+// suppressing something. A run deleted its CRUD lifecycle test expecting
+// generate to re-derive it, generate reported success in silence, and the
+// file was gone.
+//
+// The two arms matter equally. Reporting the deleted path is the feature;
+// NOT reporting the present one is what keeps the report worth reading —
+// a warning that fires for every scaffold in a healthy project is noise
+// users learn to skip, which is how the real signal gets missed.
+func TestAbsentScaffolds_ReportsTheDeletedOnesOnly(t *testing.T) {
+	root := newScaffoldProject(t)
+	const (
+		deleted = "internal/handlers/library/handlers_crud_test.go"
+		kept    = "internal/app/auth.go"
+	)
+	for _, rel := range []string{deleted, kept} {
+		if wrote, err := WriteScaffoldIfMissing(root, rel, []byte("package x\n")); err != nil || !wrote {
+			t.Fatalf("seed scaffold %s (wrote=%v, err=%v)", rel, wrote, err)
+		}
+	}
+	// The author hardens their migrations, the born fixtures no longer
+	// satisfy them, and they delete the test expecting a re-derivation.
+	if err := os.Remove(filepath.Join(root, deleted)); err != nil {
+		t.Fatalf("delete %s: %v", deleted, err)
+	}
+
+	got := AbsentScaffolds(root)
+	if len(got) != 1 || got[0] != deleted {
+		t.Fatalf("AbsentScaffolds = %v, want exactly [%s].\n"+
+			"A scaffold-once path recorded in the birth ledger but absent on disk is a "+
+			"file forge is deliberately declining to write. That decision is right, but it "+
+			"has to be VISIBLE: the run this pins deleted the file expecting generate to "+
+			"re-derive it, generate said nothing, and an hour went into trying to "+
+			"reproduce the birth condition by hand.", got, deleted)
+	}
+}
+
+// TestAbsentScaffolds_SilentOnAHealthyProject is the noise guard stated
+// on its own. Every scaffold present ⇒ nothing to report, so a steady-state
+// `forge generate` prints no scaffold warning at all.
+func TestAbsentScaffolds_SilentOnAHealthyProject(t *testing.T) {
+	root := newScaffoldProject(t)
+	for _, rel := range []string{"internal/app/auth.go", "cmd/app/main.go"} {
+		if wrote, err := WriteScaffoldIfMissing(root, rel, []byte("package x\n")); err != nil || !wrote {
+			t.Fatalf("seed scaffold %s (wrote=%v, err=%v)", rel, wrote, err)
+		}
+	}
+	if got := AbsentScaffolds(root); len(got) != 0 {
+		t.Fatalf("AbsentScaffolds = %v on a project where every scaffold is present; "+
+			"want none. A warning that fires in the healthy case trains users to ignore "+
+			"the one that matters", got)
+	}
+}

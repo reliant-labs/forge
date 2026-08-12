@@ -968,7 +968,7 @@ func elemType(sliceType string) string {
 // buildCreateAssigns maps the create-request fields onto the entity
 // struct. Request fields are matched to columns by name; unmatched
 // fields are dropped with a comment so the generated code says why.
-// Columns the request does NOT carry — `// forge:server-set` fields, and
+// Columns the request does NOT carry — `// forge:read-only` fields, and
 // anything in the table the wire message never had — are then filled from
 // the schema's own DEFAULT (see schemaDefaultAssigns).
 func buildCreateAssigns(svc ServiceDef, m Method, entity EntityDef) ([]string, []UnmappedField) {
@@ -1003,7 +1003,7 @@ func buildCreateAssigns(svc ServiceDef, m Method, entity EntityDef) ([]string, [
 // schemaDefaultAssigns fills the entity columns the create request does not
 // carry with the value the SCHEMA says they start at.
 //
-// A `// forge:server-set` column is, by construction, absent from the create
+// A `// forge:read-only` column is, by construction, absent from the create
 // request — so the op left the Go field at its zero value and Bun wrote that
 // zero. For a column whose default is NOT the Go zero the row is then
 // invalid on arrival: an enum column born as
@@ -1018,7 +1018,7 @@ func buildCreateAssigns(svc ServiceDef, m Method, entity EntityDef) ([]string, [
 // This is also why the birth migration's enum DEFAULT matters and is not
 // cosmetic: whatever literal the schema declares is the literal pasted here.
 // scaffold.bornEnumDefault picks the first REAL enum member for exactly that
-// reason — a server-set column starting at the proto zero would start every
+// reason — a read-only column starting at the proto zero would start every
 // row in a state the domain does not have.
 //
 // The obvious-looking fix — `nullzero` / `default:` on the bun tag, letting

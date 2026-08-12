@@ -11,6 +11,34 @@ import (
 
 // --- pure helpers -----------------------------------------------------------
 
+func TestStripHelmOCIStatus_Helm4Receipt(t *testing.T) {
+	in := `Pulled: docker.io/envoyproxy/gateway-helm:v1.7.2
+Digest: sha256:02cfb2d2e9a31386f850a1ef3ab2a7a18a489eb2140a35c700c73b9b72b231f8
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: envoy-gateway`
+
+	got := stripHelmOCIStatus(in)
+	if strings.Contains(got, "Pulled:") || strings.Contains(got, "Digest:") {
+		t.Fatalf("Helm 4 OCI receipt survived:\n%s", got)
+	}
+	if !strings.Contains(got, "apiVersion: v1") || !strings.Contains(got, "kind: ServiceAccount") {
+		t.Fatalf("Kubernetes manifest was not preserved:\n%s", got)
+	}
+}
+
+func TestStripHelmOCIStatus_PreservesOrdinaryManifest(t *testing.T) {
+	in := `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: Pulled`
+	if got := stripHelmOCIStatus(in); got != in {
+		t.Fatalf("ordinary manifest changed:\n%s", got)
+	}
+}
+
 // TestStampAppLabel_OverridesEveryDoc proves the helm-as-a-RENDERER
 // bridge: every manifest a chart renders is FORCED to
 // `app.kubernetes.io/name = <name>` so the SAME exclusive --target axis

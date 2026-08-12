@@ -29,16 +29,18 @@ type Skill struct {
 	// can opt them back in. Consumers building their own retrieval layer
 	// should treat migration skills as transition-scoped, not steady-state.
 	Relevance string
-	// AppliesFrom / AppliesTo are the migration skill's declared version
-	// bounds (half-open [from, to) over the project's pinned forge_version),
-	// passed through verbatim from the `applies-from:` / `applies-to:`
+	// Version is the release that introduced the breaking change this
+	// migration skill covers, passed through verbatim from the `version:`
 	// frontmatter for consumers that want to do their own version gating.
+	// A project needs the migration when its pin is BELOW this version and
+	// it still exhibits the old shape.
+	//
 	// Forge itself gates listings on the relevance class only (binary
 	// versions are routinely dev builds / pseudo-versions, which are not
-	// meaningfully comparable); the authoritative project-aware range +
-	// detection gate is `forge project upgrade list`. Empty when undeclared.
-	AppliesFrom string
-	AppliesTo   string
+	// meaningfully comparable); the authoritative project-aware version +
+	// detection gate is `forge project upgrade list`. Empty when undeclared
+	// and for non-migration skills.
+	Version string
 
 	// SkillForgeVersion is the forge version whose embedded templates the
 	// skill content comes from — i.e. the forge module linked into THIS
@@ -99,8 +101,7 @@ func ListSkillsWithOptions(projectRoot string, opts ListSkillsOptions) ([]Skill,
 			Scope:               string(m.Scope),
 			Emit:                string(m.Emit),
 			Relevance:           string(m.Relevance),
-			AppliesFrom:         m.AppliesFrom,
-			AppliesTo:           m.AppliesTo,
+			Version:             m.Version,
 			SkillForgeVersion:   m.SkillForgeVersion,
 			ProjectForgeVersion: m.ProjectForgeVersion,
 			VersionSkew:         m.VersionSkew,

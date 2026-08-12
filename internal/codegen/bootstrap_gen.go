@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -498,8 +499,12 @@ type BootstrapTestServiceData struct {
 	ProtoServiceName       string // e.g. "ApiService" (proto service name for connect client)
 	ProtoConnectImportPath string // e.g. "github.com/foo/bar/gen/services/api/v1/apiv1connect"
 	ProtoConnectPkg        string // e.g. "apiv1connect" (Go identifier used at call sites)
-	Fallible               bool   // true if the constructor returns (T, error)
-	HasDB                  bool   // true if Deps struct has a DB orm.Context field
+	// MountMethod is the handler method that mounts the service — "Register"
+	// normally, "Mount" when the service declares an RPC of its own called
+	// Register (one type cannot carry both, and the RPC wins).
+	MountMethod string
+	Fallible    bool // true if the constructor returns (T, error)
+	HasDB       bool // true if Deps struct has a DB orm.Context field
 	// Constructor is the handler's entry-point func name — `New` unless the
 	// package moved the `// forge:constructor` marker onto a name of its own.
 	// Read through [BootstrapTestServiceData.ConstructorName].
@@ -626,7 +631,9 @@ type DepsAutoStub struct {
 	ExtraImports []ExtraImport
 }
 
-// GenerateBootstrapTesting generates pkg/app/testing.go from the bootstrap_testing.go.tmpl template.
+// GenerateBootstrapTesting generates the per-component test harness: one
+// helpers_gen_test.go per service / internal package, rendered from
+// component_test_helpers.go.tmpl into that component's own directory.
 //
 // cs is the project's checksum tracker — passing it keeps pkg/app/testing.go
 // recorded so `forge project audit` doesn't flag stale state on it. A nil cs is tolerated.
@@ -725,6 +732,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			ProtoServiceName:       svc.Name,
 			ProtoConnectImportPath: connectImport,
 			ProtoConnectPkg:        connectPkg,
+			MountMethod:            mountMethodFor(svc),
 			Fallible:               fallible,
 			Constructor:            DetectConstructorName(handlerDir),
 			HasDB:                  hasDB,
@@ -873,17 +881,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 		}
 	}
 
-	data := struct {
-		Module              string
-		Services            []BootstrapTestServiceData
-		ConnectImports      []string
-		Packages            []BootstrapPackageData
-		AnyServiceHasDB     bool
-		AnyServiceNeedsTime bool
-		AnyServiceNeedsULID bool
-		HasMigrationsFS     bool
-		ExtraImports        []ExtraImport
-	}{
+	data := bootstrapTestingTemplateData{
 		Module:              modulePath,
 		Services:            testSvcs,
 		ConnectImports:      connectImports,
@@ -897,53 +895,273 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 		// so generated CRUD/handler tests can start with the real schema
 		// instead of the bare default database.
 		HasMigrationsFS: ProjectHasSQLMigrations(projectDir),
-		ExtraImports:    nil, // filled below after duplicate-filtering
+		ExtraImports:    extraImports,
 	}
 
-	// Filter ExtraImports against everything the template ALREADY
-	// imports. Stub method signatures routinely reference packages the
-	// static import block carries unconditionally (`context` is the
-	// canonical case: the template emits `"context"` whenever there are
-	// services, and any stub method taking ctx adds `context "context"`
-	// to ExtraImports — two declarations of the same name, which fails
-	// `go build`). Rather than hand-mirroring the template's conditional
-	// import logic here (and drifting the moment the template changes),
-	// render a baseline WITHOUT extras, parse its import block, and drop
-	// every extra whose declared name + path are already present. An
-	// extra whose alias collides with a different path is kept as-is:
-	// that's a genuine user-level package-name collision the compile
-	// error should surface, not something to silently rewrite.
-	if len(extraImports) > 0 {
-		baseline, berr := templates.ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)
-		if berr == nil {
-			extraImports = filterAlreadyImported(extraImports, baseline)
+	// Emit ONE helpers_gen_test.go per component, beside the component it
+	// constructs, instead of a single pkg/app/testing.go.
+	//
+	// pkg/app/testing.go was a NON-test .go file that imported "testing",
+	// and cmd/<proj>/cmd imports pkg/app — so `go list -deps ./cmd/<proj>`
+	// contained `testing` and every scaffolded project linked the testing
+	// package (and the flags it registers in init()) into its production
+	// binary. The `_test.go` suffix is what fixes that: the toolchain
+	// compiles these files only into their package's test binary.
+	if err := writeComponentTestHelpers(data, projectDir, cs); err != nil {
+		return err
+	}
+
+	// Retire the pre-split file. An existing project regenerating against
+	// this forge must LOSE pkg/app/testing.go, not end up with both it and
+	// the new per-component files: leaving it behind would keep the leak
+	// alive (the whole point of the split) and duplicate-declare every
+	// helper's name in a package that still compiles into cmd/.
+	if err := removeRetiredBootstrapTesting(projectDir, cs); err != nil {
+		return err
+	}
+
+	// Emit the typed New<Entity> test factories, one
+	// internal/handlers/<svc>/factories_gen_test.go per handler package that
+	// owns entities. Best-effort contract: a missing/unreachable shadow DB or
+	// an unseedable entity just means the factory isn't emitted this run,
+	// never a failed generate.
+	if err := GenerateEntityFactories(projectDir, modulePath, services, cs); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: skipped entity factories: %v\n", err)
+	}
+
+	// Retire internal/testfactory, where the factories lived before they
+	// moved beside their consumers. Leaving it behind would keep a non-test
+	// .go file that imports `testing` in the tree — the exact shape this move
+	// removes — and duplicate-declare every New<Entity> the new files emit
+	// (harmlessly, being in another package, but confusingly).
+	removeRetiredEntityFactories(projectDir, cs)
+	return nil
+}
+
+// removeRetiredEntityFactories deletes the pre-move
+// internal/testfactory/factory_gen.go and, when that leaves the directory
+// empty, the directory itself.
+//
+// Only a copy that still self-verifies as forge's own render is reclaimed
+// (removeRetiredForgeFile's contract): a hand-edited or disowned one is the
+// user's now, and deleting it would destroy work forge did not write. Such a
+// project keeps the old package — and its `testing` import — until the user
+// removes it, which the drift hint for this path says outright.
+func removeRetiredEntityFactories(projectDir string, cs *checksums.FileChecksums) {
+	rel := RetiredEntityFactoryRelPath()
+	removeRetiredForgeFile(projectDir, rel, cs)
+	// os.Remove on a directory succeeds only when it is empty, which is
+	// exactly the condition for reclaiming it: a user file parked alongside
+	// keeps the directory alive.
+	_ = os.Remove(filepath.Join(projectDir, filepath.Dir(rel)))
+}
+
+// bootstrapTestingTemplateData is the assembled component inventory
+// GenerateBootstrapTesting builds before fanning it out into one
+// per-component helper file. It was an anonymous struct back when the whole
+// inventory rendered into a single pkg/app/testing.go; naming it lets the
+// per-component writer take it as a parameter.
+type bootstrapTestingTemplateData struct {
+	Module              string
+	Services            []BootstrapTestServiceData
+	ConnectImports      []string
+	Packages            []BootstrapPackageData
+	AnyServiceHasDB     bool
+	AnyServiceNeedsTime bool
+	AnyServiceNeedsULID bool
+	HasMigrationsFS     bool
+	ExtraImports        []ExtraImport
+}
+
+// componentTestHelperData is the per-component view the
+// component_test_helpers.go.tmpl template renders. One value per service /
+// internal package; each renders into that component's own directory in that
+// component's own package clause, so two components can never collide on an
+// identifier and a new service never rewrites an existing service's file.
+type componentTestHelperData struct {
+	Module    string
+	Package   string // package CLAUSE of the component's dir
+	Name      string
+	FieldName string
+	IsService bool
+
+	ConstructorName string
+	Fallible        bool
+	HasDB           bool
+	HasLogger       bool
+	HasConfig       bool
+	HasMigrationsFS bool
+	NeedsTime       bool
+	NeedsULID       bool
+
+	ProtoServiceName       string
+	ProtoConnectImportPath string
+	ProtoConnectPkg        string
+	MountMethod            string
+
+	AutoStubs       []DepsAutoStub
+	UnresolvedStubs []UnresolvedAutoStub
+	FuncDefaults    []DepsFuncDefault
+	FuncTodos       []UnresolvedAutoStub
+	ExtraImports    []ExtraImport
+}
+
+// componentTestHelperFile is the file name emitted into each component dir.
+// The `_test.go` suffix is load-bearing — see writeComponentTestHelpers.
+const componentTestHelperFile = "helpers_gen_test.go"
+
+// writeComponentTestHelpers renders one helpers_gen_test.go per service and
+// per internal package, into that component's own directory.
+//
+// THE PACKAGE CLAUSE IS THE COMPONENT'S OWN (`package order`), NOT the
+// external test package (`package order_test`). Go compiles a package's
+// in-package _test.go files INTO the package under test, and an external
+// `order_test` package then imports that augmented package — so exported
+// helpers declared here are visible to BOTH the internal and the external
+// test files of this directory, while remaining invisible to every other
+// package. That is exactly the scope a test factory should have.
+func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir string, cs *checksums.FileChecksums) error {
+	for _, svc := range data.Services {
+		d := componentTestHelperData{
+			Module:                 data.Module,
+			Package:                svc.Package,
+			Name:                   svc.Name,
+			FieldName:              svc.FieldName,
+			IsService:              true,
+			ConstructorName:        svc.ConstructorName(),
+			Fallible:               svc.Fallible,
+			HasDB:                  svc.HasDB,
+			HasMigrationsFS:        data.HasMigrationsFS,
+			ProtoServiceName:       svc.ProtoServiceName,
+			MountMethod:            svc.MountMethod,
+			ProtoConnectImportPath: svc.ProtoConnectImportPath,
+			ProtoConnectPkg:        svc.ProtoConnectPkg,
+			AutoStubs:              svc.AutoStubs,
+			UnresolvedStubs:        svc.UnresolvedStubs,
+			FuncDefaults:           svc.FuncDefaults,
+			FuncTodos:              svc.FuncTodos,
+		}
+		for _, fd := range svc.FuncDefaults {
+			if fd.NeedsTime {
+				d.NeedsTime = true
+			}
+			if fd.NeedsULID {
+				d.NeedsULID = true
+			}
+		}
+		// The helpers now live INSIDE the component's package, so the
+		// component's own types (Deps, Service) are unqualified and the
+		// service's own import must not be re-emitted. Cross-package stub
+		// imports still apply.
+		d.ExtraImports = extraImportsExcluding(mergeExtraImports(
+			[]BootstrapTestServiceData{svc}), svc.Package)
+		dir := filepath.Join(projectDir, "internal", "handlers", filepath.FromSlash(svc.ImportPath))
+		if err := renderComponentTestHelpers(d, dir, projectDir, cs); err != nil {
+			return err
 		}
 	}
-	data.ExtraImports = extraImports
+	for _, pkg := range data.Packages {
+		d := componentTestHelperData{
+			Module:          data.Module,
+			Package:         pkg.Package,
+			Name:            pkg.Name,
+			FieldName:       pkg.FieldName,
+			IsService:       false,
+			ConstructorName: pkg.ConstructorName(),
+			Fallible:        pkg.Fallible,
+			HasDB:           pkg.HasDB,
+			HasLogger:       pkg.HasLogger,
+			HasConfig:       pkg.HasConfig,
+			HasMigrationsFS: data.HasMigrationsFS,
+		}
+		dir := filepath.Join(projectDir, "internal", filepath.FromSlash(pkg.ImportPath))
+		if err := renderComponentTestHelpers(d, dir, projectDir, cs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	content, err := templates.ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)
+// renderComponentTestHelpers renders one component's helper file into dir.
+// A component whose directory does not exist yet (declared in forge.yaml but
+// not yet scaffolded on disk) is skipped rather than conjuring a stray dir.
+func renderComponentTestHelpers(d componentTestHelperData, dir, projectDir string, cs *checksums.FileChecksums) error {
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return nil
+	}
+	// Filter ExtraImports against what the template ALREADY imports.
+	// Cross-package stub method signatures routinely reference packages the
+	// static import block carries unconditionally (`context` is the canonical
+	// case: the template emits `"context"` for every service, and any stub
+	// method taking a ctx adds `context "context"` to ExtraImports — two
+	// declarations of the same name, which fails `go build`). Rather than
+	// hand-mirroring the template's conditional import logic here (and
+	// drifting the moment the template changes), render a baseline WITHOUT
+	// extras, parse its import block, and drop every extra already present.
+	// An extra whose alias collides with a DIFFERENT path is kept: that's a
+	// genuine package-name collision the compile error should surface.
+	if len(d.ExtraImports) > 0 {
+		bare := d
+		bare.ExtraImports = nil
+		if baseline, berr := templates.ProjectTemplates().Render("component_test_helpers.go.tmpl", bare); berr == nil {
+			d.ExtraImports = filterAlreadyImported(d.ExtraImports, baseline)
+		}
+	}
+	content, err := templates.ProjectTemplates().Render("component_test_helpers.go.tmpl", d)
 	if err != nil {
-		return fmt.Errorf("render bootstrap_testing.go.tmpl: %w", err)
+		return fmt.Errorf("render component_test_helpers.go.tmpl for %s: %w", d.Name, err)
 	}
-
-	if err := writeForgeOwned(projectDir, filepath.Join("pkg", "app", "testing.go"), content, cs); err != nil {
-		return fmt.Errorf("write pkg/app/testing.go: %w", err)
+	rel, err := filepath.Rel(projectDir, filepath.Join(dir, componentTestHelperFile))
+	if err != nil {
+		return fmt.Errorf("resolve helper path for %s: %w", d.Name, err)
 	}
-
-	// Emit the project-owned FK-spine seed helper (pkg/app/seedgraph_gen.go)
-	// alongside the test harness. Best-effort: a missing/unreachable shadow DB
-	// just means the helper isn't emitted this run (the flow test then hand-
-	// seeds), so a write/introspection hiccup must never fail the whole generate.
-	if err := GenerateSeedGraph(projectDir, modulePath, cs); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: skipped pkg/app/seedgraph_gen.go: %v\n", err)
+	if err := writeForgeOwned(projectDir, rel, content, cs); err != nil {
+		return fmt.Errorf("write %s: %w", rel, err)
 	}
+	return nil
+}
 
-	// Emit the typed New<Entity> test factories (pkg/app/factory_gen.go)
-	// alongside the FK-spine seed helper. Same best-effort contract: a
-	// missing/unreachable shadow DB or an unseedable entity just means the
-	// factory isn't emitted this run, never a failed generate.
-	if err := GenerateEntityFactories(projectDir, modulePath, cs); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: skipped pkg/app/factory_gen.go: %v\n", err)
+// extraImportsExcluding drops any import whose alias is the component's own
+// package — now that the helpers live in that package, importing it would be
+// a self-import.
+func extraImportsExcluding(in []ExtraImport, ownPkg string) []ExtraImport {
+	out := make([]ExtraImport, 0, len(in))
+	for _, imp := range in {
+		if imp.Alias == ownPkg {
+			continue
+		}
+		out = append(out, imp)
+	}
+	return out
+}
+
+// removeRetiredBootstrapTesting deletes a pre-split pkg/app/testing.go and
+// drops its checksum entry, so an upgrading project stops linking `testing`
+// into cmd/ instead of carrying the leaking file alongside its replacement.
+//
+// A file the user has DISOWNED (or otherwise hand-edited away from the
+// forge-owned render) is left alone: forge does not delete files it no longer
+// owns. Such a project keeps the leak until the user removes the file, which
+// the drift hint for this path now says outright.
+func removeRetiredBootstrapTesting(projectDir string, cs *checksums.FileChecksums) error {
+	rel := filepath.Join("pkg", "app", "testing.go")
+	abs := filepath.Join(projectDir, rel)
+	body, err := os.ReadFile(abs)
+	if err != nil {
+		return nil // absent (the common case: a project scaffolded post-split)
+	}
+	if cs.IsDisowned(filepath.ToSlash(rel)) {
+		return nil
+	}
+	// Only reclaim a file that still self-verifies as forge's own render.
+	// A hand-edited copy is the user's now, and deleting it would destroy
+	// work forge did not write.
+	if checksums.Verify(body) != checksums.Pristine {
+		return nil
+	}
+	checksums.RecordPreWriteAbs(abs)
+	if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove retired %s: %w", rel, err)
 	}
 	return nil
 }
@@ -972,11 +1190,11 @@ func filterExternalComponentPackages(projectDir string, pkgs []BootstrapPackageD
 // project ship migrations" reads, so they cannot disagree:
 //
 //   - GenerateMigrate embeds db/embed.go's MigrationsFS
-//   - bootstrap_testing.go.tmpl imports forgedb (which only exists when
+//   - component_test_helpers.go.tmpl imports forgedb (which only exists when
 //     GenerateMigrate saw migrations)
 //   - cmd-tree-db.go.tmpl compiles `db migrate` against the EMBEDDED set
-//   - components_gen.json declares the deploy-path migration step, which
-//     the env render turns into a migration initContainer
+//   - the scaffolded per-env `migrate` argv, which the env render turns
+//     into a migration initContainer
 func ProjectHasSQLMigrations(projectDir string) bool {
 	entries, err := os.ReadDir(filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
@@ -1341,4 +1559,27 @@ func computeFuncDefaults(handlerDir string) ([]DepsFuncDefault, []UnresolvedAuto
 		}
 	}
 	return defaults, todos
+}
+
+// ComponentTestHelperRelPath is the project-relative path of a service's
+// generated test-helper file. Exposed so tests (and callers reasoning about
+// generated output) name the location in one place rather than rebuilding the
+// "internal/handlers/<leaf>/helpers_gen_test.go" string each time.
+func ComponentTestHelperRelPath(handlerLeaf string) string {
+	return filepath.Join("internal", "handlers", handlerLeaf, componentTestHelperFile)
+}
+
+// mountMethodFor names the handler method that mounts svc.
+//
+// A service may declare an RPC called Register — the obvious name for a
+// sign-up endpoint — which collides with the scaffolded Register(mux,
+// opts...) mount helper. The handler renames its helper to Mount in that
+// case, so every generated call site has to follow.
+func mountMethodFor(svc ServiceDef) string {
+	for _, m := range svc.Methods {
+		if m.Name == "Register" {
+			return "Mount"
+		}
+	}
+	return "Register"
 }

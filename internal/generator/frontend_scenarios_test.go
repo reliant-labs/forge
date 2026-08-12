@@ -43,7 +43,7 @@ func TestWriteScenariosIndex_Idempotent(t *testing.T) {
 	if err := WriteScenariosIndex(dir, ".", nil); err != nil {
 		t.Fatalf("first WriteScenariosIndex: %v", err)
 	}
-	first, err := os.ReadFile(filepath.Join(dir, "index.ts"))
+	first, err := os.ReadFile(filepath.Join(dir, "index_gen.ts"))
 	if err != nil {
 		t.Fatalf("read first index: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestWriteScenariosIndex_Idempotent(t *testing.T) {
 	if err := WriteScenariosIndex(dir, ".", nil); err != nil {
 		t.Fatalf("second WriteScenariosIndex: %v", err)
 	}
-	second, err := os.ReadFile(filepath.Join(dir, "index.ts"))
+	second, err := os.ReadFile(filepath.Join(dir, "index_gen.ts"))
 	if err != nil {
 		t.Fatalf("read second index: %v", err)
 	}
@@ -113,31 +113,31 @@ func TestEmitScenarioScaffolding_SeedsDefaultOnce(t *testing.T) {
 		t.Errorf("default.ts was overwritten on re-emit; got:\n%s", got)
 	}
 
-	// scenario-types.ts is regenerated every run — so it should exist and
+	// scenario-types_gen.ts is regenerated every run — so it should exist and
 	// not be the hand-edited marker.
-	typesPath := filepath.Join(mocksDir, "scenario-types.ts")
+	typesPath := filepath.Join(mocksDir, "scenario-types_gen.ts")
 	tb, err := os.ReadFile(typesPath)
 	if err != nil {
-		t.Fatalf("read scenario-types.ts: %v", err)
+		t.Fatalf("read scenario-types_gen.ts: %v", err)
 	}
 	if !strings.Contains(string(tb), "export interface Scenario") {
-		t.Errorf("scenario-types.ts missing Scenario interface; got:\n%s", tb)
+		t.Errorf("scenario-types_gen.ts missing Scenario interface; got:\n%s", tb)
 	}
 	// Hybrid mode contract: the passthrough opt-in must be exported on the
 	// Scenario interface, otherwise scenarios can't forward unmatched RPCs
 	// to the real backend and the hybrid wiring is dead code.
 	if !strings.Contains(string(tb), "passthrough?:") {
-		t.Errorf("scenario-types.ts missing %q (required for hybrid mode); got:\n%s", "passthrough?:", tb)
+		t.Errorf("scenario-types_gen.ts missing %q (required for hybrid mode); got:\n%s", "passthrough?:", tb)
 	}
 
-	// index.ts exists and references the hand-edited default.
-	indexPath := filepath.Join(mocksDir, "scenarios", "index.ts")
+	// index_gen.ts exists and references the hand-edited default.
+	indexPath := filepath.Join(mocksDir, "scenarios", "index_gen.ts")
 	ib, err := os.ReadFile(indexPath)
 	if err != nil {
-		t.Fatalf("read index.ts: %v", err)
+		t.Fatalf("read index_gen.ts: %v", err)
 	}
 	if !strings.Contains(string(ib), `from "./default"`) {
-		t.Errorf("index.ts missing default reference; got:\n%s", ib)
+		t.Errorf("index_gen.ts missing default reference; got:\n%s", ib)
 	}
 }
 

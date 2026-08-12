@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/schemadef"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // Entity birth and the CRUD conversion generator share ONE contract, stated

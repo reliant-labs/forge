@@ -110,6 +110,144 @@ type ConfigTemplateData struct {
 	// GenerateConfigLoader; left empty by callers that only need the
 	// field partition (e.g. ConfigBlocksFromMessages).
 	Module string
+
+	// BinaryConfigs are the per-binary config surfaces, one per config
+	// message carrying a (forge.v1.binary_config).binary annotation. EMPTY
+	// for the common project that annotates nothing — config.go.tmpl then
+	// emits exactly what it always did, so per-binary config costs the
+	// single-binary case nothing.
+	BinaryConfigs []BinaryConfig
+
+	// RootConfigMessage names the project-global config message that
+	// `Config`, `RegisterFlags` and `Load` are emitted for — "AppConfig" in
+	// every scaffolded project. It is empty only when a project has moved
+	// ENTIRELY to per-binary configs and deleted its AppConfig, in which
+	// case the template emits the per-binary surfaces alone rather than
+	// aliasing a type that no longer exists.
+	RootConfigMessage string
+}
+
+// BinaryConfig is one binary's complete config surface: the message that
+// carries its (forge.v1.binary_config).binary annotation, resolved into the
+// shape the templates and the KCL projection consume.
+//
+// One of these per binary is what makes ownership DISJOINT. Every consumer
+// — the Go loader shim, the KCL schema, the env projection — is built from
+// exactly one BinaryConfig, so a field deleted from one binary's message
+// is absent from that binary's flags, schema and Deployment env and reaches
+// no other binary.
+type BinaryConfig struct {
+	// Binary is the cmd/<name> leaf this config belongs to.
+	Binary string
+	// MessageName is the config message's proto name (e.g. "AdminConfig") —
+	// the generated Go type this binary's Config aliases.
+	MessageName string
+	// Fields is every leaf this binary resolves, composed blocks included,
+	// each with its GoPath set. This is what the binary's env projection and
+	// its Deployment's env vars are built from: the union of what the
+	// process actually reads, and nothing else.
+	Fields []ConfigTemplateField
+	// OwnFields are the leaves declared DIRECTLY on the binary's message —
+	// the fields only it reads. They register as LOCAL cobra flags on the
+	// binary's subcommand.
+	OwnFields []ConfigTemplateField
+	// SharedFields are the leaves reached through a composed block (the
+	// BaseConfig case). They register as PERSISTENT flags on the root, so one
+	// definition serves every binary while each resolves its own value.
+	SharedFields []ConfigTemplateField
+	// Blocks are the config blocks this message composes, in declaration
+	// order — the shared definitions, named so the template can reach them.
+	Blocks []ConfigBlockRef
+}
+
+// BinaryConfigsFromMessages resolves the per-binary config surfaces from a
+// project's parsed config messages: one BinaryConfig per message carrying a
+// (forge.v1.binary_config).binary annotation, in declaration order.
+//
+// A project that annotates nothing gets NO BinaryConfigs, and every caller
+// falls back to the single project-global AppConfig path — which is why
+// per-binary config is additive and the common single-binary project is
+// unchanged. Selection is by ANNOTATION, never by message name.
+func BinaryConfigsFromMessages(messages []ConfigMessage) []BinaryConfig {
+	byName := make(map[string]*ConfigMessage, len(messages))
+	for i := range messages {
+		byName[messages[i].Name] = &messages[i]
+	}
+
+	var out []BinaryConfig
+	for i := range messages {
+		m := &messages[i]
+		if m.Binary == "" {
+			continue
+		}
+		bc := BinaryConfig{Binary: m.Binary, MessageName: m.Name}
+		for _, f := range m.Fields {
+			// A message-typed field naming another config message is a
+			// composed block — the shared half. Its leaves keep their own
+			// annotations and are qualified through the block field, exactly
+			// as component config blocks already are.
+			if f.ProtoType == "message" && f.MessageType != "" {
+				bm, known := byName[f.MessageType]
+				if !known {
+					continue
+				}
+				bc.Blocks = append(bc.Blocks, ConfigBlockRef{FieldName: f.GoName, TypeName: f.MessageType})
+				for _, bf := range bm.Fields {
+					if bf.ProtoType == "message" && bf.MessageType != "" {
+						continue // one nesting level, as elsewhere
+					}
+					tf := configTemplateField(bf, f.GoName+"."+bf.GoName)
+					bc.Fields = append(bc.Fields, tf)
+					bc.SharedFields = append(bc.SharedFields, tf)
+				}
+				continue
+			}
+			tf := configTemplateField(f, f.GoName)
+			bc.Fields = append(bc.Fields, tf)
+			bc.OwnFields = append(bc.OwnFields, tf)
+		}
+		out = append(out, bc)
+	}
+	return out
+}
+
+// ConfigFieldsForBinary returns the raw ConfigFields one binary resolves —
+// its own leaves plus the leaves of every block it composes — in the order
+// the KCL emitters expect. It is the ConfigField-level twin of
+// BinaryConfig.Fields, kept separate because the KCL projection works from
+// the parsed proto fields (env_var/sensitive/default), not the Go template
+// shape.
+//
+// This is what makes a workload's Deployment carry only ITS binary's env
+// vars: the projection for a binary is emitted from exactly this set.
+func ConfigFieldsForBinary(messages []ConfigMessage, binary string) []ConfigField {
+	byName := make(map[string]*ConfigMessage, len(messages))
+	for i := range messages {
+		byName[messages[i].Name] = &messages[i]
+	}
+	for i := range messages {
+		m := &messages[i]
+		if m.Binary != binary {
+			continue
+		}
+		var out []ConfigField
+		for _, f := range m.Fields {
+			if f.ProtoType == "message" && f.MessageType != "" {
+				if bm, known := byName[f.MessageType]; known {
+					for _, bf := range bm.Fields {
+						if bf.ProtoType == "message" && bf.MessageType != "" {
+							continue
+						}
+						out = append(out, bf)
+					}
+				}
+				continue
+			}
+			out = append(out, f)
+		}
+		return out
+	}
+	return nil
 }
 
 // ConfigBlockRef names one component config block as composed on the
@@ -172,11 +310,38 @@ func BuildConfigTemplateData(messages []ConfigMessage) ConfigTemplateData {
 		}
 	}
 
-	data := ConfigTemplateData{}
+	data := ConfigTemplateData{BinaryConfigs: BinaryConfigsFromMessages(messages)}
 	seenBlockType := map[string]bool{}
 	for _, m := range messages {
 		if isBlock[m.Name] {
 			continue
+		}
+		// A message bound to a binary is that binary's config, emitted
+		// through data.BinaryConfigs. Flattening its fields onto the root
+		// Config too would put every binary's fields (and secrets) back on
+		// one shared type — precisely what per-binary config exists to
+		// prevent.
+		//
+		// A message bound to a FRONTEND is skipped for the same reason and
+		// one more: it is not Go config at all. Its projections are the
+		// TypeScript module, the KCL schema and the browser's config.js —
+		// there is no binary that loads it, so aliasing `Config` to it
+		// would type the whole backend against a browser's config surface.
+		//
+		// Skipping BOTH is what the reachability lint already assumes
+		// (see rootConfigMessage in lint_config_reach.go). Before the
+		// scaffold declared a frontend config, no project reached this
+		// branch with one, so the asymmetry was invisible: a project whose
+		// frontend message sorted ahead of AppConfig — `admin_config.proto`
+		// before `config.proto` — got `type Config = configv1.AdminConfig`
+		// and every cfg.Jwt* reference in internal/app stopped compiling.
+		if m.Binary != "" || m.Frontend != "" {
+			continue
+		}
+		// The first unbound, non-block message is the project-global config
+		// the `Config` alias is emitted for (AppConfig in every scaffold).
+		if data.RootConfigMessage == "" {
+			data.RootConfigMessage = m.Name
 		}
 		for _, f := range m.Fields {
 			if f.ProtoType == "message" {
@@ -462,6 +627,54 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 	return nil
 }
 
+// ScaffoldCmdAuthIfMissing births cmd/<bin>/cmd/auth.go — the
+// `auth idp-provision` subcommand — for a project that declares a
+// frontend. Write-if-absent (writeForgeScaffoldOnce), so this is also the
+// upgrade path for a project scaffolded before this command existed: the
+// next `forge generate` births it without touching anything else.
+//
+// A no-op for a project with no frontend: an IdP exists to complete a
+// browser sign-in, so a project with no browser must not be handed a
+// command that registers one it will never call — the same gate
+// docker-compose.yml's `idp` service and the `idp-provision` workload
+// stanza (ScaffoldWorkloadsKCL) both use.
+//
+// Deliberately NOT part of the codegen.Service contract (unlike
+// GenerateCmdServerWithFields): it has no config-field dependency and no
+// caller needs to fake it independently of the rest of the cmd-tree birth
+// pass it runs alongside.
+func ScaffoldCmdAuthIfMissing(hasFrontend bool, frontendName, targetDir string) error {
+	if !hasFrontend {
+		return nil
+	}
+	treeDir := primaryCmdTreeDir(targetDir)
+	if treeDir == "" {
+		return nil
+	}
+	modulePath, err := GetModulePath(targetDir)
+	if err != nil {
+		return fmt.Errorf("read module path: %w", err)
+	}
+	data := struct {
+		Module       string
+		Name         string
+		FrontendName string
+	}{
+		Module:       modulePath,
+		Name:         filepath.Base(filepath.Dir(treeDir)),
+		FrontendName: frontendName,
+	}
+	content, rerr := templates.ProjectTemplates().Render("cmd-tree-auth.go.tmpl", data)
+	if rerr != nil {
+		return fmt.Errorf("render cmd-tree-auth.go.tmpl: %w", rerr)
+	}
+	dest := filepath.Join(treeDir, "auth.go")
+	if _, werr := writeForgeScaffoldOnce(targetDir, dest, content); werr != nil {
+		return fmt.Errorf("write %s: %w", dest, werr)
+	}
+	return nil
+}
+
 // primaryCmdTreeDir returns the project-relative directory of the primary
 // binary's command tree (cmd/<bin>/cmd), discovered by glob so this path
 // doesn't need to re-read forge.yaml for the binary name.
@@ -497,7 +710,34 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 	// messages additionally get nested struct types on Config.
 	data := BuildConfigTemplateData(messages)
 
-	if len(data.Fields) == 0 {
+	// "No ROOT fields" and "nothing to generate" are different things, and
+	// conflating them was the fr-config-all-binary bug.
+	//
+	// data.Fields collects only the fields of UNANNOTATED root messages —
+	// a message bound to a binary is deliberately excluded, because
+	// flattening it onto the root Config would put every binary's fields
+	// (and secrets) back on one shared type, which is exactly what
+	// per-binary config exists to prevent. So a project that annotates
+	// EVERY config message — the natural end state of the per-binary
+	// migration — has an empty Fields by design while having a complete
+	// per-binary surface to emit.
+	//
+	// Early-returning on len(Fields)==0 therefore emitted the per-binary
+	// KCL while leaving pkg/config/config_gen.go STALE: the Go half kept
+	// whatever it said before the migration, with no error and no warning.
+	// A project had to keep a deliberately unannotated AppConfig to work
+	// around it.
+	//
+	// The all-annotated project is LEGITIMATE, not a user error: the deploy
+	// half already emits a per-binary KCL schema for exactly this shape, so
+	// refusing it in the Go half would make forge reject a project its own
+	// generator otherwise supports. config.go.tmpl already gates the root
+	// alias/Load/RegisterFlags on .RootConfigMessage, so an all-annotated
+	// project renders the per-binary surfaces alone and no root Config type
+	// — which is the honest description of that project.
+	//
+	// Only a project with NO config surface at all is a genuine no-op.
+	if len(data.Fields) == 0 && len(data.BinaryConfigs) == 0 {
 		return nil
 	}
 
@@ -515,8 +755,13 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 		return fmt.Errorf("render config.go.tmpl: %w", err)
 	}
 
-	if err := writeForgeOwned(targetDir, filepath.Join("pkg", "config", "config.go"), content, cs); err != nil {
-		return fmt.Errorf("write pkg/config/config.go: %w", err)
+	// Renamed to _gen so the name states the tier. This one mattered most:
+	// pkg/config/config.go is a path every Go developer expects to own, and
+	// its old spelling invited exactly the hand-edit that hash-guarding then
+	// punished as permanent drift.
+	RetireRenamedGenerated(targetDir, filepath.Join("pkg", "config", "config.go"), cs)
+	if err := writeForgeOwned(targetDir, filepath.Join("pkg", "config", "config_gen.go"), content, cs); err != nil {
+		return fmt.Errorf("write pkg/config/config_gen.go: %w", err)
 	}
 	return nil
 }

@@ -73,18 +73,30 @@ SQL is the schema language. Entities are PROJECTIONS of the applied `db/migratio
 
 Load `proto` and `db` for the full rulesets. `{{.CLI}} lint --conventions` enforces the structural ones (`forgeconv-one-service-per-file`, `forgeconv-internal-package-contract-names`, `forgeconv-no-handler-error-mapping`).
 
+## The scaffolded frontend is starter code
+
+The UI forge scaffolds has the same status as Rails scaffolding — it proves the stack is wired end to end, and it is not a design. Do not hand it to a user and call the work finished.
+
+Placeholder by construction: the dashboard's entity-tile grid, the sidebar nav, the sign-in screen, and every generated list/detail/create/edit page. These are "yours" files — forge writes them once and then leaves them alone (`nav.tsx` and `dashboard.tsx` keep refreshing only until your first edit, then they are yours too). Rewriting them wholesale is the expected next step, not a deviation from the scaffold.
+
+Ready to show a user means an information hierarchy built around what this product actually does rather than around the entity list, real copy instead of "Manage tasks", and empty/loading/error states that were designed rather than inherited from the default ladder. It also means a brief — what the product should look and feel like — which only the user can give you.
+
+Load `frontend/design` before starting that work. It asks for the brief first and will not let you invent an aesthetic without one.
+
+Forge deliberately does not guess your product's visual identity. A scaffold that shipped an invented one would be harder to replace than one that is obviously neutral, because you would spend the first hour arguing with taste that nobody chose.
+
 ## Critical rules
 
-1. **Never edit generated code** — `gen/`, `*_gen.go`, `*-hooks.ts`, and `internal/app/compose.go` / `mounts_services.go` / `lifecycle.go`. All overwritten by `{{.CLI}} generate`. Edit the proto / `contract.go` / config instead.
+1. **Never edit generated code** — `gen/`, `*_gen.go`, `*-hooks.ts`, and `internal/app/compose.go` / `mounts_services_gen.go` / `lifecycle.go`. All overwritten by `{{.CLI}} generate`. Edit the proto / `contract.go` / config instead.
 2. **Proto is the API's canonical input** — API contracts and frontend hooks derive from proto definitions.
 3. **Migrations are the DB source of truth** — the schema comes from migrations; entities/ORM are projected from the APPLIED schema, not from proto.
 4. **Always run `{{.CLI}} lint` after `{{.CLI}} generate`.** The triple gate before you call a phase done:
    ```
-   {{.CLI}} generate && {{.CLI}} lint && go build ./... && go test ./...
+   {{.CLI}} generate && {{.CLI}} lint && go build ./... && task test
    ```
    `{{.CLI}} lint` catches contract-gaps (packages with exported methods but no `contract.go`), multi-service proto files, missing-annotation rules, and exported-vars violations. Running it at every phase is cheap; backfilling six phases later is not.
 5. **`{{.CLI}} generate` is safe** — it never overwrites hand-written business logic (handler files, `internal/app/providers.go`, `internal/app/auth.go`, etc.).
-6. **Use `{{.CLI}} test`**, not raw `go test`. The CLI sets up the test database, build tags, and flags.
+6. **`task test` is the test suite** — Go plus every frontend's tests, with the database, build tags and flags already set up. There is no `{{.CLI}} test`: a second spelling could disagree with the Taskfile, so it was removed. `task test -- ./internal/foo/...` scopes to Go packages, `task test:integration` and `task test:e2e` are the tagged lanes.
 
 ## When forge itself is wrong
 

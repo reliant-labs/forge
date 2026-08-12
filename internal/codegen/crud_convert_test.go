@@ -21,7 +21,7 @@ import (
 // literal can express — ran in production and in no test.
 //
 // That is the sharpest place for a gap to be, because the function exists
-// to fix a bug that ships silently. A `// forge:server-set` column is by
+// to fix a bug that ships silently. A `// forge:read-only` column is by
 // construction absent from the create request, so the op leaves the Go
 // field at its zero and Bun writes that zero. For a column whose DEFAULT
 // is NOT the Go zero the row is invalid on arrival — an enum column born
@@ -64,10 +64,10 @@ var canonicalDefaults = map[string]defaultProjection{
 	"bool":    {sqlDefault: "true", goLiteral: "true", zeroDefault: "false"},
 }
 
-// serverSetEntity builds an entity whose create request carries NO
+// readOnlyEntity builds an entity whose create request carries NO
 // fields, so every column reaches schemaDefaultAssigns — the
-// `// forge:server-set` shape, which is the only way this code runs.
-func serverSetEntity(cols ...EntityColumn) (ServiceDef, Method, EntityDef) {
+// `// forge:read-only` shape, which is the only way this code runs.
+func readOnlyEntity(cols ...EntityColumn) (ServiceDef, Method, EntityDef) {
 	svc := ServiceDef{
 		Package: "orders.v1",
 		Schemas: map[string][]SchemaFieldDef{
@@ -83,7 +83,7 @@ func serverSetEntity(cols ...EntityColumn) (ServiceDef, Method, EntityDef) {
 // never quietly assert on an error path instead.
 func createAssigns(t *testing.T, cols ...EntityColumn) []string {
 	t.Helper()
-	svc, m, entity := serverSetEntity(cols...)
+	svc, m, entity := readOnlyEntity(cols...)
 	assigns, unmapped := buildCreateAssigns(svc, m, entity)
 	if err := UnmappedFieldsError(unmapped); err != nil {
 		t.Fatalf("unexpected unmapped fields: %v", err)

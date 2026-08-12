@@ -197,7 +197,7 @@ env_merge = lambda base: [EnvVar], overrides: [EnvVar] -> [EnvVar] {
 #
 # Per-env app config is NOT passed via `-D`: it lives in the typed AppConfig
 # instance in `deploy/kcl/<env>/config.k` and is projected into each workload's
-# env by `config_projection.appConfigEnvMap` — read config there, not via raw
+# env by `config_gen.appConfigEnvMap` — read config there, not via raw
 # `option()`.
 
 # env() — the current environment name (the `-D env=<name>` binding the forge

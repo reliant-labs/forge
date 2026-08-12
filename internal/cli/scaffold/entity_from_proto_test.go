@@ -357,6 +357,118 @@ func TestAddEntityFromProto_BatchUnionsMarkedMessages(t *testing.T) {
 	}
 }
 
+// entityFromProtoRetiredMarkerProto is the raw fixture carrying the retired
+// `forge:server-set` spelling on a marked entity, PLUS the two shapes that
+// must never trip the refusal: prose that merely mentions forge markers, and
+// markers belonging to other passes (forge:secret in the descriptor path,
+// forge:mutation in the frontend hook generator).
+const entityFromProtoRetiredMarkerProto = `syntax = "proto3";
+
+package services.tasks.v1;
+
+option go_package = "example.com/testproj/gen/services/tasks/v1;tasksv1";
+
+service TasksService {
+  rpc CreateDraft(CreateDraftRequest) returns (CreateDraftResponse);
+}
+
+// forge:entity
+// See the forge:read-only docs; the forge:server-set spelling was retired.
+message Gadget {
+  string id = 1;
+  // forge:server-set
+  string status = 2;
+  int64 amount = 3;
+}
+
+message CreateDraftRequest { string body = 1; }
+message CreateDraftResponse { string id = 1; }
+`
+
+// TestAddEntityFromProto_RetiredMarkerRefusesBirth is the end-to-end proof of
+// the closed gap: before the retired-marker ledger this proto birthed
+// happily, exit zero, with `status` client-writable on the born Create
+// request — exactly what the author's `forge:server-set` comment says it is
+// not. Birth must now refuse, name the replacement, and write nothing.
+func TestAddEntityFromProto_RetiredMarkerRefusesBirth(t *testing.T) {
+	dir := setupEntityFromProtoProject(t)
+	protoRel := filepath.Join("proto", "services", "tasks", "v1", "tasks.proto")
+	writeFixtureFile(t, dir, protoRel, entityFromProtoRetiredMarkerProto)
+
+	_, err := captureStdout(t, func() error {
+		return runEntityFromProto(nil, "tasks", entityOpts{})
+	})
+	if err == nil {
+		t.Fatal("birth must REFUSE a message carrying a retired marker, got nil error")
+	}
+	msg := err.Error()
+	// The message is a runbook: what is wrong, that it currently does
+	// nothing, and the literal replacement spelling.
+	for _, want := range []string{"forge:server-set", "forge:read-only", "Gadget"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refusal must mention %q, got:\n%s", want, msg)
+		}
+	}
+	// Nothing written: the refusal costs no migration.
+	entries, _ := os.ReadDir(filepath.Join(dir, "db", "migrations"))
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "_create_gadgets") {
+			t.Errorf("refused birth must write no migration, found %s", e.Name())
+		}
+	}
+}
+
+// TestAddEntityFromProto_OtherPassMarkersAndProseDoNotRefuse is the
+// false-positive guard that matters most: a spurious birth refusal breaks
+// every project that builds today. forge:secret (descriptor path),
+// forge:mutation (frontend hooks) and prose containing `forge:` must all
+// birth exactly as before.
+func TestAddEntityFromProto_OtherPassMarkersAndProseDoNotRefuse(t *testing.T) {
+	dir := setupEntityFromProtoProject(t)
+	protoRel := filepath.Join("proto", "services", "tasks", "v1", "tasks.proto")
+	writeFixtureFile(t, dir, protoRel, `syntax = "proto3";
+
+package services.tasks.v1;
+
+option go_package = "example.com/testproj/gen/services/tasks/v1;tasksv1";
+
+service TasksService {
+  rpc CreateDraft(CreateDraftRequest) returns (CreateDraftResponse);
+}
+
+// forge:entity
+// Fields below follow the forge: marker conventions; see the forge:read-only
+// docs for the write-surface rules.
+message Gadget {
+  string id = 1;
+  // forge:secret
+  string token = 2;
+  // forge:read-only
+  string status = 3;
+  bool armed = 4; // forge:mutation applies to rpcs, not fields
+}
+
+message CreateDraftRequest { string body = 1; }
+message CreateDraftResponse { string id = 1; }
+`)
+
+	if _, err := captureStdout(t, func() error {
+		return runEntityFromProto(nil, "tasks", entityOpts{})
+	}); err != nil {
+		t.Fatalf("prose and other-pass markers must NOT refuse birth: %v", err)
+	}
+	found := false
+	entries, _ := os.ReadDir(filepath.Join(dir, "db", "migrations"))
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "_create_gadgets.up.sql") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Gadget should have birthed normally")
+	}
+}
+
 func TestAddEntityFromProto_BatchDryRunWritesNothing(t *testing.T) {
 	dir := setupEntityFromProtoProject(t)
 	protoRel := filepath.Join("proto", "services", "tasks", "v1", "tasks.proto")

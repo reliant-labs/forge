@@ -49,9 +49,10 @@ Sub-commands surface that capability for ad-hoc debugging from the shell.`,
 // read-only and side-effect free: it never executes the curl, only prints it.
 func newAPICurlCmd() *cobra.Command {
 	var (
-		port int
-		body string
-		host string
+		port      int
+		body      string
+		host      string
+		authToken string
 	)
 	cmd := &cobra.Command{
 		Use:   "curl <service.method>",
@@ -83,9 +84,10 @@ or paste into a debugger / Postman / HTTPie session.`,
 					"run from inside a forge project, or `cd` to one first")
 			}
 			out, err := buildCurlCommand(projectDir, args[0], curlOptions{
-				port: port,
-				body: body,
-				host: host,
+				port:      port,
+				body:      body,
+				host:      host,
+				authToken: authToken,
 			})
 			if err != nil {
 				return err
@@ -97,6 +99,7 @@ or paste into a debugger / Postman / HTTPie session.`,
 	cmd.Flags().IntVar(&port, "port", 0, "Port the app listens on (default 8080; set per-env in deploy/kcl)")
 	cmd.Flags().StringVar(&body, "body", "", "Request body JSON (default: zero-value skeleton from proto fields)")
 	cmd.Flags().StringVar(&host, "host", "localhost", "Host name to embed in the URL")
+	cmd.Flags().StringVar(&authToken, "auth-token", "", "Bearer token to inline (default: a $TOKEN placeholder on RPCs that require auth)")
 	return cmd
 }
 
@@ -104,9 +107,10 @@ or paste into a debugger / Postman / HTTPie session.`,
 // Bundled as a struct so the signature stays stable as we add knobs
 // (e.g. --auth-token) without churn at every call site.
 type curlOptions struct {
-	port int
-	body string
-	host string
+	port      int
+	body      string
+	host      string
+	authToken string
 }
 
 // buildCurlCommand is the pure function under the cobra command. It loads
@@ -161,16 +165,45 @@ func buildCurlCommand(projectDir, target string, opts curlOptions) (string, erro
 		streamingNote = "\n# Note: this RPC is streaming — curl will only send/receive the first frame."
 	}
 
+	// The descriptor already knows whether the interceptor will turn this
+	// caller away (AuthRequired mirrors the proto's auth_required, which is
+	// fail-closed by default). Emitting a curl that is guaranteed to 401 and
+	// saying nothing is the difference between a command you can paste and a
+	// command you have to debug.
+	authHeader := ""
+	authNote := ""
+	switch {
+	case opts.authToken != "":
+		authHeader = fmt.Sprintf("\n  -H 'Authorization: Bearer %s' \\", opts.authToken)
+	case method.AuthRequired:
+		authHeader = "\n  -H \"Authorization: Bearer $TOKEN\" \\"
+		authNote = "\n# This RPC requires authentication (auth_required). Set $TOKEN first —\n# `forge skill load auth/dev-loop` covers minting one locally, or pass --auth-token."
+	}
+
 	// Single-line-per-segment, copy-pasteable. Keep the body inline (the
 	// skeleton is small) so users can edit it in place before sending.
 	curl := fmt.Sprintf(`curl -X POST \
-  -H 'Content-Type: %s' \
+  -H 'Content-Type: %s' \%s
   -d %s \
   %s`,
 		contentType,
+		authHeader,
 		shellQuoteSingle(bodyJSON),
 		url,
 	)
+	if authNote != "" {
+		curl += authNote
+	}
+	// The dev loop binds a KERNEL-ASSIGNED port at launch (so several stacks
+	// coexist on one host) and never persists it — it exists in the `forge run`
+	// banner and nowhere on disk. So this default is right for a deployed env
+	// and wrong for the local stack the user most likely wants to hit, and
+	// saying so is cheaper than the round-trip through a connection refused.
+	if opts.port == 0 {
+		curl += fmt.Sprintf(
+			"\n# Port %d is the AppConfig default. `forge run` binds an ephemeral port instead —\n# take it from the launch banner (or `forge env status <env>`) and pass --port.",
+			defaultServePort)
+	}
 	if streamingNote != "" {
 		curl += streamingNote
 	}

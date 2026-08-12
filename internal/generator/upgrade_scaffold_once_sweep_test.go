@@ -40,13 +40,12 @@ import (
 // these command-tree files" — a fact that changes when a file is added or
 // renamed, not when its ownership changes.
 var cmdTreeTemplates = map[string]string{
-	"cmd-tree-root.go.tmpl":      "root.go",
-	"cmd-tree-serve.go.tmpl":     "serve.go",
-	"cmd-tree-server.go.tmpl":    "server.go",
-	"cmd-tree-version.go.tmpl":   "version.go",
-	"cmd-tree-db.go.tmpl":        "db.go",
-	"cmd-tree-db-source.go.tmpl": "db_source.go",
-	"cmd-tree-commands.go.tmpl":  "commands.go",
+	"cmd-tree-root.go.tmpl":     "root.go",
+	"cmd-tree-serve.go.tmpl":    "serve.go",
+	"cmd-tree-server.go.tmpl":   "server.go",
+	"cmd-tree-version.go.tmpl":  "version.go",
+	"cmd-tree-db.go.tmpl":       "db.go",
+	"cmd-tree-commands.go.tmpl": "commands.go",
 }
 
 // scaffoldOnceBanner is the canonical Tier-2 marker the banner linter

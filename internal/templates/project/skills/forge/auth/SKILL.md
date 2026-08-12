@@ -121,32 +121,20 @@ To personalize for callers who DO present a token, validate it in the handler, o
 
 ## Forge authenticates; it does not authorize
 
-**`auth_required: true` answers "is this caller signed in", never "may they touch
-THIS row".** The interceptor rejects callers with no valid token and then treats
-every authenticated caller alike — two users with valid tokens are
-indistinguishable to it. An authenticated rpc that reads an id from the request
-and returns the row is therefore reachable by every signed-in user, and on update
-a caller who supplies the whole message can also reassign the row to themselves.
+**Forge ships no authorization.** `auth_required: true` answers "is this caller
+signed in", never "may they touch THIS row" — the interceptor rejects callers
+with no valid token and then treats every authenticated caller alike. There is
+no annotation, config field or generated hook that expresses a policy; designing
+and enforcing one is application code.
 
-Ownership is a property of the row, so the check goes where the row is:
+Two forge-specific facts worth knowing before you write it:
 
-```go
-claims, err := middleware.GetUser(ctx)
-if err != nil { return nil, err }
-rec, err := s.records.ByID(ctx, req.Msg.GetId())
-if err != nil { return nil, err }
-if rec.OwnerID != claims.UserID {
-    return nil, connect.NewError(connect.CodeNotFound, errors.New("record not found"))
-}
-```
-
-`NotFound` over `PermissionDenied` — confirming a row exists but is not yours is
-itself a disclosure. Filter LIST inside the query, not after it, or the total
-leaks what the page hides.
-
-Generated CRUD delegations are the common miss: they compile, pass their tests,
-and read as finished. `auth_required: true` on an update means someone
-is signed in. It does not mean the row is theirs.
+- **Generated CRUD delegations carry no policy.** They compile, pass their
+  scaffolded tests, and read as finished, so an unenforced rpc looks identical
+  to an enforced one. `db/crud-overrides` covers the seams for putting a policy
+  on one.
+- **`middleware.GetUser(ctx)` is where the principal comes from.** The
+  interceptor already proved the caller has an identity; that call gets it.
 
 ## Making a principal an application principal: the `Enrich` seam
 
@@ -164,9 +152,9 @@ A bearer credential you own end to end: your table, your store, `forge/pkg/apike
 
 ## Dev mode
 
-Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors) — **authentication is enforced in every mode**, and no environment variable turns it off. A local call to a protected RPC needs a real token: mint one against an HS256 `jwt_secret` in `.env.dev`, or bring up the **opt-in** dev IdP container (`docker-compose.yml` gates it behind a compose profile, off by default so a project with no browser does not pay for it).
+Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors) — **authentication is enforced in every mode**, and no environment variable turns it off. A local call to a protected RPC needs a real token: mint one against an HS256 `jwt_secret` in the env's secret store (`forge secret set dev JWT_SECRET`), or use the dev IdP, which `forge run` brings up as a host process for any project that declares a frontend. It is Zitadel, and its instance is DECLARED in `idp-steps.yaml` — `forge run` reproduces it, credential included.
 
-Load `auth/dev-loop` before debugging a local 401: it covers the two traps that are not your wiring — a containerized IdP has two hostnames (set `jwt_issuer` AND `jwt_jwks_url`), and some IdPs issue opaque access tokens no JWKS can validate.
+Load `auth/dev-loop` before debugging a local 401: it covers the traps that are not your wiring — the dev IdP answers to ONE hostname (`localhost`, which is why its dev loop is `forge run`, not a containerized app), and an OIDC app registered with the default token type mints OPAQUE access tokens no JWKS can validate.
 
 ## Frontend wiring
 
@@ -182,9 +170,9 @@ Inject claims: `middleware.ContextWithClaims(ctx, &middleware.Claims{UserID: "us
 - **Whether this server authenticates is answerable FROM SOURCE** — `AuthDeps{AnonymousOK: false}` in the generated serve wiring plus the protos' `auth_required` declarations, both readable in a diff. No env var, no config field, and no runtime condition may decide it: an opt-out settable from a shell cannot be reviewed.
 - `auth_required: false` on the rpc is the ONE way to publish an endpoint; it is enforced, not documentation. Never bypass auth by removing the interceptor.
 - **A public handler gets NO claims, even from a caller who offered a token** — the allow-list is checked before any credential is. Handle both cases: `ClaimsFromContext` and check `ok`, never a blind deref.
-- On an authenticated RPC, `middleware.GetUser` gives you the principal to scope rows to — not proof of authentication, which the interceptor already established.
+- On an authenticated RPC, `middleware.GetUser` gives you the principal — not proof of authentication, which the interceptor already established.
 - Custom claim DATA rides `enrichClaims`, not a parallel claim type. Hydrate by the IdP `sub`, never by email.
 - **Input validation is protovalidate's job**, via `buf.validate` rules on the proto — not `enrichClaims`, which runs only on authenticated requests and reports failures as auth errors.
-- Pin the dev IdP's image to an exact version; a moving tag makes "login broke today" unattributable.
+- Pin the dev IdP's image to an exact version; a moving tag makes "login broke today" unattributable. Declare its instance (`idp-steps.yaml`) rather than clicking through a console — a setup step that must be RUN is one a teammate's clone will not have.
 - **Forge validates tokens; it never issues them.** No login/signup/logout route belongs in a service — implement `AuthProvider` against your IdP. Provisioning is yours: a public `Register` RPC that trusts the verified `sub`, never a body field.
-- This skill ends at identity. **Authorization is application code** — what a caller may do is yours to design and enforce. See the `security-review` skill for the review bar.
+- This skill ends at identity. **Forge ships no authorization** — what a caller may do is yours to design and enforce, and nothing in the framework will flag its absence.

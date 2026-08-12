@@ -29,16 +29,15 @@
 //
 // Library reference: github.com/reliant-labs/forge/pkg/tdd
 // Skill: forge skill load testing/patterns
-// Migration:  forge skill load migrations/v0.x-to-tdd-rpccases
 package {{.ServicePackage}}_test
 {{- if or $m.ClientStreaming $m.ServerStreaming}}
 
 // TODO: {{$m.Name}} is a streaming RPC and tdd.RunRPCCases targets unary
 // handlers. This file is {{$m.Name}}'s slot — write the streaming test here.
 //
-// The service instance comes from app.NewTest{{.TestHelperName}}(t) (see
-// pkg/app/testing.go); pass app.With{{.TestHelperName}}Deps(...) to override
-// a dependency.
+// The service instance comes from {{.ServicePackage}}.NewTest{{.TestHelperName}}(t)
+// (see this package's helpers_gen_test.go); pass
+// {{.ServicePackage}}.With{{.TestHelperName}}Deps(...) to override a dependency.
 {{- else}}
 
 import (
@@ -50,13 +49,16 @@ import (
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
 
-	{{/* The handler package itself is deliberately NOT imported: nothing
-	     here names a type from it, and Go rejects an unused import. Add
-	     `{{.ServicePackage}} "{{.Module}}/internal/handlers/{{.ServiceImportPath}}"`
-	     when an assertion needs one. (The import path uses the on-disk dir
-	     leaf; the selector uses the package clause, and the two may legally
-	     differ — hence the explicit alias.) */ -}}
-	"{{.Module}}/pkg/app"
+	{{/* The handler package is imported for its test factory: NewTest<X> is
+	     declared in that package's OWN helpers_gen_test.go (package
+	     {{.ServicePackage}}, a _test.go file). Go compiles a package's
+	     in-package _test.go files INTO the package under test, and this
+	     external {{.ServicePackage}}_test package imports that augmented
+	     package — so the helper is visible here, while `testing` never
+	     reaches the production binary. (The import path uses the on-disk
+	     dir leaf; the selector uses the package clause, and the two may
+	     legally differ — hence the explicit alias.) */ -}}
+	{{.ServicePackage}} "{{.Module}}/internal/handlers/{{.ServiceImportPath}}"
 )
 
 // Test{{$m.Name}}_Generated runs the canonical scaffold rows for {{$m.Name}}.
@@ -65,10 +67,10 @@ import (
 func Test{{$m.Name}}_Generated(t *testing.T) {
 	t.Parallel()
 
-	// app.NewTest{{.TestHelperName}} (pkg/app/testing.go) returns the
+	// {{.ServicePackage}}.NewTest{{.TestHelperName}} (helpers_gen_test.go) returns the
 	// {{.ServicePackage}} *Service wired with stubbed dependencies. Override one
-	// with app.With{{.TestHelperName}}Deps(...), or per-row via Case.Setup.
-	svc := app.NewTest{{.TestHelperName}}(t)
+	// with {{.ServicePackage}}.With{{.TestHelperName}}Deps(...), or per-row via Case.Setup.
+	svc := {{.ServicePackage}}.NewTest{{.TestHelperName}}(t)
 
 	tdd.RunRPCCases(t, []tdd.RPCCase[pb.{{$m.InputType}}, pb.{{$m.OutputType}}]{
 		{
@@ -76,15 +78,15 @@ func Test{{$m.Name}}_Generated(t *testing.T) {
 			// is the generated CodeUnimplemented stub. Implementing the
 			// handler makes this row FAIL — replace it then with real
 			// assertions, e.g.
-			//   { Name: "happy_path", Req: ..., Ctx: app.AuthedContext(t),
+			//   { Name: "happy_path", Req: ..., Ctx: {{.ServicePackage}}.AuthedContext(t),
 			//     Check: func(t *testing.T, resp *connect.Response[pb.{{$m.OutputType}}]) { ... } },
 			//   { Name: "missing_required_field", Req: ...,
-			//     Ctx: app.AuthedContext(t), WantErr: connect.CodeInvalidArgument },
+			//     Ctx: {{.ServicePackage}}.AuthedContext(t), WantErr: connect.CodeInvalidArgument },
 			// Ctx carries authenticated test claims (UserID "test-user",
 			// role "admin") so middleware.GetUser sees a principal.
 			Name:    "unimplemented_scaffold",
 			Req:     connect.NewRequest(&pb.{{$m.InputType}}{}),
-			Ctx:     app.AuthedContext(t),
+			Ctx:     {{.ServicePackage}}.AuthedContext(t),
 			WantErr: connect.CodeUnimplemented,
 		},
 	}, svc.{{$m.Name}})

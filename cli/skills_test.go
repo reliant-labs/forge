@@ -2,9 +2,42 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// plantProjectMigrationSkill writes a project-scope skill carrying
+// relevance=migration and returns the project root.
+//
+// forge ships no migration skills most of the time — the registry holds
+// one only while a release inside the supported upgrade window carries a
+// breaking change, and skills are deleted once they age out. These tests
+// pin the public API's BEHAVIOUR toward migration skills, which has to
+// hold whether or not the binary currently ships any, so they supply
+// their own instead of reaching for one that may not be there.
+func plantProjectMigrationSkill(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, ".forge", "skills", "migrations", "v0.5.0")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	body := `---
+name: v0.5.0
+description: the deploy target moved from forge.yaml into KCL
+relevance: migration
+version: v0.5.0
+---
+
+# Migrating to v0.5.0
+`
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	return root
+}
 
 // TestListSkillsSignatureStable is a compile-time pin of the public API
 // reliant links against: ListSkills(projectRoot string) ([]Skill, error)
@@ -23,8 +56,9 @@ func TestListSkillsSignatureStable(t *testing.T) {
 // metadata so consumers can make their own call.
 func TestListSkillsExcludesMigrationsByDefault(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // isolate from ~/.forge/skills
+	root := plantProjectMigrationSkill(t)
 
-	defaults, err := ListSkills("")
+	defaults, err := ListSkills(root)
 	if err != nil {
 		t.Fatalf("ListSkills: %v", err)
 	}
@@ -40,7 +74,7 @@ func TestListSkillsExcludesMigrationsByDefault(t *testing.T) {
 		}
 	}
 
-	all, err := ListSkillsWithOptions("", ListSkillsOptions{IncludeMigrationSkills: true})
+	all, err := ListSkillsWithOptions(root, ListSkillsOptions{IncludeMigrationSkills: true})
 	if err != nil {
 		t.Fatalf("ListSkillsWithOptions: %v", err)
 	}
@@ -64,14 +98,17 @@ func TestListSkillsExcludesMigrationsByDefault(t *testing.T) {
 
 // TestLoadSkillStillServesMigrations pins the load-by-path escape hatch:
 // listings hide migration skills, but LoadSkill must keep serving them
-// (forge project upgrade list points agents at exactly these paths).
+// (forge project upgrade list points agents at exactly these paths, so
+// this is the only route by which a migration is ever read).
 func TestLoadSkillStillServesMigrations(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	body, err := LoadSkill("", "migrations/v0.x-to-contractkit")
+	root := plantProjectMigrationSkill(t)
+
+	body, err := LoadSkill(root, "migrations/v0.5.0")
 	if err != nil {
 		t.Fatalf("LoadSkill: %v", err)
 	}
-	if !strings.Contains(string(body), "contractkit") {
+	if !strings.Contains(string(body), "Migrating to v0.5.0") {
 		t.Error("migration skill body looks wrong")
 	}
 }

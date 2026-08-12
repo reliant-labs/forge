@@ -10,8 +10,7 @@
 //
 // Nothing here is specific to any identity provider. Endpoints arrive as
 // arguments, either literally or from `discover()`, so the same code drives
-// Auth0, Clerk, Keycloak, Zitadel, Okta or Logto with only configuration
-// changing.
+// Auth0, Clerk, Keycloak, Zitadel or Okta with only configuration changing.
 //
 // # Relationship to forge/pkg/oauth2
 //
@@ -417,6 +416,27 @@ export interface ExchangeRequest {
   code: string;
   /** The verifier whose challenge was sent with the authorization request. */
   verifier: Verifier;
+  /**
+   * The API this token is FOR (RFC 8707 `resource`). Optional, and omitted
+   * from the request when unset.
+   *
+   * Some providers mint an OPAQUE access token unless the client names a
+   * registered API resource, and an opaque token is not a JWT: it fails
+   * signature validation with "invalid number of segments" however correct
+   * everything else is. Sending it here is what makes such a provider issue
+   * a JWT whose `aud` is this value, which is the same value the backend
+   * enforces as its audience.
+   *
+   * It must accompany the AUTHORIZATION request too — the provider decides
+   * the token's format when the code is issued, not when it is redeemed.
+   *
+   * Zitadel (the dev IdP forge scaffolds) decides this per APPLICATION
+   * rather than per request: an app registered with accessTokenType JWT
+   * already mints JWTs audienced to its own client id, so this parameter
+   * changes nothing there. Bringing the environment up sets both, so the
+   * value matches the backend's JWT_AUDIENCE either way.
+   */
+  resource?: string;
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -460,6 +480,9 @@ export async function exchangeCode(
     client_id: req.clientId,
     redirect_uri: req.redirectUri,
   });
+  if (req.resource) {
+    body.set("resource", req.resource);
+  }
 
   const doFetch = req.fetchImpl ?? globalThis.fetch;
   const response = await doFetch(req.endpoint, {
@@ -554,6 +577,15 @@ export interface RefreshRequest {
   clientId: string;
   /** The refresh token to redeem. Required. */
   refreshToken: string;
+  /**
+   * The API the refreshed token is FOR (RFC 8707 `resource`). Optional.
+   *
+   * Pass the SAME value the original exchange used. A refresh that omits it
+   * against a provider that keys token format on the resource hands back an
+   * opaque token, so the session works until the first refresh and then every
+   * request 401s — a failure that looks like expiry and is not.
+   */
+  resource?: string;
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -587,10 +619,15 @@ export interface RefreshResult {
  * A provider MAY return a new refresh token, and RFC 6749 §6 then requires the
  * client to discard the old one. Many rotate on EVERY refresh and treat a
  * re-presented old token as theft — revoking the whole grant, which signs the
- * user out completely rather than failing one call. (Verified against Logto
- * 1.41.0: it rotates every time, and outside a ~3s grace window a replayed
- * token returns invalid_grant AND kills the grant, so even the newest token
- * dies.)
+ * user out completely rather than failing one call.
+ *
+ * (Verified against Zitadel v4.16.2, the dev IdP forge scaffolds: it rotates
+ * on every refresh and rejects a replayed token IMMEDIATELY — no grace window
+ * — with Errors.OIDCSession.RefreshTokenInvalid. It does not revoke the whole
+ * grant: the newest token still works. So on Zitadel a lost race costs one
+ * failed call rather than the session, but a client that keeps presenting a
+ * stale token never refreshes again. Other providers are harsher; do not rely
+ * on the survivable case.)
  *
  * So this returns what to present next rather than leaving the caller to work
  * it out from an optionally-present field. That grace window is precisely why
@@ -623,6 +660,9 @@ export async function refreshToken(
     refresh_token: req.refreshToken,
     client_id: req.clientId,
   });
+  if (req.resource) {
+    body.set("resource", req.resource);
+  }
 
   const doFetch = req.fetchImpl ?? globalThis.fetch;
   const response = await doFetch(req.endpoint, {
@@ -665,6 +705,8 @@ export interface ProviderMetadata {
   authorizationEndpoint: string;
   tokenEndpoint: string;
   endSessionEndpoint: string;
+  /** Where the profile claims live when the id_token does not carry them. */
+  userinfoEndpoint: string;
   jwksUri: string;
   codeChallengeMethodsSupported: string[];
 }
@@ -729,9 +771,41 @@ export async function discover(
     authorizationEndpoint,
     tokenEndpoint,
     endSessionEndpoint: stringField(doc, "end_session_endpoint"),
+    userinfoEndpoint: stringField(doc, "userinfo_endpoint"),
     jwksUri: stringField(doc, "jwks_uri"),
     codeChallengeMethodsSupported: Array.isArray(methods)
       ? methods.filter((m): m is string => typeof m === "string")
       : [],
   };
+}
+
+/**
+ * Fetches the profile claims for an access token (OIDC Core §5.3).
+ *
+ * Needed because an id_token is not required to carry them, and providers
+ * differ: the scaffolded dev IdP returns an id_token with `sub` and nothing
+ * else, so an app that reads only the token shows its user a raw subject
+ * identifier ("signed in as 385598587603534935") instead of a name.
+ *
+ * Resolves null on any failure. Profile claims are decoration — a session is
+ * valid without them, and a display name is never worth failing a sign-in
+ * over.
+ */
+export async function fetchUserinfo(
+  endpoint: string,
+  accessToken: string,
+): Promise<Record<string, unknown> | null> {
+  if (!endpoint || !accessToken) return null;
+  try {
+    const res = await fetch(endpoint, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return body && typeof body === "object"
+      ? (body as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }

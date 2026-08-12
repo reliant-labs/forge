@@ -7,83 +7,108 @@ description: Write Next.js frontends — generated hooks, the component library,
 
 ## Project structure
 
-Each frontend lives in `frontends/<name>/` as a Next.js App Router app (`forge scaffold frontend <name>`): `src/app/` (pages/layouts), `src/components/`, `src/hooks/` (generated + custom), `src/lib/` (utilities + Connect client). Generated TypeScript lives in this frontend's own `src/gen/` — import it as `@/gen/...`, never from the project-root `gen/` (that tree is Go). `--kind` also takes `mobile` (an Expo React Native app: `app/` screens, the same hooks/lib/stores systems adapted — the event bus gains `app:background`/`app:foreground`, the UI store `drawerOpen`/`bottomSheetOpen`) and `vite-spa` (a plain Vite SPA; `--output`/`--base-path` are web-only).
+Each frontend lives in `frontends/<name>/` as a Next.js App Router app (`forge scaffold frontend <name>`): `src/app/`, `src/components/`, `src/hooks/`, `src/lib/`. Generated TypeScript lives in this frontend's own `src/gen/` — import it as `@/gen/...`, never from the project-root `gen/` (that tree is Go).
 
-## Production build shape (`output:`)
+`--kind` also takes `mobile` (Expo React Native: `app/` screens, the same hooks/lib/stores adapted — the event bus gains `app:background`/`app:foreground`, the UI store `drawerOpen`/`bottomSheetOpen`) and `vite-spa` (`--output`/`--base-path` are web-only).
 
-`forge scaffold frontend` emits a `next.config.ts` captured in `forge.yaml` as `output:`. Three values:
+## Build & serving shapes
 
-| `output:`    | Production shape | Use when |
-| ------------ | ---------------- | -------- |
-| `standalone` | Node sidecar (`output: "standalone"`) | **The default.** Pairs with the shipped Dockerfile; supports the generated dynamic CRUD routes, server components/actions, request-time `redirect()`/`cookies()`. |
-| `static`     | Static export (`output: "export"`) | Pure UI shell with NO dynamic routes — drop `out/` on a CDN. |
-| `server`     | Full Next.js (no `output:`) | Custom server, ISR, managed host (Vercel). |
-
-Opt in at scaffold time: `forge scaffold frontend dashboard --output static`.
-
-**FOOTGUN: `static` is incompatible with generated CRUD pages.** `output: "export"` requires `generateStaticParams()` on every dynamic segment, and the generated detail/edit pages (`/<entity>/[id]`) are dynamic client routes whose ids only exist at runtime — `npm run build` fails on any project with a CRUD entity. Server-runtime APIs (`redirect()` from `next/navigation`, `cookies()`, server actions) also require `standalone` or `server`; for a root redirect under static export, use a client component with `useRouter().replace()` in a `useEffect`, not `redirect()`.
-
-**Build dirs are fenced.** In `standalone`/`server`, production builds write to `.next-prod` (a `distDir` conditional) while `next dev` keeps `.next` — so `npm run build` during a live `forge env up` dev session can't clobber the dev cache. `next start` and the Dockerfile read `.next-prod`. `static` keeps Next.js defaults, so avoid production builds during a live dev session in that mode. `output:` takes effect only at scaffold time (`next.config.ts` is yours to edit after).
-
-## Serving under a path prefix (`base_path`)
-
-To mount a frontend under a URL prefix, declare `base_path: /admin` in `forge.yaml` (or `--base-path /admin`; must start with `/`, no trailing `/`). What it drives:
-
-- `next.config.ts` sets **both `basePath` AND `assetPrefix`** to the same value — `assetPrefix` is required or some RSC chunk URLs skip the prefix and React never hydrates.
-- **ONE env var**: `NEXT_PUBLIC_BASE_PATH` is the only override forge reads or writes. Never invent a second variant (`ADMIN_WEB_BASE_PATH` etc.) — it is silently ignored.
-- `src/lib/basepath_gen.ts` (regenerated) exports `BASE_PATH` + `joinBasePath(path)`.
-- Static-export builds **fail loudly** if `NEXT_PUBLIC_BASE_PATH` is emptied while `forge.yaml` declares a prefix (a root-mounted export 404s behind the proxy).
-
-Internal navigation (`<Link href="/tasks">`, `router.push("/tasks")`) keeps app-relative paths — Next.js prepends the basePath automatically; do NOT wrap these in `joinBasePath`. Hand-built URLs Next.js can't see — `window.location.origin`-based return URLs, OAuth `redirect_uri`, share links, raw `fetch()`/`<a>` paths — MUST go through `joinBasePath`:
-
-```typescript
-import { joinBasePath } from "@/lib/basepath_gen";
-const successUrl = window.location.origin + joinBasePath("/billing/success");
-```
-
-Anti-patterns lint catches: bare `"/admin" + path` literals, bare `/route` strings in hand-built URLs, and reading any env var other than `NEXT_PUBLIC_BASE_PATH`.
+`forge.yaml`'s `output:` picks the production shape — `standalone` (the default
+Node sidecar), `static` (export to a CDN), or `server` (full Next.js). `static`
+is **incompatible with generated CRUD pages**, whose `/<entity>/[id]` routes are
+dynamic. `base_path: /admin` mounts a frontend under a URL prefix, and hand-built
+URLs then have to go through `joinBasePath` from `src/lib/basepath_gen.ts`.
+Both, with the footguns, are in `frontend/serving`.
 
 ## Generated TypeScript hooks
 
-`forge generate` produces per-service React Query hooks in `src/hooks/` — read RPCs get `useQuery`, mutating RPCs get `useMutation`. Import from the barrel: `import { useGetTask, useCreateTask, useListTasks } from "@/hooks"`. Base wrappers `useApiQuery` / `useApiMutation` cover one-off or composite operations.
+`forge generate` produces per-service React Query hooks in `src/hooks/` — read RPCs get `useQuery`, mutating RPCs `useMutation`. Import from the barrel: `import { useGetTask, useListTasks } from "@/hooks"`. Base wrappers `useApiQuery` / `useApiMutation` cover composite operations.
 
 ## The component library
 
-Find production-ready components before building from scratch: `component_library(action="search", query="dashboard")`, `component_library(action="get", name="quadrant_chart")`. Categories: layouts, charts, diagrams, deck, ui.
+**Search it before you hand-write any UI.** 74 components ship across layouts, charts, diagrams, deck, and ui:
 
-**Data viz: use Recharts, not the library.** For commodity charts (bar/line/area/donut/pie/scatter/sparkline) `npm i recharts` — hand-rolled SVG loses on every dimension that matters (tooltips, brush, datetime/log axes, locale formatting, canvas past ~1k points, a11y). The component library only ships **narrative** charts (`quadrant_chart`, `concentric_circles`, `funnel_chart`) and `slide_*` deck charts. Rule: dashboard → Recharts; slide / marketing page → check the library first.
+```bash
+forge component search card      # by keyword — try the noun you were about to build
+forge component list             # the whole catalog, grouped by category
+forge component install card_grid
+```
+
+**What is already in `src/components/ui/` is not the catalog** — it is the 25 the scaffold auto-installs. The other 49 arrive only via `forge component install`. Reading the directory and concluding the library is exhausted is the failure mode; search instead.
+
+Reach for these before writing markup yourself:
+
+| About to build | Install instead |
+|---|---|
+| A stat / KPI block | `stat_grid`, `metric_card` |
+| "No results yet" copy | `empty_state` |
+| A destructive-action prompt | `confirmation_dialog` |
+| A sortable/dense table | `data_table` |
+| A board, timeline, tile grid | `kanban_board`, `timeline`, `card_grid` |
+| A conversion / stage funnel | `funnel_chart` |
+| A dropdown, breadcrumb, toggle, filter bar | `dropdown_menu`, `breadcrumb`, `toggle_switch`, `filter_bar` |
+
+A search that returns nothing is a real answer: there is no drawer/sheet or quantity-stepper, so those you write yourself. (The `component_library` MCP tool is the same catalog.)
+
+**Data viz: use Recharts, not the library.** For commodity charts (bar/line/area/donut/pie/scatter/sparkline) `npm i recharts`. The library ships only **narrative** charts (`quadrant_chart`, `concentric_circles`, `funnel_chart`) and `slide_*` deck charts. Dashboard → Recharts; slide / marketing page → check the library first.
 
 ### Base UI primitives (always available)
 
-Every frontend ships low-level primitives under `src/components/ui/`. Pages and higher-level components MUST compose these instead of inlining `<button>`/`<input>`/`<table>` markup:
+Every frontend ships low-level primitives under `src/components/ui/`. Compose these instead of inlining `<button>`/`<input>`/`<table>` markup:
 
 | Primitive | What it is |
 |-----------|-----------|
 | `button` | `primary`/`secondary`/`outline`/`ghost`/`danger` variants, sizes, loading state |
-| `input`, `label`, `form` | Text input, field label, and `Form`/`FormField`/`FormError`/`FormActions` — `<FormField>` mints an id via `useId()` and exposes it via `FormFieldContext` so child `<Label>`/`<Input>`/`<Select>` auto-bind without `htmlFor`/`id` boilerplate |
+| `input`, `label`, `form` | Text input, field label, and `Form`/`FormField`/`FormError`/`FormActions`. `<FormField>` mints an id via `useId()`, so child `<Label>`/`<Input>`/`<Select>` auto-bind without `htmlFor`/`id` |
 | `card` | Generic surface primitive |
 | `avatar`, `tabs`, `chip` | Avatar (image/initials/status), tab nav (underline/pills/boxed), removable filter chip. `Tabs`/`FilterBar`: pass `activeTab`/`values` to control them from the URL |
 | `table` | Bare structural table — markup only. For a wired list view use `<Resource>` (see `frontend-runtime`) |
 | `select` | Options array, sizes, invalid state |
 | `toast_notification` | The toast STACK (default export), rendered once by the owned `providers.tsx`. Never call it directly — fire `emitToast({ message, variant })` from `@/lib/events` |
 
-Plus higher-level scaffolded components: `sidebar_layout`, `page_header`, `badge`, `modal`, `skeleton_loader`, `pagination`, `search_input`, `alert_banner`, `key_value_list`, `login_form`. All are `overwrite: once` — yours to edit after install.
+Plus auto-installed: `sidebar_layout`, `page_header`, `badge`, `modal`, `skeleton_loader`, `pagination`, `search_input`, `alert_banner`, `key_value_list`, `login_form`. All `overwrite: once` — yours after install.
 
-Two have canonical APIs plus source-port aliases (write new code against canonical): **`Badge`** — canonical `error`/`success`/`warning`/`info`/`neutral`; aliases `danger→error`, `default→neutral`. **`Modal`** — canonical footer is the **`footer` slot prop**; footer-in-`children` is accepted source-port shorthand, rewrite to the slot when you next touch it. (`Button`'s destructive variant is `danger`, not `error` — Button is action-shaped, Badge is status-shaped.)
+Two carry aliases; write new code against canonical. **`Badge`** — `error`/`success`/`warning`/`info`/`neutral`, aliases `danger→error`, `default→neutral`. **`Modal`** — canonical footer is the **`footer` slot prop**; rewrite footer-in-`children` when you next touch it. (`Button`'s destructive variant is `danger`, not `error`.)
 
 ### Owned higher-level components
 
 Owned scaffold (not `ui/`), composing the base primitives — yours to edit or delete:
 
-- **`status-badge.tsx`** / **`enum-select.tsx`** — proto-enum badge + select. Pass the enum OBJECT (`<StatusBadge value={order.status} enumType={OrderStatus} />`), never its type NAME: the field is a runtime NUMBER and only the object reverse-maps it.
-- **`entity-picker.tsx`** / **`entity-name.tsx`** — the foreign-key pair: searchable single-select over a generated LIST hook, id→display-name over a generated GET hook. Never hand-roll a per-entity picker. See `frontend/pages`.
+- **`status-badge.tsx`** / **`enum-select.tsx`** — proto-enum badge + select. See **Formatting** below for the enum-object rule and status colors.
+- **`entity-picker.tsx`** / **`entity-name.tsx`** — the foreign-key pair: searchable select over a generated LIST hook, id→display-name over a GET hook. Never hand-roll a per-entity picker. See `frontend/pages`.
 - **`src/components/session_nav.tsx`** (Next.js) — signed-in user + sign-out, on `useAuth()`. No login form or `/login` route ships; sign-in is your IdP's. See `auth`.
 
-Typed list views are NOT owned scaffold: the generated CRUD pages import `<Resource>` from `@reliant-labs/web-runtime`, which owns the loading/error/empty/data ladder and cursor pagination. See `frontend-runtime`.
+Typed list views are NOT owned scaffold: the generated CRUD pages import `<Resource>` from `@reliant-labs/web-runtime`, which owns the loading/error/empty/data ladder and cursor pagination (`frontend-runtime`).
+
+## Formatting: `@/lib/format-utils`
+
+Scaffolded into every frontend. **Import these — never re-derive them per feature.**
+
+| Need | Export |
+|---|---|
+| Money (`int64` cents) — exact | `formatMoneyCents(cents)` → `$272,000.00` |
+| Money — headline, no cents | `formatMoneyWhole(cents)` → `$272,000` |
+| Recurring price | `formatMoneyInterval(cents, "month")` → `$29.00/mo` |
+| Proto `Timestamp` → `Date` | `timestampToDate(ts)` — null when unset/out of range |
+| Date, date+time | `formatDate(ts)`, `formatDateTime(ts)` |
+| Elapsed time | `formatAge(ts)` → `"3 days ago"` |
+| Enum → label | `enumLabel(value, EnumObject)` → `"Inspection Scheduled"` |
+| Enum → `<select>` options | `enumOptions(EnumObject)` |
+| Any column value | `formatValue(v)` |
+
+Unset renders `—` throughout. Pass the enum **object**, never its type name — protobuf-es enums are runtime numbers and only the object reverse-maps.
+
+**Status colors:** `<StatusBadge value={x.status} enumType={X}>` resolves a variant from a built-in generic-lifecycle map (`active`, `paid`, `failed`, …). Declare your product's own words once at module scope — never edit the built-in map or write a per-feature color record:
+
+```ts
+registerStatusVariants({ weather_hold: "warning", emergency: "error" });
+```
+
+An unregistered status renders neutral, never a guessed color.
 
 ## Connect RPC clients + mock mode
 
-Import the generated transport from `src/lib/connect.ts`; for direct calls `createClient(MyService, transport)`. The scaffold talks to the REAL backend out of the box (`src/lib/connect.ts` reads `NEXT_PUBLIC_API_URL` or the `forge generate`-maintained dev port); start it with `forge env up dev`. Mock mode is **opt-in** via `.env.local`:
+Import the generated transport from `src/lib/connect.ts`; for direct calls `createClient(MyService, transport)`. The scaffold talks to the REAL backend out of the box (`connect.ts` reads `NEXT_PUBLIC_API_URL` or the generate-maintained dev port); start it with `forge env up dev`. Mock mode is **opt-in** via `.env.local`:
 
 | `NEXT_PUBLIC_MOCK_API` | Behavior |
 |---|---|
@@ -91,7 +116,19 @@ Import the generated transport from `src/lib/connect.ts`; for direct calls `crea
 | `true` | Mock transport only — the layout renders a persistent "MOCK DATA — backend not connected" banner. |
 | `hybrid` | `?scenario=` overlays on a real transport. |
 
-**Never remove the mock banner from the layout** — it prevents a working-looking UI masquerading as a working stack.
+**Never remove the mock banner from the layout** — it stops a working-looking UI masquerading as a working stack.
+
+### Where the mock pipeline lives
+
+The dispatch ENGINE is library code — `@reliant-labs/web-runtime/mock-transport`, imported through that subpath and never the barrel, so a production bundle can shake it out. Your project keeps only a declarative table:
+
+- **`src/lib/mock-transport_gen.ts`** (Tier-1) — one `MockEntityDescriptor` per entity: service name, primary-key field, fixture module, entity schema, and each CRUD RPC's response schema. Regenerated from your protos every run.
+- **`src/mocks/<entity>_gen.ts`** — the deterministic fixtures, the same rows `forge db seed apply` writes.
+- **`src/mocks/scenarios/*.ts`** — your scenarios; forge only regenerates the `index_gen.ts` barrel.
+
+Dispatch order: scenario handler → hybrid passthrough → entity fixtures → `Unimplemented`. A Get miss is a real `NotFound`, never a silent wrong record. Writes round-trip within one browser session and reset on reload.
+
+To stub an RPC, run `forge scaffold scenario <name>` and add a typed handler — do NOT edit `mock-transport_gen.ts`. Activate with `?scenario=<name>`; it is read once at module init, so client-side navigation keeps it active until a full reload.
 
 ## Protobuf-ES v2
 
@@ -113,28 +150,37 @@ const req = create(CreateTaskRequestSchema, { name: "My Task" }); // NOT new Cre
 @theme { --color-brand: #3b82f6; --font-sans: "Inter", sans-serif; }
 ```
 
-Treat CSS as architecture: prefer Tailwind utilities + component variants; `@theme`/scoped CSS variables for reusable tokens (don't hard-code one-off colors); avoid `!important` (simplify selectors or add a variant API); avoid DOM `style={{...}}` except for truly dynamic runtime values (measured dimensions, chart coordinates); keep global CSS small. `npm run lint:styles` catches `!important` and invalid v4 at-rules.
+Use `@theme`/scoped CSS variables for reusable tokens rather than one-off colors, and keep global CSS small. `npm run lint:styles` catches `!important` and invalid v4 at-rules. Full rules in `frontend/patterns`.
 
 ## Visual verification
 
-**ALWAYS use BOTH `take_snapshot` AND `take_screenshot` (Chrome DevTools) before declaring frontend work complete.** Snapshots (a11y tree) cannot detect CSS/visual issues — layout shifts, wrong colors, z-index, overflow; only screenshots catch those. For responsive testing, resize the page and screenshot at multiple breakpoints.
+**Use BOTH `take_snapshot` AND `take_screenshot` (Chrome DevTools) before declaring frontend work complete.** The a11y-tree snapshot cannot detect layout shifts, wrong colors, z-index or overflow; only screenshots catch those. Screenshot at multiple breakpoints. `frontend/design` carries the overflow probe.
 
 ## Component patterns
 
-Functional components with hooks only — no class components. Prefer **server components**; add `"use client"` only for interactivity, browser APIs, or hooks (`useState`/`useEffect`). Keep components small; extract reusable logic into custom hooks. Handle Connect RPC errors by code (`err instanceof ConnectError`, switch on `err.code` — `Code.InvalidArgument`, `Code.PermissionDenied`, else generic). Every data-fetching component must handle **loading**, **success**, and **error**.
+Functional components with hooks only. Prefer **server components**; add `"use client"` only for interactivity, browser APIs, or hooks. Handle Connect errors by code (`err instanceof ConnectError`, switch on `err.code`). Every data-fetching component must handle **loading**, **success**, and **error**. Composition and effects discipline are in `frontend/patterns`.
 
 ## Files NOT to edit
 
-Regenerated by `forge generate` — changes overwritten: `src/gen/`, `src/lib/connect.ts`, `src/lib/basepath_gen.ts`, `src/hooks/*-hooks.ts`. Put custom code in separate files (`src/hooks/custom-hooks.ts`, `src/lib/utils.ts`).
+Regenerated by `forge generate` — edits overwritten: `src/gen/`, `src/lib/connect.ts`, `src/lib/basepath_gen.ts`, `src/hooks/*-hooks.ts`. Put custom code in separate files (`src/hooks/custom-hooks.ts`).
+
+## Files that are starter code (rewrite expected)
+
+Everything carrying the `// yours: scaffolded once` banner is written once and left alone — `src/app/page.tsx`, `src/app/auth/sign-in/page.tsx`, and every generated list/detail/create/edit page under `src/app/<entity>/`. `src/components/nav.tsx` and `src/app/dashboard.tsx` stay current until your first edit to either.
+
+None of it is a design — it is Rails-style scaffolding built from the entity list, enough to prove hooks, transport and auth are wired. Replacing it is expected: real copy, a hierarchy built around what the product does, and chosen empty/loading/error states.
+
+Load `frontend/design` before building the real thing; it asks for a brief first and will not proceed on taste alone.
 
 ## Scaffolded systems (yours to extend)
 
 Created by `forge scaffold frontend`, yours to modify:
 
-- **Auth provider** (`src/lib/auth/`) — DI'd via `AuthProvider`; implement the interface to add real auth (Auth0/Clerk/custom JWT). `useAuth()` gives user/token/login/logout.
-- **Event bus** (`src/lib/events.ts` + `src/lib/event-context.tsx`) — typed pub/sub for imperative cross-cutting actions (`toast:show`, `auth:expired`, `navigate`). Extend the `EventMap`; use `useEvent(name, handler)`. Not a source of truth.
-- **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for shared client state (`sidebarCollapsed`, `commandPaletteOpen`). Extend or create domain stores in `src/stores/`. **Subscribe to slices, not the whole store.** Use generated React Query hooks for server data — do NOT copy backend data into Zustand.
-- Also scaffolded: `src/lib/format-utils.ts`, and `src/lib/admin-url.ts` (`adminUrl`/`absoluteAdminUrl` over `basepath_gen.ts` — use these or `joinBasePath` for any string handed to an external system that round-trips back).
+- **Auth provider** (`src/lib/auth/`) — DI'd via `AuthProvider`; implement the interface to add real auth. `useAuth()` gives user/token/login/logout.
+- **Event bus** (`src/lib/events.ts` + `src/lib/event-context.tsx`) — typed pub/sub for imperative cross-cutting actions (`toast:show`, `auth:expired`, `navigate`). Extend `EventMap`; use `useEvent(name, handler)`. Not a source of truth.
+- **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for client state (`sidebarCollapsed`, `commandPaletteOpen`). Add domain stores in `src/stores/`. **Subscribe to slices, not the whole store.** Server data stays in the React Query hooks, never copied into Zustand.
+- **`src/lib/format-utils.ts`** — presentation formatting. Import from `@/lib/format-utils`; do not re-derive these per feature (see below).
+- Also scaffolded: `src/lib/admin-url.ts` (`adminUrl`/`absoluteAdminUrl` over `basepath_gen.ts` — use these or `joinBasePath` for any string handed to an external system that round-trips back).
 
 ## Dev workflow
 
@@ -143,7 +189,7 @@ forge env up dev   # Full stack: infra + Go (hot reload) + Next.js; reads deploy
 forge generate     # After any .proto change
 ```
 
-`forge env up` dev-serves each declared frontend via `npm run dev` (NOT `npm run build` — that is for `forge build` / `forge env deploy`). Each serves on its own KCL-declared port (`forge.Frontend.port`), **force-injected as `PORT`** into the Next.js child, so the browser URL matches the declaration even if a stale `PORT` bled in from the shell. There is no dev reverse proxy. To route a service under the prod Gateway too, declare an `HTTPRoute` with a `host:` in `deploy/kcl/<env>/main.k`.
+`forge env up` dev-serves each declared frontend via `npm run dev` (`npm run build` is for `forge build` / `forge env deploy`). Each serves on its own KCL-declared port (`forge.Frontend.port`), **force-injected as `PORT`** into the child, so the browser URL matches the declaration even if a stale `PORT` bled in from the shell. There is no dev reverse proxy. To route a service under the prod Gateway, declare an `HTTPRoute` with a `host:` in `deploy/kcl/<env>/main.k`.
 
 ## File naming inside `frontends/<name>/src/`
 
@@ -159,6 +205,7 @@ Load **state** (decision table, state vs events, ownership), **patterns** (compo
 - Never hand-edit generated files; run `forge generate` after every `.proto` change.
 - Always `create(Schema, {...})` for protobuf messages, never `new Message()`.
 - `"use client"` only when needed; verify visually with BOTH `take_snapshot` and `take_screenshot`.
-- `component_library` before building UI from scratch; Recharts for dashboard charts.
+- `forge component search <noun>` before hand-writing any UI — `src/components/ui/` holds only the auto-installed core, not the catalog. Recharts for dashboard charts.
+- Money, dates, enum labels and status colors come from `@/lib/format-utils`. Re-deriving one per feature is how three modules end up disagreeing.
 - React Query hooks for server data, Zustand for client state only (subscribe to slices), event bus for imperative actions — never as a source of truth.
 - Keep forms in react-hook-form + Zod. Never remove the mock-mode banner.

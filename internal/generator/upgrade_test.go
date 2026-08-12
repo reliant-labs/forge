@@ -105,16 +105,15 @@ func TestManagedFiles(t *testing.T) {
 	// version.go, db.go) are intentionally NOT managed here — see the
 	// assertions after the loop.
 	expected := map[string]bool{
-		// root.go and db_source.go are the command-tree files that remain
-		// genuinely re-derived: root.go declares ServiceName from the
-		// forge.yaml name and gates newDBCmd on a user config field, and
-		// db_source.go's referenceability depends on db/migrations/ content.
-		"cmd/cmd/root.go":      true,
-		"cmd/cmd/db_source.go": true,
-		"Taskfile.yml":         true,
-		"Dockerfile":           true,
-		"docker-compose.yml":   true,
-		".golangci.yml":        true,
+		// No cmd-tree file is managed here anymore: every file under
+		// cmd/<bin>/cmd/ is scaffold-once and the user's. The last one
+		// (root_gen.go) was retired when its facts either stopped being
+		// derived or moved to db/source_gen.go, which the generate pipeline
+		// owns rather than upgrade.
+		"Taskfile.yml":       true,
+		"Dockerfile":         true,
+		"docker-compose.yml": true,
+		".golangci.yml":      true,
 		// The thin auth-policy pair is the ONLY middleware the project
 		// keeps; the mechanism files (cors/auth/claims/…) moved to
 		// forge/pkg/{authn,middleware} and must NOT be managed.
@@ -417,12 +416,13 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	// Modify a Tier-1 file and a Tier-2 file (user edits: markers gone).
-	// root.go is the Tier-1 exemplar: it is still genuinely re-derived
-	// (ServiceName from forge.yaml, newDBCmd gated on a config field), so
-	// --force overwriting it is the intended behaviour. The command-tree
-	// files that became scaffold-once cannot stand in here — forge does not
-	// rewrite those at all anymore, with or without --force.
-	modifiedPath := filepath.Join(dir, "cmd/test-project/cmd/root.go")
+	//
+	// deploy/alloy-config.alloy is the Tier-1 exemplar because it is the only
+	// one upgrade still manages: the whole command tree became scaffold-once,
+	// and forge does not rewrite those at all, with or without --force. The
+	// property under test is unchanged — --force overwrites a hand-edited
+	// Tier-1 file — only the file that can stand for it has moved.
+	modifiedPath := filepath.Join(dir, "deploy/alloy-config.alloy")
 	if err := os.WriteFile(modifiedPath, []byte("// user modified\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +438,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Path == "cmd/test-project/cmd/root.go" || r.Path == "Dockerfile" {
+		if r.Path == "deploy/alloy-config.alloy" || r.Path == "Dockerfile" {
 			if r.Status != UpgradeUpdated {
 				t.Errorf("%s: status = %q, want %q with --force", r.Path, r.Status, UpgradeUpdated)
 			}
@@ -451,7 +451,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(content) == "// user modified\n" {
-		t.Error("cmd/test-project/cmd/root.go was not overwritten by --force")
+		t.Error("deploy/alloy-config.alloy was not overwritten by --force")
 	}
 	content, err = os.ReadFile(modifiedTier2)
 	if err != nil {
@@ -634,7 +634,7 @@ func TestUpgradeSkipsDisownedFiles(t *testing.T) {
 // project (old pkg/middleware mechanism files, no middleware.go) must
 // NOT receive the thin policy pair from `forge project upgrade` — the legacy
 // files declare the same symbols and the package would stop compiling.
-// Adoption is the user-driven migrations/v0.x-to-middleware-lib path.
+// Adoption is a user-driven hand-migration, never an upgrade side effect.
 func TestUpgrade_SkipsThinMiddlewareInLegacyLayout(t *testing.T) {
 	dir := t.TempDir()
 	mwDir := filepath.Join(dir, "pkg", "middleware")

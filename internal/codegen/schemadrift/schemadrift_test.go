@@ -8,7 +8,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/scaffold"
-	"github.com/reliant-labs/forge/internal/schemadef"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // bornMigration renders forge's real birth-time projection for an entity and

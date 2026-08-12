@@ -126,7 +126,57 @@ func allowEmptyEnv(fd protoreflect.FieldDescriptor) bool {
 // mounts) are intentionally skipped — defense-in-depth against shell-history
 // / `ps` exposure of credentials.
 func RegisterFlagsFor(flags *pflag.FlagSet, msg proto.Message) error {
-	return registerFlagsForDesc(flags, msg.ProtoReflect().Descriptor())
+	return registerFlagsForDesc(flags, msg.ProtoReflect().Descriptor(), scopeAll)
+}
+
+// FlagScope selects WHICH of a config message's flags a registration call
+// covers. It exists for per-binary config, where one message's flags are
+// split across two cobra flag sets rather than all landing on one command.
+//
+// A per-binary config composes a SHARED block (conventionally BaseConfig,
+// holding port/log level/mode — every binary wants each of them, as its own
+// value) alongside the leaves only that binary reads. Those two halves want
+// different cobra homes:
+//
+//   - the shared block's leaves are PERSISTENT flags on the root command, so
+//     `app --log-level=debug admin` works and one definition serves every
+//     subcommand;
+//   - the binary's own leaves are LOCAL flags on that binary's subcommand, so
+//     `app admin --help` lists exactly what admin reads and two binaries can
+//     each define a `--port` without colliding.
+//
+// Splitting by scope rather than registering everything twice is what keeps
+// ownership disjoint at the CLI: a flag registered under ScopeOwn belongs to
+// one subcommand's flag set and no other command can see it.
+//
+// Loading is deliberately NOT scoped — LoadInto walks the whole message, and
+// cobra's Flags() on a subcommand already merges inherited persistent flags
+// (so Changed()/Lookup() resolve a root flag from the subcommand). One load
+// call therefore fills both halves with the normal precedence.
+type FlagScope int
+
+const (
+	// ScopeAll registers every config-bound field, blocks included. It is the
+	// single-config default and what RegisterFlags/RegisterFlagsFor use.
+	ScopeAll FlagScope = iota
+	// ScopeShared registers ONLY the leaves of composed config blocks — the
+	// shared base a per-binary config embeds. Intended for the root command's
+	// persistent flag set.
+	ScopeShared
+	// ScopeOwn registers ONLY the leaves declared directly on the message,
+	// skipping composed blocks — the fields this binary alone reads.
+	// Intended for a binary subcommand's local flag set.
+	ScopeOwn
+)
+
+// scopeAll is the unexported spelling used by the internal recursion.
+const scopeAll = ScopeAll
+
+// RegisterFlagsScoped registers the subset of msg's flags selected by scope
+// onto flags. See FlagScope for why the split exists and which cobra flag set
+// each half belongs on. ScopeAll is identical to RegisterFlagsFor.
+func RegisterFlagsScoped(flags *pflag.FlagSet, msg proto.Message, scope FlagScope) error {
+	return registerFlagsForDesc(flags, msg.ProtoReflect().Descriptor(), scope)
 }
 
 // registerFlagsForDesc registers flags for a descriptor, recursing into
@@ -138,15 +188,27 @@ func RegisterFlagsFor(flags *pflag.FlagSet, msg proto.Message) error {
 // block's flags share the flat namespace exactly as the generated loader
 // emitted them. Recursion is unbounded in depth but cycle-free in practice
 // (a config proto is a finite tree).
-func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescriptor) error {
+// The scope argument selects which half of a per-binary config the call
+// covers (see FlagScope): ScopeShared descends into composed blocks and
+// registers nothing at this level, ScopeOwn registers this level's leaves and
+// skips blocks entirely, and ScopeAll does both. Nested levels below a block
+// are always registered in full — scope partitions the message's OWN fields
+// from its COMPOSED ones, and that distinction only exists at the top.
+func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescriptor, scope FlagScope) error {
 	fields := desc.Fields()
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
 		if isConfigBlock(fd) {
-			if err := registerFlagsForDesc(flags, fd.Message()); err != nil {
+			if scope == ScopeOwn {
+				continue // composed block: the root registers it, not this binary
+			}
+			if err := registerFlagsForDesc(flags, fd.Message(), scopeAll); err != nil {
 				return err
 			}
 			continue
+		}
+		if scope == ScopeShared {
+			continue // own leaf: belongs to the binary's subcommand, not the root
 		}
 		opt := fieldOptions(fd)
 		if opt == nil || opt.GetFlag() == "" {

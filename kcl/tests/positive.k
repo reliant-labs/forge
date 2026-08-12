@@ -12,7 +12,7 @@ to a boolean; the test runner (`tests/run.sh` or the Go-side test in
 import forge
 
 # A Service with HostDeploy. env_vars carries KCL-declared per-env
-# config; secrets_file points at a gitignored dotenv with API keys etc.
+# config; secret VALUES come from the bundle secret_provider.
 # working_dir pins the cross-repo case — a sibling repo whose Air
 # config resolves build paths relative to ITS own root.
 _svc_host = forge.RenderedWorkload {
@@ -24,7 +24,6 @@ _svc_host = forge.RenderedWorkload {
         env_vars = [
             forge.EnvVar { name = "LOG_LEVEL", value = "debug" }
         ]
-        secrets_file = ".env.dev.secrets"
         working_dir = "../reliant"
     }
 }
@@ -109,7 +108,6 @@ assert_buildonly_discriminator = output.services[2].deploy.type == "build-only"
 assert_host_runner_present = output.services[0].deploy.runner == "air"
 assert_host_env_vars_one = len(output.services[0].deploy.env_vars) == 1
 assert_host_env_vars_name = output.services[0].deploy.env_vars[0].name == "LOG_LEVEL"
-assert_host_secrets_file_set = output.services[0].deploy.secrets_file == ".env.dev.secrets"
 assert_host_delve_port_default = output.services[0].deploy.delve_port == 2345
 assert_host_working_dir_set = output.services[0].deploy.working_dir == "../reliant"
 assert_cluster_resources_null = output.services[1].deploy.resources == None

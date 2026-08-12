@@ -44,7 +44,11 @@ type fakeRunner struct {
 
 	// envCalls captures the per-call env overlay so tests can confirm
 	// env_file contents were threaded through to the exec'd process.
-	// One entry per RunWithEnv call (Run is recorded with nil).
+	// Indices stay ALIGNED with calls — every recorded call appends an
+	// entry, nil for the ones that carry no overlay (Run, Output) — so
+	// a test that finds a call at index i can read its env at the same
+	// index. Appending only on RunWithEnv would silently skew the two
+	// slices apart the moment a provider added an Output call.
 	envCalls []map[string]string
 
 	// runErrs returns canned errors keyed by the joined argv prefix.
@@ -88,23 +92,37 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) error {
 
 func (f *fakeRunner) RunWithEnv(_ context.Context, env map[string]string, name string, args ...string) error {
 	full := f.record(name, args)
-	// Copy the map so test mutations on f.envCalls don't pun on the
-	// caller's overlay.
-	var copyEnv map[string]string
-	if env != nil {
-		copyEnv = make(map[string]string, len(env))
-		for k, v := range env {
-			copyEnv[k] = v
-		}
-	}
-	f.envCalls = append(f.envCalls, copyEnv)
+	f.envCalls = append(f.envCalls, copyEnvMap(env))
 	return f.lookupErr(full)
 }
 
 func (f *fakeRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
 	full := f.record(name, args)
+	f.envCalls = append(f.envCalls, nil)
 	if err := f.lookupErr(full); err != nil {
 		return nil, err
 	}
 	return []byte(f.lookupOutput(full)), nil
+}
+
+func (f *fakeRunner) OutputWithEnv(_ context.Context, env map[string]string, name string, args ...string) ([]byte, error) {
+	full := f.record(name, args)
+	f.envCalls = append(f.envCalls, copyEnvMap(env))
+	if err := f.lookupErr(full); err != nil {
+		return nil, err
+	}
+	return []byte(f.lookupOutput(full)), nil
+}
+
+// copyEnvMap snapshots a call's env overlay so a test mutating f.envCalls
+// does not pun on the caller's live map.
+func copyEnvMap(env map[string]string) map[string]string {
+	if env == nil {
+		return nil
+	}
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		out[k] = v
+	}
+	return out
 }

@@ -866,6 +866,16 @@ See example.sql for the shape.
 	vocab := `# db/seeds/vocab.yaml — domain vocabulary for ` + "`forge db seed`" + ` (yours; forge
 # never regenerates it).
 #
+# EDITING THIS FILE? RUN ` + "`forge generate`" + ` AFTERWARDS.
+#
+# It feeds two consumers, and only one of them reads it live. ` + "`forge db seed`" + `
+# reads it on every run, so a change shows up in the next seeded database. The
+# frontend's mock fixtures (src/mocks/*_gen.ts) CACHE it as TypeScript literals,
+# because a browser has no database to derive them from — so those go stale the
+# moment you edit this file and stay stale until a regenerate. The fixture
+# freshness guard fails ` + "`task test`" + ` when that happens rather than letting mock
+# mode serve rows for a vocabulary you have since changed.
+#
 # THIS FILE IS THE ONLY PLACE YOUR DOMAIN'S WORDS COME FROM.
 #
 # forge derives everything your schema DECLARES — a column's type, its enum or
@@ -894,11 +904,33 @@ See example.sql for the shape.
 #
 # pools:                       # shared pools, referenced from several columns
 #   product_names: [Alpha One, Beta Two, Gamma Three]
-# columns:                     # "table.column": inline list or {pool: name}
+# columns:                     # "table.column": inline list, {pool: name},
+#                              # {type: name}, or {min: n, max: n}
 #   products.name: {pool: product_names}
 #   catalog_items.name: {pool: product_names}
 #   brands.name: [Northwind, Contoso Labs]
 #   orders.currency: [USD]     # a pool of ONE pins every row to that value
+#
+# NUMERIC columns take a range. Describe every one that means something —
+# an undescribed numeric column seeds as the ROW INDEX (1, 2, 3 …), which
+# is inside every CHECK and therefore never reported, but it makes money
+# render as a fraction of a cent and makes two numeric columns on the same
+# table perfectly correlated:
+#
+#   products.price_cents: {min: 1200, max: 24900, step: 100}
+#   products.stock_quantity: {min: 0, max: 250}
+#   products.rating: {min: 1.0, max: 5.0, step: 0.5, decimals: 1}
+#
+# TWO TRAPS WORTH THE 30 SECONDS, both of which produce data that satisfies
+# the schema and still breaks a page:
+#
+#   * A 3-char currency column (` + "`CHECK (char_length(currency) = 3)`" + `) synthesizes
+#     as "sa5" — a valid length, and a currency code nothing recognises.
+#     Intl.NumberFormat THROWS on it in the generated frontend. Pin it:
+#     ` + "`products.currency: [USD]`" + `.
+#   * A column you MEANT to be unique but did not declare UNIQUE will repeat.
+#     The seeder draws without replacement only for a real UNIQUE constraint —
+#     if duplicates matter, fix the migration, not this file.
 `
 	if _, err := WriteScaffoldIfMissing(g.Path, filepath.Join("db", "seeds", "vocab.yaml"), []byte(vocab)); err != nil {
 		return err

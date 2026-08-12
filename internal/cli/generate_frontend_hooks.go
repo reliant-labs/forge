@@ -30,7 +30,14 @@ import (
 // CheckoutCart ("Check…"), CountersignAgreement ("Count…") — and a non-CRUD
 // custom RPC (PlaceOrder, ReviewSubmission) can mutate state the heuristic has
 // no way to know about. The marker is the author's explicit override.
-var mutationMarkerRE = regexp.MustCompile(`forge:mutation\b`)
+//
+// The marker NAME comes from codegen.KnownProtoMarkers (proto_markers.go) so
+// this pass and `forge lint --proto-markers` share one vocabulary. The PATTERN
+// stays this package's own: mutationMarkedMethods does its own comment-block
+// attachment walk and hands this expression an already-isolated comment, so it
+// needs no `//` prefix and no full-line anchor — unlike the entity-birth and
+// descriptor recognizers. Only the spelling is shared, not the scanning.
+var mutationMarkerRE = regexp.MustCompile(regexp.QuoteMeta(codegen.ProtoMarkerMutation) + `\b`)
 
 // rpcDeclRE matches a proto `rpc <Name>(` service-method declaration and
 // captures the method name.
@@ -134,7 +141,7 @@ func applyMutationMarkers(data *codegen.FrontendHookTemplateData, marked map[str
 //     project's @<scope>/api workspace. The per-frontend hooks dir is
 //     not touched in this mode — frontends consume the workspace
 //     package instead.
-func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string) error {
+func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, cs *checksums.FileChecksums) error {
 	if len(services) == 0 {
 		return nil
 	}
@@ -150,7 +157,7 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 	}
 
 	if cfg.IsFrontendWorkspacesEnabled() {
-		return generateFrontendHooksWorkspace(cfg, services, projectDir, tmpl)
+		return generateFrontendHooksWorkspace(cfg, services, projectDir, tmpl, cs)
 	}
 
 	for _, fe := range cfg.Frontends {
@@ -195,10 +202,25 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 				symbols: hookFileExportedSymbols(data),
 			})
 
-			outPath := filepath.Join(hooksDir, fileName)
-			if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
-				return fmt.Errorf("write hooks file %s: %w", outPath, err)
+			// Through the certification chokepoint, not a bare
+			// os.WriteFile: the banner already claims "forge-owned,
+			// regenerated every run" (Tier-1), and only a
+			// checksums.WriteGeneratedFile write embeds the forge:hash
+			// marker that claim depends on. An uncertified Tier-1 file is
+			// invisible to the marker-driven stale-artifact sweep
+			// (cleanupStaleArtifacts) — exactly how a renamed service's
+			// old hook file survived a rename on disk with nothing to
+			// delete it. See reportOrphanedHookFiles below for the
+			// legacy files this fix cannot retroactively certify.
+			outRel := filepath.Join(feDir, "src", "hooks", fileName)
+			if _, err := checksums.WriteGeneratedFile(projectDir, outRel, buf.Bytes(), cs, true); err != nil {
+				return fmt.Errorf("write hooks file %s: %w", outRel, err)
 			}
+			// Retire the pre-`_gen` copy. Two live hook modules would both
+			// be re-exported by the barrel below, so every hook symbol
+			// would be bound twice and the barrel would not compile.
+			codegen.RetireRenamedGenerated(projectDir,
+				filepath.Join(feDir, "src", "hooks", naming.ServiceHookFileLegacy(svc.Name)), cs)
 
 			// Emit a live happy-path test next to the generated hooks
 			// file. React Native uses a different rendering target (no
@@ -222,9 +244,70 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 		}
 
 		fmt.Printf("  ✅ Generated %d hook file(s) for frontend %s\n", len(hookFiles), fe.Name)
+
+		reportOrphanedHookFiles(hooksDir, hookFiles)
 	}
 
 	return nil
+}
+
+// reportOrphanedHookFiles warns about *-hooks.ts files sitting in hooksDir
+// that this run did NOT (re)write and that carry no forge:hash marker —
+// left behind by a forge build old enough to predate routing hook writes
+// through the certification chokepoint (WriteGeneratedFile).
+//
+// It is report-only, never destructive, and deliberately narrower than
+// the marker-driven stale-artifact sweep (cleanupStaleArtifacts): a
+// hook file THIS run writes now carries a forge:hash marker, so any
+// future rename/removal is that sweep's job, automatically, with no
+// code here. The gap this function closes is the one the sweep cannot
+// close on its own — files written by a forge predating this fix, which
+// carry the Tier-1 "forge-owned, regenerated every run" banner but no
+// marker to certify it. Un-marked means forge cannot prove authorship,
+// so deleting one would be a guess; naming it, with the reason and the
+// remedy, is the guess-free half forge can own.
+func reportOrphanedHookFiles(hooksDir string, live []hookFileEntry) {
+	liveNames := make(map[string]bool, len(live))
+	for _, f := range live {
+		liveNames[f.fileName] = true
+	}
+
+	entries, err := os.ReadDir(hooksDir)
+	if err != nil {
+		return
+	}
+
+	var orphans []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, "-hooks.ts") || liveNames[name] {
+			continue
+		}
+		content, rerr := os.ReadFile(filepath.Join(hooksDir, name))
+		if rerr != nil {
+			continue
+		}
+		// A marker-bearing file is the marker sweep's territory
+		// (cleanupStaleArtifacts), whether pristine or hand-edited —
+		// reporting it here too would just be a second, redundant
+		// notice for the same file.
+		if _, found := checksums.ExtractMarker(content); found {
+			continue
+		}
+		orphans = append(orphans, name)
+	}
+	if len(orphans) == 0 {
+		return
+	}
+	sort.Strings(orphans)
+
+	fmt.Fprintf(os.Stderr, "\n⚠️  %d stale hook file(s) in %s carry the \"forge-owned, regenerated every run\" banner "+
+		"but predate forge's hash-marker certification, so forge cannot prove it still owns the bytes and won't "+
+		"delete them automatically. forge no longer generates these (their service was renamed or removed) — "+
+		"delete them by hand:\n", len(orphans), hooksDir)
+	for _, name := range orphans {
+		fmt.Fprintf(os.Stderr, "   - %s\n", filepath.Join(hooksDir, name))
+	}
 }
 
 // hookFileEntry describes one generated hook file for index.ts generation.
@@ -250,7 +333,7 @@ func hookFileExportedSymbols(data codegen.FrontendHookTemplateData) []string {
 // generateFrontendHooksWorkspace emits the workspace-mode hooks: one
 // file per service at packages/hooks/src/generated/<svc>-hooks.ts,
 // plus a barrel index.ts. Shared by every frontend in the project.
-func generateFrontendHooksWorkspace(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, tmpl *template.Template) error {
+func generateFrontendHooksWorkspace(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, tmpl *template.Template, cs *checksums.FileChecksums) error {
 	layout := generator.NewFrontendWorkspaceLayout(cfg.Name)
 	generatedDir := filepath.Join(projectDir, "packages", "hooks", "src", "generated")
 	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
@@ -281,10 +364,14 @@ func generateFrontendHooksWorkspace(cfg *config.ProjectConfig, services []codege
 			symbols:  hookFileExportedSymbols(data),
 		})
 
-		outPath := filepath.Join(generatedDir, fileName)
-		if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write hooks file %s: %w", outPath, err)
+		// See the per-frontend loop's write for why this goes through
+		// the certification chokepoint rather than os.WriteFile.
+		outRel := filepath.Join("packages", "hooks", "src", "generated", fileName)
+		if _, err := checksums.WriteGeneratedFile(projectDir, outRel, buf.Bytes(), cs, true); err != nil {
+			return fmt.Errorf("write hooks file %s: %w", outRel, err)
 		}
+		codegen.RetireRenamedGenerated(projectDir,
+			filepath.Join("packages", "hooks", "src", "generated", naming.ServiceHookFileLegacy(svc.Name)), cs)
 	}
 
 	if len(hookFiles) > 0 {
@@ -295,6 +382,8 @@ func generateFrontendHooksWorkspace(cfg *config.ProjectConfig, services []codege
 	}
 
 	fmt.Printf("  ✅ Generated %d hook file(s) at packages/hooks/src/generated\n", len(hookFiles))
+
+	reportOrphanedHookFiles(generatedDir, hookFiles)
 	return nil
 }
 
@@ -428,12 +517,22 @@ type hookStarterData struct {
 // this one now does too. An unrenamed starter left by an older forge is
 // renamed into place rather than left beside the new file.
 //
-// `fileName` is the hooks filename (e.g. "user-service-hooks.ts"); the test
-// goes next to it as "user-service-hooks.test.tsx".
+// `fileName` is the hooks filename (e.g. "user-service-hooks_gen.ts"); the
+// test goes next to it as "user-service-hooks.test.tsx".
+//
+// The test deliberately does NOT carry the `_gen` suffix its subject does.
+// `_gen` means "forge owns this and rewrites it every run", and this file is
+// the opposite: scaffold-once, yours the moment it lands. Naming it
+// `*_gen.test.tsx` would advertise a guarantee forge does not make about it —
+// and would make the drift lint's mechanical filename rule claim a file it
+// must never stomp.
 func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, data codegen.FrontendHookTemplateData) error {
 	base := strings.TrimSuffix(fileName, ".ts")
-	testPath := filepath.Join(hooksDir, base+".test.tsx")
-	legacyStarterPath := filepath.Join(hooksDir, base+".test.tsx.starter")
+	// The module the test IMPORTS is the generated one (with `_gen`); the
+	// test's own name drops it.
+	testBase := strings.TrimSuffix(base, "_gen")
+	testPath := filepath.Join(hooksDir, testBase+".test.tsx")
+	legacyStarterPath := filepath.Join(hooksDir, testBase+".test.tsx.starter")
 
 	scaffoldRoot, scaffoldRel, haveLedger := checksums.SplitScaffoldPath(testPath)
 

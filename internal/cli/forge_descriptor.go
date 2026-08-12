@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -383,7 +382,7 @@ func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
 		}
 		fd.Validate = fieldConstraintsFromDescriptor(f.Desc)
 		fd.Secret = fieldHasSecretMarker(f)
-		fd.ServerSet = fieldHasServerSetMarker(f)
+		fd.ReadOnly = fieldHasReadOnlyMarker(f)
 		fields = append(fields, fd)
 	}
 	sd.Schemas[fq] = fields
@@ -395,7 +394,13 @@ func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
 // is matched WITHOUT the leading slashes. Spacing/prose variants tolerated
 // (`forge:secret`, `  forge:secret — db creds`), any line of a multi-line
 // comment block.
-var secretFieldMarkerRE = regexp.MustCompile(`(?m)^\s*forge:secret(\s|$|[^\w])`)
+//
+// The marker NAME comes from codegen.KnownProtoMarkers (proto_markers.go) so
+// this pass and `forge lint --proto-markers` share one vocabulary. forge:secret
+// is read HERE and nowhere else — the raw scanner never looks for it — which is
+// why the registry has to be the union across passes rather than any one
+// scanner's list.
+var secretFieldMarkerRE = codegen.ProtoMarkerCommentRE(codegen.ProtoMarkerSecret)
 
 // fieldHasSecretMarker reports whether a field carries the `// forge:secret`
 // marker as its LEADING comment (the documented site) or a TRAILING one
@@ -407,21 +412,29 @@ func fieldHasSecretMarker(f *protogen.Field) bool {
 		secretFieldMarkerRE.MatchString(string(f.Comments.Trailing))
 }
 
-// serverSetFieldMarkerRE matches the `forge:server-set` field marker inside
-// a proto leading/trailing comment. Like secretFieldMarkerRE, buf strips the
-// `//` before protogen sees the text, so the token is matched WITHOUT the
-// leading slashes; spacing/prose variants tolerated (`forge:server-set`,
-// `  forge:server-set — set by the server`), any line of a multi-line block.
-var serverSetFieldMarkerRE = regexp.MustCompile(`(?m)^\s*forge:server-set(\s|$|[^\w])`)
+// readOnlyFieldMarkerRE matches the read-only field markers
+// (codegen.ReadOnlyProtoMarkers — `forge:read-only` and `forge:computed`)
+// inside a proto leading/trailing comment. Like secretFieldMarkerRE, buf
+// strips the `//` before protogen sees the text, so the token is matched
+// WITHOUT the leading slashes; spacing/prose variants tolerated
+// (`forge:read-only`, `  forge:read-only — the server owns this`), any line
+// of a multi-line block. Marker names from the registry, as with
+// secretFieldMarkerRE.
+//
+// forge:computed matches here too, so a computed field is excluded from the
+// write envelopes by exactly the rule read-only is — the descriptor path and
+// the raw scanner share the registry set precisely so a field's writability
+// cannot depend on which pass found it.
+var readOnlyFieldMarkerRE = codegen.ProtoMarkerAnyCommentRE(codegen.ReadOnlyProtoMarkers)
 
-// fieldHasServerSetMarker reports whether a field carries the
-// `// forge:server-set` marker as its LEADING comment (the documented site)
-// or a TRAILING one (`string status = 4; // forge:server-set`). The marker
-// keeps the column + read responses but excludes the field from the
-// generated Create/Update request messages; see SchemaFieldDef.ServerSet.
-func fieldHasServerSetMarker(f *protogen.Field) bool {
-	return serverSetFieldMarkerRE.MatchString(string(f.Comments.Leading)) ||
-		serverSetFieldMarkerRE.MatchString(string(f.Comments.Trailing))
+// fieldHasReadOnlyMarker reports whether a field carries a read-only marker
+// (`// forge:read-only` or `// forge:computed`) as its LEADING comment (the
+// documented site) or a TRAILING one (`string status = 4; // forge:read-only`).
+// The marker keeps the column + read responses but excludes the field from the
+// generated Create/Update request messages; see SchemaFieldDef.ReadOnly.
+func fieldHasReadOnlyMarker(f *protogen.Field) bool {
+	return readOnlyFieldMarkerRE.MatchString(string(f.Comments.Leading)) ||
+		readOnlyFieldMarkerRE.MatchString(string(f.Comments.Trailing))
 }
 
 // fieldConstraintsFromDescriptor reads a field's protovalidate
@@ -687,9 +700,44 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 	}
 
 	return codegen.ConfigMessage{
-		Name:   string(msg.Desc.Name()),
-		Fields: configFields,
+		Name:     string(msg.Desc.Name()),
+		Fields:   configFields,
+		Binary:   configMessageBinary(msg),
+		Frontend: configMessageFrontend(msg),
 	}, true
+}
+
+// configMessageFrontend reads the message-level
+// (forge.v1.frontend_config).frontend annotation — the forge.yaml frontend
+// whose bundle loads this config. Empty when the message carries no
+// annotation, which is every backend config and every shared block.
+func configMessageFrontend(msg *protogen.Message) string {
+	opts := msg.Desc.Options()
+	if opts == nil {
+		return ""
+	}
+	fc, ok := proto.GetExtension(opts, forgev1.E_FrontendConfig).(*forgev1.FrontendConfigOptions)
+	if !ok || fc == nil {
+		return ""
+	}
+	return fc.GetFrontend()
+}
+
+// configMessageBinary reads the message-level
+// (forge.v1.binary_config).binary annotation — the cmd/<name> leaf whose
+// process loads this config. Empty when the message carries no annotation,
+// which is the common single-AppConfig project and also every shared block
+// (BaseConfig) composed onto the per-binary configs.
+func configMessageBinary(msg *protogen.Message) string {
+	opts := msg.Desc.Options()
+	if opts == nil {
+		return ""
+	}
+	bc, ok := proto.GetExtension(opts, forgev1.E_BinaryConfig).(*forgev1.BinaryConfigOptions)
+	if !ok || bc == nil {
+		return ""
+	}
+	return bc.GetBinary()
 }
 
 // messageHasConfigFields reports whether any DIRECT field of msg

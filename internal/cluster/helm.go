@@ -196,7 +196,42 @@ func helmTemplate(ctx context.Context, spec HelmChartSpec) (string, error) {
 		return "", fmt.Errorf("helm template %s (%s@%s): %w\n%s",
 			spec.Name, chartRef, spec.Version, err, stderr.String())
 	}
-	return stdout.String(), nil
+	return stripHelmOCIStatus(stdout.String()), nil
+}
+
+// stripHelmOCIStatus removes Helm 4's OCI pull receipt from stdout. Helm 3
+// wrote these lines to stderr, but Helm 4 prefixes successful `helm template
+// oci://...` output with a standalone YAML-looking document:
+//
+//	Pulled: <ref>
+//	Digest: sha256:...
+//
+// Forge stamps every rendered document before applying it. Without this
+// boundary cleanup, the receipt gains metadata but still has no apiVersion or
+// kind, and kubectl rejects the whole stream. Only an initial document made
+// entirely of the two known receipt keys is removed; arbitrary chart output is
+// preserved so malformed manifests still fail loudly at apply time.
+func stripHelmOCIStatus(manifests string) string {
+	docs := splitDocs(manifests)
+	if len(docs) == 0 {
+		return ""
+	}
+	lines := strings.Split(docs[0], "\n")
+	isReceipt := len(lines) > 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "Pulled:") && !strings.HasPrefix(trimmed, "Digest:") {
+			isReceipt = false
+			break
+		}
+	}
+	if isReceipt {
+		docs = docs[1:]
+	}
+	return strings.Join(docs, docDelimiter)
 }
 
 // writeValuesFile marshals a helm values dict to a temp YAML file and
@@ -444,7 +479,7 @@ func helmTemplateIncludeCRDs(ctx context.Context, spec HelmChartSpec) (string, e
 		return "", fmt.Errorf("helm template --include-crds %s (%s@%s): %w\n%s",
 			spec.Name, chartRef, spec.Version, err, stderr.String())
 	}
-	return stdout.String(), nil
+	return stripHelmOCIStatus(stdout.String()), nil
 }
 
 // stampAppLabel FORCES `app.kubernetes.io/name = <name>` onto every

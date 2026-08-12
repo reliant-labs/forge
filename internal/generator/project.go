@@ -102,7 +102,7 @@ func (g *ProjectGenerator) hasCmd() bool { return !g.isLibrary() }
 // already uses. Secondary binaries (`forge scaffold binary`) DO sanitize, because
 // they are named after a Go component, not the project. The deploy-side
 // build declaration must therefore also target the raw primary path — see
-// codegen.GenerateComponentsJSON (the F5 fix aligned it to this).
+// codegen.WorkloadStanza, which writes it into deploy/kcl/workloads.k.
 func (g *ProjectGenerator) binaryName() string {
 	return g.Name
 }
@@ -413,6 +413,13 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 		if g.Features.MigrationsEnabled() {
 			files = append(files, struct{ template, dest string }{"cmd-tree-db.go.tmpl", filepath.Join(treeDir, "db.go")})
 		}
+		// cmd/<bin>/cmd/auth.go (`auth idp-provision`) exists to converge
+		// the dev IdP application — an IdP exists to complete a browser
+		// sign-in, so a project with no frontend never gets this command
+		// at all, the same gate docker-compose.yml's `idp` service uses.
+		if g.FrontendName != "" {
+			files = append(files, struct{ template, dest string }{"cmd-tree-auth.go.tmpl", filepath.Join(treeDir, "auth.go")})
+		}
 	}
 
 	// Service-kind scaffolds always get Dockerfile / .dockerignore — see
@@ -493,10 +500,11 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 		// pkg/app is now a thin substrate: the LIVE runtime DI composition
 		// lives in internal/app (OpenInfra → NewComponents, emitted by the
 		// post-scaffold `forge generate`). At scaffold time we only emit the
-		// per-component test harness (testing.go) + the CONVENTIONS explainer;
-		// migrate.go is emitted below when migrations are enabled.
+		// per-component test harness (each service's own helpers_gen_test.go)
+		// + the CONVENTIONS explainer; migrate.go is emitted below when
+		// migrations are enabled.
 		if err := g.generateBootstrapTesting(); err != nil {
-			return fmt.Errorf("failed to generate pkg/app/testing.go: %w", err)
+			return fmt.Errorf("failed to generate service test helpers: %w", err)
 		}
 		// Emit pkg/app/CONVENTIONS.md once at scaffold so per-service
 		// service.go files can point at a single canonical explainer for
@@ -804,8 +812,29 @@ func (g *ProjectGenerator) generateFrontendFiles() error {
 	// `forge scaffold frontend --kind mobile` which already wires it up.
 	// If the initial-RN-frontend path ever lands, gate the call here
 	// the same way add.go does.
+
+	// Declare this frontend's public runtime config BEFORE rendering its
+	// files. The annotation in that proto is what activates the typed
+	// config module, the KCL schema and the per-env config.js; without it
+	// the whole system emits nothing and the templates below fall back to
+	// build-time process.env reads. Only meaningful when codegen is on —
+	// a project with codegen disabled never runs the generators that
+	// would consume the annotation.
+	typedConfig := FrontendTypedConfig{}
+	if g.Features.CodegenEnabled() {
+		if err := WriteFrontendConfigProto(g.Path, g.ModulePath, g.FrontendName, g.ServicePort); err != nil {
+			return fmt.Errorf("write frontend config proto: %w", err)
+		}
+		// Derived from the template just written rather than from the
+		// descriptor: `forge generate` has not run yet at scaffold time,
+		// so there is nothing to parse. This is what lets the frontend be
+		// scaffolded already reading the typed module.
+		typedConfig = ScaffoldedFrontendTypedConfig()
+	}
+
 	return GenerateFrontendFilesWithOptions(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort, "", FrontendGenOptions{
-		Workspaces: g.FrontendWorkspaces,
+		Workspaces:  g.FrontendWorkspaces,
+		TypedConfig: typedConfig,
 	})
 }
 

@@ -105,7 +105,7 @@ func tier1ExtensionPointHint(relPath string) string {
 	// ── internal/app/ — composition and mounting ──────────────────────
 	if dir == "internal/app" {
 		switch base {
-		case "mounts_services.go":
+		case "mounts_services_gen.go", "mounts_services.go":
 			// Two answers, because there are two cases: a route that
 			// belongs to a service has a seam; a bare project-level route
 			// has none.
@@ -126,12 +126,25 @@ func tier1ExtensionPointHint(relPath string) string {
 			// explicit component wiring in compose.go.
 			return "custom wiring belongs in internal/app/providers.go (OpenInfra) + internal/app/compose.go (NewComponents) — the retired pkg/app DI unit no longer runs"
 		case "testing.go":
-			// The gap this file was forked for IS CLOSED. computeAutoStubs
-			// now synthesizes a stub for every interface-typed Deps field,
-			// and With<Svc>Deps overrides any of them. Say so explicitly:
-			// the stale advice is what keeps an obsolete fork alive.
-			return seamAt("your own _test.go files", "With<Svc>Deps(...) — and interface-typed Deps fields are AUTO-STUBBED now, "+
-				"so the hand-rolled stub factories this file used to be forked for are no longer needed")
+			// This file is RETIRED. It was a non-test .go file importing
+			// "testing" in a package cmd/<proj> imports, so it linked
+			// package `testing` — and the flags it registers in init() —
+			// into every scaffolded project's production binary. forge
+			// deletes it on regenerate when it is still forge's own render;
+			// a hand-edited copy is the user's, so say what to do with it.
+			return "RETIRED — this file put package `testing` in your production binary. " +
+				"Its per-service replacement is internal/handlers/<svc>/helpers_gen_test.go " +
+				"(a _test.go file, so it never reaches cmd/). Move anything you added there, " +
+				"then delete this file; entity factories now live beside the handler that " +
+				"owns them, in internal/handlers/<svc>/factories_gen_test.go"
+		case "factory_gen.go":
+			// Same leak, same retirement: the typed entity factories moved
+			// beside the handler package whose tests call them, as a
+			// _test.go file the toolchain keeps out of cmd/ by construction.
+			return "RETIRED — moved to internal/handlers/<svc>/factories_gen_test.go so `testing` " +
+				"stays out of your production binary. The factories are now in that handler " +
+				"package itself, so its own tests call New<Entity> unqualified (drop the " +
+				"import); delete this file"
 		}
 	}
 
@@ -142,10 +155,10 @@ func tier1ExtensionPointHint(relPath string) string {
 			return "regenerate from contract.go / proto instead of editing — this file is derived output"
 		}
 	}
-	if strings.HasPrefix(dir, "internal/db") && strings.HasSuffix(base, "_orm.go") {
+	if strings.HasPrefix(dir, "internal/db") && strings.HasSuffix(base, "_orm_gen.go") {
 		return "edit the migration + proto that derive it — this file is a projection of the schema, not a source of truth"
 	}
-	if dir == "pkg/config" && base == "config.go" {
+	if dir == "pkg/config" && (base == "config_gen.go" || base == "config.go") {
 		return seamAt("forge.yaml", "config: / environments[].config — the generated struct is a projection of it")
 	}
 	if strings.HasPrefix(rel, "frontends/") {

@@ -160,8 +160,7 @@ info "tempdir: ${WORK_DIR}"
     "${FORGE_BIN}" new "${PROJECT_NAME}" \
         --mod "${MODULE_PATH}" \
         --kind service \
-        --skip-tools \
-        --license none 2>&1
+        --skip-tools 2>&1
 ) || fail "forge new failed — likely WIP breakage in internal/cli/new.go; let the user fix and retry"
 
 [ -d "${PROJECT_DIR}/deploy/kcl/dev" ] || fail "scaffold missing deploy/kcl/dev"

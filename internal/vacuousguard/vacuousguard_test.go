@@ -70,17 +70,7 @@ var quarantine = []quarantined{
 		Key:  "internal/cli/frontend_firebase_render_test.go::TestFrontendDeployNoneRendersBuildOnly",
 		Cost: "Same stat of kcl/schema.k. Owner: internal/cli.",
 	},
-	{
-		Rule: RuleDeadSkip,
-		Key:  "internal/seeddata/gate_test.go::TestApplierNotReachableFromShippedModule",
-		Cost: "Skips when pkg/go.mod — the sibling module of this repo — is missing. Owner: internal/seeddata.",
-	},
-	{
-		Rule: RuleDeadSkip,
-		Key:  "internal/seeddata/gate_test.go::TestGeneratedMigrateTemplateHasNoSeedPath",
-		Cost: "Skips when the migrate template — tracked under internal/templates — is unreadable. " +
-			"Owner: internal/seeddata.",
-	},
+
 	{
 		Rule: RuleDeadSkip,
 		Key:  "internal/generator/frontend_webruntime_test.go::TestWebRuntimePublishedRangeTracksPackage",

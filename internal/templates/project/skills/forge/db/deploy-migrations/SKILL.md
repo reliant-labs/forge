@@ -8,7 +8,7 @@ description: How a deployed environment applies schema migrations — migrations
 ## The shape
 
 The app binary **embeds** its migrations: `forge generate` writes
-`db/embed.go` (`//go:embed migrations/*.sql` → `forgedb.MigrationsFS`) and
+`db/embed_gen.go` (`//go:embed migrations/*.sql` → `forgedb.MigrationsFS`) and
 `<binary> db migrate up` applies that embedded set.
 
 This is not a stylistic choice. The production image's runtime stage copies
@@ -17,20 +17,26 @@ container — so a migrator reading `file://db/migrations` could only ever fail
 there. Embedding is what makes the image able to migrate itself, and therefore
 what makes a deploy-time migration step possible at all.
 
-## The wiring (nothing to do by hand)
+## The wiring
 
 ```
 db/migrations/*.sql
   └─ forge generate
-       ├─ db/embed.go                     (the embedded FS)
-       └─ deploy/kcl/components_gen.json  {"migrate": {"command": ["/app/<project>","db","migrate","up"]}}
-            └─ deploy/kcl/<env>/main.k    migrate = fc.load_migrate(fc.COMPONENTS_GEN)
-                 └─ rendered Deployment   initContainers: [migrate]
+       └─ db/embed_gen.go                   (the embedded FS)
+
+deploy/kcl/<env>/main.k                 migrate = ["/app/<project>", "db", "migrate", "up"]
+  └─ rendered Deployment                initContainers: [migrate]
 ```
 
-The command is **empty until the project ships its first `.sql`**, and an
-empty command renders no init container. A migration step running a command
-guaranteed to fail is worse than no step.
+The `migrate` argv is **yours**. forge scaffolds it once per environment and
+never rewrites it, because how a system migrates is an operational decision
+that differs per env and changes over time.
+
+Set it to `[]` in any environment that applies migrations out of band — a
+DBA-run pipeline, a managed-database console, a separate release train. An
+empty command renders no init container, which is the honest answer for an
+env that migrates elsewhere. Replace the argv entirely to run a different
+tool.
 
 The init container runs the **same image** and the **same env** as the app, so
 it reads the same `DATABASE_URL` from the same Secret.

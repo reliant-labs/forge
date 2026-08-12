@@ -18,12 +18,12 @@ func secretProviderFromEntities(e *KCLEntities, projectDir string) (secrets.Prov
 		return secrets.NewProvider(nil)
 	}
 	// A "rendered" provider declares cluster Secrets explicitly (name +
-	// per-key source) — it is NOT an env-var-keyed resolver like dotenv.
-	// Its cluster apply runs through applyRenderedSecretsPerGroup; for the
-	// env-var-resolution consumers here (host secret-ref validation /
-	// injection) it has nothing to offer, so return a noop. The dedicated
-	// per-group path builds its own `.env.<env>` dotenv source for
-	// from="dotenv" keys.
+	// per-key source) — it is NOT an env-var-keyed resolver like dir or
+	// dotenv. Its cluster apply runs through applyRenderedSecretsPerGroup;
+	// for the env-var-resolution consumers here (host secret-ref
+	// validation / injection) it has nothing to offer, so return a noop.
+	// The dedicated per-group path builds its own value source for
+	// from="dir" / from="dotenv" keys.
 	if e.SecretProvider.Type == "rendered" {
 		return secrets.NewProvider(nil)
 	}
@@ -101,6 +101,48 @@ func serviceEnvVars(s *ServiceEntity) []KCLEnvVar {
 		out = append(out, s.Deploy.Host.EnvVars...)
 	case s.Deploy.Cluster != nil:
 		out = append(out, s.Deploy.Cluster.EnvVars...)
+	}
+	return out
+}
+
+// renderedSecretsValueSource builds the provider that resolves
+// `from="dir"` / `from="dotenv"` keys for a RenderedSecrets bundle.
+//
+// A RenderedSecrets provider declares the Secrets but not where their
+// values live, so this picks the env's local store: secrets/<env>.yaml.
+func renderedSecretsValueSource(envName string) (secrets.Provider, error) {
+	projectDir := projectDirForKCL()
+
+	return secrets.NewProvider(&secrets.ProviderConfig{
+		Type: "file",
+		Path: filepath.Join(projectDir, "secrets", envName+".yaml"),
+	})
+}
+
+// scopeSecretsToService narrows the env-wide secret map to the keys this
+// service DECLARES via EnvVar.secret_ref.
+//
+// This is the trust boundary for host services: the provider resolves the
+// whole store once per run, but a process only ever sees what its own KCL
+// asks for. A secret added to the store without a matching declaration
+// reaches nothing — so KCL stays the single place a value becomes live,
+// and one service cannot read another's credentials.
+//
+// A nil/empty store returns nil so the caller's legacy secrets_file
+// fallback still triggers on "no provider declared".
+func scopeSecretsToService(all map[string]string, svc *ServiceEntity) map[string]string {
+	if len(all) == 0 || svc == nil {
+		return nil
+	}
+	refs := secretRefsForService(svc)
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(refs))
+	for _, r := range refs {
+		if v, ok := all[r.EnvName]; ok {
+			out[r.EnvName] = v
+		}
 	}
 	return out
 }

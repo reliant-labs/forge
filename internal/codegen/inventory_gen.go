@@ -47,6 +47,11 @@ type InventoryServiceData struct {
 	Name string
 	// FieldName is the exported field on *Services holding the instance.
 	FieldName string
+	// MountMethod is the method this file calls to mount the service —
+	// "Register" normally, "Mount" when the service declares an RPC of its
+	// own called Register. One type cannot carry both a Register(mux,
+	// opts...) helper and a Register(ctx, req) RPC, and the RPC wins.
+	MountMethod string
 	// Alias is the import alias for the service's handler package.
 	Alias string
 	// ImportPath is the module-relative handler import path.
@@ -82,7 +87,7 @@ type InventoryServiceData struct {
 	HasWebhooks bool
 }
 
-// InventoryGenData is the rendered template input for mounts_services.go.tmpl.
+// InventoryGenData is the rendered template input for mounts_services_gen.go.tmpl.
 type InventoryGenData struct {
 	Module      string
 	RESTEnabled bool
@@ -160,9 +165,22 @@ func GenerateInventory(in InventoryGenInput) error {
 		// InventoryServiceData doc). Empty Version for an unversioned package.
 		protoVersion := naming.ProtoPackageVersion(svc.Package)
 
+		// A service may declare an RPC called Register — the obvious name for
+		// a sign-up endpoint — which collides with the scaffolded mount
+		// helper. The handler renames its helper to Mount in that case, so
+		// this call site has to follow.
+		mountMethod := "Register"
+		for _, m := range svc.Methods {
+			if m.Name == "Register" {
+				mountMethod = "Mount"
+				break
+			}
+		}
+
 		rows = append(rows, InventoryServiceData{
 			Name:             runtimeName,
 			FieldName:        fieldName,
+			MountMethod:      mountMethod,
 			Alias:            alias,
 			ImportPath:       "internal/handlers/" + res.ImportLeaf,
 			Package:          pkg,
@@ -187,12 +205,16 @@ func GenerateInventory(in InventoryGenInput) error {
 		ConnectImports: imports,
 	}
 
-	content, err := templates.ProjectTemplates().Render("mounts_services.go.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("mounts_services_gen.go.tmpl", data)
 	if err != nil {
-		return fmt.Errorf("render mounts_services.go.tmpl: %w", err)
+		return fmt.Errorf("render mounts_services_gen.go.tmpl: %w", err)
 	}
-	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "mounts_services.go"), content, in.Checksums); err != nil {
-		return fmt.Errorf("write internal/app/mounts_services.go: %w", err)
+	// Renamed to _gen so the name states the tier: this file is a pure
+	// projection of the discovered service set, rewritten on every run, and a
+	// reader could not tell that from the old spelling without opening it.
+	RetireRenamedGenerated(in.ProjectDir, filepath.Join("internal", "app", "mounts_services.go"), in.Checksums)
+	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "mounts_services_gen.go"), content, in.Checksums); err != nil {
+		return fmt.Errorf("write internal/app/mounts_services_gen.go: %w", err)
 	}
 	return nil
 }

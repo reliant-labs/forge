@@ -33,6 +33,15 @@ interface UiState {
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
 
+  // Mobile navigation drawer.
+  //
+  // Separate state from sidebarCollapsed, not a reuse of it: on a phone the
+  // nav is an overlay that is open or shut, and on a desktop it is a rail
+  // that is wide or narrow. Sharing one flag would mean collapsing the rail
+  // on a laptop silently decided whether the drawer was open on a phone.
+  mobileNavOpen: boolean;
+  setMobileNavOpen: (open: boolean) => void;
+
   // Command palette
   commandPaletteOpen: boolean;
   setCommandPaletteOpen: (open: boolean) => void;
@@ -44,6 +53,10 @@ export const useUiStore = create<UiState>((set) => ({
   sidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+
+  // Mobile navigation drawer
+  mobileNavOpen: false,
+  setMobileNavOpen: (open) => set({ mobileNavOpen: open }),
 
   // Command palette
   commandPaletteOpen: false,

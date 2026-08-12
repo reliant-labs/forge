@@ -535,9 +535,9 @@ func TestDashboardGenTemplate_RealCountsAndCreateGating(t *testing.T) {
 		}},
 	}
 	rendered, err := templates.FrontendTemplates().Render(
-		"nextjs/src/app/dashboard_gen.tsx.tmpl", data)
+		"nextjs/src/app/dashboard.tsx.tmpl", data)
 	if err != nil {
-		t.Fatalf("render dashboard_gen: %v", err)
+		t.Fatalf("render dashboard: %v", err)
 	}
 	out := string(rendered)
 
@@ -545,27 +545,49 @@ func TestDashboardGenTemplate_RealCountsAndCreateGating(t *testing.T) {
 		`import { useListTasks } from "@/hooks/task-service-hooks";`,
 		"const { data } = useListTasks({});",
 		"const count = data?.tasks?.length;",
-		`{count === undefined ? "—" : String(count)}`,
+		"{count === undefined ? (",
+		"animate-pulse",
+		"String(count)",
 		"ALL_ROUTES.filter((route) => route.hasCreate)",
-		"Create {route.labelSingular}",
+		"New {route.labelSingular}",
 		`"use client";`,
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("dashboard_gen missing %q:\n%s", want, out)
+			t.Errorf("dashboard missing %q:\n%s", want, out)
 		}
 	}
 	if strings.Contains(out, "&mdash;") {
-		t.Errorf("dashboard_gen still renders the static &mdash; fake stat card:\n%s", out)
+		t.Errorf("dashboard still renders the static &mdash; fake stat card:\n%s", out)
 	}
 
-	// nav_gen carries hasCreate so the dashboard can gate.
+	// The undefined branch must render a loading AFFORDANCE, never a value.
+	// An em-dash (or a "0") in the not-yet-loaded slot is a fabricated stat:
+	// it is indistinguishable from a real answer of "none", so a slow query
+	// reads as an empty table. The skeleton span says "still loading" and
+	// cannot be mistaken for data.
+	start := strings.Index(out, "{count === undefined ? (")
+	end := strings.Index(out, ") : (")
+	if start < 0 || end < start {
+		t.Fatalf("dashboard no longer renders a count===undefined branch at all:\n%s", out)
+	}
+	undefinedBranch := out[start:end]
+	if !strings.Contains(undefinedBranch, "animate-pulse") {
+		t.Errorf("the count===undefined branch must render a loading skeleton, not a placeholder value:\n%s", undefinedBranch)
+	}
+	for _, fabricated := range []string{"—", `"0"`, "&mdash;"} {
+		if strings.Contains(undefinedBranch, fabricated) {
+			t.Errorf("the count===undefined branch renders the fabricated value %q — an unloaded count must not be indistinguishable from a real one:\n%s", fabricated, undefinedBranch)
+		}
+	}
+
+	// nav carries hasCreate so the dashboard can gate.
 	navRendered, err := templates.FrontendTemplates().Render(
-		"nextjs/src/components/nav_gen.tsx.tmpl", data)
+		"nextjs/src/components/nav.tsx.tmpl", data)
 	if err != nil {
-		t.Fatalf("render nav_gen: %v", err)
+		t.Fatalf("render nav: %v", err)
 	}
 	if !strings.Contains(string(navRendered), `slug: "tasks", labelSingular: "Task", hasCreate: true`) {
-		t.Errorf("nav_gen missing hasCreate/labelSingular route fields:\n%s", navRendered)
+		t.Errorf("nav missing hasCreate/labelSingular route fields:\n%s", navRendered)
 	}
 }
 
@@ -584,7 +606,7 @@ func TestDashboardGenTemplate_CountsTotalCountNotPageLength(t *testing.T) {
 	render := func(t *testing.T, page templates.NavPageData) string {
 		t.Helper()
 		rendered, err := templates.FrontendTemplates().Render(
-			"nextjs/src/app/dashboard_gen.tsx.tmpl", templates.FrontendTemplateData{
+			"nextjs/src/app/dashboard.tsx.tmpl", templates.FrontendTemplateData{
 				FrontendName: "web",
 				ProjectName:  "demo",
 				Pages:        []templates.NavPageData{page},
@@ -593,7 +615,7 @@ func TestDashboardGenTemplate_CountsTotalCountNotPageLength(t *testing.T) {
 				}},
 			})
 		if err != nil {
-			t.Fatalf("render dashboard_gen: %v", err)
+			t.Fatalf("render dashboard: %v", err)
 		}
 		return string(rendered)
 	}
@@ -656,22 +678,26 @@ func TestHooksTemplate_KeyFactory(t *testing.T) {
 	out := renderHooksForTest(t, false)
 
 	for _, want := range []string{
-		// Factory exists with service + entity scopes.
+		// Factory exists with service + entity scopes. The tuples themselves
+		// are built by @reliant-labs/web-runtime/service-hooks and pinned in
+		// ITS suite (service-hooks.test.ts); what the generated file owns —
+		// and what is asserted here — is the service name, which entities get
+		// a scope, and which RPCs get a key.
+		`const keys = serviceKeys("taskService");`,
 		"export const taskServiceKeys = {",
-		`all: ["taskService"] as const,`,
-		`task: ["taskService", "task"] as const,`,
-		// Query keys: [service, entity, method, protojson(req)].
-		`["taskService", "task", "getTask", requestKey(GetTaskRequestSchema, req)] as const,`,
-		`["taskService", "task", "listTasks", requestKey(ListTasksRequestSchema, req)] as const,`,
+		"all: keys.all,",
+		`task: keys.entity("task"),`,
+		// Query keys are declared per RPC with the request schema that hashes
+		// them and the entity they are scoped under.
+		`getTask: keys.query("getTask", GetTaskRequestSchema, "task"),`,
+		`listTasks: keys.query("listTasks", ListTasksRequestSchema, "task"),`,
 		// Hooks consume the factory — no hand-built key literals.
-		"queryKey: taskServiceKeys.getTask(req),",
-		"queryKey: taskServiceKeys.listTasks(req),",
+		"taskServiceKeys.getTask,",
+		"taskServiceKeys.listTasks,",
 		// CRUD mutation invalidates the ENTITY scope, not the service.
-		"queryClient.invalidateQueries({ queryKey: taskServiceKeys.task });",
+		"createMutationHook<typeof CreateTaskRequestSchema, CreateTaskResponse>(\n  taskServiceKeys.task,",
 		// Non-CRUD mutation (SendReport) falls back to the service scope.
-		"queryClient.invalidateQueries({ queryKey: taskServiceKeys.all });",
-		// protojson normalization helper present.
-		"return toJson(schema, create(schema, req));",
+		"createMutationHook<typeof SendReportRequestSchema, SendReportResponse>(\n  taskServiceKeys.all,",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered hooks missing %q:\n%s", want, out)
@@ -720,18 +746,23 @@ func TestMockTransport_MutableStoreAndNotFound(t *testing.T) {
 
 	got := renderMockTransport(t, entities)
 
+	// The mutable store, the store-backed List, and the NotFound-on-miss are
+	// the ENGINE's behaviors now — asserted directly, against a real
+	// protobuf runtime, in web-runtime/src/mock-transport.test.ts. What the
+	// project file supplies is the data those behaviors run on, so that is
+	// what is pinned here.
 	for _, want := range []string{
-		// mutable session store
-		"const tasksStore = new Map(",
-		"tasksMocks.tasks.map((e) => [String(e.id), e]),",
-		// list reads the store, not the static fixture array
-		"tasks: Array.from(tasksStore.values()),",
-		// get-miss is a real NotFound
-		"Code.NotFound",
-		// create inserts; delete removes — both key by the PK field (`id` here)
-		"tasksStore.set(String(pk), created);",
-		"tasksStore.delete(String(req?.id));",
-		// the entity schema import comes from the ENTITY's module
+		// the fixtures the session store is seeded from
+		"fixtures: tasksMocks.tasks,",
+		// the field the store keys by, and the CRUD arms that use it
+		`pkField: "id",`,
+		`list: { rpc: "ListTasks", responseSchema: ListTasksResponseSchema, itemsField: "tasks" }`,
+		`get: { rpc: "GetTask", responseSchema: GetTaskResponseSchema, entityField: "task" }`,
+		`create: { rpc: "CreateTask"`,
+		`delete: { rpc: "DeleteTask" }`,
+		// the entity schema the write paths build records with, imported
+		// from the ENTITY's module (which differs from the service's here)
+		"entitySchema: TaskSchema,",
 		`from "@/gen/db/v1/tasks_pb"`,
 	} {
 		if !strings.Contains(got, want) {
@@ -805,35 +836,35 @@ func TestHooksTemplate_MutationComposeThenSpread(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			out := renderHooksForTest(t, tc.workspaces)
 
-			// The raw options object must never be spread into useMutation —
-			// only the destructured rest may be. `...options` after the
-			// composed onSuccess re-introduces the override bug. (Query
-			// hooks spread `...options` legitimately — nothing is composed
-			// there — so scope the check to useMutation call bodies.)
-			mutationBlocks := strings.Split(out, "useMutation({")[1:]
-			if len(mutationBlocks) == 0 {
-				t.Fatalf("expected at least one useMutation call in rendered hooks:\n%s", out)
+			// The compose-then-spread pattern ITSELF now lives in
+			// @reliant-labs/web-runtime/service-hooks, and is tested there
+			// against a captured options object
+			// ("composes the caller's onSuccess AFTER invalidation") — a
+			// stronger check than the substring assertions this test used to
+			// make, because it observes the actual composition rather than
+			// the text that implements it.
+			//
+			// What remains generated, and is asserted here, is that every
+			// mutation goes THROUGH that factory with an invalidation scope.
+			// A hand-rolled useMutation reappearing in the template is the
+			// regression this now guards: it would bypass the composition
+			// and silently reintroduce the caller-overrides-invalidation bug.
+			if strings.Contains(out, "useMutation({") {
+				t.Errorf("rendered hooks hand-roll useMutation — mutations must go through "+
+					"createMutationHook so caller onSuccess cannot replace the composed invalidation:\n%s", out)
 			}
-			for _, block := range mutationBlocks {
-				if end := strings.Index(block, "});"); end >= 0 {
-					block = block[:end]
+			if !strings.Contains(out, "createMutationHook<typeof CreateTaskRequestSchema, CreateTaskResponse>(") {
+				t.Errorf("expected CreateTask to be built by createMutationHook:\n%s", out)
+			}
+			// Every createMutationHook call passes an invalidation scope as
+			// its first argument — never omitted, never a bare literal.
+			for _, want := range []string{
+				"createMutationHook<typeof CreateTaskRequestSchema, CreateTaskResponse>(\n  taskServiceKeys.task,",
+				"createMutationHook<typeof SendReportRequestSchema, SendReportResponse>(\n  taskServiceKeys.all,",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("expected mutation hook to declare its invalidation scope %q:\n%s", want, out)
 				}
-				if strings.Contains(block, "...options") {
-					t.Errorf("useMutation body spreads raw `...options` — caller onSuccess would replace composed invalidation:\n%s", block)
-				}
-			}
-			// The compose-then-spread pattern: destructure first...
-			if !strings.Contains(out, "const { onSuccess, ...rest } = options ?? {};") {
-				t.Errorf("expected destructuring `const { onSuccess, ...rest } = options ?? {};` in mutation hooks:\n%s", out)
-			}
-			// ...then spread the rest.
-			if !strings.Contains(out, "...rest,") {
-				t.Errorf("expected `...rest,` spread in mutation hooks:\n%s", out)
-			}
-			// And the composed callback still calls the caller's onSuccess
-			// after invalidation.
-			if !strings.Contains(out, "onSuccess?.(...args);") {
-				t.Errorf("expected composed onSuccess to delegate to caller's onSuccess:\n%s", out)
 			}
 		})
 	}

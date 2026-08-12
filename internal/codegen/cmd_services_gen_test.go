@@ -64,25 +64,57 @@ func TestGenerateCmdGroups(t *testing.T) {
 
 	base := filepath.Join(dir, "cmd", "proj", "cmd")
 
-	// Services: one file per service, typed mount method expression.
+	// Services: TWO files per service. <name>.go is the user's scaffold-once
+	// subcommand (ctor, Use, RunE); <name>_mount_gen.go is the Tier-1 sliver
+	// holding the typed mount method expression, which stays re-derivable
+	// because a cross-role collision can change its spelling after birth.
 	for _, tc := range []struct {
 		file      string
+		mountFile string
 		ctor      string
 		mountExpr string
 		use       string
 	}{
-		{filepath.Join("services", "admin-server.go"), "func NewAdminServerCmd(deps cmd.Deps)", "(*app.Components).MountAdminServer", `Use:   "admin-server",`},
-		{filepath.Join("services", "billing.go"), "func NewBillingCmd(deps cmd.Deps)", "(*app.Components).MountBilling", `Use:   "billing",`},
+		{
+			filepath.Join("services", "admin-server.go"),
+			filepath.Join("services", "admin-server_mount_gen.go"),
+			"func NewAdminServerCmd(deps cmd.Deps)",
+			"(*app.Components).MountAdminServer",
+			`Use:   "admin-server",`,
+		},
+		{
+			filepath.Join("services", "billing.go"),
+			filepath.Join("services", "billing_mount_gen.go"),
+			"func NewBillingCmd(deps cmd.Deps)",
+			"(*app.Components).MountBilling",
+			`Use:   "billing",`,
+		},
 	} {
+		rawMount, err := os.ReadFile(filepath.Join(base, tc.mountFile))
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.mountFile, err)
+		}
+		mountContent := string(rawMount)
+		if !strings.Contains(mountContent, tc.mountExpr) {
+			t.Errorf("%s missing the typed mount expression %q\n%s", tc.mountFile, tc.mountExpr, mountContent)
+		}
+		assertParses(t, tc.mountFile, mountContent)
+
 		raw, err := os.ReadFile(filepath.Join(base, tc.file))
 		if err != nil {
 			t.Fatalf("read %s: %v", tc.file, err)
 		}
 		content := string(raw)
-		for _, want := range []string{tc.ctor, tc.mountExpr, tc.use, "package services"} {
+		for _, want := range []string{tc.ctor, tc.use, "package services"} {
 			if !strings.Contains(content, want) {
 				t.Errorf("%s missing %q\n%s", tc.file, want, content)
 			}
+		}
+		// The mount expression must NOT be inlined here: this file is
+		// scaffold-once, so a collision rename could never reach it.
+		if strings.Contains(content, "(*app.Components).Mount") {
+			t.Errorf("%s inlines the mount method expression, but it is scaffold-once — "+
+				"a later collision rename could never correct it\n%s", tc.file, content)
 		}
 		// No init() self-registration — the registry is gone; main.go wires
 		// the tree explicitly.
@@ -150,10 +182,15 @@ func TestGenerateCmdGroups(t *testing.T) {
 	// zero items). All three groups are anchored even though workers/operators
 	// have no per-component files yet — main.go's (future) named imports of
 	// those subpackages must resolve.
+	//
+	// The filenames differ by TIER, not by accident: the services anchor is
+	// Tier-1 (register_gen.go) because it projects the built-in collision
+	// NOTEs, while the workers/operators anchors project nothing and are
+	// scaffold-once (register.go). See GenerateCmdGroups.
 	for _, anchor := range []struct{ file, pkg string }{
 		{filepath.Join("services", "register_gen.go"), "package services"},
-		{filepath.Join("workers", "register_gen.go"), "package workers"},
-		{filepath.Join("operators", "register_gen.go"), "package operators"},
+		{filepath.Join("workers", "register.go"), "package workers"},
+		{filepath.Join("operators", "register.go"), "package operators"},
 	} {
 		raw, err := os.ReadFile(filepath.Join(base, anchor.file))
 		if err != nil {
@@ -309,8 +346,8 @@ func TestGenerateCmdGroups_ZeroComponents(t *testing.T) {
 	base := filepath.Join(dir, "cmd", "proj", "cmd")
 	for _, anchor := range []string{
 		filepath.Join("services", "register_gen.go"),
-		filepath.Join("workers", "register_gen.go"),
-		filepath.Join("operators", "register_gen.go"),
+		filepath.Join("workers", "register.go"),
+		filepath.Join("operators", "register.go"),
 	} {
 		raw, err := os.ReadFile(filepath.Join(base, anchor))
 		if err != nil {
@@ -367,15 +404,23 @@ func TestGenerateCmdGroups_MountNameCollision(t *testing.T) {
 
 	base := filepath.Join(dir, "cmd", "proj", "cmd", "services")
 
-	// Colliding service: cmd-group must call the collision-aware mount METHOD,
-	// matching the Svc-prefixed name inventory_gen emits.
+	// Colliding service: the mount file must name the collision-aware mount
+	// METHOD, matching the Svc-prefixed name inventory_gen emits.
+	//
+	// This collision is precisely why the mount expression is NOT in the
+	// scaffold-once billing.go: MountBilling becomes MountSvcBilling when an
+	// unrelated internal/billing package appears, which can happen long after
+	// the subcommand was born. Only a re-derived file can track that.
+	billingMount := mustReadFile(t, filepath.Join(base, "billing_mount_gen.go"))
+	if !strings.Contains(billingMount, "(*app.Components).MountSvcBilling") {
+		t.Errorf("billing_mount_gen.go must name collision-aware (*app.Components).MountSvcBilling:\n%s", billingMount)
+	}
+	if strings.Contains(billingMount, "(*app.Components).MountBilling\n") {
+		t.Errorf("billing_mount_gen.go must NOT name the plain MountBilling (mismatch with inventory_gen):\n%s", billingMount)
+	}
+	assertParses(t, "billing_mount_gen.go", billingMount)
+
 	billing := mustReadFile(t, filepath.Join(base, "billing.go"))
-	if !strings.Contains(billing, "(*app.Components).MountSvcBilling") {
-		t.Errorf("billing.go must call collision-aware (*app.Components).MountSvcBilling:\n%s", billing)
-	}
-	if strings.Contains(billing, "(*app.Components).MountBilling,") {
-		t.Errorf("billing.go must NOT call the plain MountBilling (mismatch with inventory_gen):\n%s", billing)
-	}
 	// The constructor name stays PLAIN (NewBillingCmd) + Use "billing" — it is a
 	// local group-package symbol, not subject to the cross-role rename. Only the
 	// mount method reference is collision-aware. This matches the control-plane
@@ -389,11 +434,12 @@ func TestGenerateCmdGroups_MountNameCollision(t *testing.T) {
 	assertParses(t, "billing.go", billing)
 
 	// Non-colliding service is unchanged — plain MountUser.
-	user := mustReadFile(t, filepath.Join(base, "user.go"))
-	if !strings.Contains(user, "(*app.Components).MountUser") {
-		t.Errorf("user.go must call plain (*app.Components).MountUser:\n%s", user)
+	userMount := mustReadFile(t, filepath.Join(base, "user_mount_gen.go"))
+	if !strings.Contains(userMount, "(*app.Components).MountUser") {
+		t.Errorf("user_mount_gen.go must name plain (*app.Components).MountUser:\n%s", userMount)
 	}
-	assertParses(t, "user.go", user)
+	assertParses(t, "user_mount_gen.go", userMount)
+	assertParses(t, "user.go", mustReadFile(t, filepath.Join(base, "user.go")))
 }
 
 func mustWriteFile(t *testing.T, path, content string) {

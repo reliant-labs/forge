@@ -35,14 +35,17 @@ import (
 	"connectrpc.com/otelconnect"
 
 	fmw "github.com/reliant-labs/forge/pkg/middleware"
+{{- if index .ConfigFields "AutoMigrate"}}
+	"github.com/reliant-labs/forge/pkg/migratekit"
+{{- end}}
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/serverkit"
 	"github.com/reliant-labs/forge/pkg/validate"
 
-	"{{.Module}}/internal/app"
 {{- if index .ConfigFields "AutoMigrate"}}
-	pkgapp "{{.Module}}/pkg/app"
+	forgedb "{{.Module}}/db"
 {{- end}}
+	"{{.Module}}/internal/app"
 	"{{.Module}}/pkg/config"
 	"{{.Module}}/pkg/middleware"
 {{- if index .ConfigFields "AutoMigrate"}}
@@ -143,7 +146,14 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// Migrate BEFORE constructing components and mounting: a service that
 	// starts serving against a schema its migrations have not reached
 	// answers requests with errors that look like bugs.
-	if merr := serverkit.AutoMigrate(skCfg, logger, pkgapp.AutoMigrate); merr != nil {
+	//
+	// forgedb.Source() is the embedded SQL, re-derived in db/source_gen.go
+	// (nil until you write your first migration, which migratekit tolerates at
+	// boot); the migration LOGIC is migratekit's, so improvements to it arrive
+	// through a forge/pkg bump rather than a re-scaffold of this file, which
+	// is yours.
+	if merr := serverkit.AutoMigrate(skCfg, logger,
+		migratekit.AutoMigrate(forgedb.Source(), forgedb.SourceDir)); merr != nil {
 		return merr
 	}
 {{- end}}

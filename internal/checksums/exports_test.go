@@ -72,7 +72,7 @@ func TestExtractGoExports_HandlesParseError(t *testing.T) {
 
 func TestIsGoPath(t *testing.T) {
 	cases := map[string]bool{
-		"db/embed.go":        true,
+		"db/embed_gen.go":    true,
 		"pkg/app/migrate.go": true,
 		"a.go.tmpl":          false,
 		"hooks.ts":           false,

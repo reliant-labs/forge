@@ -49,9 +49,11 @@ _bundle = forge.Bundle {
         # Host-mode dev server with live-reload.
         #
         # env_vars carries reproducible per-env config (DATABASE_URL,
-        # LOG_LEVEL, …). secrets_file points at a gitignored dotenv
-        # for STRIPE_*, JWT_*, etc. forge run / forge env up load
-        # secrets_file first, then layer env_vars on top so KCL wins.
+        # LOG_LEVEL, …). Secret VALUES come from the bundle's
+        # secret_provider (FileSecrets — secrets/dev/), scoped to the keys
+        # this service DECLARES via EnvVar.secret_ref. forge run /
+        # forge env up load secrets first, then layer env_vars on top so
+        # KCL wins.
         forge.RenderedWorkload {
             name = "admin-server"
             image = "example"
@@ -62,7 +64,6 @@ _bundle = forge.Bundle {
                     forge.EnvVar { name = "LOG_LEVEL", value = "debug" }
                     forge.EnvVar { name = "DATABASE_URL", value = "postgres://localhost:5432/example_dev?sslmode=disable" }
                 ]
-                secrets_file = ".env.dev.secrets"
             }
         }
         # Cluster-deployed proxy. Routed via Gateway API — see the

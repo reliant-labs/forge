@@ -77,6 +77,37 @@ var removals = []removal{
 					"pkg/oauth2/",
 					"internal/templates/frontend/shared-web/src/lib/auth/",
 					"internal/templates/frontend_auth_flow_test.go",
+					// Zitadel's OWN multi-tenancy: the dev IdP resolves which
+					// instance a request belongs to from the Host header. That
+					// is a property of the product forge runs as a container,
+					// not a tenant concept forge ships. Scoped by the same
+					// "multi-tenant" token, so a TenantID field here still fails.
+					"pkg/devidp/zitadel.go",
+				},
+			},
+			{
+				Name: "prose teaching that forge has no tenancy",
+				Reason: "The db/write-policy skill's \"If rows belong to someone, that is a column\" section and " +
+					"seedplan's diamond-disambiguation comment both name tenancy in order to say " +
+					"forge does NOT have it: the skill tells the author that ownership must be a " +
+					"column they write because forge stores none, and the seedplan comment records " +
+					"that the rule is deliberately STRUCTURAL and must not start recognizing " +
+					"`tenant_id`/`org_id`, because that would put back the domain concept the " +
+					"package removed on purpose.\n" +
+					"This is documentation OF the removal, and it is the text most likely to stop " +
+					"someone reintroducing the feature — deleting it to satisfy the guard would " +
+					"delete the explanation for why the guard exists. Scoped to the negating " +
+					"phrasings, so a line in these same files that actually reintroduced a tenant " +
+					"column or helper still fails.",
+				Token: regexp.MustCompile(`no implicit tenant|nothing about tenancy, ownership or scope|` +
+					"`company_id`/`tenant_id`/`org_id`"),
+				Paths: []string{
+					"internal/templates/project/skills/forge/db/SKILL.md",
+					"internal/templates/project/skills/forge/db/write-policy/SKILL.md",
+					// The rendered copies of the same templates, tracked in-repo.
+					".claude/skills/db/SKILL.md",
+					".claude/skills/db-write-policy/SKILL.md",
+					"pkg/seedplan/diamond.go",
 				},
 			},
 		},
@@ -189,6 +220,43 @@ var removals = []removal{
 				Name:   "Connect PermissionDenied wire code",
 				Reason: "`svcerr.PermissionDenied` / `connect.CodePermissionDenied` is the standard Connect/gRPC status code an application returns from ITS OWN policy check. forge transports the code; it does not decide it.",
 				Token:  regexp.MustCompile(`(?i)permission[_ ]?denied`),
+			},
+			{
+				Name: "the lint rules that DETECT the removed annotations",
+				Reason: "proto-options and vendored-protos exist precisely because a project's vendored " +
+					"forge.proto kept declaring `authz_public` / `required_roles` / `authz_custom` / " +
+					"`default_roles` on field numbers upstream had reserved: buf compiled them, forge's " +
+					"own descriptor had no such fields, and 104 annotations across 14 service protos " +
+					"declared an authorization posture enforced by nothing, silently. These rules name " +
+					"the dead spellings in order to FIND them in user projects — the reference is the " +
+					"feature working, and deleting it would delete the detection along with the record " +
+					"of what it is for. Scoped to the lint rules' own files and to the removed option " +
+					"spellings, so an actual role check or Authorize hook in these files still fails.",
+				Token: regexp.MustCompile(`(?i)\bauthz\b|\brequire[sd]?[_-]?roles?\b|\bdefault_roles\b`),
+				Paths: []string{
+					"internal/cli/lint/lint_proto_options.go",
+					"internal/cli/lint/lint_proto_options_test.go",
+					"internal/cli/lint/lint_vendored_protos.go",
+					"internal/cli/lint/help_surface_test.go",
+				},
+			},
+			{
+				Name: "Kubernetes RBAC prose where the Kubernetes noun is a line away",
+				Reason: "Three places describe POD-identity RBAC in prose whose Kubernetes noun sits on a " +
+					"neighbouring line, so the kubernetesNoun Context above cannot see it: README's KCL " +
+					"model list (\"Application, Environment, ConfigMap, Ingress, RBAC\"), the " +
+					"idp-provision workload comment explaining why that job needs a Role to PATCH a " +
+					"ConfigMap in its own namespace, and the auth command-tree template's WHY IT NEEDS " +
+					"RBAC paragraph about the ServiceAccount token every pod is projected. All three " +
+					"are the ServiceAccount permissions that make `forge env deploy` work, not " +
+					"application authorization — which none of these files has ever contained. Scoped " +
+					"to the bare word in these three paths; every other RBAC spelling stays guarded.",
+				Token: regexp.MustCompile(`(?i)\brbac\b`),
+				Paths: []string{
+					"README.md",
+					"internal/codegen/workloads_kcl.go",
+					"internal/templates/project/cmd-tree-auth.go.tmpl",
+				},
 			},
 		},
 	},
@@ -324,20 +392,19 @@ var removals = []removal{
 			"nobody remembered to update it.",
 		// READ BEFORE EDITING — the live look-alike.
 		//
-		// forge still WRITES `deploy/kcl/components_gen.json`
-		// (codegen.ComponentsJSONRelPath, emitted by GenerateComponentsJSON):
-		// a generated, untracked, lockfile-class projection of the discovered
-		// Inventory that the per-env main.k loads so KCL can expand it into
-		// k8s resources. Nothing in Go reads it back as truth. It is correct,
-		// it must keep working, and deleting it breaks `forge env deploy`.
+		// forge still SCAFFOLDS `deploy/kcl/components.k`
+		// (codegen.ComponentsKCLRelPath): the project's own, TRACKED,
+		// hand-editable declaration of what it is made of. It is written once
+		// and never regenerated, which is exactly what separates it from the
+		// retired root manifest — it is not a second source of truth forge
+		// keeps in sync, it IS the source of truth, and it is KCL rather than
+		// JSON. It must keep working; deleting it breaks every render.
 		//
-		// The patterns below are separated from it by SPELLING, not by an
-		// allowance: `components_gen.json` has an underscore where the retired
-		// manifest has a dot, and the live Go identifiers
-		// (ComponentsJSONRelPath, GenerateComponentsJSON) carry no dot at all.
-		// That is why there is no carve-out here to soften — see the
-		// components_gen entries in TestLegitimateLookalikesAreStillPresent,
-		// which fail if a widened pattern ever swallows the live file.
+		// It is separated from the patterns below by SPELLING: the retired
+		// manifest is `components.json` at the project ROOT, and this is
+		// `components.k` under deploy/kcl/. See the components.k entry in
+		// TestLegitimateLookalikesAreStillPresent, which fails if a widened
+		// pattern ever swallows the live file.
 		//
 		// SCOPE: this entry forbids the retired FILE and the retired Go API
 		// that read and wrote it. It deliberately does not police the word
@@ -358,9 +425,81 @@ var removals = []removal{
 			// it.
 			regexp.MustCompile(`\bDeriveProjectKind\b`),
 			// The manifest reader/writers. All three name a components FILE,
-			// which is the retired mechanism; the live writer is spelled
-			// GenerateComponentsJSON and emits the KCL projection instead.
+			// which is the retired mechanism.
 			regexp.MustCompile(`(?i)\b(?:hasComponentsFile|WriteComponentsFile|AppendComponentToFile)\b`),
+		},
+	},
+	{
+		Name: "the forge.components KCL package and its Server/Binary schemas",
+		Why: "`Server` meant two different things: a PROTO SERVICE (a set of RPCs " +
+			"mounted on a shared mux) and a DEPLOYABLE (an image + args + placement). " +
+			"They are not the same object — one binary serving twelve Connect services " +
+			"is ONE deployable — and conflating them invited a declaration per proto " +
+			"service. A real project declared 14 `servers` that rendered 10 Deployments " +
+			"from 2 binaries. What replaced it is `forge.workloads`, whose `Workload` " +
+			"schema is exactly one deployable unit, with a `kind` discriminator " +
+			"(service/worker/cron/job/operator/tool) instead of six subschemas that " +
+			"shared every field and differed only in which expansion ran. " +
+			"`Binary` is gone outright: it named a property EVERY workload has (they " +
+			"are all executables with args) and its expansion was byte-identical to " +
+			"`Worker`'s. What it MEANT — built into the image, never scheduled — is " +
+			"`kind = \"tool\"`, which renders no manifest at all rather than an " +
+			"unscheduled Deployment nobody addressed.",
+		Patterns: []*regexp.Regexp{
+			// The package, on any surface (import path or prose).
+			regexp.MustCompile(`\bforge\.components\b`),
+			// The retired schema names, as a project would write them. Anchored
+			// on the `fc.` alias the old scaffold used so the English words
+			// "server" and "binary" cannot match.
+			regexp.MustCompile(`\bfc\.(?:Server|Worker|Cron|Job|Operator|Binary|Component|ComponentPort|ComponentEnv)\b`),
+			// The retired render entry point + env schema.
+			regexp.MustCompile(`\brender_components\b|\bComponentEnv\b|\bComponentPort\b`),
+			// The retired Go emitters. Their replacements are Workload*.
+			regexp.MustCompile(`\b(?:ComponentsKCLRelPath|ComponentsKCLExists|ComponentStanza|ComponentStanzaHint|AppendComponentStanza|ScaffoldComponentsKCL)\b`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the changelog entry announcing the rename",
+				Reason: "The CHANGELOG has to name what it removed, or the entry cannot " +
+					"tell a reader upgrading what stopped existing.",
+				Token: regexp.MustCompile(`forge\.components|fc\.(?:Server|Worker|Cron|Job|Operator|Binary|Component|ComponentPort|ComponentEnv)|render_components|ComponentEnv|ComponentPort|ComponentsKCLRelPath|ComponentsKCLExists|ComponentStanza|ComponentStanzaHint|AppendComponentStanza|ScaffoldComponentsKCL`),
+				Paths: []string{"CHANGELOG.md"},
+			},
+		},
+	},
+	{
+		Name: "generated components_gen.json",
+		Why: "Deploy has ONE source of truth and it is KCL. forge used to also emit " +
+			"`deploy/kcl/components_gen.json` — a gitignored, regenerated-every-run " +
+			"projection of the discovered Inventory that each per-env main.k read via " +
+			"`fc.load_components(fc.COMPONENTS_GEN)`. That split one concept across two " +
+			"files, one of them untracked, so a FRESH CLONE rendered ZERO manifests " +
+			"SILENTLY until someone ran `forge generate`. It also made forge decide " +
+			"things it has no business deciding: which components exist in which " +
+			"environment, and whether a migration step runs. Those are per-env choices " +
+			"a project must be able to hand-edit — bring in NATS, use a hosted database " +
+			"in prod and a container in dev, change a port — and a file forge rewrites " +
+			"every run cannot hold them. What replaced it is `deploy/kcl/components.k`: " +
+			"scaffolded ONCE, tracked, appended to by `forge scaffold`, never " +
+			"regenerated. Drift is reported by `forge lint`, not repaired.",
+		Patterns: []*regexp.Regexp{
+			// The file, on any surface. Underscore-anchored, so the live
+			// `components.k` cannot match it.
+			regexp.MustCompile(`\bcomponents_gen\.json\b`),
+			// The Go API that wrote it.
+			regexp.MustCompile(`\b(?:ComponentsJSONRelPath|GenerateComponentsJSON|ComponentsToJSON)\b`),
+			// The KCL loaders that read it. `load_components`/`load_migrate`
+			// were the only readers; COMPONENTS_GEN was the path constant.
+			regexp.MustCompile(`\b(?:load_components|load_migrate|COMPONENTS_GEN)\b`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the changelog entry announcing the removal",
+				Reason: "The CHANGELOG has to name what it removed, or the entry cannot " +
+					"tell a reader upgrading what stopped existing.",
+				Token: regexp.MustCompile(`components_gen\.json|ComponentsJSONRelPath|GenerateComponentsJSON|ComponentsToJSON|load_components|load_migrate|COMPONENTS_GEN`),
+				Paths: []string{"CHANGELOG.md"},
+			},
 		},
 	},
 	{
@@ -426,7 +565,7 @@ var removals = []removal{
 		Why: "A component never carries a port. Every service in a binary mounts onto the SAME " +
 			"Connect mux and the process listens ONCE, on AppConfig.port (env PORT, default " +
 			"8080) — config.DefaultServePort. Any other port is a DEPLOY fact declared per " +
-			"environment in deploy/kcl/<env>/main.k on forge.components.Component.ports, so " +
+			"environment in deploy/kcl/<env>/main.k on forge.workloads.Workload.ports, so " +
 			"nothing forge introspects (the proto descriptor, owned worker/operator files, " +
 			"cmd/) can state one. The Go-side carrier — ComponentConfig.Ports, PortSpec, " +
 			"HTTPPortName, PrimaryPort() and the components_gen.json `ports` key — is gone. " +
@@ -527,6 +666,17 @@ var removals = []removal{
 				Paths: []string{"internal/codegen/crud_gen.go"},
 			},
 			{
+				Name: "the ignore rule keeping a legacy project's copy committed",
+				Reason: "`handlers/**/*_gen.go` is ignored, so a legacy project that still carries the " +
+					"retired handlers_crud_gen_test.go would have it swept up by the glob. The " +
+					".gitignore comment names the file to explain why *_gen_test.go is deliberately " +
+					"NOT ignored — committing it is what keeps `go test ./...` green on a fresh " +
+					"clone of such a project. The reference exists to protect a file forge no " +
+					"longer writes, not to keep writing it. Scoped to .gitignore.",
+				Token: regexp.MustCompile(`\bhandlers_crud_gen_test\.go\b`),
+				Paths: []string{".gitignore"},
+			},
+			{
 				Name: "the tests that assert both files are ABSENT",
 				Reason: "The retirement sweep is covered by tests that build a project carrying the old " +
 					"pair and assert it is gone afterwards. They must name the files to look for them. " +
@@ -549,7 +699,10 @@ var removals = []removal{
 					"earns in knownGeneratedHandlerFiles.",
 				Token: regexp.MustCompile(`\bhandlers_crud_gen_test\.go\b|\bhandlers_crud_integration_test\.go\b`),
 				Paths: []string{
-					"**/migrations/v0.x-to-tdd-rpccases/SKILL.md",
+					// Any per-release migration skill under migrations/
+					// earns this carve-out: naming the retired file is how
+					// it tells a reader who still owns one what to do.
+					"**/migrations/*/SKILL.md",
 					"**/migration-upgrade/SKILL.md",
 					"internal/templates/skills_validation_test.go",
 				},
@@ -680,7 +833,7 @@ var removals = []removal{
 	},
 	{
 		Name: "the seeder's demo identity and its table-name classifiers",
-		Why: "internal/seeddata used to read a table's NAME for domain meaning. `detectIdentity` " +
+		Why: "pkg/seedplan used to read a table's NAME for domain meaning. `detectIdentity` " +
 			"elected any table called `users`/`user` with a single string `id` key to be THE user " +
 			"table, and stamped row 0 with DemoUserID/DemoUserEmail/DemoUserName — literals it " +
 			"copied off the JWT scaffold and declared forge-wide canonical. `isOrgTableName` " +
@@ -717,7 +870,7 @@ var removals = []removal{
 	},
 	{
 		Name: "the seeder's column-name domain heuristics",
-		Why: "internal/seeddata used to decide what a column MEANS from what it was CALLED. " +
+		Why: "pkg/seedplan used to decide what a column MEANS from what it was CALLED. " +
 			"`price`/`amount`/`*_cents` were money, `currency`/`*_currency` pinned to the constant " +
 			"USD (even overriding a CHECK vocabulary that offered EUR and GBP), `*color*`/`*_hex` " +
 			"and the design tokens primary/secondary/accent/background drew hex colors, `email`/" +
@@ -735,10 +888,10 @@ var removals = []removal{
 			"email-format CHECK on a column spelled `email` and violated the identical CHECK on " +
 			"one spelled `contact`, which aborts the whole transactional seed. The declaration " +
 			"surface is db/seeds/vocab.yaml. What replaced them derives from what the author " +
-			"DECLARED — the canonical type, the CHECK vocabulary, a regex CHECK (seeddata." +
+			"DECLARED — the canonical type, the CHECK vocabulary, a regex CHECK (seedplan." +
 			"SynthString builds a value from the pattern itself), length and range bounds, NOT " +
 			"NULL, UNIQUE, the foreign keys — and an undescribed column gets the emitter's " +
-			"self-labelling placeholder, seeddata.SyntheticStringPrefix + column + row.",
+			"self-labelling placeholder, seedplan.SyntheticStringPrefix + column + row.",
 		Patterns: []*regexp.Regexp{
 			// The dispatchers. Case-SENSITIVE Go identifiers; `isDateColumn`
 			// and friends have no live homonym in the tree.
@@ -764,6 +917,24 @@ var removals = []removal{
 			// The frontend mock generator's second copy of the same heuristics
 			// has its own entry below — it was a separate decision, made
 			// separately.
+		},
+		Allowances: []allowance{
+			{
+				Name: "the frontend-config projector's own stringValue helper",
+				Reason: "internal/cli/generate_frontend_config.go has an unrelated four-line " +
+					"`stringValue(v any) (string, bool)` — a type assertion that reads a KCL-projected " +
+					"config value as a string, reporting a non-string as \"not a string here\" rather " +
+					"than coercing it. It reads OIDC issuer/client-id out of a rendered config map; " +
+					"it draws nothing, knows no column names, and predates none of the seeder's " +
+					"heuristics.\n" +
+					"The generic lowercase spelling in the pattern above is what collides: no " +
+					"`stringValue` — nor `integerLiteral`, nor `SynthStringValue` — appears anywhere " +
+					"in pkg/seedplan's history; seedplan's real names are SynthString and " +
+					"SyntheticStringPrefix. Scoped to this one file, so a genuine seeder heuristic " +
+					"landing here (isCurrencyColumn, detectPersonish, samplesNames …) still fails.",
+				Token: regexp.MustCompile(`\bstringValue\b`),
+				Paths: []string{"internal/cli/generate_frontend_config.go"},
+			},
 		},
 	},
 	{
@@ -805,7 +976,7 @@ var removals = []removal{
 			"guess named tables that do not exist (`categorys`), so mock foreign keys referenced " +
 			"ids no fixture carried.\n" +
 			"There is now ONE dataset. codegen.SeedProjection resolves the project's own " +
-			"seeddata.Plan and the fixtures carry what that plan writes at each (table, column, " +
+			"seedplan.Plan and the fixtures carry what that plan writes at each (table, column, " +
 			"row) — vocabulary from db/seeds/vocab.yaml, values from the CHECK constraints, keys " +
 			"and references from the real foreign keys — and a column nothing describes gets the " +
 			"same self-labelling placeholder in both places.",
@@ -1276,10 +1447,10 @@ func TestLegitimateLookalikesAreStillPresent(t *testing.T) {
 		{"the English verb \"packs\"", "\"the read path never packs it\" — prose the packs patterns must not reach", regexp.MustCompile(`never packs `)},
 		{"svcerr.PermissionDenied", "Connect wire code an application returns from its own policy check", regexp.MustCompile(`svcerr\.PermissionDenied`)},
 		{"connect.CodePermissionDenied", "the Connect status code it maps to", regexp.MustCompile(`CodePermissionDenied`)},
-		{"deploy/kcl/components_gen.json", "the LIVE generated inventory forge emits for KCL to expand into k8s resources — not the retired root manifest; the underscore is what separates them", regexp.MustCompile(`deploy/kcl/components_gen\.json`)},
-		{"ComponentsJSONRelPath", "the const naming that generated file", regexp.MustCompile(`ComponentsJSONRelPath`)},
-		{"GenerateComponentsJSON", "the function that writes it every generate run", regexp.MustCompile(`GenerateComponentsJSON`)},
-		{"forge.components.ComponentPort", "the LIVE KCL schema a project declares a real port on, per env — the home a port moved TO, not the Go carrier it moved off", regexp.MustCompile(`\bComponentPort\b`)},
+		{"deploy/kcl/workloads.k", "the LIVE, tracked, user-owned workload declaration KCL expands into k8s resources — not the retired root manifest; the extension and the directory are what separate them", regexp.MustCompile(`deploy/kcl/workloads\.k`)},
+		{"WorkloadsKCLRelPath", "the const naming that scaffolded file", regexp.MustCompile(`WorkloadsKCLRelPath`)},
+		{"WorkloadStanza", "the formatter that writes one workload into it, shared by the scaffold and the drift lint", regexp.MustCompile(`WorkloadStanza`)},
+		{"forge.workloads.Port", "the LIVE KCL schema a project declares a real port on — the home a port moved TO, not the Go carrier it moved off", regexp.MustCompile(`\bfw\.Port\b`)},
 		{"config.DefaultServePort", "the one port fact forge itself knows: the single mux every service in the binary mounts onto", regexp.MustCompile(`DefaultServePort`)},
 		{"HostDeploy.listen_ports", "the host TCP ports a dev-mode service binds — a KCL deploy fact, unrelated to the removed per-component carrier", regexp.MustCompile(`listen_ports`)},
 		{"K8sCluster.ports", "the k8s Service/container port list on a cluster deploy block", regexp.MustCompile(`ports\?: \[int\]|Ports\s+\[\]int`)},

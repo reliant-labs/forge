@@ -97,6 +97,32 @@ type fixture struct {
 	// SHAPE is user-authored, so a fixture that never touches it leaves
 	// the config surface unexercised.
 	ConfigBlocks []configBlock
+	// Binaries are `forge scaffold binary` names: extra long-running
+	// processes, each with its own cmd/<name>. A binary is the ANCHOR a
+	// BinaryConfig needs — a config message naming a binary with no
+	// cmd/<name> is a generate-time error, not a silently unused config.
+	Binaries []string
+	// BinaryConfigs are config messages bound to a binary with
+	// `(forge.v1.binary_config) = {binary: "<name>"}`. This is the input
+	// pkg/config/config_gen.go's per-binary section is projected from:
+	// the file emits a Config alias plus Register/Load/ModeOf/Validate
+	// FOR EACH ONE. A fixture set where no project declares one leaves
+	// that whole half of the template unexercised, and the file then
+	// looks constant while really only being untested.
+	BinaryConfigs []binaryConfigBlock
+}
+
+// binaryConfigBlock is one config message bound to a binary — the
+// documented way a binary declares a config surface only its own process
+// loads.
+type binaryConfigBlock struct {
+	// Binary is the cmd/<name> leaf whose process loads this config. It
+	// must name a binary the fixture also scaffolds.
+	Binary string
+	// Name is the message name, e.g. "Indexer" → message IndexerConfig.
+	Name string
+	// Fields are annotated proto field declarations, written verbatim.
+	Fields []string
 }
 
 // configBlock is one `<Name>Config` message composed onto AppConfig as a
@@ -180,6 +206,61 @@ func projectB() fixture {
 					`description: "Maximum persists per tick"}];`,
 			},
 		}},
+		// A SECOND BINARY with its OWN config. This is what exercises
+		// pkg/config/config_gen.go's per-binary half: the template emits a
+		// type alias plus Register/Load/ModeOf/Validate per binary-bound
+		// message, and a project that annotates nothing gets none of it.
+		// Without this the file renders the same AppConfig shim either way
+		// and reads as constant — see the note in projectD on why an
+		// unexercised input and a genuine constant look identical.
+		Binaries: []string{"indexer"},
+		BinaryConfigs: []binaryConfigBlock{{
+			Binary: "indexer",
+			Name:   "Indexer",
+			Fields: []string{
+				`int32 batch_size = 1 [(forge.v1.config) = {` +
+					`env_var: "INDEXER_BATCH_SIZE", flag: "batch-size", ` +
+					`default_value: "100", description: "Rows per indexing batch"}];`,
+			},
+		}},
+	}
+}
+
+// projectD is the shape the A/B pair cannot express: a project that has
+// declared NO entity, and therefore has no migration, plus a service
+// whose name shadows a built-in subcommand.
+//
+// It exists because three Tier-1 files track inputs that both A and B
+// happen to hold at the SAME value, which makes each look like a
+// constant when it is really only unexercised:
+//
+//   - db/source_gen.go's body is a two-state projection of "does
+//     db/migrations/ hold any .sql yet". A and B both have migrations,
+//     so both render the embedded branch. D renders the nil branch.
+//   - db/embed_gen.go is emitted ONLY when that answer is yes — so its
+//     very presence is the projection, which D is what demonstrates.
+//   - cmd/<bin>/cmd/services/register_gen.go carries a NOTE for every
+//     service whose kebab name shadows a built-in (server / version /
+//     db / help / completion). Neither A nor B names one, so the anchor
+//     renders its bare package clause both times. D declares a service
+//     named `version`, which is skipped as a subcommand and recorded in
+//     the anchor.
+//
+// It keeps A and B's project identity (see the "held constant" section
+// of the package doc): D varies DECLARATIONS only, so a byte difference
+// it produces is still attributable to something the user wrote.
+func projectD() fixture {
+	return fixture{
+		Label:  "D(no entities → no migrations, built-in-colliding service name)",
+		Name:   FixedProjectName,
+		Module: FixedModulePath,
+		// `version` collides with the built-in version subcommand. It is a
+		// legal service name (ReservedServiceNames covers only the
+		// worker/scheduler family), and the cmd-group generator skips its
+		// subcommand and records the collision in the anchor.
+		Services: []string{"alpha", "version"},
+		// No Entities: nothing is marked `// forge:entity`, so `forge
+		// scaffold` births no table and db/migrations/ stays empty.
 	}
 }
 
@@ -253,7 +334,20 @@ func render(parent string, fx fixture) (*renderResult, error) {
 		}
 	}
 
+	// Binaries BEFORE their config messages: a message naming a binary
+	// with no cmd/<name> is a generate-time error, so the anchor has to
+	// exist before the annotation referring to it does.
+	for _, bin := range fx.Binaries {
+		if err := forgeIn(root, "scaffold", "binary", bin); err != nil {
+			return nil, fmt.Errorf("scaffold binary %s: %w", bin, err)
+		}
+	}
+
 	if err := addConfigBlocks(root, fx.ConfigBlocks); err != nil {
+		return nil, err
+	}
+
+	if err := addBinaryConfigs(root, fx.BinaryConfigs); err != nil {
 		return nil, err
 	}
 
@@ -325,7 +419,6 @@ func normalizeKey(rel, projectName string) string {
 	return rel
 }
 
-
 // addConfigBlocks composes each block onto AppConfig in
 // proto/config/v1/config.proto: the `<Name>Config` message is appended at
 // file scope and a field referencing it is inserted as the last member of
@@ -377,6 +470,42 @@ func addConfigBlocks(root string, blocks []configBlock) error {
 // assigns on AppConfig. Chosen above the scaffolded field tags (and the
 // reserved 22) so injected fields never collide.
 const configBlockFirstTag = 60
+
+// addBinaryConfigs appends each binary-bound config message to
+// proto/config/v1/config.proto at FILE SCOPE.
+//
+// Unlike addConfigBlocks, nothing is composed onto AppConfig: the whole
+// point of `(forge.v1.binary_config)` is that the message is the named
+// binary's OWN config surface, reached by the binary rather than through
+// the project-global root. Composing it onto AppConfig would make it a
+// shared block and defeat the input being exercised.
+//
+// Field tags are the block's own (each message is fresh, so they start
+// at 1 and cannot collide with anything scaffolded).
+func addBinaryConfigs(root string, blocks []binaryConfigBlock) error {
+	if len(blocks) == 0 {
+		return nil
+	}
+	protoPath := filepath.Join(root, "proto", "config", "v1", "config.proto")
+	raw, err := os.ReadFile(protoPath)
+	if err != nil {
+		return fmt.Errorf("read config proto: %w", err)
+	}
+
+	var msgs strings.Builder
+	msgs.Write(raw)
+	for _, blk := range blocks {
+		fmt.Fprintf(&msgs, "\n// %sConfig is the %s binary's own configuration surface.\n",
+			blk.Name, blk.Binary)
+		fmt.Fprintf(&msgs, "message %sConfig {\n", blk.Name)
+		fmt.Fprintf(&msgs, "  option (forge.v1.binary_config) = {binary: %q};\n\n", blk.Binary)
+		for _, f := range blk.Fields {
+			msgs.WriteString("  " + f + "\n")
+		}
+		msgs.WriteString("}\n")
+	}
+	return os.WriteFile(protoPath, []byte(msgs.String()), 0o644)
+}
 
 // addPublicRPCs declares each named RPC on the service with
 // `auth_required: false`, plus its request/response messages. This is

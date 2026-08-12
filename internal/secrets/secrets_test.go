@@ -1,19 +1,32 @@
 package secrets
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// writeDotenv writes a dotenv into a temp dir and returns its path.
+// writeDotenv builds a YAML secret STORE from a dotenv-shaped body, so the
+// existing fixtures stay readable now that the store is YAML.
 func writeDotenv(t *testing.T, body string) string {
 	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, ".env.secrets")
-	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-		t.Fatalf("write dotenv: %v", err)
+	var b strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&b, "%s: %q\n", k, v)
+	}
+	p := filepath.Join(t.TempDir(), "dev.yaml")
+	if err := os.WriteFile(p, []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
 	}
 	return p
 }
@@ -50,14 +63,14 @@ func TestNewProvider_External(t *testing.T) {
 	}
 }
 
-func TestNewProvider_Dotenv_Present(t *testing.T) {
+func TestNewProvider_File_Present(t *testing.T) {
 	path := writeDotenv(t, "GITHUB_CLIENT_ID=abc123\nSUPABASE_JWT_ISSUER=https://x\n# comment\n")
-	p, err := NewProvider(&ProviderConfig{Type: "dotenv", Path: path})
+	p, err := NewProvider(&ProviderConfig{Type: "file", Path: path})
 	if err != nil {
 		t.Fatalf("NewProvider dotenv: %v", err)
 	}
-	if p.Kind() != "dotenv" {
-		t.Errorf("Kind: got %q, want dotenv", p.Kind())
+	if p.Kind() != "file" {
+		t.Errorf("Kind: got %q, want file", p.Kind())
 	}
 	v, ok := p.Resolve("GITHUB_CLIENT_ID")
 	if !ok || v != "abc123" {
@@ -72,27 +85,32 @@ func TestNewProvider_Dotenv_Present(t *testing.T) {
 	}
 }
 
-func TestNewProvider_Dotenv_MissingFile_NonFatal(t *testing.T) {
+func TestNewProvider_File_MissingFile_NonFatal(t *testing.T) {
 	// Point at a path that doesn't exist: non-fatal, empty dotenv provider.
 	missing := filepath.Join(t.TempDir(), "does-not-exist.env")
-	p, err := NewProvider(&ProviderConfig{Type: "dotenv", Path: missing})
+	p, err := NewProvider(&ProviderConfig{Type: "file", Path: missing})
 	if err != nil {
 		t.Fatalf("NewProvider missing dotenv should be non-fatal, got err: %v", err)
 	}
-	if p.Kind() != "dotenv" {
-		t.Errorf("Kind: got %q, want dotenv", p.Kind())
+	if p.Kind() != "file" {
+		t.Errorf("Kind: got %q, want file", p.Kind())
 	}
 	if len(p.All()) != 0 {
 		t.Errorf("All on missing dotenv: got %v, want empty", p.All())
 	}
 }
 
-func TestNewProvider_Dotenv_IsDirectory_Fatal(t *testing.T) {
-	// A directory where a file is expected is NOT os.ErrNotExist -> fatal.
-	dir := t.TempDir()
-	_, err := NewProvider(&ProviderConfig{Type: "dotenv", Path: dir})
+func TestNewProvider_DotenvRemoved_IsHardError(t *testing.T) {
+	// The dotenv provider is GONE, not deprecated. A project still
+	// declaring it must fail loudly with the migration command — a silent
+	// fallback would boot the stack with no secrets and fail later,
+	// somewhere far less obvious.
+	_, err := NewProvider(&ProviderConfig{Type: "dotenv", Path: ".env.dev"})
 	if err == nil {
-		t.Fatal("expected error reading a directory as dotenv, got nil")
+		t.Fatal("expected an error for the removed dotenv provider, got nil")
+	}
+	if !strings.Contains(err.Error(), "forge secret migrate") {
+		t.Fatalf("error must name the migration command, got: %v", err)
 	}
 }
 
@@ -105,7 +123,7 @@ func TestNewProvider_UnknownType(t *testing.T) {
 
 func TestValidateDeclaredRefs_AllPresent(t *testing.T) {
 	path := writeDotenv(t, "A=1\nB=2\n")
-	p, _ := NewProvider(&ProviderConfig{Type: "dotenv", Path: path})
+	p, _ := NewProvider(&ProviderConfig{Type: "file", Path: path})
 	refs := []SecretRef{
 		{EnvName: "A", SecretName: "s", SecretKey: "a"},
 		{EnvName: "B", SecretName: "s", SecretKey: "b"},
@@ -117,7 +135,7 @@ func TestValidateDeclaredRefs_AllPresent(t *testing.T) {
 
 func TestValidateDeclaredRefs_SomeMissing_ListsAll(t *testing.T) {
 	path := writeDotenv(t, "PRESENT=1\n")
-	p, _ := NewProvider(&ProviderConfig{Type: "dotenv", Path: path})
+	p, _ := NewProvider(&ProviderConfig{Type: "file", Path: path})
 	refs := []SecretRef{
 		{EnvName: "PRESENT", SecretName: "ok", SecretKey: "k"},
 		{EnvName: "GITHUB_CLIENT_ID", SecretName: "github-oauth", SecretKey: "client-id"},
@@ -150,7 +168,7 @@ func TestValidateDeclaredRefs_SomeMissing_ListsAll(t *testing.T) {
 
 func TestValidateDeclaredRefs_DefaultsKeyToEnvName(t *testing.T) {
 	path := writeDotenv(t, "")
-	p, _ := NewProvider(&ProviderConfig{Type: "dotenv", Path: path})
+	p, _ := NewProvider(&ProviderConfig{Type: "file", Path: path})
 	refs := []SecretRef{{EnvName: "TOKEN", SecretName: "creds"}} // SecretKey empty
 	err := ValidateDeclaredRefs(p, refs, path)
 	if err == nil || !strings.Contains(err.Error(), "creds/TOKEN") {
@@ -176,7 +194,7 @@ func TestValidateDeclaredRefs_Noop_Nil(t *testing.T) {
 
 func TestRenderK8sSecrets_GroupsByName_MultiKey_Deterministic(t *testing.T) {
 	path := writeDotenv(t, "CLIENT_ID=id\nCLIENT_SECRET=sec\nJWT=jwt\n")
-	p, _ := NewProvider(&ProviderConfig{Type: "dotenv", Path: path})
+	p, _ := NewProvider(&ProviderConfig{Type: "file", Path: path})
 	refs := []SecretRef{
 		// Two refs into the same Secret "github-oauth".
 		{EnvName: "CLIENT_SECRET", SecretName: "github-oauth", SecretKey: "client-secret"},
@@ -232,7 +250,7 @@ func TestRenderK8sSecrets_Noop_Nil(t *testing.T) {
 func TestRenderK8sSecrets_NoResolvable_Nil(t *testing.T) {
 	// dotenv provider but no ref resolves -> nil (nothing to render).
 	path := writeDotenv(t, "OTHER=1\n")
-	p, _ := NewProvider(&ProviderConfig{Type: "dotenv", Path: path})
+	p, _ := NewProvider(&ProviderConfig{Type: "file", Path: path})
 	refs := []SecretRef{{EnvName: "MISSING", SecretName: "s", SecretKey: "k"}}
 	if got := RenderK8sSecrets(p, refs, "dev"); got != nil {
 		t.Errorf("no-resolvable RenderK8sSecrets should be nil, got: %v", got)
@@ -242,7 +260,7 @@ func TestRenderK8sSecrets_NoResolvable_Nil(t *testing.T) {
 // dotenvFor builds a dotenv provider over a temp .env file with body.
 func dotenvFor(t *testing.T, body string) Provider {
 	t.Helper()
-	p, err := NewProvider(&ProviderConfig{Type: "dotenv", Path: writeDotenv(t, body)})
+	p, err := NewProvider(&ProviderConfig{Type: "file", Path: writeDotenv(t, body)})
 	if err != nil {
 		t.Fatalf("NewProvider dotenv: %v", err)
 	}
@@ -259,13 +277,13 @@ func secretStringData(t *testing.T, m map[string]any) map[string]any {
 	return sd
 }
 
-func TestRenderDeclaredSecrets_Dotenv(t *testing.T) {
+func TestRenderDeclaredSecrets_FromStore(t *testing.T) {
 	dot := dotenvFor(t, "DB_PASSWORD=hunter2\nDB_USER=admin\n")
 	declared := []DeclaredSecret{{
 		Name: "db-credentials",
 		Keys: map[string]DeclaredSecretKey{
-			"password": {From: "dotenv", Key: "DB_PASSWORD"},
-			"username": {From: "dotenv", Key: "DB_USER"},
+			"password": {From: "file", Key: "DB_PASSWORD"},
+			"username": {From: "file", Key: "DB_USER"},
 		},
 	}}
 	mans, err := RenderDeclaredSecrets(declared, dot, "dev", "myns")
@@ -284,11 +302,11 @@ func TestRenderDeclaredSecrets_Dotenv(t *testing.T) {
 	}
 }
 
-func TestRenderDeclaredSecrets_MissingDotenvKey(t *testing.T) {
+func TestRenderDeclaredSecrets_MissingStoreKey(t *testing.T) {
 	dot := dotenvFor(t, "DB_USER=admin\n")
 	declared := []DeclaredSecret{{
 		Name: "db-credentials",
-		Keys: map[string]DeclaredSecretKey{"password": {From: "dotenv", Key: "DB_PASSWORD"}},
+		Keys: map[string]DeclaredSecretKey{"password": {From: "file", Key: "DB_PASSWORD"}},
 	}}
 	_, err := RenderDeclaredSecrets(declared, dot, "dev", "myns")
 	if err == nil {

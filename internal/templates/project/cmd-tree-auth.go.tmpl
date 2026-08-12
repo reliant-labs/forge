@@ -1,0 +1,199 @@
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+//
+// `{{.Name}} auth idp-provision` — the deploy-time IdP CONVERGENCE step.
+//
+// This is the identity twin of `db migrate up` (db.go): a one-shot,
+// idempotent step that runs as an ordinary `kind = "job"` Workload
+// (deploy/kcl/workloads.k) on every deploy of the dev environment,
+// registering this project's browser application against the dev IdP
+// (Zitadel) and PUBLISHING the values it generates — never returning
+// them through a render-time hook.
+//
+// WHY A JOB, NOT A KCL PLUGIN CALL. Two of the IdP's values are
+// server-GENERATED and cannot be declared up front: the SPA application's
+// client_id, and the Zitadel project id (the token's `aud`). An earlier
+// design resolved them from INSIDE a KCL render — a plugin dialed the IdP
+// while `forge generate` was evaluating config.k. That solved a problem
+// that does not exist: a render never actually needs to LEARN a generated
+// value, because a workload can reference it BY NAME instead. This job
+// converges the values once and writes them somewhere every consumer
+// already knows how to read:
+//
+//   - on a Kubernetes cluster: a ConfigMap, referenced by name via
+//     `configMapKeyRef` — see pkg/devidp.ConfigMapPublisher.
+//   - on compose/dev, where there is no ConfigMap concept: a COMMITTED KCL
+//     file (deploy/kcl/dev/idp_identity_gen.k) the environment's config.k
+//     imports directly — see pkg/devidp.KCLFilePublisher.
+//
+// Which publisher runs is decided by pkg/devidp.RunningInCluster (the
+// ServiceAccount namespace mount every real pod has), not by a flag —
+// there is nothing for an operator to get wrong.
+//
+// WHY IT NEEDS RBAC. The cluster half PATCHes a ConfigMap in its own
+// namespace using the Kubernetes ServiceAccount token every pod is
+// projected — no external client library, no kubeconfig. That needs a
+// Role granting get/create/update/patch on configmaps, declared alongside
+// the job in deploy/kcl/workloads.k (`namespaced_rbac`) — see the
+// idp-provision workload comment there for the grant itself.
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/pkg/devidp"
+
+	"{{.Module}}/pkg/config"
+)
+
+func init() { registerCommand(newAuthCmd) }
+
+// newAuthCmd builds the `auth` command tree.
+func newAuthCmd(deps Deps) *cobra.Command {
+	_ = deps
+	authCmd := &cobra.Command{
+		Use:   "auth",
+		Short: "Identity-provider administration",
+	}
+	authCmd.AddCommand(newIDPProvisionCmd())
+	return authCmd
+}
+
+func newIDPProvisionCmd() *cobra.Command {
+	var (
+		base           string
+		host           string
+		patPath        string
+		browserOrigin  string
+		frontendOrigin string
+		basePath       string
+		configMapName  string
+		kclFilePath    string
+		timeout        time.Duration
+	)
+
+	cmd := &cobra.Command{
+		Use:   "idp-provision",
+		Args:  cobra.NoArgs,
+		Short: "Converge the dev IdP application and publish the generated identity (idempotent)",
+		Long: `Registers this project's browser application against the dev identity
+provider and publishes what Zitadel GENERATED — the client_id and the
+project id (token audience) — so the rest of the stack can reference them
+by name instead of by value.
+
+Idempotent: EnsureProject/EnsureSPAApplication read before they write, so
+a re-run against an already-registered application returns the same
+identity and changes nothing. That is what lets this run on every deploy.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+			defer cancel()
+
+			token, err := readIDPPAT(patPath)
+			if err != nil {
+				return err
+			}
+
+			client := &devidp.Client{Base: base, Host: host, Token: token}
+
+			spec := devidp.Spec{
+				Project:        "{{.Name}}",
+				Frontend:       "{{.FrontendName}}",
+				RedirectURIs:   []string{devidp.RedirectGlob(frontendOrigin, basePath, "/auth/callback")},
+				PostLogoutURIs: []string{devidp.LogoutGlob(frontendOrigin)},
+			}
+
+			identity, err := devidp.Reconcile(ctx, client, spec, browserOrigin)
+			if err != nil {
+				return fmt.Errorf("idp-provision: %w", err)
+			}
+
+			var publisher devidp.Publisher
+			if devidp.RunningInCluster() {
+				publisher = &devidp.ConfigMapPublisher{Name: configMapName}
+			} else {
+				publisher = &devidp.KCLFilePublisher{Path: kclFilePath}
+			}
+			if err := publisher.Publish(ctx, identity); err != nil {
+				return fmt.Errorf("idp-provision: publish: %w", err)
+			}
+
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "idp-provision: converged %q (audience %s)\n",
+				spec.Frontend, identity.Audience)
+			return nil
+		},
+	}
+
+	// The literals below are a LAST RESORT, not the source of truth. The dev
+	// environment declares the IdP's port once (deploy/kcl/dev/main.k) and
+	// hands this job the resulting origin as IDP_BASE / IDP_BROWSER_ORIGIN,
+	// which envOrIDP picks up — so moving the port moves the container and
+	// this job together. These fallbacks only apply when nothing declared
+	// them at all, and they match the scaffolded default port so a
+	// hand-invocation against an unmoved IdP still works.
+	cmd.Flags().StringVar(&base, "base", envOrIDP("IDP_BASE", "http://localhost:8080"),
+		"identity provider origin this process DIALS (declared in deploy/kcl/<env>/main.k; in-cluster Service DNS or the published localhost port)")
+	cmd.Flags().StringVar(&host, "host", envOrIDP("IDP_HOST", ""),
+		"Host header to present when --base differs from the address the instance is registered under")
+	cmd.Flags().StringVar(&patPath, "pat-file", envOrIDP("IDP_PAT_PATH", ".forge/idp/pat.txt"),
+		"path to the service-account personal access token idp-steps.yaml's declarative boot writes")
+	cmd.Flags().StringVar(&browserOrigin, "browser-origin", envOrIDP("IDP_BROWSER_ORIGIN", "http://localhost:8080"),
+		"the BROWSER-facing origin the issuer mints tokens under, declared alongside --base (OIDC Discovery requires iss == the URL fetched)")
+	cmd.Flags().StringVar(&frontendOrigin, "frontend-origin-glob", envOrIDP("FRONTEND_ORIGIN_GLOB", "http://localhost:*"),
+		"redirect-URI origin pattern registered with the dev IdP; a single '*' spans only the port")
+	cmd.Flags().StringVar(&basePath, "base-path", envOrIDP("FRONTEND_BASE_PATH", ""),
+		"the frontend's forge.yaml base_path, so the registered callback matches the real one")
+	cmd.Flags().StringVar(&configMapName, "configmap-name", envOrIDP("IDP_CONFIGMAP_NAME", "{{.Name}}-idp-identity"),
+		"ConfigMap this job publishes into, on a cluster target")
+	cmd.Flags().StringVar(&kclFilePath, "kcl-file", envOrIDP("IDP_KCL_FILE", "deploy/kcl/dev/idp_identity_gen.k"),
+		"committed KCL file this job publishes into, on a compose/dev target")
+	cmd.Flags().DurationVar(&timeout, "timeout", 3*time.Minute, "overall timeout (a first boot waits on the IdP's own initialization)")
+
+	config.RegisterFlags(cmd)
+	return cmd
+}
+
+// envOrIDP reads this command's flag default from the environment before
+// falling back to a literal — the same convention `db migrate` flags use,
+// so a value can be set either way depending on whether this runs as a
+// host process (`forge run`) or inside a Job (env only).
+func envOrIDP(key, fallback string) string {
+	if v := os.Getenv(key); v != "" { //nolint:forbidigo // one-shot CLI flag default; not runtime component config.
+		return v
+	}
+	return fallback
+}
+
+// readIDPPAT reads the service account token idp-steps.yaml's declarative
+// first boot writes to disk — what lets this command authenticate with no
+// console visit and no credential read out of the IdP's own database.
+//
+// A MISSING file almost always means the IdP itself never started (a port
+// collision, a failed download, a database it could not reach) rather than
+// anything this job did — the file is written by the IdP's own first-boot
+// declarative setup, before this job ever runs. A bare "no such file or
+// directory" sends someone looking at THIS command's flags; naming the
+// actual dependency sends them at the IdP's own log, which is where the fix
+// actually is.
+func readIDPPAT(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("read %s: %w\n"+
+				"  this file is written by the dev IdP's own first-boot setup, so a missing file usually means\n"+
+				"  the IdP never came up rather than anything wrong with this command.\n"+
+				"  Host process (the scaffolded default): .forge/hostinfra/idp/zitadel.log\n"+
+				"  Container (forge.Compose): `docker compose ps` / `docker compose logs idp`", path, err)
+		}
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return "", fmt.Errorf("%s is empty", path)
+	}
+	return token, nil
+}

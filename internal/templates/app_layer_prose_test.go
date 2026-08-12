@@ -32,14 +32,20 @@ import (
 // a file forge stopped emitting — which is exactly how the dead paths this
 // guard removes survived in the first place.
 var emittedAppLayerFiles = map[string]string{
-	"internal/app/providers.go":       "project/providers.go.tmpl",
-	"internal/app/compose.go":         "project/compose.go.tmpl",
-	"internal/app/lifecycle.go":       "project/lifecycle.go.tmpl",
-	"internal/app/mounts_services.go": "project/mounts_services.go.tmpl",
-	"internal/app/auth.go":            "project/app-auth.go.tmpl",
-	"internal/app/inject_gen.go":      "", // internal/codegen/inject_gen.go, no template
-	"pkg/app/testing.go":              "project/bootstrap_testing.go.tmpl",
-	"pkg/app/migrate.go":              "project/migrate.go.tmpl",
+	"internal/app/providers.go":           "project/providers.go.tmpl",
+	"internal/app/compose.go":             "project/compose.go.tmpl",
+	"internal/app/lifecycle.go":           "project/lifecycle.go.tmpl",
+	"internal/app/mounts_services_gen.go": "project/mounts_services_gen.go.tmpl",
+	"internal/app/auth.go":                "project/app-auth.go.tmpl",
+	"internal/app/inject_gen.go":          "", // internal/codegen/inject_gen.go, no template
+	// The per-component harness is no longer an app-layer file: it lives at
+	// internal/handlers/<svc>/helpers_gen_test.go (a _test.go file, so
+	// package `testing` stays out of the production binary).
+	//
+	// pkg/app/migrate.go is likewise gone: it was golang-migrate ceremony with
+	// a single project-specific token in it, and now lives in
+	// pkg/migratekit.AutoMigrate. The project keeps only the call site, in the
+	// serve.go it already owns.
 }
 
 var appLayerPathRE = regexp.MustCompile(`(?:pkg|internal)/app/[a-z0-9_]+\.go`)

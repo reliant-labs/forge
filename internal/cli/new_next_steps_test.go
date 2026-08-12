@@ -114,10 +114,11 @@ func TestNewNextStepsArePasteable(t *testing.T) {
 	n := Name()
 
 	cases := []struct {
-		name     string
-		kind     string
-		inPlace  bool
-		services []string
+		name        string
+		kind        string
+		inPlace     bool
+		services    []string
+		hasFrontend bool
 		// wantCmds are command paths (cobra CommandPath minus the root
 		// prefix) the block MUST name. Empty means "no forge commands
 		// expected" (the CLI / library skeletons are prose-only).
@@ -158,7 +159,7 @@ func TestNewNextStepsArePasteable(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			lines := newNextSteps("demo", tc.inPlace, tc.kind, tc.services)
+			lines := newNextSteps("demo", tc.inPlace, tc.kind, tc.services, tc.hasFrontend)
 			if len(lines) == 0 {
 				t.Fatal("newNextSteps returned nothing")
 			}
@@ -233,5 +234,21 @@ func TestNewNextStepsResolveHelper(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A scaffolded frontend means auth is live and fail-closed: every RPC 401s
+// until an identity provider is wired. `forge run` does that wiring and
+// prints the credentials, but a reader who stops at this block reads the
+// first 401 as a broken scaffold. So the block has to say it, and only when
+// there is a frontend to sign in to.
+func TestNewNextSteps_MentionsSignInOnlyWithAFrontend(t *testing.T) {
+	withFE := strings.Join(newNextSteps("demo", false, config.ProjectKindService, []string{"item"}, true), "\n")
+	if !strings.Contains(withFE, "sign-in") {
+		t.Errorf("a project WITH a frontend must name the sign-in it was scaffolded:\n%s", withFE)
+	}
+	noFE := strings.Join(newNextSteps("demo", false, config.ProjectKindService, []string{"item"}, false), "\n")
+	if strings.Contains(noFE, "sign-in") {
+		t.Errorf("a project with NO frontend has nothing to sign in to:\n%s", noFE)
 	}
 }

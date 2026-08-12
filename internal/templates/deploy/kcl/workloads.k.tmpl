@@ -1,0 +1,91 @@
+"""
+What {{.ProjectName}} DEPLOYS — the workload declarations.
+
+YOURS. forge scaffolds this file once and never rewrites it. `forge
+scaffold service|worker|binary|operator` APPENDS a new declaration to the
+end; nothing else forge does touches what is already here. Edit it
+freely — reorder it, comment it, delete a workload you no longer ship.
+
+WHAT A WORKLOAD IS
+==================
+One deployable unit: an executable, the args that select what it does,
+and where it runs. In Kubernetes terms, what becomes ONE Deployment.
+
+A workload is NOT a proto service. One binary can mount a dozen Connect
+services on a shared mux and still be ONE workload, because it is one
+process with one image and one set of args. Declaring a workload per
+proto service renders N Deployments for what is really one process —
+that is the single most expensive mistake this file's vocabulary
+exists to prevent.
+
+  kind = "service"   Deployment + Service (named ports)
+  kind = "worker"    Deployment, no Service (nothing dials it)
+  kind = "cron"      CronJob on `schedule`
+  kind = "job"       one-shot; `before` names who waits on it
+  kind = "operator"  manager Deployment + cluster RBAC
+  kind = "tool"      built into the image, never scheduled
+
+DECLARE COMPLETE, REFINE PER ENV
+================================
+Each declaration below is a COMPLETE, valid workload — ports and all —
+not a fragment awaiting assembly. That is what makes it readable on its
+own: this file answers "what is this thing?" in full.
+
+An environment then REFINES what it needs with KCL's `|` merge operator,
+in `deploy/kcl/<env>/main.k`:
+
+    _api = wl.{{.PrimaryIdent}} | {replicas = 3}
+
+Only the difference is stated, the rest is inherited, and because `|`
+preserves the schema type, every `check:` in forge.workloads re-runs on
+the merged result. An env that sets `replicas = 0` is rejected AT THAT
+ENV, naming the field — a base declaration cannot be refined into an
+invalid one.
+
+ADDING SOMETHING THAT ISN'T GO CODE
+===================================
+Anything can be a workload, whether or not forge generated it. Declare
+it in the env that HAS it rather than here, and only that env gets it:
+
+    # in deploy/kcl/dev/main.k
+    _nats = fw.Workload {
+        name = "nats"
+        kind = "service"
+        image = "nats"
+        registry = "docker.io/library"
+        ports = [fw.Port {name = "client", port = 4222, expose = True}]
+    }
+    _workloads = [_api, _nats]
+
+That is how you run a containerized database locally while prod points
+at a hosted one.
+"""
+
+import forge.workloads as fw
+
+# One NAMED declaration per deployable unit. The name is what each
+# environment refines (`wl.{{.PrimaryIdent}} | {...}`), which is why these are
+# bindings rather than entries in one anonymous list.
+{{- if .Workloads}}
+
+{{.Workloads}}
+{{- else}}
+
+# No workloads yet. `forge scaffold service <name>` appends the first
+# one — or write it by hand:
+#
+#     billing = fw.Workload {
+#         name = "billing"
+#         kind = "service"
+#         ports = [fw.Port {name = "http", port = 8080, expose = True}]
+#         build = {type = "go", cmd = "./cmd/{{.ProjectName}}", output_name = "{{.ProjectName}}"}
+#     }
+{{- end}}
+
+# Every workload this project ships. `forge scaffold` appends to this
+# list, and each environment imports it as its starting set.
+#
+# An environment is NOT obliged to deploy all of them — `deploy/kcl/<env>/main.k`
+# names what IT runs, so an env can drop one, refine one, or add a workload
+# only it has. This list is "what exists", not "what every env deploys".
+ALL: [fw.Workload] = [{{.WorkloadIdents}}]

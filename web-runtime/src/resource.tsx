@@ -222,19 +222,47 @@ export function Resource<T>({
   );
 }
 
+// SkeletonRows is the loading rung of the tristate ladder: a shimmer the
+// width of the table while the first page is in flight.
+//
+// It is ONE row with a colSpan cell, matching the error and empty rungs
+// above — not `rows` × `cols` real table cells. That shape is what makes it
+// accessible, and the reasoning is worth keeping:
+//
+//   - The shimmer is pure decoration. It carries no data, so it is wrapped
+//     in aria-hidden and the cell carries one sr-only "Loading…" instead.
+//     Assistive tech hears the state once, not once per placeholder.
+//   - A grid of empty <td>s announced as a table of blank cells, and read
+//     as a real 5-row result set by anything counting rows. The placeholder
+//     geometry is now plain <div>s inside the single cell, so the table has
+//     exactly the structure it claims to have at every moment.
+//   - Empty cells also tripped jsx-a11y/control-has-associated-label under
+//     the eslint config forge scaffolds. That was the symptom that surfaced
+//     this; the row-shape mismatch above is the actual defect.
+//
+// aria-hidden goes on the inner <div>, never on the <td> or <tr>: jsx-a11y
+// treats table elements as focusable, so hiding one is
+// no-aria-hidden-on-focusable — correctly, since a hidden focusable node is
+// a focus trap for screen-reader users.
 function SkeletonRows({ rows, cols }: { rows: number; cols: number }) {
   return (
-    <>
-      {Array.from({ length: rows }).map((_, r) => (
-        <tr key={r}>
-          {Array.from({ length: cols }).map((__, c) => (
-            <td key={c} className="px-4 py-3">
-              <div className="h-4 w-full animate-pulse rounded bg-surface-muted" />
-            </td>
+    <tr>
+      <td colSpan={cols} className="p-0">
+        <span className="sr-only">Loading…</span>
+        <div aria-hidden="true" className="divide-y divide-border">
+          {Array.from({ length: rows }).map((_, r) => (
+            <div key={r} className="flex items-center gap-4 px-4 py-3">
+              {Array.from({ length: cols }).map((__, c) => (
+                <div
+                  key={c}
+                  className="h-4 flex-1 animate-pulse rounded bg-surface-muted"
+                />
+              ))}
+            </div>
           ))}
-        </tr>
-      ))}
-    </>
+        </div>
+      </td>
+    </tr>
   );
 }
 

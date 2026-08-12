@@ -81,8 +81,16 @@ func (c *configSvc) ReadProjectConfig(path string) (*config.ProjectConfig, error
 	return ReadProjectConfig(path)
 }
 
-func (c *configSvc) WriteProjectConfigFile(cfg *config.ProjectConfig, path string) error {
-	return WriteProjectConfigFile(cfg, path)
+func (c *configSvc) SetProjectConfigScalar(path, key string, value any) error {
+	return SetProjectConfigScalar(path, key, value)
+}
+
+func (c *configSvc) SetProjectConfigScalarPath(path string, keys []string, value any) error {
+	return SetProjectConfigScalarPath(path, keys, value)
+}
+
+func (c *configSvc) AppendFrontendEntryToConfig(configPath string, entry config.FrontendConfig) error {
+	return AppendFrontendEntryToConfig(configPath, entry)
 }
 
 func (c *configSvc) AppendFrontendToConfig(projectRoot, frontendName string, port int) error {

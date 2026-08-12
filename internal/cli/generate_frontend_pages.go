@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 
@@ -122,6 +123,18 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 			return err
 		}
 
+		// Per-frontend route allowlist (forge.yaml frontends[].routes). Empty
+		// means "every CRUD entity" — the historical behavior, and the right
+		// one for a project's only frontend.
+		wantRoute, unknownRoutes := routeFilterFor(fe, liveSlugs)
+		if len(unknownRoutes) > 0 {
+			// Reported, not ignored: a typo'd or renamed slug otherwise
+			// yields a frontend silently missing the page its author asked
+			// for, and the omission looks identical to a generator bug.
+			fmt.Printf("  ⚠️  frontend %s: routes %v match no CRUD entity (known: %v)\n",
+				fe.Name, unknownRoutes, sortedSlugs(liveSlugs))
+		}
+
 		var pageCount, skipCount int
 
 		for _, svc := range services {
@@ -133,6 +146,12 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 				// emit broken field references.
 				entityDef, ok := entityByName[strings.ToLower(entity.EntityName)]
 				if !ok {
+					continue
+				}
+				// Not in this frontend's declared route set — skip before
+				// writing anything, so the pages are never created rather
+				// than created-and-deleted.
+				if !wantRoute(entity.EntitySlug) {
 					continue
 				}
 				// Typed columns / search fields / detail rows: the
@@ -458,4 +477,47 @@ func renderPageScaffoldIfMissing(tmpl *template.Template, data codegen.PageTempl
 	// actually emitted. Same contract as the gofmt/goimports pass the Tier-1
 	// writer runs over .go renders.
 	return checksums.WriteScaffoldIfMissing(projectDir, relPath, templates.CanonicalTSImportOrder(buf.Bytes()))
+}
+
+// routeFilterFor builds this frontend's route predicate from its declared
+// allowlist, plus the list of declared slugs that match no real CRUD entity.
+//
+// An EMPTY allowlist means "every entity" — the behavior every project had
+// before frontends[].routes existed, and the one that stays correct for a
+// project with a single frontend. The filter only narrows when a frontend
+// explicitly says which routes it wants.
+//
+// Slugs are compared case-insensitively and tolerate a leading "/" so both
+// "llm-keys" and "/llm-keys" work; the URL form is what an author is likely to
+// copy out of a browser.
+func routeFilterFor(fe config.FrontendConfig, liveSlugs map[string]bool) (func(string) bool, []string) {
+	if len(fe.Routes) == 0 {
+		return func(string) bool { return true }, nil
+	}
+
+	want := make(map[string]bool, len(fe.Routes))
+	var unknown []string
+	for _, r := range fe.Routes {
+		slug := strings.ToLower(strings.Trim(strings.TrimSpace(r), "/"))
+		if slug == "" {
+			continue
+		}
+		want[slug] = true
+		if !liveSlugs[slug] {
+			unknown = append(unknown, r)
+		}
+	}
+	return func(slug string) bool { return want[strings.ToLower(slug)] }, unknown
+}
+
+// sortedSlugs renders a slug set deterministically for the unknown-route
+// warning — an unordered map would make the same misconfiguration print
+// differently on every run.
+func sortedSlugs(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }

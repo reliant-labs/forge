@@ -142,7 +142,7 @@ func TestInspector_DisownedGoFilesByDir(t *testing.T) {
 
 func TestInspector_Tier1GoFiles(t *testing.T) {
 	dir := t.TempDir()
-	mustStamp(t, dir, "db/embed.go", "package db\n")
+	mustStamp(t, dir, "db/embed_gen.go", "package db\n")
 	mustStamp(t, dir, "pkg/app/bootstrap.go", "package app\n")
 	mustStamp(t, dir, "pkg/app/disowned.go", "package app\n") // marker lingers, but disowned
 	mustStamp(t, dir, "web/hooks.ts", "export {}\n")          // skip non-Go
@@ -153,7 +153,7 @@ func TestInspector_Tier1GoFiles(t *testing.T) {
 	}}
 	insp := NewInspector(dir, cs)
 	got := insp.Tier1GoFiles()
-	want := []string{"db/embed.go", "pkg/app/bootstrap.go"}
+	want := []string{"db/embed_gen.go", "pkg/app/bootstrap.go"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Tier1GoFiles = %v, want %v", got, want)
 	}

@@ -38,12 +38,47 @@ import (
 // flag is registered idempotently so re-registering on the same command (or a
 // parent that already has it) is safe.
 func RegisterFlags(cmd *cobra.Command, msg proto.Message) error {
-	if cmd.PersistentFlags().Lookup(ConfigFlag) == nil && cmd.Flags().Lookup(ConfigFlag) == nil {
-		cmd.PersistentFlags().String(ConfigFlag, "",
-			fmt.Sprintf("path to a config file (.json/.yaml/.yml); also settable via %s. "+
-				"Precedence: defaults < file < env < flags", ConfigPathEnv))
-	}
+	registerConfigFileFlag(cmd)
 	return RegisterFlagsFor(cmd.Flags(), msg)
+}
+
+// RegisterSharedFlags registers a per-binary config's SHARED half — the
+// leaves of the config blocks it composes (conventionally BaseConfig) — as
+// PERSISTENT flags on cmd, so every subcommand beneath it inherits them and
+// `app --log-level=debug admin` resolves. It also registers the --config file
+// flag, exactly as RegisterFlags does.
+//
+// Call it once on the ROOT command, then RegisterOwnFlags on each binary
+// subcommand. The two calls partition the message: no flag is registered
+// twice, and a binary's own flags stay invisible to its siblings.
+func RegisterSharedFlags(cmd *cobra.Command, msg proto.Message) error {
+	registerConfigFileFlag(cmd)
+	return RegisterFlagsScoped(cmd.PersistentFlags(), msg, ScopeShared)
+}
+
+// RegisterOwnFlags registers a per-binary config's OWN half — the leaves
+// declared directly on the message, skipping composed blocks — as LOCAL flags
+// on cmd. `app admin --help` then lists exactly what admin reads, and two
+// binaries may each declare a --port without colliding, because a local flag
+// set belongs to one command.
+//
+// The composed base is deliberately NOT registered here: the root already
+// carries it persistently, and cobra merges inherited persistent flags into a
+// subcommand's Flags(), so Load still resolves both halves in one pass.
+func RegisterOwnFlags(cmd *cobra.Command, msg proto.Message) error {
+	return RegisterFlagsScoped(cmd.Flags(), msg, ScopeOwn)
+}
+
+// registerConfigFileFlag adds the persistent --config <path> flag if neither
+// this command nor a parent already carries it. Idempotent, so the shared and
+// whole-message registration paths can both call it.
+func registerConfigFileFlag(cmd *cobra.Command) {
+	if cmd.PersistentFlags().Lookup(ConfigFlag) != nil || cmd.Flags().Lookup(ConfigFlag) != nil {
+		return
+	}
+	cmd.PersistentFlags().String(ConfigFlag, "",
+		fmt.Sprintf("path to a config file (.json/.yaml/.yml); also settable via %s. "+
+			"Precedence: defaults < file < env < flags", ConfigPathEnv))
 }
 
 // Load populates msg in place from cobra flags > environment variables >

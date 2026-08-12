@@ -36,6 +36,10 @@ type Service interface {
 type Deps struct{}
 
 // New constructs a templates.Service.
+//
+// forge:no-observe
+// Pure compute: empty Deps; the package reads its own embedded FS. There
+// is no I/O boundary worth instrumenting.
 func New(_ Deps) Service { return &svc{} }
 
 type svc struct{}

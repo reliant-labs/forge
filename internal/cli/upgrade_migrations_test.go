@@ -9,130 +9,118 @@ import (
 	"testing"
 )
 
-// TestLoadMigrationMetas_FindsDevTargetSkill verifies the embedded
-// templates expose the dev-target-to-kcl-deploy skill (the first
-// shipped migration). This pins the discovery convention so future
-// migrations can be added by dropping a SKILL.md into the templates
-// dir without touching the loader.
-func TestLoadMigrationMetas_FindsDevTargetSkill(t *testing.T) {
-	metas, err := loadMigrationMetas()
-	if err != nil {
-		t.Fatalf("loadMigrationMetas: %v", err)
-	}
-	var found *migrationMeta
-	for i := range metas {
-		if metas[i].ID == "dev-target-to-kcl-deploy" {
-			found = &metas[i]
-			break
-		}
-	}
-	if found == nil {
-		ids := make([]string, 0, len(metas))
-		for _, m := range metas {
-			ids = append(ids, m.ID)
-		}
-		t.Fatalf("dev-target-to-kcl-deploy not found; got IDs: %v", ids)
-	}
-	if found.AppliesFrom == "" || found.AppliesTo == "" {
-		t.Errorf("dev-target-to-kcl-deploy missing version bounds: from=%q to=%q",
-			found.AppliesFrom, found.AppliesTo)
-	}
-	if found.Detection == "" {
-		t.Errorf("dev-target-to-kcl-deploy missing detection script")
-	}
-	if found.SkillPath != "migrations/dev-target-to-kcl-deploy" {
-		t.Errorf("unexpected skill path: %q", found.SkillPath)
-	}
-}
-
-// TestLoadMigrationMetas_FindsVersionDirs verifies the walker picks up
-// v*-to-* migration skills (e.g. v0.1-to-v0.2, v0.x-to-contractkit).
-// These shipped for several forge versions and are stable anchors for
-// pinning the discovery convention.
-func TestLoadMigrationMetas_FindsVersionDirs(t *testing.T) {
-	metas, err := loadMigrationMetas()
-	if err != nil {
-		t.Fatalf("loadMigrationMetas: %v", err)
-	}
-
-	// Spot-check a couple of IDs that should be present. We don't pin
-	// the full set — new migrations land all the time — but these have
-	// shipped for several forge versions and are stable anchors.
-	wantSome := []string{"v0.1-to-v0.2", "v0.x-to-contractkit"}
-	got := make(map[string]string)
-	for _, m := range metas {
-		got[m.ID] = m.SkillPath
-	}
-	for _, id := range wantSome {
-		skillPath, ok := got[id]
-		if !ok {
-			ids := make([]string, 0, len(got))
-			for k := range got {
-				ids = append(ids, k)
-			}
-			t.Fatalf("migration %q not discovered; got IDs: %v", id, ids)
-		}
-		// All migrations live under "migrations/" (plural). The
-		// SkillPath flows into `forge skill load <path>` so the prefix
-		// must reflect the on-disk root.
-		want := "migrations/" + id
-		if skillPath != want {
-			t.Errorf("%s SkillPath = %q, want %q", id, skillPath, want)
-		}
-	}
-}
-
-// TestMigrationSkills_DeclareAGate is the invariant that keeps the worklist
-// honest: every shipped migration must declare at least one gate — a version
-// range, a detection script, retired, or elective. A migration declaring none
-// claims to apply to every project forge ever generated, which is never true;
-// a tree of those turns `forge project upgrade` into a catalogue dump that
-// users learn to scroll past.
+// TestLoadMigrationMetas_RegistryIsWellFormed walks whatever the binary
+// actually ships. An EMPTY registry is a valid, expected state — forge
+// ships no migration until a release in the supported window breaks
+// something — so this asserts shape, not count.
 //
-// Declared version bounds must also be orderable, or the gate silently
-// disappears at comparison time.
-func TestMigrationSkills_DeclareAGate(t *testing.T) {
+// The invariants below are what let the machinery stay correct as skills
+// come and go: an ID that isn't the release version breaks
+// `upgrade apply`, and a missing detection makes a migration unable to
+// show it applies to anything.
+func TestLoadMigrationMetas_RegistryIsWellFormed(t *testing.T) {
 	metas, err := loadMigrationMetas()
 	if err != nil {
 		t.Fatalf("loadMigrationMetas: %v", err)
 	}
-	if len(metas) == 0 {
-		t.Fatal("no migration skills discovered")
-	}
 	for _, m := range metas {
-		gated := m.Retired || m.Elective ||
-			strings.TrimSpace(m.Detection) != "" ||
-			strings.TrimSpace(m.AppliesFrom) != "" ||
-			strings.TrimSpace(m.AppliesTo) != ""
-		if !gated {
-			t.Errorf("migration %q declares no gate: add applies-from/applies-to, a detection script, or retired/elective to its frontmatter", m.ID)
+		if m.SkillPath != "migrations/"+m.ID {
+			t.Errorf("migration %q: SkillPath = %q, want %q", m.ID, m.SkillPath, "migrations/"+m.ID)
 		}
-		for label, bound := range map[string]string{"applies-from": m.AppliesFrom, "applies-to": m.AppliesTo} {
-			if strings.TrimSpace(bound) != "" && semverKey(bound) == "" {
-				t.Errorf("migration %q has unorderable %s %q", m.ID, label, bound)
-			}
+		// The directory name IS the release version. The CLI prints and
+		// records the directory; the frontmatter is what an agent reads.
+		// If they disagree, one of the two is lying.
+		if m.Version != m.ID {
+			t.Errorf("migration %q declares version %q — the directory name and `version:` frontmatter must match", m.ID, m.Version)
+		}
+		if semverKey(m.Version) == "" {
+			t.Errorf("migration %q has unorderable version %q — it can never be compared against a project baseline", m.ID, m.Version)
+		}
+		// Detection is the state-based gate. Without it a migration
+		// cannot demonstrate a project needs it.
+		if strings.TrimSpace(m.Detection) == "" {
+			t.Errorf("migration %q declares no detection script — it cannot show it applies to any project", m.ID)
 		}
 	}
 }
 
-// TestLoadMigrationMetas_TombstoneIsRetired pins the tombstone's frontmatter.
-// v0.1-to-v0.2 migrates toward a DI shape that was itself deleted, so it
-// applies to nothing; `retired: true` is what makes that machine-readable
-// instead of relying on the description starting with the word TOMBSTONE.
-func TestLoadMigrationMetas_TombstoneIsRetired(t *testing.T) {
+// TestComputePendingMigrations_EmptyRegistryIsNotAnError is the
+// zero-skill guarantee. forge currently ships no migrations, and the
+// machinery must treat that as a normal answer rather than an error or a
+// crash — this is the state the registry sits in between breaking
+// releases, which is most of the time.
+func TestComputePendingMigrations_EmptyRegistryIsNotAnError(t *testing.T) {
 	metas, err := loadMigrationMetas()
 	if err != nil {
 		t.Fatalf("loadMigrationMetas: %v", err)
 	}
-	for _, m := range metas {
-		if m.ID == "v0.1-to-v0.2" {
-			if !m.Retired {
-				t.Error("v0.1-to-v0.2 must declare retired: true — its target shape no longer exists")
-			}
-			return
-		}
+	if len(metas) != 0 {
+		t.Skipf("registry is non-empty (%d migrations) — this test pins the empty case", len(metas))
 	}
-	t.Fatal("v0.1-to-v0.2 not discovered")
+
+	dir := newTestProject(t)
+	var pending []pendingMigration
+	withCwd(t, dir, func() {
+		got, err := computePendingMigrations()
+		if err != nil {
+			t.Fatalf("computePendingMigrations on an empty registry: %v", err)
+		}
+		pending = got
+	})
+	if len(pending) != 0 {
+		t.Errorf("empty registry produced %d pending migrations: %+v", len(pending), pending)
+	}
+}
+
+// TestWritePendingMigrationsHuman_EmptyRegistrySaysSo distinguishes the
+// two empty cases. "forge ships none" is a fact about the binary;
+// "none apply to you" is a fact about the project. A user mid-upgrade
+// who is told "up to date" when the real reason is that the binary has
+// no migrations at all has been told the wrong thing.
+func TestWritePendingMigrationsHuman_EmptyRegistrySaysSo(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writePendingMigrationsHuman(&buf, nil, 0 /* shipped */); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "No migrations shipped") {
+		t.Errorf("empty-registry message should say the binary ships none, got: %q", out)
+	}
+
+	// With migrations shipped but none applicable, the answer is about
+	// the project instead.
+	buf.Reset()
+	if err := writePendingMigrationsHuman(&buf, nil, 3 /* shipped */); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !strings.Contains(buf.String(), "up to date") {
+		t.Errorf("expected 'up to date' when migrations exist but none apply, got: %q", buf.String())
+	}
+}
+
+// TestRunUpgradeApply_EmptyRegistryGivesAnHonestHint: on a binary with no
+// migrations, "available IDs: " followed by nothing is a dead end. Say
+// there are none.
+func TestRunUpgradeApply_EmptyRegistryGivesAnHonestHint(t *testing.T) {
+	metas, err := loadMigrationMetas()
+	if err != nil {
+		t.Fatalf("loadMigrationMetas: %v", err)
+	}
+	if len(metas) != 0 {
+		t.Skipf("registry is non-empty (%d migrations) — this test pins the empty case", len(metas))
+	}
+
+	dir := newTestProject(t)
+	withCwd(t, dir, func() {
+		var buf bytes.Buffer
+		err := runUpgradeApply(&buf, "v0.5.0")
+		if err == nil {
+			t.Fatal("expected an error applying an unknown migration")
+		}
+		if !strings.Contains(err.Error(), "ships no migrations") {
+			t.Errorf("error should say the binary ships no migrations, got: %v", err)
+		}
+	})
 }
 
 // TestParseMigrationFrontmatter_ExtractsAllFields exercises the
@@ -140,29 +128,25 @@ func TestLoadMigrationMetas_TombstoneIsRetired(t *testing.T) {
 // fields should leave the meta empty (not error).
 func TestParseMigrationFrontmatter_ExtractsAllFields(t *testing.T) {
 	body := []byte(`---
-name: demo
-description: a demo migration
-applies-from: v0.5.0
-applies-to: "v0.6.0"
-detection: 'grep -l foo bar'
+name: v0.5.0
+description: the deploy target moved from forge.yaml into KCL
+version: "v0.5.0"
+detection: 'grep -q "^dev_target:" forge.yaml'
 ---
 
 # body
 `)
 	m := parseMigrationFrontmatter(body)
-	if m.Title != "demo" {
-		t.Errorf("Title = %q, want demo", m.Title)
+	if m.Title != "v0.5.0" {
+		t.Errorf("Title = %q, want v0.5.0", m.Title)
 	}
-	if m.Description != "a demo migration" {
+	if m.Description != "the deploy target moved from forge.yaml into KCL" {
 		t.Errorf("Description = %q", m.Description)
 	}
-	if m.AppliesFrom != "v0.5.0" {
-		t.Errorf("AppliesFrom = %q", m.AppliesFrom)
+	if m.Version != "v0.5.0" {
+		t.Errorf("Version = %q (quotes should be stripped)", m.Version)
 	}
-	if m.AppliesTo != "v0.6.0" {
-		t.Errorf("AppliesTo = %q (quotes should be stripped)", m.AppliesTo)
-	}
-	if m.Detection != "grep -l foo bar" {
+	if m.Detection != `grep -q "^dev_target:" forge.yaml` {
 		t.Errorf("Detection = %q", m.Detection)
 	}
 }
@@ -171,81 +155,184 @@ detection: 'grep -l foo bar'
 // rather than panicking on bodies without a leading "---\n".
 func TestParseMigrationFrontmatter_NoFrontmatter(t *testing.T) {
 	m := parseMigrationFrontmatter([]byte("# just markdown\n"))
-	if m.Title != "" || m.Description != "" || m.AppliesFrom != "" {
+	if m.Title != "" || m.Description != "" || m.Version != "" {
 		t.Errorf("expected empty meta, got %+v", m)
 	}
 }
 
-// TestVersionInRange covers the half-open [from, to) range semantics
-// plus all the empty-bound special cases.
+// TestBaselinePrecedes is the version half of the applicability
+// decision: has this project crossed the release the migration belongs
+// to?
 //
-// versionInRange is pure ordering — it answers "does this version fall in
-// this window" and nothing else. Whether an unorderable or dev-build
-// baseline should see a migration is migrationApplies' business
-// (TestMigrationApplies_*), not something smuggled in here as a special
-// case: conflating the two is what let a dev build be sorted against
-// migrations for releases it was never on.
-func TestVersionInRange(t *testing.T) {
+// Ordering is real SemVer precedence, which matters because the versions
+// forge actually produces are not simple vX.Y.Z triples. A build from a
+// local checkout stamps a Go pseudo-version —
+// `v0.0.4-0.20260724212501-dfb85daf8474+dirty` — and SemVer says that is
+// a PRE-RELEASE of v0.0.4: after v0.0.3, before v0.0.4, and unambiguously
+// below v0.1.0. A component-wise string comparison gets that wrong in
+// both directions, which is how a dev build ends up sorted against
+// migrations it has nothing to do with.
+func TestBaselinePrecedes(t *testing.T) {
 	tests := []struct {
-		name    string
-		version string
-		from    string
-		to      string
-		want    bool
+		name     string
+		baseline string
+		version  string
+		want     bool
 	}{
-		// A version we cannot order cannot be excluded by a range.
-		// (Whether an unorderable baseline should see the migration at
-		// all is migrationApplies' call, not this one's.)
-		{"empty project version", "", "v0.5.0", "v0.6.0", true},
-		{"dev sentinel", "dev", "v0.5.0", "v0.6.0", true},
-		// As a pure version, 0.0.0 orders below v0.5.0.
-		{"0.0.0 orders below the range", "0.0.0", "v0.5.0", "v0.6.0", false},
-		// A dev build's pseudo-version is a pre-release of the next
-		// patch. SemVer places it precisely, so it takes part in
-		// version gating like any other version.
-		{"pseudoversion below range", "v0.0.4-0.20260724212501-dfb85daf8474+dirty", "v0.5.0", "v0.6.0", false},
-		{"pseudoversion inside range", "v0.5.4-0.20260724212501-dfb85daf8474+dirty", "v0.5.0", "v0.6.0", true},
-		{"pseudoversion is a pre-release of its base", "v0.6.0-0.20260724212501-dfb85daf8474", "v0.5.0", "v0.6.0", true},
-		{"in range", "v0.5.0", "v0.5.0", "v0.6.0", true},
-		{"in range mid", "v0.5.3", "v0.5.0", "v0.6.0", true},
-		{"below range", "v0.4.9", "v0.5.0", "v0.6.0", false},
-		{"at upper bound (half-open)", "v0.6.0", "v0.5.0", "v0.6.0", false},
-		{"above range", "v0.7.0", "v0.5.0", "v0.6.0", false},
-		// Open bounds.
-		{"open from", "v0.4.0", "", "v0.6.0", true},
-		{"open to", "v9.0.0", "v0.5.0", "", true},
-		{"both open", "v0.5.0", "", "", true},
-		// Missing patch component normalises to 0.
-		{"missing patch", "v0.5", "v0.5.0", "v0.6.0", true},
-		// Leading "v" optional on both sides.
-		{"unprefixed version", "0.5.0", "v0.5.0", "v0.6.0", true},
-		// Released 0.0.x ordering: the hop forge is actually making.
-		{"0.0.3 inside a 0.0.x window", "v0.0.3", "v0.0.2", "v0.0.5", true},
-		{"0.0.1 below a 0.0.x window", "v0.0.1", "v0.0.2", "v0.0.5", false},
-		{"0.0.5 at a 0.0.x upper bound", "v0.0.5", "v0.0.2", "v0.0.5", false},
+		{"below the release", "v0.4.9", "v0.5.0", true},
+		{"exactly at the release: already crossed", "v0.5.0", "v0.5.0", false},
+		{"past the release", "v0.6.0", "v0.5.0", false},
+		{"far below", "v0.1.0", "v0.5.0", true},
+		// A dev build's pseudo-version is a pre-release of its base, so
+		// it orders below that base.
+		{"pseudoversion below", "v0.0.4-0.20260724212501-dfb85daf8474+dirty", "v0.5.0", true},
+		{"pseudoversion is a pre-release of its base", "v0.5.0-0.20260724212501-dfb85daf8474", "v0.5.0", true},
+		{"pseudoversion above", "v0.6.1-0.20260724212501-dfb85daf8474+dirty", "v0.5.0", false},
+		// Unorderable inputs leave the decision to detection rather than
+		// silently dropping the migration.
+		{"unorderable baseline defers to detection", "dev", "v0.5.0", true},
+		{"unorderable version defers to detection", "v0.4.0", "not-a-version", true},
+		// Normalisation.
+		{"missing patch component", "v0.5", "v0.5.0", false},
+		{"unprefixed baseline", "0.4.0", "v0.5.0", true},
+		// The 0.0.x range forge actually ships in today.
+		{"0.0.3 below 0.0.4", "v0.0.3", "v0.0.4", true},
+		{"0.0.4 at 0.0.4", "v0.0.4", "v0.0.4", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := versionInRange(tt.version, tt.from, tt.to)
-			if got != tt.want {
-				t.Errorf("versionInRange(%q, %q, %q) = %v, want %v",
-					tt.version, tt.from, tt.to, got, tt.want)
+			if got := baselinePrecedes(tt.baseline, tt.version); got != tt.want {
+				t.Errorf("baselinePrecedes(%q, %q) = %v, want %v",
+					tt.baseline, tt.version, got, tt.want)
 			}
 		})
 	}
 }
 
-// TestRunDetection_EmptyScriptMatches verifies the "no detection script"
-// case is treated as "migration applies".
-func TestRunDetection_EmptyScriptMatches(t *testing.T) {
-	if !runDetection(t.TempDir(), "") {
-		t.Error("expected runDetection to return true for empty script")
+// TestMigrationApplies_StagedJumpGetsEveryCrossedRelease is THE property
+// the per-version model exists to provide, and the one the old
+// per-transition range model got wrong.
+//
+// A project pinned several releases back must be handed every migration
+// it crossed, in release order — not just the last hop's. Under the old
+// [from, to) ranges a project that jumped a window without landing inside
+// it fell through the gap and was told there was nothing to do.
+func TestMigrationApplies_StagedJumpGetsEveryCrossedRelease(t *testing.T) {
+	root := t.TempDir()
+	// Every migration's detection matches, so the version gate is the
+	// only thing being measured.
+	all := []migrationMeta{
+		{ID: "v0.6.0", Version: "v0.6.0", Detection: "true"},
+		{ID: "v0.3.0", Version: "v0.3.0", Detection: "true"},
+		{ID: "v0.5.0", Version: "v0.5.0", Detection: "true"},
+		{ID: "v0.4.0", Version: "v0.4.0", Detection: "true"},
+	}
+
+	got := applicableMigrations(all, "v0.2.0", root)
+	var ids []string
+	for _, r := range got {
+		ids = append(ids, r.Meta.ID)
+	}
+	want := []string{"v0.3.0", "v0.4.0", "v0.5.0", "v0.6.0"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Errorf("a v0.2.0 project jumping to current got %v, want every crossed release in order %v", ids, want)
+	}
+
+	// A project already at v0.4.0 has crossed v0.3.0 and v0.4.0; only the
+	// releases still ahead of it remain.
+	got = applicableMigrations(all, "v0.4.0", root)
+	ids = nil
+	for _, r := range got {
+		ids = append(ids, r.Meta.ID)
+	}
+	want = []string{"v0.5.0", "v0.6.0"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Errorf("a v0.4.0 project got %v, want %v", ids, want)
 	}
 }
 
-// TestRunDetection_ScriptExitCode covers the script-runs path. We
-// intentionally do not exercise grep over a real forge.yaml here —
-// the goal is to prove the script's exit code drives the result.
+// TestMigrationApplies_DetectionGatesInsideTheWindow: predating the
+// release is necessary, not sufficient. The project must actually exhibit
+// the old shape — a project that never used the feature that changed
+// needs no migration for it.
+func TestMigrationApplies_DetectionGatesInsideTheWindow(t *testing.T) {
+	root := t.TempDir()
+	m := migrationMeta{ID: "v0.5.0", Version: "v0.5.0", Detection: "test -f old-shape-marker"}
+	if migrationApplies(m, "v0.4.0", root) {
+		t.Error("migration offered to a project that does not exhibit the old shape")
+	}
+	if err := os.WriteFile(filepath.Join(root, "old-shape-marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !migrationApplies(m, "v0.4.0", root) {
+		t.Error("migration withheld from a project that DOES exhibit the old shape")
+	}
+}
+
+// TestMigrationApplies_NoDetectionAppliesToNothing: a migration that
+// names no way to tell whether it applies must stay out of every
+// worklist. Defaulting the other way puts a malformed skill into ALL of
+// them.
+func TestMigrationApplies_NoDetectionAppliesToNothing(t *testing.T) {
+	root := t.TempDir()
+	m := migrationMeta{ID: "v0.5.0", Version: "v0.5.0"}
+	for _, baseline := range []string{"", "dev", "v0.1.0", "v0.4.0", "v9.0.0"} {
+		if migrationApplies(m, baseline, root) {
+			t.Errorf("detection-less migration offered at baseline %q", baseline)
+		}
+	}
+}
+
+// TestMigrationApplies_UnknownBaselineUsesDetectionAlone is the
+// dev-without-a-tag guarantee: a project bridged to a local forge
+// checkout, or one that predates the forge_version field, has no usable
+// position on the timeline. Inventing one and filtering against the
+// invention is how a project gets handed the migrations of a release it
+// was never on. What the tree contains is the only thing still true.
+func TestMigrationApplies_UnknownBaselineUsesDetectionAlone(t *testing.T) {
+	root := t.TempDir()
+	m := migrationMeta{ID: "v0.5.0", Version: "v0.5.0", Detection: "test -f old-shape-marker"}
+
+	for _, baseline := range []string{"", "0.0.0", "v0.0.0", "dev", "(devel)", "not-a-version"} {
+		if migrationApplies(m, baseline, root) {
+			t.Errorf("baseline %q: migration offered before its shape exists in the tree", baseline)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "old-shape-marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, baseline := range []string{"", "0.0.0", "dev", "(devel)", "not-a-version"} {
+		if !migrationApplies(m, baseline, root) {
+			t.Errorf("baseline %q: detection matched but the migration was withheld", baseline)
+		}
+	}
+}
+
+// TestMigrationApplies_AlreadyCrossedIsNeverOffered: a project at or past
+// a release has crossed it by definition, even if some unrelated file
+// still trips the detection grep. The version gate is what stops a
+// detection false-positive from re-offering old work.
+func TestMigrationApplies_AlreadyCrossedIsNeverOffered(t *testing.T) {
+	root := t.TempDir()
+	m := migrationMeta{ID: "v0.5.0", Version: "v0.5.0", Detection: "true"}
+	for _, baseline := range []string{"v0.5.0", "v0.5.1", "v0.6.0", "v1.0.0"} {
+		if migrationApplies(m, baseline, root) {
+			t.Errorf("baseline %q has already crossed v0.5.0 but was offered its migration", baseline)
+		}
+	}
+}
+
+// TestRunDetection_EmptyScriptDoesNotMatch: an absent detection is the
+// absence of evidence, not evidence the migration applies.
+func TestRunDetection_EmptyScriptDoesNotMatch(t *testing.T) {
+	if runDetection(t.TempDir(), "") {
+		t.Error("expected runDetection to return false for an empty script")
+	}
+}
+
+// TestRunDetection_ScriptExitCode covers the script-runs path: the exit
+// code drives the result.
 func TestRunDetection_ScriptExitCode(t *testing.T) {
 	dir := t.TempDir()
 	if !runDetection(dir, "true") {
@@ -257,8 +344,8 @@ func TestRunDetection_ScriptExitCode(t *testing.T) {
 }
 
 // TestRunDetection_ProjectDirSeen verifies the detection script is
-// executed with the project root as CWD — important because the
-// canonical detection (`grep -l dev_target forge.yaml`) is path-relative.
+// executed with the project root as CWD — important because detection
+// scripts are path-relative (`grep -q ... forge.yaml`).
 func TestRunDetection_ProjectDirSeen(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "marker"), []byte("hi"), 0o644); err != nil {
@@ -273,7 +360,7 @@ func TestRunDetection_ProjectDirSeen(t *testing.T) {
 func TestReadWriteMigrationsState(t *testing.T) {
 	dir := t.TempDir()
 	state := migrationsState{Applied: map[string]string{
-		"dev-target-to-kcl-deploy": "2026-06-04T10:00:00Z",
+		"v0.5.0": "2026-06-04T10:00:00Z",
 	}}
 	if err := writeMigrationsState(dir, state); err != nil {
 		t.Fatalf("write: %v", err)
@@ -282,7 +369,7 @@ func TestReadWriteMigrationsState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if got.Applied["dev-target-to-kcl-deploy"] != "2026-06-04T10:00:00Z" {
+	if got.Applied["v0.5.0"] != "2026-06-04T10:00:00Z" {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
 
@@ -293,31 +380,6 @@ func TestReadWriteMigrationsState(t *testing.T) {
 	}
 	if len(got2.Applied) != 0 {
 		t.Errorf("expected empty Applied for absent file, got %+v", got2)
-	}
-}
-
-// TestRunUpgradeApply_RecordsToStateFile is the integration test for
-// the apply subcommand body: it must write a state file containing the
-// applied migration id.
-func TestRunUpgradeApply_RecordsToStateFile(t *testing.T) {
-	dir := newTestProject(t)
-	withCwd(t, dir, func() {
-		var buf bytes.Buffer
-		if err := runUpgradeApply(&buf, "dev-target-to-kcl-deploy"); err != nil {
-			t.Fatalf("runUpgradeApply: %v", err)
-		}
-	})
-
-	data, err := os.ReadFile(filepath.Join(dir, ".forge", "migrations.json"))
-	if err != nil {
-		t.Fatalf("read migrations.json: %v", err)
-	}
-	var st migrationsState
-	if err := json.Unmarshal(data, &st); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if _, ok := st.Applied["dev-target-to-kcl-deploy"]; !ok {
-		t.Errorf("expected dev-target-to-kcl-deploy in applied set, got %+v", st)
 	}
 }
 
@@ -337,134 +399,81 @@ func TestRunUpgradeApply_UnknownIDErrors(t *testing.T) {
 	})
 }
 
-// TestComputePendingMigrations_NoProjectVersion verifies a project
-// without a forge_version pin lists every migration as pending. The
-// dev-target-to-kcl-deploy migration's detection script greps for
-// "dev_target" in forge.yaml, so we plant that string to make sure
-// detection passes too.
-func TestComputePendingMigrations_NoProjectVersion(t *testing.T) {
-	dir := newTestProject(t)
-	// Make detection pass — forge.yaml contains the dev_target string.
-	planted := filepath.Join(dir, "forge.yaml")
-	body, _ := os.ReadFile(planted)
-	body = append(body, []byte("\n# dev_target marker for detection test\n")...)
-	if err := os.WriteFile(planted, body, 0o644); err != nil {
-		t.Fatalf("plant dev_target: %v", err)
+// TestWritePendingMigrationsHuman_ListsInReleaseOrder pins the two things
+// an agent reads off the worklist: the load/apply commands, and the
+// instruction that the order is load-bearing.
+func TestWritePendingMigrationsHuman_ListsInReleaseOrder(t *testing.T) {
+	pending := []pendingMigration{
+		{Meta: migrationMeta{ID: "v0.4.0", SkillPath: "migrations/v0.4.0", Version: "v0.4.0", Title: "Older"}},
+		{Meta: migrationMeta{ID: "v0.5.0", SkillPath: "migrations/v0.5.0", Version: "v0.5.0", Title: "Newer"}},
 	}
-
-	var pending []pendingMigration
-	withCwd(t, dir, func() {
-		got, err := computePendingMigrations()
-		if err != nil {
-			t.Fatalf("computePendingMigrations: %v", err)
-		}
-		pending = got
-	})
-
-	if len(pending) == 0 {
-		t.Fatal("expected at least one pending migration on an unversioned project")
-	}
-	var sawDevTarget bool
-	for _, p := range pending {
-		if p.Meta.ID == "dev-target-to-kcl-deploy" {
-			sawDevTarget = true
-			if p.Applied {
-				t.Error("dev-target-to-kcl-deploy should NOT be marked applied yet")
-			}
-		}
-	}
-	if !sawDevTarget {
-		t.Error("dev-target-to-kcl-deploy should be in pending list when detection matches")
-	}
-}
-
-// TestComputePendingMigrations_DetectionFiltersOut verifies migrations
-// whose detection script does NOT match are filtered out. The shipped
-// dev-target-to-kcl-deploy migration greps forge.yaml for "dev_target";
-// a plain test project without that string should NOT see the
-// migration.
-func TestComputePendingMigrations_DetectionFiltersOut(t *testing.T) {
-	dir := newTestProject(t) // forge.yaml has no dev_target string
-
-	var pending []pendingMigration
-	withCwd(t, dir, func() {
-		got, err := computePendingMigrations()
-		if err != nil {
-			t.Fatalf("computePendingMigrations: %v", err)
-		}
-		pending = got
-	})
-
-	for _, p := range pending {
-		if p.Meta.ID == "dev-target-to-kcl-deploy" {
-			t.Error("dev-target-to-kcl-deploy must be filtered out when detection finds nothing")
-		}
-	}
-}
-
-// TestComputePendingMigrations_VersionRangeFiltersOut covers the
-// version-range gate. With a project pinned beyond the migration's
-// applies-to bound, the migration should be hidden — even though the
-// dev_target detection string is planted in forge.yaml.
-func TestComputePendingMigrations_VersionRangeFiltersOut(t *testing.T) {
-	dir := newTestProjectWithVersion(t, "v9.0.0")
-	// Plant the dev_target marker so detection passes — leaves the
-	// version filter as the only remaining gate.
-	cfgPath := filepath.Join(dir, "forge.yaml")
-	body, _ := os.ReadFile(cfgPath)
-	body = append(body, []byte("# dev_target marker\n")...)
-	if err := os.WriteFile(cfgPath, body, 0o644); err != nil {
-		t.Fatalf("plant marker: %v", err)
-	}
-
-	var pending []pendingMigration
-	withCwd(t, dir, func() {
-		got, err := computePendingMigrations()
-		if err != nil {
-			t.Fatalf("computePendingMigrations: %v", err)
-		}
-		pending = got
-	})
-	for _, p := range pending {
-		if p.Meta.ID == "dev-target-to-kcl-deploy" {
-			t.Errorf("dev-target-to-kcl-deploy must be hidden when project version > applies-to; got pending entry %+v", p)
-		}
-	}
-}
-
-// TestWritePendingMigrationsHuman_EmptyListSaysUpToDate confirms the
-// spec-mandated empty-list message.
-func TestWritePendingMigrationsHuman_EmptyListSaysUpToDate(t *testing.T) {
 	var buf bytes.Buffer
-	if err := writePendingMigrationsHuman(&buf, nil); err != nil {
+	if err := writePendingMigrationsHuman(&buf, pending, len(pending)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if !strings.Contains(buf.String(), "up to date") {
-		t.Errorf("expected 'up to date' message, got: %q", buf.String())
+	out := buf.String()
+	if i, j := strings.Index(out, "v0.4.0"), strings.Index(out, "v0.5.0"); i < 0 || j < 0 || i > j {
+		t.Errorf("releases should print oldest first:\n%s", out)
+	}
+	for _, want := range []string{
+		"skill load migrations/v0.4.0",
+		"project upgrade apply v0.4.0",
+		"in the order listed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
 	}
 }
 
 // TestWritePendingMigrationsJSON_StableShape pins the JSON keys so
-// downstream parsers don't break on a key rename.
+// downstream parsers don't break on a key rename. shipped_migrations is
+// what lets a consumer tell "forge ships none" from "none apply to you"
+// without re-deriving it from an empty array.
 func TestWritePendingMigrationsJSON_StableShape(t *testing.T) {
 	pending := []pendingMigration{
-		{Meta: migrationMeta{ID: "demo", Title: "Demo", AppliesFrom: "v0.5", AppliesTo: "v0.6"}},
+		{Meta: migrationMeta{ID: "v0.5.0", Title: "Demo", Version: "v0.5.0"}},
 	}
 	var buf bytes.Buffer
-	if err := writePendingMigrationsJSON(&buf, pending); err != nil {
+	if err := writePendingMigrationsJSON(&buf, pending, 1); err != nil {
 		t.Fatalf("json: %v", err)
 	}
 	out := buf.String()
 	for _, key := range []string{
 		`"binary_version"`,
+		`"shipped_migrations"`,
 		`"pending"`,
-		`"id": "demo"`,
-		`"applies_from"`,
-		`"applies_to"`,
+		`"id": "v0.5.0"`,
+		`"version"`,
 	} {
 		if !strings.Contains(out, key) {
 			t.Errorf("JSON missing %s: %s", key, out)
 		}
+	}
+}
+
+// TestRunUpgradeApply_RecordsToStateFile is the integration test for the
+// apply subcommand body. It plants a synthetic migration in the applied
+// set directly (the shipped registry is empty), then verifies the file
+// round-trips — the state format has to keep working across the periods
+// when forge ships no migrations at all.
+func TestRunUpgradeApply_RecordsToStateFile(t *testing.T) {
+	dir := newTestProject(t)
+	state := migrationsState{Applied: map[string]string{"v0.5.0": "2026-06-04T10:00:00Z"}}
+	if err := writeMigrationsState(dir, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, ".forge", "migrations.json"))
+	if err != nil {
+		t.Fatalf("read migrations.json: %v", err)
+	}
+	var st migrationsState
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := st.Applied["v0.5.0"]; !ok {
+		t.Errorf("expected v0.5.0 in applied set, got %+v", st)
 	}
 }
 
@@ -475,7 +484,7 @@ func TestWritePendingMigrationsJSON_StableShape(t *testing.T) {
 // The forge.yaml mirrors the strict-loader schema: module_path and
 // version are required, so a too-small fixture causes LoadStrict to
 // fail and the project-version probe falls back to "" (which would
-// silently pass version-range filters).
+// silently pass version gates).
 func newTestProject(t *testing.T) string {
 	t.Helper()
 	return newTestProjectWithVersion(t, "")
@@ -550,183 +559,6 @@ func TestIsPreV01Baseline(t *testing.T) {
 	for _, tt := range tests {
 		if got := isPreV01Baseline(tt.version); got != tt.want {
 			t.Errorf("isPreV01Baseline(%q) = %v, want %v", tt.version, got, tt.want)
-		}
-	}
-}
-
-// TestMigrationApplies_RetiredNeverApplies is the regression test for the bug
-// this whole path existed to produce: a project was offered
-// migrations/v0.1-to-v0.2, a tombstone whose target shape had already been
-// deleted. A retired migration applies to nothing, at any baseline, with or
-// without a matching detection script.
-func TestMigrationApplies_RetiredNeverApplies(t *testing.T) {
-	root := t.TempDir()
-	retired := migrationMeta{ID: "v0.1-to-v0.2", Retired: true, Detection: "true"}
-	for _, baseline := range []string{
-		"",
-		"0.0.0",
-		"dev",
-		"v0.0.3",
-		"v0.0.4-0.20260724212501-dfb85daf8474+dirty",
-		"v0.1.0",
-		"v2.0.0",
-	} {
-		if migrationApplies(retired, baseline, root) {
-			t.Errorf("retired migration offered at baseline %q", baseline)
-		}
-	}
-}
-
-// TestMigrationApplies_PreV01BaselineSkipsV01Migrations: a baseline below
-// v0.1.0 must never be handed a migration whose range starts at v0.1.0 —
-// including when the baseline is a dev build's pseudo-version, which is the
-// shape every locally-built forge stamps.
-func TestMigrationApplies_PreV01BaselineSkipsV01Migrations(t *testing.T) {
-	root := t.TempDir()
-	m := migrationMeta{ID: "v0.1-to-v0.2", AppliesFrom: "v0.1.0", AppliesTo: "v0.2.0"}
-	for _, baseline := range []string{
-		"",       // unpinned: no version evidence, and no detection to fall back on
-		"0.0.0",  // unset-field sentinel: same
-		"dev",    // unorderable sentinel: same
-		"v0.0.3", // released 0.0.x tag: ordered below the window
-		"v0.0.4-0.20260724212501-dfb85daf8474+dirty", // dev build: ordered below the window
-		"v0.0.0-20260430002332-8f05b089372c",         // untagged-base pseudo-version: same
-	} {
-		if migrationApplies(m, baseline, root) {
-			t.Errorf("baseline %q (pre-v0.1) was offered a v0.1→v0.2 migration", baseline)
-		}
-	}
-	// A project genuinely at v0.1.x still gets it: fixing the pre-v0.1 case
-	// must not disarm real version gating.
-	if !migrationApplies(m, "v0.1.4", root) {
-		t.Error("a v0.1.4 project must still be offered the v0.1→v0.2 migration")
-	}
-}
-
-// TestMigrationApplies_ReleasedVersionOrdering exercises a real released
-// 0.0.x → 0.0.x hop end to end: three migrations with adjacent windows, one
-// project version, exactly one match. This is the ordering guarantee the
-// upgrade story rests on, at the version range forge actually ships in.
-func TestMigrationApplies_ReleasedVersionOrdering(t *testing.T) {
-	root := t.TempDir()
-	early := migrationMeta{ID: "early", AppliesFrom: "v0.0.1", AppliesTo: "v0.0.3"}
-	current := migrationMeta{ID: "current", AppliesFrom: "v0.0.3", AppliesTo: "v0.0.4"}
-	later := migrationMeta{ID: "later", AppliesFrom: "v0.0.4", AppliesTo: "v0.1.0"}
-
-	got := applicableMigrations([]migrationMeta{later, early, current}, "v0.0.3", root)
-	if len(got) != 1 || got[0].Meta.ID != "current" {
-		var ids []string
-		for _, r := range got {
-			ids = append(ids, r.Meta.ID)
-		}
-		t.Fatalf("v0.0.3 baseline matched %v, want exactly [current]", ids)
-	}
-
-	// Stepping the baseline one release forward moves the window with it.
-	got = applicableMigrations([]migrationMeta{later, early, current}, "v0.0.4", root)
-	if len(got) != 1 || got[0].Meta.ID != "later" {
-		var ids []string
-		for _, r := range got {
-			ids = append(ids, r.Meta.ID)
-		}
-		t.Fatalf("v0.0.4 baseline matched %v, want exactly [later]", ids)
-	}
-}
-
-// TestMigrationApplies_DetectionGatesInsideTheRange: being in range is
-// necessary, not sufficient. The project must actually exhibit the old shape.
-func TestMigrationApplies_DetectionGatesInsideTheRange(t *testing.T) {
-	root := t.TempDir()
-	m := migrationMeta{ID: "shape", AppliesFrom: "v0.0.1", AppliesTo: "v0.1.0", Detection: "test -f old-shape-marker"}
-	if migrationApplies(m, "v0.0.3", root) {
-		t.Error("in-range migration offered to a project that does not exhibit the old shape")
-	}
-	if err := os.WriteFile(filepath.Join(root, "old-shape-marker"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !migrationApplies(m, "v0.0.3", root) {
-		t.Error("in-range migration withheld from a project that DOES exhibit the old shape")
-	}
-}
-
-// TestMigrationApplies_DevBaselineUsesDetection is the dev-without-a-tag
-// guarantee: a project bridged to a local forge checkout pins a
-// pseudo-version, and that must still produce a correct answer — the boundless
-// shape migrations are gated on what the project actually contains, with no
-// published tag anywhere.
-func TestMigrationApplies_DevBaselineUsesDetection(t *testing.T) {
-	root := t.TempDir()
-	const devPin = "v0.0.4-0.20260724212501-dfb85daf8474+dirty"
-	m := migrationMeta{ID: "v0.x-to-typed-di", Detection: "test -f pkg/app/wire_gen.go"}
-
-	if migrationApplies(m, devPin, root) {
-		t.Error("dev-build baseline offered a migration whose shape the project does not have")
-	}
-	if err := os.MkdirAll(filepath.Join(root, "pkg", "app"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "pkg", "app", "wire_gen.go"), []byte("package app\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !migrationApplies(m, devPin, root) {
-		t.Error("dev-build baseline denied a migration the project demonstrably needs")
-	}
-}
-
-// TestMigrationApplies_ElectiveIsNeverPushed: binary=shared is an architecture
-// choice, not drift off a shape forge stopped generating. It stays loadable by
-// name; it never lands in the automatic worklist.
-func TestMigrationApplies_ElectiveIsNeverPushed(t *testing.T) {
-	root := t.TempDir()
-	m := migrationMeta{ID: "v0.x-to-binary-shared", Elective: true, Detection: "true"}
-	if migrationApplies(m, "v0.0.3", root) {
-		t.Error("elective migration pushed into the worklist")
-	}
-}
-
-// TestRunUpgradeApply_RetiredIDRefused: recording a tombstone as "applied"
-// would put a lie in .forge/migrations.json.
-func TestRunUpgradeApply_RetiredIDRefused(t *testing.T) {
-	dir := newTestProject(t)
-	withCwd(t, dir, func() {
-		var buf bytes.Buffer
-		err := runUpgradeApply(&buf, "v0.1-to-v0.2")
-		if err == nil {
-			t.Fatal("expected an error applying a retired migration")
-		}
-		if !strings.Contains(err.Error(), "retired") {
-			t.Errorf("error should say the migration is retired: %v", err)
-		}
-	})
-}
-
-// TestMigrationApplies_UnknownBaselineNeedsDetection: when the project names
-// no version, the version range stops being evidence and a detection script
-// becomes mandatory. Without one, the migration cannot show it applies, so it
-// stays out of the worklist rather than padding it.
-func TestMigrationApplies_UnknownBaselineNeedsDetection(t *testing.T) {
-	root := t.TempDir()
-	rangeOnly := migrationMeta{ID: "range-only", AppliesFrom: "v0.5.0", AppliesTo: "v0.6.0"}
-	detected := migrationMeta{ID: "detected", AppliesFrom: "v0.5.0", AppliesTo: "v0.6.0", Detection: "test -f old-shape-marker"}
-
-	for _, baseline := range []string{"", "0.0.0", "v0.0.0", "dev", "(devel)", "not-a-version"} {
-		if migrationApplies(rangeOnly, baseline, root) {
-			t.Errorf("baseline %q: range-only migration offered with no evidence", baseline)
-		}
-		if migrationApplies(detected, baseline, root) {
-			t.Errorf("baseline %q: detection-gated migration offered before its shape exists", baseline)
-		}
-	}
-
-	if err := os.WriteFile(filepath.Join(root, "old-shape-marker"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, baseline := range []string{"", "0.0.0", "dev"} {
-		if !migrationApplies(detected, baseline, root) {
-			t.Errorf("baseline %q: detection matched but the migration was withheld", baseline)
-		}
-		if migrationApplies(rangeOnly, baseline, root) {
-			t.Errorf("baseline %q: range-only migration still has no evidence", baseline)
 		}
 	}
 }

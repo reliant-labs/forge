@@ -271,7 +271,7 @@ func TestMaterialize_IdempotentRefreshesDriftAndDeletesStrays(t *testing.T) {
 		t.Fatalf("vendor dir not present after materialize")
 	}
 	// The embedded module's core files landed; excluded trees did not.
-	for _, want := range []string{"kcl.mod", "schema.k", "render.k", filepath.Join("components", "schema.k"), filepath.Join("lib", "services.k")} {
+	for _, want := range []string{"kcl.mod", "schema.k", "render.k", filepath.Join("workloads", "schema.k"), filepath.Join("lib", "services.k")} {
 		if _, err := os.Stat(filepath.Join(dir, VendorDirName, want)); err != nil {
 			t.Errorf("expected vendored file %s: %v", want, err)
 		}

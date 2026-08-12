@@ -182,12 +182,18 @@ func CanonicalBodyHash(root, relPath string, content []byte) string {
 // about paths); every gate that has a path in hand should classify
 // through here so the drift scan, the writer, and the artifact-
 // retirement sweep all answer the same question the same way.
+// Marker detection is path-aware too: a marker in a comment syntax
+// relPath's own format cannot produce is documentation about the marker,
+// not a stamp, so such a file classifies NoMarker (forge claims no
+// ownership) rather than Modified. See ExtractMarkerFor.
 func ClassifyPath(root, relPath string, content []byte) VerifyStatus {
-	status := Verify(content)
-	if status != Modified {
-		return status
+	embedded, found := ExtractMarkerFor(relPath, content)
+	if !found {
+		return NoMarker
 	}
-	embedded, _ := ExtractMarker(content)
+	if embedded == BodyHash(content) {
+		return Pristine
+	}
 	if goFormatterEquivalent(root, relPath, content, embedded) {
 		return Pristine
 	}

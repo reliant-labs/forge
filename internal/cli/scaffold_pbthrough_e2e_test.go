@@ -97,12 +97,13 @@ func TestE2EPbThroughCrudPlusCustomRpc(t *testing.T) {
 			t.Errorf("compose.go carries a collision-flip identity %q — no domain package should force one:\n%s", banned, compose)
 		}
 	}
-	testingGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "testing.go"))
+	helpersRel := filepath.Join("internal", "handlers", "widget", "helpers_gen_test.go")
+	testingGo := readFileE2E(t, filepath.Join(projectDir, helpersRel))
 	if strings.Contains(testingGo, "NewTestSvcWidget") {
-		t.Errorf("pkg/app/testing.go carries the flipped NewTestSvcWidget factory:\n%s", testingGo)
+		t.Errorf("%s carries the flipped NewTestSvcWidget factory:\n%s", helpersRel, testingGo)
 	}
 	if !strings.Contains(testingGo, "NewTestWidget") {
-		t.Errorf("pkg/app/testing.go should carry the plain NewTestWidget factory:\n%s", testingGo)
+		t.Errorf("%s should carry the plain NewTestWidget factory:\n%s", helpersRel, testingGo)
 	}
 
 	// Idempotency: three back-to-back generates must be byte-for-byte stable

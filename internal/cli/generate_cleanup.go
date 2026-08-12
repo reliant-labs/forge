@@ -95,6 +95,15 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, handEdite
 		if upgradeManagedPaths[rel] {
 			continue
 		}
+		// Per-frontend managed files (frontends/<name>/eslint.config.mjs)
+		// are the same lane, but their paths depend on the frontends a
+		// project declares, so they cannot be in the static union above.
+		// Without this the sweep reads them as "certified, not written this
+		// run" and --force-cleanup DELETES the pristine ones — the exact
+		// data loss UpgradeManagedPaths exists to prevent.
+		if generator.IsFrontendManagedPath(rel) {
+			continue
+		}
 		// Owner-step gate. If the owning emitter step is gated off this
 		// run, we can't conclude the path is stale.
 		if gate := tier1OwnerGate(rel); gate != nil && !gate(ctx) {

@@ -6,7 +6,7 @@ description: Proto file reference — annotations, CRUD conventions, field rules
 # Proto File Reference
 
 Annotation + naming reference. Structural conventions (one service per file,
-CRUD method shapes) are enforced reactively by `forge lint --conventions`.
+CRUD method shapes) are enforced by `forge lint --conventions`.
 
 Proto is the **wire truth**: services, RPCs, messages. It is NOT the schema
 language — the schema lives in `db/migrations/` (see `db`).
@@ -19,12 +19,11 @@ proto/forge/v1/forge.proto                     # Forge annotations (vendored, ne
 proto/shared/v1/types.proto                    # Cross-service shared messages (optional)
 ```
 
-One service per `.proto` file. The proto package mirrors the file's path under
-`proto/`, with no project prefix: `services.<service>.v1`. (`buf lint`'s
-`PACKAGE_DIRECTORY_MATCH` rejects any other form.) Cross-service references go
-through `proto/shared/v1/types.proto` — never import another service's proto.
-
-**Enforced by:** `forge lint --conventions` → `forgeconv-one-service-per-file`.
+One service per `.proto` file (`forge lint --conventions` →
+`forgeconv-one-service-per-file`). The proto package mirrors the file's path
+under `proto/`, with no project prefix: `services.<service>.v1` — `buf lint`'s
+`PACKAGE_DIRECTORY_MATCH` rejects any other form. Cross-service references go
+through `proto/shared/v1/types.proto`; never import another service's proto.
 
 ## After Editing Protos
 
@@ -37,14 +36,14 @@ build. Generated code is overwritten — fix issues in `.proto`, never in `gen/`
 
 `forge generate` is the canonical entry, never `buf generate` alone: buf emits
 only the `.pb.go` / `_pb.ts` stubs, while the descriptors, schema-driven ORM,
-mocks, frontend hooks and CRUD wiring come from forge's post-buf passes.
-`forge generate` runs `buf generate` internally.
+mocks, frontend hooks and CRUD wiring come from forge's post-buf passes (it runs
+`buf generate` internally).
 
 ## No Backwards Compatibility
 
-Proto files in Forge projects are not published APIs with external
-consumers. Edit freely — add, rename, remove fields, RPCs, and messages.
-Mark removed fields as `reserved`; never reuse field numbers.
+Proto files in Forge projects are not published APIs with external consumers.
+Edit freely — add, rename, remove fields, RPCs and messages. Mark removed fields
+as `reserved`; never reuse field numbers.
 
 ## Annotation Reference
 
@@ -67,14 +66,13 @@ service TaskService {
 }
 ```
 
-`forge scaffold entity` writes exactly this onto every scaffolded CRUD RPC
-(`auth_required: true` + `idempotency_key` on the mutating verbs).
+`forge scaffold entity` writes exactly this onto every scaffolded CRUD RPC.
 
 **Don't guess the option surface — dump it.** `forge project annotations` emits
-the authoritative spec (every `forge:*` marker, the proto→column mapping, the
+the authoritative spec — every `forge:*` marker, the proto→column mapping, the
 projected `buf.validate` rules, and every `(forge.v1.service)` /
-`(forge.v1.method)` option with its type, effect, and default) straight from
-forge's compiled descriptors and recognizers, so it cannot drift:
+`(forge.v1.method)` option with its type, effect and default — from forge's
+compiled descriptors, so it cannot drift:
 
 ```bash
 forge project annotations --kind method          # readable table
@@ -82,62 +80,67 @@ forge project annotations --kind service --json  # machine-readable
 forge project annotations --json                 # everything
 ```
 
-Two semantics worth memorizing:
+The whole method surface is five options — there are no others, and a name
+forge does not know is a **hard `buf generate` failure**, not a warning:
 
-- `auth_required` is **fail-closed and per-rpc** — auth is required even when the
-  option is unset, and `auth_required: false` publishes *that one rpc* to
-  unauthenticated callers while its siblings stay closed. There is no
-  service-wide posture to set: the reachability of each rpc is decided on that
-  rpc, in the proto, when the rpc is authored — not later, elsewhere. It declares
-  only *whether a caller must be authenticated*; what an authenticated caller may
-  then do is not expressible in proto — it is handler logic against
-  `middleware.GetUser(ctx)`, checked against the row's own owner column (see
-  `auth`, and `db` for where that column comes from).
-- `timeout` takes a Duration literal: `timeout: { seconds: 30 }`.
+| option | type | what it does |
+|---|---|---|
+| `auth_required` | bool | whether the caller must be authenticated (see below) |
+| `idempotent` | bool | marks the method safe to retry |
+| `idempotency_key` | bool | advisory marker for callers; forge does not enforce it |
+| `timeout` | Duration | per-method server timeout — `timeout: { seconds: 30 }` |
+| `errors` | repeated string | declared error codes, e.g. `errors: ["NotFound"]` |
 
-### Retired: entity / field annotations
+There is **no `description`** — the prose that documents an rpc is the
+ordinary `//` comment above it. Writing one inside the option block fails
+with `field description not found` and takes the whole generate down with it.
 
-`(forge.v1.entity)` and `(forge.v1.field)` are **retired and ignored** —
-deprecated tombstones in `forge/v1/forge.proto` so legacy protos keep compiling;
-`forge generate` prints a one-line notice per message still carrying them.
-Entities are projections of the applied `db/migrations/` schema now; there is no
-proto-side schema declaration. Still have annotated entity messages (or a
-`proto/db/` directory)? See `migrations/proto-entities-to-schema-truth`.
+`auth_required` is **fail-closed and per-rpc**: auth is required even when the
+option is unset, and `auth_required: false` publishes *that one rpc* to
+unauthenticated callers while its siblings stay closed. There is no service-wide
+posture to set. It declares only *whether a caller must be authenticated*; what
+an authenticated caller may then do is handler logic against
+`middleware.GetUser(ctx)`, checked against the row's own owner column (`auth`,
+and `db` for where that column comes from).
 
-There is likewise **no `forge:default` annotation** — a column's default is
-plain SQL (`NOT NULL DEFAULT <expr>`) in the birth migration, adjustable there.
+### No schema annotations
+
+There is no proto-side schema declaration: entities are projections of the
+applied `db/migrations/` schema. `(forge.v1.entity)` and `(forge.v1.field)` are
+ignored — delete any that survive in your protos, along with a `proto/db/`
+directory if you have one. A column's default is likewise plain SQL (`NOT NULL
+DEFAULT <expr>`) in the birth migration, not an annotation.
 
 ### Birth markers — the `// forge:*` comments
 
 You author an entity's proto message and birth it with `forge scaffold` (or
-`forge scaffold entity <name> --from-proto <svc>` for one named message) —
-that is the only birth path forge has. **Comment markers** shape what birth
-emits. Ordinary `//` comments — not
-`(forge.v1.*)` options — read by the raw-proto scanner at birth only; inert once
-the table exists. Message-level markers go in the leading comment; field-level
-markers take a leading comment **or** a trailing one after the field's `;`
-(inline `[...]` options in between are fine).
+`forge scaffold entity <name> --from-proto <svc>` for one named message) — the
+only birth path forge has. **Comment markers** shape what birth emits. They are
+ordinary `//` comments, not `(forge.v1.*)` options, read by the raw-proto
+scanner at birth only and inert once the table exists. Message-level markers go
+in the leading comment; field-level markers take a leading comment **or** a
+trailing one after the field's `;` (inline `[...]` options in between are fine).
 
 **Managed fields are declared, not assumed.** Birth writes `id`, `created_at`
-and `updated_at` (plus `deleted_at` under `forge:soft-delete`) into your message,
-in your file, at field numbers above its high-water mark — one time, then they
-are yours like everything else it injects. Declare them yourself if you prefer;
-birth leaves a field the message already has alone. Either way the message
-describes its own shape, which is what the ORM row type, the CRUD envelopes and
-the generated edit pages all project.
+and `updated_at` (plus `deleted_at` under `forge:soft-delete`) into your message
+at field numbers above its high-water mark, one time, and they are yours
+thereafter. Declare them yourself if you prefer — birth leaves a field the
+message already has alone. Either way the message describes its own shape, which
+is what the ORM row type, the CRUD envelopes and the generated edit pages
+project.
 
 Run `forge project annotations --kind entity` / `--kind field` for the current
 marker list and what each emits. In practice: `forge:entity` tablizes a message;
 `forge:soft-delete` and `forge:append-only` tablize *and* shape the lifecycle
 (opt-in soft delete; an immutable ledger with no Update/Delete);
-`forge:server-set` and `forge:secret` trim a field off the born write and read
+`forge:read-only` and `forge:secret` trim a field off the born write and read
 sides respectively.
 
 ```proto
 // forge:soft-delete
 message Product {
   string name = 1;
-  double price = 2 [(buf.validate.field).double.gte = 0];  // forge:server-set
+  double price = 2 [(buf.validate.field).double.gte = 0];  // forge:read-only
   string api_token = 3;      // forge:secret
   bool requires_prescription = 4;
   // birth appends: id, created_at, updated_at, deleted_at
@@ -148,27 +151,39 @@ Storage-side semantics (what each marker adds to the owned migration, the
 proto→column type mapping, and the entity-shaping flags `--soft-delete` /
 `--no-timestamps` / `--table`) live in `db`.
 
-### The fast way to get annotation syntax right: run `forge generate`
+**Spell a marker wrong and nothing happens — quietly.** An unrecognized marker
+is just a proto comment: it compiles, the birth exits zero, and the field keeps
+its default behavior, so a mistyped `forge:read-only` leaves the field
+client-writable. `forge generate` cannot catch this, since there is no error to
+raise; `forge lint --proto-markers` flags any `forge:*` in a proto comment that
+matches no known marker, naming the file, the line and the closest real marker:
+
+```
+⚠ [forge-proto-markers] proto/services/orders/v1/orders.proto:8
+    → "forge:server-set" was renamed to "forge:read-only" and is no longer
+      recognized — this comment currently does NOTHING (the field stays
+      client-writable). Rewrite it as "forge:read-only".
+```
+
+Warnings only: it never fails the build, since an unrecognized marker might be
+a future forge version's or prose that happens to contain `forge:`. It runs in
+the default `forge lint` pass whenever a `proto/` tree exists.
+
+### Getting annotation syntax right: run `forge generate`
 
 It's a fast, exact oracle. Draft the proto (for a new entity, mark it
 `// forge:entity` and let `forge scaffold` write the migration), run it, read
-the error, fix, repeat. It fails **loudly** on a bad List filter (a field naming no
-real column), a missing import, a malformed message, or a migration postgres
+the error, fix, repeat. It fails **loudly** on a bad List filter (a field naming
+no real column), a missing import, a malformed message, or a migration postgres
 rejects. Don't plan the annotation surface up front.
 
 ## CRUD RPC Naming Convention — the wire half of an entity
 
-An entity exists when **both halves** exist:
-
-1. a service proto declares the CRUD RPCs below (**wire truth**), and
-2. the applied schema in `db/migrations/` has the matching table —
-   pluralized snake_case of the entity name (**storage truth**).
-
-CRUD RPCs without a table generate honest nothing (Unimplemented stubs, no
-pages, no ORM). Tables without CRUD RPCs are plain schema for hand-written code.
-`forge scaffold entity` scaffolds both halves in one step; the messages and
-RPCs it writes into the service proto are yours afterwards — the wire contract
-evolves independently of the schema.
+An entity needs both a service proto declaring the CRUD RPCs below and a
+matching table in the applied schema (pluralized snake_case of the entity
+name); see `db` for the storage half. `forge scaffold entity` writes both in one
+step, and the messages and RPCs it puts in the service proto are yours
+afterwards — the wire contract evolves independently of the schema.
 
 Use these exact prefixes. For matching methods (with the matching table), forge
 generates the per-RPC op constructors and the `<entity>ToProto` /
@@ -196,13 +211,12 @@ existing content never modified).
 When a request/response shape deliberately deviates (a list keyed by
 `ticker`+`limit` instead of AIP-158, say), forge scaffolds an Unimplemented stub
 into `handlers_crud.go` carrying a `forge:custom-read-shape: <reason>` comment
-(including the observed field list). That is the system working, not an error —
-the body is yours to implement, composing the `pkg/crud`/`pkg/orm` helpers
-(cursor encode/decode, `WhereEq`/`WhereILikeAny` filters, column-allowlisted
-order-by). `forge generate` prints one warning line per stub it scaffolds, and
-`forge project audit` reports each under `crud_stubs` until the body lands (the
-RPC returns `CodeUnimplemented` until then). Older forge versions spell the
-marker `FORGE_CRUD_SHAPE_MISMATCH`; audit recognizes both for one release.
+with the observed field list. That is the system working, not an error — the
+body is yours to implement, composing the `pkg/crud`/`pkg/orm` helpers (cursor
+encode/decode, `WhereEq`/`WhereILikeAny` filters, column-allowlisted order-by).
+`forge generate` prints one warning line per stub, and `forge project audit`
+reports each under `crud_stubs` until the body lands; the RPC returns
+`CodeUnimplemented` until then.
 
 ### List Request Conventions (AIP-158)
 
@@ -245,9 +259,8 @@ optional string patient_id = 4;  // FK / owner scope — exact-match on patient_
 ```
 
 Never fetch a page and filter client-side — that truncates past the page cap.
-(`forge scaffold entity` scaffolds `page_size`/`page_token`/`search`/`bool`
-facets/`order_by`/`descending` automatically; you add enum/FK/owner facets like
-these by hand.)
+`forge scaffold entity` writes the `page_size`/`page_token`/`search`/`bool`
+facets/`order_by`/`descending` set; enum/FK/owner facets you add by hand.
 
 ## Enum Conventions
 
@@ -295,5 +308,4 @@ hand-copy it into `proto/services/` and scaffold a server: every method
 - Splitting a multi-service file — `proto-split`.
 - Designing the Go service surface behind the proto — `service-layer`.
 - Handler implementation patterns — `api`.
-- DB schema lifecycle (migrations, conventions, the portable subset) — `db`.
-- Retiring legacy entity annotations — `migrations/proto-entities-to-schema-truth`.
+- DB schema lifecycle, and the schema as the entity truth — `db`.

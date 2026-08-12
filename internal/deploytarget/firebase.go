@@ -11,6 +11,15 @@ import (
 	"strings"
 )
 
+// FrontendConfigJSName is the filename of the runtime config document
+// inside a deployed site. It MUST agree with
+// codegen.FrontendConfigJSFile — the generator emits the <script src>
+// that loads it, and this package writes the file that src resolves to.
+// It is duplicated rather than imported because this package deliberately
+// has no dependency on the codegen layer; the agreement is pinned by a
+// test rather than by the type system.
+const FrontendConfigJSName = "config.js"
+
 // FirebaseProvider deploys a frontend's static build output to Firebase
 // Hosting. It is the frontend analogue of ExternalProvider — but unlike
 // External it is NOT a generic shell escape hatch: the contract is
@@ -74,6 +83,19 @@ type FirebaseFrontend struct {
 	// BuildEnv is the build-time env injected into the build process
 	// (NEXT_PUBLIC_* / VITE_*). Layered on top of os.Environ().
 	BuildEnv map[string]string
+
+	// RuntimeConfigJS is this ENVIRONMENT's rendered runtime config
+	// document — the `window.__FORGE_CONFIG__ = {...}` script the browser
+	// loads before any bundle code runs, produced from the environment's
+	// KCL (frontend_config_gen.k's runtime projection).
+	//
+	// It is written into the assembled tree AFTER the built bundle is
+	// copied, which is what makes promotion real: the bundle is
+	// environment-agnostic and this one file is the only part that
+	// differs, so the same bytes ship to dev and prod carrying different
+	// configuration. Empty means the frontend declares no typed config —
+	// nothing is written and the assembled layout is unchanged.
+	RuntimeConfigJS string
 
 	// Spec is the FirebaseHosting deploy config.
 	Spec FirebaseHostingSpec
@@ -184,11 +206,19 @@ type firebasePlan struct {
 	// Copies is the ordered list of (absoluteSrc → relativeDestUnderStaging)
 	// the assembler will perform. The first entry is always the frontend's
 	// own public_dir (mounted under base_path); the rest are Bundle dirs.
-	Copies        []firebaseCopy
-	FirebaseJSON  string   // marshaled firebase.json contents
-	FirebaseRC    string   // marshaled .firebaserc contents
-	DeployCmd     []string // argv for the firebase deploy invocation
-	DeployWorkdir string   // dir the firebase command runs from (StagingDir's parent)
+	Copies []firebaseCopy
+	// RuntimeConfigJS is the environment's runtime config document, and
+	// RuntimeConfigRel is where it lands relative to the staging root —
+	// inside the base-path subtree, because that is where the document
+	// head's <script src="<basePath>/config.js"> resolves it. Empty
+	// RuntimeConfigJS means the frontend declares no typed config and no
+	// document is written.
+	RuntimeConfigJS  string
+	RuntimeConfigRel string
+	FirebaseJSON     string   // marshaled firebase.json contents
+	FirebaseRC       string   // marshaled .firebaserc contents
+	DeployCmd        []string // argv for the firebase deploy invocation
+	DeployWorkdir    string   // dir the firebase command runs from (StagingDir's parent)
 }
 
 type firebaseCopy struct {
@@ -266,18 +296,28 @@ func (p FirebaseProvider) buildPlan(fe FirebaseFrontend) (firebasePlan, error) {
 		"--non-interactive",
 	}
 
+	// The runtime document lands beside the frontend's own public_dir
+	// content — under base_path when it has one — so the blocking
+	// <script src> in the document head resolves it.
+	runtimeConfigRel := ""
+	if fe.RuntimeConfigJS != "" {
+		runtimeConfigRel = filepath.Join(basePathToDestRel(fe.Spec.BasePath), FrontendConfigJSName)
+	}
+
 	return firebasePlan{
-		Name:          fe.Name,
-		FrontendDir:   frontendDir,
-		InstallCmd:    installCmd,
-		BuildCmd:      buildCmd,
-		BuildEnv:      fe.BuildEnv,
-		StagingDir:    staging,
-		Copies:        copies,
-		FirebaseJSON:  fbJSON,
-		FirebaseRC:    fbRC,
-		DeployCmd:     deployCmd,
-		DeployWorkdir: deployWorkdir,
+		Name:             fe.Name,
+		FrontendDir:      frontendDir,
+		InstallCmd:       installCmd,
+		BuildCmd:         buildCmd,
+		BuildEnv:         fe.BuildEnv,
+		StagingDir:       staging,
+		Copies:           copies,
+		RuntimeConfigJS:  fe.RuntimeConfigJS,
+		RuntimeConfigRel: runtimeConfigRel,
+		FirebaseJSON:     fbJSON,
+		FirebaseRC:       fbRC,
+		DeployCmd:        deployCmd,
+		DeployWorkdir:    deployWorkdir,
 	}, nil
 }
 
@@ -642,6 +682,26 @@ func assembleFirebaseStaging(plan firebasePlan) error {
 			return fmt.Errorf("copy %s -> %s: %w", c.Src, dst, err)
 		}
 	}
+
+	// The environment's runtime config document, written LAST — after
+	// every copy — so it overwrites any config.js that travelled inside
+	// the built bundle (the dev copy `forge generate` checks in, which is
+	// under the frontend's static-asset root and therefore gets built into
+	// public_dir). Writing it before the copies would let dev's values
+	// silently ship to production.
+	//
+	// This is the step that makes promotion real: the bundle is
+	// environment-agnostic, and this one file is the only part of the
+	// deployed artifact that differs between environments.
+	if plan.RuntimeConfigJS != "" {
+		dst := filepath.Join(plan.StagingDir, plan.RuntimeConfigRel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return fmt.Errorf("create runtime config dir: %w", err)
+		}
+		if err := os.WriteFile(dst, []byte(plan.RuntimeConfigJS), 0o644); err != nil {
+			return fmt.Errorf("write runtime config %s: %w", dst, err)
+		}
+	}
 	return nil
 }
 
@@ -704,6 +764,10 @@ func printFirebasePlan(w io.Writer, plan firebasePlan) {
 			mount = "/" + c.DestRel
 		}
 		_, _ = fmt.Fprintf(w, "      %-18s -> %s   (%s)\n", c.Src, mount, c.Label)
+	}
+	if plan.RuntimeConfigJS != "" {
+		_, _ = fmt.Fprintf(w, "      %-18s -> /%s   (runtime config for this environment)\n",
+			"<rendered KCL>", filepath.ToSlash(plan.RuntimeConfigRel))
 	}
 	_, _ = fmt.Fprintf(w, "    firebase.json (hosting.public=%s):\n", filepath.Base(plan.StagingDir))
 	for _, line := range strings.Split(strings.TrimRight(plan.FirebaseJSON, "\n"), "\n") {

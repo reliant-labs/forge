@@ -36,11 +36,24 @@ type {{.ServiceName}}Mock struct {
 {{end}}
 }
 
+{{- if not .HasRegisterRPC}}
 // Register implements forge.Service
 func (m *{{.ServiceName}}Mock) Register(mux *http.ServeMux, opts ...connect.HandlerOption) {
 	path, handler := {{.PkgName}}connect.New{{.ServiceName}}Handler(m, opts...)
 	mux.Handle(path, handler)
 }
+{{- else}}
+// Mount registers this mock's Connect routes on mux.
+//
+// NOT named Register: this service declares an RPC called Register, and the
+// mount helper and the RPC method cannot share one name on one type. The RPC
+// wins, because it is the service's own API — mountkit.Service is satisfied
+// by a small adapter instead, which is the cheaper of the two collisions.
+func (m *{{.ServiceName}}Mock) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) {
+	path, handler := {{.PkgName}}connect.New{{.ServiceName}}Handler(m, opts...)
+	mux.Handle(path, handler)
+}
+{{- end}}
 
 // Name implements forge.Service
 func (m *{{.ServiceName}}Mock) Name() string {

@@ -1,6 +1,6 @@
 ---
 name: secrets
-description: The forge secret-provider model — declare a secret once as a reference, bind its value per-env via a provider (dotenv for dev/local, external for prod/staging), and let forge resolve + inject per runtime. KCL stays pure — no secret values ever in rendered output.
+description: The forge secret-provider model — declare a secret once as a reference, bind its value per-env via a provider (a gitignored YAML secret store for dev/local, external for prod/staging), and let forge resolve + inject it into the services that declare it. forge projects use no .env files. KCL stays pure — no secret values ever in rendered output.
 ---
 
 # Secrets
@@ -12,9 +12,12 @@ A secret is **declared once** as a *reference* (an `EnvVar` with a
 bundle. Forge resolves the value once and injects it per runtime
 (host / compose / external / k8s). KCL stays pure — secret values never
 appear in rendered KCL output, only the references do. Dev/local pulls
-values from a gitignored dotenv; prod/staging declares that the values
-live somewhere forge never sees (External Secrets Operator, sealed
-secrets, workload identity).
+values from a gitignored YAML secret store (name -> value);
+prod/staging declares that the values live somewhere forge never sees
+(External Secrets Operator, sealed secrets, workload identity).
+
+**forge projects contain no `.env` files.** `forge lint` fails on one —
+see "Why a directory, not a `.env` file" below.
 
 ## Declare (once, env-invariant)
 
@@ -34,10 +37,10 @@ string database_url = 3 [(forge.v1.config) = {
 
 What that annotation buys, in every environment:
 
-- `deploy/kcl/config_schema.k` types the field as a `ConfigSecretRef`
+- `deploy/kcl/config_gen.k` types the field as a `ConfigSecretRef`
   (a Secret **name + key**), defaulted to
   `{name = "<project>-secrets", key = "<env_var lowercased>"}`.
-- `deploy/kcl/config_projection.k` projects it as `from_secret`, so the
+- The same file's `appConfigEnvMap` projects it as `from_secret`, so the
   rendered manifest carries `valueFrom.secretKeyRef` — **never** an
   inline `value:`.
 - The per-env `deploy/kcl/<env>/config.k` (git-tracked) carries
@@ -49,8 +52,8 @@ What that annotation buys, in every environment:
 Point it at a different Secret by writing the override in `config.k`:
 
 ```kcl
-app_config: config_schema.AppConfig = {
-    database_url = config_schema.ConfigSecretRef {name = "rds-creds", key = "url"}
+app_config: config_gen.AppConfig = {
+    database_url = config_gen.ConfigSecretRef {name = "rds-creds", key = "url"}
 }
 ```
 
@@ -64,7 +67,7 @@ For a secret that is NOT app config (a sidecar's token, an infra
 service's password), declare the reference directly. A secret reference
 is a `forge.EnvVar` carrying `secret_ref` (+ optional `secret_key`,
 which defaults to `name`). It projects to the same k8s `secretKeyRef`.
-For the HOST runtime the dotenv key is `EnvVar.name`.
+For the HOST runtime the store key is `EnvVar.name`.
 
 ```kcl
 # A service's env_vars — same declaration in every env
@@ -72,11 +75,18 @@ forge.EnvVar { name = "STRIPE_SECRET_KEY", secret_ref = "app-secrets" }
 forge.EnvVar { name = "JWT_SIGNING_KEY",  secret_ref = "app-secrets", secret_key = "jwt-signing-key" }
 ```
 
+**Declaring is what makes a value live.** A service receives ONLY the
+keys it declares — a value sitting in the store that no service
+references reaches nothing. That is deliberate: it means the store
+cannot become a side channel for configuration.
+
 ```bash
-# .env.dev  (gitignored) — keyed by env-var NAME
-DATABASE_URL=postgres://postgres:postgres@localhost:5434/myapp?sslmode=disable
-STRIPE_SECRET_KEY=sk_test_...
-JWT_SIGNING_KEY=base64-private-key...
+# Store the values (or hand-edit the YAML)
+printf '%s' "$STRIPE_KEY" | forge secret set dev STRIPE_SECRET_KEY
+forge secret set dev JWT_SIGNING_KEY --from-file ./key.pem
+
+forge secret ensure dev   # create the dir + list refs with no value yet
+forge secret list dev     # names + presence, never values
 ```
 
 ## Per-env provider
@@ -84,9 +94,9 @@ JWT_SIGNING_KEY=base64-private-key...
 Set `Bundle.secret_provider` per env. It picks where forge gets values.
 
 ```kcl
-# deploy/kcl/dev/main.k — DEV pulls from a gitignored dotenv
+# deploy/kcl/dev/main.k — DEV reads a gitignored directory
 _bundle = forge.Bundle {
-    secret_provider = forge.DotenvSecrets { path = ".env.dev" }
+    secret_provider = forge.FileSecrets { path = "secrets/dev.yaml" }
     services = [ ... ]
 }
 ```
@@ -107,26 +117,52 @@ _bundle = forge.Bundle {
 }
 ```
 
-- `forge.DotenvSecrets { path = ".env.dev" }` — `type="dotenv"`;
-  has a `path`. DEV / LOCAL only. `.env.<env>` is the convention forge
-  scaffolds and every value-resolving path reads.
+- `forge.FileSecrets { path = "secrets/dev.yaml" }` — `type="file"`; a
+  gitignored YAML file mapping env-var name to value. DEV / E2E only;
+  forge rejects it in any other env. This is what the scaffold emits.
 - `forge.ExternalSecrets {}` — `type="external"`; a pure marker, **no
   other fields**. PROD / STAGING.
+- `forge.DotenvSecrets { path = ... }` — **DEPRECATED**. Still resolved
+  so existing projects run; `forge lint` fails on the file and
+  `forge secret migrate <env>` converts it.
 
 ## Per-runtime: what forge does
 
-With **DotenvSecrets**, forge reads the dotenv (keyed by env-var name)
+With **FileSecrets**, forge reads the YAML store (env-var name -> value)
 and injects it differently per runtime:
 
 | Runtime | What forge does |
 |---|---|
-| host / air | The whole dotenv becomes the secrets layer (provider-first). Per-service `HostDeploy.secrets_file` is now only a backward-compat fallback when no bundle provider is declared. |
-| compose / external | Dotenv is merged **under** the `env_file` overlay — an explicit `env_file` wins. |
+| host / air | Each service gets the keys **it declares** via `secret_ref` — not the whole store. Per-service `HostDeploy.secrets_file` is only a backward-compat fallback when no bundle provider is declared. |
+| compose / external | Values are merged **under** the `env_file` overlay — an explicit `env_file` wins. |
 | k8s | Forge **renders** Secret objects CLI-side from the declared cluster `secret_ref`s and `kubectl apply`s them **before** the Deployments, so `secretKeyRef` resolves. Guarded by an `isLocalCluster` check — forge **refuses** to render plaintext into a non-local cluster (only k3d / kind / docker-desktop / minikube / rancher-desktop / colima / orbstack). |
 
 **Validation:** `forge env up` / `forge env deploy` **fail-fast** if a declared
-`secret_ref` has no value in the dotenv. (This replaces the old silent
-"missing secret → feature disabled" behavior.)
+`secret_ref` has no value in the store, listing every miss with the
+`forge secret set` line that fixes it.
+
+## Why a YAML store, not a `.env` file
+
+forge projects do not use `.env` files, and `forge lint` fails on one.
+
+A dotenv was handed to every host service **wholesale**, so adding a line
+to it made that value live everywhere *without touching KCL*. That made
+the untracked file the cheapest place to put anything — and the result
+was predictable: service URLs, client IDs and issuer names migrated out
+of version-controlled KCL into a file nobody could review, diff, or
+reproduce on another machine.
+
+Two properties fix that, and both matter:
+
+1. **Declaration-scoped injection.** A value reaches only the services
+   that declare it, so putting config in the store accomplishes nothing —
+   this is the property that actually closed the hole.
+2. **YAML, not `KEY=value`.** Real quoting and multi-line values, so a PEM
+   key or a JSON blob round-trips without escaping games.
+
+If a value is the same on every developer's machine, it is not a secret:
+put it in `deploy/kcl/<env>/config.k`, or declare it as a
+`RenderedSecretKey { from = "literal" }` where it stays in git.
 
 With **ExternalSecrets**, forge **never sees values** and is inert on
 its side — it renders nothing and validates nothing. k8s references
@@ -163,17 +199,25 @@ bundle provider is the single-source model now — prefer it.
 
 ## Gotchas
 
-- **Dotenv is local-only.** The `isLocalCluster` guard makes forge
-  refuse to render plaintext Secrets into anything but a local cluster
-  (k3d / kind / docker-desktop / minikube / rancher-desktop / colima /
-  orbstack). Use `ExternalSecrets` for staging/prod.
+- **FileSecrets is local-only.** It is rejected outside dev/e2e (a KCL
+  check), and the `isLocalCluster` guard makes forge refuse to render
+  plaintext Secrets into anything but a local cluster (k3d / kind /
+  docker-desktop / minikube / rancher-desktop / colima / orbstack). Use
+  `ExternalSecrets` for staging/prod.
 - **Fail-fast on missing refs.** A declared `secret_ref` with no value
-  in the dotenv aborts `forge env up` / `forge env deploy` — no more silent
+  in the store aborts `forge env up` / `forge env deploy` — no more silent
   feature-disable.
-- **Dotenv is keyed by env-var NAME.** The dotenv key must match
-  `EnvVar.name` (not `secret_ref` / `secret_key`).
+- **The store is keyed by env-var NAME.** The YAML KEY must match
+  `EnvVar.name` (not `secret_ref` / `secret_key`), and must be a valid
+  env-var name — forge refuses to load a store containing a key that
+  could never be injected.
+- **Multi-line values round-trip.** A PEM key or JSON blob is written as
+  a YAML block scalar; values with colons or leading spaces are quoted.
+- **Undeclared values are inert.** A key no service declares is never
+  injected. `forge secret list <env>` reports these — they are usually a
+  typo, or config that belongs in `config.k`.
 - **ExternalSecrets is inert.** It renders nothing and validates
   nothing — it only declares that values live outside forge. It has
   **no** provider/auth fields (no aws-secrets-manager / vault keys).
 - **env_file wins.** Under compose/external, an explicit `env_file`
-  overlay overrides the dotenv-provided values.
+  overlay overrides the provider-supplied values.

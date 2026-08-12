@@ -240,7 +240,7 @@ func writeCapabilitiesText(w io.Writer, spec CapabilitiesSpec) error {
 	}
 
 	if len(spec.Markers) > 0 {
-		if err := p("\nMARKERS (`// forge:*` comments the proto scanner reads)\n"); err != nil {
+		if err := p("\nMARKERS (`// forge:*` comments forge reads out of your proto and Go source)\n"); err != nil {
 			return err
 		}
 		for _, m := range spec.Markers {

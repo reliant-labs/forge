@@ -31,6 +31,18 @@ func ValidHarnesses() []Harness {
 	}
 }
 
+// Normalized resolves the zero value to the default harness. A
+// ProjectGenerator built by a caller that never set Harness carries "",
+// which every switch below already treats as reliant; Normalized makes
+// that resolution explicit for the callers that SERIALIZE the value, so
+// what lands in forge.yaml is a real harness name rather than a blank.
+func (h Harness) Normalized() Harness {
+	if h == "" {
+		return HarnessReliant
+	}
+	return h
+}
+
 // MemoryFilePath returns the project-root-relative path for the top-level
 // memory file corresponding to the given harness.
 func (h Harness) MemoryFilePath() string {

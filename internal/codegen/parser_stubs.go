@@ -17,6 +17,51 @@ type ForgeDescriptor struct {
 	Configs  []ConfigMessage `json:"configs"`
 }
 
+// noticeMissingDescriptor reports the absent gen/forge_descriptor.json —
+// but ONLY for a project that actually declares a service in a .proto.
+//
+// A missing descriptor is a normal, permanent state for a project with no
+// service protos (a CLI, a library): the pipeline skips descriptor
+// extraction when features.codegen is off or nothing declares a service,
+// so "run 'forge generate' with protoc-gen-forge" names a step that will
+// never produce the file. Printing it unconditionally made an
+// unactionable line the most frequent output of a healthy tree — forge's
+// own repo emitted it two to three times per command. Where the project
+// DOES declare a service, the descriptor is genuinely pending and the
+// notice is real.
+func noticeMissingDescriptor(projectDir string) {
+	if !protoSourceDeclaresService(projectDir) {
+		return
+	}
+	log.Println("Info: forge_descriptor.json not found — run 'forge generate' with protoc-gen-forge to produce it")
+}
+
+// protoSourceDeclaresService reports whether any .proto under
+// <projectDir>/proto declares a service. Cheap line scan, matching the
+// pipeline's own gate (generate_helpers.go's protoSourceHasService):
+// the first token on a line must be the `service` keyword, so prose in
+// doc comments and `service`-suffixed message names do not match.
+func protoSourceDeclaresService(projectDir string) bool {
+	found := false
+	_ = filepath.Walk(filepath.Join(projectDir, "proto"), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || filepath.Ext(path) != ".proto" {
+			return nil //nolint:nilerr // an unreadable tree simply declares no service
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "service" {
+				found = true
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	return found
+}
+
 // loadDescriptor reads and parses the forge_descriptor.json file from the gen/ directory.
 func loadDescriptor(projectDir string) (*ForgeDescriptor, error) {
 	descPath := filepath.Join(projectDir, "gen", "forge_descriptor.json")
@@ -43,7 +88,7 @@ func ParseServicesFromProtos(dir string, projectDir string) ([]ServiceDef, error
 		return nil, err
 	}
 	if desc == nil {
-		log.Println("Info: forge_descriptor.json not found — run 'forge generate' with protoc-gen-forge to produce it")
+		noticeMissingDescriptor(projectDir)
 		return nil, nil
 	}
 
@@ -70,7 +115,7 @@ func ParseEntityProtos(projectDir string) ([]EntityDef, error) {
 		return nil, err
 	}
 	if desc == nil {
-		log.Println("Info: forge_descriptor.json not found — run 'forge generate' with protoc-gen-forge to produce it")
+		noticeMissingDescriptor(projectDir)
 		return nil, nil
 	}
 	return BuildSchemaEntities(projectDir, desc.Services)
@@ -125,7 +170,7 @@ func ParseConfigProtosFromDir(dir string) ([]ConfigMessage, error) {
 		return nil, err
 	}
 	if desc == nil {
-		log.Println("Info: forge_descriptor.json not found — run 'forge generate' with protoc-gen-forge to produce it")
+		noticeMissingDescriptor(projectDir)
 		return nil, nil
 	}
 	return desc.Configs, nil

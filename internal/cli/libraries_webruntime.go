@@ -122,7 +122,7 @@ func buildWebRuntimeSpec(projectDir string) (*WebRuntimeSpec, error) {
 	if err != nil {
 		return nil, fmt.Errorf(
 			"%s is installed at %s but its inventory could not be read: %w\n"+
-				"If that path is a local checkout, build it (`npm run build` there); otherwise reinstall the package.",
+				"If that path is a local checkout, build it (`npm run build` there); otherwise reinstall the package",
 			webRuntimePackage, dir, err)
 	}
 	return spec, nil

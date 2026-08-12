@@ -79,6 +79,7 @@ assert_order = output.clusters[0].name == "cp" and \
 assert_owner_servers = output.clusters[0].servers == 1
 assert_owner_agents = output.clusters[0].agents == 0
 assert_owner_context = output.clusters[0].context == "k3d-cp"
+assert_owner_image = output.clusters[0].image == "rancher/k3s:v1.36.3-k3s1"
 assert_owner_network_null = output.clusters[0].network == None
 assert_owner_no_inherit = output.clusters[0].registry_inherit == False
 assert_owner_api_port = output.clusters[0].api_port == 6443
@@ -87,6 +88,7 @@ assert_owner_api_port = output.clusters[0].api_port == 6443
 # network is k3d-<owner.name> and registry_inherit flips true; the
 # computed .context tracks the secondary's own name.
 assert_secondary_context = output.clusters[1].context == "k3d-workload"
+assert_secondary_image = output.clusters[1].image == "rancher/k3s:v1.36.3-k3s1"
 assert_secondary_network = output.clusters[1].network == "k3d-cp"
 assert_secondary_inherit = output.clusters[1].registry_inherit == True
 assert_secondary_agents = output.clusters[1].agents == 2

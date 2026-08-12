@@ -1,6 +1,6 @@
 ---
 name: flow
-description: "Flow tests — hand-write a full multi-entity RPC test: seed the FK spine with app.SeedGraph, drive the real service against a migrated DB, assert the derived result, and cover the negative/gap case."
+description: "Flow tests — hand-write a full multi-entity RPC test: seed the FK spine with seedplan.SeedGraph, drive the real service against a migrated DB, assert the derived result, and cover the negative/gap case."
 ---
 
 # Flow Tests
@@ -31,37 +31,46 @@ Three generated helpers give you the real stack in three lines:
 | `app.NewMigratedTestDB(t)` | a real-postgres `orm.Context` with `db/migrations` applied |
 | `app.NewTest<Service>(t, app.WithDB(db))` | the real service, wired to that DB |
 | `app.AuthedContext(t, opts...)` | a context carrying test claims (`testkit.WithRoles`, `testkit.WithOrgID`) |
-| `app.SeedGraph(t, db, "<table>")` | seeds `<table>` + its FK ancestors as one connected spine, returns a `*SeededGraph` |
+| `seedplan.SeedGraph(t, db, "<table>")` | seeds `<table>` + its FK ancestors as one connected spine, returns a `*SeededGraph` |
 
 The server mounts bare and the test controls the principal entirely through
 `AuthedContext` — pass whichever claim values (`testkit.WithUserID`,
 `testkit.WithRoles`, `testkit.WithOrgID`) the handler under test reads.
 
-## Seed the FK spine — use `app.SeedGraph`
+## Seed the FK spine — use `seedplan.SeedGraph`
 
 A flow needs a whole foreign-key spine present before the RPC runs — a brand, a
 product, a variant, a cart, a cart item. That spine is **referential setup**, not
-the subject under test, so don't hand-chain a `CreateX` sequence. forge bakes the
-FK-closure INSERTs at generate time into `app.SeedGraph`:
+the subject under test, so don't hand-chain a `CreateX` sequence:
 
 ```go
-g := app.SeedGraph(t, db, "cart_items")
+import "github.com/reliant-labs/forge/pkg/seedplan"
+
+db := app.NewMigratedTestDB(t)
+g := seedplan.SeedGraph(t, db, "cart_items")
 ```
 
-`SeedGraph` seeds the named table **and its transitive foreign-key ancestors** as
-**one connected happy-path spine** — row 0 of every table references row 0 of its
-parents — and hands back a `*SeededGraph`:
+`SeedGraph` reads the schema **out of the database you hand it** — the one
+`NewMigratedTestDB` just migrated — works out which tables `cart_items`
+transitively depends on, and inserts one connected happy-path spine: row 0 of
+every table references row 0 of its parents. It returns a `*SeededGraph`:
 
 - `g.PK("carts")` — the seeded cart id, to pass to the RPC.
 - `g.PK("variants")` — the variant the cart item is on.
 - `g.Value("cart_items", "quantity")` — the seeded quantity, so an assertion
   reads the **real** seeded input instead of hard-coding it.
+- `g.Tables()` — what actually got seeded, when you're not sure of the shape.
 
-Every seeded row satisfies the migrations' CHECK / enum / char_length / range
-constraints, because the SQL was baked from forge's own seed planner (the same one
-behind `forge db seed`) at generate time — so `SeedGraph` has **no runtime seed
-dependency**. `app.SeedGraph` (`pkg/app/seedgraph_gen.go`) is regenerated with the
-schema; its known roots are every table in `db/migrations`.
+Every seeded row satisfies the migrations' CHECK / enum / `char_length` / range
+constraints, because the values come from forge's seed planner — the same one
+behind `forge db seed` — run **now**, against the schema this database actually
+has. Add a column or a constraint and the next test run plans around it; there
+is nothing to regenerate and nothing to keep in sync.
+
+`SeedGraph` seeds **ancestors, never descendants**. The closure answers "what
+must already exist for this row to be insertable", which is exactly what a
+foreign key makes mandatory. Nothing requires a row to have children, so a
+child table is never dragged in.
 
 **Root at the deepest table you want pre-seeded.** To test a CREATE path, root at
 the *parent* (`SeedGraph(t, db, "carts")` seeds the spine; you then create the
@@ -72,9 +81,7 @@ cart item via its RPC). To test a read/derived/update path, root at the leaf
 assertion turns on — here the variant's **price type**, a `prices` row that is a
 *descendant* of `variants`, not an ancestor, so it is NOT part of the spine — is a
 distinct row you insert per case, so each test states its own precondition (see
-the two tests below). A compact direct-`INSERT` is exactly right for that one row;
-it is also the fallback for the whole spine on a project with no migrations at
-generate time (where `SeedGraph` isn't emitted).
+the two tests below). A compact direct-`INSERT` is exactly right for that one row.
 
 ## Worked example: PlaceOrder
 
@@ -98,6 +105,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
 	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 	"github.com/reliant-labs/forge/pkg/testkit"
 
 	pb "example.com/shop/gen/checkout/v1"
@@ -106,7 +114,7 @@ import (
 
 func TestPlaceOrder_DerivesSubtotalFromOneTimePrices(t *testing.T) {
 	db := app.NewMigratedTestDB(t)
-	g := app.SeedGraph(t, db, "cart_items") // brand → product → variant → cart → cart_item
+	g := seedplan.SeedGraph(t, db, "cart_items") // brand → product → variant → cart → cart_item
 
 	// The price TYPE is the domain crux, so seed it explicitly: give the spine's
 	// variant a ONE-TIME price. (prices descend from variants, so they are not
@@ -152,7 +160,7 @@ mode too — here, a variant with **only** a subscription price:
 ```go
 func TestPlaceOrder_SubscriptionOnlyVariant_FailsPrecondition(t *testing.T) {
 	db := app.NewMigratedTestDB(t)
-	g := app.SeedGraph(t, db, "cart_items")
+	g := seedplan.SeedGraph(t, db, "cart_items")
 
 	// The spine's variant gets ONLY a subscription price — nothing one-time to
 	// charge, so checkout must refuse rather than guess a total.
@@ -184,9 +192,9 @@ func seedPrice(t *testing.T, db orm.Context, variantID, kind string, cents int64
 
 ## Rules
 
-- **Seed the spine with `app.SeedGraph`, insert the crux by hand.** `SeedGraph`
-  builds the FK ancestor graph for a root table; a separate one- or two-row
-  insert seeds the case-specific values your assertion turns on.
+- **Seed the spine with `seedplan.SeedGraph`, insert the crux by hand.**
+  `SeedGraph` builds the FK ancestor graph for a root table; a separate one- or
+  two-row insert seeds the case-specific values your assertion turns on.
 - **Assert derived values, not echoes.** The interesting output is what the RPC
   *computed* (`subtotal_cents`, `unit_price_cents`) from the seeded input — not
   that a field you set came back unchanged.
@@ -196,6 +204,15 @@ func seedPrice(t *testing.T, db orm.Context, variantID, kind string, cents int64
   out of the default unit run.
 - **One graph per test.** `app.NewMigratedTestDB(t)` gives each test its own
   isolated database — no shared state, no ordering assumptions.
+
+## Related: typed single-entity factories
+
+When you need **one valid row of a specific entity** rather than a whole spine,
+`app.New<Entity>(t, db, overrides…)` is the typed tool: it inserts one row with
+every NOT NULL column and FK parent satisfied, gives each call a fresh primary
+key, and returns the typed `*db.<Entity>`. Use `SeedGraph` for "a whole
+referential spine addressed by table name", `New<Entity>` for "a valid Order I
+can override two fields on".
 
 See also: `testing` (the pyramid + harness overview), `testing/integration`
 (the build-tag discipline), `testing/e2e` (full-stack flows over the network).

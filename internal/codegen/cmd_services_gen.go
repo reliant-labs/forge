@@ -181,10 +181,11 @@ type CmdServiceGroupInput struct {
 // cmd/<bin>/cmd (devspace idiom): ONE FILE PER SERVICE in the services/
 // SUBPACKAGE, each `New<X>Cmd(cmd.Deps)` whose RunE calls cmd.Serve() with a
 // TYPED (*app.Components).Mount<Svc> selection. Each of the services/, workers/,
-// and operators/ groups gets a register_gen.go anchor so the package compiles
-// with zero items; the services anchor additionally carries the built-in
-// collision NOTEs. Selection is compile-time typed — no string positional arg,
-// no string→inventory lookup.
+// and operators/ groups gets an anchor file so the package compiles with zero
+// items. The services anchor is Tier-1 (register_gen.go) because it projects an
+// input — the built-in collision NOTEs; the workers/ and operators/ anchors are
+// SCAFFOLD-ONCE (register.go) because they project nothing. Selection is
+// compile-time typed — no string positional arg, no string→inventory lookup.
 //
 // It ALSO scaffolds cmd/<bin>/main.go — the composition root — ONCE
 // (write-if-absent) from the service rows. main.go is OWNED code thereafter:
@@ -221,15 +222,34 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 	// surfaces as a build error downstream, not a silent miscompile.
 	mountOverride := cmdServiceMountOverrides(targetDir, in)
 
-	// services/ — one file per service + the anchor (with collision NOTEs).
+	// services/ — per service: the SCAFFOLD-ONCE subcommand plus the Tier-1
+	// mount reference it calls, then the group anchor (with collision NOTEs).
+	//
+	// THE SPLIT. <name>.go is the user's cobra command — flags, RunE, help
+	// text — and users customize it (a per-service flag, an extra env read).
+	// Written once, never rewritten. <name>_mount_gen.go holds the single
+	// expression forge must keep re-deriving: the collision-aware
+	// (*app.Components).Mount<Svc> method, whose spelling can change when an
+	// unrelated package is added. Splitting them is what lets the command be
+	// owned without stranding the mount reference at whatever name it had on
+	// the day the service was born.
 	svcItems, skipped := cmdServiceItemsFromNames(modulePath, in.Bin, in.Services, mountOverride)
 	for _, item := range svcItems {
+		mountContent, rerr := templates.ProjectTemplates().Render("cmd-svc-mount-gen.go.tmpl", item)
+		if rerr != nil {
+			return fmt.Errorf("render cmd-svc-mount-gen.go.tmpl (%s): %w", item.Name, rerr)
+		}
+		mountDest := filepath.Join(groupDir("services"), item.Name+"_mount_gen.go")
+		if werr := writeForgeOwned(targetDir, mountDest, mountContent, cs); werr != nil {
+			return fmt.Errorf("write %s: %w", mountDest, werr)
+		}
+
 		content, rerr := templates.ProjectTemplates().Render("cmd-svc-group.go.tmpl", item)
 		if rerr != nil {
 			return fmt.Errorf("render cmd-svc-group.go.tmpl (%s): %w", item.Name, rerr)
 		}
 		dest := filepath.Join(groupDir("services"), item.Name+".go")
-		if werr := writeForgeOwned(targetDir, dest, content, cs); werr != nil {
+		if _, werr := writeForgeScaffoldOnce(targetDir, dest, content); werr != nil {
 			return fmt.Errorf("write %s: %w", dest, werr)
 		}
 	}
@@ -241,30 +261,48 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 		return fmt.Errorf("write services/register_gen.go: %w", err)
 	}
 
-	// workers/ — one file per worker + the anchor.
-	// NOTE: the per-worker subcommand files (workers/<name>.go) are NOT emitted
-	// here. Each is scaffold-once OWNED code the `forge scaffold worker` scaffold
-	// writes exactly once (ScaffoldWorkerCmd) and then hand-wires into the owned
-	// main.go / lifecycle.go. `forge generate` performs ZERO worker discovery, so
-	// this pass only (re)writes the anchor that keeps the workers/ subpackage
-	// compilable (and main.go's blank import resolvable) with zero workers.
-	workerAnchor, err := templates.ProjectTemplates().Render("cmd-worker-register.go.tmpl", struct{}{})
-	if err != nil {
-		return fmt.Errorf("render cmd-worker-register.go.tmpl: %w", err)
-	}
-	if err := writeForgeOwned(targetDir, filepath.Join(groupDir("workers"), "register_gen.go"), workerAnchor, cs); err != nil {
-		return fmt.Errorf("write workers/register_gen.go: %w", err)
-	}
-
-	// operators/ — anchor only (see the workers/ note above). Per-operator
-	// subcommand files are scaffold-once OWNED code written by `forge scaffold
-	// operator` (ScaffoldOperatorCmd), never by `forge generate`.
-	opAnchor, err := templates.ProjectTemplates().Render("cmd-operator-register.go.tmpl", struct{}{})
-	if err != nil {
-		return fmt.Errorf("render cmd-operator-register.go.tmpl: %w", err)
-	}
-	if err := writeForgeOwned(targetDir, filepath.Join(groupDir("operators"), "register_gen.go"), opAnchor, cs); err != nil {
-		return fmt.Errorf("write operators/register_gen.go: %w", err)
+	// workers/ and operators/ — the group anchors, SCAFFOLD-ONCE.
+	//
+	// WHY THESE ARE NOT TIER-1, unlike the services anchor beside them.
+	// `forge generate` performs ZERO worker/operator discovery: the
+	// per-component subcommand files are scaffold-once OWNED code written by
+	// `forge scaffold worker/operator` (ScaffoldWorkerCmd /
+	// ScaffoldOperatorCmd), and neither template takes any data — both render
+	// from struct{}{}. So these two files carry no derived fact at all. Their
+	// entire content is a package clause and a doc comment, byte-identical in
+	// every project forge has ever generated.
+	//
+	// That is precisely what internal/tierguard exists to reject. A Tier-1
+	// file that is not a function of user input gains nothing from
+	// regeneration — there is nothing to re-derive — while still imposing
+	// Tier-1's cost: a user who edits it puts it in permanent drift and
+	// silently falls off the upgrade path forever. The services anchor keeps
+	// Tier-1 honestly because it DOES project an input (the collision NOTE
+	// for a service whose kebab name shadows a built-in); these two have no
+	// equivalent, because a worker's name cannot collide with anything here.
+	//
+	// Scaffold-once is the tier that matches what they are: forge writes the
+	// anchor at birth so the subpackage compiles with zero components, and
+	// then it is the user's — which is already true of every other file in
+	// these directories.
+	for _, group := range []struct{ name, tmpl string }{
+		{"workers", "cmd-worker-register.go.tmpl"},
+		{"operators", "cmd-operator-register.go.tmpl"},
+	} {
+		anchor, rerr := templates.ProjectTemplates().Render(group.tmpl, struct{}{})
+		if rerr != nil {
+			return fmt.Errorf("render %s: %w", group.tmpl, rerr)
+		}
+		// Reclaim the Tier-1 copy these were emitted as before the tier
+		// change. Only a copy that still verifies as forge's own render is
+		// removed; a hand-edited or disowned one is the user's and is left
+		// alone. Retiring the old name is what keeps the package from
+		// carrying two anchors declaring the same package clause.
+		RetireGenerated(targetDir, filepath.Join(groupDir(group.name), "register_gen.go"), cs)
+		dest := filepath.Join(groupDir(group.name), "register.go")
+		if _, werr := writeForgeScaffoldOnce(targetDir, dest, anchor); werr != nil {
+			return fmt.Errorf("write %s: %w", dest, werr)
+		}
 	}
 
 	// cmd/<bin>/main.go — the COMPOSITION ROOT, SCAFFOLD-ONCE owned code. It names
@@ -275,6 +313,21 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 	// worker/operator refs on the initial emit — generate does no worker/operator
 	// discovery — and an existing main.go is left untouched.
 	if err := generateCmdMain(targetDir, modulePath, in.Bin, svcItems); err != nil {
+		return err
+	}
+
+	// cmd/<bin>/cmd/root_gen.go is RETIRED for new projects: the command tree
+	// has no generated file anymore. ServiceName is a const in the
+	// scaffold-once root.go, `db migrate` is registered by the db.go that
+	// defines it, and the one genuinely re-derived fact (whether an embedded
+	// migration set exists) moved to db.Source().
+	//
+	// A project born BEFORE that change keeps its own scaffold-once root.go,
+	// which calls generatedCommands() — and forge does not rewrite files it
+	// promised never to touch. So this keeps emitting root_gen.go for exactly
+	// those projects, and deletes it once root.go no longer needs it. See
+	// cmd_root_legacy.go.
+	if err := SyncLegacyRootGen(targetDir, modulePath, in.Bin, cs); err != nil {
 		return err
 	}
 

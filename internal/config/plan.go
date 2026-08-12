@@ -5,7 +5,6 @@ type PlanFile struct {
 	ProjectName string         `yaml:"project_name"`
 	GoModule    string         `yaml:"go_module"`
 	GoVersion   string         `yaml:"go_version,omitempty"`
-	License     string         `yaml:"license,omitempty"`
 	MockData    bool           `yaml:"mock_data,omitempty"`
 	Services    []PlanService  `yaml:"services,omitempty"`
 	Packages    []PlanPackage  `yaml:"packages,omitempty"`
@@ -74,4 +73,29 @@ type PlanEntityField struct {
 	// generated repo's Spec.SecretColumns preserves it on a maskless
 	// full-replace Update rather than clobbering the stored value with "".
 	Secret bool `yaml:"secret,omitempty" json:"secret,omitempty"`
+	// Immutable marks a column declared `forge:immutable` in a COMMENT ON
+	// COLUMN. It projects to Bun's `skipupdate` tag option, so a full-replace
+	// UPDATE omits it from the SET clause while an explicit update_mask
+	// naming it still writes it.
+	//
+	// The declaration lives in the MIGRATION, not the proto: whether a column
+	// may be rewritten is a fact about storage, and the wire contract and the
+	// schema evolve on independent clocks. Inferring it from the absence of a
+	// wire field is wrong — a column can be absent from the API and still be
+	// ordinary mutable state (an internal score, a denormalized cache).
+	Immutable bool `yaml:"immutable,omitempty" json:"immutable,omitempty"`
+	// Version marks a column declared `forge:version` in a COMMENT ON
+	// COLUMN. It opts the entity into optimistic concurrency control:
+	// forge/pkg/crud's Repo adds it to Update/UpdateMasked's WHERE clause
+	// (matched against the caller's last-read value) and increments it on
+	// a successful write, failing a lost race with svcerr.ErrAborted
+	// rather than silently overwriting a concurrent writer's change.
+	Version bool `yaml:"version,omitempty" json:"version,omitempty"`
+	// FillStrategy carries a `forge:fill=<strategy>` COMMENT ON COLUMN
+	// declaration verbatim ("ulid" or "handler"), "" for none. "ulid" makes
+	// forge/pkg/crud's Repo generate one at Create for this (non-PK) column,
+	// the same chokepoint that already ULID-generates an empty string PK.
+	// "handler" changes no codegen behavior — it only suppresses the
+	// unsatisfiable-column lint. See schemadef.ColumnMarkerFill.
+	FillStrategy string `yaml:"fill_strategy,omitempty" json:"fill_strategy,omitempty"`
 }

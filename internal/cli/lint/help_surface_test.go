@@ -52,29 +52,79 @@ func TestLintHelpSurface(t *testing.T) {
 	cmd := newCmd(testFactory())
 
 	assertStringSlicesEqual(t, "lint visible flags", visibleFlagNames(cmd), []string{
+		// Continuous rules about the USER's own code. config-deps,
+		// frontend-stores and optional-deps-guard were all hidden as
+		// "audits" and were consequently undiscoverable: on the flagship app
+		// config-deps alone reported 15 real findings with paste-ready
+		// remediation, while a freshly scaffolded project comes up clean on
+		// all three — advisory, but not noisy.
+		"column-markers",
+		// A continuous rule about the user's own protos + handlers: a
+		// forge:computed field nothing populates takes the column default,
+		// which for the money columns this marker mostly lands on ships as
+		// $0.00 with no constraint violated, no test failing, and no log
+		// line. Visible because a human reading a screen is otherwise the
+		// only detector.
+		"computed-fields",
+		"config-deps",
+		// A continuous rule about the user's own config protos: with
+		// per-binary configs a whole config message can be bound to a
+		// binary that does not exist, and nothing else in forge reports
+		// it — the fields simply generate and are never loaded.
+		"config-reach",
 		"contract",
 		"conventions",
+		// A continuous rule about the user's own project, and the only
+		// place this failure is legible at all: a foreign key added after
+		// handlers_crud_test.go was scaffolded strands the seed literals
+		// in a file forge deliberately never regenerates, and the only
+		// other signal is a pq constraint error in test setup — one per
+		// affected package, reading like a broken harness.
+		// A continuous rule about the user's own protos, and the only place
+		// this failure is legible: Create<Entity>Request is the one envelope
+		// that FLATTENS the entity, so it re-declares each field's
+		// `optional` label, and a label lost there collapses absent and
+		// empty. The write lands as "" in a nullable column and surfaces as
+		// a postgres foreign-key violation naming a constraint, never the
+		// proto line that caused it.
+		"create-nullability",
+		"crud-fixtures",
 		"fix",
+		"frontend-stores",
 		"generated-drift",
 		"help-dev",
 		"json",
 		"migration-safety",
 		"no-fix",
+		"optional-deps-guard",
+		// A continuous rule about the user's own protos, and the only place
+		// a misspelled forge:* marker surfaces at all — visible for the same
+		// reason column-markers is.
+		"proto-markers",
+		// The OPTION-field twin of proto-markers, and the rule that would
+		// have caught 104 inert authz annotations in the flagship app.
+		// Visible for the same reason: it is a continuous rule about the
+		// user's own protos, and the only place the failure surfaces.
+		"proto-options",
 		// User surface, not maintainer: it is the answer to "how do I lint
 		// the backend without paying for the Node toolchain", and it mirrors
 		// the frontend-skipping vocabulary `forge build` already uses.
 		"skip-frontends",
 		"strict",
 		"tests",
+		// Gating, and about the user's project: forge COPIES these protos
+		// in and then never tracks them, so a stale vendored forge.proto
+		// is invisible to every other command. Hiding the one check that
+		// sees it would recreate the silence.
+		"vendored-protos",
 	})
 
+	// What stays hidden: meaningless outside the forge repo, bundled into
+	// a visible flag, or a one-shot you run at setup and never again.
 	assertStringSlicesEqual(t, "lint hidden flags", hiddenFlagNames(cmd), []string{
 		"banners",
 		"check-workarounds",
-		"config-deps",
 		"exported-vars",
-		"frontend-stores",
-		"optional-deps-guard",
 		"scaffolds",
 		"suggest-buf-excepts",
 		"suggest-excludes",

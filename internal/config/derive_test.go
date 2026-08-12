@@ -369,8 +369,8 @@ features:
 // TestDeriveFeatureDefaults_DeployFollowsKind pins the derivation rule
 // deploy ⇔ kind == service: a pristine service scaffold has deploy on
 // (its deploy/kcl tree is shipped by the scaffold and the generate
-// pipeline must emit deploy/kcl/config_schema.k + config_projection.k +
-// each env's config.k for the scaffold's own main.k import to resolve);
+// pipeline must emit deploy/kcl/config_gen.k + each env's config.k for
+// the scaffold's own main.k import to resolve);
 // cli/library kinds have no deploy surface. An explicit false always wins
 // over derivation.
 func TestDeriveFeatureDefaults_DeployFollowsKind(t *testing.T) {

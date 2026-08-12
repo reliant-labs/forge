@@ -23,13 +23,13 @@ func genConfigGo(t *testing.T, messages []ConfigMessage) string {
 	if err := GenerateConfigLoader(messages, dir, nil); err != nil {
 		t.Fatalf("GenerateConfigLoader() error = %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "pkg", "config", "config.go"))
+	data, err := os.ReadFile(filepath.Join(dir, "pkg", "config", "config_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 	// The generated shim must always be valid Go.
 	fset := token.NewFileSet()
-	if _, perr := parser.ParseFile(fset, "config.go", data, parser.AllErrors); perr != nil {
+	if _, perr := parser.ParseFile(fset, "config_gen.go", data, parser.AllErrors); perr != nil {
 		t.Fatalf("generated config.go does not parse: %v\n%s", perr, data)
 	}
 	return string(data)

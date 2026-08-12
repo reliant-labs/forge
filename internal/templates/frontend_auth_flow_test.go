@@ -278,7 +278,7 @@ func TestScaffoldedAuthKeepsTheTokenOutOfPersistentStorage(t *testing.T) {
 // TestScaffoldedAuthHardcodesNoIdentityProvider pins that the flow is
 // configured, not baked in.
 //
-// forge ships Logto as an opt-in dev-compose convenience; a scaffold that
+// forge ships Zitadel as an opt-in dev-compose convenience; a scaffold that
 // named it in code would make every other provider a code change rather than
 // a config change.
 func TestScaffoldedAuthHardcodesNoIdentityProvider(t *testing.T) {
@@ -324,9 +324,9 @@ func TestScaffoldedAuthHardcodesNoIdentityProvider(t *testing.T) {
 // The package's own stripComments cannot be used here: it is documented as
 // naive about "//" inside a string, which is harmless for the route guard it
 // was written for (an absolute URL is not a same-origin route) but fatal for
-// THIS guard — it truncates `"https://tenant.logto.app/oidc"` at the "//",
+// THIS guard — it truncates `"https://tenant.auth0.com/oidc"` at the "//",
 // deleting the very vendor name being looked for. Verified: with
-// stripComments, a hardcoded Logto issuer URL passed this test.
+// stripComments, a hardcoded issuer URL passed this test.
 func stripCommentsKeepingStrings(src string) string {
 	var out strings.Builder
 	var quote byte // 0 when not inside a string

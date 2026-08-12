@@ -89,8 +89,8 @@ _host_svc = _svc_by_name["admin-server"]
 assert_host_deploy_type = _host_svc.deploy.type == "host"
 assert_host_runner = _host_svc.deploy.runner == "air"
 assert_host_air_config = _host_svc.deploy.air_config == ".air.admin-server.toml"
-# NO secrets_file — host secrets come from Bundle.secret_provider, not here.
-assert_host_no_secrets_file = _host_svc.deploy.secrets_file == None
+# Host secrets come from Bundle.secret_provider (FileSecrets), scoped to the
+# keys each service declares — there is no per-service secrets file.
 # command = the agnostic command+args, folded (no override on this one).
 assert_host_command = _host_svc.command == ["./control-plane", "server"]
 

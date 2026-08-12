@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -258,7 +259,7 @@ func generateCRUDHandlers(services []codegen.ServiceDef, modulePath string, proj
 }
 
 // generateServiceMocks always regenerates mocks from proto definitions.
-func generateServiceMocks(services []codegen.ServiceDef, projectDir string) error {
+func generateServiceMocks(services []codegen.ServiceDef, projectDir string, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating service mocks...")
 
 	if len(services) == 0 {
@@ -266,7 +267,7 @@ func generateServiceMocks(services []codegen.ServiceDef, projectDir string) erro
 	}
 
 	for _, svc := range services {
-		written, err := codegen.GenerateMock(svc, filepath.Join(projectDir, "internal", "handlers", "mocks"))
+		written, err := codegen.GenerateMock(svc, projectDir, filepath.Join(projectDir, "internal", "handlers", "mocks"), cs)
 		if err != nil {
 			return fmt.Errorf("failed to generate mock for %s: %w", svc.Name, err)
 		}

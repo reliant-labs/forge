@@ -23,10 +23,10 @@ import (
 //     is needed — the render exercises exactly what a user gets.
 //  2. The -D override contract documented in main.k (via `option()`)
 //     stays accepted by the entrypoint. NOTE: whether the tag appears
-//     in the output depends on components_gen.json carrying workloads;
-//     deploy-as-data currently derives an empty component list for a
-//     fresh scaffold, so the tag-containment check is conditional on a
-//     workload image being rendered at all.
+//     in the output depends on deploy/kcl/workloads.k declaring
+//     workloads; a fresh scaffold with no services declares none, so the
+//     tag-containment check is conditional on a workload image being
+//     rendered at all.
 //
 // kcl is required via requireTool: a maintainer without the binary gets a
 // named skip, and CI — which installs kcl in e2e-suite.yml — gets a hard

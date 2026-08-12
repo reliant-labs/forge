@@ -10,7 +10,7 @@ stream (forge.render_manifests).
 
 Exercises:
 
-  * DotenvSecrets projects {type:"dotenv", path:...} into output.
+  * FileSecrets projects {type:"dir", path:...} into output.
   * ExternalSecrets projects {type:"external"} into output.
   * No provider => `secret_provider` key absent from output.
   * Provider declaration never appears in render_manifests.
@@ -24,15 +24,15 @@ _target = forge.ClusterTarget {
     registry = "localhost:5051"
 }
 
-_dotenv_bundle = forge.Bundle {
+_store_bundle = forge.Bundle {
     cluster_target = _target
     services = [forge.RenderedWorkload {
         name = "api"
         image = "api:dev"
         deploy = _target.deploy
     }]
-    secret_provider = forge.DotenvSecrets {
-        path = ".env.dev.secrets"
+    secret_provider = forge.FileSecrets {
+        path = "secrets/dev.yaml"
     }
 }
 
@@ -45,16 +45,16 @@ _no_provider_bundle = forge.Bundle {
     services = []
 }
 
-output_dotenv = forge.render(_dotenv_bundle)
+output_store = forge.render(_store_bundle)
 output_external = forge.render(_external_bundle)
 output_none = forge.render(_no_provider_bundle)
-manifests_dotenv = forge.render_manifests(_dotenv_bundle)
+manifests_store = forge.render_manifests(_store_bundle)
 
 # ── Invariants ─────────────────────────────────────────────────────
 
-# DotenvSecrets projects type + path into the ENTITY output.
-assert_dotenv_type = output_dotenv.secret_provider.type == "dotenv"
-assert_dotenv_path = output_dotenv.secret_provider.path == ".env.dev.secrets"
+# FileSecrets projects type + path into the ENTITY output.
+assert_store_type = output_store.secret_provider.type == "file"
+assert_store_path = output_store.secret_provider.path == "secrets/dev.yaml"
 
 # ExternalSecrets projects type into the ENTITY output (no path).
 assert_external_type = output_external.secret_provider.type == "external"
@@ -63,5 +63,5 @@ assert_external_type = output_external.secret_provider.type == "external"
 assert_none_absent = "secret_provider" not in output_none
 
 # The provider declaration NEVER appears in the manifest stream — no
-# Secret manifest is rendered from a dotenv provider by KCL.
-assert_no_secret_manifest = len([m for m in manifests_dotenv if m.kind == "Secret"]) == 0
+# Secret manifest is rendered from a provider declaration by KCL.
+assert_no_secret_manifest = len([m for m in manifests_store if m.kind == "Secret"]) == 0

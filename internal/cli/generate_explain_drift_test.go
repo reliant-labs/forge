@@ -154,6 +154,12 @@ func TestExplainDrift_DiffTruncation(t *testing.T) {
 // TestExplainDrift_NoRenderProduced: when the drifted file's emitter
 // never ran (step preset / gate), the diff section says so instead of
 // failing.
+//
+// The path is registered as a Tier-1 TARGET without being written, which
+// is what a gated-off emitter looks like from here: forge still owns the
+// path, it just produced nothing this run. That distinction is what the
+// note reports — see explainDriftNoRenderNote, which tells this apart from
+// a path forge no longer emits at all (where no flag can produce a diff).
 func TestExplainDrift_NoRenderProduced(t *testing.T) {
 	checksums.ResetPerRunState()
 	defer checksums.ResetPerRunState()
@@ -161,12 +167,42 @@ func TestExplainDrift_NoRenderProduced(t *testing.T) {
 	const rel = "pkg/app/wire_gen.go"
 	ctx, drift, _ := newExplainDriftCtx(t, rel, []byte("package app\n"), []byte("package app // edit\n"))
 	prepareExplainDrift(ctx, drift)
-	// No emitter write happens.
+	// Forge still owns the path; its emitter step just didn't run.
+	checksums.Tier1TargetSet[rel] = true
 
 	var b strings.Builder
 	printExplainDriftDiffs(&b, ctx)
-	if !strings.Contains(b.String(), "no fresh render was produced this run") {
+	if !strings.Contains(b.String(), "no fresh render this run") {
 		t.Errorf("missing no-render note; got:\n%s", b.String())
+	}
+}
+
+// TestExplainDrift_NoRenderBecauseNoLongerEmitted: the other half of the
+// no-render case, and the one that made `--explain-drift` useless exactly
+// when the drift error recommended it.
+//
+// A path forge has STOPPED emitting (frontends/*/src/app/dashboard_gen.tsx
+// after the dashboard became scaffold-once) can never have a fresh render,
+// so the note must say that plainly rather than blaming a gate the user
+// could go looking for.
+func TestExplainDrift_NoRenderBecauseNoLongerEmitted(t *testing.T) {
+	checksums.ResetPerRunState()
+	defer checksums.ResetPerRunState()
+
+	const rel = "frontends/web/src/app/dashboard_gen.tsx"
+	ctx, drift, _ := newExplainDriftCtx(t, rel,
+		[]byte("export const x = 1;\n"), []byte("export const x = 2; // edit\n"))
+	prepareExplainDrift(ctx, drift)
+	// Deliberately NOT a Tier-1 target: no emitter claims this path.
+
+	var b strings.Builder
+	printExplainDriftDiffs(&b, ctx)
+	out := b.String()
+	if !strings.Contains(out, "no longer emits this file") {
+		t.Errorf("note must say forge stopped emitting the file; got:\n%s", out)
+	}
+	if strings.Contains(out, "--steps") {
+		t.Errorf("note points at --steps, which cannot produce a render here; got:\n%s", out)
 	}
 }
 

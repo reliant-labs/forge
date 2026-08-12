@@ -40,20 +40,26 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// renderOnce memoizes the two fixture renders. Each costs ~20s of real
+// renderOnce memoizes the fixture renders. Each costs ~20s of real
 // codegen (buf, sqlc, go mod tidy), and every test in this package wants
-// the same pair, so they are built once per binary.
+// the same set, so they are built once per binary.
 var (
-	renderOnce sync.Once
-	renderA    *renderResult
-	renderB    *renderResult
-	renderC    *renderResult
-	renderErr  error
+	renderOnce   sync.Once
+	renderInputs []*renderResult
+	renderC      *renderResult
+	renderErr    error
 )
 
-// renders returns the two input-varied fixtures (A, B) and the
-// identity-varied control (C).
-func renders(t *testing.T) (a, b, identity *renderResult) {
+// renders returns the INPUT-VARIED fixtures and the identity-varied
+// control (C).
+//
+// The input set is A, B and D. All three share one project identity and
+// differ only in what the user DECLARED, so any byte difference among
+// them is attributable to a declaration. C is returned separately and
+// never participates in a verdict — it varies the module path, which is
+// not a derivation input (see the package doc's "held constant"
+// section), and is used only to decide the REMEDY for a constant file.
+func renders(t *testing.T) (inputs []*renderResult, identity *renderResult) {
 	t.Helper()
 	renderOnce.Do(func() {
 		// Not t.TempDir: the trees outlive the first test that asks for
@@ -63,11 +69,20 @@ func renders(t *testing.T) (a, b, identity *renderResult) {
 			renderErr = err
 			return
 		}
-		if renderA, renderErr = render(filepath.Join(base, "a"), projectA()); renderErr != nil {
-			return
-		}
-		if renderB, renderErr = render(filepath.Join(base, "b"), projectB()); renderErr != nil {
-			return
+		for _, spec := range []struct {
+			dir string
+			fx  fixture
+		}{
+			{"a", projectA()},
+			{"b", projectB()},
+			{"d", projectD()},
+		} {
+			r, rerr := render(filepath.Join(base, spec.dir), spec.fx)
+			if rerr != nil {
+				renderErr = fmt.Errorf("fixture %s: %w", spec.fx.Label, rerr)
+				return
+			}
+			renderInputs = append(renderInputs, r)
 		}
 		renderC, renderErr = render(filepath.Join(base, "c"), projectC())
 	})
@@ -76,7 +91,7 @@ func renders(t *testing.T) (a, b, identity *renderResult) {
 			"This guard cannot classify anything without rendered projects. It fails here rather "+
 			"than reporting an empty inventory as success.", renderErr)
 	}
-	return renderA, renderB, renderC
+	return renderInputs, renderC
 }
 
 // TestTier1FilesAreDerivedFromUserInput is the guard.
@@ -88,11 +103,11 @@ func renders(t *testing.T) (a, b, identity *renderResult) {
 // nothing by regenerating it, and the user who edits it falls off the
 // upgrade path permanently (see the package doc).
 func TestTier1FilesAreDerivedFromUserInput(t *testing.T) {
-	a, b, identity := renders(t)
+	inputs, identity := renders(t)
 
-	assertInventoryIsReal(t, a, b)
+	assertInventoryIsReal(t, inputs)
 
-	classifications := Classify(a, b, identity)
+	classifications := Classify(inputs, identity)
 	if len(classifications) == 0 {
 		t.Fatal("classified zero files: the Tier-1 inventory is empty, so every assertion below " +
 			"would hold vacuously. See assertInventoryIsReal — this should be unreachable.")
@@ -115,9 +130,13 @@ func TestTier1FilesAreDerivedFromUserInput(t *testing.T) {
 		}
 	}
 
-	t.Logf("Tier-1 inventory: %d paths across both fixtures (A=%d, B=%d) — "+
+	var perFixture []string
+	for _, r := range inputs {
+		perFixture = append(perFixture, fmt.Sprintf("%s=%d", r.Label, len(r.Tier1)))
+	}
+	t.Logf("Tier-1 inventory: %d paths across %d input-varied fixtures (%s) — "+
 		"derived(content)=%d derived(presence)=%d constant=%d unreadable=%d",
-		len(classifications), len(a.Tier1), len(b.Tier1),
+		len(classifications), len(inputs), strings.Join(perFixture, ", "),
 		counts[Derived], counts[OnlyInOne], counts[Constant], counts[Unreadable])
 
 	// Under -v, print the whole table. The pass/fail verdict only needs
@@ -149,19 +168,24 @@ func TestTier1FilesAreDerivedFromUserInput(t *testing.T) {
 		return offenders[i].Path < offenders[j].Path
 	})
 
+	var labels []string
+	for _, r := range inputs {
+		labels = append(labels, r.Label)
+	}
 	var msg strings.Builder
 	fmt.Fprintf(&msg, "%d Tier-1 file(s) are NOT derived from user input.\n\n", len(offenders))
-	msg.WriteString("Each was rendered twice against materially different user inputs — " +
-		a.Label + " vs " + b.Label + " — and came out byte-identical.\n" +
+	fmt.Fprintf(&msg, "Each was rendered %d times against materially different user inputs — %s — "+
+		"and came out byte-identical.\n", len(inputs), strings.Join(labels, " vs "))
+	msg.WriteString(
 		"A file that does not respond to the user's protos, migrations, contract.go or forge.yaml " +
-		"is not being re-derived from anything;\nit is library code in the user's tree behind a " +
-		"\"do not edit\" banner. Regenerating it cannot keep it correct (it was never a function of " +
-		"the inputs)\nand it carries a real cost: a user who edits it puts it in permanent drift, " +
-		"so every future forge improvement silently stops arriving.\n\n" +
-		"Fix: move the content into forge/pkg and leave a short user-owned scaffold that calls it. " +
-		"If a file is constant only\nBECAUSE these two fixtures do not happen to move it, extend a " +
-		"fixture in fixtures.go to exercise the input it tracks\n(preferred — it becomes real " +
-		"evidence), or add a documented allowList entry in classify.go.\n\n")
+			"is not being re-derived from anything;\nit is library code in the user's tree behind a " +
+			"\"do not edit\" banner. Regenerating it cannot keep it correct (it was never a function of " +
+			"the inputs)\nand it carries a real cost: a user who edits it puts it in permanent drift, " +
+			"so every future forge improvement silently stops arriving.\n\n" +
+			"Fix: move the content into forge/pkg and leave a short user-owned scaffold that calls it. " +
+			"If a file is constant only\nBECAUSE these fixtures do not happen to move it, extend a " +
+			"fixture in fixtures.go to exercise the input it tracks\n(preferred — it becomes real " +
+			"evidence), or add a documented allowList entry in allowlist_test.go.\n\n")
 	fmt.Fprintf(&msg, "Ranked by size (largest = most library code misplaced):\n")
 	for i, c := range offenders {
 		kind := "pure library code — can move to forge/pkg verbatim"
@@ -175,8 +199,11 @@ func TestTier1FilesAreDerivedFromUserInput(t *testing.T) {
 			fmt.Fprintf(&msg, "      template: %s\n", tp)
 		}
 	}
-	fmt.Fprintf(&msg, "\nRendered trees kept for inspection:\n  A: %s\n  B: %s\n  C: %s\n",
-		a.Root, b.Root, identity.Root)
+	msg.WriteString("\nRendered trees kept for inspection:\n")
+	for _, r := range inputs {
+		fmt.Fprintf(&msg, "  %s: %s\n", r.Label, r.Root)
+	}
+	fmt.Fprintf(&msg, "  %s: %s\n", identity.Label, identity.Root)
 	t.Error(msg.String())
 }
 
@@ -191,10 +218,15 @@ func TestTier1FilesAreDerivedFromUserInput(t *testing.T) {
 // extraction fail, after which every emitter is skipped and
 // Tier1TargetSet stays empty), so the empty case must be a loud failure
 // and not a quiet pass.
-func assertInventoryIsReal(t *testing.T, a, b *renderResult) {
+func assertInventoryIsReal(t *testing.T, inputs []*renderResult) {
 	t.Helper()
 
-	for _, r := range []*renderResult{a, b} {
+	if len(inputs) < 2 {
+		t.Fatalf("the differential method needs at least two input-varied fixtures; got %d. "+
+			"A single render cannot distinguish a derived file from a constant one.", len(inputs))
+	}
+
+	for _, r := range inputs {
 		if len(r.Tier1) == 0 {
 			t.Fatalf("fixture %s targeted ZERO Tier-1 files.\n\n"+
 				"checksums.Tier1TargetSet is populated by every Tier-1 write, so an empty set means the "+
@@ -215,13 +247,27 @@ func assertInventoryIsReal(t *testing.T, a, b *renderResult) {
 	// Deliberately chosen to span several distinct emitters, so a single
 	// broken step cannot satisfy the whole check: config codegen, the
 	// cmd tree, app composition, and the middleware procedure set.
+	// NOTE: the per-service test harness is deliberately NOT in this list.
+	// It is emitted per service, at internal/handlers/<svc>/helpers_gen_test.go,
+	// so its path differs between fixture A (task), fixture B
+	// (billing/reporting) and fixture D (alpha/version) — it cannot be a
+	// shape-invariant anchor. Its
+	// predecessor, the project-wide pkg/app/testing.go, was retired because
+	// being a non-test .go file in pkg/app put package `testing` into every
+	// scaffolded project's production binary.
 	mustContain := []string{
-		"pkg/config/config.go",
-		"pkg/app/testing.go",
+		"pkg/config/config_gen.go",
 		"pkg/middleware/procedures_gen.go",
-		"cmd/" + binPlaceholder + "/cmd/root.go",
+		// NOT a cmd-tree file: there is no longer any Tier-1 file under
+		// cmd/<bin>/cmd/. root_gen.go was the last one, and its facts either
+		// stopped being derived (ServiceName; the db command, now added by
+		// the db.go that defines it) or moved to the package they describe.
+		// db/source_gen.go is where the surviving one lives, and it is
+		// shape-invariant — every service project emits it, in both the
+		// with-SQL and without-SQL states.
+		"db/source_gen.go",
 	}
-	for _, r := range []*renderResult{a, b} {
+	for _, r := range inputs {
 		for _, want := range mustContain {
 			if !r.Tier1[filepath.ToSlash(want)] {
 				t.Fatalf("fixture %s has %d Tier-1 targets but not %q.\n\n"+
@@ -233,7 +279,7 @@ func assertInventoryIsReal(t *testing.T, a, b *renderResult) {
 		}
 	}
 
-	for _, r := range []*renderResult{a, b} {
+	for _, r := range inputs {
 		if len(r.Missing) > 0 {
 			t.Logf("fixture %s: %d Tier-1 target(s) not readable on disk: %v",
 				r.Label, len(r.Missing), r.Missing)
@@ -250,10 +296,10 @@ func assertInventoryIsReal(t *testing.T, a, b *renderResult) {
 // every comparison return "identical" would present as a long list of
 // confident mis-tier findings.
 func TestClassifierAgreesWithKnownDerivedFiles(t *testing.T) {
-	a, b, identity := renders(t)
+	inputs, identity := renders(t)
 
 	byPath := map[string]Classification{}
-	for _, c := range Classify(a, b, identity) {
+	for _, c := range Classify(inputs, identity) {
 		byPath[c.Path] = c
 	}
 
@@ -266,16 +312,20 @@ func TestClassifierAgreesWithKnownDerivedFiles(t *testing.T) {
 	// `type Config = configv1.AppConfig` alias — and an alias to a
 	// varying type is itself invariant text. Adding a component config
 	// block to proto/config/v1/config.proto (fixture B's ConfigBlocks)
-	// demonstrably moves deploy/kcl/config_projection.k and the
+	// demonstrably moves deploy/kcl/config_gen.k and the
 	// generated gen/config/v1/config.pb.go while leaving config.go
 	// byte-identical, so the file tracks the config proto's EXISTENCE,
 	// not its content. It is reported as a mis-tier candidate on that
 	// evidence; see the ranked findings.
+	// byPath is the union over both fixtures, so a path only fixture A
+	// emits is a valid control. The test harness and the entity factories
+	// both moved beside the service they serve
+	// (internal/handlers/<svc>/{helpers,factories}_gen_test.go), so that
+	// `cmd/<proj>` no longer links package `testing`.
 	known := []string{
 		"pkg/middleware/procedures_gen.go",
-		"pkg/app/factory_gen.go",
-		"pkg/app/seedgraph_gen.go",
-		"pkg/app/testing.go",
+		"internal/handlers/task/factories_gen_test.go",
+		"internal/handlers/task/helpers_gen_test.go",
 	}
 	checked := 0
 	for _, p := range known {
@@ -305,16 +355,19 @@ func templatePathFor(rel string) string {
 	base := filepath.Base(rel)
 	candidates := map[string]string{
 		"root.go":       "internal/templates/project/cmd-tree-root.go.tmpl",
-		"server.go":     "internal/templates/project/cmd-tree-server.go.tmpl",
-		"version.go":    "internal/templates/project/cmd-tree-version.go.tmpl",
-		"db.go":         "internal/templates/project/cmd-tree-db.go.tmpl",
-		"migrate.go":    "internal/templates/project/app-migrate.go.tmpl",
-		"testing.go":    "internal/templates/project/bootstrap_testing.go.tmpl",
-		"compose.go":    "internal/templates/project/app-compose.go.tmpl",
-		"lifecycle.go":  "internal/templates/project/app-lifecycle.go.tmpl",
-		"repo.go":       "internal/templates/project/repo.go.tmpl",
-		"embed.go":      "internal/templates/project/db-embed.go.tmpl",
-		"orm_shared.go": "internal/templates/project/orm-shared.go.tmpl",
+		"config_gen.go": "internal/templates/project/config.go.tmpl",
+		// source_gen.go is emitted from Go, not a template — the hint names
+		// the emitter so a finding still points at the file to change.
+		"source_gen.go":       "internal/codegen/app_scaffolds.go",
+		"server.go":           "internal/templates/project/cmd-tree-server.go.tmpl",
+		"version.go":          "internal/templates/project/cmd-tree-version.go.tmpl",
+		"db.go":               "internal/templates/project/cmd-tree-db.go.tmpl",
+		"migrate.go":          "internal/templates/project/app-migrate.go.tmpl",
+		"helpers_gen_test.go": "internal/templates/project/component_test_helpers.go.tmpl",
+		"compose.go":          "internal/templates/project/app-compose.go.tmpl",
+		"lifecycle.go":        "internal/templates/project/app-lifecycle.go.tmpl",
+		"repo.go":             "internal/templates/project/repo.go.tmpl",
+		"embed.go":            "internal/templates/project/db-embed.go.tmpl",
 	}
 	tp, ok := candidates[base]
 	if !ok {
@@ -347,7 +400,8 @@ func templatePathFor(rel string) string {
 // survivable do not apply to it. Reported as a failure so the count
 // cannot grow quietly.
 func TestForgeOwnedFilesRouteThroughTheTier1Chokepoint(t *testing.T) {
-	a, _, _ := renders(t)
+	inputs, _ := renders(t)
+	a := inputs[0]
 
 	banner := []byte("forge-owned:")
 
@@ -410,7 +464,8 @@ func TestForgeOwnedFilesRouteThroughTheTier1Chokepoint(t *testing.T) {
 // guard silently narrows — the exact failure of the earlier audit that
 // read one table in upgrade.go and concluded "exactly 6 Tier-1 files".
 func TestTier1InventoryIsProducerDerived(t *testing.T) {
-	a, _, _ := renders(t)
+	inputs, _ := renders(t)
+	a := inputs[0]
 
 	if len(a.Tier1) == 0 {
 		t.Fatal("empty inventory (see assertInventoryIsReal)")

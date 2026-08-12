@@ -3,6 +3,7 @@ package migrationlint
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -65,6 +66,70 @@ func TestLintMigrationsDirAllowsDestructiveAllowlist(t *testing.T) {
 	}
 	if len(result.Findings) != 0 {
 		t.Fatalf("expected no findings, got %#v", result.Findings)
+	}
+}
+
+// TestLintMigrationsDirAllowsProjectRelativeAllowlistPaths covers the way an
+// allowlist entry is actually WRITTEN.
+//
+// forge.yaml's `database.migration_safety.allowed_destructive` sits beside
+// `migrations_dir: db/migrations`, so the natural — and the documented —
+// entry is the project-relative path, `db/migrations/0001_drop_column.up.sql`.
+// The linter walks an ABSOLUTE directory, so the path it matches against is
+// absolute, and filepath.Match has no `**`: a project-relative pattern
+// matches neither the absolute path nor the bare basename. Every entry
+// written that way silently did nothing, and the file it named kept failing
+// CI with a message telling the author to allowlist the file they had
+// already allowlisted.
+//
+// The bare-basename form is covered above; this pins the form a real
+// forge.yaml uses.
+func TestLintMigrationsDirAllowsProjectRelativeAllowlistPaths(t *testing.T) {
+	dir := writeProjectMigration(t, "0001_drop_column.up.sql", `ALTER TABLE users DROP COLUMN legacy_name;`)
+
+	for _, pattern := range []string{
+		"db/migrations/0001_drop_column.up.sql", // the documented shape
+		"db/migrations/*.up.sql",                // a glob over that directory
+		"*_drop_column.up.sql",                  // basename glob (already worked)
+	} {
+		t.Run(pattern, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.AllowedDestructive = []string{pattern}
+			result, err := LintMigrationsDir(dir, cfg)
+			if err != nil {
+				t.Fatalf("LintMigrationsDir() error = %v", err)
+			}
+			if len(result.Findings) != 0 {
+				t.Fatalf("allowlist entry %q did not suppress the destructive finding — "+
+					"an entry that matches nothing is indistinguishable from no entry at "+
+					"all, and the error tells the author to add the entry they already "+
+					"wrote. Got %#v", pattern, result.Findings)
+			}
+		})
+	}
+}
+
+// TestLintMigrationsDirAllowlistDoesNotOverMatch is the other half: making
+// the allowlist match a project-relative path must not turn it into a
+// substring check that silences unrelated files.
+func TestLintMigrationsDirAllowlistDoesNotOverMatch(t *testing.T) {
+	dir := writeProjectMigration(t, "0001_drop_column.up.sql", `ALTER TABLE users DROP COLUMN legacy_name;`)
+	if err := os.WriteFile(filepath.Join(dir, "0002_drop_other.up.sql"),
+		[]byte(`ALTER TABLE users DROP COLUMN legacy_name;`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.AllowedDestructive = []string{"db/migrations/0001_drop_column.up.sql"}
+	result, err := LintMigrationsDir(dir, cfg)
+	if err != nil {
+		t.Fatalf("LintMigrationsDir() error = %v", err)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("exactly the un-allowlisted migration must still be reported, got %#v", result.Findings)
+	}
+	if !strings.Contains(result.Findings[0].File, "0002_drop_other") {
+		t.Errorf("the surviving finding must be 0002_drop_other, got %s", result.Findings[0].File)
 	}
 }
 
@@ -262,6 +327,23 @@ func TestLintMigrationsDirIgnoresDownMigrations(t *testing.T) {
 func writeMigration(t *testing.T, name, content string) string {
 	t.Helper()
 	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// writeProjectMigration is writeMigration with the real directory LAYOUT:
+// <tmp>/db/migrations/<name>, so the absolute path the linter walks actually
+// ends in the project-relative tail an allowed_destructive entry names.
+// writeMigration's flat temp dir cannot exercise that, which is why the
+// project-relative allowlist form went unnoticed.
+func writeProjectMigration(t *testing.T, name, content string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "db", "migrations")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}

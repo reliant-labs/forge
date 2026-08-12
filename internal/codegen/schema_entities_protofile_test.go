@@ -3,7 +3,7 @@ package codegen
 import (
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/schemadef"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // TestBuildEntityDef_CrossFileMessageSchemaResolution pins the cross-proto

@@ -86,11 +86,13 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 	"github.com/reliant-labs/forge/internal/linter/scaffolds"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // Severity values used in the JSON report. These now match the canonical
@@ -227,79 +229,8 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 		cfg = store.Config()
 	}
 
-	switch {
-	case flags.contract, flags.exportedVars:
-		if store != nil && !store.Features().ContractsEnabled() {
-			return buildLintJSONReport([]lintJSONFinding{skippedFinding("contracts feature is disabled in forge.yaml")}, false), nil
-		}
-		fs, gated, err := collectContractLintJSON(ctx, paths, contractExcludesFromConfig(cfg))
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, gated), nil
-	case flags.migrationSafety:
-		if store != nil && !store.Features().MigrationsEnabled() {
-			return buildLintJSONReport([]lintJSONFinding{skippedFinding("migrations feature is disabled in forge.yaml")}, false), nil
-		}
-		fs, gated, err := collectMigrationSafetyJSON(cfg)
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, gated), nil
-	case flags.conventions:
-		fs, gated, err := collectConventionsJSON(forgeconv.LintOptions{Strict: flags.strict})
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, gated), nil
-	case flags.generatedDrift:
-		fs, gated, err := collectGeneratedDriftJSON(cwd)
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, gated), nil
-	case flags.frontendStores:
-		fs, err := collectFrontendStoresJSON(cwd)
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, false), nil
-	case flags.scaffolds:
-		fs, gated, err := collectScaffoldsJSON(cwd)
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, gated), nil
-	case flags.tests:
-		fs, err := collectTestsJSON(cwd)
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, false), nil
-	case flags.banners:
-		fs, err := collectBannersJSON(cwd)
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, false), nil
-	case flags.checkWorkarounds:
-		fs, err := collectWorkaroundsJSON(cwd)
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, false), nil
-	case flags.optionalDepsGuard:
-		fs, err := collectOptionalDepsGuardJSON(cwd)
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, false), nil
-	case flags.configDeps:
-		fs, err := collectConfigDepsJSON(cwd)
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, false), nil
+	if report, handled, err := collectSingleLinterJSON(ctx, flags, paths, cwd, store, cfg); handled {
+		return report, err
 	}
 
 	return collectAllLintersJSON(ctx, lintRunOptions{
@@ -308,6 +239,89 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 		paths:         paths,
 		cfg:           cfg,
 	}, cwd)
+}
+
+// collectSingleLinterJSON dispatches the --<linter> flags that select ONE
+// linter to run on its own. handled=false means no such flag was set and the
+// caller should run the whole suite instead; it is distinct from a nil report,
+// which a selected linter can legitimately return alongside an error.
+func collectSingleLinterJSON(
+	ctx context.Context,
+	flags lintFlags,
+	paths []string,
+	cwd string,
+	store *projectstore.Store,
+	cfg *config.ProjectConfig,
+) (*lintJSONReport, bool, error) {
+	// Each arm returns through this closure so the switch stays a flat
+	// one-line-per-linter dispatch table.
+	done := func(r *lintJSONReport, err error) (*lintJSONReport, bool, error) {
+		if err != nil {
+			return nil, true, err
+		}
+		return r, true, nil
+	}
+	report := func(fs []lintJSONFinding, gated bool, err error) (*lintJSONReport, bool, error) {
+		if err != nil {
+			return nil, true, err
+		}
+		return done(buildLintJSONReport(fs, gated), nil)
+	}
+	// reportUngated is report for the linters that return findings only —
+	// they cannot gate the build, so gated is always false.
+	reportUngated := func(fs []lintJSONFinding, err error) (*lintJSONReport, bool, error) {
+		return report(fs, false, err)
+	}
+
+	switch {
+	case flags.contract, flags.exportedVars:
+		if store != nil && !store.Features().ContractsEnabled() {
+			return done(buildLintJSONReport([]lintJSONFinding{skippedFinding("contracts feature is disabled in forge.yaml")}, false), nil)
+		}
+		return report(collectContractLintJSON(ctx, paths, contractExcludesFromConfig(cfg)))
+	case flags.migrationSafety:
+		if store != nil && !store.Features().MigrationsEnabled() {
+			return done(buildLintJSONReport([]lintJSONFinding{skippedFinding("migrations feature is disabled in forge.yaml")}, false), nil)
+		}
+		return report(collectMigrationSafetyJSON(cfg))
+	case flags.conventions:
+		return report(collectConventionsJSON(forgeconv.LintOptions{Strict: flags.strict}))
+	case flags.generatedDrift:
+		return report(collectGeneratedDriftJSON(cwd))
+	case flags.frontendStores:
+		return reportUngated(collectFrontendStoresJSON(cwd))
+	case flags.scaffolds:
+		return report(collectScaffoldsJSON(cwd))
+	case flags.tests:
+		return report(collectTestsJSON(cwd))
+	case flags.banners:
+		return reportUngated(collectBannersJSON(cwd))
+	case flags.checkWorkarounds:
+		return reportUngated(collectWorkaroundsJSON(cwd))
+	case flags.optionalDepsGuard:
+		return reportUngated(collectOptionalDepsGuardJSON(cwd))
+	case flags.configDeps:
+		return reportUngated(collectConfigDepsJSON(cwd))
+	case flags.columnMarkers:
+		return reportUngated(collectColumnMarkersJSON(cfg))
+	case flags.crudFixtures:
+		return reportUngated(collectCrudFixturesJSON(cwd, cfg))
+	case flags.protoMarkers:
+		return reportUngated(collectProtoMarkersJSON(protoDirDefault))
+	case flags.createNullability:
+		fs, err := collectCreateNullabilityJSON(protoDirDefault)
+		return report(fs, len(fs) > 0, err)
+	case flags.computedFields:
+		return reportUngated(collectComputedFieldsJSON(cwd))
+	case flags.protoOptions:
+		return reportUngated(collectProtoOptionsJSON(protoDirDefault))
+	case flags.vendoredProtos:
+		return report(collectVendoredProtosJSON(cwd))
+	case flags.configReach:
+		return reportUngated(collectConfigReachJSON(cwd, cfg))
+	}
+
+	return nil, false, nil
 }
 
 // collectAllLintersJSON mirrors runAllLinters step-for-step. Each step
@@ -454,18 +468,26 @@ func collectScaffoldsJSON(cwd string) ([]lintJSONFinding, bool, error) {
 	return findingsToJSON(res.Findings), res.HasErrors(), nil
 }
 
-func collectTestsJSON(cwd string) ([]lintJSONFinding, error) {
+// collectTestsJSON mirrors runTestsLint on the JSON path. The second
+// return reports whether anything gates — only the shape rule can, so the
+// two paths agree on which findings are fatal.
+func collectTestsJSON(cwd string) ([]lintJSONFinding, bool, error) {
 	handlerRes, err := forgeconv.LintHandlerTests(cwd)
 	if err != nil {
-		return nil, fmt.Errorf("handler-test lint failed: %w", err)
+		return nil, false, fmt.Errorf("handler-test lint failed: %w", err)
 	}
 	frontendRes, err := forgeconv.LintFrontendHookTests(cwd)
 	if err != nil {
-		return nil, fmt.Errorf("frontend-hook-test lint failed: %w", err)
+		return nil, false, fmt.Errorf("frontend-hook-test lint failed: %w", err)
+	}
+	shapeRes, err := forgeconv.LintFrontendHookTestShape(cwd)
+	if err != nil {
+		return nil, false, fmt.Errorf("frontend-hook-test-shape lint failed: %w", err)
 	}
 	out := findingsToJSON(handlerRes.Findings)
 	out = append(out, findingsToJSON(frontendRes.Findings)...)
-	return out, nil
+	out = append(out, findingsToJSON(shapeRes.Findings)...)
+	return out, shapeRes.HasErrors(), nil
 }
 
 func collectBannersJSON(cwd string) ([]lintJSONFinding, error) {
@@ -524,6 +546,215 @@ func collectConfigDepsJSON(projectDir string) ([]lintJSONFinding, error) {
 			Rule:     "forge-config-deps",
 			Message:  fmt.Sprintf("%s/%s Deps.%s is a naked scalar (%s) — scalar Deps fields are configuration, not collaborators", f.Role, f.Package, f.Field, f.Type),
 			FixHint:  configDepsFixHint(f),
+		})
+	}
+	return out, nil
+}
+
+// collectColumnMarkersJSON maps column-markers findings onto the JSON
+// contract. Severity warning across the board — an unrecognized forge:*
+// marker might be a future forge version's, so the finding is a nudge to
+// check the spelling, not a hard failure.
+func collectColumnMarkersJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, error) {
+	findings, err := collectColumnMarkerFindings(migrationsDirFor(cfg))
+	if err != nil {
+		return nil, fmt.Errorf("column-markers lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Severity: lintSevWarning,
+			Rule:     "forge-column-markers",
+			Message:  fmt.Sprintf("unrecognized forge:* marker on %s", f.Object),
+			FixHint:  columnMarkerFixHint(f),
+		})
+	}
+	return out, nil
+}
+
+// collectCrudFixturesJSON maps crud-fixtures findings onto the JSON
+// contract. Severity warning across the board: the fixture is genuinely
+// stale and its test genuinely fails, but the file is the user's — forge
+// scaffolded it once and does not own it — so the finding reports and
+// locates the problem rather than gating the build on an edit only the
+// author can make.
+func collectCrudFixturesJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSONFinding, error) {
+	findings, err := collectCrudFixtureFindings(cwd, migrationsDirFor(cfg))
+	if err != nil {
+		return nil, fmt.Errorf("crud-fixtures lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Severity: lintSevWarning,
+			Rule:     "forge-crud-fixtures",
+			Message: fmt.Sprintf("seeded value %s in %s.%s references no seeded %s.%s row",
+				f.Value, f.Table, f.Column, f.RefTable, f.RefColumn),
+			FixHint: crudFixtureFixHint(f),
+		})
+	}
+	return out, nil
+}
+
+// collectProtoMarkersJSON maps proto-markers findings onto the JSON
+// contract. Severity warning across the board, for the same reason as its
+// column-marker sibling — an unrecognized forge:* marker might be a future
+// forge version's, or unrelated prose, so the finding is a nudge to check
+// the spelling rather than a hard failure.
+func collectProtoMarkersJSON(protoDir string) ([]lintJSONFinding, error) {
+	findings, err := collectProtoMarkerFindings(protoDir)
+	if err != nil {
+		return nil, fmt.Errorf("proto-markers lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		msg := fmt.Sprintf("unrecognized forge:* proto marker %q", f.Marker)
+		if f.Renamed != "" {
+			msg = fmt.Sprintf("removed forge:* proto marker %q (renamed to %q)", f.Marker, f.Renamed)
+		}
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Severity: lintSevWarning,
+			Rule:     "forge-proto-markers",
+			Message:  msg,
+			FixHint:  protoMarkerFixHint(f),
+		})
+	}
+	return out, nil
+}
+
+// collectCreateNullabilityJSON maps create-nullability findings onto the
+// JSON contract. Severity ERROR, unlike its advisory proto siblings: an
+// unknown marker or option might be a future forge's, but two declarations
+// of the same field disagreeing about presence is unambiguous — it
+// silently corrupts writes and has exactly one correct resolution.
+func collectCreateNullabilityJSON(protoDir string) ([]lintJSONFinding, error) {
+	findings, err := collectCreateNullabilityFindings(protoDir)
+	if err != nil {
+		return nil, fmt.Errorf("create-nullability lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		side, other := "the entity", "Create"+f.Entity+"Request"
+		if !f.EntityOptional {
+			side, other = "Create"+f.Entity+"Request", "the entity"
+		}
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Severity: lintSevError,
+			Rule:     "forgeconv-create-request-nullability",
+			Message: fmt.Sprintf("%s.%s is `optional` on %s but not on %s",
+				f.Entity, f.Field, side, other),
+			FixHint: createNullabilityFixHint(f),
+		})
+	}
+	return out, nil
+}
+
+// collectComputedFieldsJSON maps computed-fields findings onto the JSON
+// contract. Severity warning: the finding is high-confidence, but the fix
+// is app logic only the author can write, and a project mid-migration
+// (marker added before the hook) should still be able to lint.
+func collectComputedFieldsJSON(cwd string) ([]lintJSONFinding, error) {
+	findings, err := collectComputedFieldFindings(cwd)
+	if err != nil {
+		return nil, fmt.Errorf("computed-fields lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Severity: lintSevWarning,
+			Rule:     "forgeconv-computed-field-unwritten",
+			Message: fmt.Sprintf("%s.%s is marked %s but no non-generated Go file assigns %s",
+				f.Entity, f.Field, codegen.ProtoMarkerComputed, f.GoField),
+			FixHint: computedFieldFixHint(f),
+		})
+	}
+	return out, nil
+}
+
+// collectProtoOptionsJSON maps proto-options findings onto the JSON
+// contract. Severity warning: the scan is a source-level parse that does
+// not resolve imports, so it cannot see a project that legitimately
+// extended forge's option messages — the vendored-protos rule gates the
+// root cause instead. See lint_proto_options.go for the full rationale.
+func collectProtoOptionsJSON(protoDir string) ([]lintJSONFinding, error) {
+	findings, err := collectProtoOptionFindings(protoDir)
+	if err != nil {
+		return nil, fmt.Errorf("proto-options lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		msg := fmt.Sprintf("(%s) is not an annotation this forge binary defines", f.Extension)
+		if f.Field != "" {
+			msg = fmt.Sprintf("(%s).%s is not a field %s defines — the annotation is read by nothing",
+				f.Extension, f.Field, f.Message)
+		}
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Severity: lintSevWarning,
+			Rule:     "forge-proto-options",
+			Message:  msg,
+			FixHint:  protoOptionFixHint(f),
+		})
+	}
+	return out, nil
+}
+
+// collectVendoredProtosJSON maps vendored-proto drift onto the JSON
+// contract, returning the gating verdict alongside: drift in forge.proto
+// is an ERROR that flips `ok` to false (a field-number collision with an
+// upstream `reserved` is a correctness bug and the fix is mechanical),
+// while validate.proto drift is a warning. See lint_vendored_protos.go.
+func collectVendoredProtosJSON(projectDir string) ([]lintJSONFinding, bool, error) {
+	findings, err := collectVendoredProtoFindings(projectDir)
+	if err != nil {
+		return nil, false, fmt.Errorf("vendored-protos lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		severity := lintSevWarning
+		if f.Severity == vendoredSeverityError {
+			severity = lintSevError
+		}
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Severity: severity,
+			Rule:     "forge-vendored-proto-drift",
+			Message: fmt.Sprintf("%s differs from the copy embedded in this forge binary:\n%s",
+				f.File, strings.TrimRight(f.Diff, "\n")),
+			FixHint: vendoredProtoFixHint(f),
+		})
+	}
+	return out, vendoredProtosGate(findings), nil
+}
+
+// collectConfigReachJSON maps config-reach findings onto the JSON
+// contract. Severity warning: an unreachable field is dead weight rather
+// than a defect, and the remediation is a deletion the author has to
+// judge. See lint_config_reach.go.
+func collectConfigReachJSON(projectDir string, cfg *config.ProjectConfig) ([]lintJSONFinding, error) {
+	findings, err := collectConfigReachFindingsForProject(projectDir, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("config-reach lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, lintJSONFinding{
+			Severity: lintSevWarning,
+			Rule:     "forge-config-unreachable",
+			Message: fmt.Sprintf("config field %s.%s is loaded by no binary or frontend",
+				f.Message, f.Field),
+			FixHint: configReachFixHint(f),
 		})
 	}
 	return out, nil

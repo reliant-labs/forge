@@ -15,8 +15,11 @@ import (
 	"testing"
 )
 
-// rotatingIdP is a refresh endpoint that behaves the way a real rotating
-// provider does, modelled on Logto 1.41.0 as measured against a live instance:
+// rotatingIdP is a refresh endpoint that behaves the way a STRICT rotating
+// provider does. It is deliberately harsher than the dev IdP forge scaffolds
+// (Zitadel v4.16.2 rotates on every refresh and rejects a replayed token
+// immediately, but revokes only that token, not the grant) because the client
+// has to be correct against the harshest behaviour in the wild:
 //
 //   - every successful refresh CONSUMES the presented token and issues a new
 //     one;
@@ -119,8 +122,8 @@ func (i *rotatingIdP) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Reuse detection: a token this server already redeemed is theft, and
-	// the response is to kill the whole grant. This is the behaviour observed
-	// from Logto outside its 3s grace window.
+	// the response is to kill the whole grant — the strictest reading of
+	// RFC 6749 §6, and what a client must survive.
 	if i.consumed[presented] {
 		i.revoked = true
 		i.live = ""

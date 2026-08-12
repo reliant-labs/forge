@@ -397,7 +397,7 @@ var removedSchemaKeys = map[string]string{
 	"features.packs": "delete the key — the `packs` feature no longer exists. " +
 		"Frontend components are owned scaffold; auth/audit are code + libraries (`forge skill load auth`).",
 	"k8s.provider": "remove the key — per-environment cluster choice now lives in KCL " +
-		"`forge.K8sCluster` blocks under deploy/kcl/; see `forge skill load migrations/environments-to-kcl`.",
+		"`forge.K8sCluster` blocks under deploy/kcl/.",
 	// deploy.provider was never read: the CI provider lives in `ci.provider`
 	// (generate_ci.go reads cfg.CI.Provider). Removed in the forge.yaml
 	// schema cleanup (FORGE_SHAPE_REDESIGN §4 — deploy is pipeline-control
@@ -436,7 +436,7 @@ var removedSchemaKeys = map[string]string{
 	"binaries[].kind": "remove the key — every `forge scaffold binary` entry is long-running; " +
 		"there are no binary kinds.",
 	"services[].dev_target": "move host/cluster placement to the per-env `deploy:` field on the KCL " +
-		"`forge.Service` schema; see `forge skill load migrations/dev-target-to-kcl-deploy`.",
+		"`forge.Service` schema (`forge.HostDeploy | forge.K8sCluster | forge.External | forge.Compose | forge.BuildOnly`).",
 	// serve/served_by shipped only on an unreleased branch (never adopted
 	// downstream) before being replaced by registration-in-code: what a
 	// binary serves is the row list in pkg/app/services.go, not a yaml
@@ -489,13 +489,12 @@ func normalizeKeyPath(p string) string {
 //   - `environments`: removed in the deploy-target-architecture
 //     migration. Per-env deploy info (cluster/namespace/registry/
 //     domain) now lives in KCL `forge.K8sCluster` blocks; per-env
-//     app config lives in sibling `config.<env>.yaml` files. See
-//     the `environments-to-kcl` migration skill.
+//     app config lives in sibling `config.<env>.yaml` files.
 var deprecatedTopLevelKeys = map[string]string{
 	"environments": "this key is no longer part of the forge.yaml schema and will be DROPPED on the next " +
 		"forge.yaml rewrite (forge generate / forge project upgrade re-serialize the file). Migrate per-env config " +
 		"before you lose it: per-env deploy info moves to KCL `forge.K8sCluster` blocks and per-env app config " +
-		"moves to sibling `config.<env>.yaml` files — run `forge skill load migrations/environments-to-kcl`.",
+		"moves to sibling `config.<env>.yaml` files next to forge.yaml.",
 }
 
 // walkUnknownKeys recursively descends a yaml.Node mapping against the
@@ -918,6 +917,20 @@ func validateFrontends(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 					fix:    `use a "/"-prefixed path with no trailing slash, e.g. "/admin" (omit the field entirely for root mounting).`,
 				})
 			}
+		}
+		// frontends[].auth_mode picks where the user types their password.
+		// "redirect" is the only mode forge scaffolds: driving a hosted
+		// sign-in from a first-party form is provider-proprietary, so
+		// there is nothing generic to generate. A rejected value here is
+		// better than a silently-ignored one.
+		if am := strings.ToLower(strings.TrimSpace(fe.AuthMode)); am != "" && am != AuthModeRedirect {
+			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "auth_mode"})
+			out = append(out, validationIssue{
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.auth_mode value %q is invalid", prefix, fe.AuthMode),
+				fix:    "use redirect (the default, and the only mode forge scaffolds). A first-party sign-in form is yours to build against your IdP's own API — see `forge skill load auth/frontend`.",
+			})
 		}
 	}
 

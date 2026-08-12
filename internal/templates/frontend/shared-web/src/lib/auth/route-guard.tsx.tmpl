@@ -1,0 +1,137 @@
+{{if eq .Platform "nextjs"}}"use client";
+
+{{end}}// yours: scaffolded once, never touched again — forge will not overwrite this file
+//
+// RouteGuard — what an anonymous visitor sees.
+//
+// Without it, a signed-out visitor gets the full app shell and then a wall of
+// failed fetches: the pages render fine (they are just markup), every RPC
+// behind them answers 401, and the result looks like a broken app rather than
+// one that is asking you to sign in. The server is behaving correctly; it is
+// the browser that has not been told what to do about it. This component is
+// that instruction.
+//
+// ── It is a NO-OP unless an IdP is actually configured ────────────────
+//
+// `isOidcConfigured()` is false when no issuer + client id reached the
+// browser's env, which is exactly the state of a project that has not set up
+// an identity provider — including every project that never wants one. In
+// that state the auth provider is the MOCK, which reports a signed-in fixture
+// user, and this component renders its children unconditionally. So adding
+// the guard cannot break a project that has no IdP: with no real identity to
+// enforce, there is nothing to enforce it against.
+//
+// ── Why a component and not middleware ────────────────────────────────
+//
+// The session lives in the browser (an authorization-code + PKCE flow keeps
+// the token client-side, which is what lets the backend stay a pure
+// validator). Next.js middleware runs on the server, where that token is not
+// visible, so a middleware guard would have to be told about the session
+// through a cookie forge does not set. Guarding at the top of the tree keeps
+// the check where the truth is.
+//
+// ── Yours to change ───────────────────────────────────────────────────
+//
+// Common edits, all local to this file:
+//
+//   - PUBLIC ROUTES: add paths to `publicPaths` below (a marketing page, a
+//     pricing page, a public share link).
+//   - INVERT IT: if most of your product is public and only a section is
+//     gated, drop this from the layout and wrap just that section instead.
+//   - DELETE IT: if a proxy authenticates before the app ever loads, this
+//     check is redundant — remove the import from the layout and this file.
+
+import { useEffect, useState } from "react";
+
+import { useAuth } from "./context";
+import { isOidcConfigured } from "./oidc-provider";
+
+/** Where an anonymous visitor is sent. Matches the scaffolded sign-in route. */
+const SIGN_IN_PATH = "/auth/sign-in";
+
+/**
+ * Paths that render without a session.
+ *
+ * The auth routes themselves MUST be here — sending an anonymous visitor from
+ * the sign-in page to the sign-in page is a redirect loop, and the callback
+ * route has to run its code exchange while still signed out, which is the
+ * very thing that ends the signed-out state.
+ */
+const publicPaths = [SIGN_IN_PATH, "/auth/callback"];
+
+function isPublicPath(pathname: string): boolean {
+  return publicPaths.some(
+    (p) => pathname === p || pathname.startsWith(`${p}/`),
+  );
+}
+
+/**
+ * Gates its children on a session, sending anonymous visitors to sign in.
+ *
+ * `navigate` and `pathname` are injected rather than imported from a router,
+ * for the same reason the sign-in and callback SCREENS take them: this file is
+ * shared byte-for-byte between the Next.js and Vite scaffolds, which disagree
+ * about routing and about nothing else here. It also means this component can
+ * be tested with no router mounted at all.
+ */
+export function RouteGuard({
+  pathname,
+  navigate,
+  children,
+}: {
+  pathname: string;
+  navigate: (path: string) => void;
+  children: React.ReactNode;
+}) {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  // With no IdP configured there is no real session to require, and the mock
+  // provider reports one anyway — so the guard stands down entirely and a
+  // project with no identity provider renders exactly as it did before.
+  const enforcing = isOidcConfigured();
+  const blocked =
+    enforcing && !isLoading && !isAuthenticated && !isPublicPath(pathname);
+
+  // Redirect from an effect, not during render: navigating while rendering is
+  // a side effect in the render phase, which React is entitled to run twice
+  // (and does, under StrictMode in development).
+  useEffect(() => {
+    if (!blocked) return;
+    // Where to come back to. The sign-in screen reads `returnTo` and lands the
+    // user on the page they actually asked for instead of the home page.
+    const returnTo = encodeURIComponent(pathname);
+    navigate(`${SIGN_IN_PATH}?returnTo=${returnTo}`);
+  }, [blocked, navigate, pathname]);
+
+  // ── Why the render output cannot depend on any of the above ──────────
+  //
+  // `enforcing`, `isLoading` and `isAuthenticated` are all browser-only
+  // facts: the session lives in memory here, and the OIDC settings come from
+  // a runtime document the server process never reads. Returning null on the
+  // client where the server returned children is a hydration mismatch, and
+  // React does not repair one by re-rendering — it abandons the
+  // server-streamed markup and mounts a SECOND copy beside it. That is two
+  // full app shells stacked down the page, two theme toggles, and a nav
+  // whose Collapse button is wired to a tree nothing listens to.
+  //
+  // So the first client render reproduces the server's output exactly
+  // (children, always), and the gate is applied one commit later, from an
+  // effect. The cost is a frame of protected markup for a signed-out
+  // visitor; it renders nothing sensitive on its own, and its queries fail
+  // closed at the API.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => setHydrated(true), []);
+
+  if (!hydrated) return <>{children}</>;
+
+  // While the provider is restoring a session, render nothing rather than the
+  // signed-out view: showing the sign-in screen to a user who IS signed in,
+  // for the one frame it takes to find out, is a worse flicker than a blank.
+  if (enforcing && isLoading) return null;
+
+  // Already redirecting — do not render the protected tree, or its queries
+  // fire the 401s this component exists to prevent.
+  if (blocked) return null;
+
+  return <>{children}</>;
+}

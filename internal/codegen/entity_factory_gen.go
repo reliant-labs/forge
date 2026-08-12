@@ -12,13 +12,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jinzhu/inflection"
+
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/schemadef"
-	"github.com/reliant-labs/forge/internal/seeddata"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
-// Typed entity factories: the generate-time companion to seedgraph_gen.go.
+// Typed entity factories: the TYPED counterpart to seedplan.SeedGraph.
 //
 // SeedGraph seeds an FK spine keyed by a raw TABLE name and hands back a
 // string-keyed handle — the right primitive for a flow test that drives its
@@ -31,17 +33,35 @@ import (
 //
 // New<Entity>(t, db, overrides…) inserts ONE valid row — every NOT-NULL column
 // and FK parent satisfied from forge's seed planner — and returns the typed
-// *db.<Entity>. Each call gets a fresh primary key (so it is repeatable, unlike
-// the fixed-PK SeedGraph root), the FK parent spine is seeded idempotently
-// (ON CONFLICT DO NOTHING), and column overrides let a test set just the fields
-// it asserts on:
+// *db.<Entity>. Each call gets a fresh primary key, so it is repeatable where
+// a SeedGraph root is a single fixed spine; the FK parent spine is seeded
+// idempotently (ON CONFLICT DO NOTHING), and column overrides let a test set
+// just the fields it asserts on:
 //
-//	o := app.NewOrder(t, database, func(o *db.Order) { o.Status = "shipped" })
+//	o := NewOrder(t, database, func(o *db.Order) { o.Status = "shipped" })
 //
-// It lives in pkg/app so an EXTERNAL `<svc>_test` package can call it without the
-// pkg/app↔handler import cycle a white-box (`package <svc>`) test would hit.
+// WHERE THEY LAND, AND WHY IT IS A `_test.go` FILE. Each entity's factory is
+// emitted into the handler package that owns its CRUD RPCs, as
+// internal/handlers/<svc>/factories_gen_test.go — beside that service's
+// helpers_gen_test.go and in the same package clause. The `_test.go` suffix is
+// load-bearing: the toolchain compiles such a file only into that package's
+// test binary, so `testing` is never linked into cmd/. The factories used to
+// live in their own non-test package (internal/testfactory) for importability,
+// which meant a non-test .go file importing `testing` sat in the tree — safe
+// only for as long as nothing in the production import graph reached it, a
+// property guarded by a `go list -deps` test rather than by structure. Landing
+// them beside their consumer makes the leak unrepresentable instead.
 //
-// Emission mirrors buildSeedGraphSpecs' graceful degradation: no migrations, an
+// THE VISIBILITY THIS BUYS AND COSTS. Go compiles a package's in-package
+// _test.go files INTO the package under test, and the external `<svc>_test`
+// package then imports that augmented package — so these exported factories are
+// visible to BOTH `package <svc>` and `package <svc>_test` files in this
+// directory, and to nothing else. That is the correct scope for a test factory
+// and it is what the scaffolded CRUD lifecycle test (package <svc>_test, same
+// directory) needs. A test in a DIFFERENT package cannot call them; such a test
+// drives the service through its RPCs, which is the seam it should be using.
+//
+// Emission degrades gracefully: no migrations, an
 // unreachable shadow DB, or an unsatisfiable FK closure just means the factory
 // for that entity (or the whole file) isn't emitted — never a failed generate.
 
@@ -86,9 +106,9 @@ func buildEntityFactorySpecs(projectDir string) []entityFactorySpec {
 		return nil
 	}
 
-	pools := seeddata.PoolsFromTables(tables)
-	bounds := seeddata.BoundsFromTables(tables)
-	vocab, _ := seeddata.LoadVocab(seeddata.VocabPath(migDir))
+	pools := seedplan.PoolsFromTables(tables)
+	bounds := seedplan.BoundsFromTables(tables)
+	vocab, _ := seedplan.LoadVocab(seedplan.VocabPath(migDir))
 
 	var specs []entityFactorySpec
 	roots := make([]string, 0, len(dbEntities))
@@ -118,13 +138,17 @@ func buildEntityFactorySpecs(projectDir string) []entityFactorySpec {
 // over its FK closure (root included). Returns ok=false when the closure is
 // unsatisfiable or the root statement/PK can't be resolved — the caller then
 // skips that entity, exactly as the seed-graph builder skips an unseedable root.
-func bakeEntityFactory(byName map[string]schemadef.Table, root string, ent dbEntity, pools seeddata.EnumPools, bounds seeddata.CheckBounds, vocab *seeddata.Vocab) (entityFactorySpec, bool) {
-	closure := seedGraphClosure(byName, root)
+func bakeEntityFactory(byName map[string]schemadef.Table, root string, ent dbEntity, pools seedplan.EnumPools, bounds seedplan.CheckBounds, vocab *seedplan.Vocab) (entityFactorySpec, bool) {
+	all := make([]schemadef.Table, 0, len(byName))
+	for _, t := range byName {
+		all = append(all, t)
+	}
+	closure := seedplan.FKClosure(all, root)
 	closureTables := make([]schemadef.Table, 0, len(closure))
 	for _, n := range closure {
 		closureTables = append(closureTables, byName[n])
 	}
-	plan, err := seeddata.BuildPlan(closureTables, pools, seeddata.Config{Rows: 1, Salt: 0})
+	plan, err := seedplan.BuildPlan(closureTables, pools, seedplan.Config{Rows: 1, Salt: 0})
 	if err != nil {
 		return entityFactorySpec{}, false
 	}
@@ -267,9 +291,14 @@ func pgQuoteIdent(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
-// renderEntityFactoryFile renders the forge-owned pkg/app/factory_gen.go. All
-// baked SQL goes through strconv.Quote so any character stays a valid Go string.
-func renderEntityFactoryFile(modulePath string, specs []entityFactorySpec) []byte {
+// renderEntityFactoryFile renders one handler package's forge-owned
+// factories_gen_test.go. All baked SQL goes through strconv.Quote so any
+// character stays a valid Go string.
+//
+// pkgName is the handler package's own clause (`order`), so the file compiles
+// INTO that package's test binary and its exported factories are visible to the
+// directory's internal and external (`order_test`) test files alike.
+func renderEntityFactoryFile(modulePath, pkgName string, specs []entityFactorySpec) []byte {
 	var b strings.Builder
 	b.WriteString("// Code generated by forge. DO NOT EDIT.\n")
 	b.WriteString("// forge-owned: regenerated every run — do not edit (forge project disown to take ownership)\n")
@@ -278,9 +307,24 @@ func renderEntityFactoryFile(modulePath string, specs []entityFactorySpec) []byt
 	b.WriteString("// Typed entity factories for tests. New<Entity>(t, db, overrides…) inserts one\n")
 	b.WriteString("// valid row — every NOT-NULL column and FK parent satisfied — and returns the\n")
 	b.WriteString("// typed *db.<Entity>. Each call gets a fresh primary key, so call it once per\n")
-	b.WriteString("// row. Import it from an EXTERNAL <svc>_test package (avoids the pkg/app↔handler\n")
-	b.WriteString("// import cycle a white-box test hits). See the forge `testing` skill.\n")
-	b.WriteString("package app\n\n")
+	b.WriteString("// row:\n")
+	b.WriteString("//\n")
+	b.WriteString("//\titem := NewItem(t, database)\n")
+	b.WriteString("//\n")
+	b.WriteString("// WHY THIS IS A `_test.go` FILE. The toolchain compiles it only into this\n")
+	b.WriteString("// package's test binary, so the `testing` import below is never linked into\n")
+	b.WriteString("// cmd/. These factories used to live in their own non-test package\n")
+	b.WriteString("// (internal/testfactory) to be importable from anywhere; that made a non-test\n")
+	b.WriteString("// .go file importing `testing` part of the tree, safe only while nothing in\n")
+	b.WriteString("// the production import graph happened to reach it.\n")
+	b.WriteString("//\n")
+	b.WriteString("// The package clause is `" + pkgName + "`, NOT `" + pkgName + "_test`. Go compiles a package's\n")
+	b.WriteString("// in-package _test.go files INTO the package under test, and the external\n")
+	b.WriteString("// `" + pkgName + "_test` package then imports that augmented package — so these\n")
+	b.WriteString("// factories are visible to BOTH the internal and the external test files in\n")
+	b.WriteString("// this directory (including the scaffolded CRUD lifecycle test), and to no\n")
+	b.WriteString("// other package. See the forge `testing` skill.\n")
+	b.WriteString("package " + pkgName + "\n\n")
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
 	b.WriteString("\t\"testing\"\n\n")
@@ -306,7 +350,7 @@ func renderEntityFactoryFile(modulePath string, specs []entityFactorySpec) []byt
 		b.WriteString("// primary key, so call it once per row you need. Override the columns your\n")
 		b.WriteString("// test asserts on; leave the rest to the seeded defaults:\n")
 		b.WriteString("//\n")
-		fmt.Fprintf(&b, "//\t%s := app.New%s(t, database, func(x *db.%s) { /* x.Field = … */ })\n", s.lower, s.goName, s.goName)
+		fmt.Fprintf(&b, "//\t%s := New%s(t, database, func(x *db.%s) { /* x.Field = … */ })\n", s.lower, s.goName, s.goName)
 		b.WriteString("//\n")
 		b.WriteString("// A single-column-unique NOT-NULL field other than the primary key keeps its\n")
 		b.WriteString("// seeded value across calls — override such a field yourself to insert more\n")
@@ -363,17 +407,132 @@ func backquoteOrQuote(s string) string {
 	return strconv.Quote(s)
 }
 
-// GenerateEntityFactories writes the forge-owned pkg/app/factory_gen.go with the
-// typed New<Entity> test factories. Best-effort and forge-owned + checksum-
-// tracked, exactly like GenerateSeedGraph: a no-op (writes nothing, returns nil)
-// when there are no factory-eligible entities or the schema can't be
-// introspected, so it never fails a generate run on a machine without a
+// GenerateEntityFactories writes one forge-owned factories_gen_test.go per
+// handler package, holding the typed New<Entity> factories for the entities
+// that package's CRUD RPCs own.
+//
+// Best-effort and forge-owned + checksum-tracked: a no-op (writes nothing,
+// returns nil) when there are no factory-eligible entities or the schema can't
+// be introspected, so it never fails a generate run on a machine without a
 // reachable shadow database.
-func GenerateEntityFactories(projectDir, modulePath string, cs *checksums.FileChecksums) error {
+//
+// An entity whose CRUD RPCs no service declares is SKIPPED rather than parked
+// in a shared package. The factory's whole value is being callable from the
+// test that exercises that entity's handlers, and Go's in-package-_test.go
+// visibility rule means it can only be called from the directory it lands in —
+// so an entity with no owning handler package has no directory that could use
+// it. Emitting one anyway would reintroduce exactly the importable-from-
+// anywhere non-test package this move removed.
+func GenerateEntityFactories(projectDir, modulePath string, services []ServiceDef, cs *checksums.FileChecksums) error {
 	specs := buildEntityFactorySpecs(projectDir)
 	if len(specs) == 0 {
 		return nil
 	}
-	content := renderEntityFactoryFile(modulePath, specs)
-	return writeForgeOwned(projectDir, filepath.Join("pkg", "app", "factory_gen.go"), content, cs)
+
+	byService := groupFactorySpecsByService(projectDir, services, specs)
+	for _, dir := range sortedFactoryDirs(byService) {
+		group := byService[dir]
+		content := renderEntityFactoryFile(modulePath, group.pkg, group.specs)
+		rel, err := filepath.Rel(projectDir, filepath.Join(dir, entityFactoryFile))
+		if err != nil {
+			return fmt.Errorf("resolve factory path for %s: %w", group.pkg, err)
+		}
+		if err := writeForgeOwned(projectDir, rel, content, cs); err != nil {
+			return fmt.Errorf("write %s: %w", rel, err)
+		}
+	}
+	return nil
+}
+
+// entityFactoryFile is the file name emitted into each handler package. The
+// `_test.go` suffix is load-bearing — see the file header.
+const entityFactoryFile = "factories_gen_test.go"
+
+// factoryGroup is one handler package's share of the factories: the package
+// clause to render under, and the entity specs it owns.
+type factoryGroup struct {
+	pkg   string
+	specs []entityFactorySpec
+}
+
+// groupFactorySpecsByService routes each entity spec to the handler directory
+// whose service declares that entity's CRUD RPCs, keyed by absolute dir.
+//
+// The routing question — "which service owns entity E?" — is the same one
+// MatchCRUDMethods answers when it pairs a CRUD method with an entity, and it
+// is answered from the same evidence: a method named Create<E>/Get<E>/
+// Update<E>/Delete<E>/List<Es> on that service. Re-using ParseCRUDOperation
+// keeps the two from drifting into disagreeing about ownership.
+//
+// An entity claimed by two services lands in both. That is deliberate: each
+// package's factory is private to its own test binary, so there is no
+// redeclaration between them, and a test in either directory can seed the row
+// it needs.
+func groupFactorySpecsByService(projectDir string, services []ServiceDef, specs []entityFactorySpec) map[string]factoryGroup {
+	out := map[string]factoryGroup{}
+	for _, svc := range services {
+		owned := ownedFactorySpecs(svc, specs)
+		if len(owned) == 0 {
+			continue
+		}
+		res, err := ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			// No handler dir on disk (declared but not yet scaffolded).
+			// Skipping matches renderComponentTestHelpers rather than
+			// conjuring a stray directory.
+			continue
+		}
+		g := out[res.Dir]
+		g.pkg = res.PackageName
+		g.specs = append(g.specs, owned...)
+		out[res.Dir] = g
+	}
+	return out
+}
+
+// ownedFactorySpecs returns the specs for entities svc declares CRUD RPCs for.
+func ownedFactorySpecs(svc ServiceDef, specs []entityFactorySpec) []entityFactorySpec {
+	claimed := map[string]bool{}
+	for _, m := range svc.Methods {
+		if m.ClientStreaming || m.ServerStreaming {
+			continue // CRUD is unary only, same as MatchCRUDMethods
+		}
+		op, entityName := parseCRUDOperation(m.Name)
+		if op == "" {
+			continue
+		}
+		claimed[strings.ToLower(entityName)] = true
+		// `ListOrders` names the entity in the plural; the spec is keyed
+		// by the singular Go type name.
+		if op == "list" {
+			claimed[strings.ToLower(inflection.Singular(entityName))] = true
+		}
+	}
+	var owned []entityFactorySpec
+	for _, s := range specs {
+		if claimed[strings.ToLower(s.goName)] {
+			owned = append(owned, s)
+		}
+	}
+	return owned
+}
+
+// sortedFactoryDirs orders the emission targets so a run's writes are
+// deterministic (the generate pipeline's idempotency check compares bytes).
+func sortedFactoryDirs(byService map[string]factoryGroup) []string {
+	dirs := make([]string, 0, len(byService))
+	for dir := range byService {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+// RetiredEntityFactoryRelPath is the pre-move location of the entity factories:
+// their own non-test package, which every project scaffolded before this change
+// still carries. GenerateEntityFactories' caller retires it so an upgrading
+// project does not end up with both copies — the old one being a non-test .go
+// file that imports `testing`, which is the shape this move exists to remove.
+func RetiredEntityFactoryRelPath() string {
+	return filepath.Join("internal", "testfactory", "factory_gen.go")
 }

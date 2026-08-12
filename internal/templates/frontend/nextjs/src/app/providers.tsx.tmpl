@@ -2,13 +2,15 @@
 
 import { initClientTelemetry, RuntimeShell } from "@reliant-labs/web-runtime";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo } from "react";
 
 import ToastNotification from "@/components/ui/toast_notification";
 import { AuthContextProvider, useAuth } from "@/lib/auth/context";
+import { RouteGuard } from "@/lib/auth/route-guard";
 import { setAuthTokenGetter } from "@/lib/connect";
 import { EventBusProvider, useEventBus } from "@/lib/event-context";
-import { initTelemetry } from "@/lib/otel";
+import { initTelemetry } from "@/lib/otel_gen";
 import { queryClient } from "@/lib/query-client";
 
 import type { ToastEvent } from "@/lib/events";
@@ -51,10 +53,41 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <EventBusProvider devMode={isDev}>
         <AuthContextProvider>
           <AuthTokenBridge />
-          <RuntimeLayer>{children}</RuntimeLayer>
+          <AppRouteGuard>
+            <RuntimeLayer>{children}</RuntimeLayer>
+          </AppRouteGuard>
         </AuthContextProvider>
       </EventBusProvider>
     </QueryClientProvider>
+  );
+}
+
+/**
+ * The App Router adapter for the shared route guard.
+ *
+ * The guard itself is framework-agnostic and lives in
+ * `src/lib/auth/route-guard.tsx`, shared byte-for-byte with the Vite scaffold;
+ * this supplies the two things Next.js does differently — how to read the
+ * current path, and how to navigate.
+ *
+ * `replace`, not `push`: a page you were bounced off is not a place Back
+ * should return you to.
+ *
+ * Which routes are public, and whether to gate the whole app at all, are
+ * decisions in route-guard.tsx — both files are yours.
+ */
+function AppRouteGuard({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const navigate = useCallback(
+    (path: string) => router.replace(path),
+    [router],
+  );
+
+  return (
+    <RouteGuard pathname={pathname ?? "/"} navigate={navigate}>
+      {children}
+    </RouteGuard>
   );
 }
 

@@ -51,7 +51,11 @@ import (
 // entityMarkerRE matches the `// forge:entity` marker line. `//\s*`
 // tolerates the glued `//forge:entity` spelling; the trailing group
 // tolerates prose after the token (`// forge:entity — orders table`).
-var entityMarkerRE = regexp.MustCompile(`^\s*//+\s*forge:entity(\s|$|[^\w])`)
+//
+// The marker NAME comes from the KnownProtoMarkers registry (proto_markers.go)
+// rather than being spelled inline, so the vocabulary this scanner recognizes
+// and the vocabulary `forge lint --proto-markers` enforces cannot drift.
+var entityMarkerRE = protoMarkerFullLineRE(ProtoMarkerEntity)
 
 // appendOnlyMarkerRE / softDeleteMarkerRE match the two entity-behavior
 // markers, parsed exactly like entityMarkerRE (leading full-line comment,
@@ -66,19 +70,25 @@ var entityMarkerRE = regexp.MustCompile(`^\s*//+\s*forge:entity(\s|$|[^\w])`)
 //     (Delete becomes soft, reads filter IS NULL). OPT-IN: unmarked
 //     entities get no deleted_at.
 var (
-	appendOnlyMarkerRE = regexp.MustCompile(`^\s*//+\s*forge:append-only(\s|$|[^\w])`)
-	softDeleteMarkerRE = regexp.MustCompile(`^\s*//+\s*forge:soft-delete(\s|$|[^\w])`)
+	appendOnlyMarkerRE = protoMarkerFullLineRE(ProtoMarkerAppendOnly)
+	softDeleteMarkerRE = protoMarkerFullLineRE(ProtoMarkerSoftDelete)
 )
 
-// serverSetFieldMarkerRE matches the FIELD-level `// forge:server-set`
-// marker, in two spellings the scanner accepts: a full-line comment
-// PRECEDING the field (the documented site, mirroring the entity markers)
-// or a TRAILING inline comment (`string status = 4; // forge:server-set`).
-// It is anchored with `//+` but NOT to line start, so the same expression
-// matches the trailing form off the original field line. The marker keeps
-// the column + entity/read surface but excludes the field from the born
-// Create/Update request messages; see SchemaFieldDef.ServerSet.
-var serverSetFieldMarkerRE = regexp.MustCompile(`//+\s*forge:server-set(\s|$|[^\w])`)
+// readOnlyFieldMarkerRE matches the FIELD-level read-only markers
+// (ReadOnlyProtoMarkers: `// forge:read-only` and `// forge:computed`), in
+// two spellings the scanner accepts: a full-line comment PRECEDING the
+// field (the documented site, mirroring the entity markers) or a TRAILING
+// inline comment (`string status = 4; // forge:read-only`). It is anchored
+// with `//+` but NOT to line start, so the same expression matches the
+// trailing form off the original field line. Either marker keeps the
+// column + entity/read surface but excludes the field from the born
+// Create/Update request messages; see SchemaFieldDef.ReadOnly.
+//
+// forge:computed rides the SAME expression rather than a parallel one so
+// the two can never diverge on which fields stay client-writable; its
+// extra obligation (something must populate the value) is checked by lint,
+// which is the only place the two markers differ.
+var readOnlyFieldMarkerRE = ProtoMarkerAnyLineRE(ReadOnlyProtoMarkers)
 
 // RawProtoMessage is one TOP-LEVEL message captured by the raw scan.
 type RawProtoMessage struct {
@@ -119,12 +129,45 @@ type RawProtoMessage struct {
 	// (their own space). An appended field takes MaxFieldNumber+1 and can
 	// therefore never collide with, or renumber, what the author wrote.
 	MaxFieldNumber int
-	// UnappliedServerSetMarkers are `// forge:server-set` markers written
+	// UnappliedReadOnlyMarkers are `// forge:read-only` markers written
 	// inside this message that attached to NO captured field. A marker the
 	// scanner cannot honour must never be dropped in silence — the author
-	// believes the field is server-authoritative and it would ship on the
+	// believes the field is off the write surface and it would ship on the
 	// born Create request — so birth refuses the entity and names the site.
-	UnappliedServerSetMarkers []RawProtoMarkerSite
+	UnappliedReadOnlyMarkers []RawProtoMarkerSite
+	// RetiredMarkers are `forge:*` spellings written inside this message
+	// that forge USED to recognize and deliberately removed
+	// (RemovedProtoMarkers) — today they read as ordinary prose and do
+	// nothing at all.
+	//
+	// This is the ledger UnappliedReadOnlyMarkers structurally cannot
+	// populate: that one holds markers forge RECOGNIZES but could not
+	// place, and a retired spelling is recognized by nothing. Without this
+	// field the most dangerous case — `// forge:server-set`, whose author
+	// believes a field is off the write surface — exits zero in silence.
+	RetiredMarkers []RetiredProtoMarkerSite
+}
+
+// RetiredProtoMarkerSite locates one retired `forge:*` spelling and carries
+// the marker that replaced it, so the refusal can name the fix rather than
+// only the problem.
+type RetiredProtoMarkerSite struct {
+	// File is the absolute path of the declaring .proto file.
+	File string
+	// Line is the 1-based line number of the marker.
+	Line int
+	// Text is the marker's source line, trimmed.
+	Text string
+	// Marker is the retired spelling found (e.g. forge:server-set).
+	Marker string
+	// ReplacedBy is the marker that superseded it (e.g. forge:read-only).
+	ReplacedBy string
+}
+
+// String renders the site as `<file>:<line>: <source line>`, matching
+// RawProtoMarkerSite so both ledgers read alike in a refusal.
+func (s RetiredProtoMarkerSite) String() string {
+	return fmt.Sprintf("%s:%d: %s", filepath.Base(s.File), s.Line, s.Text)
 }
 
 // RawProtoMarkerSite locates one `// forge:*` marker in a source file.
@@ -238,7 +281,7 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 		name      string
 		oneof     string
 		options   string // trailing `[...]` inline options (buf.validate rules)
-		serverSet bool   // carries a `// forge:server-set` leading/trailing marker
+		readOnly  bool   // carries a `// forge:read-only` leading/trailing marker
 	}
 	type rawMessage struct {
 		msg    *RawProtoMessage
@@ -281,18 +324,18 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 		pendingMarker := false // // forge:entity (or any marker — see below)
 		pendingAppendOnly := false
 		pendingSoftDelete := false
-		// FIELD-level marker: a leading `// forge:server-set` comment line is
+		// FIELD-level marker: a leading `// forge:read-only` comment line is
 		// pending until the very next captured field consumes it (the trailing
 		// inline spelling is read off the field's own statement instead).
-		pendingFieldServerSet := false
-		pendingFieldServerSetAt := -1 // byte offset of the pending marker
+		pendingFieldReadOnly := false
+		pendingFieldReadOnlyAt := -1 // byte offset of the pending marker
 
-		// Every `// forge:server-set` occurrence in this file, and which of
+		// Every `// forge:read-only` occurrence in this file, and which of
 		// them a field actually consumed. Whatever is left over is a marker
-		// the author wrote and forge did not honour — reported per message so
-		// birth can refuse loudly instead of dropping it.
-		serverSetSites := serverSetFieldMarkerRE.FindAllStringIndex(content, -1)
-		consumedServerSet := make(map[int]bool, len(serverSetSites))
+		// the author wrote and forge did not honour — reported per message
+		// so birth can refuse loudly instead of dropping it.
+		readOnlySites := readOnlyFieldMarkerRE.FindAllStringIndex(content, -1)
+		consumedReadOnly := make(map[int]bool, len(readOnlySites))
 		msgStartIdx := len(messages)
 
 		lines := strings.Split(content, "\n")
@@ -304,7 +347,7 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 			// `int32 m = 8 [(buf.validate.field).int32 = {`\n`  gte: 1`\n`  lte:
 			// 12`\n`}];` — is captured whole: findInlineOptions scans across the
 			// newlines to the matching `]`. The single `line` is still used for
-			// the trailing `// forge:server-set` marker (which binds to the
+			// the trailing `// forge:read-only` marker (which binds to the
 			// field's own line).
 			restFromLine := content[lineStart:]
 			lineOffset := lineStart    // byte offset of `line` within content
@@ -321,11 +364,11 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 					pendingMarker, pendingAppendOnly = true, true
 				case softDeleteMarkerRE.MatchString(trimmedRaw):
 					pendingMarker, pendingSoftDelete = true, true
-				case serverSetFieldMarkerRE.MatchString(trimmedRaw):
+				case readOnlyFieldMarkerRE.MatchString(trimmedRaw):
 					// FIELD-level marker on its own line: attaches to the next
 					// captured field, NOT to the message (never tablizes).
-					pendingFieldServerSet = true
-					pendingFieldServerSetAt = lineOffset + serverSetFieldMarkerRE.FindStringIndex(line)[0]
+					pendingFieldReadOnly = true
+					pendingFieldReadOnlyAt = lineOffset + readOnlyFieldMarkerRE.FindStringIndex(line)[0]
 				}
 				continue // comment line — a pending marker survives
 			}
@@ -453,17 +496,17 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 							if top.kind == "oneof" {
 								oneofName = top.name
 							}
-							// A `// forge:server-set` marker LEADING this field
+							// A `// forge:read-only` marker LEADING this field
 							// (pending) or TRAILING its declaration. Either way the
 							// marker's site is recorded as consumed.
-							takeServerSet := func(fieldName string) bool {
+							takeReadOnly := func(fieldName string) bool {
 								got := false
-								if pendingFieldServerSet {
-									consumedServerSet[pendingFieldServerSetAt] = true
+								if pendingFieldReadOnly {
+									consumedReadOnly[pendingFieldReadOnlyAt] = true
 									got = true
 								}
-								if off, ok := rawFieldTrailingServerSet(restFromLine, fieldName); ok {
-									consumedServerSet[lineOffset+off] = true
+								if off, ok := rawFieldTrailingReadOnly(restFromLine, fieldName); ok {
+									consumedReadOnly[lineOffset+off] = true
 									got = true
 								}
 								return got
@@ -471,10 +514,10 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 							if m := rawMapFieldRE.FindStringSubmatch(trimmed); m != nil {
 								currentMsg.fields = append(currentMsg.fields, rawField{
 									typeToken: "map", mapKey: m[1], mapValue: m[2], name: m[3], oneof: oneofName,
-									serverSet: takeServerSet(m[3]),
+									readOnly: takeReadOnly(m[3]),
 								})
 								currentMsg.msg.MaxFieldNumber = maxInt(currentMsg.msg.MaxFieldNumber, atoiOr(m[4], 0))
-								pendingFieldServerSet = false
+								pendingFieldReadOnly = false
 							} else if m := rawFieldRE.FindStringSubmatch(trimmed); m != nil {
 								currentMsg.fields = append(currentMsg.fields, rawField{
 									label: strings.TrimSpace(m[1]), typeToken: m[2], name: m[3], oneof: oneofName,
@@ -483,11 +526,11 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 									// brace-safety, which would erase a `pattern = "..."`.
 									// restFromLine (not `line`) so a braced value spanning
 									// several physical lines is captured whole.
-									options:   findInlineOptions(restFromLine, m[3]),
-									serverSet: takeServerSet(m[3]),
+									options:  findInlineOptions(restFromLine, m[3]),
+									readOnly: takeReadOnly(m[3]),
 								})
 								currentMsg.msg.MaxFieldNumber = maxInt(currentMsg.msg.MaxFieldNumber, atoiOr(m[4], 0))
-								pendingFieldServerSet = false
+								pendingFieldReadOnly = false
 							}
 						}
 					}
@@ -532,24 +575,45 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 				// only: any non-field statement (a decl, an enum value) drops it.
 				// Comment/blank lines `continue` above without reaching here, so
 				// the marker still survives those between it and its field.
-				pendingFieldServerSet = false
+				pendingFieldReadOnly = false
 			}
 		}
 
-		// Every `// forge:server-set` this file carries that no field took,
+		// Every read-only marker this file carries that no field took,
 		// attributed to the top-level message whose body encloses it. Birth
 		// refuses an entity carrying one: a marker forge cannot honour must
 		// never be silently dropped.
-		for _, site := range serverSetSites {
-			if consumedServerSet[site[0]] {
+		for _, site := range readOnlySites {
+			if consumedReadOnly[site[0]] {
 				continue
 			}
 			for _, rm := range messages[msgStartIdx:] {
 				if site[0] < rm.msg.BodyOpen || site[0] > rm.msg.BodyClose {
 					continue
 				}
-				rm.msg.UnappliedServerSetMarkers = append(rm.msg.UnappliedServerSetMarkers,
+				rm.msg.UnappliedReadOnlyMarkers = append(rm.msg.UnappliedReadOnlyMarkers,
 					RawProtoMarkerSite{File: path, Line: lineNumberAt(content, site[0]), Text: sourceLineAt(content, site[0])})
+				break
+			}
+		}
+
+		// Every RETIRED spelling this file carries, attributed the same way.
+		// No consumed-set to consult: nothing can consume these, which is
+		// precisely the failure being closed — a retired marker is inert, so
+		// without this ledger the birth exits zero and the author's field
+		// ships client-writable.
+		for _, hit := range RetiredProtoMarkerSites(content) {
+			for _, rm := range messages[msgStartIdx:] {
+				if hit.Offset < rm.msg.BodyOpen || hit.Offset > rm.msg.BodyClose {
+					continue
+				}
+				rm.msg.RetiredMarkers = append(rm.msg.RetiredMarkers, RetiredProtoMarkerSite{
+					File:       path,
+					Line:       lineNumberAt(content, hit.Offset),
+					Text:       sourceLineAt(content, hit.Offset),
+					Marker:     hit.Marker,
+					ReplacedBy: hit.ReplacedBy,
+				})
 				break
 			}
 		}
@@ -636,9 +700,9 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 			// FLATTENS this field (Create<Entity>Request) re-declares the
 			// same rules and the wire interceptor enforces them there too.
 			def.ValidateOptions = ValidateFieldOptions(f.options)
-			// `// forge:server-set` — carried so the born Create/Update
-			// request messages omit this server-authoritative field.
-			def.ServerSet = f.serverSet
+			// `// forge:read-only` — carried so the born Create/Update
+			// request messages omit this non-client-writable field.
+			def.ReadOnly = f.readOnly
 			rm.msg.Fields = append(rm.msg.Fields, def)
 		}
 		scan.Messages = append(scan.Messages, *rm.msg)
@@ -696,10 +760,11 @@ func sourceLineAt(content string, off int) string {
 	return strings.TrimSpace(content[start : off+end])
 }
 
-// rawFieldTrailingServerSet reports whether the field named `field` carries
-// a TRAILING `// forge:server-set` comment, returning the byte offset of
-// that comment within `text` (the file content from the field's own line to
-// EOF, strings and comments intact — same input findInlineOptions reads).
+// rawFieldTrailingReadOnly reports whether the field named `field` carries
+// a TRAILING `// forge:read-only` comment (either spelling), returning the
+// byte offset of that comment within `text` (the file content from the
+// field's own line to EOF, strings and comments intact — same input
+// findInlineOptions reads).
 //
 // A trailing comment binds to the field whose DECLARATION it follows, so
 // the scan walks from `<field> = <number>` to the `;` that terminates the
@@ -713,14 +778,14 @@ func sourceLineAt(content string, off int) string {
 // rejected the marker whenever any `<name> = <number>` sat between field
 // and comment. Every inline options bracket contains one:
 //
-//	int64 unit_price_cents = 5 [(buf.validate.field).int64.gte = 0]; // forge:server-set
+//	int64 unit_price_cents = 5 [(buf.validate.field).int64.gte = 0]; // forge:read-only
 //
 // `gte = 0` read as "a later field declaration", so the marker was
-// discarded — silently. The author believed the field was server-set and
-// it shipped on the born Create request. The correlation was exact across
-// a twelve-field app: every field with a bracket kept, every field without
-// one stripped.
-func rawFieldTrailingServerSet(text, field string) (int, bool) {
+// discarded — silently. The author believed the field was off the write
+// surface and it shipped on the born Create request. The correlation was
+// exact across a twelve-field app: every field with a bracket kept, every
+// field without one stripped.
+func rawFieldTrailingReadOnly(text, field string) (int, bool) {
 	fre := regexp.MustCompile(`\b` + regexp.QuoteMeta(field) + `\s*=\s*\d+`)
 	loc := fre.FindStringIndex(text)
 	if loc == nil {
@@ -741,7 +806,7 @@ func rawFieldTrailingServerSet(text, field string) (int, bool) {
 	if nl := strings.IndexByte(comment, '\n'); nl >= 0 {
 		comment = comment[:nl]
 	}
-	if !serverSetFieldMarkerRE.MatchString(comment) {
+	if !readOnlyFieldMarkerRE.MatchString(comment) {
 		return 0, false
 	}
 	return i, true

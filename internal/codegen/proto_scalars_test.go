@@ -4,7 +4,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/schemadef"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // Every test in this file derives its obligation from a table the

@@ -168,16 +168,16 @@ type SchemaFieldDef struct {
 	// proto scan does not need it — birth stores the column unconditionally).
 	// `json:",omitempty"` keeps old descriptors parseable (additive contract).
 	Secret bool `json:"secret,omitempty"`
-	// ServerSet marks a field carrying the `// forge:server-set` marker: the
+	// ReadOnly marks a field carrying the `// forge:read-only` marker: the
 	// INPUT-side mirror of Secret. The column is real and stays on the entity
 	// message + Get/List responses (readable), but the field is OMITTED from
-	// the generated Create/Update REQUEST messages — a server-authoritative
-	// value (status, computed price, lifecycle timestamp) the client must not
-	// set. Read off BOTH extractors (the compiled descriptor's source-code
-	// comments AND the raw proto scan — a brand-new `// forge:entity` message
-	// births its quintet from the raw scan, before the descriptor knows it).
+	// the generated Create/Update REQUEST messages — a value (status,
+	// computed price, lifecycle timestamp) the client must not write. Read
+	// off BOTH extractors (the compiled descriptor's source-code comments AND
+	// the raw proto scan — a brand-new `// forge:entity` message births its
+	// quintet from the raw scan, before the descriptor knows it).
 	// `json:",omitempty"` keeps old descriptors parseable (additive contract).
-	ServerSet bool `json:"server_set,omitempty"`
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // IsInputEmpty returns true if the input type is google.protobuf.Empty.
@@ -246,6 +246,22 @@ type EntityColumn struct {
 	// IsGenerated marks GENERATED ALWAYS AS (...) STORED columns — the DB
 	// computes them, so the ORM must never write them (Bun's ,scanonly).
 	IsGenerated bool `json:",omitempty"`
+	// Immutable marks a column declared `forge:immutable` in its catalog
+	// comment (COMMENT ON COLUMN). It projects to Bun's `skipupdate`, so a
+	// full-replace UPDATE leaves the stored value alone.
+	Immutable bool `json:",omitempty"`
+	// Version marks a column declared `forge:version` in its catalog
+	// comment: the entity opts into optimistic concurrency control. See
+	// forge/pkg/crud's meta.versionColumn for the write-path behavior.
+	Version bool `json:",omitempty"`
+	// FillStrategy carries a `forge:fill=<strategy>` declaration verbatim
+	// ("ulid" or "handler"), "" when the column declares none. It names WHO
+	// fills a column the wire never carries a value for — "ulid" makes the
+	// ORM generate one at Create (see forge/pkg/crud's meta.fillULIDCols);
+	// "handler" is pure acknowledgement that suppresses the
+	// unsatisfiable-column lint and changes no codegen behavior. See
+	// schemadef.ColumnMarkerFill for the full grammar and rationale.
+	FillStrategy string `json:",omitempty"`
 }
 
 // FieldKind classifies a proto field for code generation branching.
@@ -293,12 +309,12 @@ type EntityField struct {
 	// direction — never packed onto a Get/List response — while staying
 	// settable on Create/Update. Additive (`json:",omitempty"`).
 	Secret bool `json:",omitempty"`
-	// ServerSet carries the field's `// forge:server-set` marker: the field
-	// is server-authoritative, so the CRUD test's mutable/clobber-field
+	// ReadOnly carries the field's `// forge:read-only` marker: the field is
+	// not client-writable, so the CRUD test's mutable/clobber-field
 	// selection (and any other client-input projection) skips it. The value
 	// stays on the entity + read responses; only the client-settable request
 	// surfaces exclude it. Additive (`json:",omitempty"`).
-	ServerSet bool `json:",omitempty"`
+	ReadOnly bool `json:",omitempty"`
 	// MapValueKind is the proto kind of a map field's VALUE ("string",
 	// "int64", "message", "enum", ...). GoType collapses every map to the
 	// marker "map[string]string", so without this the conversion generator
@@ -346,6 +362,39 @@ type ConfigField struct {
 type ConfigMessage struct {
 	Name   string        // Message name (e.g., "AppConfig")
 	Fields []ConfigField // Fields with config_field annotations
+
+	// Binary is the cmd/<name> leaf this config belongs to, from the
+	// message-level (forge.v1.binary_config).binary annotation. Empty means
+	// the message is not bound to a binary: either the project's single
+	// project-global AppConfig (the common case — nothing to annotate) or a
+	// shared block composed onto other configs (BaseConfig).
+	//
+	// It is what makes per-binary ownership DISJOINT: a binary's generated
+	// loader, KCL schema and env projection are built from the message
+	// carrying its name, so deleting a field from one binary's config
+	// cannot reach another's. Keyed on the ANNOTATION, never on the message
+	// NAME — renaming AdminConfig does not re-point it at another binary.
+	// `json:",omitempty"` keeps descriptors written by older forge binaries
+	// readable (additive contract, see the audit-json skill).
+	Binary string `json:",omitempty"`
+
+	// Frontend is the forge.yaml frontends[].name whose BUNDLE loads this
+	// config, from the message-level (forge.v1.frontend_config).frontend
+	// annotation. Empty means the message is not bound to a frontend.
+	//
+	// It plays the same disjoint-ownership role Binary does, one layer out:
+	// a frontend's generated TypeScript module, KCL schema and per-env
+	// projection are built from the message carrying its name. The
+	// difference is what the binding IMPLIES about secrecy — a
+	// frontend-bound message is delivered to a browser, so every field it
+	// carries is public and a `sensitive` field reaching one is a
+	// generate-time error (see ValidateFrontendConfigs).
+	//
+	// A message may carry BOTH annotations only if that is genuinely
+	// intended; the shared-definition pattern is to compose one unannotated
+	// block (BaseConfig) onto an annotated binary config AND an annotated
+	// frontend config, so the shared fact is declared once.
+	Frontend string `json:",omitempty"`
 }
 
 // DetermineFieldKind classifies a field based on its ProtoType and GoType.

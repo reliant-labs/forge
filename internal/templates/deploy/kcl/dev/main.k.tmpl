@@ -1,42 +1,69 @@
 """
 Development environment configuration for {{.ProjectName}}.
 
-DEPLOY-AS-DATA: forge no longer hand-writes a `forge.Service` per
-component here. It serializes the denormalized component base shape to
-`deploy/kcl/components_gen.json`, and the forge.components KCL schema
-hierarchy (Server / Worker / Cron / Operator / Binary) owns ALL
-normalization into k8s resources. This file LOADS that data, overlays
-the per-env knobs (replicas, registry, resources, secrets), and renders.
+YOURS. forge scaffolds this file once and never rewrites it.
+
+It answers WHICH workloads dev runs and HOW they differ here.
+`deploy/kcl/workloads.k` declares each workload COMPLETELY — ports and
+all — and this file REFINES what dev changes, using KCL's `|` merge.
+Only the difference is stated; everything else is inherited.
+
+Refinement is type-checked: `|` preserves the schema, so every `check:`
+in forge.workloads re-runs on the merged result. A bad override fails
+HERE, in dev, naming the field.
+
+Everything below is editable. Change a port, drop a workload, bring in
+NATS or a containerized database that only exists here — this file is
+the whole story for this environment, and nothing regenerates it.
 
 Two outputs:
 
   * `manifests` — Kubernetes manifest list rendered for the env from
-    components_gen.json + the forge.components schemas. Pipe to
-    `kubectl apply -f -` or `forge env deploy dev`. Select with
-    `kcl run deploy/kcl/dev -S manifests --format yaml`.
+    the workloads + the forge.workloads schema. Pipe to
+    `kubectl apply -f -` or `forge env deploy dev`. Preview them with
+    `forge env deploy dev --dry-run`.
 
   * `output` — JSON contract the forge CLI consumes (`forge build`,
     `forge env up`, `forge env deploy`) for host-vs-cluster dispatch + builds.
-    Bridged from the same component data. Select with
-    `kcl run deploy/kcl/dev -S output --format json`.
+    Bridged from the same workload data.
 
 Per-env tag/registry overrides are consumed by `forge.image_tag(env)`
 (reads `option("image_tag")`) and the `registry` field. The forge CLI
 passes `-D image_tag=` on every build/deploy.
 
-Path note: `forge.components.load_components` reads
-components_gen.json relative to the project root — the directory forge
-runs `kcl run deploy/kcl/<env>` from, and where the documented manual
-command `kcl run deploy/kcl/dev` is run from.
+RENDER THIS THROUGH FORGE, not a bare `kcl run`. This env calls
+`plugin.allocate_port` / `plugin.resolve_port` (see the PORTS block
+below) — forge builtins that live in the `kcl_plugin.forge` namespace
+forge registers in-process before it evaluates anything. The standalone
+`kcl` binary has no such plugin and fails with "the plugin package
+`kcl_plugin.forge` is not found".
+
+That is the cost of declaring ports here rather than scattering literals
+across a compose file and a job's flag defaults, and it buys the property
+that makes this file worth reading: a port is stated ONCE and everything
+that must agree on it reads that one statement.
+
+It still renders from a clean checkout — there is no generated data file
+to produce first.
 """
 
 import forge
-import forge.components as fc
+import forge.workloads as fw
+
+# The port primitives. `resolve_port` and `allocate_port` are forge
+# builtins, so they are imported from the plugin namespace in THIS file
+# rather than re-exported through the forge module — that is what keeps the
+# forge module itself renderable under a plugin-less `kcl run`.
+import kcl_plugin.forge as plugin
+
+# What this project DEPLOYS — user-owned, shared by every env.
+# This file refines what is specific to THIS environment.
+import ..workloads as wl
 
 # Per-environment config — KCL-native path: the typed AppConfig values
 # live in the user-owned `config.k` next to this file; the generated
-# `config_projection.appConfigEnvMap` projects them into env vars.
-import config_projection
+# `config_gen.appConfigEnvMap` projects them into env vars.
+import config_gen
 import .config as appcfg
 {{- if .IngressEnabled}}
 
@@ -55,37 +82,120 @@ _cluster = forge.ClusterTarget {
     registry = _registry
 }
 
-# Base env every component sees (COMMON_ENV + per-env config.k projection),
+# ---------------------------------------------------------------------------
+# PORTS — declared HERE, once, and referenced everywhere else.
+# ---------------------------------------------------------------------------
+# A port is a fact TWO things have to agree on: whatever binds it, and
+# whatever dials it. Writing the number twice is how they come to disagree,
+# and the failure is always downstream of the cause — a connection to
+# something else that happened to be listening, or a request to a port
+# nothing answers on. So each one is a variable here, and every other
+# reference in this file reads the variable.
+#
+# The two primitives differ in exactly one way, and it decides which to use:
+#
+#   plugin.resolve_port(name, preferred) is AVAILABILITY-CHECKED. It takes
+#   `preferred` when free, steps to the next free port when not, and
+#   remembers the answer (.forge/ports-dev.json) so it is stable from then
+#   on. Use it for a port only this project's own declarations name — the
+#   number can be anything, as long as both ends read this variable.
+#
+#   plugin.allocate_port(base, key) is DETERMINISTIC. It returns
+#   base + block(key)*100 and does NOT step off a busy port. Use it when
+#   something OUTSIDE these declarations has already been told the number,
+#   so a port that quietly moved would be a port that is simply wrong.
+#
+# Postgres is the first kind: nothing outside this file knows where the dev
+# database lives. On a machine already running another stack on 5432 this
+# steps to 5433 and stays there, and the DSN below follows it — which is the
+# whole point.
+_postgres_port = plugin.resolve_port("{{.ProjectName}}-dev-postgres", 5432)
+{{- if .HasFrontend}}
+
+# The IdP is the second kind, and it genuinely cannot float. Zitadel derives
+# the `iss` claim of every token it mints from the origin it is reached on,
+# and the browser has to arrive at that same origin for the instance to
+# answer at all (it routes by Host header). So the number is baked into
+# issued tokens and into a registered redirect URI — moving it between runs
+# invalidates both. allocate_port keeps it fixed at 8080 for this checkout,
+# and gives a SECOND worktree of this project its own stable block (8180,
+# 8280, …) so two dev stacks can run side by side without either drifting.
+#
+# If 8080 is taken on your machine, change the base here. Everything that
+# has to agree — the container's published port, the provisioning job, the
+# issuer both halves of auth enforce — reads this one variable.
+_idp_port = plugin.allocate_port(8080, option("worktree") or "")
+_idp_origin = "http://localhost:${_idp_port}"
+{{- end}}
+
+# The dev database connection string, composed from the port declared above
+# rather than written out a second time.
+#
+# This is layered onto every workload's env below, which puts it ABOVE the
+# secret store in the host-launch precedence (project config → secrets → KCL
+# env_vars → your shell). That ordering is deliberate: `secrets/dev.yaml`
+# holds a DATABASE_URL seeded at scaffold time with whatever port was free
+# THEN, and a stale copy of a port is exactly the thing that connects an app
+# to another project's database. The declaration wins; your shell still wins
+# over the declaration.
+_database_url = "postgres://postgres:postgres@localhost:${_postgres_port}/{{.ProjectName}}?sslmode=disable"
+
+# Base env every workload sees (COMMON_ENV + per-env config.k projection),
 # assembled with forge.env_merge (name-keyed, LAST-wins) so a later layer
 # overrides an earlier one by name instead of the `+`-concat footgun (which
 # emits duplicate keys kubectl rejects).
-_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, forge.env_project(config_projection.appConfigEnvMap(appcfg.app_config))), [
+_base_env = forge.env_merge(forge.env_merge(forge.COMMON_ENV, forge.env_project(config_gen.appConfigEnvMap(appcfg.app_config))), [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
+    forge.EnvVar {name = "DATABASE_URL", value = _database_url}
 ])
 
-# Load the denormalized components forge emitted and overlay the dev
-# knobs. The `|` merge layers per-env config onto each loaded component;
-# all components run the project image (one image, cobra subcommands per
+# Refine the declared workloads with the dev
+# knobs. The `|` merge layers per-env placement onto each workload;
+# all workloads run the project image (one image, cobra subcommands per
 # binary).
-_components = [c | {
+# WHAT THIS ENVIRONMENT DEPLOYS.
+#
+# `wl.ALL` is every workload the project declares. This list is yours:
+# drop one dev does not run, or append a workload only dev has (see the
+# `_nats` example at the bottom of this file).
+_declared = wl.ALL
+
+# PER-WORKLOAD refinement for dev. Name a workload and state only what
+# differs here; everything else is inherited from its base declaration.
+# Because `|` preserves the schema type, forge.workloads' `check:` rules
+# re-run on the result, so an invalid override fails HERE, in dev.
+#
+#     _declared = [w | {replicas = 2} if w.name == "{{.PrimaryWorkload}}" else w for w in _declared]
+
+# ENV-WIDE PLACEMENT — WHERE these run, not WHAT they are.
+#
+# Every field here is mechanical: derived from this environment or from
+# the workload's own name, identical for every workload, and knowable
+# only here. That is why it is applied in one pass instead of repeated on
+# each declaration. Nothing that describes the workload ITSELF (ports,
+# command, kind, build) is set here — that lives in workloads.k, where it
+# is stated once and inherited by every environment.
+_workloads = [c | {
     image = "{{.ProjectName}}"
     registry = _registry
     namespace = _namespace
-    replicas = 1
     env_vars = forge.env_merge(_base_env, [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}])
-} for c in fc.load_components(fc.COMPONENTS_GEN)]
+} for c in _declared]
 
-_component_env = fc.ComponentEnv {
-    # Deploy-time schema migrations. `load_migrate` reads the argv forge
-    # emits into components_gen.json (`/app/<project> db migrate up`, over the
-    # migrations EMBEDDED in the image) — empty until the project ships its
-    # first db/migrations/*.sql, populated from then on with no edit here.
+_workload_env = fw.WorkloadEnv {
+    # Deploy-time schema migrations are NOT configured here. They are an
+    # ordinary workload — the `migrate` one-shot in deploy/kcl/workloads.k,
+    # a `kind = "job"` with `before = [fw.BEFORE_ALL]` — which this env
+    # inherits through `wl.ALL` like everything else it deploys.
     #
-    # It renders as an initContainer on every Deployment-shaped workload, so
-    # the schema is current BEFORE any new pod serves a request and a failed
-    # migration stalls the rollout with the old pods still serving. Concurrent
-    # replicas are safe — golang-migrate takes a postgres advisory lock.
-    migrate = fc.load_migrate(fc.COMPONENTS_GEN)
+    # That job renders as an initContainer on every workload here, so the
+    # schema is current BEFORE any new pod serves a request and a failed
+    # migration stalls the rollout with the old pods still serving.
+    #
+    # If THIS environment migrates out of band, drop the workload from
+    # `_declared` above rather than editing anything in this block:
+    #
+    #     _declared = [w for w in wl.ALL if w.name != "migrate"]
     namespace = _namespace
     project = "{{.ProjectName}}"
     registry = _registry
@@ -94,12 +204,12 @@ _component_env = fc.ComponentEnv {
 }
 
 # Support resources (ConfigMaps + ingress) come from a Bundle the forge
-# render layer projects; the workloads come from the component
-# expansion. render_support omits namespace/netpol (render_components
+# render layer projects; the workloads come from the workload
+# expansion. render_support omits namespace/netpol (render_workloads
 # owns those).
 _support = forge.Bundle {
     cluster_target = _cluster
-    # Config rides the appConfigEnvMap projection on every component env;
+    # Config rides the appConfigEnvMap projection on every workload env;
     # no standalone ConfigMap resources on the native config path.
     config_maps = []
 {{- if .IngressEnabled}}
@@ -110,36 +220,174 @@ _support = forge.Bundle {
 }
 
 # k8s manifests for `kubectl apply -f -`.
-manifests = fc.render_components(_components, _component_env) \
+manifests = fw.render_workloads(_workloads, _workload_env) \
     + forge.render_support(_support)
 
 # JSON contract consumed by forge build/run/deploy. Bridges the loaded
-# components into forge.Service / CronJob / Operator entities so the
-# build + host/cluster dispatch contract is unchanged. Binaries deploy
-# build-only (forge orchestrates them via the CLI); servers/workers run
+# workloads into forge.Service / CronJob / Operator entities so the
+# build + host/cluster dispatch contract is unchanged. Tools deploy
+# build-only (forge orchestrates them via the CLI); services/workers run
 # in-cluster.
-_svc_components = [c for c in _components if c.kind in ["server", "worker"]]
-_bin_components = [c for c in _components if c.kind == "binary"]
-_cron_components = [c for c in _components if c.kind == "cron"]
-_op_components = [c for c in _components if c.kind == "operator"]
+_svc_workloads = [c for c in _workloads if c.kind in ["service", "worker"]]
+_tool_workloads = [c for c in _workloads if c.kind == "tool"]
+_cron_workloads = [c for c in _workloads if c.kind == "cron"]
+_op_workloads = [c for c in _workloads if c.kind == "operator"]
+# One-shot jobs (the scaffolded `migrate` step is one). These reach the
+# HOST runner through the bundle: k8s and compose lower `before`
+# themselves — an initContainer, and
+# `depends_on: {condition: service_completed_successfully}` — but the host
+# runner is a process launcher with no orchestrator underneath it, so it
+# has to be TOLD to run the argv and wait for exit 0 before starting the
+# services the job gates.
+_job_workloads = [c for c in _workloads if c.kind == "job"]
 
 _bundle = forge.Bundle {
     cluster_target = _cluster
-    services = [forge.RenderedWorkload {
+    services = [
+        # ── THIS ENVIRONMENT'S INFRASTRUCTURE ────────────────────────────
+        #
+        # The servers this app DIALS but does not build, named one at a
+        # time. Reading this list tells you what the dev stack IS, rather
+        # than one opaque name you have to open another file to decode.
+        #
+        # The scaffolded default runs postgres as a HOST PROCESS — no
+        # container, no daemon, nothing to install first. That is not a
+        # simplification of some "real" containerized setup; it is the
+        # position that a dev loop whose own code runs on the host should
+        # not require a container runtime underneath it. On a small cloud
+        # VM — which is where a lot of development actually happens — docker
+        # is several hundred megabytes resident before this project has done
+        # anything, and on some of them it cannot be installed at all.
+        # Postgres has a perfectly good native binary; forge fetches it
+        # once, caches it, and supervises it.
+        #
+        # It is a REAL postgres, not an emulation. It is the same binary
+        # forge already uses to introspect your migrations at generate time,
+        # so the dev database and the schema your ORM was projected from
+        # behave identically. The data directory (.forge/hostinfra/postgres)
+        # PERSISTS across runs the way a compose volume would; delete it to
+        # start clean.
+        #
+        # WANT A CONTAINER INSTEAD? Say so — `forge.Compose` did not go
+        # anywhere, it stopped being the only option:
+        #
+        #     deploy = forge.Compose {service = "postgres"}
+        #
+        # docker-compose.yml still defines that service. The two files
+        # answer different questions and neither answers the other's: KCL
+        # says WHICH servers this environment consists of and on what port;
+        # docker-compose.yml says how a container is built and what it
+        # relates to (its image, healthcheck, `depends_on`).
+        #
+        # ORDERING. Every entry here is brought up — and waited on — before
+        # any workload that dials it starts. A host instance is not reported
+        # up until it accepts a connection, and a compose service is
+        # deployed with `docker compose up -d --wait`, which blocks on the
+        # healthcheck it declares. So postgres is SERVING, not merely
+        # started, before the first migration runs.
+        forge.RenderedWorkload {
+            name = "postgres"
+            deploy = forge.HostInfra {
+                port = _postgres_port
+                database = "{{.ProjectName}}"
+            }
+        },
+{{- if .HasFrontend}}
+        # The dev identity provider — a HOST PROCESS too, which is what
+        # makes this whole environment container-free. A scaffolded project
+        # starts ZERO containers, whether or not it ships a frontend.
+        #
+        # Zitadel is a single static Go binary. forge downloads the pinned
+        # version once, verifies it against a checksum committed in forge
+        # itself, caches it under the user cache dir, and supervises it the
+        # same way it supervises postgres above. It is the same server the
+        # container ran, configured identically — only the execution
+        # changed.
+        #
+        # NOTHING ABOUT THE SETUP CHANGED. `idp-steps.yaml` is still the
+        # declarative bootstrap (the instance, the org, the admin user you
+        # sign in as, the service account), Zitadel still converges to it on
+        # first boot, and it still writes that account's token to
+        # `idp_pat_path` — which is the file the idp-provision job below
+        # reads to register this project's browser application.
+        #
+        # It stores its state in postgres, and the postgres it uses is the
+        # one declared above: its OWN database (`idp_database`) on that same
+        # server, reached at the same `_postgres_port`. One server, two
+        # schemas that cannot collide. The container path spent a second
+        # postgres CONTAINER on that isolation; a second database buys the
+        # same thing for nothing.
+        #
+        # forge starts it AFTER postgres and waits for Zitadel's own
+        # `/debug/ready`, which reports READY rather than merely listening:
+        # on first boot the declarative setup runs before it serves, and
+        # registration against a listening-but-unconverged IdP fails.
+        #
+        # WANT THE CONTAINER INSTEAD? docker-compose.yml still defines the
+        # `idp` service (and the `idp-db` it needs). Swap this one
+        # declaration:
+        #
+        #     deploy = forge.Compose {
+        #         service = "idp"
+        #         env = {"IDP_PORT": str(_idp_port)}
+        #     }
+        #
+        # Everything else — the port, the steps file, the provisioning job —
+        # is unchanged, because all of it reads the same `_idp_port`.
+        #
+        # NO SIGN-IN LOOP AT ALL? Drop this entry and the `idp-provision`
+        # workload (see deploy/kcl/workloads.k); the frontend then runs
+        # against its mock auth provider.
+        forge.RenderedWorkload {
+            name = "idp"
+            deploy = forge.HostInfra {
+                engine = "zitadel"
+                port = _idp_port
+                # Where its state lives: this environment's own postgres,
+                # in a database of the IdP's own.
+                idp_database_port = _postgres_port
+            }
+        },
+{{- end}}
+        # ── OBSERVABILITY — OPT-IN, NOT SCAFFOLDED ───────────────────────
+        #
+        # docker-compose.yml also defines `lgtm` (Grafana + Loki + Tempo +
+        # Mimir in one container) and `alloy` (the collector that feeds it).
+        # They are deliberately NOT in this list: an LGTM stack is roughly a
+        # gigabyte of resident memory to look at telemetry from a service
+        # you are currently running in a terminal. That is a poor default on
+        # the machines this environment is built for, and it is two lines to
+        # add the day you actually want a trace waterfall:
+        #
+        #     forge.RenderedWorkload {
+        #         name = "lgtm"
+        #         deploy = forge.Compose {service = "lgtm"}
+        #     },
+        #     forge.RenderedWorkload {
+        #         name = "alloy"
+        #         deploy = forge.Compose {service = "alloy"}
+        #     },
+        #
+        # Nothing else changes: the app exports OTLP when `otlp_endpoint` is
+        # set in config.k and is a no-op when it is not, so telemetry starts
+        # flowing as soon as there is somewhere to send it. Grafana is then
+        # on http://localhost:3000.
+    ] + [forge.RenderedWorkload {
         name = c.name
         image = "{{.ProjectName}}"
         command = c.command
         env_vars = c.env_vars
-        # Ports come from THIS file, never from components_gen.json: a port is a
-        # deploy fact. Add them to the `_components` overlay above
-        # (`ports = [fc.ComponentPort {name = "http", port = 9090, expose = True}]`)
+        # Ports come from the workload declaration in workloads.k, where a
+        # workload states its own ports. An env that genuinely differs refines
+        # them by name in `_declared` above
+        # (`| {ports = [fw.Port {name = "http", port = 9090, expose = True}]}`)
         # and they flow to both the manifests and this build/dispatch contract.
-        # Empty is the normal case — the Server expansion serves the standard
+        # The scaffolded default is the standard
         # :8080 mux, which is the one port the binary actually binds.
         deploy = _cluster.deploy | {ports = [p.port for p in c.ports]}
         if c.build:
             build = forge.build_of(c.build)
-    } for c in _svc_components] + [forge.RenderedWorkload {
+    } for c in _svc_workloads] + [forge.RenderedWorkload {
         name = c.name
         image = "{{.ProjectName}}"
         command = c.command
@@ -147,34 +395,77 @@ _bundle = forge.Bundle {
         deploy = forge.BuildOnly {}
         if c.build:
             build = forge.build_of(c.build)
-    } for c in _bin_components]
+    } for c in _tool_workloads]
     cronjobs = [forge.CronJob {
         name = c.name
         image = "{{.ProjectName}}"
         schedule = c.schedule
         command = c.command
         env_vars = c.env_vars
-    } for c in _cron_components]
+    } for c in _cron_workloads]
     operators = [forge.Operator {
         name = c.name
         image = "{{.ProjectName}}"
         crds = c.crds
         env_vars = c.env_vars
-    } for c in _op_components]
+    } for c in _op_workloads]
+    jobs = [forge.OneShotJob {
+        name = c.name
+        image = "{{.ProjectName}}"
+        command = c.command
+        before = c.before
+{{- if .HasFrontend}}
+        # The idp-provision job is the one workload that has to be TOLD
+        # where the IdP is, and this is where it is told — from the same
+        # `_idp_port` the container above is published on.
+        #
+        # Both names carry the same value, and that is a property of a dev
+        # loop rather than a shortcut. IDP_BASE is where the job DIALS the
+        # IdP; IDP_BROWSER_ORIGIN is the origin it REGISTERS, the one that
+        # ends up in `iss` and that the browser must arrive at. They differ
+        # when the job runs inside the compose network and the browser does
+        # not — here both are host-side on the same machine, so they are one
+        # address.
+        #
+        # This closes a real trap. The scaffolded job's flags default to a
+        # literal `http://localhost:8080` baked in at project-generation
+        # time, so before this declaration existed, moving the IdP moved the
+        # container and left the job dialling 8080 — where it burned its
+        # full timeout and failed with an error three steps downstream of
+        # the cause. The generated binary does not have to learn the port;
+        # the environment that owns the number hands it over.
+        env_vars = forge.env_merge(c.env_vars, [
+            forge.EnvVar {name = "IDP_BASE", value = _idp_origin}
+            forge.EnvVar {name = "IDP_BROWSER_ORIGIN", value = _idp_origin}
+        ]) if c.name == "idp-provision" else c.env_vars
+{{- else}}
+        env_vars = c.env_vars
+{{- end}}
+    } for c in _job_workloads]
     config_maps = []
     # SECRET VALUES for this env. Every config field marked `sensitive: true`
     # in proto/config/v1/config.proto projects into the manifest as a
     # valueFrom.secretKeyRef — a REFERENCE — so the values have to come from
     # somewhere forge can read WITHOUT putting them in git. On a local cluster
-    # that is the gitignored `.env.dev`: forge resolves each declared ref from
-    # it, renders the backing Secret CLI-side, and applies it BEFORE the
+    # that is the gitignored `secrets/dev.yaml` store — a flat YAML map of
+    # env-var name to value. forge resolves each declared ref from it,
+    # renders the backing Secret CLI-side, and applies it BEFORE the
     # Deployments roll out so every secretKeyRef resolves on first schedule.
     # It also layers the same values onto host processes (`forge run`).
     #
-    # LOCAL CLUSTERS ONLY — forge refuses to project a dotenv-rendered
-    # plaintext Secret into a non-local cluster. Cloud envs use
+    # Populate it with `forge secret set dev <KEY>` (value on stdin, never
+    # argv), or hand-edit the YAML. `forge secret ensure dev` creates the
+    # store and lists every declared ref still missing a value.
+    #
+    # A value only reaches a service that DECLARES it via EnvVar.secret_ref,
+    # so putting something here that nothing references does nothing —
+    # non-secret config belongs in config.k, where it stays in version
+    # control.
+    #
+    # LOCAL CLUSTERS ONLY — forge refuses to project a plaintext-rendered
+    # Secret into a non-local cluster. Cloud envs use
     # `forge.ExternalSecrets {}` (see staging/prod).
-    secret_provider = forge.DotenvSecrets {path = ".env.dev"}
+    secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
     http_routes = ing.HTTP_ROUTES
@@ -183,3 +474,20 @@ _bundle = forge.Bundle {
 }
 
 output = forge.render(_bundle)
+
+# ---------------------------------------------------------------------------
+# A WORKLOAD ONLY DEV HAS
+# ---------------------------------------------------------------------------
+# Anything can be a workload, whether or not forge generated it. Declare
+# it HERE rather than in workloads.k and only dev gets it — which is how
+# you run a containerized dependency locally while prod points at a
+# hosted one. Uncomment, then add `_nats` to `_declared` above.
+#
+#     _nats = fw.Workload {
+#         name = "nats"
+#         kind = "service"
+#         image = "nats"
+#         registry = "docker.io/library"
+#         ports = [fw.Port {name = "client", port = 4222, expose = True}]
+#     }
+#     _declared = wl.ALL + [_nats]

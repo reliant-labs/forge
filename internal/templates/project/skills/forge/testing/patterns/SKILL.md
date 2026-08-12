@@ -11,7 +11,7 @@ All patterns are table-driven by default: one slice of cases, one iteration help
 
 ## Pattern 1: RPC handler test (use `tdd.TableRPC`)
 
-One-line: in-process handler call via the generated `NewTest<Svc>` helper in `pkg/app/testing.go` — `<Svc>` is the SERVICE NAME in PascalCase (service `users` ⇒ `app.NewTestUsers`), not the proto service name. Hermetic; no server, no network. The library carries the iteration + error-code assertion so the test file is just the case table.
+One-line: in-process handler call via the generated `NewTest<Svc>` helper in that service's own `helpers_gen_test.go` (e.g. `internal/handlers/users/helpers_gen_test.go`, `package users`) — `<Svc>` is the SERVICE NAME in PascalCase (service `users` ⇒ `users.NewTestUsers`), not the proto service name. Hermetic; no server, no network. The library carries the iteration + error-code assertion so the test file is just the case table.
 
 ```go
 package myservice_test
@@ -29,7 +29,7 @@ import (
 
 func TestCreateUser(t *testing.T) {
 	t.Parallel()
-	svc := app.NewTestUsers(t)
+	svc := users.NewTestUsers(t)
 
 	tdd.TableRPC(t, []tdd.Case[pb.CreateUserRequest, pb.CreateUserResponse]{
 		{
@@ -54,7 +54,7 @@ func TestCreateUser(t *testing.T) {
 
 Scaffold contract: forge-generated rows assert `WantErr: connect.CodeUnimplemented` and are SELF-DESTRUCTING — they fail the moment the handler is implemented, forcing real `Check`/`WantErr` assertions to replace them. There is deliberately no "any outcome" mode in `pkg/tdd`: every row must be able to fail.
 
-When to use: validating a single handler's request/response/error contract. This is the default unit-test shape for any RPC. The scaffold-once, user-owned CRUD test (`handlers_crud_test.go`) drives the same in-process service against a real migrated DB — `app.NewTest<Svc>(t, app.WithDB(db))`, then `svc.Create<Entity>(ctx, connect.NewRequest(...))`. (`app.NewTest<Svc>Server(t)` exists too, returning an `httptest.Server` + typed client, for tests that need the wire.) A handler's own access checks live in the handler, so exercise them the same way as any other branch: drive the handler with claims that hold — or lack — what the check requires via `app.AuthedContext(t, testkit.WithRoles(...), testkit.WithOrgID(...))` and assert the `CodePermissionDenied` / `CodeNotFound` outcome.
+When to use: validating a single handler's request/response/error contract. This is the default unit-test shape for any RPC. The scaffold-once, user-owned CRUD test (`handlers_crud_test.go`) drives the same in-process service against a real migrated DB — `<pkg>.NewTest<Svc>(t, <pkg>.WithDB(db))`, then `svc.Create<Entity>(ctx, connect.NewRequest(...))`. (`<pkg>.NewTest<Svc>Server(t)` exists too, returning an `httptest.Server` + typed client, for tests that need the wire.) A handler's own access checks live in the handler, so exercise them the same way as any other branch: drive the handler with claims that hold — or lack — what the check requires via `<pkg>.AuthedContext(t, testkit.WithRoles(...), testkit.WithOrgID(...))` and assert the `CodePermissionDenied` / `CodeNotFound` outcome.
 
 ## Pattern 2: Contract test (use `tdd.TableContract`)
 
@@ -190,6 +190,26 @@ The `pkg/tdd` library exports:
 | `app.AuthedContext(t, opts...)` | claims-bearing `Case.Ctx` (generated re-export of `testkit.AuthedContext`) |
 | `app.NewMigratedTestDB(t)` / `testkit.NewMigratedPostgresDB(t, fs)` | real postgres with embedded `db/migrations` applied — opt in via `app.WithDB(app.NewMigratedTestDB(t))` when a test needs the real schema (migrations apply verbatim; a migration postgres rejects fails loudly) |
 | `tdd.SetupMockDB(t)` | real-postgres `*sql.DB` (pkg/pgtest; no driver import needed) |
+| `seedplan.SeedGraph(t, db, "<table>")` | populate a migrated DB: seeds the table + its FK ancestors as one connected spine, every value already satisfying the schema's CHECK/enum/length constraints (`testing/flow`) |
+
+### Populating a migrated DB: seed the spine, don't hand-write rows
+
+`NewMigratedTestDB` gives you an empty schema. The reflex is to hand-build the
+parent chain with struct literals, and it wastes a cycle on a trap:
+
+**An enum column is `TEXT` + `CHECK (col IN (...))` listing the proto member
+NAMES, so a Go zero value `""` is rejected by the database.** A hand-written
+parent row that leaves any enum field unset dies on insert with
+`violates check constraint "<table>_<col>_check"` — setup failing for a reason
+that has nothing to do with what you were testing. Same for a `string` field
+carrying `min_len`, which becomes `CHECK (char_length(col) >= 1)`.
+
+`seedplan.SeedGraph(t, db, "<table>")` avoids all of it: it reads the schema
+out of the database you hand it and plans values that satisfy every
+constraint, then returns `g.PK("<parent>")` for the ids your RPC needs. Reach
+for it before writing a `CreateX` chain. Hand-written rows are still right when
+the test turns on a SPECIFIC value (an accepted estimate, an overdue invoice)
+— then name every enum explicitly, e.g. `Status: "ESTIMATE_STATUS_ACCEPTED"`.
 
 Forge's scaffolders emit Pattern 1 (unit; plus CRUD integration when entities exist) and Pattern 2 (contract) automatically. Hand-write Pattern 3 / Pattern 4 — those don't fit a generic helper.
 

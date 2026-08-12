@@ -26,7 +26,7 @@ by default — could not reach its own database.
 forge renders is a Gateway API Gateway whose controller lives
 elsewhere. A policy that allows traffic from a namespace nothing runs
 in is a policy that denies ingress, which is why the source namespace
-is now DECLARED (ComponentEnv.ingress_namespace) rather than assumed.
+is now DECLARED (WorkloadEnv.ingress_namespace) rather than assumed.
 
 The external egress rule is port-scoped rather than
 destination-scoped: forge cannot know the address of a managed

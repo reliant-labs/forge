@@ -54,11 +54,14 @@ func TestE2EZeroServiceScaffoldCompiles(t *testing.T) {
 
 	runCmd(t, projectDir, forgeBin, "generate")
 
-	// The generated test harness uses *slog.Logger unconditionally, so
-	// the import must be present even with no components.
-	testingGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "testing.go"))
-	if strings.Contains(testingGo, "slog.") && !strings.Contains(testingGo, `"log/slog"`) {
-		t.Errorf("pkg/app/testing.go references slog without importing log/slog")
+	// The test harness is emitted PER COMPONENT, beside the component, as
+	// internal/handlers/<svc>/helpers_gen_test.go. A zero-component project
+	// has none to emit — and the project-wide pkg/app/testing.go that used
+	// to stand in for it is retired (as a non-test .go file in a package
+	// cmd/ imports, it linked package `testing` into the production binary).
+	// Its absence is the assertion now.
+	if _, err := os.Stat(filepath.Join(projectDir, "pkg", "app", "testing.go")); err == nil {
+		t.Error("pkg/app/testing.go must not be emitted — it put package `testing` in the production binary")
 	}
 
 	// The real assertion: the whole zero-component tree compiles.

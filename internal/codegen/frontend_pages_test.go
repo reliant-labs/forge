@@ -38,8 +38,8 @@ func TestExtractCRUDEntities_FullCRUD(t *testing.T) {
 	if e.EntitySlug != "tasks" {
 		t.Errorf("EntitySlug = %q, want %q", e.EntitySlug, "tasks")
 	}
-	if e.HooksImportPath != "@/hooks/task-service-hooks" {
-		t.Errorf("HooksImportPath = %q, want %q", e.HooksImportPath, "@/hooks/task-service-hooks")
+	if e.HooksImportPath != "@/hooks/task-service-hooks_gen" {
+		t.Errorf("HooksImportPath = %q, want %q", e.HooksImportPath, "@/hooks/task-service-hooks_gen")
 	}
 	if e.TypesImportPath != "@/gen/services/tasks/v1/tasks_pb" {
 		t.Errorf("TypesImportPath = %q, want %q", e.TypesImportPath, "@/gen/services/tasks/v1/tasks_pb")

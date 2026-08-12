@@ -454,6 +454,26 @@ type FrontendTemplateData struct {
 	APIURL string
 	Module string
 	Pages  []NavPageData
+	// HasTypedConfig reports whether this frontend has a config message
+	// bound to it by (forge.v1.frontend_config). When true, templates read
+	// their settings through the generated src/lib/config_gen.ts — values
+	// delivered at RUNTIME by the KCL-rendered config.js — instead of
+	// build-time-inlined NEXT_PUBLIC_* / VITE_* env vars.
+	//
+	// It gates rather than replaces because frontend config is OPT-IN: a
+	// project that declares no frontend-bound message keeps the previous
+	// env-var behavior byte-for-byte, so adopting this is a proto edit and
+	// nothing else.
+	HasTypedConfig bool
+	// Has<Field> report which well-known OIDC/mock fields that message
+	// actually declares. A template cannot reference cfg.OIDC_SCOPES when
+	// the proto never declared it — the generated module's type would not
+	// have the key and `tsc` would fail — so each read is gated on its own
+	// field being present.
+	HasRedirectURI bool
+	HasScopes      bool
+	HasResource    bool
+	HasMockAPI     bool
 	// NavHookImports is the per-module aggregation of the list hooks the
 	// dashboard tiles consume. Derived from Pages by the nav generator.
 	NavHookImports []NavHookImport

@@ -19,7 +19,7 @@ import (
 // forge scaffolds no `db/fixtures` directory — the seed model is
 // `db/seeds/` (vocab.yaml + a user-owned custom/ overlay), and the mock
 // values come from codegen.SeedProjection reading the project's own
-// seeddata.Plan. So the header named a directory that does not exist, and
+// seedplan.Plan. So the header named a directory that does not exist, and
 // pointed a reader looking for "where does this data come from?" at
 // nothing. `pkg/testkit`'s LoadFixture still says db/fixtures, but that is
 // a path the CALLER passes and forge never creates; the mock header was
@@ -83,7 +83,7 @@ func TestMockHeaderCitesOnlyDirectoriesForgeScaffolds(t *testing.T) {
 	for dir := range claims {
 		if _, err := os.Stat(filepath.Join(root, "db", dir)); err != nil {
 			t.Errorf("the generated mock header cites db/%s, but `forge project new` creates no such "+
-				"directory (%v).\nThe mocks are rendered from the project's own seeddata.Plan (see "+
+				"directory (%v).\nThe mocks are rendered from the project's own seedplan.Plan (see "+
 				"codegen.SeedProjection); the seed model on disk is db/seeds/.\nA header naming a "+
 				"directory that does not exist sends a reader asking \"where does this data come "+
 				"from?\" to nothing.", dir, err)

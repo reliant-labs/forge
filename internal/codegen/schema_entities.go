@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -8,8 +9,8 @@ import (
 	"github.com/jinzhu/inflection"
 
 	"github.com/reliant-labs/forge/internal/naming"
-	"github.com/reliant-labs/forge/internal/schemadef"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // BuildSchemaEntities is the entity source of truth: it joins the
@@ -64,6 +65,20 @@ func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef,
 				continue
 			}
 			seen[key] = true
+			// A composite PK has no single column the CRUD projection's
+			// Get/Update/Delete (which take ONE id) can key on. Fabricating
+			// "id" here used to silently name a column that does not exist
+			// on the table, producing broken generated code with no signal
+			// to the user. Skip the entity entirely instead — its RPCs fall
+			// through to the ordinary stub path, exactly as if no matching
+			// table existed at all — and say so once, by name, so the user
+			// knows to reach it via the repo_ext seam rather than wonder why
+			// CRUD never showed up.
+			if len(table.PKCols) > 1 {
+				fmt.Printf("ℹ️  %s has a composite primary key (%s) — CRUD projection and ULID id-generation are skipped; the table is plain schema (query it via the repo_ext seam).\n",
+					table.Name, strings.Join(table.PKCols, ", "))
+				continue
+			}
 			entities = append(entities, buildEntityDef(name, table, svc))
 		}
 	}
@@ -99,20 +114,26 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 
 	// Columns: the applied schema, verbatim.
 	for _, c := range table.Columns {
+		fillStrategy, _ := c.FillStrategy()
 		e.Columns = append(e.Columns, EntityColumn{
-			Name:        c.Name,
-			Type:        string(c.Type),
-			IsArray:     c.IsArray,
-			NotNull:     c.NotNull,
-			IsPK:        c.IsPK,
-			DeclType:    c.DeclType,
-			Default:     c.Default,
-			IsGenerated: c.IsGenerated,
+			Name:         c.Name,
+			Type:         string(c.Type),
+			IsArray:      c.IsArray,
+			NotNull:      c.NotNull,
+			IsPK:         c.IsPK,
+			DeclType:     c.DeclType,
+			Default:      c.Default,
+			IsGenerated:  c.IsGenerated,
+			Immutable:    c.HasMarker(schemadef.ColumnMarkerImmutable),
+			Version:      c.HasMarker(schemadef.ColumnMarkerVersion),
+			FillStrategy: fillStrategy,
 		})
 	}
 
-	// PK: single-column keys only — composite PKs fall back to "id"
-	// for the CRUD projection (Get/Delete take one id).
+	// PK: single-column keys only. BuildSchemaEntities filters out
+	// composite-PK tables before calling this function (see there), so
+	// table.PKCols is always length 0 or 1 here. The "id" fallback below
+	// covers only the length-0 case — a table with no declared PK at all.
 	e.PkField = "id"
 	e.PkGoType = "string"
 	if len(table.PKCols) == 1 {
@@ -260,11 +281,11 @@ func WireEntityFields(svc ServiceDef, entityName string) []EntityField {
 
 func schemaFieldToEntityField(d SchemaFieldDef) EntityField {
 	f := EntityField{
-		Name:      d.Name,
-		GoName:    naming.ToProtoPascalCase(d.Name),
-		Optional:  d.Optional,
-		Secret:    d.Secret,
-		ServerSet: d.ServerSet,
+		Name:     d.Name,
+		GoName:   naming.ToProtoPascalCase(d.Name),
+		Optional: d.Optional,
+		Secret:   d.Secret,
+		ReadOnly: d.ReadOnly,
 	}
 	switch d.Kind {
 	case "message":

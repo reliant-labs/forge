@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/schemadef"
-	"github.com/reliant-labs/forge/internal/seeddata"
+	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // The CHECK expression is a SERIALIZATION FORMAT that forge both writes and
@@ -51,11 +51,11 @@ type checkRoundTripCase struct {
 	sqlType string
 	// constraints is the rule set handed to the WRITER.
 	constraints FieldConstraints
-	// wantMinLen/wantMaxLen are what seeddata.LengthBounds must recover.
+	// wantMinLen/wantMaxLen are what seedplan.LengthBounds must recover.
 	// -1 means "reader must report unbounded on that side".
 	wantMinLen int
 	wantMaxLen int
-	// wantNumMin/wantNumMax are what seeddata.BoundsFromTables must recover.
+	// wantNumMin/wantNumMax are what seedplan.BoundsFromTables must recover.
 	wantNumMin *int64
 	wantNumMax *int64
 }
@@ -162,7 +162,7 @@ func TestCheckExpressions_SurviveRoundTripThroughPostgres(t *testing.T) {
 	}
 
 	// Readers consume the whole table set, exactly as production does.
-	bounds := seeddata.BoundsFromTables(tables)
+	bounds := seedplan.BoundsFromTables(tables)
 
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -184,7 +184,7 @@ func TestCheckExpressions_SurviveRoundTripThroughPostgres(t *testing.T) {
 				t.Logf("postgres canonicalized: %s", ck.Def)
 			}
 
-			gotMin, gotMax := seeddata.LengthBounds(tbl, col)
+			gotMin, gotMax := seedplan.LengthBounds(tbl, col)
 			assertBound(t, "LengthBounds min", gotMin, tc.wantMinLen)
 			assertBound(t, "LengthBounds max", gotMax, tc.wantMaxLen)
 

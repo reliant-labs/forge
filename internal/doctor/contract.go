@@ -74,6 +74,10 @@ type Service interface {
 type Deps struct{}
 
 // New constructs a doctor.Service.
+//
+// forge:no-observe
+// Pure compute: empty Deps. Doctor shells out to local tooling and
+// reports what it found; the CLI's own output is the trace.
 func New(_ Deps) Service { return &svc{} }
 
 type svc struct{}
@@ -123,6 +127,7 @@ func projectChecks() []namedCheck {
 	base := []namedCheck{
 		{"covdata", CheckCovdata},
 		{"Disowned Files", CheckDisownedFiles},
+		{"Auth Issuer Parity", CheckAuthParity},
 	}
 	return append(base, deployabilityChecks()...)
 }

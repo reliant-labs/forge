@@ -2,7 +2,7 @@ import { createConnectTransport } from "@connectrpc/connect-web";
 import { createClient, type Transport } from "@connectrpc/connect";
 import { buildRuntimeInterceptors } from "@reliant-labs/web-runtime";
 import type { DescService } from "@bufbuild/protobuf";
-import { createMockTransport } from "@/lib/mock-transport";
+import { createMockTransport } from "@/lib/mock-transport_gen";
 import { DEV_API_URL } from "./apiurl_gen";
 
 // The API URL is read from VITE_API_URL (Vite exposes import.meta.env vars
@@ -44,7 +44,7 @@ function buildTransport(): Transport {
   //              and exercise the rest of the stack for real.
   //   anything else (default) — real backend, real auth.
   //
-  // The mock transport is generated at src/lib/mock-transport.ts by the
+  // The mock transport is generated at src/lib/mock-transport_gen.ts by the
   // frontend scaffold, and re-rendered with entity fixtures by every
   // `forge generate` — so this static import resolves from the moment the
   // frontend exists, which Vite's ESM pipeline requires (the older

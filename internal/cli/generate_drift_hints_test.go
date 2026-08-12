@@ -18,11 +18,13 @@ func TestTier1ExtensionPointHint(t *testing.T) {
 		{"internal/handlers/orders/handlers_gen.go", []string{"contract.go", "proto"}},
 		{"internal/handlers/orders/mock_gen.go", []string{"contract.go", "proto"}},
 
-		// pkg/app/testing.go was forked in the fleet for exactly one
-		// reason — "interface-typed Deps stubs aren't generated". That
-		// capability shipped, so the hint must now name the seam. A
-		// blank hint here is what kept an obsolete fork alive.
-		{"pkg/app/testing.go", []string{"With<Svc>Deps", "AUTO-STUBBED"}},
+		// pkg/app/testing.go is RETIRED: as a non-test .go file importing
+		// "testing" in a package cmd/<proj> imports, it linked package
+		// `testing` into every production binary. The hint must say so and
+		// name the replacement, so a project still carrying the file knows
+		// where its harness went rather than re-forking it.
+		{"pkg/app/testing.go", []string{"RETIRED", "helpers_gen_test.go"}},
+		{"pkg/app/factory_gen.go", []string{"RETIRED", "factories_gen_test.go"}},
 
 		// The HTTP edge: forge owns serve.go end-to-end and exposes no
 		// seam. The hint must SAY that and name each missing seam, so
@@ -35,10 +37,10 @@ func TestTier1ExtensionPointHint(t *testing.T) {
 
 		// mounts_services.go has a per-service seam AND a project-level
 		// gap; the hint carries both halves.
-		{"internal/app/mounts_services.go", []string{"RegisterHTTP", "NO EXTENSION POINT EXISTS", "ExtraRoutes"}},
+		{"internal/app/mounts_services_gen.go", []string{"RegisterHTTP", "NO EXTENSION POINT EXISTS", "ExtraRoutes"}},
 
-		{"pkg/config/config.go", []string{"forge.yaml"}},
-		{"internal/db/order_orm.go", []string{"migration", "proto"}},
+		{"pkg/config/config_gen.go", []string{"forge.yaml"}},
+		{"internal/db/order_orm_gen.go", []string{"migration", "proto"}},
 		{"frontends/admin-web/src/app/dashboard_gen.tsx", []string{"regenerate from proto"}},
 
 		// Leading ./ normalized.
@@ -66,10 +68,10 @@ func TestTier1ExtensionPointHint(t *testing.T) {
 // zero disowns were deliberate.
 func TestTier1ExtensionPointHintIsTotal(t *testing.T) {
 	paths := []string{
-		"pkg/app/wire_gen.go", "pkg/app/testing.go", "pkg/config/config.go",
+		"pkg/app/wire_gen.go", "pkg/app/testing.go", "pkg/config/config_gen.go",
 		"cmd/x/cmd/serve.go", "cmd/x/cmd/server.go", "cmd/x/cmd/svc_register.go",
-		"internal/app/mounts_services.go", "internal/app/auth.go",
-		"internal/handlers/orders/handlers_gen.go", "internal/db/thing_orm.go",
+		"internal/app/mounts_services_gen.go", "internal/app/auth.go",
+		"internal/handlers/orders/handlers_gen.go", "internal/db/thing_orm_gen.go",
 		"frontends/web/src/lib/apiurl_gen.ts", "deploy/kcl/main.k",
 		"", ".", "weird", "a/b/c/d/e_gen.go",
 	}
@@ -87,7 +89,7 @@ func TestTier1ExtensionPointHintIsTotal(t *testing.T) {
 func TestFormatTier1DriftReport(t *testing.T) {
 	drift := []checksums.Tier1DriftEntry{
 		{Path: "pkg/app/wire_gen.go", RecordedHash: "aaaa1111", OnDiskHash: "bbbb2222"},
-		{Path: "pkg/config/config.go", RecordedHash: "cccc3333", OnDiskHash: "dddd4444"},
+		{Path: "pkg/config/config_gen.go", RecordedHash: "cccc3333", OnDiskHash: "dddd4444"},
 	}
 	got := formatTier1DriftReport(drift)
 

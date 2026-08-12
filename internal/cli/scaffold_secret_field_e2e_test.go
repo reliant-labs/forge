@@ -73,10 +73,13 @@ func TestE2EScaffoldSecretFieldPreservedOnFullReplace(t *testing.T) {
 		t.Fatalf("secret column must stay in the born migration (schema truth); migrations=%v mig=\n%s", migEntries, upMig)
 	}
 
-	// ── repo layer: the generated Spec preserves the secret on full replace ──
-	credORM := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "credential_orm.go"))
-	if !regexp.MustCompile(`SecretColumns:\s*\[\]string\{"token"\}`).MatchString(credORM) {
-		t.Errorf("credential_orm.go must carry crud.Spec SecretColumns []string{\"token\"}; got:\n%s", credORM)
+	// ── repo layer: the secret column is held back on a full replace ──
+	// The protection rides on the column's own Bun tag (,skipupdate) rather
+	// than a parallel list of column names in a repo Spec: a name list was
+	// checked against nothing, so a typo silently disabled the guard.
+	credORM := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "credential_orm_gen.go"))
+	if !regexp.MustCompile(`bun:"token[^"]*,skipupdate`).MatchString(credORM) {
+		t.Errorf("credential_orm.go must tag the token column ,skipupdate; got:\n%s", credORM)
 	}
 
 	// ── runtime: drive the generated stack against real postgres ──

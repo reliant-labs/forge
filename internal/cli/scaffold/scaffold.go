@@ -187,6 +187,17 @@ type componentSpec struct {
 	// most across kinds (full pipeline + E2E for service; no-generate branch
 	// + bootstrap-only for worker; no pipeline for binary).
 	postScaffold func(p postScaffoldParams) error
+
+	// deferWorkloadDecl suppresses the deploy/kcl/workloads.k append at the
+	// end of this run, handing the caller responsibility for it.
+	//
+	// Set by the BATCH path only. The declaration must happen after the
+	// generate pipeline, because it re-reads the inventory and a service is
+	// declared by the compiled proto descriptor the pipeline produces. In a
+	// batch the pipeline runs once, after every name has been scaffolded, so
+	// no per-name run is in a position to make the append — the batch makes
+	// them all, in order, once the descriptor is current.
+	deferWorkloadDecl bool
 }
 
 // postScaffoldParams bundles the state scaffoldComponent threads into the
@@ -250,11 +261,30 @@ func scaffoldComponent(spec componentSpec) error {
 	// internal/workers/ | internal/operators/ | cmd/), which is what the next
 	// read discovers. The post-scaffold generate step turns those sources
 	// into wiring.
-	return spec.postScaffold(postScaffoldParams{
+
+	if err := spec.postScaffold(postScaffoldParams{
 		cfg:  cfg,
 		root: root,
 		name: spec.name,
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Declare the new workload in the project's deploy/kcl/workloads.k.
+	// This is the ONE write forge makes to that user-owned file after it is
+	// born, and it is a pure append — nothing above the insertion point is
+	// touched. When the file has been restructured such that there is no
+	// unambiguous place to insert, the stanza is PRINTED instead of guessed.
+	//
+	// AFTER postScaffold, deliberately: a service is declared by the proto
+	// descriptor, which the post-scaffold generate step is what produces.
+	// Re-reading the inventory here means the stanza carries what discovery
+	// actually found — a cron's schedule, an operator's group/version/CRDs —
+	// rather than a kind guessed from the subcommand name.
+	if !spec.deferWorkloadDecl {
+		declareWorkloadInKCL(root, cfg, spec)
+	}
+	return nil
 }
 
 // runPostScaffoldGenerate runs the worker-style post-scaffold generate step:
@@ -339,22 +369,22 @@ func wireWorkerIntoTree(cfg *config.ProjectConfig, root, name string) {
 	})
 }
 
-// reportServiceCmdWiring prints the ONE owned line a freshly added service
-// still needs: the constructor reference in cmd/<bin>/main.go.
+// wireServiceIntoTree adds the freshly added service's constructor to
+// cmd/<bin>/main.go, and prints the manual instruction only when it cannot.
 //
 // `forge generate` emits the service's cobra subcommand
 // (cmd/<bin>/cmd/services/<name>.go) — but the composition root decides which
-// commands this binary SHIPS, and that file is owned code forge writes exactly
-// once and never touches again. Without this line the subcommand is generated
-// and unreachable: `<bin> <service>` does not exist and `<bin> --help` never
-// lists it, silently. Workers and operators already print the same instruction
-// (wireComponentIntoTree); services were the gap.
+// commands this binary SHIPS. Without the constructor reference the subcommand
+// is generated and unreachable: `<bin> <service>` does not exist and
+// `<bin> --help` never lists it, silently.
 //
-// Printed only when the reference is actually absent, so a --resume/--force
-// re-run over an already-wired service stays quiet. Reserved names (the command
-// tree's own server/version/db/…) emit no subcommand at all, so there is
-// nothing to say about them.
-func reportServiceCmdWiring(cfg *config.ProjectConfig, root, name string) {
+// main.go stays OWNED code: this is a one-argument append that leaves the rest
+// of the file alone, and an Execute call forge does not recognize is declined
+// rather than guessed at (see codegen.WireComponentIntoMain for the full
+// reasoning). Already-wired is a no-op, so a --resume/--force re-run stays
+// quiet. Reserved names (the command tree's own server/version/db/…) emit no
+// subcommand at all, so there is nothing to wire.
+func wireServiceIntoTree(cfg *config.ProjectConfig, root, name string) {
 	runtime, ctor, emitted := codegen.CmdServiceCommand(name)
 	if !emitted {
 		return
@@ -363,20 +393,27 @@ func reportServiceCmdWiring(cfg *config.ProjectConfig, root, name string) {
 	if _, err := os.Stat(filepath.Join(root, "cmd", bin, "cmd", "services", runtime+".go")); err != nil {
 		return // no subcommand on disk (codegen skipped or failed) — nothing to wire
 	}
-	mainPath := filepath.Join(root, "cmd", bin, "main.go")
-	main, err := os.ReadFile(mainPath)
-	if err != nil {
-		return
-	}
-	if strings.Contains(string(main), "services."+ctor) {
-		return
-	}
 	module := ""
 	if cfg != nil {
 		module = cfg.ModulePath
 	}
+
+	outcome, err := codegen.WireComponentIntoMain(root, bin, module, "services", ctor)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not update cmd/%s/main.go: %v\n", bin, err)
+	}
+	switch outcome {
+	case codegen.WireAlreadyWired:
+		return
+	case codegen.WireApplied:
+		fmt.Printf("  ✅ wired services.%s into cmd/%s/main.go — `%s %s` is live\n", ctor, bin, bin, runtime)
+		return
+	}
+
+	// Unrecognized: the user has made main.go their own in a shape forge
+	// cannot append to. Print exactly what to add, as before.
 	fmt.Printf(`
-🔧 One owned file left to wire — the command tree is named explicitly, not discovered:
+🔧 One owned file left to wire — forge could not find the cmd.Execute(...) call to append to:
 
   cmd/%[1]s/main.go — add to the cmd.Execute(...) arg list (+ the services import):
       import "%[2]s/cmd/%[1]s/cmd/services"
@@ -417,17 +454,29 @@ func wireComponentIntoTree(cfg *config.ProjectConfig, root, name string, w compo
 		fmt.Printf("  • cmd/%s/cmd/%s/%s.go already exists (left untouched)\n", bin, w.group, name)
 	}
 
-	fmt.Printf(`
-🔧 One owned file left to wire — the command tree is named explicitly, not discovered:
+	ctor := "New" + field + "Cmd"
+	outcome, werr := codegen.WireComponentIntoMain(root, bin, module, w.group, ctor)
+	if werr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not update cmd/%s/main.go: %v\n", bin, werr)
+	}
+	switch outcome {
+	case codegen.WireAlreadyWired:
+		// Nothing to say: a re-run over an already-wired component.
+	case codegen.WireApplied:
+		fmt.Printf("  ✅ wired %s.%s into cmd/%s/main.go — `%s %s` is live\n", w.group, ctor, bin, bin, name)
+	default:
+		fmt.Printf(`
+🔧 One owned file left to wire — forge could not find the cmd.Execute(...) call to append to:
 
   cmd/%[1]s/main.go — add to the cmd.Execute(...) arg list (+ the %[2]s import):
       import "%[3]s/cmd/%[1]s/cmd/%[2]s"
       %[2]s.New%[4]sCmd,
-
-  internal/app/{compose,lifecycle}.go are handled by `+"`forge generate`"+`: it discovers
-  the component from its package directory and reconciles the field, the
-  construction, and the typed accessor into those owned files for you.
 `, bin, w.group, module, field)
+	}
+
+	fmt.Printf("  • internal/app/{compose,lifecycle}.go are handled by `forge generate`: it discovers\n" +
+		"    the component from its package directory and reconciles the field, the\n" +
+		"    construction, and the typed accessor into those owned files for you.\n")
 }
 
 // --- scaffold service ---
@@ -439,12 +488,18 @@ func newServiceCmd(f *factory.Factory) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "service <name>",
-		Short: "Scaffold a new Go service",
-		Long: `Scaffold a new Go service into an existing Forge project.
+		Use:   "service <name>...",
+		Short: "Scaffold one or more Go services",
+		Long: `Scaffold one or more Go services into an existing Forge project.
 
-This creates the service directory structure, proto file, Dockerfile,
+This creates each service's directory structure, proto file, Dockerfile,
 hot-reload config, and updates the project configuration.
+
+Pass several names to scaffold them as ONE batch. The generate pipeline
+is the dominant cost of this command and it derives everything it emits
+from the tree, so a batch writes every service's sources and then
+projects them once — four services in one call cost one pipeline run
+instead of four.
 
 There is no per-service port: every service in a binary mounts onto the
 SAME Connect mux, and the process listens once on the AppConfig 'port'
@@ -459,15 +514,17 @@ Flags:
              service.go, the test files, and the proto stub. Use after
              manually editing a scaffolded file and wanting to start over.
 
---resume and --force are mutually exclusive.
+--resume and --force are mutually exclusive, and apply to every name in
+the batch.
 
 Example:
   forge scaffold service users
+  forge scaffold service customers sales jobs billing   # one pipeline run
   forge scaffold service users --resume   # recover from a partial failure
   forge scaffold service users --force    # re-stamp every output file`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runService(f, args[0], resume, force)
+			return runServices(f, args, resume, force)
 		},
 	}
 
@@ -477,7 +534,109 @@ Example:
 	return cmd
 }
 
-func runService(f *factory.Factory, name string, resume, force bool) error {
+// runServices scaffolds a BATCH of services, paying the generate pipeline
+// once for the whole set.
+//
+// The pipeline is the dominant cost of `forge scaffold service` — buf
+// generate, the ORM/CRUD projection, mocks, wiring, `go mod tidy`, `go build`
+// — and it is a pure function of the tree: it discovers services from the
+// proto descriptor rather than from anything the verb records, and re-running
+// it writes byte-identical output. So scaffolding N services one at a time
+// pays for N projections of which the first N-1 are immediately superseded by
+// the next. Measured on a four-service round, that was four full pipeline runs
+// where one was correct.
+//
+// The batch is therefore: validate and conflict-check every name FIRST (a
+// typo must not cost three scaffolds before it is caught), write every
+// service's sources with the pipeline suppressed, run the pipeline once, then
+// perform each name's post-pipeline tail (E2E harness, command-tree wiring,
+// registry notice, workloads.k declaration) in the order the user named them.
+//
+// A single-name call goes through exactly this path — there is one code path,
+// not a fast path and a batch path that can drift apart.
+func runServices(f *factory.Factory, names []string, resume, force bool) error {
+	ctxLabel := "forge scaffold service"
+	if len(names) == 0 {
+		return cliutil.UserErr(ctxLabel, "no service name given", "",
+			"pass one or more names, e.g. `forge scaffold service customers sales`")
+	}
+
+	// Reject a repeated name before anything is written. Two identical names
+	// would scaffold the same dirs twice and then collide in codegen, and the
+	// only moment that is cheap to say is before the first write. Compare on
+	// the CANONICAL package form, so "admin-server" and "admin_server" — which
+	// scaffold into the same directory — are caught too.
+	seen := map[string]string{}
+	for _, name := range names {
+		canonical := naming.ServicePackage(name)
+		if first, dup := seen[canonical]; dup {
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("service %q is named twice in this batch (as %q and %q)", canonical, first, name),
+				"", "name each service once — they share one directory and one Go package")
+		}
+		seen[canonical] = name
+	}
+
+	if len(names) > 1 {
+		fmt.Printf("Scaffolding %d services as one batch (the generate pipeline runs once at the end)...\n\n", len(names))
+	}
+
+	batch := &serviceBatch{total: len(names)}
+	for i, name := range names {
+		batch.index = i
+		if err := runService(f, name, resume, force, batch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// serviceBatch threads the batch's shape through the per-name scaffold so each
+// run knows whether it is the one that pays for the pipeline, and so the
+// deferred post-pipeline tails can be collected and replayed at the end.
+type serviceBatch struct {
+	// total is the number of names in the batch; index is the current one.
+	total int
+	index int
+	// tails are the post-pipeline steps each name deferred, replayed in
+	// naming order once the pipeline has run.
+	tails []func() error
+	// rollbacks undo each name's scaffold, for a pipeline failure that
+	// invalidates the whole batch.
+	rollbacks []func()
+}
+
+// isLast reports whether the current name is the one that runs the pipeline.
+func (b *serviceBatch) isLast() bool { return b.index == b.total-1 }
+
+// rollbackAll rewinds every fresh service in the batch, in reverse order.
+func (b *serviceBatch) rollbackAll() {
+	for i := len(b.rollbacks) - 1; i >= 0; i-- {
+		b.rollbacks[i]()
+	}
+}
+
+// runTails replays each name's post-pipeline tail in naming order.
+//
+// A tail that fails does NOT abort the rest: by this point every service is
+// written and the pipeline has validated them, so a failure here is one
+// service's finishing touch (an E2E harness, a wiring append) and not a reason
+// to leave the other three unfinished. The first error is returned once every
+// tail has had its turn.
+func (b *serviceBatch) runTails() error {
+	var firstErr error
+	for _, tail := range b.tails {
+		if err := tail(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// runService scaffolds ONE service. batch is never nil — a single-service
+// invocation is a batch of one — and carries whether this name is the one that
+// pays for the shared generate pipeline.
+func runService(f *factory.Factory, name string, resume, force bool, batch *serviceBatch) error {
 	ctxLabel := fmt.Sprintf("forge scaffold service %s", name)
 
 	// --resume and --force are mutually exclusive: one is "preserve user
@@ -510,10 +669,14 @@ func runService(f *factory.Factory, name string, resume, force bool) error {
 		handlerDirPreexisted bool
 		protoDirPreexisted   bool
 	)
-
 	return scaffoldComponent(componentSpec{
 		name:     name,
 		ctxLabel: ctxLabel,
+		// The service path owns its own workloads.k declaration, from
+		// finishService — the tail that runs after the shared pipeline has
+		// compiled the descriptor discovery reads. The spine's own append
+		// would fire mid-batch, before the descriptor knows the service.
+		deferWorkloadDecl: true,
 		validate: func(name string) error {
 			if err := validateServiceName(name); err != nil {
 				return cliutil.WrapUserErr(ctxLabel, "invalid service name", "",
@@ -578,63 +741,98 @@ func runService(f *factory.Factory, name string, resume, force bool) error {
 			return nil
 		},
 		postScaffold: func(p postScaffoldParams) error {
-			// Run the full generation pipeline: buf generate, service stubs,
-			// mocks, bootstrap.go, testing.go, go mod tidy, etc.
-			fmt.Println("\n🔧 Running generation pipeline...")
-			err := f.Gen.RunPipeline(p.root)
-			if err != nil {
-				// Roll back the freshly-scaffolded files so a validation
-				// failure doesn't strand a half-created service (orphan proto
-				// dir + handler dir). Only dirs this run created are removed;
-				// a pre-existing dir (resume/force / manual edit) is preserved.
+			// Record this name's rollback with the batch so a failure on the
+			// SHARED pipeline rewinds every fresh service, not just the one
+			// that happened to be running when it failed. The pipeline
+			// validates the batch as a whole: if it fails, none of these
+			// services is known-good, and leaving the earlier ones behind
+			// would strand exactly the orphan handler/proto dirs the
+			// single-service rollback exists to prevent. Only dirs THIS run
+			// created are ever removed — a pre-existing dir (resume/force, or
+			// a re-run over a manual edit) is preserved.
+			batch.rollbacks = append(batch.rollbacks, func() {
 				if !exists && !resume && !force {
 					rollbackServiceScaffold(p.root, servicePkg, handlerDirPreexisted, protoDirPreexisted)
 				}
+			})
+
+			// The post-pipeline tail — everything that reads what the pipeline
+			// PRODUCED (the E2E harness off the compiled stub, the command-tree
+			// wiring off the generated subcommand, the registry check). Held as
+			// a closure so the batch replays every name's tail after the single
+			// shared pipeline run, in the order the user named them.
+			batch.tails = append(batch.tails, func() error {
+				return finishService(f, p, name)
+			})
+
+			// Only the LAST name pays for the pipeline; earlier names have
+			// written their sources and stop here. See runServices for why the
+			// pipeline is batchable at all.
+			if !batch.isLast() {
+				fmt.Printf("  ✓ sources written — pipeline deferred to the end of the batch\n")
+				return nil
+			}
+
+			// The full generation pipeline: buf generate, service stubs,
+			// mocks, bootstrap.go, testing.go, go mod tidy, etc. ONCE for the
+			// whole batch.
+			fmt.Println("\n🔧 Running generation pipeline...")
+			if err := f.Gen.RunPipeline(p.root); err != nil {
+				batch.rollbackAll()
 				return fmt.Errorf("generation pipeline failed for service %q: %w", name, err)
 			}
-
-			// Generate E2E test harness. GenerateE2ETests already skips
-			// existing files unconditionally, which gives the right behavior
-			// for both --resume and default. --force is not threaded through
-			// here because the E2E harness is the user's tests and clobbering
-			// them is rarely what someone re-stamping a scaffold actually
-			// wants.
-			fmt.Println("Generating E2E test harness...")
-			e2eMethods := generator.MethodsFromProtoStub(name)
-			if err := generator.GenerateE2ETests(p.root, name, p.cfg.ModulePath, p.cfg.Name, e2eMethods); err != nil {
-				fmt.Printf("  warning: failed to generate E2E tests: %v\n", err)
-				// Non-fatal: the service was created successfully
-			}
-
-			fmt.Printf("\n✅ Service '%s' added successfully!\n", name)
-
-			// The command tree is OWNED code — forge generated the service's
-			// subcommand but only the composition root decides what this binary
-			// ships. Print the one line that is left (no-op when already wired).
-			reportServiceCmdWiring(p.cfg, p.root, name)
-
-			// Registration: pkg/app/services.go is user-owned — forge never
-			// edits it. When the file predates this service (the usual
-			// add-flow: the registry was scaffolded with the project's earlier
-			// services), the new row constructor is generated but
-			// unreferenced, so the binary won't serve the service until the
-			// user adds the line. Print the exact line; `forge project audit` keeps
-			// the gap visible (codegen.unregistered_services) until it's
-			// resolved. This is deliberate: the registration line is the one
-			// decision the user (or their agent) writes — forge generates the
-			// guardrails around it.
-			if reg, regErr := f.Gen.LoadServiceRegistry(p.root); regErr == nil && reg.Exists() && !reg.Registered(name) {
-				fmt.Println()
-				fmt.Printf("⚠️  %s is user-owned — forge does not edit it.\n", f.Gen.ServiceRegistryRelPath)
-				fmt.Printf("   To serve %q from this binary, add this row to RegisteredServices:\n\n", name)
-				fmt.Printf("       %s(app, cfg, logger, opts...),\n\n", codegen.ServiceRowFuncName(name))
-				fmt.Println("   Until then the service is generated but not served (forge project audit: codegen.unregistered_services).")
-				fmt.Println("   After registering, `forge generate` also emits its cobra subcommand into cmd/services_gen.go.")
-			}
-
-			return nil
+			return batch.runTails()
 		},
 	})
+}
+
+// finishService is one service's post-pipeline tail: the steps that read what
+// the generate pipeline produced. Split out of the postScaffold hook so a
+// batch can defer it past the single shared pipeline run instead of
+// interleaving it with the scaffolding of the next name.
+func finishService(f *factory.Factory, p postScaffoldParams, name string) error {
+	// Generate E2E test harness. GenerateE2ETests already skips existing
+	// files unconditionally, which gives the right behavior for both
+	// --resume and default. --force is not threaded through here because the
+	// E2E harness is the user's tests and clobbering them is rarely what
+	// someone re-stamping a scaffold actually wants.
+	fmt.Println("Generating E2E test harness...")
+	e2eMethods := generator.MethodsFromProtoStub(name)
+	if err := generator.GenerateE2ETests(p.root, name, p.cfg.ModulePath, p.cfg.Name, e2eMethods); err != nil {
+		fmt.Printf("  warning: failed to generate E2E tests: %v\n", err)
+		// Non-fatal: the service was created successfully
+	}
+
+	fmt.Printf("\n✅ Service '%s' added successfully!\n", name)
+
+	// The command tree is OWNED code — forge generated the service's
+	// subcommand but only the composition root decides what this binary
+	// ships. Append the constructor (no-op when already wired; prints the
+	// manual line when main.go is not in a shape forge recognizes).
+	wireServiceIntoTree(p.cfg, p.root, name)
+
+	// Registration: pkg/app/services.go is user-owned — forge never edits it.
+	// When the file predates this service (the usual add-flow: the registry
+	// was scaffolded with the project's earlier services), the new row
+	// constructor is generated but unreferenced, so the binary won't serve
+	// the service until the user adds the line. Print the exact line;
+	// `forge project audit` keeps the gap visible
+	// (codegen.unregistered_services) until it's resolved. This is
+	// deliberate: the registration line is the one decision the user (or
+	// their agent) writes — forge generates the guardrails around it.
+	if reg, regErr := f.Gen.LoadServiceRegistry(p.root); regErr == nil && reg.Exists() && !reg.Registered(name) {
+		fmt.Println()
+		fmt.Printf("⚠️  %s is user-owned — forge does not edit it.\n", f.Gen.ServiceRegistryRelPath)
+		fmt.Printf("   To serve %q from this binary, add this row to RegisteredServices:\n\n", name)
+		fmt.Printf("       %s(app, cfg, logger, opts...),\n\n", codegen.ServiceRowFuncName(name))
+		fmt.Println("   Until then the service is generated but not served (forge project audit: codegen.unregistered_services).")
+		fmt.Println("   After registering, `forge generate` also emits its cobra subcommand into cmd/services_gen.go.")
+	}
+
+	// The workloads.k declaration goes last, after the descriptor the
+	// pipeline compiled — discovery is what knows the component's real shape.
+	declareWorkloadInKCL(p.root, p.cfg, componentSpec{name: name, ctxLabel: "forge scaffold service " + name})
+	return nil
 }
 
 // rollbackServiceScaffold removes the on-disk files a FAILED `forge scaffold
@@ -1078,6 +1276,8 @@ func newFrontendCmd(_ *factory.Factory) *cobra.Command {
 	var kind string
 	var output string
 	var basePath string
+	var authMode string
+	var routes []string
 
 	cmd := &cobra.Command{
 		Use:   "frontend <name>",
@@ -1096,11 +1296,29 @@ supports the dynamic [id] CRUD routes forge generates. Opt into
 fails the build on the generated /<entity>/[id] pages. Use "server"
 for full Next.js dev+prod (next start).
 
+--routes limits which entities get generated CRUD pages. By default forge
+scaffolds a list/detail/create/edit route set for EVERY entity in the
+project, which is right for a project's first frontend and wrong for every
+one after it — a purpose-built frontend starts by deleting most of what was
+just written. Naming routes makes the set an allowlist, so entities added
+later do not silently appear in this frontend. The value is persisted as
+frontends[].routes and honored by every subsequent forge generate run.
+
 --base-path mounts the frontend under a URL prefix (e.g. /admin behind a
 reverse proxy that blends several apps on one host). It is persisted as
 frontends[].base_path in forge.yaml and rendered into next.config.ts
 (basePath + assetPrefix) and the generated src/lib/basepath_gen.ts
 helper. The single runtime override is NEXT_PUBLIC_BASE_PATH.
+
+--auth-mode picks where the user types their password. "redirect" is the
+default and the only mode forge scaffolds: sign-in happens on the IdP's
+own hosted pages, which is portable across every IdP, and MFA, social
+sign-in and password reset come for free because the provider
+implements them. A first-party form inside your app is possible — the
+password goes from the browser to the IdP either way — but every
+implementation of one drives a single provider's proprietary API, so
+there is nothing portable to generate. Bringing the environment up
+registers the new frontend with the dev IdP; nothing else to run.
 
 Example:
   forge scaffold frontend web
@@ -1108,71 +1326,101 @@ Example:
   forge scaffold frontend mobile --kind mobile
   forge scaffold frontend admin --kind vite-spa
   forge scaffold frontend dashboard --output standalone
-  forge scaffold frontend admin --base-path /admin`,
+  forge scaffold frontend admin --base-path /admin
+  forge scaffold frontend web --auth-mode credentials
+  forge scaffold frontend ops --routes users,usage-events`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runFrontend(cmd.Context(), args[0], port, kind, output, basePath)
+			return runFrontend(cmd.Context(), args[0], port, kind, output, basePath, authMode, routes)
 		},
 	}
 
-	cmd.Flags().IntVar(&port, "port", 0, "Frontend dev server port (default: auto-increment from 3000)")
+	cmd.Flags().IntVar(&port, "port", 0, "Pin the frontend dev-server port. Default (unset) allocates a free port at launch — set this only when the port is externally fixed (e.g. an OAuth redirect URI registered with an IdP).")
 	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web, mobile, or vite-spa)")
 	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: standalone (default), static, or server. Only applies to --kind web.")
 	cmd.Flags().StringVar(&basePath, "base-path", "", `URL prefix the frontend is mounted under (e.g. "/admin"). Only applies to --kind web.`)
+	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Where the user signs in. Only `redirect` (the default) is scaffolded: sign-in happens on the IdP's own hosted pages. A first-party form is yours to build against your IdP's API — every such API is provider-specific.")
+	cmd.Flags().StringSliceVar(&routes, "routes", nil, "Only generate CRUD pages for these entity route slugs (e.g. --routes users,usage-events). Default (unset) generates a page set for EVERY entity. Persisted as frontends[].routes and honored by every later generate run.")
 
 	return cmd
 }
 
-func runFrontend(ctx context.Context, name string, port int, kind, output, basePath string) error {
+// frontendFlags is the normalized, validated form of the flags
+// `forge scaffold frontend` accepts. Values are lowercased and trimmed, so
+// downstream comparisons can be exact.
+type frontendFlags struct {
+	kind     string
+	output   string
+	basePath string
+	authMode string
+}
+
+// validateFrontendFlags normalizes and cross-checks the scaffold flags before
+// anything is written.
+//
+// --output and --base-path are Next.js-only, so passing either with
+// --kind mobile / vite-spa is refused here rather than silently ignored: the
+// flag would otherwise appear accepted and have no effect on the scaffold.
+func validateFrontendFlags(ctxLabel, kind, output, basePath, authMode string) (frontendFlags, error) {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch kind {
+	case "", "web", "mobile", "vite-spa":
+	default:
+		return frontendFlags{}, cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("invalid frontend kind %q", kind), "",
+			"pass --kind web, mobile, or vite-spa")
+	}
+
+	output = strings.ToLower(strings.TrimSpace(output))
+	switch output {
+	case "", "static", "standalone", "server":
+	default:
+		return frontendFlags{}, cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("invalid --output %q", output), "",
+			"pass --output standalone (default), static, or server")
+	}
+	if output != "" && kind != "" && kind != "web" {
+		return frontendFlags{}, cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("--output only applies to Next.js frontends (--kind web); got --kind %q", kind), "",
+			"drop --output for non-web frontends, or use --kind web")
+	}
+
+	// The base-path shape contract is shared with forge.yaml validation
+	// (leading "/", no trailing "/", [A-Za-z0-9._-] segments) — the value is
+	// spliced verbatim into next.config.ts and generated TypeScript literals.
+	basePath = strings.TrimSpace(basePath)
+	if basePath != "" {
+		if msg, ok := config.ValidateBasePath(basePath); !ok {
+			return frontendFlags{}, cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("invalid --base-path %q: %s", basePath, msg), "",
+				"use a leading \"/\", no trailing \"/\", and [A-Za-z0-9._-] segments")
+		}
+		if kind != "" && kind != "web" {
+			return frontendFlags{}, cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("--base-path only applies to Next.js frontends (--kind web); got --kind %q", kind), "",
+				"drop --base-path for non-web frontends, or use --kind web")
+		}
+	}
+
+	authMode = strings.ToLower(strings.TrimSpace(authMode))
+	if err := validateAuthMode(ctxLabel, authMode); err != nil {
+		return frontendFlags{}, err
+	}
+	return frontendFlags{kind: kind, output: output, basePath: basePath, authMode: authMode}, nil
+}
+
+func runFrontend(ctx context.Context, name string, port int, kind, output, basePath, authMode string, routes []string) error {
 	ctxLabel := fmt.Sprintf("forge scaffold frontend %s", name)
 	if err := validateFrontendName(name); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "invalid frontend name", "",
 			"use a name starting with a letter, containing letters/digits/_/-", err)
 	}
 
-	kind = strings.ToLower(strings.TrimSpace(kind))
-	switch kind {
-	case "", "web", "mobile", "vite-spa":
-	default:
-		return cliutil.UserErr(ctxLabel,
-			fmt.Sprintf("invalid frontend kind %q", kind), "",
-			"pass --kind web, mobile, or vite-spa")
+	flags, err := validateFrontendFlags(ctxLabel, kind, output, basePath, authMode)
+	if err != nil {
+		return err
 	}
-
-	// --output applies only to Next.js (kind=web / kind=""). Reject
-	// up-front for mobile / vite-spa so the user gets a clear error
-	// instead of silently-ignored flag.
-	output = strings.ToLower(strings.TrimSpace(output))
-	switch output {
-	case "", "static", "standalone", "server":
-	default:
-		return cliutil.UserErr(ctxLabel,
-			fmt.Sprintf("invalid --output %q", output), "",
-			"pass --output standalone (default), static, or server")
-	}
-	if output != "" && kind != "" && kind != "web" {
-		return cliutil.UserErr(ctxLabel,
-			fmt.Sprintf("--output only applies to Next.js frontends (--kind web); got --kind %q", kind), "",
-			"drop --output for non-web frontends, or use --kind web")
-	}
-
-	// --base-path follows the same Next.js-only rule, plus the strict
-	// shape contract shared with forge.yaml validation (leading "/", no
-	// trailing "/", [A-Za-z0-9._-] segments) — the value is spliced
-	// verbatim into next.config.ts and generated TypeScript literals.
-	basePath = strings.TrimSpace(basePath)
-	if basePath != "" {
-		if msg, ok := config.ValidateBasePath(basePath); !ok {
-			return cliutil.UserErr(ctxLabel,
-				fmt.Sprintf("invalid --base-path %q: %s", basePath, msg), "",
-				"use a leading \"/\", no trailing \"/\", and [A-Za-z0-9._-] segments")
-		}
-		if kind != "" && kind != "web" {
-			return cliutil.UserErr(ctxLabel,
-				fmt.Sprintf("--base-path only applies to Next.js frontends (--kind web); got --kind %q", kind), "",
-				"drop --base-path for non-web frontends, or use --kind web")
-		}
-	}
+	kind, output, basePath, authMode = flags.kind, flags.output, flags.basePath, flags.authMode
 
 	root, err := projectRoot()
 	if err != nil {
@@ -1187,7 +1435,23 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 		return err
 	}
 
-	// Check for name conflict
+	// Check for name conflict.
+	//
+	// Two names conflict when they CANONICALIZE the same, not only when
+	// they are spelled the same. Everything forge derives from a frontend
+	// name — the config proto file (proto/config/v1/<name>_config.proto),
+	// the dev-IdP KCL fragment, the Go package — goes through
+	// naming.GoPackage, which folds hyphens to underscores. So "foo-bar"
+	// and "foo_bar" are distinct in forge.yaml but name ONE config proto.
+	//
+	// Silently, too: WriteFrontendConfigProto refuses to overwrite an
+	// existing file (it holds an issuer and client id it cannot
+	// reconstruct), so scaffolding the second frontend would succeed while
+	// quietly binding it to the FIRST one's config — a frontend reading
+	// another frontend's OIDC client id, discovered at runtime as a login
+	// that redirects to the wrong app. Refusing at the point the name is
+	// chosen is the only place this is still cheap to fix.
+	canonical := naming.GoPackage(name)
 	for _, frontend := range cfg.Frontends {
 		if frontend.Name == name {
 			return cliutil.UserErr(ctxLabel,
@@ -1195,17 +1459,33 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 				"",
 				"pick a different name, or remove the existing frontend first")
 		}
-	}
-
-	// Auto-assign port if not specified
-	if port == 0 {
-		port = 3000
-		for _, frontend := range cfg.Frontends {
-			if frontend.Port >= port {
-				port = frontend.Port + 1
-			}
+		if naming.GoPackage(frontend.Name) == canonical {
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("frontend %q collides with existing frontend %q: both canonicalize to %q",
+					name, frontend.Name, canonical),
+				fmt.Sprintf("forge derives generated names from the canonical form, so both frontends would "+
+					"claim proto/config/v1/%s_config.proto and deploy/kcl/dev/identity_%s_gen.k",
+					canonical, canonical),
+				fmt.Sprintf("pick a name that canonicalizes differently (hyphens and underscores are "+
+					"equivalent here — %q and %q are the same name to forge), or remove the existing frontend first",
+					name, frontend.Name))
 		}
 	}
+
+	// Port 0 = EPHEMERAL, and it stays that way. `forge project new` already
+	// scaffolds FrontendPort: 0 for this reason (see project.go): the
+	// frontend port is omitempty in forge.yaml, and `forge run` / `forge env
+	// up` allocate a free OS port at launch and print it in the summary.
+	//
+	// This used to auto-assign 3000 (then 3001, …) instead, which put a
+	// literal in forge.yaml that no longer had anything to do with what was
+	// free — so on a host running several forge stacks, `forge run` failed
+	// on a port another project already held and the fix was to hand-edit
+	// forge.yaml. Scaffolding a frontend now teaches the same "discover the
+	// dev port from forge's output, don't hardcode 3000" pattern the rest of
+	// the toolchain already assumes. An explicit --port is still honored
+	// verbatim, for a frontend whose port is externally fixed (an OAuth
+	// redirect URI registered with an IdP is a literal string).
 
 	frontendType := "nextjs"
 	frontendKind := kind
@@ -1221,7 +1501,11 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 		frontendKind = ""
 	}
 
-	fmt.Printf("Adding %s '%s' (port %d)...\n", frontendDescription, name, port)
+	if port == 0 {
+		fmt.Printf("Adding %s '%s' (dev port allocated at launch)...\n", frontendDescription, name)
+	} else {
+		fmt.Printf("Adding %s '%s' (port %d)...\n", frontendDescription, name, port)
+	}
 
 	// The dev API port baked into the new frontend's apiurl_gen.ts. Every
 	// service mounts onto the binary's one Connect mux, so this is the same
@@ -1240,10 +1524,35 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	if err := generator.WriteFrontendWorkspaceFiles(root, cfg.Name, workspaces); err != nil {
 		return fmt.Errorf("write frontend workspace files: %w", err)
 	}
+	// Declare this frontend's public runtime config, then render its files
+	// against it. The (forge.v1.frontend_config) annotation in that proto
+	// is what activates the typed config module, the KCL schema and the
+	// per-env config.js — a frontend added without one gets none of the
+	// config system and falls back to build-time env vars.
+	//
+	// This is append-only on an existing project BY CONSTRUCTION: it
+	// writes a NEW per-frontend file, so no config content already on disk
+	// is read, rewritten or reordered, and an existing file for this
+	// frontend is left exactly as it is.
+	if err := generator.WriteFrontendConfigProto(root, cfg.ModulePath, name, apiPort); err != nil {
+		return fmt.Errorf("write frontend config proto: %w", err)
+	}
+
+	// Which typed fields the frontend's templates may read. A project that
+	// already declared this frontend's config by hand is authoritative —
+	// read it, so a hand-written message with a narrower field set does not
+	// get templates referencing keys it lacks. Otherwise the set comes from
+	// the proto just written, because `forge generate` has not run yet and
+	// there is no descriptor to parse.
+	typedConfig := frontendTypedConfigFor(root, name)
+	if !typedConfig.Bound {
+		typedConfig = generator.ScaffoldedFrontendTypedConfig()
+	}
 	if err := generator.GenerateFrontendFilesWithOptions(root, cfg.ModulePath, cfg.Name, name, apiPort, kind, generator.FrontendGenOptions{
-		Workspaces: workspaces,
-		Output:     output,
-		BasePath:   basePath,
+		Workspaces:  workspaces,
+		Output:      output,
+		BasePath:    basePath,
+		TypedConfig: typedConfig,
 	}); err != nil {
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
@@ -1260,26 +1569,35 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 		}
 	}
 
-	// Update forge.yaml. Only persist `output:` when the user passed
-	// the flag — keeping the field empty lets the per-frontend
-	// scaffold default (currently "standalone") evolve without forcing
-	// every existing forge.yaml to track it explicitly.
-	feEntry := config.FrontendConfig{
-		Name: name,
-		Type: frontendType,
-		Kind: frontendKind,
-		Path: fmt.Sprintf("frontends/%s", name),
-		Port: port,
+	// ── Write back THREE fields, each in place. ──
+	//
+	// This command runs against a forge.yaml the user has been living in
+	// for the life of the project, and it changes three things. It used to
+	// change them by marshalling the whole config struct back over the
+	// file, which is a rewrite, not an update: a Go struct models no
+	// comments and no key order, and NormalizeForWrite drops every section
+	// whose values happen to match what forge would derive. On a real
+	// manifest that silently deleted the comment header, the ci: and lint:
+	// blocks, and most of features:. The file still loaded, so nothing
+	// complained. Each mutation below edits only its own bytes.
+	configPath := filepath.Join(root, "forge.yaml")
+
+	entry := buildFrontendEntry(frontendEntryInput{
+		Name:         name,
+		FrontendType: frontendType,
+		FrontendKind: frontendKind,
+		Kind:         kind,
+		Output:       output,
+		BasePath:     basePath,
+		AuthMode:     authMode,
+		Port:         port,
+		Routes:       routes,
+	})
+	cfg.Frontends = append(cfg.Frontends, entry)
+	if err := generator.AppendFrontendEntryToConfig(configPath, entry); err != nil {
+		return fmt.Errorf("update project config: %w", err)
 	}
-	if output != "" && (kind == "" || kind == "web") {
-		feEntry.Output = output
-	}
-	// Persist base_path so `forge generate` keeps regenerating the
-	// basepath_gen.ts helper with the right prefix.
-	if basePath != "" && (kind == "" || kind == "web") {
-		feEntry.BasePath = basePath
-	}
-	cfg.Frontends = append(cfg.Frontends, feEntry)
+
 	// Flip features.frontend on so subsequent `forge generate` runs
 	// pick up the frontend codegen pass. Projects scaffolded with
 	// `forge project new --kind service` (no --frontend) leave this field
@@ -1288,6 +1606,9 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	// the *bool survives marshal round-trips.
 	frontendOn := true
 	cfg.Features.Frontend = &frontendOn
+	if err := generator.SetProjectConfigScalarPath(configPath, []string{"features", "frontend"}, true); err != nil {
+		return fmt.Errorf("update project config: %w", err)
+	}
 
 	// Bring stack.frontend.framework in sync with the frontend we just
 	// added. Projects scaffolded without --frontend leave this field as
@@ -1297,13 +1618,10 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	// so a user who set something exotic (e.g. "svelte") keeps it.
 	if cfg.Stack.Frontend.Framework == "" || cfg.Stack.Frontend.Framework == "none" {
 		cfg.Stack.Frontend.Framework = frontendType
-	}
-
-	// Components is a derived, `yaml:"-"` field — readProjectConfig fills it
-	// from disk and marshalling drops it again, so the write-back below stays
-	// the identity-plus-frontends shape forge.yaml has always carried.
-	if err := generator.WriteProjectConfigFile(cfg, filepath.Join(root, "forge.yaml")); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+		if err := generator.SetProjectConfigScalarPath(configPath,
+			[]string{"stack", "frontend", "framework"}, frontendType); err != nil {
+			return fmt.Errorf("update project config: %w", err)
+		}
 	}
 
 	// Install the new frontend's npm dependencies so the user can run
@@ -1317,8 +1635,45 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	}
 
 	fmt.Printf("\n✅ Frontend '%s' added successfully!\n", name)
+	reportFrontendAuthNextStep(root)
 
 	return nil
+}
+
+// reportFrontendAuthNextStep points at the dev IdP when the project has no
+// OIDC issuer configured yet.
+//
+// Auth is fail-closed in every mode. Bringing the environment up configures
+// sign-in automatically — the IdP is declared infrastructure and the
+// application registration is converged during bring-up — so this says where
+// to sign in rather than handing over a setup procedure. Without the line, the
+// cheap-looking move is to hand-roll an AuthProvider that injects a pasted
+// token, which is a credential in a repo and a file that has to be deleted
+// later; the PKCE provider the scaffold already ships needs no code.
+func reportFrontendAuthNextStep(root string) {
+	// Only speak up when nothing is configured. A project already pointed at
+	// an issuer (dev IdP or hosted) needs no advice. The DirSecrets store is
+	// one file per secret, so presence of a non-empty file IS the answer —
+	// no parsing, and nothing to read out of the value.
+	for _, key := range []string{"JWT_JWKS_URL", "JWT_ISSUER"} {
+		info, err := os.Stat(filepath.Join(root, "secrets", "dev", key))
+		if err == nil && info.Size() > 0 {
+			return
+		}
+	}
+	fmt.Print(`
+🔑 Auth is fail-closed: every RPC that needs a caller answers 401 until you
+   sign in. Nothing to set up —
+
+       forge run
+
+   brings up the identity provider this project declares, registers this
+   frontend with it, and prints the sign-in URL and the dev credentials.
+   Details, including the traps (opaque-vs-JWT access tokens, and pointing a
+   real deployment at your own issuer):
+
+       forge skill load auth/dev-loop
+`)
 }
 
 // runFrontendNpmInstall runs `npm install` in the freshly scaffolded
@@ -1547,11 +1902,121 @@ func runBinary(name string) error {
 			fmt.Printf("   - forge.yaml (binaries: entry)\n\n")
 			fmt.Printf("Next steps:\n")
 			fmt.Printf("  1. Edit internal/%s/%s.go to implement the runtime loop.\n", pkg, pkg)
-			fmt.Printf("  2. Run `forge generate` — the binary flows into\n")
-			fmt.Printf("     deploy/kcl/components_gen.json automatically; the per-env\n")
-			fmt.Printf("     main.k expands it into a Deployment via the forge.components\n")
-			fmt.Printf("     KCL schema hierarchy. No main.k hand-edit needed.\n")
+			fmt.Printf("  2. It was declared in deploy/kcl/workloads.k as kind=\"tool\": built\n")
+			fmt.Printf("     into the image, never scheduled. Refine it per env in\n")
+			fmt.Printf("     deploy/kcl/<env>/main.k if it needs to run there — both files are yours.\n")
 			return nil
 		},
 	})
+}
+
+// normalizeRouteSlugs canonicalizes --routes input: lowercased, surrounding
+// slashes trimmed, blanks dropped, duplicates collapsed, order preserved.
+//
+// Tolerating "/users" alongside "users" matters because the value an author
+// has at hand is usually a URL they copied, not the on-disk directory name.
+func normalizeRouteSlugs(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, r := range in {
+		slug := strings.ToLower(strings.Trim(strings.TrimSpace(r), "/"))
+		if slug == "" || seen[slug] {
+			continue
+		}
+		seen[slug] = true
+		out = append(out, slug)
+	}
+	return out
+}
+
+// frontendEntryInput is buildFrontendEntry's parameter set. A struct rather
+// than nine positional args: several are same-typed strings, so a swapped pair
+// would compile cleanly and write the wrong forge.yaml.
+type frontendEntryInput struct {
+	Name         string
+	FrontendType string
+	FrontendKind string
+	Kind         string
+	Output       string
+	BasePath     string
+	AuthMode     string
+	Port         int
+	Routes       []string
+}
+
+// buildFrontendEntry assembles the forge.yaml entry for a newly scaffolded
+// frontend.
+//
+// Optional fields are written ONLY when the user asked for them: leaving a
+// field empty lets its scaffold default evolve in a later forge version
+// without every existing forge.yaml pinning the old value. That is why each
+// assignment below is conditional rather than unconditional.
+func buildFrontendEntry(in frontendEntryInput) config.FrontendConfig {
+	fe := config.FrontendConfig{
+		Name: in.Name,
+		Type: in.FrontendType,
+		Kind: in.FrontendKind,
+		Path: fmt.Sprintf("frontends/%s", in.Name),
+		Port: in.Port,
+	}
+	isWeb := in.Kind == "" || in.Kind == "web"
+	if in.Output != "" && isWeb {
+		fe.Output = in.Output
+	}
+	// base_path drives the regenerated basepath_gen.ts helper's prefix.
+	if in.BasePath != "" && isWeb {
+		fe.BasePath = in.BasePath
+	}
+	// The route allowlist MUST persist: otherwise the next `forge generate`
+	// re-scaffolds the whole entity set this flag was used to avoid, and the
+	// frontend's route surface would depend on which command last touched it.
+	if len(in.Routes) > 0 {
+		fe.Routes = normalizeRouteSlugs(in.Routes)
+	}
+	return fe
+}
+
+// frontendTypedConfigFor reports which typed config fields the project
+// declares for the named frontend, by reading the config protos and finding
+// the message bound to it with (forge.v1.frontend_config).
+//
+// A parse failure or an absent message yields the zero value, which renders
+// the frontend's previous env-var form. That degradation is safe HERE, and
+// only here, because this path decides which template variant to scaffold —
+// not whether a secret may ship. The sensitive-field refusal lives in
+// `forge generate`, which fails loudly rather than degrading.
+func frontendTypedConfigFor(root, frontendName string) generator.FrontendTypedConfig {
+	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(root, "proto", "config"))
+	if err != nil {
+		return generator.FrontendTypedConfig{}
+	}
+	for _, fc := range codegen.FrontendConfigsFromMessages(messages) {
+		if fc.Frontend != frontendName {
+			continue
+		}
+		envVars := make([]string, 0, len(fc.Fields))
+		for _, f := range fc.Fields {
+			if f.EnvVar != "" {
+				envVars = append(envVars, f.EnvVar)
+			}
+		}
+		return generator.FrontendTypedConfigFrom(envVars)
+	}
+	return generator.FrontendTypedConfig{}
+}
+
+// validateAuthMode rejects an unrecognized --auth-mode.
+//
+// "redirect" is the only mode forge scaffolds. A first-party sign-in form is
+// a legitimate thing to build, but every implementation of one is specific to
+// a single provider's API, so there is nothing portable to generate.
+func validateAuthMode(ctxLabel, authMode string) error {
+	switch authMode {
+	case "", config.AuthModeRedirect:
+		return nil
+	default:
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("invalid --auth-mode %q", authMode), "",
+			"pass --auth-mode redirect (the default, and the only mode forge scaffolds)")
+	}
 }

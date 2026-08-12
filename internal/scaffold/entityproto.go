@@ -70,7 +70,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
-	"github.com/reliant-labs/forge/internal/seeddata"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // EntityFromProtoSpec is the resolved input to
@@ -355,7 +355,7 @@ func quoteSQLList(values []string) string {
 // were not asked to.
 //
 // forge treats the sentinel as not-a-value everywhere else it touches
-// one: the seeder refuses to draw it (seeddata.SeedEnumChoices), the born
+// one: the seeder refuses to draw it (seedplan.SeedEnumChoices), the born
 // CRUD fixtures refuse to use it (codegen.enumFixture), the scaffolded
 // create form refuses to submit it, and the generated write path stores
 // the column DEFAULT instead of it (codegen.assignToDB). A CHECK that
@@ -373,11 +373,11 @@ func quoteSQLList(values []string) string {
 //     spelling for "unset" at all, and an enum that is ONLY its sentinel
 //     has no real member to fall back to. Both keep the full vocabulary —
 //     `CHECK (col IN ())` is not applyable SQL, and deleting a domain
-//     value is worse than admitting one. seeddata.SeedEnumChoices decides
+//     value is worse than admitting one. seedplan.SeedEnumChoices decides
 //     which member is the sentinel (and carries the same fallback), so
 //     there is ONE definition of that in the codebase.
 func bornEnumVocabulary(values []string) []string {
-	if len(values) == 0 || seeddata.SeedEnumChoices(values)[0] == values[0] {
+	if len(values) == 0 || seedplan.SeedEnumChoices(values)[0] == values[0] {
 		return values
 	}
 	return values[1:]
@@ -398,6 +398,60 @@ func shortEnumName(fq string) string {
 		return fq[i+1:]
 	}
 	return fq
+}
+
+// emitEnumColumn emits the column (and any explanatory comments) for one enum
+// field, or records a TODO when the enum has no mechanical mapping.
+//
+// The vocabulary a row may hold is not always the full proto value list: when
+// bornEnumVocabulary drops the zero value as an "unset" sentinel, that
+// sentinel is never admitted by the CHECK, and the emitted comments say so —
+// the column's spelling for unset is NULL (optional) or the first real member
+// (DEFAULT), not the proto zero.
+func emitEnumColumn(
+	f codegen.SchemaFieldDef,
+	spec EntityFromProtoSpec,
+	samePackage func(string) bool,
+	col func(string, ...any),
+	comment func(string, ...any),
+	todo func(codegen.SchemaFieldDef, string),
+) {
+	if !samePackage(f.TypeName) {
+		todo(f, fmt.Sprintf("cross-package enum %s", f.TypeName))
+		return
+	}
+	values, ok := spec.Enums[f.TypeName]
+	if !ok || len(values) == 0 {
+		todo(f, fmt.Sprintf("enum %s has no values in the descriptor (stale? run `forge generate`)", f.TypeName))
+		return
+	}
+	vocab := bornEnumVocabulary(values)
+	sentinel := ""
+	if len(vocab) != len(values) {
+		sentinel = values[0]
+	}
+	switch {
+	case f.Repeated:
+		comment("-- %s: elements take the %s value names (%s)", f.Name, f.TypeName, strings.Join(values, " | "))
+		col("%s TEXT[] NOT NULL DEFAULT '{}'", f.Name)
+	case f.Optional:
+		// A CHECK (col IN (...)) passes NULL rows by SQL three-valued logic,
+		// so nullable needs no special form — and NULL is already this
+		// column's spelling for "unset", which is the only thing the proto
+		// zero could have meant.
+		if sentinel != "" {
+			comment("-- %s: NULL is \"unset\". The proto zero (%s) means the same", f.Name, sentinel)
+			comment("--   thing on the wire, so it is stored as NULL rather than admitted here.")
+		}
+		col("%s TEXT CHECK (%s IN (%s))", f.Name, f.Name, quoteSQLList(vocab))
+	default:
+		if sentinel != "" {
+			comment("-- %s: the proto zero (%s) means \"unset\", never a state a", f.Name, sentinel)
+			comment("--   row is in — so it is not admitted, and DEFAULT is the first real")
+			comment("--   %s member. A create that leaves the field unset stores that DEFAULT.", shortEnumName(f.TypeName))
+		}
+		col("%s TEXT NOT NULL DEFAULT '%s' CHECK (%s IN (%s))", f.Name, bornEnumDefault(values), f.Name, quoteSQLList(vocab))
+	}
 }
 
 // RenderEntityMigrationFromProto renders the create-table migration pair
@@ -456,42 +510,7 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 			col("%s JSONB NOT NULL DEFAULT '{}'", f.Name)
 
 		case f.Kind == "enum":
-			if !samePackage(f.TypeName) {
-				todo(f, fmt.Sprintf("cross-package enum %s", f.TypeName))
-				break
-			}
-			values, ok := spec.Enums[f.TypeName]
-			if !ok || len(values) == 0 {
-				todo(f, fmt.Sprintf("enum %s has no values in the descriptor (stale? run `forge generate`)", f.TypeName))
-				break
-			}
-			vocab := bornEnumVocabulary(values)
-			sentinel := ""
-			if len(vocab) != len(values) {
-				sentinel = values[0]
-			}
-			switch {
-			case f.Repeated:
-				comment("-- %s: elements take the %s value names (%s)", f.Name, f.TypeName, strings.Join(values, " | "))
-				col("%s TEXT[] NOT NULL DEFAULT '{}'", f.Name)
-			case f.Optional:
-				// A CHECK (col IN (...)) passes NULL rows by SQL
-				// three-valued logic, so nullable needs no special form —
-				// and NULL is already this column's spelling for "unset",
-				// which is the only thing the proto zero could have meant.
-				if sentinel != "" {
-					comment("-- %s: NULL is \"unset\". The proto zero (%s) means the same", f.Name, sentinel)
-					comment("--   thing on the wire, so it is stored as NULL rather than admitted here.")
-				}
-				col("%s TEXT CHECK (%s IN (%s))", f.Name, f.Name, quoteSQLList(vocab))
-			default:
-				if sentinel != "" {
-					comment("-- %s: the proto zero (%s) means \"unset\", never a state a", f.Name, sentinel)
-					comment("--   row is in — so it is not admitted, and DEFAULT is the first real")
-					comment("--   %s member. A create that leaves the field unset stores that DEFAULT.", shortEnumName(f.TypeName))
-				}
-				col("%s TEXT NOT NULL DEFAULT '%s' CHECK (%s IN (%s))", f.Name, bornEnumDefault(values), f.Name, quoteSQLList(vocab))
-			}
+			emitEnumColumn(f, spec, samePackage, col, comment, todo)
 
 		case f.Kind == "message":
 			switch {

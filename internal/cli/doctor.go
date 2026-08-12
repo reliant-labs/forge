@@ -82,7 +82,9 @@ Examples:
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output results as JSON")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show evidence for all checks (not just failures)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Overall timeout for all checks")
-	cmd.Flags().StringVar(&signal, "signal", "", "Run only the deployability gate (deploy). Environment-runtime signals live on `forge env status <env> --signal`.")
+	// No backticks in a usage string: cobra reads the first backticked span
+	// as the flag's argument-name placeholder.
+	cmd.Flags().StringVar(&signal, "signal", "", "Run only the deployability gate (deploy). Environment-runtime signals live on 'forge env status <env> --signal'.")
 
 	// Subcommands. `parity` is the host-mode vs cluster-mode env+config
 	// divergence detector — surfaces "local wasn't representative of

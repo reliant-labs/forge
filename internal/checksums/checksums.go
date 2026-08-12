@@ -34,8 +34,10 @@
 // ── What little persistent state remains under .forge/ ───────────────
 //
 //   - .forge/disowned.json — the one-way ownership door. Path + reason
+//
 //   - timestamp per `forge project disown`. Generate skips these paths while
 //     the file exists; deleting the file re-adopts it. Committed.
+//
 //   - .forge/hashes.json — the scoped fallback for the few Tier-1
 //     output formats that cannot carry comments (JSON). path → body
 //     hash of the last render. Deliberately minimal: this exception
@@ -83,6 +85,10 @@ const (
 func ResetSkipWrite() {
 	WrittenThisRun = map[string]bool{}
 	Tier1TargetSet = map[string]bool{}
+	// A refused disown carry-over blocks a path for ONE run: the user is
+	// expected to resolve the conflict between runs, and a block that
+	// outlived its run would silently suppress a legitimate emit later.
+	ResetWriteBlocks()
 }
 
 // Tier1TargetSet is the per-pipeline-run set of relative paths that the
@@ -531,6 +537,16 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 	// dropped entirely) and the disown is dead weight.
 	markTier1Target(relPath)
 
+	// A refused disown carry-over blocks this path for the rest of the run
+	// (see disown_rename.go). Forge renamed an emitter's output onto a path
+	// the user already occupies, and could not move their disowned copy
+	// there; writing now would put a fresh render beside the disowned file
+	// with the same symbols, which is the exact collision the carry-over
+	// exists to prevent. The conflict was already reported as a runbook.
+	if WriteBlocked(relPath) {
+		return false, nil
+	}
+
 	// Disowned: user-owned — never overwrite, even with force=true
 	// (--force discards current-run hand-edits to forge-owned files; it
 	// does not undo a recorded ownership transfer). Exception —
@@ -595,7 +611,7 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 			// (goimports regrouping imports, gofmt realigning whitespace)
 			// rewrites bytes without touching meaning. Normalize-on-compare
 			// before treating the mismatch as a hand-edit (goformat.go).
-			embedded, _ := ExtractMarker(onDisk)
+			embedded, _ := ExtractMarkerFor(relPath, onDisk)
 			canonBody, canonOK := canonicalGoBody(root, relPath, onDisk)
 			switch {
 			case canonOK && canonBody == BodyHash(stamped):
@@ -908,7 +924,7 @@ func ScanMarkers(root string) map[string]MarkerInfo {
 		if readErr != nil {
 			return nil
 		}
-		embedded, found := ExtractMarker(content)
+		embedded, found := ExtractMarkerFor(rel, content)
 		if !found {
 			return nil
 		}
@@ -955,7 +971,7 @@ func RestampWritten(root string, cs *FileChecksums) {
 			}
 			continue
 		}
-		if _, found := ExtractMarker(content); !found {
+		if _, found := ExtractMarkerFor(relPath, content); !found {
 			continue // scaffold ("yours") writes carry no marker
 		}
 		restamped, ok := Stamp(relPath, content)

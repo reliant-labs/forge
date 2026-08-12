@@ -817,7 +817,7 @@ func printDeployBanner(projectName, envName, imageTag, tagSource, namespace stri
 // loadDeployEnvConfigKV returns the `-D key=value` config scalars passed to the
 // KCL manifest render. On the KCL-native config path there are none: per-env
 // app config lives in deploy/kcl/<env>/config.k and flows into each workload's
-// env through config_projection.appConfigEnvMap during the render itself — the
+// env through config_gen.appConfigEnvMap during the render itself — the
 // env's main.k reads it directly rather than through top-level `-D` bindings.
 // The empty (non-nil) map keeps the render's `-D` plumbing intact while
 // carrying no config.
@@ -974,6 +974,18 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 	if entities == nil {
 		return nil
 	}
+	// This environment's frontend runtime config documents, rendered from
+	// its OWN KCL. This is what closes the promote loop: forge generates
+	// the runtime projection (frontend_config_gen.k) and here is the
+	// consumer that turns it into a deployed artifact, so a bundle built
+	// once picks up a different config.js in each environment it is
+	// promoted to. A project that annotates no frontend config gets an
+	// empty map and an unchanged deploy.
+	runtimeConfigs, rcErr := renderFrontendRuntimeDocs(projectDir, envName)
+	if rcErr != nil {
+		return rcErr
+	}
+
 	var fes []deploytarget.FirebaseFrontend
 	var buildOnly []deploytarget.BuildOnlyFrontend
 	var builtDirs []string
@@ -997,7 +1009,9 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 			return err
 		}
 		builtDirs = append(builtDirs, f.Path)
-		fes = append(fes, frontendToFirebase(f))
+		fb := frontendToFirebase(f)
+		fb.RuntimeConfigJS = runtimeConfigs[f.Name]
+		fes = append(fes, fb)
 	}
 
 	// Build/deploy-path forge-owned dotenv gate: a committed .env.local /
@@ -2055,7 +2069,7 @@ func secretSupplyForPreflight(entities *KCLEntities) []cluster.SecretSupply {
 				Kind: cluster.SupplyRenderedManifest,
 			})
 		}
-		if entities.SecretProvider.Type == "dotenv" {
+		if entities.SecretProvider.Type == "file" {
 			// The refs forge resolves + renders into Secrets at deploy time are
 			// exactly the cluster-service refs; dedupe by Secret name.
 			seen := map[string]bool{}
@@ -2409,21 +2423,26 @@ func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, gro
 	if err := secrets.ValidateDeclaredRefs(prov, secretRefsForK8sServices(entities), dotenvPath); err != nil {
 		return err
 	}
-	if prov.Kind() != "dotenv" {
+	// Only the value-resolving provider renders Secrets; external/none
+	// deliberately resolve nothing.
+	if prov.Kind() != "file" {
 		return nil
 	}
 
-	// GUARD: dotenv renders PLAINTEXT Secrets — local clusters only.
-	// Reject if any k8s-cluster group targets a non-local cluster.
+	// GUARD: these providers render PLAINTEXT Secrets — local clusters
+	// only. Reject if any k8s-cluster group targets a non-local cluster.
+	// This is the Go half of the dev/e2e gate the KCL check declares;
+	// both exist so a hand-built entity (no KCL check) still can't ship a
+	// developer's local secret into a real cluster.
 	for _, g := range groups {
 		if g.ProviderID != "k8s-cluster" {
 			continue
 		}
 		if !isLocalCluster(g.Cluster) {
 			return fmt.Errorf(
-				"secret_provider 'dotenv' renders plaintext Secrets and is for LOCAL clusters only; target cluster %q is not local. "+
+				"secret_provider %q renders plaintext Secrets and is for LOCAL clusters only; target cluster %q is not local. "+
 					"Use secret_provider = forge.ExternalSecrets {} (Secrets provisioned out-of-band) for remote clusters",
-				g.Cluster)
+				prov.Kind(), g.Cluster)
 		}
 	}
 
@@ -2481,11 +2500,10 @@ func applyRenderedSecretsPerGroup(ctx context.Context, entities *KCLEntities, gr
 		return nil
 	}
 
-	// Dotenv source for `from="dotenv"` keys: the gitignored `.env.<env>`.
-	dotenvPath := filepath.Join(projectDirForKCL(), ".env."+envName)
-	dot, derr := secrets.NewProvider(&secrets.ProviderConfig{Type: "dotenv", Path: dotenvPath})
+	// Value source for `from="file"` keys: the env's secret store.
+	dot, derr := renderedSecretsValueSource(envName)
 	if derr != nil {
-		return fmt.Errorf("rendered secrets dotenv source: %w", derr)
+		return fmt.Errorf("rendered secrets value source: %w", derr)
 	}
 
 	// Index declared Secrets by name for the per-group lookup.

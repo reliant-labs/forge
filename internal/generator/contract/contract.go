@@ -18,6 +18,10 @@ type Service interface {
 type Deps struct{}
 
 // New constructs a contract.Service.
+//
+// forge:no-observe
+// Pure compute: empty Deps; parses contract.go ASTs and emits mocks in
+// process. Nothing here crosses a network or storage boundary.
 func New(_ Deps) Service { return &svc{} }
 
 type svc struct{}

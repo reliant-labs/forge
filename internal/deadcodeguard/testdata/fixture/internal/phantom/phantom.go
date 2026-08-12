@@ -5,7 +5,7 @@ package phantom
 import "sync"
 
 // Component reproduces the real defect: config.ComponentConfig.Ports was read
-// by PrimaryPort and by the components_gen emitter, and written by nothing but
+// by PrimaryPort and by the deploy-data emitter, and written by nothing but
 // tests, so every consumer branched on a hard zero.
 type Component struct {
 	Name string

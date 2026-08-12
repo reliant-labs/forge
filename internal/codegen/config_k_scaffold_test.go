@@ -1,10 +1,14 @@
 package codegen
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/devpg"
+	"github.com/reliant-labs/forge/internal/secrets"
 )
 
 func defaultConfigFields() []ConfigField {
@@ -42,7 +46,7 @@ func TestGenerateConfigKScaffold_DevSeedsMode(t *testing.T) {
 	if !strings.Contains(got, `auto_migrate = True`) {
 		t.Errorf("dev config.k missing auto_migrate = True (dev boots alive):\n%s", got)
 	}
-	if !strings.Contains(got, "app_config: config_schema.AppConfig = {") {
+	if !strings.Contains(got, "app_config: "+ConfigSchemaModule+".AppConfig = {") {
 		t.Errorf("dev config.k missing typed AppConfig instance:\n%s", got)
 	}
 	// Sparse: a defaulted field (log_level has a schema default) is NOT pinned.
@@ -146,7 +150,11 @@ func TestGenerateConfigKScaffold_UnmarkedDBURLStillSeedsDev(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read dev config.k: %v", err)
 	}
-	wantDSN := `database_url = "postgres://postgres:postgres@localhost:5434/myapp?sslmode=disable"`
+	// The seeded DSN names the port the project's docker-compose publishes
+	// postgres on (${POSTGRES_PORT:-5432}), not a hardcoded one — see
+	// devDatabaseDSN. Pinning a literal port here is what let the scaffold
+	// and compose disagree silently.
+	wantDSN := fmt.Sprintf(`database_url = %q`, devpg.DSN("myapp"))
 	if !strings.Contains(string(body), wantDSN) {
 		t.Errorf("dev config.k for an UNMARKED database_url must still seed the local DSN %q:\n%s",
 			wantDSN, body)
@@ -154,64 +162,86 @@ func TestGenerateConfigKScaffold_UnmarkedDBURLStillSeedsDev(t *testing.T) {
 }
 
 // TestGenerateEnvSecretsScaffold_DevOnly: the VALUES half of every sensitive
-// field lands in the gitignored `.env.dev`, seeded with the concrete local DSN
-// so a fresh clone's `forge run` is turnkey. A CLOUD env gets no dotenv at all —
-// its provider is external and forge must never hold its credentials.
+// field gets a slot in the gitignored `secrets/dev.yaml`, scaffolded EMPTY —
+// including DATABASE_URL, whose value the env's KCL declares per render (see
+// devSecretValue). A CLOUD env gets no store at all — its provider is
+// external and forge must never hold its credentials.
+//
+// The store is YAML at secrets/<env>.yaml, NOT a dotenv: the dotenv provider
+// was removed, and `forge lint`'s no-dotenv rule rejects `.env*` outright, so
+// a scaffold that wrote one failed forge's own linter on a brand-new project.
 func TestGenerateEnvSecretsScaffold_DevOnly(t *testing.T) {
 	fields := defaultConfigFields()
 
 	dir := t.TempDir()
 	wrote, err := GenerateEnvSecretsScaffold(fields, "myapp", dir, "dev")
 	if err != nil {
-		t.Fatalf("scaffold .env.dev: %v", err)
+		t.Fatalf("scaffold secrets/dev.yaml: %v", err)
 	}
 	if !wrote {
-		t.Fatal("expected a fresh .env.dev to be written")
+		t.Fatal("expected a fresh secrets/dev.yaml to be written")
 	}
-	body, err := os.ReadFile(filepath.Join(dir, ".env.dev"))
+	body, err := os.ReadFile(filepath.Join(dir, "secrets", "dev.yaml"))
 	if err != nil {
-		t.Fatalf("read .env.dev: %v", err)
+		t.Fatalf("read secrets/dev.yaml: %v", err)
 	}
 	got := string(body)
-	wantLine := "DATABASE_URL=postgres://postgres:postgres@localhost:5434/myapp?sslmode=disable"
-	if !strings.Contains(got, wantLine) {
-		t.Errorf(".env.dev missing the seeded local DSN %q:\n%s", wantLine, got)
+	// A labelled slot, with no value: the dev connection string is composed
+	// in deploy/kcl/dev/main.k from the port it resolves there, so a copy
+	// here would be a second declaration of the port that goes stale the
+	// first time 5432 is busy. See devSecretValue.
+	if !strings.Contains(got, `DATABASE_URL: ""`) {
+		t.Errorf("secrets/dev.yaml missing the empty DATABASE_URL slot:\n%s", got)
+	}
+	if strings.Contains(got, "postgres://") {
+		t.Errorf("secrets/dev.yaml carries a DSN — the dev port is KCL's fact, not this file's:\n%s", got)
+	}
+	// The store must parse as the YAML the file provider reads back.
+	if _, err := secrets.ReadSecretFile(filepath.Join(dir, "secrets", "dev.yaml")); err != nil {
+		t.Errorf("scaffolded store is not readable by the file provider: %v\n%s", err, got)
+	}
+	// It must never be a dotenv again — forge lint rejects those.
+	if _, statErr := os.Stat(filepath.Join(dir, ".env.dev")); !os.IsNotExist(statErr) {
+		t.Error(".env.dev was written; forge lint's no-dotenv rule rejects it")
 	}
 
 	for _, env := range []string{"staging", "prod"} {
 		cloudDir := t.TempDir()
 		wrote, err := GenerateEnvSecretsScaffold(fields, "myapp", cloudDir, env)
 		if err != nil {
-			t.Fatalf("scaffold .env.%s: %v", env, err)
+			t.Fatalf("scaffold secrets/%s.yaml: %v", env, err)
 		}
 		if wrote {
-			t.Errorf("%s must NOT get a secrets dotenv — its provider is external, and a second "+
+			t.Errorf("%s must NOT get a secret store — its provider is external, and a second "+
 				"unread place to put a production credential is a footgun", env)
 		}
-		if _, statErr := os.Stat(filepath.Join(cloudDir, ".env."+env)); !os.IsNotExist(statErr) {
-			t.Errorf(".env.%s exists but must not", env)
+		if _, statErr := os.Stat(filepath.Join(cloudDir, "secrets", env+".yaml")); !os.IsNotExist(statErr) {
+			t.Errorf("secrets/%s.yaml exists but must not", env)
 		}
 	}
 }
 
-// TestGenerateEnvSecretsScaffold_NeverClobbers: the dotenv holds a developer's
+// TestGenerateEnvSecretsScaffold_NeverClobbers: the store holds a developer's
 // REAL local credentials. Regenerating must leave an existing file alone.
 func TestGenerateEnvSecretsScaffold_NeverClobbers(t *testing.T) {
 	dir := t.TempDir()
-	existing := "DATABASE_URL=postgres://me:hunter2@localhost:5432/mine\n"
-	if err := os.WriteFile(filepath.Join(dir, ".env.dev"), []byte(existing), 0o600); err != nil {
-		t.Fatalf("seed existing dotenv: %v", err)
+	existing := "DATABASE_URL: \"postgres://me:hunter2@localhost:5432/mine\"\n"
+	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o700); err != nil {
+		t.Fatalf("mkdir secrets: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets", "dev.yaml"), []byte(existing), 0o600); err != nil {
+		t.Fatalf("seed existing store: %v", err)
 	}
 
 	wrote, err := GenerateEnvSecretsScaffold(defaultConfigFields(), "myapp", dir, "dev")
 	if err != nil {
-		t.Fatalf("scaffold .env.dev: %v", err)
+		t.Fatalf("scaffold secrets/dev.yaml: %v", err)
 	}
 	if wrote {
-		t.Error("an existing .env.dev must be left untouched")
+		t.Error("an existing secrets/dev.yaml must be left untouched")
 	}
-	body, _ := os.ReadFile(filepath.Join(dir, ".env.dev"))
+	body, _ := os.ReadFile(filepath.Join(dir, "secrets", "dev.yaml"))
 	if string(body) != existing {
-		t.Errorf(".env.dev was rewritten:\n%s", body)
+		t.Errorf("secrets/dev.yaml was rewritten:\n%s", body)
 	}
 }

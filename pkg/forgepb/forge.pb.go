@@ -1011,6 +1011,161 @@ func (x *ConfigFieldOptions) GetAllowedValues() []string {
 	return nil
 }
 
+// BinaryConfigOptions binds a config message to the BINARY that loads it,
+// giving each binary its own config surface instead of one project-global
+// AppConfig every process ships.
+//
+// The problem it solves is ownership, not size: with one shared message,
+// every binary links every field — including credentials it has no business
+// reading — and removing a field for one binary removes it for all of them.
+// Annotating a message with a binary makes that message THAT binary's
+// config: forge generates a loader, a KCL schema and an env projection per
+// binary, so a workload's Deployment carries only ITS binary's env vars and
+// deleting a field from one binary's config cannot affect another's.
+//
+// Ownership is disjoint; DEFINITIONS may still be shared. Every binary
+// wanting a log level is not duplication — they are separate values on
+// separate processes. Compose a shared message (conventionally BaseConfig)
+// as a field on each binary's config and its leaves are registered once per
+// binary, resolved independently at runtime.
+//
+// This is an ANNOTATION rather than a naming convention for the same reason
+// ConfigFieldRole is: behavior follows the annotation, never the identifier.
+// Renaming AdminConfig does not re-point it at another binary, and naming a
+// message GatewayConfig does not silently make it the gateway's config.
+//
+// A project that annotates NOTHING is unchanged: its single AppConfig stays
+// the one config every binary loads. Per-binary config is opt-in.
+type BinaryConfigOptions struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Binary is the cmd/<name> leaf whose process loads this config — the same
+	// name `forge scaffold binary` creates and the deploy layer names its
+	// workload after. A message annotated with a binary that has no cmd/<name>
+	// directory is a generate-time error, not a silently unused config.
+	Binary        string `protobuf:"bytes,1,opt,name=binary,proto3" json:"binary,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BinaryConfigOptions) Reset() {
+	*x = BinaryConfigOptions{}
+	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BinaryConfigOptions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BinaryConfigOptions) ProtoMessage() {}
+
+func (x *BinaryConfigOptions) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BinaryConfigOptions.ProtoReflect.Descriptor instead.
+func (*BinaryConfigOptions) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *BinaryConfigOptions) GetBinary() string {
+	if x != nil {
+		return x.Binary
+	}
+	return ""
+}
+
+// FrontendConfigOptions binds a config message to the FRONTEND that loads
+// it, making a frontend a first-class consumer of the same declared,
+// typed, defaulted config surface a binary gets.
+//
+// It is the browser twin of BinaryConfigOptions and shares its reasoning:
+// ownership is disjoint (a frontend's generated TypeScript module, KCL
+// schema and per-env projection are built from the message carrying its
+// name, so deleting a field from one frontend cannot reach another's),
+// while DEFINITIONS may still be shared. The OIDC issuer both halves of an
+// authenticated app need is ONE fact: compose a shared message onto both
+// the binary's config and the frontend's, and the two cannot drift.
+//
+// It differs from BinaryConfigOptions in exactly one way, and the
+// difference is the point:
+//
+//	A BINARY's config may hold secrets. A FRONTEND's may not.
+//
+// Everything a browser reads is public. A frontend's config is delivered
+// to the client and is readable by anyone who opens devtools — there is no
+// browser analogue of a Kubernetes Secret, and no amount of care at the
+// deploy layer changes that. So `sensitive: true` — which on a binary
+// means "this value comes from a Secret, never a literal env var" — has no
+// safe meaning here at all.
+//
+// forge therefore treats a sensitive field reaching a frontend config as a
+// GENERATE-TIME ERROR rather than a warning or a runtime check. A warning
+// would be discovered after the value had already shipped in a bundle, and
+// a leaked credential cannot be un-shipped: the only useful moment to
+// refuse is before the value is ever written down. Split the secret out
+// into a binary-bound message and let the backend hold it; if the browser
+// genuinely needs the capability, it needs a token minted by the backend,
+// not the credential itself.
+//
+// A project that annotates NOTHING is unchanged. Frontend config is opt-in.
+type FrontendConfigOptions struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Frontend is the forge.yaml `frontends[].name` whose bundle loads this
+	// config — the same name `forge scaffold frontend` creates. A message
+	// annotated with a frontend that no forge.yaml declares is a
+	// generate-time error, not a silently unused config.
+	Frontend      string `protobuf:"bytes,1,opt,name=frontend,proto3" json:"frontend,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FrontendConfigOptions) Reset() {
+	*x = FrontendConfigOptions{}
+	mi := &file_forge_v1_forge_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FrontendConfigOptions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FrontendConfigOptions) ProtoMessage() {}
+
+func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FrontendConfigOptions.ProtoReflect.Descriptor instead.
+func (*FrontendConfigOptions) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *FrontendConfigOptions) GetFrontend() string {
+	if x != nil {
+		return x.Frontend
+	}
+	return ""
+}
+
 var file_forge_v1_forge_proto_extTypes = []protoimpl.ExtensionInfo{
 	{
 		ExtendedType:  (*descriptorpb.MessageOptions)(nil),
@@ -1018,6 +1173,22 @@ var file_forge_v1_forge_proto_extTypes = []protoimpl.ExtensionInfo{
 		Field:         50200,
 		Name:          "forge.v1.entity",
 		Tag:           "bytes,50200,opt,name=entity",
+		Filename:      "forge/v1/forge.proto",
+	},
+	{
+		ExtendedType:  (*descriptorpb.MessageOptions)(nil),
+		ExtensionType: (*BinaryConfigOptions)(nil),
+		Field:         50201,
+		Name:          "forge.v1.binary_config",
+		Tag:           "bytes,50201,opt,name=binary_config",
+		Filename:      "forge/v1/forge.proto",
+	},
+	{
+		ExtendedType:  (*descriptorpb.MessageOptions)(nil),
+		ExtensionType: (*FrontendConfigOptions)(nil),
+		Field:         50202,
+		Name:          "forge.v1.frontend_config",
+		Tag:           "bytes,50202,opt,name=frontend_config",
 		Filename:      "forge/v1/forge.proto",
 	},
 	{
@@ -1058,6 +1229,15 @@ var file_forge_v1_forge_proto_extTypes = []protoimpl.ExtensionInfo{
 var (
 	// optional forge.v1.EntityOptions entity = 50200;
 	E_Entity = &file_forge_v1_forge_proto_extTypes[0]
+	// Binds a config message to the binary that loads it. See BinaryConfigOptions.
+	//
+	// optional forge.v1.BinaryConfigOptions binary_config = 50201;
+	E_BinaryConfig = &file_forge_v1_forge_proto_extTypes[1]
+	// Binds a config message to the frontend that loads it. See
+	// FrontendConfigOptions.
+	//
+	// optional forge.v1.FrontendConfigOptions frontend_config = 50202;
+	E_FrontendConfig = &file_forge_v1_forge_proto_extTypes[2]
 )
 
 // Extension fields to descriptorpb.FieldOptions.
@@ -1068,23 +1248,23 @@ var (
 	// projections. Kept only so legacy protos keep compiling.
 	//
 	// optional forge.v1.FieldOptions field = 50300;
-	E_Field = &file_forge_v1_forge_proto_extTypes[1]
+	E_Field = &file_forge_v1_forge_proto_extTypes[3]
 	// Configuration binding to environment variables and CLI flags.
 	//
 	// optional forge.v1.ConfigFieldOptions config = 50400;
-	E_Config = &file_forge_v1_forge_proto_extTypes[2]
+	E_Config = &file_forge_v1_forge_proto_extTypes[4]
 )
 
 // Extension fields to descriptorpb.ServiceOptions.
 var (
 	// optional forge.v1.ServiceOptions service = 50000;
-	E_Service = &file_forge_v1_forge_proto_extTypes[3]
+	E_Service = &file_forge_v1_forge_proto_extTypes[5]
 )
 
 // Extension fields to descriptorpb.MethodOptions.
 var (
 	// optional forge.v1.MethodOptions method = 50100;
-	E_Method = &file_forge_v1_forge_proto_extTypes[4]
+	E_Method = &file_forge_v1_forge_proto_extTypes[6]
 )
 
 var File_forge_v1_forge_proto protoreflect.FileDescriptor
@@ -1162,7 +1342,11 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\tsensitive\x18\x06 \x01(\bR\tsensitive\x12\x1a\n" +
 	"\bcategory\x18\a \x01(\tR\bcategory\x12-\n" +
 	"\x04role\x18\b \x01(\x0e2\x19.forge.v1.ConfigFieldRoleR\x04role\x12%\n" +
-	"\x0eallowed_values\x18\t \x03(\tR\rallowedValues*q\n" +
+	"\x0eallowed_values\x18\t \x03(\tR\rallowedValues\"-\n" +
+	"\x13BinaryConfigOptions\x12\x16\n" +
+	"\x06binary\x18\x01 \x01(\tR\x06binary\"3\n" +
+	"\x15FrontendConfigOptions\x12\x1a\n" +
+	"\bfrontend\x18\x01 \x01(\tR\bfrontend*q\n" +
 	"\aStoreAs\x12\x18\n" +
 	"\x14STORE_AS_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eSTORE_AS_JSONB\x10\x01\x12\x11\n" +
@@ -1180,7 +1364,9 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x19CONFIG_FIELD_ROLE_TLS_KEY\x10\x03\x12\"\n" +
 	"\x1eCONFIG_FIELD_ROLE_CORS_ORIGINS\x10\x04\x12,\n" +
 	"(CONFIG_FIELD_ROLE_CORS_ALLOW_CREDENTIALS\x10\x05:R\n" +
-	"\x06entity\x12\x1f.google.protobuf.MessageOptions\x18\x98\x88\x03 \x01(\v2\x17.forge.v1.EntityOptionsR\x06entity:M\n" +
+	"\x06entity\x12\x1f.google.protobuf.MessageOptions\x18\x98\x88\x03 \x01(\v2\x17.forge.v1.EntityOptionsR\x06entity:e\n" +
+	"\rbinary_config\x12\x1f.google.protobuf.MessageOptions\x18\x99\x88\x03 \x01(\v2\x1d.forge.v1.BinaryConfigOptionsR\fbinaryConfig:k\n" +
+	"\x0ffrontend_config\x12\x1f.google.protobuf.MessageOptions\x18\x9a\x88\x03 \x01(\v2\x1f.forge.v1.FrontendConfigOptionsR\x0efrontendConfig:M\n" +
 	"\x05field\x12\x1d.google.protobuf.FieldOptions\x18\xfc\x88\x03 \x01(\v2\x16.forge.v1.FieldOptionsR\x05field:U\n" +
 	"\x06config\x12\x1d.google.protobuf.FieldOptions\x18\xe0\x89\x03 \x01(\v2\x1c.forge.v1.ConfigFieldOptionsR\x06config:U\n" +
 	"\aservice\x12\x1f.google.protobuf.ServiceOptions\x18І\x03 \x01(\v2\x18.forge.v1.ServiceOptionsR\aservice:Q\n" +
@@ -1199,7 +1385,7 @@ func file_forge_v1_forge_proto_rawDescGZIP() []byte {
 }
 
 var file_forge_v1_forge_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_forge_v1_forge_proto_goTypes = []any{
 	(StoreAs)(0),                        // 0: forge.v1.StoreAs
 	(ServiceVisibility)(0),              // 1: forge.v1.ServiceVisibility
@@ -1212,11 +1398,13 @@ var file_forge_v1_forge_proto_goTypes = []any{
 	(*AuthConfig)(nil),                  // 8: forge.v1.AuthConfig
 	(*MethodOptions)(nil),               // 9: forge.v1.MethodOptions
 	(*ConfigFieldOptions)(nil),          // 10: forge.v1.ConfigFieldOptions
-	(*durationpb.Duration)(nil),         // 11: google.protobuf.Duration
-	(*descriptorpb.MessageOptions)(nil), // 12: google.protobuf.MessageOptions
-	(*descriptorpb.FieldOptions)(nil),   // 13: google.protobuf.FieldOptions
-	(*descriptorpb.ServiceOptions)(nil), // 14: google.protobuf.ServiceOptions
-	(*descriptorpb.MethodOptions)(nil),  // 15: google.protobuf.MethodOptions
+	(*BinaryConfigOptions)(nil),         // 11: forge.v1.BinaryConfigOptions
+	(*FrontendConfigOptions)(nil),       // 12: forge.v1.FrontendConfigOptions
+	(*durationpb.Duration)(nil),         // 13: google.protobuf.Duration
+	(*descriptorpb.MessageOptions)(nil), // 14: google.protobuf.MessageOptions
+	(*descriptorpb.FieldOptions)(nil),   // 15: google.protobuf.FieldOptions
+	(*descriptorpb.ServiceOptions)(nil), // 16: google.protobuf.ServiceOptions
+	(*descriptorpb.MethodOptions)(nil),  // 17: google.protobuf.MethodOptions
 }
 var file_forge_v1_forge_proto_depIdxs = []int32{
 	4,  // 0: forge.v1.EntityOptions.indexes:type_name -> forge.v1.IndexDef
@@ -1224,22 +1412,26 @@ var file_forge_v1_forge_proto_depIdxs = []int32{
 	6,  // 2: forge.v1.FieldOptions.validate:type_name -> forge.v1.ValidationRules
 	1,  // 3: forge.v1.ServiceOptions.visibility:type_name -> forge.v1.ServiceVisibility
 	8,  // 4: forge.v1.ServiceOptions.auth:type_name -> forge.v1.AuthConfig
-	11, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
+	13, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
 	2,  // 6: forge.v1.ConfigFieldOptions.role:type_name -> forge.v1.ConfigFieldRole
-	12, // 7: forge.v1.entity:extendee -> google.protobuf.MessageOptions
-	13, // 8: forge.v1.field:extendee -> google.protobuf.FieldOptions
-	13, // 9: forge.v1.config:extendee -> google.protobuf.FieldOptions
-	14, // 10: forge.v1.service:extendee -> google.protobuf.ServiceOptions
-	15, // 11: forge.v1.method:extendee -> google.protobuf.MethodOptions
-	3,  // 12: forge.v1.entity:type_name -> forge.v1.EntityOptions
-	5,  // 13: forge.v1.field:type_name -> forge.v1.FieldOptions
-	10, // 14: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
-	7,  // 15: forge.v1.service:type_name -> forge.v1.ServiceOptions
-	9,  // 16: forge.v1.method:type_name -> forge.v1.MethodOptions
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	12, // [12:17] is the sub-list for extension type_name
-	7,  // [7:12] is the sub-list for extension extendee
+	14, // 7: forge.v1.entity:extendee -> google.protobuf.MessageOptions
+	14, // 8: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
+	14, // 9: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
+	15, // 10: forge.v1.field:extendee -> google.protobuf.FieldOptions
+	15, // 11: forge.v1.config:extendee -> google.protobuf.FieldOptions
+	16, // 12: forge.v1.service:extendee -> google.protobuf.ServiceOptions
+	17, // 13: forge.v1.method:extendee -> google.protobuf.MethodOptions
+	3,  // 14: forge.v1.entity:type_name -> forge.v1.EntityOptions
+	11, // 15: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
+	12, // 16: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
+	5,  // 17: forge.v1.field:type_name -> forge.v1.FieldOptions
+	10, // 18: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
+	7,  // 19: forge.v1.service:type_name -> forge.v1.ServiceOptions
+	9,  // 20: forge.v1.method:type_name -> forge.v1.MethodOptions
+	21, // [21:21] is the sub-list for method output_type
+	21, // [21:21] is the sub-list for method input_type
+	14, // [14:21] is the sub-list for extension type_name
+	7,  // [7:14] is the sub-list for extension extendee
 	0,  // [0:7] is the sub-list for field type_name
 }
 
@@ -1255,8 +1447,8 @@ func file_forge_v1_forge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_forge_v1_forge_proto_rawDesc), len(file_forge_v1_forge_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   8,
-			NumExtensions: 5,
+			NumMessages:   10,
+			NumExtensions: 7,
 			NumServices:   0,
 		},
 		GoTypes:           file_forge_v1_forge_proto_goTypes,

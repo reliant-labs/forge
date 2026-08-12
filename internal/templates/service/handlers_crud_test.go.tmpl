@@ -27,7 +27,13 @@ import (
 {{- end}}
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
-	"{{.Module}}/pkg/app"
+	{{/* The test factory NewTest<X> is declared in this package's OWN
+	     helpers_gen_test.go (package {{.Package}}, a _test.go file). Go
+	     compiles a package's in-package _test.go files INTO the package
+	     under test, and this external {{.Package}}_test package imports
+	     that augmented package — so the helper is visible here through an
+	     ordinary import, while never reaching the production binary. */ -}}
+	{{.Package}} "{{.Module}}/internal/handlers/{{.ServiceImportPath}}"
 	"{{.Module}}/pkg/middleware"
 )
 
@@ -126,7 +132,7 @@ func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 		t.Fatalf("seed parent rows: %v", err)
 	}
 {{- end}}
-	svc := app.NewTest{{$.TestHelperName}}(t, app.WithDB(db))
+	svc := {{$.Package}}.NewTest{{$.TestHelperName}}(t, {{$.Package}}.WithDB(db))
 	ctx := crudTestCtx()
 
 	// Two creates must produce two rows with distinct, non-empty IDs.

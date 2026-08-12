@@ -44,7 +44,7 @@ func TestGeneratePlanORM_CertifiesOutputs(t *testing.T) {
 	}
 
 	insp := checksums.NewInspector(root, cs)
-	for _, rel := range []string{ormRel("orm_shared.go"), ormRel("item_orm.go"), ormRel("order_orm.go")} {
+	for _, rel := range []string{ormRel("item_orm_gen.go"), ormRel("order_orm_gen.go")} {
 		content, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			t.Errorf("%s not written: %v", rel, err)
@@ -79,7 +79,7 @@ func TestGeneratePlanORM_DisownedFileLeftAlone(t *testing.T) {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 
-	rel := ormRel("item_orm.go")
+	rel := ormRel("item_orm_gen.go")
 	full := filepath.Join(root, rel)
 
 	// User disowns and hand-patches the file.
@@ -146,7 +146,7 @@ func TestGeneratePlanORM_StaleSweepRespectsOwnership(t *testing.T) {
 
 	// Disown kept_orm.go — the user owns it now (marker stripped,
 	// recorded in cs.Disowned).
-	keptRel := ormRel("kept_orm.go")
+	keptRel := ormRel("kept_orm_gen.go")
 	if err := cs.DisownPaths(root, []string{keptRel}, "keeping it"); err != nil {
 		t.Fatalf("DisownPaths: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestGeneratePlanORM_StaleSweepRespectsOwnership(t *testing.T) {
 		t.Fatalf("GeneratePlanORM after removal: %v", err)
 	}
 
-	goneRel := ormRel("gone_orm.go")
+	goneRel := ormRel("gone_orm_gen.go")
 	if _, err := os.Stat(filepath.Join(root, goneRel)); !os.IsNotExist(err) {
 		t.Errorf("stale %s not removed (stat err=%v)", goneRel, err)
 	}
@@ -188,7 +188,7 @@ func TestGeneratePlanORM_StaleSweepKeepsHandEditedFiles(t *testing.T) {
 		[]config.PlanEntity{idOnly("Item"), idOnly("Edited")}, cs); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
-	editedRel := ormRel("edited_orm.go")
+	editedRel := ormRel("edited_orm_gen.go")
 	full := filepath.Join(root, editedRel)
 	prior, err := os.ReadFile(full)
 	if err != nil {
@@ -221,7 +221,7 @@ func TestGeneratePlanORM_NilChecksumsTolerated(t *testing.T) {
 	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM with nil cs: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ormRel("item_orm.go"))); err != nil {
+	if _, err := os.Stat(filepath.Join(root, ormRel("item_orm_gen.go"))); err != nil {
 		t.Errorf("nil-cs generate should still write files: %v", err)
 	}
 }
@@ -235,7 +235,7 @@ func TestGeneratePlanORM_NilChecksumsTolerated(t *testing.T) {
 func TestGeneratePlanORM_AdoptsUntrackedExistingFiles(t *testing.T) {
 	checksums.ResetSkipWrite()
 	root := t.TempDir()
-	rel := ormRel("item_orm.go")
+	rel := ormRel("item_orm_gen.go")
 	full := filepath.Join(root, rel)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		t.Fatal(err)

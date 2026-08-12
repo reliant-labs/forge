@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// sampleSecretProviderJSON is an entity render carrying a dotenv
+// sampleSecretProviderJSON is an entity render carrying a FileSecrets
 // secret_provider declaration plus a mix of cluster/host services with
 // declared secret_refs. Exercises the parse + wiring helpers.
 const sampleSecretProviderJSON = `{
@@ -28,7 +28,7 @@ const sampleSecretProviderJSON = `{
       ]
     }
   ],
-  "secret_provider": {"type": "dotenv", "path": ".env.dev.secrets"}
+  "secret_provider": {"type": "file", "path": "secrets/dev.yaml"}
 }`
 
 func TestParseKCLEntities_SecretProvider(t *testing.T) {
@@ -39,11 +39,11 @@ func TestParseKCLEntities_SecretProvider(t *testing.T) {
 	if e.SecretProvider == nil {
 		t.Fatal("SecretProvider is nil")
 	}
-	if e.SecretProvider.Type != "dotenv" {
-		t.Errorf("type: got %q, want dotenv", e.SecretProvider.Type)
+	if e.SecretProvider.Type != "file" {
+		t.Errorf("type: got %q, want file", e.SecretProvider.Type)
 	}
-	if e.SecretProvider.Path != ".env.dev.secrets" {
-		t.Errorf("path: got %q, want .env.dev.secrets", e.SecretProvider.Path)
+	if e.SecretProvider.Path != "secrets/dev.yaml" {
+		t.Errorf("path: got %q, want secrets/dev.yaml", e.SecretProvider.Path)
 	}
 }
 
@@ -103,13 +103,17 @@ func TestSecretRefsForK8sServices(t *testing.T) {
 	}
 }
 
-func TestSecretProviderFromEntities_DotenvPathResolved(t *testing.T) {
+func TestSecretProviderFromEntities_StorePathResolved(t *testing.T) {
 	dir := t.TempDir()
-	// Write the dotenv so the provider loads it; assert the value resolves
-	// (proving the relative path was joined against projectDir).
-	if err := os.WriteFile(filepath.Join(dir, ".env.dev.secrets"),
-		[]byte("GITHUB_CLIENT_ID=abc\nTOKEN=tok\nSTRIPE_KEY=sk\n"), 0o600); err != nil {
-		t.Fatalf("write dotenv: %v", err)
+	// Populate the store so the provider loads it; assert the value
+	// resolves (proving the relative path was joined against projectDir).
+	store := filepath.Join(dir, "secrets", "dev.yaml")
+	if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {
+		t.Fatalf("mkdir store: %v", err)
+	}
+	body := "GITHUB_CLIENT_ID: abc\nTOKEN: tok\nSTRIPE_KEY: sk\n"
+	if err := os.WriteFile(store, []byte(body), 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
 	}
 	e, err := parseKCLEntities([]byte(sampleSecretProviderJSON))
 	if err != nil {
@@ -119,8 +123,8 @@ func TestSecretProviderFromEntities_DotenvPathResolved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("secretProviderFromEntities: %v", err)
 	}
-	if p.Kind() != "dotenv" {
-		t.Fatalf("Kind: got %q, want dotenv", p.Kind())
+	if p.Kind() != "file" {
+		t.Fatalf("Kind: got %q, want file", p.Kind())
 	}
 	if v, ok := p.Resolve("GITHUB_CLIENT_ID"); !ok || v != "abc" {
 		t.Errorf("Resolve through resolved path: got (%q,%v), want (abc,true)", v, ok)

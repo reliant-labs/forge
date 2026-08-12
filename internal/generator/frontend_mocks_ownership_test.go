@@ -180,7 +180,7 @@ func TestFrontendMockSurface_DisownedFixtureIsNotOverwritten(t *testing.T) {
 		t.Fatalf("first emit: %v", err)
 	}
 
-	rel := filepath.Join(feRel, "src", "mocks", "things.ts")
+	rel := filepath.Join(feRel, "src", "mocks", "things_gen.ts")
 	if err := cs.DisownPaths(root, []string{filepath.ToSlash(rel)}, "test"); err != nil {
 		t.Fatalf("disown: %v", err)
 	}

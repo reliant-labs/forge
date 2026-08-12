@@ -281,3 +281,146 @@ func TestBuildLibrariesSpec_ResolvesInThisRepo(t *testing.T) {
 		t.Errorf("svcerr missing from the resolved inventory of %s", spec.Dir)
 	}
 }
+
+// TestDetectLibraryDivergence_NoDivergenceWhenResolvedInsideModuleCache
+// asserts the "not diverged" branch: a resolved directory that IS (or is
+// under) GOMODCACHE is the normal, no-workspace steady state, and must
+// report nil regardless of anything else — this is the case that must
+// stay silent, so it is tested in isolation from any real go.mod
+// resolution.
+func TestDetectLibraryDivergence_NoDivergenceWhenResolvedInsideModuleCache(t *testing.T) {
+	modCache, err := goEnv(context.Background(), "GOMODCACHE")
+	if err != nil || modCache == "" {
+		t.Fatalf("goEnv GOMODCACHE: %v (%q)", err, modCache)
+	}
+	resolvedDir := filepath.Join(modCache, "github.com/reliant-labs/forge/pkg@v0.0.3")
+
+	got := detectLibraryDivergence(context.Background(), resolvedDir)
+	if got != nil {
+		t.Errorf("expected nil divergence for a resolved dir under GOMODCACHE, got %+v", got)
+	}
+}
+
+// TestDetectLibraryDivergence_DetectsGoWorkOverrideInThisRepo is the
+// positive case, exercised against this repo's own go.work (which `use`s
+// ./pkg): the resolved directory sits outside GOMODCACHE, so the
+// divergence must be reported with the go.mod-pinned version and
+// Source == "go.work".
+func TestDetectLibraryDivergence_DetectsGoWorkOverrideInThisRepo(t *testing.T) {
+	dir, _, err := resolveForgePkgDir(context.Background())
+	if err != nil {
+		t.Fatalf("resolveForgePkgDir: %v", err)
+	}
+
+	got := detectLibraryDivergence(context.Background(), dir)
+	if got == nil {
+		t.Fatal("expected a divergence in this repo (go.work uses ./pkg), got nil")
+	}
+	if got.Source != "go.work" {
+		t.Errorf("Source = %q, want \"go.work\"", got.Source)
+	}
+	if got.GoModVersion == "" {
+		t.Error("GoModVersion is empty — the go.mod pin should still be readable with GOWORK=off")
+	}
+	wantResolved, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("filepath.Abs: %v", err)
+	}
+	if got.ResolvedDir != wantResolved {
+		t.Errorf("ResolvedDir = %q, want %q", got.ResolvedDir, wantResolved)
+	}
+}
+
+// TestBuildLibrariesSpec_PopulatesDivergenceInThisRepo asserts the field
+// is wired all the way through buildLibrariesSpec, not just reachable via
+// the helper directly.
+func TestBuildLibrariesSpec_PopulatesDivergenceInThisRepo(t *testing.T) {
+	spec, err := buildLibrariesSpec(context.Background())
+	if err != nil {
+		t.Fatalf("buildLibrariesSpec: %v", err)
+	}
+	if spec.Divergence == nil {
+		t.Fatal("expected spec.Divergence to be populated in this repo (go.work uses ./pkg)")
+	}
+	if spec.Divergence.Source != "go.work" {
+		t.Errorf("Source = %q, want \"go.work\"", spec.Divergence.Source)
+	}
+}
+
+// TestWriteLibraryDivergence_NilIsSilent asserts the "no new noise" rule:
+// a project with no override must print exactly what it printed before
+// this feature existed.
+func TestWriteLibraryDivergence_NilIsSilent(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeLibraryDivergence(&buf, forgePkgModule, nil); err != nil {
+		t.Fatalf("writeLibraryDivergence: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for nil divergence, got:\n%s", buf.String())
+	}
+}
+
+// TestWriteLibraryDivergence_NamesResolvedDirAndGoModVersion asserts the
+// warning names both facts an agent needs: where the build actually
+// resolves to, and what go.mod alone (what an offline `go doc` reads)
+// says.
+func TestWriteLibraryDivergence_NamesResolvedDirAndGoModVersion(t *testing.T) {
+	div := &LibraryDivergence{
+		GoModVersion: "v0.0.3",
+		ResolvedDir:  "/Users/dev/src/forge/pkg",
+		Source:       "go.work",
+	}
+	var buf bytes.Buffer
+	if err := writeLibraryDivergence(&buf, forgePkgModule, div); err != nil {
+		t.Fatalf("writeLibraryDivergence: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"/Users/dev/src/forge/pkg", "v0.0.3", "go.work", "go doc " + forgePkgModule} {
+		if !strings.Contains(out, want) {
+			t.Errorf("divergence output is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestWriteLibraries_JSONOmitsDivergenceWhenNil keeps the JSON surface
+// as quiet as the text one: a normal project (no override) must not
+// grow a "divergence" key at all.
+func TestWriteLibraries_JSONOmitsDivergenceWhenNil(t *testing.T) {
+	spec := LibrariesSpec{Module: forgePkgModule, Dir: "/abs/path/to/pkg"}
+	var buf bytes.Buffer
+	if err := writeLibraries(&buf, spec, true); err != nil {
+		t.Fatalf("writeLibraries json: %v", err)
+	}
+	if strings.Contains(buf.String(), "divergence") {
+		t.Errorf("expected no \"divergence\" key when Divergence is nil, got:\n%s", buf.String())
+	}
+}
+
+// TestWriteLibraries_JSONCarriesDivergenceStructuredFields asserts the
+// --json surface exposes the divergence as structured fields, per the
+// task's requirement, not just folded into the text banner.
+func TestWriteLibraries_JSONCarriesDivergenceStructuredFields(t *testing.T) {
+	spec := LibrariesSpec{
+		Module: forgePkgModule,
+		Dir:    "/abs/path/to/pkg",
+		Divergence: &LibraryDivergence{
+			GoModVersion: "v0.0.3",
+			ResolvedDir:  "/abs/path/to/pkg",
+			Source:       "go.work",
+		},
+	}
+	var buf bytes.Buffer
+	if err := writeLibraries(&buf, spec, true); err != nil {
+		t.Fatalf("writeLibraries json: %v", err)
+	}
+	var got LibrariesSpec
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, buf.String())
+	}
+	if got.Divergence == nil {
+		t.Fatal("expected divergence to round-trip through JSON")
+	}
+	if got.Divergence.GoModVersion != "v0.0.3" || got.Divergence.Source != "go.work" {
+		t.Errorf("divergence round-trip lost data: %+v", got.Divergence)
+	}
+}

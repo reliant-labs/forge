@@ -78,3 +78,45 @@ func TestCollapseClusterServicesToHostKeepsDeclaredHostServices(t *testing.T) {
 		t.Fatalf("declared host service was not preserved: %+v", e.Services)
 	}
 }
+
+// TestCollapseClusterServicesToHostKeepsComposeInfra guards the declaration
+// the host-only dev loop depends on.
+//
+// A compose service is INFRASTRUCTURE — the postgres/IdP/telemetry containers
+// the host processes are about to dial — and `forge run` brings it up by
+// dispatching the entities this function returns. Dropping it here (as "not a
+// cluster service") deletes the declaration before anything can act on it,
+// and the failure is silent and awful: the stack reports success, and the app
+// connects to whatever else happens to be listening on the DSN's port —
+// another project's database, with the right port and the wrong data.
+func TestCollapseClusterServicesToHostKeepsComposeInfra(t *testing.T) {
+	e := &KCLEntities{Services: []ServiceEntity{
+		{
+			Name:   "dev-infra",
+			Deploy: DeployConfigEntity{Type: "compose", Compose: &ComposeDeploy{Service: "dev-infra"}},
+		},
+		{
+			Name:   "api",
+			Deploy: DeployConfigEntity{Type: "cluster"},
+			Build:  BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/api"}},
+		},
+	}}
+
+	collapseClusterServicesToHost(e)
+
+	var infra, host int
+	for _, svc := range e.Services {
+		switch svc.Deploy.Type {
+		case "compose":
+			infra++
+		case "host":
+			host++
+		}
+	}
+	if infra != 1 {
+		t.Errorf("compose infra was dropped (%d survived, want 1): host services would start against nothing", infra)
+	}
+	if host != 1 {
+		t.Errorf("cluster service did not collapse to host (%d, want 1)", host)
+	}
+}

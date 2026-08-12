@@ -25,13 +25,13 @@ func TestGenerateConfigLoader_DefaultScaffoldParses(t *testing.T) {
 	if err := GenerateConfigLoader(DefaultConfigMessages(), dir, nil); err != nil {
 		t.Fatalf("GenerateConfigLoader: %v", err)
 	}
-	src := filepath.Join(dir, "pkg", "config", "config.go")
+	src := filepath.Join(dir, "pkg", "config", "config_gen.go")
 	data, err := os.ReadFile(src)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
-	if _, perr := parser.ParseFile(fset, "config.go", data, parser.AllErrors); perr != nil {
+	if _, perr := parser.ParseFile(fset, "config_gen.go", data, parser.AllErrors); perr != nil {
 		t.Fatalf("generated config.go does not parse: %v\n--- SOURCE ---\n%s", perr, data)
 	}
 }

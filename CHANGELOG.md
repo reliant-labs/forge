@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arrays, `created_at`/`updated_at TIMESTAMPTZ DEFAULT (now())`;
   `--soft-delete`, `--no-timestamps`, `--no-rpcs`) and scaffolds the
   CRUD wire contract into the service proto once. `forge generate`
-  shadow-applies `db/migrations` to in-memory SQLite, introspects, and
+  shadow-applies `db/migrations` to a real ephemeral Postgres, introspects, and
   projects entity structs + ORM (`internal/db/<entity>_orm.go`, plain
   Go types: `time.Time`, pointers for nullable, native slices), CRUD
   wiring with generated `<entity>ToProto`/`<entity>FromProto`
@@ -25,6 +25,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ⇒ search filter span.
 
 ### Removed
+- **`deploy/kcl/components_gen.json`. KCL is the sole source of truth for
+  deploy.** The generated component inventory is gone — the file, the
+  `codegen.GenerateComponentsJSON` / `ComponentsToJSON` /
+  `ComponentsJSONRelPath` Go API that wrote it, and the
+  `fc.load_components` / `fc.load_migrate` / `fc.COMPONENTS_GEN` KCL
+  loaders that read it. No alias, no shim, no fallback.
+
+  What replaces it is `deploy/kcl/components.k`: one typed literal per
+  component (`fc.Server {name = "billing", build = {...}}`), **scaffolded
+  once and owned by the project from then on.** `forge scaffold
+  service|worker|binary|operator` APPENDS an entry; nothing forge does
+  ever rewrites what is already there.
+
+  Why: a file forge regenerated every run could not hold the per-env
+  customization KCL exists for — bringing in components forge never
+  generated (NATS, a cache, a sidecar), running a containerized database
+  in dev against a hosted one in prod, changing a port per environment.
+  It was also gitignored, so a FRESH CLONE rendered **zero manifests,
+  silently**, until someone ran `forge generate`. Now every deploy file
+  is tracked and hand-editable, and `kcl run deploy/kcl/dev` works on a
+  clean checkout with nothing generated first.
+
+  Two axes, each owned by one place: `components.k` says WHAT the system
+  is made of (env-neutral — no ports, no replicas); `deploy/kcl/<env>/main.k`
+  says HOW it runs in that environment (ports, replicas, resources,
+  registry, secrets, env-only components).
+
+  The deploy-time migration step moved with it: `migrate` is now stated
+  literally per env (`migrate = ["/app/<project>", "db", "migrate", "up"]`)
+  instead of being derived, so an environment that migrates out of band
+  sets `migrate = []` and one that migrates differently says so.
+
+  Forge still NOTICES drift — a component in the code with no entry in
+  `components.k` — but it REPORTS it (`forge lint`, with the exact stanza
+  to paste) rather than rewriting the file. Both directions have
+  legitimate deliberate cases, so neither fails a build.
+
+  **Migration:** add a `deploy/kcl/components.k` declaring your
+  components, replace `for c in fc.load_components(fc.COMPONENTS_GEN)`
+  with `for c in comps.COMPONENTS` (plus `import ..components as comps`)
+  in each env's `main.k`, replace `fc.load_migrate(fc.COMPONENTS_GEN)`
+  with the literal argv, and delete the gitignore entry. `forge generate`
+  scaffolds `components.k` for you if it is absent.
 - **The per-component port.** `config.ComponentConfig.Ports`,
   `config.PortSpec`, `config.HTTPPortName`, `ComponentConfig.PrimaryPort()`
   and the `ports` key in `deploy/kcl/components_gen.json` are gone — no

@@ -379,6 +379,79 @@ func TestBuildCurlCommand_PortOverride(t *testing.T) {
 	}
 }
 
+// TestBuildCurlCommand_Auth pins the three auth shapes. The descriptor
+// already carries AuthRequired (it mirrors the proto's auth_required, which
+// is fail-closed), so a printed command that omits the header on a protected
+// RPC is one the user can only discover is wrong by running it and reading a
+// 401 — which is exactly what this command exists to save them.
+func TestBuildCurlCommand_Auth(t *testing.T) {
+	desc := ForgeDescriptor{Services: []codegen.ServiceDef{{
+		Name:    "UserService",
+		Package: "users.v1",
+		Methods: []codegen.Method{
+			{Name: "GetUser", InputType: "google.protobuf.Empty", AuthRequired: true},
+			{Name: "Health", InputType: "google.protobuf.Empty", AuthRequired: false},
+		},
+	}}}
+	dir := writeProjectWithDescriptor(t, desc)
+
+	t.Run("protected rpc gets a token placeholder and a note", func(t *testing.T) {
+		out, err := buildCurlCommand(dir, "users.v1.UserService.GetUser", curlOptions{})
+		if err != nil {
+			t.Fatalf("buildCurlCommand: %v", err)
+		}
+		if !strings.Contains(out, `-H "Authorization: Bearer $TOKEN"`) {
+			t.Errorf("protected RPC is missing the Authorization header; output:\n%s", out)
+		}
+		if !strings.Contains(out, "auth_required") {
+			t.Errorf("protected RPC should explain why the header is there; output:\n%s", out)
+		}
+	})
+
+	t.Run("public rpc gets no auth header", func(t *testing.T) {
+		out, err := buildCurlCommand(dir, "users.v1.UserService.Health", curlOptions{})
+		if err != nil {
+			t.Fatalf("buildCurlCommand: %v", err)
+		}
+		if strings.Contains(out, "Authorization") {
+			t.Errorf("public RPC must not carry an Authorization header; output:\n%s", out)
+		}
+	})
+
+	t.Run("default port warns that the dev loop is ephemeral", func(t *testing.T) {
+		out, err := buildCurlCommand(dir, "users.v1.UserService.Health", curlOptions{})
+		if err != nil {
+			t.Fatalf("buildCurlCommand: %v", err)
+		}
+		if !strings.Contains(out, "ephemeral port") {
+			t.Errorf("default port should flag the `forge run` mismatch; output:\n%s", out)
+		}
+	})
+
+	t.Run("--port silences the ephemeral-port note", func(t *testing.T) {
+		out, err := buildCurlCommand(dir, "users.v1.UserService.Health", curlOptions{port: 51141})
+		if err != nil {
+			t.Fatalf("buildCurlCommand: %v", err)
+		}
+		if strings.Contains(out, "ephemeral port") {
+			t.Errorf("an explicit --port needs no warning; output:\n%s", out)
+		}
+	})
+
+	t.Run("--auth-token inlines the real value and drops the note", func(t *testing.T) {
+		out, err := buildCurlCommand(dir, "users.v1.UserService.GetUser", curlOptions{authToken: "tok-123"})
+		if err != nil {
+			t.Fatalf("buildCurlCommand: %v", err)
+		}
+		if !strings.Contains(out, "-H 'Authorization: Bearer tok-123'") {
+			t.Errorf("--auth-token not inlined; output:\n%s", out)
+		}
+		if strings.Contains(out, "$TOKEN") {
+			t.Errorf("--auth-token should replace the placeholder, not sit beside it; output:\n%s", out)
+		}
+	})
+}
+
 // TestBuildCurlCommand_BodyOverride pins the --body flag: a non-empty
 // opts.body wins over the zero-skeleton render.
 func TestBuildCurlCommand_BodyOverride(t *testing.T) {

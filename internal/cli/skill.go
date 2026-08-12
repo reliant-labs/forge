@@ -101,12 +101,12 @@ type skillMeta struct {
 	Emit        SkillEmit      // forge | general | both (from frontmatter; empty == legacy forge default)
 	Relevance   SkillRelevance // "" (always) | migration (from frontmatter; dir-derived default for migrations/)
 
-	// AppliesFrom / AppliesTo mirror the migration-skill `applies-from:` /
-	// `applies-to:` frontmatter bounds (half-open [from, to) over the
-	// project's pinned forge_version). Informational on listings — the
-	// authoritative range gate lives in `forge project upgrade list`.
-	AppliesFrom string
-	AppliesTo   string
+	// Version mirrors the migration-skill `version:` frontmatter — the
+	// release that introduced the breaking change. Informational on
+	// listings; the authoritative applicability gate (baseline below the
+	// release AND detection matching) lives in
+	// `forge project upgrade list`.
+	Version string
 
 	// fsPath is non-empty for project/user-scope skills and points at the
 	// SKILL.md on disk. For forge-shipped skills it is empty (content is
@@ -146,11 +146,21 @@ func newSkillListCmd() *cobra.Command {
 	var (
 		jsonOut           bool
 		includeMigrations bool
+		all               bool
 	)
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List available skills (forge-shipped, project, and user-global)",
 		Long: `List available skills (forge-shipped, project, and user-global).
+
+The default view is GROUPED and fits on one screen: the start-here skills
+first, then one row per skill group with its sub-skills collapsed into a
+'+N' count. Every collapsed sub-skill is still loadable by its exact path
+('forge skill load db/seeding'). Pass --all for the exhaustive flat table.
+
+'forge skill search <keyword>' is usually faster than reading either view —
+it scores paths, descriptions and BODIES, so it finds skills whose title
+never mentions your term.
 
 One-time migration playbooks (relevance: migration — the skills under
 migrations/) are hidden by default; they only matter while crossing a
@@ -165,8 +175,13 @@ apply to this project's pinned forge_version.`,
 			if !includeMigrations {
 				skills = filterDefaultRelevance(skills)
 			}
+			// --json is the sub-agent contract: a flat array of every
+			// skill, unchanged by the grouping the human-facing view does.
 			if jsonOut {
 				return writeSkillsJSON(cmd.OutOrStdout(), skills)
+			}
+			if !all {
+				return writeGroupedSkills(cmd.OutOrStdout(), skills)
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "PATH\tSCOPE\tNAME\tDESCRIPTION")
@@ -192,6 +207,7 @@ apply to this project's pinned forge_version.`,
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output JSON instead of a tab-separated table")
+	cmd.Flags().BoolVar(&all, "all", false, "Print the exhaustive flat table (every sub-skill, full descriptions) instead of the grouped view")
 	cmd.Flags().BoolVar(&includeMigrations, "include-migrations", false, "Include one-time migration skills (relevance: migration) in the listing")
 	return cmd
 }
@@ -362,13 +378,12 @@ type SkillMetaPublic struct {
 	// the default) or "migration" (one-time upgrade transition; excluded
 	// from default listings, included via SkillListOptions.IncludeMigrations).
 	Relevance SkillRelevance
-	// AppliesFrom / AppliesTo are the migration skill's frontmatter version
-	// bounds (half-open [from, to) over the project's pinned forge_version),
-	// passed through verbatim for consumers that want to do their own
-	// version gating. Empty for non-migration skills and for migration
-	// skills without declared bounds.
-	AppliesFrom string
-	AppliesTo   string
+	// Version is the migration skill's frontmatter `version:` — the release
+	// that introduced the breaking change — passed through verbatim for
+	// consumers that want to do their own version gating. A project
+	// applies the migration when its baseline is below this version.
+	// Empty for non-migration skills.
+	Version string
 
 	// SkillForgeVersion is the forge version the skill content ships with —
 	// i.e. the version of the forge module/binary serving this listing.
@@ -429,8 +444,7 @@ func ListSkillsAtWithOptions(projectRoot string, opts SkillListOptions) ([]Skill
 			Scope:               m.Scope,
 			Emit:                m.Emit,
 			Relevance:           m.Relevance,
-			AppliesFrom:         m.AppliesFrom,
-			AppliesTo:           m.AppliesTo,
+			Version:             m.Version,
 			ProjectForgeVersion: projectVersion,
 		}
 		if m.Scope == SkillScopeForge {
@@ -780,6 +794,15 @@ func loadForgeShippedSkill(skillPath string) ([]byte, error) {
 }
 
 // parseFrontmatter extracts name and description from YAML frontmatter.
+//
+// The block is parsed as real YAML first, then falls back to the historical
+// line splitter. The splitter cannot see a folded/literal block scalar
+// (`description: >-` followed by indented lines): it reads the INDICATOR as
+// the value and drops the sentence, which listed the skill as ">-" and made
+// it unsearchable by its own words. The fallback is kept because frontmatter
+// in a user's own .forge/skills/ is not guaranteed to be valid YAML, and a
+// listing that silently loses a hand-written skill is worse than one that
+// parses it loosely.
 func parseFrontmatter(content []byte) skillMeta {
 	s := string(content)
 	if !strings.HasPrefix(s, "---\n") {
@@ -790,6 +813,23 @@ func parseFrontmatter(content []byte) skillMeta {
 		return skillMeta{}
 	}
 	block := s[4 : 4+end]
+
+	var fm struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
+		Emit        string `yaml:"emit"`
+		Relevance   string `yaml:"relevance"`
+		Version     string `yaml:"version"`
+	}
+	if err := yaml.Unmarshal([]byte(block), &fm); err == nil {
+		return skillMeta{
+			Name:        strings.TrimSpace(fm.Name),
+			Description: strings.TrimSpace(fm.Description),
+			Emit:        SkillEmit(strings.TrimSpace(fm.Emit)),
+			Relevance:   SkillRelevance(strings.TrimSpace(fm.Relevance)),
+			Version:     strings.TrimSpace(fm.Version),
+		}
+	}
 
 	var meta skillMeta
 	for _, line := range strings.Split(block, "\n") {
@@ -805,10 +845,8 @@ func parseFrontmatter(content []byte) skillMeta {
 				meta.Emit = SkillEmit(v)
 			case "relevance":
 				meta.Relevance = SkillRelevance(v)
-			case "applies-from":
-				meta.AppliesFrom = strings.Trim(v, `"'`)
-			case "applies-to":
-				meta.AppliesTo = strings.Trim(v, `"'`)
+			case "version":
+				meta.Version = strings.Trim(v, `"'`)
 			}
 		}
 	}

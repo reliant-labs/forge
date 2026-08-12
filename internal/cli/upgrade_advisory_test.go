@@ -55,7 +55,7 @@ func TestAdvisoryReport_FreshScaffoldIsSilent(t *testing.T) {
 	var out string
 	withCwd(t, dir, func() {
 		out = captureStdout(t, func() {
-			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true); err != nil {
+			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true, false); err != nil {
 				t.Fatalf("runAdvisoryPass: %v", err)
 			}
 		})
@@ -116,7 +116,7 @@ func TestAdvisoryReport_StaleGithubStarterSurfaces(t *testing.T) {
 	var out string
 	withCwd(t, dir, func() {
 		out = captureStdout(t, func() {
-			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true); err != nil {
+			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true, false); err != nil {
 				t.Fatalf("runAdvisoryPass: %v", err)
 			}
 		})
@@ -138,7 +138,7 @@ func TestAdvisoryReport_BehindFileSurfacesWithBothRemedies(t *testing.T) {
 	var out string
 	withCwd(t, dir, func() {
 		out = captureStdout(t, func() {
-			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true); err != nil {
+			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true, false); err != nil {
 				t.Fatalf("runAdvisoryPass: %v", err)
 			}
 		})
@@ -150,8 +150,13 @@ func TestAdvisoryReport_BehindFileSurfacesWithBothRemedies(t *testing.T) {
 	if !strings.Contains(out, rel) {
 		t.Errorf("expected %s to be named:\n%s", rel, out)
 	}
-	if !strings.Contains(out, "behind by") {
+	if !strings.Contains(out, "behind") {
 		t.Errorf("expected the line-count measure of how far behind:\n%s", out)
+	}
+	// The measure must be a COUNT, not a diff. The report sizes a
+	// difference; it never prints one. (`--check <path>` does.)
+	if strings.Contains(out, "--- a/") || strings.Contains(out, "+++ b/") {
+		t.Errorf("the summary must not print inline diffs:\n%s", out)
 	}
 	if !strings.Contains(out, "project upgrade --force "+rel) {
 		t.Errorf("expected the per-path adopt command naming the file:\n%s", out)
@@ -176,13 +181,13 @@ func TestAdvisoryReport_CustomizedFileIsFramedAsAMerge(t *testing.T) {
 	var out string
 	withCwd(t, dir, func() {
 		out = captureStdout(t, func() {
-			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true); err != nil {
+			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true, false); err != nil {
 				t.Fatalf("runAdvisoryPass: %v", err)
 			}
 		})
 	})
 
-	if !strings.Contains(out, "yours alone") {
+	if !strings.Contains(out, "yours") {
 		t.Errorf("a customized file must be reported as customized:\n%s", out)
 	}
 	if !strings.Contains(out, "a merge you make") {
@@ -221,7 +226,7 @@ func TestRunUpgrade_AdoptsANamedScaffoldOnceFile(t *testing.T) {
 	var out string
 	withCwd(t, dir, func() {
 		out = captureStdout(t, func() {
-			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true); err != nil {
+			if _, err := runAdvisoryPass(dir, cfg, generator.ForceNone(), true, false); err != nil {
 				t.Fatalf("runAdvisoryPass: %v", err)
 			}
 		})

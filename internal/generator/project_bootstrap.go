@@ -9,7 +9,14 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// generateBootstrapTesting writes pkg/app/testing.go with test helper functions.
+// generateBootstrapTesting writes the per-service helpers_gen_test.go test
+// harness beside each service.
+//
+// This used to write a single pkg/app/testing.go. That file was a NON-test
+// .go file importing "testing", in a package cmd/<proj> imports, so every
+// scaffolded project linked package `testing` into its production binary.
+// The `_test.go` suffix is the fix — see writeComponentTestHelpers in
+// internal/codegen.
 func (g *ProjectGenerator) generateBootstrapTesting() error {
 	type autoStub struct {
 		FieldName          string
@@ -45,6 +52,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		ProtoServiceName       string
 		ProtoConnectImportPath string
 		ProtoConnectPkg        string
+		MountMethod            string
 		Fallible               bool
 		HasDB                  bool
 		Alias                  string
@@ -69,19 +77,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		FuncTodos    []unresolvedStub
 	}
 
-	type bootstrapPackage struct {
-		Name            string
-		Package         string
-		ImportPath      string
-		FieldName       string
-		Fallible        bool
-		Alias           string
-		VarName         string
-		ConstructorName string
-	}
-
 	var services []bootstrapTestService
-	var connectImports []string
 	if g.ServiceName != "" {
 		pkg := naming.ServicePackage(g.ServiceName)
 		fieldName := naming.ToPascalCase(g.ServiceName)
@@ -102,6 +98,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 				ProtoServiceName:       protoServiceName,
 				ProtoConnectImportPath: connectImport,
 				ProtoConnectPkg:        connectPkg,
+				MountMethod:            "Register",
 				Alias:                  pkg,
 				VarName:                lowerFirstRune(fieldName),
 				// Spelled out rather than taken from
@@ -110,7 +107,6 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 				ConstructorName: "New",
 			},
 		}
-		connectImports = []string{connectImport}
 	}
 
 	// extraImport mirrors codegen.ExtraImport. We can't pull the codegen
@@ -123,33 +119,79 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		Path  string
 	}
 
-	data := struct {
-		Module              string
-		Services            []bootstrapTestService
-		ConnectImports      []string
-		Packages            []bootstrapPackage
-		AnyServiceHasDB     bool
-		AnyServiceNeedsTime bool
-		AnyServiceNeedsULID bool
-		ExtraImports        []extraImport
-	}{
-		Module:              g.ModulePath,
-		Services:            services,
-		ConnectImports:      connectImports,
-		Packages:            nil,   // No packages at initial project creation
-		AnyServiceHasDB:     false, // DB deps are added later by forge generate
-		AnyServiceNeedsTime: false, // Clock/IDGen func defaults are derived post-codegen
-		AnyServiceNeedsULID: false, // (GenerateBootstrapTesting) once services declare them
-		ExtraImports:        nil,   // No cross-package auto-stubs at initial scaffold time
-	}
+	// One helper file per service, in that service's own directory and
+	// package clause. Mirrors codegen.writeComponentTestHelpers; the two
+	// render the same template, so a project that is scaffolded and then
+	// `forge generate`d converges on identical bytes.
+	for _, svc := range services {
+		data := struct {
+			Module    string
+			Package   string
+			Name      string
+			FieldName string
+			IsService bool
 
-	content, err := templates.ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render bootstrap_testing.go.tmpl: %w", err)
-	}
+			ConstructorName string
+			Fallible        bool
+			HasDB           bool
+			HasLogger       bool
+			HasConfig       bool
+			HasMigrationsFS bool
+			NeedsTime       bool
+			NeedsULID       bool
 
-	destPath := filepath.Join(g.Path, "pkg", "app", "testing.go")
-	return os.WriteFile(destPath, content, 0644)
+			ProtoServiceName       string
+			ProtoConnectImportPath string
+			ProtoConnectPkg        string
+			MountMethod            string
+
+			// The template ranges over these stub/func-seam slices. They
+			// are always empty at initial-scaffold time (the service has no
+			// Deps fields beyond the bare pair yet), but the fields must
+			// exist for the template to execute — the post-codegen
+			// GenerateBootstrapTesting pass populates them for real.
+			AutoStubs       []autoStub
+			UnresolvedStubs []unresolvedStub
+			FuncDefaults    []funcDefault
+			FuncTodos       []unresolvedStub
+
+			ExtraImports []extraImport
+		}{
+			Module:    g.ModulePath,
+			Package:   svc.Package,
+			Name:      svc.Name,
+			FieldName: svc.FieldName,
+			IsService: true,
+
+			ConstructorName: svc.ConstructorName,
+			Fallible:        svc.Fallible,
+			HasDB:           false, // DB deps are added later by forge generate
+			HasMigrationsFS: false, // no migrations exist at project creation
+			NeedsTime:       false, // Clock/IDGen func defaults are derived post-codegen
+			NeedsULID:       false, // (GenerateBootstrapTesting) once services declare them
+
+			ProtoServiceName:       svc.ProtoServiceName,
+			ProtoConnectImportPath: svc.ProtoConnectImportPath,
+			ProtoConnectPkg:        svc.ProtoConnectPkg,
+			MountMethod:            svc.MountMethod,
+
+			ExtraImports: nil, // No cross-package auto-stubs at initial scaffold time
+		}
+
+		content, err := templates.ProjectTemplates().Render("component_test_helpers.go.tmpl", data)
+		if err != nil {
+			return fmt.Errorf("render component_test_helpers.go.tmpl for %s: %w", svc.Name, err)
+		}
+
+		destDir := filepath.Join(g.Path, "internal", "handlers", svc.ImportPath)
+		if err := os.MkdirAll(destDir, 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(destDir, "helpers_gen_test.go"), content, 0644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // lowerFirstRune returns s with the first rune lowercased — used to

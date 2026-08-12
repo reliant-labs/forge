@@ -1,4 +1,20 @@
 services:
+  # The app's database as a CONTAINER — available, but NOT what the
+  # scaffolded dev environment runs.
+  #
+  # `deploy/kcl/dev/main.k` declares postgres as a `forge.HostInfra`, so
+  # `forge run` starts a real postgres binary as a host process and never
+  # touches this service. The reasoning is there, in the file that makes the
+  # choice; the short version is that a dev loop whose own code runs on the
+  # host should not require a container runtime underneath it, and on a small
+  # cloud VM docker costs hundreds of megabytes before the project starts.
+  #
+  # To use this instead, change that one declaration:
+  #
+  #     deploy = forge.Compose {service = "postgres"}
+  #
+  # and set the DSN's port to match the one published below. Nothing else
+  # changes; the app cannot tell the difference.
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -38,7 +54,7 @@ services:
       LOG_FORMAT: text
       AUTO_MIGRATE: "true"
       PPROF_ADDR: ":6060"
-      # ── Identity (see the `logto` service below) ─────────────────────
+      # ── Identity (see the `idp` service below) ────────────────────────
       #
       # These are PASSTHROUGH with an empty default, and empty is the
       # CLOSED state, not an off switch: with no key material the
@@ -48,12 +64,22 @@ services:
       # declarations, both in source. There is deliberately no
       # AUTH_ENABLED.
       #
-      # JWT_ISSUER and JWT_JWKS_URL are two fields because a dev IdP has
-      # TWO hostnames: the browser reaches Logto at localhost:3001, so
-      # that is the `iss` its tokens carry, while this container reaches
-      # the same server at logto:3001. Discovery cannot bridge that —
-      # OIDC Discovery §4.3 requires the document's issuer to equal the
-      # URL it was fetched from — so the JWKS URL is given literally.
+      # Bringing the environment up writes both JWT_ISSUER and
+      # JWT_JWKS_URL, and against the dev IdP they name the SAME origin
+      # (http://localhost:${IDP_PORT}) — the one the browser uses. They
+      # stay two fields because a real deployment can need them to
+      # differ; here they do not, so discovery would work too.
+      #
+      # THIS CONTAINER is the exception, and it is why the dev loop for
+      # a project with an IdP is `forge run` (host processes) rather
+      # than `docker compose up app`. Zitadel resolves WHICH instance a
+      # request is for from the request's Host header, and the instance
+      # only knows the domain it was configured with (`localhost`). A
+      # fetch from inside this network to http://idp:8080 is answered
+      # "Instance not found" — so an in-network JWKS URL does not work,
+      # and no URL can carry the override. A host process reaches the
+      # IdP at the same localhost URL the browser does, which is the
+      # configuration forge writes.
       JWT_ISSUER: ${JWT_ISSUER-}
       JWT_JWKS_URL: ${JWT_JWKS_URL-}
       JWT_AUDIENCE: ${JWT_AUDIENCE-}
@@ -72,14 +98,17 @@ services:
         condition: service_healthy
       lgtm:
         condition: service_started
-      # required: false is LOAD-BEARING, not politeness: a service that
-      # depends on one gated behind a profile makes the WHOLE file
-      # invalid when that profile is off ("service app depends on
-      # undefined service logto: invalid compose project"), so the
-      # default dev stack would stop parsing.
-      logto:
+{{- if .HasFrontend}}
+      # required: false is LOAD-BEARING, not politeness. It is what lets
+      # `docker compose up app` start without waiting on the IdP — the app
+      # does not need it to boot (its identity env is passthrough-empty
+      # until the application is registered), and gating the app's start on
+      # a second web server's 60s first-boot would slow every `up` for a
+      # dependency it can tolerate arriving late.
+      idp:
         condition: service_healthy
         required: false
+{{- end}}
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
       interval: 10s
@@ -122,92 +151,179 @@ services:
     networks:
       - {{.ProjectName}}-net
 
-  # Logto — an OIDC identity provider, so a developer can complete a REAL
+{{- if .HasFrontend}}
+  # Zitadel — an OIDC identity provider, so a developer can complete a REAL
   # browser sign-in locally instead of hand-minting HS256 tokens.
   #
-  # OPT-IN, via the same `profiles:` mechanism app-debug uses (the file's
-  # existing gating idiom — see app-debug above). Bring it up with:
+  # AVAILABLE, but NOT what the scaffolded dev environment runs — the same
+  # status the `postgres` service above has.
   #
-  #     docker compose --profile logto up -d --wait
+  # `deploy/kcl/dev/main.k` declares the IdP as a `forge.HostInfra` with
+  # `engine = "zitadel"`, so `forge run` downloads the pinned Zitadel binary
+  # once and supervises it as a host process. That is what makes a
+  # scaffolded project start ZERO containers: Zitadel is a single static Go
+  # binary, and a dev loop whose own code runs on the host should not need a
+  # container runtime for its dependencies either.
   #
-  # Off by default because it is a ~300 MB Node image and a second web
-  # server: a project with no browser (API-key auth, a worker, a service
-  # with no frontend) must not pay for an IdP it never calls. Nothing in
-  # the default stack references it, so `docker compose up` never pulls it.
+  # To use this instead, change that one declaration:
+  #
+  #     deploy = forge.Compose {
+  #         service = "idp"
+  #         env = {"IDP_PORT": str(_idp_port)}
+  #     }
+  #
+  # Everything else is unchanged — same steps file, same port, same
+  # provisioning job — because all of it reads the same `_idp_port`.
+  #
+  # It is scaffolded HERE because this project declares a frontend. A
+  # project with no browser (API-key auth, a worker, a CLI) never gets
+  # this service written at all, so it never pays for a second web server
+  # it would not call.
+  #
+  # The instance is DECLARED, not provisioned by hand. `idp-steps.yaml`
+  # next to this file describes the instance, the organization, the admin
+  # user and the service account, and Zitadel converges to it on first
+  # boot — including writing the service account's personal access token to
+  # ./.forge/idp/pat.txt.
   #
   # The app's identity env stays EMPTY by default rather than defaulting to
   # these URLs, and that is deliberate: a configured-but-unreachable JWKS
   # endpoint makes the server REFUSE TO START (pkg/auth fetches keys at
-  # boot), so baking Logto's URL in as a default would break
-  # `docker compose up` for every project that never asked for an IdP.
-  # Empty means "no key material" — closed, and bootable.
+  # boot). The values are converged into deploy/kcl/dev/config.k once the
+  # application is registered — see below. Empty means "no key material" —
+  # closed, and bootable.
   #
-  # To run the full loop, bring the profile up and hand the app the four
-  # values from Logto's admin console at localhost:3002 (create an app of
-  # type "Single page application" — a PUBLIC client, no secret):
-  #
-  #     docker compose --profile logto up -d --wait
-  #     export JWT_ISSUER=http://localhost:3001/oidc
-  #     export JWT_JWKS_URL=http://logto:3001/oidc/jwks
-  #     export JWT_AUDIENCE=<the API resource indicator you registered>
-  #     export OIDC_CLIENT_ID=<the app id Logto shows you>
-  #     docker compose --profile logto up -d --wait app
-  #
-  # JWT_AUDIENCE is not optional decoration here: Logto issues an OPAQUE
-  # access token unless the client asks for a registered API resource, and
-  # an opaque token is not a JWT and will not validate. Register an API
-  # resource, request it, and the token comes back as a JWT with that
-  # indicator as `aud`.
+  # One value CANNOT be declared: an OIDC client's `client_id` is generated
+  # by the server when the application is registered, so the browser cannot
+  # be told what to send until it exists. Zitadel's FirstInstance schema has
+  # no Project/Application section, so there is nowhere in THIS file to put
+  # it. forge converges it instead: bringing the environment up registers
+  # the application over the IdP's own API (using the PAT above) and writes
+  # the client id — plus the issuer/JWKS/audience both halves must agree on
+  # — into the env's KCL config. It adopts an existing
+  # registration rather than creating a second one, so it is a no-op once
+  # correct — and bringing the environment up is the only thing that runs
+  # it, so there is no second path to forget.
   #
   # Pinned MINOR.PATCH, never `latest`: an IdP that silently changes
   # version under a dev stack turns "login broke today" into an
   # archaeology exercise. Bump deliberately.
-  logto:
-    image: svhd/logto:1.41.0
-    profiles:
-      - logto
+  idp:
+    image: ghcr.io/zitadel/zitadel:v4.16.2
     restart: unless-stopped
-    # SHARES the postgres service above, in its OWN `logto` database.
+    # Backed by `idp-db` below — a postgres container of the IdP's OWN,
+    # NOT the app's database.
     #
-    # A second postgres container would cost another ~256 MB and a second
-    # volume to isolate an IdP's tables from an app's — but they are
-    # already isolated: separate databases share no schema, no search
-    # path, and no migration history, and this app's own AUTO_MIGRATE
-    # runs against ${POSTGRES_DB} and cannot see `logto`. What sharing
-    # DOES couple is lifecycle (one restart takes both down) and the
-    # superuser, both of which are fine in dev and neither of which is
-    # what this compose file is for. The check that matters is a name
-    # collision: `logto` is not ${POSTGRES_DB:-{{.ProjectName}}}, and
-    # `forge new` rejects a project named `logto`… so if you DID name it
-    # that, override POSTGRES_DB.
+    # It used to share the app's postgres in a separate `zitadel`
+    # database, which was the right call when both were containers on one
+    # compose network. They are not any more: the app's postgres runs as a
+    # HOST PROCESS by default (see deploy/kcl/dev/main.k), and pointing a
+    # container at it would mean reaching back out through the docker
+    # host gateway — a different address on Linux than on macOS, on a port
+    # that moves when the host port does. That is a lot of coupling to
+    # save a container on the ONE service in this stack that is already a
+    # container.
     #
-    # `db seed --swe` (skip-when-exists) creates the database and schema
-    # on first boot and is a no-op afterwards, so this is idempotent
-    # across restarts.
-    entrypoint: ["sh", "-c", "npm run cli db seed -- --swe && npm start"]
+    # The cost is ~256 MB and a second volume while the IdP is running.
+    # The benefit is that the IdP's storage is entirely its own: it starts,
+    # stops and resets without touching the app's database, and nothing
+    # about where the app's postgres lives can break the sign-in loop.
+    command:
+      - start-from-init
+      - --masterkey
+      - ${IDP_MASTERKEY:-MasterkeyNeedsToHave32Characters}
+      - --tlsMode
+      - disabled
+      - --steps
+      - /steps.yaml
     environment:
-      DB_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/logto
-      TRUST_PROXY_HEADER: "1"
-      # ENDPOINT is the issuer Logto MINTS TOKENS UNDER, so it must be the
-      # URL the BROWSER uses — a token whose `iss` is http://logto:3001
-      # names a host no browser can resolve, and the app's JWT_ISSUER
-      # check would then have to lie to match it.
-      ENDPOINT: http://localhost:${LOGTO_PORT:-3001}
-      ADMIN_ENDPOINT: http://localhost:${LOGTO_ADMIN_PORT:-3002}
+      # `idp-db` is the compose service name below — an in-network address,
+      # so no host port is involved and nothing here moves when the app's
+      # postgres does.
+      ZITADEL_DATABASE_POSTGRES_HOST: idp-db
+      ZITADEL_DATABASE_POSTGRES_PORT: "5432"
+      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: postgres
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: postgres
+      ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: postgres
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: postgres
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
+      # Plain HTTP, because this is a local dev loop with no certificate.
+      # Both are required: ExternalSecure alone still serves TLS.
+      ZITADEL_EXTERNALSECURE: "false"
+      ZITADEL_TLS_ENABLED: "false"
+      # EXTERNALDOMAIN/EXTERNALPORT are the address the BROWSER uses, and
+      # they are what Zitadel mints tokens under — the `iss` your server
+      # then enforces. They are also how Zitadel decides which instance a
+      # request is FOR: it matches the request's Host header against the
+      # instance's registered domains and answers "Instance not found" to
+      # anything else. That is why nothing in this stack reaches the IdP
+      # at `http://idp:8080` — see the `auth/dev-loop` skill.
+      ZITADEL_EXTERNALDOMAIN: localhost
+      ZITADEL_EXTERNALPORT: ${IDP_PORT:-8080}
+      # The declarative boot writes the service account's PAT here, which
+      # is what lets forge register the application
+      # without a console visit or a seeded secret read out of the IdP's
+      # own database.
+      ZITADEL_FIRSTINSTANCE_PATPATH: /pat/pat.txt
+      # Serve the BUILT-IN (v1) sign-in pages. Zitadel v4 defaults this to
+      # `true`, which routes /oauth/v2/authorize at a login UI that ships
+      # as a SEPARATE container (ghcr.io/zitadel/zitadel-login) — with
+      # that container absent the sign-in page 404s, so the redirect flow
+      # dead-ends after a correct-looking authorization request. The v1
+      # pages are served by this container and complete the same flow, so
+      # one container is the whole IdP. If you later want the v2 login
+      # experience, add that image and set this back to true.
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "false"
+      # Do not interrupt the first sign-in with a passkey/2FA enrollment
+      # prompt. It is skippable, but it is a screen between a developer
+      # and the thing they are actually testing, and a local instance has
+      # no SMTP or WebAuthn origin to complete it against.
+      #
+      # BOTH are needed and they are not the same knob. ForceMFA (already
+      # false by default) decides whether MFA is REQUIRED; these decide
+      # whether the enrollment NUDGE is shown. PasswordlessType 0 drops
+      # the passkey offer, and MfaInitSkipLifetime 0s stops the "set up
+      # 2FA" interstitial — with only the first, the sign-in still lands
+      # on a 2-Factor Setup screen instead of the callback.
+      #
+      # A DEV default, not a recommendation: your real IdP is a different
+      # issuer and should absolutely prompt.
+      ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_PASSWORDLESSTYPE: "0"
+      ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_MFAINITSKIPLIFETIME: 0s
+    volumes:
+      - ./idp-steps.yaml:/steps.yaml:ro
+      - ./.forge/idp:/pat
     ports:
-      # Loopback-bound and fixed, for the same reason postgres is: the
-      # redirect URI registered in Logto is a literal string, so the port
-      # cannot be kernel-assigned.
-      - "127.0.0.1:${LOGTO_PORT:-3001}:3001"
-      - "127.0.0.1:${LOGTO_ADMIN_PORT:-3002}:3002"
+      # Loopback-bound and FIXED — this one genuinely cannot float. The
+      # issuer in every token Zitadel mints is derived from the origin it
+      # is reached on, and both halves of auth have to name that same
+      # origin in advance (the browser's oidc_issuer and the backend's
+      # jwt_issuer), so a port assigned at launch would leave two
+      # declarations pointing nowhere. Override it with IDP_PORT when it
+      # collides, and move the declared issuer with it.
+      #
+      # The FRONTEND's port is a different matter and is NOT pinned: the
+      # app registered here runs in dev mode, where Zitadel matches
+      # redirect URIs as globs, so the idp-provision job (deploy/kcl/
+      # workloads.k) registers http://localhost:*/auth/callback and the
+      # frontend keeps whatever port the kernel gives it.
+      #
+      # Zitadel needs ONE port — its console, APIs and OIDC endpoints are
+      # all served here.
+      - "127.0.0.1:${IDP_PORT:-8080}:8080"
     depends_on:
-      postgres:
+      idp-db:
         condition: service_healthy
     healthcheck:
-      # /api/status is Logto's own unauthenticated health route and answers
-      # 204. The image is node:22-alpine — no wget, no curl — so probe with
-      # the node binary that is guaranteed present.
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/api/status',r=>process.exit(r.statusCode===204?0:1)).on('error',()=>process.exit(1))"]
+      # /debug/ready is Zitadel's own unauthenticated readiness route. It
+      # reports READY rather than merely listening, which matters on the
+      # first boot: the declarative setup (schema, instance, org, admin
+      # user, PAT) runs before it starts serving. The image is distroless
+      # — no wget, no curl, no shell — so probe with the zitadel binary
+      # that is guaranteed present.
+      test: ["CMD", "/app/zitadel", "ready"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -215,8 +331,53 @@ services:
     networks:
       - {{.ProjectName}}-net
 
+  # The dev IdP's OWN database. Deliberately not the app's.
+  #
+  # NO PUBLISHED PORT: nothing outside the compose network ever connects to
+  # it, so it takes no host port and cannot collide with anything — which
+  # also means there is no second port to declare in KCL. The IdP reaches it
+  # at `idp-db:5432` on this network.
+  #
+  # It is only running while the IdP is. `forge run` starts the IdP, which
+  # `depends_on` this and waits for its healthcheck, so it comes and goes
+  # with the one service that uses it. A project that drops the IdP from
+  # deploy/kcl/dev/main.k starts neither.
+  idp-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    environment:
+      # Fixed, not ${VAR}-driven: these credentials are reachable only from
+      # inside this network, they are referenced by the `idp` service above,
+      # and making them configurable would be two more values to keep in
+      # agreement for no gain.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # Zitadel creates its own `zitadel` database on first boot (hence the
+      # ADMIN credentials it is given), so this is just the maintenance DB
+      # it connects to in order to do that.
+      POSTGRES_DB: postgres
+    volumes:
+      - idp_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - {{.ProjectName}}-net
+{{- end}}
+
   # Grafana Alloy — single collector for metrics, logs, and profiles.
   # Scrapes app services on the docker network and forwards to the LGTM stack.
+  #
+  # No healthcheck, deliberately: nothing waits on Alloy being READY. It is
+  # a collector — the app does not dial it, and telemetry dropped in the
+  # first seconds of a dev session costs nothing. `docker compose up --wait`
+  # treats a service with no healthcheck as ready once it is running, so
+  # naming it in dev/main.k gets it started without gating anything on it.
+  # Give it a `healthcheck:` here if you ever do need to wait on it.
   alloy:
     image: grafana/alloy:latest
     restart: unless-stopped
@@ -263,6 +424,9 @@ volumes:
   go_mod_cache:
   go_build_cache:
   lgtm_data:
+{{- if .HasFrontend}}
+  idp_db_data:
+{{- end}}
 
 networks:
   {{.ProjectName}}-net:

@@ -227,23 +227,28 @@ func TestGenerateBootstrapTesting_SnakeCaseHandlerDir(t *testing.T) {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "testing.go"))
+	data, err := os.ReadFile(filepath.Join(projectDir, ComponentTestHelperRelPath("engine_shadow")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	content := string(data)
 	mustParseGo(t, "testing.go", data)
 
+	// The helper file now lives INSIDE the handler package, so the disk-first
+	// resolution shows up as the package CLAUSE (and the file's location)
+	// rather than as an import of the handler package. Both still prove the
+	// same thing: the on-disk `engine_shadow` leaf was honored, not the
+	// synthesized `engineshadow` form.
 	for _, want := range []string{
-		`engine_shadow "example.com/proj/internal/handlers/engine_shadow"`,
+		"package engine_shadow\n",
 		"func NewTestEngineShadow(",
 	} {
 		if !strings.Contains(content, want) {
-			t.Errorf("testing.go missing %q\n--- content ---\n%s", want, content)
+			t.Errorf("helpers_gen_test.go missing %q\n--- content ---\n%s", want, content)
 		}
 	}
-	if strings.Contains(content, "internal/handlers/engineshadow") {
-		t.Errorf("testing.go still references synthesized handlers/engineshadow:\n%s", content)
+	if strings.Contains(content, "engineshadow") {
+		t.Errorf("helpers_gen_test.go still references synthesized engineshadow:\n%s", content)
 	}
 }
 

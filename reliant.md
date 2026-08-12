@@ -3,12 +3,67 @@
 
 This is a **Forge** project managed by the `forge` CLI.
 
+## ⛔ You are running INSIDE forge — do not kill it
+
+The agent session reading this is itself hosted by a forge process. Commands
+that stop forge, or that match processes by name, therefore terminate **your
+own session** and every agent working alongside you. All in-flight work stops,
+and nothing gets reported back.
+
+Never run any of these:
+
+- `pkill forge`, `killall forge`, `pkill -f forge`, or any pattern-matched kill
+- `forge env down …`, `forge env down --all` — these stop host services, and one
+  of those processes is the session you are running in
+- `kill` against a PID you did not personally start
+
+**To clean up, be surgical.** Remove only containers you created, by explicit
+name (`docker rm -f <name>`). Stop only a PID you started yourself and recorded.
+Leave every pre-existing container, process and stack alone — a shared dev box
+runs many of them, and another agent almost certainly depends on one.
+
+**Leaving a stack running is the correct outcome.** It costs a little memory. A
+pattern-kill costs the session, the other agents, and the work.
+
+## Philosophy
+
+> Forge is your LLM's best friend. It aims to scaffold a production app from day
+> 0, with hooks and seams that allow the LLM to introspect, and connect your app
+> to best practices like middlewares, deployments, env promotion, monitoring and
+> more. It must support the happy-path 80/20 rule: 80% of users get out of the
+> box happy path, but the last 20% of users are never disempowered. We provide
+> escape hatches and primitives for users to build upon.
+
+Read this before proposing a design. It rules out whole categories of answer:
+
+- **Production from day 0, not a toy that graduates.** A scaffold that works
+  only in dev, and must be replaced before shipping, has not saved anyone work
+  — it has deferred it to the moment they can least afford it. What forge
+  scaffolds on day 0 is the same thing that runs in prod, configured
+  differently.
+- **Declarative over imperative.** The state of the world is DECLARED in files
+  under version control, and something converges reality to it. A setup step
+  that must be *run*, in order, against a live system, is a step that can be
+  skipped, half-completed, or lost when a teammate clones the repo. If a
+  provisioning story requires a CLI invocation, that is a smell to be designed
+  out, not documented around.
+- **Primitives, not modes.** An enum of three blessed configurations is not a
+  primitive; it is three products, none of which is the one a given user needs,
+  and it leaves dead branches in every project that picked one. Ship the real
+  thing wired up, and expose the seams that let it be rewired.
+- **Working defaults, not empty ones.** A scaffolded field left blank is not
+  neutral — it is a broken app plus a scavenger hunt. Scaffold values that make
+  the thing RUN, and make replacing them a one-line edit in a file that already
+  exists.
+- **The 20% are never disempowered.** Every default is overridable, every
+  generated file has an owned seam beside it, and no convenience is implemented
+  as a wall.
+
 ## Skills
 
 Run `forge skill list` to discover available playbooks, and `forge skill load <name>` to read one. Available skills:
 
-- **forge** — overall project conventions
-- **getting-started** — onboarding walkthrough
+- **forge** — start here: greenfield sequence, project conventions
 - **services** — adding and editing services
 - **api** — Connect RPC API patterns
 - **db** — database, ORM, and migrations

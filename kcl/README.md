@@ -6,25 +6,28 @@ Typed schemas + manifest render layer that forge projects import.
 import forge
 
 # The env-wide Kubernetes facts, stated ONCE. Carried on the Bundle's
-# `cluster_target`; each service references its derived `.deploy` rather
-# than restating cluster/namespace/registry per service.
+# `cluster_target`, so no workload restates cluster/namespace/registry.
 _k8s = forge.ClusterTarget {
     cluster = "k3d-myapp"
     namespace = "myapp-dev"
     registry = "localhost:5050"
 }
 
+# Target-agnostic workloads. There is NO `deploy` field: the presence of a
+# `host` block routes this one through the host adapter, and its absence
+# means k8s. One builder can therefore serve both the host dev env and the
+# cluster envs from a single definition.
 forge.Service {
     name = "admin-server"
     image = "myapp:dev"
-    deploy = forge.HostDeploy { runner = "air", air_config = ".air.toml" }
+    host = forge.HostOverrides { runner = "air", air_config = ".air.toml" }
 }
 
 forge.Service {
     name = "workspace-proxy"
     image = "myapp:dev"
-    # Reference the env-wide target; overlay only the per-service knobs.
-    deploy = _k8s.deploy | { replicas = 1, ports = [8080] }
+    ports = [8080]
+    replicas = 1
 }
 
 forge.Operator {
@@ -61,12 +64,33 @@ forge CLI can dispatch on intent rather than infer it:
 | `Frontend` | Web or mobile frontend (Next.js / Vite / RN).         | `frontends[]` |
 | `CronJob`  | Scheduled job. Omit `schedule` → renders a Job.       | `cronjobs[]`  |
 
-`Service.deploy` is a polymorphic union — one of `HostDeploy`,
-`K8sCluster`, `External`, `Compose`, or `BuildOnly`. The `type`
-discriminator lives ON the deploy subschema so KCL's JSON output is
-self-describing. Forge's CLI reads the discriminator to decide whether
-to run on host, schedule in cluster, shell out to a custom CLI, or
-just produce a build artifact.
+### Two `Service` schemas: which one you write
+
+`Service` (in `core.k`) is **the one you author** — target-agnostic, with
+zero k8s vocabulary. Put these in `Bundle.workloads`. It has **no `deploy`
+field**: target selection is *structural*, by which override block is
+present.
+
+| You write | Renders to |
+|---|---|
+| a `host` block  | the host adapter (`go-run` / `air` / binary / delve) |
+| no `host` block | k8s (Deployment + Service), the default |
+| a `k8s` block   | k8s, plus that escape hatch's overrides |
+
+A host-targeted `Service` that also sets k8s-only fields fails at KCL load
+rather than silently dropping them.
+
+`RenderedWorkload` (in `schema.k`) is the **k8s-shaped projection carrier**
+the adapters produce. It is what `Bundle.services` holds, and it is
+adapter-internal — you generally do not hand-author it. It carries the
+polymorphic `deploy` union (`HostDeploy` / `K8sCluster` / `External` /
+`Compose` / `BuildOnly`) whose `type` discriminator makes the JSON output
+self-describing, so forge's CLI can tell whether to run on host, schedule in
+cluster, shell out to a custom CLI, or just produce a build artifact.
+
+Both are supported today: the agnostic `Service` is the path forward for
+host and k8s, while compose, external and build-only targets still flow
+through `RenderedWorkload` until they are folded into the core.
 
 `External` is the escape hatch for any deploy target driven by a CLI
 (Fly.io / Cloudflare Workers / Cloud Run / ECS / Vercel / systemd VM
@@ -90,7 +114,8 @@ conflict. Host services see the same per-env config source that
 keeps host and cluster from drifting.
 
 `CLI` / `Job` collapse:
-- A CLI tool is a `Service` with `deploy = forge.BuildOnly{...}`.
+- A CLI tool is a workload whose projection carries `deploy =
+  forge.BuildOnly{...}` — build the artifact, deploy nothing.
 - A one-shot Job is a `CronJob` with `schedule = ""` (renders as a Job
   instead of a CronJob).
 
@@ -117,7 +142,7 @@ schema BillingService(forge.Service):
 
 _svc = BillingService {
     name = "billing-api", image = "billing-api", region = "us-east-1"
-    deploy = _prod.deploy | { ports = [8080] }
+    ports = [8080]
 }
 ```
 
@@ -196,9 +221,14 @@ Project's `deploy/kcl/dev/main.k`:
 import forge
 
 entities = forge.Bundle {
-    services = [
-        forge.Service { name = "admin-server", image = "myapp:dev",
-                        deploy = forge.HostDeploy { runner = "air" } }
+    # `workloads` is the agnostic authoring entry. (`services` still accepts
+    # pre-projected RenderedWorkloads for the targets not yet folded in.)
+    workloads = [
+        forge.Service {
+            name = "admin-server"
+            image = "myapp:dev"
+            host = forge.HostOverrides { runner = "air" }
+        }
     ]
     operators = []
     frontends = [
@@ -235,7 +265,7 @@ set is discoverable from the `forge` surface:
 
 Per-env **config** is NOT passed via `-D`: it lives in the typed `AppConfig`
 instance in `deploy/kcl/<env>/config.k` and is projected into each workload's
-env by `config_projection.appConfigEnvMap` — read config there, never raw
+env by `config_gen.appConfigEnvMap` — read config there, never raw
 `option()`.
 
 ### Per-env conditional manifests
@@ -260,14 +290,14 @@ _bundle = forge.Bundle {
 For a SENSITIVE config field (`sensitive: true` in the config proto), forge's
 config codegen types the field as a `ConfigSecretRef` on the generated
 `AppConfig` schema, defaulting to the `<project>-secrets` Secret and a
-`<env_var lowercased>` key; `config_projection.appConfigEnvMap` projects it to a
+`<env_var lowercased>` key; `config_gen.appConfigEnvMap` projects it to a
 `from_secret` EnvSource. To bind a field to a DIFFERENT existing cluster
 Secret/key, set its `ConfigSecretRef` in the per-env `deploy/kcl/<env>/config.k`:
 
 ```kcl
 # deploy/kcl/prod/config.k
-app_config: config_schema.AppConfig = {
-    internal_service_secret = config_schema.ConfigSecretRef {
+app_config: config_gen.AppConfig = {
+    internal_service_secret = config_gen.ConfigSecretRef {
         name = "control-plane-internal", key = "secret"
     }
 }
@@ -281,9 +311,10 @@ the `EnvVar` schema doc in `schema.k`.
 
 ## Versioning
 
-Pin a `kcl-vX.Y.Z` git tag from your project's `kcl.mod`. The forge CLI
-ships migrations per tagged release so `forge project upgrade` can bump
-versions deterministically. See `migration/v0.x-to-kcl-module/SKILL.md`.
+Pin a `kcl-vX.Y.Z` git tag from your project's `kcl.mod`. When a release
+changes this module's schemas in a breaking way, forge ships a migration
+skill for that release; `forge project upgrade list` surfaces the ones
+your project still needs.
 
 ## Layout
 

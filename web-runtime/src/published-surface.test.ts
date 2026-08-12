@@ -33,6 +33,7 @@ interface Manifest {
   types: string;
   exports: Record<string, { types: string; default: string } | string>;
   peerDependencies: Record<string, string>;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
 }
 
 const pkg = JSON.parse(
@@ -65,6 +66,94 @@ describe("the published surface", () => {
     // directive scans exactly this package — cannot reach the sources either.
     expect(pkg.files).not.toContain("src");
     expect(pkg.files).toEqual(["dist", "interceptors", "README.md"]);
+  });
+
+  it("publishes the engine subpaths OUTSIDE the barrel", () => {
+    // The exact entry points a consumer can name. Adding one is a public API
+    // decision, so it is spelled out here rather than derived.
+    expect(Object.keys(pkg.exports).sort()).toEqual([
+      ".",
+      "./interceptors",
+      "./mock-transport",
+      "./otel",
+      "./package.json",
+      "./service-hooks",
+    ]);
+
+    // `./mock-transport`, `./otel` and `./service-hooks` are deliberately NOT
+    // re-exported from the barrel, and each for its own reason:
+    //
+    //   - mock-transport is dev-only. It pulls the fixture dispatch engine
+    //     in, and a production bundle has to be able to shake it out
+    //     entirely. A barrel re-export would anchor it in every import of
+    //     this package.
+    //   - otel imports the eight OpenTelemetry SDK packages. Only the
+    //     Next.js scaffold installs those; a Vite-SPA or React-Native
+    //     frontend declares @opentelemetry/api alone. Re-exporting from the
+    //     barrel would leave those frontends resolving packages they never
+    //     installed — a build error in a file they do not use.
+    //   - service-hooks imports @tanstack/react-query. Every frontend forge
+    //     scaffolds installs it, but the barrel is also what a consumer
+    //     imports for interceptors and errors alone; anchoring React Query
+    //     there would make a non-React consumer resolve a package it never
+    //     declared.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const forbidden of ["./mock-transport", "./otel", "./service-hooks"]) {
+      expect(
+        barrel.includes(forbidden),
+        `index.d.ts re-exports ${forbidden}; it must stay reachable only through its own subpath`,
+      ).toBe(false);
+    }
+  });
+
+  it("declares the OTel SDK peers optional, and @opentelemetry/api required", () => {
+    // The `./otel` subpath's imports are peers, not dependencies: the
+    // consuming app owns the OTel version so the browser loads exactly one
+    // copy of the SDK. Marking them OPTIONAL is what lets the frontends that
+    // never import `./otel` install nothing and still get a clean, warning-
+    // free `npm install`.
+    const sdkPeers = Object.keys(pkg.peerDependencies).filter(
+      (name) =>
+        name.startsWith("@opentelemetry/") && name !== "@opentelemetry/api",
+    );
+    expect(sdkPeers.length).toBeGreaterThan(0);
+    for (const name of sdkPeers) {
+      expect(
+        pkg.peerDependenciesMeta?.[name]?.optional,
+        `${name} must be an OPTIONAL peer — only the Next.js scaffold installs it`,
+      ).toBe(true);
+    }
+
+    // @opentelemetry/api is the exception and must stay required: trace.ts
+    // propagates W3C traceparent on every RPC from the BARREL, with no
+    // collector and no SDK. Every frontend resolves it.
+    expect(pkg.peerDependenciesMeta?.["@opentelemetry/api"]?.optional).not.toBe(
+      true,
+    );
+  });
+
+  it("declares @tanstack/react-query an optional peer, reachable only via ./service-hooks", () => {
+    // Same rule as the OTel SDKs: the ONLY module that imports React Query is
+    // the ./service-hooks subpath. A consumer that imports the barrel for
+    // interceptors and errors must not be told it is missing a dependency it
+    // will never resolve.
+    expect(pkg.peerDependencies["@tanstack/react-query"]).toBeDefined();
+    expect(
+      pkg.peerDependenciesMeta?.["@tanstack/react-query"]?.optional,
+      "@tanstack/react-query must be an OPTIONAL peer — only ./service-hooks imports it",
+    ).toBe(true);
+  });
+
+  it("keeps the base-path helpers IN the barrel", () => {
+    // The counterpart to the subpath rule above. basepath.ts has no imports
+    // at all, so there is no dependency footprint to fence off — and the
+    // scaffolded src/lib/basepath_gen.ts is a one-liner that reaches for it
+    // from the barrel. A regression that moved it behind a subpath would
+    // break every generated frontend.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of ["createBasePath", "joinBasePath", "normalizeBasePath"]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(true);
+    }
   });
 
   it("declares a React type surface that is identical on React 18 and 19", () => {

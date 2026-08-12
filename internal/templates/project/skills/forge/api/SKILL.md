@@ -131,7 +131,7 @@ A `*Service` method reads and writes its own tables through `s.deps`. Out of the
 
 ## Testing handlers
 
-The scaffold gives you one test file per RPC (`handlers_scaffold_<rpc>_test.go`, no shared helper) built on `tdd.RunRPCCases` (`pkg/tdd`), run against the real `*Service` wired by the test harness (`app.NewTest<Svc>(t)`) — no mock of the handler itself. Each row declares a request, an expected outcome (`Check` or a `WantErr` code), and an optional setup hook; the scaffold row asserts `CodeUnimplemented` and self-destructs the moment you implement the RPC. When a handler delegates to a domain package, fake that collaborator through its generated `mock_gen.go` (set the `XxxFunc` field), pass it via `app.With<Svc>Deps(...)`, return a `svcerr.Err*` sentinel to exercise error paths, and assert `connect.CodeOf(err)`. Run `task test`. See `testing/patterns` Pattern 1.
+The scaffold gives you one test file per RPC (`handlers_scaffold_<rpc>_test.go`, no shared helper) built on `tdd.RunRPCCases` (`pkg/tdd`), run against the real `*Service` wired by the test harness (`<pkg>.NewTest<Svc>(t)`, from that service's own `helpers_gen_test.go`) — no mock of the handler itself. Each row declares a request, an expected outcome (`Check` or a `WantErr` code), and an optional setup hook; the scaffold row asserts `CodeUnimplemented` and self-destructs the moment you implement the RPC. When a handler delegates to a domain package, fake that collaborator through its generated `mock_gen.go` (set the `XxxFunc` field), pass it via `<pkg>.With<Svc>Deps(...)`, return a `svcerr.Err*` sentinel to exercise error paths, and assert `connect.CodeOf(err)`. Run `task test`. See `testing/patterns` Pattern 1.
 
 ## Extending Repository without breaking fakes
 

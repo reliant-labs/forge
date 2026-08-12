@@ -39,6 +39,10 @@ type Service interface {
 type Deps struct{}
 
 // New constructs a debug.Service.
+//
+// forge:no-observe
+// Pure compute: empty Deps; reads and writes the local debug-session
+// file. No injected collaborator to trace through.
 func New(_ Deps) Service { return &svc{} }
 
 type svc struct{}

@@ -54,6 +54,11 @@ func TestGenerateHelpSurface(t *testing.T) {
 
 	assertStringSlicesEqual(t, "generate visible flags", visibleFlagNames(cmd), []string{
 		"check",
+		// VISIBLE on purpose: --dry-run is the spelling every other forge
+		// verb uses for "show me, don't do it", and a user who has to
+		// discover that generate calls it something else has already lost
+		// the round trip the flag exists to save.
+		"dry-run",
 		"explain",
 		"force",
 		"heal",

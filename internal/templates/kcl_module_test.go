@@ -1,7 +1,9 @@
 package templates
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,14 +36,45 @@ func kclModuleRoot(t *testing.T) string {
 }
 
 // runKCL invokes `kcl run` with `-E forge=<module-root>` so external
-// imports of the `forge` package resolve to our in-tree module.
+// imports of the `forge` package resolve to our in-tree module. The
+// returned bytes are the JSON document callers json.Unmarshal.
+//
+// Two things make that reliable under a parallel `go test`:
+//
+// Stderr is kept OUT of the returned bytes (it is folded into the error
+// instead), and kcl's package-manager progress chatter is stripped from the
+// front of stdout. When two `kcl` processes contend for the shared package
+// cache, kcl prints "waiting for package-cache lock..." as a plain line on
+// STDOUT, ahead of the JSON. json.Unmarshal then failed with `invalid
+// character 'w' looking for beginning of value`, so a perfectly green
+// invariant was reported as a broken one — a failure that appears only when
+// tests run concurrently and vanishes on a re-run in isolation, which is the
+// most expensive kind to debug.
 func runKCL(t *testing.T, entry string, args ...string) ([]byte, error) {
 	t.Helper()
 	root := kclModuleRoot(t)
 	all := append([]string{"run", "-E", "forge=" + root, "--format", "json"}, args...)
 	all = append(all, entry)
 	cmd := exec.CommandContext(t.Context(), "kcl", all...)
-	return cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil && stderr.Len() > 0 {
+		err = fmt.Errorf("%w\nstderr:\n%s", err, stderr.String())
+	}
+	return trimKCLNoise(out), err
+}
+
+// trimKCLNoise drops kcl's non-JSON preamble, so a document that is valid
+// apart from progress chatter parses. It looks for the first '{' or '[' and
+// returns from there; output with no JSON at all is returned untouched so
+// the caller's error still shows what kcl actually said.
+func trimKCLNoise(out []byte) []byte {
+	i := bytes.IndexAny(out, "{[")
+	if i <= 0 {
+		return out
+	}
+	return out[i:]
 }
 
 // TestKCLModule_PositiveAssertions walks every tests/positive*.k file
@@ -83,6 +116,12 @@ func TestKCLModule_PositiveAssertions(t *testing.T) {
 		// `-D env=dev|e2e` (the literal-gate binding) and has a
 		// dedicated test (TestKCLModule_RenderedSecretsLiteral).
 		if name == "positive_rendered_secrets_literal.k" {
+			continue
+		}
+		// Skip the DirSecrets fixtures — the provider is gated to
+		// dev/e2e (it renders plaintext Secrets), so they need
+		// `-D env=`. Dedicated test: TestKCLModule_FileSecrets.
+		if name == "positive_file_secrets.k" || name == "positive_secret_provider.k" {
 			continue
 		}
 		found++
@@ -251,10 +290,65 @@ func TestKCLModule_RenderedSecretsLiteral(t *testing.T) {
 	}
 
 	// A literal under a NON-dev/e2e env binding must be rejected.
+	// The rejection lands on stderr, which runKCL folds into the error.
 	if out, err := runKCL(t, entry, "-D", "env=prod"); err == nil {
 		t.Errorf("expected kcl to reject from='literal' under -D env=prod, but it succeeded:\n%s", out)
-	} else if !strings.Contains(string(out), "Check failed") {
-		t.Errorf("expected 'Check failed' rejecting literal in prod, got:\n%s", out)
+	} else if got := string(out) + "\n" + err.Error(); !strings.Contains(got, "Check failed") {
+		t.Errorf("expected 'Check failed' rejecting literal in prod, got:\n%s", got)
+	}
+}
+
+// TestKCLModule_FileSecrets pins the dev/e2e gate on DirSecrets — the
+// scaffolded local secret store. It renders PLAINTEXT k8s Secrets, so it
+// is allowed only under `-D env=dev|e2e`; staging/prod must declare
+// ExternalSecrets and take their values from an out-of-band Secret.
+func TestKCLModule_FileSecrets(t *testing.T) {
+	if _, err := exec.LookPath("kcl"); err != nil {
+		t.Skip("kcl not on PATH; skipping DirSecrets test")
+	}
+	root := kclModuleRoot(t)
+
+	// positive_secret_provider.k also declares a DirSecrets bundle, so it
+	// carries the same dev/e2e gate and runs here rather than in the
+	// env-less sweep.
+	for _, fixture := range []string{"positive_file_secrets.k", "positive_secret_provider.k"} {
+		runFileSecretsFixture(t, filepath.Join(root, "tests", fixture))
+	}
+}
+
+// runFileSecretsFixture asserts a DirSecrets fixture renders under dev/e2e
+// and is REJECTED under prod — forge will not render a plaintext Secret
+// from a developer's local directory into a real cluster.
+func runFileSecretsFixture(t *testing.T, entry string) {
+	t.Helper()
+
+	for _, env := range []string{"dev", "e2e"} {
+		t.Run("env="+env, func(t *testing.T) {
+			out, err := runKCL(t, entry, "-D", "env="+env)
+			if err != nil {
+				t.Fatalf("kcl run -D env=%s failed (DirSecrets must be allowed in %s): %v\n%s", env, env, err, out)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(out, &parsed); err != nil {
+				t.Fatalf("unmarshal: %v\n%s", err, out)
+			}
+			for k, v := range parsed {
+				if !strings.HasPrefix(k, "assert_") {
+					continue
+				}
+				if b, ok := v.(bool); !ok || !b {
+					t.Errorf("env=%s: assertion %q not true: %v", env, k, v)
+				}
+			}
+		})
+	}
+
+	// A prod binding must be rejected: forge will not render a plaintext
+	// Secret from a developer's local directory into a real cluster.
+	if out, err := runKCL(t, entry, "-D", "env=prod"); err == nil {
+		t.Errorf("expected kcl to reject DirSecrets under -D env=prod, but it succeeded:\n%s", out)
+	} else if got := string(out) + "\n" + err.Error(); !strings.Contains(got, "Check failed") {
+		t.Errorf("expected 'Check failed' rejecting DirSecrets in prod, got:\n%s", got)
 	}
 }
 
@@ -287,12 +381,28 @@ func TestKCLModule_NegativeChecks(t *testing.T) {
 				t.Fatalf("expected kcl to reject %s but it succeeded:\n%s",
 					name, out)
 			}
-			// The error should reference "Check failed" — that's the
-			// signal it was OUR check block that fired, not a syntax
-			// or unrelated error.
-			if !strings.Contains(string(out), "Check failed") {
-				t.Errorf("expected 'Check failed' in stderr for %s, got:\n%s",
-					name, out)
+			// The rejection must come from OUR validation, not from a
+			// syntax or type error that would also exit non-zero (and
+			// would make this test pass vacuously while the schema
+			// validated nothing).
+			//
+			// Two forms count, and both mean "the module evaluated and
+			// forge's own validation rejected the input":
+			//   * "Check failed"    — a schema `check:` block, the usual case.
+			//   * "EvaluationError" — an `assert` in the render layer. A
+			//     constraint spanning MULTIPLE components (e.g. a Job whose
+			//     `before` names a component that does not exist) cannot be
+			//     expressed as a single schema's check block, because no one
+			//     schema can see the others.
+			// A CompileError / TypeError matches neither and still fails.
+			//
+			// kcl reports the rejection on STDERR, which runKCL folds
+			// into the error rather than into out (out is JSON for the
+			// positive cases). Search both.
+			got := string(out) + "\n" + err.Error()
+			if !strings.Contains(got, "Check failed") && !strings.Contains(got, "EvaluationError") {
+				t.Errorf("expected 'Check failed' or 'EvaluationError' in stderr for %s, got:\n%s",
+					name, got)
 			}
 		})
 	}

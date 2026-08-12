@@ -15,7 +15,8 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/database"
 	"github.com/reliant-labs/forge/internal/projectstore"
-	"github.com/reliant-labs/forge/internal/seeddata"
+	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // devModeValue is the runtime MODE value that marks an environment as
@@ -27,12 +28,18 @@ const devModeValue = "development"
 // newDBSeedCommand builds `forge db seed` — the runtime materializer for
 // deterministic, FK-coherent development seed data.
 //
-// The applier lives in internal/seeddata (forge's root module); generated
-// applications import only forge/pkg/... (a separate module) and therefore
-// CANNOT reach it. Seeding capability is structurally absent from every
-// shipped server binary — this command is the ONLY thing that can apply
-// seeds, and apply/reset hard-refuse any non-dev environment with no
-// override flag.
+// The planner and applier live in pkg/seedplan, the shipped module, so a
+// project's TESTS can seed a foreign-key spine by calling a Go function
+// (seedplan.SeedGraph) instead of shelling this binary. That is a deliberate
+// widening: seeding is a development capability, and a test is development.
+//
+// What keeps it out of production is not reachability, then, but the two
+// things that actually decide it. The migrate path — the one component that
+// runs against non-dev databases — has no seed code path at all
+// (TestGeneratedMigrateTemplateHasNoSeedPath pins it), and this command
+// hard-refuses any non-dev environment with no override flag. A server binary
+// seeds nothing because nothing in it calls a seeder, which is the same
+// reason it does not send mail.
 func newDBSeedCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "seed",
@@ -131,20 +138,35 @@ func newDBSeedResetCommand() *cobra.Command {
 	return cmd
 }
 
+// seedShadowFor resolves the postgres SERVER that the migrations under migDir
+// get applied to so their schema can be introspected. migDir is
+// <project>/db/migrations, so the project directory is its grandparent.
+//
+// This lives in the CLI, not in seedplan, because resolving it means knowing
+// how a forge project stores its database coordinates (forge.yaml, .env, the
+// per-env KCL config) — see internal/shadowdb. seedplan takes the answer as a
+// parameter so it stays a library: it seeds whatever database it is handed
+// and has no opinion about where projects keep their config. An empty result
+// means "no reachable configured server", and pgtest's embedded postgres is
+// used instead.
+func seedShadowFor(migDir string) string {
+	return shadowdb.Resolve(filepath.Dir(filepath.Dir(migDir)))
+}
+
 // seedConfigFromProject maps the project's forge.yaml database.seed block onto
-// the seeddata.Config the applier consumes.
-func seedConfigFromProject() seeddata.Config {
+// the seedplan.Config the applier consumes.
+func seedConfigFromProject() seedplan.Config {
 	store, err := loadProjectStore()
 	if err != nil {
-		return seeddata.DefaultConfig()
+		return seedplan.DefaultConfig()
 	}
 	return seedConfigFromStore(store)
 }
 
 // seedConfigFromStore is the pure, testable core of seedConfigFromProject:
-// it maps an already-loaded project store onto the seeddata.Config.
-func seedConfigFromStore(store *projectstore.Store) seeddata.Config {
-	c := seeddata.DefaultConfig()
+// it maps an already-loaded project store onto the seedplan.Config.
+func seedConfigFromStore(store *projectstore.Store) seedplan.Config {
+	c := seedplan.DefaultConfig()
 	s := store.Database().Seed
 	if s.Rows > 0 {
 		c.Rows = s.Rows
@@ -246,7 +268,7 @@ func openSeedDB(ctx context.Context, dsn, migDir string, checkPending bool) (*sq
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 	if checkPending {
-		pending, why, perr := seeddata.MigrationsPending(ctx, db, migDir)
+		pending, why, perr := seedplan.MigrationsPending(ctx, db, migDir)
 		if perr != nil {
 			_ = db.Close()
 			return nil, perr
@@ -269,12 +291,12 @@ func runDBSeedApply(ctx context.Context, dsn, env, migDir string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	plan, err := seeddata.BuildLivePlan(ctx, db, migDir, seedConfigFromProject())
+	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowFor(migDir), seedConfigFromProject())
 	if err != nil {
 		return err
 	}
 	printSeedWarnings(plan)
-	res, err := seeddata.Apply(ctx, db, plan)
+	res, err := seedplan.Apply(ctx, db, plan)
 	if err != nil {
 		return err
 	}
@@ -291,7 +313,7 @@ func runDBSeedApply(ctx context.Context, dsn, env, migDir string) error {
 // never fail the seed — an invalid vocab value is skipped and a fully-invalid
 // column falls back to built-in synthesis; a MALFORMED vocab file is a hard
 // error from BuildLivePlan instead.
-func printSeedWarnings(plan *seeddata.Plan) {
+func printSeedWarnings(plan *seedplan.Plan) {
 	for _, w := range plan.Warnings() {
 		fmt.Fprintf(os.Stdout, "warning: %s\n", w)
 	}
@@ -354,12 +376,12 @@ func runDBSeedStatus(ctx context.Context, dsn, migDir string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	plan, err := seeddata.BuildLivePlan(ctx, db, migDir, seedConfigFromProject())
+	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowFor(migDir), seedConfigFromProject())
 	if err != nil {
 		return err
 	}
 	printSeedWarnings(plan)
-	rows, err := seeddata.Status(ctx, db, plan)
+	rows, err := seedplan.Status(ctx, db, plan)
 	if err != nil {
 		return err
 	}
@@ -384,12 +406,12 @@ func runDBSeedReset(ctx context.Context, dsn, env, migDir string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	plan, err := seeddata.BuildLivePlan(ctx, db, migDir, seedConfigFromProject())
+	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowFor(migDir), seedConfigFromProject())
 	if err != nil {
 		return err
 	}
 	printSeedWarnings(plan)
-	res, err := seeddata.Reset(ctx, db, plan)
+	res, err := seedplan.Reset(ctx, db, plan)
 	if err != nil {
 		return err
 	}

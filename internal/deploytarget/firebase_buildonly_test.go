@@ -58,6 +58,10 @@ func (r *emittingRunner) Output(_ context.Context, name string, args ...string) 
 	return nil, r.record(name, args, nil)
 }
 
+func (r *emittingRunner) OutputWithEnv(_ context.Context, env map[string]string, name string, args ...string) ([]byte, error) {
+	return nil, r.record(name, args, env)
+}
+
 // TestBuildOnlyThenFirebaseAssembles is the end-to-end contract for
 // `deploy = None` ⇒ build-only: a build-only frontend (admin-web, env
 // injected) is BUILT first, emitting admin-web/out; then a sibling

@@ -14,7 +14,7 @@ import (
 //
 // The generator's ORM/CRUD emitters reference a fixed set of symbols from
 // the project's resolved forge/pkg module: orm.Context.Dialect(),
-// orm.UnknownFieldError, and crud.Spec{Timestamps, LegacyTextDeletedAt}.
+// orm.UnknownFieldError, and the no-argument crud.NewRepo[M]().
 // A project that pins a forge/pkg OLDER than this binary can lack those
 // symbols. Without a handshake, `forge generate` rewrites the whole tree
 // and only THEN fails its own `go build` validate with `undefined:
@@ -60,9 +60,12 @@ func requiredPkgSymbols() []pkgSymbolProbe {
 		// orm.UnknownFieldError — emitted in the Update<Entity>Masked
 		// doc-comment + returned by crud.UpdateMasked (kalshi fr-ac69216583).
 		{imports: orm, stmt: "_ = orm.UnknownFieldError{}"},
-		// crud.Spec{Timestamps, LegacyTextDeletedAt} — the per-entity repo
-		// spec the generator constructs.
-		{imports: crud, stmt: "_ = crud.Spec{Timestamps: true, LegacyTextDeletedAt: true}"},
+		// crud.NewRepo[M]() — the per-entity repo the generator constructs.
+		// It takes NO argument: every fact it needs is derived from the
+		// model's Bun tags. A pkg predating that still requires a Spec, and
+		// the arity mismatch is exactly the skew this probe catches before
+		// codegen touches the tree.
+		{imports: crud, stmt: "_ = crud.NewRepo[struct{}]()"},
 	}
 }
 
@@ -157,11 +160,19 @@ func checkPkgCompat(projectDir string) error {
 	if len(missing) > 0 {
 		detail = fmt.Sprintf("the resolved forge/pkg is missing: %s", strings.Join(missing, ", "))
 	}
-	return cliutil.UserErr("forge generate (forge/pkg compatibility handshake)",
-		detail+" — generating would rewrite the tree and then fail its own validate. No files were changed.",
+	// The diagnosis block is appended AFTER the Fix clause rather than
+	// folded into `what`: formatUserErr joins the two with ". Fix: ", which
+	// reads correctly only when `what` is a single line.
+	base := cliutil.UserErr("forge generate (forge/pkg compatibility handshake)",
+		detail+" — generating would rewrite the tree and then fail its own validate. No files were changed",
 		"",
-		"bump the forge/pkg pin to match this binary: `go get github.com/reliant-labs/forge/pkg@latest && go mod tidy` "+
-			"(and re-tidy gen/ if present). Then re-run 'forge generate'.")
+		"if the forge/pkg pin is genuinely behind this binary, run "+
+			"`go get github.com/reliant-labs/forge/pkg@latest && go mod tidy` "+
+			"(and re-tidy gen/ if present), then re-run '"+Name()+" generate'. "+
+			"If the two toolchains below disagree, re-run with the SAME forge "+
+			"that generated this tree, or reinstall both so they match")
+
+	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
 }
 
 // extractMissingPkgSymbols pulls the forge/pkg symbols a probe build

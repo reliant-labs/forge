@@ -2,13 +2,15 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 )
 
 const sampleClustersJSON = `{
   "clusters": [
-    {"name": "cp", "context": "k3d-cp", "registry_inherit": false, "servers": 1, "agents": 0, "api_port": 6443},
-    {"name": "workload", "context": "k3d-workload", "network": "k3d-cp", "registry_inherit": true, "servers": 1, "agents": 2, "api_port": 6444},
+    {"name": "cp", "context": "k3d-cp", "image": "rancher/k3s:v1.36.3-k3s1", "registry_inherit": false, "servers": 1, "agents": 0, "api_port": 6443},
+    {"name": "workload", "context": "k3d-workload", "image": "rancher/k3s:v1.36.3-k3s1", "network": "k3d-cp", "registry_inherit": true, "servers": 1, "agents": 2, "api_port": 6444},
     {"name": "configured", "context": "k3d-configured", "config": "deploy/k3d.workload.yaml", "servers": 1, "agents": 0}
   ],
   "services": []
@@ -32,6 +34,9 @@ func TestParseKCLEntities_Clusters(t *testing.T) {
 	}
 	if owner.Context != "k3d-cp" {
 		t.Errorf("clusters[0].Context = %q want k3d-cp", owner.Context)
+	}
+	if owner.Image != "rancher/k3s:v1.36.3-k3s1" {
+		t.Errorf("clusters[0].Image = %q want pinned k3s image", owner.Image)
 	}
 	if owner.Network != "" || owner.RegistryInherit {
 		t.Errorf("owner cluster must derive no network/registry_inherit; got network=%q inherit=%v",
@@ -90,18 +95,26 @@ func TestReconcileDeclaredClusters_EmptyIsNoop(t *testing.T) {
 // deploy phase (`forge env deploy <env> --target=envoy-gateway`), so the
 // per-cluster ingress-install seam is gone entirely. A warm reconcile of an
 // already-existing cluster is a pure no-op beyond the secondary-node setup.
-// The clusterExists seam is stubbed so the test never touches k3d/kubectl;
+// The cluster-state seam is stubbed so the test never touches k3d/kubectl;
 // the absence of any ingress shell-out is the assertion (the test would not
 // compile if an installClusterIngressFn seam were still referenced).
 func TestReconcileDeclaredClusters_NoImperativeIngress(t *testing.T) {
-	origExists := clusterExistsFn
+	origState := clusterRuntimeStateFn
+	origHealth := ensureRunningClusterHealthyFn
+	origHostDNS := ensureClusterHostGatewayDNSFn
 	origSetup := setupSecondaryClusterNodeFn
 	t.Cleanup(func() {
-		clusterExistsFn = origExists
+		clusterRuntimeStateFn = origState
+		ensureRunningClusterHealthyFn = origHealth
+		ensureClusterHostGatewayDNSFn = origHostDNS
 		setupSecondaryClusterNodeFn = origSetup
 	})
 
-	clusterExistsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
+	clusterRuntimeStateFn = func(_ context.Context, _ string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{Exists: true, Running: true}, nil
+	}
+	ensureRunningClusterHealthyFn = func(_ context.Context, _ ClusterEntity) error { return nil }
+	ensureClusterHostGatewayDNSFn = func(_ context.Context, _ string) error { return nil }
 	// A nested-secondary setup seam is the ONLY warm-path side effect that
 	// remains; an owner cluster (no derived network/inherit) triggers none.
 	setupSecondaryClusterNodeFn = func(_ context.Context, _ ClusterEntity) error { return nil }
@@ -148,18 +161,32 @@ func TestIsNestedSecondary(t *testing.T) {
 // reached (the warm path also gates the secondary setup on the same
 // predicate, so this exercises that path).
 func TestReconcileDeclaredClusters_SecondarySetup(t *testing.T) {
-	origExists := clusterExistsFn
+	origState := clusterRuntimeStateFn
+	origHealth := ensureRunningClusterHealthyFn
+	origHostDNS := ensureClusterHostGatewayDNSFn
 	origSetup := setupSecondaryClusterNodeFn
 	t.Cleanup(func() {
-		clusterExistsFn = origExists
+		clusterRuntimeStateFn = origState
+		ensureRunningClusterHealthyFn = origHealth
+		ensureClusterHostGatewayDNSFn = origHostDNS
 		setupSecondaryClusterNodeFn = origSetup
 	})
 
-	clusterExistsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
+	clusterRuntimeStateFn = func(_ context.Context, _ string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{Exists: true, Running: true}, nil
+	}
 
-	var setup []string
+	var events []string
+	ensureRunningClusterHealthyFn = func(_ context.Context, c ClusterEntity) error {
+		events = append(events, "health:"+c.Name)
+		return nil
+	}
+	ensureClusterHostGatewayDNSFn = func(_ context.Context, name string) error {
+		events = append(events, "host-dns:"+name)
+		return nil
+	}
 	setupSecondaryClusterNodeFn = func(_ context.Context, c ClusterEntity) error {
-		setup = append(setup, c.Name)
+		events = append(events, "setup:"+c.Name)
 		return nil
 	}
 
@@ -171,8 +198,338 @@ func TestReconcileDeclaredClusters_SecondarySetup(t *testing.T) {
 		t.Fatalf("reconcileDeclaredClusters: %v", err)
 	}
 
-	if len(setup) != 1 || setup[0] != "cp-daemon" {
-		t.Fatalf("secondary setup invoked for %v; want exactly [cp-daemon]", setup)
+	want := []string{
+		"health:control-plane", "host-dns:control-plane",
+		"health:cp-daemon", "host-dns:cp-daemon", "setup:cp-daemon",
+	}
+	if len(events) != len(want) {
+		t.Fatalf("events = %v; want %v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("events = %v; want %v", events, want)
+		}
+	}
+}
+
+// TestReconcileDeclaredClusters_StartsStoppedInDeclarationOrder pins the
+// stopped-cluster recovery path that `forge env up` needs after `k3d cluster
+// stop`: start and wait for the owner before touching the nested secondary,
+// then start and wait for the secondary before its DNS/MSS setup.
+func TestReconcileDeclaredClusters_StartsStoppedInDeclarationOrder(t *testing.T) {
+	origState := clusterRuntimeStateFn
+	origStart := startDeclaredClusterFn
+	origWait := waitDeclaredClusterReadyFn
+	origHostDNS := ensureClusterHostGatewayDNSFn
+	origSetup := setupSecondaryClusterNodeFn
+	t.Cleanup(func() {
+		clusterRuntimeStateFn = origState
+		startDeclaredClusterFn = origStart
+		waitDeclaredClusterReadyFn = origWait
+		ensureClusterHostGatewayDNSFn = origHostDNS
+		setupSecondaryClusterNodeFn = origSetup
+	})
+
+	clusterRuntimeStateFn = func(_ context.Context, _ string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{Exists: true, Running: false}, nil
+	}
+
+	var events []string
+	startDeclaredClusterFn = func(_ context.Context, name string) error {
+		events = append(events, "start:"+name)
+		return nil
+	}
+	waitDeclaredClusterReadyFn = func(_ context.Context, name string) error {
+		events = append(events, "wait:"+name)
+		return nil
+	}
+	ensureClusterHostGatewayDNSFn = func(_ context.Context, name string) error {
+		events = append(events, "host-dns:"+name)
+		return nil
+	}
+	setupSecondaryClusterNodeFn = func(_ context.Context, c ClusterEntity) error {
+		events = append(events, "setup:"+c.Name)
+		return nil
+	}
+
+	clusters := []ClusterEntity{
+		{Name: "control-plane"},
+		{Name: "cp-daemon", Network: "k3d-control-plane", RegistryInherit: true},
+	}
+	if err := reconcileDeclaredClusters(t.Context(), clusters, "", "dev"); err != nil {
+		t.Fatalf("reconcileDeclaredClusters: %v", err)
+	}
+
+	want := []string{
+		"start:control-plane",
+		"wait:control-plane",
+		"host-dns:control-plane",
+		"start:cp-daemon",
+		"wait:cp-daemon",
+		"host-dns:cp-daemon",
+		"setup:cp-daemon",
+	}
+	if len(events) != len(want) {
+		t.Fatalf("events = %v; want %v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("events = %v; want %v", events, want)
+		}
+	}
+}
+
+func TestReconcileDeclaredClusters_StoppedClusterStartFailureStopsReconcile(t *testing.T) {
+	origState := clusterRuntimeStateFn
+	origStart := startDeclaredClusterFn
+	origWait := waitDeclaredClusterReadyFn
+	origHostDNS := ensureClusterHostGatewayDNSFn
+	origSetup := setupSecondaryClusterNodeFn
+	t.Cleanup(func() {
+		clusterRuntimeStateFn = origState
+		startDeclaredClusterFn = origStart
+		waitDeclaredClusterReadyFn = origWait
+		ensureClusterHostGatewayDNSFn = origHostDNS
+		setupSecondaryClusterNodeFn = origSetup
+	})
+
+	clusterRuntimeStateFn = func(_ context.Context, _ string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{Exists: true, Running: false}, nil
+	}
+	wantErr := errors.New("start failed")
+	startDeclaredClusterFn = func(_ context.Context, _ string) error { return wantErr }
+	waitCalled := false
+	hostDNSCalled := false
+	setupCalled := false
+	waitDeclaredClusterReadyFn = func(_ context.Context, _ string) error {
+		waitCalled = true
+		return nil
+	}
+	ensureClusterHostGatewayDNSFn = func(_ context.Context, _ string) error {
+		hostDNSCalled = true
+		return nil
+	}
+	setupSecondaryClusterNodeFn = func(_ context.Context, _ ClusterEntity) error {
+		setupCalled = true
+		return nil
+	}
+
+	err := reconcileDeclaredClusters(t.Context(), []ClusterEntity{{
+		Name: "cp-daemon", Network: "k3d-control-plane", RegistryInherit: true,
+	}}, "", "dev")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("reconcileDeclaredClusters error = %v; want wrapped %v", err, wantErr)
+	}
+	if waitCalled || hostDNSCalled || setupCalled {
+		t.Fatalf("start failure continued reconciliation: wait=%v hostDNS=%v setup=%v", waitCalled, hostDNSCalled, setupCalled)
+	}
+}
+
+func TestEnsureDeclaredCluster_PassesPinnedK3sImage(t *testing.T) {
+	origState := clusterRuntimeStateFn
+	origCreate := createDeclaredClusterFn
+	origHostDNS := ensureClusterHostGatewayDNSFn
+	t.Cleanup(func() {
+		clusterRuntimeStateFn = origState
+		createDeclaredClusterFn = origCreate
+		ensureClusterHostGatewayDNSFn = origHostDNS
+	})
+
+	clusterRuntimeStateFn = func(_ context.Context, _ string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{}, nil
+	}
+	var gotArgs []string
+	createDeclaredClusterFn = func(_ context.Context, name string, args []string) error {
+		if name != "cp-daemon" {
+			t.Fatalf("create name = %q; want cp-daemon", name)
+		}
+		gotArgs = append([]string(nil), args...)
+		return nil
+	}
+	ensureClusterHostGatewayDNSFn = func(_ context.Context, name string) error {
+		if name != "cp-daemon" {
+			t.Fatalf("host DNS cluster = %q; want cp-daemon", name)
+		}
+		return nil
+	}
+
+	if err := ensureDeclaredCluster(t.Context(), ClusterEntity{
+		Name: "cp-daemon", Image: "rancher/k3s:v1.36.3-k3s1", Servers: 1,
+	}, "", "dev"); err != nil {
+		t.Fatalf("ensureDeclaredCluster: %v", err)
+	}
+	want := []string{
+		"cluster", "create", "cp-daemon", "--image", "rancher/k3s:v1.36.3-k3s1", "--servers", "1",
+	}
+	if len(gotArgs) != len(want) {
+		t.Fatalf("create args = %v; want %v", gotArgs, want)
+	}
+	for i := range want {
+		if gotArgs[i] != want[i] {
+			t.Fatalf("create args = %v; want %v", gotArgs, want)
+		}
+	}
+}
+
+func TestK3dClusterListEntryFullyRunning(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry k3dClusterListEntry
+		want  bool
+	}{
+		{"stopped", k3dClusterListEntry{ServersCount: 1}, false},
+		{"all nodes running", k3dClusterListEntry{ServersRunning: 1, ServersCount: 1, AgentsRunning: 2, AgentsCount: 2}, true},
+		{"agent stopped", k3dClusterListEntry{ServersRunning: 1, ServersCount: 1, AgentsRunning: 1, AgentsCount: 2}, false},
+		{"legacy k3d JSON without counts", k3dClusterListEntry{ServersRunning: 1}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.entry.fullyRunning(); got != tc.want {
+				t.Errorf("fullyRunning() = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStartK3dCluster_CommandFailureButClusterRunningContinues(t *testing.T) {
+	origRun := runK3dClusterStartCommandFn
+	origLookup := lookupK3dStateAfterStartFn
+	origCleanup := cleanupK3dStartToolsFn
+	t.Cleanup(func() {
+		runK3dClusterStartCommandFn = origRun
+		lookupK3dStateAfterStartFn = origLookup
+		cleanupK3dStartToolsFn = origCleanup
+	})
+
+	startErr := errors.New("host-alias injection hung")
+	runK3dClusterStartCommandFn = func(_ context.Context, _ string) error { return startErr }
+	lookupK3dStateAfterStartFn = func(_ context.Context, _ string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{Exists: true, Running: true}, nil
+	}
+	cleanupK3dStartToolsFn = func(_ context.Context, _ string) error { return nil }
+
+	if err := startK3dCluster(t.Context(), "control-plane"); err != nil {
+		t.Fatalf("startK3dCluster should accept authoritative running state after command failure: %v", err)
+	}
+}
+
+func TestStartK3dCluster_CommandFailureAndClusterStoppedFails(t *testing.T) {
+	origRun := runK3dClusterStartCommandFn
+	origLookup := lookupK3dStateAfterStartFn
+	origCleanup := cleanupK3dStartToolsFn
+	t.Cleanup(func() {
+		runK3dClusterStartCommandFn = origRun
+		lookupK3dStateAfterStartFn = origLookup
+		cleanupK3dStartToolsFn = origCleanup
+	})
+
+	startErr := errors.New("start failed")
+	runK3dClusterStartCommandFn = func(_ context.Context, _ string) error { return startErr }
+	lookupK3dStateAfterStartFn = func(_ context.Context, _ string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{Exists: true, Running: false}, nil
+	}
+	cleanupK3dStartToolsFn = func(_ context.Context, _ string) error { return nil }
+
+	err := startK3dCluster(t.Context(), "control-plane")
+	if !errors.Is(err, startErr) {
+		t.Fatalf("startK3dCluster error = %v; want wrapped %v", err, startErr)
+	}
+}
+
+func TestStartK3dCluster_CancelsHungClientAfterClusterIsRunning(t *testing.T) {
+	origRun := runK3dClusterStartCommandFn
+	origLookup := lookupK3dStateAfterStartFn
+	origCleanup := cleanupK3dStartToolsFn
+	origPoll := k3dClusterStartPollInterval
+	origGrace := k3dClusterStartHealthyGrace
+	t.Cleanup(func() {
+		runK3dClusterStartCommandFn = origRun
+		lookupK3dStateAfterStartFn = origLookup
+		cleanupK3dStartToolsFn = origCleanup
+		k3dClusterStartPollInterval = origPoll
+		k3dClusterStartHealthyGrace = origGrace
+	})
+
+	runK3dClusterStartCommandFn = func(ctx context.Context, _ string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	lookupK3dStateAfterStartFn = func(_ context.Context, _ string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{Exists: true, Running: true}, nil
+	}
+	cleaned := false
+	cleanupK3dStartToolsFn = func(_ context.Context, name string) error {
+		if name != "cp-daemon" {
+			t.Fatalf("cleanup name = %q; want cp-daemon", name)
+		}
+		cleaned = true
+		return nil
+	}
+	k3dClusterStartPollInterval = time.Millisecond
+	k3dClusterStartHealthyGrace = 2 * time.Millisecond
+
+	if err := startK3dCluster(t.Context(), "cp-daemon"); err != nil {
+		t.Fatalf("startK3dCluster: %v", err)
+	}
+	if !cleaned {
+		t.Fatal("hung-client recovery did not clean the temporary tools container")
+	}
+}
+
+func TestCreateK3dCluster_CancelsHungClientAfterClusterIsRunning(t *testing.T) {
+	origRun := runK3dClusterCreateCommandFn
+	origLookup := lookupK3dStateAfterCreateFn
+	origCleanup := cleanupK3dCreateToolsFn
+	origMerge := mergeK3dKubeconfigFn
+	origPoll := k3dClusterStartPollInterval
+	origGrace := k3dClusterStartHealthyGrace
+	t.Cleanup(func() {
+		runK3dClusterCreateCommandFn = origRun
+		lookupK3dStateAfterCreateFn = origLookup
+		cleanupK3dCreateToolsFn = origCleanup
+		mergeK3dKubeconfigFn = origMerge
+		k3dClusterStartPollInterval = origPoll
+		k3dClusterStartHealthyGrace = origGrace
+	})
+
+	runK3dClusterCreateCommandFn = func(ctx context.Context, args []string) error {
+		if len(args) < 3 || args[0] != "cluster" || args[1] != "create" {
+			t.Fatalf("create args = %v", args)
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	lookupK3dStateAfterCreateFn = func(_ context.Context, _ string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{Exists: true, Running: true}, nil
+	}
+	cleaned := false
+	cleanupK3dCreateToolsFn = func(_ context.Context, name string) error {
+		if name != "control-plane" {
+			t.Fatalf("cleanup name = %q; want control-plane", name)
+		}
+		cleaned = true
+		return nil
+	}
+	merged := false
+	mergeK3dKubeconfigFn = func(_ context.Context, name string) error {
+		if name != "control-plane" {
+			t.Fatalf("merge name = %q; want control-plane", name)
+		}
+		merged = true
+		return nil
+	}
+	k3dClusterStartPollInterval = time.Millisecond
+	k3dClusterStartHealthyGrace = 2 * time.Millisecond
+
+	if err := createK3dCluster(t.Context(), "control-plane",
+		[]string{"cluster", "create", "control-plane"}); err != nil {
+		t.Fatalf("createK3dCluster: %v", err)
+	}
+	if !cleaned {
+		t.Fatal("hung-client recovery did not clean the temporary tools container")
+	}
+	if !merged {
+		t.Fatal("hung-client recovery did not repair the default kubeconfig")
 	}
 }
 
@@ -190,6 +547,23 @@ func TestNodeHostsLineFor(t *testing.T) {
 	// not false-match.
 	if got := nodeHostsLineFor("10.0.0.2 host.k3d.internal.evil\n", "host.k3d.internal"); got != "" {
 		t.Errorf("nodeHostsLineFor(substring) = %q want empty (no substring match)", got)
+	}
+}
+
+func TestUpsertNodeHostsAlias(t *testing.T) {
+	const before = "172.27.0.2 k3d-control-plane-server-0\n" +
+		"192.168.1.10 host.k3d.internal retained-name\n" +
+		"10.0.0.8 another-name\n"
+	const want = "172.27.0.2 k3d-control-plane-server-0\n" +
+		"192.168.1.10 retained-name\n" +
+		"10.0.0.8 another-name\n" +
+		"192.168.65.254 host.k3d.internal\n"
+	got := upsertNodeHostsAlias(before, k3dHostGatewayAlias, "192.168.65.254")
+	if got != want {
+		t.Fatalf("upsertNodeHostsAlias:\n%s\nwant:\n%s", got, want)
+	}
+	if gotIP := nodeHostsIPFor(got, k3dHostGatewayAlias); gotIP != "192.168.65.254" {
+		t.Fatalf("nodeHostsIPFor = %q; want 192.168.65.254", gotIP)
 	}
 }
 

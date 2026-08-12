@@ -21,6 +21,7 @@ import (
 func newNewCmd() *cobra.Command {
 	var (
 		projectPath     string
+		nameFlag        string
 		modulePath      string
 		kindFlag        string
 		serviceNames    []string
@@ -28,8 +29,6 @@ func newNewCmd() *cobra.Command {
 		goVersion       string
 		inPlace         bool
 		force           bool
-		license         string
-		licenseAuthor   string
 		disableFeatures []string
 		harness         string
 		skipTools       bool
@@ -76,14 +75,26 @@ Example:
   forge project new my-project --mod github.com/example/my-project --frontend web
   forge project new mycli      --mod github.com/example/mycli --kind cli
   forge project new mylib      --mod github.com/example/mylib --kind library
-  forge project new --in-place --mod github.com/example/my-project`,
+  forge project new --in-place --mod github.com/example/my-project
+  forge project new --in-place --name my-project --mod github.com/example/my-project
+
+With --in-place and no name, the project is named after the DIRECTORY. That
+name becomes cmd/<name>/, the binary, the image and the deploy manifests, so
+in a worktree or a branch checkout — where the directory is named after the
+branch rather than the product — pass --name.`,
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var projectName string
+			projectName := nameFlag
 			if len(args) > 0 {
+				if nameFlag != "" && nameFlag != args[0] {
+					return cliutil.UserErr("forge project new",
+						fmt.Sprintf("project named twice: %q positionally and %q via --name", args[0], nameFlag),
+						"",
+						"pass the name once — as the positional arg, or as --name")
+				}
 				projectName = args[0]
 			}
-			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces)
+			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces)
 		},
 	}
 
@@ -94,11 +105,10 @@ Example:
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
+	cmd.Flags().StringVar(&nameFlag, "name", "", "Project name. Same as the positional arg, and the way to name an --in-place project whose directory (a worktree, a branch checkout) is not the product name; defaults to the directory name")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing project configuration")
-	cmd.Flags().StringVar(&license, "license", "MIT", "License to include (MIT, Apache-2.0, BSD-3-Clause, none)")
-	cmd.Flags().StringVar(&licenseAuthor, "license-author", "", "Author/copyright holder for the LICENSE file (defaults to git config user.name)")
 	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload")
-	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for: reliant (default; reliant CLI auto-discovers skills via forge.yaml), claude (writes CLAUDE.md + .claude/skills/), cursor (.cursorrules), copilot (.github/copilot-instructions.md), codex (AGENTS.md)")
+	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for. Each writes a memory file; only claude also receives on-disk skills. reliant (default): reliant.md — skills are read from the forge binary (`forge skill load <name>`) and discovered via forge.yaml, so NO skill files are written. claude: CLAUDE.md + .claude/skills/ (regenerated every `forge generate`). cursor: .cursorrules. copilot: .github/copilot-instructions.md. codex: AGENTS.md. Recorded as `harness:` in forge.yaml and honored by every later generate")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
@@ -194,7 +204,7 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 }
 
 //nolint:revive,cyclop // TODO: collapse into a runNewOptions struct; the cyclomatic complexity comes from cobra flag fan-out (resume/force/in-place/per-feature toggles) and refactoring requires a shared options type — cobra flag wiring is the only call site.
-func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool) error {
+func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool) error {
 	kindNormalized, bufPluginsNormalized, binaryNormalized, err := validateNewArgs(kindFlag, bufPlugins, binaryMode, serviceNames, frontendNames)
 	if err != nil {
 		return err
@@ -291,11 +301,6 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		return fmt.Errorf("failed to generate project: %w", err)
 	}
 
-	// Write LICENSE file if requested
-	if err := writeLicenseFile(targetPath, license, licenseAuthor); err != nil {
-		return fmt.Errorf("failed to write LICENSE: %w", err)
-	}
-
 	emitHarnessSkills(gen, targetPath)
 
 	// Generate additional services beyond the first (if any). Scaffolding the
@@ -338,7 +343,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 
 	success = true
 	fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
-	printNewNextSteps(projectName, inPlace, kindNormalized, serviceNames)
+	printNewNextSteps(projectName, inPlace, kindNormalized, serviceNames, len(frontendNames) > 0)
 
 	return nil
 }
@@ -356,7 +361,16 @@ func resolveNewTargetPath(projectName, projectPath string, inPlace, force bool) 
 		if err != nil {
 			return "", "", fmt.Errorf("failed to resolve path: %w", err)
 		}
-		// Derive project name from directory if not provided
+		// Fall back to the directory name only when nothing named the project.
+		//
+		// The directory is a WEAK signal: in-place scaffolding is most often
+		// run inside a worktree or a checkout whose name belongs to the
+		// branch, the ticket, or whatever the clone was called — not to the
+		// product. The name chosen here is not cosmetic either: it becomes
+		// cmd/<name>/, the binary, the image, the KCL manifests and the
+		// compose services, so a wrong one is spread across the tree before
+		// the first build. Naming it explicitly (positional arg or --name) is
+		// always better than inheriting the directory.
 		if projectName == "" {
 			projectName = filepath.Base(targetPath)
 		}
@@ -681,15 +695,15 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) {
 // inline — the one piece of forge-specific syntax involved, which nothing
 // else on screen teaches. `forge scaffold` then does the rest in one step,
 // which is what makes naming the proto edit affordable.
-func printNewNextSteps(projectName string, inPlace bool, kind string, serviceNames []string) {
-	for _, line := range newNextSteps(projectName, inPlace, kind, serviceNames) {
+func printNewNextSteps(projectName string, inPlace bool, kind string, serviceNames []string, hasFrontend bool) {
+	for _, line := range newNextSteps(projectName, inPlace, kind, serviceNames, hasFrontend) {
 		fmt.Println(line)
 	}
 }
 
 // newNextSteps renders the block printNewNextSteps writes, as lines. Split
 // out so the paste-ability contract is testable without capturing stdout.
-func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []string) []string {
+func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []string, hasFrontend bool) []string {
 	n := Name()
 	out := []string{"", "Next steps:"}
 	if !inPlace {
@@ -731,8 +745,23 @@ func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []
 			"      ↳ the marker is the tablizing decision; custom RPCs go in the same file",
 			scaffold,
 			"      ↳ births every marked message — migration pair + CRUD quintet — then generates",
-			fmt.Sprintf("  %s run", n),
-			"      ↳ applies migrations, seeds demo rows, prints your URLs",
+			fmt.Sprintf("  %s run", n))
+		if hasFrontend {
+			// Auth is fail-closed, so every RPC 401s until an identity
+			// provider is wired. `forge run` does that wiring itself and
+			// prints the credentials — but a reader who never gets there
+			// reads a 401 as a broken scaffold. Say it here, where they
+			// are already looking.
+			out = append(out,
+				"      ↳ applies migrations, seeds demo rows, brings up the dev IdP,",
+				"        and prints your URLs + the sign-in you were scaffolded",
+				"",
+				"  The UI you will see is starter code, not a design — yours to rewrite.",
+				"      ↳ why, and what finishing it takes, is in your project memory file")
+		} else {
+			out = append(out, "      ↳ applies migrations, seeds demo rows, prints your URLs")
+		}
+		out = append(out,
 			"",
 			fmt.Sprintf("  Field types and markers: %s project annotations --kind field", n))
 	}

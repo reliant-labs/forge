@@ -58,16 +58,27 @@ func entityFieldsFromSchemaDefs(protoPkg string, defs []codegen.SchemaFieldDef) 
 			// flattened field with the entity field's exact label and type,
 			// so every rule that type-checks on one type-checks on the other.
 			ValidateOptions: f.ValidateOptions,
-			ServerSet:       f.ServerSet,
+			ReadOnly:        f.ReadOnly,
 		}
-		// Decl feeds the List-request affordances (search on string
-		// entities, optional bool filters) — plain scalars only.
+		// Decl feeds the List-request affordances: free-text `search` on
+		// string entities, and one exact-match facet per filterable field.
+		//
+		// Enums and foreign keys are facets because they are what a real
+		// caller filters by — a status, an owner, a parent. Leaving them
+		// out made every born list unfilterable on its single most useful
+		// column, and the workaround (fetch a page, filter client-side)
+		// silently truncates past the page cap. See buildEntityCRUDMessagePieces.
 		if !f.Repeated && !f.Optional {
-			switch f.Kind {
-			case "string":
+			switch {
+			case f.Kind == "string" && f.Name != "id" && strings.HasSuffix(f.Name, "_id"):
+				ef.Decl = "fk"
+			case f.Kind == "string":
 				ef.Decl = "string"
-			case "bool":
+			case f.Kind == "bool":
 				ef.Decl = "bool"
+			case f.Kind == "enum":
+				ef.Decl = "enum"
+				ef.EnumType = strings.TrimPrefix(f.TypeName, protoPkg+".")
 			}
 		}
 		fields = append(fields, ef)

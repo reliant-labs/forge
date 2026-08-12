@@ -369,7 +369,7 @@ func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
 
-	body, err := os.ReadFile(filepath.Join(projectRoot, "pkg", "app", "testing.go"))
+	body, err := os.ReadFile(filepath.Join(projectRoot, ComponentTestHelperRelPath("billing")))
 	if err != nil {
 		t.Fatalf("read testing.go: %v", err)
 	}
@@ -459,38 +459,35 @@ func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
 			},
 		}},
 	}
-	data := struct {
-		Module              string
-		Services            []BootstrapTestServiceData
-		ConnectImports      []string
-		Packages            []BootstrapPackageData
-		AnyServiceHasDB     bool
-		AnyServiceNeedsTime bool
-		AnyServiceNeedsULID bool
-		HasMigrationsFS     bool
-		ExtraImports        []ExtraImport
-	}{
-		Module:         "example.com/proj",
-		Services:       []BootstrapTestServiceData{svc},
-		ConnectImports: []string{svc.ProtoConnectImportPath},
+	data := componentTestHelperData{
+		Module:                 "example.com/proj",
+		Package:                svc.Package,
+		Name:                   svc.Name,
+		FieldName:              svc.FieldName,
+		IsService:              true,
+		ConstructorName:        svc.ConstructorName(),
+		ProtoServiceName:       svc.ProtoServiceName,
+		ProtoConnectImportPath: svc.ProtoConnectImportPath,
+		ProtoConnectPkg:        svc.ProtoConnectPkg,
+		AutoStubs:              svc.AutoStubs,
 		ExtraImports: []ExtraImport{
 			{Alias: "userpkg", Path: "example.com/proj/internal/user"},
 			{Alias: "dbpkg", Path: "example.com/proj/internal/db"},
 		},
 	}
 
-	body, err := templates.ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)
+	body, err := templates.ProjectTemplates().Render("component_test_helpers.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("render bootstrap_testing.go.tmpl: %v", err)
+		t.Fatalf("render component_test_helpers.go.tmpl: %v", err)
 	}
 	content := string(body)
 
 	// The compile-time guard must reference the interface in CODE (not just a
 	// comment), so the import imported solely for the stub is genuinely used.
 	if !strings.Contains(content, "var _ userpkg.Service = stubBillingUsers{}") {
-		t.Errorf("testing.go must emit the cross-package stub interface assertion:\n%s", content)
+		t.Errorf("helpers must emit the cross-package stub interface assertion:\n%s", content)
 	}
-	mustParseGo(t, "testing.go", body)
+	mustParseGo(t, "helpers_gen_test.go", body)
 }
 
 // TestGenerateBootstrapTesting_UnresolvedSelectorTODO confirms that a
@@ -522,7 +519,7 @@ type Deps struct {
 	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
-	body, _ := os.ReadFile(filepath.Join(projectRoot, "pkg", "app", "testing.go"))
+	body, _ := os.ReadFile(filepath.Join(projectRoot, ComponentTestHelperRelPath("billing")))
 	content := string(body)
 	if !strings.Contains(content, "TODO: stub broken.Repository") {
 		t.Errorf("testing.go should carry the TODO comment for an unresolved selector\n--- rendered ---\n%s", content)
@@ -565,7 +562,7 @@ func New(d Deps) (*Service, error) { return &Service{}, nil }
 	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
-	body, err := os.ReadFile(filepath.Join(projectRoot, "pkg", "app", "testing.go"))
+	body, err := os.ReadFile(filepath.Join(projectRoot, ComponentTestHelperRelPath("billing")))
 	if err != nil {
 		t.Fatalf("read testing.go: %v", err)
 	}

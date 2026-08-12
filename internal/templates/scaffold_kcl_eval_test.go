@@ -3,28 +3,36 @@ package templates_test
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
 // TestScaffoldedIngressEvaluates scaffolds a fresh service-kind
-// project and runs `kcl run` over the dev env. The scaffold must
-// produce KCL that evaluates cleanly with empty HTTP_ROUTES/GRPC_ROUTES
-// — every commented-out template route stays commented.
+// project and renders the dev env. The scaffold must produce KCL that
+// evaluates cleanly with empty HTTP_ROUTES/GRPC_ROUTES — every
+// commented-out template route stays commented.
 //
 // Module resolution needs no rewrite: the test binary is a dev build
 // (no stamped pkg version), so the scaffold is BORN with the embedded
 // forge KCL module vendored into `.forge-kcl/` and deploy/kcl/kcl.mod
 // pointing at it by relative path (internal/kclvendor).
+//
+// It renders through kclrender — forge's OWN evaluation seam — rather
+// than by shelling out to the `kcl` binary, and that is a real part of
+// what is being asserted. The scaffolded dev env declares its ports with
+// the `plugin.allocate_port` / `plugin.resolve_port` builtins, which live
+// in the `kcl_plugin.forge` namespace forge registers in-process; the
+// standalone `kcl` binary has no plugin and cannot evaluate them. So
+// "renders from a clean checkout" means renders THE WAY FORGE RENDERS IT,
+// which is the only way any forge command ever reads this file. Shelling
+// out would test a path no user takes and would fail on a scaffold that
+// is completely correct.
 func TestScaffoldedIngressEvaluates(t *testing.T) {
-	if _, err := exec.LookPath("kcl"); err != nil {
-		t.Skip("kcl not on PATH; skipping scaffold KCL eval test")
-	}
 	tmp := t.TempDir()
 	g := generator.NewProjectGenerator("svc-eval", tmp, "example.com/svc-eval")
 	g.Kind = config.ProjectKindService
@@ -51,26 +59,24 @@ func TestScaffoldedIngressEvaluates(t *testing.T) {
 	// the projection lambda the env main.k imports, and the per-env
 	// user-owned values instance. Minimal shapes with the exact
 	// names/signatures the generators emit.
-	schemaStub := `schema AppConfig:
-    port: int = 8080
-`
-	projectionStub := `import forge
-import config_schema
+	// ONE generated module carrying both halves, matching what
+	// codegen.GenerateConfigKCL emits (schema then lambda, same file).
+	configGenStub := `import forge
 
-appConfigEnvMap = lambda c: config_schema.AppConfig -> {str: forge.EnvSource} {
+schema AppConfig:
+    port: int = 8080
+
+appConfigEnvMap = lambda c: AppConfig -> {str: forge.EnvSource} {
     {"PORT" = {value = str(c.port)}}
 }
 `
-	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl", "config_schema.k"), []byte(schemaStub), 0644); err != nil {
-		t.Fatalf("write config_schema.k stub: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl", "config_projection.k"), []byte(projectionStub), 0644); err != nil {
-		t.Fatalf("write config_projection.k stub: %v", err)
+	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl", "config_gen.k"), []byte(configGenStub), 0644); err != nil {
+		t.Fatalf("write config_gen.k stub: %v", err)
 	}
 	for _, env := range []string{"dev", "staging", "prod"} {
-		configStub := `import config_schema
+		configStub := `import config_gen
 
-app_config: config_schema.AppConfig = {
+app_config: config_gen.AppConfig = {
 }
 `
 		if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl", env, "config.k"), []byte(configStub), 0644); err != nil {
@@ -78,22 +84,22 @@ app_config: config_schema.AppConfig = {
 		}
 	}
 
-	cmd := exec.CommandContext(t.Context(), "kcl", "run",
-		"-S", "output",
-		"--format", "json",
-		filepath.Join(tmp, "deploy/kcl/dev"))
-	// Run from the project root so the deploy-as-data main.k's
-	// `file.read("deploy/kcl/components_gen.json")` resolves — KCL's
-	// file.read is process-cwd-relative, the same contract forge's
-	// RenderKCL / RenderManifests honor.
-	cmd.Dir = tmp
-	out, err := cmd.CombinedOutput()
+	// workDir is the project root so the main.k's relative imports
+	// (`..workloads`, `..ingress`) and its kcl.mod dependency path resolve
+	// — the same cwd contract forge's RenderKCL / RenderManifests honor.
+	out, err := kclrender.Run(tmp, filepath.Join(tmp, "deploy/kcl/dev"), []string{"env=dev"})
 	if err != nil {
-		t.Fatalf("kcl run dev: %v\n%s", err, out)
+		t.Fatalf("render dev env: %v", err)
 	}
-	var parsed map[string]any
-	if err := json.Unmarshal(out, &parsed); err != nil {
+	// The rendered document wraps the contract as `output = forge.render(...)`
+	// alongside `manifests`, so unwrap the same way parseKCLEntities does.
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
 		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	parsed, ok := doc["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("rendered document has no `output` contract:\n%s", out)
 	}
 	// Ingress arrays present and empty (no routes uncommented in scaffold).
 	for _, k := range []string{"gateways", "http_routes", "grpc_routes"} {

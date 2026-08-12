@@ -10,7 +10,7 @@
 import {{ .Ident }} from "./{{ .Slug }}";
 {{- end }}
 
-import type { Scenario } from "../scenario-types";
+import type { Scenario } from "../scenario-types_gen";
 
 const registry: Record<string, Scenario> = {
 {{- range .Scenarios }}

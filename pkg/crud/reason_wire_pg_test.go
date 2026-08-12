@@ -59,7 +59,7 @@ func accountCreateServer(t *testing.T) *httptest.Server {
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE)`); err != nil {
 		t.Fatalf("create accounts table: %v", err)
 	}
-	repo := NewRepo[account](Spec{})
+	repo := NewRepo[account]()
 
 	handler := connect.NewUnaryHandler(
 		createAccountProcedure,

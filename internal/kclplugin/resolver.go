@@ -22,6 +22,18 @@
 //     engine lives in internal/devstack; this package holds a settable hook
 //     (UseBlockAllocator) so the CLI wires the lock-guarded registry in.
 //
+// WHAT USED TO LIVE HERE. An earlier resolve_oidc_client primitive applied
+// resolve_port's shape to an OIDC client_id — a value the IdP generates at
+// registration and that therefore cannot be declared up front, resolved
+// from INSIDE a render by dialing the IdP mid-evaluation. That solved a
+// problem that does not exist: a render never actually needs to LEARN a
+// generated value, because a workload can reference it BY NAME instead. The
+// generated identity is now converged by an ordinary deploy-time Job
+// (`auth idp-provision`, pkg/devidp) that PUBLISHES it — a ConfigMap on a
+// cluster target, a committed KCL file on compose/dev — and every render
+// just reads whatever was last published, the same way it reads any other
+// declared fact. See the `auth/dev-loop` skill.
+//
 // The plugin bridge that lets KCL call back into Go is CGO-only (see
 // register_cgo.go / register_nocgo.go). forge's distributed binaries are
 // built with CGO so the namespace is always available; a CGO-free build
@@ -37,6 +49,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // PortResolver hands out host ports, one per logical name, stable for the
@@ -52,10 +65,12 @@ import (
 //     (3000 → 3001 → …) so dev ports stay human-friendly and parity-stable;
 //  3. an OS-assigned free port as the last resort.
 //
-// It never hands the same port to two names. Like any probe-then-bind
-// scheme (cf. cloud-dev.sh's _pick_port), there is an inherent TOCTOU
-// window between resolving a port and the launched process binding it;
-// acceptable for the dev loop this serves.
+// It never hands the same port to two names. Availability means BOTH
+// bindable and unanswered — see portFree, where a docker-published port
+// that a bind probe alone reports free is the case that forced the second
+// check. Like any probe-then-bind scheme (cf. cloud-dev.sh's _pick_port)
+// there is an inherent TOCTOU window between resolving a port and the
+// launched process binding it; acceptable for the dev loop this serves.
 type PortResolver struct {
 	mu        sync.Mutex
 	byName    map[string]int // confirmed this run
@@ -94,8 +109,26 @@ func (r *PortResolver) Resolve(name string, preferred int) (int, error) {
 	if p, ok := r.byName[name]; ok {
 		return p, nil
 	}
-	// 1. Reuse last run's port for this name when still available.
-	if p, ok := r.persisted[name]; ok && p > 0 && !r.claimed[p] && portFree(p) {
+	// 1. Reuse last run's port for this name. UNCONDITIONALLY — a port
+	//    already assigned to a name is that name's port, and an
+	//    availability check here would defeat the store's entire purpose.
+	//
+	//    The check that used to be here re-probed the port and moved on
+	//    when it was busy, which produced exactly the wrong answer in the
+	//    most ordinary situation there is: the thing that OWNS this port is
+	//    still running from the last `forge run`. It answers, so the probe
+	//    called it busy, so the render handed out a different port — and
+	//    the stack came up beside its own still-running database instead of
+	//    reusing it, with the app now dialling a port nothing was on.
+	//
+	//    If a FOREIGN process has taken the port in the meantime, the
+	//    consumer discovers it at bind time and says so — a loud, specific
+	//    failure naming the port and the declaration that owns it (see
+	//    internal/hostinfra's holder check) — rather than a silent drift
+	//    into a different port whose consequences surface somewhere else.
+	//    A stable port that occasionally collides is a better contract than
+	//    an unstable one that never does.
+	if p, ok := r.persisted[name]; ok && p > 0 && !r.claimed[p] {
 		return r.assign(name, p), nil
 	}
 	// 2. Prefer the requested port, then scan upward from it.
@@ -136,6 +169,27 @@ func (r *PortResolver) assign(name string, port int) int {
 	return port
 }
 
+// portFree reports whether a port can be handed to a process that will
+// BIND it and to a client that will then DIAL it — which takes two probes,
+// not one, because on a developer machine those can disagree.
+//
+// A bind succeeding is not sufficient. Docker's userland proxy publishes a
+// container port by listening on the wildcard address (`*:5433`), and macOS
+// lets a subsequent bind to `localhost:5433` succeed anyway — different
+// address, no conflict, as far as the kernel is concerned. So a bind-only
+// probe reports FREE for a port that another stack's database is actively
+// answering on. The port then gets handed out, and whatever binds it either
+// loses the race for new connections or leaves clients reaching the other
+// listener: a dev stack silently talking to a foreign database, which is
+// the exact failure the port declaration exists to prevent.
+//
+// A dial succeeding is not sufficient either, in the other direction: it
+// proves someone is listening but says nothing about whether WE could bind.
+// Requiring both is what makes "free" mean usable.
+//
+// A dial that hangs is treated as occupied — a port that takes longer than
+// the timeout to answer is not one to hand a dev server. The timeout is
+// short because this runs once per port considered, inside a render.
 func portFree(p int) bool {
 	var lc net.ListenConfig
 	ln, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("localhost:%d", p))
@@ -143,8 +197,29 @@ func portFree(p int) bool {
 		return false
 	}
 	_ = ln.Close()
-	return true
+	return !portAnswering(p)
 }
+
+// portAnswering reports whether anything accepts a connection on the port,
+// across BOTH loopback families. Checking both matters: docker publishes on
+// the wildcard address, so a container can be reachable over ::1 while
+// 127.0.0.1 looks quiet (or the reverse), and either one is a listener a
+// client resolving "localhost" may land on.
+func portAnswering(p int) bool {
+	for _, host := range []string{"127.0.0.1", "[::1]"} {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, p), portProbeTimeout)
+		if err == nil {
+			_ = conn.Close()
+			return true
+		}
+	}
+	return false
+}
+
+// portProbeTimeout bounds each dial in the availability probe. Loopback
+// either answers immediately or does not answer at all, so this only has to
+// out-wait a busy machine, not a network.
+const portProbeTimeout = 250 * time.Millisecond
 
 func freePort() (int, error) {
 	var lc net.ListenConfig

@@ -565,7 +565,7 @@ func serviceDeclared(comps []config.ComponentConfig, name string) bool {
 }
 
 // buildForgeConfigValues turns the per-env KCL config projection
-// (config_projection.appConfigEnvMap, ENV_VAR-keyed) into the
+// (config_gen.appConfigEnvMap, ENV_VAR-keyed) into the
 // key→parityValue projection both modes derive from. An inline `value`
 // entry carries through as a resolved value; a `from_secret` entry is a
 // secret-backed value — noted as secret_ref_placeholder rather than an

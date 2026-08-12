@@ -5,7 +5,7 @@ description: Migrate an existing project to forge — pre-flight, project shape,
 
 # Migrating an Existing Project to Forge
 
-Use this skill when porting an existing Go codebase onto a forge-generated scaffold. For greenfield work see `getting-started`.
+Use this skill when porting an existing Go codebase onto a forge-generated scaffold. For greenfield work see `forge`.
 
 ## Pre-flight
 
@@ -133,8 +133,8 @@ failing `CREATE/ALTER/DROP TABLE` is a hard generate error you fix in a
 new migration. See the `db` skill for details.
 
 If the source project was an older forge project with annotated entity
-protos (or a `proto/db/` directory), see
-`migrations/proto-entities-to-schema-truth` for the flip.
+protos (or a `proto/db/` directory), delete both: the applied schema in
+`db/migrations/` is the entity model now, and the annotations are ignored.
 
 ## When forge itself is wrong, mid-migration
 

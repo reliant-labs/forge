@@ -23,6 +23,7 @@ func newUpgradeCmd() *cobra.Command {
 		force     bool
 		toVersion string
 		dryRun    bool
+		all       bool
 	)
 
 	cmd := &cobra.Command{
@@ -54,23 +55,34 @@ is bumped to the current binary version (or to --to when provided). Migrations
 whose declared version range AND detection script both match this project are
 surfaced first, so the LLM running upgrade can follow them step-by-step.
 
+--check SUMMARIZES; --check <path> DETAILS. The report names each file that
+differs and sizes the difference in lines — it does NOT print diffs inline,
+because on a real project that is thousands of lines nobody reads. Files are
+grouped and ranked by what adopting them costs: the ones with no local edits
+come first, since for those a single --force is the whole job. Name a path
+after --check to see that one file's full diff, or pass --all to list every
+file the groups summarized.
+
 Examples:
   forge project upgrade                        # Upgrade to latest, run all needed migrations
   forge project upgrade --to 1.5.0             # Upgrade to a specific target version
   forge project upgrade --dry-run              # Show what would change (alias for --check)
-  forge project upgrade --check                # Dry-run: only show what would change
+  forge project upgrade --check                # Dry-run summary: what differs, and by how much
+  forge project upgrade --check buf.yaml       # That one file's full diff
+  forge project upgrade --check --all          # Every reported file (still no inline diffs)
   forge project upgrade --force                # Apply all updates, even for user-modified files
   forge project upgrade --force buf.yaml       # Overwrite ONLY buf.yaml; leave other edits alone`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --dry-run is an alias for --check; either toggles dry-run.
-			return runUpgrade(check || dryRun, force, args, toVersion)
+			return runUpgradeWithView(check || dryRun, force, all, args, toVersion)
 		},
 	}
 
 	cmd.Flags().BoolVar(&check, "check", false, "Dry-run: only show what would change, don't write files")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Alias for --check")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite user-modified files. Name paths after it to overwrite only those")
+	cmd.Flags().BoolVar(&all, "all", false, "List every reported file instead of the first few per group")
 	cmd.Flags().StringVar(&toVersion, "to", "", "Target forge version (defaults to the current binary version)")
 
 	// `forge project upgrade list` and `forge project upgrade apply <id>` cover the
@@ -84,6 +96,18 @@ Examples:
 }
 
 func runUpgrade(check, force bool, forcePaths []string, toVersion string) error {
+	return runUpgradeWithView(check, force, false, forcePaths, toVersion)
+}
+
+// runUpgradeWithView is runUpgrade plus the two presentation controls.
+//
+// showAll uncaps every truncated list. Naming paths under --check (rather
+// than under --force) selects the DETAIL view for exactly those files: the
+// report summarizes, and a named path is how you ask for one file's diff.
+// That is the whole shape of the fix — `--check` summarizes, `--check
+// <path>` details — and it is why paths mean something different in the
+// two modes without ever being ambiguous: --force writes, --check cannot.
+func runUpgradeWithView(check, force, showAll bool, forcePaths []string, toVersion string) error {
 	configPath, err := findProjectConfigFile()
 	if err != nil {
 		return err
@@ -96,6 +120,13 @@ func runUpgrade(check, force bool, forcePaths []string, toVersion string) error 
 	cfg := store.Config()
 
 	projectDir := filepath.Dir(configPath)
+
+	// `--check <path>...` is the detail view: one file's full diff. It
+	// short-circuits the whole report, because a reader who named a file
+	// is not looking for the summary they just read.
+	if check && !force && len(forcePaths) > 0 {
+		return runUpgradeDetail(projectDir, cfg, forcePaths)
+	}
 
 	selection, err := resolveForceSelection(cfg, force, forcePaths)
 	if err != nil {
@@ -118,26 +149,30 @@ func runUpgrade(check, force bool, forcePaths []string, toVersion string) error 
 	// projects the migrations of a release they were never on.
 	from := store.Meta().EffectiveForgeVersion()
 
-	// Minor-hop enforcement. Per-version codemods are written for one
-	// minor at a time (v0.1 → v0.2, v0.2 → v0.3, ...). Hopping multiple
-	// minors at once almost always means an intermediate codemod runs
-	// against a project that's already partially in the new shape — the
-	// rewrite is guaranteed to be either a no-op or a corruption. We
-	// require the user to step through one at a time so each codemod
-	// runs against a clean baseline.
+	// Supported-window enforcement (the Istio model). forge supports
+	// upgrading from at most supportedUpgradeWindowMinors minor releases
+	// back in a single run; anything older is a STAGED upgrade through an
+	// intermediate release.
 	//
-	// This check only applies when:
-	//   1. Both from/to parse cleanly as vMaj.Min(.patch).
-	//   2. The hop spans the same major (cross-major upgrades aren't
-	//      part of the codemod chain at all).
-	//   3. The hop spans more than one minor.
-	if hop := minorHopDistance(from, target); hop > 1 {
+	// The reason is the same one that bounds the migration registry: each
+	// migration is written against the shapes of the releases inside the
+	// window, so a project further back than that would have its
+	// migrations applied to a tree none of their authors ever saw. Making
+	// the user stop at an intermediate release means every migration runs
+	// against a baseline it was actually written for.
+	//
+	// This check only applies when both from/to parse cleanly as
+	// vMaj.Min(.patch) and span the same major — cross-major upgrades
+	// aren't part of the staged chain at all.
+	if hop := minorHopDistance(from, target); hop > supportedUpgradeWindowMinors {
+		stagedTo := minorPlus(from, supportedUpgradeWindowMinors)
 		return cliutil.UserErr(
 			fmt.Sprintf("forge project upgrade --to %s", target),
-			fmt.Sprintf("minor-hop only: cannot upgrade %s → %s in one step (each per-version codemod must run against a clean baseline)", from, target),
+			fmt.Sprintf("%s is %d minor releases behind %s — forge supports upgrading from at most %d minors back in one step",
+				describeVersion(from), hop, target, supportedUpgradeWindowMinors),
 			"",
-			fmt.Sprintf("run '%s project upgrade --to v%s' first, then re-run '%s project upgrade --to %s' (one minor at a time)",
-				Name(), nextMinor(from), Name(), target),
+			fmt.Sprintf("staged upgrade: run '%s project upgrade --to v%s' first, then re-run '%s project upgrade --to %s'",
+				Name(), stagedTo, Name(), target),
 		)
 	}
 
@@ -188,19 +223,16 @@ func runUpgrade(check, force bool, forcePaths []string, toVersion string) error 
 		return err
 	}
 
-	counts := tallyAndPrintUpgradeResults(results, check)
-
-	fmt.Println()
-
-	printUpgradeSummary(counts, check)
-	printUserModifiedRemedies(counts.userModifiedPaths)
+	counts := tallyAndPrintUpgradeResults(results, check, showAll)
+	printSkippedPaths(counts, showAll)
+	printUserModifiedRemedies(counts, showAll)
 
 	// The scaffold-once tier. Separate pass, separate section, and
 	// advisory by contract: these files are the user's from birth, so the
 	// run reports what their templates gained and writes nothing unless a
 	// path was named after --force. Runs in both modes — a --check that
 	// stayed silent about them is how a retried-4xx query client shipped.
-	if _, err := runAdvisoryPass(projectDir, cfg, selection, check); err != nil {
+	if _, err := runAdvisoryPass(projectDir, cfg, selection, check, showAll); err != nil {
 		return err
 	}
 
@@ -221,10 +253,10 @@ func runUpgrade(check, force bool, forcePaths []string, toVersion string) error 
 	// dry-run — the report would be misleading without the actual
 	// rewrites having happened.
 	//
-	// Hard error: this report is the canonical worklist for manual
-	// follow-up items. Silently dropping it strands the user with no
-	// record of what still needs hand-attention.
-	if !check && (len(codemodReport.Auto) > 0 || len(codemodReport.Manual) > 0) {
+	// Hard error: this report is the canonical record of what the codemod
+	// rewrote. Silently dropping it strands the user with no account of
+	// what changed under them.
+	if !check && len(codemodReport.Auto) > 0 {
 		if err := writeUpgradeNotes(projectDir, from, target, codemodReport); err != nil {
 			return fmt.Errorf("write UPGRADE_NOTES.md: %w", err)
 		}
@@ -271,8 +303,9 @@ func printApplicableMigrations(projectRoot, baseline string) {
 	}
 	fmt.Println()
 	fmt.Println("    The deterministic steps (regen, build) run automatically below.")
-	fmt.Println("    Load each skill above and follow its 'Migration (manual part)' section")
-	fmt.Println("    for any user-code adjustments needed for the version bump.")
+	fmt.Println("    Load each skill above IN THE ORDER LISTED (oldest release first) and")
+	fmt.Println("    follow its 'Migration (manual part)' section — each one assumes the")
+	fmt.Println("    release above it has already been migrated.")
 	fmt.Println()
 }
 
@@ -371,9 +404,8 @@ func runUpgradeCodemods(projectDir, from, target string) (CodemodReport, error) 
 			"inspect UPGRADE_NOTES.md (when written) and the codemod log; fix the offending file then re-run upgrade",
 			err)
 	}
-	if len(report.Auto) > 0 || len(report.Manual) > 0 {
-		fmt.Printf("🔧 Applied %d codemod rewrites; %d items need LLM/manual review.\n",
-			len(report.Auto), len(report.Manual))
+	if len(report.Auto) > 0 {
+		fmt.Printf("🔧 Applied %d codemod rewrites.\n", len(report.Auto))
 		fmt.Println("    Detail in UPGRADE_NOTES.md (written at the end).")
 		fmt.Println()
 	}
@@ -418,52 +450,137 @@ type upgradeCounts struct {
 	// userModifiedPaths are the paths reported as user-modified, in
 	// output order — the exact argument list the remedy hints quote back.
 	userModifiedPaths []string
+	// skippedPaths are the paths upgrade declined to manage this run
+	// (disowned, or a legacy layout). Kept so `--all` can name them:
+	// "2 skipped" with no way to learn WHICH two is a count the reader
+	// can do nothing with.
+	skippedPaths []string
+	// upToDatePaths are the files that match their template. The
+	// summary carries them as a count — they need no action and listing
+	// them is what a report does when it has nothing to say — but
+	// `--all` names them, so no path the old report printed became
+	// unreachable in the new one.
+	upToDatePaths []string
+	// modifiedRows are the user-modified rows, sized, for the remedy
+	// block to rank the same way the listing above it did.
+	modifiedRows []driftRow
 }
 
-// tallyAndPrintUpgradeResults prints one line per upgraded file (and the
-// indented diff for user-modified files) and returns the aggregate counts.
-func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check bool) upgradeCounts {
+// tallyAndPrintUpgradeResults reports the managed (Tier-2) lane and returns
+// the aggregate counts.
+//
+// What it no longer does is print each file's diff inline. That is the
+// single change that took this report from 14,244 lines to something a
+// person reads: a drift REPORT's job is to say that a file differs and by
+// how much, and the diff itself is what you ask for on ONE file. The
+// per-file diff is one `--check <path>` away and the section says so.
+//
+// Files that are up to date are counted, not listed. "up to date" is the
+// answer to a question nobody asked while looking for what changed; the
+// headline count carries it.
+func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showAll bool) upgradeCounts {
 	var c upgradeCounts
+	var updatedRows, modifiedRows []driftRow
 	for _, r := range results {
+		row := driftRow{Path: r.Path, Missing: r.Missing, Local: r.Local, Absent: r.Absent}
 		switch r.Status {
 		case generator.UpgradeUpToDate:
 			c.upToDate++
-			_, _ = fmt.Fprintf(os.Stdout, "  %-35s up to date\n", r.Path)
+			c.upToDatePaths = append(c.upToDatePaths, r.Path)
 		case generator.UpgradeUpdated:
 			c.updated++
-			_, _ = fmt.Fprintf(os.Stdout, "  %-35s %s\n", r.Path, updatedLabel(r.Forced, check))
+			if r.Forced {
+				row.Note = forcedNote(check)
+			}
+			updatedRows = append(updatedRows, row)
 		case generator.UpgradeUserModified:
 			c.userModified++
 			c.userModifiedPaths = append(c.userModifiedPaths, r.Path)
-			_, _ = fmt.Fprintf(os.Stdout, "  %-35s user-modified (skipped)\n", r.Path)
-			if r.Diff != "" {
-				// Indent the diff for readability
-				for _, line := range splitLines(r.Diff) {
-					_, _ = fmt.Fprintf(os.Stdout, "    %s\n", line)
-				}
-			}
+			modifiedRows = append(modifiedRows, row)
 		case generator.UpgradeSkipped:
 			c.skipped++
-			_, _ = fmt.Fprintf(os.Stdout, "  %-35s skipped\n", r.Path)
+			c.skippedPaths = append(c.skippedPaths, r.Path)
 		}
+	}
+	c.modifiedRows = modifiedRows
+
+	printCountsLine(
+		countPart(c.updated, updatedCountLabel(check)),
+		countPart(c.userModified, "with local edits (skipped)"),
+		countPart(c.upToDate, "up to date"),
+		countPart(c.skipped, "not upgrade-managed here"),
+	)
+
+	if len(updatedRows) > 0 {
+		// Files being ADDED are separated from files being refreshed:
+		// one creates something that was not there, the other changes
+		// something that was, and a reader skimming for "what is about
+		// to happen to my tree" wants those apart.
+		var adds, refreshes []driftRow
+		for _, row := range updatedRows {
+			if row.Absent {
+				adds = append(adds, row)
+				continue
+			}
+			refreshes = append(refreshes, row)
+		}
+		sortDriftRows(adds)
+		sortDriftRows(refreshes)
+		printDriftGroup(addedTitle(check), adds, showAll)
+		printDriftGroup(updatedTitle(check), refreshes, showAll)
+	}
+	if len(modifiedRows) > 0 {
+		cheap, merge, absent := groupDriftRows(modifiedRows)
+		// Cheap first: these are the rows where `--force <path>` is a
+		// complete answer, and burying them under the merges is the
+		// defect this report exists to fix.
+		//
+		// "Cheap" here means the line comparison found nothing in the
+		// file the template cannot account for. These files still
+		// reach this lane as user-modified — an unverifiable marker,
+		// or provenance predating markers entirely — so the heading
+		// says the file is unproven rather than claiming it is
+		// unedited. Adopting one is still the cheapest move available.
+		printDriftGroup("Cheap adopts (nothing here the template lacks):", cheap, showAll)
+		printDriftGroup("Your lines and the template's (merge by hand):", merge, showAll)
+		printDriftGroup("Shipped by the template, absent here:", absent, showAll)
 	}
 	return c
 }
 
-// updatedLabel names what happened (or would happen) to a file the upgrade
-// wrote. Overwriting a file the user edited is a different act from refreshing
-// a pristine render, so it gets a different word.
-func updatedLabel(forced, check bool) string {
-	switch {
-	case forced && check:
-		return "would overwrite your edits (--force)"
-	case forced:
-		return "overwrote your edits (--force)"
-	case check:
+// updatedCountLabel / updatedTitle keep the dry-run conditional in one
+// place: the same rows are either a report of what WOULD happen or a
+// record of what did.
+func updatedCountLabel(check bool) string {
+	if check {
 		return "would update"
-	default:
-		return "updated"
 	}
+	return "updated"
+}
+
+func updatedTitle(check bool) string {
+	if check {
+		return "Would update (no local edits):"
+	}
+	return "Updated:"
+}
+
+// addedTitle names the pure-add group: a managed file the template ships
+// that this project does not have yet.
+func addedTitle(check bool) string {
+	if check {
+		return "Would add (not in this project yet):"
+	}
+	return "Added:"
+}
+
+// forcedNote marks the rows whose adoption discarded user edits, so that
+// fact never rides only on a flag the reader has to remember passing.
+func forcedNote(check bool) string {
+	if check {
+		return "--force: would discard your edits"
+	}
+	return "--force: your edits discarded"
 }
 
 // printUserModifiedRemedies names both ways out of a user-modified file, at
@@ -480,49 +597,63 @@ func updatedLabel(forced, check bool) string {
 // Both are printed and neither is applied: a user-modified verdict is not
 // evidence of intent (it also fires on files whose provenance predates the
 // self-certifying marker), and disown is a one-way door.
-func printUserModifiedRemedies(paths []string) {
+//
+// The adopt command is emitted ONE PATH PER LINE. It used to be a single
+// --force naming every user-modified path in sequence, which on a real
+// project meant 34 paths and several hundred characters wrapped across the
+// terminal — copy-pasteable in the sense that a loaded gun is portable.
+// Per-line, each command is short, readable, and adopts exactly one file,
+// which is the granularity the rest of this command already works at.
+//
+// The cheap rows lead, because those are the ones where running the
+// printed command is the whole job.
+func printUserModifiedRemedies(c upgradeCounts, showAll bool) {
+	paths := c.userModifiedPaths
 	if len(paths) == 0 {
 		return
 	}
-	joined := strings.Join(paths, " ")
+	cheap, merge, absent := groupDriftRows(c.modifiedRows)
+
 	fmt.Println()
-	fmt.Printf("Two ways to resolve the %d user-modified file(s):\n", len(paths))
-	fmt.Println("  Adopt the new template for specific files (your edits there are discarded):")
-	fmt.Printf("    %s project upgrade --force %s\n", Name(), joined)
+	fmt.Printf("  Two ways to resolve the %d file(s) with local edits:\n", len(paths))
+	if len(cheap) > 0 || len(absent) > 0 {
+		fmt.Println("  Adopt the current template for one file (its contents are replaced):")
+		printAdoptCommands(append(append([]driftRow{}, cheap...), absent...), showAll)
+	}
+	if len(merge) > 0 {
+		fmt.Printf("  %d of them %s lines of your own — adopting discards those:\n",
+			len(merge), plural(len(merge), "carries", "carry"))
+		printAdoptCommands(merge, showAll)
+	}
 	fmt.Println("  Or claim a file as yours — upgrade never touches it again, even with --force:")
 	fmt.Printf("    %s project disown %s --reason \"<what the template can't express>\"\n", Name(), paths[0])
+	printDetailPointer()
 }
 
-// printUpgradeSummary prints the one-line, comma-joined summary of the upgrade
-// counts. No-op when nothing was updated/skipped/etc.
-func printUpgradeSummary(c upgradeCounts, check bool) {
-	parts := []string{}
-	if c.updated > 0 {
-		verb := "Updated"
-		if check {
-			verb = "Would update"
-		}
-		parts = append(parts, fmt.Sprintf("%s %d file(s)", verb, c.updated))
-	}
-	if c.userModified > 0 {
-		parts = append(parts, fmt.Sprintf("%d user-modified (skipped)", c.userModified))
-	}
-	if c.upToDate > 0 {
-		parts = append(parts, fmt.Sprintf("%d up to date", c.upToDate))
-	}
-	if c.skipped > 0 {
-		parts = append(parts, fmt.Sprintf("%d skipped", c.skipped))
-	}
-	if len(parts) == 0 {
+// printSkippedPaths names the files upgrade declined to manage, under
+// --all only.
+//
+// They are a real part of the report — a disowned file being skipped is
+// the disown working — but they need no action, so the summary carries
+// them as a count and --all names them. Nothing is silently dropped.
+func printSkippedPaths(c upgradeCounts, showAll bool) {
+	if !showAll {
 		return
 	}
-	for i, p := range parts {
-		if i > 0 {
-			fmt.Print(", ")
-		}
-		fmt.Print(p)
+	printNamedPathList("Up to date with the current template:", c.upToDatePaths)
+	printNamedPathList("Not upgrade-managed in this project (disowned, or a legacy layout):", c.skippedPaths)
+}
+
+// printNamedPathList prints a titled, indented list of paths, or nothing.
+func printNamedPathList(title string, paths []string) {
+	if len(paths) == 0 {
+		return
 	}
 	fmt.Println()
+	fmt.Printf("  %s\n", title)
+	for _, p := range paths {
+		fmt.Printf("    %s\n", p)
+	}
 }
 
 // bumpForgeVersion pins the project's forge_version after a successful,
@@ -531,6 +662,14 @@ func printUpgradeSummary(c upgradeCounts, check bool) {
 // --check and for the dev/(devel)/empty sentinel targets. A write failure is a
 // hard error — a silent no-bump strands the project pinned to the old version,
 // so the next `forge generate` runs the wrong template set.
+//
+// The write is SURGICAL — one scalar, in place. It used to marshal the whole
+// config struct back over forge.yaml, which changed the one field and
+// silently destroyed everything a Go struct cannot hold: on forge's own
+// manifest that meant 84 lines and 40 comment lines down to 21 lines and
+// none, with the ci: and lint: blocks gone and features: reduced to a single
+// flag. Semantics survived, so nothing failed and nobody was told. forge.yaml
+// is a file the user writes in; a one-field update has to read like one.
 func bumpForgeVersion(cfg *config.ProjectConfig, configPath, target string, check bool) error {
 	if check || target == "" || target == "dev" || target == "(devel)" {
 		return nil
@@ -539,7 +678,7 @@ func bumpForgeVersion(cfg *config.ProjectConfig, configPath, target string, chec
 		return nil
 	}
 	cfg.ForgeVersion = target
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
+	if err := generator.SetProjectConfigScalar(configPath, "forge_version", target); err != nil {
 		return fmt.Errorf("bump forge_version in forge.yaml: %w", err)
 	}
 	fmt.Printf("\nforge_version → %s (forge.yaml updated)\n", target)
@@ -571,16 +710,21 @@ func isPreV01Baseline(v string) bool {
 	return semver.Compare(key, "v0.1.0") < 0
 }
 
-// nextMinor returns the next minor version after v (e.g. "0.1" → "0.2",
-// "v1.4.3" → "1.5"). When v can't be parsed cleanly we fall back to
-// the input string — the caller's error message is still informative
-// even with the fallback. Used by the minor-hop guard's error message.
-func nextMinor(v string) string {
+// minorPlus returns the version n minor releases after v (e.g.
+// minorPlus("0.1", 2) → "0.3", minorPlus("v1.4.3", 2) → "1.6"). When v
+// can't be parsed cleanly we fall back to the input string — the
+// caller's error message is still informative even with the fallback.
+//
+// Used by the supported-window guard to name the intermediate release a
+// too-old project should stage through: landing exactly at the far edge
+// of the window is the largest step that is still supported, so it is
+// the fewest stops to current.
+func minorPlus(v string, n int) string {
 	maj, minor, ok := splitMinor(v)
 	if !ok {
 		return v
 	}
-	return fmt.Sprintf("%d.%d", maj, minor+1)
+	return fmt.Sprintf("%d.%d", maj, minor+n)
 }
 
 // splitLines splits a string into lines, handling both \n and \r\n.

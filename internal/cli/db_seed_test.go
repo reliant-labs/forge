@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/reliant-labs/forge/internal/seeddata"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // The seed-apply dev gate is FAIL-CLOSED and classifies by the runtime MODE in
@@ -26,7 +26,7 @@ func TestSeedEnvClassification(t *testing.T) {
 		}
 	}
 
-	const kHeader = "import config_schema\n\napp_config: config_schema.AppConfig = {\n"
+	const kHeader = "import config_gen\n\napp_config: config_gen.AppConfig = {\n"
 
 	// dev: config.k marks development (the scaffolded shape) -> dev.
 	writeConfigK("dev", kHeader+"    environment = \"development\"\n}\n")
@@ -52,9 +52,9 @@ func TestSeedEnvClassification(t *testing.T) {
 	}
 }
 
-// The database.seed block flows onto seeddata.Config.
+// The database.seed block flows onto seedplan.Config.
 func TestSeedConfigFlows(t *testing.T) {
-	load := func(t *testing.T, forgeYAML string) seeddata.Config {
+	load := func(t *testing.T, forgeYAML string) seedplan.Config {
 		t.Helper()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "forge.yaml")

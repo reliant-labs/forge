@@ -47,20 +47,23 @@ func TestClassifyTemplate(t *testing.T) {
 		{"internal/templates/service/handlers_gen.go.tmpl", tier1Generated},
 		{"internal/templates/frontend/hooks.ts.tmpl", tier1Generated},
 		// The writer is the authority on tier (internal/codegen/writers.go).
-		// writeForgeOwned => Tier-1: the cmd-tree files, the per-service item
-		// file, the three group anchors, and the mount surface.
-		{"internal/templates/project/cmd-svc-group.go.tmpl", tier1Generated},
+		// writeForgeOwned => Tier-1: the three group anchors and the mount
+		// surface.
 		{"internal/templates/project/cmd-worker-register.go.tmpl", tier1Generated},
-		{"internal/templates/project/mounts_services.go.tmpl", tier1Generated},
-		// root.go stays Tier-1 on merit: it declares ServiceName from the
-		// forge.yaml project name and gates its newDBCmd wiring on a config
-		// field parsed out of the user's config proto — genuinely re-derived
-		// from user input, which is the only thing that justifies Tier-1.
-		{"internal/templates/project/cmd-tree-root.go.tmpl", tier1Generated},
-		// db-source.go is the re-derived sliver carved out of db.go: whether
-		// forgedb.MigrationsFS is even a referenceable symbol depends on
-		// whether db/migrations/ holds any .sql, re-read from disk each run.
-		{"internal/templates/project/cmd-tree-db-source.go.tmpl", tier1Generated},
+		{"internal/templates/project/mounts_services_gen.go.tmpl", tier1Generated},
+		// cmd-tree-root-gen.go.tmpl is deliberately absent: the command tree
+		// has NO Tier-1 file. ServiceName is a const in the scaffold-once
+		// root.go, `db migrate` is added by the db.go that defines it, and
+		// the one re-derived fact (whether the embedded migration set exists)
+		// moved to db/source_gen.go — the package it is a fact about.
+		// <svc>_mount_gen.go is the same carve-out for a service subcommand:
+		// the collision-aware Mount<Svc> method expression can change spelling
+		// when an unrelated package is added, so it cannot be frozen at birth.
+		{"internal/templates/project/cmd-svc-mount-gen.go.tmpl", tier1Generated},
+		// root.go and <svc>.go themselves are the USER's: the command tree's
+		// shape and flags, and each service subcommand's RunE and help text.
+		{"internal/templates/project/cmd-tree-root.go.tmpl", tier2Scaffold},
+		{"internal/templates/project/cmd-svc-group.go.tmpl", tier2Scaffold},
 		// writeForgeScaffoldOnce => one-shot scaffold: the composition root,
 		// the per-worker/per-operator subcommand items, and the internal/app
 		// composition pair. Forge writes each once and never rewrites it, so

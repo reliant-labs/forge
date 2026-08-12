@@ -108,6 +108,16 @@ const (
 	// an updatable column of this entity. Wire code: InvalidArgument.
 	ReasonUnknownField = "unknown_field"
 
+	// ReasonVersionConflict — the row was modified by another writer
+	// between this caller's read and its write, on an entity that declared
+	// a `forge:version` column. The caller's move is specific and
+	// mechanical, which is why this is not folded into any existing
+	// reason: re-read the row, re-apply the change to the fresh values,
+	// and write again. It is the one CRUD failure where a blind retry of
+	// the SAME request is guaranteed to fail identically.
+	// Wire code: Aborted.
+	ReasonVersionConflict = "version_conflict"
+
 	// ReasonInvalidPageToken — the supplied page_token did not decode.
 	// The caller's move is to restart the listing from page one.
 	// Wire code: InvalidArgument.
@@ -159,6 +169,16 @@ const (
 func mapRepoErr(op, entity string, err error) error {
 	if errors.Is(err, orm.ErrNoRows) || svcerr.IsNotFound(err) {
 		return clientErr(svcerr.NotFound(entity), ReasonNotFound)
+	}
+	// An optimistic-concurrency conflict on a `forge:version` entity. It is
+	// checked BEFORE the not-found branch's neighbours because the repo has
+	// already done the work of telling the two apart (see
+	// Repo.requireWriteLanded) and this package must not undo that: reported
+	// as NotFound, a conflict would tell a client its row was deleted when
+	// it was merely edited by someone else. The repo's message already says
+	// what to do and names no SQL, so it passes through as written.
+	if svcerr.IsAborted(err) {
+		return clientErr(err, ReasonVersionConflict)
 	}
 	// An update_mask path that names no updatable column is the CALLER's
 	// mistake, not a server fault: InvalidArgument, with the offending
@@ -246,15 +266,32 @@ func clientErr(err error, reason string) error {
 // this package's "internal" bucket does, and the branch exists precisely
 // to pass the application's verdict through. Only an unreasoned error
 // gets stamped, so the vocabulary stays total either way.
+//
+// That pass-through is keyed on svcerr.IsClassified rather than on
+// *connect.Error alone, because Entity and Pack are OVERRIDE seams: an
+// application scoping CRUD to its own owner column returns its own rejections
+// from them (svcerr.InvalidArgument for a reference it will not accept,
+// svcerr.NotFound for a
+// row it will not admit exists). Those are bare sentinels, and matching only
+// *connect.Error sent every one of them out as CodeInternal — a caller's
+// mistake reported as a server fault, from the half of the pipeline whose
+// sibling mapRepoErr has understood sentinels all along. The asymmetry was
+// invisible: the same svcerr value meant 404 from Fetch and 500 from Entity.
 func mapPackErr(err error) error {
-	var ce *connect.Error
-	if errors.As(err, &ce) {
+	if svcerr.IsClassified(err) {
+		ce := svcerr.ToConnect(err)
 		if ce.Meta().Get(svcerr.ReasonHeader) == "" {
 			ce.Meta().Set(svcerr.ReasonHeader, ReasonInternal)
 		}
 		return ce
 	}
-	return clientErr(connect.NewError(connect.CodeInternal, err), ReasonInternal)
+	// Handed to clientErr UNWRAPPED. Pre-building a *connect.Error here made
+	// svcerr.ToConnect find one already present and pass its message straight
+	// through — which for a driver error is raw SQL, table names and whatever
+	// the DSN contains. Letting svcerr classify it instead routes through
+	// clientSafe, which substitutes InternalMessage on the wire and keeps the
+	// original reachable as a cause for the logging interceptor.
+	return clientErr(svcerr.WithCause(svcerr.Internal("response projection failed"), err), ReasonInternal)
 }
 
 // pgFailure is the part of a postgres error the APPLICATION authored: the

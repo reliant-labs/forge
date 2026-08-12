@@ -75,7 +75,7 @@ forge generate
 This produces:
 
 - Go service stubs and CRUD handler wiring (`handlers_crud_ops_gen.go` op constructors plus thin delegations in the user-owned `handlers_crud.go` for matching method names — see `api`).
-- Generated React Query hooks: `useListUsers`, `useGetUser`, `useCreateUser`, `useUpdateUser`, `useDeleteUser`. They are emitted per PROTO SERVICE, not per entity — `src/hooks/<service>-service-hooks.ts` — so import from the barrel (`@/hooks`), which re-exports every generated hook file.
+- Generated React Query hooks: `useListUsers`, `useGetUser`, `useCreateUser`, `useUpdateUser`, `useDeleteUser`. They are emitted per PROTO SERVICE, not per entity — `src/hooks/<service>-service-hooks_gen.ts` — so import from the barrel (`@/hooks`), which re-exports every generated hook file.
 - Generated Connect transport in `src/lib/connect.ts`.
 
 Never hand-edit `*-hooks.ts` — overwritten on next `forge generate`. Add custom hooks in a separate file (`src/hooks/custom-hooks.ts`).

@@ -29,6 +29,11 @@ type Deps struct {
 
 // New constructs a docs.Service. nil Deps fields are filled with the
 // canonical implementation from each collaborator package.
+//
+// forge:no-observe
+// Pure compute: both collaborators (codegen.Parser, contract.Service) are
+// themselves in-process parsers. Rendering docs touches no network or
+// database, so there is nothing for a span to measure.
 func New(d Deps) Service {
 	if d.CodegenParser == nil {
 		d.CodegenParser = codegen.NewParser(codegen.Deps{})

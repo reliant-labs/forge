@@ -231,6 +231,13 @@ type CRUDMethodTemplateData struct {
 	// map create-request fields onto the entity struct (with timestamp/
 	// wrapper/array/width conversions baked in).
 	CreateAssigns []string
+	// FillHandlerColumns names the entity's `forge:fill=handler` columns —
+	// present only on a "create" method, and only when at least one such
+	// column exists. When non-empty, ensureCRUDShimFile scaffolds an
+	// op.Entity wrapper around the create delegation carrying a
+	// FORGE_SCAFFOLD reminder to stamp each one, instead of the bare
+	// crud.HandleCreate(...) delegation.
+	FillHandlerColumns []string
 }
 
 // CreateFieldData holds a field mapping from a create request to the ORM entity.
@@ -597,11 +604,15 @@ func crudShimImports(data CRUDTemplateData) []string {
 	imports := []string{"context", "connectrpc.com/connect"}
 	hasMismatch := false
 	hasReal := false
+	needsDB := false
 	for _, m := range data.CRUDMethods {
 		if m.ShapeMismatch {
 			hasMismatch = true
 		} else {
 			hasReal = true
+		}
+		if len(m.FillHandlerColumns) > 0 {
+			needsDB = true
 		}
 	}
 	if hasReal {
@@ -615,6 +626,10 @@ func crudShimImports(data CRUDTemplateData) []string {
 			"github.com/reliant-labs/forge/pkg/orm",
 			"github.com/reliant-labs/forge/pkg/svcerr",
 			data.Module+"/internal/db")
+	} else if needsDB {
+		// The forge:fill=handler scaffold's op.Entity wrapper names the
+		// *db.<Entity> type the build closure returns.
+		imports = append(imports, data.Module+"/internal/db")
 	}
 	imports = append(imports, "pb "+data.Module+"/gen/"+data.ProtoPackage+"/v1")
 	return imports
@@ -1101,6 +1116,20 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 	updateMaskField := ""
 	if shapeOK && cm.Operation == "update" {
 		updateMaskField = updateMaskGoField(svc, cm.Method.InputType)
+
+		// A forge:version column the wire message does not carry makes
+		// this Update un-runnable after a row's first edit: the caller
+		// has no way to present the version the compare-and-swap
+		// matches on, so the predicate is always `version = 0`. Raised
+		// on the update method because that is the one the marker
+		// changes, and only on the handler path — the test builder
+		// (strictFilters=false) must keep scaffolding for an entity
+		// whose proto is mid-edit.
+		if strictFilters {
+			if err := UnversionableEntitiesError(FindUnversionableEntities(cm.Entity)); err != nil {
+				return CRUDMethodTemplateData{}, fmt.Errorf("%s.%s: %w", svc.Name, cm.Method.Name, err)
+			}
+		}
 	}
 
 	// Best-effort filter mapping for the WIRED custom-read-shape body.
@@ -1115,6 +1144,7 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 	// Precompute the create-request -> entity-struct assignments.
 	// Skip on shape mismatch — the stub doesn't reference these.
 	var createAssigns []string
+	var fillHandlerColumns []string
 	if shapeOK && cm.Operation == "create" {
 		m := Method{
 			Name:        cm.Method.Name,
@@ -1133,36 +1163,47 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 			if err := UnmappedFieldsError(unmapped); err != nil {
 				return CRUDMethodTemplateData{}, fmt.Errorf("%s.%s: %w", svc.Name, cm.Method.Name, err)
 			}
+			// A NOT NULL column with no DB DEFAULT and no wire assignment
+			// (forge:read-only, and no forge:fill= acknowledgement) is
+			// provably impossible to INSERT: every Create for this entity
+			// fails at the database. Derived purely from schema+wire facts
+			// forge already joined into cm.Entity, so it fires whether or
+			// not the author has ever heard of forge:fill.
+			if err := UnsatisfiableColumnsError(FindUnsatisfiableColumns(cm.Entity)); err != nil {
+				return CRUDMethodTemplateData{}, fmt.Errorf("%s.%s: %w", svc.Name, cm.Method.Name, err)
+			}
 		}
+		fillHandlerColumns = FillHandlerColumns(cm.Entity)
 	}
 
 	return CRUDMethodTemplateData{
-		MethodName:        cm.Method.Name,
-		InputType:         cm.Method.InputType,
-		OutputType:        cm.Method.OutputType,
-		EntityName:        cm.Entity.Name,
-		EntityLower:       strings.ToLower(cm.Entity.Name),
-		Operation:         cm.Operation,
-		AuthRequired:      cm.Method.AuthRequired,
-		AuthSeam:          crudAuthSeam,
-		PkField:           naming.ToProtoPascalCase(cm.Entity.PkField),
-		PkColumnName:      cm.Entity.PkField,
-		PkGoType:          cm.Entity.PkGoType,
-		HasPkInInput:      cm.Operation == "get" || cm.Operation == "update" || cm.Operation == "delete",
-		ResponseField:     cm.Entity.Name,
-		HasPagination:     hasPagination,
-		PaginationStyle:   paginationStyle,
-		HasFilters:        len(filterFields) > 0,
-		FilterFields:      filterFields,
-		HasOrderBy:        hasOrderBy,
-		HasDescending:     hasDescending,
-		HasTotalCount:     hasTotalCount,
-		UpdateEntityField: updateEntityField,
-		UpdateMaskField:   updateMaskField,
-		CreateAssigns:     createAssigns,
-		ShapeMismatch:     !shapeOK,
-		MismatchReason:    shapeReason,
-		CustomFilters:     customFilters,
+		MethodName:         cm.Method.Name,
+		InputType:          cm.Method.InputType,
+		OutputType:         cm.Method.OutputType,
+		EntityName:         cm.Entity.Name,
+		EntityLower:        strings.ToLower(cm.Entity.Name),
+		Operation:          cm.Operation,
+		AuthRequired:       cm.Method.AuthRequired,
+		AuthSeam:           crudAuthSeam,
+		PkField:            naming.ToProtoPascalCase(cm.Entity.PkField),
+		PkColumnName:       cm.Entity.PkField,
+		PkGoType:           cm.Entity.PkGoType,
+		HasPkInInput:       cm.Operation == "get" || cm.Operation == "update" || cm.Operation == "delete",
+		ResponseField:      cm.Entity.Name,
+		HasPagination:      hasPagination,
+		PaginationStyle:    paginationStyle,
+		HasFilters:         len(filterFields) > 0,
+		FilterFields:       filterFields,
+		HasOrderBy:         hasOrderBy,
+		HasDescending:      hasDescending,
+		HasTotalCount:      hasTotalCount,
+		UpdateEntityField:  updateEntityField,
+		UpdateMaskField:    updateMaskField,
+		CreateAssigns:      createAssigns,
+		ShapeMismatch:      !shapeOK,
+		MismatchReason:     shapeReason,
+		CustomFilters:      customFilters,
+		FillHandlerColumns: fillHandlerColumns,
 	}, nil
 }
 
@@ -1291,11 +1332,18 @@ type CRUDTestTemplateData struct {
 	// against another column (see crudTestFixtures.orderedFixture).
 	NeedsTimestamppb bool
 	// TestHelperName mirrors ServiceTemplateData.TestHelperName: the suffix
-	// the bootstrap testing generator emits on `app.NewTest<X>` /
-	// `app.NewTest<X>Server`. CRUD test scaffolds use this rather than
+	// the bootstrap testing generator emits on `NewTest<X>` /
+	// `NewTest<X>Server`. CRUD test scaffolds use this rather than
 	// pascal-casing Package so the call site matches the actual factory
 	// when an internal package shares the service's leaf name.
 	TestHelperName string
+	// ServiceImportPath is the internal/handlers/ directory leaf, used to
+	// import the handler package whose in-package helpers_gen_test.go
+	// declares NewTest<X>. The scaffolded test stays `package <pkg>_test`
+	// (external), and Go compiles a package's in-package _test.go files
+	// INTO the package under test — so the external test package sees
+	// these helpers through this ordinary import.
+	ServiceImportPath string
 }
 
 // CRUDTestEntityData groups CRUD operations by entity for lifecycle tests.
@@ -1452,6 +1500,8 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	data := buildCRUDTestTemplateData(svc, filteredMethods, modulePath, projectDir, fix)
 	data.Package = pkg
 	data.TestHelperName = ComputeTestHelperName(pkg, projectDir)
+	// relDir is internal/handlers/<leaf>; the import needs the leaf.
+	data.ServiceImportPath = filepath.ToSlash(filepath.Base(relDir))
 
 	// The fixtures are now fixed; verify them against the schema that will
 	// enforce them BEFORE the file is written. A fixture forge's own
@@ -1541,7 +1591,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 			var fields []CRUDTestFieldData
 			protoNameByGoName := make(map[string]string)
 			optionalByGoName := make(map[string]bool)
-			serverSetByGoName := make(map[string]bool)
+			readOnlyByGoName := make(map[string]bool)
 			secretByGoName := make(map[string]bool)
 			for _, f := range cm.Entity.Fields {
 				if f.Name == cm.Entity.PkField {
@@ -1559,7 +1609,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 				})
 				protoNameByGoName[f.GoName] = f.Name
 				optionalByGoName[f.GoName] = f.Optional
-				serverSetByGoName[f.GoName] = f.ServerSet
+				readOnlyByGoName[f.GoName] = f.ReadOnly
 				secretByGoName[f.GoName] = f.Secret
 			}
 
@@ -1598,11 +1648,11 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 				if fix.columnWriteConstrained(cm.Entity, protoNameByGoName[f.ProtoName]) {
 					continue
 				}
-				// `// forge:server-set` fields are server-authoritative — not
-				// client-settable. The born test must NOT set one (as the
-				// mutated field OR the masked clobber-proof value), so skip it
-				// here; the update lifecycle test then never references it.
-				if serverSetByGoName[f.ProtoName] {
+				// `// forge:read-only` fields are not client-settable. The born
+				// test must NOT set one (as the mutated field OR the masked
+				// clobber-proof value), so skip it here; the update lifecycle
+				// test then never references it.
+				if readOnlyByGoName[f.ProtoName] {
 					continue
 				}
 				// `// forge:secret` fields are stripped from read responses and
@@ -1612,7 +1662,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 				// observe the change) OR its clobber-proof value (a stripped
 				// read is always ""), and picking it as the maskless-mutated
 				// field would make that assertion fail. Skip it, exactly like
-				// server-set.
+				// read-only.
 				if secretByGoName[f.ProtoName] {
 					continue
 				}

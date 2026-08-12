@@ -337,7 +337,7 @@ func TestMocksStepPresetExcludesUnrelatedHeavyEmitters(t *testing.T) {
 		"frontend nav + dashboard",           // frontends/<name>/src/components/nav.tsx
 		"frontend mocks + transport",         // frontends/<name>/src/lib/mock-transport.ts
 		"pkg/app substrate (app_gen/setup)",  // bootstrap-only preset's territory
-		"pkg/app/testing.go",                 // bootstrap-only preset's territory
+		"per-service test helpers",           // bootstrap-only preset's territory
 		"pkg/app/migrate.go",                 // bootstrap-only preset's territory
 		"service stubs",                      // hand-editable service.go scaffolds
 		"go build (validate generated code)", // user runs go test in their loop

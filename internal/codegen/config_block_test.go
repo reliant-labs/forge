@@ -147,7 +147,7 @@ func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 		t.Fatalf("GenerateConfigLoader: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "pkg", "config", "config.go"))
+	data, err := os.ReadFile(filepath.Join(dir, "pkg", "config", "config_gen.go"))
 	if err != nil {
 		t.Fatalf("read config.go: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 
 	// The generated file must be syntactically valid Go.
 	fset := token.NewFileSet()
-	if _, err := parser.ParseFile(fset, "config.go", data, 0); err != nil {
+	if _, err := parser.ParseFile(fset, "config_gen.go", data, 0); err != nil {
 		t.Fatalf("generated config.go does not parse: %v\n--- content ---\n%s", err, content)
 	}
 }
@@ -188,7 +188,7 @@ func TestConfigBlock_RegenerateIdempotent(t *testing.T) {
 		if err := GenerateConfigLoader(traderConfigMessages(), projectDir, nil); err != nil {
 			t.Fatalf("GenerateConfigLoader: %v", err)
 		}
-		cfgGo, err := os.ReadFile(filepath.Join(projectDir, "pkg", "config", "config.go"))
+		cfgGo, err := os.ReadFile(filepath.Join(projectDir, "pkg", "config", "config_gen.go"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -227,7 +227,7 @@ func TestGenerateConfigKScaffold_BlockLeaf(t *testing.T) {
 	}
 	content := string(data)
 
-	if !strings.Contains(content, "app_config: config_schema.AppConfig = {") {
+	if !strings.Contains(content, "app_config: "+ConfigSchemaModule+".AppConfig = {") {
 		t.Errorf("config.k should declare the typed AppConfig instance:\n%s", content)
 	}
 	// The block-reference field carries no env_var and must never be pinned.

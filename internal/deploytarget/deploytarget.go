@@ -32,10 +32,21 @@
 //     / systemd-on-VM and any other CLI-driven deploy target.
 //   - ComposeProvider    — docker compose pull/up -d. Rollback writes a
 //     generated override file pinning the previous tag.
+//   - HostInfraProvider  — a third-party server (postgres) run as a HOST
+//     PROCESS, no container runtime. This is the DEFAULT shape for dev
+//     infrastructure; Compose is the opt-in for projects that want the
+//     container. See internal/hostinfra.
 //
 // HostDeploy and BuildOnly aren't providers — `forge run` / `forge env up`
 // own the host story, and BuildOnly is consumed by `forge build`.
 // The dispatcher skips both rather than routing them through a Provider.
+//
+// HostInfra IS a provider even though it also runs on the host, because it
+// answers a different question: HostDeploy launches code this project
+// BUILDS, HostInfra supervises a dependency forge FETCHES. They fail
+// differently (a compile error vs. a missing binary vs. a held port), and a
+// single "runs on the host" target would have to guess which it was
+// looking at.
 //
 // forge:exclude-contract
 // deploytarget is an outbound deploy-dispatch adapter (per-service deploy
@@ -133,7 +144,7 @@ type ServiceGroup struct {
 
 // ResolvedService is one service in a group, with its deploy block
 // already dispatched by type. Exactly one of K8sCluster/External/
-// Compose is non-nil; the dispatcher discards services with
+// Compose/HostInfra is non-nil; the dispatcher discards services with
 // HostDeploy/BuildOnly (those aren't in any deploy-target group).
 type ResolvedService struct {
 	Name string
@@ -145,6 +156,7 @@ type ResolvedService struct {
 	K8sCluster *K8sClusterSpec
 	External   *ExternalSpec
 	Compose    *ComposeSpec
+	HostInfra  *HostInfraSpec
 
 	// Secrets carries resolved secret values to inject into the runtime
 	// env (compose / external). Populated by the deploy dispatch from a
@@ -194,6 +206,59 @@ type ComposeSpec struct {
 	ComposeFile string
 	Service     string
 	EnvFile     string
+
+	// Env is the KCL-declared map forge puts in the `docker compose`
+	// PROCESS environment — which is what the compose file's own `${VAR}`
+	// references interpolate from. EnvFile is a different channel: it only
+	// forwards values into CONTAINERS, and passing --env-file also
+	// REPLACES compose's default `.env`.
+	//
+	// It is what lets a value be declared once in an env's KCL and reach
+	// the container (the dev IdP's port is the motivating case — see
+	// Compose.env in kcl/schema.k). These entries WIN over the inherited
+	// shell environment, deliberately: a shell override would move the
+	// container while every KCL reference to the same value stayed put.
+	Env map[string]string
+
+	// Wait selects readiness-gated deploys: `docker compose up -d
+	// --wait` blocks until the service's declared healthcheck passes
+	// instead of returning the moment the container is created.
+	//
+	// It is a pointer because the useful default is TRUE and a bool's
+	// zero value is false: a nil Wait means "not specified", which
+	// composeWait resolves to true. That keeps a ComposeSpec built by
+	// any path — KCL, a test literal, a future caller — readiness-gated
+	// unless someone opts OUT on purpose.
+	Wait *bool
+
+	// WaitTimeoutSeconds is a CEILING on the wait, not the mechanism:
+	// readiness is decided by the healthcheck, and this only bounds how
+	// long forge tolerates a container that never gets there, so a
+	// wedged service fails loudly instead of hanging a dev loop or a CI
+	// job forever. Zero means "no explicit ceiling" and lets the
+	// healthcheck's own retries x interval bound it.
+	WaitTimeoutSeconds int
+}
+
+// HostInfraSpec is the per-service host-infra deploy spec. Mirrors the
+// kcl/schema.k HostInfra schema: a third-party server forge runs as a host
+// process rather than a container. See internal/hostinfra.
+type HostInfraSpec struct {
+	Engine   string
+	Port     int
+	Database string
+	User     string
+	Password string
+	DataDir  string
+	Version  string
+
+	// engine = "zitadel" only — the dev IdP's backing database and its
+	// declarative bootstrap. See the HostInfra schema in kcl/schema.k.
+	IDPDatabase     string
+	IDPDatabasePort int
+	IDPMasterKey    string
+	IDPStepsFile    string
+	IDPPATPath      string
 }
 
 // ErrProviderNotImplemented is the sentinel future providers (Lambda,
@@ -224,6 +289,7 @@ func NewRegistry() *Registry {
 	r.Register(K8sClusterProvider{})
 	r.Register(ExternalProvider{})
 	r.Register(ComposeProvider{})
+	r.Register(HostInfraProvider{})
 	r.Register(FirebaseProvider{})
 	return r
 }
@@ -332,6 +398,28 @@ func GroupServices(env string, services []RawService) ([]ServiceGroup, error) {
 				Secrets: s.Secrets,
 			})
 
+		case s.HostInfra != nil:
+			// ONE group for every host-infra instance in the env. Unlike
+			// compose (grouped by file) or k8s (grouped by cluster) there is
+			// no shared target to key on — each instance is its own server,
+			// on its own port, with its own data directory. Grouping them
+			// together is what lets the provider attempt all of them and
+			// report the failures together.
+			const key = "host-infra"
+			grp, ok := groups[key]
+			if !ok {
+				grp = &ServiceGroup{
+					Env:        env,
+					ProviderID: "host-infra",
+				}
+				groups[key] = grp
+				keyOrder = append(keyOrder, key)
+			}
+			grp.Services = append(grp.Services, ResolvedService{
+				Name:      s.Name,
+				HostInfra: s.HostInfra,
+			})
+
 		default:
 			// Host / BuildOnly / nil — skipped by the deploy dispatch.
 		}
@@ -348,8 +436,8 @@ func GroupServices(env string, services []RawService) ([]ServiceGroup, error) {
 
 // RawService is the input shape for GroupServices — one entry per
 // rendered Service, with the deploy union already dispatched to the
-// matching variant. Exactly one of K8sCluster / External / Compose
-// is non-nil for services the dispatcher should ship; all three nil
+// matching variant. Exactly one of K8sCluster / External / Compose /
+// HostInfra is non-nil for services the dispatcher should ship; all nil
 // means "skip" (host / build-only / no deploy declared).
 type RawService struct {
 	Name string
@@ -358,8 +446,9 @@ type RawService struct {
 	// and the per-service spec (carried through to the provider).
 	K8sCluster *RawK8sCluster
 
-	External *ExternalSpec
-	Compose  *ComposeSpec
+	External  *ExternalSpec
+	Compose   *ComposeSpec
+	HostInfra *HostInfraSpec
 
 	// Secrets carries resolved secret values to inline into the runtime
 	// env for External/Compose services. Carried verbatim onto the
@@ -411,6 +500,8 @@ func groupTarget(g ServiceGroup) string {
 			return "file=" + g.Services[0].Compose.ComposeFile
 		}
 		return "file=?"
+	case "host-infra":
+		return "host processes"
 	case "firebase":
 		if len(g.Frontends) > 0 {
 			return "site=" + g.Frontends[0].Spec.resolvedTarget()

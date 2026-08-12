@@ -14,7 +14,7 @@ import (
 
 // TestLoadProjectConfigEnvMap_SensitiveRoutesToSecret is the end-to-end mission
 // check for the two-channel config projection: a scaffolded project's dev
-// config renders each field through config_projection.appConfigEnvMap — the
+// config renders each field through config_gen.appConfigEnvMap — the
 // EXACT source `forge run` injects into the host env and a deploy projects into
 // every workload's manifest — and each field lands on the RIGHT channel.
 //
@@ -77,14 +77,22 @@ func TestLoadProjectConfigEnvMap_SensitiveRoutesToSecret(t *testing.T) {
 		t.Errorf("ENVIRONMENT projection = %#v, want inline \"development\"", srcs["ENVIRONMENT"])
 	}
 
-	// The reference has to point at something: the dev secret provider's
-	// dotenv carries the value, keyed by env-var NAME.
-	dotenv, err := os.ReadFile(filepath.Join(tmp, ".env.dev"))
+	// The reference needs a SLOT to point at: the dev secret provider's store
+	// lists every declared sensitive ref, keyed by env-var NAME. That store is
+	// secrets/dev.yaml — NOT a dotenv, which forge lint rejects outright.
+	store, err := os.ReadFile(filepath.Join(tmp, "secrets", "dev.yaml"))
 	if err != nil {
-		t.Fatalf("read scaffolded .env.dev: %v", err)
+		t.Fatalf("read scaffolded secrets/dev.yaml: %v", err)
 	}
-	want := "DATABASE_URL=postgres://postgres:postgres@localhost:5434/cfgproj?sslmode=disable"
-	if !strings.Contains(string(dotenv), want) {
-		t.Errorf(".env.dev missing %q — the Secret reference resolves to nothing:\n%s", want, dotenv)
+	// The slot is EMPTY, and that is not a broken dev loop: DATABASE_URL's
+	// value is composed in deploy/kcl/dev/main.k from the port it resolves
+	// there, and KCL env vars override this store on host launch. A DSN
+	// written here would be a second declaration of the dev postgres port
+	// that cannot track the first. See codegen.generateEnvSecretsBody.
+	if !strings.Contains(string(store), `DATABASE_URL: ""`) {
+		t.Errorf("secrets/dev.yaml missing the empty DATABASE_URL slot:\n%s", store)
+	}
+	if strings.Contains(string(store), "postgres://") {
+		t.Errorf("secrets/dev.yaml carries a DSN — the dev port is KCL's fact, not this file's:\n%s", store)
 	}
 }

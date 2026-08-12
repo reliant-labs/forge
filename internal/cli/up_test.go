@@ -1188,3 +1188,65 @@ func TestWithDevRunDefaults(t *testing.T) {
 		t.Fatalf("an explicitly configured CORS_ORIGINS must survive; got %q", got["CORS_ORIGINS"])
 	}
 }
+
+// THE BANNER IS WHERE PEOPLE LOOK. A stack whose identity halves disagree
+// comes up entirely green — every process running, every port bound — and
+// then 401s every authenticated RPC. doctor has always been able to say so,
+// but nothing prompts a run of it at the moment the stack starts, so the
+// diagnosis sat in a command nobody was told to type.
+func TestAuthParityTrailer(t *testing.T) {
+	t.Run("warns when only the frontend names an issuer", func(t *testing.T) {
+		dir := t.TempDir()
+		writeParityConfigK(t, dir, `app_config: config_gen.AppConfig = {
+    environment = "development"
+}
+
+web_config: frontend_config_gen.WebConfig = {
+    oidc_issuer = "http://localhost:8080"
+}
+`)
+		got := authParityTrailerIn(dir, "dev")
+		if !strings.Contains(got, "Auth:") {
+			t.Errorf("no warning for a half-wired stack, got %q", got)
+		}
+		if !strings.Contains(got, "forge doctor") {
+			t.Errorf("the warning must say where the detail is, got %q", got)
+		}
+	})
+
+	t.Run("silent when both halves agree", func(t *testing.T) {
+		dir := t.TempDir()
+		writeParityConfigK(t, dir, `app_config: config_gen.AppConfig = {
+    jwt_issuer = "http://localhost:8080"
+}
+
+web_config: frontend_config_gen.WebConfig = {
+    oidc_issuer = "http://localhost:8080"
+}
+`)
+		if got := authParityTrailerIn(dir, "dev"); got != "" {
+			t.Errorf("a correctly-wired stack must print nothing, got %q", got)
+		}
+	})
+
+	t.Run("silent when neither half names an issuer", func(t *testing.T) {
+		// The scaffold's default before any IdP exists. No key material is
+		// the correct closed-and-bootable state, not a misconfiguration.
+		dir := t.TempDir()
+		writeParityConfigK(t, dir, "app_config: config_gen.AppConfig = {\n    environment = \"development\"\n}\n")
+		if got := authParityTrailerIn(dir, "dev"); got != "" {
+			t.Errorf("an identity-less project must print nothing, got %q", got)
+		}
+	})
+}
+
+func writeParityConfigK(t *testing.T, root, body string) {
+	t.Helper()
+	dir := filepath.Join(root, "deploy", "kcl", "dev")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.k"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

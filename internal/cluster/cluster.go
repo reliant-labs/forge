@@ -619,12 +619,12 @@ func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string, im
 // so deploy-as-data file reads resolve.
 func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) (string, error) {
 	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests)
-	// Render from the project root so the deploy-as-data main.k's
-	// `file.read("deploy/kcl/components_gen.json")` resolves. mainK is
-	// `<root>/deploy/kcl/<env>/main.k`; strip the four trailing path
-	// components to recover the project root. KCL's `file.read` is
-	// cwd-relative, so the cwd is part of the contract. Empty (a relative
-	// mainK) falls back to the process cwd, matching the old behaviour.
+	// Render from the project root so the env main.k's relative imports
+	// (`..components`, `..ingress`) and the kcl.mod vendor path resolve.
+	// mainK is `<root>/deploy/kcl/<env>/main.k`; strip the four trailing path
+	// components to recover the project root. Resolution is cwd-relative, so
+	// the cwd is part of the contract. Empty (a relative mainK) falls back to
+	// the process cwd, matching the old behaviour.
 	workDir := projectRootFromMainK(mainK)
 	if workDir == "" {
 		if wd, err := os.Getwd(); err == nil {

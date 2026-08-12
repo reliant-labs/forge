@@ -25,7 +25,7 @@ func TestStepSnapshotTier1Exports_RecordsGoExports(t *testing.T) {
 	dir := t.TempDir()
 
 	// db/embed.go — Tier-1 Go file with two public exports.
-	writeStampedUnderDir(t, dir, "db/embed.go", `package forgedb
+	writeStampedUnderDir(t, dir, "db/embed_gen.go", `package forgedb
 
 var Migrations = "v1"
 
@@ -57,7 +57,7 @@ var ScaffoldExport = "x"
 	if err := stepSnapshotTier1Exports(ctx); err != nil {
 		t.Fatalf("stepSnapshotTier1Exports: %v", err)
 	}
-	if got, ok := ctx.PriorExports["db/embed.go"]; !ok {
+	if got, ok := ctx.PriorExports["db/embed_gen.go"]; !ok {
 		t.Errorf("PriorExports missing db/embed.go entry")
 	} else {
 		if got.PkgName != "forgedb" {
@@ -95,7 +95,7 @@ func Apply() { _ = db.Migrations() }
 
 	// 2. Generated file (BEFORE the rename) — declares Migrations.
 	// Stamped: the marker is what makes it a Tier-1 snapshot subject.
-	writeStampedUnderDir(t, dir, "db/embed.go", `package db
+	writeStampedUnderDir(t, dir, "db/embed_gen.go", `package db
 
 func Migrations() string { return "old" }
 `)
@@ -111,7 +111,7 @@ func Migrations() string { return "old" }
 	}
 
 	// 3. Simulate codegen rewriting db/embed.go with the new symbol.
-	writeUnderDir(t, dir, "db/embed.go", `package db
+	writeUnderDir(t, dir, "db/embed_gen.go", `package db
 
 var MigrationsFS = "new"
 `)
@@ -127,7 +127,7 @@ var MigrationsFS = "new"
 	if !strings.Contains(out, "Tier-1 rename detection") {
 		t.Errorf("missing rename-detection banner; got:\n%s", out)
 	}
-	if !strings.Contains(out, "db/embed.go") {
+	if !strings.Contains(out, "db/embed_gen.go") {
 		t.Errorf("warning should name the renamed file; got:\n%s", out)
 	}
 	if !strings.Contains(out, "Migrations") {
@@ -153,7 +153,7 @@ import "example.com/m/db"
 func Use() { _ = db.MigrationsFS }
 `)
 	// Old: declared both.
-	writeStampedUnderDir(t, dir, "db/embed.go", `package db
+	writeStampedUnderDir(t, dir, "db/embed_gen.go", `package db
 
 var Migrations = "old"
 var MigrationsFS = "x"
@@ -165,7 +165,7 @@ var MigrationsFS = "x"
 	}
 	// Drop Migrations from the new render — but the only call site
 	// references the still-present MigrationsFS, NOT Migrations.
-	writeUnderDir(t, dir, "db/embed.go", `package db
+	writeUnderDir(t, dir, "db/embed_gen.go", `package db
 
 var MigrationsFS = "x"
 `)
@@ -193,7 +193,7 @@ import "example.com/m/db"
 
 func init() { _ = db.Migrations() }
 `)
-	writeStampedUnderDir(t, dir, "db/embed.go", `package db
+	writeStampedUnderDir(t, dir, "db/embed_gen.go", `package db
 
 func Migrations() string { return "old" }
 `)
@@ -202,7 +202,7 @@ func Migrations() string { return "old" }
 	if err := stepSnapshotTier1Exports(ctx); err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	writeUnderDir(t, dir, "db/embed.go", `package db
+	writeUnderDir(t, dir, "db/embed_gen.go", `package db
 
 var MigrationsFS = "new"
 `)
@@ -235,7 +235,7 @@ func Apply() { _ = forgedb.MigrationsFS }
 `)
 
 	// 1. Pre-rename: db/embed.go declares MigrationsFS in package forgedb.
-	writeStampedUnderDir(t, dir, "db/embed.go", `package forgedb
+	writeStampedUnderDir(t, dir, "db/embed_gen.go", `package forgedb
 
 var MigrationsFS = "v1"
 `)
@@ -247,7 +247,7 @@ var MigrationsFS = "v1"
 	}
 
 	// 2. Post-rename: db/embed.go no longer declares MigrationsFS.
-	writeUnderDir(t, dir, "db/embed.go", `package forgedb
+	writeUnderDir(t, dir, "db/embed_gen.go", `package forgedb
 
 var Other = "v2"
 `)
@@ -290,7 +290,7 @@ func TestStepDetectRenamedExports_CollisionDisambiguates(t *testing.T) {
 	dir := t.TempDir()
 
 	// Pre-rename declarer.
-	writeStampedUnderDir(t, dir, "db/embed.go", `package forgedb
+	writeStampedUnderDir(t, dir, "db/embed_gen.go", `package forgedb
 
 var Migrations = "v1"
 `)
@@ -308,7 +308,7 @@ func Run() { _ = db.Migrations }
 	}
 
 	// Post: dropped from db/embed.go; declared in TWO other packages.
-	writeUnderDir(t, dir, "db/embed.go", `package forgedb
+	writeUnderDir(t, dir, "db/embed_gen.go", `package forgedb
 
 var Renamed = "v2"
 `)

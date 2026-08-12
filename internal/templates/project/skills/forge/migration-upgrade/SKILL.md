@@ -1,6 +1,6 @@
 ---
 name: migration-upgrade
-description: Upgrade a forge project to a newer forge binary version — version pinning in forge.yaml, per-version migration skills, and the deprecation cycle policy.
+description: Upgrade a forge project to a newer forge binary version — version pinning in forge.yaml, the per-version migration skills, the supported upgrade window (N minors back), and the deprecation cycle policy.
 ---
 
 # Upgrading a forge project
@@ -21,6 +21,36 @@ Legacy projects that predate the field are treated as `0.0.0`. They
 get a one-time nudge from `forge generate` to run `forge project upgrade` so
 the baseline can be pinned.
 
+## The supported upgrade window
+
+forge supports upgrading from at most **2 minor releases back** in a
+single run (the Istio model). A project further back does a **staged
+upgrade**: step to an intermediate release first, then continue.
+
+```
+v0.3  v0.4  v0.5  v0.6  v0.7        binary: v0.7
+ │                 └──────┴─ project at v0.5: inside the window, one step
+ └─ project at v0.3: 4 minors back — stage through v0.5 first
+```
+
+Attempting too large a jump is refused with the intermediate version
+named:
+
+```text
+$ forge project upgrade --to v0.7.0
+  v0.3.0 is 4 minor releases behind v0.7.0 — at most 2 minors back
+  is supported in one step
+
+  staged upgrade: run 'forge project upgrade --to v0.5' first, then
+  re-run the original command
+```
+
+Why a window at all: each migration is written against the shapes of the
+releases inside it. Migrations compose multiplicatively — N releases back
+is N playbooks that must all still apply cleanly, in order, to a tree
+none of their authors ever saw. Bounding N is what keeps the registry
+small enough that every migration in it is still true.
+
 ## How to upgrade
 
 ```bash
@@ -28,12 +58,15 @@ the baseline can be pinned.
 grep forge_version forge.yaml
 forge version
 
+# See which migrations this project actually needs.
+forge project upgrade list
+
 # Preview what the upgrade would change.
 forge project upgrade --dry-run        # alias for --check
 
 # Apply.
 forge project upgrade                  # bumps to the binary's version
-forge project upgrade --to 1.5.0       # bumps to a specific version
+forge project upgrade --to v0.5.0      # bumps to a specific version
 
 # Force-overwrite user-modified frozen files (rare; usually you want
 # to inspect the diff first and reconcile manually).
@@ -42,10 +75,10 @@ forge project upgrade --force
 
 `forge project upgrade` runs in three phases:
 
-1. **Discover migration skills.** It walks `skills/forge/migrations/v*-to-*`
-   in the embedded skill registry and surfaces any whose `from` prefix
-   matches the project's current `forge_version` major/minor family.
-   Each skill prints with a `forge skill load <path>` command.
+1. **Surface applicable migrations.** Every release the project has not
+   crossed yet, whose detection script matches the project's current
+   shape, printed oldest release first with a `forge skill load <path>`
+   command.
 2. **Apply template drift.** Frozen Tier-2 files (Taskfile, Dockerfile,
    middleware scaffolds) are diffed against the latest templates; the
    user sees a unified diff for any file they've modified, and unmodified
@@ -54,13 +87,19 @@ forge project upgrade --force
 
 ## Reading per-version migration skills
 
-A migration skill at `migrations/v<from>-to-<feature>` is the playbook
-for crossing one version boundary. Every skill follows the same
-six-section shape (see `migrations/v0.x-to-contractkit` as the canonical
-example):
+A migration skill at `migrations/<version>` is the playbook for the
+breaking changes one RELEASE introduced. Load it by the path
+`forge project upgrade list` prints for it.
+
+**Apply them in the order `forge project upgrade list` prints them —
+oldest release first.** Each assumes the ones above it have already
+landed; running a later release's playbook against a tree still in an
+earlier shape is how a staged upgrade corrupts a project.
+
+Every skill follows the same six-section shape:
 
 1. **What changed.** A one-paragraph technical description.
-2. **Detection.** How to identify which shape your code currently has.
+2. **Detection.** How to identify whether your code has the old shape.
 3. **Migration (deterministic part).** Commands that `forge project upgrade`
    already runs for you (regen, build).
 4. **Migration (manual part).** What user-edited code might need to
@@ -69,11 +108,122 @@ example):
    shape-specific checks.
 6. **Rollback.** How to back out if something breaks.
 
-When `forge project upgrade` surfaces a skill, the deterministic steps run
-automatically. Load the skill yourself and apply the manual steps —
-forge intentionally doesn't try to automate them, because they touch
-hand-written code that the LLM is better placed to reason about than
-a regex-based rewrite.
+forge intentionally doesn't try to automate the manual steps, because
+they touch hand-written code that an LLM is better placed to reason about
+than a regex-based rewrite.
+
+Once you've finished a migration's steps:
+
+```bash
+forge project upgrade apply <version>   # records it in .forge/migrations.json
+```
+
+## Currently shipped migrations
+
+**None.** forge ships no migration skills right now — no release inside
+the supported window carries a breaking change that a project can still
+be on the wrong side of.
+
+An empty registry is the normal steady state, not a gap. `forge project
+upgrade list` says so directly:
+
+```text
+No migrations shipped by <this binary> — no release in the supported
+upgrade window carries a breaking change.
+```
+
+<!-- @forge-only:start -->
+
+## Authoring a migration skill (forge core authors)
+
+Add a migration when a release changes the *shape* of a generated
+artifact in a way user code or downstream tooling can observe. A new
+annotation, a renamed helper, a changed file layout, a removed config
+key — those need one. Pure internal refactors (swapping the regex engine
+that parses proto annotations) do not.
+
+### Where it goes and what it's called
+
+One directory per RELEASE, named for that release:
+
+```
+internal/templates/project/skills/forge/migrations/v0.5.0/SKILL.md
+```
+
+The directory name IS the identifier: it's what `forge project upgrade
+list` prints, what `forge project upgrade apply <id>` takes, and what
+lands in `.forge/migrations.json`. One skill covers everything that
+release broke — do not create a directory per individual change.
+
+### Frontmatter contract
+
+```yaml
+---
+name: v0.5.0
+description: the deploy target moved from forge.yaml into KCL
+relevance: migration
+version: v0.5.0
+detection: grep -q '^dev_target:' forge.yaml
+---
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Human-readable title. |
+| `description` | yes | One line; this is what the worklist prints. |
+| `relevance` | no | `migration` — defaulted from the directory, declare it anyway. |
+| `version` | yes | The release that introduced the break. **Must equal the directory name** (a test pins this). |
+| `detection` | yes | Shell snippet, run in the project root. Exit 0 means the project still has the old shape. |
+
+A migration applies when **both** hold: the project's pinned
+`forge_version` is BELOW `version`, and `detection` exits 0.
+
+### Writing detection: state, never version
+
+Detection must test what the tree CONTAINS, never what version it claims
+to be. The version half of the decision is already made by the `version`
+field, and duplicating it there breaks the two cases that matter most:
+
+- **Unpinned or dev-built projects.** A project bridged to a local forge
+  checkout pins a pseudo-version; one predating `forge_version` has no
+  pin at all. Neither has a usable position on the timeline, so forge
+  falls back to detection ALONE. A version-based detection returns
+  nothing useful here.
+- **Multi-release jumps.** A project crossing four releases at once gets
+  all four migrations. Each one must independently answer "does this tree
+  still have my old shape?" — including after the previous three have
+  already rewritten parts of it.
+
+Good detection is a grep or a file test — three examples of the
+`detection:` frontmatter value:
+
+```text
+test -f pkg/app/wire_gen.go
+rg -q 'forge:server-set' internal/
+grep -q '^dev_target:' forge.yaml
+```
+
+A migration with no detection applies to NOTHING — it cannot demonstrate
+any project needs it, so it stays out of every worklist rather than
+landing in all of them.
+
+### The pruning rule
+
+**When a release ages out of the supported window, DELETE its skill.**
+Not archive, not mark retired — delete.
+
+The window is `supportedUpgradeWindowMinors` in
+`internal/cli/upgrade_migrations.go` (currently 2). A project older than
+that cannot reach the migration anyway: it gets the staged-upgrade
+refusal instead, which routes it through an intermediate release where
+the migration was still in the window.
+
+A skill nothing can reach is a skill nothing tests. Keeping it around
+grows the registry without bound and leaves playbooks that quietly stop
+being true. Deleting it is what makes the honest answer — "stage through
+vX first" — the only answer that path can give.
+
+<!-- @forge-only:end -->
 
 ## Deprecation cycle policy
 
@@ -81,103 +231,22 @@ When forge changes the shape of a generated artifact:
 
 - **Old shape works for N versions with warnings.** N is at least 2
   minor versions (e.g. an old shape introduced before 1.4 stays
-  buildable, with deprecation warnings, through 1.5 and 1.6).
+  buildable, with deprecation warnings, through 1.5 and 1.6). This is the
+  same 2 the upgrade window uses, and not a coincidence: a project inside
+  the window is a project whose shapes forge still supports.
 - **Old shape removed in next major.** A 2.0 release is allowed to
-  delete the old shape entirely. The migration skill stays in the
-  registry as an archived reference for projects upgrading directly
-  from a pre-1.x version.
+  delete the old shape entirely.
 - **Behavioural fingerprints preserved across the cycle.** Mock
   not-set error strings, slog attribute keys, span names, and metric
   names are locked by fingerprint tests. A migration that breaks one
   of those gets called out explicitly in the skill's "What changed"
   section.
 
-## When to write a new migration skill
-
-Forge core authors should add a new `migrations/v<from>-to-<feature>`
-skill whenever a release changes the *shape* of a generated artifact
-in a way that user code or downstream tooling can observe. Pure
-internal refactors (e.g. swapping the regex engine that parses
-proto annotations) don't need a skill. A new annotation, a renamed
-helper, a changed file layout — those do.
-
 ## See also
 
 - `migration` — the top-level skill for porting a non-forge project
   *into* forge in the first place. This skill is for upgrading an
   already-forge project.
-- `migrations/v0.x-to-typed-di` — retire the `pkg/app` name-matched DI
-  (`wire_gen.go` / the appkit string-keyed table) for the EXPLICIT
-  composition: an OWNED `internal/app/providers.go` (`Infra` +
-  `OpenInfra`) plus a generated `internal/app/compose.go`
-  (`func NewComponents(infra) (*Components, error)`) that resolves every
-  `Deps` field BY TYPE. A missing provider is a loud generate-/compile-
-  time error, not a silent nil. This is the canonical "arrive at the
-  explicit composition root" upgrade.
-- `migrations/v0.x-to-serverkit-composed` — retire `serverkit.Run` with
-  string service-NAME selection for `Run(ctx, cfg, serverkit.Server{…})`
-  with TYPED mount selection: each service gets a typed
-  `(*app.Components).Mount<Svc>` method (in
-  `internal/app/mounts_services.go`) and its own
-  `cmd/<bin>/cmd/services/<name>.go` subcommand that hands that method
-  EXPRESSION to a shared `cmd.Serve`. The `Application` interface, Hooks,
-  the string→inventory mount lookup, and the generated `cmd/otel.go` shim
-  are gone; serverkit OWNS OTel.
-- `migrations/v0.x-to-serverkit` — collapse the ~520-line inline
-  `cmd/server.go` scaffold onto a thin shim over `forge/pkg/serverkit`
-  (the library owns the HTTP listener, observability chain, health
-  probes, worker/operator supervision, and graceful shutdown).
-- `migrations/v0.x-to-internal-layout` — move top-level `handlers/`,
-  `workers/`, `operators/` under `internal/` (mechanical move +
-  import-path rewrite; the compiler then enforces app-internal privacy).
-- `migrations/v0.x-to-self-certifying` — drop the global
-  `.forge/checksums.json` manifest for self-certifying generated files
-  (each Tier-1 file embeds its own `forge:hash=<sha256>`); automatic on
-  the next `forge generate` / `forge project upgrade`.
-- `migrations/v0.x-to-contractkit` — the canonical per-version
-  migration example (mock/middleware/tracing/metrics → contractkit).
-- `migrations/v0.x-to-observe-libs` — per-package wrapper codegen →
-  `forge/pkg/observe` Connect interceptors.
-- `migrations/v0.x-to-crud-lib` — `handlers_crud_gen.go` inline
-  lifecycle → `forge/pkg/crud` delegation shims.
-- `migrations/v0.x-to-middleware-lib` — ~25 scaffolded pkg/middleware
-  mechanism files → forge libraries (`pkg/authn`, `pkg/middleware`,
-  `pkg/observe`) + ONE thin user-owned policy file.
-  Optional; old copies keep working.
-- `migrations/v0.x-to-tdd-rpccases` — `handlers_crud_gen_test.go`
-  per-RPC inline test boilerplate → `tdd.RunRPCCases` row-driven shims.
-- `migrations/v0.x-to-env-config` — hand-curated KCL env-var groups →
-  `forge.yaml environments[].config` + sensitive-field projection.
-- `migrations/v0.x-to-testkit` — bootstrap_testing.go inlined sub-helpers
-  (discard logger, in-memory SQLite, httptest harness) →
-  `forge/pkg/testkit` library.
-- `migrations/v0.x-to-strict-contract-names` — internal-package
-  `contract.go` files must declare `type Service interface`, `type Deps
-  struct`, and `func New(Deps) Service` exactly. Lint-enforced via
-  `forgeconv-internal-package-contract-names`; non-canonical names
-  previously produced silently-broken bootstrap codegen.
-- `migrations/v0.x-to-checksum-history` — historical: flat -> structured
-  `.forge/checksums.json`. SUPERSEDED: the manifest itself is gone now —
-  generated files carry an embedded `forge:hash` marker and the first
-  `forge generate`/`forge project upgrade` migrates a legacy manifest
-  automatically (stamps pristine files, converts disowns to
-  `.forge/disowned.json`, deletes checksums.json).
-- `migrations/kcl-schemas-to-module` — in-tree
-  `deploy/kcl/{schema,base,render}.k` deleted; projects `import forge`
-  from the upstream KCL module and instantiate typed entities
-  (`forge.Service`, `forge.Operator`, `forge.Frontend`, `forge.CronJob`)
-  with a polymorphic `deploy` union.
-- `migrations/environments-to-kcl` — `forge.yaml -> environments[]` removed
-  entirely. Env-wide deploy knobs (cluster/namespace/registry/domain)
-  move onto per-service `forge.K8sCluster` blocks; per-env app config
-  moves to sibling `config.<env>.yaml` files next to forge.yaml.
-- `migrations/dev-target-to-kcl-deploy` — `forge.yaml services[].dev_target`
-  removed; deploy target is now `Service.deploy` in KCL with
-  `forge.HostDeploy | forge.K8sCluster | forge.External | forge.Compose | forge.BuildOnly`.
-- `migrations/host-env-file-to-env-vars` — `HostDeploy.env_file` split
-  into `env_vars` (KCL-declared per-env config) + `secrets_file`
-  (gitignored dotenv) so host services see the same per-env config
-  source K8sCluster services see via the Deployment env block.
 
 ## Post-merge gotchas
 

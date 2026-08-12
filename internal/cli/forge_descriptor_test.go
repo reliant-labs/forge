@@ -173,33 +173,33 @@ func TestSecretFieldMarkerRE(t *testing.T) {
 	}
 }
 
-// TestServerSetFieldMarkerRE pins the descriptor-side `// forge:server-set`
+// TestReadOnlyFieldMarkerRE pins the descriptor-side `// forge:read-only`
 // marker grammar — the INPUT-side mirror of `// forge:secret`. buf strips the
 // `//` before protogen sees the comment, so the token matches WITHOUT slashes;
 // leading/trailing/prose variants and multi-line doc blocks all resolve.
-func TestServerSetFieldMarkerRE(t *testing.T) {
+func TestReadOnlyFieldMarkerRE(t *testing.T) {
 	match := []string{
-		" forge:server-set\n",
-		"forge:server-set",
-		"  forge:server-set — the server assigns this\n",
-		"line one about the field\n forge:server-set\n",
-		"forge:server-set\n",
+		" forge:read-only\n",
+		"forge:read-only",
+		"  forge:read-only — the server owns this\n",
+		"line one about the field\n forge:read-only\n",
+		"forge:read-only\n",
 	}
 	for _, s := range match {
-		if !serverSetFieldMarkerRE.MatchString(s) {
-			t.Errorf("expected server-set marker to match %q", s)
+		if !readOnlyFieldMarkerRE.MatchString(s) {
+			t.Errorf("expected read-only marker to match %q", s)
 		}
 	}
 	noMatch := []string{
 		" not a marker\n",
-		" forge:server-setter\n", // must not match a longer token
+		" forge:read-onlyish\n", // must not match a longer token
 		" forge:secret\n",
 		" forge:entity\n",
 		"",
 	}
 	for _, s := range noMatch {
-		if serverSetFieldMarkerRE.MatchString(s) {
-			t.Errorf("did not expect server-set marker to match %q", s)
+		if readOnlyFieldMarkerRE.MatchString(s) {
+			t.Errorf("did not expect read-only marker to match %q", s)
 		}
 	}
 }

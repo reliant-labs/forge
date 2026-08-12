@@ -544,7 +544,6 @@ func TestLoadProject_UnknownKeyClassification(t *testing.T) {
 			wantSubstr: []string{
 				`"k8s.provider" is no longer a forge.yaml key`,
 				"forge.K8sCluster",
-				"migrations/environments-to-kcl",
 			},
 			notSubstr: []string{"did you mean"},
 		},
@@ -647,8 +646,12 @@ func TestLoadProject_DeprecatedEnvironmentsStillLoads(t *testing.T) {
 	if !strings.Contains(out, "deprecated top-level key") {
 		t.Errorf("expected warning to flag a deprecated top-level key, got: %q", out)
 	}
-	if !strings.Contains(out, "migrations/environments-to-kcl") {
-		t.Errorf("expected warning to point at the environments-to-kcl migration skill, got: %q", out)
+	// The hint must name where the config GOES, not a skill to load: the
+	// migration registry is pruned per release, so a warning that points
+	// at a skill path outlives the skill. Naming the destination shape
+	// stays true whether or not a migration is currently shipped.
+	if !strings.Contains(out, "config.<env>.yaml") {
+		t.Errorf("expected warning to name where per-env config moves to, got: %q", out)
 	}
 }
 

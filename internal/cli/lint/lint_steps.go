@@ -41,6 +41,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
@@ -359,12 +360,16 @@ func lintPipeline() []linterStep {
 			},
 		},
 
-		// 11. Handler-test convention lint — warnings only; never gates.
+		// 11. Test-convention lint. The handler and hook-test-presence
+		// rules are warnings, but the hook-test SHAPE rule gates: a
+		// scaffolded test asserting the opposite shape from its hook can
+		// never pass, so letting it through would be reporting green over
+		// a permanently red suite.
 		{
 			name:  "test convention lint",
-			gates: false,
+			gates: true,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if dirExists("internal/handlers") {
+				if dirExists("internal/handlers") || dirExists("frontends") {
 					return true, ""
 				}
 				return false, ""
@@ -372,10 +377,9 @@ func lintPipeline() []linterStep {
 			runText: func(rc *lintRunCtx) error {
 				return runTestsLint()
 			},
-			errFormat: "⚠️  Handler-test lint: %v\n",
+			errFormat: "❌ Test-convention lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				fs, err := collectTestsJSON(rc.cwd)
-				return fs, false, err
+				return collectTestsJSON(rc.cwd)
 			},
 		},
 
@@ -448,6 +452,125 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-ter. Component-drift — reports components the code declares
+		// that deploy/kcl/workloads.k does not (and vice versa). forge does
+		// not regenerate that file, so this is what notices when the two
+		// drift apart. Warnings only: both directions have legitimate
+		// deliberate cases (see lint_component_drift.go).
+		{
+			name:  "component-drift lint",
+			gates: false,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.cwd == "" || rc.cfg == nil {
+					return false, ""
+				}
+				// Only meaningful once deploy is scaffolded. A project
+				// without workloads.k has nothing to drift from.
+				if !codegen.WorkloadsKCLExists(rc.cwd) {
+					return false, ""
+				}
+				return true, ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runComponentDrift(rc.cwd, rc.cfg)
+			},
+			errFormat: "⚠️  component-drift lint: %v\n",
+			collect:   collectComponentDriftJSON,
+		},
+
+		// 13d-bis. Column-markers — flags a COMMENT ON COLUMN/CONSTRAINT
+		// whose text contains forge: but matches no known column marker
+		// (see lint_column_markers.go). Warnings only.
+		{
+			name:  "column-markers lint",
+			gates: false,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if dirExists(migrationsDirFor(rc.cfg)) {
+					return true, ""
+				}
+				return false, ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runColumnMarkersLint(rc.cfg)
+			},
+			errFormat: "⚠️  column-markers lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectColumnMarkersJSON(rc.cfg)
+				return fs, false, err
+			},
+		},
+
+		// 13d-ter. Proto-markers — the same check one layer up: flags a
+		// .proto comment whose text contains forge: but matches no known
+		// proto marker (see lint_proto_markers.go). A misspelled marker
+		// compiles fine and does nothing, so this is the only place it
+		// surfaces. Warnings only.
+		{
+			name:  "proto-markers lint",
+			gates: false,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				// No proto tree at all (CLI / library projects) → silent
+				// skip, matching the column check's missing-migrations arm.
+				return dirExists(protoDirDefault), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runProtoMarkersLint(protoDirDefault)
+			},
+			errFormat: "⚠️  proto-markers lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectProtoMarkersJSON(protoDirDefault)
+				return fs, false, err
+			},
+		},
+
+		// 13d-quater. Create-nullability — a field's `optional` label must
+		// agree between an entity message and its Create<Entity>Request.
+		// The Create request is the one envelope that FLATTENS the entity,
+		// so it re-declares the label, and a label lost in the
+		// re-declaration collapses absent and zero: the create writes ""
+		// into a nullable column and postgres answers with a foreign-key
+		// violation naming a constraint rather than the proto line that
+		// caused it. GATES, unlike its advisory proto siblings — there is
+		// no reading under which the two declarations should disagree.
+		{
+			name:  "create-nullability lint",
+			gates: true,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return dirExists(protoDirDefault), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runCreateNullabilityLint(protoDirDefault)
+			},
+			errFormat: "❌ create-nullability lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectCreateNullabilityJSON(protoDirDefault)
+				return fs, len(fs) > 0, err
+			},
+		},
+
+		// 13d-quinquies. Computed-fields — a `// forge:computed` field is a
+		// DECLARED obligation that something derives the value. Nothing
+		// forge generates does, so an unmet obligation means the insert
+		// takes the column default: $0.00 money with no error anywhere,
+		// found only by a human reading a screen. Warnings only — the fix
+		// is app logic the author has to write, and a project mid-migration
+		// (marker added before the hook) should still be able to lint.
+		{
+			name:  "computed-fields lint",
+			gates: false,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return dirExists(protoDirDefault) && rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runComputedFieldsLint(rc.cwd)
+			},
+			errFormat: "⚠️  computed-fields lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectComputedFieldsJSON(rc.cwd)
+				return fs, false, err
+			},
+		},
+
 		// 13e. Enforce-component-observe — every wired component with a Service
 		// interface + a canonical New(Deps) Service constructor must make an
 		// observability decision: `// forge:constructor` to instrument, or
@@ -476,6 +599,26 @@ func lintPipeline() []linterStep {
 			errFormat: "❌ enforce-component-observe lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectEnforceComponentObserveJSON(rc.cwd)
+			},
+		},
+
+		// 14b. No-dotenv — forge projects declare config in KCL and keep
+		// secret VALUES in the secret store. A .env file bypasses
+		// both (it is injected wholesale, so nothing has to be
+		// declared), so its presence is an error, not a warning.
+		{
+			name:  "no-dotenv lint",
+			gates: true,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runNoDotenvLint(rc.cwd)
+			},
+			errFormat: "❌ no-dotenv lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectNoDotenvJSON(rc.cwd)
+				return fs, len(fs) > 0, err
 			},
 		},
 

@@ -59,6 +59,8 @@ import (
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
+
 	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/pgtest"
@@ -226,6 +228,75 @@ func NewTestServer(t *testing.T, register func(mux *http.ServeMux)) *httptest.Se
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// ApplyOptions applies each functional option to cfg and returns it.
+//
+// Every generated per-component test factory opens with the same three lines —
+// build the default config, range over the variadic options, call each — and it
+// does so once per factory (NewTest<Svc>, NewTest<Svc>Server, and any the user
+// adds). This is that loop, and it is the one piece of the option machinery
+// that is expressible here: it never names the option's config type, only
+// applies functions to it.
+//
+// The options THEMSELVES cannot live here, and the reason is worth stating
+// because it is the boundary of what this package can absorb. A per-component
+// option is a `func(*testConfig)` where testConfig holds the project's own
+// *config.Config and that component's own Deps — project types, unknown to
+// forge/pkg. Expressing them generically (Option[C, D]) compiles, but Go infers
+// type parameters only from ARGUMENTS, never from the return type, so every
+// call site would have to spell them out:
+//
+//	NewTestOrder(t, testkit.WithLogger[config.Config, Deps](lg))   // generic
+//	NewTestOrder(t, WithLogger(lg))                                // today
+//
+// That is a worse test-writing experience in every project, permanently, to
+// delete three-line functions from a generated file. So the options stay
+// generated per component and only their application loop is shared.
+//
+// O is a second type parameter rather than a plain `...func(*C)` because the
+// per-component option is a NAMED type (`type TestOption func(*testConfig)`),
+// and Go does not assign []TestOption to []func(*testConfig) — a named type and
+// its underlying type are not identical in that position. Constraining O by
+// `~func(*C)` accepts the named type and infers both parameters from the
+// arguments.
+//
+// Call it by FORWARDING a slice — `ApplyOptions(cfg, opts...)` — which is what
+// a variadic factory already has. Passing no variadic argument at all leaves O
+// with nothing to infer from and does not compile; forward an empty (even nil)
+// slice for the no-options case.
+func ApplyOptions[C any, O ~func(*C)](cfg *C, opts ...O) *C {
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	return cfg
+}
+
+// NewConnectClient starts a test server with register mounted on its mux and
+// builds a typed Connect client against it via newClient.
+//
+// It folds together the two halves every generated NewTest<Svc>Server does by
+// hand: [NewTestServer] (mux, httptest.Server, t.Cleanup) and the client
+// construction, which needs the proto-specific `<svc>v1connect.New<Svc>Client`
+// constructor. That constructor is generated code this package cannot name, so
+// it arrives as a parameter — and because it is a plain argument, its type
+// parameter INFERS at the call site, unlike the option types above:
+//
+//	srv, client := testkit.NewConnectClient(t,
+//	    svc.Register, orderv1connect.NewOrderServiceClient)
+//
+// The server is returned alongside the client for tests that need its URL or
+// want to close it early; it is already registered for cleanup.
+// register matches the generated service's own Register method, which takes
+// variadic connect.HandlerOption alongside the mux.
+func NewConnectClient[C any](
+	t *testing.T,
+	register func(mux *http.ServeMux, opts ...connect.HandlerOption),
+	newClient func(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) C,
+) (*httptest.Server, C) {
+	t.Helper()
+	srv := NewTestServer(t, func(mux *http.ServeMux) { register(mux) })
+	return srv, newClient(http.DefaultClient, srv.URL)
 }
 
 // ClaimsOption mutates the default test claims built by [AuthedContext].

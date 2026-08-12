@@ -112,6 +112,9 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 			if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
 				continue
 			}
+			if isStdlibConventionMethod(funcDecl) {
+				continue
+			}
 			if funcDecl.Name.IsExported() {
 				hasExportedMethods = true
 				break
@@ -145,6 +148,40 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 	return nil, nil
 }
 
+// stdlibConventionMethods are exported method names whose meaning is fixed
+// by the standard library rather than by the package's own API: the
+// interfaces the runtime, fmt, encoding/json and friends look for by name.
+// Implementing one is a rendering/marshalling convention on a data record,
+// not a behavioral seam a caller would swap out — and because the stdlib
+// matches on the exact exported name, the rule's usual "unexport it if it's
+// helper-only" repair does not exist for them.
+var stdlibConventionMethods = map[string]bool{
+	"String":          true, // fmt.Stringer
+	"Error":           true, // error
+	"Unwrap":          true, // errors.Unwrap
+	"Is":              true, // errors.Is
+	"As":              true, // errors.As
+	"Format":          true, // fmt.Formatter
+	"GoString":        true, // fmt.GoStringer
+	"MarshalJSON":     true, // json.Marshaler
+	"UnmarshalJSON":   true, // json.Unmarshaler
+	"MarshalText":     true, // encoding.TextMarshaler
+	"UnmarshalText":   true, // encoding.TextUnmarshaler
+	"MarshalYAML":     true, // yaml.Marshaler
+	"UnmarshalYAML":   true, // yaml.Unmarshaler
+	"MarshalBinary":   true, // encoding.BinaryMarshaler
+	"UnmarshalBinary": true, // encoding.BinaryUnmarshaler
+}
+
+// isStdlibConventionMethod reports whether decl is one of the
+// stdlibConventionMethods — a method that should not, on its own, make a
+// package look like it has a behavioral contract. A package that ALSO has
+// a genuine exported method is still reported: the check skips the
+// convention methods rather than exempting the package.
+func isStdlibConventionMethod(decl *ast.FuncDecl) bool {
+	return stdlibConventionMethods[decl.Name.Name]
+}
+
 // isInternalPackage returns true if the package path contains an "internal/" segment.
 func isInternalPackage(pkgPath string) bool {
 	return strings.Contains(pkgPath, "/internal/") ||
@@ -170,10 +207,11 @@ func isHandlerPackage(pkgPath string) bool {
 //	mounts_services.go  — the Tier-1 typed Mount<Svc> surface + Inventory
 //	lifecycle.go        — the typed Worker/Operator supervised-surface accessors
 var composeSeamFiles = map[string]bool{
-	"compose.go":         true,
-	"providers.go":       true,
-	"mounts_services.go": true,
-	"lifecycle.go":       true,
+	"compose.go":             true,
+	"providers.go":           true,
+	"mounts_services_gen.go": true,
+	"mounts_services.go":     true, // pre-rename spelling, still a seam marker
+	"lifecycle.go":           true,
 }
 
 // isCompositionSeamPackage reports whether the package under analysis is

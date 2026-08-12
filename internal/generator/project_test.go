@@ -259,7 +259,11 @@ func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 	assertCompositionRootDeferred(t, root, "cli-only")
 	assertPathExists(t, filepath.Join(root, "cmd", "cli-only", "cmd", "root.go"))
 	assertPathExists(t, filepath.Join(root, "cmd", "cli-only", "cmd", "version.go"))
-	assertPathExists(t, filepath.Join(root, "pkg", "app", "testing.go"))
+	// The per-component test harness is emitted PER SERVICE, beside the
+	// service. A zero-service project has no component to emit one for —
+	// and there is no longer a project-wide pkg/app/testing.go standing in
+	// for it (that file put package `testing` in the production binary).
+	assertPathNotExists(t, filepath.Join(root, "pkg", "app", "testing.go"))
 	assertPathExists(t, filepath.Join(root, "pkg", "middleware", "middleware.go"))
 	assertPathExists(t, filepath.Join(root, "forge.yaml"))
 	// The retired name-matched DI unit AND the dead pkg/app substrate must
@@ -319,6 +323,9 @@ func TestProjectGeneratorKindCLIScaffold(t *testing.T) {
 		filepath.Join(root, "go.mod"),
 		filepath.Join(root, "Taskfile.yml"),
 		filepath.Join(root, "forge.yaml"),
+		// NOT config_gen.go: a CLI project runs no codegen, so this is the
+		// hand-owned Config{} stub generateCLIConfigStub writes, and it keeps
+		// the plain name precisely because nothing regenerates it.
 		filepath.Join(root, "pkg", "config", "config.go"),
 	}
 	for _, p := range mustExist {
@@ -455,7 +462,6 @@ func TestProjectGeneratorKindServiceDefault(t *testing.T) {
 		filepath.Join(root, "cmd", "mysvc", "cmd", "server.go"),
 		filepath.Join(root, "cmd", "mysvc", "cmd", "version.go"),
 		filepath.Join(root, "pkg", "middleware", "middleware.go"),
-		filepath.Join(root, "pkg", "app", "testing.go"),
 		filepath.Join(root, "Dockerfile"),
 		filepath.Join(root, "docker-compose.yml"),
 	}
@@ -689,8 +695,11 @@ func assertCompositionRootDeferred(t *testing.T, root, bin string) {
 	// A copy born here would freeze ConfigFields-gated blocks that disagree
 	// with the project's actual config, with nothing left to correct it.
 	assertPathNotExists(t, filepath.Join(root, "cmd", bin, "cmd", "serve.go"))
-	for _, group := range []string{"services", "workers", "operators"} {
-		assertPathNotExists(t, filepath.Join(root, "cmd", bin, "cmd", group, "register_gen.go"))
+	// The services anchor is Tier-1 (register_gen.go); the workers/operators
+	// anchors project nothing and are scaffold-once (register.go).
+	assertPathNotExists(t, filepath.Join(root, "cmd", bin, "cmd", "services", "register_gen.go"))
+	for _, group := range []string{"workers", "operators"} {
+		assertPathNotExists(t, filepath.Join(root, "cmd", bin, "cmd", group, "register.go"))
 	}
 }
 
@@ -1247,7 +1256,6 @@ func TestFeatureFlag_AllEnabled(t *testing.T) {
 	// Migrations
 	assertPathExists(t, filepath.Join(root, "db", "migrations"))
 	assertPathExists(t, filepath.Join(root, "cmd", "all-features", "cmd", "db.go"))
-	assertPathExists(t, filepath.Join(root, "pkg", "app", "migrate.go"))
 
 	// Codegen. server.go is the anchor rather than serve.go: both are
 	// codegen-gated, but serve.go is scaffold-once and born in the codegen
@@ -1256,7 +1264,10 @@ func TestFeatureFlag_AllEnabled(t *testing.T) {
 	// OTel is owned by serverkit — no cmd/otel.go shim.
 	assertPathNotExists(t, filepath.Join(root, "cmd", "otel.go"))
 	assertPathExists(t, filepath.Join(root, "proto"))
-	assertPathExists(t, filepath.Join(root, "pkg", "app", "testing.go"))
+	// Per-service test harness, beside the service, as a _test.go file so
+	// package `testing` stays out of the production binary.
+	assertPathExists(t, filepath.Join(root, "internal", "handlers", "api", "helpers_gen_test.go"))
+	assertPathNotExists(t, filepath.Join(root, "pkg", "app", "testing.go"))
 
 	// Deploy
 	assertPathExists(t, filepath.Join(root, "Dockerfile"))

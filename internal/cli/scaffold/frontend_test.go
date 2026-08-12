@@ -91,7 +91,7 @@ func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
 	dir := withTempProject(t, freshServiceForgeYAML)
 	markServiceProject(t, dir)
 
-	if err := runFrontend(context.Background(), "dashboard", 0, "", "", ""); err != nil {
+	if err := runFrontend(context.Background(), "dashboard", 0, "", "", "", "", nil); err != nil {
 		t.Fatalf("runFrontend: %v", err)
 	}
 
@@ -149,7 +149,7 @@ func TestRunAddFrontend_StackFrameworkByKind(t *testing.T) {
 			dir := withTempProject(t, freshServiceForgeYAML)
 			markServiceProject(t, dir)
 
-			if err := runFrontend(context.Background(), "app", 0, tc.kind, "", ""); err != nil {
+			if err := runFrontend(context.Background(), "app", 0, tc.kind, "", "", "", nil); err != nil {
 				t.Fatalf("runFrontend(kind=%q): %v", tc.kind, err)
 			}
 
@@ -177,7 +177,7 @@ func TestRunAddFrontend_PreservesCustomStackFramework(t *testing.T) {
 	dir := withTempProject(t, customYAML)
 	markServiceProject(t, dir)
 
-	if err := runFrontend(context.Background(), "app", 0, "", "", ""); err != nil {
+	if err := runFrontend(context.Background(), "app", 0, "", "", "", "", nil); err != nil {
 		t.Fatalf("runFrontend: %v", err)
 	}
 

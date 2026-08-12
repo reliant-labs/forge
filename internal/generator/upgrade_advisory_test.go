@@ -292,12 +292,22 @@ func TestAdvisories_AbsentFileIsReported(t *testing.T) {
 	}
 }
 
-// TestAdvisories_SetIsTheSharedMechanismTree pins WHAT is reported: the
-// files that win composition from the shared template roots, and nothing
-// from the per-kind tree. Membership is derived from those roots rather
-// than hand-listed precisely so a new mechanism module cannot be
-// forgotten — which is the bug class this lane exists to fix.
-func TestAdvisories_SetIsTheSharedMechanismTree(t *testing.T) {
+// TestAdvisories_SetIsEveryTemplateWrittenFile pins WHAT is reported.
+//
+// This lane originally covered the SHARED template roots only, and excluded
+// the per-kind tree on the grounds that those files are "the platform
+// wiring a project is expected to grow into". That conflated two different
+// questions. Whether forge OWNS a file (and may rewrite it) is one; whether
+// forge can TELL YOU the template moved is another. Answering the second
+// with the first is what made frontends/<name>/eslint.config.mjs invisible
+// to every forge command — while .golangci.yml, the same kind of file on
+// the backend side, reported a diff and both remedies.
+//
+// So the rule is now the generic one — if forge wrote it from a template,
+// its drift is reportable — and what is pinned here is the small exclusion
+// set, each entry of which fails the lane's standing "exactly ONE renderer"
+// admission rule.
+func TestAdvisories_SetIsEveryTemplateWrittenFile(t *testing.T) {
 	_, cfg := advisoryTestProject(t)
 	got := map[string]bool{}
 	for _, row := range advisoryRows(t, cfg) {
@@ -305,23 +315,55 @@ func TestAdvisories_SetIsTheSharedMechanismTree(t *testing.T) {
 	}
 	base := filepath.ToSlash(cfg.Frontends[0].EffectivePath()) + "/"
 	for _, want := range []string{
+		// Shared mechanism modules — the lane's original membership.
 		"src/lib/query-client.ts",
 		"src/lib/events.ts",
 		"src/lib/format-utils.ts",
 		"src/hooks/use-api-query.ts",
+		// Per-kind files, admitted now — the class eslint.config.mjs
+		// belongs to, and which was equally invisible before.
+		"src/lib/connect.ts",
+		"next.config.ts",
+		"tsconfig.json",
 	} {
 		if !got[base+want] {
-			t.Errorf("shared mechanism module %s missing from the advisory set", want)
+			t.Errorf("%s is written from a template but has no advisory row, so its drift "+
+				"cannot be reported by any forge command", want)
 		}
 	}
 	for _, unwanted := range []string{
-		"src/lib/connect.ts",    // per-kind transport wiring
-		"next.config.ts",        // per-kind app shell
-		"src/lib/apiurl_gen.ts", // regenerated every run, not scaffold-once
+		// Regenerated every run: the drift probe owns these and proves
+		// drift from an embedded marker rather than inferring it.
+		"src/lib/apiurl_gen.ts",
+		"src/lib/basepath_gen.ts",
+		// Seeded from the discovered entity set by the nav generator; this
+		// lane has the frontend config but not the inventory.
+		"src/components/nav.tsx",
+		"src/app/dashboard.tsx",
+		// Reconciled after render by EnsureWebRuntimeDependency, whose
+		// web-runtime specifier differs between a released and a dev forge.
+		"package.json",
+		// Claimed by the MANAGED lane, which refreshes a pristine copy and
+		// offers `disown`. It was registered in both lanes at once, so
+		// `upgrade --check` listed it twice with two different remedies.
+		frontendManagedRel,
 	} {
 		if got[base+unwanted] {
-			t.Errorf("%s is per-kind or generated and must not be in the advisory set", unwanted)
+			t.Errorf("%s has a second renderer, so an advisory row would report forge's own "+
+				"inconsistency as the user's drift", unwanted)
 		}
+	}
+
+	// Dropping the advisory row must not restore the original bug (total
+	// silence on the file) — the managed lane has to still cover it.
+	managed := false
+	for _, f := range frontendManagedFiles(cfg) {
+		if filepath.ToSlash(f.destPath) == base+frontendManagedRel {
+			managed = true
+		}
+	}
+	if !managed {
+		t.Errorf("%s%s is in neither upgrade lane — hand-editing it is invisible again", base, frontendManagedRel)
 	}
 }
 

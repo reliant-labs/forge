@@ -574,3 +574,96 @@ export function formatMoneyInterval(
   if (amount === "—") return amount;
   return `${amount}${intervalSuffix(interval)}`;
 }
+
+/**
+ * formatMoneyWhole renders cents as whole currency units — "$272,000", never
+ * "$272,000.00". For a headline figure (a dashboard total, a pipeline value)
+ * where the cents are two characters of noise on a number nobody reconciles to
+ * the penny.
+ *
+ * Use {@link formatMoneyCents} anywhere the exact amount is the point — an
+ * invoice line, a payment, a balance.
+ */
+export function formatMoneyWhole(value: unknown, currency = "USD"): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const cents = typeof value === "bigint" ? Number(value) : Number(value);
+  if (Number.isNaN(cents)) return String(value);
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 0,
+  }).format(cents / 100);
+}
+
+/**
+ * WireTimestamp is the runtime shape of a protobuf-es `google.protobuf.
+ * Timestamp`: `seconds` is a bigint, so no JS date API accepts it directly.
+ */
+export interface WireTimestamp {
+  seconds: bigint;
+  nanos?: number;
+}
+
+/**
+ * timestampToDate converts a proto Timestamp to a Date, or null when the
+ * value is unset or out of range.
+ *
+ * The range guard matters: `new Date(NaN)` and `new Date(8.64e15 + 1)` are
+ * both "Invalid Date", which renders as the literal string "Invalid Date" in
+ * a table cell. Returning null routes those through the same "—" path as an
+ * unset value.
+ */
+export function timestampToDate(ts: WireTimestamp | undefined | null): Date | null {
+  if (!ts) return null;
+  const ms = Number(ts.seconds) * 1000;
+  if (!Number.isFinite(ms)) return null;
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** formatDate renders a Timestamp as "Jan 14, 2024". */
+export function formatDate(ts: WireTimestamp | undefined | null): string {
+  const date = timestampToDate(ts);
+  if (!date) return "—";
+  return date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/** formatDateTime adds the time of day — for appointments and audit trails. */
+export function formatDateTime(ts: WireTimestamp | undefined | null): string {
+  const date = timestampToDate(ts);
+  if (!date) return "—";
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * formatAge renders elapsed time the way a person says it — "Today",
+ * "3 days ago", "5 weeks ago". For a record's age, where the magnitude is the
+ * signal and the exact date is not. A future timestamp renders "—".
+ */
+export function formatAge(
+  ts: WireTimestamp | undefined | null,
+  now: Date = new Date(),
+): string {
+  const date = timestampToDate(ts);
+  if (!date) return "—";
+  const days = Math.floor((now.getTime() - date.getTime()) / 86_400_000);
+  if (days < 0) return "—";
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 21) return `${days} days ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 9) return `${weeks} weeks ago`;
+  const months = Math.floor(days / 30);
+  if (months < 24) return `${months} months ago`;
+  return `${Math.floor(days / 365)} years ago`;
+}

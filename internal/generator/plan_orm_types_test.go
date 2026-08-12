@@ -8,7 +8,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/schemadef"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // The ORM generator projects a column onto a struct field, and the CRUD
@@ -186,7 +186,7 @@ func TestRenderORMEntity_EmitsNativeArrayFieldTypes(t *testing.T) {
 			{Name: "ids", Type: "[]int64", NotNull: true},
 		},
 	}
-	src := string(renderORMEntity(ent))
+	src := string(renderORMEntity(ent, false))
 	for _, want := range []string{
 		"Flags []bool `bun:\"flags,array,notnull\"`",
 		"Scores []float64 `bun:\"scores,array,notnull\"`",

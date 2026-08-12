@@ -46,6 +46,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/doctor"
 	"github.com/reliant-labs/forge/internal/envutil"
+	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/secrets"
@@ -524,6 +525,10 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	apiBaseURL := ""
 	if opts.hostOnly {
 		collapseClusterServicesToHost(entities)
+		// Same translation for the one-shots: their argv is written for
+		// the image (`/app/<project> db migrate up`), and on the host the
+		// project binary is `go run ./cmd/<project>`.
+		collapseJobsToHost(entities, cfg.Name)
 		// Ephemeral dev ports (host-only dev loop only — a full `forge env up`
 		// leaves cluster/declared ports untouched). Two freshly-scaffolded
 		// stacks otherwise both fall back to backend :8080 and frontend :3000
@@ -631,23 +636,11 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 
 	// Phase 3: host-mode services.
 	if scope.host {
-		// Ensure the dev database the host services are about to dial EXISTS
-		// before they boot — the runtime counterpart to the generate-time
-		// shadow DB, which forge already ensure-creates on the fly. A freshly
-		// scaffolded dev DSN (…:5434/<project>) names a database nothing has
-		// issued CREATE DATABASE for, so the first `forge run` boot would
-		// otherwise die with `FATAL: database "<project>" does not exist` before
-		// AUTO_MIGRATE could apply the schema. Host-run dev loop only
-		// (`forge run` / `--host-only`); a full `forge env up dev` manages its DB
-		// via compose/k8s, not this localhost DSN.
-		if opts.hostOnly {
-			if err := ensureDevDatabase(cfg, entities, opts.env); err != nil {
-				return err
-			}
-		}
-		hostFailures := upHostServices(ctx, cfg, entities, prov, opts.env, detach, opts.targets, procs)
-		if hostFailures > 0 {
-			fmt.Printf("[up] %d host service(s) failed to start (see above)\n", hostFailures)
+		if err := upHostPhase(ctx, hostPhase{
+			cfg: cfg, entities: entities, prov: prov, opts: opts,
+			projectDir: projectDir, detach: detach, procs: procs,
+		}); err != nil {
+			return err
 		}
 	}
 
@@ -719,6 +712,111 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	<-sigCh
 	fmt.Println("\n[up] shutting down...")
 	procs.shutdown()
+	return nil
+}
+
+// hostPhase is the state upHostPhase needs to converge the host world and
+// start the host-mode services in it.
+type hostPhase struct {
+	cfg        *config.ProjectConfig
+	entities   *KCLEntities
+	prov       secrets.Provider
+	opts       upOptions
+	projectDir string
+	detach     bool
+	procs      *procRegistry
+}
+
+// upHostPhase runs phase 3 of `forge env up`: converge the host world, then
+// start the host-mode services in it.
+//
+// The ordering is the load-bearing part. Infrastructure and the dev database
+// come up first, then the one-shot jobs run to completion, then the config
+// those jobs published is re-read, and only then do services start — each step
+// prepares the world the next one assumes.
+func upHostPhase(ctx context.Context, p hostPhase) error {
+	cfg, entities, opts := p.cfg, p.entities, p.opts
+	{
+		// Converge the env's DECLARED infrastructure before any host process
+		// dials it. The cluster path already does this (the infra pre-warm in
+		// upClusterBringup); a host-only run skipped it entirely, which is why
+		// `forge run` used to start an app against whatever happened to be
+		// listening on the scaffolded DSN's port — including another project's
+		// postgres, silently, with the right port and the wrong database.
+		//
+		// This is deliberately generic: it brings up whatever the env's KCL
+		// declares as infrastructure and knows nothing about what those
+		// servers ARE. The scaffolded dev env declares postgres as a
+		// `forge.HostInfra` — a real postgres forge runs as a HOST PROCESS,
+		// so a `forge run` needs no container runtime at all — and (only when
+		// the project ships a frontend) the dev IdP as a `forge.Compose`
+		// container. A project that wants its database containerized too says
+		// `forge.Compose` there as well and this loop brings that up instead.
+		//
+		// Best-effort by the same reasoning as the cluster path's pre-warm: a
+		// project may legitimately run its infra out of band, and the
+		// readiness gate below is the authoritative check on whether the
+		// stack actually came up.
+		if opts.hostOnly {
+			if err := prewarmInfra(ctx, opts.env, entities); err != nil {
+				fmt.Printf("[up] infra: %v (continuing; host services may fail to connect)\n", err)
+			}
+		}
+		// Ensure the dev database the host services are about to dial EXISTS
+		// before they boot — the runtime counterpart to the generate-time
+		// shadow DB, which forge already ensure-creates on the fly. A freshly
+		// scaffolded dev DSN (…:5434/<project>) names a database nothing has
+		// issued CREATE DATABASE for, so the first `forge run` boot would
+		// otherwise die with `FATAL: database "<project>" does not exist` before
+		// AUTO_MIGRATE could apply the schema. Host-run dev loop only
+		// (`forge run` / `--host-only`); a full `forge env up dev` manages its DB
+		// via compose/k8s, not this localhost DSN.
+		if opts.hostOnly {
+			if err := ensureDevDatabase(cfg, entities, opts.env); err != nil {
+				return err
+			}
+		}
+		// Identity needs no SPECIAL step here — the idp-provision job below
+		// IS the convergence step, run through the exact same runHostJobs
+		// path as any other one-shot. The values it publishes (the
+		// generated client_id, the project id) reach both halves of the
+		// app as ordinary per-env config, by importing the committed file
+		// it writes, like every other declared value — there is no
+		// separate bring-up step to skip, reorder, or forget.
+		//
+		// One-shot jobs run to completion BEFORE any host service starts —
+		// that is the ordering the `job` component kind declares, and on
+		// the host there is no orchestrator underneath us to enforce it.
+		// Fail-closed: a job that does not exit 0 stops the up rather than
+		// letting its dependents run against a world it was supposed to
+		// have prepared.
+		if err := runHostJobs(ctx, cfg, entities, p.prov.All(), opts.env); err != nil {
+			return err
+		}
+		// Re-read what those jobs PUBLISHED into the environment's config.
+		//
+		// idp-provision registers the browser application and writes the
+		// generated client_id into deploy/kcl/<env>/idp_identity_gen.k. The
+		// frontend's config.js was rendered by `forge generate`, BEFORE that
+		// file had a real value in it — so on a fresh project the browser
+		// would be served an empty OIDC_CLIENT_ID (the frontend's no-auth
+		// posture) until someone ran generate a second time, with nothing on
+		// screen saying so. The value cannot exist any earlier: it is minted
+		// by a running IdP on request. So it is re-read here, once the jobs
+		// that produce it have run and before the frontend serves anything.
+		//
+		// A no-op from the second run on, and never fatal — see
+		// refreshFrontendRuntimeConfigs.
+		if changed, err := refreshFrontendRuntimeConfigs(cfg, p.projectDir, opts.env); err != nil {
+			fmt.Printf("[up] frontend runtime config: %v (serving the previously generated config.js)\n", err)
+		} else if changed > 0 {
+			fmt.Printf("[up] frontend runtime config: refreshed %d config.js from converged identity\n", changed)
+		}
+		hostFailures := upHostServices(ctx, cfg, entities, p.prov, opts.env, p.detach, opts.targets, p.procs)
+		if hostFailures > 0 {
+			fmt.Printf("[up] %d host service(s) failed to start (see above)\n", hostFailures)
+		}
+	}
 	return nil
 }
 
@@ -829,23 +927,25 @@ func upClusterBringup(ctx context.Context, in upClusterInput) error {
 			return fmt.Errorf("kubeconfig secrets: %w", err)
 		}
 	}
-	// Kick off the docker-compose infra (postgres/nats/temporal/...)
-	// NOW, concurrent with the build phase. Image pulls + container
-	// health warmup are the long pole on a warm `up` and are wholly
-	// independent of the project image build, so overlapping the two
-	// shaves that wall-clock off every run. The deploy phase below
-	// re-dispatches the same compose group as an idempotent no-op once
-	// warm (pull is current; `up -d` sees the containers already
-	// running) and stays the authoritative health barrier before the
-	// k8s rollout — so a best-effort failure here is non-fatal. Skipped
-	// when the deploy phase won't run (--no-deploy): nothing would
-	// consume the infra and nothing later barriers on it.
+	// Kick off the declared infra (host-run postgres, and any compose
+	// service the env declares) NOW, concurrent with the build phase.
+	// Bringing a server up — an image pull and health warmup for a
+	// container, a first-run binary extraction for a host process — is the
+	// long pole on a warm `up` and is wholly independent of the project
+	// image build, so overlapping the two shaves that wall-clock off every
+	// run. The deploy phase below re-dispatches the same groups as an
+	// idempotent no-op once warm (pull is current, `up -d` sees the
+	// containers running, and a host instance already serving is adopted)
+	// and stays the authoritative health barrier before the k8s rollout —
+	// so a best-effort failure here is non-fatal. Skipped when the deploy
+	// phase won't run (--no-deploy): nothing would consume the infra and
+	// nothing later barriers on it.
 	var infraWarm chan error
-	if scope.composeInfra && !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:infra") {
+	if scope.infra && !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:infra") {
 		infraWarm = make(chan error, 1)
 		go func() {
-			fmt.Println("\n[up] infra phase (compose — concurrent with build)")
-			infraWarm <- prewarmComposeInfra(ctx, opts.env, entities)
+			fmt.Println("\n[up] infra phase (concurrent with build)")
+			infraWarm <- prewarmInfra(ctx, opts.env, entities)
 		}()
 	}
 	if !opts.noBuild {
@@ -1130,10 +1230,45 @@ func printUpSummary(e *KCLEntities, env string, background bool, targets []strin
 	if background {
 		trailer = fmt.Sprintf("Detached — stop with `forge env down %s`", env)
 	}
+	trailers := []string{trailer}
+	// A stack whose two identity halves disagree comes up looking perfectly
+	// healthy — every process green, every port bound — and then answers 401
+	// to every authenticated RPC. The banner is the one place someone is
+	// definitely looking at that moment, so the warning belongs here rather
+	// than only in a `forge doctor` run nothing prompts them to make.
+	if w := authParityTrailer(env); w != "" {
+		trailers = append(trailers, w)
+	}
 	// showOwner=false: the immediate summary stays off the lsof/ps hot path;
 	// notReadyLabel="starting" because a just-launched port not yet bound is
 	// booting, not down.
-	renderUpSummary(os.Stdout, env, rows, "starting", false, []string{trailer})
+	renderUpSummary(os.Stdout, env, rows, "starting", false, trailers)
+}
+
+// authParityTrailer returns a one-line banner warning when this environment's
+// backend and frontend do not agree on an issuer, or "" when they do (or when
+// neither declares one, which is the correct closed-and-bootable state).
+//
+// It reuses doctor's check rather than re-reading the KCL, so there is one
+// definition of "the halves disagree" and the banner cannot drift from what
+// `forge doctor` reports. Warn-only for the same reason doctor warns: a
+// split-issuer setup is legitimate, and this cannot tell one from a typo.
+func authParityTrailer(env string) string {
+	root, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return authParityTrailerIn(root, env)
+}
+
+// authParityTrailerIn is authParityTrailer against an explicit project root.
+func authParityTrailerIn(root, env string) string {
+	res := doctor.CheckAuthParity(context.Background(), &doctor.Environment{ProjectDir: root, Env: env})
+	if res.Status != doctor.StatusWarn {
+		return ""
+	}
+	return "⚠ Auth: " + res.Message + "\n" +
+		"│   Sign-in will succeed and RPCs will still 401. Details: forge doctor"
 }
 
 // renderUpSummary writes the aligned host-service + frontend table + the
@@ -1641,29 +1776,84 @@ func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string, no
 	return runBuild(ctx, opts)
 }
 
-// prewarmComposeInfra brings up the project's docker-compose deploy
-// targets so their image pulls + health warmup can run concurrently with
-// the build phase. It reuses the exact same path the deploy phase takes —
-// buildDeployGroups → ComposeProvider.Deploy (pull + up -d + health
-// check) — so the deploy phase's later re-dispatch is a true idempotent
-// no-op, not a second, subtly-different code path. Namespace is irrelevant
-// to compose targets, so the group builder gets an empty fallback. Returns
-// the first compose group's error; the caller treats it as best-effort.
-func prewarmComposeInfra(ctx context.Context, env string, entities *KCLEntities) error {
+// prewarmInfra brings up the project's declared dev INFRASTRUCTURE — the
+// servers the app dials but does not build — before any host process tries
+// to connect to one.
+//
+// It dispatches whatever the env declares, through the same
+// buildDeployGroups → Provider.Deploy path the deploy phase takes, so the
+// deploy phase's later re-dispatch is a true idempotent no-op rather than a
+// second, subtly-different code path. Two providers are infrastructure:
+//
+//   - host-infra — a server forge runs as a HOST PROCESS (postgres, via
+//     internal/hostinfra). This is the scaffolded default: a dev loop whose
+//     own code needs no container should not need a container runtime, and
+//     on a small cloud VM docker is a cost paid before the project starts.
+//   - compose — a container, for a project that declares one. The dev IdP
+//     is still one of these (Zitadel is a server with its own postgres
+//     dependency; running it host-native is a different project), so a
+//     project WITH a frontend does still need docker for that one service.
+//
+// Namespace is irrelevant to both, so the group builder gets an empty
+// fallback.
+//
+// EVERY group is attempted, even after one fails, and the failures are
+// reported together. The caller already treats this whole call as
+// best-effort (see the "continuing; host services may fail to connect" log
+// at the call site) — but a single `return` on the first group's error used
+// to abandon every group after it, silently. A dev stack's compose services
+// share one file and therefore one group, so a port collision on postgres
+// took the IdP down with it, and the failure surfaced three steps
+// downstream as a job reading a PAT file the IdP never got to write, with
+// nothing connecting the two. Collecting every group's error names the
+// actual cause at the actual point of failure.
+func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error {
 	groups, err := buildDeployGroups(env, entities, "")
 	if err != nil {
-		return fmt.Errorf("group compose services: %w", err)
+		return fmt.Errorf("group infrastructure services: %w", err)
 	}
-	provider := deploytarget.ComposeProvider{ProjectDir: projectDirForKCL()}
+	projectDir := projectDirForKCL()
+	return deployInfraGroups(ctx, groups, map[string]deploytarget.Provider{
+		"host-infra": deploytarget.HostInfraProvider{ProjectDir: projectDir},
+		"compose":    deploytarget.ComposeProvider{ProjectDir: projectDir},
+	})
+}
+
+// deployInfraGroups runs each INFRASTRUCTURE group through its provider and
+// returns every failure, joined. Groups whose provider is not in the map
+// (cluster / external / firebase) are skipped — they are applications, not
+// the servers those applications dial.
+//
+// Split out from prewarmInfra so the attempt-everything contract is
+// testable without a project on disk. That contract is the whole point of
+// this function: the caller treats infra bring-up as best-effort, and a
+// `return` on the first group's error silently abandoned every group after
+// it — which is how one port collision used to take an entire dev stack
+// down while naming only the first casualty.
+func deployInfraGroups(ctx context.Context, groups []deploytarget.ServiceGroup, providers map[string]deploytarget.Provider) error {
+	var failures []error
 	for _, g := range groups {
-		if g.ProviderID != provider.Name() {
+		provider, isInfra := providers[g.ProviderID]
+		if !isInfra {
 			continue
 		}
 		if err := provider.Deploy(ctx, g); err != nil {
-			return err
+			failures = append(failures, fmt.Errorf("%s: %w", infraGroupServiceNames(g), err))
 		}
 	}
-	return nil
+	return errors.Join(failures...)
+}
+
+// infraGroupServiceNames names the services in an infrastructure deploy
+// group, for an error message that says WHICH services a failed group left
+// undeployed — a human reading "compose: exit status 1" has no way to know
+// which of the services sharing that group never came up.
+func infraGroupServiceNames(g deploytarget.ServiceGroup) string {
+	names := make([]string, 0, len(g.Services))
+	for _, svc := range g.Services {
+		names = append(names, svc.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 // reconcileCluster is the cluster-scope reconcile entry point shared by
@@ -1757,26 +1947,21 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 	cmd := hostlaunch.BuildCmd(ctx, svc.Name, spec)
 
 	// Env composition: projectConfig → secrets → env_vars →
-	// os.Environ() wins last. Secrets are provider-first: the per-env
-	// secret provider (built once in runUp, passed down as secretsLayer)
-	// is the authoritative source when declared. Only when no provider is
-	// declared (empty secretsLayer) do we fall back to the legacy
-	// per-service secrets_file. A missing secrets_file is non-fatal
-	// (warn-and-continue); parse / permission errors are fatal because
-	// they signal a broken KCL pin rather than a developer who hasn't
-	// created the file yet.
-	secretVals := secretsLayer
-	if len(secretVals) == 0 {
-		loaded, lerr := hostlaunch.LoadSecretsFile(host.SecretsFile)
-		switch {
-		case lerr == nil:
-			secretVals = loaded
-		case errors.Is(lerr, os.ErrNotExist):
-			fmt.Printf("[up] host %s: warning: secrets file %s missing; continuing without it\n", svc.Name, host.SecretsFile)
-		default:
-			return nil, "", fmt.Errorf("host %s: read secrets file %s: %w", svc.Name, host.SecretsFile, lerr)
-		}
-	}
+	// os.Environ() wins last.
+	//
+	// Secrets come from the env's bundle secret_provider, SCOPED to what
+	// this service DECLARES: the provider map is the whole store, and a
+	// service receives only the keys it names via EnvVar.secret_ref.
+	// Injecting the whole store was how an undeclared value reached every
+	// process — which made dropping a line in the secrets file, rather
+	// than declaring it in KCL, the path of least resistance, and is why
+	// non-secret config drifted out of version control. An undeclared
+	// secret now reaches nothing.
+	//
+	// (The legacy per-service `secrets_file` dotenv fallback was removed
+	// with the dotenv provider: it was the same wholesale injection with a
+	// per-service path.)
+	secretVals := scopeSecretsToService(secretsLayer, &svc)
 	envVars := hostEnvVarsToMap(host)
 	// projectConfig layer: forge.yaml environments[<env>].config projected
 	// to env-var strings. Same source the cluster ConfigMap projection
@@ -1865,7 +2050,7 @@ func forceHostBindPorts(env []string, svcName string, declared map[string]string
 // implicit on-boot migrate, and its CORS allow-list stays explicit.
 //
 // An EMPTY project-config value never shadows a dev default. The KCL
-// projection is total — config_projection.k emits one entry per AppConfig
+// projection is total — config_gen.k emits one entry per AppConfig
 // field unconditionally (`"CORS_ORIGINS" = {value = c.cors_origins}`), so a
 // field the env's config.k never pinned still arrives here carrying its
 // schema zero value. That "" is an ABSENCE, not a decision, and it is
@@ -2513,12 +2698,88 @@ func runUpStop(env string) error {
 	}
 	projectID := projectIDForDir(projectDir)
 	stopped := stopStack(projectID, env)
-	if stopped == 0 {
+
+	// Host infrastructure is stopped SEPARATELY, because it is not one of
+	// the child processes the ledger tracks. A host-run postgres is started
+	// through `pg_ctl start`, which daemonizes: the process forge spawned
+	// exits immediately and the server it left behind is not forge's child,
+	// carries none of forge's ownership markers, and outlives the `forge
+	// run` that started it — by design, so a dev stack keeps serving after
+	// the command returns. Signalling it the way stopStack signals a child
+	// would be both impossible (no marker to find it by) and wrong (SIGKILL
+	// leaks the SysV IPC an orderly shutdown releases).
+	//
+	// Its DATA survives; this stops the server, it does not reset the
+	// database. Best-effort: a failure here is reported but must not stop
+	// the rest of the teardown.
+	infraStopped, err := stopHostInfra(env)
+	if err != nil {
+		fmt.Printf("[up] host infra: %v\n", err)
+	}
+
+	if stopped == 0 && infraStopped == 0 {
 		fmt.Printf("[up] no forge processes running for env=%s in %s.\n", env, projectDir)
 		return nil
 	}
-	fmt.Printf("[up] stopped %d process tree(s) for env=%s.\n", stopped, env)
+	if stopped > 0 {
+		fmt.Printf("[up] stopped %d process tree(s) for env=%s.\n", stopped, env)
+	}
+	if infraStopped > 0 {
+		fmt.Printf("[up] stopped %d host infrastructure server(s) for env=%s (data preserved).\n", infraStopped, env)
+	}
 	return nil
+}
+
+// stopHostInfra shuts down every `forge.HostInfra` server the env declares
+// and reports how many were actually running.
+//
+// The env's KCL is re-rendered to learn what to stop, which is the same
+// source `up` read to start it — so an instance is found by its
+// DECLARATION rather than by scanning for stray postgres processes. That
+// matters on a shared machine: forge stops the server whose data directory
+// this project declares, and cannot mistake a colleague's (or another
+// project's) database for its own.
+//
+// A render failure is reported, not fatal: `forge env down` must still stop
+// the host processes it can reach even when the KCL no longer renders.
+func stopHostInfra(env string) (int, error) {
+	projectDir := projectDirForKCL()
+	entities, err := RenderKCL(context.Background(), projectDir, env)
+	if err != nil {
+		return 0, fmt.Errorf("render KCL to find declared host infrastructure: %w", err)
+	}
+	var failures []error
+	count := 0
+	for _, svc := range entities.Services {
+		if svc.Deploy.Type != "host-infra" || svc.Deploy.HostInfra == nil {
+			continue
+		}
+		hi := svc.Deploy.HostInfra
+		spec := hostinfra.Spec{
+			Name:            svc.Name,
+			Engine:          hi.Engine,
+			Port:            hi.Port,
+			Database:        hi.Database,
+			User:            hi.User,
+			Password:        hi.Password,
+			DataDir:         hi.DataDir,
+			Version:         hi.Version,
+			IDPDatabase:     hi.IDPDatabase,
+			IDPDatabasePort: hi.IDPDatabasePort,
+			IDPMasterKey:    hi.IDPMasterKey,
+			IDPStepsFile:    hi.IDPStepsFile,
+			IDPPATPath:      hi.IDPPATPath,
+		}
+		stopped, serr := hostinfra.StopReport(projectDir, spec)
+		if serr != nil {
+			failures = append(failures, serr)
+			continue
+		}
+		if stopped {
+			count++
+		}
+	}
+	return count, errors.Join(failures...)
 }
 
 // upLogPath returns the well-known log file for a host service or

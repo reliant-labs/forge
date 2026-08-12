@@ -58,54 +58,54 @@ func TestNextJSESLintConfig_ExemptsScenariosAndConfigs(t *testing.T) {
 	}
 }
 
-// TestNextJSOtelImportsAlphabetised guards the `import/order` rule against
-// the scaffolded `lib/otel.ts`. The eslint config enables
-// `import/order` with `alphabetize: { order: "asc", caseInsensitive: true }`,
-// so the @opentelemetry/* imports must be in alphabetical order — they
-// previously were not, generating one warning per import line on the
-// user's first `npm run lint`.
-func TestNextJSOtelImportsAlphabetised(t *testing.T) {
+// TestNextJSOtelKeepsEnvReadsInProjectCode pins the one thing the scaffolded
+// `lib/otel_gen.ts` must keep now that the SDK wiring itself has moved into
+// @reliant-labs/web-runtime/otel: the `process.env.NEXT_PUBLIC_*` reads.
+//
+// Next.js inlines those literals at BUILD time, and it can only do that where
+// they are written out verbatim in application code. A library reading
+// `process.env` at runtime finds nothing in a browser, so hoisting these
+// upstream would silently disable trace export for every project — with no
+// error anywhere, just no spans.
+//
+// (This test used to assert the @opentelemetry/* imports were alphabetised,
+// for the eslint import/order rule. There are no such imports left to sort:
+// the eight SDK packages are the library's dependency now, and the project
+// file imports exactly one module.)
+func TestNextJSOtelKeepsEnvReadsInProjectCode(t *testing.T) {
 	content, err := FrontendTemplates().Render(
-		filepath.Join("nextjs", "src", "lib", "otel.ts.tmpl"),
+		filepath.Join("nextjs", "src", "lib", "otel_gen.ts.tmpl"),
 		FrontendTemplateData{
 			FrontendName: "dashboard",
 			ProjectName:  "testproject",
 		},
 	)
 	if err != nil {
-		t.Fatalf("render nextjs/src/lib/otel.ts.tmpl: %v", err)
+		t.Fatalf("render nextjs/src/lib/otel_gen.ts.tmpl: %v", err)
 	}
 	s := string(content)
 
-	// Extract the @opentelemetry import lines in source order and verify
-	// the path-after-`from` is alphabetically sorted (case-insensitive).
-	var paths []string
-	for _, line := range strings.Split(s, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "import ") {
-			continue
+	for _, envVar := range []string{
+		"process.env.NEXT_PUBLIC_OTEL_ENDPOINT",
+		"process.env.NEXT_PUBLIC_APP_VERSION",
+	} {
+		if !strings.Contains(s, envVar) {
+			t.Errorf("otel_gen.ts no longer reads %s in project code — Next.js can only inline that literal where it is written verbatim, so tracing would silently no-op; got:\n%s", envVar, s)
 		}
-		if !strings.Contains(trimmed, "'@opentelemetry/") && !strings.Contains(trimmed, "\"@opentelemetry/") {
-			continue
-		}
-		fromIdx := strings.Index(trimmed, " from ")
-		if fromIdx == -1 {
-			continue
-		}
-		spec := strings.TrimSpace(trimmed[fromIdx+len(" from "):])
-		spec = strings.TrimSuffix(spec, ";")
-		spec = strings.Trim(spec, "'\"")
-		paths = append(paths, spec)
 	}
 
-	if len(paths) < 2 {
-		t.Fatalf("expected several @opentelemetry imports in otel.ts; got %d", len(paths))
+	// The engine comes from the SUBPATH, never the barrel: the barrel is
+	// imported by Vite-SPA and React-Native frontends, which install
+	// @opentelemetry/api alone and would fail to resolve the SDK packages.
+	if !strings.Contains(s, `"@reliant-labs/web-runtime/otel"`) &&
+		!strings.Contains(s, `'@reliant-labs/web-runtime/otel'`) {
+		t.Errorf("otel_gen.ts must import the SDK wiring from the @reliant-labs/web-runtime/otel subpath; got:\n%s", s)
 	}
 
-	for i := 1; i < len(paths); i++ {
-		if strings.ToLower(paths[i]) < strings.ToLower(paths[i-1]) {
-			t.Errorf("@opentelemetry imports not alphabetised (eslint import/order will warn): %q comes after %q in source but is alphabetically earlier", paths[i], paths[i-1])
-		}
+	// initTelemetry is the name providers.tsx imports. providers.tsx is
+	// scaffold-once, so renaming this export breaks every existing project.
+	if !strings.Contains(s, "export function initTelemetry(") {
+		t.Errorf("otel_gen.ts must export initTelemetry — providers.tsx (scaffold-once, never rewritten) imports it by that name; got:\n%s", s)
 	}
 }
 

@@ -236,7 +236,7 @@ func (c *Components) AllWorkers() []Worker {
 //
 // A matcher keyed on `.Name(` sees only `Serve` and `Context` on that line,
 // so the Mount<Svc> reference — a genuine cross-tier pin into
-// mounts_services.go.tmpl — did not exist as far as the lint was concerned.
+// mounts_services_gen.go.tmpl — did not exist as far as the lint was concerned.
 // That is not a cosmetic miss: it let a proposed Tier-2 reclassification of
 // mounts_services.go read as SAFE with a fully green suite, while in fact
 // shipping the `has no field or method Mount<Svc>` build break for any

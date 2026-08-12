@@ -2,7 +2,7 @@
 Positive tests for the RenderedSecrets secret provider (dotenv-sourced).
 
 RenderedSecrets declares named k8s Secrets EXPLICITLY (name + per-key
-source). This file exercises the `from="dotenv"` source (the env-agnostic
+source). This file exercises the `from="dir"` source (the env-agnostic
 path — no inline values, so no `-D env` gate). The `from="literal"`
 dev/e2e gating has its own env-bound test
 (positive_rendered_secrets_literal.k) and negative test
@@ -40,11 +40,11 @@ _bundle = forge.Bundle {
                 name = "db-credentials"
                 keys = {
                     "password" = forge.RenderedSecretKey {
-                        from = "dotenv"
+                        from = "file"
                         key = "DB_PASSWORD"
                     }
                     "username" = forge.RenderedSecretKey {
-                        from = "dotenv"
+                        from = "file"
                         key = "DB_USER"
                     }
                 }
@@ -64,7 +64,7 @@ assert_secret_name = output.secret_provider.secrets[0].name == "db-credentials"
 
 # Each key's SOURCE (from + key) projects — but no VALUE (dotenv keys
 # carry only the reference).
-assert_pw_from = output.secret_provider.secrets[0].keys.password.from == "dotenv"
+assert_pw_from = output.secret_provider.secrets[0].keys.password.from == "file"
 assert_pw_key = output.secret_provider.secrets[0].keys.password.key == "DB_PASSWORD"
 assert_pw_no_value = output.secret_provider.secrets[0].keys.password.value == Undefined
 

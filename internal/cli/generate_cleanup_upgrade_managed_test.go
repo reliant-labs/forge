@@ -49,7 +49,7 @@ func TestCleanupStaleArtifacts_SkipsUpgradeManagedPaths(t *testing.T) {
 		// otherwise call stale and delete.
 		"cmd/cmd/db.go",
 		"cmd/cmd/version.go",
-		"cmd/cmd/db_source.go",
+		"cmd/cmd/root.go",
 		".golangci.yml",
 		".github/CODEOWNERS",
 		".github/pull_request_template.md",
@@ -104,7 +104,7 @@ func TestUpgradeManagedPaths_CoversReportedFiles(t *testing.T) {
 		// to cmd/<bin>/cmd; the name-less UpgradeManagedPaths union yields the
 		// bare cmd/cmd/<file>.go form.
 		"cmd/cmd/root.go",
-		"cmd/cmd/db_source.go",
+		"cmd/cmd/root.go",
 		// These four are in the set for a DIFFERENT reason than their
 		// neighbours, and the difference is the point. None is
 		// upgrade-managed at all anymore — each became scaffold-once

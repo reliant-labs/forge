@@ -6,7 +6,7 @@
 //
 //   - markers        the `// forge:*` comment markers the proto scanner reads
 //     (forge:entity, forge:soft-delete, forge:append-only,
-//     forge:server-set, forge:secret).
+//     forge:read-only, forge:secret).
 //   - field_types    the proto→column mapping an entity birth applies,
 //     iterated from the real scaffold.ProtoSQLMappings (whose
 //     scalar half is projected from the renderer's scalarSQL).
@@ -39,6 +39,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	entityscaffold "github.com/reliant-labs/forge/internal/scaffold"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // MarkerSpec describes one `// forge:*` comment marker. AppliesTo is the
@@ -107,12 +108,13 @@ func newAnnotationsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "annotations",
 		Short: "Dump forge's authoritative entity-authoring annotation spec",
-		Long: `Dump forge's authoritative entity-authoring annotation spec.
+		Long: `Dump forge's authoritative annotation spec.
 
 Emits the vocabulary forge itself understands, sourced from forge's own
 definitions so it cannot drift from behavior:
 
-  markers          the // forge:* comment markers the proto scanner reads
+  markers          the // forge:* comment markers, in proto AND Go source,
+                   plus the forge:* COMMENT ON COLUMN/CONSTRAINT markers
   field_types      the proto->column mapping an entity birth applies
   validate_rules   the projected protovalidate subset and its db/zod/wire effects
   service_options  the (forge.v1.service) options
@@ -120,17 +122,24 @@ definitions so it cannot drift from behavior:
 
 Use --kind to limit the dump to one annotation level, and --json for a
 machine-readable dump that tools can query instead of re-deriving the spec.
+--kind column is the forge:* markers declared as a postgres catalog COMMENT
+in a migration rather than a proto/Go comment (forge:immutable on a column,
+forge:ref on a foreign-key constraint). --kind go is the wiring/observability
+/contract vocabulary forge reads out of .go files (forge:optional-dep,
+forge:constructor, forge:no-observe, forge:exclude-contract, ...) — the
+markers you meet in scaffolded code.
 
 Examples:
   forge project annotations --json
   forge project annotations --kind entity --json
-  forge project annotations --kind method`,
+  forge project annotations --kind column
+  forge project annotations --kind go`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAnnotations(cmd.OutOrStdout(), kind, asJSON)
 		},
 	}
-	cmd.Flags().StringVar(&kind, "kind", "", "limit to one annotation kind: entity, field, service, or method (default: all)")
+	cmd.Flags().StringVar(&kind, "kind", "", "limit to one annotation kind: entity, field, column, service, method, or go (default: all)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the spec as JSON")
 	return cmd
 }
@@ -179,72 +188,207 @@ func buildAnnotationsSpec(kind string) (AnnotationsSpec, error) {
 			Markers:       filterMarkers(all.Markers, "method"),
 			MethodOptions: all.MethodOptions,
 		}, nil
+	case "column":
+		// Column-comment markers (forge:immutable, forge:ref) — declared as
+		// postgres catalog COMMENTs, not proto comments, so they get their
+		// own kind rather than polluting the entity/field views.
+		return AnnotationsSpec{Markers: filterMarkers(all.Markers, "column")}, nil
+	case "go":
+		// The markers read out of .go source rather than out of proto —
+		// the wiring/observability/contract vocabulary. These have no
+		// proto counterpart, so they get their own kind rather than
+		// polluting the entity/field/method views.
+		return AnnotationsSpec{Markers: filterMarkers(all.Markers,
+			"package", "contract", "constructor", "deps-field")}, nil
 	default:
-		return AnnotationsSpec{}, fmt.Errorf("unknown --kind %q (want entity, field, service, or method)", kind)
+		return AnnotationsSpec{}, fmt.Errorf("unknown --kind %q (want entity, field, column, service, method, or go)", kind)
 	}
 }
 
-func filterMarkers(in []MarkerSpec, appliesTo string) []MarkerSpec {
+func filterMarkers(in []MarkerSpec, appliesTo ...string) []MarkerSpec {
+	want := make(map[string]bool, len(appliesTo))
+	for _, a := range appliesTo {
+		want[a] = true
+	}
 	var out []MarkerSpec
 	for _, m := range in {
-		if m.AppliesTo == appliesTo {
+		if want[m.AppliesTo] {
 			out = append(out, m)
 		}
 	}
 	return out
 }
 
-// markerSpecs is the one thin literal projection in this file. The marker
-// NAMES and their placement grammar are owned by the regexes in
-// internal/codegen/proto_rawscan.go (entityMarkerRE, softDeleteMarkerRE,
-// appendOnlyMarkerRE, serverSetFieldMarkerRE) and, for forge:secret, by
-// secretFieldMarkerRE in forge_descriptor.go. The effects are the birth/read
-// behaviors in internal/scaffold/entityproto.go and
-// internal/codegen/crud_convert.go. TestAnnotations_MarkerNames pins every
-// name here against those real recognizers so a rename cannot drift the dump.
+// markerSpecs is the one thin literal projection in this file — the
+// DESCRIPTIONS are literals; the marker NAMES are not.
+//
+// Proto marker names come from codegen.KnownProtoMarkers and column marker
+// names from schemadef.KnownColumnMarkers, the same two registries the
+// scanners spell their markers from and `forge lint`'s unknown-marker checks
+// enforce, so this dump cannot advertise a vocabulary that differs from the
+// one forge actually reads. The placement grammar behind each proto name is
+// owned by the regexes those constants build (proto_rawscan.go's
+// entityMarkerRE / softDeleteMarkerRE / appendOnlyMarkerRE /
+// readOnlyFieldMarkerRE, forge_descriptor.go's secretFieldMarkerRE, and
+// generate_frontend_hooks.go's mutationMarkerRE). The effects are the
+// birth/read behaviors in internal/scaffold/entityproto.go and
+// internal/codegen/crud_convert.go.
+//
+// Go-source marker names remain literals here: they have no registry,
+// because each is read by a single recognizer in its own package rather than
+// by a vocabulary shared across passes. TestAnnotations_MarkerNames pins
+// every one of them against its real recognizer.
 func markerSpecs() []MarkerSpec {
 	return []MarkerSpec{
 		{
-			Name:      "forge:entity",
+			Name:      codegen.ProtoMarkerEntity,
 			AppliesTo: "entity",
 			Effect:    "Marks a top-level proto message as a database entity: forge births the create-table migration and the CRUD quintet (Create/Get/Update/Delete/List) at scaffold time, and DECLARES the managed fields it doesn't already have (id, created_at, updated_at) on the message itself — appended at free field numbers, never renumbering yours.",
 			Placement: "full-line leading comment immediately above `message X {`",
 			Example:   "// forge:entity\nmessage Order { ... }",
 		},
 		{
-			Name:      "forge:soft-delete",
+			Name:      codegen.ProtoMarkerSoftDelete,
 			AppliesTo: "entity",
 			Effect:    "Entity is born with a nullable deleted_at column, declared on the message alongside the other managed fields; Delete becomes an UPDATE and reads filter `deleted_at IS NULL`. Also tablizes the message (implies forge:entity).",
 			Placement: "full-line leading comment immediately above `message X {`",
 			Example:   "// forge:soft-delete\nmessage Note { ... }",
 		},
 		{
-			Name:      "forge:append-only",
+			Name:      codegen.ProtoMarkerAppendOnly,
 			AppliesTo: "entity",
 			Effect:    "Entity is born WITHOUT Update/Delete RPCs and with a DB trigger that rejects every UPDATE/DELETE (an immutable ledger). Also tablizes the message (implies forge:entity).",
 			Placement: "full-line leading comment immediately above `message X {`",
 			Example:   "// forge:append-only\nmessage AuditEvent { ... }",
 		},
 		{
-			Name:      "forge:server-set",
+			Name:      codegen.ProtoMarkerReadOnly,
 			AppliesTo: "field",
-			Effect:    "Field is kept on the entity message and Get/List responses but OMITTED from the born Create/Update request messages — a server-authoritative value the client must not set.",
+			Effect:    "Field is kept on the entity message and Get/List responses but OMITTED from the born Create/Update request messages — readable, not client-writable. The write-side mirror of forge:secret. Nothing assigns the value for you: give the column a DB DEFAULT (or set it in your handler), or an insert lands the zero value. If the value is DERIVED rather than defaulted, use forge:computed instead — it does the same thing and lint holds you to the derivation.",
 			Placement: "leading full-line comment above the field, or a trailing comment after the field's terminating `;` — inline `[...]` options, including multi-line braced protovalidate values, sit between them harmlessly. A marker no field consumes REFUSES the birth, naming file and line.",
-			Example:   "int64 unit_price_cents = 4 [(buf.validate.field).int64.gte = 0]; // forge:server-set",
+			Example:   "int64 unit_price_cents = 4 [(buf.validate.field).int64.gte = 0]; // forge:read-only",
 		},
 		{
-			Name:      "forge:mutation",
+			Name:      codegen.ProtoMarkerComputed,
+			AppliesTo: "field",
+			Effect:    "Everything forge:read-only does (kept on the entity + Get/List, OMITTED from the born Create/Update requests), PLUS a declared obligation that your app derives the value. `forge lint --computed-fields` fails the field when no non-generated Go file assigns it. Use this instead of forge:read-only whenever the value is calculated rather than defaulted: a read-only field nothing computes takes the column DEFAULT, which for a money column is 0 — no constraint is violated, no test fails, and the only symptom is a screen showing $0.00.",
+			Placement: "leading full-line comment above the field, or a trailing comment after the field's terminating `;` — same two positions as forge:read-only, and a marker no field consumes REFUSES the birth.",
+			Example:   "// quantity_milli * unit_price_cents / 1000, maintained on write.\nint64 amount_cents = 7; // forge:computed",
+		},
+		{
+			Name:      codegen.ProtoMarkerMutation,
 			AppliesTo: "method",
 			Effect:    "Forces the generated React Query hook for this rpc to be a useMutation. Classification is otherwise by leading verb — Get/List/Search/Find/Check/Has/Is/Count/Exists (whole-word) are reads, EVERYTHING else is a mutation — so this is needed only for an imperative rpc that happens to open with a read word (FindAndHoldSeat, IssueRefund). A write generated as useQuery re-fires on every component remount. Unlike the entity/field markers this one is read on every `forge generate`, not just at birth.",
 			Placement: "leading full-line comment above the `rpc` line, or a trailing comment on it",
 			Example:   "// forge:mutation — holds inventory, so it must never be a cached read.\nrpc FindAndHoldSeat(FindAndHoldSeatRequest) returns (FindAndHoldSeatResponse);",
 		},
 		{
-			Name:      "forge:secret",
+			Name:      codegen.ProtoMarkerSecret,
 			AppliesTo: "field",
-			Effect:    "Column stays real and writable on Create/Update but is stripped from read responses — the generated <entity>ToProto never packs it, so Get/List omit it and it is excluded from the list search span.",
+			Effect:    "Column stays real schema truth but is stripped from read responses — the generated <entity>ToProto never packs it, so Get/List omit it and it is excluded from the list search span. Because a client therefore reads it back as \"\", the column is also tagged ,skipupdate: a maskless full-replace Update leaves the stored value alone rather than clobbering the credential with that \"\". Settable on Create, and on an explicit update_mask that names it.",
 			Placement: "leading full-line comment above the field, or a trailing comment on the field line",
 			Example:   "string api_token = 2; // forge:secret",
+		},
+
+		// ── Column-comment markers ──
+		//
+		// Declared as a postgres catalog COMMENT applied by a migration, not
+		// as a `//` proto comment — these attach to the APPLIED schema, which
+		// is forge's one source of truth for columns and constraints (see the
+		// `db` skill). schemadef.Column.HasMarker / schemadef.KnownColumnMarkers
+		// is the single registry both this dump and `forge lint`'s
+		// unknown-column-marker check read, so the two cannot drift.
+		{
+			Name:      schemadef.ColumnMarkerImmutable,
+			AppliesTo: "column",
+			Effect:    "The column is omitted from a full-replace UPDATE's SET clause — projects to Bun's `,skipupdate` tag on the generated struct — while an explicit update_mask naming it still writes it. Use for a value the server owns that a client round-trip must not clobber.",
+			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:immutable'; in a migration",
+			Example:   "COMMENT ON COLUMN invoices.total_cents IS 'forge:immutable';",
+		},
+		{
+			Name:      schemadef.ColumnMarkerRef,
+			AppliesTo: "column",
+			Effect:    "Declares which route is authoritative when a table reaches the same parent two ways (a direct FK and a longer FK chain) — `authoritative` (this edge is the truth), `derived-from=<column>` (seed this column from the named edge), or `independent` (unrelated facts). Consumed by `forge db seed`'s diamond resolution; undeclared diamonds are refused rather than silently seeded inconsistently. Full grammar and worked examples: the `db/seeding` skill.",
+			Placement: "COMMENT ON CONSTRAINT <fk_name> ON <table> IS 'forge:ref ...'; in a migration — on the FOREIGN KEY constraint, NOT a column comment.",
+			Example:   "COMMENT ON CONSTRAINT orders_patient_id_fkey ON orders IS 'forge:ref derived-from=prescription_id';",
+		},
+		{
+			Name:      schemadef.ColumnMarkerVersion,
+			AppliesTo: "column",
+			Effect:    "Opts the entity into optimistic concurrency control: Update/UpdateMasked add this column to the WHERE clause (matched against the caller's last-read value) and increment it on a successful write. A write that loses the race to a concurrent writer fails with Connect code Aborted instead of silently overwriting the other writer's change. REQUIRES a matching field on the entity's wire message (`int64 version = N;  // forge:read-only`) — the check compares the version the CALLER presents, so a column the caller cannot read back and return is always the zero value, and every update after a row's first one fails Aborted; `forge generate` refuses the column-only half rather than emit that. The repo owns the increment, so the client's proposed value is never trusted: forge:read-only keeps the field off the Create/Update request shapes while leaving it on the entity and the read responses, and an update_mask naming the column is an unknown_field error.",
+			Placement: "BOTH halves, in the same change: ALTER TABLE <table> ADD COLUMN <col> BIGINT NOT NULL DEFAULT 0; plus COMMENT ON COLUMN <table>.<col> IS 'forge:version'; in a migration, AND `int64 <col> = N;  // forge:read-only` on the entity message in the proto",
+			Example:   "COMMENT ON COLUMN crews.version IS 'forge:version';  (with `int64 version = 12;  // forge:read-only` on message Crew)",
+		},
+		{
+			Name:      schemadef.ColumnMarkerFill,
+			AppliesTo: "column",
+			Effect:    "Declares WHO fills a forge:read-only column the generated Create/Update never carries a value for — `ulid` (forge generates one at Create, the same chokepoint that ULID-generates an empty string PK; non-PK columns only) or `handler` (pure acknowledgement — no codegen behavior changes, but the create shim scaffolds an op.Entity wrapper with a FORGE_SCAFFOLD reminder naming the column). Suppresses `forge lint`'s unsatisfiable-column check, which otherwise fails the build for a NOT NULL column with no DB DEFAULT and no forge:fill declaration — that combination cannot be inserted through the generated CRUD path at all.",
+			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:fill=ulid'; or 'forge:fill=handler'; in a migration",
+			Example:   "COMMENT ON COLUMN customers.company_id IS 'forge:fill=handler';",
+		},
+
+		// ── Go-source markers ──
+		//
+		// These are read out of the project's .go files, not its protos.
+		// Both the spaced (`// forge:x`) and unspaced (`//forge:x`) forms are
+		// accepted, and the marker must be the WHOLE comment line after
+		// stripping comment syntax and whitespace — so prose that merely
+		// mentions a directive is never mistaken for one.
+		{
+			Name:      "forge:optional-dep",
+			AppliesTo: "deps-field",
+			Effect:    "The Deps field may legitimately be nil at construction: validateDeps must not enforce it, and composition emits the typed zero silently rather than reporting an unresolved dependency. Guard each use (`if s.deps.X != nil`). Without the marker, a required non-scalar Deps field that resolves to nothing is a loud generate-time or compile-time error — forge never emits a silent typed-zero for a required field.",
+			Placement: "leading full-line comment above the Deps struct field, or a trailing comment on it",
+			Example:   "type Deps struct {\n\t// forge:optional-dep\n\tStripe StripeClient\n}",
+		},
+		{
+			Name:      "forge:optional-checked",
+			AppliesTo: "deps-field",
+			Effect:    "Suppresses `forge lint --optional-deps-guard` on one dereference of a `forge:optional-dep` field that is provably safe by reasoning the analyzer cannot follow.",
+			Placement: "on the dereferencing line, or the line above it",
+			Example:   "return s.deps.Stripe.Charge(ctx, amt) // forge:optional-checked",
+		},
+		{
+			Name:      "forge:constructor",
+			AppliesTo: "constructor",
+			Effect:    "Names this function as the package's component constructor when it is not the canonical `New`, and opts the package IN to the generated observability decorator (middleware_gen.go), so every component-to-component call on the interface gets a span, a metric and panic recovery. Scaffolds stamp it by default, so a generated package is born instrumented.",
+			Placement: "on the constructor's doc comment",
+			Example:   "// NewClient builds the client.\n// forge:constructor\nfunc NewClient(d Deps) (Service, error)",
+		},
+		{
+			Name:      "forge:no-observe",
+			AppliesTo: "constructor",
+			Effect:    "Opts out of the generated observability decorator. On the constructor it exempts the whole package; on a single interface method it routes just that method around the chain. The opt-out wins over every opt-in.",
+			Placement: "on the constructor's doc comment (whole package), or above one interface method",
+			Example:   "type Service interface {\n\t// forge:no-observe\n\tHealthz() error\n}",
+		},
+		{
+			Name:      "forge:service",
+			AppliesTo: "contract",
+			Effect:    "Declares this interface to be the package's contract when it is not named `Service`. `forge:contract` is an accepted synonym. Names are deliberately free — `Service` is a poor name for a mailer or a store — but the signature is not: the constructor must take Deps and return the contract, or there is nothing to wire.",
+			Placement: "on the interface's doc comment",
+			Example:   "// forge:service\ntype Mailer interface { Send(context.Context, Message) error }",
+		},
+		{
+			Name:      "forge:exclude-contract",
+			AppliesTo: "package",
+			Effect:    "Opts the package out of contract codegen entirely — no canonical-shape check, no wiring, and NO generated mock. The per-package equivalent of listing it in forge.yaml `contracts.exclude`. For packages that are genuinely not contract-shaped; the trade is that you hand-roll any test double yourself.",
+			Placement: "package doc comment, or a free-standing comment in any of the package's .go files",
+			Example:   "// forge:exclude-contract\npackage strategyregistry",
+		},
+		{
+			Name:      "forge:external-component",
+			AppliesTo: "package",
+			Effect:    "This component is hand-constructed in providers.go / OpenInfra rather than by the injector, so the injector skips it — but the package STILL gets its contract and mock codegen. For a package that is contract-shaped and wants its mock, but whose construction is bespoke (adapter wrapping, two-phase setters, a dialer nil'd on unset env) and so cannot be a plain New(Deps) node. `forge:provided` is an accepted synonym.",
+			Placement: "package doc comment, or a free-standing comment in any of the package's .go files",
+			Example:   "// forge:external-component\npackage natsbus",
+		},
+		{
+			Name:      "forge:outbound-io",
+			AppliesTo: "package",
+			Effect:    "Asserts the package is an outbound boundary — it talks OUT to a third-party system and must not serve inbound RPCs. `forge lint` enforces that with forgeconv-outbound-io-no-rpc.",
+			Placement: "package doc comment, or a free-standing comment in any of the package's .go files",
+			Example:   "// forge:outbound-io\npackage stripeadapter",
 		},
 	}
 }

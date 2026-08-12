@@ -24,6 +24,19 @@ You compose it from **your** owned files:
 Import everything from the barrel:
 `import { … } from "@reliant-labs/web-runtime"`.
 
+Three subpaths are deliberately OUTSIDE the barrel, each for its own reason:
+
+| Subpath | Why it is not in the barrel |
+|---|---|
+| `/interceptors` | DOM-free transport layer, for React Native / non-react-dom renderers. |
+| `/mock-transport` | Dev-only. The fixture dispatch engine must be tree-shakeable out of a production bundle. |
+| `/otel` | Pulls the eight `@opentelemetry/*` SDK packages, which only the Next.js scaffold installs — they are OPTIONAL peer deps. A Vite-SPA or React-Native frontend declares `@opentelemetry/api` alone and imports the barrel. |
+
+Nothing you write imports `/mock-transport` or `/otel` directly: forge generates
+the thin project files (`src/lib/mock-transport_gen.ts`, `src/lib/otel_gen.ts`)
+that do, carrying the per-project table and the `NEXT_PUBLIC_*` env reads
+respectively.
+
 Presentation stays yours and is deliberately NOT in the package: the component
 library under `src/components/ui`, `globals.css`, the nav and the layout are
 all scaffolded once for you to fork.
@@ -56,7 +69,7 @@ brand headers → traceparent**. Every attempt re-runs the whole chain
 **no OTLP collector required**. The forge backend runs `otelconnect` +
 `otelhttp` with a `TraceContext` propagator, so browser→backend calls **join
 the same distributed trace**. If you additionally configure OpenTelemetry
-export (`NEXT_PUBLIC_OTEL_ENDPOINT`, see `src/lib/otel.ts`), the active browser
+export (`NEXT_PUBLIC_OTEL_ENDPOINT`, see `src/lib/otel_gen.ts`), the active browser
 span's context is propagated instead, stitching the browser and server spans
 into one trace.
 

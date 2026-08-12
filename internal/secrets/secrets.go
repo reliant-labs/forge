@@ -14,12 +14,14 @@
 // DECLARATION (type + path); all value resolution happens here in Go so
 // secrets never enter the KCL renderer.
 //
-// Two provider kinds:
+// Provider kinds:
 //
-//   - "dotenv" (dev/local): forge reads a gitignored dotenv keyed by
-//     env-var NAME, resolves declared refs from it, and — for k8s
-//     targets — RENDERS Secret objects from it CLI-side. Local clusters
-//     only.
+//   - "file" (dev/local): forge reads a gitignored YAML file — a flat map
+//     of env-var name to value. Local clusters only. This is the
+//     scaffolded default; see fileProvider for why it replaced the dotenv.
+//   - "dotenv": REMOVED. It injected the whole file into every host
+//     service, so values never had to be declared. NewProvider returns a
+//     hard error naming `forge secret migrate`.
 //   - "external" (prod/staging): forge never sees values. k8s references
 //     pre-existing Secrets (External Secrets Operator / sealed); host &
 //     external runtimes obtain secrets via workload identity / ambient
@@ -28,11 +30,10 @@
 //
 // The package is intentionally decoupled from internal/cli to avoid an
 // import cycle (cli depends on secrets, not the reverse). It reuses
-// internal/hostlaunch's dotenv reader, which only imports the stdlib —
-// no cycle risk.
+// only the stdlib for its own file reads — no cycle risk.
 //
 // forge:exclude-contract
-// secrets is a secret-reference→value resolution utility (per-env dotenv /
+// secrets is a secret-reference→value resolution utility (per-env dir /
 // external providers), not a contract-shaped service. Opt out of the
 // require-contract rule.
 package secrets
@@ -41,37 +42,38 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/envutil"
+	"gopkg.in/yaml.v3"
 )
 
 // Provider resolves declared secret references to values for one env.
 type Provider interface {
-	Kind() string // "dotenv" | "external" | "none"
-	// Resolve returns the value for an env var by NAME (dotenv-key
-	// convention: the key in the dotenv == the EnvVar.name). ok=false
+	Kind() string // "file" | "external" | "none"
+	// Resolve returns the value for an env var by NAME (the key in the
+	// store == the EnvVar.name). ok=false
 	// when this provider has no value for name.
 	Resolve(name string) (value string, ok bool)
 	// All returns every value the provider can supply, keyed by name.
-	// dotenv: the whole file. external/none: nil.
+	// file: the whole store. external/none: nil.
 	All() map[string]string
 }
 
 // ProviderConfig is the cli-decoupled view of the KCL secret_provider
 // entity. (cli maps KCLEntities.SecretProvider -> this.)
 type ProviderConfig struct {
-	Type string // "dotenv" | "external"
-	Path string // dotenv path (already resolved to an absolute/project path by caller)
+	Type string // "file" | "external"
+	Path string // secret-store file (already resolved to an absolute/project path by caller)
 }
 
 // NewProvider builds a Provider. cfg==nil -> a noop provider (Kind
 // "none", All nil, Resolve always !ok) so callers need no nil checks.
-// dotenv: loads the file now; a MISSING dotenv file is a non-fatal
-// empty provider with a returned error==nil but Kind "dotenv" and empty
-// All (so validation, not load, reports missing declared keys) — BUT if
-// the file exists and is unreadable/malformed, return the error.
+// file: loads the store now; a MISSING file is a non-fatal
+// file: loads the store now; a MISSING file is a non-fatal empty
+// provider (so validation, not load, reports the missing keys with the
+// `forge secret set` fix) — BUT an unreadable/invalid store is an error.
 func NewProvider(cfg *ProviderConfig) (Provider, error) {
 	if cfg == nil {
 		return noopProvider{}, nil
@@ -79,26 +81,34 @@ func NewProvider(cfg *ProviderConfig) (Provider, error) {
 	switch strings.ToLower(strings.TrimSpace(cfg.Type)) {
 	case "external":
 		return externalProvider{}, nil
-	case "dotenv":
-		values, err := envutil.ParseDotEnv(cfg.Path)
+	case "file":
+		values, err := ReadSecretFile(cfg.Path)
 		if err != nil {
-			// A missing file is non-fatal: an empty dotenv provider so
-			// ValidateDeclaredRefs (not load) reports the missing keys
-			// with an actionable message. Any OTHER error (permissions,
-			// a directory in place of a file, etc.) is fatal.
+			// A missing file is non-fatal: ValidateDeclaredRefs reports
+			// the unresolvable refs with a `forge secret set` fix line,
+			// which is far more useful than a bare stat error.
 			if errors.Is(err, os.ErrNotExist) {
-				return dotenvProvider{values: map[string]string{}, path: cfg.Path}, nil
+				return fileProvider{values: map[string]string{}, path: cfg.Path}, nil
 			}
-			return nil, fmt.Errorf("load dotenv %q: %w", cfg.Path, err)
+			return nil, fmt.Errorf("load secret file %q: %w", cfg.Path, err)
 		}
-		if values == nil {
-			values = map[string]string{}
-		}
-		return dotenvProvider{values: values, path: cfg.Path}, nil
+		return fileProvider{values: values, path: cfg.Path}, nil
 	case "", "none":
 		return noopProvider{}, nil
+	case "dotenv":
+		// REMOVED. The dotenv provider handed every host service the whole
+		// file, so a value went live without ever being declared in KCL —
+		// which is how non-secret config drifted out of version control.
+		// This is a hard error rather than a silent fallback: a project
+		// still declaring it would otherwise boot with NO secrets and fail
+		// later, somewhere less obvious.
+		return nil, fmt.Errorf(
+			"secret_provider 'dotenv' has been removed\n"+
+				"fix: forge secret migrate <env>   (converts %s to secrets/<env>.yaml)\n"+
+				"     then declare `secret_provider = forge.FileSecrets {path = \"secrets/<env>.yaml\"}`",
+			cfg.Path)
 	default:
-		return nil, fmt.Errorf("unknown secret provider type %q (expected \"dotenv\" or \"external\")", cfg.Type)
+		return nil, fmt.Errorf("unknown secret provider type %q (expected \"file\" or \"external\")", cfg.Type)
 	}
 }
 
@@ -117,26 +127,130 @@ func (externalProvider) Kind() string                  { return "external" }
 func (externalProvider) Resolve(string) (string, bool) { return "", false }
 func (externalProvider) All() map[string]string        { return nil }
 
-// dotenvProvider resolves values from a gitignored dotenv keyed by
-// env-var NAME.
-type dotenvProvider struct {
+// fileProvider resolves values from a single gitignored YAML file: a flat
+// map of env-var NAME -> value.
+//
+// One file, not a file-per-secret and not a dotenv. The dotenv was
+// replaced because forge handed the WHOLE file to every host service, so a
+// value went live without ever being declared in KCL — that is a property
+// of the injection, not of the format, and it is fixed by
+// declaration-scoped injection (see scopeSecretsToService), not by the
+// on-disk shape. YAML then buys what a dotenv cannot: real quoting, and
+// multi-line values (a PEM key, a JSON service-account blob) without
+// escaping games.
+type fileProvider struct {
 	values map[string]string
 	path   string
 }
 
-func (d dotenvProvider) Kind() string { return "dotenv" }
+func (f fileProvider) Kind() string { return "file" }
 
-func (d dotenvProvider) Resolve(name string) (string, bool) {
-	v, ok := d.values[name]
+func (f fileProvider) Resolve(name string) (string, bool) {
+	v, ok := f.values[name]
 	return v, ok
 }
 
-func (d dotenvProvider) All() map[string]string { return d.values }
+func (f fileProvider) All() map[string]string { return f.values }
+
+// ReadSecretFile loads the YAML secret file: a flat mapping of env-var
+// name to value.
+//
+// Values are decoded as strings, so `PORT: 8080` and `DEBUG: true` yield
+// "8080" and "true" rather than a type error — an env var is a string, and
+// failing on an unquoted number would be a papercut with no upside.
+// Nested maps and sequences ARE an error: they cannot become an env var,
+// so accepting them silently would leave a value that looks set but never
+// arrives.
+func ReadSecretFile(path string) (map[string]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	values := make(map[string]string, len(doc))
+	var bad []string
+	for k, v := range doc {
+		if !ValidSecretKey(k) {
+			bad = append(bad, fmt.Sprintf("%s (not a valid env-var name)", k))
+			continue
+		}
+		switch tv := v.(type) {
+		case nil:
+			values[k] = ""
+		case string:
+			values[k] = tv
+		case bool, int, int64, float64:
+			values[k] = fmt.Sprintf("%v", tv)
+		default:
+			bad = append(bad, fmt.Sprintf("%s (%T is not a scalar)", k, v))
+		}
+	}
+	if len(bad) > 0 {
+		sort.Strings(bad)
+		return nil, fmt.Errorf(
+			"%s has %d unusable entr(ies): %s\n"+
+				"fix: every key must be an UPPER_SNAKE_CASE env-var name mapped to a scalar",
+			path, len(bad), strings.Join(bad, ", "))
+	}
+	return values, nil
+}
+
+// ValidSecretKey reports whether name is usable as an env-var name:
+// [A-Za-z_][A-Za-z0-9_]*. Shared with the CLI so `forge secret set`
+// rejects the same names the loader would.
+func ValidSecretKey(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r == '_':
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// WriteSecretFile writes the map back as YAML with sorted keys, 0600.
+// Sorted so a re-write is a clean diff rather than map-iteration noise.
+func WriteSecretFile(path string, values map[string]string) error {
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	b.WriteString("# forge secret store — GITIGNORED, never commit.\n")
+	b.WriteString("# Managed by `forge secret set/unset`; hand-edits are fine too.\n")
+	b.WriteString("# Keys must match an EnvVar.secret_ref declared in KCL, or the value\n")
+	b.WriteString("# reaches nothing (`forge secret list <env>` reports unused keys).\n")
+	for _, k := range keys {
+		out, err := yaml.Marshal(map[string]string{k: values[k]})
+		if err != nil {
+			return fmt.Errorf("marshal %s: %w", k, err)
+		}
+		b.Write(out)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o600)
+}
 
 // SecretRef is a declared reference extracted from the entities: the
-// env-var NAME (== dotenv key), the k8s Secret NAME, and the key within
-// that Secret. SecretKey defaults to EnvName when empty (matches the KCL
-// _env_source lambda).
+// env-var NAME (== the secret's filename in the store), the k8s Secret
+// NAME, and the key within that Secret. SecretKey defaults to EnvName
+// when empty (matches the KCL _env_source lambda).
 type SecretRef struct {
 	EnvName    string
 	SecretName string
@@ -152,11 +266,16 @@ func (r SecretRef) key() string {
 }
 
 // ValidateDeclaredRefs returns a single fail-fast error listing every
-// declared ref the provider cannot supply. For Kind "dotenv": each
+// declared ref the provider cannot supply. For Kind "file": each
 // EnvName must be present in All(). For "external"/"none": returns nil
 // (forge cannot see those values).
-func ValidateDeclaredRefs(p Provider, refs []SecretRef, dotenvPath string) error {
-	if p == nil || p.Kind() != "dotenv" {
+func ValidateDeclaredRefs(p Provider, refs []SecretRef, storePath string) error {
+	if p == nil {
+		return nil
+	}
+	// Only value-resolving providers can be validated: external/none
+	// deliberately cannot see values, so there is nothing to check.
+	if p.Kind() != "file" {
 		return nil
 	}
 	values := p.All()
@@ -183,11 +302,15 @@ func ValidateDeclaredRefs(p Provider, refs []SecretRef, dotenvPath string) error
 		}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "secret provider \"dotenv\" (path %s) is missing %d declared value(s):\n", dotenvPath, len(missing))
+	fmt.Fprintf(&b, "secret provider %q (path %s) is missing %d declared value(s):\n", p.Kind(), storePath, len(missing))
 	for _, r := range missing {
 		fmt.Fprintf(&b, "    %-*s   (Secret %s/%s)\n", width, r.EnvName, r.SecretName, r.key())
 	}
-	fmt.Fprintf(&b, "fix: add them to %s, or remove the secret_ref from the EnvVar.", dotenvPath)
+	// The fix line names the command for a dir provider — the whole point
+	// of the dir layout is that adding a secret is a forge command, not a
+	// hand-edit of a file that gets injected everywhere.
+	fmt.Fprintf(&b, "fix: forge secret set <env> <KEY>   (writes into %s)\n", storePath)
+	fmt.Fprint(&b, "     …or remove the secret_ref from the EnvVar if it is no longer needed.")
 	return errors.New(b.String())
 }
 
@@ -201,7 +324,7 @@ type DeclaredSecret struct {
 }
 
 // DeclaredSecretKey is the value source for one key in a DeclaredSecret.
-// From is "dotenv" (resolve Key from the dotenv provider) or "literal"
+// From is "file" (resolve Key from the secret store) or "literal"
 // (inline Value, gated to dev/e2e by RenderDeclaredSecrets).
 type DeclaredSecretKey struct {
 	From  string
@@ -211,8 +334,8 @@ type DeclaredSecretKey struct {
 
 // envAllowsLiteral reports whether `from='literal'` inline values are
 // permitted for env. The Go-side guard mirroring the KCL check: only
-// dev/e2e may inline a secret value; every other env must use a dotenv
-// source. Defense in depth — a hand-built entity (no KCL check) can't
+// dev/e2e may inline a secret value; every other env resolves from the
+// store. Defense in depth — a hand-built entity (no KCL check) can't
 // smuggle a literal into prod.
 func envAllowsLiteral(env string) bool {
 	return env == "dev" || env == "e2e"
@@ -222,9 +345,9 @@ func envAllowsLiteral(env string) bool {
 // RenderedSecrets provider's declared Secrets. Each declared key resolves
 // to its value:
 //
-//   - from="dotenv": resolve Key from the dotenv provider `dot` (the
-//     same .env.<env> machinery DotenvSecrets uses). A missing dotenv key
-//     is an error (listed per Secret/key) — the value can't be rendered.
+//   - from="file": resolve Key from the env's secret store `dot`. A key
+//     with no value is an error (listed per Secret/key) — the value can't
+//     be rendered.
 //   - from="literal": use the inline Value, but ONLY when env is dev/e2e.
 //     A literal in any other env is a hard error (the trust-safe gate).
 //
@@ -261,26 +384,27 @@ func RenderDeclaredSecrets(declared []DeclaredSecret, dot Provider, env, namespa
 			case "literal":
 				if !envAllowsLiteral(env) {
 					problems = append(problems, fmt.Sprintf(
-						"Secret %s/%s: from='literal' is only allowed in dev/e2e (env %q must use from='dotenv')",
+						"Secret %s/%s: from='literal' is only allowed in dev/e2e (env %q must use from='file')",
 						name, k, env))
 					continue
 				}
 				sd[k] = src.Value
-			case "dotenv", "":
-				dotKey := src.Key
-				if dotKey == "" {
-					dotKey = k
+			// Resolve Key from the env's secret store.
+			case "file", "":
+				srcKey := src.Key
+				if srcKey == "" {
+					srcKey = k
 				}
-				v, ok := dot.Resolve(dotKey)
+				v, ok := dot.Resolve(srcKey)
 				if !ok {
 					problems = append(problems, fmt.Sprintf(
-						"Secret %s/%s: dotenv key %q not found", name, k, dotKey))
+						"Secret %s/%s: secret store key %q not found", name, k, srcKey))
 					continue
 				}
 				sd[k] = v
 			default:
 				problems = append(problems, fmt.Sprintf(
-					"Secret %s/%s: unknown source %q (expected 'dotenv' or 'literal')", name, k, src.From))
+					"Secret %s/%s: unknown source %q (expected 'file' or 'literal')", name, k, src.From))
 			}
 		}
 		out = append(out, map[string]any{
@@ -305,12 +429,12 @@ func RenderDeclaredSecrets(declared []DeclaredSecret, dot Provider, env, namespa
 // RenderK8sSecrets builds k8s Secret manifests (as []map[string]any,
 // ready to marshal to YAML/JSON) from the resolved values, grouping refs
 // by SecretName; each Secret's stringData[SecretKey] = resolved(EnvName).
-// Only Kind "dotenv" produces output; "external"/"none" return nil
+// Only Kind "file" produces output; "external"/"none" return nil
 // (prod references pre-existing Secrets). Skips refs whose value doesn't
 // resolve (ValidateDeclaredRefs is the gate for those). Deterministic
 // ordering (sorted Secret names + keys) for stable diffs.
 func RenderK8sSecrets(p Provider, refs []SecretRef, namespace string) []map[string]any {
-	if p == nil || p.Kind() != "dotenv" {
+	if p == nil || p.Kind() != "file" {
 		return nil
 	}
 	// Group resolved (key -> value) pairs by Secret name.

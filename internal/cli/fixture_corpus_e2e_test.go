@@ -1993,15 +1993,14 @@ func itemSeamProbe() string { return "user-owned" }
 
 	// features.deploy is shape-derived for service projects: the scaffold
 	// ships deploy/kcl/dev/main.k on the KCL-native config path (it
-	// imports `config_projection` + the per-env `.config`), so a pristine
+	// imports `config_gen` + the per-env `.config`), so a pristine
 	// generate MUST emit those files or the scaffold's own KCL imports
 	// are unresolvable and `forge run` can't compose per-env config (the
 	// J1 features.deploy catch-22: gate said deploy=false, schema
 	// rejected features.deploy, main.k imported the never-generated
 	// file).
 	for _, rel := range []string{
-		filepath.Join("deploy", "kcl", "config_schema.k"),
-		filepath.Join("deploy", "kcl", "config_projection.k"),
+		filepath.Join("deploy", "kcl", "config_gen.k"),
 		filepath.Join("deploy", "kcl", "dev", "config.k"),
 	} {
 		if _, err := os.Stat(filepath.Join(projectDir, rel)); err != nil {
@@ -2069,7 +2068,7 @@ func itemSeamProbe() string { return "user-owned" }
 	// The ORM is a projection of the schema, not of any proto: the
 	// entity struct lives in internal/db and uses time.Time (the
 	// timestamppb impedance is confined to the wire seam).
-	ormPath := filepath.Join(projectDir, "internal", "db", "item_orm.go")
+	ormPath := filepath.Join(projectDir, "internal", "db", "item_orm_gen.go")
 	if orm := readFileE2E(t, ormPath); !strings.Contains(orm, "type Item struct") {
 		t.Errorf("internal/db/item_orm.go does not declare the Item entity struct")
 	} else if strings.Contains(orm, "timestamppb") {
@@ -2155,7 +2154,7 @@ UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 	writeCorpusFile(t, filepath.Join(projectDir, "db", "migrations", "00003_bookmark_domain.down.sql"),
 		"ALTER TABLE bookmarks DROP COLUMN domain;\n")
 	runCmd(t, projectDir, forgeBin, "generate")
-	bookmarkORM := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "bookmark_orm.go"))
+	bookmarkORM := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "bookmark_orm_gen.go"))
 	// Collapse whitespace: the entity struct is gofmt-aligned, so the
 	// field/type pair is separated by run-of-spaces, not a single space.
 	if !strings.Contains(strings.Join(strings.Fields(bookmarkORM), " "), "Domain string") {
@@ -2200,7 +2199,7 @@ message Trade {
 	}
 	writeCorpusFile(t, tradeMigPath, tradeMig)
 	runCmd(t, projectDir, forgeBin, "generate")
-	tradeORM := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "trade_orm.go"))
+	tradeORM := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "trade_orm_gen.go"))
 	// Whitespace-collapsed: the struct field is gofmt-aligned.
 	if !strings.Contains(strings.Join(strings.Fields(tradeORM), " "), "CreatedAt string") {
 		t.Errorf("TEXT created_at should project as a string struct field; got:\n%s", tradeORM)
@@ -2302,7 +2301,7 @@ message Trade {
 	// so disown refused on
 	// internal/db/*_orm.go. Full round-trip: hand-edit → drift error →
 	// disown → generate leaves it alone → delete + generate re-adopts.
-	disownRoundTrip(t, forgeBin, projectDir, "internal/db/item_orm.go")
+	disownRoundTrip(t, forgeBin, projectDir, "internal/db/item_orm_gen.go")
 
 	t.Logf("crud-lifecycle fixture total: %s", time.Since(start))
 }

@@ -441,11 +441,11 @@ var createFieldSkipList = map[string]bool{
 type formFieldDef struct {
 	MessageFieldDef
 	EnumTypeFQ string
-	// ServerSet carries the entity field's `// forge:server-set` marker
-	// (deep Schemas source only). The edit form skips these — a
-	// server-authoritative field must not become an editable input whose
-	// value would be named in the update_mask and clobber the server's.
-	ServerSet bool
+	// ReadOnly carries the entity field's `// forge:read-only` marker
+	// (deep Schemas source only). The edit form skips these — a field the
+	// client cannot write must not become an editable input whose value
+	// would be named in the update_mask and clobber the stored one.
+	ReadOnly bool
 }
 
 // schemaFieldToFormFieldDef converts one deep-schema field into the
@@ -480,7 +480,7 @@ func schemaFieldToFormFieldDef(d SchemaFieldDef) formFieldDef {
 			fd.ProtoType = "[]" + d.Kind
 		}
 	}
-	return formFieldDef{MessageFieldDef: fd, EnumTypeFQ: enumFQ, ServerSet: d.ServerSet}
+	return formFieldDef{MessageFieldDef: fd, EnumTypeFQ: enumFQ, ReadOnly: d.ReadOnly}
 }
 
 // formFieldsForMessage resolves a message's fields for form projection.
@@ -1010,12 +1010,12 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,
 					if f.Name == "id" {
 						continue
 					}
-					// `// forge:server-set` fields are server-authoritative:
+					// `// forge:read-only` fields are not client-writable:
 					// keep them off the edit form, so they're never named in
-					// the update_mask and the server's value is never clobbered.
+					// the update_mask and the stored value is never clobbered.
 					// (The create form reads the CreateRequest, which already
 					// omits them, so only the entity-driven edit form needs this.)
-					if f.ServerSet {
+					if f.ReadOnly {
 						continue
 					}
 					// Never render the mask or the entity wrapper itself

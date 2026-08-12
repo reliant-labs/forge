@@ -56,11 +56,27 @@ func expandVars(template string, vars map[string]string) string {
 // the supplied key=value map onto os.Environ() before exec (used to
 // thread `env_file` contents into the child). Output captures combined
 // output (used for the health-check checks that need to inspect the
-// result).
+// result); OutputWithEnv does both.
+//
+// OutputWithEnv exists because a compose subcommand that INSPECTS
+// (`compose ps`) re-reads and re-interpolates the compose file exactly
+// like one that ACTS (`compose up`) — so it needs the same overlay, or it
+// resolves a different config than the one just deployed.
 type commandRunner interface {
 	Run(ctx context.Context, name string, args ...string) error
 	RunWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error
 	Output(ctx context.Context, name string, args ...string) ([]byte, error)
+	OutputWithEnv(ctx context.Context, env map[string]string, name string, args ...string) ([]byte, error)
+}
+
+// outputWithEnv runs an output-capturing command with an env overlay,
+// falling through to the plain Output when there is nothing to overlay so
+// the common (no-env) call keeps its existing shape in test recordings.
+func outputWithEnv(ctx context.Context, runner commandRunner, env map[string]string, name string, args ...string) ([]byte, error) {
+	if len(env) == 0 {
+		return runner.Output(ctx, name, args...)
+	}
+	return runner.OutputWithEnv(ctx, env, name, args...)
 }
 
 // execRunner is the production commandRunner. Run pipes through to
@@ -86,10 +102,17 @@ func (execRunner) RunWithEnv(ctx context.Context, env map[string]string, name st
 }
 
 func (execRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return execRunner{}.OutputWithEnv(ctx, nil, name, args...)
+}
+
+func (execRunner) OutputWithEnv(ctx context.Context, env map[string]string, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
+	if len(env) > 0 {
+		cmd.Env = envutil.MergeExtraWins(os.Environ(), env)
+	}
 	if err := cmd.Run(); err != nil {
 		return buf.Bytes(), fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}

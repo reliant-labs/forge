@@ -180,18 +180,29 @@ func TestMockTransport_BindsTransportVariableNotCastAtReturn(t *testing.T) {
 
 	got := renderMockTransport(t, entities)
 
-	// The variable-binding pattern: tsc gets Transport's parameter types
-	// before it checks the method bodies.
-	if !strings.Contains(got, "const transport: Transport = {") {
-		t.Errorf("expected `const transport: Transport = {` binding in output (so callback param types are inferred). Got:\n%s", got)
-	}
-	if !strings.Contains(got, "return transport;") {
-		t.Errorf("expected `return transport;` at the end of createMockTransport. Got:\n%s", got)
+	// The Transport literal — and with it the TS7006 hazard — now lives in
+	// @reliant-labs/web-runtime/mock-transport, where
+	// `const transport: Transport` binding is asserted by the package's own
+	// tests. What the PROJECT file must still do is expose the same
+	// entry point with the same signature, since connect.ts (scaffold-once,
+	// never rewritten) calls it as `createMockTransport()` and
+	// `createMockTransport(real)`.
+	if !strings.Contains(got, "export function createMockTransport(fallback?: Transport): Transport {") {
+		t.Errorf("expected the createMockTransport(fallback?) entry point connect.ts calls. Got:\n%s", got)
 	}
 
-	// The cast-at-the-end pattern would still type-check the OUTER return
-	// shape but fail TS7006 on every method parameter. Guard against it
-	// creeping back via a future template edit.
+	// The engine must arrive through the SUBPATH, never the barrel: the
+	// fixtures and the dispatch engine have to be tree-shakeable out of a
+	// production bundle.
+	if !strings.Contains(got, `from "@reliant-labs/web-runtime/mock-transport"`) {
+		t.Errorf("expected the engine to be imported from the /mock-transport subpath. Got:\n%s", got)
+	}
+	if strings.Contains(got, `from "@reliant-labs/web-runtime"`) {
+		t.Errorf("mock transport must not import the barrel — that would anchor the fixtures in every bundle. Got:\n%s", got)
+	}
+
+	// The engine is re-exported under a local alias so the project's own
+	// exported symbol keeps the name its callers use.
 	if strings.Contains(got, "as unknown as Transport") {
 		t.Errorf("template should not use `as unknown as Transport` cast (TS7006 on callback params). Got:\n%s", got)
 	}
@@ -228,24 +239,25 @@ func TestMockTransport_StreamMethodHasNoExplicitReturnTypeAnnotation(t *testing.
 
 	got := renderMockTransport(t, entities)
 
-	// The explicit annotation on the method signature would re-introduce
-	// TS2322 in the passthrough branch of stream(). The fix removes
-	// `: Promise<StreamResponse<never, never>>` from the actual function
-	// signature line (a `):` token followed by the annotation). The
-	// teaching comment above the method may still reference the type
-	// name to explain *why* the annotation is gone — only the bare
-	// signature form is forbidden.
-	const badSignature = `contextValues): Promise<StreamResponse<never, never>>`
-	if strings.Contains(got, badSignature) {
-		t.Errorf("stream() should not carry an explicit `: Promise<StreamResponse<never, never>>` return-type annotation on the function signature (TS2322 on the passthrough branch). Got:\n%s", got)
+	// The stream() method — and the TS2322 hazard its missing annotation
+	// avoids — is library code now, guarded by the engine's own tests. The
+	// project file must not carry a hand-rolled Transport implementation at
+	// all: a re-inlined one is exactly the ~300 lines this extraction
+	// removed, and it would drift from the tested engine silently.
+	for _, reinlined := range []string{
+		"async stream(method, signal, timeoutMs, header, input, contextValues)",
+		"async unary(method, signal, timeoutMs, header, input, contextValues)",
+		"const transport: Transport = {",
+	} {
+		if strings.Contains(got, reinlined) {
+			t.Errorf("the project file must delegate to the engine, not re-implement Transport (%q). Got:\n%s", reinlined, got)
+		}
 	}
 
-	// Sanity: the stream method must still be present without an
-	// explicit return-type annotation — the signature ends with `) {`,
-	// not `): Promise<...> {`.
-	const goodSignature = `async stream(method, signal, timeoutMs, header, input, contextValues) {`
-	if !strings.Contains(got, goodSignature) {
-		t.Errorf("expected the `async stream(...) {` method definition (annotation-free) in output. Got:\n%s", got)
+	// Streaming still has to WORK — it is the engine's job, reached through
+	// the single entry point.
+	if !strings.Contains(got, "createEngineTransport({") {
+		t.Errorf("expected the project file to delegate to the engine's createMockTransport. Got:\n%s", got)
 	}
 }
 
@@ -400,58 +412,39 @@ func TestMockTransport_SurrogatePk_KeyAndLookupsUseSameField(t *testing.T) {
 
 	got := renderMockTransport(t, entities)
 
-	// 1) The store must key on the surrogate PK.
-	if !strings.Contains(got, "usageEventsStore = new Map(") {
-		t.Fatalf("expected usageEventsStore map in output. Got:\n%s", got)
-	}
-	if !strings.Contains(got, "[String(e."+pk+"), e]") {
-		t.Errorf("store should key by `e.%s`. Got:\n%s", pk, got)
+	// The engine reads ONE field name — pkField — and uses it for the store
+	// key, the Get/Delete lookup, the Update key resolution and the Create
+	// mint. That single-source-of-truth is what makes the whole class of
+	// surrogate-PK bugs unrepresentable: there is no longer a second place
+	// to hardcode `id`. So the assertion moves to the declaration.
+	if !strings.Contains(got, `pkField: "`+pk+`",`) {
+		t.Fatalf("expected the descriptor to declare pkField %q. Got:\n%s", pk, got)
 	}
 
-	// 2) NO handler may read a hardcoded `id` field off the request. Before the
-	//    fix the Get/Delete handlers read `req?.id`, Update read `patch.id ??
-	//    req.id`, and Create minted `init.id` — all of which key a different
-	//    field than the store, so the round-trip silently misses.
-	for _, bad := range []string{
-		"String(req?.id)",
-		"req as { id?: unknown }",
-		"patch.id ?? req.id",
-		"init.id ===",
-		"...init, id }",
-	} {
-		if strings.Contains(got, bad) {
-			t.Errorf("surrogate-PK transport must not reference hardcoded `id` lookup %q (store keys by %s). Got:\n%s", bad, pk, got)
+	// And it must be the ONLY pk declaration for this entity — a second one
+	// naming `id` would mean the template grew a fallback.
+	pkRe := regexp.MustCompile(`pkField: "([A-Za-z0-9_]+)"`)
+	for _, m := range pkRe.FindAllStringSubmatch(got, -1) {
+		if m[1] != pk {
+			t.Errorf("descriptor declares pkField %q, want %q — a surrogate-PK entity has no `id` field to fall back to. Got:\n%s", m[1], pk, got)
 		}
 	}
 
-	// 3) Every handler must look up / write the SAME field the store keys by.
+	// The fixtures the store is built from must come from the entity's own
+	// mock module, and the CRUD arms must all be declared.
+	if !strings.Contains(got, "fixtures: usageEventsMocks.usageEvents,") {
+		t.Errorf("expected the descriptor to carry the entity's fixtures. Got:\n%s", got)
+	}
 	for _, want := range []string{
-		"input as { " + pk + "?: unknown }",     // Get + Delete request shape
-		"Store.get(String(req?." + pk + "))",    // Get lookup
-		"Store.delete(String(req?." + pk + "))", // Delete
-		"patch." + pk + " ?? req." + pk,         // Update key resolution
-		"init." + pk + " ===",                   // Create PK detection
-		"...init, " + pk + ": pk }",             // Create writes PK field
+		`list: { rpc: "ListUsageEvents"`,
+		`get: { rpc: "GetUsageEvent"`,
+		`create: { rpc: "CreateUsageEvent"`,
+		`update: { rpc: "UpdateUsageEvent"`,
+		`delete: { rpc: "DeleteUsageEvent" }`,
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("expected surrogate-PK handler to reference %q. Got:\n%s", want, got)
+			t.Errorf("expected the descriptor to declare %q. Got:\n%s", want, got)
 		}
-	}
-
-	// 4) Cross-check: extract the field referenced by the store key and assert
-	//    each handler references the literal SAME field — proving key/lookup
-	//    agreement structurally, not by enumerated string.
-	keyRe := regexp.MustCompile(`\[String\(e\.([A-Za-z0-9_]+)\), e\]`)
-	m := keyRe.FindStringSubmatch(got)
-	if m == nil {
-		t.Fatalf("could not locate store-key field in output:\n%s", got)
-	}
-	storeKeyField := m[1]
-	if storeKeyField != pk {
-		t.Fatalf("store-key field = %q, want %q", storeKeyField, pk)
-	}
-	if !strings.Contains(got, "req?."+storeKeyField) {
-		t.Errorf("Get/Delete must look up the store-key field %q (req?.%s). Got:\n%s", storeKeyField, storeKeyField, got)
 	}
 }
 
@@ -492,20 +485,23 @@ func TestMockTransport_ResponseEntityField_WrapsOnDescriptorField(t *testing.T) 
 
 	got := renderMockTransport(t, entities)
 
-	// The response builders must set the descriptor-named field.
+	// Each CRUD arm must name the descriptor's wrapper field. The engine
+	// writes the entity onto exactly this key, so a wrong value here is the
+	// same tsc failure it always was — just declared once per arm instead
+	// of spelled out in three hand-rolled response builders.
 	for _, want := range []string{
-		"create(GetLLMKeyResponseSchema, {\n            key: found,",
-		"create(CreateLLMKeyResponseSchema, {\n            key: created,",
-		"create(CreateLLMKeyResponseSchema, {\n            key: updated,",
+		`get: { rpc: "GetLLMKey", responseSchema: GetLLMKeyResponseSchema, entityField: "key" }`,
+		`create: { rpc: "CreateLLMKey", responseSchema: CreateLLMKeyResponseSchema, entityField: "key"`,
+		`update: { rpc: "UpdateLLMKey", responseSchema: CreateLLMKeyResponseSchema, entityField: "key"`,
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("expected response builder to wrap entity on descriptor field. Missing:\n%q\nGot:\n%s", want, got)
+			t.Errorf("expected the descriptor to wrap the entity on the response-descriptor field. Missing:\n%q\nGot:\n%s", want, got)
 		}
 	}
 
 	// And must NOT fall back to the naive camelCased entity name.
-	if strings.Contains(got, "lLMKey: found") || strings.Contains(got, "lLMKey: created") {
-		t.Errorf("response builder must not use camelCase(EntityName) `lLMKey` wrapper. Got:\n%s", got)
+	if strings.Contains(got, `entityField: "lLMKey"`) {
+		t.Errorf("descriptor must not use camelCase(EntityName) `lLMKey` wrapper. Got:\n%s", got)
 	}
 }
 
@@ -520,15 +516,15 @@ func TestMockTransport_ResponseEntityField_WrapsOnDescriptorField(t *testing.T) 
 func TestMockTransport_NoEntities_EmitsScenarioCapableTransport(t *testing.T) {
 	got := renderMockTransport(t, nil)
 
-	// Scenario dispatch must survive: active-scenario resolution, the
-	// handler lookup, and the passthrough fallback wiring.
+	// Scenario dispatch must survive: the registry import, the resolution
+	// call (which is what reads `?scenario=` and runs setup()), and the
+	// entry point with its passthrough-carrying fallback parameter.
 	for _, want := range []string{
-		`import * as scenarios from "../mocks/scenarios"`,
-		`scenarios.defaultScenario`,
-		`const handler = active.handlers[key]`,
-		`active.passthrough === true`,
+		`import * as scenarios from "../mocks/scenarios/index_gen"`,
+		`resolveActiveScenario(scenarios)`,
 		`export function createMockTransport(fallback?: Transport): Transport`,
-		`Code.Unimplemented`,
+		`scenario: active,`,
+		`fallback,`,
 		`export const activeScenario = active`,
 	} {
 		if !strings.Contains(got, want) {
@@ -547,14 +543,15 @@ func TestMockTransport_NoEntities_EmitsScenarioCapableTransport(t *testing.T) {
 		}
 	}
 
-	// With no entities the per-entity fixture machinery is omitted: no
-	// `create(...Schema` fixture builders, no `Store` maps, and the
-	// `create` import (used only by fixtures) is dropped to keep the file
-	// free of unused-import errors under strict tsc / eslint.
+	// With no entities the per-entity fixture machinery is omitted
+	// entirely: no descriptor array, no fixture imports, and no
+	// MockEntityDescriptor type import — each would be an unused binding
+	// under strict tsc / eslint.
 	for _, unwanted := range []string{
-		`import { create } from "@bufbuild/protobuf"`,
-		"Store = new Map(",
+		"const entities: readonly MockEntityDescriptor[]",
+		"MockEntityDescriptor",
 		`from "@/mocks/`,
+		"entities,",
 	} {
 		if strings.Contains(got, unwanted) {
 			t.Errorf("did not expect entity-fixture artifact %q in no-entity transport. Got:\n%s", unwanted, got)

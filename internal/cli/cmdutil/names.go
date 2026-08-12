@@ -2,9 +2,12 @@ package cmdutil
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // The name-validation rules below are shared by `forge project new` (which stays in
@@ -51,6 +54,37 @@ var ReservedServiceNames = map[string]bool{
 	"worker": true, "scheduler": true, "cron": true, "job": true,
 }
 
+// ReservedServiceNameList returns the reserved names in stable order, for
+// error messages and help text. Nothing else enumerates them, and a name
+// that is rejected without the set being visible sends people guessing —
+// `job` in particular is the natural noun for a whole class of domains
+// (field service, construction, scheduling, print, logistics).
+func ReservedServiceNameList() []string {
+	out := make([]string, 0, len(ReservedServiceNames))
+	for name := range ReservedServiceNames {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// reservedNameAlternatives suggests service names for a rejected reserved
+// noun. Concrete suggestions matter more here than the general rule: the
+// author has a domain concept in mind and needs a name for it now, and
+// "pick something else" sends them to invent one that may collide again.
+func reservedNameAlternatives(name string) string {
+	switch name {
+	case "job":
+		return "`workorder`, `dispatch`, or `booking`"
+	case "worker":
+		return "`crew`, `staff`, or `operator_pool`"
+	case "scheduler", "cron":
+		return "`schedule`, `itinerary`, or `calendar`"
+	default:
+		return "a noun naming what the service owns"
+	}
+}
+
 // ValidateServiceName checks that a name is valid for a service and not a
 // reserved service name. For background workers use 'forge scaffold worker <name>'.
 func ValidateServiceName(name string) error {
@@ -58,9 +92,51 @@ func ValidateServiceName(name string) error {
 		return err
 	}
 	if ReservedServiceNames[strings.ToLower(name)] {
-		return fmt.Errorf("%q is reserved; for background workers use 'forge scaffold worker <name>'", name)
+		return fmt.Errorf("%q is reserved (reserved service names: %s) — these collide with forge's "+
+			"worker/scheduler subsystems.\n"+
+			"  For a background worker:  forge scaffold worker %s\n"+
+			"  For a DOMAIN entity of this name — %q is the natural noun in field service, "+
+			"construction, scheduling and logistics — name the service for what it owns "+
+			"instead (e.g. %s). The service is the bounded context, not the table: its "+
+			"entity messages can still be called %s",
+			name, strings.Join(ReservedServiceNameList(), ", "), name, name,
+			reservedNameAlternatives(strings.ToLower(name)), naming.ToPascalCase(name))
 	}
 	return nil
+}
+
+// ValidateServiceDirConsistency checks that a proto service name and its
+// containing proto/services/<dir>/ directory name generate the SAME Go
+// identifiers from forge's two independent generators:
+//
+//   - buf (protoc-gen-connect-go) names its Connect stubs from the PROTO
+//     service name: New<ProtoName>Handler, Unimplemented<ProtoName>Handler,
+//     <ProtoName>Name.
+//   - forge names its bootstrap wiring from the DIRECTORY: Mount<Pascal(dir)>,
+//     NewTest<Pascal(dir)>, <Pascal(dir)>TestOption.
+//
+// These agree only when protoName == pascalCase(dir) + "Service" — exactly
+// what `forge scaffold service <dir>` writes into a fresh proto file. Once a
+// proto is hand-edited (e.g. "WorkOrderService" in a directory scaffolded as
+// "workorder"), the two generators silently diverge and the mismatch surfaces
+// three layers downstream as a Go compile error
+// ("undefined: workorderv1connect.UnimplementedWorkOrderServiceHandler (but
+// have UnimplementedWorkorderServiceHandler)") with no indication of the
+// proto/directory naming as the cause. This check catches it at the source.
+func ValidateServiceDirConsistency(protoServiceName, dirName string) error {
+	expected := naming.ToPascalCase(dirName) + "Service"
+	if protoServiceName == expected {
+		return nil
+	}
+	bufIdentifier := "New" + protoServiceName + "Handler"
+	forgeIdentifier := "Mount" + naming.ToPascalCase(dirName)
+	fixDir := naming.ToSnakeCase(strings.TrimSuffix(protoServiceName, "Service"))
+	return fmt.Errorf(
+		"proto service %q in directory %q generates conflicting Go identifiers:\n"+
+			"  buf (from the proto):      %s\n"+
+			"  forge (from the directory): %s\n"+
+			"Fix: rename the proto service to %q, or rename the directory to %q",
+		protoServiceName, dirName, bufIdentifier, forgeIdentifier, expected, fixDir)
 }
 
 // ValidateIdentifier checks that a name is valid for use as a service,

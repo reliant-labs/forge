@@ -4,6 +4,33 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{{.FrontendName}} | {{.ProjectName}}</title>
+    <!--
+      Theme, applied BEFORE first paint.
+
+      Without this the page paints the light palette, the bundle loads, an
+      effect reads localStorage and only then swaps to dark — a white flash
+      on every load for every dark-mode user. It has to be a synchronous
+      inline script in <head>: a module script is deferred, which is exactly
+      too late.
+
+      It only sets the attribute for an EXPLICIT choice. Left absent, the
+      `prefers-color-scheme` block in index.css applies, so a user on
+      "system" is already correct with no JS at all.
+
+      The storage key is duplicated from THEME_STORAGE_KEY in
+      src/lib/theme/use-theme.ts — this script cannot import, so a contract
+      test asserts the two spellings stay identical.
+    -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("forge-theme");
+          if (t === "dark" || t === "light") {
+            document.documentElement.setAttribute("data-theme", t);
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

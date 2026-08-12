@@ -14,7 +14,16 @@
 
 import { describe, expect, it } from "vitest";
 
-import { enumBadgeVariant, formatValue, registerStatusVariants } from "@/lib/format-utils";
+import {
+  enumBadgeVariant,
+  formatAge,
+  formatDate,
+  formatMoneyCents,
+  formatMoneyWhole,
+  formatValue,
+  registerStatusVariants,
+  timestampToDate,
+} from "@/lib/format-utils";
 
 // A protobuf-es v2 numeric enum, carrying both the forward and reverse entries.
 enum PatientStatus {
@@ -138,5 +147,69 @@ describe("formatValue for a bytes column", () => {
       seen.add(formatValue(new Uint8Array(len)));
     }
     expect(seen.size).toBe(6);
+  });
+});
+
+describe("formatMoneyWhole", () => {
+  // The whole point of the second spelling: no cents on a headline figure.
+  it("drops the cents that formatMoneyCents keeps", () => {
+    expect(formatMoneyWhole(27_200_000n)).toBe("$272,000");
+    expect(formatMoneyCents(27_200_000n)).toBe("$272,000.00");
+  });
+
+  // Rounding, not truncation — $10.99 is nearer $11 than $10.
+  it("rounds to the nearest whole unit", () => {
+    expect(formatMoneyWhole(1099)).toBe("$11");
+    expect(formatMoneyWhole(1049)).toBe("$10");
+  });
+
+  it("renders an unset amount as an em dash, and honours currency", () => {
+    expect(formatMoneyWhole(null)).toBe("—");
+    expect(formatMoneyWhole(undefined)).toBe("—");
+    expect(formatMoneyWhole(0)).toBe("$0");
+    expect(formatMoneyWhole(150_000, "EUR")).toContain("1,500");
+  });
+});
+
+describe("timestampToDate", () => {
+  it("converts a proto Timestamp's bigint seconds", () => {
+    expect(timestampToDate({ seconds: 1_705_190_400n })?.toISOString()).toBe(
+      "2024-01-14T00:00:00.000Z",
+    );
+  });
+
+  // The guard that keeps "Invalid Date" out of the UI: an out-of-range or
+  // unset timestamp is null, which every formatter renders as "—".
+  it("returns null rather than an Invalid Date", () => {
+    expect(timestampToDate(null)).toBeNull();
+    expect(timestampToDate(undefined)).toBeNull();
+    expect(timestampToDate({ seconds: 10_000_000_000_000n })).toBeNull();
+    expect(formatDate({ seconds: 10_000_000_000_000n })).toBe("—");
+  });
+});
+
+describe("formatAge", () => {
+  const now = new Date("2024-06-15T12:00:00Z");
+  const daysAgo = (n: number) => ({
+    seconds: BigInt(Math.floor(now.getTime() / 1000) - n * 86_400),
+  });
+
+  it("names the recent past instead of counting it", () => {
+    expect(formatAge(daysAgo(0), now)).toBe("Today");
+    expect(formatAge(daysAgo(1), now)).toBe("Yesterday");
+  });
+
+  // The unit coarsens as the magnitude grows: "45 days ago" is harder to read
+  // than "6 weeks ago".
+  it("coarsens the unit as the age grows", () => {
+    expect(formatAge(daysAgo(3), now)).toBe("3 days ago");
+    expect(formatAge(daysAgo(45), now)).toBe("6 weeks ago");
+    expect(formatAge(daysAgo(120), now)).toBe("4 months ago");
+    expect(formatAge(daysAgo(800), now)).toBe("2 years ago");
+  });
+
+  it("renders an unset or future timestamp as an em dash", () => {
+    expect(formatAge(null, now)).toBe("—");
+    expect(formatAge(daysAgo(-5), now)).toBe("—");
   });
 });

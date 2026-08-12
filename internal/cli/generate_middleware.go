@@ -294,53 +294,18 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			}
 		} else if testLedger && checksums.ScaffoldRecorded(testRoot, testRel) {
 			// Deliberately deleted — leave it deleted.
-		} else if os.IsNotExist(statErr) { //nolint:nestif // the create-vs-refresh decision for the born test file: each nested arm is a distinct on-disk state with its own message.
-			cf, parseErr := contract.ParseContract(contractPath)
-			if parseErr != nil {
-				return fmt.Errorf("parse contract for %s: %w", rel, parseErr)
-			}
-			if len(cf.Interfaces) > 1 {
-				fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (multi-interface package; write tests manually)\n", rel)
-			} else if len(cf.Interfaces) == 1 && cf.Interfaces[0].Name != "Service" {
-				// Single-interface, non-canonical name (e.g. Manager,
-				// Handler). The template scaffolds `pkg.New(pkg.Deps{})`
-				// which won't match a non-Service shape — skip and let
-				// the user write the test manually.
-				fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (interface %q is not the canonical Service shape; write tests manually)\n", rel, cf.Interfaces[0].Name)
-			} else if !packageHasTwoResultNew(path) {
-				// The contract_test.go.tmpl emits the canonical two-result
-				// form `_, err := pkg.New(pkg.Deps{})`. Packages whose
-				// `New` is still the legacy single-result form
-				// (`func New(Deps) Service`) would get a non-compiling
-				// scaffold — skip and leave breadcrumb. Polish New to
-				// `(Service, error)` to opt back in.
-				fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (New is single-result; polish to `func New(Deps) (Service, error)` to enable auto-scaffold)\n", rel)
-			} else {
-				pkgName := filepath.Base(path)
-				// importPath is "mcp/database" for internal/mcp/database, just
-				// "database" for internal/database. Strip the leading
-				// "internal/" segment from the module-relative path.
-				importPath := strings.TrimPrefix(rel, "internal/")
-				modPath, modErr := codegen.GetModulePath(projectDir)
-				if modErr != nil {
-					return fmt.Errorf("read module path for contract_test scaffold: %w", modErr)
-				}
-				data := struct {
-					Name       string
-					ImportPath string
-					Module     string
-				}{Name: pkgName, ImportPath: importPath, Module: modPath}
-				content, renderErr := templates.InternalPkgTemplates().Render("contract_test.go.tmpl", data)
-				if renderErr != nil {
-					return fmt.Errorf("render contract_test.go for %s: %w", rel, renderErr)
-				}
-				if writeErr := os.WriteFile(testPath, content, 0644); writeErr != nil {
-					return fmt.Errorf("write contract_test.go for %s: %w", rel, writeErr)
-				}
-				if testLedger {
-					checksums.RecordScaffold(testRoot, testRel)
-				}
-				fmt.Printf("  ✅ Scaffolded contract_test.go for %s/\n", rel)
+		} else if os.IsNotExist(statErr) {
+			if err := birthContractTest(contractTestBirth{
+				ProjectDir:   projectDir,
+				PkgDir:       path,
+				Rel:          rel,
+				ContractPath: contractPath,
+				TestPath:     testPath,
+				TestRoot:     testRoot,
+				TestRel:      testRel,
+				TestLedger:   testLedger,
+			}); err != nil {
+				return err
 			}
 		}
 
@@ -355,6 +320,72 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		fmt.Printf("🔧 Generated contracts for %d internal package(s)\n", generated)
 	}
 
+	return nil
+}
+
+// contractTestBirth is everything the one-time contract_test.go scaffold
+// needs to decide whether to write the file, and where.
+type contractTestBirth struct {
+	ProjectDir   string
+	PkgDir       string
+	Rel          string
+	ContractPath string
+	TestPath     string
+	TestRoot     string
+	TestRel      string
+	TestLedger   bool
+}
+
+// birthContractTest scaffolds contract_test.go for a package that has none.
+//
+// Three package shapes are declined rather than scaffolded, because
+// contract_test.go.tmpl emits exactly one call — `_, err := pkg.New(pkg.Deps{})`
+// — and that call only compiles for the canonical single-`Service`,
+// two-result-`New` package. Writing it anyway would hand back a package that
+// does not build, so each declined shape prints why and what to change to opt
+// back in.
+func birthContractTest(b contractTestBirth) error {
+	cf, parseErr := contract.ParseContract(b.ContractPath)
+	if parseErr != nil {
+		return fmt.Errorf("parse contract for %s: %w", b.Rel, parseErr)
+	}
+
+	switch {
+	case len(cf.Interfaces) > 1:
+		fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (multi-interface package; write tests manually)\n", b.Rel)
+		return nil
+	case len(cf.Interfaces) == 1 && cf.Interfaces[0].Name != "Service":
+		fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (interface %q is not the canonical Service shape; write tests manually)\n", b.Rel, cf.Interfaces[0].Name)
+		return nil
+	case !packageHasTwoResultNew(b.PkgDir):
+		fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (New is single-result; polish to `func New(Deps) (Service, error)` to enable auto-scaffold)\n", b.Rel)
+		return nil
+	}
+
+	// importPath is "mcp/database" for internal/mcp/database, just
+	// "database" for internal/database. Strip the leading "internal/"
+	// segment so the template can emit `{{.Module}}/internal/{{.ImportPath}}`.
+	importPath := strings.TrimPrefix(b.Rel, "internal/")
+	modPath, modErr := codegen.GetModulePath(b.ProjectDir)
+	if modErr != nil {
+		return fmt.Errorf("read module path for contract_test scaffold: %w", modErr)
+	}
+	data := struct {
+		Name       string
+		ImportPath string
+		Module     string
+	}{Name: filepath.Base(b.PkgDir), ImportPath: importPath, Module: modPath}
+	content, renderErr := templates.InternalPkgTemplates().Render("contract_test.go.tmpl", data)
+	if renderErr != nil {
+		return fmt.Errorf("render contract_test.go for %s: %w", b.Rel, renderErr)
+	}
+	if writeErr := os.WriteFile(b.TestPath, content, 0644); writeErr != nil {
+		return fmt.Errorf("write contract_test.go for %s: %w", b.Rel, writeErr)
+	}
+	if b.TestLedger {
+		checksums.RecordScaffold(b.TestRoot, b.TestRel)
+	}
+	fmt.Printf("  ✅ Scaffolded contract_test.go for %s/\n", b.Rel)
 	return nil
 }
 
@@ -455,6 +486,15 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 		messages = codegen.DefaultConfigMessages()
 	}
 
+	// A `sensitive` field bound to a FRONTEND is refused before anything is
+	// written. This runs at the head of config generation on purpose: a
+	// secret that reaches a bundle, a config.js, or even a rendered KCL
+	// plan has already been published, so the only useful moment to refuse
+	// is before the first artifact exists.
+	if err := codegen.ValidateFrontendConfigs(messages); err != nil {
+		return nil, err
+	}
+
 	if err := codegen.GenerateConfigLoader(messages, projectDir, cs); err != nil {
 		return nil, fmt.Errorf("failed to generate config loader: %w", err)
 	}
@@ -486,16 +526,48 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 	return configFields, nil
 }
 
-// generatePerEnvDeployConfig emits the KCL config files. It writes the two
-// project-level, forge-owned files ONCE — config_schema.k (the config TYPE) +
-// config_projection.k (the projection BEHAVIOR, appConfigEnvMap) — from the
-// proto config annotations, then scaffolds a user-owned per-env config.k
+// generatePerEnvDeployConfig emits the KCL config files. It writes the ONE
+// project-level, forge-owned file — config_gen.k, carrying both the config
+// TYPE and the projection BEHAVIOR (appConfigEnvMap) — from the proto config
+// annotations, then scaffolds a user-owned per-env config.k
 // (write-if-absent) from the proto's own defaults for every environment
 // declared on the filesystem (deploy/kcl/<env>/main.k).
 //
-// The env's main.k imports config_projection + its own config.k and projects
+// The env's main.k imports config_gen + its own config.k and projects
 // the typed AppConfig into every workload's env via appConfigEnvMap — the one
 // source both host-run and cluster deploy read.
+// configFieldsExcludingBinaries flattens the config fields of every message
+// NOT bound to a binary — the project-global AppConfig, when one still
+// exists alongside per-binary configs.
+//
+// Shared blocks (BaseConfig) are excluded too: their leaves already reach
+// the projection through each binary that composes them, and emitting them
+// again at the top level would put a binary's fields back into a shared
+// surface, which is what per-binary config exists to prevent.
+func configFieldsExcludingBinaries(messages []codegen.ConfigMessage) []codegen.ConfigField {
+	composed := map[string]bool{}
+	for _, m := range messages {
+		for _, f := range m.Fields {
+			if f.MessageType != "" {
+				composed[f.MessageType] = true
+			}
+		}
+	}
+	var out []codegen.ConfigField
+	for _, m := range messages {
+		if m.Binary != "" || composed[m.Name] {
+			continue
+		}
+		for _, f := range m.Fields {
+			if f.MessageType != "" {
+				continue
+			}
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs *generator.FileChecksums) error {
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
 	if err != nil {
@@ -520,11 +592,46 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	}
 	kclDirAbs := filepath.Join(projectDir, kclDir)
 
-	// Project-level, forge-owned files: the config TYPE (config_schema.k) + the
-	// projection BEHAVIOR (config_projection.k, appConfigEnvMap). Regenerated
+	// Project-level, forge-owned file: the config TYPE + the projection
+	// BEHAVIOR (appConfigEnvMap) in ONE module, config_gen.k. Regenerated
 	// from proto on every run.
-	if err := codegen.GenerateConfigNativeShared(fields, cfg.Name, projectDir, kclDirAbs, cs); err != nil {
-		return fmt.Errorf("emit KCL config schema + projection: %w", err)
+	// Per-binary configs, when the project declares any: each annotated
+	// message projects its OWN schema + env-projection lambda, so a
+	// workload's env carries only that binary's fields. A project that
+	// annotates nothing takes the single-AppConfig path, unchanged.
+	perBinary := codegen.BinaryConfigFieldsFrom(messages)
+	var rootFields []codegen.ConfigField
+	if len(perBinary) > 0 {
+		rootFields = configFieldsExcludingBinaries(messages)
+	}
+
+	if len(perBinary) > 0 {
+		if err := codegen.GenerateConfigNativeSharedPerBinary(rootFields, perBinary, cfg.Name, projectDir, kclDirAbs, cs); err != nil {
+			return fmt.Errorf("emit per-binary KCL config module: %w", err)
+		}
+	} else if err := codegen.GenerateConfigNativeShared(fields, cfg.Name, projectDir, kclDirAbs, cs); err != nil {
+		return fmt.Errorf("emit KCL config module: %w", err)
+	}
+
+	// Frontend configs are a SEPARATE module (frontend_config_gen.k)
+	// because they are public by construction: nothing in that file may
+	// carry a secret reference, and keeping the two apart makes that
+	// boundary visible in the file tree rather than a rule to remember.
+	frontendConfigs := codegen.FrontendConfigsFromMessages(messages)
+	if err := codegen.GenerateFrontendConfigNative(frontendConfigs, cfg.Name, projectDir, kclDirAbs, cs); err != nil {
+		return fmt.Errorf("emit KCL frontend config module: %w", err)
+	}
+
+	// Transition for projects generated before the merge: their user-owned
+	// config.k / main.k still import the two modules that just went away, so
+	// point them at config_gen before anything tries to render. Runs before
+	// the per-env scaffold below so a freshly reconciled env is consistent
+	// in the same pass.
+	if rewrote, rerr := codegen.ReconcileConfigModuleImports(kclDirAbs); rerr != nil {
+		return fmt.Errorf("reconcile KCL config imports: %w", rerr)
+	} else if len(rewrote) > 0 {
+		fmt.Printf("  ♻️  Repointed %d env file(s) at deploy/kcl/%s.k (config_schema + config_projection merged): %s\n",
+			len(rewrote), codegen.ConfigSchemaModule, strings.Join(rewrote, ", "))
 	}
 
 	envs, lerr := ListEnvs(projectDir)
@@ -536,12 +643,51 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 		// Per-env user-owned config.k (write-if-absent) — the typed AppConfig
 		// VALUES instance, scaffolded from proto defaults. Never clobbers an
 		// existing (user-edited) file.
-		wrote, cerr := codegen.GenerateConfigKScaffold(fields, cfg.Name, kclDirAbs, envName)
+		// With per-binary configs it carries one typed instance per binary
+		// instead of a single app_config.
+		var (
+			wrote bool
+			cerr  error
+		)
+		if len(perBinary) > 0 {
+			wrote, cerr = codegen.GenerateConfigKScaffoldPerBinary(rootFields, perBinary, cfg.Name, kclDirAbs, envName)
+		} else {
+			wrote, cerr = codegen.GenerateConfigKScaffold(fields, cfg.Name, kclDirAbs, envName)
+		}
 		if cerr != nil {
 			return fmt.Errorf("scaffold %s config.k: %w", envName, cerr)
 		}
 		if wrote {
 			scaffolded++
+		}
+		// The frontend half of the same file. Appended separately (rather
+		// than folded into the write-if-absent body above) because a
+		// frontend config is usually annotated LONG AFTER the env's
+		// config.k was first written, and a file-granularity
+		// write-if-absent would never revisit it — leaving the runtime
+		// projection with no instance to project and the environment
+		// silently on proto defaults.
+		// The dev identity block rides along for the DEV env of a project
+		// that declares an IdP. Both halves of the gate matter: a deployed
+		// environment's issuer is a real one whose applications are
+		// registered out of band, and a project scaffolded without a
+		// frontend declares no IdP-convergence workload to seed a block for.
+		devIdentity := envName == "dev" && projectDeclaresDevIDP(projectDir)
+		if devIdentity {
+			// The stub this config.k's import unconditionally reads from —
+			// see EnsureIDPIdentityStub. Seeded BEFORE the instance below,
+			// so the very first render after the identity fields are added
+			// has something to import.
+			if serr := codegen.EnsureIDPIdentityStub(kclDirAbs, envName); serr != nil {
+				return fmt.Errorf("seed %s idp identity stub: %w", envName, serr)
+			}
+		}
+		if added, ferr := codegen.EnsureFrontendConfigInstances(
+			frontendConfigs, kclDirAbs, envName, cfg.Name, devIdentity, fields); ferr != nil {
+			return fmt.Errorf("scaffold %s frontend config instances: %w", envName, ferr)
+		} else if len(added) > 0 {
+			fmt.Printf("  ✅ deploy/kcl/%s/config.k: added runtime config instance(s) for frontend(s) %s\n",
+				envName, strings.Join(added, ", "))
 		}
 		// Per-env, gitignored `.env.<env>` — the VALUES half of every
 		// `sensitive` config field, which config.k deliberately does not
@@ -551,6 +697,6 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 			return fmt.Errorf("scaffold %s secrets dotenv: %w", envName, serr)
 		}
 	}
-	fmt.Printf("  ✅ Generated deploy/kcl/config_schema.k + config_projection.k (scaffolded %d new config.k)\n", scaffolded)
+	fmt.Printf("  ✅ Generated deploy/kcl/%s.k (scaffolded %d new config.k)\n", codegen.ConfigSchemaModule, scaffolded)
 	return nil
 }

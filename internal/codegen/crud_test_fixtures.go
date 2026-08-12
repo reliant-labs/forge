@@ -10,9 +10,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/reliant-labs/forge/internal/naming"
-	"github.com/reliant-labs/forge/internal/schemadef"
-	"github.com/reliant-labs/forge/internal/seeddata"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // crudTestFixtures is the schema-derived model behind constraint-correct
@@ -30,13 +30,13 @@ import (
 // legacy type-blind literals.
 type crudTestFixtures struct {
 	tables map[string]schemadef.Table
-	pools  seeddata.EnumPools
-	bounds seeddata.CheckBounds
+	pools  seedplan.EnumPools
+	bounds seedplan.CheckBounds
 	// vocab is the project's db/seeds/vocab.yaml domain-vocabulary overlay,
 	// when present: the parent-closure seed rows then carry the same domain
 	// values the dev dataset does (same Plan, same determinism). nil is the
 	// built-in behavior.
-	vocab *seeddata.Vocab
+	vocab *seedplan.Vocab
 	// plans maps an entity's table to its FK-parent-closure seed plan. A
 	// nil entry means the closure was unsatisfiable (e.g. a NOT NULL FK
 	// cycle through the entity itself); that entity keeps legacy fixtures.
@@ -125,7 +125,7 @@ func (fx *crudTestFixtures) verify(ctx context.Context) error {
 // because foreign keys may cross services (a clinical entity referencing a
 // catalog table) while the lifecycle test only has its own service's stack.
 type entitySeedPlan struct {
-	plan    *seeddata.Plan
+	plan    *seedplan.Plan
 	seedSQL string
 }
 
@@ -149,11 +149,11 @@ func buildCRUDTestFixtures(projectDir string, methods []CRUDMethod) *crudTestFix
 	// The domain-vocabulary overlay flows into the fixture seed plans too.
 	// Load problems are non-fatal at generate time — the seed CLI is where
 	// vocab errors/warnings surface; here a bad file just means built-ins.
-	vocab, _ := seeddata.LoadVocab(seeddata.VocabPath(filepath.Join(projectDir, "db", "migrations")))
+	vocab, _ := seedplan.LoadVocab(seedplan.VocabPath(filepath.Join(projectDir, "db", "migrations")))
 	fx := &crudTestFixtures{
 		tables:  byName,
-		pools:   seeddata.PoolsFromTables(tables),
-		bounds:  seeddata.BoundsFromTables(tables),
+		pools:   seedplan.PoolsFromTables(tables),
+		bounds:  seedplan.BoundsFromTables(tables),
 		vocab:   vocab,
 		plans:   map[string]*entitySeedPlan{},
 		shadow:  shadow,
@@ -220,8 +220,8 @@ func (fx *crudTestFixtures) buildEntitySeedPlan(root string) *entitySeedPlan {
 		t.ForeignKeys = fx.foreignKeys(t)
 		closureTables = append(closureTables, t)
 	}
-	cfg := seeddata.Config{Rows: 2, Salt: 0}
-	plan, err := seeddata.BuildPlan(closureTables, fx.pools, cfg)
+	cfg := seedplan.Config{Rows: 2, Salt: 0}
+	plan, err := seedplan.BuildPlan(closureTables, fx.pools, cfg)
 	if err != nil {
 		// Unsatisfiable closure (NOT NULL FK back into the entity, or into
 		// a cycle). The entity keeps legacy fixtures; the test may need a
@@ -433,9 +433,9 @@ func (fx *crudTestFixtures) deriveFieldFixture(svc ServiceDef, ent EntityDef, in
 		return fx.intFixture(t.Name, fieldName)
 	case "float32", "float64":
 		b, _ := fx.boundFor(t.Name, fieldName)
-		f1 := clampFloat(1.0, b)
+		f1, f2 := spreadFloat(b)
 		return strconv.FormatFloat(f1, 'g', -1, 64),
-			strconv.FormatFloat(clampFloat(f1+1, b), 'g', -1, 64), true
+			strconv.FormatFloat(f2, 'g', -1, 64), true
 	}
 	return "", "", false
 }
@@ -459,18 +459,18 @@ func (fx *crudTestFixtures) deriveFieldFixture(svc ServiceDef, ent EntityDef, in
 // about the window it exists to exercise.
 //
 // Rank r sits r steps above its chain's root — the SAME placement
-// seeddata.OrderRanks resolves for the seeded rows, so a born fixture and
+// seedplan.OrderRanks resolves for the seeded rows, so a born fixture and
 // the dev dataset can never disagree about one schema. create #2 shifts
 // every placed column by one further step, which preserves the ordering (all
 // of them move together) and keeps the two creates distinct.
 func (fx *crudTestFixtures) orderedFixture(t schemadef.Table, col schemadef.Column, goType string) (string, string, bool) {
-	rank, ok := seeddata.OrderRanks(t)[col.Name]
+	rank, ok := seedplan.OrderRanks(t)[col.Name]
 	if !ok {
 		return "", "", false
 	}
 	switch goType {
 	case "*timestamppb.Timestamp":
-		days := seeddata.OrderStepDays * rank
+		days := seedplan.OrderStepDays * rank
 		return timestampAfter(days), timestampAfter(days + 1), true
 	case "int32", "int64", "uint32", "uint64":
 		b, _ := fx.boundFor(t.Name, col.Name)
@@ -497,7 +497,7 @@ func timestampAfter(days int) string {
 
 // clampInt / clampFloat pin a value into a column's range-CHECK bounds. A
 // nil end is unbounded on that side.
-func clampInt(v int64, b seeddata.NumBound) int64 {
+func clampInt(v int64, b seedplan.NumBound) int64 {
 	if b.Min != nil && v < *b.Min {
 		v = *b.Min
 	}
@@ -507,7 +507,64 @@ func clampInt(v int64, b seeddata.NumBound) int64 {
 	return v
 }
 
-func clampFloat(f float64, b seeddata.NumBound) float64 {
+// spreadFloat picks the two float fixtures the lifecycle test creates with.
+//
+// The bound IS the input. An earlier shape picked a type-blind 1 and then
+// clamped it into range, which is backwards twice over: clamping only the
+// first of the pair put a 2 into a `CHECK (col <= 1)` column (a rate, a
+// ratio, a probability), and clamping both collapsed them onto one endpoint,
+// so the born test asserted "two rows differ" against two identical rows and
+// passed while proving nothing.
+//
+// Deriving from the interval removes both failures and picks better values
+// besides: the endpoints are where an off-by-one in a CHECK or a validator
+// actually lives, so a fixture pair of (lo, hi) exercises more than two
+// arbitrary interior points would. Unbounded ends fall back to a small
+// concrete pair — there is no boundary to aim at.
+func spreadFloat(b seedplan.NumBound) (float64, float64) {
+	switch {
+	case b.Min == nil && b.Max == nil:
+		return 1, 2
+	case b.Min == nil:
+		hi := float64(*b.Max)
+		return hi - 1, hi
+	case b.Max == nil:
+		lo := float64(*b.Min)
+		return lo, lo + 1
+	}
+
+	lo, hi := float64(*b.Min), float64(*b.Max)
+	if lo > hi {
+		// Contradictory CHECKs — nothing satisfies them. Emit the lower
+		// bound and let the guard report the real conflict against
+		// postgres rather than inventing a value that hides it.
+		return lo, lo
+	}
+	// lo == hi is the one-legal-value column: the same value twice is the
+	// only honest answer, and the create-#2 assertion is what will say so.
+	return lo, hi
+}
+
+// spreadInt is spreadFloat for integer columns, and exists for the same
+// reason: `clampInt(1, b)` followed by `clampInt(v1+1, b)` silently collapses
+// on a narrow bound — `CHECK (col >= 0 AND col <= 1)` yielded 1 and 1 — so
+// the generated test compared a row against itself.
+func spreadInt(b seedplan.NumBound) (int64, int64) {
+	switch {
+	case b.Min == nil && b.Max == nil:
+		return 1, 2
+	case b.Min == nil:
+		return *b.Max - 1, *b.Max
+	case b.Max == nil:
+		return *b.Min, *b.Min + 1
+	}
+	if *b.Min > *b.Max {
+		return *b.Min, *b.Min
+	}
+	return *b.Min, *b.Max
+}
+
+func clampFloat(f float64, b seedplan.NumBound) float64 {
 	if b.Min != nil && f < float64(*b.Min) {
 		f = float64(*b.Min)
 	}
@@ -545,7 +602,7 @@ func (fx *crudTestFixtures) enumFixture(svc ServiceDef, ent EntityDef, inputType
 	if !okN {
 		return "", "", false // cross-package / unresolvable — legacy fixture
 	}
-	choices := seeddata.SeedEnumChoices(svc.Enums[fq])
+	choices := seedplan.SeedEnumChoices(svc.Enums[fq])
 	if pool, okP := fx.pools[ent.TableName]; okP {
 		if vocab := pool[fieldName]; len(vocab) > 0 {
 			allowed := map[string]bool{}
@@ -590,7 +647,7 @@ func (fx *crudTestFixtures) enumFixture(svc ServiceDef, ent EntityDef, inputType
 // when the column is genuinely unconstrained.
 func (fx *crudTestFixtures) stringFixture(t schemadef.Table, col schemadef.Column) (string, string, bool) {
 	if pool, okP := fx.pools[t.Name]; okP {
-		if vocab := seeddata.SeedEnumChoices(pool[col.Name]); len(vocab) > 0 {
+		if vocab := seedplan.SeedEnumChoices(pool[col.Name]); len(vocab) > 0 {
 			c1, c2 := vocab[0], vocab[0]
 			if len(vocab) > 1 {
 				c2 = vocab[1]
@@ -601,15 +658,15 @@ func (fx *crudTestFixtures) stringFixture(t schemadef.Table, col schemadef.Colum
 	minLen, maxLen := lengthBoundsFor(t, col)
 	if columnHasCheck(t, col.Name) || minLen > 0 || maxLen > 0 {
 		// Constrained beyond a vocabulary (regex CHECK, char_length, varchar
-		// cap): seeddata.SynthString builds a value from the constraints the
+		// cap): seedplan.SynthString builds a value from the constraints the
 		// column DECLARES, so the fixture satisfies the same CHECKs the seeded
 		// rows do. Two rows can coincide when the pattern admits no per-row
 		// variation — walk on until they differ, keeping every candidate a
 		// value the pattern still accepts (mangling one would break it).
-		v1 := fitLength(seeddata.SynthString(t, col, 0), minLen, maxLen, 0)
+		v1 := fitLength(seedplan.SynthString(t, col, 0), minLen, maxLen, 0)
 		v2 := v1
 		for row := 1; row < 8 && v2 == v1; row++ {
-			v2 = fitLength(seeddata.SynthString(t, col, row), minLen, maxLen, row)
+			v2 = fitLength(seedplan.SynthString(t, col, row), minLen, maxLen, row)
 		}
 		return strconv.Quote(v1), strconv.Quote(v2), true
 	}
@@ -634,7 +691,7 @@ func (fx *crudTestFixtures) jsonFixture() (string, string, bool) {
 // members or not claim a fixture at all.
 func (fx *crudTestFixtures) intFixture(table, column string) (string, string, bool) {
 	if pool, okP := fx.pools[table]; okP {
-		if vocab := seeddata.SeedEnumChoices(pool[column]); len(vocab) > 0 {
+		if vocab := seedplan.SeedEnumChoices(pool[column]); len(vocab) > 0 {
 			c1, c2 := vocab[0], vocab[0]
 			if len(vocab) > 1 {
 				c2 = vocab[1]
@@ -646,14 +703,14 @@ func (fx *crudTestFixtures) intFixture(table, column string) (string, string, bo
 	if !has {
 		return "", "", false // unconstrained — legacy literal
 	}
-	v1 := clampInt(1, b)
-	return strconv.FormatInt(v1, 10), strconv.FormatInt(clampInt(v1+1, b), 10), true
+	v1, v2 := spreadInt(b)
+	return strconv.FormatInt(v1, 10), strconv.FormatInt(v2, 10), true
 }
 
-func (fx *crudTestFixtures) boundFor(table, column string) (seeddata.NumBound, bool) {
+func (fx *crudTestFixtures) boundFor(table, column string) (seedplan.NumBound, bool) {
 	cols, ok := fx.bounds[table]
 	if !ok {
-		return seeddata.NumBound{}, false
+		return seedplan.NumBound{}, false
 	}
 	b, ok := cols[column]
 	return b, ok
@@ -681,14 +738,14 @@ func columnHasCheck(t schemadef.Table, column string) bool {
 	return false
 }
 
-// lengthBoundsFor is seeddata.LengthBounds — the char_length CHECK +
+// lengthBoundsFor is seedplan.LengthBounds — the char_length CHECK +
 // varchar-cap merge lives with the rest of the constraint introspection.
 func lengthBoundsFor(t schemadef.Table, col schemadef.Column) (minLen, maxLen int) {
-	return seeddata.LengthBounds(t, col)
+	return seedplan.LengthBounds(t, col)
 }
 
 // fitLength forces s into [minLen, maxLen] (0 = unbounded) via the shared
-// seeddata.FitLength — one implementation of the length model, so a fixture and
+// seedplan.FitLength — one implementation of the length model, so a fixture and
 // the seeded row it mirrors can never disagree. row differentiates create #2's
 // value for UNIQUE columns whose value TRUNCATED, where fitting alone would
 // collapse both creates onto the same prefix: the last character becomes the
@@ -696,7 +753,7 @@ func lengthBoundsFor(t schemadef.Table, col schemadef.Column) (minLen, maxLen in
 // would break the format CHECKs — email, URL — the heuristics satisfy).
 func fitLength(s string, minLen, maxLen, row int) string {
 	truncated := maxLen > 0 && utf8.RuneCountInString(s) > maxLen
-	s = seeddata.FitLength(s, minLen, maxLen)
+	s = seedplan.FitLength(s, minLen, maxLen)
 	if truncated && row > 0 {
 		if r := []rune(s); len(r) > 0 {
 			r[len(r)-1] = rune('0' + row%10)

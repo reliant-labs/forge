@@ -13,19 +13,23 @@
 // with a {{if .HasMigrations}} fork through the middle. It is now two files
 // with one job each:
 //
-//   - cmd-tree-db.go.tmpl        scaffold-once, USER-OWNED: the command tree
-//     and its error policy. It has NO template
-//     conditionals at all — that is the point of
-//     the split, and one of the tests below pins it.
-//   - cmd-tree-db-source.go.tmpl Tier-1: the one genuinely re-derived fact,
-//     whether forgedb.MigrationsFS is a symbol that
-//     exists, re-read from db/migrations/ each run.
+//   - cmd-tree-db.go.tmpl  scaffold-once, USER-OWNED: the command tree and its
+//     error policy. It has NO template conditionals at
+//     all — that is the point of the split, and one of
+//     the tests below pins it.
+//   - db/source_gen.go     Tier-1: the one genuinely re-derived fact, whether
+//     MigrationsFS is a symbol that exists, re-read from
+//     db/migrations/ each run. It lives in package db
+//     (beside the embed it wraps) rather than in the
+//     command tree, which now has no generated file at
+//     all. Emitted from Go, so it is tested through
+//     codegen.GenerateMigrate rather than by rendering.
 //
-// The two branches of db-source are asserted separately because they are wired
-// to different symbols: with migrations the file imports forgedb; without them
-// db/embed.go does not exist, so referencing forgedb would not COMPILE — the
-// classic "the emitted text looked right and the emitted project didn't build"
-// failure this repo keeps re-learning.
+// The two branches of the source file are asserted separately because they are
+// wired to different symbols: with migrations it returns MigrationsFS; without
+// them db/embed_gen.go does not exist, so naming MigrationsFS would not
+// COMPILE — the classic "the emitted text looked right and the emitted project
+// didn't build" failure this repo keeps re-learning.
 package templates_test
 
 import (
@@ -34,9 +38,12 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -44,7 +51,11 @@ import (
 // templates read.
 type dbTemplateData struct {
 	Module        string
+	Name          string
 	HasMigrations bool
+	// ConfigFields is read by cmd-tree-root-gen.go.tmpl, which absorbed the
+	// migration source when db_source.go was folded into it.
+	ConfigFields map[string]bool
 }
 
 // renderDB renders one of the db command-tree templates and parses it, so
@@ -53,7 +64,9 @@ func renderDB(t *testing.T, tmpl string, hasMigrations bool) string {
 	t.Helper()
 	out, err := templates.ProjectTemplates().Render(tmpl, dbTemplateData{
 		Module:        "example.com/demo",
+		Name:          "demo",
 		HasMigrations: hasMigrations,
+		ConfigFields:  map[string]bool{"AutoMigrate": true},
 	})
 	if err != nil {
 		t.Fatalf("render %s (HasMigrations=%v): %v", tmpl, hasMigrations, err)
@@ -103,22 +116,37 @@ func dbFileFuncs(t *testing.T, src string) map[string]bool {
 	return out
 }
 
-// TestCmdTreeDBSource_WithMigrationsExposesTheEmbeddedFS pins the with-SQL
-// branch of the Tier-1 source file: it must import the project's embedded db
-// package and hand that FS out through migrationSource.
+// renderMigrationSource emits db/source_gen.go for a project with or without
+// SQL and returns its contents.
+//
+// This one is emitted from Go (codegen.GenerateMigrate), not from a template,
+// so it is exercised through the real emitter against a real directory rather
+// than by rendering a template name.
+func renderMigrationSource(t *testing.T, hasMigrations bool) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := codegen.GenerateMigrate(dir, "example.com/demo", hasMigrations, nil); err != nil {
+		t.Fatalf("GenerateMigrate(hasMigrations=%v): %v", hasMigrations, err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "db", "source_gen.go"))
+	if err != nil {
+		t.Fatalf("read db/source_gen.go: %v", err)
+	}
+	return string(body)
+}
+
+// TestMigrationSource_WithMigrationsExposesTheEmbeddedFS pins the with-SQL
+// branch of the one Tier-1 file in the migration wiring: Source() must hand out
+// the embedded FS, and nothing may reach for the filesystem.
 //
 // Asserted on the parsed import set and the declared function set, so the test
 // is about what the compiler will resolve rather than about the current
-// spelling of any one line.
-func TestCmdTreeDBSource_WithMigrationsExposesTheEmbeddedFS(t *testing.T) {
-	src := renderDB(t, "cmd-tree-db-source.go.tmpl", true)
+// spelling of any one line. Source() lives in package db beside the embed it
+// wraps, so with SQL it needs no import to name MigrationsFS at all.
+func TestMigrationSource_WithMigrationsExposesTheEmbeddedFS(t *testing.T) {
+	src := renderMigrationSource(t, true)
 
 	imports := dbFileImports(t, src)
-	wantImport := "example.com/demo/db"
-	if !containsString(imports, wantImport) {
-		t.Errorf("rendered db_source.go does not import the embedded migration package %q; imports = %v",
-			wantImport, imports)
-	}
 
 	// The whole point: no filesystem source. `file://db/migrations` cannot
 	// resolve inside the runtime image, so a path-sourced migrator must not
@@ -126,41 +154,47 @@ func TestCmdTreeDBSource_WithMigrationsExposesTheEmbeddedFS(t *testing.T) {
 	for _, forbidden := range []string{
 		"github.com/golang-migrate/migrate/v4/source/file",
 		"path/filepath",
+		"os",
 	} {
 		if containsString(imports, forbidden) {
-			t.Errorf("rendered db_source.go imports %q — the production image has no "+
+			t.Errorf("rendered db/source_gen.go imports %q — the production image has no "+
 				"db/migrations directory, so the source must be the embedded FS; imports = %v",
 				forbidden, imports)
 		}
 	}
 
-	if funcs := dbFileFuncs(t, src); !funcs["migrationSource"] {
-		t.Errorf("rendered db_source.go does not declare migrationSource; db.go's openMigrator calls it. declared = %v", funcs)
+	if funcs := dbFileFuncs(t, src); !funcs["Source"] {
+		t.Errorf("rendered db/source_gen.go does not declare Source; db.go's openMigrator and "+
+			"serve.go's AutoMigrate both call it. declared = %v", funcs)
+	}
+	if !strings.Contains(src, "return MigrationsFS") {
+		t.Errorf("with migrations, Source() must return the embedded set:\n%s", src)
 	}
 }
 
-// TestCmdTreeDBSource_WithoutMigrationsCompilesAndYieldsNoSource pins the
-// no-SQL branch. db/embed.go is NOT generated for a project with no .sql, so
-// ANY reference to it would fail to compile — this is the assertion a
-// text-only test would miss and a real build would catch.
+// TestMigrationSource_WithoutMigrationsCompilesAndYieldsNoSource pins the
+// no-SQL branch. db/embed_gen.go is NOT generated for a project with no .sql,
+// so ANY reference to MigrationsFS would fail to compile — this is the
+// assertion a text-only test would miss and a real build would catch.
 //
-// It must still declare migrationSource, because db.go (which is
-// scaffold-once and therefore identical in both branches) calls it
-// unconditionally.
-func TestCmdTreeDBSource_WithoutMigrationsCompilesAndYieldsNoSource(t *testing.T) {
-	src := renderDB(t, "cmd-tree-db-source.go.tmpl", false)
+// It must still declare Source, because db.go and serve.go are scaffold-once
+// (identical in both branches) and call it unconditionally.
+func TestMigrationSource_WithoutMigrationsCompilesAndYieldsNoSource(t *testing.T) {
+	src := renderMigrationSource(t, false)
 
-	imports := dbFileImports(t, src)
-	for _, imp := range imports {
-		if strings.HasSuffix(imp, "/db") {
-			t.Errorf("rendered db_source.go imports %q, but db/embed.go is not generated "+
-				"without migrations — the project would not compile; imports = %v", imp, imports)
-		}
+	if strings.Contains(src, "MigrationsFS") {
+		t.Errorf("without migrations, db/embed_gen.go is not generated, so db/source_gen.go "+
+			"must not name MigrationsFS — the project would not compile:\n%s", src)
 	}
 
-	if funcs := dbFileFuncs(t, src); !funcs["migrationSource"] {
-		t.Errorf("rendered db_source.go does not declare migrationSource; the scaffold-once db.go "+
+	funcs := dbFileFuncs(t, src)
+	if !funcs["Source"] {
+		t.Errorf("rendered db/source_gen.go does not declare Source; the scaffold-once db.go "+
 			"calls it in BOTH branches, so omitting it breaks the build. declared = %v", funcs)
+	}
+	if !strings.Contains(src, "return nil") {
+		t.Errorf("without migrations, Source() must return nil (migratekit tolerates that at "+
+			"boot and refuses it at `db migrate up`):\n%s", src)
 	}
 }
 
@@ -171,7 +205,7 @@ func TestCmdTreeDBSource_WithoutMigrationsCompilesAndYieldsNoSource(t *testing.T
 // looked like at that moment, and then never re-rendered. So a conditional in
 // it is worse than in a Tier-1 file: it freezes one branch forever, and no
 // later `forge generate` can correct it if the project's inputs change. The
-// input-dependent sliver was moved to db_source.go precisely so that this file
+// input-dependent sliver was moved to root_gen.go precisely so that this file
 // has no branch to freeze.
 //
 // Asserted on the RAW TEMPLATE, not the render: a render has already resolved
@@ -192,7 +226,7 @@ func TestCmdTreeDB_IsFreeOfTemplateConditionals(t *testing.T) {
 			t.Errorf("cmd-tree-db.go.tmpl contains the control action %q. This file is "+
 				"scaffold-once: it is written from the project's inputs at ONE moment and never "+
 				"re-rendered, so a conditional freezes one branch permanently. Input-dependent "+
-				"code belongs in the Tier-1 cmd-tree-db-source.go.tmpl instead.", control)
+				"code belongs in the Tier-1 cmd-tree-root-gen.go.tmpl instead.", control)
 		}
 	}
 

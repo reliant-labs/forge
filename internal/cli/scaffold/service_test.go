@@ -20,7 +20,7 @@ func TestRunAddService_RollsBackOnPipelineFailure(t *testing.T) {
 	f := testFactory()
 	f.Gen.RunPipeline = func(string) error { return fmt.Errorf("simulated validation failure") }
 
-	err := runService(f, "orders", false, false)
+	err := runServices(f, []string{"orders"}, false, false)
 	if err == nil {
 		t.Fatal("expected runService to surface the pipeline failure")
 	}
@@ -58,7 +58,7 @@ func TestRunAddService_RollbackPreservesPreexistingDirs(t *testing.T) {
 	f.Gen.RunPipeline = func(string) error { return fmt.Errorf("simulated validation failure") }
 
 	// --resume so an existing dir is tolerated by the conflict check.
-	if err := runService(f, "orders", true, false); err == nil {
+	if err := runServices(f, []string{"orders"}, true, false); err == nil {
 		t.Fatal("expected runService to surface the pipeline failure")
 	}
 

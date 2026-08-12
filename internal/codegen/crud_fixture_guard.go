@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/schemadef"
-	"github.com/reliant-labs/forge/internal/seeddata"
+	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // The guard that makes constraint-correct fixtures HONEST.
@@ -153,7 +153,7 @@ func verifyFixtures(ctx context.Context, db *sql.DB, t schemadef.Table, values [
 		if !satisfied {
 			suggested := ""
 			if col, okC := tableColumn(t, ck.Columns[0]); okC {
-				if typ, okT := seeddata.InferVocabType(t, col); okT {
+				if typ, okT := seedplan.InferVocabType(t, col); okT {
 					suggested = typ
 				}
 			}

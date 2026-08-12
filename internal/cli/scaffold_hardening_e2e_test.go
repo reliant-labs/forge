@@ -146,7 +146,7 @@ message Session {
 	if strings.Contains(ordersUp, "deleted_at") {
 		t.Errorf("unmarked entity (orders) must NOT get deleted_at:\n%s", ordersUp)
 	}
-	sessOrm := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "session_orm.go"))
+	sessOrm := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "session_orm_gen.go"))
 	if !strings.Contains(sessOrm, "soft_delete") {
 		t.Error("session ORM must carry Bun's soft_delete tag")
 	}

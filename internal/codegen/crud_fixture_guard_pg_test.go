@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/schemadef"
-	"github.com/reliant-labs/forge/internal/seeddata"
+	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // The guard's contract, verified against a real postgres.
@@ -106,7 +106,7 @@ func TestFixtureGuard_AcceptsWhatPostgresAccepts_RejectsWhatItRejects(t *testing
 			}
 			// Ground truth: does postgres itself accept this value in this
 			// column? Asked by INSERTing a row that is otherwise valid.
-			pgAccepts := insertProbe(t, ctx, shadow, column, sqlLit)
+			pgAccepts := insertProbe(ctx, t, shadow, column, sqlLit)
 
 			// The guard's verdict on the same value.
 			vs, judged, err := verifyFixtures(ctx, shadow.DB(), orders,
@@ -151,7 +151,7 @@ func TestFixtureGuard_AcceptsWhatPostgresAccepts_RejectsWhatItRejects(t *testing
 // INSERTing a row whose OTHER columns are known-good and rolling back. This is
 // the ground truth the guard is measured against: it is literally the create
 // the generated lifecycle test performs.
-func insertProbe(t *testing.T, ctx context.Context, shadow *schemadef.Shadow, column, sqlLit string) bool {
+func insertProbe(ctx context.Context, t *testing.T, shadow *schemadef.Shadow, column, sqlLit string) bool {
 	t.Helper()
 	good := map[string]string{
 		"id":               `'x'`,
@@ -207,8 +207,8 @@ CREATE TABLE accounts (
 	// Half one: the producer falls back. SynthString's own contract is that a
 	// value it derived from a pattern does NOT carry the synthetic prefix, so
 	// the prefix is the producer's own signal that it invented a placeholder.
-	got := seeddata.SynthString(accounts, col, 0)
-	if !strings.HasPrefix(got, seeddata.SyntheticStringPrefix) {
+	got := seedplan.SynthString(accounts, col, 0)
+	if !strings.HasPrefix(got, seedplan.SyntheticStringPrefix) {
 		t.Skipf("derivation now inverts this pattern (%q) — the fallback this guards is gone", got)
 	}
 
@@ -262,8 +262,8 @@ CREATE TABLE shipments (
 	// The derived fixture, via the production path.
 	fx := &crudTestFixtures{
 		tables:  map[string]schemadef.Table{"shipments": shipments},
-		pools:   seeddata.PoolsFromTables(tables),
-		bounds:  seeddata.BoundsFromTables(tables),
+		pools:   seedplan.PoolsFromTables(tables),
+		bounds:  seedplan.BoundsFromTables(tables),
 		plans:   map[string]*entitySeedPlan{},
 		emitted: map[string][]fixtureValue{},
 	}
@@ -294,7 +294,7 @@ CREATE TABLE shipments (
 	}
 
 	// The suggestion must WORK: every value it generates passes the guard.
-	vals, err := seeddata.VocabTypeValues(suggested, 0, "shipments", "shipping_country", 8)
+	vals, err := seedplan.VocabTypeValues(suggested, 0, "shipments", "shipping_country", 8)
 	if err != nil {
 		t.Fatalf("suggested type %q: %v", suggested, err)
 	}
@@ -328,8 +328,8 @@ func TestFixtureGuard_NumericInListFixtureIsAMember(t *testing.T) {
 
 	fx := &crudTestFixtures{
 		tables:  map[string]schemadef.Table{"orders": orders},
-		pools:   seeddata.PoolsFromTables(tables),
-		bounds:  seeddata.BoundsFromTables(tables),
+		pools:   seedplan.PoolsFromTables(tables),
+		bounds:  seedplan.BoundsFromTables(tables),
 		plans:   map[string]*entitySeedPlan{},
 		emitted: map[string][]fixtureValue{},
 	}

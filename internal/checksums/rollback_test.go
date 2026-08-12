@@ -59,7 +59,7 @@ func TestRollback_RestoresModifiedFileToPreRunBytes(t *testing.T) {
 
 func TestRollback_DeletesNewlyCreatedFileAndPrunesEmptyDirs(t *testing.T) {
 	root := t.TempDir()
-	const rel = "internal/db/widget_orm.go" // dir does NOT exist pre-run
+	const rel = "internal/db/widget_orm_gen.go" // dir does NOT exist pre-run
 
 	ResetSkipWrite()
 	BeginRollbackJournal(root)
@@ -100,7 +100,7 @@ func TestRollback_PruneStopsAtNonEmptyDir(t *testing.T) {
 	BeginRollbackJournal(root)
 	t.Cleanup(CommitRollback)
 
-	const rel = "internal/db/widget_orm.go"
+	const rel = "internal/db/widget_orm_gen.go"
 	if _, err := WriteGeneratedFile(root, rel, []byte("package db\n"), nil, false); err != nil {
 		t.Fatal(err)
 	}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
@@ -28,10 +27,18 @@ import (
 // The codemod handles the deterministic mechanics; the skill describes
 // the intent-bearing parts the LLM/user should review.
 
-// CodemodReport summarizes one upgrade codemod run. Auto entries are
-// the deterministic rewrites the codemod applied; Manual entries are
-// observations the codemod made about the project that need
-// LLM/user review (e.g. ambiguous nil-checks it left in place).
+// CodemodReport summarizes one upgrade codemod run: the deterministic
+// rewrites the codemod applied, plus the commands to verify them.
+//
+// There was once a parallel `Manual []ManualItem` list for observations a
+// codemod made but declined to rewrite. It went out with the last
+// codemod that produced one, because nothing left could write it and a
+// field that can only hold its zero value makes every branch downstream
+// decoration. The intent-bearing half of an upgrade lives in the
+// per-release migration skill now (see upgrade_migrations.go), which is
+// prose an agent reads rather than a struct a codemod fills in. If a
+// future codemod genuinely needs to hand back file:line observations,
+// reintroduce the field together with the code that writes it.
 type CodemodReport struct {
 	// Auto is the list of mechanical rewrites the codemod applied,
 	// each formatted as a single human-readable line ("removed
@@ -39,25 +46,10 @@ type CodemodReport struct {
 	// the UPGRADE_NOTES.md output — keep insertion order.
 	Auto []string
 
-	// Manual is the list of items the codemod identified but didn't
-	// rewrite, each with a file:line reference so the LLM can land
-	// on the right spot. Reasons range from "pattern didn't match
-	// the conservative shape we auto-rewrite" to "needs intent
-	// inspection".
-	Manual []ManualItem
-
 	// VerifyCommands are the commands the user should run after the
 	// codemod completes. Defaults to the triple-gate when the
 	// codemod doesn't override.
 	VerifyCommands []string
-}
-
-// ManualItem is one entry in CodemodReport.Manual — file:line pairs
-// the LLM/user should look at after the codemod completes.
-type ManualItem struct {
-	File   string // relative to projectDir
-	Line   int    // 1-based; 0 means file-level (no specific line)
-	Reason string // short, paste-into-an-LLM-prompt-friendly
 }
 
 // CodemodFn is the contract every per-version codemod implements.
@@ -76,6 +68,15 @@ var codemodRegistry = map[string]CodemodFn{}
 
 // registerCodemod adds a codemod for the named hop. Called from each
 // codemod file's init().
+//
+// Currently no hop needs a codemod, so the registry is empty and nothing
+// calls this — but the registry is live: runCodemodChain reads it on every
+// `forge project upgrade`, and this is the only way to populate it. Deleting
+// the registrar would leave a map nothing can ever fill and make the chain
+// dead by construction; the next version hop that needs an AST rewrite calls
+// this from its init().
+//
+//nolint:unused // registration seam for codemodRegistry, which runCodemodChain reads on every upgrade.
 func registerCodemod(fromMinor, toMinor string, fn CodemodFn) {
 	codemodRegistry[codemodKey(fromMinor, toMinor)] = fn
 }
@@ -200,7 +201,6 @@ func runCodemodChain(projectDir, from, to string) (CodemodReport, error) {
 			return merged, fmt.Errorf("codemod v%s -> v%s: %w", hopFrom, hopTo, err)
 		}
 		merged.Auto = append(merged.Auto, report.Auto...)
-		merged.Manual = append(merged.Manual, report.Manual...)
 		if len(report.VerifyCommands) > 0 {
 			merged.VerifyCommands = report.VerifyCommands
 		}
@@ -214,15 +214,6 @@ func runCodemodChain(projectDir, from, to string) (CodemodReport, error) {
 // review and delete after the upgrade lands.
 func writeUpgradeNotes(projectDir, fromVersion, toVersion string, report CodemodReport) error {
 	path := filepath.Join(projectDir, "UPGRADE_NOTES.md")
-
-	// Sort manual items by file then line for stable output regardless
-	// of the order codemods discovered them.
-	sort.SliceStable(report.Manual, func(i, j int) bool {
-		if report.Manual[i].File != report.Manual[j].File {
-			return report.Manual[i].File < report.Manual[j].File
-		}
-		return report.Manual[i].Line < report.Manual[j].Line
-	})
 
 	verify := report.VerifyCommands
 	if len(verify) == 0 {
@@ -250,19 +241,6 @@ func writeUpgradeNotes(projectDir, fromVersion, toVersion string, report Codemod
 		sb.WriteString("_None — the codemod found no patterns to rewrite. (Either the project was already in v" + normalizeMinor(toVersion) + " shape, or the codemod for this hop is informational-only.)_\n\n")
 	}
 
-	if len(report.Manual) > 0 {
-		sb.WriteString("## Needs LLM / manual attention\n\n")
-		sb.WriteString("These items were identified but **not rewritten** — they need human (or LLM-with-context) judgement. Each entry includes a file:line reference for direct navigation.\n\n")
-		for _, m := range report.Manual {
-			loc := m.File
-			if m.Line > 0 {
-				loc = fmt.Sprintf("%s:%d", m.File, m.Line)
-			}
-			fmt.Fprintf(&sb, "- **%s** — %s\n", loc, m.Reason)
-		}
-		sb.WriteString("\n")
-	}
-
 	sb.WriteString("## Verification\n\n")
 	sb.WriteString("Run the following from the project root after applying any manual changes above:\n\n")
 	sb.WriteString("```bash\n")
@@ -270,7 +248,13 @@ func writeUpgradeNotes(projectDir, fromVersion, toVersion string, report Codemod
 		fmt.Fprintf(&sb, "%s\n", c)
 	}
 	sb.WriteString("```\n\n")
-	sb.WriteString("Clean compile + green tests + clean lint = upgrade done. See the per-version migration skill (`forge skill load migration/v" + normalizeMinor(fromVersion) + "-to-v" + normalizeMinor(toVersion) + "`) for the full intent-level migration story.\n")
+	// Point at the worklist command rather than a constructed skill path:
+	// migration skills are per-RELEASE and pruned once a release ages out
+	// of the supported window, so a path built from a version pair names a
+	// skill that may never have existed. `upgrade list` always answers
+	// correctly, including when the answer is "none".
+	sb.WriteString("Clean compile + green tests + clean lint = upgrade done. Run `" + Name() +
+		" project upgrade list` for the per-release migration skills this project still needs — they carry the intent-level story the codemod cannot.\n")
 
 	return os.WriteFile(path, []byte(sb.String()), 0o644)
 }

@@ -598,6 +598,30 @@ func IsInsufficientBalance(err error) bool { return errors.Is(err, ErrInsufficie
 // IsExpired reports whether err carries (or wraps) ErrExpired.
 func IsExpired(err error) bool { return errors.Is(err, ErrExpired) }
 
+// IsClassified reports whether err carries a verdict someone on this side of
+// the wire made deliberately — a *connect.Error, or any sentinel from this
+// package. It is the question "does this error already know its own code?",
+// which is what a caller needs before deciding whether to impose one.
+//
+// The distinction matters wherever a boundary receives errors from two
+// sources. A driver or SDK error is unclassified: nobody chose CodeInternal
+// for it, so imposing that default is honest. An svcerr sentinel is the
+// opposite — the application named the failure, and overwriting its code
+// discards a decision. Without this predicate the only cheap test is
+// `errors.As(&connect.Error{})`, which sees the first kind and misses the
+// second, silently turning a caller's 400 into a 500.
+func IsClassified(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ce *connect.Error
+	if errors.As(err, &ce) {
+		return true
+	}
+	_, _, recognised := codeForRecognized(err)
+	return recognised
+}
+
 // WithDetail attaches a structured proto.Message detail to the connect
 // error that ToConnect would build for err. Used when the service
 // layer wants to surface client-readable structured context (e.g., a

@@ -1,0 +1,9 @@
+{
+  "forge_version": "v0.0.4-0.20260808214856-a144cf7c68d0+dirty",
+  "files": {
+    ".github/workflows/ci.yml": {
+      "reason": "migrated from legacy .forge/checksums.json (legacy fork-era entry; the fork state was removed)",
+      "disowned_at": "2026-06-24T16:14:00Z"
+    }
+  }
+}

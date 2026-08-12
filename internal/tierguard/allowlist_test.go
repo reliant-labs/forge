@@ -32,18 +32,39 @@ type allowEntry struct {
 // mis-tier candidate, and deciding what to do about each one is
 // follow-up work, not something this guard should pre-absolve.
 //
-// Two paths were considered and deliberately NOT exempted, because in
-// both cases the honest fix was to make the fixtures exercise the input:
+// Several paths were considered and deliberately NOT exempted, because
+// in each case the honest fix was to make the fixtures exercise the
+// input, or to change the file's tier:
 //
 //   - pkg/middleware/procedures_gen.go looked constant until fixture B
 //     declared an RPC with `auth_required: false`. It is now genuinely
 //     Derived. An exemption would have hidden a real, testable property.
-//   - pkg/config/config.go looked like it "must" be per-project because
-//     of its `type Config = configv1.AppConfig` alias. Adding a component
-//     config block to proto/config/v1/config.proto moved
-//     deploy/kcl/config_projection.k and gen/config/v1/config.pb.go and
-//     left config.go byte-identical — so the alias text is invariant and
-//     the file stays a reported candidate on the evidence.
+//   - pkg/config/config_gen.go looked like a mis-tier: constant across
+//     A/B, and varying only with the module path, which reads as "embeds
+//     the user's import paths but no declaration of theirs". The earlier
+//     experiment that moved a COMPONENT config block confirmed the
+//     `type Config = configv1.AppConfig` alias text is invariant — but
+//     the file has a second half nothing was exercising. Fixture B now
+//     scaffolds a second binary and gives it a config message carrying
+//     `(forge.v1.binary_config)`, which emits a per-binary alias plus
+//     Register/Load/ModeOf/Validate. The file is genuinely Derived; the
+//     mis-tier reading was an unexercised input, not a property.
+//   - db/source_gen.go and db/embed_gen.go project whether
+//     db/migrations/ holds any .sql. A and B both had migrations, so
+//     both rendered the same branch. Fixture D declares no entity at
+//     all: source_gen.go's body flips to the nil branch and embed_gen.go
+//     is not emitted, making it presence-derived.
+//   - cmd/<bin>/cmd/services/register_gen.go records a NOTE for a
+//     service whose kebab name shadows a built-in. Fixture D declares a
+//     service named `version`, and the anchor now moves.
+//
+// Two paths were found to be genuine mis-tiers and FIXED rather than
+// exempted: cmd/<bin>/cmd/{workers,operators}/register_gen.go rendered
+// from `struct{}{}` — `forge generate` does no worker/operator discovery,
+// so they projected nothing in any project. They are now scaffold-once
+// register.go (see codegen.GenerateCmdGroups). That is the outcome this
+// guard exists to produce; an allowList entry would have preserved the
+// defect.
 //
 // Add an entry only with a reason naming the specific user input the file
 // is a function of and why no fixture moves it — and prefer extending a
@@ -93,9 +114,9 @@ func TestAllowListEntriesAreJustified(t *testing.T) {
 	// Every exemption must still be load-bearing. A path that now
 	// classifies as derived does not need an exemption, and leaving one
 	// behind would mask a future regression at that path.
-	a, b, identity := renders(t)
+	inputs, identity := renders(t)
 	byPath := map[string]Classification{}
-	for _, c := range Classify(a, b, identity) {
+	for _, c := range Classify(inputs, identity) {
 		byPath[c.Path] = c
 	}
 	for _, e := range allowList {

@@ -48,6 +48,35 @@ type objectMeta struct {
 // applyable output at all.
 const manifestRootKey = "manifests"
 
+// outputRootKey is the sibling root carrying forge's JSON deploy
+// contract — the same document `forge build` / `forge env deploy`
+// consume. It is where a HOST-deployed service exists, since a host
+// service has no manifest.
+const outputRootKey = "output"
+
+// parseHostServices reads the host-deployed services out of the `output`
+// contract. Anything unparseable answers nil: this is a best-effort
+// enrichment of a check that must keep working on a render that predates
+// the contract, or whose shape has moved on.
+func parseHostServices(raw json.RawMessage) []renderedService {
+	if len(raw) == 0 {
+		return nil
+	}
+	var contract struct {
+		Services []renderedService `json:"services"`
+	}
+	if err := json.Unmarshal(raw, &contract); err != nil {
+		return nil
+	}
+	var hosts []renderedService
+	for _, s := range contract.Services {
+		if s.Deploy.Type == "host" {
+			hosts = append(hosts, s)
+		}
+	}
+	return hosts
+}
+
 // envRender is one environment's render outcome.
 type envRender struct {
 	env string
@@ -65,7 +94,38 @@ type envRender struct {
 	// would reject — a document with no apiVersion or no kind.
 	invalid []string
 	objects []k8sObject
-	err     error
+	// hostServices are the env's HOST-deployed services, read from the
+	// `output` JSON contract rather than from `manifests`.
+	//
+	// A host-mode environment runs its app as a process on the developer's
+	// machine and gives the cluster only what must be in it. Such a service
+	// has real env vars and a real command, but never becomes a container —
+	// so a check that reads only manifests cannot see it at all, and would
+	// report an env that migrates on every boot as having no way to migrate.
+	hostServices []renderedService
+	err          error
+}
+
+// renderedService is the slice of the `output.services` contract these
+// checks reason about. Deliberately minimal: the contract is large and
+// evolving, and every field read here is one more thing that can break.
+type renderedService struct {
+	Name    string        `json:"name"`
+	Command []string      `json:"command"`
+	EnvVars []renderedEnv `json:"env_vars"`
+	Deploy  struct {
+		Type string `json:"type"`
+		// A host service's environment is composed onto the DEPLOY block,
+		// not the service's own env_vars — the host adapter owns it, the
+		// way a cluster service's env lands on the container. Reading only
+		// the outer list finds an empty slice on every host service.
+		EnvVars []renderedEnv `json:"env_vars"`
+	} `json:"deploy"`
+}
+
+type renderedEnv struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // deployRenders renders every declared environment once and memoises
@@ -100,11 +160,21 @@ func renderDeployEnvs(projectDir string) []envRender {
 
 	renders := make([]envRender, 0, len(names))
 	for _, name := range names {
-		// The main.k files read deploy/kcl/components_gen.json through a
-		// project-root-relative file.read, so the project root is the
-		// work dir — same contract `forge ci validate-kcl` uses.
+		// The main.k files resolve their imports (`..components`,
+		// `..ingress`) and the kcl.mod vendor path relative to the project
+		// root, so the project root is the work dir — same contract
+		// `forge ci validate-kcl` uses.
 		rel := filepath.Join("deploy", "kcl", name, "main.k")
-		raw, rerr := kclrender.Run(projectDir, rel, nil)
+		// `-D env=<name>` is not optional. It is what `option("env")`
+		// reads, and env-conditionals key off it — including forge's own
+		// kcl/schema.k, whose RenderedSecretKey check allows an inlined
+		// literal secret only when option("env") is dev or e2e. Rendering
+		// without it leaves the option Undefined, so that check fails for
+		// EVERY environment including the two it permits, and the deploy
+		// checks report a project non-applyable over a conditional that
+		// would have been satisfied. internal/cli's renderKCLRaw passes the
+		// same argument; the two renderers disagreeing is the bug.
+		raw, rerr := kclrender.Run(projectDir, rel, []string{"env=" + name})
 		if rerr != nil {
 			renders = append(renders, envRender{env: name, err: rerr})
 			continue
@@ -164,6 +234,7 @@ func parseRender(raw []byte) envRender {
 	sort.Strings(keys)
 
 	out := envRender{}
+	out.hostServices = parseHostServices(root[outputRootKey])
 	for _, k := range keys {
 		var list []k8sObject
 		if lerr := json.Unmarshal(root[k], &list); lerr != nil {
@@ -205,27 +276,51 @@ func invalidObjects(root string, list []k8sObject) []string {
 	return bad
 }
 
-// podTemplateKinds are the workload kinds whose pod template these
-// checks descend into.
+// podTemplateKinds are the workload kinds whose pod template sits
+// directly at spec.template.
+//
+// Job belongs here with the long-running kinds even though it runs to
+// completion: its pod carries a ServiceAccount and a full environment,
+// which is what the SA-binding and secret checks read. Omitting it made
+// a migrate Job that correctly bound its SA report as unbound, and hid a
+// plaintext credential on the one workload most likely to carry a
+// database URL.
 var podTemplateKinds = map[string]bool{
 	"Deployment":  true,
 	"StatefulSet": true,
 	"DaemonSet":   true,
 	"ReplicaSet":  true,
+	"Job":         true,
 }
 
 // containersOf returns (podSpec, containers) for a workload object, or
 // (nil, nil) when the object carries no pod template.
 func containersOf(o k8sObject) (map[string]any, []map[string]any) {
-	if !podTemplateKinds[o.Kind] {
-		return nil, nil
-	}
-	tmpl, _ := mapAt(o.Spec, "template")
-	podSpec, ok := mapAt(tmpl, "spec")
+	podSpec, ok := podSpecOf(o)
 	if !ok {
 		return nil, nil
 	}
 	return podSpec, containerList(podSpec, "containers")
+}
+
+// podSpecOf locates a workload's pod spec, which sits one level deeper
+// for a CronJob: it templates a Job, which templates the pod
+// (spec.jobTemplate.spec.template.spec).
+func podSpecOf(o k8sObject) (map[string]any, bool) {
+	spec := o.Spec
+	if o.Kind == "CronJob" {
+		jobTmpl, ok := mapAt(spec, "jobTemplate")
+		if !ok {
+			return nil, false
+		}
+		if spec, ok = mapAt(jobTmpl, "spec"); !ok {
+			return nil, false
+		}
+	} else if !podTemplateKinds[o.Kind] {
+		return nil, false
+	}
+	tmpl, _ := mapAt(spec, "template")
+	return mapAt(tmpl, "spec")
 }
 
 // initContainersOf returns a workload's initContainers. Separate from
@@ -481,14 +576,47 @@ var sensitiveEnvNames = []string{
 	"ACCESS_KEY", "CREDENTIAL", "DATABASE_URL", "DB_URL", "DSN", "CONNECTION_STRING",
 }
 
+// secretReferenceSuffixes name a variable that POINTS AT a credential
+// rather than carrying one. The name of a Secret is not secret — a
+// manifest has to carry it in the clear for a pod to reference it at all
+// — and neither is the path a credential is mounted at.
+//
+// This is a narrow exemption on the SUFFIX, not a substring: it exempts
+// IMAGE_PULL_SECRET_NAME and TOKEN_PATH, and does not exempt
+// SECRET_NAME_ENCRYPTION_KEY, whose name merely mentions a name. Without
+// it these were 68 of 89 findings on a real project — enough noise to
+// bury the genuine plaintext credentials in the same report, and a check
+// whose output is mostly false is one people learn to skip.
+var secretReferenceSuffixes = []string{"_NAME", "_PATH", "_FILE", "_KEY_REF", "_SECRET_REF"}
+
+// literalSecretEnvs are the environments allowed to carry a credential as
+// a literal. It MIRRORS the allowance in forge's kcl/schema.k
+// (RenderedSecretKey: `option("env") in ["dev", "e2e"]`) — the two must
+// agree, or a project is failed here for what the schema permits.
+//
+// Matched on the exact environment name, like the schema's own check: a
+// near-miss such as "dev-k8s" deploys to a real cluster and is NOT
+// exempt.
+var literalSecretEnvs = map[string]bool{"dev": true, "e2e": true}
+
 func isSensitiveEnvName(name string) bool {
 	upper := strings.ToUpper(name)
+	matched := false
 	for _, frag := range sensitiveEnvNames {
 		if strings.Contains(upper, frag) {
-			return true
+			matched = true
+			break
 		}
 	}
-	return false
+	if !matched {
+		return false
+	}
+	for _, suffix := range secretReferenceSuffixes {
+		if strings.HasSuffix(upper, suffix) {
+			return false
+		}
+	}
+	return true
 }
 
 // isNonSecretLiteral rules out the values a credential can never take.
@@ -543,6 +671,22 @@ func CheckDeploySecrets(_ context.Context, env *Environment) CheckResult {
 	var leaks []string
 	checked := 0
 	for _, r := range renders {
+		// dev and e2e may inline a credential, because forge's own KCL
+		// schema says so: RenderedSecretKey permits `from = "literal"`
+		// exactly when option("env") is dev or e2e, and refuses it in every
+		// other environment. Failing a project here for the thing the schema
+		// allows put the two halves of forge in disagreement, and left a
+		// project with permanently-red findings it could not fix — which is
+		// how a check stops being read, taking the prod findings in the same
+		// list with it.
+		//
+		// A dev credential is `postgres:postgres` against a database bound to
+		// the developer's own machine; an e2e credential is a throwaway whose
+		// other half lives in the test's assertions. Neither is a secret in
+		// any sense a Secret would protect.
+		if literalSecretEnvs[r.env] {
+			continue
+		}
 		for _, o := range r.objects {
 			_, containers := containersOf(o)
 			containers = append(containers, initContainersOf(o)...)
@@ -642,6 +786,35 @@ func hasMigrationStep(objects []k8sObject) bool {
 	return false
 }
 
+// hostMigrationStep reports whether any HOST-deployed service applies
+// migrations — either by running a migrate command, or by carrying
+// AUTO_MIGRATE=true.
+//
+// Same two mechanisms the manifest path accepts, read off the `output`
+// contract instead of a pod spec, so a host env and a cluster env are
+// judged by the same standard.
+func hostMigrationStep(services []renderedService) bool {
+	for _, s := range services {
+		if looksLikeMigration(s.Name) {
+			return true
+		}
+		for _, word := range s.Command {
+			if looksLikeMigration(word) {
+				return true
+			}
+		}
+		// Both lists: a host service's env is composed onto the deploy
+		// block, while the service's own env_vars carry anything declared
+		// directly on it.
+		for _, e := range append(append([]renderedEnv{}, s.EnvVars...), s.Deploy.EnvVars...) {
+			if e.Name == "AUTO_MIGRATE" && strings.EqualFold(strings.TrimSpace(e.Value), "true") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // autoMigrateEnabled reports whether every workload in the render runs
 // its migrations at startup (AUTO_MIGRATE=true).
 func autoMigrateEnabled(objects []k8sObject) bool {
@@ -674,11 +847,12 @@ func autoMigrateEnabled(objects []k8sObject) bool {
 //
 // The generated cloud envs set AUTO_MIGRATE=false — correct, because
 // three replicas racing to migrate on startup is not a migration
-// strategy. What replaces it is the migration initContainer the
-// component render emits from components_gen.json's `migrate` command:
+// strategy. What replaces it is the scaffolded `migrate` workload: a
+// one-shot job (`kind = "job"`, `before = [fw.BEFORE_ALL]`) running
 // `<binary> db migrate up` over the migrations EMBEDDED in the image,
-// serialized across replicas by a postgres advisory lock, ordered
-// before the app container by Kubernetes itself.
+// serialized across replicas by a postgres advisory lock, and lowered to
+// an initContainer so it is ordered before the app container by
+// Kubernetes itself.
 //
 // The check does not care WHICH mechanism an env uses — a migration
 // Job, an initContainer, a migrate command, or AUTO_MIGRATE=true all
@@ -715,6 +889,15 @@ func CheckDeployMigrations(_ context.Context, env *Environment) CheckResult {
 		if hasMigrationStep(r.objects) || autoMigrateEnabled(r.objects) {
 			continue
 		}
+		// A HOST-deployed service migrates just as effectively as a
+		// container does, and it is the normal shape for a dev env: the app
+		// runs on the developer's machine with AUTO_MIGRATE=true while the
+		// cluster holds only the pieces that must be in it. That service
+		// never becomes a container, so reading manifests alone reports an
+		// env that migrates on every boot as one with no way to migrate.
+		if hostMigrationStep(r.hostServices) {
+			continue
+		}
 		unmigrated = append(unmigrated, fmt.Sprintf(
 			"%s: AUTO_MIGRATE is off and the render carries no migration Job, initContainer or migrate command "+
 				"— a schema-changing release deploys new code against the old schema", r.env))
@@ -726,10 +909,19 @@ func CheckDeployMigrations(_ context.Context, env *Environment) CheckResult {
 			Message: fmt.Sprintf("%d of %d environment(s) ship %d SQL migration(s) with no way to apply them",
 				len(unmigrated), len(renders), sqlCount),
 			Evidence: strings.Join(unmigrated, "\n") +
-				"\nfix: wire the generated migration step into the env — `migrate = fc.load_migrate(fc.COMPONENTS_GEN)` " +
-				"on the ComponentEnv in deploy/kcl/<env>/main.k — and re-run `forge generate` so " +
-				"components_gen.json carries the command. That renders an initContainer running the image's " +
-				"`db migrate up` (embedded migrations, advisory-locked) before the app container starts.",
+				"\nfix: declare the migration as a one-shot workload in deploy/kcl/workloads.k —\n" +
+				"      migrate = fw.Workload {\n" +
+				"          name = \"migrate\"\n" +
+				"          kind = \"job\"\n" +
+				"          command = [\"/app/<project>\", \"db\", \"migrate\", \"up\"]\n" +
+				"          before = [fw.BEFORE_ALL]\n" +
+				"      }\n" +
+				"    and add it to this environment's workload list. `before = [fw.BEFORE_ALL]` gates " +
+				"EVERY workload without naming any, so it keeps holding when a workload is added later; " +
+				"it renders an initContainer running the image's `db migrate up` (embedded migrations, " +
+				"advisory-locked) before the app container starts. If this environment applies migrations " +
+				"out of band instead, that is a legitimate answer — this check reads the render, so wire " +
+				"the step you actually use.",
 		}
 	}
 	return CheckResult{

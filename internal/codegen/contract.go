@@ -29,7 +29,7 @@ type Service interface {
 	GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...map[string]bool) error
 	RegenerateServiceFile(svc ServiceDef, targetDir string) error
 	GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, crudMethodNames map[string]bool, cs *checksums.FileChecksums) (*MissingHandlerResult, error)
-	GenerateMock(svc ServiceDef, mockDir string) (bool, error)
+	GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.FileChecksums) (bool, error)
 
 	// Auth is owned code now (GenerateAuthSetup scaffolds the editable
 	// internal/app/auth.go, a plain package func that writes once and never
@@ -74,6 +74,11 @@ type Inspector interface {
 type Deps struct{}
 
 // New constructs the file-emission Service.
+//
+// forge:no-observe
+// Pure compute: empty Deps, and the work is template rendering and file
+// emission inside a CLI process. There is no request lifecycle to
+// correlate spans against and no remote call to time.
 func New(_ Deps) Service { return &svc{} }
 
 // NewParser constructs the descriptor / go.mod parser surface.

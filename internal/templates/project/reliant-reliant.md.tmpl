@@ -36,10 +36,24 @@ This is a Forge-generated Go + Next.js application with:
 - **Context**: Only for stable, broad dependencies (auth, theme, event bus) — not high-frequency data
 - **Derive, don't effect**: Compute values during render, never useEffect to set derived state
 
+## The scaffolded frontend is starter code
+
+The UI forge scaffolds has the same status as Rails scaffolding — it proves the stack is wired end to end, and it is not a design. Do not hand it to a user and call the work finished.
+
+Placeholder by construction: the dashboard's entity-tile grid, the sidebar nav, the sign-in screen, and every generated list/detail/create/edit page. These are "yours" files — forge writes them once and then leaves them alone (`nav.tsx` and `dashboard.tsx` keep refreshing only until your first edit, then they are yours too). Rewriting them wholesale is the expected next step, not a deviation from the scaffold.
+
+Ready to show a user means an information hierarchy built around what this product actually does rather than around the entity list, real copy instead of "Manage tasks", and empty/loading/error states that were designed rather than inherited from the default ladder. It also means a brief — what the product should look and feel like — which only the user can give you.
+
+Load `frontend/design` before starting that work. It asks for the brief first and will not let you invent an aesthetic without one.
+
+Forge deliberately does not guess your product's visual identity. A scaffold that shipped an invented one would be harder to replace than one that is obviously neutral, because you would spend the first hour arguing with taste that nobody chose.
+
+The light/dark palette IS wired, though: semantic tokens in `globals.css` / `index.css` (`bg-surface`, `text-ink`, `border-border`, …) with a working theme toggle. Rebrand by editing those token values in one file — never by reaching for raw palette classes like `bg-blue-600` in a component.
+
 ## Do NOT Edit
 - `gen/` directory
 - `*_gen.go` files
-- `internal/app/compose.go`, `mounts_services.go`, `lifecycle.go` (forge-owned until `{{.CLI}} project disown`)
+- `internal/app/compose.go`, `mounts_services_gen.go`, `lifecycle.go` (forge-owned until `{{.CLI}} project disown`)
 - `internal/db/<entity>_orm.go`, `pkg/config/`
 - `frontends/*/src/hooks/*-hooks.ts`
 - `frontends/*/src/gen/`

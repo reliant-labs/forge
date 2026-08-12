@@ -1,4 +1,6 @@
-import type { AuthProvider, AuthUser } from "./provider";
+{{if .HasTypedConfig}}import { loadConfig } from "@/lib/config_gen";
+
+{{end}}import type { AuthProvider, AuthUser } from "./provider";
 
 /**
  * The scaffolded {@link AuthProvider} — the one the app runs on until you
@@ -29,15 +31,36 @@ import type { AuthProvider, AuthUser } from "./provider";
  * UI — already reads that one object, so nothing else changes. Point the
  * backend's `jwt_jwks_url` at the same issuer and both halves agree.
  */
-{{- if eq .Platform "vite-spa"}}
-const MOCK_MODE = import.meta.env.VITE_MOCK_API;
+{{- if .HasTypedConfig}}
+// Read through the generated typed config — the SAME source oidc-provider.ts
+// uses to select between this provider and the real one. Reading a
+// build-time-inlined NEXT_PUBLIC_/VITE_ name here instead would split the
+// decision across two sources: selectAuthProvider() would hand back the mock
+// while this file, seeing an env var the typed-config build never sets,
+// believed it was driving a real backend — so the "mock" provider returned a
+// null user and a null token, and scaffolded UI rendered signed-out.
+//
+// Deliberately a function, not a module-scope const: loadConfig() throws on
+// invalid config, and evaluating that at import time turns a fixable
+// misconfiguration into a blank page with a stack trace pointing at an import.
+function mockMode(): string | undefined {
+  return loadConfig().MOCK_API || undefined;
+}
+{{- else if eq .Platform "vite-spa"}}
+function mockMode(): string | undefined {
+  return import.meta.env.VITE_MOCK_API as string | undefined;
+}
 {{- else if eq .Platform "react-native"}}
 // No "hybrid" here: the scenario-backed mock transport is browser-only
 // (`forge generate` emits src/lib/mock-transport.ts for the Next.js and Vite
 // trees), so React Native is either pure mock or a real backend.
-const MOCK_MODE = process.env.EXPO_PUBLIC_MOCK_API;
+function mockMode(): string | undefined {
+  return process.env.EXPO_PUBLIC_MOCK_API;
+}
 {{- else}}
-const MOCK_MODE = process.env.NEXT_PUBLIC_MOCK_API;
+function mockMode(): string | undefined {
+  return process.env.NEXT_PUBLIC_MOCK_API;
+}
 {{- end}}
 
 // "true"   — pure mock: every RPC is answered locally, so the fixture token
@@ -45,8 +68,8 @@ const MOCK_MODE = process.env.NEXT_PUBLIC_MOCK_API;
 // "hybrid" — scenario handlers overlay a real backend and unmatched RPCs are
 //            forwarded. Those DO need a credential this provider does not
 //            have, so the fixture session renders but nothing is sent.
-const IS_PURE_MOCK = MOCK_MODE === "true";
-const IS_MOCKED = IS_PURE_MOCK || MOCK_MODE === "hybrid";
+const isPureMock = () => mockMode() === "true";
+const isMocked = () => isPureMock() || mockMode() === "hybrid";
 
 // A stand-in session for mock mode, where nothing reaches the network. It is
 // not a credential and no server accepts it — it exists so scaffolded UI has
@@ -60,7 +83,7 @@ const MOCK_TOKEN = "mock-token-dev";
 
 export function createSessionAuthProvider(): AuthProvider {
   // The session this provider can offer at all. Null against a real backend.
-  const fixtureUser: AuthUser | null = IS_MOCKED ? MOCK_USER : null;
+  const fixtureUser: AuthUser | null = isMocked() ? MOCK_USER : null;
 
   // Start signed in when there is something to be signed in WITH. The value
   // is inlined into the bundle at build time, so the server render and the
@@ -93,7 +116,7 @@ export function createSessionAuthProvider(): AuthProvider {
     // Authorization header rather than one no server would accept.
     getToken: async () => {
       warnUnwired();
-      return current && IS_PURE_MOCK ? MOCK_TOKEN : null;
+      return current && isPureMock() ? MOCK_TOKEN : null;
     },
     getUser: () => {
       warnUnwired();

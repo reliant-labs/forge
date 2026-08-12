@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/reliant-labs/forge/pkg/components"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/pkg/components"
 )
 
 func newInstallCmd(_ *factory.Factory) *cobra.Command {

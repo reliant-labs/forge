@@ -1,96 +1,47 @@
 ---
 name: testing
-description: "Testing methodology — the test pyramid, mock vs real, harness patterns, flakiness prevention, and discipline."
+description: "What forge gives you to test with — testkit's real-postgres harness, generated contract mocks, pkg/tdd, the task test lanes and their build tags."
 emit: both
 ---
 
-# Testing Methodology
+# Testing a forge project
 
-## The Test Pyramid
+Forge ships the harness, the mocks and the lanes. How you structure a suite is
+yours; this is what is already there to build it out of.
 
-Structure tests in layers, with volume decreasing as scope increases:
+## What forge gives you to test with
 
-1. **Unit** — fast, hermetic, single-component. The default; runs in seconds.
-2. **Integration** — touches a real dependency (database, file system, child process). Runs in tens of seconds.
-3. **End-to-end** — full stack, multi-component flows. Runs in minutes.
+The tiers map onto forge machinery, and which one you are in decides what is
+already available:
 
-The pyramid shape matters. Many units, fewer integrations, a small e2e set. Inverting it — lots of e2e, few units — makes the suite slow and brittle, and failures point at the wrong layer.
+1. **Unit** — the real subject plus the **generated contract mocks** for its
+   collaborators (`mock_gen.go`, one per interface in `contract.go` — never
+   hand-roll a fake for something declared there).
+2. **Integration** — `testkit.NewPostgresDB(t)` gives a real ephemeral postgres
+   with your own `db/migrations/*.up.sql` applied, no Docker required. The ORM
+   and its SQL are the things most worth exercising for real here, since a
+   mocked repository cannot fail the way a query does.
+3. **End-to-end** — `task test:e2e`, against a stack from `forge env up dev`.
 
-## Mock vs Real Decision Framework
+Forge's generated mocks exist for collaborators, so the subject under test
+stays real at every tier.
 
-This is the most critical testing decision. Get it wrong and tests either break constantly or miss real bugs.
+## Forge-specific harness facts
 
-### Keep REAL
-
-- **The thing under test** — never mock what you're testing.
-- **Fast, deterministic things** — pure functions, in-memory data structures, value objects.
-- **Things where mocking hides bugs** — ORM behavior, SQL queries, serialization logic.
-
-### MOCK
-
-- **External services** — third-party APIs, email providers, payment gateways.
-- **Non-deterministic sources** — time, random numbers, network calls.
-- **Slow irrelevant resources** — services not related to the behavior under test.
-
-### The Boundary Rule
-
-Mock at **system boundaries**, keep internals real. If two components live in the same service, test them together. If they cross a network boundary, mock the far side.
-
-### Real-vs-mock discipline by tier
-
-The boundary moves as scope widens — and the one rule that never bends is **never mock the subject under test**:
-
-- **Unit** — exercise the real subject (handler / contract method); mock its *collaborators* via the generated contract mocks. A test that stubs the very thing it claims to test proves nothing.
-- **Integration / e2e** — exercise the REAL subject *and* its real internal collaborators (DB, sibling services). Mock ONLY external boundaries you don't own — third-party providers, payment gateways, upstream APIs. Replacing an internal collaborator with a mock at this tier defeats the point of the tier.
-
-If you catch yourself mocking the subject — or mocking an internal collaborator in an integration/e2e test — stop: you've either picked the wrong tier or you're about to write a test that can't fail for the right reason.
-
-## Test Harness Patterns
-
-- **Test database** — transaction-per-test with rollback for isolation. Each test starts with a known fixture, mutates freely, and the rollback wipes its state without contaminating the next.
-- **External services** — mock at the typed client interface, not at HTTP. Mocking HTTP forces every test to know your serialization shape; mocking the client lets the test express intent.
-- **Authenticated client** — build a helper that returns a pre-authenticated client for the test's chosen user; don't reinvent the auth flow per-test.
-- **Fixtures** — deterministic seed data, created in setup, cleaned in teardown. No "leftover from a previous run" allowed.
-
-## Flakiness Prevention
-
-Flaky tests erode trust. Follow these rules strictly:
-
-- **Never use fixed sleeps.** `sleep(2)` to "wait for the worker" is always wrong. Poll with a timeout instead.
-- **Poll with a deadline.** For async operations, retry a check until it passes or a deadline expires. Fail with the last observed state, not just "timed out."
-- **Event-driven waiting.** Channels, condition variables, or test hooks beat polling when the runtime supports them — cheaper and more responsive.
-- **Deterministic seeds.** If randomness is involved, seed it explicitly and log the seed so a failure reproduces.
-- **Isolate state per test.** No shared mutable state between test functions.
-- **No ordering assumptions.** Tests must pass in any order, including alphabetic, reverse, and randomized.
-
-## Discipline
-
-Hard-won rules. Violating any of these is how a fast unit suite turns into a multi-minute CI hang.
-
-### Extract pure validators from runners
-
-Any orchestrator that performs I/O — spawns subprocesses, hits the network, calls a code-generation pipeline — MUST delegate argument validation to a pure helper. Tests of the argument logic call ONLY the helper; never the runner.
-
-```
-runX(args):
-  validated, err = validateXArgs(args)   # pure: inputs → normalized values + error
-  if err: return err
-  ... slow I/O follows ...
-```
-
-Test `validateXArgs` from a unit test. Never `runX` — the runner is an integration- or e2e-tier concern.
-
-### Isolate heavy tests behind a tag or marker
-
-Anything that touches subprocesses, network, the filesystem outside a managed temp dir, time-based behavior, or external services belongs behind a tag/marker (Go build tags, pytest marks, Jest projects — whatever your runtime offers) so the default test command runs only fast unit tests with a tight timeout. Heavy tests opt-in.
-
-Tests that hit a **live external dependency** (a real third-party sandbox, a deployed environment, a real credential) go one step further: gate them behind an explicit opt-in env var (e.g. `RUN_LIVE_TESTS=1`) and skip-with-a-reason when it's unset. The default suite stays hermetic and green in CI; the live test runs only when a human (or a dedicated CI job) asks for it. A live test that runs by default is a flaky test waiting to happen and a credential leak waiting to bite.
-
-### Determinism rule
-
-Diagnostics, golden files, and assertions over hash-map data MUST sort keys before formatting or comparing. Map iteration order is non-deterministic in most languages; tests that compare formatted strings against a fixture will flake intermittently. Sort first, format second.
-
-The same applies to any logged diagnostic output you intend to grep in tests.
+- **The DB harness is per-test, not per-suite.** `testkit.NewPostgresDB(t)`
+  applies every `db/migrations/*.up.sql` to a fresh ephemeral database, so a
+  test sees your real schema — including CHECK constraints, FKs and triggers
+  that a fixture struct would not reproduce. `FORGE_TEST_POSTGRES_URL` points it
+  at a server instead of the embedded binary.
+- **Scaffolded CRUD lifecycle tests seed their own FK parents** with
+  deterministic ids, inline in the test. When you add a constraint those rows
+  do not satisfy, the fix is that seed block — it is yours, and forge does not
+  rewrite it.
+- **Mock at the typed client interface, not at HTTP.** Forge generates the
+  former for every interface in a `contract.go`; mocking HTTP instead forces
+  each test to know your serialization shape.
+- **Live external dependencies** belong behind an explicit opt-in env var and a
+  skip-with-reason, so `task test` stays hermetic in CI.
 
 <!-- @forge-only:start -->
 ## Library entry point: `pkg/tdd`
@@ -159,15 +110,19 @@ physically excluded from it (a build tag that is not set means those files are
 never compiled, not skipped at runtime), so they cost nothing until you ask for
 them with `task test:integration` / `task test:e2e`.
 
-## Canonical anti-pattern (real bug — kept here as a warning)
+## The untagged lane has a 120s budget
 
-`TestRunNewKindValidation/empty_becomes_service` originally invoked the full `runNew` pipeline (network, filesystem, subprocesses) from a unit-test file. It hung tests for 99+ seconds and would have stalled CI indefinitely without an external timeout. Fix: extracted `validateNewArgs` (pure, in-memory) and rewrote the test to call only the helper. **If you find yourself writing `runX(cmd, args)` from a `_test.go` file in a unit context, stop and extract the validator first.**
+`TestRunNewKindValidation/empty_becomes_service` once invoked the full `runNew`
+pipeline — network, filesystem, subprocesses — from an untagged test file, and
+hung for 99+ seconds against that budget. Worth knowing because the failure mode
+is a CI stall rather than a red test: an untagged file that reaches for real I/O
+is compiled into the default lane, where nothing skips it.
 
 ## Sub-skills (forge)
 
 - `testing/unit` — hermetic, fast handler-level tests.
 - `testing/integration` — real-DB tests behind `//go:build integration`.
-- `testing/flow` — hand-written multi-entity RPC tests: seed the FK spine with `app.SeedGraph`, drive the real service against a migrated DB, assert the derived result + the negative/gap case.
+- `testing/flow` — hand-written multi-entity RPC tests: seed the FK spine with `seedplan.SeedGraph`, drive the real service against a migrated DB, assert the derived result + the negative/gap case.
 - `testing/e2e` — full-stack flows behind `//go:build e2e`.
 - `testing/patterns` — copy-paste-ready table-driven templates for the four most common test shapes.
 

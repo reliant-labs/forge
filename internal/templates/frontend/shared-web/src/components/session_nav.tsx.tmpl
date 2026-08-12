@@ -1,0 +1,147 @@
+{{if eq .Platform "nextjs"}}"use client";
+
+{{end}}// yours: scaffolded once, never touched again — forge will not overwrite this file
+// SessionNav; owned scaffold. See `forge skill load auth`.
+/**
+ * SessionNav — who is signed in, and a way out. Drop into your header or the
+ * sidebar footer:
+ *
+ *   import { SessionNav } from "@/components/session_nav";
+ *   <header><SessionNav /></header>
+ *
+ * Reads the app's AuthProvider through `useAuth()` — the SAME seam
+ * `providers.tsx` feeds the Connect transport's bearer token from. There is
+ * no second session store and no auth endpoint of its own: what this renders
+ * and what your RPCs send are the same identity by construction.
+ *
+ * Which provider sits behind that seam is decided by CONFIGURATION, in
+ * `selectAuthProvider()` (src/lib/auth/oidc-provider.ts):
+ *
+ *   - with an OIDC issuer + client id configured, the real
+ *     authorization-code + PKCE provider, which redirects to your IdP;
+ *   - otherwise (and always in pure-mock mode) `createSessionAuthProvider()`
+ *     — a fixture session while the mock transport answers, and signed out
+ *     with a first-use warning against a real backend.
+ *
+ * Nothing in this file changes when you configure an IdP: it reads the same
+ * `useAuth()` either way.
+ *
+ * Built from forge's base UI primitives (`Avatar`, `Button`).
+ */
+import { useEffect, useRef, useState } from "react";
+
+import Avatar from "@/components/ui/avatar";
+import Button from "@/components/ui/button";
+import { useAuth } from "@/lib/auth/context";
+
+export function SessionNav() {
+  const { user, isAuthenticated, isLoading, logout } = useAuth();
+
+  // See the isLoading branch below.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => setHydrated(true), []);
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Dismissal, both ways in:
+  //
+  //   - Outside click, decided by CONTAINMENT rather than by a
+  //     stopPropagation guard on the wrapper. A wrapper that swallows every
+  //     click is a <div> pressed into service as a control — no role, no tab
+  //     stop, no keyboard path — and it also eats clicks that anything above
+  //     this component legitimately wants to see.
+  //   - Escape, with focus handed back to the trigger. Click-away alone
+  //     leaves a keyboard user with a menu they can open and not close, and
+  //     closing while focus sits on "Sign out" would otherwise drop focus to
+  //     <body> and lose their place on the page.
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      rootRef.current?.querySelector("button")?.focus();
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const handleSignOut = async () => {
+    setOpen(false);
+    await logout();
+  };
+
+  // The skeleton is CLIENT-ONLY, for the same reason the route guard's gate
+  // is: `isLoading` is a browser fact (the session lives in memory here), so
+  // rendering a placeholder on the client where the server rendered a user —
+  // or vice versa — is a hydration mismatch, and React answers one by
+  // discarding the server tree and mounting a second copy of the whole app.
+  //
+  // Matching the server on the first client render costs one frame of the
+  // signed-out state; getting it wrong cost two of everything.
+  if (hydrated && isLoading) {
+    return (
+      <div className="h-8 w-24 animate-pulse rounded-md bg-surface-muted" />
+    );
+  }
+
+  // Signed out: render NOTHING.
+  //
+  // With an IdP configured the route guard has already redirected this
+  // visitor to sign in, so a "Sign in" button here is unreachable in the
+  // gated app — and where it IS reachable (a public route you added to the
+  // guard's publicPaths), a control in the corner of the chrome is the wrong
+  // way to offer sign-in anyway: link to /auth/sign-in from the page itself,
+  // where you can say why.
+  //
+  // Without an IdP the mock provider reports a signed-in fixture user, so
+  // this branch is not reached there either.
+  if (!isAuthenticated || !user) {
+    return null;
+  }
+
+  return (
+    <div ref={rootRef} className="relative">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen((v) => !v)}
+        // Disclosure, not a menu: the panel below is a text block plus one
+        // button, so aria-expanded is the whole contract. aria-haspopup
+        // would promise a role="menu" that is not there.
+        aria-expanded={open}
+        className="gap-2"
+      >
+        <Avatar size="xs" name={user.name ?? user.email ?? undefined} />
+        <span className="max-w-[12rem] truncate">
+          {user.name ?? user.email ?? "User"}
+        </span>
+      </Button>
+
+      {open ? (
+        <div className="absolute right-0 z-50 mt-1 w-56 rounded-md border border-border bg-surface py-1 shadow-lg">
+          <div className="border-b border-border px-3 py-2 text-xs text-ink-subtle">
+            Signed in as
+            <div className="truncate text-sm font-medium text-ink">
+              {user.email ?? user.id}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="block w-full px-3 py-1.5 text-left text-sm text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+          >
+            Sign out
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}

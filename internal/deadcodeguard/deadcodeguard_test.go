@@ -41,7 +41,7 @@ var quarantine = []quarantined{
 	// NOTE: the four per-service-port entries (config.ComponentConfig.Ports and
 	// PortSpec.Port/.Protocol/.Expose) were REMOVED, not fixed away by accident:
 	// the field, the PrimaryPort() accessor that always returned 0, the
-	// components_gen.json `ports` key nothing populated, and every consumer that
+	// generated `ports` key nothing populated, and every consumer that
 	// read the zero are gone. A port is a deploy fact declared in KCL. See
 	// config.DefaultServePort for the one port fact forge itself knows.
 

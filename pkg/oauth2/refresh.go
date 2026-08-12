@@ -122,10 +122,13 @@ var ErrNoRefreshToken = errors.New("oauth2: refresh token is empty")
 // A provider MAY return a new refresh token, and RFC 6749 §6 says the client
 // MUST then discard the old one. Many providers rotate on EVERY refresh and
 // treat a re-presented old token as theft: they revoke the entire grant, which
-// signs the user out completely rather than merely failing one call. Verified
-// against Logto 1.41.0, which rotates every time and, outside a three-second
-// grace window, answers a replayed token with invalid_grant AND kills the
-// grant — so the newest token dies too.
+// signs the user out completely rather than merely failing one call.
+//
+// Verified against Zitadel v4.16.2 (the IdP forge scaffolds for local dev): it
+// rotates on every refresh and rejects a replayed token IMMEDIATELY, with no
+// grace window — though it revokes only that token, leaving the newest one
+// usable. Providers built on node oidc-provider are harsher and kill the whole
+// grant. Write the client for the harsh case; it is correct under both.
 //
 // This function therefore reports what to present NEXT rather than leaving the
 // caller to infer it. [Refreshed.RefreshToken] is ALWAYS the token to use for

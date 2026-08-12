@@ -5,7 +5,7 @@
 //
 // forge derives ORM/CRUD code by applying a project's migrations to a
 // throwaway "shadow" postgres and introspecting the live schema
-// (internal/schemadef). That needs a server. Historically the ONLY way to
+// (pkg/schemadef). That needs a server. Historically the ONLY way to
 // use a real running server instead of a fragile embedded one was the
 // FORGE_TEST_POSTGRES_URL env var — a TEST-suite variable that leaked into
 // being the production codegen config channel. Because it lived OUTSIDE
@@ -113,23 +113,23 @@ func candidateDSNs(projectDir string) []string {
 }
 
 // dotenvDatabaseURL reads DATABASE_URL from the project's per-env secret
-// dotenv (`.env.<env>` at the project root) — the `dotenv` secret provider
-// deploy/kcl/<env>/main.k declares, and the source of every `sensitive`
-// config field's VALUE. Any error (no file, no key) yields "".
+// store — the provider deploy/kcl/<env>/main.k declares, and the source of
+// every `sensitive` config field's VALUE. Any error (no store, no key)
+// yields "".
 //
-// This is a deliberately small dotenv read (KEY=VALUE, `#` comments,
-// optional `export` prefix and surrounding quotes) rather than a dependency
-// on internal/envutil: shadowdb is imported by the generate pipeline and
-// stays leaf-only, exactly like configDatabaseURL's best-effort text read.
+// Reads the FileSecrets store (secrets/<env>.yaml) with a deliberately
+// small line scan rather than a YAML dependency: shadowdb is imported by
+// the generate pipeline and stays leaf-only, exactly like
+// configDatabaseURL's best-effort text read. Only the flat `KEY: value`
+// shape is understood, which is all this store is.
 func dotenvDatabaseURL(projectDir, env string) string {
-	data, err := os.ReadFile(filepath.Join(projectDir, ".env."+env))
+	data, err := os.ReadFile(filepath.Join(projectDir, "secrets", env+".yaml"))
 	if err != nil {
 		return ""
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		line = strings.TrimPrefix(line, "export ")
-		key, value, ok := strings.Cut(line, "=")
+		key, value, ok := strings.Cut(line, ":")
 		if !ok || strings.TrimSpace(key) != "DATABASE_URL" {
 			continue
 		}

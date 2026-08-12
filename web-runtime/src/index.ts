@@ -42,6 +42,20 @@ export {
   userMessage,
 } from "./errors.js";
 
+/**
+ * Mount-prefix helpers, for the URLs Next.js's router never sees — absolute
+ * URLs handed to external systems that round-trip back into the app.
+ *
+ * Barrel-exported rather than behind a subpath: three string functions with
+ * no imports, so there is no dependency footprint for a subpath to fence off.
+ */
+export {
+  createBasePath,
+  joinBasePath,
+  normalizeBasePath,
+  type BasePathHelpers,
+} from "./basepath.js";
+
 /** W3C trace-context propagation. */
 export {
   freshTraceparent,

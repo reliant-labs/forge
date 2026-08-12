@@ -8,6 +8,8 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"connectrpc.com/connect"
+
 	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
@@ -259,5 +261,86 @@ func TestAuthedContext_WithClaimsReplacesWholesale(t *testing.T) {
 	claims, _ := localClaimsFrom(ctx)
 	if claims.UserID != "only-me" || claims.Email != "" || claims.Role != "" {
 		t.Fatalf("WithClaims must replace the defaults wholesale, got %+v", claims)
+	}
+}
+
+// The two declarations below mirror, exactly, the shapes the generated
+// per-component test harness emits. They exist because both helpers below
+// compiled fine against a hand-written approximation and then FAILED against a
+// real scaffolded project — the approximation used an unnamed func type and a
+// non-variadic Register, and neither difference is visible until a real
+// generated file calls them.
+
+// TestOption mirrors the generated `type TestOption func(*testConfig)`. The
+// NAMED type is the point: Go does not assign []TestOption to
+// []func(*testConfig), so ApplyOptions must accept it via a ~func constraint.
+type harnessOption func(*harnessConfig)
+
+type harnessConfig struct{ n int }
+
+// harnessRegister mirrors a generated service's Register method, which takes
+// variadic connect.HandlerOption alongside the mux.
+func harnessRegister(mux *http.ServeMux, opts ...connect.HandlerOption) {
+	mux.HandleFunc("/probe", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
+}
+
+type harnessClient struct{ baseURL string }
+
+// newHarnessClient mirrors a generated `New<Svc>Client` constructor.
+func newHarnessClient(_ connect.HTTPClient, baseURL string, _ ...connect.ClientOption) harnessClient {
+	return harnessClient{baseURL: baseURL}
+}
+
+func TestApplyOptions_AcceptsANamedOptionType(t *testing.T) {
+	t.Parallel()
+	opts := []harnessOption{
+		func(c *harnessConfig) { c.n++ },
+		func(c *harnessConfig) { c.n += 10 },
+	}
+	got := testkit.ApplyOptions(&harnessConfig{}, opts...)
+	if got.n != 11 {
+		t.Fatalf("options applied in order should yield 11, got %d", got.n)
+	}
+}
+
+// TestApplyOptions_EmptySliceReturnsTheDefaults covers the "caller passed no
+// options" path the way the GENERATED code reaches it: forwarding a possibly
+// empty `opts...` slice, which carries the option type even when it has no
+// elements.
+//
+// Calling testkit.ApplyOptions(cfg) with no variadic argument at all does not
+// compile — there is nothing to infer O from — which is why the helper's doc
+// comment tells callers to forward their slice. Every generated factory does
+// exactly that, so the uninferable spelling never arises in a scaffolded
+// project.
+func TestApplyOptions_EmptySliceReturnsTheDefaults(t *testing.T) {
+	t.Parallel()
+	var none []harnessOption
+	if got := testkit.ApplyOptions(&harnessConfig{n: 7}, none...); got.n != 7 {
+		t.Fatalf("with no options the config must come back untouched, got %d", got.n)
+	}
+}
+
+func TestNewConnectClient_ServesTheRegisteredMuxAndBuildsAClient(t *testing.T) {
+	t.Parallel()
+	srv, client := testkit.NewConnectClient(t, harnessRegister, newHarnessClient)
+
+	// The client is built against the server that is actually serving.
+	if client.baseURL != srv.URL {
+		t.Fatalf("client baseURL = %q, want the test server's %q", client.baseURL, srv.URL)
+	}
+
+	// And register really was mounted — a client pointed at a server with no
+	// handlers would satisfy the URL check above while being useless.
+	resp, err := http.Get(srv.URL + "/probe")
+	if err != nil {
+		t.Fatalf("GET the registered route: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "ok" {
+		t.Fatalf("registered handler did not serve; body = %q", body)
 	}
 }

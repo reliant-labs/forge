@@ -356,16 +356,52 @@ func hasAllowDestructivePragma(content string) bool {
 	return allowDestructivePragmaRe.MatchString(content)
 }
 
+// isAllowedDestructive reports whether file is covered by an
+// allowed_destructive glob from forge.yaml.
+//
+// The linter walks an absolute migrations directory, but an allowlist entry
+// is written the way the author sees the file: usually project-relative
+// (`db/migrations/0007_drop_x.up.sql`), sometimes just the basename, and
+// occasionally a glob over either. filepath.Match has no `**` and anchors at
+// the whole string, so matching the pattern against the absolute path alone
+// silently fails every project-relative entry — the file stays flagged and
+// the error tells the author to add the entry they already wrote.
+//
+// So the pattern is matched against every PATH SUFFIX of the file, taken at
+// separator boundaries: for /repo/db/migrations/x.up.sql that is
+// "db/migrations/x.up.sql", "migrations/x.up.sql" and "x.up.sql", as well as
+// the full absolute path. Suffixes are whole segments, never arbitrary
+// substrings, so an entry still names a real path tail and cannot widen into
+// a partial-name match on a neighbouring migration.
 func isAllowedDestructive(file string, patterns []string) bool {
+	candidates := pathSuffixes(file)
 	for _, pattern := range patterns {
-		if ok, _ := filepath.Match(pattern, filepath.Base(file)); ok {
-			return true
-		}
-		if ok, _ := filepath.Match(pattern, file); ok {
-			return true
+		// Normalize the pattern's separators so an entry written with the
+		// forge.yaml convention (forward slashes) matches on Windows too.
+		pattern = filepath.FromSlash(pattern)
+		for _, candidate := range candidates {
+			if ok, _ := filepath.Match(pattern, candidate); ok {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// pathSuffixes returns file plus every trailing run of its path segments,
+// longest first: /a/b/c.sql → [/a/b/c.sql, a/b/c.sql, b/c.sql, c.sql].
+func pathSuffixes(file string) []string {
+	clean := filepath.Clean(file)
+	sep := string(filepath.Separator)
+	segments := strings.Split(strings.TrimPrefix(clean, sep), sep)
+
+	suffixes := []string{clean}
+	for i := range segments {
+		if suffix := strings.Join(segments[i:], sep); suffix != clean {
+			suffixes = append(suffixes, suffix)
+		}
+	}
+	return suffixes
 }
 
 func firstNonEmpty(values ...string) string {

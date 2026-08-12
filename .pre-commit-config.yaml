@@ -34,6 +34,19 @@ repos:
         files: \.(ts|tsx|js|jsx|json|md|yml|yaml|css)$
         exclude: ^(gen/|.*\.pb\.go$)
 
+  # Compiled binaries do not belong in git: they never diff usefully, they are
+  # large forever, and a Go binary embeds the build machine's absolute paths.
+  # check-added-large-files above is size-only, so a small artifact slips past
+  # it; this detects by content instead.
+  - repo: local
+    hooks:
+      - id: no-committed-binaries
+        name: no committed binaries
+        entry: scripts/check-no-binaries.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+
   # Buf has no first-party pre-commit mirror; invoke its CLI locally.
   # `buf format -d` prints a diff and exits non-zero on any
   # formatting difference — exactly the semantics pre-commit expects.

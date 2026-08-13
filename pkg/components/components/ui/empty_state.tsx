@@ -16,13 +16,13 @@ export default function EmptyState({
   onAction,
 }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-200 bg-white px-6 py-16 text-center">
+    <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-border bg-surface px-6 py-16 text-center">
       {icon ? (
-        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-gray-100 text-gray-400">
+        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-surface-muted text-ink-subtle">
           {icon}
         </div>
       ) : (
-        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-gray-100 text-gray-400">
+        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-surface-muted text-ink-subtle">
           <svg
             className="h-7 w-7"
             fill="none"
@@ -38,12 +38,12 @@ export default function EmptyState({
           </svg>
         </div>
       )}
-      <h3 className="mt-4 text-sm font-semibold text-gray-900">{title}</h3>
-      <p className="mt-1 max-w-sm text-sm text-gray-500">{description}</p>
+      <h3 className="mt-4 text-sm font-semibold text-ink">{title}</h3>
+      <p className="mt-1 max-w-sm text-sm text-ink-muted">{description}</p>
       {actionLabel && onAction && (
         <button
           onClick={onAction}
-          className="mt-6 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+          className="mt-6 inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent shadow-sm transition hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
         >
           <svg
             className="h-4 w-4"

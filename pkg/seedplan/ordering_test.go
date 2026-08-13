@@ -492,3 +492,68 @@ func TestMaterialize_TwoColumnCheckOnRealPostgres(t *testing.T) {
 		t.Errorf("prescriptions holds %d row(s), want 10 — a table skipped is the other way to fail this", n)
 	}
 }
+
+// A DERIVED column — `total = subtotal + tax` — is not an ordering edge and
+// forge's placement cannot satisfy it: three independently placed values make
+// the equality true only by coincidence. That much was already correct.
+//
+// What was missing is the REMEDY. The generic refusal ("not a two-column
+// ordering comparison") describes the parser, not the author's mistake, and
+// two measured forge-one-shot runs both read it and went looking for a
+// seeding workaround — one hand-wrote 192 lines of CRUD override to maintain
+// the column — when postgres will maintain it outright and forge already
+// skips GENERATED columns when seeding.
+//
+// So this asserts the warning NAMES the derived column and the declaration
+// that fixes it. Without the derivation detector it fails on both counts.
+func TestOrdering_DerivedColumnWarningNamesGeneratedAlways(t *testing.T) {
+	table := schemadef.Table{
+		Name:   "estimates",
+		PKCols: []string{"id"},
+		Columns: []schemadef.Column{
+			idCol(), intCol("subtotal_cents"), intCol("tax_cents"), intCol("total_cents"),
+		},
+		Checks: []schemadef.CheckConstraint{
+			// Verbatim shape from the measured runs, as postgres renders it.
+			check("estimates_total_is_subtotal_plus_tax",
+				"CHECK ((total_cents = (subtotal_cents + tax_cents)))",
+				"total_cents", "subtotal_cents", "tax_cents"),
+		},
+	}
+	p := planFor(t, table, 5)
+	warns := p.Warnings()
+	if len(warns) == 0 {
+		t.Fatal("a derivation forge cannot place must still warn — silence here is the false green")
+	}
+	joined := strings.Join(warns, "\n  ")
+	for _, want := range []string{
+		"total_cents",         // WHICH column is derived
+		"GENERATED ALWAYS AS", // the declaration that fixes it
+		"forge:computed",      // the escape hatch for cross-ROW derivations
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the warning must mention %q so the author can act on it; got:\n  %s", want, joined)
+		}
+	}
+}
+
+// The guard on the above: a plain column-to-column equality states an
+// invariant, not a derivation, and must NOT be told to become a GENERATED
+// column — nothing computes it from anything.
+func TestOrdering_PlainEqualityIsNotReportedAsDerivation(t *testing.T) {
+	table := schemadef.Table{
+		Name:   "transfers",
+		PKCols: []string{"id"},
+		Columns: []schemadef.Column{
+			idCol(), intCol("debit_cents"), intCol("credit_cents"),
+		},
+		Checks: []schemadef.CheckConstraint{
+			check("transfers_balanced", "CHECK ((debit_cents = credit_cents))",
+				"debit_cents", "credit_cents"),
+		},
+	}
+	p := planFor(t, table, 5)
+	if joined := strings.Join(p.Warnings(), "\n  "); strings.Contains(joined, "GENERATED ALWAYS AS") {
+		t.Errorf("a plain equality is an invariant, not a derivation — it has no expression to generate from; got:\n  %s", joined)
+	}
+}

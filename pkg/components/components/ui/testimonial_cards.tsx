@@ -17,7 +17,7 @@ function StarRating({ rating }: { rating: number }) {
         <svg
           key={i}
           className={`h-4 w-4 ${
-            i < rating ? "text-amber-400" : "text-gray-200"
+            i < rating ? "text-warning" : "text-ink-subtle"
           }`}
           viewBox="0 0 20 20"
           fill="currentColor"
@@ -37,7 +37,7 @@ export default function TestimonialCards({
       {testimonials.map((t) => (
         <div
           key={t.name}
-          className="flex flex-col rounded-2xl border border-gray-200 bg-white p-6"
+          className="flex flex-col rounded-2xl border border-border bg-surface p-6"
         >
           {t.rating != null && (
             <div className="mb-4">
@@ -45,12 +45,12 @@ export default function TestimonialCards({
             </div>
           )}
 
-          <blockquote className="flex-1 text-gray-700 leading-relaxed">
+          <blockquote className="flex-1 text-ink-muted leading-relaxed">
             &ldquo;{t.quote}&rdquo;
           </blockquote>
 
-          <div className="mt-6 flex items-center gap-3 border-t border-gray-100 pt-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-sm font-semibold text-gray-600">
+          <div className="mt-6 flex items-center gap-3 border-t border-border pt-4">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-muted text-sm font-semibold text-ink-muted">
               {t.name
                 .split(" ")
                 .map((n) => n[0])
@@ -58,8 +58,8 @@ export default function TestimonialCards({
                 .slice(0, 2)}
             </div>
             <div>
-              <p className="text-sm font-semibold text-gray-900">{t.name}</p>
-              <p className="text-xs text-gray-500">
+              <p className="text-sm font-semibold text-ink">{t.name}</p>
+              <p className="text-xs text-ink-muted">
                 {t.role}
                 {t.company && <>, {t.company}</>}
               </p>

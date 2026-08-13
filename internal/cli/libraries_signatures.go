@@ -470,8 +470,12 @@ func parseSignatureSelectors(list string, pkgs []LibrarySpec) (map[string]map[st
 		item = strings.TrimPrefix(item, forgePkgModule+"/")
 		pkg, symbol, _ := strings.Cut(item, ".")
 		if !known[pkg] {
+			// Named without a flag prefix: the selector now arrives
+			// positionally far more often than through --signatures, and an
+			// error that quotes a flag the caller never typed reads as a bug
+			// in forge rather than a typo in the argument.
 			return nil, fmt.Errorf(
-				"--signatures: %s is not a forge/pkg package\nAvailable: %s\nUse `all` for every package, or `<pkg>.<Symbol>` for one declaration",
+				"%s is not a forge/pkg package\nAvailable: %s\nUse `all` for every package, or `<pkg>.<Symbol>` for one declaration",
 				pkg, strings.Join(names, ", "))
 		}
 		if _, seen := out[pkg]; !seen {
@@ -517,7 +521,7 @@ func filterSymbols(pkg string, syms []LibrarySymbol, want map[string]bool) ([]Li
 			}
 		}
 		return nil, fmt.Errorf(
-			"--signatures: %s exports no %s\nIt exports: %s",
+			"%s exports no %s\nIt exports: %s",
 			forgePkgModule+"/"+pkg, name, strings.Join(exported, ", "))
 	}
 	return out, nil

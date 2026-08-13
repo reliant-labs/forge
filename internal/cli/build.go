@@ -699,8 +699,8 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 	dockerFrontends := frontends
 	skipProjectDocker := false
 	if entities != nil {
-		dockerFrontends = nil
-		if !kclHasClusterService(entities) {
+		dockerFrontends = kclImageFrontends(frontends, entities)
+		if !kclHasClusterService(entities) && !kclHasClusterFrontend(entities) {
 			skipProjectDocker = true
 		}
 	}
@@ -1786,6 +1786,50 @@ func summarizeKCLBuildPlan(e *KCLEntities) {
 		}
 		fmt.Printf("[build]   Frontends (skip docker): %s\n", strings.Join(names, ", "))
 	}
+}
+
+// kclHasClusterFrontend reports whether the entity set contains at least
+// one FRONTEND with deploy.Type == "cluster" — a frontend that ships as a
+// container image and renders a Deployment, rather than deploying to
+// Firebase Hosting or being dev-served only.
+func kclHasClusterFrontend(e *KCLEntities) bool {
+	for _, f := range e.Frontends {
+		if f.Deploy != nil && f.Deploy.Type == "cluster" {
+			return true
+		}
+	}
+	return false
+}
+
+// kclImageFrontends filters the configured frontends down to the ones that
+// need a docker image built: those whose KCL declares a deploy target that
+// SHIPS AN IMAGE (today, cluster). A Firebase-hosted frontend produces a
+// static export deployed by the Firebase provider, and a frontend with no
+// deploy block is dev-served only — neither needs an image, which is why
+// this list was previously always empty under a KCL render.
+//
+// Matching is by NAME against the rendered entities, so a frontend present
+// in forge.yaml but absent from this env's KCL correctly gets no image.
+func kclImageFrontends(frontends []config.FrontendConfig, e *KCLEntities) []config.FrontendConfig {
+	if e == nil {
+		return nil
+	}
+	wanted := make(map[string]bool, len(e.Frontends))
+	for _, f := range e.Frontends {
+		if f.Deploy != nil && f.Deploy.Type == "cluster" {
+			wanted[f.Name] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	var out []config.FrontendConfig
+	for _, fe := range frontends {
+		if wanted[fe.Name] {
+			out = append(out, fe)
+		}
+	}
+	return out
 }
 
 // kclHasClusterService reports whether the entity set contains at least

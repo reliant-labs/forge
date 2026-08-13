@@ -56,15 +56,15 @@ export default function CrudForm({
   return (
     <form
       onSubmit={handleSubmit}
-      className="overflow-hidden rounded-xl border border-gray-200 bg-white"
+      className="overflow-hidden rounded-xl border border-border bg-surface"
     >
       {(title || description) && (
-        <div className="border-b border-gray-200 px-6 py-4">
+        <div className="border-b border-border px-6 py-4">
           {title && (
-            <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+            <h2 className="text-lg font-semibold text-ink">{title}</h2>
           )}
           {description && (
-            <p className="mt-1 text-sm text-gray-500">{description}</p>
+            <p className="mt-1 text-sm text-ink-muted">{description}</p>
           )}
         </div>
       )}
@@ -75,8 +75,8 @@ export default function CrudForm({
           const baseInput =
             "block w-full rounded-lg border px-3 py-2 text-sm shadow-sm transition focus:outline-none focus:ring-1";
           const inputClass = error
-            ? `${baseInput} border-red-300 focus:border-red-500 focus:ring-red-500`
-            : `${baseInput} border-gray-300 focus:border-blue-500 focus:ring-blue-500`;
+            ? `${baseInput} border-danger-border focus:border-danger-border focus:ring-danger`
+            : `${baseInput} border-border-strong focus:border-accent-border focus:ring-accent`;
 
           if (field.type === "checkbox") {
             return (
@@ -86,17 +86,17 @@ export default function CrudForm({
                   id={field.name}
                   checked={Boolean(values[field.name])}
                   onChange={(e) => handleChange(field.name, e.target.checked)}
-                  className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  className="mt-1 h-4 w-4 rounded border-border-strong text-accent focus:ring-accent"
                 />
                 <div>
                   <label
                     htmlFor={field.name}
-                    className="text-sm font-medium text-gray-700"
+                    className="text-sm font-medium text-ink-muted"
                   >
                     {field.label}
                   </label>
                   {field.helpText && (
-                    <p className="text-xs text-gray-500">{field.helpText}</p>
+                    <p className="text-xs text-ink-muted">{field.helpText}</p>
                   )}
                 </div>
               </div>
@@ -107,11 +107,11 @@ export default function CrudForm({
             <div key={field.name}>
               <label
                 htmlFor={field.name}
-                className="mb-1 block text-sm font-medium text-gray-700"
+                className="mb-1 block text-sm font-medium text-ink-muted"
               >
                 {field.label}
                 {field.required && (
-                  <span className="ml-0.5 text-red-500">*</span>
+                  <span className="ml-0.5 text-danger">*</span>
                 )}
               </label>
 
@@ -162,10 +162,10 @@ export default function CrudForm({
               )}
 
               {field.helpText && !error && (
-                <p className="mt-1 text-xs text-gray-500">{field.helpText}</p>
+                <p className="mt-1 text-xs text-ink-muted">{field.helpText}</p>
               )}
               {error && (
-                <p className="mt-1 text-xs text-red-600">{error}</p>
+                <p className="mt-1 text-xs text-danger">{error}</p>
               )}
             </div>
           );
@@ -173,13 +173,13 @@ export default function CrudForm({
       </div>
 
       {/* Actions */}
-      <div className="flex items-center justify-end gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4">
+      <div className="flex items-center justify-end gap-3 border-t border-border bg-surface-muted px-6 py-4">
         {onCancel && (
           <button
             type="button"
             onClick={onCancel}
             disabled={loading}
-            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-50 disabled:opacity-50"
+            className="rounded-lg border border-border-strong bg-surface px-4 py-2 text-sm font-medium text-ink-muted shadow-sm transition hover:bg-surface-muted disabled:opacity-50"
           >
             Cancel
           </button>
@@ -187,7 +187,7 @@ export default function CrudForm({
         <button
           type="submit"
           disabled={loading}
-          className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent shadow-sm transition hover:bg-accent-hover disabled:opacity-50"
         >
           {loading && (
             <svg

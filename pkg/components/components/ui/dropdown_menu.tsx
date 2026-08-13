@@ -42,30 +42,36 @@ export default function DropdownMenu({ trigger, groups, align = "right" }: Dropd
 
   return (
     <div className="relative inline-block" ref={ref}>
-      <div onClick={() => setOpen(!open)} className="cursor-pointer">
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className="cursor-pointer"
+      >
         {trigger}
-      </div>
+      </button>
       {open && (
         <div
-          className={`absolute z-50 mt-1 min-w-[200px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg ${
+          className={`absolute z-50 mt-1 min-w-[200px] rounded-lg border border-border bg-surface py-1 shadow-lg ${
             align === "right" ? "right-0" : "left-0"
           }`}
         >
           {groups.map((group, gi) => (
             <div key={gi}>
-              {gi > 0 && <div className="my-1 border-t border-gray-100" />}
+              {gi > 0 && <div className="my-1 border-t border-border" />}
               {group.label && (
-                <div className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                <div className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-ink-subtle">
                   {group.label}
                 </div>
               )}
               {group.items.map((item, ii) => {
                 const baseStyle = `flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors ${
                   item.disabled
-                    ? "cursor-not-allowed text-gray-300"
+                    ? "cursor-not-allowed text-ink-subtle"
                     : item.variant === "danger"
-                      ? "text-red-600 hover:bg-red-50"
-                      : "text-gray-700 hover:bg-gray-50"
+                      ? "text-danger hover:bg-danger-surface"
+                      : "text-ink-muted hover:bg-surface-muted"
                 }`;
 
                 if (item.href) {

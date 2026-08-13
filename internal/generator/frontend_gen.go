@@ -399,6 +399,27 @@ var coreComponents = []string{
 	"toast_notification",
 	"key_value_list",
 	"login_form",
+
+	// Shapes every CRUD frontend reaches for, added because a measured build
+	// hand-wrote them WHILE the library copies sat one `component_library get`
+	// away. Three separate sub-agents fetched `empty_state` and all three
+	// wrote their own; a fourth fetched `stat_grid` and wrote a StatCard.
+	//
+	// The old reason was cost, not ignorance: the library shipped hardcoded
+	// palette classes, so installing one meant re-theming every className.
+	// That is fixed at the source, and shipping these in the scaffold closes
+	// the rest of the gap — an installed file is edited, a fetched snippet is
+	// reimplemented.
+	//
+	// Anything domain-SHAPED (kanban, funnel, gantt) stays in the library on
+	// purpose: a scaffolded file nobody deletes is worse than an uninstalled
+	// one, because it lives in the tree, in review, and in every grep.
+	"empty_state",
+	"stat_grid",
+	"metric_card",
+	"filter_bar",
+	"confirmation_dialog",
+	"data_table",
 }
 
 // installCoreComponents writes core UI components from the component library

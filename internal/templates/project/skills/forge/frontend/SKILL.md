@@ -34,19 +34,22 @@ forge component list             # the whole catalog, grouped by category
 forge component install card_grid
 ```
 
-**What is already in `src/components/ui/` is not the catalog** — it is the 25 the scaffold auto-installs. The other 49 arrive only via `forge component install`. Reading the directory and concluding the library is exhausted is the failure mode; search instead.
+**What is already in `src/components/ui/` is not the catalog** — it is the 31 the scaffold auto-installs. The rest arrive only via `forge component install`. Reading the directory and concluding the library is exhausted is the failure mode; search instead.
 
-Reach for these before writing markup yourself:
+**Every component already uses this project's theme tokens** (`ink`, `surface`, `border`, `accent`, `danger`, `success`, `warning` and their `-surface`/`-border`/`-ink` variants), so installing one never means re-theming it. A raw palette class like `bg-blue-600` in a component is a forge bug to report — not a reason to hand-write your own.
 
-| About to build | Install instead |
+Reach for these before writing markup yourself. **✓ already ships in `src/components/ui/`** — import it, do not rebuild it; the rest are one `forge component install` away:
+
+| About to build | Use |
 |---|---|
-| A stat / KPI block | `stat_grid`, `metric_card` |
-| "No results yet" copy | `empty_state` |
-| A destructive-action prompt | `confirmation_dialog` |
-| A sortable/dense table | `data_table` |
+| A stat / KPI block | ✓ `stat_grid`, ✓ `metric_card` |
+| "No results yet" copy | ✓ `empty_state` |
+| A destructive-action prompt | ✓ `confirmation_dialog` |
+| A sortable/dense table | ✓ `data_table` |
+| A filter/search bar for a list page | ✓ `filter_bar` |
 | A board, timeline, tile grid | `kanban_board`, `timeline`, `card_grid` |
 | A conversion / stage funnel | `funnel_chart` |
-| A dropdown, breadcrumb, toggle, filter bar | `dropdown_menu`, `breadcrumb`, `toggle_switch`, `filter_bar` |
+| A dropdown, breadcrumb, toggle | `dropdown_menu`, `breadcrumb`, `toggle_switch` |
 
 A search that returns nothing is a real answer: there is no drawer/sheet or quantity-stepper, so those you write yourself. (The `component_library` MCP tool is the same catalog.)
 

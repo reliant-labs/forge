@@ -176,9 +176,9 @@ export default function ConcentricCircles({
                 backgroundColor: hexToRgba(accentColor, opacityForRing(i) + 0.3),
               }}
             />
-            <span className="text-white font-semibold">{ring.label}</span>
-            <span className="text-slate-400">{ring.value}</span>
-            <span className="text-slate-500">— {ring.description}</span>
+            <span className="text-on-accent font-semibold">{ring.label}</span>
+            <span className="text-ink-subtle">{ring.value}</span>
+            <span className="text-ink-muted">— {ring.description}</span>
           </div>
         ))}
       </div>

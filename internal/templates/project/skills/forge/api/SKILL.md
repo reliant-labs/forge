@@ -53,7 +53,11 @@ This delegates to a `Things` domain package; a simpler RPC would query `s.deps.R
 
 ## Error mapping — use `svcerr`, do NOT hand-roll a helper
 
-Every handler uses `svcerr.Wrap(err)` from `github.com/reliant-labs/forge/pkg/svcerr`. The library owns the service-error → connect-error mapping; do **not** re-implement it per service. It handles three cases:
+Every handler uses `svcerr.Wrap(err)` from `github.com/reliant-labs/forge/pkg/svcerr`. The library owns the service-error → connect-error mapping; do **not** re-implement it per service.
+
+> **Need a signature from a `forge/pkg` library?** `forge project libraries svcerr` prints its full exported API — several packages at once, e.g. `forge project libraries svcerr crud orm`. Do **not** grep forge's source tree for it, and do not use bare `go doc <pkg>`: that renders a struct as `struct{ ... }` with no methods, which is why a measured run grepped `pkg/crud/repo.go` fourteen times for one signature.
+
+It handles three cases:
 
 | input | result |
 |---|---|

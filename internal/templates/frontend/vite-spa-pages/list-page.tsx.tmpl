@@ -61,8 +61,11 @@ const PAGE_SIZE = 25;
 
 // ---- Typed columns ----
 // One entry per renderable proto field, type-checked against {{.EntityName}}.
+// The id and the created/updated timestamps are deliberately NOT here — the row
+// already links to the detail page, which is where they belong. Add one back if
+// this list needs it; this file is yours.
 const columns: ResourceColumn<{{.EntityName}}>[] = [
-{{- range .Columns}}
+{{- range .ListColumns}}
   {
     header: "{{.Label}}",
 {{- if .IsBadge}}

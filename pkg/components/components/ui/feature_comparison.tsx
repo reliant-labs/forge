@@ -14,7 +14,7 @@ interface FeatureComparisonProps {
 function CheckIcon() {
   return (
     <svg
-      className="mx-auto h-5 w-5 text-green-500"
+      className="mx-auto h-5 w-5 text-success"
       viewBox="0 0 20 20"
       fill="currentColor"
     >
@@ -30,7 +30,7 @@ function CheckIcon() {
 function CrossIcon() {
   return (
     <svg
-      className="mx-auto h-5 w-5 text-gray-300"
+      className="mx-auto h-5 w-5 text-ink-subtle"
       viewBox="0 0 20 20"
       fill="currentColor"
     >
@@ -50,18 +50,18 @@ export default function FeatureComparison({
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[600px] border-collapse text-sm">
-        <thead className="sticky top-0 z-10 bg-white">
+        <thead className="sticky top-0 z-10 bg-surface">
           <tr>
-            <th className="border-b border-gray-200 py-4 pr-4 text-left font-medium text-gray-500">
+            <th className="border-b border-border py-4 pr-4 text-left font-medium text-ink-muted">
               Feature
             </th>
             {products.map((product) => (
               <th
                 key={product.name}
-                className={`border-b border-gray-200 px-4 py-4 text-center font-semibold ${
+                className={`border-b border-border px-4 py-4 text-center font-semibold ${
                   product.highlight
-                    ? "bg-blue-50 text-blue-700"
-                    : "text-gray-900"
+                    ? "bg-accent-surface text-accent-ink"
+                    : "text-ink"
                 }`}
               >
                 {product.name}
@@ -75,21 +75,21 @@ export default function FeatureComparison({
               <tr>
                 <td
                   colSpan={products.length + 1}
-                  className="border-b border-gray-100 bg-gray-50 px-0 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500"
+                  className="border-b border-border bg-surface-muted px-0 py-3 text-xs font-semibold uppercase tracking-wider text-ink-muted"
                 >
                   {group.name}
                 </td>
               </tr>
               {group.features.map((feature) => (
                 <tr key={feature.name} className="group">
-                  <td className="border-b border-gray-100 py-3 pr-4 text-gray-700 group-hover:bg-gray-50">
+                  <td className="border-b border-border py-3 pr-4 text-ink-muted group-hover:bg-surface-muted">
                     {feature.name}
                   </td>
                   {feature.values.map((value, i) => (
                     <td
                       key={i}
-                      className={`border-b border-gray-100 px-4 py-3 text-center group-hover:bg-gray-50 ${
-                        products[i]?.highlight ? "bg-blue-50/50" : ""
+                      className={`border-b border-border px-4 py-3 text-center group-hover:bg-surface-muted ${
+                        products[i]?.highlight ? "bg-accent-surface/50" : ""
                       }`}
                     >
                       {typeof value === "boolean" ? (
@@ -99,7 +99,7 @@ export default function FeatureComparison({
                           <CrossIcon />
                         )
                       ) : (
-                        <span className="text-gray-700">{value}</span>
+                        <span className="text-ink-muted">{value}</span>
                       )}
                     </td>
                   ))}

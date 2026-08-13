@@ -17,7 +17,7 @@ export default function Masonry({ items, columns = 3 }: MasonryProps) {
       {items.map((item, i) => (
         <div
           key={i}
-          className={`mb-4 break-inside-avoid rounded-xl border border-gray-200 bg-white p-5 ${
+          className={`mb-4 break-inside-avoid rounded-xl border border-border bg-surface p-5 ${
             item.span === 2 ? "sm:col-span-2" : ""
           }`}
         >

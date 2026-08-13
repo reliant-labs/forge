@@ -14,10 +14,10 @@ export default function NavigationHeader({
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
-    <header className="border-b border-gray-200 bg-white">
+    <header className="border-b border-border bg-surface">
       <nav className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
         {/* Brand */}
-        <div className="text-lg font-bold text-gray-900">{brand}</div>
+        <div className="text-lg font-bold text-ink">{brand}</div>
 
         {/* Desktop links */}
         <div className="hidden items-center gap-8 md:flex">
@@ -27,8 +27,8 @@ export default function NavigationHeader({
               href={link.href}
               className={`text-sm font-medium transition ${
                 link.active
-                  ? "text-blue-600"
-                  : "text-gray-600 hover:text-gray-900"
+                  ? "text-accent"
+                  : "text-ink-muted hover:text-ink"
               }`}
             >
               {link.label}
@@ -37,7 +37,7 @@ export default function NavigationHeader({
           {cta && (
             <a
               href={cta.href}
-              className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-600"
+              className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-on-accent transition hover:bg-accent"
             >
               {cta.label}
             </a>
@@ -47,7 +47,7 @@ export default function NavigationHeader({
         {/* Mobile hamburger */}
         <button
           type="button"
-          className="inline-flex items-center justify-center rounded-md p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700 md:hidden"
+          className="inline-flex items-center justify-center rounded-md p-2 text-ink-muted hover:bg-surface-muted hover:text-ink-muted md:hidden"
           onClick={() => setMenuOpen(!menuOpen)}
           aria-expanded={menuOpen}
           aria-label="Toggle menu"
@@ -86,7 +86,7 @@ export default function NavigationHeader({
 
       {/* Mobile menu */}
       {menuOpen && (
-        <div className="border-t border-gray-100 px-4 pb-4 pt-2 md:hidden">
+        <div className="border-t border-border px-4 pb-4 pt-2 md:hidden">
           <div className="flex flex-col gap-1">
             {links.map((link) => (
               <a
@@ -94,8 +94,8 @@ export default function NavigationHeader({
                 href={link.href}
                 className={`rounded-lg px-3 py-2 text-sm font-medium ${
                   link.active
-                    ? "bg-blue-50 text-blue-600"
-                    : "text-gray-700 hover:bg-gray-50"
+                    ? "bg-accent-surface text-accent"
+                    : "text-ink-muted hover:bg-surface-muted"
                 }`}
               >
                 {link.label}
@@ -104,7 +104,7 @@ export default function NavigationHeader({
             {cta && (
               <a
                 href={cta.href}
-                className="mt-2 rounded-lg bg-blue-500 px-3 py-2 text-center text-sm font-semibold text-white hover:bg-blue-600"
+                className="mt-2 rounded-lg bg-accent px-3 py-2 text-center text-sm font-semibold text-on-accent hover:bg-accent"
               >
                 {cta.label}
               </a>

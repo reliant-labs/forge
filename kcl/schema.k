@@ -2116,10 +2116,26 @@ schema Frontend:
       * rn     — React Native; no in-cluster deploy.
 
     The optional `deploy` block declares a first-class production deploy
-    target the same way Service.deploy does. Today the only variant is
-    FirebaseHosting (static export → Firebase Hosting). Omit `deploy`
-    to keep the legacy behaviour — the frontend is dev-served / built
-    only, never auto-shipped by `forge env deploy`.
+    target the same way Service.deploy does:
+
+      * FirebaseHosting — static export → Firebase Hosting (public CDN).
+      * K8sCluster      — ships as a container image and runs as an
+                          in-cluster Deployment + Service, exactly like a
+                          forge.Service. Use for a frontend that must NOT
+                          be publicly hosted (an internal operator
+                          console), or for a server-rendered Next.js app
+                          that needs a running Node process rather than a
+                          static export.
+
+    Omit `deploy` to keep the legacy behaviour — the frontend is
+    dev-served / built only, never auto-shipped by `forge env deploy`.
+
+    A K8sCluster frontend needs a Dockerfile at `path` (Next.js: set
+    `output: "standalone"`), and its `port` is the container port the
+    Service targets. It is NOT exposed publicly by virtue of being
+    deployed: like any workload, reachability is whatever the project's
+    ingress (HTTPRoute/Gateway) and NetworkPolicies say — declare no route
+    and it is reachable only in-cluster / via `kubectl port-forward`.
     """
     name: str
     type: str = "nextjs"
@@ -2143,7 +2159,7 @@ schema Frontend:
     # same variable (forge warns). Additive — omit for the legacy
     # env_vars-only shape. See FrontendConfig.
     config?: FrontendConfig
-    deploy?: FirebaseHosting
+    deploy?: FirebaseHosting | K8sCluster
 
     check:
         name, "Frontend.name is required"

@@ -127,6 +127,15 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 			return fmt.Errorf("generate ORM for entity %s: %w", ent.Name, err)
 		}
 	}
+
+	// The interface shape of everything just written. Emitted from the SAME
+	// entity slice as the delegates above, so the two cannot describe
+	// different schemas — and carrying compile-time assertions, so a drift
+	// between a delegate and its interface fails at generate time rather
+	// than in a user's package.
+	if err := writeStoreInterfaces(root, entities, cs); err != nil {
+		return fmt.Errorf("generate store interfaces: %w", err)
+	}
 	return nil
 }
 

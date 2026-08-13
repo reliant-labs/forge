@@ -29,6 +29,7 @@ func newProjectCmd() *cobra.Command {
 	cmd.AddCommand(newMigrateCmd())
 	cmd.AddCommand(newUpgradeCmd())
 	cmd.AddCommand(newMapCmd())
+	cmd.AddCommand(newShapesCmd())
 	cmd.AddCommand(newGraphCmd())
 	cmd.AddCommand(newIntrospectCmd())
 	cmd.AddCommand(newFeaturesCmd())

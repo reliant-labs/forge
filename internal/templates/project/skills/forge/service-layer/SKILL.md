@@ -57,6 +57,66 @@ type thingReader interface {
 }
 ```
 
+### Persistence: use the GENERATED store, don't hand-write an adapter
+
+The rule above is about interfaces you own. **Do not apply it by hand-writing a
+Store interface plus a passthrough adapter over the ORM** — forge generates
+both, per entity and in aggregate, in `internal/db/store_gen.go`:
+
+```go
+type Deps struct {
+    Estimates db.EstimateStore   // one entity
+    DB        db.Store           // or the aggregate, when a service spans tables
+}
+
+est, err := s.deps.Estimates.GetEstimateByID(ctx, id)   // no handle to thread
+```
+
+`forge generate` resolves each by type from the ORM client it already owns — **no Infra field, no constructor, nothing to wire.** Just declare the field. The store
+holds the database handle, so a method takes only your arguments. Prefer the
+narrowest that works — a smaller dep is a smaller fake.
+
+To see the methods available on one, ask your own package — `go doc
+./internal/db EstimateStore`, or `forge project shapes --kind store` for the
+list. Both answer from the file generated for *your* schema. Reading forge's
+generator source instead is a detour that cost one measured run 11 turns.
+
+**Two questions, two commands — neither is a grep.**
+
+| you want | run |
+|---|---|
+| what YOUR generated code offers (stores, RPCs, handlers, tables) | `forge project shapes --grep Estimate` |
+| what a `forge/pkg` LIBRARY offers (`orm`, `crud`, `svcerr`, `tdd`, `testkit`) | `forge project libraries orm crud` |
+
+`forge project libraries orm` answers `RunTransaction` — a symbol one measured
+run grepped for **sixteen times** while the skill documenting it was already
+loaded. Bare `go doc <pkg>` does not: it prints a struct as `struct{ ... }` with
+no methods. `go doc <pkg> <Type>` does work if you already know the type name.
+
+The aggregate exposes one accessor per entity, and either form rebinds to a
+transaction with `WithTx`, so a multi-step use case commits as a unit:
+
+```go
+err := client.RunTransaction(ctx, func(tx orm.Context) error {
+    s := deps.DB.WithTx(tx)
+    if err := s.Estimates().UpdateEstimate(ctx, est); err != nil {
+        return err
+    }
+    return s.Jobs().CreateJob(ctx, job)
+})
+```
+
+Two measured runs missed this and hand-wrote the layer anyway: 723 lines across
+four packages in one, 464 across two in the other, almost all of it one-line
+passthroughs like `return db.GetEstimateByID(ctx, s.db, id)`. If you find
+yourself writing that method, stop and use the generated store.
+
+**A query the generated CRUD cannot express** — a join, an aggregate, a CTE,
+raw SQL — goes in that entity's `internal/db/<entity>_repo_ext.go` seam, which
+is scaffolded once and never regenerated. Declare a narrow consumer-side
+interface for it (the rule above applies again here) rather than expecting it on
+the generated store, which is regenerated and would go stale against it.
+
 ## The implementation
 
 Behind the interface, the implementation type is unexported. Construction goes through a constructor that returns the interface.

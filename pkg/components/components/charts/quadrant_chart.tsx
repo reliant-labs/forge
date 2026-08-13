@@ -85,7 +85,7 @@ export default function QuadrantChart({
   return (
     <div className="inline-block" style={{ width }}>
       {title && (
-        <h3 className="text-lg font-semibold text-white mb-2 text-center">
+        <h3 className="text-lg font-semibold text-on-accent mb-2 text-center">
           {title}
         </h3>
       )}

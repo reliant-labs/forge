@@ -445,7 +445,49 @@ func IsDevBuild() bool {
 			break
 		}
 	}
+
+	// EMBEDDED forge: when forge runs inside a host binary (`reliant forge …`),
+	// info.Main describes the HOST, not forge. Classifying on the host asks the
+	// wrong question — a dirty reliant that consumes a TAGGED forge would be
+	// called a dev forge and write a local-forge go.work bridge into every
+	// scaffold, pointing at a checkout the user never asked it to use.
+	//
+	// The honest signal is how FORGE ITSELF resolved in that build, which is
+	// exactly what the dep entry records:
+	//
+	//	mod  github.com/reliant-labs/reliant  v1.5.1-…+dirty   ← host, dirty
+	//	dep  github.com/reliant-labs/forge    v0.0.3           ← forge, tagged
+	//
+	// A dep carrying a directory Replace is a local checkout (the sibling-repo
+	// loop) and stays dev; a dep at a clean tag is a release even when the host
+	// tree is filthy. The host's vcs.modified is deliberately NOT consulted
+	// here: it describes the host's working tree, and forge's own bytes came
+	// from the module cache regardless of what the host has edited.
+	if forgeDep, embedded := forgeModuleDep(info); embedded {
+		if forgeDep.Replace != nil {
+			// Replaced by a local directory → the developer IS iterating on
+			// forge. A replacement carrying a version is still a module.
+			return forgeDep.Replace.Version == ""
+		}
+		return isDevBuildFrom(forgeDep.Version, false)
+	}
+
 	return isDevBuildFrom(info.Main.Version, vcsModified)
+}
+
+// forgeModuleDep returns forge's own entry in a host binary's dependency graph.
+// embedded is false when forge IS the main module (the standalone `forge`
+// binary), in which case the caller classifies on info.Main as before.
+func forgeModuleDep(info *debug.BuildInfo) (*debug.Module, bool) {
+	if info.Main.Path == forgeModulePath {
+		return nil, false
+	}
+	for _, dep := range info.Deps {
+		if dep != nil && dep.Path == forgeModulePath {
+			return dep, true
+		}
+	}
+	return nil, false
 }
 
 // isDevBuildFrom is the pure decision behind IsDevBuild, split out so the

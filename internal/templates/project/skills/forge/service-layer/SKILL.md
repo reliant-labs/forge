@@ -94,17 +94,30 @@ loaded. Bare `go doc <pkg>` does not: it prints a struct as `struct{ ... }` with
 no methods. `go doc <pkg> <Type>` does work if you already know the type name.
 
 The aggregate exposes one accessor per entity, and either form rebinds to a
-transaction with `WithTx`, so a multi-step use case commits as a unit:
+transaction with `WithTx`, so a multi-step use case commits as a unit.
+
+**`RunTransaction` is on the ORM CLIENT, not on the store.** The store is the
+data surface; the client owns the transaction. Declare both when a use case
+spans entities — a measured run grepped for `RunTransaction` **sixteen times**
+and then wrote throwaway compile probes to discover it is not a `Store` method:
 
 ```go
-err := client.RunTransaction(ctx, func(tx orm.Context) error {
-    s := deps.DB.WithTx(tx)
+type Deps struct {
+    DB  db.Store    // the data surface: DB.Estimates(), DB.Jobs(), …
+    ORM *orm.Client // the transaction boundary: ORM.RunTransaction(…)
+}
+
+err := deps.ORM.RunTransaction(ctx, func(tx orm.Context) error {
+    s := deps.DB.WithTx(tx) // rebind every store onto this transaction
     if err := s.Estimates().UpdateEstimate(ctx, est); err != nil {
         return err
     }
     return s.Jobs().CreateJob(ctx, job)
 })
 ```
+
+`go doc ./internal/db Store` shows `WithTx` on the store; `forge project
+libraries orm` shows `RunTransaction` on the client.
 
 Two measured runs missed this and hand-wrote the layer anyway: 723 lines across
 four packages in one, 464 across two in the other, almost all of it one-line

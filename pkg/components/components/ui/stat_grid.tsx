@@ -22,9 +22,9 @@ function TrendIndicator({
   trend: { direction: "up" | "down" | "flat"; value: string };
 }) {
   const colors: Record<string, string> = {
-    up: "text-green-600 bg-green-50",
-    down: "text-red-600 bg-red-50",
-    flat: "text-gray-600 bg-gray-50",
+    up: "text-success bg-success-surface",
+    down: "text-danger bg-danger-surface",
+    flat: "text-ink-muted bg-surface-muted",
   };
 
   const arrows: Record<string, string> = {
@@ -48,20 +48,20 @@ export default function StatGrid({ stats, columns = 4 }: StatGridProps) {
       {stats.map((stat) => (
         <div
           key={stat.label}
-          className="rounded-xl border border-gray-200 bg-white p-6"
+          className="rounded-xl border border-border bg-surface p-6"
         >
           <div className="flex items-center justify-between">
             {stat.icon && (
-              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent-surface text-accent">
                 {stat.icon}
               </div>
             )}
             {stat.trend && <TrendIndicator trend={stat.trend} />}
           </div>
-          <p className="mt-4 text-3xl font-bold tracking-tight text-gray-900">
+          <p className="mt-4 text-3xl font-bold tracking-tight text-ink">
             {stat.value}
           </p>
-          <p className="mt-1 text-sm text-gray-500">{stat.label}</p>
+          <p className="mt-1 text-sm text-ink-muted">{stat.label}</p>
         </div>
       ))}
     </div>

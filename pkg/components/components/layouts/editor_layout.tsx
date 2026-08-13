@@ -39,8 +39,8 @@ export default function EditorLayout({
   bottomHeight = 200,
 }: EditorLayoutProps) {
   return (
-    <div className="flex h-screen w-full flex-col bg-gray-100">
-      <div className="flex shrink-0 items-center gap-2 border-b border-gray-200 bg-white px-4 py-2">
+    <div className="flex h-screen w-full flex-col bg-surface-muted">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface px-4 py-2">
         {toolbar}
       </div>
 
@@ -48,7 +48,7 @@ export default function EditorLayout({
         {leftPanel && (
           <aside
             aria-label="Tools"
-            className="shrink-0 overflow-y-auto border-r border-gray-200 bg-white"
+            className="shrink-0 overflow-y-auto border-r border-border bg-surface"
             style={{ width: leftWidth }}
           >
             {leftPanel}
@@ -66,7 +66,7 @@ export default function EditorLayout({
           {bottomPanel && (
             <aside
               aria-label="Bottom panel"
-              className="shrink-0 overflow-y-auto border-t border-gray-200 bg-white"
+              className="shrink-0 overflow-y-auto border-t border-border bg-surface"
               style={{ height: bottomHeight }}
             >
               {bottomPanel}
@@ -77,7 +77,7 @@ export default function EditorLayout({
         {rightPanel && (
           <aside
             aria-label="Properties"
-            className="shrink-0 overflow-y-auto border-l border-gray-200 bg-white"
+            className="shrink-0 overflow-y-auto border-l border-border bg-surface"
             style={{ width: rightWidth }}
           >
             {rightPanel}

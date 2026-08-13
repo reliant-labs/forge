@@ -27,11 +27,11 @@ export default function DashboardAnalytics({
     <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-6 py-8">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-gray-900">
+          <h1 className="text-2xl font-semibold tracking-tight text-ink">
             {title}
           </h1>
           {subtitle && (
-            <p className="mt-1 text-sm text-gray-500">{subtitle}</p>
+            <p className="mt-1 text-sm text-ink-muted">{subtitle}</p>
           )}
         </div>
         {filters && <div className="flex flex-wrap items-center gap-2">{filters}</div>}
@@ -41,7 +41,7 @@ export default function DashboardAnalytics({
 
       <section
         aria-label="Primary chart"
-        className="overflow-hidden rounded-xl border border-gray-200 bg-white p-5"
+        className="overflow-hidden rounded-xl border border-border bg-surface p-5"
       >
         {chart}
       </section>
@@ -49,7 +49,7 @@ export default function DashboardAnalytics({
       {table && (
         <section
           aria-label="Detail data"
-          className="overflow-hidden rounded-xl border border-gray-200 bg-white"
+          className="overflow-hidden rounded-xl border border-border bg-surface"
         >
           {table}
         </section>

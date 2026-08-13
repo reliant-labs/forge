@@ -1,15 +1,32 @@
 ---
 name: forge-libraries
-description: Adopt-or-port judgment for forge's public libraries — forge/pkg for Go and @reliant-labs/web-runtime for the frontend. Read this BEFORE porting a utility from an existing codebase — the equivalent may already exist. Run `forge project libraries` for the live index and the source location of both.
+description: Adopt-or-port judgment for forge's public libraries — forge/pkg for Go and @reliant-labs/web-runtime for the frontend. Read this BEFORE porting a utility from an existing codebase — the equivalent may already exist. `forge project libraries <pkg>` prints any package's full signatures; never read forge's source to find one.
 emit: both
 ---
 
-**Run `forge project libraries` first.** forge ships TWO runtime libraries and
-the command prints both:
+**Need a forge/pkg signature? `forge project libraries <pkg>`.** One call,
+any number of packages, full exported API:
 
-- **`forge/pkg`** (Go) — where it resolves to for THIS project and what each
-  package is for, from the toolchain's own module resolution and each
-  package's doc comment. Follow with `go doc <import path>` for the full API.
+```
+forge project libraries crud             every signature crud exports
+forge project libraries crud orm svcerr  three packages, one call
+forge project libraries orm.Context      one type, with its methods
+```
+
+**Do not use `go doc <pkg>` for this, and do not read forge's source.**
+`go doc` renders a struct or interface as `struct{ ... }` and lists no
+methods, so `go doc .../pkg/crud` never mentions `Repo.UpdateMasked`. That
+dead end is measured, not hypothetical: one run spent **35.5 minutes across
+89 turns** grepping `forge/pkg` for signatures — `pkg/crud/repo.go` alone 14
+times — and three of those units never wrote a line of code. `go doc -all`
+is complete but ~10x larger, mostly prose.
+
+**Run `forge project libraries` (no arguments) first** for the index. forge
+ships TWO runtime libraries and the command prints both:
+
+- **`forge/pkg`** (Go) — what each package is for, from each package's own
+  doc comment, and which copy this project resolves. Name a package to get
+  its signatures.
 - **`@reliant-labs/web-runtime`** (frontend) — where npm installed it, its
   entry points, and every module with the symbols it exports, from the
   package's own manifest and barrel. `frontend-runtime` has the composition
@@ -31,20 +48,23 @@ Forge ships a set of public Go libraries under `github.com/reliant-labs/forge/pk
 ## The index is a command, not a list
 
 ```
-forge project libraries          # every subpackage + its purpose, and WHERE the source is
+forge project libraries          # every subpackage + its purpose
+forge project libraries crud     # crud's FULL exported API, signatures and all
 forge project libraries --json
 ```
 
-It prints the absolute directory holding the `forge/pkg` source **this project resolves** — a local checkout when a `go.work` points at one, the module cache otherwise — then one line per subpackage. Every field is derived: the directory from `go list -m`, the package set from that directory, each purpose from the package's own doc comment. It therefore describes the pkg version you actually compile against, and it cannot drift the way a table in a document does.
+With no arguments it prints one line per subpackage, plus the absolute directory holding the `forge/pkg` source **this project resolves** — a local checkout when a `go.work` points at one, the module cache otherwise. That directory is there so you can confirm *which copy* you compile against; it is not a place to go reading. Every field is derived: the directory from `go list -m`, the package set from that directory, each purpose from the package's own doc comment. It therefore describes the pkg version you actually compile against, and it cannot drift the way a table in a document does.
 
-**Never search the disk for library source.** For the full API of one package, ask the toolchain:
+**Name a package and it prints the answer** — every func with its parameters, every struct with its fields, every interface and type with its methods, parsed from that same resolved source with the doc prose stripped. Several packages in one call; `all` for everything (large).
+
+**Never search the disk for library source, and don't reach for `go doc <pkg>` here.** The package view of `go doc` collapses every struct and interface to `struct{ ... }` and lists no methods at all — it cannot answer "what are `Repo.UpdateMasked`'s parameters", which is the question people actually have. `go doc -all <pkg>` *is* complete, if you want the prose too, at roughly ten times the size.
+
+`go doc` remains the right tool for **your own project's** generated code, where the types you care about are interfaces and `go doc` renders those in full:
 
 ```
-go doc github.com/reliant-labs/forge/pkg/svcerr        # the whole package surface
-go doc github.com/reliant-labs/forge/pkg/svcerr Wrap   # one symbol
+go doc ./internal/db Store           # the aggregate store, every method
+go doc ./internal/db EstimateStore   # one entity's store
 ```
-
-This is faster than opening files, works identically whether the source sits in a checkout or the module cache, and needs no path.
 
 ## Decision rule: adopt-or-port
 
@@ -70,7 +90,7 @@ These are the packages people re-implement. The list is judgment, not inventory 
 | CRUD lifecycle plumbing in a handler | `forge/pkg/crud`. Forge auto-wires it from your CRUD RPCs — don't bypass it. |
 | `*sql.DB` scan boilerplate | `forge/pkg/orm`, consumed by the generated `internal/db/<entity>_orm.go`. Schema truth is `db/migrations/`; entities are projections of it. |
 
-Each row's own package doc has the detail: `go doc <import path>`.
+Each row's full API is one call away: `forge project libraries <name>`.
 
 ## What's NOT here
 
@@ -81,7 +101,7 @@ Each row's own package doc has the detail: `go doc <import path>`.
 
 ## When this skill is not enough
 
-- The current package set, and where its source lives — `forge project libraries`.
-- Implementation details of any individual package — `go doc <import path>`.
+- The current package set — `forge project libraries`.
+- The full exported API of any package — `forge project libraries <pkg>`.
 - The forge codegen pipeline and the owned composition root that wires these libraries — see the `architecture` skill.
 - When to write a custom adapter vs. extend a forge package — see the `adapter` skill.

@@ -579,3 +579,61 @@ func propTypeIs(src, prop, typ string) bool {
 	}
 	return false
 }
+
+// TestComponentsUseThemeTokensNotPaletteLiterals pins the library to the
+// SEMANTIC palette every forge frontend scaffolds (--color-ink, --color-surface,
+// --color-accent, --color-danger/success/warning and their -surface/-border/-ink
+// variants), rather than raw Tailwind palette classes.
+//
+// Why this is a hard rule and not a preference: a component that ships
+// `bg-blue-600` cannot be installed into a project whose accent is orange
+// without rewriting every className on it. Measured in a real build — three
+// separate agents fetched `empty_state`, and all three hand-wrote their own
+// instead, because adapting the palette cost more than writing eight lines. A
+// library nobody can install is a library nobody uses.
+//
+// Two deliberate exemptions, both because the colour IS DATA rather than chrome:
+//   - categories diagrams/ and deck/ — chart series and node fills
+//   - the identity palettes (avatar initials, badge rotation), which encode a
+//     value by hue; theming them collapses the rotation to one colour
+func TestComponentsUseThemeTokensNotPaletteLiterals(t *testing.T) {
+	paletteRE := regexp.MustCompile(
+		`\b(bg|text|border|ring|divide|placeholder|from|to|via|fill|stroke|outline|shadow|accent|caret|decoration)` +
+			`-(gray|blue|red|green|slate|zinc|neutral|stone|emerald|amber|yellow|indigo|purple|orange|sky|rose|violet|teal|cyan|lime|fuchsia|pink)` +
+			`-[0-9]{2,3}\b`)
+
+	exemptCategory := map[string]bool{"diagrams": true, "deck": true}
+	exemptFile := map[string]bool{"avatar": true, "detail_view": true}
+
+	lib := NewLibrary()
+	checked := 0
+	for _, entry := range lib.Registry() {
+		if exemptCategory[string(entry.Category)] || exemptFile[entry.Name] {
+			continue
+		}
+		src, err := lib.Get(entry.Name)
+		if err != nil {
+			t.Fatalf("get %s: %v", entry.Name, err)
+		}
+		checked++
+		if found := paletteRE.FindAllString(src, -1); len(found) > 0 {
+			seen := map[string]bool{}
+			var uniq []string
+			for _, f := range found {
+				if !seen[f] {
+					seen[f] = true
+					uniq = append(uniq, f)
+				}
+			}
+			t.Errorf("%s (%s) ships hardcoded palette classes %v — use the scaffolded theme tokens "+
+				"(ink / ink-muted / ink-subtle, surface / surface-muted, border / border-strong, "+
+				"accent, danger, success, warning and their -surface/-border/-ink variants) so the "+
+				"component installs into ANY project's palette without a rewrite",
+				entry.Name, entry.Category, uniq)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("checked zero components — the library or its category filter is broken, and an empty set cannot fail")
+	}
+	t.Logf("verified %d components carry no palette literals", checked)
+}

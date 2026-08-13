@@ -108,6 +108,25 @@ The columns ARE the declaration. The generators read these off the introspected 
 | `deleted_at` | soft delete: DELETE becomes UPDATE, reads filter `IS NULL`, `ListAll*` is the unfiltered variant |
 | `created_at` + `updated_at` | ORM-managed timestamps — type-gated: time columns (`TIMESTAMPTZ` et al) or legacy `TEXT` count; anything else (epoch integers) stays plain schema |
 | text columns | spanned by the generated list `search` filter |
+| `GENERATED ALWAYS AS (…) STORED` | derived column: postgres maintains it, the ORM excludes it from writes, and the seeder skips it |
+
+### A value derived from the SAME row is a generated column
+
+`total = subtotal + tax`, `line_total = quantity * unit_price`, `balance = amount - amount_paid`. Declare the derivation; do not assert it and then maintain it by hand:
+
+```sql
+-- YES: the database computes it, always, for every writer.
+total_cents BIGINT GENERATED ALWAYS AS (subtotal_cents + tax_cents) STORED
+
+-- NO: states the rule without implementing it. Nothing computes the column,
+-- so it sits at its DEFAULT and every INSERT violates the CHECK.
+total_cents BIGINT NOT NULL DEFAULT 0,
+CONSTRAINT total_is_subtotal_plus_tax CHECK (total_cents = subtotal_cents + tax_cents)
+```
+
+The CHECK version costs you the whole chain: forge's write envelopes exclude the column (correctly — no client should assert it), so nothing writes it; `forge db seed` warns it cannot place the value; and the fix people reach for is hand-written CRUD overrides that every future entity needs too. The generated column needs none of that, and no CHECK — the equality is true by construction.
+
+**Derived from OTHER ROWS is the other case, and no generated column can express it.** An invoice's `amount_paid` summing a `payments` table, a job's cost rolling up its materials: postgres cannot reach another table from a generated column. Keep the column plain, mark the proto field `// forge:computed`, and write it from the RPC that owns the change — `forge lint --computed-fields` then holds you to it and fails if nothing assigns it.
 
 ## Just write postgres
 
@@ -138,6 +157,8 @@ Wire evolution stays proto: service-proto messages are the **API truth** and evo
 - `internal/db/*_orm.go` (and `orm_shared.go`) are Tier-1 self-certifying: each carries an embedded `forge:hash` marker, so hand-edits trip the drift guard in any clone or worktree. `forge project disown internal/db/<entity>_orm.go --reason ...` is the sanctioned one-way exit.
 - Each entity exports `<Entity>Columns`, the declared-column allowlist. `forge/pkg/crud` validates user-supplied `order_by` against it; an undeclared column is `InvalidArgument`, not a silent no-op.
 - `Get<Entity>ByID` answers a missing row with `svcerr.NotFound("<entity>")` — return or `svcerr.Wrap` it, never re-derive it. `Update`/`Delete` still give `orm.ErrNoRows`. Other repo errors → `Internal`, no SQL on the wire.
+- The delegates above are free functions, so `internal/db/store_gen.go` also exports them as INTERFACES: `<Entity>Store` per entity, and `Store` embedding all of them. That is what a service's `Deps` field names — **never hand-write an interface plus a passthrough adapter over the ORM**; forge generates both and asserts at generate time that they match. Depend on the narrowest one that works.
+- **To see what a store offers, read the interface, not forge:** `go doc ./internal/db Store` or `go doc ./internal/db <Entity>Store` prints the full method set (`go doc` renders interfaces in full — it is only structs it collapses). `forge project shapes --kind store` lists every one with its `file:line`. Do **not** go looking in forge's generator source for this: that code describes every project rather than your schema, and a measured run lost 11 turns to exactly that detour.
 
 ## Diverging from generated CRUD
 

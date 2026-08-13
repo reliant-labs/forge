@@ -367,11 +367,101 @@ _render_firebase_hosting = lambda d: FirebaseHosting -> any {
     }
 }
 
-# Frontend deploy dispatcher. Only FirebaseHosting today; an unset deploy
-# projects as null (consumer treats that as "dev-serve / build only,
-# never auto-ship").
+# Project a cluster-deployed Frontend onto the RenderedWorkload the k8s
+# manifest renderer already consumes. A frontend that ships as a container
+# IS a workload — the only reasons it is a distinct schema are the dev-loop
+# concerns (dev_runner, env_file, framework-typed config) that a Service
+# has no use for. So the projection is narrow and deliberately total:
+#
+#   Frontend.name   -> workload name AND image name (matching `forge build`'s
+#                      frontend docker tag, <registry>/<name>:<tag>, so the
+#                      manifest references the image the build produces)
+#   Frontend.port   -> the deploy block's `ports` when the author left it
+#                      empty, so a frontend's ONE declared port doesn't have
+#                      to be written twice. An explicit deploy.ports wins.
+#   Frontend.env_vars-> the container env
+#   deploy          -> the K8sCluster block, so namespace / registry / pull
+#                      secrets / platform behave exactly as for a Service
+#
+# NOT projected: dev_runner / env_file / config — dev-loop and build-time
+# concerns with no manifest meaning.
+#
+# The `deploy` re-literal is not ceremony: Frontend.deploy is typed
+# `FirebaseHosting | K8sCluster`, while RenderedWorkload.deploy is the
+# six-way service union. Rebuilding it as a K8sCluster narrows the type so
+# the assignment type-checks, and is only ever reached on the "cluster"
+# branch (the caller filters on the discriminator first).
+_project_frontend = lambda f: Frontend, bundle: Bundle -> RenderedWorkload {
+    RenderedWorkload {
+        name = f.name
+        image = f.name
+        # The CONTAINER env is the workload's, not the deploy block's — the
+        # manifest renderer reads RenderedWorkload.env_vars. A frontend may
+        # declare its env either on the Frontend (where the dev loop reads it)
+        # or on the deploy block; both land here, with the deploy block
+        # winning since it is the more specific, deploy-time declaration.
+        env_vars = f.deploy.env_vars if f.deploy.env_vars else f.env_vars
+        # securityContext DELTAS ride RenderedWorkload.security_override —
+        # the deploy block's `security_context` is the HOST/compose-shaped
+        # field and is not what the k8s manifest renderer consults. A
+        # frontend image routinely needs a different posture than forge's
+        # restricted-PSA default for a Go binary (a node image runs as
+        # uid 1000, and a Next.js server writes its own cache at runtime),
+        # so this has to be expressible or every frontend CrashLoops.
+        # Probes ride RenderedWorkload.health_probe for the same reason the
+        # securityContext does: the deploy block's `health_check` is the
+        # host/compose-shaped field, while the k8s renderer reads the agnostic
+        # HealthProbe. One probe config becomes BOTH liveness and readiness,
+        # which is the 80/20 the schema intends — a frontend serving one HTTP
+        # route has nothing more specific to say.
+        if f.deploy.health_check:
+            health_probe = HealthProbe {
+                http_path = f.deploy.health_check.liveness_path
+                port = f.deploy.health_check.http_port
+                initial_delay_seconds = f.deploy.health_check.initial_delay
+                period_seconds = f.deploy.health_check.period
+                timeout_seconds = f.deploy.health_check.timeout
+                failure_threshold = f.deploy.health_check.failure_threshold
+            }
+        if f.deploy.security_context:
+            security_override = SecurityOverrides {
+                run_as_non_root = f.deploy.security_context.run_as_non_root
+                run_as_user = f.deploy.security_context.run_as_user
+                run_as_group = f.deploy.security_context.run_as_group
+                read_only_root_fs = f.deploy.security_context.read_only_root_filesystem
+            }
+        deploy = K8sCluster {
+            cluster = f.deploy.cluster
+            namespace = f.deploy.namespace
+            registry = f.deploy.registry
+            domain = f.deploy.domain
+            replicas = f.deploy.replicas
+            resources = f.deploy.resources
+            health_check = f.deploy.health_check
+            security_context = f.deploy.security_context
+            # The frontend's ONE declared `port` becomes the container/Service
+            # port unless the deploy block names its own — so the common case
+            # doesn't write the same number twice.
+            ports = f.deploy.ports if f.deploy.ports else [f.port]
+            env_vars = f.deploy.env_vars if f.deploy.env_vars else f.env_vars
+            app_protocols = f.deploy.app_protocols
+            platform = f.deploy.platform
+            cluster_rbac = f.deploy.cluster_rbac
+            image_pull_secrets = f.deploy.image_pull_secrets
+        }
+    }
+}
+
+# Frontend deploy dispatcher. Dispatches on the discriminator exactly like
+# _render_deploy_populated does for services: "firebase" → Firebase Hosting,
+# "cluster" → an in-cluster Deployment + Service (the frontend ships as a
+# container image, same as a forge.Service).
+#
+# An unset deploy still projects as null — the consumer treats that as
+# "dev-serve / build only, never auto-ship", which is the legacy behaviour
+# every existing project relies on.
 _render_frontend_deploy = lambda d: any -> any {
-    _render_firebase_hosting(d) if d else None
+    (_render_k8s_cluster(d) if d.type == "cluster" else _render_firebase_hosting(d)) if d else None
 }
 
 # Render a FrontendConfig to its stable dict form. Optional string knobs
@@ -907,8 +997,20 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
     # `deploy.type == "host"` service); every other workload projects to a
     # cluster RenderedWorkload seeded from the env-wide `cluster_target`.
     _projected = [_project_workload(w, bundle) for w in bundle.workloads]
+    # A frontend declaring `deploy = forge.K8sCluster { ... }` ships as a
+    # container and therefore belongs in the SAME manifest stream as every
+    # other cluster workload — one Deployment, one Service, one apply path,
+    # and the project's existing NetworkPolicies / RBAC / probes apply to it
+    # unchanged. Projecting it here (rather than giving frontends a second,
+    # parallel deploy lifecycle) is what keeps that true.
+    #
+    # Frontends with a FirebaseHosting deploy, or no deploy block at all, are
+    # NOT projected: they stay out of the manifest stream exactly as before,
+    # and `dispatchFrontendDeploys` continues to own them.
+    _cluster_frontends = [_project_frontend(f, bundle) for f in bundle.frontends if f.deploy and f.deploy.type == "cluster"]
     _cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"] \
-        + [w for w in _projected if w.deploy.type == "cluster"]
+        + [w for w in _projected if w.deploy.type == "cluster"] \
+        + _cluster_frontends
     # Only a service with an `image` renders a workload (Deployment +
     # Service + RBAC). An image-less cluster service is an INFRA service:
     # it contributes ONLY its owned `manifests` (below), no phantom

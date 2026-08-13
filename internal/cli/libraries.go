@@ -109,55 +109,47 @@ func newLibrariesCmd() *cobra.Command {
 	var asJSON bool
 	var signatures string
 	cmd := &cobra.Command{
-		Use:   "libraries",
-		Short: "Locate forge/pkg and the web runtime on this machine and say what each is for",
-		Long: `Locate forge's public runtime libraries and summarize each one.
+		Use:   "libraries [package...]",
+		Short: "Print forge/pkg's API — name a package to get its full signatures",
+		Long: `Print forge's public runtime libraries, and the full API of any you name.
 
-forge ships TWO runtime libraries, and this prints both: forge/pkg for Go
-and @reliant-labs/web-runtime for the frontend. For each it prints the
-absolute source directory on this machine, then one line per Go package or
-per web module and its exported symbols.
+With NO arguments this is an index: forge ships TWO runtime libraries and it
+prints both — forge/pkg for Go and @reliant-labs/web-runtime for the frontend
+— one line per package, from each package's own doc comment.
 
-Read this BEFORE porting a utility from another codebase, and instead of
-searching the disk for library source. Every field is derived: the Go
-directory from 'go list -m', its package set from that directory, each
-purpose from the package's own doc comment; the web directory from what npm
-installed, its entry points from that package's exports map, its symbols
-from its own public barrel.
+NAME A PACKAGE and it stops being an index and answers the question:
 
---signatures goes a level deeper for the Go packages you name, printing
-their full exported API — every func with its parameters, every struct with
-its fields, every interface with its methods — parsed out of the source
-resolved above. Doc prose is omitted, so the block is the API and nothing
-else. Hand that to somebody who has to WRITE against these packages and
-they need no 'go doc' round trip; the default stays terse for everyone else.
+  forge project libraries crud             every signature crud exports
+  forge project libraries crud orm svcerr  three packages, one call
+  forge project libraries orm.Context      one type, with its methods
+  forge project libraries all              everything (large — prefer a list)
 
-The selector grammar is 'go doc''s, so there is nothing new to learn:
+That prints every func with its parameters, every struct with its fields,
+every interface and type with its methods, parsed out of the source this
+project actually resolves. Doc prose is omitted, so the block is API and
+nothing else.
 
-  --signatures=svcerr,tdd            two whole packages
-  --signatures=orm.Context           one type, with its methods
-  --signatures=all                   every package (large — prefer a list)
+Use this INSTEAD of 'go doc <pkg>', which cannot answer the same question:
+'go doc' renders a struct or interface as 'struct{ ... }' and lists no
+methods at all, so 'go doc .../crud' never mentions crud.Repo.UpdateMasked.
+'go doc -all <pkg>' is complete but roughly ten times larger, most of it
+prose. Neither needs the source directory, and neither does reading files.
 
-A selector that names a package or symbol that does not exist is an error
-listing what does, so a briefing script whose list has gone stale fails
-loudly rather than quietly shipping an incomplete API.
-
-For a package you did NOT select, no file reading is needed either:
-
-  go doc github.com/reliant-labs/forge/pkg/svcerr
-  go doc github.com/reliant-labs/forge/pkg/svcerr Wrap
+A selector naming a package or symbol that does not exist is an error listing
+what does, so a briefing script whose list has gone stale fails loudly rather
+than quietly shipping an incomplete API.
 
 Examples:
   forge project libraries
   forge project libraries --json
-  forge project libraries --signatures=svcerr,crud,tdd,testkit,orm.Context`,
-		Args: cobra.NoArgs,
+  forge project libraries svcerr crud tdd testkit orm.Context`,
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			spec, err := buildLibrariesSpec(cmd.Context())
 			if err != nil {
 				return err
 			}
-			if err := attachSignatures(&spec, signatures); err != nil {
+			if err := attachSignatures(&spec, mergeSignatureSelectors(signatures, args)); err != nil {
 				return err
 			}
 			return writeLibraries(cmd.OutOrStdout(), spec, asJSON)
@@ -165,8 +157,40 @@ Examples:
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the inventory as JSON")
 	cmd.Flags().StringVar(&signatures, "signatures", "",
-		"comma-separated forge/pkg selectors whose full exported API to print: `pkg`, `pkg.Symbol`, or `all`")
+		"same selectors as the positional form, comma-separated: `pkg`, `pkg.Symbol`, or `all`")
 	return cmd
+}
+
+// mergeSignatureSelectors folds the positional selectors and the
+// --signatures flag into the one comma-separated list attachSignatures
+// parses.
+//
+// The POSITIONAL form is the point. `--signatures` shipped first and was
+// measurably not enough: a run three weeks later spent 35.5 minutes across
+// 89 turns grepping forge's own pkg/ source for signatures this flag would
+// have printed, and not one unit passed it. A capability reachable only
+// through a flag you must already know about is discovered by reading
+// --help, which is a step nobody takes when they believe they already know
+// the command. `forge project libraries crud` is what someone types when
+// they want crud's API, so that is what it now does.
+//
+// The flag stays because scripts pass it, and the two compose rather than
+// conflict: a caller may pass either, or both, and gets the union.
+func mergeSignatureSelectors(flag string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	if trimmed := strings.TrimSpace(flag); trimmed != "" {
+		parts = append(parts, trimmed)
+	}
+	for _, a := range args {
+		// A comma-separated positional is accepted too: it is the spelling
+		// the flag takes and the one a caller who learned the flag first
+		// will reach for, and rejecting it would be forge being pedantic
+		// about a separator it accepts one word to the left.
+		if trimmed := strings.TrimSpace(a); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return strings.Join(parts, ",")
 }
 
 // buildLibrariesSpec resolves the forge/pkg module and reads its packages.
@@ -476,8 +500,33 @@ func writeLibraryDivergence(w io.Writer, module string, div *LibraryDivergence) 
 	_, err := fmt.Fprintf(w,
 		"  resolved: %s   (%s override)\n"+
 			"  go.mod:   %s   ← an offline `go doc` (no %s active) reads THIS\n"+
-			"  ⚠ `go doc %s` run without the %s active shows %s, not what this project builds against — read the resolved source above instead.\n\n",
+			"  ⚠ `go doc %s` run without the %s active shows %s, not what this project builds against — so use `forge project libraries <pkg>`, which always reads the resolved copy.\n\n",
 		div.ResolvedDir, div.Source, div.GoModVersion, div.Source, module, div.Source, div.GoModVersion)
+	return err
+}
+
+// writeLibrarySourceLine prints where forge/pkg resolved to, framed as a
+// resolution fact rather than as a place to go look.
+//
+// The old line read `Source on this machine: /Users/…/forge/pkg` and sat
+// directly above a package list, which is a signpost: it answers "where is
+// it" for a reader whose actual question is "what does it export", and the
+// only way to get from that path to a signature is to grep it. A measured
+// run did exactly that for 35.5 minutes across 89 turns — `pkg/crud/repo.go`
+// alone 14 times.
+//
+// The path itself is kept, because it is genuinely diagnostic: it is how a
+// reader confirms WHICH forge/pkg this project builds against (a checkout
+// via go.work, or the module cache), and the divergence warning printed
+// just below it is unreadable without it. What changes is that the reader
+// is handed the command that answers their question in the same breath, so
+// the path stops being the only actionable thing on the line.
+func writeLibrarySourceLine(w io.Writer, spec LibrariesSpec) error {
+	_, err := fmt.Fprintf(w,
+		"Resolves to: %s\n"+
+			"  (that is which copy you compile against — for what it EXPORTS, don't read it:\n"+
+			"   `forge project libraries <pkg>` prints the full signatures.)\n\n",
+		spec.Dir)
 	return err
 }
 
@@ -499,7 +548,7 @@ func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
 	if err := p("FORGE LIBRARIES — %s\n", label); err != nil {
 		return err
 	}
-	if err := p("Source on this machine: %s\n\n", spec.Dir); err != nil {
+	if err := writeLibrarySourceLine(w, spec); err != nil {
 		return err
 	}
 	if err := writeLibraryDivergence(w, spec.Module, spec.Divergence); err != nil {
@@ -516,7 +565,7 @@ func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
 			return err
 		}
 	}
-	if err := p("\nImport as %s/<name>. %s", spec.Module, deeperAPIGuidance(spec)); err != nil {
+	if err := p("\nImport as %s/<name>.\n\n%s", spec.Module, deeperAPIGuidance(spec)); err != nil {
 		return err
 	}
 	if err := p("Adopt before porting: if a package covers the surface, use it; if it covers\n" +
@@ -546,31 +595,38 @@ func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
 // tells the reader to fetch something it just printed.
 func deeperAPIGuidance(spec LibrariesSpec) string {
 	if spec.SignatureSelectors == "" {
-		return fmt.Sprintf(
-			"For the full API of one package, read it from the\n"+
-				"toolchain rather than the disk:\n"+
-				"  go doc %s/svcerr\n"+
-				"  go doc %s/svcerr Wrap\n"+
-				"Writing against several at once? `forge project libraries\n"+
-				"--signatures=svcerr,crud,tdd` prints their entire exported API right here,\n"+
-				"in one call, with the doc prose stripped.\n",
-			spec.Module, spec.Module)
+		return "" +
+			"For what a package EXPORTS, name it — one call, any number of packages:\n" +
+			"  forge project libraries crud\n" +
+			"  forge project libraries crud orm svcerr\n" +
+			"  forge project libraries orm.Context\n" +
+			"Prefer that over `go doc`, which prints a struct or interface as\n" +
+			"`struct{ ... }` with no methods: `go doc " + shortModuleRef(spec.Module) + "/crud` never\n" +
+			"mentions Repo.UpdateMasked. Reading the source files is slower still.\n"
 	}
 	example := ""
 	for _, l := range spec.Packages {
 		if len(l.Symbols) == 0 {
-			example = l.ImportPath
+			example = l.Name
 			break
 		}
 	}
 	if example == "" {
-		return fmt.Sprintf("The complete exported API of every package is printed\nbelow (--signatures=%s).\n", spec.SignatureSelectors)
+		return fmt.Sprintf("The complete exported API of every package is printed below (%s).\n", spec.SignatureSelectors)
 	}
 	return fmt.Sprintf(
 		"The complete exported API of %s is printed below.\n"+
-			"For a package that is NOT down there, read it from the toolchain rather\n"+
-			"than the disk:\n"+
-			"  go doc %s\n"+
-			"  go doc %s <Symbol>\n",
-		spec.SignatureSelectors, example, example)
+			"For a package that is NOT down there, name it the same way:\n"+
+			"  forge project libraries %s\n",
+		spec.SignatureSelectors, example)
+}
+
+// shortModuleRef renders the module for a one-line mention of `go doc`.
+// The full path is 34 characters of prefix that carry no information at
+// the point the sentence is making a comparison.
+func shortModuleRef(module string) string {
+	if i := strings.LastIndex(module, "/"); i >= 0 {
+		return "..." + module[i:]
+	}
+	return module
 }

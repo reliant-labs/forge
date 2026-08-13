@@ -1,11 +1,14 @@
 package codegen
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -15,6 +18,68 @@ import (
 type ForgeDescriptor struct {
 	Services []ServiceDef    `json:"services"`
 	Configs  []ConfigMessage `json:"configs"`
+
+	// SourceHash fingerprints the .proto files this descriptor was extracted
+	// from. It exists because the descriptor is a DERIVED CACHE of state that
+	// already lives in the protos, and a cache that cannot detect its own
+	// staleness does not degrade — it LIES.
+	//
+	// Measured: renaming one RPC in the descriptor, touching no .proto, made
+	// `forge project graph` report an RPC that existed in no proto file and
+	// omit one that existed in six places. Nothing warned, because loading
+	// was read-file-and-unmarshal with no validation of any kind.
+	//
+	// A missing descriptor was always handled gracefully; a WRONG one was
+	// trusted completely. That asymmetry is backwards, and this field is what
+	// inverts it — see DescriptorSourceHash and loadDescriptor.
+	//
+	// Empty means "written by a forge that predates the stamp": treated as
+	// stale, because an unverifiable cache is exactly the thing being fixed.
+	SourceHash string `json:"source_hash,omitempty"`
+}
+
+// DescriptorSourceHash fingerprints every .proto under <projectDir>/proto by
+// path and content. Order-independent by construction (paths are sorted), so
+// the same tree always hashes the same regardless of walk order.
+//
+// Content, not mtime: a checkout, a rebase or a `cp -R` rewrites mtimes
+// without changing meaning, and would invalidate a descriptor that is
+// perfectly good. Hashing the bytes answers the question actually being
+// asked — "was this extracted from THESE protos?"
+func DescriptorSourceHash(projectDir string) string {
+	type entry struct{ rel, sum string }
+	var entries []entry
+
+	root := filepath.Join(projectDir, "proto")
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || filepath.Ext(path) != ".proto" {
+			return nil //nolint:nilerr // an unreadable tree contributes nothing
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil //nolint:nilerr // same
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rel = path
+		}
+		sum := sha256.Sum256(data)
+		entries = append(entries, entry{filepath.ToSlash(rel), hex.EncodeToString(sum[:])})
+		return nil
+	})
+	if len(entries) == 0 {
+		return ""
+	}
+
+	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
+	h := sha256.New()
+	for _, e := range entries {
+		_, _ = h.Write([]byte(e.rel))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(e.sum))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // noticeMissingDescriptor reports the absent gen/forge_descriptor.json —
@@ -76,6 +141,24 @@ func loadDescriptor(projectDir string) (*ForgeDescriptor, error) {
 	var desc ForgeDescriptor
 	if err := json.Unmarshal(data, &desc); err != nil {
 		return nil, fmt.Errorf("parse forge descriptor: %w", err)
+	}
+
+	// REFUSE a descriptor that does not match the protos on disk. Warning
+	// would not do: every caller here feeds codegen or an inspection command,
+	// and each would carry on emitting confident, wrong answers from a cache
+	// nobody re-derived. A hard error names the one command that fixes it.
+	//
+	// Only a STAMPED descriptor is checked. An unstamped one is either a
+	// pre-guard file (the next generate stamps it) or a hand-built fixture,
+	// and refusing those would break every caller that constructs a
+	// descriptor directly without a proto tree to hash. The drift this
+	// guards against is a stamped descriptor whose protos then changed —
+	// which is the sequence that actually happens.
+	if want := DescriptorSourceHash(projectDir); want != "" && desc.SourceHash != "" && desc.SourceHash != want {
+		return nil, fmt.Errorf(
+			"gen/forge_descriptor.json is stale: it was extracted from different .proto files than the ones on disk.\n"+
+				"  It is a DERIVED cache — the protos are the source of truth — so forge refuses to answer from it.\n"+
+				"  Fix: reliant forge generate")
 	}
 	return &desc, nil
 }

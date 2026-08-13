@@ -105,6 +105,51 @@ type orderSlot struct {
 var orderCompareRE = regexp.MustCompile(
 	`^"?([a-z_][a-z0-9_]*)"?\s*(>=|>|<=|<)\s*"?([a-z_][a-z0-9_]*)"?$`)
 
+// derivationRE matches a CHECK that states one column EQUALS an arithmetic
+// expression over others in the same row — `total = subtotal + tax`,
+// `balance = amount - amount_paid`. Postgres renders these with the operands
+// parenthesized, so the right-hand side is matched loosely and validated by
+// the caller against the columns postgres says the constraint spans.
+//
+// This is deliberately NOT fed into the ordering pass. An equality is not an
+// ordering edge and forge's placement cannot satisfy it: assigning each of
+// three columns an independent value leaves `a = b + c` true only by
+// coincidence. Recognizing the shape buys a better REFUSAL, not a placement.
+var derivationRE = regexp.MustCompile(
+	`^"?([a-z_][a-z0-9_]*)"?\s*=\s*(.+[-+*/].+)$`)
+
+// derivedColumn returns the column a CHECK derives, when the constraint has
+// the `<col> = <expression over sibling columns>` shape. ok is false for
+// every other expression, including a plain column-to-column equality, which
+// states an invariant rather than a derivation.
+func derivedColumn(ck schemadef.CheckConstraint) (string, bool) {
+	body, ok := checkBody(ck.Def)
+	if !ok {
+		return "", false
+	}
+	m := derivationRE.FindStringSubmatch(unwrapParens(body))
+	if m == nil {
+		return "", false
+	}
+	target := m[1]
+	// The derived column must be one postgres says the constraint spans, and
+	// the expression must reference at least one OTHER spanned column — that
+	// is what makes it a derivation rather than a bound on a literal.
+	spans := make(map[string]bool, len(ck.Columns))
+	for _, c := range ck.Columns {
+		spans[c] = true
+	}
+	if !spans[target] {
+		return "", false
+	}
+	for _, c := range ck.Columns {
+		if c != target && strings.Contains(m[2], c) {
+			return target, true
+		}
+	}
+	return "", false
+}
+
 // orderRelsFromCheck reads the ordering edges off an introspected CHECK that
 // forge's placement is PROVEN to satisfy. ok is false for every expression
 // whose truth the placement does not establish — those are named by the
@@ -343,6 +388,23 @@ func tableOrderChains(t schemadef.Table) (map[string]orderSlot, []string) {
 		}
 		found, ok := orderRelsFromCheck(ck)
 		if !ok {
+			// A derivation is a DIFFERENT failure from an unreadable
+			// comparison, and it has a fix the author can act on. Saying only
+			// "not a two-column ordering comparison" sends them looking for a
+			// seeding workaround for something the schema should state
+			// outright — measured twice, in two runs that both hand-rolled
+			// the derivation instead.
+			if col, isDerived := derivedColumn(ck); isDerived {
+				warns = append(warns, fmt.Sprintf(
+					"seed plan: %s constraint %q derives %s from other columns, which forge cannot place — "+
+						"declare the derivation instead of asserting it: "+
+						"`%s <type> GENERATED ALWAYS AS (<expression>) STORED`. "+
+						"The database then maintains it, the CHECK becomes unnecessary, and the seeder skips the column. "+
+						"For a value derived from OTHER ROWS (a sum over children), no GENERATED column can express it — "+
+						"keep the column plain, mark the proto field `// forge:computed`, and write it from the RPC that owns the change.",
+					t.Name, ck.Name, col, col))
+				continue
+			}
 			refuse(ck.Name, "not a two-column ordering comparison")
 			continue
 		}

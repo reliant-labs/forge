@@ -199,17 +199,66 @@ cannot drift the way a document can.
 | `forge project annotations` | The entity-authoring vocabulary: how each proto field is born as a column, the `buf.validate` rules forge projects, and the `(forge.v1.service)` / `(forge.v1.method)` options. |
 | `forge project libraries` | **Every `forge/pkg/*` library**, what each is for, and the absolute path to the source this project resolves. |
 | `forge project audit --json` | What THIS project currently is: services, rpcs, entities, drift, stubs, ownership. |
+| `forge project shapes` | **Where every symbol IS**: each rpc, message, enum, table, handler and hook with `file:line`. Start recon here. |
 
 Add `--json` to any of them to query rather than read.
 
-**Never search the filesystem for forge's own source.** `forge project libraries`
-gives you the directory, and `go doc <import path>` gives you any package's full
-API without opening a file:
+### `forge project shapes` — start recon here, not with `grep`
+
+**Use it the moment you need to know where something is or what shape it has.**
+It answers, in ONE call, the question that otherwise becomes a sequence of
+greps: *where is this symbol, in every layer, and what is its signature?*
+
+```bash
+forge project shapes                      # every symbol in the project
+forge project shapes --grep Estimate      # one entity across ALL layers at once
+forge project shapes --kind rpc,handler   # what is DECLARED vs what is IMPLEMENTED
+```
+
+Every line carries `file:line`, so the next step is a targeted read — never
+another search:
 
 ```
-go doc github.com/reliant-labs/forge/pkg/svcerr
-go doc github.com/reliant-labs/forge/pkg/svcerr Wrap
+rpc      RoofopsService.ListMaterials  proto/services/roofops/v1/roofops.proto:368  in=ListMaterialsRequest out=ListMaterialsResponse
+message  Material                      proto/services/roofops/v1/roofops.proto:737
+table    materials                     db/migrations/00010_create_materials.up.sql:9
+handler  ListMaterials                 internal/handlers/roofops/handlers_crud.go:790
+hook     useListMaterials              frontends/dashboard/src/hooks/roofops-service-hooks_gen.ts:212
 ```
+
+**Why it beats grepping, in minutes.** A measured fan-out spent **28.4 minutes
+across 123 tool calls** on `find` / `grep` / `ls` answering exactly this — the
+single largest recoverable cost in that run. The dominant pattern was paging one
+1,685-line proto by symbol (`grep -n "message ListMaterialsRequest" -A 10 …`),
+repeated by eleven agents who each re-derived the same contract. Each grep costs
+a whole turn; `shapes` costs one and returns more.
+
+Reach for it when you would otherwise:
+
+- hunt for a file — `--grep <Name>` names it and the line
+- open a large proto to find one message — the line number takes you straight there
+- ask "is this RPC implemented yet?" — `--kind handler` flags every `unwired-stub`
+- ask "does a hook exist for this?" — `--kind hook`
+
+It parses the protos, migrations and source **live on every call** (~2s on a
+15-entity project). It deliberately does NOT read `gen/forge_descriptor.json`:
+that file is a derived cache, and a recon answer that is confidently wrong is
+worse than no answer.
+
+**Never search the filesystem for forge's own source.** Name the package and
+`forge project libraries` prints its full exported API — every signature, no
+file reading:
+
+```
+forge project libraries svcerr             the whole package
+forge project libraries crud orm svcerr    three packages, one call
+forge project libraries orm.Context        one type, with its methods
+```
+
+Reach for that rather than `go doc <pkg>`, which collapses every struct and
+interface to `struct{ ... }` and lists no methods — it cannot tell you
+`crud.Repo.UpdateMasked`'s parameters. (For your OWN generated interfaces,
+`go doc ./internal/db Store` is fine: `go doc` renders interfaces in full.)
 
 ## Running it
 
@@ -243,7 +292,8 @@ hand-wrote and then deleted.
 | build a **UI control** | check `src/components/` and `forge component search <thing>` first. A status badge, an enum select, and the foreign-key picker/name pair are already scaffolded and enum-aware; the library ships 70+ more | `frontend`, `frontend/pages` |
 | write a **table-driven test** | `forge/pkg/tdd` + the scaffolded per-rpc `handlers_scaffold_<rpc>_test.go`; contract packages get a `mock_gen.go` you configure by field | `testing/patterns` |
 | **port a utility** (errors, auth, middleware, test harness, money, retries) | `forge project libraries` lists every `forge/pkg/*` package with its purpose and source path. Adopt before porting — `forge/pkg/svcerr` is the most re-implemented thing in forge's history | `forge-libraries` |
-| **read a forge library's API** | `go doc <import path>` — never `find`, never `grep` across the disk | `forge-libraries` |
+| **read a forge library's API** | `forge project libraries <pkg>` prints every signature in one call — never `find`, never `grep`, and not `go doc <pkg>`, which shows no methods | `forge-libraries` |
+| **see what a generated store offers** | `go doc ./internal/db <Entity>Store` (interfaces render in full), or `forge project shapes --kind store` for the list. Never forge's generator source | `db`, `service-layer` |
 | need **dev data** | `forge db seed apply` derives FK-coherent rows from the applied schema; teach it your domain nouns in `db/seeds/vocab.yaml` | `db/seeding` |
 
 `forge scaffold` also births a `worker`, `operator`, `crd`, `binary`, `adapter`,

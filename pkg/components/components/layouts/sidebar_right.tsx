@@ -21,12 +21,12 @@ export default function SidebarRight({
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto bg-gray-50 p-6">{children}</main>
+      <main className="flex-1 overflow-y-auto bg-surface-muted p-6">{children}</main>
 
       {/* Sidebar */}
-      <aside className="flex w-64 flex-col border-l border-gray-200 bg-white">
+      <aside className="flex w-64 flex-col border-l border-border bg-surface">
         {brand && (
-          <div className="flex h-16 shrink-0 items-center border-b border-gray-200 px-6">
+          <div className="flex h-16 shrink-0 items-center border-b border-border px-6">
             {brand}
           </div>
         )}
@@ -39,8 +39,8 @@ export default function SidebarRight({
                   href={item.href ?? "#"}
                   className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium ${
                     item.active
-                      ? "bg-indigo-50 text-indigo-700"
-                      : "text-gray-700 hover:bg-gray-100"
+                      ? "bg-accent-surface text-accent-ink"
+                      : "text-ink-muted hover:bg-surface-muted"
                   }`}
                 >
                   {item.icon && (

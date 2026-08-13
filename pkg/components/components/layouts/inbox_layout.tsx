@@ -27,9 +27,9 @@ export default function InboxLayout({
   const listPercent = Math.round(Math.max(0.2, Math.min(0.6, listRatio)) * 100);
   const previewPercent = 100 - listPercent;
   return (
-    <div className="flex h-screen w-full flex-col bg-white">
+    <div className="flex h-screen w-full flex-col bg-surface">
       {header && (
-        <div className="flex shrink-0 items-center gap-3 border-b border-gray-200 px-4 py-3">
+        <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3">
           {header}
         </div>
       )}
@@ -44,7 +44,7 @@ export default function InboxLayout({
       >
         <aside
           aria-label="Item list"
-          className="min-h-0 overflow-y-auto border-b border-gray-200 md:border-b-0 md:border-r"
+          className="min-h-0 overflow-y-auto border-b border-border md:border-b-0 md:border-r"
         >
           {list}
         </aside>

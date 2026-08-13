@@ -17,15 +17,15 @@ export default function HeroSection({
   media,
 }: HeroSectionProps) {
   return (
-    <section className="bg-white">
+    <section className="bg-surface">
       <div className="mx-auto grid max-w-7xl items-center gap-12 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:px-8 lg:py-28">
         {/* Text content */}
         <div className="max-w-xl">
-          <h1 className="text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl lg:text-6xl">
+          <h1 className="text-4xl font-bold tracking-tight text-ink sm:text-5xl lg:text-6xl">
             {headline}
           </h1>
           {subheadline && (
-            <p className="mt-6 text-lg leading-relaxed text-gray-600">
+            <p className="mt-6 text-lg leading-relaxed text-ink-muted">
               {subheadline}
             </p>
           )}
@@ -34,7 +34,7 @@ export default function HeroSection({
               {primaryCta && (
                 <a
                   href={primaryCta.href ?? "#"}
-                  className="rounded-lg bg-blue-500 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-600"
+                  className="rounded-lg bg-accent px-6 py-3 text-sm font-semibold text-on-accent shadow-sm transition hover:bg-accent"
                 >
                   {primaryCta.label}
                 </a>
@@ -42,7 +42,7 @@ export default function HeroSection({
               {secondaryCta && (
                 <a
                   href={secondaryCta.href ?? "#"}
-                  className="rounded-lg border border-gray-300 px-6 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+                  className="rounded-lg border border-border-strong px-6 py-3 text-sm font-semibold text-ink-muted transition hover:bg-surface-muted"
                 >
                   {secondaryCta.label}
                 </a>

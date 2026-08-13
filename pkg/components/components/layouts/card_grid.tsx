@@ -22,7 +22,7 @@ export default function CardGrid({ cards, columns = 3 }: CardGridProps) {
       {cards.map((card, i) => (
         <div
           key={i}
-          className="overflow-hidden rounded-xl border border-gray-200 bg-white"
+          className="overflow-hidden rounded-xl border border-border bg-surface"
         >
           {card.image && (
             <img
@@ -33,17 +33,17 @@ export default function CardGrid({ cards, columns = 3 }: CardGridProps) {
           )}
 
           <div className="p-5">
-            <h3 className="text-lg font-semibold text-gray-900">
+            <h3 className="text-lg font-semibold text-ink">
               {card.title}
             </h3>
-            <p className="mt-1 text-sm text-gray-500">{card.description}</p>
+            <p className="mt-1 text-sm text-ink-muted">{card.description}</p>
 
             {card.tags && card.tags.length > 0 && (
               <div className="mt-3 flex flex-wrap gap-2">
                 {card.tags.map((tag, j) => (
                   <span
                     key={j}
-                    className="inline-flex rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-700"
+                    className="inline-flex rounded-full bg-accent-surface px-2.5 py-0.5 text-xs font-medium text-accent-ink"
                   >
                     {tag}
                   </span>

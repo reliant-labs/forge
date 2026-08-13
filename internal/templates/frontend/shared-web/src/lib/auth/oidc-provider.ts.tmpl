@@ -54,7 +54,9 @@
 // Register `<origin>/auth/callback` as an allowed redirect URI with
 // whichever one you use.
 
-import {
+{{if .HasTypedConfig}}import { loadConfig } from "@/lib/config_gen";
+
+{{end}}import {
   buildAuthorizeUrl,
   createState,
   createVerifier,
@@ -79,9 +81,7 @@ import {
   updateSessionTokens,
 } from "./oidc-storage";
 import { createSessionAuthProvider } from "./session-provider";
-{{if .HasTypedConfig}}
-import { loadConfig } from "@/lib/config_gen";
-{{end}}
+
 import type { AuthProvider, AuthUser } from "./provider";
 
 {{if .HasTypedConfig}}// OIDC settings come from the generated, typed config module — which reads

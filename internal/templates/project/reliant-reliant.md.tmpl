@@ -63,5 +63,5 @@ The light/dark palette IS wired, though: semantic tokens in `globals.css` / `ind
 - `{{.CLI}} skill load forge` — the entry point: what forge already scaffolds, and the commands that print its whole surface.
 - `{{.CLI}} project capabilities` — every verb, analyzer and marker forge has, in one call.
 - `{{.CLI}} project annotations` — the entity-authoring vocabulary (field types, projected validate rules, proto options).
-- `{{.CLI}} project libraries` — every `forge/pkg/*` library, its purpose, and the source path this project resolves. Run it before porting a utility; read one with `go doc <import path>`. Never search the disk for forge's source.
+- `{{.CLI}} project libraries` — every `forge/pkg/*` library and its purpose. Run it before porting a utility. Add a package name (`{{.CLI}} project libraries crud orm`) to print those packages' full exported API, signatures included; that beats `go doc <pkg>`, which shows no methods. Never search the disk for forge's source.
 - `{{.CLI}} skill list` / `{{.CLI}} skill load <name>` — the skills, served from the binary, so they always match the forge you are running.

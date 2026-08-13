@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260709200747-435963d16310.1
-	connectrpc.com/connect v1.19.1
+	connectrpc.com/connect v1.20.0
 	github.com/evanw/esbuild v0.28.1
 	github.com/fergusstrange/embedded-postgres v1.34.0
 	github.com/fsnotify/fsnotify v1.10.0
@@ -23,7 +23,7 @@ require (
 	golang.org/x/term v0.43.0
 	golang.org/x/text v0.37.0
 	golang.org/x/tools v0.44.0
-	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
 	kcl-lang.io/kcl-go v0.12.3
 	kcl-lang.io/kpm v0.12.4
@@ -191,7 +191,17 @@ require (
 
 // The CLI and the app-runtime library are separate modules on purpose: apps
 // import forge/pkg and must not inherit the CLI's tree (kcl, docker, delve,
-// aws, gcp). forge itself is always built from source in-repo (see Taskfile
-// `build`/`dev`), so root resolves pkg from ./pkg rather than a published tag.
-// Release order is therefore: tag pkg/vX.Y.Z, bump the require above, tag root.
-replace github.com/reliant-labs/forge/pkg => ./pkg
+// aws, gcp).
+//
+// There is deliberately NO `replace ... => ./pkg` here. Go refuses
+// `go install <module>/cmd/...@version` for any module whose go.mod carries a
+// replace, so one makes every published tag uninstallable — v0.0.3 installs,
+// v0.0.4 and v0.0.5 did not, and control-plane's CI pinned itself to v0.0.3 as
+// a result. internal/modguard guards it.
+//
+// In-repo development resolves ./pkg through the gitignored go.work
+// (`go work init . ./pkg`), which bridges locally without following the module
+// into the published artifact.
+//
+// Release order: tag pkg/vX.Y.Z, bump the require above, tag root.
+

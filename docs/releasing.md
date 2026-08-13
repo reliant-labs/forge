@@ -20,9 +20,25 @@ See `docs/pkg-versioning.md` for the dev-vs-release dependency model behind the
 cd forge
 task release:pkg -- vX.Y.Z          # validates clean pkg/ tree + standalone
                                     # (GOWORK=off) build/vet, then tags pkg/vX.Y.Z
-git tag vX.Y.Z                      # root module tag, same HEAD
-git push origin vX.Y.Z pkg/vX.Y.Z  # publish both
+git push origin pkg/vX.Y.Z          # publish pkg FIRST — the require below needs it
+
+go mod edit -require=github.com/reliant-labs/forge/pkg@vX.Y.Z
+go build ./... && git commit -am "chore: require forge/pkg vX.Y.Z"
+
+git tag vX.Y.Z                      # root module tag, on the require bump
+git push origin main vX.Y.Z
 ```
+
+**The require bump is not optional.** The root module has no
+`replace ... => ./pkg`, so the require IS how a consumer resolves forge/pkg.
+Skipping it ships a root module pointing at a stale pkg — v0.0.4 shipped
+requiring `pkg v0.0.3` while `pkg/v0.0.4` existed, and no in-repo build could
+have noticed. `internal/modguard` fails the suite if the require is a
+pseudo-version or a placeholder.
+
+The two tags therefore land on DIFFERENT commits (pkg on the release commit,
+root one commit later on the bump). That is expected; `pkg/` content is
+identical at both.
 
 If `task release:pkg` fails on the standalone build, the `pkg/` go.mod isn't
 tidied for the consumer's view — run `cd pkg && GOWORK=off go mod tidy`, commit,

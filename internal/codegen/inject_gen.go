@@ -67,6 +67,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
+	"regexp"
 )
 
 // composeField is one field on the Components struct (one row of the typed
@@ -191,6 +192,92 @@ const (
 	frameworkHTTPClientExpr = "infra.DefaultClient()"
 )
 
+// Framework STORE seam. `internal/db/store_gen.go` gives every entity's
+// generated CRUD an interface shape — `db.<Entity>Store` per entity, plus the
+// aggregate `db.Store` — so a service can name persistence as a Deps field
+// instead of hand-writing an interface and a passthrough adapter over the ORM
+// free functions.
+//
+// That type is only useful if it RESOLVES. Without this seam the generator
+// reports `Pipeline.Deps.Estimates (db.EstimateStore) has no provider` and
+// tells the author to add an Infra field and construct "your implementation" —
+// which is the hand-written adapter layer the generated store exists to
+// delete. Measured: two forge-one-shot runs wrote 723 and 464 lines of exactly
+// that, and generating the type without wiring it would have left them writing
+// it anyway.
+//
+// Every store is constructible from ONE thing forge already owns — the ORM
+// client on Infra — so there is nothing for the author to supply and no
+// decision to defer: db.NewStore(infra.ORM) for the aggregate, and the
+// per-entity accessor off it for a narrow dep. Same override story as
+// Clock/IDGen/HTTPClient: an Infra field NAMED after the Deps field wins via
+// the exact-name path, and compose.go is owned, so any bespoke wiring stays a
+// one-line edit.
+const (
+	frameworkStoreAggregateType = "db.Store"
+	frameworkStoreAggregateExpr = "db.NewStore(infra.ORM)"
+)
+
+// frameworkStoreEntityExpr returns the compose expression for a per-entity
+// store dep — `db.NewStore(infra.ORM).<Plural>()`. It returns "" for any type
+// that is not a generated per-entity store, so an unrelated `db.`-qualified
+// interface never picks up a spurious provider.
+//
+// The accessor set is read from the GENERATED file rather than inferred from
+// the type name. A name match alone would resolve `db.WidgetStore` in a
+// project with no Widget entity and emit code that does not compile; and the
+// accessor spelling is the pluralizer's output, which this package must not
+// re-derive.
+func frameworkStoreEntityExpr(depType string, accessors map[string]string) string {
+	if len(accessors) == 0 {
+		return ""
+	}
+	plural, ok := accessors[depType]
+	if !ok {
+		return ""
+	}
+	return "db.NewStore(infra.ORM)." + plural + "()"
+}
+
+// storeAccessorRE matches one accessor line in the generated store interface:
+//
+//	Estimates() EstimateStore
+var storeAccessorRE = regexp.MustCompile(`^\t([A-Z]\w*)\(\) ([A-Z]\w*Store)$`)
+
+// parseStoreAccessors reads internal/db/store_gen.go and returns a map of
+// qualified dep type (`db.EstimateStore`) → accessor name (`Estimates`).
+//
+// Reading the generated file is deliberate: it is the only place that knows
+// BOTH which entities exist and what the pluralizer named their accessors, so
+// a rename or a new entity flows through with no second source to keep in
+// sync. An absent file (a project with no entities, or one generated before
+// stores existed) yields an empty map, and every store dep then falls through
+// to the ordinary missing-provider path.
+func parseStoreAccessors(projectDir string) map[string]string {
+	raw, err := os.ReadFile(filepath.Join(projectDir, "internal", "db", "store_gen.go"))
+	if err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	inAggregate := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		switch {
+		case strings.HasPrefix(line, "type Store interface {"):
+			inAggregate = true
+			continue
+		case inAggregate && strings.HasPrefix(line, "}"):
+			inAggregate = false
+		}
+		if !inAggregate {
+			continue
+		}
+		if m := storeAccessorRE.FindStringSubmatch(line); m != nil {
+			out["db."+m[2]] = m[1]
+		}
+	}
+	return out
+}
+
 // InjectGenData is the rendered template input for compose.go.tmpl.
 type InjectGenData struct {
 	Module            string
@@ -207,6 +294,8 @@ type InjectGenData struct {
 	// them (unused-import build failure).
 	NeedsTime bool
 	NeedsULID bool
+	// NeedsDBStore gates the internal/db import for a generated-store dep.
+	NeedsDBStore bool
 	// Fields is the Components struct field set (one per component, typed as
 	// its concrete handler/worker/operator type), in stable FieldName order.
 	Fields []composeField
@@ -300,13 +389,17 @@ func GenerateCompose(in InjectGenInput) error {
 	// reset to ""+TODO). Empty when config.go hasn't been generated yet.
 	configFields := parseConfigFields(in.ProjectDir)
 
+	// Accessor map for the generated per-entity stores, read once per run.
+	storeAccessors := parseStoreAccessors(in.ProjectDir)
+
 	var (
-		rendered    []InjectComponentData
-		missing     []MissingProvider
-		needsConfig bool
-		needsFmt    bool
-		needsTime   bool
-		needsULID   bool
+		rendered     []InjectComponentData
+		missing      []MissingProvider
+		needsConfig  bool
+		needsFmt     bool
+		needsTime    bool
+		needsULID    bool
+		needsDBStore bool
 	)
 
 	for _, c := range plan.Order {
@@ -329,7 +422,7 @@ func GenerateCompose(in InjectGenInput) error {
 		}
 		for _, df := range c.Deps {
 			needsConfig = needsConfig || df.Name == "Config"
-			expr, comment, miss := resolveInjectField(df, c, producerVar, resolver, infraFields, configFields, matcher, in.RoleRoot(c))
+			expr, comment, miss := resolveInjectField(df, c, producerVar, resolver, infraFields, configFields, matcher, in.RoleRoot(c), storeAccessors)
 			if miss != nil {
 				missing = append(missing, *miss)
 			}
@@ -337,11 +430,16 @@ func GenerateCompose(in InjectGenInput) error {
 			// seam. The emitted expressions are unique constants, so an exact
 			// match uniquely identifies a seam fill (Infra / config / producer
 			// exprs are `infra.*` / literals, never these).
-			switch expr {
-			case frameworkClockExpr:
+			switch {
+			case expr == frameworkClockExpr:
 				needsTime = true
-			case frameworkIDGenExpr:
+			case expr == frameworkIDGenExpr:
 				needsULID = true
+			case strings.HasPrefix(expr, "db.NewStore("):
+				// Both store forms — the aggregate and a per-entity accessor
+				// off it — are spelled db.NewStore(...), so one prefix gates
+				// the internal/db import for either.
+				needsDBStore = true
 			}
 			rc.Assignments = append(rc.Assignments, InjectAssignment{
 				Field:   df.Name,
@@ -377,6 +475,7 @@ func GenerateCompose(in InjectGenInput) error {
 		NeedsFmt:          needsFmt,
 		NeedsTime:         needsTime,
 		NeedsULID:         needsULID,
+		NeedsDBStore:      needsDBStore,
 		Fields:            fields,
 		Order:             rendered,
 		HasCycle:          plan.HasCycle(),
@@ -1063,7 +1162,7 @@ func injectBeforeImportClose(content, lines string) string {
 // should emit, following the priority order in the file header. The third
 // return is non-nil when the field is a required collaborator with a
 // PROVEN-missing provider (generate-time loud error).
-func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]string, resolver TypeResolver, infraFields map[string]InfraField, configFields map[string]InfraField, matcher *InfraAssignabilityMatcher, roleRoot string) (expr, comment string, miss *MissingProvider) {
+func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]string, resolver TypeResolver, infraFields map[string]InfraField, configFields map[string]InfraField, matcher *InfraAssignabilityMatcher, roleRoot string, storeAccessors map[string]string) (expr, comment string, miss *MissingProvider) {
 	// 1. PRODUCER — another component produces this type (by-type edge).
 	if prodField := resolver.Resolve(c, df.Type); prodField != "" && prodField != c.FieldName {
 		if v, ok := producerVar[prodField]; ok {
@@ -1101,6 +1200,9 @@ func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]s
 			return frameworkClockExpr, "framework clock", nil
 		case frameworkIDGenType:
 			return frameworkIDGenExpr, "framework id generator", nil
+		case frameworkStoreAggregateType:
+			// Every entity's store, bound to the ORM client Infra already owns.
+			return frameworkStoreAggregateExpr, "generated store (internal/db/store_gen.go)", nil
 		case frameworkHTTPClientType:
 			// Instrumented default client (see the seam const block). The
 			// generic Infra-by-assignability path below would also find a
@@ -1108,6 +1210,13 @@ func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]s
 			// provider is the method, and the exact-name gate above already
 			// honors an explicit same-name override.
 			return frameworkHTTPClientExpr, "instrumented default client (providers.go DefaultClient)", nil
+		}
+		// A per-entity generated store (db.<Entity>Store). Not a switch case
+		// because the set is per-project: it is read from the generated
+		// store file, so a type that merely LOOKS like one in a project
+		// without that entity still falls through to missing-provider.
+		if expr := frameworkStoreEntityExpr(df.Type, storeAccessors); expr != "" {
+			return expr, "generated store (internal/db/store_gen.go)", nil
 		}
 	}
 

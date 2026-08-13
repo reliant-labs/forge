@@ -67,10 +67,22 @@ type server struct {
 }
 
 var (
-	sharedOnce sync.Once
-	shared     *server
-	sharedErr  error
-	dbCounter  atomic.Uint64
+	// sharedMu guards the lazy init below. It replaces a sync.Once, which
+	// could not express "Shutdown returns us to the uninitialized state":
+	// a Once stays fired forever, so a boot AFTER a Shutdown handed back the
+	// gutted struct — non-nil server, nil baseDB — together with a NIL error,
+	// and the first Exec in New segfaulted on it.
+	//
+	// The forge binary never hit this because main calls cli.Execute exactly
+	// once and Execute DEFERS Shutdown, making "after Shutdown" identical to
+	// "after the process exits". internal/tierguard breaks that equivalence
+	// deliberately: it drives the whole pipeline in-process through repeated
+	// cli.Execute() calls, so it pays the deferred Shutdown after every
+	// simulated forge invocation and keeps going.
+	sharedMu  sync.Mutex
+	shared    *server
+	sharedErr error
+	dbCounter atomic.Uint64
 )
 
 // freePort asks the OS for an unused TCP port, in the uint32 shape
@@ -84,14 +96,22 @@ func freePort() (uint32, error) {
 	return uint32(p), nil
 }
 
-// boot resolves this process's shared postgres server. Idempotent via
-// sharedOnce: it acquires exactly ONE cross-process pool reference (or one
-// external-server connection) for the process lifetime, released by
-// Shutdown.
+// boot resolves this process's shared postgres server, acquiring exactly ONE
+// cross-process pool reference (or one external-server connection) at a time,
+// released by Shutdown.
+//
+// A live handle is reused; anything else re-acquires. That makes the sequence
+// boot → Shutdown → boot correct rather than fatal, which is what an
+// in-process embedder (internal/tierguard) needs and what a plain sync.Once
+// could not give: the Once stayed fired after Shutdown and handed the next
+// caller a closed handle with a nil error.
 func boot() (*server, error) {
-	sharedOnce.Do(func() {
-		shared, sharedErr = startServer()
-	})
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	if shared != nil && shared.baseDB != nil {
+		return shared, sharedErr
+	}
+	shared, sharedErr = startServer()
 	return shared, sharedErr
 }
 
@@ -127,6 +147,8 @@ func startServer() (*server, error) {
 // `task test` — so the per-package `go test` binaries a suite spawns now reach
 // the pool directly, which is the path reapStaleInstances covers.)
 func Shutdown() {
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
 	if shared == nil {
 		return
 	}
@@ -138,6 +160,11 @@ func Shutdown() {
 		shared.release()
 		shared.release = nil
 	}
+	// Drop the handle entirely, so the next boot re-acquires rather than
+	// resurrecting a closed one. Leaving the pointer behind is what made
+	// Shutdown a one-way door.
+	shared = nil
+	sharedErr = nil
 }
 
 // bootEmbedded starts a fresh embedded postgres and returns its maintenance
@@ -421,12 +448,22 @@ func New() (*sql.DB, func(), error) {
 		return nil, nil, fmt.Errorf("pgtest: ping %s: %w", name, err)
 	}
 
+	// Capture the maintenance handle rather than the server struct: a caller
+	// that defers BOTH cleanup and Shutdown runs them in the natural order
+	// Shutdown-then-cleanup, and reading s.baseDB then would dereference the
+	// field Shutdown just nilled. Holding the *sql.DB directly means the worst
+	// case is a scratch database left behind — which the pool teardown drops
+	// anyway — instead of a panic in a deferred call.
+	baseDB := s.baseDB
 	cleanup := func() {
 		_ = db.Close()
+		if baseDB == nil {
+			return
+		}
 		// Terminate lingering backends so DROP DATABASE doesn't block.
-		_, _ = s.baseDB.Exec(
+		_, _ = baseDB.Exec(
 			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", name)
-		_, _ = s.baseDB.Exec("DROP DATABASE IF EXISTS " + name)
+		_, _ = baseDB.Exec("DROP DATABASE IF EXISTS " + name)
 	}
 	return db, cleanup, nil
 }

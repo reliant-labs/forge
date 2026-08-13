@@ -511,10 +511,17 @@ func TestParseSignatureSelectors_UnknownSelectorsFailLoudly(t *testing.T) {
 	}
 }
 
-// TestWriteLibraries_DefaultStaysTerseAndAdvertisesTheFlag: the default
-// output is what every existing caller already parses and pastes, so
-// adding signatures must not change it — but a flag nobody can discover
-// is a flag nobody passes.
+// TestWriteLibraries_DefaultStaysTerse: the default output is what every
+// existing caller already parses and pastes, so the deep surface must not
+// leak into it — but a way in that nobody can discover is one nobody
+// takes.
+//
+// The advertised route used to be `--signatures`, and this test used to
+// require the literal `go doc .../svcerr` line beside it. Both moved, for
+// the same reason: the flag went undiscovered through a whole measured run
+// (35.5 min of grepping instead), and `go doc <pkg>` turned out not to
+// reach methods at all. The invariant — terse by default, and it names the
+// deeper route — is unchanged; only the route's spelling is.
 func TestWriteLibraries_DefaultStaysTerse(t *testing.T) {
 	t.Parallel()
 	spec := repoLibrariesSpec(t, "")
@@ -529,12 +536,8 @@ func TestWriteLibraries_DefaultStaysTerse(t *testing.T) {
 	if strings.Contains(out, "func WithReason") {
 		t.Error("the default output grew signatures")
 	}
-	if !strings.Contains(out, "--signatures") {
-		t.Error("the default output does not mention --signatures, so nobody will pass it")
-	}
-	// The `go doc` pointer is still the only route for 24 packages here.
-	if !strings.Contains(out, "go doc "+forgePkgModule+"/svcerr") {
-		t.Error("the default output dropped the go doc guidance it still needs")
+	if !strings.Contains(out, "forge project libraries crud") {
+		t.Error("the default output does not name the positional form, so nobody will use it")
 	}
 }
 

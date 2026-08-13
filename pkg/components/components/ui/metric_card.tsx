@@ -31,7 +31,12 @@ function Sparkline({ points }: { points: SparklinePoint[] }) {
     return `${x},${y}`;
   });
 
-  const trend = values[values.length - 1] >= values[0];
+  // Both indices are in-bounds (points.length >= 2 above), but
+  // noUncheckedIndexedAccess can't see that — the fallbacks keep the
+  // comparison total, and equal ends read as a flat (non-negative) trend.
+  const first = values[0] ?? 0;
+  const last = values[values.length - 1] ?? first;
+  const trend = last >= first;
 
   return (
     <svg width={width} height={height} className="flex-shrink-0">
@@ -55,10 +60,10 @@ function TrendIndicator({ change }: { change: { value: number; label?: string } 
     <div
       className={`inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-medium ${
         isNeutral
-          ? "bg-gray-100 text-gray-600"
+          ? "bg-surface-muted text-ink-muted"
           : isPositive
-            ? "bg-green-50 text-green-700"
-            : "bg-red-50 text-red-700"
+            ? "bg-success-surface text-success-ink"
+            : "bg-danger-surface text-danger-ink"
       }`}
     >
       {!isNeutral && (
@@ -73,22 +78,22 @@ function TrendIndicator({ change }: { change: { value: number; label?: string } 
         </svg>
       )}
       {isPositive ? "+" : ""}
-      {change.value}%{change.label && <span className="ml-0.5 text-gray-500">{change.label}</span>}
+      {change.value}%{change.label && <span className="ml-0.5 text-ink-muted">{change.label}</span>}
     </div>
   );
 }
 
 export default function MetricCard({ label, value, change, icon, sparkline, href }: MetricCardProps) {
   const content = (
-    <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md">
+    <div className="rounded-lg border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md">
       <div className="flex items-start justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            {icon && <div className="flex-shrink-0 text-gray-400">{icon}</div>}
-            <p className="text-sm font-medium text-gray-500 truncate">{label}</p>
+            {icon && <div className="flex-shrink-0 text-ink-subtle">{icon}</div>}
+            <p className="text-sm font-medium text-ink-muted truncate">{label}</p>
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <p className="text-2xl font-semibold text-gray-900">{value}</p>
+            <p className="text-2xl font-semibold text-ink">{value}</p>
             {change && <TrendIndicator change={change} />}
           </div>
         </div>

@@ -714,14 +714,27 @@ func (f FrontendEntity) EffectiveEnvVars() []KCLEnvVar {
 }
 
 // FrontendDeployEntity carries the deploy discriminator for a frontend.
-// Today the only populated variant is FirebaseHosting (Type=="firebase");
-// the Firebase field is non-nil exactly when Type=="firebase". The Type
-// discriminator still drives the build skip-list; the embedded variant
-// blocks carry the per-target config the deploy dispatch needs. Adding
-// new dispatch keys (e.g. a Vercel variant) later is a pure additive
-// change — a new pointer field + a new Type string.
+// Two variants are populated today: FirebaseHosting (Type=="firebase")
+// and K8sCluster (Type=="cluster"); the matching pointer field is non-nil
+// exactly when its Type matches. The Type discriminator drives the build
+// skip-list; the embedded variant blocks carry the per-target config the
+// deploy dispatch needs. Adding new dispatch keys (e.g. a Vercel variant)
+// later is a pure additive change — a new pointer field + a new Type
+// string.
+//
+// The two variants take DIFFERENT paths after the build:
+//
+//   - "firebase" ships out-of-band via dispatchFrontendDeploys (build the
+//     static export, assemble it, `firebase deploy`). It never appears in
+//     the k8s manifest stream.
+//   - "cluster" is projected in KCL (render.k `_project_frontend`) onto the
+//     same RenderedWorkload a forge.Service produces, so it renders a real
+//     Deployment + Service and rides the normal apply / rollout / prune
+//     path. Nothing in the Go deploy dispatch special-cases it — by the
+//     time the manifests exist it is indistinguishable from any other
+//     cluster workload, which is the point.
 type FrontendDeployEntity struct {
-	Type string `json:"type"` // "firebase" (host/cluster/external/compose reserved for future frontend targets)
+	Type string `json:"type"` // "firebase" | "cluster" (host/external/compose reserved for future frontend targets)
 
 	// Firebase is populated when Type=="firebase". The Firebase Hosting
 	// deploy spec — build output dir, target site/project, base-path

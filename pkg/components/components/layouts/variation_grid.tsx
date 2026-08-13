@@ -46,12 +46,12 @@ export default function VariationGrid({
       {(title || subtitle) && (
         <header className="mb-6">
           {title && (
-            <h2 className="text-xl font-semibold leading-tight text-gray-900">
+            <h2 className="text-xl font-semibold leading-tight text-ink">
               {title}
             </h2>
           )}
           {subtitle && (
-            <p className="mt-1 text-sm text-gray-500">{subtitle}</p>
+            <p className="mt-1 text-sm text-ink-muted">{subtitle}</p>
           )}
         </header>
       )}
@@ -60,20 +60,20 @@ export default function VariationGrid({
         {variations.map((v, i) => (
           <figure
             key={i}
-            className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white"
+            className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-surface"
           >
-            <figcaption className="flex items-baseline justify-between gap-3 border-b border-gray-100 px-4 py-3">
-              <span className="text-sm font-semibold text-gray-900">
+            <figcaption className="flex items-baseline justify-between gap-3 border-b border-border px-4 py-3">
+              <span className="text-sm font-semibold text-ink">
                 {v.label}
               </span>
               {v.note && (
-                <span className="truncate text-xs text-gray-500">
+                <span className="truncate text-xs text-ink-muted">
                   {v.note}
                 </span>
               )}
             </figcaption>
             <div
-              className="min-w-0 flex-1 overflow-auto bg-gray-50 p-4"
+              className="min-w-0 flex-1 overflow-auto bg-surface-muted p-4"
               style={heightStyle}
             >
               {v.content}

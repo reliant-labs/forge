@@ -18,7 +18,7 @@ export default function SplitView({
   return (
     <div className="flex h-screen overflow-hidden">
       <div
-        className="overflow-y-auto border-r border-gray-200"
+        className="overflow-y-auto border-r border-border"
         style={{ flexBasis: `${leftPercent}%` }}
       >
         {left}

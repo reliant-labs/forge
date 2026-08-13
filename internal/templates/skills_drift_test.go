@@ -51,6 +51,11 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		// Tier-1 per-RPC CRUD op constructors (projection half of the
 		// CRUD split; the user-owned handlers_crud.go delegates to them).
 		"handlers_crud_ops_gen.go": {},
+		// internal/db/store_gen.go — the ORM delegates given an INTERFACE
+		// shape (<Entity>Store per entity, plus an aggregate Store embedding
+		// them). It is what a service's Deps field names, so packages stop
+		// hand-writing a passthrough adapter over the free functions.
+		"store_gen.go": {},
 		// Legacy pre-split CRUD implementation file. No longer emitted,
 		// but live skills may still name it in "legacy / still
 		// recognized" context (e.g. audit-json's crud_stubs row).

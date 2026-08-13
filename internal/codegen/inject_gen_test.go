@@ -1397,3 +1397,79 @@ func New(d Deps) (Service, error) { return nil, nil }
 	}
 	goBuild("after removing the Deps field")
 }
+
+// writeStoreGen writes a minimal internal/db/store_gen.go — just the aggregate
+// interface the resolver reads its accessor map from. The real file is emitted
+// by the ORM generator; this is the shape that matters to composition.
+func writeStoreGen(t *testing.T, projectDir string, entities ...[2]string) {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("package db\n\ntype Store interface {\n")
+	for _, e := range entities {
+		b.WriteString("\t" + e[1] + "() " + e[0] + "Store\n")
+	}
+	b.WriteString("}\n")
+	dir := filepath.Join(projectDir, "internal", "db")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "store_gen.go"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A generated store must RESOLVE, not merely exist.
+//
+// Generating db.<Entity>Store without teaching composition to provide it is
+// worse than not generating it: `forge generate` reports "has no provider" and
+// instructs the author to add an Infra field and construct "your
+// implementation" — which is the hand-written passthrough adapter the store
+// exists to delete. Two measured forge-one-shot runs wrote 723 and 464 lines
+// of exactly that layer.
+//
+// Every store is constructible from the ORM client Infra already owns, so
+// there is nothing for the author to supply.
+func TestGenerateInject_GeneratedStoreSeam(t *testing.T) {
+	dir := newInjectProject(t)
+	writeStoreGen(t, dir, [2]string{"Estimate", "Estimates"}, [2]string{"Job", "Jobs"})
+	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tEstimates db.EstimateStore\n\tAll db.Store")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	})
+	if err != nil {
+		t.Fatalf("a generated store must resolve without hand-wiring; got: %v", err)
+	}
+	out := readInject(t, dir)
+	for _, want := range []string{
+		"Estimates: db.NewStore(infra.ORM).Estimates(),",
+		"All: db.NewStore(infra.ORM),",
+		`"example.com/proj/internal/db"`,
+	} {
+		if !containsNormalized(out, want) {
+			t.Fatalf("compose.go missing %q:\n%s", want, out)
+		}
+	}
+	assertGofmtFixedPoint(t, filepath.Join(dir, "internal", "app", "compose.go"))
+}
+
+// The accessor set comes from the GENERATED file, so a type that merely looks
+// like a store in a project that has no such entity must NOT pick up a
+// provider — emitting db.NewStore(...).Widgets() there would not compile.
+// It falls through to the ordinary loud missing-provider path instead.
+func TestGenerateInject_UnknownStoreTypeIsStillMissing(t *testing.T) {
+	dir := newInjectProject(t)
+	writeStoreGen(t, dir, [2]string{"Estimate", "Estimates"})
+	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tWidgets db.WidgetStore")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	})
+	if err == nil {
+		t.Fatal("db.WidgetStore has no Widget entity behind it — resolving it would emit code that does not compile")
+	}
+}

@@ -14,9 +14,9 @@ interface DashboardGridProps {
 }
 
 const trendIndicator: Record<string, { symbol: string; color: string }> = {
-  up: { symbol: "\u2191", color: "text-green-600" },
-  down: { symbol: "\u2193", color: "text-red-600" },
-  flat: { symbol: "\u2192", color: "text-gray-500" },
+  up: { symbol: "\u2191", color: "text-success" },
+  down: { symbol: "\u2193", color: "text-danger" },
+  flat: { symbol: "\u2192", color: "text-ink-muted" },
 };
 
 export default function DashboardGrid({
@@ -25,9 +25,9 @@ export default function DashboardGrid({
   children,
 }: DashboardGridProps) {
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-surface-muted">
       {header && (
-        <header className="border-b border-gray-200 bg-white px-6 py-4">
+        <header className="border-b border-border bg-surface px-6 py-4">
           {header}
         </header>
       )}
@@ -42,13 +42,13 @@ export default function DashboardGrid({
               return (
                 <div
                   key={i}
-                  className="rounded-xl border border-gray-200 bg-white p-5"
+                  className="rounded-xl border border-border bg-surface p-5"
                 >
-                  <p className="text-sm font-medium text-gray-500">
+                  <p className="text-sm font-medium text-ink-muted">
                     {metric.label}
                   </p>
                   <div className="mt-1 flex items-baseline gap-2">
-                    <p className="text-2xl font-semibold text-gray-900">
+                    <p className="text-2xl font-semibold text-ink">
                       {metric.value}
                     </p>
                     {trend && (
@@ -63,7 +63,7 @@ export default function DashboardGrid({
           </div>
         )}
 
-        <div className="rounded-xl border border-gray-200 bg-white p-6">
+        <div className="rounded-xl border border-border bg-surface p-6">
           {children}
         </div>
       </div>

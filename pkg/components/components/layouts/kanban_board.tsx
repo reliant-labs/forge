@@ -9,29 +9,29 @@ interface KanbanBoardProps {
 
 export default function KanbanBoard({ columns }: KanbanBoardProps) {
   return (
-    <div className="flex h-screen gap-4 overflow-x-auto bg-gray-100 p-6">
+    <div className="flex h-screen gap-4 overflow-x-auto bg-surface-muted p-6">
       {columns.map((column, i) => (
         <div
           key={i}
-          className="flex w-72 shrink-0 flex-col rounded-xl bg-gray-200/60"
+          className="flex w-72 shrink-0 flex-col rounded-xl bg-surface-muted/60"
         >
           <div className="flex items-center justify-between px-4 py-3">
-            <h3 className="text-sm font-semibold text-gray-900">
+            <h3 className="text-sm font-semibold text-ink">
               {column.title}
             </h3>
-            <span className="rounded-full bg-gray-300 px-2 py-0.5 text-xs font-medium text-gray-700">
+            <span className="rounded-full bg-surface-muted px-2 py-0.5 text-xs font-medium text-ink-muted">
               {column.cards.length}
             </span>
           </div>
 
           <div className="flex-1 space-y-2 overflow-y-auto px-3 pb-3">
             {column.cards.map((card, j) => (
-              <div key={j} className="rounded-lg bg-white p-3 shadow-sm">
-                <p className="text-sm font-medium text-gray-900">
+              <div key={j} className="rounded-lg bg-surface p-3 shadow-sm">
+                <p className="text-sm font-medium text-ink">
                   {card.title}
                 </p>
                 {card.description && (
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="mt-1 text-xs text-ink-muted">
                     {card.description}
                   </p>
                 )}
@@ -40,7 +40,7 @@ export default function KanbanBoard({ columns }: KanbanBoardProps) {
                     {card.tags.map((tag, k) => (
                       <span
                         key={k}
-                        className="inline-flex rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-700"
+                        className="inline-flex rounded bg-accent-surface px-1.5 py-0.5 text-xs font-medium text-accent-ink"
                       >
                         {tag}
                       </span>

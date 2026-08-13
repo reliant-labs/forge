@@ -74,11 +74,14 @@ type PageTemplateData struct {
 	// ("@/gen/db/v1/tasks_pb"). May differ from TypesImportPath when the
 	// entity message lives in its own proto file.
 	EntityTypeImportPath string
-	// Columns drives the list page's typed column array and the detail
-	// page's field rows. Only renderable kinds are included (scalars,
-	// enums, timestamps, repeated scalars) — nested messages and maps
-	// don't belong in a table cell.
+	// Columns drives the DETAIL page's field rows. Only renderable kinds
+	// are included (scalars, enums, timestamps, repeated scalars) — nested
+	// messages and maps don't belong in a table cell.
 	Columns []EntityPageField
+	// ListColumns drives the LIST page's typed column array. It is Columns
+	// minus the identity/audit fields — see listColumnExcluded for why a
+	// table and a detail view want different sets.
+	ListColumns []EntityPageField
 	// SearchFields are the camelCase string-typed fields client-side
 	// search filters over. Empty → the list page omits the search box.
 	//
@@ -1313,14 +1316,54 @@ var enumLikeNameFragments = []string{
 	"status", "type", "kind", "role", "state", "category", "priority", "level",
 }
 
+// isEnumLikeFieldName reports whether a STRING field's name suggests a closed
+// value set, so the cell renders as a badge rather than plain text.
+//
+// The match is on whole snake_case SEGMENTS, not a substring. `strings.Contains`
+// badged `billing_state` — a US state, free text with fifty values — because it
+// contains "state", and the emitted cell then handed a postal abbreviation to
+// StatusBadge with no enum behind it. Segment matching keeps `job_state` and
+// `payment_status` while dropping `billing_state`, `real_estate_id` and
+// `statement_id`.
+//
+// A false positive here is worse than a miss: a badge asserts "this is one of a
+// known set", and the page has to be hand-corrected to walk it back. A missed
+// badge just renders as text, which is what the field already was.
 func isEnumLikeFieldName(name string) bool {
-	lower := strings.ToLower(name)
-	for _, frag := range enumLikeNameFragments {
-		if strings.Contains(lower, frag) {
-			return true
+	for _, seg := range strings.Split(strings.ToLower(name), "_") {
+		for _, frag := range enumLikeNameFragments {
+			if seg == frag {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// listColumnIdentityFields are the identity/audit columns a LIST page omits by
+// default. They stay on the DETAIL page, where "when was this created" is a
+// real question a reader asks about one record.
+//
+// This is the same judgement the existing deleted_at skip already makes —
+// machinery, not data — applied to the fields every measured run deleted by
+// hand. In a table they are pure noise: the primary key is already the row's
+// link target, and created/updated timestamps push the columns that identify
+// the record off the visible width. A measured 15-entity app generated 12
+// columns per list and every one of its 30 pages was rewritten; three of those
+// twelve were these.
+//
+// It is a DEFAULT, not a rule. The born page is user-owned from birth, so
+// adding the column back is one line in a file forge never overwrites.
+var listColumnIdentityFields = map[string]bool{
+	"id":          true,
+	"created_at":  true,
+	"create_time": true,
+	"updated_at":  true,
+	"update_time": true,
+}
+
+func listColumnExcluded(fieldName string) bool {
+	return listColumnIdentityFields[strings.ToLower(fieldName)]
 }
 
 // AttachEntityMeta enriches a PageTemplateData with typed field metadata
@@ -1400,6 +1443,9 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) 
 			}
 		}
 		page.Columns = append(page.Columns, col)
+		if !listColumnExcluded(f.Name) {
+			page.ListColumns = append(page.ListColumns, col)
+		}
 
 		if f.ProtoType == "string" {
 			page.SearchFields = append(page.SearchFields, camel)

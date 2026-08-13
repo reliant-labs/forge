@@ -186,6 +186,19 @@ INSERT: a UNIQUE column backed by a 5-value CHECK vocabulary can never carry 20
 rows, so its table caps at 5 and the plan says so — the same cap a 1-1 foreign
 key already gets.
 
+A **cross-column ordering** CHECK (`expires_at > issued_at`) is placed: the pass
+ranks the columns and assigns each a value above its lower bound, so the rows
+satisfy it by arithmetic rather than by luck.
+
+A **derivation** (`total_cents = subtotal_cents + tax_cents`) is not placeable
+and the plan says so by name, because three independently synthesized values
+make an equality true only by coincidence. It is not a seeding problem to work
+around — the schema is asserting a rule it never implements. Declare it instead
+(`GENERATED ALWAYS AS (…) STORED`, see the `db` skill) and the column stops
+being seeded at all, because postgres owns it. **Do not pin the columns to
+`{min: 0, max: 0}` in `vocab.yaml` to force the CHECK to hold** — that trades a
+warning for a demo database where every money column reads zero.
+
 `apply` runs as one transaction: it seeds every table or leaves the database
 untouched, so a failed run is always safe to retry and never leaves a
 half-populated dev database behind.

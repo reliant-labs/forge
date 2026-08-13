@@ -132,11 +132,28 @@ func TestFrontendSkillPointsAtComponentLibraryAtDecisionPoint(t *testing.T) {
 
 	// Name the components that were hand-written despite shipping, so the
 	// search has a concrete noun to match.
+	//
+	// These now ship in the SCAFFOLD (coreComponents), not just the library —
+	// a later measured run showed three sub-agents fetching empty_state from
+	// the library and all three writing their own anyway, because the library
+	// copies carried hardcoded palette classes that had to be re-themed. The
+	// palette is fixed at the source and these install by default, so the
+	// skill must present them as already-present files to import rather than
+	// as something to go install.
 	for _, name := range []string{"stat_grid", "metric_card", "empty_state"} {
 		if !strings.Contains(skill, name) {
 			t.Errorf("frontend SKILL.md never names the %q component — "+
-				"it ships in the library and was hand-written in a measured build", name)
+				"it ships in src/components/ui/ and was hand-written in a measured build", name)
 		}
+	}
+
+	// The distinction is the point: an agent that thinks a scaffolded
+	// component needs installing runs a command for a file already in its
+	// tree, and an agent that thinks an installable one is absent hand-writes
+	// it. The skill must mark which is which.
+	if !strings.Contains(skill, "already ships in `src/components/ui/`") {
+		t.Error("frontend SKILL.md does not distinguish the scaffold-installed components " +
+			"from the install-on-demand ones — both failure modes cost a rewrite or a wasted command")
 	}
 
 	// The library is opt-in beyond the core set: an agent that never runs
@@ -149,12 +166,33 @@ func TestFrontendSkillPointsAtComponentLibraryAtDecisionPoint(t *testing.T) {
 	}
 }
 
-// TestFrontendSkillStaysUnderCap — the delivered cap is 24000 bytes and the
-// working cap is 15000.
+// TestFrontendSkillStaysUnderCap — the frontend skill must fit the DELIVERED
+// ceiling with room to spare.
+//
+// The real guard is TestShippedSkillsFitDeliveryBudget in skills_size_test.go:
+// it measures every skill at its rendered size (template + the generated-by
+// banner + the shared preamble, ~1.1 KB) against maxDeliveredSkillBytes, which
+// mirrors reliant's actual truncation ceiling. Past that a skill loses its
+// TAIL — where sub-skill pointers and related-skill links live — so oversize
+// severs guidance rather than shortening it.
+//
+// This test is the frontend skill's own early-warning line, deliberately set
+// BELOW that ceiling so there is headroom to add guidance without a fight. It
+// previously sat at 15000 with the file at 14992 — eight bytes of room, which
+// made every correction a trimming exercise and, measured, caused a factual
+// fix to be abandoned rather than land. A budget that blocks true statements
+// is enforcing the wrong thing: the cost of a skill is whether an agent reads
+// it, and a stale skill costs more than a long one.
+//
+// Raise this only with a reason. Shrinking the skill is still the better move
+// when the addition is not load-bearing.
 func TestFrontendSkillStaysUnderCap(t *testing.T) {
 	t.Parallel()
 
-	if n := len(frontendSkill(t)); n >= 15000 {
-		t.Errorf("frontend SKILL.md is %d bytes, over the 15000-byte working cap", n)
+	const workingCap = 18_000
+	if n := len(frontendSkill(t)); n >= workingCap {
+		t.Errorf("frontend SKILL.md is %d bytes, over the %d-byte working cap. "+
+			"Cut something before raising this — and check TestShippedSkillsFitDeliveryBudget, "+
+			"which is the ceiling that actually truncates in the field", n, workingCap)
 	}
 }

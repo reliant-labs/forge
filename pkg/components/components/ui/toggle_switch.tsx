@@ -35,12 +35,12 @@ export default function ToggleSwitch({
         aria-checked={checked}
         disabled={disabled}
         onClick={() => !disabled && onChange(!checked)}
-        className={`relative inline-flex flex-shrink-0 rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${s.track} ${
-          checked ? "bg-blue-600" : "bg-gray-200"
+        className={`relative inline-flex flex-shrink-0 rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 ${s.track} ${
+          checked ? "bg-accent" : "bg-surface-muted"
         }`}
       >
         <span
-          className={`inline-block rounded-full bg-white shadow-sm ring-0 transition-transform duration-200 ease-in-out ${s.thumb} ${
+          className={`inline-block rounded-full bg-surface shadow-sm ring-0 transition-transform duration-200 ease-in-out ${s.thumb} ${
             checked ? s.translate : "translate-x-0.5"
           } mt-[2px] ml-[1px]`}
         />
@@ -48,10 +48,10 @@ export default function ToggleSwitch({
       {(label || description) && (
         <div>
           {label && (
-            <span className="text-sm font-medium text-gray-900">{label}</span>
+            <span className="text-sm font-medium text-ink">{label}</span>
           )}
           {description && (
-            <p className="text-sm text-gray-500">{description}</p>
+            <p className="text-sm text-ink-muted">{description}</p>
           )}
         </div>
       )}

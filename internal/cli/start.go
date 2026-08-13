@@ -194,7 +194,7 @@ Three dumps answer "what does forge already do?" without prose:
 
     forge project capabilities   every verb, lint analyzer and marker
     forge project annotations    the full entity-authoring spec
-    forge project libraries      every forge/pkg package and its source path
+    forge project libraries      every forge/pkg package; add a name for its full API
 
 ` + "`forge skill list`" + ` is the whole catalog; ` + "`forge skill search <keyword>`" + ` finds one
 by topic.

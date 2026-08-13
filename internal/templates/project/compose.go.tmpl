@@ -42,6 +42,10 @@ import (
 
 	"github.com/oklog/ulid/v2"
 {{- end}}
+{{- if .NeedsDBStore}}
+
+	"{{.Module}}/internal/db"
+{{- end}}
 {{range .Order}}
 	{{.Alias}} "{{$.Module}}/{{.ImportPath}}"
 {{- end}}

@@ -98,7 +98,7 @@ export default function FilterBar({
         {searchFilter && (
           <div className="relative min-w-[200px] flex-1">
             <svg
-              className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+              className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-subtle"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -115,7 +115,7 @@ export default function FilterBar({
               value={values[searchFilter.key] ?? ""}
               onChange={(e) => updateFilter(searchFilter.key, e.target.value)}
               placeholder={searchFilter.placeholder ?? searchPlaceholder}
-              className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm shadow-sm placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-lg border border-border-strong bg-surface py-2 pl-9 pr-3 text-sm shadow-sm placeholder:text-ink-subtle focus:border-accent-border focus:outline-none focus:ring-1 focus:ring-accent"
             />
           </div>
         )}
@@ -126,7 +126,7 @@ export default function FilterBar({
             key={filter.key}
             value={values[filter.key] ?? ""}
             onChange={(e) => updateFilter(filter.key, e.target.value)}
-            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm shadow-sm focus:border-accent-border focus:outline-none focus:ring-1 focus:ring-accent"
           >
             <option value="">{filter.label}</option>
             {filter.options?.map((opt) => (
@@ -144,12 +144,13 @@ export default function FilterBar({
           {activeFilters.map((f) => (
             <span
               key={f.key}
-              className="inline-flex items-center gap-1 rounded-full bg-blue-50 py-1 pl-3 pr-1.5 text-xs font-medium text-blue-700"
+              className="inline-flex items-center gap-1 rounded-full bg-accent-surface py-1 pl-3 pr-1.5 text-xs font-medium text-accent-ink"
             >
               {f.label}: {f.displayValue}
               <button
                 onClick={() => removeFilter(f.key)}
-                className="flex h-4 w-4 items-center justify-center rounded-full transition hover:bg-blue-200"
+                aria-label={`Remove ${f.label} filter`}
+                className="flex h-4 w-4 items-center justify-center rounded-full transition hover:bg-accent-surface"
               >
                 <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -159,7 +160,7 @@ export default function FilterBar({
           ))}
           <button
             onClick={clearAll}
-            className="text-xs font-medium text-gray-500 transition hover:text-gray-700"
+            className="text-xs font-medium text-ink-muted transition hover:text-ink-muted"
           >
             Clear all
           </button>

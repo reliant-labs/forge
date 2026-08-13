@@ -344,3 +344,87 @@ func TestListPage_DegradesWithoutFilters(t *testing.T) {
 		}
 	}
 }
+
+// A LIST page and a DETAIL page want different column sets. The detail view
+// answers "everything about this record", so the id and the audit timestamps
+// belong there. A table answers "which record do I want", and those three
+// columns are pure noise in it — the row is already a link to the detail page.
+//
+// Measured: a 15-entity app generated 12 columns per list, all 30 of its CRUD
+// pages were rewritten by hand, and every rewrite dropped exactly these.
+func TestAttachEntityMeta_ListOmitsIdentityAndAuditColumns(t *testing.T) {
+	svc := listFilterSvcForTest()
+	pages := ExtractCRUDEntities(svc)
+	if len(pages) != 1 {
+		t.Fatalf("expected 1 CRUD entity, got %d", len(pages))
+	}
+	page := pages[0]
+	AttachEntityMeta(&page, EntityDef{
+		Name:    "Order",
+		PkField: "id",
+		Fields: []EntityField{
+			{Name: "id", ProtoType: "string", Kind: FieldKindScalar},
+			{Name: "customer", ProtoType: "string", Kind: FieldKindScalar},
+			{Name: "created_at", ProtoType: "string", Kind: FieldKindScalar},
+			{Name: "updated_at", ProtoType: "string", Kind: FieldKindScalar},
+		},
+	}, svc)
+
+	has := func(cols []EntityPageField, name string) bool {
+		for _, c := range cols {
+			if c.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, omitted := range []string{"id", "createdAt", "updatedAt"} {
+		if has(page.ListColumns, omitted) {
+			t.Errorf("list columns must omit %q — it is machinery in a table, not data", omitted)
+		}
+		if !has(page.Columns, omitted) {
+			t.Errorf("detail columns must KEEP %q — the detail page is where it is a real question", omitted)
+		}
+	}
+	if !has(page.ListColumns, "customer") {
+		t.Error("a real data column must survive the exclusion")
+	}
+}
+
+// `billing_state` is a US state — free text with fifty values — and the badge
+// heuristic matched it on the SUBSTRING "state", handing a postal abbreviation
+// to StatusBadge with no enum behind it. A false badge asserts a closed set
+// that does not exist, and has to be hand-corrected out of the born page; a
+// missed badge merely renders the text the field already was.
+func TestIsEnumLikeFieldName_MatchesWholeSegmentsNotSubstrings(t *testing.T) {
+	for _, name := range []string{"status", "job_state", "payment_status", "lead_type", "user_role"} {
+		if !isEnumLikeFieldName(name) {
+			t.Errorf("%q names a closed value set and must badge", name)
+		}
+	}
+	for _, name := range []string{"real_estate_id", "statement_id", "prototype_note", "typeahead_hint"} {
+		if isEnumLikeFieldName(name) {
+			t.Errorf("%q only CONTAINS an enum-ish fragment — badging it asserts a value set that does not exist", name)
+		}
+	}
+}
+
+// KNOWN GAP, pinned deliberately: `billing_state` is a US state — free text
+// with fifty values — and it still badges, because "state" IS one of its
+// segments and a segment match cannot tell it from `job_state`.
+//
+// The signal that separates them is not in the name at all: the proto declares
+// it `string billing_state = 7 [(buf.validate.field).string.max_len = 2]`, and
+// a closed set would have been declared an enum. EntityField carries no
+// validate-rule metadata today, so the checker cannot see it.
+//
+// This test documents the boundary rather than asserting the wrong thing. When
+// max_len (or any protovalidate rule) reaches EntityField, tighten
+// isEnumLikeFieldName to treat a length-capped string as free text and flip
+// this expectation.
+func TestIsEnumLikeFieldName_KnownGap_AddressStateStillBadges(t *testing.T) {
+	if !isEnumLikeFieldName("billing_state") {
+		t.Skip("billing_state no longer badges — the gap is closed; fold this into the negative table above")
+	}
+}

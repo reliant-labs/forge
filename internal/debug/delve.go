@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/go-delve/delve/service/api"
@@ -80,7 +79,7 @@ func (d *DelveDebugger) StartWithEnv(ctx context.Context, binary string, args []
 	}
 	// Start dlv in its own process group and detach IO so it survives
 	// after the parent (forge) exits.
-	d.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detachProcess(d.cmd)
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", os.DevNull, err)
@@ -134,7 +133,7 @@ func (d *DelveDebugger) StartAttach(ctx context.Context, pid int) error {
 	// Detach IO and run dlv in its own process group so it survives after
 	// forge exits — the session is reconnected by later `forge debug`
 	// invocations, exactly like Start.
-	d.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detachProcess(d.cmd)
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", os.DevNull, err)

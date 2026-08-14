@@ -322,20 +322,24 @@ func writePoolState(st poolState) {
 	_ = os.Rename(tmp, poolStatePath())
 }
 
-// lockPool takes an exclusive advisory lock on the pool lockfile. flock is
-// tied to the open file description, so the kernel releases it automatically
-// if the holder dies — a crashed lock-holder never wedges the pool.
+// lockPool takes an exclusive advisory lock on the pool lockfile. The lock is
+// tied to the open file handle, so the OS releases it automatically if the
+// holder dies — a crashed lock-holder never wedges the pool.
+//
+// The locking primitive itself is per-platform (flock(2) on unix,
+// LockFileEx on Windows); see pool_lock_unix.go / pool_lock_windows.go.
 func lockPool() (unlock func(), err error) {
 	f, err := os.OpenFile(poolLockPath(), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	unlockFile, err := lockFileExclusive(f)
+	if err != nil {
 		_ = f.Close()
 		return nil, err
 	}
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		unlockFile()
 		_ = f.Close()
 	}, nil
 }

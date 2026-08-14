@@ -259,7 +259,10 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 	// same lifecycle postgres has (pg_ctl daemonizes to get there). Without
 	// this it would die with the launching shell's process group, and the
 	// dev stack would not survive the command returning.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	//
+	// The attribute that achieves that is per-platform (setsid on unix, a
+	// detached process group on Windows); see proc_unix.go / proc_windows.go.
+	detachProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("host-infra %s: start zitadel: %w", spec.Name, err)
@@ -358,8 +361,8 @@ func stopZitadel(projectDir string, spec Spec) (bool, error) {
 		removeZitadelPID(dataDir)
 		return false, nil
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		if errors.Is(err, syscall.ESRCH) {
+	if err := terminateProcess(pid); err != nil {
+		if errors.Is(err, syscall.ESRCH) || errors.Is(err, os.ErrProcessDone) {
 			removeZitadelPID(dataDir)
 			return false, nil
 		}
@@ -376,7 +379,7 @@ func stopZitadel(projectDir string, spec Spec) (bool, error) {
 	// Would not go quietly. The state that matters is in postgres and is
 	// already durable, so this is safe — and leaving it running would hold
 	// the port against the next `forge run`.
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	_ = killProcess(pid)
 	removeZitadelPID(dataDir)
 	return true, nil
 }

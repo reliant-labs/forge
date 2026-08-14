@@ -17,7 +17,7 @@ import (
 // TYPE of the generated React Query hooks.
 //
 // The contract: the transport's error-normalize interceptor (wired in
-// src/lib/connect.ts from @reliant-labs/web-runtime) throws ConnectClientError
+// src/lib/connect.ts from @reliantlabs/forge-web-runtime) throws ConnectClientError
 // on every failure, carrying `.code`, `.status`, `.retryable` and — stamped by
 // the backend on every error pkg/crud returns — `.reason`. The documented rule
 // is to branch on `.reason`/`.code` and render with `userMessage(err)`, never
@@ -99,7 +99,7 @@ func TestE2EGeneratedHooksExposeTheTypedErrorContract(t *testing.T) {
 	// A smoke read, not the gate: name the invariant so a failure below reads
 	// as "the error type regressed" instead of as a wall of tsc output.
 	hooks := readFileE2E(t, filepath.Join(webDir, "src", "hooks", hooksFile))
-	if !strings.Contains(hooks, `import type { ConnectClientError } from "@reliant-labs/web-runtime"`) {
+	if !strings.Contains(hooks, `import type { ConnectClientError } from "@reliantlabs/forge-web-runtime"`) {
 		t.Errorf("generated hooks do not import the runtime's error type:\n%s", hooks)
 	}
 
@@ -166,7 +166,7 @@ func runCmdCombined(dir string, timeout time.Duration, name string, args ...stri
 // naming.ServiceHookFile so the fixture and the file on disk cannot drift.
 const errorContractPositiveFixture = `"use client";
 
-import { userMessage } from "@reliant-labs/web-runtime";
+import { userMessage } from "@reliantlabs/forge-web-runtime";
 
 import { useCreateItem, useListItems } from "%s";
 

@@ -9,7 +9,7 @@
 // This Vite SPA consumes the SAME forge runtime as the Next.js frontend —
 // the runtime is framework-agnostic (pure React/TS), so there is no parallel
 // table implementation to drift:
-//   - <Resource> (@reliant-labs/web-runtime) owns the loading / error /
+//   - <Resource> (@reliantlabs/forge-web-runtime) owns the loading / error /
 //     empty / data tristate ladder, the debounced server-side filter box,
 //     and cursor pagination. This page never re-hand-rolls that ladder and
 //     never client-side-filters a single fetched page.
@@ -36,7 +36,7 @@
 
 import { useState } from "react";
 {{- end}}
-import { Resource, type ResourceColumn } from "@reliant-labs/web-runtime";
+import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";
 import { keepPreviousData } from "@tanstack/react-query";
 import { {{if .HasCreate}}Link, {{end}}useNavigate } from "@tanstack/react-router";
 {{- if .HasCreate}}

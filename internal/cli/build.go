@@ -131,6 +131,18 @@ type buildOptions struct {
 	// `deploy?: FirebaseHosting`) to decide which frontends need a docker
 	// image at all.
 	skipFrontends bool
+	// targets, when non-empty, scopes the build to the named applications
+	// (service / operator / frontend names), exactly as `forge env deploy
+	// --target` scopes a deploy. The rendered entity set is narrowed to
+	// those names before the build set is derived, so every downstream
+	// decision follows from it: the go-build targets, the KCL
+	// docker/shell dispatch, the build-only variants, the external
+	// build_cmd dispatch, and the skipProjectDocker guard (which reads
+	// "does this env still declare a cluster service" off the NARROWED
+	// set). Naming only host-mode/frontend apps therefore builds and
+	// pushes no image at all. Requires env — without a render there is no
+	// entity set to filter. Empty means "build everything", the default.
+	targets []string
 	// tag, when set, overrides the git-derived image tag computed by
 	// resolveImageTag. CI pipelines that pin the image to a release
 	// number (e.g. `--tag v1.2.3`) use this. Empty (the default) means
@@ -363,6 +375,17 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		} else {
 			entities = ents
 		}
+	}
+
+	// --target narrows the entity set BEFORE any build decision reads it.
+	// Doing it here (rather than at each derivation site) is what makes the
+	// scoping total: resolveBuildTargetSet, buildKCLDockerShell,
+	// buildKCLBuildOnlyVariants and buildExternalServiceResults all read
+	// `entities`, so one filter covers every build lane. Validated by the
+	// caller (`forge env up` / `forge env deploy`), which owns the
+	// "unknown target" message and its available-names list.
+	if len(opts.targets) > 0 && entities != nil {
+		entities = filterEntitiesByTarget(entities, opts.targets)
 	}
 
 	// Resolve the docker image tag once, up front. Both the docker

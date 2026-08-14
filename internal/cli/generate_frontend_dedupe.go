@@ -15,7 +15,7 @@ import (
 // WHY FORGE TOUCHES A USER-OWNED FILE AT ALL. vitest.config.ts is
 // scaffold-once — written at birth and never rewritten, because a test config
 // is exactly the kind of thing a project outgrows. But forge moved the
-// generated hooks' React Query machinery into @reliant-labs/web-runtime, and
+// generated hooks' React Query machinery into @reliantlabs/forge-web-runtime, and
 // that move has a consequence no existing project can see coming:
 //
 // A dev build of forge bridges the runtime with a `file:` specifier, which npm
@@ -124,7 +124,7 @@ func addDedupeToConfig(path string) bool {
 	var out bytes.Buffer
 	out.Write(body[:insertAt])
 	out.WriteString("\n" + indent + "  // Added by forge: the generated hooks call into\n")
-	out.WriteString(indent + "  // @reliant-labs/web-runtime, which a dev forge build links by path.\n")
+	out.WriteString(indent + "  // @reliantlabs/forge-web-runtime, which a dev forge build links by path.\n")
 	out.WriteString(indent + "  // Without this, React and React Query load twice (once from the\n")
 	out.WriteString(indent + "  // link target) and the two copies do not share a React context.\n")
 	out.WriteString(indent + "  " + dedupeLine)

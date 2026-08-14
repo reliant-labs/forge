@@ -103,7 +103,7 @@ func TestNextJSConfig_BasePath_StaticGuard(t *testing.T) {
 // TestNextJSBasePathGen_Render pins what the generated helper still OWNS.
 //
 // The BEHAVIOUR — normalisation, the idempotency guard, the absolute-URL
-// passthrough — moved into @reliant-labs/web-runtime, where it is tested
+// passthrough — moved into @reliantlabs/forge-web-runtime, where it is tested
 // directly (web-runtime/src/basepath.test.ts) instead of being re-emitted
 // into every project and asserted here by substring. What is left in the
 // generated file is the part that is genuinely this project's, and it is
@@ -144,7 +144,7 @@ func TestNextJSBasePathGen_Render(t *testing.T) {
 		// (and src/lib/admin-url.ts) are unaffected by where they come from.
 		"export const { BASE_PATH, joinBasePath } = createBasePath(",
 		// The behaviour is the library's, and is named as such.
-		`import { createBasePath } from "@reliant-labs/web-runtime";`,
+		`import { createBasePath } from "@reliantlabs/forge-web-runtime";`,
 		// Header documents the division of labour with <Link>.
 		"<Link",
 		"window.location",
@@ -165,7 +165,7 @@ func TestNextJSBasePathGen_Render(t *testing.T) {
 	} {
 		if strings.Contains(s, forbidden) {
 			t.Errorf("basepath_gen.ts re-inlines %q — that behaviour belongs to "+
-				"@reliant-labs/web-runtime; the generated file carries the VALUE only. Got:\n%s",
+				"@reliantlabs/forge-web-runtime; the generated file carries the VALUE only. Got:\n%s",
 				forbidden, s)
 		}
 	}

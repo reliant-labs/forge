@@ -346,7 +346,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		}
 	}
 
-	// Resolve the @reliant-labs/web-runtime specifier for THIS machine before
+	// Resolve the @reliantlabs/forge-web-runtime specifier for THIS machine before
 	// anything installs. The scaffold flow runs `npm install` straight after
 	// generating the files, so a dev build has to have swapped the published
 	// range for its `file:` bridge by now or that first install would go

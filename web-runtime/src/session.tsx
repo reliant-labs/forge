@@ -1,6 +1,6 @@
 "use client";
 
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // Session context: the current user, derived from the auth state the app
 // hands in and the bearer token's JWT claims. The runtime never imports the

@@ -1,8 +1,8 @@
-import { userMessage } from "@reliant-labs/web-runtime";
+import { userMessage } from "@reliantlabs/forge-web-runtime";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 
-import type { ConnectClientError } from "@reliant-labs/web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
 import type { UseMutationOptions } from "@tanstack/react-query";
 
 /**

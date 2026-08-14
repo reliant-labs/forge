@@ -1,7 +1,7 @@
-// Package generator — @reliant-labs/web-runtime dependency resolution for
+// Package generator — @reliantlabs/forge-web-runtime dependency resolution for
 // generated frontends.
 //
-// Generated frontends import @reliant-labs/web-runtime (the web twin of
+// Generated frontends import @reliantlabs/forge-web-runtime (the web twin of
 // forge/pkg): connect.ts builds its interceptor stack from it, providers.tsx
 // mounts RuntimeShell, the CRUD list pages render <Resource>. It is therefore
 // a REAL dependency of shipped application code and belongs in
@@ -46,7 +46,7 @@ import (
 
 // WebRuntimePackage is the npm package name of forge's frontend runtime
 // library.
-const WebRuntimePackage = "@reliant-labs/web-runtime"
+const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 
 // webRuntimePublishedRange is the semver range a scaffold declares when it is
 // not bridged to a local checkout. Keep the major.minor pointed at
@@ -224,7 +224,7 @@ func commonAncestor(a, b string) string {
 	return joined
 }
 
-// EnsureWebRuntimeDependency reconciles the @reliant-labs/web-runtime entry in
+// EnsureWebRuntimeDependency reconciles the @reliantlabs/forge-web-runtime entry in
 // frontends/<name>/package.json so that npm — not forge — owns the link under
 // node_modules.
 //

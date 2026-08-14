@@ -15,7 +15,7 @@ import (
 )
 
 // TestE2EScaffoldFrontendRuntime is the gate on how a generated frontend
-// consumes @reliant-labs/web-runtime — the web twin of forge/pkg. It scaffolds
+// consumes @reliantlabs/forge-web-runtime — the web twin of forge/pkg. It scaffolds
 // a fresh project with a Next.js frontend + one CRUD entity, runs
 // `forge generate`, and asserts that the generated frontend:
 //
@@ -66,7 +66,7 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	}
 
 	// ── package.json declares it, by a path that names nobody. ──
-	linkPath := filepath.Join(webDir, "node_modules", "@reliant-labs", "web-runtime")
+	linkPath := filepath.Join(webDir, "node_modules", "@reliantlabs", "forge-web-runtime")
 	pkgJSON := readFileE2E(t, filepath.Join(webDir, "package.json"))
 	spec := webRuntimeSpecE2E(t, pkgJSON)
 	if !strings.HasPrefix(spec, "file:") {
@@ -90,14 +90,14 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 
 	// ── Tailwind is told to scan the package. ──
 	globalsCSS := readFileE2E(t, filepath.Join(webDir, "src", "app", "globals.css"))
-	if !strings.Contains(globalsCSS, `@source "../../node_modules/@reliant-labs/web-runtime"`) {
+	if !strings.Contains(globalsCSS, `@source "../../node_modules/@reliantlabs/forge-web-runtime"`) {
 		t.Errorf("globals.css does not @source the runtime package; its utilities would be dropped:\n%s", globalsCSS)
 	}
 
 	// ── The transport is wrapped with the runtime interceptor stack. ──
 	connectTS := readFileE2E(t, filepath.Join(webDir, "src", "lib", "connect.ts"))
 	if !strings.Contains(connectTS, "buildRuntimeInterceptors") ||
-		!strings.Contains(connectTS, `from "@reliant-labs/web-runtime"`) {
+		!strings.Contains(connectTS, `from "@reliantlabs/forge-web-runtime"`) {
 		t.Errorf("connect.ts does not wire the runtime interceptor stack:\n%s", connectTS)
 	}
 
@@ -137,7 +137,7 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	if got := webRuntimeSpecE2E(t, after); got != spec {
 		t.Errorf("regenerate changed the specifier: %q -> %q", spec, got)
 	}
-	if n := strings.Count(after, "@reliant-labs/web-runtime"); n != 1 {
+	if n := strings.Count(after, "@reliantlabs/forge-web-runtime"); n != 1 {
 		t.Errorf("package declared %d times after regenerate, want 1:\n%s", n, after)
 	}
 
@@ -169,7 +169,7 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 // assertRuntimePeersDedupedE2E is the gate that a type-level or build-level
 // check structurally cannot be.
 //
-// @reliant-labs/web-runtime declares its shared libraries as
+// @reliantlabs/forge-web-runtime declares its shared libraries as
 // peerDependencies: "the consuming app supplies this copy". npm honours that
 // for a registry install — one hoisted copy at the app root — and cannot
 // honour it across the `file:` bridge a dev forge writes, because that is a
@@ -325,7 +325,7 @@ func runtimePeersE2E(t *testing.T, pkgPath string) []string {
 func setWebRuntimeSpecE2E(t *testing.T, pkgPath, spec string) {
 	t.Helper()
 	body := readFileE2E(t, pkgPath)
-	key := strconv.Quote("@reliant-labs/web-runtime") + ": "
+	key := strconv.Quote("@reliantlabs/forge-web-runtime") + ": "
 	old := key + strconv.Quote(webRuntimeSpecE2E(t, body))
 	updated := strings.Replace(body, old, key+strconv.Quote(spec), 1)
 	if updated == body {
@@ -372,7 +372,7 @@ func copyTreeE2E(t *testing.T, src, dst, skipDir string) {
 	}
 }
 
-// webRuntimeSpecE2E extracts the @reliant-labs/web-runtime specifier a
+// webRuntimeSpecE2E extracts the @reliantlabs/forge-web-runtime specifier a
 // frontend's package.json declares, failing the test when it declares none.
 func webRuntimeSpecE2E(t *testing.T, manifest string) string {
 	t.Helper()
@@ -383,10 +383,10 @@ func webRuntimeSpecE2E(t *testing.T, manifest string) string {
 	if err := json.Unmarshal([]byte(manifest), &doc); err != nil {
 		t.Fatalf("package.json is not valid JSON: %v\n%s", err, manifest)
 	}
-	if spec, ok := doc.Dependencies["@reliant-labs/web-runtime"]; ok {
+	if spec, ok := doc.Dependencies["@reliantlabs/forge-web-runtime"]; ok {
 		return spec
 	}
-	if spec, ok := doc.DevDependencies["@reliant-labs/web-runtime"]; ok {
+	if spec, ok := doc.DevDependencies["@reliantlabs/forge-web-runtime"]; ok {
 		t.Errorf("runtime declared in devDependencies; shipped app code imports it")
 		return spec
 	}

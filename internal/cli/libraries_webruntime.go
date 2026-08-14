@@ -3,7 +3,7 @@
 // The frontend half of `forge project libraries`.
 //
 // forge ships two runtime libraries, not one: forge/pkg for Go and
-// @reliant-labs/web-runtime for the web. The verb only ever indexed the Go
+// @reliantlabs/forge-web-runtime for the web. The verb only ever indexed the Go
 // one, so an agent asking "what does the frontend runtime give me, and
 // where is it" got no answer from the toolchain and went looking on the
 // disk — every refusal the recursive-scan guard has recorded was an agent
@@ -12,7 +12,7 @@
 // Everything here is ENUMERATED, the same way the Go side is:
 //
 //   - the DIRECTORY is wherever npm materialized the dependency
-//     (node_modules/@reliant-labs/web-runtime), which is npm's own answer
+//     (node_modules/@reliantlabs/forge-web-runtime), which is npm's own answer
 //     for this project — a file: link in a dev tree, an unpacked tarball
 //     in a release one, without this code knowing which.
 //   - the VERSION is that package's own package.json.
@@ -43,7 +43,7 @@ import (
 )
 
 // webRuntimePackage is the npm name of forge's frontend runtime.
-const webRuntimePackage = "@reliant-labs/web-runtime"
+const webRuntimePackage = "@reliantlabs/forge-web-runtime"
 
 // WebRuntimeModule is one module the runtime's barrel re-exports: the
 // symbols it contributes and the barrel's own comment about it.

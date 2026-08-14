@@ -1,4 +1,4 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // Lightweight client RUM: unhandled errors + core Web Vitals, captured with
 // native browser APIs (no extra dependency). Export is OPT-IN: by default

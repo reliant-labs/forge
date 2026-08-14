@@ -1,6 +1,6 @@
 import { createClient, type Transport } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
-import { buildRuntimeInterceptors } from "@reliant-labs/web-runtime";
+import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
 
 import { DEV_API_URL } from "./apiurl_gen";
 
@@ -23,7 +23,7 @@ export function setAuthTokenGetter(fn: () => Promise<string | null>) {
 // brand headers, W3C traceparent propagation (so backend spans join
 // the same trace — always on, no collector required), typed error
 // normalization, and transient-retry with backoff. It ships as
-// @reliant-labs/web-runtime. The token getter resolves the CURRENT token on
+// @reliantlabs/forge-web-runtime. The token getter resolves the CURRENT token on
 // every call — the bridge above swaps it after login.
 const interceptors = buildRuntimeInterceptors({
   getToken: () => _getToken(),

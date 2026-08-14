@@ -1,4 +1,4 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // Typed client errors. Connect surfaces failures as ConnectError with a
 // numeric Code; the rest of the app should reason about a stable, typed

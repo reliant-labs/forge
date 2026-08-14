@@ -4,7 +4,7 @@
 // Browser OpenTelemetry CONFIGURATION. The SDK wiring it configures — the
 // WebTracerProvider, the batched OTLP/HTTP exporter, W3C propagation and the
 // fetch / XHR / document-load auto-instrumentations — lives in
-// @reliant-labs/web-runtime/otel.
+// @reliantlabs/forge-web-runtime/otel.
 //
 // What stays here is the part that CANNOT move: the `process.env.NEXT_PUBLIC_*`
 // reads. Next.js inlines those literals into the bundle at BUILD time, and it
@@ -23,7 +23,7 @@
 // attached to every RPC, which is what makes browser spans join the backend's
 // trace — is always on, needs no collector, and does NOT depend on this
 // module.
-import { initBrowserTracing } from "@reliant-labs/web-runtime/otel";
+import { initBrowserTracing } from "@reliantlabs/forge-web-runtime/otel";
 
 /**
  * initTelemetry starts browser trace export. Call it once from the app
@@ -41,4 +41,4 @@ export function initTelemetry(serviceName = '{{.ProjectName}}-frontend') {
   });
 }
 
-export { context, getTracer, propagation, trace } from '@reliant-labs/web-runtime/otel';
+export { context, getTracer, propagation, trace } from '@reliantlabs/forge-web-runtime/otel';

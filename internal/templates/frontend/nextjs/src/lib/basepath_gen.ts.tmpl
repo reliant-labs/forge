@@ -7,7 +7,7 @@
 //
 // This file is the VALUE only. The behaviour — normalising the prefix,
 // prefixing a path idempotently, passing absolute URLs through — lives in
-// @reliant-labs/web-runtime, where it is written and tested once instead of
+// @reliantlabs/forge-web-runtime, where it is written and tested once instead of
 // being re-emitted into every project. Only the two things that are genuinely
 // this project's are here: forge.yaml's base_path, and the env read.
 //
@@ -38,7 +38,7 @@
 //
 // NEXT_PUBLIC_BASE_PATH is the ONLY base-path env var forge reads or writes,
 // and the same name next.config.ts uses for `basePath` / `assetPrefix`.
-import { createBasePath } from "@reliant-labs/web-runtime";
+import { createBasePath } from "@reliantlabs/forge-web-runtime";
 
 export const { BASE_PATH, joinBasePath } = createBasePath(
   process.env.NEXT_PUBLIC_BASE_PATH ?? "{{.BasePath}}",

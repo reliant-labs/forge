@@ -5,11 +5,11 @@
  * What is NOT here, deliberately: error copy. `userMessage` and
  * `stripServerFraming` mirror the framing forge's own backend writes
  * (`forge/pkg/svcerr`), so they are a wire contract rather than a design
- * choice, and they live in `@reliant-labs/web-runtime` next to
+ * choice, and they live in `@reliantlabs/forge-web-runtime` next to
  * `normalizeError` — one implementation instead of two that a comment
  * promised to keep in sync. Import them from the package:
  *
- *   import { userMessage } from "@reliant-labs/web-runtime";
+ *   import { userMessage } from "@reliantlabs/forge-web-runtime";
  */
 
 export function formatValue(value: unknown): string {

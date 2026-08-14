@@ -60,7 +60,7 @@ func TestNextJSESLintConfig_ExemptsScenariosAndConfigs(t *testing.T) {
 
 // TestNextJSOtelKeepsEnvReadsInProjectCode pins the one thing the scaffolded
 // `lib/otel_gen.ts` must keep now that the SDK wiring itself has moved into
-// @reliant-labs/web-runtime/otel: the `process.env.NEXT_PUBLIC_*` reads.
+// @reliantlabs/forge-web-runtime/otel: the `process.env.NEXT_PUBLIC_*` reads.
 //
 // Next.js inlines those literals at BUILD time, and it can only do that where
 // they are written out verbatim in application code. A library reading
@@ -97,9 +97,9 @@ func TestNextJSOtelKeepsEnvReadsInProjectCode(t *testing.T) {
 	// The engine comes from the SUBPATH, never the barrel: the barrel is
 	// imported by Vite-SPA and React-Native frontends, which install
 	// @opentelemetry/api alone and would fail to resolve the SDK packages.
-	if !strings.Contains(s, `"@reliant-labs/web-runtime/otel"`) &&
-		!strings.Contains(s, `'@reliant-labs/web-runtime/otel'`) {
-		t.Errorf("otel_gen.ts must import the SDK wiring from the @reliant-labs/web-runtime/otel subpath; got:\n%s", s)
+	if !strings.Contains(s, `"@reliantlabs/forge-web-runtime/otel"`) &&
+		!strings.Contains(s, `'@reliantlabs/forge-web-runtime/otel'`) {
+		t.Errorf("otel_gen.ts must import the SDK wiring from the @reliantlabs/forge-web-runtime/otel subpath; got:\n%s", s)
 	}
 
 	// initTelemetry is the name providers.tsx imports. providers.tsx is

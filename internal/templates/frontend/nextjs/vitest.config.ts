@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
-// Every package @reliant-labs/web-runtime declares as a peer must resolve to
+// Every package @reliantlabs/forge-web-runtime declares as a peer must resolve to
 // ONE copy — this app's.
 //
 // peerDependencies states the contract ("the consuming app supplies this
@@ -28,7 +28,7 @@ import { defineConfig } from "vitest/config";
 const webRuntimePeers: string[] = Object.keys(
   JSON.parse(
     fs.readFileSync(
-      join(__dirname, "node_modules", "@reliant-labs", "web-runtime", "package.json"),
+      join(__dirname, "node_modules", "@reliantlabs", "forge-web-runtime", "package.json"),
       "utf8",
     ),
   ).peerDependencies ?? {},

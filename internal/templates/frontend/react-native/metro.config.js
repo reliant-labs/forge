@@ -4,7 +4,7 @@
 // client; delete either and `expo start` fails to resolve a module.
 //
 //   1. unstable_enablePackageExports. @connectrpc/connect, @bufbuild/protobuf
-//      and @reliant-labs/web-runtime declare their entry points ONLY through
+//      and @reliantlabs/forge-web-runtime declare their entry points ONLY through
 //      package.json "exports" — no physical file at the old path. Metro in
 //      this Expo SDK still defaults that resolution off, so without the flag
 //      the first RPC import dies on `Unable to resolve module
@@ -12,7 +12,7 @@
 //
 //   2. watchFolders / nodeModulesPaths, for the local runtime bridge. When
 //      the forge binary is a dev build, `forge generate` symlinks its own
-//      checkout of @reliant-labs/web-runtime into node_modules so edits land
+//      checkout of @reliantlabs/forge-web-runtime into node_modules so edits land
 //      here with nothing published. Metro crawls only the project root, so a
 //      symlink pointing outside it has to be watched explicitly — and the
 //      helpers its transformed files pull in (@babel/runtime) have to resolve
@@ -35,7 +35,7 @@ config.resolver.nodeModulesPaths = [
 try {
   // require.resolve follows symlinks, so this is the runtime's REAL location.
   const runtimeDir = path.dirname(
-    require.resolve("@reliant-labs/web-runtime/package.json", {
+    require.resolve("@reliantlabs/forge-web-runtime/package.json", {
       paths: [__dirname],
     }),
   );

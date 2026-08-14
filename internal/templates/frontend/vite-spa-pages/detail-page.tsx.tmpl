@@ -12,7 +12,7 @@
 {{- if or .HasUpdate .HasDelete}}
 import { {{if .HasDelete}}Trash2{{end}}{{if and .HasDelete .HasUpdate}}, {{end}}{{if .HasUpdate}}SquarePen{{end}}{{if .HasDelete}}, TriangleAlert{{end}} } from "lucide-react";
 {{- end}}
-import { userMessage } from "@reliant-labs/web-runtime";
+import { userMessage } from "@reliantlabs/forge-web-runtime";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 {{- if .HasDelete}}
 import { useState } from "react";

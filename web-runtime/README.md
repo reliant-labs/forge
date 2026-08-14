@@ -1,4 +1,4 @@
-# @reliant-labs/web-runtime
+# @reliantlabs/forge-web-runtime
 
 The forge frontend runtime — the web twin of `forge/pkg`. Framework-agnostic
 React/TypeScript mechanism shared by every frontend forge scaffolds (Next.js
@@ -13,7 +13,7 @@ import {
   RouteGuard,               // signed-in render gate
   Resource,                 // the list tristate + cursor pagination
   initClientTelemetry,      // opt-in client RUM
-} from "@reliant-labs/web-runtime";
+} from "@reliantlabs/forge-web-runtime";
 ```
 
 ## What is in here, and what is deliberately not
@@ -83,7 +83,7 @@ and `npm run typecheck` compiles the package against **both** majors
 are peers, resolved from the consuming app. `next` deliberately is **not** — a
 Vite SPA consumes this package identically.
 
-Next.js consumers keep `transpilePackages: ["@reliant-labs/web-runtime"]`
+Next.js consumers keep `transpilePackages: ["@reliantlabs/forge-web-runtime"]`
 (forge's generated `next.config.ts` sets it). The reason changed with the
 build — it is no longer "these are `.tsx` files" but "these modules carry
 `"use client"` and Next has to process them rather than treat the package as
@@ -96,7 +96,7 @@ import {
   buildRuntimeInterceptors, // the Connect transport stack
   ConnectClientError,       // what the stack throws
   setTraceSampled,          // traceInterceptor's knob
-} from "@reliant-labs/web-runtime/interceptors";
+} from "@reliantlabs/forge-web-runtime/interceptors";
 ```
 
 The `./interceptors` subpath is the transport layer on its own: `src/errors.ts`
@@ -134,10 +134,10 @@ this package — **it does not scan `node_modules`**:
 
 ```css
 /* frontends/<name>/src/app/globals.css (Next.js) */
-@source "../../node_modules/@reliant-labs/web-runtime";
+@source "../../node_modules/@reliantlabs/forge-web-runtime";
 
 /* frontends/<name>/src/index.css (Vite SPA) */
-@source "../node_modules/@reliant-labs/web-runtime";
+@source "../node_modules/@reliantlabs/forge-web-runtime";
 ```
 
 Without that directive every utility only this package uses is dropped from

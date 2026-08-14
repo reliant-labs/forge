@@ -9,11 +9,11 @@
 // on an endpoint that never needed a credential at all.
 //
 // The assertion derives from the HEADERS THE INTERCEPTOR ACTUALLY SET, using
-// the REAL authInterceptor from @reliant-labs/web-runtime — the same one
+// the REAL authInterceptor from @reliantlabs/forge-web-runtime — the same one
 // src/lib/connect.ts installs. A reimplementation here would prove nothing
 // about what ships.
 
-import { authInterceptor } from "@reliant-labs/web-runtime";
+import { authInterceptor } from "@reliantlabs/forge-web-runtime";
 import { describe, expect, it } from "vitest";
 
 import { clearSession, getAccessToken, setSession } from "./oidc-storage";

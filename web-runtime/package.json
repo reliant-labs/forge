@@ -1,8 +1,12 @@
 {
-  "name": "@reliant-labs/web-runtime",
+  "name": "@reliantlabs/forge-web-runtime",
   "version": "0.3.0",
   "description": "The forge frontend runtime: Connect interceptor stack, session, error boundary, toast queue, <Resource> container, W3C trace propagation and client RUM. The web twin of forge/pkg.",
   "license": "BUSL-1.1",
+  "//publishConfig note": "A SCOPED package defaults to restricted. Restricted breaks `npm install` for anyone outside the org — including every machine that scaffolds a project with a released forge, which resolves this package from the registry by semver range. Declaring access here means a publish cannot accidentally ship private by omitting --access public.",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "sideEffects": false,
   "files": [

@@ -1,6 +1,6 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
-// The "@reliant-labs/web-runtime/interceptors" entry point promises ONE
+// The "@reliantlabs/forge-web-runtime/interceptors" entry point promises ONE
 // thing the barrel cannot: it drags no React into the consumer's program at
 // all. A React Native app renders none of this package's components — they
 // emit <table>, <input>, <div> — so pulling their module graph in would cost

@@ -14,7 +14,7 @@
 {{- if or .HasUpdate .HasDelete}}
 import { {{if .HasDelete}}Trash2{{end}}{{if and .HasDelete .HasUpdate}}, {{end}}{{if .HasUpdate}}SquarePen{{end}}{{if .HasDelete}}, TriangleAlert{{end}} } from "lucide-react";
 {{- end}}
-import { userMessage } from "@reliant-labs/web-runtime";
+import { userMessage } from "@reliantlabs/forge-web-runtime";
 import Link from "next/link";
 {{- /* useRouter is only consumed by the delete flow's onSuccess redirect —
        importing it unconditionally ships an eslint no-unused-vars warning

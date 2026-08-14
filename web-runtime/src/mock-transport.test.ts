@@ -1,4 +1,4 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // The mock transport's behavior contract. Every case here used to be a
 // property of ~300 lines of Tier-1 scaffold in each generated project, where

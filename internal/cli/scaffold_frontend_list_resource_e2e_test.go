@@ -66,7 +66,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 	//    passes every filter server-side, and walks the cursor. ──
 	for _, want := range []string{
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
-		`import { Resource, type ResourceColumn } from "@reliant-labs/web-runtime";`,
+		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
 		`import { OrderStatus } from "@/gen/services/order/v1/order_pb";`,
 		`const resource = useQueryResource(query);`,
 		`<Resource<Order>`,

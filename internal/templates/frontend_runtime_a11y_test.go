@@ -1,4 +1,4 @@
-// frontend_runtime_a11y_test.go — @reliant-labs/web-runtime renders into
+// frontend_runtime_a11y_test.go — @reliantlabs/forge-web-runtime renders into
 // every forge frontend, so an accessibility defect in it is one a project
 // CANNOT fix.
 //

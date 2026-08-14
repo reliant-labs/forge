@@ -1,5 +1,5 @@
 import { Code, ConnectError } from "@connectrpc/connect";
-import { userMessage } from "@reliant-labs/web-runtime";
+import { userMessage } from "@reliantlabs/forge-web-runtime";
 import { MutationCache, QueryClient, type QueryKey } from "@tanstack/react-query";
 
 import { emitToast } from "@/lib/events";

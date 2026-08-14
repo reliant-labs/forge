@@ -42,7 +42,7 @@ function run(command, args) {
     shell: command === "npm" && process.platform === "win32",
   });
   if (result.error) {
-    console.error(`@reliant-labs/web-runtime: could not run ${command}:`, result.error.message);
+    console.error(`@reliantlabs/forge-web-runtime: could not run ${command}:`, result.error.message);
     process.exit(1);
   }
   if (result.status !== 0) {
@@ -52,7 +52,7 @@ function run(command, args) {
 
 if (!existsSync(tsc)) {
   console.log(
-    "@reliant-labs/web-runtime: no local toolchain — installing devDependencies once to build dist/",
+    "@reliantlabs/forge-web-runtime: no local toolchain — installing devDependencies once to build dist/",
   );
   run("npm", ["install", "--no-audit", "--no-fund", "--ignore-scripts"]);
 }

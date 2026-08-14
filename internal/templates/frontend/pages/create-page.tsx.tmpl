@@ -18,7 +18,7 @@ import { base64Decode } from "@bufbuild/protobuf/wire";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 {{- end}}
 import { zodResolver } from "@hookform/resolvers/zod";
-import { userMessage } from "@reliant-labs/web-runtime";
+import { userMessage } from "@reliantlabs/forge-web-runtime";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { {{if .HasCreateFK}}Controller, {{end}}useForm } from "react-hook-form";

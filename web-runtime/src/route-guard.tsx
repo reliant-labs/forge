@@ -1,6 +1,6 @@
 "use client";
 
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // Sign-in gating for a page or section, driven by the session forge already
 // derives from the JWT. This gates RENDERING only — the backend remains the

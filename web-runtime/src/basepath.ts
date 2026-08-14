@@ -1,4 +1,4 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // The mount-prefix primitives: normalising a raw `base_path` value, and
 // prefixing an app-internal path with it.

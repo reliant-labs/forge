@@ -8,7 +8,7 @@
 // those was a real defect before it was a test:
 //
 //   - The Vite scaffold declared 18 tokens while shared components — the
-//     src/components/ui/** library and @reliant-labs/web-runtime, which ship
+//     src/components/ui/** library and @reliantlabs/forge-web-runtime, which ship
 //     BYTE-IDENTICAL into both trees — referenced 28. `bg-success-surface`
 //     and friends resolved to nothing, so status badges in a Vite SPA
 //     rendered as unstyled text while the same component looked correct
@@ -186,7 +186,7 @@ func TestBothScaffoldsDeclareTheSameColorTokens(t *testing.T) {
 	if len(missingFromVite) > 0 || len(missingFromNext) > 0 {
 		t.Errorf("the two scaffolds declare different color tokens.\n"+
 			"missing from %s: %v\nmissing from %s: %v\n\n"+
-			"The src/components/ui/** library and @reliant-labs/web-runtime ship BYTE-IDENTICAL into both "+
+			"The src/components/ui/** library and @reliantlabs/forge-web-runtime ship BYTE-IDENTICAL into both "+
 			"frontends, so a token only one stylesheet declares makes those shared components render with a "+
 			"missing color in the other — silently, since an undefined custom property is not a CSS error. "+
 			"Declare every token in both files.",

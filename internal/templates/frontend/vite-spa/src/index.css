@@ -1,13 +1,13 @@
 @import "tailwindcss";
 
 /*
- * Tailwind v4 does not scan node_modules. @reliant-labs/web-runtime renders
+ * Tailwind v4 does not scan node_modules. @reliantlabs/forge-web-runtime renders
  * the SAME semantic utilities declared below (text-ink, bg-danger-surface,
  * border-border, …), so without this directive every class only the runtime
  * uses is absent from the built CSS and its components render unstyled.
  * The path is relative to THIS file: src/ → the frontend root.
  */
-@source "../node_modules/@reliant-labs/web-runtime";
+@source "../node_modules/@reliantlabs/forge-web-runtime";
 
 /*
  * Semantic theme tokens — the ONE place brand + light/dark live.

@@ -1,6 +1,6 @@
 ---
 name: forge-libraries
-description: Adopt-or-port judgment for forge's public libraries — forge/pkg for Go and @reliant-labs/web-runtime for the frontend. Read this BEFORE porting a utility from an existing codebase — the equivalent may already exist. `forge project libraries <pkg>` prints any package's full signatures; never read forge's source to find one.
+description: Adopt-or-port judgment for forge's public libraries — forge/pkg for Go and @reliantlabs/forge-web-runtime for the frontend. Read this BEFORE porting a utility from an existing codebase — the equivalent may already exist. `forge project libraries <pkg>` prints any package's full signatures; never read forge's source to find one.
 emit: both
 ---
 
@@ -27,7 +27,7 @@ ships TWO runtime libraries and the command prints both:
 - **`forge/pkg`** (Go) — what each package is for, from each package's own
   doc comment, and which copy this project resolves. Name a package to get
   its signatures.
-- **`@reliant-labs/web-runtime`** (frontend) — where npm installed it, its
+- **`@reliantlabs/forge-web-runtime`** (frontend) — where npm installed it, its
   entry points, and every module with the symbols it exports, from the
   package's own manifest and barrel. `frontend-runtime` has the composition
   rules; the runtime is a package, so there is nothing to edit or regenerate.

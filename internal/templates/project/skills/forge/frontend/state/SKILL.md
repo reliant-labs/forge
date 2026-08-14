@@ -50,7 +50,7 @@ For every piece of state, answer:
 Every async operation has at least: `loading`, `error`, `success`, `empty`. Generated hooks provide these via React Query — always handle all states:
 
 ```tsx
-import { userMessage } from "@reliant-labs/web-runtime";
+import { userMessage } from "@reliantlabs/forge-web-runtime";
 
 if (query.isLoading) return <SkeletonLoader />;
 if (query.isError) return <AlertBanner variant="error" message={userMessage(query.error)} />;

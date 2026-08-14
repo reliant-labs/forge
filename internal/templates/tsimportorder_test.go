@@ -28,7 +28,7 @@ func TestCanonicalTSImportOrder(t *testing.T) {
 // yours: scaffolded once, never touched again
 // Detail page emitted by ` + "`forge scaffold page`" + `.
 import { Trash2 } from "lucide-react";
-import { userMessage } from "@reliant-labs/web-runtime";
+import { userMessage } from "@reliantlabs/forge-web-runtime";
 import Link from "next/link";
 
 export default function P() {}
@@ -37,7 +37,7 @@ export default function P() {}
 
 // yours: scaffolded once, never touched again
 // Detail page emitted by ` + "`forge scaffold page`" + `.
-import { userMessage } from "@reliant-labs/web-runtime";
+import { userMessage } from "@reliantlabs/forge-web-runtime";
 import { Trash2 } from "lucide-react";
 import Link from "next/link";
 
@@ -46,7 +46,7 @@ export default function P() {}
 		},
 		{
 			name: "render-time internal paths sort among the fixed ones",
-			in: `import { Resource } from "@reliant-labs/web-runtime";
+			in: `import { Resource } from "@reliantlabs/forge-web-runtime";
 
 import { useQueryResource } from "@/hooks/use-query-resource";
 import { formatValue } from "@/lib/format-utils";
@@ -57,7 +57,7 @@ import type { Product } from "@/gen/services/catalog/v1/catalog_pb";
 
 const columns = [];
 `,
-			want: `import { Resource } from "@reliant-labs/web-runtime";
+			want: `import { Resource } from "@reliantlabs/forge-web-runtime";
 
 import { ProductStatus } from "@/gen/services/catalog/v1/catalog_pb";
 import { useListProducts } from "@/hooks/catalog-service-hooks";

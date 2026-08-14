@@ -127,6 +127,7 @@ require (
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/kubescape/go-git-url v0.0.31 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-sqlite3 v1.14.49 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/moby/locker v1.0.1 // indirect

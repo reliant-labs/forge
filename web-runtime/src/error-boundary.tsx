@@ -1,6 +1,6 @@
 "use client";
 
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // A React error boundary with a designed fallback. Next.js file-convention
 // boundaries (app/error.tsx, app/global-error.tsx) catch route render

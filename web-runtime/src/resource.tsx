@@ -1,6 +1,6 @@
 "use client";
 
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // <Resource> — the owned-once data-table container. It encapsulates the
 // loading / error / empty / data tristate ladder, a server-side (debounced)

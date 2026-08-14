@@ -84,7 +84,7 @@ Never hand-edit `*-hooks.ts` — overwritten on next `forge generate`. Add custo
 
 `data_table` is in the component library but is NOT one of the components the
 scaffold installs — run `forge component install data_table` first, or reach
-for `<Resource>` from `@reliant-labs/web-runtime` (see `frontend-runtime`).
+for `<Resource>` from `@reliantlabs/forge-web-runtime` (see `frontend-runtime`).
 
 ```tsx
 // frontends/web/src/app/users/page.tsx
@@ -294,7 +294,7 @@ take_screenshot()    # actual rendered pixels
 5. **Hand-editing a generated `*-hooks.ts`.** Overwritten on next `forge generate`.
 6. **Skipping screenshots.** Snapshots compile, tests pass, layout is broken in the browser.
 7. **Leaving a scaffolded form on the raw CRUD RPC when a domain verb owns the operation.** The generated create page wires `Create<Entity>`: the generator cannot tell whether `IssuePrescription` creates a row or transitions one, so it never guesses. You can. Point the form at the domain RPC when one exists — that is where the invariants and side effects live. Rewire the mutation hook only.
-8. **Hand-rolling mutation error toasts.** Mutation failures already surface through the app-wide chokepoint (`MutationCache.onError` in `src/lib/query-client.ts`). If your page renders the error inline (form banner), pass `meta: { silenceErrorToast: true }` to the mutation so the failure isn't announced twice — and show users `userMessage(err)` (from `@reliant-labs/web-runtime`), never raw `err.message`.
+8. **Hand-rolling mutation error toasts.** Mutation failures already surface through the app-wide chokepoint (`MutationCache.onError` in `src/lib/query-client.ts`). If your page renders the error inline (form banner), pass `meta: { silenceErrorToast: true }` to the mutation so the failure isn't announced twice — and show users `userMessage(err)` (from `@reliantlabs/forge-web-runtime`), never raw `err.message`.
 
 ## Rules
 

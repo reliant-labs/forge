@@ -91,7 +91,7 @@ var perKindAdvisoryExclusions = map[string]string{
 	"src/app/page.tsx":       "seeded once by the nav generator, which owns the entity list it shows",
 
 	// package.json is RECONCILED after the template render, by
-	// EnsureWebRuntimeDependency: the @reliant-labs/web-runtime specifier
+	// EnsureWebRuntimeDependency: the @reliantlabs/forge-web-runtime specifier
 	// is `^x.y.z` from a released forge and `file:<path>` from a dev build,
 	// so the bytes on disk legitimately differ from a plain template
 	// render. That is the two-renderer condition exactly — reporting it

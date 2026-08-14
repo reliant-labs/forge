@@ -81,7 +81,7 @@ Owned scaffold (not `ui/`), composing the base primitives — yours to edit or d
 - **`entity-picker.tsx`** / **`entity-name.tsx`** — the foreign-key pair: searchable select over a generated LIST hook, id→display-name over a GET hook. Never hand-roll a per-entity picker. See `frontend/pages`.
 - **`src/components/session_nav.tsx`** (Next.js) — signed-in user + sign-out, on `useAuth()`. No login form or `/login` route ships; sign-in is your IdP's. See `auth`.
 
-Typed list views are NOT owned scaffold: the generated CRUD pages import `<Resource>` from `@reliant-labs/web-runtime`, which owns the loading/error/empty/data ladder and cursor pagination (`frontend-runtime`).
+Typed list views are NOT owned scaffold: the generated CRUD pages import `<Resource>` from `@reliantlabs/forge-web-runtime`, which owns the loading/error/empty/data ladder and cursor pagination (`frontend-runtime`).
 
 ## Formatting: `@/lib/format-utils`
 
@@ -123,7 +123,7 @@ Import the generated transport from `src/lib/connect.ts`; for direct calls `crea
 
 ### Where the mock pipeline lives
 
-The dispatch ENGINE is library code — `@reliant-labs/web-runtime/mock-transport`, imported through that subpath and never the barrel, so a production bundle can shake it out. Your project keeps only a declarative table:
+The dispatch ENGINE is library code — `@reliantlabs/forge-web-runtime/mock-transport`, imported through that subpath and never the barrel, so a production bundle can shake it out. Your project keeps only a declarative table:
 
 - **`src/lib/mock-transport_gen.ts`** (Tier-1) — one `MockEntityDescriptor` per entity: service name, primary-key field, fixture module, entity schema, and each CRUD RPC's response schema. Regenerated from your protos every run.
 - **`src/mocks/<entity>_gen.ts`** — the deterministic fixtures, the same rows `forge db seed apply` writes.

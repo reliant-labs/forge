@@ -1,6 +1,6 @@
 "use client";
 
-import { initClientTelemetry, RuntimeShell } from "@reliant-labs/web-runtime";
+import { initClientTelemetry, RuntimeShell } from "@reliantlabs/forge-web-runtime";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo } from "react";
@@ -17,7 +17,7 @@ import type { ToastEvent } from "@/lib/events";
 import type {
   RuntimeToastHostProps,
   RuntimeToastSink,
-} from "@reliant-labs/web-runtime";
+} from "@reliantlabs/forge-web-runtime";
 
 /**
  * Top-level client-only provider wrapper.

@@ -57,7 +57,7 @@ type LibrarySpec struct {
 
 // LibrariesSpec is the whole dump: the resolved Go module and its packages,
 // then the frontend runtime. forge ships two runtime libraries — forge/pkg
-// for Go and @reliant-labs/web-runtime for the web — and a verb that
+// for Go and @reliantlabs/forge-web-runtime for the web — and a verb that
 // indexed only the first sent every agent looking for the second onto the
 // filesystem.
 type LibrariesSpec struct {
@@ -114,7 +114,7 @@ func newLibrariesCmd() *cobra.Command {
 		Long: `Print forge's public runtime libraries, and the full API of any you name.
 
 With NO arguments this is an index: forge ships TWO runtime libraries and it
-prints both — forge/pkg for Go and @reliant-labs/web-runtime for the frontend
+prints both — forge/pkg for Go and @reliantlabs/forge-web-runtime for the frontend
 — one line per package, from each package's own doc comment.
 
 NAME A PACKAGE and it stops being an index and answers the question:

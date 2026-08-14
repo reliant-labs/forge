@@ -379,7 +379,7 @@ func TestFormatComponentList(t *testing.T) {
 // TestExternalComponentRefsAreTight makes it a ratchet: an entry nothing
 // references must be deleted.
 var externalComponentRefs = map[string]string{
-	"Resource": "@reliant-labs/web-runtime — the wired list view over a Connect list RPC",
+	"Resource": "@reliantlabs/forge-web-runtime — the wired list view over a Connect list RPC",
 	"Field":    "headlessui — cited in label.tsx as prior art for the FormField context pattern",
 }
 

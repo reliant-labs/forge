@@ -312,6 +312,78 @@ func TestCollectManifestRefs(t *testing.T) {
 	}
 }
 
+// A resource the SAME manifest stream renders is not a missing dependency:
+// `kubectl apply` creates it in the same pass. Demanding it exist first makes
+// a first deploy unsatisfiable — the user is told to provision the very thing
+// this deploy provisions. Regression test for a bundle carrying an in-cluster
+// IdP whose bootstrap ConfigMap is rendered two documents above the Deployment
+// that mounts it.
+func TestCollectManifestRefs_SelfProvidedNotRequired(t *testing.T) {
+	const stream = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zitadel-steps
+  namespace: control-plane-prod
+data:
+  steps.yaml: "FirstInstance: {}"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: self-made
+  namespace: control-plane-prod
+stringData:
+  token: abc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zitadel
+  namespace: control-plane-prod
+spec:
+  template:
+    spec:
+      containers:
+        - name: zitadel
+          image: ghcr.io/zitadel/zitadel:v4.16.2
+          env:
+            - name: TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: self-made
+                  key: token
+            - name: EXTERNAL
+              valueFrom:
+                secretKeyRef:
+                  name: provisioned-elsewhere
+                  key: password
+          volumeMounts:
+            - name: steps
+              mountPath: /steps.yaml
+      volumes:
+        - name: steps
+          configMap:
+            name: zitadel-steps
+`
+	refs := CollectManifestRefs(stream)
+
+	if _, ok := refs.ConfigMaps["zitadel-steps"]; ok {
+		t.Errorf("zitadel-steps is rendered by this stream and must not be required: %v", refs.ConfigMaps)
+	}
+	if _, ok := refs.Secrets["self-made"]; ok {
+		t.Errorf("self-made Secret is rendered by this stream and must not be required: %v", refs.Secrets)
+	}
+	// The genuinely external reference must STILL be required — this is the
+	// check's whole value, and over-subtracting would silently gut it.
+	if _, ok := refs.Secrets["provisioned-elsewhere"]; !ok {
+		t.Errorf("provisioned-elsewhere is NOT in the stream and must remain required: %v", refs.Secrets)
+	}
+	// Images are never self-provided: an image is satisfied by a registry.
+	if _, ok := refs.Images["ghcr.io/zitadel/zitadel:v4.16.2"]; !ok {
+		t.Errorf("image refs must be unaffected by self-provided subtraction: %v", refs.Images)
+	}
+}
+
 func TestCollectManifestRefs_Empty(t *testing.T) {
 	refs := CollectManifestRefs("")
 	if len(refs.Secrets) != 0 || len(refs.Images) != 0 {

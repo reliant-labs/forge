@@ -254,7 +254,7 @@ enum ProductStatus {
 	//
 	//    Snapshot the whole set rather than one named file. This assertion
 	//    used to hardcode src/lib/runtime/interceptors.ts, which later moved
-	//    into the @reliant-labs/web-runtime package — readFileE2E then
+	//    into the @reliantlabs/forge-web-runtime package — readFileE2E then
 	//    t.Fatal'd on a path that no longer exists, and because this lane is
 	//    behind `-tags e2e` nobody saw it. The invariant was never about that
 	//    file: eslint --fix must not mutate ANY file forge regenerates, or the

@@ -1,12 +1,12 @@
 ---
 name: frontend-runtime
-description: The forge frontend runtime, @reliant-labs/web-runtime — the web twin of forge/pkg. Transport interceptor stack (auth, brand, W3C traceparent, error normalization, retry), app-shell providers (session, error boundary, toast host), the generic <Resource> data-table container, and client telemetry.
+description: The forge frontend runtime, @reliantlabs/forge-web-runtime — the web twin of forge/pkg. Transport interceptor stack (auth, brand, W3C traceparent, error normalization, retry), app-shell providers (session, error boundary, toast host), the generic <Resource> data-table container, and client telemetry.
 ---
 
 # Frontend Runtime
 
 Every generated web frontend — Next.js and Vite SPA alike — is built on
-**`@reliant-labs/web-runtime`**, the frontend analog of `forge/pkg`. It is a
+**`@reliantlabs/forge-web-runtime`**, the frontend analog of `forge/pkg`. It is a
 set of pull-out-of-the-box batteries the app wires through thin, owned
 composition.
 
@@ -22,7 +22,7 @@ You compose it from **your** owned files:
 - `src/app/providers.tsx` — mounts `RuntimeShell` and inits telemetry.
 
 Import everything from the barrel:
-`import { … } from "@reliant-labs/web-runtime"`.
+`import { … } from "@reliantlabs/forge-web-runtime"`.
 
 Three subpaths are deliberately OUTSIDE the barrel, each for its own reason:
 
@@ -50,7 +50,7 @@ utility only the runtime renders vanishes from the built CSS.
 `connect.ts` builds its Connect interceptors from the runtime:
 
 ```ts
-import { buildRuntimeInterceptors } from "@reliant-labs/web-runtime";
+import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
 
 const interceptors = buildRuntimeInterceptors({
   getToken: () => _getToken(),      // bearer token (wired by AuthTokenBridge)
@@ -94,7 +94,7 @@ import {
   FORGE_ERROR_REASON_HEADER, // "x-forge-error-reason" — the metadata key .reason is read from
   normalizeError,
   userMessage,
-} from "@reliant-labs/web-runtime";
+} from "@reliantlabs/forge-web-runtime";
 ```
 
 **The rule: branch on `.reason` (or `.code`), render with `userMessage(err)`,
@@ -145,7 +145,7 @@ to rename, restyle, or delete, and a forge-owned file may not depend on them.
 Everything app-shaped is a **prop**, wired once in your `providers.tsx`:
 
 ```tsx
-import { RuntimeShell } from "@reliant-labs/web-runtime";
+import { RuntimeShell } from "@reliantlabs/forge-web-runtime";
 import ToastNotification from "@/components/ui/toast_notification";
 import { useAuth } from "@/lib/auth/context";
 import { useEventBus } from "@/lib/event-context";
@@ -189,7 +189,7 @@ no host is mounted), `onError` (optional — forwarded to the error boundary).
   crashes; use this to isolate a subtree so one crashing widget degrades to a
   small fallback instead of taking the route down:
   ```tsx
-  import { RuntimeErrorBoundary } from "@reliant-labs/web-runtime";
+  import { RuntimeErrorBoundary } from "@reliantlabs/forge-web-runtime";
   <RuntimeErrorBoundary compact><RiskyWidget /></RuntimeErrorBoundary>
   ```
 - **`RuntimeToastHost`** — owns the toast QUEUE (ids, add, dismiss-one,
@@ -201,7 +201,7 @@ no host is mounted), `onError` (optional — forwarded to the error boundary).
 ### Route guarding (render-gate only)
 
 ```tsx
-import { RouteGuard } from "@reliant-labs/web-runtime";
+import { RouteGuard } from "@reliantlabs/forge-web-runtime";
 
 <RouteGuard loading={<Spinner />} fallback={<SignInPrompt />}>
   <AdminPanel />
@@ -228,7 +228,7 @@ component. Pair it with `useQueryResource` and a generated list hook. Do not
 hand-roll the tristate ladder, and do not client-side-filter a single page cap.
 
 ```tsx
-import { Resource, type ResourceColumn } from "@reliant-labs/web-runtime";
+import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";
 import { useQueryResource } from "@/hooks/use-query-resource";
 
 const columns: ResourceColumn<Item>[] = [
@@ -266,7 +266,7 @@ with native browser APIs — no extra dependency. Export is **opt-in**: events
 go to an in-process sink (console in dev) unless you pass an `endpoint`.
 
 ```ts
-import { initClientTelemetry } from "@reliant-labs/web-runtime";
+import { initClientTelemetry } from "@reliantlabs/forge-web-runtime";
 
 initClientTelemetry({
   onEvent: (e) => myReporter(e),

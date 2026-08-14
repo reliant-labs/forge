@@ -64,10 +64,12 @@ type upOptions struct {
 	noGenerate  bool // skip the pre-build "ensure generated code" step (--no-generate)
 	noInstall   bool // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
 	noSeed      bool // skip the first-boot dev auto-seed (--no-seed)
-	// targets, when non-empty, scopes the host + frontend phases to the
-	// named services/frontends — `forge env up --target admin-server` is the
-	// single-service inner loop (combine with --host-only to skip the
-	// cluster build+deploy). Empty means "everything", the default.
+	// targets, when non-empty, scopes the WHOLE run to the named
+	// services/operators/frontends — build, deploy, host and frontend
+	// phases alike, mirroring `forge env deploy --target`. Naming a
+	// frontend therefore no longer docker-builds and pushes every cluster
+	// service on the way to starting one dev server. Empty means
+	// "everything", the default.
 	targets []string
 	// renderOptions are raw `-D name=value` values pushed into the env's KCL
 	// as top-level options. OPAQUE to forge: it validates the name against
@@ -204,7 +206,7 @@ Render options (-D):
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge env up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default `forge env up` installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
 	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default `forge run`/`forge env up` seeds a dev database once when it is reachable and all seedable tables are empty.")
-	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the host + frontend phases to specific services/frontends by name (repeatable). `forge env up dev --target admin-server --host-only` is the single-service inner loop. Default: everything.")
+	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the whole run — build, deploy, host and frontend phases — to specific services/operators/frontends by name (repeatable). Targeting only host/frontend apps builds no images. An unknown name is an error listing the env's app names. Default: everything.")
 	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with `forge env options <env>`.")
 
 	return cmd
@@ -500,6 +502,17 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	mergeConfigFrontends(entities, cfg)
 	if entitiesEmpty(entities) {
 		return fmt.Errorf("no services/operators/frontends/cronjobs declared in deploy/kcl/%s/", opts.env)
+	}
+
+	// A --target that names nothing is a typo, and the cost of treating it
+	// as a filter that simply matches no entity is the worst outcome
+	// available: the pre-flight below still tears down the running stack,
+	// and then the run starts nothing in its place. Validated AFTER
+	// mergeConfigFrontends so frontend names are in the available set, and
+	// against the SAME name set `forge env deploy --target` validates
+	// against, so a name that works for one command works for the other.
+	if err := validateDeployTargets(entities, opts.targets); err != nil {
+		return err
 	}
 	summarizeKCLBuildPlan(entities)
 
@@ -836,8 +849,12 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 //     all the port probe was ever for. After (1) every remaining holder is
 //     foreign by construction — a foreign process is reported, never killed.
 func upPreflight(projectID, env string, e *KCLEntities, targets []string, frontendsOn bool) error {
-	if stopped := stopStack(projectID, env); stopped > 0 {
-		fmt.Printf("[up] stopped %d process tree(s) from the env=%s stack this project was already running\n", stopped, env)
+	if stopped := stopStackScoped(projectID, env, targets); stopped > 0 {
+		scopeNote := ""
+		if len(targets) > 0 {
+			scopeNote = fmt.Sprintf(" for %s (other services left running)", strings.Join(targets, ", "))
+		}
+		fmt.Printf("[up] stopped %d process tree(s) from the env=%s stack this project was already running%s\n", stopped, env, scopeNote)
 	}
 	conflicts := conflictingPorts(e, targets, frontendsOn, portInUse)
 	if len(conflicts) == 0 {
@@ -951,7 +968,7 @@ func upClusterBringup(ctx context.Context, in upClusterInput) error {
 	if !opts.noBuild {
 		if !skipFeature(store, config.FeatureBuild, "up:build") {
 			fmt.Println("\n[up] build phase")
-			if err := upBuildCluster(ctx, cfg, opts.env, opts.noGenerate); err != nil {
+			if err := upBuildCluster(ctx, cfg, opts.env, opts.noGenerate, opts.targets); err != nil {
 				return fmt.Errorf("build: %w", err)
 			}
 		}
@@ -987,7 +1004,7 @@ func upClusterBringup(ctx context.Context, in upClusterInput) error {
 			// its `next dev` server. The build-only path exists to
 			// materialize a static frontend for a FirebaseHosting frontend
 			// to reference at DEPLOY time; it has no place in the dev loop.
-			if err := reconcileCluster(ctx, opts.env, deployOptions{skipFrontend: true}); err != nil {
+			if err := reconcileCluster(ctx, opts.env, deployOptions{skipFrontend: true, targets: opts.targets}); err != nil {
 				return fmt.Errorf("deploy: %w", err)
 			}
 		}
@@ -1758,12 +1775,21 @@ func entitiesEmpty(e *KCLEntities) bool {
 // per-env KCL filter applied (deliverable 3's runBuild path). The
 // registry comes from the rendered KCL's K8sCluster.registry —
 // defaults to localhost:5050 for dev (the canonical k3d mirror).
-func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string, noGenerate bool) error {
+func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string, noGenerate bool, targets []string) error {
 	registry := "localhost:5050"
 	if reg := k8sClusterRegistryForEnv(ctx, env); reg != "" {
 		registry = reg
 	}
-	opts := buildOptions{
+	return runBuild(ctx, upBuildOptionsFor(env, registry, noGenerate, targets))
+}
+
+// upBuildOptionsFor is the pure construction of `forge env up`'s build-phase
+// options, split out from upBuildCluster so the wiring is unit-testable
+// without a cluster to query for a registry. targets is the load-bearing
+// field: it is what scopes the docker build+push to the apps this run is
+// actually bringing up, so a `--target <frontend>` builds no images at all.
+func upBuildOptionsFor(env, registry string, noGenerate bool, targets []string) buildOptions {
+	return buildOptions{
 		outputDir:     "bin",
 		buildTarget:   "all",
 		parallel:      true,
@@ -1772,8 +1798,8 @@ func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string, no
 		env:           env,
 		skipFrontends: true,
 		skipGenerate:  noGenerate,
+		targets:       targets,
 	}
-	return runBuild(ctx, opts)
 }
 
 // prewarmInfra brings up the project's declared dev INFRASTRUCTURE — the
@@ -2448,7 +2474,34 @@ func (p *procRegistry) persist() {
 		fmt.Printf("[up] warning: mkdir state: %v\n", err)
 		return
 	}
+	// Entries this run did NOT start, carried forward. A scoped
+	// (`--target`) run replaces only the services it names and deliberately
+	// leaves the rest of the stack running (see stopStackScoped); those
+	// processes are still live and must stay in the ledger, which is what
+	// `forge env down` and `forge env ps` read to find them. Dead and
+	// same-named entries are dropped — this run's PID is the current one,
+	// and a process that has exited is not something to remember.
+	//
+	// No-op for a full run: the unscoped teardown removed the ledger before
+	// this point, so there is nothing to carry.
+	carried := make([]trackedProc, 0)
+	started := make(map[string]bool, len(p.processes))
+	p.mu.Lock()
+	for _, mp := range p.processes {
+		started[mp.name] = true
+	}
+	p.mu.Unlock()
+	for _, prev := range trackedStack(p.projectID, p.env) {
+		if started[prev.name] || prev.pid <= 0 || !processAlive(prev.pid) {
+			continue
+		}
+		carried = append(carried, prev)
+	}
+
 	var b strings.Builder
+	for _, prev := range carried {
+		_, _ = fmt.Fprintf(&b, "%s\t%d\n", prev.name, prev.pid)
+	}
 	p.mu.Lock()
 	for _, mp := range p.processes {
 		// Prefer the PID captured at Start (survives Process.Release on

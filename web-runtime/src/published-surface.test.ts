@@ -1,4 +1,4 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // The publish contract: what a consumer resolves, and what it must never be
 // able to resolve.

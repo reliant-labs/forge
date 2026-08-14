@@ -181,7 +181,7 @@ func TestMockTransport_BindsTransportVariableNotCastAtReturn(t *testing.T) {
 	got := renderMockTransport(t, entities)
 
 	// The Transport literal — and with it the TS7006 hazard — now lives in
-	// @reliant-labs/web-runtime/mock-transport, where
+	// @reliantlabs/forge-web-runtime/mock-transport, where
 	// `const transport: Transport` binding is asserted by the package's own
 	// tests. What the PROJECT file must still do is expose the same
 	// entry point with the same signature, since connect.ts (scaffold-once,
@@ -194,10 +194,10 @@ func TestMockTransport_BindsTransportVariableNotCastAtReturn(t *testing.T) {
 	// The engine must arrive through the SUBPATH, never the barrel: the
 	// fixtures and the dispatch engine have to be tree-shakeable out of a
 	// production bundle.
-	if !strings.Contains(got, `from "@reliant-labs/web-runtime/mock-transport"`) {
+	if !strings.Contains(got, `from "@reliantlabs/forge-web-runtime/mock-transport"`) {
 		t.Errorf("expected the engine to be imported from the /mock-transport subpath. Got:\n%s", got)
 	}
-	if strings.Contains(got, `from "@reliant-labs/web-runtime"`) {
+	if strings.Contains(got, `from "@reliantlabs/forge-web-runtime"`) {
 		t.Errorf("mock transport must not import the barrel — that would anchor the fixtures in every bundle. Got:\n%s", got)
 	}
 

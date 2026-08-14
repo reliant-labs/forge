@@ -1,4 +1,4 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // The headline guarantee, self-tested: every Connect call carries a valid
 // W3C traceparent, WITHOUT any OTLP collector configured, so the backend

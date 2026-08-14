@@ -60,6 +60,21 @@ tasks:
       # docs/pkg-versioning.md for the dev-vs-release dependency model.
       - ./scripts/release-pkg.sh {{.CLI_ARGS}}
 
+  release:web-runtime:
+    desc: "Tag a @reliantlabs/forge-web-runtime release: task release:web-runtime -- vX.Y.Z (add --dry-run to validate only)"
+    cmds:
+      # The npm twin of release:pkg. Validates version shape, a clean
+      # web-runtime/ tree, no existing tag, package.json/tag agreement, a
+      # green build+typecheck+test, that the packed tarball really contains
+      # dist/, and that forge's webRuntimePublishedRange tracks the version
+      # being released — so a released forge can never scaffold a range the
+      # registry cannot satisfy.
+      #
+      # Pushing the tag and `npm publish` are deliberate manual steps the
+      # script prints at the end: both are irreversible, and npm requires a
+      # 2FA OTP to publish.
+      - ./scripts/release-web-runtime.sh {{.CLI_ARGS}}
+
   test:
     # Scoping: `task test -- ./internal/lifecycle/...` runs ONLY those Go
     # packages; with no `--` args it is the whole module. An unmatched pattern

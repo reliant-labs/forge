@@ -1,6 +1,6 @@
-// @reliant-labs/web-runtime — the web twin of forge/pkg.
+// @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
-// Public barrel. Import batteries from "@reliant-labs/web-runtime".
+// Public barrel. Import batteries from "@reliantlabs/forge-web-runtime".
 //
 // Everything here is MECHANISM: the transport interceptor stack, the session,
 // the error boundary, the toast queue, the <Resource> tristate ladder, W3C

@@ -1,5 +1,5 @@
 // frontend_runtime_boundary_test.go — the scaffold may not re-declare what
-// @reliant-labs/web-runtime already exports.
+// @reliantlabs/forge-web-runtime already exports.
 //
 // Born red on `stripServerFraming`, which existed TWICE: once in
 // web-runtime/src/errors.ts and once in the scaffold's
@@ -109,7 +109,7 @@ func TestScaffoldDoesNotRedeclareRuntimeExports(t *testing.T) {
 				if !owned[m[1]] {
 					continue
 				}
-				t.Errorf("%s/%s declares %q, which @reliant-labs/web-runtime already exports.\n"+
+				t.Errorf("%s/%s declares %q, which @reliantlabs/forge-web-runtime already exports.\n"+
 					"A scaffold-once file is written once and never overwritten, so a second copy of a package symbol "+
 					"can never be corrected in a project that has already shipped. Import it from the package instead — "+
 					"and do NOT leave a re-export shim behind, because a shim drifts for the same reason.",
@@ -128,7 +128,7 @@ func TestRuntimeOwnsTheErrorFramingContract(t *testing.T) {
 	owned := webRuntimeExports(t)
 	for _, name := range []string{"stripServerFraming", "userMessage"} {
 		if !owned[name] {
-			t.Errorf("@reliant-labs/web-runtime no longer exports %q — the scaffold's pages import it from there", name)
+			t.Errorf("@reliantlabs/forge-web-runtime no longer exports %q — the scaffold's pages import it from there", name)
 		}
 	}
 
@@ -140,7 +140,7 @@ func TestRuntimeOwnsTheErrorFramingContract(t *testing.T) {
 	// forge/pkg/svcerr on purpose, to say where the contract went.
 	if strings.Contains(string(fu), `svcerr:\s*`) {
 		t.Error("shared/src/lib/format-utils.ts carries the `svcerr:` stripping regex again — " +
-			"that contract belongs to @reliant-labs/web-runtime, in ONE implementation")
+			"that contract belongs to @reliantlabs/forge-web-runtime, in ONE implementation")
 	}
 
 	// The pages that SHOW an error must reach the package for the copy.
@@ -156,8 +156,8 @@ func TestRuntimeOwnsTheErrorFramingContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
 		}
-		if !strings.Contains(string(raw), `import { userMessage } from "@reliant-labs/web-runtime";`) {
-			t.Errorf("%s does not import userMessage from @reliant-labs/web-runtime", rel)
+		if !strings.Contains(string(raw), `import { userMessage } from "@reliantlabs/forge-web-runtime";`) {
+			t.Errorf("%s does not import userMessage from @reliantlabs/forge-web-runtime", rel)
 		}
 		for _, line := range strings.Split(string(raw), "\n") {
 			if strings.Contains(line, `from "@/lib/format-utils"`) && strings.Contains(line, "userMessage") {

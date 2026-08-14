@@ -392,7 +392,7 @@ The details:
   `middleware`, `crud`, `tdd`, `testkit`, `pgtest`, `config`, `money`,
   `controller`, `migratekit`, `schemadef`, `seedplan`, `audit`, `validate`, and
   more — `forge project libraries` lists them all with their doc summaries.
-  `@reliant-labs/web-runtime` is the TypeScript twin.
+  `@reliantlabs/forge-web-runtime` is the TypeScript twin.
 
 ---
 
@@ -514,7 +514,7 @@ forge/
 ├── kcl/             # KCL module: typed schemas + manifest render layer
 ├── pkg/             # Libraries projects import (serverkit, svcerr, orm, …)
 │   └── components/  # UI component library shipped to scaffolded frontends
-├── web-runtime/     # @reliant-labs/web-runtime — the web twin of pkg/
+├── web-runtime/     # @reliantlabs/forge-web-runtime — the web twin of pkg/
 ├── proto/           # Forge's own proto annotations (forge/v1)
 ├── docs/            # getting-started, concepts, releasing, pkg versioning
 ├── examples/        # Runnable examples

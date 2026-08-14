@@ -1,6 +1,6 @@
 "use client";
 
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // RuntimeShell is the provider set the app shell mounts INSIDE its existing
 // providers (QueryClient + event bus + auth). It adds, in one place:

@@ -23,7 +23,7 @@ import (
 //
 //  1. src/lib/search-schemas.ts imported `zod`; the React Native package.json
 //     never declared it (fixed f98fe434).
-//  2. @reliant-labs/web-runtime declares @opentelemetry/api as a peer; the
+//  2. @reliantlabs/forge-web-runtime declares @opentelemetry/api as a peer; the
 //     React Native package.json never declared it (fixed d11f0f5b).
 //  3. src/lib/connect.ts references "@/lib/mock-transport" — a module only
 //     `forge generate` emitted — so `forge scaffold frontend` handed back a
@@ -215,8 +215,8 @@ func dropCommentLines(body string) string {
 }
 
 // packageNameOf reduces a bare specifier to its package name:
-// "expo/metro-config" → "expo", "@reliant-labs/web-runtime/interceptors" →
-// "@reliant-labs/web-runtime".
+// "expo/metro-config" → "expo", "@reliantlabs/forge-web-runtime/interceptors" →
+// "@reliantlabs/forge-web-runtime".
 func packageNameOf(spec string) string {
 	parts := strings.Split(spec, "/")
 	if strings.HasPrefix(spec, "@") && len(parts) >= 2 {

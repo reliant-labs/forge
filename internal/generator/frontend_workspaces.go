@@ -131,7 +131,7 @@ func WriteFrontendWorkspaceFiles(projectDir, projectName string, workspaces bool
 		return err
 	}
 	// packages/hooks holds the generated hooks, which import
-	// @reliant-labs/web-runtime for the ConnectClientError type. Reconciling
+	// @reliantlabs/forge-web-runtime for the ConnectClientError type. Reconciling
 	// the specifier here is what bridges it to a dev forge's checkout, and
 	// what adds the entry to a workspace project scaffolded before the hooks
 	// declared the type.
@@ -294,7 +294,7 @@ src/gen/
 // src/use-api-query.ts, src/use-api-mutation.ts, src/index.ts}.
 //
 // The package is DOM-free: it depends on @tanstack/react-query, the
-// project's @<scope>/api workspace and @reliant-labs/web-runtime (for the
+// project's @<scope>/api workspace and @reliantlabs/forge-web-runtime (for the
 // ConnectClientError type the generated hooks declare), and uses no
 // document/window APIs. That keeps it consumable from both Next.js
 // (DOM-aware) and React Native (DOM-free Hermes/Node runtime).
@@ -418,7 +418,7 @@ export function connectClient<S extends DescService>(service: S) {
 
 	useAPIQuery := `import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
 
-import type { ConnectClientError } from "@reliant-labs/web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
 
 /**
  * useApiQuery wraps a Connect client promise-returning call in a
@@ -457,7 +457,7 @@ export function useApiQuery<TData, TError = ConnectClientError>(
 
 	useAPIMutation := `import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
 
-import type { ConnectClientError } from "@reliant-labs/web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
 
 /**
  * useApiMutation wraps a Connect client promise-returning call in a

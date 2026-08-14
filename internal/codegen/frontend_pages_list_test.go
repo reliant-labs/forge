@@ -171,7 +171,7 @@ func TestListPage_RendersServerSideResource(t *testing.T) {
 	for _, want := range []string{
 		// Adopts the runtime container + tristate adapter.
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
-		`import { Resource, type ResourceColumn } from "@reliant-labs/web-runtime";`,
+		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
 		`const resource = useQueryResource(query);`,
 		`<Resource<Order>`,
 		`status={resource.status}`,
@@ -231,7 +231,7 @@ func TestViteSpaListPage_ServerSideResource(t *testing.T) {
 	for _, want := range []string{
 		// Adopts the runtime container + tristate adapter.
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
-		`import { Resource, type ResourceColumn } from "@reliant-labs/web-runtime";`,
+		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
 		`const resource = useQueryResource(query);`,
 		`<Resource<Order>`,
 		// Enum filter imported + rendered as a typed <select>.
@@ -324,7 +324,7 @@ func TestListPage_DegradesWithoutFilters(t *testing.T) {
 
 	out := renderPageTemplate(t, "pages", "list-page.tsx.tmpl", page)
 	for _, want := range []string{
-		`import { Resource, type ResourceColumn } from "@reliant-labs/web-runtime";`,
+		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
 		`<Resource<Widget>`,
 		`onNextPage={() => setCursor((c) => [...c, nextToken])}`,
 	} {

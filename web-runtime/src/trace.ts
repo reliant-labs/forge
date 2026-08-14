@@ -1,4 +1,4 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // W3C trace-context propagation for the browser.
 //

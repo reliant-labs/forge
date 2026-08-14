@@ -257,14 +257,74 @@ func discoverRunningStacks() []runningStack {
 // process trees it signalled. The records are removed either way: the stack
 // they described is gone.
 func stopStack(projectID, env string) int {
+	return stopStackScoped(projectID, env, nil)
+}
+
+// stopStackScoped is stopStack narrowed to the services a run is about to
+// REPLACE. With an empty scope it is stopStack: the whole (project, env)
+// stack goes, and the records with it.
+//
+// A non-empty scope is the `forge env up --target` case, and the distinction
+// is the whole point of the flag. "One stack per (project, env)" exists so a
+// second run cannot leave a half-owned duplicate of a service behind — it is
+// about the services being RESTARTED, not about the env as an indivisible
+// unit. Tearing the whole env down to restart one frontend contradicts what
+// the user asked for and, worse, does it silently: they get a stack with one
+// service running and no indication the other five were stopped on the way.
+//
+// Scoping is by the FORGE_UP_SERVICE marker each child is stamped with,
+// resolved through the same ancestry walk ownership uses, so a re-exec'd
+// grandchild (air restarting its server) is still attributed to its service.
+// A process whose service marker cannot be read is left ALONE under a scoped
+// stop: an unattributable process is not evidence that the targeted service
+// is running, and killing it would resurrect the very behaviour this
+// prevents. It is still reclaimed by an unscoped stop, where the intent is
+// "everything in this env".
+//
+// Records are only removed on an unscoped stop. Under a scope the ledger
+// still describes live processes this run is not touching, and dropping it
+// would strand them: `forge env down` and `forge env ps` read it. The
+// registry rewrites the ledger for the services it starts (see
+// procRegistry.persist), which merges rather than replaces for this reason.
+func stopStackScoped(projectID, env string, scope []string) int {
 	facts := newOSProcFacts()
 	roots := stackTeardownRoots(projectID, env, trackedStack(projectID, env), facts.pidList(), processAlive, facts)
+	if len(scope) > 0 {
+		roots = filterRootsByService(roots, scope, facts)
+	}
 	for _, pid := range roots {
 		fmt.Printf("[up] %s: stopping (pid %d + tree)\n", serviceOfPID(pid, facts), pid)
 	}
 	killTreesAndWait(roots)
-	removeStackRecords(projectID, env)
+	if len(scope) == 0 {
+		removeStackRecords(projectID, env)
+	}
 	return len(roots)
+}
+
+// filterRootsByService keeps only the teardown roots whose stamped service
+// marker is in scope. Both the host name (`admin-server`) and the frontend
+// form (`frontend:reliant-web`) are matched against the bare target name, so
+// a caller passes app names and need not know how the registry spells a
+// frontend's ledger entry.
+//
+// Unattributable roots are dropped, not kept — see stopStackScoped.
+func filterRootsByService(roots []int, scope []string, f procFacts) []int {
+	wanted := make(map[string]bool, len(scope))
+	for _, name := range scope {
+		wanted[name] = true
+	}
+	kept := make([]int, 0, len(roots))
+	for _, pid := range roots {
+		service := serviceOfPID(pid, f)
+		if service == "" || service == "process" {
+			continue
+		}
+		if wanted[strings.TrimPrefix(service, "frontend:")] {
+			kept = append(kept, pid)
+		}
+	}
+	return kept
 }
 
 // stackTeardownRoots is the pure selection core of stopStack: every process

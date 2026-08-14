@@ -115,7 +115,53 @@ func CollectManifestRefs(manifests string) ManifestRefs {
 		}
 		collectRefs(node, &refs)
 	}
+	dropSelfProvided(manifests, &refs)
 	return refs
+}
+
+// dropSelfProvided removes references the SAME manifest stream satisfies.
+//
+// The preflight's job is to catch dependencies the live target is missing
+// BEFORE the apply — a Secret or ConfigMap that must already exist because
+// nothing in this deploy creates it. A resource the bundle itself renders is
+// not that: `kubectl apply` creates it in the same pass, ordered ahead of the
+// pods that consume it. Demanding it exist beforehand makes a first deploy
+// unsatisfiable by construction — the user is told to provision something
+// they cannot provision, because the thing that provisions it is the very
+// deploy being blocked.
+//
+// This surfaced on a bundle carrying an in-cluster IdP: the bundle renders
+// its own `zitadel-steps` bootstrap ConfigMap two documents above the
+// Deployment that mounts it, and the preflight refused the deploy for a
+// ConfigMap sitting in the stream it was reading.
+//
+// Only Secrets and ConfigMaps are subtracted. Images are deliberately NOT:
+// an image reference is satisfied by a registry, never by another document
+// in this stream, so a "self-provided" image is meaningless.
+func dropSelfProvided(manifests string, refs *ManifestRefs) {
+	for _, doc := range splitDocs(manifests) {
+		var head struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &head); err != nil {
+			continue
+		}
+		if head.Metadata.Name == "" {
+			continue
+		}
+		// Keyed by BARE NAME, matching how collectRefs records references
+		// (a secretKeyRef names a Secret in the pod's own namespace, so the
+		// namespace is implied by the apply target, not carried in the key).
+		switch head.Kind {
+		case "Secret":
+			delete(refs.Secrets, head.Metadata.Name)
+		case "ConfigMap":
+			delete(refs.ConfigMaps, head.Metadata.Name)
+		}
+	}
 }
 
 // CollectManifestGVKs walks a `---`-separated multi-doc YAML manifest stream

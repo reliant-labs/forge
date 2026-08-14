@@ -1,4 +1,4 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // The mock transport ENGINE. A generated frontend used to carry this entire
 // pipeline as ~300 lines of Tier-1 scaffold; what varies per project is only
@@ -21,7 +21,7 @@
 //   4. Anything else rejects with Code.Unimplemented so callers see a
 //      clear error instead of a silent empty response.
 //
-// Imported through the "@reliant-labs/web-runtime/mock-transport" subpath,
+// Imported through the "@reliantlabs/forge-web-runtime/mock-transport" subpath,
 // never the barrel: a production bundle must be able to shake the fixtures
 // and this engine out entirely, which is why the generated `connect.ts`
 // reaches its own shim through a dynamic `require()` gated on the mock-mode

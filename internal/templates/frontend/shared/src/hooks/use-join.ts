@@ -1,6 +1,6 @@
 import { useQueries } from "@tanstack/react-query";
 
-import type { ConnectClientError } from "@reliant-labs/web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
 import type { UseQueryResult } from "@tanstack/react-query";
 
 /**

@@ -1,7 +1,7 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // This module is also the package's SECOND ENTRY POINT, published as
-// "@reliant-labs/web-runtime/interceptors". It is the DOM-free, React-free
+// "@reliantlabs/forge-web-runtime/interceptors". It is the DOM-free, React-free
 // half of the runtime: the transport layer and nothing else. Importing it
 // pulls in exactly ./errors and ./trace — no React, no @types/react, no
 // window/document. That matters for React Native, where Expo pins React 18
@@ -182,7 +182,7 @@ export function buildRuntimeInterceptors(
 // is expressed in them: errorNormalizeInterceptor THROWS ConnectClientError
 // and RuntimeInterceptorConfig.onError RECEIVES one, so a consumer cannot
 // write a handler without the type; setTraceSampled is traceInterceptor's
-// only knob. A consumer of "@reliant-labs/web-runtime/interceptors" must
+// only knob. A consumer of "@reliantlabs/forge-web-runtime/interceptors" must
 // never have to fall back to the React-typed barrel to complete the job.
 
 export {

@@ -278,10 +278,46 @@ The rendered JSON:
 ```
 
 **Normalized KCL in, denormalized JSON out.** Consumers (`forge env up`'s dev proxy, the cluster Gateway, audit/explain tools) read the rendered bundle, never KCL syntax — drift is impossible by construction. Lean on cross-references for:
-- **Port** — any route, ingress, or sidecar declaring the port of a service it points at.
+- **Port** — any route, ingress, sidecar, probe, NetworkPolicy allow rule, or env var declaring the port of a service it points at.
 - **Name** — backend `service =` fields, gateway `listener =` refs, anywhere one schema names another.
 - **Image** — two services sharing an image tag (e.g. a sidecar built from the same source) reference `MAIN.image`.
 - **Per-env scaling toggles** — `dev = MAIN | { replicas = 1 }` overlays via the spread operator so only the env-specific field is rewritten.
+
+### Reference the OWNING declaration; don't hoist a bare variable
+
+The reference must point at the schema that OWNS the value, not at a loose
+constant someone lifted out beside it:
+
+```kcl
+# ✗ hoisting — two declarations that merely agree today
+_admin_port = 8090
+ADMIN       = forge.Service { name = "admin-server", port = _admin_port }
+CONSOLE     = forge.Service { env = { API_URL = "http://localhost:8090" } }   # drifts silently
+
+# ✓ referencing — one declaration, read twice
+ADMIN   = forge.Service { name = "admin-server", port = 8090 }
+CONSOLE = forge.Service { env = { API_URL = "http://${ADMIN.name}:${ADMIN.port}" } }
+```
+
+Hoisting looks like deduplication and isn't: it creates a THIRD name that
+must itself be kept in sync, and nothing stops the next edit from writing the
+literal again. A field read off the owning schema cannot drift, because there
+is no second place to change.
+
+**Why this matters more than it looks.** A port mismatch is invisible at
+render — both documents are valid YAML, `forge lint` passes, the deploy
+applies cleanly — and fatal at runtime. The canonical failure: a probe
+declared from one constant while the container's `PORT`/`HEALTH_PORT` env came
+from another. The binary bound the port it was told to; the kubelet probed the
+other; the pod started healthy, failed its readiness check, and was killed and
+restarted forever. The logs showed a clean startup, so the evidence pointed
+everywhere except the two numbers that disagreed.
+
+The same applies to any pair that must match literally: a Zitadel/OIDC issuer
+baked into token `iss` vs. the issuer the API validates, an OAuth redirect URI
+registered with the IdP vs. the one the browser sends, a Service DNS name vs.
+the URL another workload dials. When two places must agree, make it one
+declaration read twice.
 
 ## Per-env conditional manifests via `option("env")`
 

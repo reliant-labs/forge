@@ -10,7 +10,7 @@ import React from "react";
  *
  * Reach for these when you are laying out a bespoke table. A list view
  * over a Connect list RPC should use `<Resource>` from
- * `@reliant-labs/web-runtime` instead — it owns the loading / error /
+ * `@reliantlabs/forge-web-runtime` instead — it owns the loading / error /
  * empty ladder and cursor pagination, and is what the generated CRUD
  * list pages render.
  */

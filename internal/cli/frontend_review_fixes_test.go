@@ -114,13 +114,13 @@ func TestFrontendLintConfigConsistency(t *testing.T) {
 			t.Errorf("format-utils missing %q", want)
 		}
 	}
-	// userMessage/stripServerFraming moved to @reliant-labs/web-runtime, next
+	// userMessage/stripServerFraming moved to @reliantlabs/forge-web-runtime, next
 	// to normalizeError, which strips the identical backend framing — the two
 	// copies used to carry comments promising to keep each other in sync, and
 	// the scaffold-once copy could never be corrected once a project shipped.
 	for _, gone := range []string{"export function userMessage", "export function stripServerFraming"} {
 		if strings.Contains(string(fu), gone) {
-			t.Errorf("format-utils re-declares %q — error framing is a wire contract owned by @reliant-labs/web-runtime, not a per-project scaffold", gone)
+			t.Errorf("format-utils re-declares %q — error framing is a wire contract owned by @reliantlabs/forge-web-runtime, not a per-project scaffold", gone)
 		}
 	}
 	// inferVariant substring-matched status strings as a last-resort semantic
@@ -231,7 +231,7 @@ func TestPageTemplates_TypedColumnsNoReflection(t *testing.T) {
 		// Adopts the runtime <Resource> container + tristate adapter — the
 		// tristate ladder + pagination are owned once, not re-hand-rolled.
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
-		`import { Resource, type ResourceColumn } from "@reliant-labs/web-runtime";`,
+		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
 		`const columns: ResourceColumn<Task>[] = [`,
 		`header: "Title",`,
 		`cell: (item) => formatValue(item.title),`,
@@ -679,7 +679,7 @@ func TestHooksTemplate_KeyFactory(t *testing.T) {
 
 	for _, want := range []string{
 		// Factory exists with service + entity scopes. The tuples themselves
-		// are built by @reliant-labs/web-runtime/service-hooks and pinned in
+		// are built by @reliantlabs/forge-web-runtime/service-hooks and pinned in
 		// ITS suite (service-hooks.test.ts); what the generated file owns —
 		// and what is asserted here — is the service name, which entities get
 		// a scope, and which RPCs get a key.
@@ -837,7 +837,7 @@ func TestHooksTemplate_MutationComposeThenSpread(t *testing.T) {
 			out := renderHooksForTest(t, tc.workspaces)
 
 			// The compose-then-spread pattern ITSELF now lives in
-			// @reliant-labs/web-runtime/service-hooks, and is tested there
+			// @reliantlabs/forge-web-runtime/service-hooks, and is tested there
 			// against a captured options object
 			// ("composes the caller's onSuccess AFTER invalidation") — a
 			// stronger check than the substring assertions this test used to

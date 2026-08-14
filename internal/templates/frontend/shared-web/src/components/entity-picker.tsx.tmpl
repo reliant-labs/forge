@@ -1,12 +1,12 @@
 {{if eq .Platform "nextjs"}}"use client";
 
-{{end}}import { userMessage } from "@reliant-labs/web-runtime";
+{{end}}import { userMessage } from "@reliantlabs/forge-web-runtime";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { useDebouncedValue } from "@/hooks/use-query-resource";
 
-import type { ConnectClientError } from "@reliant-labs/web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
 import type { UseQueryOptions, UseQueryResult } from "@tanstack/react-query";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 

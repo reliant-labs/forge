@@ -2,7 +2,7 @@
 // forge-owned: regenerated every run — do not edit (forge project disown to take ownership)
 //
 // The project's mock dispatch TABLE. The engine that reads it lives in
-// @reliant-labs/web-runtime/mock-transport.
+// @reliantlabs/forge-web-runtime/mock-transport.
 //
 // What stays here is what varies per project: which entities exist, which
 // RPC serves each CRUD arm, which proto field carries the payload, and the
@@ -27,7 +27,7 @@
 // barrel: a production bundle must be able to shake the fixtures and the
 // engine out entirely, which is why connect.ts reaches this module through
 // a dynamic `require()` gated on the mock-mode env var.
-import { createMockTransport as createEngineTransport, resolveActiveScenario } from "@reliant-labs/web-runtime/mock-transport";
+import { createMockTransport as createEngineTransport, resolveActiveScenario } from "@reliantlabs/forge-web-runtime/mock-transport";
 {{- /*
   Import order matters: the emitted file must pass the scaffold's
   import/order rule (external, then internal `@/`, then parent `../`, then
@@ -55,7 +55,7 @@ import * as scenarios from "../mocks/scenarios/index_gen";
 
 import type { Transport } from "@connectrpc/connect";
 {{- if .Entities }}
-import type { MockEntityDescriptor } from "@reliant-labs/web-runtime/mock-transport";
+import type { MockEntityDescriptor } from "@reliantlabs/forge-web-runtime/mock-transport";
 {{- end }}
 
 // Resolve the active scenario once at module init, and run its `setup()`

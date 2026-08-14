@@ -3,7 +3,7 @@ package cli
 // The frontend half of `forge project libraries`.
 //
 // Every refusal the recursive-scan guard recorded in the last run was an
-// agent hunting @reliant-labs/web-runtime on the filesystem, because the
+// agent hunting @reliantlabs/forge-web-runtime on the filesystem, because the
 // verb that answers "where are forge's libraries and what is in them"
 // covered forge/pkg and nothing else. These tests run against this repo's
 // OWN web-runtime package — the same truth source the command reads at
@@ -229,13 +229,13 @@ func newWebRuntimeProject(t *testing.T, declared, pkgDir string) string {
 		t.Fatal(err)
 	}
 	if pkgDir != "" {
-		scope := filepath.Join(fe, "node_modules", "@reliant-labs")
+		scope := filepath.Join(fe, "node_modules", "@reliantlabs")
 		if err := os.MkdirAll(scope, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		// npm materializes a file: dependency as a symlink; the command must
 		// print the checkout, not the link, so an author can edit it.
-		if err := os.Symlink(pkgDir, filepath.Join(scope, "web-runtime")); err != nil {
+		if err := os.Symlink(pkgDir, filepath.Join(scope, "forge-web-runtime")); err != nil {
 			t.Fatal(err)
 		}
 	}

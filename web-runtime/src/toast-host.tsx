@@ -1,6 +1,6 @@
 "use client";
 
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // The toast host: the queue and its lifecycle, with NO opinion about how a
 // toast looks or where the events come from. The app supplies both —

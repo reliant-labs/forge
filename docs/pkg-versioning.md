@@ -83,6 +83,69 @@ rm -rf .forge-pkg/
 forge generate   # refreshes the Dockerfile (drops the COPY line)
 ```
 
+## The npm twin: `@reliantlabs/forge-web-runtime`
+
+`web-runtime/` is the frontend half of the same story, and it follows the
+same dev-vs-release model — for the same reason and with the same failure
+mode if it drifts.
+
+| | Go | npm |
+|---|---|---|
+| Package | `github.com/reliant-labs/forge/pkg` | `@reliantlabs/forge-web-runtime` |
+| Release tag | `pkg/vX.Y.Z` | `web-runtime/vX.Y.Z` |
+| Cut a release | `task release:pkg -- vX.Y.Z` | `task release:web-runtime -- vX.Y.Z` |
+| Dev bridge | `replace` + `.forge-pkg/` | `file:<path-to-web-runtime>` |
+| Release specifier | the pinned version in `go.mod` | `webRuntimePublishedRange` (`^X.Y.Z`) |
+
+**Release flow.** A released forge writes an ordinary semver range into
+every scaffolded frontend's `package.json`, and npm resolves it from the
+registry like any other dependency. No local paths — a `file:` specifier
+would name a directory that does not exist on the user's disk.
+
+**Dev flow.** A forge built from source writes
+`file:<path-to-the-running-forge's-web-runtime>`. npm symlinks the
+directory into `node_modules`, so edits to `web-runtime/src` land in the
+project with nothing published and no reinstall. The path is written
+relative or home-anchored, never absolute — an absolute path would carry
+the maintainer's username into a committed file. See
+`internal/generator/frontend_webruntime.go`.
+
+**The scope name is load-bearing.** npm requires a scoped package's scope
+to equal the publishing org exactly: the org is `reliantlabs`, so the
+package is `@reliantlabs/...`. That is deliberately NOT the hyphenated
+`reliant-labs` used by the Go module path, the GHCR registry and the GCP
+projects — npm orgs and GitHub orgs are separate namespaces and the npm
+one was registered unhyphenated. The package name is prefixed `forge-` so
+it reads as forge's, since the org spans more than forge.
+
+**`--access public` is not optional.** A scoped package defaults to
+restricted, and a restricted package breaks `npm install` for anyone
+outside the org — including every machine that scaffolds a project with a
+released forge. `web-runtime/package.json` declares
+`publishConfig.access: "public"` so a publish cannot ship private by
+omitting the flag.
+
+**The range must track the release.** `webRuntimePublishedRange` is what a
+released forge scaffolds. If it lags the published version, forge writes a
+range the registry cannot satisfy for the newest features, and the failure
+lands on a user rather than in CI.
+`TestWebRuntimePublishedRangeTracksPackage` pins the invariant, and
+`scripts/release-web-runtime.sh` re-checks it at release time.
+
+### Cutting one
+
+```sh
+task release:web-runtime -- v0.4.0 --dry-run   # validate only
+task release:web-runtime -- v0.4.0             # validates + tags
+
+git push origin web-runtime/v0.4.0
+cd web-runtime && npm publish --access public --otp <code>
+```
+
+Both post-tag steps are manual on purpose: they are irreversible (npm
+un-publish is barred after 72 hours), and npm requires a 2FA OTP — or a
+granular token with bypass-2fa, which is what CI would need.
+
 ## Note on the forge.v1 annotation protos (the "forge/gen" module)
 
 There is **no** published `github.com/reliant-labs/forge/gen` module and

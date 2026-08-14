@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { EntityPicker } from "@/components/entity-picker";
 import { mockTransport, renderWithTransport } from "@/lib/test-utils";
 
-import type { ConnectClientError } from "@reliant-labs/web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
 import type { UseQueryOptions } from "@tanstack/react-query";
 
 // Stand-in for a generated list hook: same `(request, options?)` signature

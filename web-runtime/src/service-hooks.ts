@@ -1,4 +1,4 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // The React Query wrapper machinery behind forge's generated per-service hook
 // files (`src/hooks/<svc>-service-hooks_gen.ts`).

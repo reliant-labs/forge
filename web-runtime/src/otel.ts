@@ -1,4 +1,4 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // OpenTelemetry JS SDK 2.x wiring for the browser: a WebTracerProvider with
 // a batched OTLP/HTTP exporter, W3C trace-context propagation, and the fetch
@@ -10,7 +10,7 @@
 // NOT depend on this module. Reach for this when you additionally want the
 // browser's own spans shipped somewhere.
 //
-// Imported through the "@reliant-labs/web-runtime/otel" subpath, never the
+// Imported through the "@reliantlabs/forge-web-runtime/otel" subpath, never the
 // barrel. The eight @opentelemetry/* SDK packages below are heavy, and only
 // the Next.js scaffold installs them: a Vite SPA or React Native frontend
 // declares just @opentelemetry/api and imports the barrel, so re-exporting

@@ -1,4 +1,4 @@
-// Part of @reliant-labs/web-runtime — the web twin of forge/pkg.
+// Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
 // stripServerFraming and userMessage used to exist TWICE: once here and once
 // in the scaffold's src/lib/format-utils.ts, each carrying a comment
@@ -27,7 +27,7 @@ import {
 /**
  * A ConnectClientError from a SECOND COPY of this package: same shape, same
  * `name`, different class object. npm produces exactly this whenever two
- * dependencies want different versions of @reliant-labs/web-runtime (it
+ * dependencies want different versions of @reliantlabs/forge-web-runtime (it
  * nests the loser), and a bundler produces it whenever one package is pulled
  * in as both ESM and CJS. Declared here rather than imported so the class
  * identity is genuinely different, which is the whole point.

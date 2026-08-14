@@ -416,6 +416,8 @@ github.com/redis/go-redis/v9 v9.1.0 h1:137FnGdk+EQdCbye1FW+qOEcY5S+SpY9T0Niuqvtf
 github.com/redis/go-redis/v9 v9.1.0/go.mod h1:urWj3He21Dj5k4TK1y59xH8Uj6ATueP8AH1cY3lZl4c=
 github.com/reliant-labs/forge/pkg v0.0.5 h1:0USanjSw7PDUvAaih8YpgDRnXbpjjJyrAyj8RwhZkwY=
 github.com/reliant-labs/forge/pkg v0.0.5/go.mod h1:kbtwm4RMa5DTrbB/6TsgtKZoEsSc9Xc4+0nwXB5LTP0=
+github.com/reliant-labs/forge/pkg v0.0.8 h1:8emTN9TiJu/svf5zDx6kDb/NgdJTWDTNBGkWbE1dFXI=
+github.com/reliant-labs/forge/pkg v0.0.8/go.mod h1:yVuNEMU2atdN1obN85YE/Qgv9lBY4m4l8JiCwtNxCRM=
 github.com/robfig/cron/v3 v3.0.1 h1:WdRxkvbJztn8LMz/QEvLN5sBU+xKpSqwwUO1Pjr4qDs=
 github.com/robfig/cron/v3 v3.0.1/go.mod h1:eQICP3HwyT7UooqI/z+Ov+PtYAWygg1TEWWzGIFLtro=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=

@@ -49,3 +49,31 @@ jobs:
       - name: Full license inventory (on failure)
         if: failure()
         run: ./scripts/check-licenses.sh --list
+
+  # The npm half, covering the web-runtime package forge publishes. Separate
+  # job, not a step: it needs Node rather than Go, and a dependency problem in
+  # the published npm package should be reported on its own.
+  #
+  # This matters more here than in a consuming app: web-runtime is PUBLISHED,
+  # so a non-permissive dependency of it propagates into every project that
+  # installs it.
+  npm-licenses:
+    name: permissive-licenses-only (npm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        working-directory: web-runtime
+        run: npm install --no-audit --no-fund
+
+      - name: Check npm dependency licenses
+        run: ./scripts/check-npm-licenses.sh web-runtime
+
+      - name: Full license inventory (on failure)
+        if: failure()
+        run: ./scripts/check-npm-licenses.sh --list web-runtime

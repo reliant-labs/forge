@@ -54,6 +54,23 @@ const manifestRootKey = "manifests"
 // service has no manifest.
 const outputRootKey = "output"
 
+// parseRenderedFrontends reads the frontend declarations out of the
+// `output` contract. Same best-effort contract as parseHostServices: a
+// render that predates the key, or whose shape has moved on, answers nil
+// rather than failing the whole parse.
+func parseRenderedFrontends(raw json.RawMessage) []renderedFrontend {
+	if len(raw) == 0 {
+		return nil
+	}
+	var contract struct {
+		Frontends []renderedFrontend `json:"frontends"`
+	}
+	if err := json.Unmarshal(raw, &contract); err != nil {
+		return nil
+	}
+	return contract.Frontends
+}
+
 // parseHostServices reads the host-deployed services out of the `output`
 // contract. Anything unparseable answers nil: this is a best-effort
 // enrichment of a check that must keep working on a render that predates
@@ -103,7 +120,35 @@ type envRender struct {
 	// so a check that reads only manifests cannot see it at all, and would
 	// report an env that migrates on every boot as having no way to migrate.
 	hostServices []renderedService
-	err          error
+	// frontends are the env's declared frontends, read from the `output`
+	// JSON contract. A frontend never becomes a k8s object unless it
+	// deploys `cluster`-mode, and a Firebase-hosted one never does at
+	// all, so `manifests` cannot answer "which frontends does this env
+	// declare" — see CheckFrontendConfigDrift.
+	frontends []renderedFrontend
+	err       error
+}
+
+// renderedFrontend is the slice of the `output.frontends` contract the
+// config-drift check reasons about: the NAME `forge build --target` has
+// to resolve, and whether the declaration claims a deploy target. The
+// rest of the contract (path, dev_runner, env vars, the typed config
+// block) belongs to the build and dev-loop paths, and reading it here
+// would be one more thing that can break.
+type renderedFrontend struct {
+	Name string `json:"name"`
+	// Deploy is nil when the KCL declared no deploy block (`deploy =
+	// None` / omitted). KCL projects that as a literal null, so the
+	// pointer distinguishes "build-only" from "ships somewhere" without
+	// a second flag.
+	Deploy *renderedFrontendDeploy `json:"deploy"`
+}
+
+// renderedFrontendDeploy carries only the discriminator. "firebase" and
+// "cluster" are today's variants; an unknown one still reads as "this
+// claims to ship", which is the question being asked.
+type renderedFrontendDeploy struct {
+	Type string `json:"type"`
 }
 
 // renderedService is the slice of the `output.services` contract these
@@ -235,6 +280,7 @@ func parseRender(raw []byte) envRender {
 
 	out := envRender{}
 	out.hostServices = parseHostServices(root[outputRootKey])
+	out.frontends = parseRenderedFrontends(root[outputRootKey])
 	for _, k := range keys {
 		var list []k8sObject
 		if lerr := json.Unmarshal(root[k], &list); lerr != nil {

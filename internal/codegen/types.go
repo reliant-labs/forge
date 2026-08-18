@@ -356,6 +356,16 @@ type ConfigField struct {
 	// referenced message's leaf fields. `json:",omitempty"` keeps old
 	// descriptors readable (additive contract, see audit-json skill).
 	MessageType string `json:",omitempty"`
+
+	// ProtoFile is the path of the proto file declaring this field, e.g.
+	// "proto/config/v1/config.proto". It carries no codegen behavior: it
+	// exists so a generate-time refusal can NAME the sources it is talking
+	// about. Fields from several protos are flattened into one KCL schema,
+	// so when two of them collide the field name alone does not tell an
+	// author which protos to go edit (see CheckDuplicateConfigFields).
+	// `json:",omitempty"` keeps descriptors written by older forge binaries
+	// readable (additive contract, see the audit-json skill).
+	ProtoFile string `json:",omitempty"`
 }
 
 // ConfigMessage represents a parsed config proto message.

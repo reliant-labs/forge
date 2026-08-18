@@ -664,7 +664,14 @@ func appendConfigMessages(out *[]codegen.ConfigMessage, msg *protogen.Message) {
 func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 	var configFields []codegen.ConfigField
 
+	// Every field records the proto file DECLARING it, so a generate-time
+	// refusal over colliding field names can name the files to go edit
+	// (codegen.CheckDuplicateConfigFields). Read off the field's own parent
+	// file rather than the message's: a config block composed from another
+	// proto contributes its leaves here, and the file that owns the leaf is
+	// the one an author has to change.
 	for _, f := range msg.Fields {
+		declaredIn := f.Desc.ParentFile().Path()
 		// Component config-block reference: a message-typed field whose
 		// target message has config-annotated fields. Repeated/map fields
 		// are excluded — a config block composes exactly once per field.
@@ -675,6 +682,7 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 				GoName:      f.GoName,
 				ProtoType:   "message",
 				MessageType: string(f.Message.Desc.Name()),
+				ProtoFile:   declaredIn,
 			})
 			continue
 		}
@@ -707,6 +715,7 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 			Sensitive:    cf.GetSensitive(),
 			Category:     cf.GetCategory(),
 			Role:         configFieldRoleString(cf.GetRole()),
+			ProtoFile:    declaredIn,
 		})
 	}
 

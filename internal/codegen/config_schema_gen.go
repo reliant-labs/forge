@@ -100,6 +100,10 @@ func renderAppConfigSchema(fields []ConfigField, projectName string) (string, er
 // declared exactly once per module, so only the first schema in a file asks
 // for it.
 func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName string, withSecretRef bool) (string, error) {
+	if err := CheckDuplicateConfigFields(fields, ConfigSchemaModule, schemaName); err != nil {
+		return "", err
+	}
+
 	var b strings.Builder
 
 	// ConfigSecretRef is the typed model for a SENSITIVE config field: a
@@ -173,6 +177,75 @@ func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName strin
 
 	b.WriteString(body.String())
 	return b.String(), nil
+}
+
+// CheckDuplicateConfigFields refuses a field set that would declare the same
+// field name twice inside ONE generated KCL schema.
+//
+// KCL accepts a repeated field in a schema suite silently and the LAST
+// declaration wins, so the first field's default is discarded with no
+// diagnostic. That is not a style problem — it is a value the operator never
+// wrote appearing in a rendered manifest. Observed in production: a config
+// proto declared `app_url = "http://localhost:3000"` and a second config
+// proto, flattened into the same AppConfig, declared `app_url = ""`. The
+// empty string won, three prod workloads shipped `APP_URL: ”`, and the
+// consumer gated a browser auth redirect on the value being non-empty — so
+// the collision silently downgraded that redirect to a bare 401. Nothing in
+// any diff showed it, because config_gen.k is generated and nobody reads it.
+//
+// The refusal is per SCHEMA, never across schemas. A project with per-binary
+// configs emits AdminConfig, GatewayConfig and so on into the same module,
+// and those legitimately share field names — `port` on both binaries is two
+// separate declarations in two separate suites, which is the whole point of
+// splitting them. Only a repeat WITHIN one suite shadows anything.
+//
+// Block-reference fields (MessageType set) are exempt: they project to a
+// comment rather than a schema field, so two of them cannot shadow each
+// other. They are still checked against SCALAR fields of the same name,
+// because that pair does produce one real declaration plus a confusing
+// comment, and it means the proto author has two different fields fighting
+// over one name.
+//
+// module names the KCL module the schema lands in (ConfigSchemaModule,
+// FrontendConfigModule, …) so the message points at the file that would
+// actually have carried the shadowed field.
+func CheckDuplicateConfigFields(fields []ConfigField, module, schemaName string) error {
+	firstSeen := make(map[string]ConfigField, len(fields))
+	for _, f := range fields {
+		prior, dup := firstSeen[f.Name]
+		if !dup {
+			firstSeen[f.Name] = f
+			continue
+		}
+		return fmt.Errorf(
+			"%s.k: field %q is declared twice in schema %s%s\n"+
+				"  — KCL silently keeps the LAST declaration, so the first field's default is discarded.\n"+
+				"  Rename one field or remove the duplicate.",
+			module, f.Name, schemaName, duplicateFieldSources(prior, f))
+	}
+	return nil
+}
+
+// duplicateFieldSources renders the provenance clause naming where the two
+// colliding declarations came from. It degrades rather than lying: a
+// descriptor written by an older forge carries no ProtoFile, and a made-up
+// path would send the author to the wrong file, so an unknown source is
+// simply omitted and a collision with no known source at all renders nothing.
+func duplicateFieldSources(first, second ConfigField) string {
+	switch {
+	case first.ProtoFile != "" && second.ProtoFile != "" && first.ProtoFile != second.ProtoFile:
+		return fmt.Sprintf("\n  (declared by both %s and %s)", first.ProtoFile, second.ProtoFile)
+	case first.ProtoFile != "" && second.ProtoFile != "":
+		// Same file twice — the proto itself repeats the name, or one
+		// message composes another from the same file.
+		return fmt.Sprintf("\n  (both declarations are in %s)", first.ProtoFile)
+	case first.ProtoFile != "":
+		return fmt.Sprintf("\n  (one declaration is in %s)", first.ProtoFile)
+	case second.ProtoFile != "":
+		return fmt.Sprintf("\n  (one declaration is in %s)", second.ProtoFile)
+	default:
+		return ""
+	}
 }
 
 // kclTypeForProtoConfig maps a config field's proto type to its KCL type.

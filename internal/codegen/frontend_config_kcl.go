@@ -578,6 +578,13 @@ func GenerateFrontendConfigKCL(configs []FrontendConfig, projectName string) (st
 // field is a plain typed value with its proto default — there is no secret
 // variant, by construction.
 func renderFrontendConfigSchema(fc FrontendConfig, projectName, schemaName string) (string, error) {
+	// Same refusal as the backend schema: a repeated field name in one KCL
+	// suite is silently last-wins, and a frontend schema is no less exposed
+	// to it than AppConfig is.
+	if err := CheckDuplicateConfigFields(fc.Fields, FrontendConfigModule, schemaName); err != nil {
+		return "", err
+	}
+
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "schema %s:\n", schemaName)

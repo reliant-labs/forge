@@ -66,10 +66,14 @@ go get github.com/reliant-labs/forge/pkg@vX.Y.Z && go mod tidy && go build ./...
 Also bump the forge-CLI install pins in `.github/workflows/ci.yml`
 (`go install github.com/reliant-labs/forge/cmd/forge@vX.Y.Z`, two occurrences).
 
-## 4. Pin forge's own CI
+## 4. Forge's own CI needs no pin
 
-`forge/.github/workflows/ci.yml` installs forge to verify generated code — pin it
-to the new tag: `go install github.com/reliant-labs/forge/cmd/forge@vX.Y.Z`.
+Nothing to do here — this step is listed only because it used to exist.
+
+`forge/.github/workflows/ci.yml` runs `go install ./cmd/forge`, building the
+forge under test from the working tree. That is deliberate: installing a tag
+would validate every PR against the LAST release, so no change to a template or
+an emitter could ever go green until after it shipped.
 
 ## 5. Rebuild the daemon image
 

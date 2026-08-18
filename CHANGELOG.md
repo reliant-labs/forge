@@ -7,7 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-17
+
+First minor release. The root CLI (`v0.1.0`) and the runtime library
+(`pkg/v0.1.0`) are tagged together, as always.
+
 ### Added
+- **The generated scaffold test row is falsifiable.** Every scaffolded
+  handler ships a self-destructing test row that asserts the RPC is not
+  implemented yet, so it goes red the moment you write the handler.
+  Keyed on a bare `connect.CodeUnimplemented`, that row could never
+  fail: a FINISHED handler can answer the same code for its own reasons
+  — a forwarder, a feature-flagged path, or most commonly a nil-guard on
+  an optional dep the test harness leaves unset — so the row passed
+  forever against implemented RPCs. Observed in one project: 78 of 78
+  integration rows green, none of them asserting anything.
+
+  `svcerr.ErrScaffoldStub` / `svcerr.ScaffoldStub(rpc)` is a sentinel
+  only forge's own untouched stub can produce, and `tdd.Case` gains
+  `WantScaffoldStub` (backed by the exported `tdd.AssertScaffoldStub`)
+  to match it. Replace the stub and the row fails, whatever the
+  replacement returns. It is deliberately NOT matched by
+  `svcerr.Unimplemented`, which remains the right answer for an RPC that
+  is unimplemented on purpose.
+
+  Identification is dual because the tiers differ: in process the error
+  chain is intact and `errors.Is` matches, while through a real Connect
+  client the error is marshalled and rebuilt, so only the
+  `svcerr.ReasonScaffoldStub` metadata survives. Both are accepted, or
+  unit rows and integration rows would mean different things under one
+  field name.
+
+  **Existing projects need no migration.** Stub excision still
+  recognises the older `Unimplemented` and `CodeUnimplemented`
+  spellings, so stubs already on disk stay excisable. Generated stubs no
+  longer import `fmt` (the message is composed from the RPC name), and
+  the AST import-fixer no longer adds it.
+- **npm license gate for the published web-runtime.**
+  `scripts/check-npm-licenses.sh` is the npm twin of `check-licenses.sh`
+  — same allowlist-not-blocklist bar, same "an unrecognized license
+  fails rather than passing quietly", same per-package exceptions that
+  must state a reason. `web-runtime` is published to npm, so a
+  non-permissive dependency would propagate into every project that
+  installs it. The strong-copyleft family, LGPL included, is not
+  exemptable through the allowlist. web-runtime passes with zero
+  production dependencies.
 - **Entity protos are dead: SQL is the schema language.** `forge scaffold
   entity bookmark url:string title:string tags:[]string done:bool`
   emits the create-table migration (`db/migrations/NNNNN_create_*.sql`
@@ -164,6 +208,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- `forge env up --target <name>` did cluster work for targets that have
+  no cluster deployment edge. Target selection filtered the manifest
+  stream, which is too late: cluster creation and cross-cluster
+  kubeconfig minting run before render/apply, so targeting a host
+  service still created a k3d cluster and the deploy pipeline reached
+  its empty-manifest fallback. Phase requirements are now derived from
+  the rendered placement graph — host, build-only and dev-served
+  frontend targets skip both phases; compose and external targets deploy
+  without a cluster; cluster services, operators, platform charts and
+  cluster frontends require both. Infra pre-warm remains independent, so
+  host processes can still depend on compose services when nothing
+  selected runs in Kubernetes. The build-plan summary now reflects the
+  filtered set rather than announcing work that will not happen.
 - `forge scaffold frontend` baked `DEV_API_URL = "http://localhost:0"` into
   the new frontend's `src/lib/apiurl_gen.ts` whenever the project already
   had a server component — it read the always-zero per-component port and
@@ -178,4 +235,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-[Unreleased]: https://github.com/OWNER/forge/compare/HEAD...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/reliant-labs/forge/compare/v0.0.8...v0.1.0

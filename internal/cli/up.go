@@ -514,7 +514,11 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	if err := validateDeployTargets(entities, opts.targets); err != nil {
 		return err
 	}
-	summarizeKCLBuildPlan(entities)
+	planEntities := entities
+	if len(opts.targets) > 0 {
+		planEntities = filterEntitiesByTarget(entities, opts.targets)
+	}
+	summarizeKCLBuildPlan(planEntities)
 
 	// Derive this run's scope (which phases execute) from --cluster-only /
 	// --host-only. scope is the single source of truth the phase gates below
@@ -586,7 +590,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// in feature_gate.go for the strict-gate shape used by the cobra
 	// RunE for those commands.
 	if scope.cluster {
-		if err := upClusterBringup(ctx, upClusterInput{
+		if err := upBuildDeployPhases(ctx, upClusterInput{
 			store: store, cfg: cfg, entities: entities, projectDir: projectDir,
 			opts: opts, scope: scope,
 		}); err != nil {
@@ -907,15 +911,19 @@ type upClusterInput struct {
 	scope      reconcileScope
 }
 
-// upClusterBringup runs `forge env up`'s cluster phases: ensure every declared k3d
-// cluster exists (and mint cross-cluster kubeconfig secrets) BEFORE anything
-// builds or deploys, kick off the docker-compose infra concurrently with the
-// build, run the build phase, barrier on the infra pre-warm, then run the
-// deploy phase. Both build and deploy are feature-gated (features.build /
-// features.deploy off → skip with a one-line log). All cluster-ensure/deploy
-// work is skipped on --no-deploy; the build phase is skipped on --no-build.
-func upClusterBringup(ctx context.Context, in upClusterInput) error {
+// upBuildDeployPhases runs the build/infra/deploy side of `forge env up`.
+// Explicit targets first reduce that work to the selected entity graph: a
+// host service, build-only service, or dev-served frontend has no cluster
+// deployment edge, so cluster creation, kubeconfig minting, and deploy are
+// skipped entirely. Compose/external targets still deploy without touching a
+// cluster; cluster services, operators, and platform charts require both.
+//
+// Infra pre-warm remains independent from cluster deployment. Host processes
+// can depend on the env's compose/host-infra services even when none of the
+// selected applications runs in Kubernetes.
+func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 	store, cfg, entities, opts, scope := in.store, in.cfg, in.entities, in.opts, in.scope
+	required := targetPhaseRequirements(entities, opts.targets)
 	// Cluster phase — ensure every declared k3d cluster exists BEFORE
 	// anything builds or deploys (image pushes target a cluster's
 	// registry; the deploy mounts Secrets into a cluster that must
@@ -927,7 +935,7 @@ func upClusterBringup(ctx context.Context, in upClusterInput) error {
 	// generalization of the dev-only ensureDevCluster on the deploy
 	// path — ownership is a reference (Cluster.owner drives the derived
 	// network / registry-inherit), no "primary" cluster.
-	if !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:clusters") {
+	if required.cluster && !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:clusters") {
 		if err := reconcileDeclaredClusters(ctx, entities.Clusters, in.projectDir, opts.env); err != nil {
 			return fmt.Errorf("clusters: %w", err)
 		}
@@ -982,7 +990,7 @@ func upClusterBringup(ctx context.Context, in upClusterInput) error {
 			fmt.Printf("[up] infra pre-warm: %v (deploy phase will retry)\n", err)
 		}
 	}
-	if !opts.noDeploy {
+	if required.deploy && !opts.noDeploy {
 		if !skipFeature(store, config.FeatureDeploy, "up:deploy") {
 			fmt.Println("\n[up] deploy phase")
 			// Cluster reconcile through the SAME named entry point
@@ -1010,6 +1018,63 @@ func upClusterBringup(ctx context.Context, in upClusterInput) error {
 		}
 	}
 	return nil
+}
+
+// upPhaseRequirements is the deployment-side closure of an explicit target
+// set. Build/host/frontend selection is already name-filtered by their own
+// phases; these flags answer the two expensive questions that cannot be
+// inferred from a non-empty --target alone: does anything selected need a
+// deploy provider, and does any selected provider require Kubernetes?
+type upPhaseRequirements struct {
+	deploy  bool
+	cluster bool
+}
+
+// targetPhaseRequirements derives phase requirements from the rendered
+// placement graph. With no explicit targets, preserve the full declarative
+// reconcile. With targets, only selected entities contribute requirements.
+//
+// Frontends are dev-served by `env up`, so they do not invoke their production
+// deploy provider here. A cluster frontend is the exception: it also renders a
+// target-labelled Kubernetes workload, which the existing targeted apply path
+// must continue to reconcile.
+func targetPhaseRequirements(e *KCLEntities, targets []string) upPhaseRequirements {
+	if len(targets) == 0 {
+		return upPhaseRequirements{deploy: true, cluster: true}
+	}
+
+	var out upPhaseRequirements
+	for _, svc := range e.Services {
+		if !inTargetSet(targets, svc.Name) {
+			continue
+		}
+		switch svc.Deploy.Type {
+		case "cluster":
+			out.deploy = true
+			out.cluster = true
+		case "compose", "external", "host-infra":
+			out.deploy = true
+		}
+	}
+	for _, op := range e.Operators {
+		if inTargetSet(targets, op.Name) {
+			out.deploy = true
+			out.cluster = true
+		}
+	}
+	for _, chart := range e.HelmCharts {
+		if inTargetSet(targets, chart.Name) {
+			out.deploy = true
+			out.cluster = true
+		}
+	}
+	for _, frontend := range e.Frontends {
+		if inTargetSet(targets, frontend.Name) && frontend.Deploy != nil && frontend.Deploy.Type == "cluster" {
+			out.deploy = true
+			out.cluster = true
+		}
+	}
+	return out
 }
 
 // upServiceRow is one host service / frontend line shared by the immediate

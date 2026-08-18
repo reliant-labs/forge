@@ -150,7 +150,54 @@ var (
 	// from NotFound (the resource never existed) and from generic
 	// FailedPrecondition. Wire code: FailedPrecondition.
 	ErrExpired = errors.New("expired")
+
+	// ErrScaffoldStub marks a handler forge scaffolded and NOBODY HAS
+	// IMPLEMENTED YET. It is not a failure mode an application ever
+	// chooses: application code returns ErrUnimplemented for a
+	// deliberately-unimplemented RPC (a forwarder, a feature-flagged
+	// path, an unwired optional dep). This sentinel means only "forge
+	// wrote this and it was never replaced." Wire code: Unimplemented.
+	//
+	// WHY IT IS SEPARATE FROM ErrUnimplemented. The scaffold test row
+	// forge emits alongside each stub asserts the RPC is not implemented,
+	// so it goes red the moment you implement it — that failure IS the
+	// prompt to write a real assertion. Keying that row on the bare
+	// CodeUnimplemented made it unfalsifiable, because a finished handler
+	// can return that code for its own reasons. The observed case: a
+	// handler opening `if s.deps.X == nil { return unimplemented(rpc) }`
+	// answers CodeUnimplemented on a test harness that leaves optional
+	// deps nil, so the row kept passing against fully-implemented RPCs —
+	// 78 of them in one project, none of them ever verified by the suite
+	// that reported them green.
+	//
+	// The fix is that only forge's own untouched stub can produce this
+	// value. Replace the stub and the row fails, whatever the replacement
+	// returns. Do not return it from hand-written code — reach for
+	// [Unimplemented] instead, which is what a real unimplemented RPC
+	// means and what the scaffold row deliberately does NOT match.
+	ErrScaffoldStub = errors.New("handler not implemented")
 )
+
+// ReasonScaffoldStub is the reason code [ScaffoldStub] annotates, carried
+// to clients as [ReasonHeader] metadata.
+//
+// The reason header, not errors.Is, is what makes the scaffold row work
+// over a real Connect client: unwrapping stops at the network boundary,
+// so a client-side errors.Is(err, ErrScaffoldStub) is false even when the
+// server returned exactly that. Metadata survives the roundtrip, which is
+// why the sentinel is identified by this string on the wire and by
+// errors.Is in process. [tdd.AssertScaffoldStub] accepts either.
+const ReasonScaffoldStub = "forge_scaffold_stub"
+
+// ScaffoldStub builds the error forge's generated handler stubs return —
+// [ErrScaffoldStub] annotated with [ReasonScaffoldStub] so it is
+// recognisable both in process and across the wire.
+//
+// It is called by generated code. Hand-written handlers should not use
+// it; see [ErrScaffoldStub] for why, and prefer [Unimplemented].
+func ScaffoldStub(rpc string) error {
+	return WithReason(wrapped(ErrScaffoldStub, "handler for "+rpc+" not yet implemented"), ReasonScaffoldStub)
+}
 
 // Constructors wrap each sentinel with a human-readable cause. Use
 // these when the service layer wants to communicate WHY the failure
@@ -518,6 +565,12 @@ func codeForRecognized(err error) (connect.Code, error, bool) {
 		return connect.CodeAborted, ErrAborted, true
 	case errors.Is(err, ErrOutOfRange):
 		return connect.CodeOutOfRange, ErrOutOfRange, true
+	// ErrScaffoldStub shares Unimplemented's wire code, so it is checked
+	// first for the same reason ErrPlanLimit precedes ErrResourceExhausted:
+	// the sentinels are distinct values and matching the broader one first
+	// would shadow the specific one.
+	case errors.Is(err, ErrScaffoldStub):
+		return connect.CodeUnimplemented, ErrScaffoldStub, true
 	case errors.Is(err, ErrUnimplemented):
 		return connect.CodeUnimplemented, ErrUnimplemented, true
 	case errors.Is(err, ErrInternal):

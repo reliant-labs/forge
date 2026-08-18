@@ -114,6 +114,54 @@ func TestUpTargetScopesTheBuildSet(t *testing.T) {
 	}
 }
 
+// TestTargetPhaseRequirements pins the phase-level half of --target scoping.
+// Filtering the eventual manifest stream is too late: cluster creation and
+// cross-cluster kubeconfig minting happen before render/apply, and calling the
+// deploy pipeline with a host-only target reaches its empty-manifest fallback.
+func TestTargetPhaseRequirements(t *testing.T) {
+	clusterFrontend := FrontendDeployEntity{Type: "cluster"}
+	e := &KCLEntities{
+		Services: []ServiceEntity{
+			{Name: "api", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{Runner: "go-run"}}},
+			{Name: "cli", Deploy: DeployConfigEntity{Type: "build-only", BuildOnly: &BuildOnlyDeploy{}}},
+			{Name: "compose-dep", Deploy: DeployConfigEntity{Type: "compose", Compose: &ComposeDeploy{}}},
+			{Name: "remote", Deploy: DeployConfigEntity{Type: "external", External: &ExternalDeploy{}}},
+			{Name: "cluster-api", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{Cluster: "dev"}}},
+		},
+		Operators:  []OperatorEntity{{Name: "controller"}},
+		HelmCharts: []HelmChartEntity{{Name: "gateway"}},
+		Frontends: []FrontendEntity{
+			{Name: "web"},
+			{Name: "cluster-web", Deploy: &clusterFrontend},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		targets []string
+		want    upPhaseRequirements
+	}{
+		{name: "unscoped full reconcile", want: upPhaseRequirements{deploy: true, cluster: true}},
+		{name: "host and dev frontend", targets: []string{"api", "web"}, want: upPhaseRequirements{}},
+		{name: "build only", targets: []string{"cli"}, want: upPhaseRequirements{}},
+		{name: "compose without cluster", targets: []string{"compose-dep"}, want: upPhaseRequirements{deploy: true}},
+		{name: "external without cluster", targets: []string{"remote"}, want: upPhaseRequirements{deploy: true}},
+		{name: "cluster service", targets: []string{"cluster-api"}, want: upPhaseRequirements{deploy: true, cluster: true}},
+		{name: "operator", targets: []string{"controller"}, want: upPhaseRequirements{deploy: true, cluster: true}},
+		{name: "platform chart", targets: []string{"gateway"}, want: upPhaseRequirements{deploy: true, cluster: true}},
+		{name: "cluster frontend", targets: []string{"cluster-web"}, want: upPhaseRequirements{deploy: true, cluster: true}},
+		{name: "mixed host and cluster", targets: []string{"api", "cluster-api"}, want: upPhaseRequirements{deploy: true, cluster: true}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := targetPhaseRequirements(e, tc.targets); got != tc.want {
+				t.Fatalf("targetPhaseRequirements(%v) = %+v, want %+v", tc.targets, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestFilterRootsByService covers the scoped-teardown selection rule without
 // real processes: frontends are stamped `frontend:<name>` but targeted by
 // bare name, and an unattributable process is never signalled by a scoped

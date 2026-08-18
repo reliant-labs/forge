@@ -344,9 +344,13 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 //   - The RPC's file EXISTS but does not declare the method (the user emptied
 //     it, or renamed the method away and kept the file): render a method-only
 //     fragment and APPEND it, then re-parse and ensure the imports the stub
-//     needs (context, fmt, connectrpc.com/connect, forge/pkg/svcerr, and the
+//     needs (context, connectrpc.com/connect, forge/pkg/svcerr, and the
 //     aliased proto pkg `pb`) are present before gofmt-ing the whole file.
-//     Every stub body references all of them, so none is left unused. Using
+//     Every stub body references all of them, so none is left unused — which
+//     is why `fmt` is NOT among them: svcerr.ScaffoldStub composes the message
+//     from the RPC name, so the stub no longer formats anything itself, and
+//     adding fmt here would leave an unused import in a file that has to
+//     compile. Using
 //     go/ast + astutil (rather than a filesystem-scanning goimports pass) keeps
 //     the import fix deterministic and handles the one import goimports cannot
 //     infer from an alias: `pb`. Merging rather than skipping matters: skipping
@@ -414,7 +418,6 @@ func scaffoldHandlerStubs(handlersPath string, data ServiceTemplateData) error {
 	// when the import (by path, and by name for the alias) is already present —
 	// which it is for any handler file that already declares handler methods.
 	astutil.AddImport(fset, file, "context")
-	astutil.AddImport(fset, file, "fmt")
 	astutil.AddImport(fset, file, "connectrpc.com/connect")
 	astutil.AddImport(fset, file, "github.com/reliant-labs/forge/pkg/svcerr")
 	astutil.AddNamedImport(fset, file, "pb", data.Module+"/gen/"+data.ProtoPackage+"/v1")

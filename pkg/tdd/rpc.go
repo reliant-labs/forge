@@ -2,9 +2,12 @@ package tdd
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"connectrpc.com/connect"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // Case is a table-driven test row for a Connect RPC.
@@ -20,10 +23,10 @@ import (
 // that the call did not return an error.
 //
 // There is deliberately no "tolerate any outcome" mode: every row must be
-// able to fail. Scaffold rows for not-yet-implemented handlers assert
-// WantErr: connect.CodeUnimplemented — such a row self-destructs (goes
-// red) the moment the handler is implemented, forcing it to be rewritten
-// with a real Check / WantErr assertion.
+// able to fail. Scaffold rows for not-yet-implemented handlers set
+// WantScaffoldStub — such a row self-destructs (goes red) the moment the
+// handler is implemented, forcing it to be rewritten with a real Check /
+// WantErr assertion.
 type Case[Req, Resp any] struct {
 	// Name identifies the row; passed straight to t.Run.
 	Name string
@@ -34,6 +37,20 @@ type Case[Req, Resp any] struct {
 	// WantErr, if non-zero, asserts the handler returned a connect.Error
 	// with this code. The Check function is not consulted in this case.
 	WantErr connect.Code
+
+	// WantScaffoldStub asserts the handler is still forge's generated
+	// stub — i.e. nobody has implemented this RPC yet. It is what the
+	// scaffold row forge emits alongside each stub sets, and it is
+	// designed to STOP passing: implement the handler and the row fails,
+	// which is the prompt to replace it with a real assertion.
+	//
+	// Do not reach for this in a hand-written row. It asserts an absence
+	// of implementation, so it can only ever be true of code nobody has
+	// written; to assert that a finished handler answers Unimplemented
+	// (a forwarder, a feature-flagged path), use
+	// WantErr: connect.CodeUnimplemented, which this deliberately does
+	// not match.
+	WantScaffoldStub bool
 
 	// Check is invoked on a successful (err == nil) response so the test
 	// can assert on the returned message. Optional.
@@ -82,6 +99,11 @@ func TableRPC[Req, Resp any](
 
 			got, err := handler(ctx, tc.Req)
 
+			if tc.WantScaffoldStub {
+				AssertScaffoldStub(t, err)
+				return
+			}
+
 			if tc.WantErr != 0 {
 				AssertConnectError(t, err, tc.WantErr)
 				return
@@ -114,6 +136,37 @@ func RunRPCCases[Req, Resp any](
 ) {
 	t.Helper()
 	TableRPC(t, cases, handler)
+}
+
+// AssertScaffoldStub asserts err is the error forge's generated handler
+// stub returns — svcerr.ErrScaffoldStub. It backs Case.WantScaffoldStub
+// and is exported for hand-written tests that drive a stub directly.
+//
+// It accepts either identification, because which one is available
+// depends on how far the error travelled. In process — a row calling the
+// handler method directly — the chain is intact and errors.Is matches.
+// Through a real Connect client the chain does not survive: the error is
+// marshalled to the wire and rebuilt on the far side, so errors.Is is
+// false and the reason METADATA is what arrives. Integration rows go over
+// a client and unit rows do not, so both paths must work or the assertion
+// would silently mean different things at the two tiers.
+//
+// The failure message names what it found, because the interesting case
+// is not "no error" but "a DIFFERENT error" — that is what an
+// implemented handler produces, and the whole point of this row.
+func AssertScaffoldStub(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected the generated scaffold stub error, got nil — this RPC looks implemented, so replace this row with a real assertion")
+	}
+	if errors.Is(err, svcerr.ErrScaffoldStub) {
+		return
+	}
+	var ce *connect.Error
+	if errors.As(err, &ce) && ce.Meta().Get(svcerr.ReasonHeader) == svcerr.ReasonScaffoldStub {
+		return
+	}
+	t.Fatalf("expected the generated scaffold stub error, got %v — if you implemented this RPC, replace this row with a real Check / WantErr assertion", err)
 }
 
 // AssertConnectError asserts that err is a non-nil Connect error with the

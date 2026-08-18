@@ -7,7 +7,7 @@ func (s *Service) {{.Name}}(
 	ctx context.Context,
 	stream *connect.BidiStream[pb.{{.InputType}}, pb.{{.OutputType}}],
 ) error {
-	return svcerr.Wrap(svcerr.WithReason(svcerr.Unimplemented(fmt.Sprintf("handler for %s not yet implemented", "{{.Name}}")), "unimplemented"))
+	return svcerr.Wrap(svcerr.ScaffoldStub("{{.Name}}"))
 }
 {{- else if .ClientStreaming}}
 // {{.Name}} implements the {{.Name}} client streaming RPC.
@@ -17,7 +17,7 @@ func (s *Service) {{.Name}}(
 	ctx context.Context,
 	stream *connect.ClientStream[pb.{{.InputType}}],
 ) (*connect.Response[pb.{{.OutputType}}], error) {
-	return nil, svcerr.Wrap(svcerr.WithReason(svcerr.Unimplemented(fmt.Sprintf("handler for %s not yet implemented", "{{.Name}}")), "unimplemented"))
+	return nil, svcerr.Wrap(svcerr.ScaffoldStub("{{.Name}}"))
 }
 {{- else if .ServerStreaming}}
 // {{.Name}} implements the {{.Name}} server streaming RPC.
@@ -28,7 +28,7 @@ func (s *Service) {{.Name}}(
 	req *connect.Request[pb.{{.InputType}}],
 	stream *connect.ServerStream[pb.{{.OutputType}}],
 ) error {
-	return svcerr.Wrap(svcerr.WithReason(svcerr.Unimplemented(fmt.Sprintf("handler for %s not yet implemented", "{{.Name}}")), "unimplemented"))
+	return svcerr.Wrap(svcerr.ScaffoldStub("{{.Name}}"))
 }
 {{- else}}
 // {{.Name}} implements the {{.Name}} RPC.
@@ -38,7 +38,7 @@ func (s *Service) {{.Name}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType}}],
 ) (*connect.Response[pb.{{.OutputType}}], error) {
-	return nil, svcerr.Wrap(svcerr.WithReason(svcerr.Unimplemented(fmt.Sprintf("handler for %s not yet implemented", "{{.Name}}")), "unimplemented"))
+	return nil, svcerr.Wrap(svcerr.ScaffoldStub("{{.Name}}"))
 }
 {{- end}}
 {{end}}

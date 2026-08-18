@@ -236,9 +236,8 @@ func (s *Service) DoThing(
 
 // TestUnwrappedDomainError_BornStubIsClean guards the thing the whole
 // exercise turns on: forge's own scaffold must never trip its own lint.
-// The born handler stub returns
-// svcerr.Wrap(svcerr.WithReason(svcerr.Unimplemented(...), ...)) for every
-// RPC shape, unary and streaming alike.
+// The born handler stub returns svcerr.Wrap(svcerr.ScaffoldStub(...)) for
+// every RPC shape, unary and streaming alike.
 func TestUnwrappedDomainError_BornStubIsClean(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "handlers", "admin")
 	must(t, mkdirAll(dir))
@@ -246,7 +245,6 @@ func TestUnwrappedDomainError_BornStubIsClean(t *testing.T) {
 
 import (
 	"context"
-	"fmt"
 
 	"connectrpc.com/connect"
 	"github.com/reliant-labs/forge/pkg/svcerr"
@@ -258,7 +256,7 @@ func (s *Service) DoThing(
 	ctx context.Context,
 	req *connect.Request[pb.DoThingRequest],
 ) (*connect.Response[pb.DoThingResponse], error) {
-	return nil, svcerr.Wrap(svcerr.WithReason(svcerr.Unimplemented(fmt.Sprintf("handler for %s not yet implemented", "DoThing")), "unimplemented"))
+	return nil, svcerr.Wrap(svcerr.ScaffoldStub("DoThing"))
 }
 
 func (s *Service) StreamThings(
@@ -266,7 +264,7 @@ func (s *Service) StreamThings(
 	req *connect.Request[pb.StreamThingsRequest],
 	stream *connect.ServerStream[pb.StreamThingsResponse],
 ) error {
-	return svcerr.Wrap(svcerr.WithReason(svcerr.Unimplemented(fmt.Sprintf("handler for %s not yet implemented", "StreamThings")), "unimplemented"))
+	return svcerr.Wrap(svcerr.ScaffoldStub("StreamThings"))
 }
 `))
 	res, err := LintHandlerErrorMapping(filepath.Dir(filepath.Dir(dir)))

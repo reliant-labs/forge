@@ -26,6 +26,24 @@ Forge ships an extensive skill catalog (architecture, proto, db, api, services, 
 
 If a skill's content seems out of date relative to what you observe in this project, trust the project — and flag it. See the **Forge bug rule** below.
 
+## Code navigation: two questions where gopls beats grep
+
+This is a Go project, so `gopls` answers two questions that grep cannot. **Use it for these; do not grep.**
+
+    gopls call_hierarchy path/to/file.go:LINE:COL   # callers AND callees
+    gopls implementation path/to/file.go:LINE:COL   # interface -> concrete types
+
+**Why grep is not an option here.** A call site does not name the receiver's type, and an implementation never mentions the interface it satisfies — Go has no `implements` keyword to search for. A codebase this size has dozens of same-named methods (`Execute`, `Get`, `Handle`), so a grep-based caller walk matches all of them and the error COMPOUNDS at every level. Measured: a depth-3 grep walk returned functions that were not on the call path at all, while gopls returned the one true caller. Depth 1 is usually survivable; depth 2+ is noise, and chasing it costs more turns than gopls ever will.
+
+Get LINE:COL from an `rg -n` hit first (the column is the 1-based offset of the identifier on that line), and CHAIN the lookup and the query into ONE command:
+
+    f=internal/svc/x.go; l=$(rg -n 'func .*executeApproval' $f | cut -d: -f1); \
+      gopls call_hierarchy $f:$l:34
+
+**Everything else stays with `rg`** — finding a definition, listing references to a distinctive name, reading code. Those are correct AND one turn, so paying gopls's cold-start (~9s measured in a large repo) buys nothing. If your harness exposes gopls as an MCP server it is always warm, which removes that cost.
+
+Do NOT use `{{.CLI}} project libraries` and gopls for the same question: `{{.CLI}} project libraries <pkg>` is for forge's OWN packages (see above), gopls is for the code in this repo.
+
 ## Architecture in one screen
 
 The two halves of every domain:

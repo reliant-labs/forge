@@ -248,10 +248,12 @@ func receiverIsService(fd *ast.FuncDecl) bool {
 }
 
 // unimplementedSelectors are the selector names an untouched forge stub
-// body reaches for. `svcerr.Unimplemented` is what every emitter writes
-// today; `connect.CodeUnimplemented` is what they wrote before the
-// error-reason rewrite and is still on disk in projects that have not
-// regenerated since.
+// body reaches for. `svcerr.ScaffoldStub` is what every emitter writes
+// today; `svcerr.Unimplemented` is what they wrote before the
+// scaffold-stub sentinel, and `connect.CodeUnimplemented` before the
+// error-reason rewrite. Both older spellings are still on disk in projects
+// that have not regenerated since, and excision has to keep recognising
+// them or those stubs become permanently unexcisable.
 //
 // This list was `CodeUnimplemented` alone for two days after the emitters
 // switched to svcerr, during which isPristineUnwiredStub matched NOTHING
@@ -260,7 +262,15 @@ func receiverIsService(fd *ast.FuncDecl) bool {
 // Unimplemented forever. TestExciseUnwiredStubs_MatchesTheEmittedShape
 // feeds this the REAL rendered template so the pair cannot drift apart
 // again.
+//
+// Note this set is BROADER than the scaffold test row's assertion, and the
+// asymmetry is deliberate. Excision asks "does this look like a stub I may
+// delete", where matching one spelling too many costs nothing (the marker
+// and the pristine-shape check already gate it). The test row asks "has
+// nobody implemented this", where matching one spelling too many is what
+// made 78 rows pass against finished handlers.
 var unimplementedSelectors = map[string]bool{
+	"ScaffoldStub":      true,
 	"Unimplemented":     true,
 	"CodeUnimplemented": true,
 }

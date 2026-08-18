@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/reliant-labs/forge/pkg/svcerr"
 	"github.com/reliant-labs/forge/pkg/tdd"
 )
 
@@ -160,6 +161,118 @@ func TestTableRPC_ScaffoldRowSelfDestructs(t *testing.T) {
 	<-done
 	if !fakeT.Failed() {
 		t.Fatal("scaffold row (WantErr: CodeUnimplemented) must FAIL once the handler is implemented")
+	}
+}
+
+// assertFails runs assert against a throwaway *testing.T and reports
+// whether it failed. The goroutine + recover is how this file already
+// drives a failing assertion (see TestTableRPC_ScaffoldRowSelfDestructs):
+// t.Fatalf calls runtime.Goexit, which must not unwind the real test.
+func assertFails(assert func(t *testing.T)) bool {
+	fakeT := &testing.T{}
+	done := make(chan struct{})
+	go func() {
+		defer func() {
+			_ = recover()
+			close(done)
+		}()
+		assert(fakeT)
+	}()
+	<-done
+	return fakeT.Failed()
+}
+
+// TestAssertScaffoldStub_DistinguishesStubFromImplementedHandler is the
+// regression this sentinel exists for.
+//
+// The scaffold row used to assert a bare CodeUnimplemented, which a
+// FINISHED handler can also return — most commonly from a nil-guard on an
+// optional dep the test harness leaves unset:
+//
+//	if s.deps.Store == nil { return nil, connect.NewError(connect.CodeUnimplemented, ...) }
+//
+// The row then passed forever against an implemented RPC. In one project
+// 78 of 78 integration rows were green for exactly this reason, none of
+// them asserting anything. Each case below is one of the shapes that has
+// to be told apart.
+func TestAssertScaffoldStub_DistinguishesStubFromImplementedHandler(t *testing.T) {
+	t.Parallel()
+
+	t.Run("forge's generated stub passes", func(t *testing.T) {
+		t.Parallel()
+		err := svcerr.Wrap(svcerr.ScaffoldStub("Hello"))
+		if assertFails(func(t *testing.T) { tdd.AssertScaffoldStub(t, err) }) {
+			t.Fatal("the generated stub must satisfy the scaffold row, or a fresh scaffold fails out of the box")
+		}
+	})
+
+	t.Run("nil-guard returning CodeUnimplemented fails", func(t *testing.T) {
+		t.Parallel()
+		err := connect.NewError(connect.CodeUnimplemented, errors.New("handler for Hello not yet implemented"))
+		if !assertFails(func(t *testing.T) { tdd.AssertScaffoldStub(t, err) }) {
+			t.Fatal("an implemented handler's nil-guard must NOT satisfy the scaffold row — this is the bug the sentinel fixes")
+		}
+	})
+
+	t.Run("deliberate svcerr.Unimplemented fails", func(t *testing.T) {
+		t.Parallel()
+		err := svcerr.Wrap(svcerr.Unimplemented("served by the daemonregistry forwarder"))
+		if !assertFails(func(t *testing.T) { tdd.AssertScaffoldStub(t, err) }) {
+			t.Fatal("a deliberately-unimplemented RPC must NOT satisfy the scaffold row")
+		}
+	})
+
+	t.Run("implemented handler returning success fails", func(t *testing.T) {
+		t.Parallel()
+		if !assertFails(func(t *testing.T) { tdd.AssertScaffoldStub(t, nil) }) {
+			t.Fatal("a succeeding handler must NOT satisfy the scaffold row")
+		}
+	})
+}
+
+// TestAssertScaffoldStub_AcceptsWireIdentification covers the integration
+// tier. Through a real Connect client the error is marshalled and rebuilt,
+// so the errors.Is chain is gone and only the reason metadata arrives; the
+// row must still assert. Without this, unit rows and integration rows
+// would mean different things under the same field name.
+func TestAssertScaffoldStub_AcceptsWireIdentification(t *testing.T) {
+	t.Parallel()
+	rebuilt := connect.NewError(connect.CodeUnimplemented, errors.New("handler for Hello not yet implemented"))
+	rebuilt.Meta().Set(svcerr.ReasonHeader, svcerr.ReasonScaffoldStub)
+	if assertFails(func(t *testing.T) { tdd.AssertScaffoldStub(t, rebuilt) }) {
+		t.Fatal("a stub error identified by reason metadata must pass — this is the only identification that survives a Connect roundtrip")
+	}
+}
+
+// TestTableRPC_WantScaffoldStubRoutes pins that the Case field actually
+// reaches the assertion, rather than falling through to the WantErr path
+// (WantErr's zero value is CodeCanceled, not "unset", so a mis-ordered
+// branch would misassert rather than no-op).
+func TestTableRPC_WantScaffoldStubRoutes(t *testing.T) {
+	t.Parallel()
+	stub := func(_ context.Context, _ *connect.Request[fakeReq]) (*connect.Response[fakeResp], error) {
+		return nil, svcerr.Wrap(svcerr.ScaffoldStub("Hello"))
+	}
+	tdd.TableRPC(t, []tdd.Case[fakeReq, fakeResp]{
+		{
+			Name:             "stub satisfies the scaffold row",
+			Req:              connect.NewRequest(&fakeReq{Name: "ada"}),
+			WantScaffoldStub: true,
+		},
+	}, stub)
+
+	// The red half is driven through AssertScaffoldStub rather than
+	// TableRPC: TableRPC reports via t.Run, and a zero-value testing.T
+	// cannot host subtests (same constraint as
+	// TestTableRPC_ScaffoldRowSelfDestructs above). The routing itself is
+	// what this test pins; the assertion's verdicts are pinned by
+	// TestAssertScaffoldStub_DistinguishesStubFromImplementedHandler.
+	_, err := helloHandler(context.Background(), connect.NewRequest(&fakeReq{Name: "ada"}))
+	if err != nil {
+		t.Fatalf("implemented handler should succeed, got %v", err)
+	}
+	if !assertFails(func(t *testing.T) { tdd.AssertScaffoldStub(t, err) }) {
+		t.Fatal("WantScaffoldStub must FAIL once the handler is implemented")
 	}
 }
 

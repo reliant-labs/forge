@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
@@ -653,13 +654,22 @@ type RBACSpec struct{}
 // side; the type discriminator is the only thing the build pipeline
 // needs to make the skip/build decision.
 type FrontendEntity struct {
-	Name      string      `json:"name"`
-	Type      string      `json:"type,omitempty"` // "nextjs" | "vite-spa" | "react-native"
-	Path      string      `json:"path"`
-	DevRunner string      `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
-	Port      int         `json:"port,omitempty"`
-	EnvFile   string      `json:"env_file,omitempty"`
-	EnvVars   []KCLEnvVar `json:"env_vars,omitempty"`
+	Name string `json:"name"`
+	Type string `json:"type,omitempty"` // "nextjs" | "vite-spa" | "react-native"
+	// Path is the frontend's directory in THIS repository. Empty exactly
+	// when Source is set — a cross-repo frontend has no directory here
+	// until the source resolver materializes one.
+	Path string `json:"path"`
+	// Source pins the frontend's code to another repository at a ref
+	// (kcl/schema.k GitSource). nil for the ordinary in-repo frontend.
+	// Callers that shell into a frontend must resolve this to a directory
+	// via internal/gitsource rather than reading Path — see
+	// resolveFrontendEntitySources.
+	Source    *config.GitSource `json:"source,omitempty"`
+	DevRunner string            `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
+	Port      int               `json:"port,omitempty"`
+	EnvFile   string            `json:"env_file,omitempty"`
+	EnvVars   []KCLEnvVar       `json:"env_vars,omitempty"`
 	// Config is the typed, well-known knobs block (kcl/schema.k
 	// FrontendConfig). nil when the frontend declares no `config`. forge
 	// expands it into the SAME env stream as EnvVars via frontendConfigEnv,

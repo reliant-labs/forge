@@ -516,7 +516,7 @@ forge/
 │   └── components/  # UI component library shipped to scaffolded frontends
 ├── web-runtime/     # @reliantlabs/forge-web-runtime — the web twin of pkg/
 ├── proto/           # Forge's own proto annotations (forge/v1)
-├── docs/            # getting-started, concepts, releasing, pkg versioning
+├── docs/            # getting-started, concepts, releasing, pkg + cross-repo sources
 ├── examples/        # Runnable examples
 ├── forge.yaml       # Project manifest
 └── Taskfile.yml     # Automation entrypoints

@@ -478,11 +478,23 @@ _render_frontend_config = lambda c: FrontendConfig -> any {
     }
 }
 
+# Render a GitSource to its stable dict form. An unset `source` projects
+# as `null` (see _render_frontend), so a path-declared frontend renders
+# byte-identically to what it did before cross-repo sources existed.
+_render_git_source = lambda s: GitSource -> any {
+    {
+        "repo": s.repo
+        "ref": s.ref
+        "subdir": s.subdir if s.subdir else None
+    }
+}
+
 _render_frontend = lambda f: Frontend -> any {
     {
         "name": f.name
         "type": f.type
-        "path": f.path
+        "path": f.path if f.path else None
+        "source": _render_git_source(f.source) if f.source else None
         "dev_runner": f.dev_runner
         "port": f.port
         "env_file": f.env_file if f.env_file else None

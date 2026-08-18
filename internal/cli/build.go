@@ -366,26 +366,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// migrated to the deploy module yet keep working unchanged. Rendered
 	// BEFORE tag resolution so the env's resolved image_tag can seed the
 	// default build tag.
-	var entities *KCLEntities
-	if opts.env != "" {
-		projectDir := projectDirForKCL()
-		ents, kerr := RenderKCL(ctx, projectDir, opts.env)
-		if kerr != nil {
-			fmt.Printf("[build]   Note: skipping KCL filter (%v)\n", kerr)
-		} else {
-			entities = ents
-		}
-	}
-
-	// --target narrows the entity set BEFORE any build decision reads it.
-	// Doing it here (rather than at each derivation site) is what makes the
-	// scoping total: resolveBuildTargetSet, buildKCLDockerShell,
-	// buildKCLBuildOnlyVariants and buildExternalServiceResults all read
-	// `entities`, so one filter covers every build lane. Validated by the
-	// caller (`forge env up` / `forge env deploy`), which owns the
-	// "unknown target" message and its available-names list.
-	if len(opts.targets) > 0 && entities != nil {
-		entities = filterEntitiesByTarget(entities, opts.targets)
+	entities, err := renderBuildEntities(ctx, cfg, opts)
+	if err != nil {
+		return err
 	}
 
 	// Resolve the docker image tag once, up front. Both the docker
@@ -621,6 +604,50 @@ type buildTargetSet struct {
 // early-return validation for `--target external`) is a single cohesive unit.
 // opts is taken by value; its skipFrontends field is only consumed within this
 // function.
+// renderBuildEntities produces the rendered-KCL entity set `forge build`
+// makes its decisions from: render (when --env is set), narrow by
+// --target, then materialize any cross-repo frontend source.
+//
+// The three steps are one helper because they must happen in exactly this
+// order and nothing between them may read `entities`. Narrowing before
+// source resolution means a `--target` that excludes a cross-repo
+// frontend does not fetch it; resolving before anything else reads a
+// frontend path means every downstream consumer sees a real directory.
+func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts buildOptions) (*KCLEntities, error) {
+	var entities *KCLEntities
+	if opts.env != "" {
+		// A missing KCL render is logged and treated as "no env filter",
+		// so projects that haven't migrated to the deploy module keep
+		// working unchanged.
+		ents, kerr := RenderKCL(ctx, projectDirForKCL(), opts.env)
+		if kerr != nil {
+			fmt.Printf("[build]   Note: skipping KCL filter (%v)\n", kerr)
+		} else {
+			entities = ents
+		}
+	}
+
+	// --target narrows the entity set BEFORE any build decision reads it.
+	// Doing it here (rather than at each derivation site) is what makes the
+	// scoping total: resolveBuildTargetSet, buildKCLDockerShell,
+	// buildKCLBuildOnlyVariants and buildExternalServiceResults all read
+	// `entities`, so one filter covers every build lane. Validated by the
+	// caller (`forge env up` / `forge env deploy`), which owns the
+	// "unknown target" message and its available-names list.
+	if len(opts.targets) > 0 && entities != nil {
+		entities = filterEntitiesByTarget(entities, opts.targets)
+	}
+
+	// Materialize any cross-repo frontend source, so every downstream
+	// consumer (npm install, `npm run build`, the docker context) sees a
+	// real directory. No-op — no resolver, no cache access — for a project
+	// that declares none.
+	if err := resolveBuildFrontendSources(ctx, cfg, entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
+}
+
 func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opts buildOptions) (buildTargetSet, error) {
 	// The starting set is the project-level "frontends forge owns a Node
 	// toolchain for", with each path resolved through the frontends/<name>

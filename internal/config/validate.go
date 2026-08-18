@@ -884,6 +884,38 @@ func validateFrontends(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 				})
 			}
 		}
+		// frontends[].source declares the code as a pinned cross-repo
+		// dependency. It is an ALTERNATIVE to `path`, never a companion:
+		// with both set there are two answers to "where is this
+		// frontend's code", and silently preferring one would make the
+		// other a lie that reads as truth in review. Reject instead.
+		if fe.Source != nil {
+			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "source"})
+			if fe.Path != "" {
+				out = append(out, validationIssue{
+					line:   line,
+					column: col,
+					msg:    fmt.Sprintf("%s declares both 'path' and 'source'", prefix),
+					fix:    "keep one: 'path' for a directory in this repo, 'source' for a pinned checkout of another repo. To build a local working copy of a `source` frontend, add an override in .forge/source-overrides.yaml instead of re-adding 'path'.",
+				})
+			}
+			if strings.TrimSpace(fe.Source.Repo) == "" {
+				out = append(out, validationIssue{
+					line:   line,
+					column: col,
+					msg:    fmt.Sprintf("%s.source.repo is required", prefix),
+					fix:    "add 'repo:' — e.g. github.com/org/app.",
+				})
+			}
+			if strings.TrimSpace(fe.Source.Ref) == "" {
+				out = append(out, validationIssue{
+					line:   line,
+					column: col,
+					msg:    fmt.Sprintf("%s.source.ref is required", prefix),
+					fix:    "add 'ref:' — a tag, branch, or commit sha. forge does not default to a branch: an unpinned cross-repo source is what makes a build unreproducible.",
+				})
+			}
+		}
 		// frontends[].output selects the Next.js build/runtime shape.
 		// Only meaningful for type=nextjs; we still validate the value
 		// for other types because changing the type later shouldn't

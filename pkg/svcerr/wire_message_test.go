@@ -65,6 +65,7 @@ var constructors = map[string]func(string) error{
 	"PlanLimit":           svcerr.PlanLimit,
 	"InsufficientBalance": svcerr.InsufficientBalance,
 	"Expired":             svcerr.Expired,
+	"ScaffoldStub":        svcerr.ScaffoldStub,
 }
 
 // packageFiles parses every non-test .go file of this package.
@@ -167,12 +168,14 @@ func TestConstructors_ClientMessageCarriesNoSentinelText(t *testing.T) {
 // the constructors documented to take a complete detail: the library adds
 // NOTHING. NotFound is excluded because its parameter is an ENTITY name,
 // not a detail — it composes the sentence itself, which is what
-// TestNotFound_ComposesASentence checks.
+// TestNotFound_ComposesASentence checks. ScaffoldStub is excluded for the
+// same reason: its parameter is an RPC NAME, and it composes the sentence
+// (TestScaffoldStub_ComposesASentence).
 func TestConstructors_MessageIsExactlyTheDetail(t *testing.T) {
 	t.Parallel()
 	const detail = "no billing account"
 	for name, ctor := range constructors {
-		if name == "NotFound" {
+		if name == "NotFound" || name == "ScaffoldStub" {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
@@ -188,6 +191,49 @@ func TestNotFound_ComposesASentence(t *testing.T) {
 	t.Parallel()
 	if msg := svcerr.ToConnect(svcerr.NotFound("order")).Message(); msg != "order not found" {
 		t.Errorf("NotFound message = %q, want a readable sentence built from the entity name", msg)
+	}
+}
+
+func TestScaffoldStub_ComposesASentence(t *testing.T) {
+	t.Parallel()
+	if msg := svcerr.ToConnect(svcerr.ScaffoldStub("ShipOrder")).Message(); msg != "handler for ShipOrder not yet implemented" {
+		t.Errorf("ScaffoldStub message = %q, want a readable sentence built from the RPC name", msg)
+	}
+}
+
+// TestScaffoldStub_IsDistinctFromUnimplemented is the whole point of the
+// sentinel. Both carry CodeUnimplemented — that is deliberate, the wire
+// contract for "not implemented" does not change — but they must not be
+// errors.Is-interchangeable, because the scaffold test row keys on the
+// difference to tell "forge wrote this" from "somebody wrote this and it
+// answers Unimplemented on purpose".
+func TestScaffoldStub_IsDistinctFromUnimplemented(t *testing.T) {
+	t.Parallel()
+	stub := svcerr.ScaffoldStub("ShipOrder")
+	if got := svcerr.ToConnect(stub).Code(); got != connect.CodeUnimplemented {
+		t.Errorf("ScaffoldStub code = %s, want %s", got, connect.CodeUnimplemented)
+	}
+	if !errors.Is(stub, svcerr.ErrScaffoldStub) {
+		t.Error("ScaffoldStub does not match its own sentinel")
+	}
+	if errors.Is(stub, svcerr.ErrUnimplemented) {
+		t.Error("ScaffoldStub matches ErrUnimplemented — a hand-written Unimplemented would be indistinguishable from an unwritten handler")
+	}
+	if errors.Is(svcerr.Unimplemented("served by the forwarder"), svcerr.ErrScaffoldStub) {
+		t.Error("a hand-written Unimplemented matches ErrScaffoldStub — the scaffold row would pass against an implemented handler")
+	}
+}
+
+// TestScaffoldStub_CarriesReasonMetadata pins the half that survives the
+// network. errors.Is cannot cross a Connect boundary (the error is
+// marshalled and rebuilt), so the reason header is the only identification
+// an integration-tier row has; if this regresses, those rows silently stop
+// asserting anything.
+func TestScaffoldStub_CarriesReasonMetadata(t *testing.T) {
+	t.Parallel()
+	ce := svcerr.ToConnect(svcerr.ScaffoldStub("ShipOrder"))
+	if got := ce.Meta().Get(svcerr.ReasonHeader); got != svcerr.ReasonScaffoldStub {
+		t.Errorf("%s = %q, want %q", svcerr.ReasonHeader, got, svcerr.ReasonScaffoldStub)
 	}
 }
 

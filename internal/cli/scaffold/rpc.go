@@ -345,10 +345,7 @@ func startsUpper(s string) bool {
 func buildRPCHandlerStub(pkg, rpcName, pbImportPath string, mode rpcStreamMode) string {
 	reqType := rpcName + "Request"
 	respType := rpcName + "Response"
-	errExpr := fmt.Sprintf(
-		`svcerr.Wrap(svcerr.WithReason(svcerr.Unimplemented(fmt.Sprintf("handler for %%s not yet implemented", %q)), "unimplemented"))`,
-		rpcName,
-	)
+	errExpr := fmt.Sprintf(`svcerr.Wrap(svcerr.ScaffoldStub(%q))`, rpcName)
 
 	// Qualify the request/response types with the generated proto
 	// package. They live in gen/, never in the handler package.
@@ -401,7 +398,6 @@ func buildRPCHandlerStub(pkg, rpcName, pbImportPath string, mode rpcStreamMode) 
 
 import (
 	"context"
-	"fmt"
 
 	"connectrpc.com/connect"
 	"github.com/reliant-labs/forge/pkg/svcerr"

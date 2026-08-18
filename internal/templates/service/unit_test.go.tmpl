@@ -15,13 +15,20 @@
 // iterates rows as t.Run subtests and asserts on either a Connect error
 // code or a happy-path response.
 //
-// The scaffold row is SELF-DESTRUCTING: it asserts
-// `WantErr: connect.CodeUnimplemented` against the stub handler, so the row
-// goes red the moment you implement {{$m.Name}}. That failure is the point
-// — replace it then with real assertions (Check for the happy path, WantErr
-// for failure modes). forge writes this file only when it is absent and
-// {{$m.Name}} is still a stub, so a file you have edited, or an RPC you have
-// implemented, is never re-offered.
+// The scaffold row is SELF-DESTRUCTING: `WantScaffoldStub` matches only the
+// error forge's own generated stub returns, so the row goes red the moment
+// you implement {{$m.Name}}. That failure is the point — replace it then with
+// real assertions (Check for the happy path, WantErr for failure modes).
+// forge writes this file only when it is absent and {{$m.Name}} is still a
+// stub, so a file you have edited, or an RPC you have implemented, is never
+// re-offered.
+//
+// It does NOT match a bare `connect.CodeUnimplemented`, deliberately. A
+// finished handler can return that code for its own reasons — a forwarder,
+// a feature flag, an unwired optional dep — and a row keyed on the code
+// alone keeps passing against fully-implemented RPCs. Asserting an
+// unforgeable sentinel is what makes "nobody has written this yet"
+// falsifiable.
 //
 // CRUD RPCs are intentionally absent — their lifecycle coverage lives in
 // handlers_crud_test.go (yours as well). Each method has exactly one
@@ -74,20 +81,11 @@ func Test{{$m.Name}}_Generated(t *testing.T) {
 
 	tdd.RunRPCCases(t, []tdd.RPCCase[pb.{{$m.InputType}}, pb.{{$m.OutputType}}]{
 		{
-			// SELF-DESTRUCTING scaffold row: passes only while {{$m.Name}}
-			// is the generated CodeUnimplemented stub. Implementing the
-			// handler makes this row FAIL — replace it then with real
-			// assertions, e.g.
-			//   { Name: "happy_path", Req: ..., Ctx: {{.ServicePackage}}.AuthedContext(t),
-			//     Check: func(t *testing.T, resp *connect.Response[pb.{{$m.OutputType}}]) { ... } },
-			//   { Name: "missing_required_field", Req: ...,
-			//     Ctx: {{.ServicePackage}}.AuthedContext(t), WantErr: connect.CodeInvalidArgument },
-			// Ctx carries authenticated test claims (UserID "test-user",
-			// role "admin") so middleware.GetUser sees a principal.
-			Name:    "unimplemented_scaffold",
-			Req:     connect.NewRequest(&pb.{{$m.InputType}}{}),
-			Ctx:     {{.ServicePackage}}.AuthedContext(t),
-			WantErr: connect.CodeUnimplemented,
+			Name: "unimplemented_scaffold", // delete this row once you implement {{$m.Name}}; it only asserts nobody has
+			Req:  connect.NewRequest(&pb.{{$m.InputType}}{}),
+			Ctx:  {{.ServicePackage}}.AuthedContext(t), // authenticated test claims (UserID "test-user", role "admin")
+			// replace with Check: func(t *testing.T, resp *connect.Response[pb.{{$m.OutputType}}]) {...}, or WantErr: connect.CodeInvalidArgument
+			WantScaffoldStub: true,
 		},
 	}, svc.{{$m.Name}})
 }

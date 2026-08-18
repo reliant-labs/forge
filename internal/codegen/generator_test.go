@@ -1149,8 +1149,12 @@ func (s *Service) Echo(
 		if !strings.Contains(content, `pb "github.com/test/proj/gen/proto/services/echo/v1"`) {
 			t.Errorf("%s must carry its own pb import; got:\n%s", stub, content)
 		}
-		if !strings.Contains(content, `"fmt"`) {
-			t.Errorf("%s must carry its own fmt import; got:\n%s", stub, content)
+		// No fmt: svcerr.ScaffoldStub composes the message from the RPC
+		// name, so the stub body formats nothing. Asserted negatively
+		// because an unused import does not compile — mustParseGo above
+		// parses, it does not type-check, so this is what catches it.
+		if strings.Contains(content, `"fmt"`) {
+			t.Errorf("%s carries an unused fmt import; got:\n%s", stub, content)
 		}
 	}
 
@@ -1891,8 +1895,17 @@ func TestUnitTestScaffold_SelfDestructingRows(t *testing.T) {
 	if strings.Contains(got, "AnyOutcome") {
 		t.Errorf("scaffold must not reference AnyOutcome (deleted from pkg/tdd — permissive rows belong in no library); got:\n%s", got)
 	}
-	if !strings.Contains(got, "WantErr: connect.CodeUnimplemented") {
-		t.Errorf("scaffold row must self-destruct via WantErr: connect.CodeUnimplemented; got:\n%s", got)
+	// WantScaffoldStub, not WantErr: connect.CodeUnimplemented. The row has
+	// to key on the sentinel only forge's own untouched stub emits, or a
+	// finished handler that answers Unimplemented for its own reasons —
+	// most commonly a nil-guard on a dep the harness leaves unset — keeps
+	// the row green forever. Asserting the bare code is exactly the defect
+	// that left 78 of 78 rows passing against implemented RPCs.
+	if !strings.Contains(got, "WantScaffoldStub: true") {
+		t.Errorf("scaffold row must self-destruct via WantScaffoldStub; got:\n%s", got)
+	}
+	if strings.Contains(got, "WantErr: connect.CodeUnimplemented") {
+		t.Errorf("scaffold row must NOT assert the bare CodeUnimplemented — an implemented handler can return it; got:\n%s", got)
 	}
 	if !strings.Contains(got, "Ctx:") || !strings.Contains(got, ".AuthedContext(t)") {
 		t.Errorf("scaffold row must emit Ctx: <pkg>.AuthedContext(t); got:\n%s", got)

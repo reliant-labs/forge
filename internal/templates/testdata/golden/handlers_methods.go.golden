@@ -6,7 +6,7 @@ func (s *Service) Echo(
 	ctx context.Context,
 	req *connect.Request[pb.EchoRequest],
 ) (*connect.Response[pb.EchoResponse], error) {
-	return nil, svcerr.Wrap(svcerr.WithReason(svcerr.Unimplemented(fmt.Sprintf("handler for %s not yet implemented", "Echo")), "unimplemented"))
+	return nil, svcerr.Wrap(svcerr.ScaffoldStub("Echo"))
 }
 
 // Tail implements the Tail server streaming RPC.
@@ -17,6 +17,6 @@ func (s *Service) Tail(
 	req *connect.Request[pb.TailRequest],
 	stream *connect.ServerStream[pb.TailResponse],
 ) error {
-	return svcerr.Wrap(svcerr.WithReason(svcerr.Unimplemented(fmt.Sprintf("handler for %s not yet implemented", "Tail")), "unimplemented"))
+	return svcerr.Wrap(svcerr.ScaffoldStub("Tail"))
 }
 

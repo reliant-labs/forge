@@ -106,11 +106,13 @@ func TestBuildRPCHandlerStub_SignaturesPerMode(t *testing.T) {
 			if !strings.HasPrefix(got, "package billing\n") {
 				t.Errorf("stub must declare `package billing`, got prefix:\n%s", got[:40])
 			}
-			if !strings.Contains(got, "svcerr.Unimplemented(") {
-				t.Errorf("stub must return Unimplemented (routed through svcerr) before the impl lands, got:\n%s", got)
-			}
-			if !strings.Contains(got, `"unimplemented"`) {
-				t.Errorf("stub must carry the stable \"unimplemented\" error-reason, got:\n%s", got)
+			// ScaffoldStub, not Unimplemented: the scaffold test row
+			// keys on a sentinel only forge's own untouched stub can
+			// emit, so implementing the RPC turns the row red however
+			// the implementation fails. A bare Unimplemented here would
+			// be indistinguishable from a finished handler's nil-guard.
+			if !strings.Contains(got, "svcerr.ScaffoldStub(") {
+				t.Errorf("stub must return ScaffoldStub (routed through svcerr) before the impl lands, got:\n%s", got)
 			}
 		})
 	}
@@ -254,11 +256,8 @@ func TestRunAddRPC_NotInProtoKeepsSnippetBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bare stub should be written for a not-in-proto RPC: %v", err)
 	}
-	if !strings.Contains(string(body), "svcerr.Unimplemented(") {
-		t.Errorf("bare stub should return Unimplemented via svcerr:\n%s", body)
-	}
-	if !strings.Contains(string(body), `"unimplemented"`) {
-		t.Errorf("bare stub should carry the stable \"unimplemented\" error-reason:\n%s", body)
+	if !strings.Contains(string(body), "svcerr.ScaffoldStub(") {
+		t.Errorf("bare stub should return ScaffoldStub via svcerr:\n%s", body)
 	}
 	// No domain package: the pb-through collapse removed the RPC vertical.
 	if _, statErr := os.Stat(filepath.Join(dir, "internal", "tasks")); !os.IsNotExist(statErr) {

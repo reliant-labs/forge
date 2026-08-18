@@ -39,10 +39,16 @@ import (
 // The two probes that together identify a source as an unwired-stub emitter.
 // Both templates and Go builders spell them the same way, because both are
 // writing the same Go method: a *Service receiver, and a body that constructs
-// an Unimplemented error.
+// the scaffold-stub error.
+//
+// The body probe is svcerr.ScaffoldStub, NOT svcerr.Unimplemented. The two are
+// deliberately different errors: ScaffoldStub is the one only forge's own
+// untouched stub emits, which is what lets the scaffold test row go red when
+// somebody implements the RPC. Probing for Unimplemented would re-widen this
+// set to every handler that answers "not implemented" on purpose.
 const (
 	handlerMethodProbe   = "func (s *Service) "
-	unwiredStubBodyProbe = "svcerr.Unimplemented("
+	unwiredStubBodyProbe = "svcerr.ScaffoldStub("
 )
 
 // markerReferences are the two legitimate ways a source stamps the marker:

@@ -44,6 +44,19 @@ forge.Frontend {
     path = "frontends/admin-web"
 }
 
+# A frontend whose code lives in ANOTHER repository, pinned to a ref —
+# builds in CI (where only this repo is checked out) and builds the same
+# bytes on every machine. See "Cross-repo sources" below.
+forge.Frontend {
+    name = "reliant-web"
+    type = "vite"
+    source = forge.GitSource {
+        repo = "github.com/reliant-labs/reliant"
+        ref = "v1.6.3"
+        subdir = "web"
+    }
+}
+
 forge.CronJob {
     name = "billing-sweep"
     schedule = "@hourly"
@@ -63,6 +76,22 @@ forge CLI can dispatch on intent rather than infer it:
 | `Operator` | Cluster-scoped controller that reconciles CRDs.       | `operators[]` |
 | `Frontend` | Web or mobile frontend (Next.js / Vite / RN).         | `frontends[]` |
 | `CronJob`  | Scheduled job. Omit `schedule` → renders a Job.       | `cronjobs[]`  |
+
+### Cross-repo sources
+
+A `Frontend` declares its code EITHER as a `path` (a directory in this
+repo) OR as a `source = forge.GitSource { repo, ref, subdir? }` — never
+both. The `source` form exists because a filesystem path to a sibling
+checkout has two failure modes: it does not exist in CI, and where it does
+exist it silently ships whatever happened to be checked out, so identical
+commits produce different artifacts on different machines.
+
+`ref` is required — forge does not default to a repository's default
+branch. Fetches are cached per repo+ref, and a machine-local
+`.forge/source-overrides.yaml` (gitignored, so it can never un-pin CI)
+maps a repo to a working copy for local iteration.
+
+See `docs/cross-repo-sources.md` for the full model.
 
 ### Two `Service` schemas: which one you write
 

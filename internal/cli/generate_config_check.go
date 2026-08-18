@@ -82,6 +82,14 @@ func validateConfigVsFilesystem(projectDir string, cfg *config.ProjectConfig) er
 func checkDeclaredFrontends(projectDir string, cfg *config.ProjectConfig) []string {
 	var out []string
 	for _, fe := range cfg.Frontends {
+		// A frontend declaring a cross-repo `source:` has no directory in
+		// this tree BY DESIGN — that is the whole point of the pin, and it
+		// is what lets the frontend build in a CI checkout of this repo
+		// alone. Its code is materialized from the pin at build time, so
+		// there is nothing for a filesystem cross-check to look at here.
+		if fe.HasGitSource() {
+			continue
+		}
 		path := fe.Path
 		if path == "" {
 			path = "frontends/" + fe.Name

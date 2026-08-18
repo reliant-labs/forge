@@ -986,6 +986,14 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 		return rcErr
 	}
 
+	// Materialize any cross-repo frontend source before anything reads a
+	// frontend Path: the deploy path installs deps, builds, and assembles
+	// the output tree, all of which need a real directory. A project with
+	// no `source:` pays nothing here.
+	if err := resolveFrontendEntitySources(ctx, projectDir, entities); err != nil {
+		return err
+	}
+
 	var fes []deploytarget.FirebaseFrontend
 	var buildOnly []deploytarget.BuildOnlyFrontend
 	var builtDirs []string

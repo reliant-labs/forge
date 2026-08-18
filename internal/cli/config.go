@@ -100,7 +100,12 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 
 	// Apply defaults for frontend paths
 	for i := range cfg.Frontends {
-		if cfg.Frontends[i].Path == "" {
+		// A frontend whose code comes from another repo has no directory
+		// in this tree, so defaulting `path` to frontends/<name> would
+		// invent one — and every path-consuming caller would then shell
+		// into a directory that does not exist. Its real directory is
+		// whatever the source resolver returns.
+		if cfg.Frontends[i].Path == "" && !cfg.Frontends[i].HasGitSource() {
 			cfg.Frontends[i].Path = "frontends/" + cfg.Frontends[i].Name
 		}
 		if cfg.Frontends[i].Type == "" {

@@ -2106,6 +2106,70 @@ schema FrontendConfig:
         mock in ["off", "true", "hybrid"], \
             "FrontendConfig.mock must be 'off' | 'true' | 'hybrid'"
 
+schema GitSource:
+    """A component's source declared as "that repository at that ref".
+
+    THE PROBLEM IT SOLVES. A cross-repo component declared as a
+    filesystem path (`path = "../reliant/web"`) works on a laptop that
+    happens to have the sibling checkout and fails everywhere else —
+    CI checks out one repository. Worse than the failure is the
+    success: where the sibling IS present, what ships is whatever
+    happened to be checked out, so two machines produce different
+    artifacts from identical commits. The Go half of the very same
+    dependency has always been a pinned, proxy-resolved module; only
+    the frontend and image halves were an unpinned path.
+
+    A GitSource closes that asymmetry. `repo` + `ref` is a reviewable,
+    promotable pin that resolves to the same bytes on a laptop, in a
+    container, and in CI — the property `go.mod` already gives the Go
+    side.
+
+        source = forge.GitSource {
+            repo = "github.com/reliant-labs/reliant"
+            ref = "v1.6.3"
+            subdir = "web"
+        }
+
+    forge fetches the pin into a machine-local cache keyed by repo+ref
+    and reuses it across builds; a second build of the same pin does no
+    network work.
+
+    LOCAL ITERATION IS NOT BLOCKED. Pinning without an escape hatch
+    would force every one-line edit through a push and a re-fetch. A
+    machine-local `.forge/source-overrides.yaml` (gitignored, never
+    committed) maps a repo to a working copy to build instead. It is
+    explicit — forge never silently adopts a sibling checkout it finds
+    on disk, because that would reintroduce the unpinned build
+    invisibly — and because it cannot be committed, an override can
+    never follow a change into CI. The pin is what builds there.
+
+    `ref` accepts a tag, a branch, or a commit sha. A sha (or a tag
+    under a project that does not move tags) is immutable and can never
+    go stale. A branch is cached the same way rather than re-fetched
+    per build: a dependency that changes underneath a build is the
+    non-reproducibility this schema exists to remove. Bump the ref, or
+    drop the cache entry, to move.
+    """
+    # host/owner/name ("github.com/org/app"), which forge expands to an
+    # https clone URL — or an explicit https:// / ssh:// / git@host:owner/name
+    # URL, used verbatim (private hosts, ssh remotes, credential helpers).
+    repo: str
+    # Tag, branch, or commit sha. REQUIRED: forge does not default to a
+    # repository's default branch, because an unpinned cross-repo
+    # dependency is exactly the problem this schema solves.
+    ref: str
+    # Path within the repository holding this component's source ("web").
+    # Unset => the repository root.
+    subdir?: str
+
+    check:
+        repo, "GitSource.repo is required (e.g. github.com/org/app)"
+        ref, "GitSource.ref is required — a tag, branch, or commit sha; forge does not default to a branch, because an unpinned cross-repo source is what makes a build unreproducible"
+        not subdir or not subdir.startswith("/"), \
+            "GitSource.subdir must be a relative path inside the repository"
+        not subdir or not subdir.startswith(".."), \
+            "GitSource.subdir must not escape the repository root"
+
 schema Frontend:
     """A web or mobile frontend.
 
@@ -2139,7 +2203,16 @@ schema Frontend:
     """
     name: str
     type: str = "nextjs"
-    path: str
+    # The frontend's directory in THIS repository. Mutually exclusive
+    # with `source`: exactly one of the two must be set. Optional in the
+    # schema (rather than required) only so `source` can replace it — a
+    # frontend declaring neither is still rejected by the check below.
+    path?: str
+    # The frontend's code in ANOTHER repository, pinned to a ref. Set
+    # this instead of `path` for a cross-repo frontend: it builds in CI,
+    # where only this repository is checked out, and builds the same
+    # bytes on every machine. See GitSource.
+    source?: GitSource
     dev_runner: str = "npm"
     port: int = 3000
     env_file?: str
@@ -2163,7 +2236,10 @@ schema Frontend:
 
     check:
         name, "Frontend.name is required"
-        path, "Frontend.path is required"
+        path or source, \
+            "Frontend needs a source of code: `path` for a directory in this repo, or `source = forge.GitSource { ... }` for a pinned checkout of another repo"
+        not (path and source), \
+            "Frontend declares both `path` and `source` — keep one. To build a local working copy of a `source` frontend, add an override in .forge/source-overrides.yaml instead of re-adding `path`."
         type in ["nextjs", "vite", "rn"], \
             "Frontend.type must be 'nextjs' | 'vite' | 'rn'"
         dev_runner in ["npm", "pnpm", "yarn"], \

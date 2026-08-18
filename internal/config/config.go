@@ -334,6 +334,30 @@ type FrontendConfig struct {
 	Type string `yaml:"type"`           // "nextjs", "react-native", "vite-spa"
 	Kind string `yaml:"kind,omitempty"` // "web" (default/Next.js), "mobile" (React Native), "vite-spa" (Vite + React + tanstack-router)
 	Path string `yaml:"path"`
+	// Source declares this frontend's code as "that repo at that ref"
+	// instead of a directory that must already be on disk. Set it INSTEAD
+	// of Path when the frontend lives in another repository:
+	//
+	//	frontends:
+	//	  - name: reliant-web
+	//	    type: vite-spa
+	//	    source:
+	//	      repo: github.com/reliant-labs/reliant
+	//	      ref: v1.6.3
+	//	      subdir: web
+	//
+	// forge fetches the pin into a machine-local cache and builds from
+	// there, so the frontend builds in CI — where only this repository is
+	// checked out — and builds the SAME bytes on every machine. A bare
+	// `path` to a sibling checkout has neither property: it fails wherever
+	// the sibling is absent, and where it is present it ships whatever
+	// happened to be checked out.
+	//
+	// Path and Source are mutually exclusive; a frontend declaring both is
+	// rejected at load. Local iteration against a working copy goes through
+	// `.forge/source-overrides.yaml` (machine-local, gitignored) rather
+	// than through editing the pin — see internal/gitsource.
+	Source *GitSource `yaml:"source,omitempty"`
 	// Port is the frontend's dev-server listen port. Omitted / 0 means
 	// EPHEMERAL: `forge run` / `forge env up` allocate a free OS port at
 	// launch and report it (see resolveEphemeralFrontendPorts). omitempty so
@@ -452,16 +476,59 @@ func (f FrontendConfig) EffectiveAuthMode() string {
 	return f.AuthMode
 }
 
+// GitSource declares a component's code as "that repository at that ref"
+// rather than a directory that must already exist on disk.
+//
+// It is the schema half of internal/gitsource (which holds the resolver,
+// the cache and the local-override rules); this type is the plain data
+// forge.yaml and KCL both unmarshal into. It lives here rather than in
+// gitsource so internal/config keeps its no-internal-imports shape — the
+// resolver converts to its own Source type at the boundary.
+//
+// The point is reproducibility, not convenience. A filesystem path to a
+// sibling checkout fails wherever the sibling is absent (CI), and where it
+// IS present it silently ships whatever happened to be checked out, so two
+// machines produce different artifacts from identical commits. A ref makes
+// the cross-repo dependency an explicit, reviewable, promotable version —
+// the same property go.mod already gives the Go half of the same
+// dependency.
+type GitSource struct {
+	// Repo is the repository: host/owner/name
+	// ("github.com/reliant-labs/reliant"), which forge expands to an https
+	// clone URL, or an explicit https://, ssh://, or git@host:owner/name
+	// URL, which is used verbatim.
+	Repo string `yaml:"repo" json:"repo"`
+	// Ref is the tag, branch, or commit sha to check out. Required —
+	// forge does not default to a repository's default branch, because an
+	// unpinned dependency is precisely the problem this type solves.
+	Ref string `yaml:"ref" json:"ref"`
+	// Subdir is the path within the repository holding this component's
+	// source ("web"). Empty means the repository root.
+	Subdir string `yaml:"subdir,omitempty" json:"subdir,omitempty"`
+}
+
 // EffectivePath returns the frontend's directory relative to the project
 // root: the declared `path`, falling back to the conventional
 // `frontends/<name>` layout when it is empty. Every command that shells
 // into a frontend (build, generate, lint) needs this same fallback, so it
 // lives on the config type rather than being re-derived per call site.
+//
+// A frontend with a `source:` has NO meaningful value here until the
+// source is resolved — its code is not in the project tree. Callers that
+// can shell into a frontend must consult HasGitSource first and route
+// through the resolver; EffectivePath keeps returning the conventional
+// fallback so the many callers that only need a label are unchanged.
 func (f FrontendConfig) EffectivePath() string {
 	if f.Path != "" {
 		return f.Path
 	}
 	return filepath.Join("frontends", f.Name)
+}
+
+// HasGitSource reports whether this frontend's code comes from another
+// repository rather than from a directory in the project tree.
+func (f FrontendConfig) HasGitSource() bool {
+	return f.Source != nil && f.Source.Repo != ""
 }
 
 // FrontendToolchainDisabled reports whether the project has opted OUT of

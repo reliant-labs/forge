@@ -538,13 +538,29 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 // source both host-run and cluster deploy read.
 // configFieldsExcludingBinaries flattens the config fields of every message
 // NOT bound to a binary — the project-global AppConfig, when one still
-// exists alongside per-binary configs.
+// exists alongside per-binary configs — INCLUDING one level of any block it
+// composes (a message-typed field naming another config message), mirroring
+// ConfigFieldsForBinary's own-plus-composed-leaves shape. Without this, a
+// block reachable only from the root (never bound to any binary) has no
+// other path into the projection, and its leaves would silently vanish from
+// deploy/kcl/config_gen.k.
 //
-// Shared blocks (BaseConfig) are excluded too: their leaves already reach
-// the projection through each binary that composes them, and emitting them
-// again at the top level would put a binary's fields back into a shared
-// surface, which is what per-binary config exists to prevent.
+// A message composed by ANY other message (root or binary-bound) is
+// excluded from being walked as its own top-level entry, whether or not
+// its composer is itself bound to a binary:
+//   - Composed by a binary (BaseConfig shared across per-binary messages):
+//     its leaves already reach the projection through each binary via
+//     ConfigFieldsForBinary; emitting them again here would put a binary's
+//     fields back into the shared root surface, which is what per-binary
+//     config exists to prevent.
+//   - Composed by the root message: its leaves are flattened in below,
+//     through the root's own message-typed field; walking the block message
+//     again as a top-level entry would duplicate them.
 func configFieldsExcludingBinaries(messages []codegen.ConfigMessage) []codegen.ConfigField {
+	byName := make(map[string]*codegen.ConfigMessage, len(messages))
+	for i := range messages {
+		byName[messages[i].Name] = &messages[i]
+	}
 	composed := map[string]bool{}
 	for _, m := range messages {
 		for _, f := range m.Fields {
@@ -560,6 +576,14 @@ func configFieldsExcludingBinaries(messages []codegen.ConfigMessage) []codegen.C
 		}
 		for _, f := range m.Fields {
 			if f.MessageType != "" {
+				if bm, known := byName[f.MessageType]; known {
+					for _, bf := range bm.Fields {
+						if bf.MessageType != "" {
+							continue // one nesting level, as elsewhere
+						}
+						out = append(out, bf)
+					}
+				}
 				continue
 			}
 			out = append(out, f)

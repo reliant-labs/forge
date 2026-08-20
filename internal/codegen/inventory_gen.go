@@ -52,10 +52,6 @@ type InventoryServiceData struct {
 	// own called Register. One type cannot carry both a Register(mux,
 	// opts...) helper and a Register(ctx, req) RPC, and the RPC wins.
 	MountMethod string
-	// Alias is the import alias for the service's handler package.
-	Alias string
-	// ImportPath is the module-relative handler import path.
-	ImportPath string
 	// Package is the Go package clause.
 	Package string
 	// ConnectPkg / ProtoServiceName drive the ConnectPath descriptor and,
@@ -139,7 +135,11 @@ func GenerateInventory(in InventoryGenInput) error {
 		if fallbackField == "" {
 			fallbackField = naming.ToPascalCase(svc.Name)
 		}
-		alias, fieldName := ResolveCollisionNaming(pkg, fallbackField, "svc", counts)
+		// The alias half is discarded: this file no longer imports the handler
+		// packages (see mounts_services_gen.go.tmpl). FieldName still has to
+		// come from the same resolver so it keys the *Components fields
+		// identically to compose.go / inject_gen.
+		_, fieldName := ResolveCollisionNaming(pkg, fallbackField, "svc", counts)
 		runtimeName := naming.ToKebabCase(strings.TrimSuffix(svc.Name, "Service"))
 		if runtimeName == "" {
 			runtimeName = naming.ToKebabCase(svc.Name)
@@ -181,8 +181,6 @@ func GenerateInventory(in InventoryGenInput) error {
 			Name:             runtimeName,
 			FieldName:        fieldName,
 			MountMethod:      mountMethod,
-			Alias:            alias,
-			ImportPath:       "internal/handlers/" + res.ImportLeaf,
 			Package:          pkg,
 			ConnectPkg:       connectPkg,
 			ProtoServiceName: protoServiceName,

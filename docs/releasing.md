@@ -29,6 +29,15 @@ git tag vX.Y.Z                      # root module tag, on the require bump
 git push origin main vX.Y.Z
 ```
 
+**Also bump `defaultPublishedForgePkgVersion`** in
+`internal/generator/project_pkgdep.go` to `vX.Y.Z` and include it in the same
+commit as the require bump above. This is the fallback a *dev-build* forge
+binary (no ldflags `PkgVersion` stamp) pins into every scaffold — if it lags,
+dev builds keep pinning an old `forge/pkg` and generated code targeting newer
+`forge/pkg` APIs won't compile. `resolveForgePkgVersion()` is the only reader;
+there is no automated staleness check (a test that read git tags would be
+non-hermetic), so this step is the guard.
+
 **The require bump is not optional.** The root module has no
 `replace ... => ./pkg`, so the require IS how a consumer resolves forge/pkg.
 Skipping it ships a root module pointing at a stale pkg — v0.0.4 shipped

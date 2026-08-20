@@ -26,8 +26,9 @@ import "github.com/reliant-labs/forge/internal/buildinfo"
 
 // defaultPublishedForgePkgVersion is the forge/pkg release a scaffold pins
 // when this binary carries no ldflags-stamped version (dev builds). Keep it
-// pointed at the latest published pkg/vX.Y.Z submodule tag.
-const defaultPublishedForgePkgVersion = "v0.0.3"
+// pointed at the latest published pkg/vX.Y.Z submodule tag — bumping it is
+// step 1 of docs/releasing.md's checklist.
+const defaultPublishedForgePkgVersion = "v0.1.2"
 
 // resolveForgePkgVersion returns the published forge/pkg version a
 // scaffolded go.mod should require. Release builds use their ldflags stamp;

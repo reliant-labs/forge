@@ -6,6 +6,7 @@
 package buildinfo
 
 import (
+	_ "embed"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,6 +19,43 @@ import (
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 )
+
+// embeddedVersionFile is a build-time copy of the repo-root VERSION file —
+// go:embed cannot reach outside its own package directory, so this file is
+// kept byte-identical to ../../VERSION (see TestEmbeddedVersionFileMatchesSource,
+// mirroring internal/assets' proto sync pattern). It states the last RELEASED
+// forge version, and is the floor Version()/Build.String() fall back to when
+// build info cannot supply a real one — most importantly the go.work case: a
+// host binary that `use`s a sibling forge checkout sees the forge dependency
+// report "(devel)" with no real version to read at all.
+//
+//go:embed VERSION
+var embeddedVersionFile string
+
+// versionFromFile validates and trims raw VERSION file content into a usable
+// version floor. Anything that isn't a clean vX.Y.Z[-pre] release-tag shape —
+// a missing file, stray whitespace, a corrupted edit — degrades to "" so
+// callers fall through to the next tier rather than trust garbage.
+func versionFromFile(raw string) string {
+	v := strings.TrimSpace(raw)
+	if !releaseTagRE.MatchString(v) {
+		return ""
+	}
+	return v
+}
+
+// withDevFloorSuffix marks a VERSION-file-derived floor as identifying a dev
+// build AT that version rather than the clean release tag itself — a
+// workspace/devel build is source somewhere at or after the release VERSION
+// names, never the exact release. Mirrors markDirty's "+dirty" convention:
+// build metadata, not a pre-release, so semver ordering still treats it as
+// this release while IsDevVersion's "+" check flags it as non-tag identity.
+func withDevFloorSuffix(v string) string {
+	if v == "" || strings.Contains(v, "+") {
+		return v
+	}
+	return v + "+dev"
+}
 
 // forgeModulePath and forgePkgModulePath are the go.mod module paths that
 // together identify a genuine forge source checkout on disk: the root module
@@ -330,14 +368,14 @@ func versionFromInfo(info *debug.BuildInfo, stamped string) string {
 		return stamped
 	}
 	if info == nil {
-		return stamped
+		return versionFloor(stamped)
 	}
 
 	if info.Main.Path == forgeCmdModulePath {
 		if info.Main.Version != "" && info.Main.Version != "(devel)" {
 			return info.Main.Version
 		}
-		return stamped
+		return versionFloor(stamped)
 	}
 
 	// Embedded: forge is a dependency of some host binary.
@@ -349,6 +387,23 @@ func versionFromInfo(info *debug.BuildInfo, stamped string) string {
 			return dep.Version
 		}
 		break
+	}
+	return versionFloor(stamped)
+}
+
+// versionFloor supplies the VERSION-file tier: when neither ldflags nor build
+// info could name a real version, fall back to the last released tag rather
+// than the bare "dev" sentinel — this is the go.work embedded case (forge
+// dep reads "(devel)", no module-cache version to read at all). The floor is
+// marked "+dev" so it never masquerades as the clean release tag itself:
+// IsDevVersion and IsDevBuild must keep calling this a dev build, and
+// InstallableVersion must keep returning "" for it — the file states a
+// RELEASED version, but a workspace build is source at or after it, not
+// that exact release. A missing/malformed VERSION file degrades to
+// returning stamped unchanged, never panics.
+func versionFloor(stamped string) string {
+	if v := versionFromFile(embeddedVersionFile); v != "" {
+		return withDevFloorSuffix(v)
 	}
 	return stamped
 }

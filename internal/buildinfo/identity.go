@@ -70,6 +70,9 @@ func buildFrom(info *debug.BuildInfo, ldflagsVersion, ldflagsCommit string) Buil
 		if info.Main.Path == forgeCmdModulePath {
 			// forge IS the main module: standalone.
 			b.Version = info.Main.Version
+			if b.Version == "" || b.Version == "(devel)" {
+				b.Version = versionFloor("")
+			}
 		} else {
 			// forge is a dependency of some host binary: embedded.
 			for _, dep := range info.Deps {
@@ -82,7 +85,13 @@ func buildFrom(info *debug.BuildInfo, ldflagsVersion, ldflagsCommit string) Buil
 				// Report the REQUIRED version, not the replacement's
 				// "(devel)" placeholder, and surface the replace target
 				// separately — together they say which build this is.
+				// The go.work case (no explicit replace) reads "(devel)"
+				// here directly — nothing to fall back on but the
+				// VERSION-file floor.
 				b.Version = dep.Version
+				if b.Version == "" || b.Version == "(devel)" {
+					b.Version = versionFloor("")
+				}
 				if dep.Replace != nil {
 					b.ReplacedBy = dep.Replace.Path
 				}

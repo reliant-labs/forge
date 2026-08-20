@@ -111,6 +111,108 @@ func TestGenerateConfigLoader_AllBinaryAnnotated_EmitsPerBinarySurface(t *testin
 	}
 }
 
+// When the project HAS a primary binary (cmd/<bin>/cmd/root.go on disk) and
+// that binary's own name matches one of the annotated messages, config.go
+// must alias Config/RegisterFlags/Load/Validate/ModeOf onto THAT message —
+// every other template (services, workers, providers.go, compose.go, the
+// scaffold-once cmd-tree-*.go files) references those symbols
+// unconditionally, and this is what gives them a real type to compile
+// against without teaching 20+ templates a second vocabulary.
+func TestGenerateConfigLoader_AllBinaryAnnotated_PrimaryBinaryGetsConfigAlias(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/proj\n\ngo 1.24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The primary binary is discovered by cmd/<bin>/cmd/root.go, matching
+	// primaryCmdTreeDir's own glob — "admin", so admin's AdminConfig is
+	// the one config.go must alias Config onto.
+	treeDir := filepath.Join(dir, "cmd", "admin", "cmd")
+	if err := os.MkdirAll(treeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(treeDir, "root.go"), []byte("package cmd\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := GenerateConfigLoader(allBinaryMessages(), dir, nil); err != nil {
+		t.Fatalf("GenerateConfigLoader: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "pkg", "config", "config_gen.go"))
+	if err != nil {
+		t.Fatalf("read config_gen.go: %v", err)
+	}
+	src := string(got)
+
+	if _, perr := parser.ParseFile(token.NewFileSet(), "config_gen.go", got, parser.AllErrors); perr != nil {
+		t.Fatalf("generated config_gen.go does not parse: %v\n---\n%s", perr, src)
+	}
+
+	// Config must alias the PRIMARY binary's message (AdminConfig), not
+	// Gateway's, and the generic symbol set must be present and typed to it.
+	for _, want := range []string{
+		"type Config = configv1.AdminConfig",
+		"func RegisterFlags(cmd *cobra.Command) {",
+		"forgeconfig.RegisterFlags(cmd, &configv1.AdminConfig{})",
+		"func Load(cmd *cobra.Command) (*Config, error) {",
+		"forgeconfig.LoadTyped[*configv1.AdminConfig](cmd)",
+		"func Validate(cfg *Config) error",
+		"func ModeOf(cfg *Config) Mode",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated config_gen.go missing %q\n---\n%s", want, src)
+		}
+	}
+	// Must not alias the non-primary binary's message.
+	if strings.Contains(src, "type Config = configv1.GatewayConfig") {
+		t.Error("Config aliased onto the non-primary binary's message")
+	}
+	// The per-binary surface must still be emitted for both binaries.
+	for _, want := range []string{
+		"type AdminConfig = configv1.AdminConfig",
+		"func LoadAdminConfig(",
+		"type GatewayConfig = configv1.GatewayConfig",
+		"func LoadGatewayConfig(",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated config_gen.go missing per-binary surface %q", want)
+		}
+	}
+}
+
+// When the project HAS a primary binary but NO config message is bound to
+// it, there is nothing to alias Config onto — the primary binary's own
+// component graph (services, workers, providers.go, compose.go) would be
+// left referencing an undefined config.Config with no explanation. This
+// must be a loud, generate-time error naming the primary binary, not a
+// silently broken tree.
+func TestGenerateConfigLoader_AllBinaryAnnotated_PrimaryBinaryHasNoConfig_Errors(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/proj\n\ngo 1.24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Primary binary is "server" — neither "admin" nor "gateway" from
+	// allBinaryMessages() is bound to it.
+	treeDir := filepath.Join(dir, "cmd", "server", "cmd")
+	if err := os.MkdirAll(treeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(treeDir, "root.go"), []byte("package cmd\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := GenerateConfigLoader(allBinaryMessages(), dir, nil)
+	if err == nil {
+		t.Fatal("GenerateConfigLoader: want error when the primary binary has no bound config message, got nil")
+	}
+	if !strings.Contains(err.Error(), "server") {
+		t.Errorf("error should name the primary binary %q: %v", "server", err)
+	}
+	if !strings.Contains(err.Error(), "binary_config") {
+		t.Errorf("error should point at the binary_config annotation fix: %v", err)
+	}
+}
+
 // A project with NO config messages at all is a different case and must stay
 // a no-op: there is nothing to describe, so writing an empty shim would be
 // noise (and would break the scaffold path that generates before any proto).

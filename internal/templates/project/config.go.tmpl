@@ -14,6 +14,16 @@
 //     (gen/config/v1.{{.RootConfigMessage}}), so every `*config.Config` reference across
 //     the tree keeps compiling while the value carries proto semantics.
 //   - RegisterFlags / Load wrap the library, typed to {{.RootConfigMessage}}.
+{{- else if .PrimaryConfigMessage}}
+//   - There is no project-global AppConfig: every config message carries a
+//     (forge.v1.binary_config) annotation. Config/RegisterFlags/Load/
+//     Validate/ModeOf below are instead aliased onto {{.PrimaryConfigMessage}} — the
+//     config message bound to this project's PRIMARY binary (cmd/<bin>/cmd)
+//     — so the primary binary's own component graph (services, workers,
+//     internal packages, providers.go, compose.go) keeps a real Config type
+//     to construct against. This is also {{.PrimaryConfigMessage}}'s per-binary alias
+//     below (Register{{.PrimaryConfigMessage}}Flags / Load{{.PrimaryConfigMessage}} etc.) — Config is a second,
+//     conventionally-named name for the exact same message, not a copy.
 {{- else}}
 //   - There is NO root Config type: every config message in this project
 //     carries a (forge.v1.binary_config) annotation, so each binary has its
@@ -38,6 +48,15 @@ import (
 // generated from proto/config/v1/config.proto. Holding a *config.Config is
 // holding a *configv1.{{.RootConfigMessage}} — there is no second struct to drift from it.
 type Config = configv1.{{.RootConfigMessage}}
+{{else if .PrimaryConfigMessage}}
+// Config is a SECOND name for {{.PrimaryConfigMessage}} — the config message bound to this
+// project's primary binary (see {{.PrimaryConfigMessage}} below) — not a distinct type.
+// There is no project-global AppConfig; this alias exists so the primary
+// binary's own component graph (services, workers, internal packages,
+// providers.go, compose.go) can spell its config `*config.Config` like
+// every other forge project, while the value carries {{.PrimaryConfigMessage}}'s proto
+// semantics.
+type Config = configv1.{{.PrimaryConfigMessage}}
 {{end}}
 // Mode is the typed runtime mode (production/development), re-exported from
 // the library so callers spell it config.Mode. The zero value is production.
@@ -81,6 +100,31 @@ func ModeOf(cfg *Config) Mode { return forgeconfig.Mode(cfg) }
 // both-or-neither, CORS wildcard+credentials rejection, allowed_values
 // string-enum checks). Annotation/TYPE-driven — never keyed on field names.
 // Called by the server entrypoint after Load, before the listener binds.
+func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
+{{- else if .PrimaryConfigMessage}}
+// RegisterFlags registers every config-bound field of {{.PrimaryConfigMessage}} (own leaves
+// plus any composed shared block) as flags on cmd — the same generic
+// registration a root AppConfig would get, applied here to the primary
+// binary's own per-binary config since there is no AppConfig to register
+// instead. See Register{{.PrimaryConfigMessage}}Flags / Register{{.PrimaryConfigMessage}}SharedFlags below for the
+// split (shared-on-root / own-on-subcommand) form other binaries use.
+func RegisterFlags(cmd *cobra.Command) {
+	if err := forgeconfig.RegisterFlags(cmd, &configv1.{{.PrimaryConfigMessage}}{}); err != nil {
+		panic("config: RegisterFlags: " + err.Error())
+	}
+}
+
+// Load populates a Config ({{.PrimaryConfigMessage}}) from CLI flags > environment
+// variables > proto defaults, recursing into any composed shared block.
+func Load(cmd *cobra.Command) (*Config, error) {
+	return forgeconfig.LoadTyped[*configv1.{{.PrimaryConfigMessage}}](cmd)
+}
+
+// ModeOf derives the runtime mode from the field tagged role=MODE.
+func ModeOf(cfg *Config) Mode { return forgeconfig.Mode(cfg) }
+
+// Validate runs the cross-field / closed-set config invariants against the
+// primary binary's own config. See Validate for the root-AppConfig form.
 func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 {{- end}}
 {{- if .BinaryConfigs}}

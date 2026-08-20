@@ -17,6 +17,8 @@ Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/dev-loop`
 
 Authentication is CODE, not a `forge.yaml` provider enum. Each service scaffolds one editable file, `internal/app/auth.go`, whose `SetupAuth` returns the validator `cmd serve.go` mounts. Picking a validator is a wiring choice; WHERE this deployment's issuer lives is per-environment DATA on the typed config (declared in `proto/config/v1/config.proto`, pinned in `deploy/kcl/<env>/config.k`). **`SetupAuth` reads no environment variable** — the app has one configuration channel.
 
+`SetupAuth(cfg *config.Config)` is unaffected by per-binary config (`forge skill load binaries`, "Config"): `config.Config` is always a real type, whether it aliases a single project-global `AppConfig` or — in an all-binary-annotated project — the config message bound to the primary server binary. `SetupAuth` never needs to know which.
+
 ```go
 // internal/app/auth.go — YOURS (scaffolded once, never regenerated).
 func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), error) {

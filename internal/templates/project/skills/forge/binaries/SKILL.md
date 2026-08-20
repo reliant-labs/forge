@@ -112,6 +112,18 @@ Binaries do **not** hand-roll `os.Getenv`, ad-hoc `slog.Logger`s, hardcoded time
 
 Per-env config (logging, env vars) lives directly in `deploy/kcl/<env>/` — not in a redundant second YAML. `forge.yaml` stays strictly top-level (project identity, features, deploy provider, the `binaries:` list).
 
+### Per-binary config (no project-global AppConfig)
+
+A project can move config OWNERSHIP off a single shared `AppConfig` onto each binary's own message — annotate a config message with `option (forge.v1.binary_config) = {binary: "<cmd/name>"};` (see `forge skill load db` / the config proto's own header for the full mechanics). Doing this for EVERY config message — deleting `AppConfig` entirely — is a legitimate end state, not a half-migration: forge still emits a complete Go/KCL/env surface per binary.
+
+This does not change how a `forge scaffold binary` composition root or a `forge scaffold service`/`worker` Deps struct is written. `config.Config` keeps meaning exactly what it always meant — "this component's config type" — regardless of whether the project has a root `AppConfig` or has moved entirely to per-binary configs:
+
+- **With a root `AppConfig`** (the common case): `config.Config` aliases it directly.
+- **All-binary-annotated, no root `AppConfig`**: `config.Config` aliases the config message bound to the project's PRIMARY binary — the one with the full `cmd/<bin>/cmd` command tree (`server`, `db migrate`, etc.), i.e. the binary a fresh `forge project new` scaffolds. Every service, worker, and internal package mounted into THAT binary's composition graph (`internal/app/compose.go`) keeps reading `Config *config.Config` unchanged.
+- **A secondary binary** (`forge scaffold binary <name>`) that wants its OWN config type, distinct from the primary binary's, reads it through the per-binary alias forge always generates alongside `Config` — `config.<MessageName>` / `config.Load<MessageName>(cmd)` — and takes that type on `Deps.Config` instead of `*config.Config`. A freshly scaffolded secondary binary's `Deps.Config *config.Config` compiles either way (it is reading the primary binary's config, same as any other component) until you point it at its own message.
+
+The primary binary MUST have a config message bound to it once the project goes all-binary — `forge generate` refuses, naming the primary binary, if none is. There is nothing else for `config.Config` to mean once the root `AppConfig` is gone.
+
 ## Errors
 
 If your binary mounts handlers, every handler maps errors with `svcerr.Wrap(err)` from `forge/pkg/svcerr` — never a raw `connect.NewError(connect.CodeInternal, err)` (it flattens NotFound/InvalidArgument/PermissionDenied) and never a hand-rolled per-binary `mapServiceError`/`toConnectError`. Domain failures use `svcerr` sentinels (`svcerr.NotFound("workspace")`). Skip per-RPC `if deps.X == nil` checks for non-optional deps — `validateDeps()` gates them at construction.

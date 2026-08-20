@@ -125,6 +125,33 @@ type ConfigTemplateData struct {
 	// case the template emits the per-binary surfaces alone rather than
 	// aliasing a type that no longer exists.
 	RootConfigMessage string
+
+	// PrimaryConfigMessage names the BinaryConfig bound to the project's
+	// PRIMARY binary (the one with cmd/<bin>/cmd/root.go — the server
+	// binary every scaffolded project has), used ONLY when
+	// RootConfigMessage is empty.
+	//
+	// The primary binary's own compose graph — providers.go, compose.go,
+	// mounts_services_gen.go, the cmd-tree-*.go.tmpl scaffold, every
+	// service/worker/internal-package Deps — references `config.Config` /
+	// `config.RegisterFlags` / `config.Load` / `config.Validate` /
+	// `config.ModeOf` unconditionally; those templates were never written
+	// to be all-binary-aware because in the common (single root AppConfig)
+	// project there is nothing else for them to say. Rather than teach 20+
+	// templates a second vocabulary, config.go.tmpl aliases that SAME
+	// symbol set onto whichever message the primary binary itself loads —
+	// which is also the semantically right binding: the server's
+	// component graph should read the server's own config, not a
+	// different binary's.
+	//
+	// Set by GenerateConfigLoader (never by BuildConfigTemplateData, which
+	// has no filesystem access to find the primary binary). Empty when
+	// RootConfigMessage is set (the common case — irrelevant) or when no
+	// primary binary was found (a CLI/library project with no cmd tree
+	// yet — config.go.tmpl then falls back to emitting no root alias at
+	// all, matching the historical all-binary behavior for such
+	// projects).
+	PrimaryConfigMessage string
 }
 
 // BinaryConfig is one binary's complete config surface: the message that
@@ -739,6 +766,47 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 	// Only a project with NO config surface at all is a genuine no-op.
 	if len(data.Fields) == 0 && len(data.BinaryConfigs) == 0 {
 		return nil
+	}
+
+	// No root AppConfig: resolve PrimaryConfigMessage so config.go.tmpl can
+	// alias Config/RegisterFlags/Load/Validate/ModeOf onto the PRIMARY
+	// binary's own per-binary config, rather than leaving those symbols
+	// undefined for the 20+ other templates that reference them
+	// unconditionally (see PrimaryConfigMessage's doc comment).
+	if data.RootConfigMessage == "" && len(data.BinaryConfigs) > 0 {
+		if treeDir := primaryCmdTreeDir(targetDir); treeDir != "" {
+			primaryBinary := filepath.Base(filepath.Dir(treeDir))
+			for _, bc := range data.BinaryConfigs {
+				if bc.Binary == primaryBinary {
+					data.PrimaryConfigMessage = bc.MessageName
+					break
+				}
+			}
+			// The primary binary EXISTS but no config message is bound
+			// to it. Every service/worker/internal-package Deps.Config
+			// field, providers.go's Infra.Cfg, compose.go, and the
+			// scaffold-once cmd-tree-*.go.tmpl files all reference
+			// config.Config unconditionally — there is nothing to alias
+			// it to, and that is a real gap the templates cannot paper
+			// over. Reject loudly at generate time rather than emit a
+			// pkg/config/config_gen.go with no Config symbol and let 20
+			// files fail to compile with no explanation of why.
+			if data.PrimaryConfigMessage == "" {
+				return fmt.Errorf(
+					"no root AppConfig and no config message is bound to the primary binary %q (cmd/%s): "+
+						"the primary binary's own component graph (services, workers, internal packages, "+
+						"providers.go, compose.go) needs a Config type to construct against. "+
+						"Fix: annotate a config message with `option (forge.v1.binary_config) = {binary: %q};`, "+
+						"or restore an unannotated root AppConfig",
+					primaryBinary, primaryBinary, primaryBinary)
+			}
+		}
+		// treeDir == "": no cmd tree on disk yet (CLI/library project, or
+		// `forge generate` running before the primary binary's tree has
+		// been scaffolded). Leave PrimaryConfigMessage empty —
+		// config.go.tmpl falls back to emitting the per-binary surfaces
+		// alone, exactly the historical all-binary behavior for a project
+		// with no primary binary to bind against.
 	}
 
 	// config.go.tmpl is a thin shim that aliases Config to the generated

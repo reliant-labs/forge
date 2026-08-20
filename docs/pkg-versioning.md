@@ -5,7 +5,9 @@ Generated projects import the `github.com/reliant-labs/forge/pkg` module
 canonical description of how that dependency is versioned, vendored, and
 released. The implementation lives in:
 
-- `internal/generator/project_pkgdep.go` — scaffold-time decision
+- `internal/generator/project_pkgdep.go` — scaffold-time decision.
+  `defaultPublishedForgePkgVersion` is the dev-build fallback pin and must be
+  bumped at release time (see `docs/releasing.md` step 1).
 - `internal/templates/project/go.mod.tmpl` — what gets emitted
 - `internal/cli/dev_pkg_replace.go` — dev-mode `.forge-pkg` vendor sync
 - `internal/cli/doctor_pkgpin.go` — `forge doctor` "stuck on dev path" check

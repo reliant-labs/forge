@@ -35,9 +35,6 @@ import (
 	mountinv "github.com/reliant-labs/forge/pkg/mountkit/inventory"
 	"{{.Module}}/pkg/config"
 	"{{.Module}}/pkg/middleware"
-{{- range .Services}}
-	{{.Alias}} "{{$.Module}}/{{.ImportPath}}"
-{{- end}}
 {{- range .ConnectImports}}
 	"{{.}}"
 {{- end}}

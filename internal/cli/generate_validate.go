@@ -22,13 +22,21 @@ func validateGeneratedProject(projectDir string, cfg *config.ProjectConfig, serv
 	var warnings []string
 
 	// Check: if the primary binary's cmd/<bin>/cmd/serve.go imports
-	// pkg/config, config.go must exist.
+	// pkg/config, the generated loader must exist.
+	//
+	// The file is pkg/config/config_gen.go — it was renamed from config.go
+	// when the tier was made explicit (RetireRenamedGenerated in
+	// codegen.GenerateConfigLoader still retires the old name), but this
+	// check kept looking for the pre-rename spelling. It therefore fired on
+	// every healthy project, which is worse than not checking at all: a
+	// warning that is always present is one readers learn to skip, and it
+	// points at "your proto/config/ annotations" when nothing is wrong.
 	bin := bootstrapBinaryName(projectDir)
 	servePath := filepath.Join(projectDir, "cmd", bin, "cmd", "serve.go")
 	if fileImportsPackage(servePath, "pkg/config") {
-		if !fileExists(filepath.Join(projectDir, "pkg", "config", "config.go")) {
+		if !fileExists(filepath.Join(projectDir, "pkg", "config", "config_gen.go")) {
 			warnings = append(warnings,
-				"cmd/"+bin+"/cmd/serve.go imports pkg/config but pkg/config/config.go was not generated. "+
+				"cmd/"+bin+"/cmd/serve.go imports pkg/config but pkg/config/config_gen.go was not generated. "+
 					"Check your proto/config/ annotations.")
 		}
 	}

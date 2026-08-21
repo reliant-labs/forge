@@ -209,8 +209,8 @@ func (cs *FileChecksums) carryDisownIn(root, oldRel, newRel string) bool {
 
 	// Forge adjudicated both paths this run — keep the stale-artifact
 	// sweep away from the file it just moved.
-	WrittenThisRun[newRel] = true
-	WrittenThisRun[oldRel] = true
+	MarkWrittenThisRun(newRel)
+	MarkWrittenThisRun(oldRel)
 
 	if DisownCarryNoticeFn != nil {
 		DisownCarryNoticeFn(oldRel, newRel)

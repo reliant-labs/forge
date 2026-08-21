@@ -13,12 +13,12 @@ import (
 // because they call for opposite actions: re-run without --steps, versus
 // accept that forge no longer emits the file at all.
 func TestExplainDriftNoRenderNote(t *testing.T) {
-	prev := checksums.Tier1TargetSet
-	t.Cleanup(func() { checksums.Tier1TargetSet = prev })
+	prev := checksums.Tier1Targets()
+	t.Cleanup(func() { checksums.SetTier1TargetSet(prev) })
 
 	const gatedOff = "frontends/web/src/lib/apiurl_gen.ts"
 	const noLongerEmitted = "frontends/web/src/app/dashboard_gen.tsx"
-	checksums.Tier1TargetSet = map[string]bool{gatedOff: true}
+	checksums.SetTier1TargetSet(map[string]bool{gatedOff: true})
 
 	t.Run("emitter gated off this run", func(t *testing.T) {
 		got := explainDriftNoRenderNote(gatedOff)

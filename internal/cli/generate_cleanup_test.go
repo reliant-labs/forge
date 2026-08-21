@@ -488,7 +488,7 @@ func TestInternalContracts_MockGenRecordedWrittenThisRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mock_gen.go not emitted: %v", err)
 	}
-	if !checksums.WrittenThisRun[rel] {
+	if !checksums.WasWrittenThisRun(rel) {
 		t.Errorf("%s not in WrittenThisRun — stale sweep would flag a live mock", rel)
 	}
 	if checksums.Verify(onDisk) != checksums.Pristine {

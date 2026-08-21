@@ -234,7 +234,7 @@ func TestGenerateFrontendHooks_WrittenFileCarriesForgeHashMarker(t *testing.T) {
 		t.Errorf("expected a pristine forge:hash marker on %s, got status %v; content:\n%s",
 			relPath, checksums.Verify(got), got)
 	}
-	if !checksums.WrittenThisRun[relPath] {
+	if !checksums.WasWrittenThisRun(relPath) {
 		t.Errorf("expected %s recorded in WrittenThisRun so the stale-artifact sweep can see this run touched it", relPath)
 	}
 }

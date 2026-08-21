@@ -64,10 +64,11 @@ import (
 	"strings"
 	"text/template"
 
+	"regexp"
+
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
-	"regexp"
 )
 
 // composeField is one field on the Components struct (one row of the typed

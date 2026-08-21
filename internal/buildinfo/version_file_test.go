@@ -30,8 +30,9 @@ func TestVersionFromInfo_WorkspaceEmbeddedFallsBackToVersionFileFloor(t *testing
 	if got == "dev" {
 		t.Fatalf("versionFromInfo = %q, want the VERSION file floor, not the bare dev sentinel", got)
 	}
-	if got != "v0.1.1+dev" {
-		t.Errorf("versionFromInfo = %q, want the embedded VERSION file (v0.1.1) marked as a dev build (+dev)", got)
+	want := withDevFloorSuffix(versionFromFile(embeddedVersionFile))
+	if got != want {
+		t.Errorf("versionFromInfo = %q, want the embedded VERSION file marked as a dev build: %q", got, want)
 	}
 }
 
@@ -94,8 +95,9 @@ func TestBuildFrom_WorkspaceEmbeddedUsesVersionFloorAndStaysHonest(t *testing.T)
 	if b.Version == "(devel)" {
 		t.Fatalf("Build.Version = %q, want the VERSION file floor, not the raw (devel) marker", b.Version)
 	}
-	if b.Version != "v0.1.1+dev" {
-		t.Errorf("Build.Version = %q, want v0.1.1+dev", b.Version)
+	want := withDevFloorSuffix(versionFromFile(embeddedVersionFile))
+	if b.Version != want {
+		t.Errorf("Build.Version = %q, want %q", b.Version, want)
 	}
 	if s := b.String(); strings.Contains(s, "(devel)") {
 		t.Errorf("String() = %q must not surface the raw (devel) marker to a user", s)

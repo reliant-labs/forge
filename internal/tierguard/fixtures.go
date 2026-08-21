@@ -389,7 +389,7 @@ func render(parent string, fx fixture) (*renderResult, error) {
 		Tier1:  map[string]bool{},
 		Bodies: map[string][]byte{},
 	}
-	for rel := range checksums.Tier1TargetSet {
+	for rel := range checksums.Tier1Targets() {
 		key := normalizeKey(rel, fx.Name)
 		res.Tier1[key] = true
 		content, err := os.ReadFile(filepath.Join(root, rel))

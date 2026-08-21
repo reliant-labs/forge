@@ -62,8 +62,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -83,13 +85,22 @@ const (
 // each pipeline run to avoid leaking state across forge invocations in
 // tests or long-lived processes.
 func ResetSkipWrite() {
+	runSetsMu.Lock()
 	WrittenThisRun = map[string]bool{}
 	Tier1TargetSet = map[string]bool{}
+	runSetsMu.Unlock()
 	// A refused disown carry-over blocks a path for ONE run: the user is
 	// expected to resolve the conflict between runs, and a block that
 	// outlived its run would silently suppress a legitimate emit later.
 	ResetWriteBlocks()
 }
+
+// runSetsMu guards the two per-run path sets below. `forge generate`
+// fans emitters out across goroutines, so the writer chokepoints record
+// into these maps concurrently; without this lock the race detector
+// (and, occasionally, a real concurrent-map-write panic) fires. Reach
+// for the accessors rather than the maps directly.
+var runSetsMu sync.Mutex
 
 // Tier1TargetSet is the per-pipeline-run set of relative paths that the
 // current run TARGETED as Tier-1 (regenerated-every-run) output — every
@@ -114,7 +125,39 @@ var Tier1TargetSet = map[string]bool{}
 // Called at the head of every Tier-1 writer, before any disown-skip, so
 // the set reflects what forge WOULD regenerate independent of ownership
 // transfers.
-func markTier1Target(relPath string) { Tier1TargetSet[relPath] = true }
+func markTier1Target(relPath string) {
+	runSetsMu.Lock()
+	defer runSetsMu.Unlock()
+	Tier1TargetSet[relPath] = true
+}
+
+// IsTier1Target reports whether relPath was recorded as a Tier-1 emit
+// target this run.
+func IsTier1Target(relPath string) bool {
+	runSetsMu.Lock()
+	defer runSetsMu.Unlock()
+	return Tier1TargetSet[relPath]
+}
+
+// Tier1Targets returns a snapshot copy of the Tier-1 target set, safe to
+// range over while other goroutines are still emitting.
+func Tier1Targets() map[string]bool {
+	runSetsMu.Lock()
+	defer runSetsMu.Unlock()
+	return maps.Clone(Tier1TargetSet)
+}
+
+// SetTier1TargetSet replaces the Tier-1 target set wholesale. For tests
+// that need to stage a specific set.
+func SetTier1TargetSet(m map[string]bool) {
+	runSetsMu.Lock()
+	defer runSetsMu.Unlock()
+	Tier1TargetSet = m
+}
+
+// MarkTier1Target records relPath as a Tier-1 emit target. Exposed for
+// tests that bypass the writer chokepoint.
+func MarkTier1Target(relPath string) { markTier1Target(relPath) }
 
 // WrittenThisRun is a per-pipeline-run set of relative paths that the
 // current `forge generate` invocation has successfully written via the
@@ -127,7 +170,34 @@ var WrittenThisRun = map[string]bool{}
 // MarkWrittenThisRun records that relPath was written during the
 // current run. Exposed publicly so tests that bypass the
 // WriteGeneratedFile* chokepoint can still simulate the post-emit set.
-func MarkWrittenThisRun(relPath string) { WrittenThisRun[relPath] = true }
+func MarkWrittenThisRun(relPath string) {
+	runSetsMu.Lock()
+	defer runSetsMu.Unlock()
+	WrittenThisRun[relPath] = true
+}
+
+// WasWrittenThisRun reports whether relPath was written this run.
+func WasWrittenThisRun(relPath string) bool {
+	runSetsMu.Lock()
+	defer runSetsMu.Unlock()
+	return WrittenThisRun[relPath]
+}
+
+// WrittenPaths returns a snapshot copy of the written-this-run set, safe
+// to range over while other goroutines are still writing.
+func WrittenPaths() map[string]bool {
+	runSetsMu.Lock()
+	defer runSetsMu.Unlock()
+	return maps.Clone(WrittenThisRun)
+}
+
+// SetWrittenThisRun replaces the written-this-run set wholesale. For
+// tests that need to stage a specific set.
+func SetWrittenThisRun(m map[string]bool) {
+	runSetsMu.Lock()
+	defer runSetsMu.Unlock()
+	WrittenThisRun = m
+}
 
 // sideRenderOnly is the per-run set of paths whose Tier-1 writes are
 // redirected to `.forge/render/<relpath>` instead of the real file.
@@ -653,7 +723,7 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 	if err := atomicWriteFile(fullPath, stamped, 0o644); err != nil {
 		return false, err
 	}
-	WrittenThisRun[relPath] = true
+	MarkWrittenThisRun(relPath)
 	if reAdopting && cs != nil {
 		delete(cs.Disowned, relPath)
 	}
@@ -715,7 +785,7 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 		}
 		cs.Unstampable[relPath] = newBody
 	}
-	WrittenThisRun[relPath] = true
+	MarkWrittenThisRun(relPath)
 	return true, nil
 }
 
@@ -798,7 +868,7 @@ func WriteScaffoldIfMissing(root, relPath string, content []byte) (bool, error) 
 		return false, err
 	}
 	RecordScaffold(root, relPath)
-	WrittenThisRun[relPath] = true
+	MarkWrittenThisRun(relPath)
 	return true, nil
 }
 
@@ -957,7 +1027,7 @@ func headContainsMarker(path string) bool {
 // flag every formatted file as "hand-edited" on the next run. Also
 // refreshes scoped-fallback entries for unstampable paths.
 func RestampWritten(root string, cs *FileChecksums) {
-	for relPath := range WrittenThisRun {
+	for relPath := range WrittenPaths() {
 		full := filepath.Join(root, relPath)
 		content, err := os.ReadFile(full)
 		if err != nil {
@@ -1012,7 +1082,7 @@ func (cs *FileChecksums) DisownPaths(root string, relPaths []string, reason stri
 		cs.Disowned[p] = DisownedEntry{Reason: reason, DisownedAt: nowRFC3339()}
 		// Forge actively adjudicated this path this run — keep the
 		// stale sweep away from it.
-		WrittenThisRun[p] = true
+		MarkWrittenThisRun(p)
 	}
 	return nil
 }
@@ -1065,7 +1135,7 @@ func RetireObsoleteDisowns(cs *FileChecksums, targetable func(relPath string) bo
 	}
 	var retired []string
 	for path := range cs.Disowned {
-		if Tier1TargetSet[path] {
+		if IsTier1Target(path) {
 			continue // still a live Tier-1 target — disown stays valid.
 		}
 		if targetable != nil && !targetable(path) {

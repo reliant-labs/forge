@@ -489,7 +489,7 @@ func TestTier1InventoryIsProducerDerived(t *testing.T) {
 
 	// The pipeline must have populated the set through the checksums
 	// chokepoint; nothing else writes it.
-	if len(checksums.Tier1TargetSet) == 0 {
+	if len(checksums.Tier1Targets()) == 0 {
 		t.Error("checksums.Tier1TargetSet is empty after a render — the inventory channel this guard " +
 			"depends on has changed; re-derive the method before trusting any verdict")
 	}

@@ -95,8 +95,17 @@ jobs:
           path: ~/.kcl
           key: kcl-cli-${{ runner.os }}
 
+      # KCL_VERSION is pinned deliberately. Left unset, the installer
+      # resolves "latest" through an UNAUTHENTICATED api.github.com call,
+      # which is rate-limited to 60/hour per runner IP and shared across
+      # every job on that host — when it is exhausted the script gets an
+      # empty tag and dies with "The KCL version is not found", failing CI
+      # for a reason that has nothing to do with the commit. Pinning also
+      # stops a KCL release from changing this build without a commit.
       - name: Install KCL
         if: steps.kcl-cache.outputs.cache-hit != 'true'
+        env:
+          KCL_VERSION: v0.11.2
         run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
 
       - name: Add KCL to PATH

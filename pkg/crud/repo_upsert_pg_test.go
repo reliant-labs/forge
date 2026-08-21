@@ -101,10 +101,20 @@ func TestUpsert_UpdatePath_PG(t *testing.T) {
 	if got.OwnerID != "owner-a" {
 		t.Errorf("owner_id = %q, want owner-a — the update path must not clobber a ,skipupdate column", got.OwnerID)
 	}
-	if !got.CreatedAt.Equal(firstCreatedAt) {
+	// Compare at microsecond precision: firstCreatedAt is the value the
+	// stamper put in memory (full nanosecond resolution from time.Now()),
+	// while got.CreatedAt has round-tripped through a Postgres timestamptz,
+	// which stores microseconds and so truncates the last three digits. An
+	// exact Equal here fails on any clock that actually resolves
+	// nanoseconds — Linux CI does; macOS returns microsecond-granular times,
+	// which is why this only ever went red on CI.
+	if !got.CreatedAt.Equal(firstCreatedAt.Truncate(time.Microsecond)) {
 		t.Errorf("created_at moved from %v to %v — an upsert on the update path must not rewrite the row's birth time", firstCreatedAt, got.CreatedAt)
 	}
-	if !got.UpdatedAt.After(firstUpdatedAt) {
+	// Same truncation applies, and it moves the stored value BACKWARDS by
+	// up to a microsecond — compare against the truncated original so the
+	// assertion measures the re-stamp, not the storage precision.
+	if !got.UpdatedAt.After(firstUpdatedAt.Truncate(time.Microsecond)) {
 		t.Errorf("updated_at did not advance: %v !> %v", got.UpdatedAt, firstUpdatedAt)
 	}
 }

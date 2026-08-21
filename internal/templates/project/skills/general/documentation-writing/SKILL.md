@@ -24,7 +24,7 @@ The critical mistake is using reference formatting (bullets, sparse lists) for t
 ```markdown
 ## Features
 - Multi-agent architecture
-- Session management  
+- Session management
 - File tracking
 - LSP integration
 ```

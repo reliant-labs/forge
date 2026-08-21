@@ -252,14 +252,14 @@ Auth is **owned scaffold, born with every frontend** — there is no
   `useAuth()` stays the source of truth:
   ```typescript
   import { create } from "zustand";
-  
+
   interface AuthUiState {
     showLoginModal: boolean;
     setShowLoginModal: (show: boolean) => void;
     lastAuthError: string | null;
     setLastAuthError: (error: string | null) => void;
   }
-  
+
   export const useAuthUiStore = create<AuthUiState>((set) => ({
     showLoginModal: false,
     setShowLoginModal: (show) => set({ showLoginModal: show }),

@@ -47,4 +47,3 @@ rpc Register(RegisterRequest) returns (RegisterResponse) {
 ```
 
 `auth_required: false` here does NOT mean unauthenticated — it means the allow-list lets the call through so the handler can do the credential work itself, because `enrichClaims` would reject the caller for having no local row and the request would never arrive. The handler validates the presented token (the same validator `SetupAuth` built), takes the **`sub` the IdP asserted**, and inserts on that. Trust the `sub` from the verified token; never a `user_id` from the request body, which is a caller-supplied string and an account-takeover primitive. Make the insert idempotent on `sub` — a retried or double-clicked registration must not create a second account.
-

@@ -42,6 +42,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      # internal/tierguard renders real fixture projects, which drives the
+      # generate pipeline's "buf generate (Go stubs)" step. Without buf on
+      # PATH those guards fail with `exec: "buf": executable file not found`
+      # — they deliberately fail rather than report an empty inventory as a
+      # pass, so this is a hard dependency of the test job, not a nicety.
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
       - name: Go tests
         run: go test -race -count=1 ./...
 

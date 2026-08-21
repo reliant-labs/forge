@@ -56,9 +56,10 @@ describe("the published surface", () => {
       ),
     ];
     for (const entry of entryPoints) {
-      expect(entry.startsWith("./src/"), `${entry} still points into src/`).toBe(
-        false,
-      );
+      expect(
+        entry.startsWith("./src/"),
+        `${entry} still points into src/`,
+      ).toBe(false);
     }
 
     // And src/ is not in the tarball at all, so a tool that GLOBS the package
@@ -151,8 +152,14 @@ describe("the published surface", () => {
     // from the barrel. A regression that moved it behind a subpath would
     // break every generated frontend.
     const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
-    for (const symbol of ["createBasePath", "joinBasePath", "normalizeBasePath"]) {
-      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(true);
+    for (const symbol of [
+      "createBasePath",
+      "joinBasePath",
+      "normalizeBasePath",
+    ]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
     }
   });
 

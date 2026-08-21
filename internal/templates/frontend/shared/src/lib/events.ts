@@ -25,7 +25,7 @@ export interface ToastEvent {
 export interface EventMap {
   "toast:show": ToastEvent;
   "toast:dismiss": { id?: string };
-  "navigate": { path: string };
+  navigate: { path: string };
   "auth:expired": undefined;
   "auth:login": undefined;
   "auth:logout": undefined;
@@ -83,7 +83,9 @@ export class EventBus {
     event: K,
     handler: EventHandler<EventMap[K]>,
   ): void {
-    this.listeners.get(event as string)?.delete(handler as EventHandler<unknown>);
+    this.listeners
+      .get(event as string)
+      ?.delete(handler as EventHandler<unknown>);
   }
 }
 

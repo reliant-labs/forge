@@ -40,9 +40,11 @@ async function callThrough(
 
   // The interceptor only reads `header`; the rest of the UnaryRequest surface
   // is irrelevant to it, so the cast keeps this test free of protobuf setup.
-  await (interceptor as unknown as (n: typeof next) => (r: unknown) => Promise<unknown>)(
-    next,
-  )({ header });
+  await (
+    interceptor as unknown as (
+      n: typeof next,
+    ) => (r: unknown) => Promise<unknown>
+  )(next)({ header });
 
   return { completed: reached, authorization: header.get("Authorization") };
 }

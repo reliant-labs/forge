@@ -24,9 +24,7 @@ export const SlideTwoColumn: React.FC<SlideTwoColumnProps> = ({
         <h1 className="text-4xl font-bold tracking-tight text-white">
           {title}
         </h1>
-        {subtitle && (
-          <p className="mt-2 text-lg text-gray-400">{subtitle}</p>
-        )}
+        {subtitle && <p className="mt-2 text-lg text-gray-400">{subtitle}</p>}
       </div>
 
       {/* Two columns */}

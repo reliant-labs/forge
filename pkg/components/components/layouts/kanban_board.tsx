@@ -16,9 +16,7 @@ export default function KanbanBoard({ columns }: KanbanBoardProps) {
           className="flex w-72 shrink-0 flex-col rounded-xl bg-surface-muted/60"
         >
           <div className="flex items-center justify-between px-4 py-3">
-            <h3 className="text-sm font-semibold text-ink">
-              {column.title}
-            </h3>
+            <h3 className="text-sm font-semibold text-ink">{column.title}</h3>
             <span className="rounded-full bg-surface-muted px-2 py-0.5 text-xs font-medium text-ink-muted">
               {column.cards.length}
             </span>
@@ -27,9 +25,7 @@ export default function KanbanBoard({ columns }: KanbanBoardProps) {
           <div className="flex-1 space-y-2 overflow-y-auto px-3 pb-3">
             {column.cards.map((card, j) => (
               <div key={j} className="rounded-lg bg-surface p-3 shadow-sm">
-                <p className="text-sm font-medium text-ink">
-                  {card.title}
-                </p>
+                <p className="text-sm font-medium text-ink">{card.title}</p>
                 {card.description && (
                   <p className="mt-1 text-xs text-ink-muted">
                     {card.description}

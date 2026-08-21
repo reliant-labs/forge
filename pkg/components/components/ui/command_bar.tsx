@@ -36,7 +36,7 @@ export default function CommandBar({
       (item) =>
         item.label.toLowerCase().includes(q) ||
         item.description?.toLowerCase().includes(q) ||
-        item.category?.toLowerCase().includes(q)
+        item.category?.toLowerCase().includes(q),
     );
   }, [items, query]);
 
@@ -198,15 +198,21 @@ export default function CommandBar({
         {/* Footer */}
         <div className="flex items-center gap-4 border-t border-border px-4 py-2 text-xs text-ink-subtle">
           <span className="inline-flex items-center gap-1">
-            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">↑↓</kbd>
+            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">
+              ↑↓
+            </kbd>
             navigate
           </span>
           <span className="inline-flex items-center gap-1">
-            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">↵</kbd>
+            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">
+              ↵
+            </kbd>
             select
           </span>
           <span className="inline-flex items-center gap-1">
-            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">esc</kbd>
+            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">
+              esc
+            </kbd>
             close
           </span>
         </div>

@@ -1,5 +1,5 @@
 # forge:hash=310d0181d3dc3b293633c928921249f9706799b1abb09d07626655dae230c4d3
-version: '3'
+version: "3"
 
 # Task wrappers for the forge CLI. Kept intentionally minimal — only
 # the verbs that have an obvious meaning for a single-binary tool (build,
@@ -10,7 +10,7 @@ vars:
   # overridden from the command line (`task test GOTESTRACE=`), which is how
   # the generated CI workflow passes through forge.yaml's `ci.test.race`.
   # Declared on the task itself it would silently win over the override.
-  GOTESTRACE: '-race'
+  GOTESTRACE: "-race"
 
 tasks:
   default:
@@ -90,7 +90,7 @@ tasks:
       # does not match it, workspace or no workspace. Run it explicitly or
       # the library that ships into every generated binary goes untested.
       # Skipped when the run is scoped to explicit root-module packages.
-      - cmd: '{{if .CLI_ARGS}}true{{else}}cd pkg && go test {{.GOTESTRACE}} -count=1 -timeout 120s ./...{{end}}'
+      - cmd: "{{if .CLI_ARGS}}true{{else}}cd pkg && go test {{.GOTESTRACE}} -count=1 -timeout 120s ./...{{end}}"
 
   test:short:
     # THIS REPO ONLY: the inner-loop tier from reliant.md. Not in the

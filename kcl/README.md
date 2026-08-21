@@ -70,8 +70,8 @@ forge.CronJob {
 Four typed entity schemas — each captures ONE orchestration shape so the
 forge CLI can dispatch on intent rather than infer it:
 
-| Schema | Purpose | JSON bucket |
-|--------|---------|-------------|
+| Schema     | Purpose                                               | JSON bucket   |
+| ---------- | ----------------------------------------------------- | ------------- |
 | `Service`  | Long-running server (RPC / HTTP). Host or in-cluster. | `services[]`  |
 | `Operator` | Cluster-scoped controller that reconciles CRDs.       | `operators[]` |
 | `Frontend` | Web or mobile frontend (Next.js / Vite / RN).         | `frontends[]` |
@@ -97,14 +97,14 @@ See `docs/cross-repo-sources.md` for the full model.
 
 `Service` (in `core.k`) is **the one you author** — target-agnostic, with
 zero k8s vocabulary. Put these in `Bundle.workloads`. It has **no `deploy`
-field**: target selection is *structural*, by which override block is
+field**: target selection is _structural_, by which override block is
 present.
 
-| You write | Renders to |
-|---|---|
+| You write       | Renders to                                           |
+| --------------- | ---------------------------------------------------- |
 | a `host` block  | the host adapter (`go-run` / `air` / binary / delve) |
-| no `host` block | k8s (Deployment + Service), the default |
-| a `k8s` block   | k8s, plus that escape hatch's overrides |
+| no `host` block | k8s (Deployment + Service), the default              |
+| a `k8s` block   | k8s, plus that escape hatch's overrides              |
 
 A host-targeted `Service` that also sets k8s-only fields fails at KCL load
 rather than silently dropping them.
@@ -131,10 +131,10 @@ for the common providers.
 
 `HostDeploy` splits per-env config from secrets:
 
-| Field          | Source              | Reproducible? |
-|----------------|---------------------|---------------|
-| `env_vars`     | KCL (this file)     | Yes — version-controlled |
-| `secrets_file` | gitignored dotenv   | No — per developer |
+| Field          | Source            | Reproducible?            |
+| -------------- | ----------------- | ------------------------ |
+| `env_vars`     | KCL (this file)   | Yes — version-controlled |
+| `secrets_file` | gitignored dotenv | No — per developer       |
 
 Forge's `forge env up` host phase loads `secrets_file` first
 (if set), then layers `env_vars` on top so KCL-declared config wins on
@@ -143,8 +143,9 @@ conflict. Host services see the same per-env config source that
 keeps host and cluster from drifting.
 
 `CLI` / `Job` collapse:
+
 - A CLI tool is a workload whose projection carries `deploy =
-  forge.BuildOnly{...}` — build the artifact, deploy nothing.
+forge.BuildOnly{...}` — build the artifact, deploy nothing.
 - A one-shot Job is a `CronJob` with `schedule = ""` (renders as a Job
   instead of a CronJob).
 
@@ -284,13 +285,13 @@ your `main.k`. Read them through the **typed `forge` accessors** (each wraps
 `option(...)` with a default + doc) rather than raw `option()` so the whole
 set is discoverable from the `forge` surface:
 
-| `-D` key        | Accessor                  | Always passed? | What it is |
-| --------------- | ------------------------- | -------------- | ---------- |
-| `env`           | `forge.env(default)`      | yes            | environment name (`dev`/`staging`/`prod`/…) |
-| `image_tag`     | `forge.image_tag(env)`    | yes            | resolved image tag (override > per-env default > `latest`) |
-| `namespace`     | `forge.namespace(default)`| yes            | k8s namespace to deploy into |
-| `image_digests` | `forge.image_digests()`   | when deploying | JSON name→digest map (pins each image to its digest) |
-| `registry`      | `forge.registry(default)` | no (override)  | image registry; the per-env literal is yours, `-D registry=` overrides it |
+| `-D` key        | Accessor                   | Always passed? | What it is                                                                |
+| --------------- | -------------------------- | -------------- | ------------------------------------------------------------------------- |
+| `env`           | `forge.env(default)`       | yes            | environment name (`dev`/`staging`/`prod`/…)                               |
+| `image_tag`     | `forge.image_tag(env)`     | yes            | resolved image tag (override > per-env default > `latest`)                |
+| `namespace`     | `forge.namespace(default)` | yes            | k8s namespace to deploy into                                              |
+| `image_digests` | `forge.image_digests()`    | when deploying | JSON name→digest map (pins each image to its digest)                      |
+| `registry`      | `forge.registry(default)`  | no (override)  | image registry; the per-env literal is yours, `-D registry=` overrides it |
 
 Per-env **config** is NOT passed via `-D`: it lives in the typed `AppConfig`
 instance in `deploy/kcl/<env>/config.k` and is projected into each workload's

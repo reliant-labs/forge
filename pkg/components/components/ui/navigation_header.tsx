@@ -26,9 +26,7 @@ export default function NavigationHeader({
               key={link.label}
               href={link.href}
               className={`text-sm font-medium transition ${
-                link.active
-                  ? "text-accent"
-                  : "text-ink-muted hover:text-ink"
+                link.active ? "text-accent" : "text-ink-muted hover:text-ink"
               }`}
             >
               {link.label}

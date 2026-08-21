@@ -1,4 +1,4 @@
-import React from 'react';
+import React from "react";
 
 interface OrgNode {
   name: string;
@@ -14,14 +14,14 @@ interface OrgChartProps {
 }
 
 const AVATAR_COLORS = [
-  'bg-blue-500',
-  'bg-purple-500',
-  'bg-emerald-500',
-  'bg-amber-500',
-  'bg-rose-500',
-  'bg-cyan-500',
-  'bg-indigo-500',
-  'bg-teal-500',
+  "bg-blue-500",
+  "bg-purple-500",
+  "bg-emerald-500",
+  "bg-amber-500",
+  "bg-rose-500",
+  "bg-cyan-500",
+  "bg-indigo-500",
+  "bg-teal-500",
 ];
 
 function getInitials(node: OrgNode): string {
@@ -31,7 +31,7 @@ function getInitials(node: OrgNode): string {
     .map((w) => w[0])
     .filter(Boolean)
     .slice(0, 2)
-    .join('')
+    .join("")
     .toUpperCase();
 }
 
@@ -57,7 +57,9 @@ function NodeCard({
       <div
         className={`w-10 h-10 rounded-full ${colorClass} flex items-center justify-center shadow-sm`}
       >
-        <span className="text-xs font-bold text-white leading-none">{initials}</span>
+        <span className="text-xs font-bold text-white leading-none">
+          {initials}
+        </span>
       </div>
       {/* Name */}
       <span className="text-sm font-bold text-gray-800 text-center leading-tight whitespace-nowrap">
@@ -96,12 +98,15 @@ function SubTree({
 
           {/* Horizontal connector bar spanning all children */}
           {node.children!.length > 1 && (
-            <div className="relative flex justify-between" style={{ width: '100%' }}>
+            <div
+              className="relative flex justify-between"
+              style={{ width: "100%" }}
+            >
               <div
                 className="absolute top-0 h-px bg-gray-300"
                 style={{
-                  left: `calc(${(100 / (node.children!.length * 2))}%)`,
-                  right: `calc(${(100 / (node.children!.length * 2))}%)`,
+                  left: `calc(${100 / (node.children!.length * 2)}%)`,
+                  right: `calc(${100 / (node.children!.length * 2)}%)`,
                 }}
               />
             </div>

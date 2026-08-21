@@ -93,7 +93,10 @@ class FakeTokenEndpoint {
 
     const presented = body.get("refresh_token") ?? "";
     if (this.revoked) {
-      return json(400, { error: "invalid_grant", error_description: "grant revoked" });
+      return json(400, {
+        error: "invalid_grant",
+        error_description: "grant revoked",
+      });
     }
     if (this.consumed.has(presented)) {
       // Reuse detection: kill the whole grant — the strictest behaviour a
@@ -230,10 +233,13 @@ describe("the refresh grant", () => {
 
   it("rejects a 200 that carries no access token", async () => {
     const fetchImpl: typeof fetch = async () =>
-      new Response(JSON.stringify({ refresh_token: "rt-new", expires_in: 60 }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      new Response(
+        JSON.stringify({ refresh_token: "rt-new", expires_in: 60 }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
     await expect(
       refreshToken({
         endpoint: "https://idp.test/token",
@@ -251,7 +257,11 @@ describe("the refresh grant", () => {
       seenUrl = String(url);
       seenBody = String(init?.body ?? "");
       return new Response(
-        JSON.stringify({ access_token: "at", token_type: "Bearer", expires_in: 60 }),
+        JSON.stringify({
+          access_token: "at",
+          token_type: "Bearer",
+          expires_in: 60,
+        }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     };
@@ -320,7 +330,11 @@ describe("storage: expiry, rotation and persistence", () => {
     });
     // A refresh response often omits the id token. Dropping the user's
     // identity because this response did not restate it would blank the UI.
-    updateSessionTokens({ accessToken: "at-2", refreshToken: "rt-2", expiresIn: 3600 });
+    updateSessionTokens({
+      accessToken: "at-2",
+      refreshToken: "rt-2",
+      expiresIn: 3600,
+    });
     expect(getRefreshToken()).toBe("rt-2");
   });
 

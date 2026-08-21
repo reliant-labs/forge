@@ -37,7 +37,11 @@ import { MethodOptions_IdempotencyLevel } from "@bufbuild/protobuf/wkt";
 import { ConnectClientError, normalizeError } from "./errors.js";
 import { injectTraceContext } from "./trace.js";
 
-import type { Interceptor, UnaryRequest, StreamRequest } from "@connectrpc/connect";
+import type {
+  Interceptor,
+  UnaryRequest,
+  StreamRequest,
+} from "@connectrpc/connect";
 
 /**
  * RuntimeInterceptorConfig is the seam the app wires its runtime dependencies

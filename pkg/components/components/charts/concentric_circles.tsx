@@ -173,7 +173,10 @@ export default function ConcentricCircles({
             <span
               className="inline-block w-3 h-3 rounded-full shrink-0"
               style={{
-                backgroundColor: hexToRgba(accentColor, opacityForRing(i) + 0.3),
+                backgroundColor: hexToRgba(
+                  accentColor,
+                  opacityForRing(i) + 0.3,
+                ),
               }}
             />
             <span className="text-on-accent font-semibold">{ring.label}</span>

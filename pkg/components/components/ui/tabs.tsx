@@ -39,8 +39,17 @@ interface TabsProps {
   children?: (activeTab: string) => React.ReactNode;
 }
 
-export default function Tabs({ tabs, activeTab, defaultTab, onChange, variant = "underline", children }: TabsProps) {
-  const [uncontrolled, setUncontrolled] = useState(defaultTab ?? tabs[0]?.id ?? "");
+export default function Tabs({
+  tabs,
+  activeTab,
+  defaultTab,
+  onChange,
+  variant = "underline",
+  children,
+}: TabsProps) {
+  const [uncontrolled, setUncontrolled] = useState(
+    defaultTab ?? tabs[0]?.id ?? "",
+  );
   const controlled = activeTab !== undefined;
   const active = activeTab ?? uncontrolled;
 
@@ -108,19 +117,29 @@ export default function Tabs({ tabs, activeTab, defaultTab, onChange, variant = 
                 {tab.icon}
                 {tab.label}
                 {tab.badge !== undefined && (
-                  <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
-                    isActive ? "bg-accent-surface text-accent-ink" : "bg-border text-ink-muted"
-                  }`}>
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                      isActive
+                        ? "bg-accent-surface text-accent-ink"
+                        : "bg-border text-ink-muted"
+                    }`}
+                  >
                     {tab.badge}
                   </span>
                 )}
               </span>
-              {variant === "underline" && isActive && <div className={s.indicator} />}
+              {variant === "underline" && isActive && (
+                <div className={s.indicator} />
+              )}
             </button>
           );
         })}
       </div>
-      {children && <div className="mt-4" role="tabpanel">{children(active)}</div>}
+      {children && (
+        <div className="mt-4" role="tabpanel">
+          {children(active)}
+        </div>
+      )}
     </div>
   );
 }

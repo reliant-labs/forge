@@ -1,6 +1,12 @@
 import React from "react";
 
-type StatusDotVariant = "active" | "paused" | "pending" | "error" | "warning" | "neutral";
+type StatusDotVariant =
+  | "active"
+  | "paused"
+  | "pending"
+  | "error"
+  | "warning"
+  | "neutral";
 type StatusDotSize = "sm" | "md" | "lg";
 
 interface StatusDotProps {
@@ -56,10 +62,14 @@ export default function StatusDot({
     <span className={`inline-flex items-center gap-1.5 ${className ?? ""}`}>
       <span
         aria-hidden="true"
-        className={`inline-block rounded-full ${dotTint[variant]} ${dotSize[size]} ${pulse ? "animate-pulse" : ""}`}
+        className={`inline-block rounded-full ${dotTint[variant]} ${
+          dotSize[size]
+        } ${pulse ? "animate-pulse" : ""}`}
       />
       {label !== undefined && (
-        <span className={`text-xs font-medium ${labelTint[variant]}`}>{label}</span>
+        <span className={`text-xs font-medium ${labelTint[variant]}`}>
+          {label}
+        </span>
       )}
     </span>
   );

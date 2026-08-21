@@ -41,9 +41,7 @@ interface FirstInputEntry extends PerformanceEntry {
 // `process.env.NODE_ENV` at build time), not a browser one. Declaring it
 // locally keeps this package free of a @types/node dependency while leaving
 // the expression textually intact so that replacement still happens.
-declare const process:
-  | { env?: Record<string, string | undefined> }
-  | undefined;
+declare const process: { env?: Record<string, string | undefined> } | undefined;
 
 let started = false;
 

@@ -33,12 +33,10 @@ const badgeColors = [
 ];
 
 const buttonStyles: Record<string, string> = {
-  primary:
-    "bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500",
+  primary: "bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500",
   secondary:
     "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:ring-gray-500",
-  danger:
-    "bg-red-600 text-white hover:bg-red-700 focus:ring-red-500",
+  danger: "bg-red-600 text-white hover:bg-red-700 focus:ring-red-500",
 };
 
 function FieldValue({ field }: { field: Field }) {
@@ -47,7 +45,9 @@ function FieldValue({ field }: { field: Field }) {
       return (
         <span
           className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-            badgeColors[Math.abs(String(field.value).length) % badgeColors.length]
+            badgeColors[
+              Math.abs(String(field.value).length) % badgeColors.length
+            ]
           }`}
         >
           {field.value}
@@ -65,11 +65,7 @@ function FieldValue({ field }: { field: Field }) {
         </a>
       );
     case "date":
-      return (
-        <time className="text-gray-900">
-          {field.value}
-        </time>
-      );
+      return <time className="text-gray-900">{field.value}</time>;
     default:
       return <span className="text-gray-900">{field.value}</span>;
   }

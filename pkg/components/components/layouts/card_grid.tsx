@@ -33,9 +33,7 @@ export default function CardGrid({ cards, columns = 3 }: CardGridProps) {
           )}
 
           <div className="p-5">
-            <h3 className="text-lg font-semibold text-ink">
-              {card.title}
-            </h3>
+            <h3 className="text-lg font-semibold text-ink">{card.title}</h3>
             <p className="mt-1 text-sm text-ink-muted">{card.description}</p>
 
             {card.tags && card.tags.length > 0 && (

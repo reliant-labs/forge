@@ -13,6 +13,7 @@ This project has not launched yet. There are no users and no backwards compatibi
 ## Architecture
 
 This is a Forge-generated Go + Next.js application with:
+
 - **Backend**: Go with Connect RPC, JWT auth, PostgreSQL + ORM
 - **Frontend**: Next.js with TypeScript, Tailwind CSS, Connect RPC client
 - **Code Generation**: Proto files drive handler, ORM, migration, and frontend generation
@@ -37,6 +38,7 @@ This is a Forge-generated Go + Next.js application with:
 - **Derive, don't effect**: Compute values during render, never useEffect to set derived state
 
 ## Do NOT Edit
+
 - `gen/` directory
 - `*_gen.go` files
 - `cmd/server.go`, `cmd/otel.go`

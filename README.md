@@ -183,7 +183,7 @@ survives contact with six months of agent-authored changes.
 
 ### Predictability: one known place for everything
 
-An LLM's failure mode isn't writing bad code — it's *guessing*. Guessing which
+An LLM's failure mode isn't writing bad code — it's _guessing_. Guessing which
 port the API bound, where the logs went, how to reach the database, whether the
 thing it just changed is even running. Every guess is a plausible-looking
 answer that might be wrong, and wrong answers compound silently.
@@ -192,16 +192,16 @@ Forge's structural advantage is that these questions all have a command, and
 the command reads the same rendered KCL the running stack was built from — so
 the answer can't drift from reality:
 
-| The question | The command |
-|---|---|
-| What is running, on what port, and is it healthy? | `forge env status <env>` (`--json`) |
-| Where are the logs for this service? | `forge env status` — a log path per service |
-| What are the ingress URLs? | `forge cluster urls` (`--json`) |
-| What does the schema actually look like? | `forge db introspect --dsn "$DATABASE_URL"` (`--format json`) |
-| How do I call this RPC? | `forge api curl <service.method>` |
-| What is this project, structurally? | `forge project audit --json`, `map --json` |
-| Is the project well-formed? | `forge doctor` |
-| What can Forge even do? | `forge project capabilities`, `annotations`, `libraries` |
+| The question                                      | The command                                                   |
+| ------------------------------------------------- | ------------------------------------------------------------- |
+| What is running, on what port, and is it healthy? | `forge env status <env>` (`--json`)                           |
+| Where are the logs for this service?              | `forge env status` — a log path per service                   |
+| What are the ingress URLs?                        | `forge cluster urls` (`--json`)                               |
+| What does the schema actually look like?          | `forge db introspect --dsn "$DATABASE_URL"` (`--format json`) |
+| How do I call this RPC?                           | `forge api curl <service.method>`                             |
+| What is this project, structurally?               | `forge project audit --json`, `map --json`                    |
+| Is the project well-formed?                       | `forge doctor`                                                |
+| What can Forge even do?                           | `forge project capabilities`, `annotations`, `libraries`      |
 
 Two properties make this usable by a model rather than just available to one.
 **Every answer is machine-readable**, so an agent parses instead of scraping
@@ -210,7 +210,7 @@ descriptors**, so it cannot drift the way a document can — the agent asks the
 binary rather than trusting a stale README.
 
 `forge env status` is the sharpest example. It reports the port a service bound
-*right now*, which process holds it, whether that binary is **stale versus your
+_right now_, which process holds it, whether that binary is **stale versus your
 repo HEAD**, and a loud DUPLICATE flag when two vintages of the same service
 are serving at once — the classic "hot reload spawned a new worker and didn't
 reap the old one" failure that otherwise reads as "my fix didn't work."
@@ -246,7 +246,7 @@ pass and never a skip. Three outcomes, not two. This matters more than it
 sounds: a false green is the single most expensive thing you can hand an agent,
 because it will confidently build on top of it.
 
-For the same reason, we'll tell you what these checks *don't* cover. They
+For the same reason, we'll tell you what these checks _don't_ cover. They
 verify the telemetry pipeline is healthy — containers up, signals ingesting,
 probes green. They do **not** certify your app logic is correct. A stack can be
 fully green while a cross-cluster dial is failing. Proving an app-flow
@@ -255,13 +255,13 @@ invariant is what tests are for.
 ### Test seams that already exist
 
 - **A mock for every interface**, generated from `contract.go`. An agent never
-  hand-rolls a fake, and a contract change breaks the build *at the mock*
+  hand-rolls a fake, and a contract change breaks the build _at the mock_
   rather than somewhere distant three files away.
 - **A real Postgres, not a stub.** `pkg/pgtest` and `pkg/testkit` give
   hermetic tests an actual ephemeral database with your migrations applied.
 - **Table-driven RPC tests** via `pkg/tdd`, so handler tests have one shape.
 - **Scaffolded tests self-destruct.** A generated test row asserts
-  `Unimplemented`, so it *fails the moment the handler is implemented* —
+  `Unimplemented`, so it _fails the moment the handler is implemented_ —
   demanding a real assertion. There is no permissive "any outcome" mode.
 - **Frontend mock scenarios.** `forge scaffold scenario` writes a typed
   Connect-RPC handler overlay you reach with `?scenario=<name>` in the URL —
@@ -381,7 +381,7 @@ The details:
   command: Fly.io, Cloudflare Workers, Cloud Run, ECS, Vercel, Railway,
   systemd-on-a-VM. Forge substitutes `${IMAGE}`, `${TAG}`, `${ENV}` and friends
   and execs it, with optional rollback and health commands.
-- **KCL is still KCL.** Forge models *your* workloads — Application,
+- **KCL is still KCL.** Forge models _your_ workloads — Application,
   Environment, ConfigMap, Ingress, RBAC. It deliberately does not model
   third-party in-cluster infra, so when you need NATS, Temporal, or a Postgres
   operator, you emit raw manifests (or run Helm) and they compose into the same

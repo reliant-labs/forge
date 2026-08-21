@@ -57,7 +57,9 @@ export default function Modal({
   useEffect(() => {
     if (!open) return;
     const previouslyFocused =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
 
     const panel = panelRef.current;
     const initial = panel?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
@@ -127,15 +129,29 @@ export default function Modal({
                     {title}
                   </h2>
                 )}
-                {description && <p id={descriptionId} className="mt-1 text-sm text-ink-muted">{description}</p>}
+                {description && (
+                  <p id={descriptionId} className="mt-1 text-sm text-ink-muted">
+                    {description}
+                  </p>
+                )}
               </div>
               <button
                 onClick={onClose}
                 aria-label="Close dialog"
                 className="rounded-md p-1 text-ink-subtle hover:text-ink-muted focus:outline-none focus:ring-2 focus:ring-accent"
               >
-                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                <svg
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 18L18 6M6 6l12 12"
+                  />
                 </svg>
               </button>
             </div>

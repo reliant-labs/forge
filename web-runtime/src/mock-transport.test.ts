@@ -8,7 +8,11 @@
 //
 // The dispatch ladder under test (in order): scenario handler → hybrid
 // passthrough → entity fixtures → Unimplemented.
-import { create, createFileRegistry, type DescMessage } from "@bufbuild/protobuf";
+import {
+  create,
+  createFileRegistry,
+  type DescMessage,
+} from "@bufbuild/protobuf";
 import {
   FileDescriptorProtoSchema,
   type DescriptorProto,

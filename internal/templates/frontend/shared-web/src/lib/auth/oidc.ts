@@ -171,7 +171,10 @@ export class Verifier {
  * secrets in.
  */
 function verifierProblem(value: string): string | null {
-  if (value.length < MIN_VERIFIER_LENGTH || value.length > MAX_VERIFIER_LENGTH) {
+  if (
+    value.length < MIN_VERIFIER_LENGTH ||
+    value.length > MAX_VERIFIER_LENGTH
+  ) {
     return `oidc: code verifier length ${value.length} is outside [${MIN_VERIFIER_LENGTH}, ${MAX_VERIFIER_LENGTH}] (RFC 7636 §4.1)`;
   }
   if (!UNRESERVED.test(value)) {
@@ -344,7 +347,9 @@ export function buildAuthorizeUrl(req: AuthorizeRequest): string {
     .map(([name]) => name);
   if (missing.length > 0) {
     throw new Error(
-      `oidc: authorization request is missing required field(s): ${missing.join(", ")}`,
+      `oidc: authorization request is missing required field(s): ${missing.join(
+        ", ",
+      )}`,
     );
   }
 
@@ -508,10 +513,7 @@ export async function exchangeCode(
  * for most error codes, but providers exist that answer 200 with an error
  * body, and others that answer 401 with one.
  */
-export function parseTokenResponse(
-  status: number,
-  raw: string,
-): TokenResponse {
+export function parseTokenResponse(status: number, raw: string): TokenResponse {
   let parsed: Record<string, unknown> | null = null;
   try {
     parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -651,7 +653,9 @@ export async function refreshToken(
     .map(([name]) => name);
   if (missing.length > 0) {
     throw new Error(
-      `oidc: refresh request is missing required field(s): ${missing.join(", ")}`,
+      `oidc: refresh request is missing required field(s): ${missing.join(
+        ", ",
+      )}`,
     );
   }
 
@@ -732,7 +736,10 @@ export async function discover(
   if (!issuer) {
     throw new Error("oidc: discovery requires an issuer URL");
   }
-  const metadataUrl = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
+  const metadataUrl = `${issuer.replace(
+    /\/$/,
+    "",
+  )}/.well-known/openid-configuration`;
   const doFetch = fetchImpl ?? globalThis.fetch;
   const response = await doFetch(metadataUrl, {
     headers: { Accept: "application/json" },
@@ -761,7 +768,9 @@ export async function discover(
     .map(([name]) => name);
   if (absent.length > 0) {
     throw new Error(
-      `oidc: discovery document from ${metadataUrl} omits required field(s): ${absent.join(", ")}`,
+      `oidc: discovery document from ${metadataUrl} omits required field(s): ${absent.join(
+        ", ",
+      )}`,
     );
   }
 

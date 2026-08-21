@@ -116,6 +116,7 @@ The pre-commit `commit-msg` hook enforces this via
 ## Filing issues
 
 Please open issues in this repository's issue tracker with:
+
 1. A clear, reproducible description (version, OS, command, expected vs actual)
 2. Relevant logs or stack traces (with secrets scrubbed)
 3. The smallest repro you can manage

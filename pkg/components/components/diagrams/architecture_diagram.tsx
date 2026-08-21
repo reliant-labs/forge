@@ -1,4 +1,4 @@
-import React, { useRef, useLayoutEffect, useState, useCallback } from 'react';
+import React, { useRef, useLayoutEffect, useState, useCallback } from "react";
 
 interface ArchitectureDiagramProps {
   /** Groups of services */
@@ -26,13 +26,13 @@ interface Rect {
 }
 
 const DEFAULT_COLORS = [
-  '#3b82f6',
-  '#8b5cf6',
-  '#10b981',
-  '#f59e0b',
-  '#ef4444',
-  '#ec4899',
-  '#06b6d4',
+  "#3b82f6",
+  "#8b5cf6",
+  "#10b981",
+  "#f59e0b",
+  "#ef4444",
+  "#ec4899",
+  "#06b6d4",
 ];
 
 function getEdgePoint(rect: Rect, targetRect: Rect): { x: number; y: number } {
@@ -68,19 +68,32 @@ export default function ArchitectureDiagram({
   connections,
 }: ArchitectureDiagramProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [serviceRects, setServiceRects] = useState<Map<string, Rect>>(new Map());
-  const [containerRect, setContainerRect] = useState<Rect>({ x: 0, y: 0, width: 0, height: 0 });
+  const [serviceRects, setServiceRects] = useState<Map<string, Rect>>(
+    new Map(),
+  );
+  const [containerRect, setContainerRect] = useState<Rect>({
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+  });
 
   const measurePositions = useCallback(() => {
     if (!containerRef.current) return;
 
     const cRect = containerRef.current.getBoundingClientRect();
-    setContainerRect({ x: cRect.left, y: cRect.top, width: cRect.width, height: cRect.height });
+    setContainerRect({
+      x: cRect.left,
+      y: cRect.top,
+      width: cRect.width,
+      height: cRect.height,
+    });
 
     const rects = new Map<string, Rect>();
-    const elements = containerRef.current.querySelectorAll<HTMLElement>('[data-service]');
+    const elements =
+      containerRef.current.querySelectorAll<HTMLElement>("[data-service]");
     elements.forEach((el) => {
-      const name = el.getAttribute('data-service');
+      const name = el.getAttribute("data-service");
       if (!name) return;
       const r = el.getBoundingClientRect();
       rects.set(name, {
@@ -102,7 +115,9 @@ export default function ArchitectureDiagram({
   }, [measurePositions, groups]);
 
   if (groups.length === 0) {
-    return <div className="text-sm text-gray-400 italic">No groups provided</div>;
+    return (
+      <div className="text-sm text-gray-400 italic">No groups provided</div>
+    );
   }
 
   return (
@@ -115,7 +130,8 @@ export default function ArchitectureDiagram({
         }}
       >
         {groups.map((group, gi) => {
-          const color = group.color ?? DEFAULT_COLORS[gi % DEFAULT_COLORS.length];
+          const color =
+            group.color ?? DEFAULT_COLORS[gi % DEFAULT_COLORS.length];
           return (
             <div
               key={gi}

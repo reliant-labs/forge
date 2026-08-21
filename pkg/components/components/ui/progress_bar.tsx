@@ -68,7 +68,8 @@ export default function ProgressBar({
   const clampedValue = Math.max(0, Math.min(value, clampedMax));
   const pct = (clampedValue / clampedMax) * 100;
 
-  const resolvedVariant: ProgressVariant = variant ?? (pct > 80 ? "danger" : "default");
+  const resolvedVariant: ProgressVariant =
+    variant ?? (pct > 80 ? "danger" : "default");
 
   return (
     <div className={className}>
@@ -89,7 +90,7 @@ export default function ProgressBar({
       <div
         role="progressbar"
         aria-labelledby={label ? labelId : undefined}
-        aria-label={label ? undefined : (ariaLabel ?? "Progress")}
+        aria-label={label ? undefined : ariaLabel ?? "Progress"}
         aria-valuemin={0}
         aria-valuemax={clampedMax}
         aria-valuenow={clampedValue}

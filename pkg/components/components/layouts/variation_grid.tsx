@@ -37,7 +37,8 @@ export default function VariationGrid({
   columns,
   artboardHeight = "auto",
 }: VariationGridProps) {
-  const cols = columns ?? (Math.min(Math.max(variations.length, 1), 4) as 1 | 2 | 3 | 4);
+  const cols =
+    columns ?? (Math.min(Math.max(variations.length, 1), 4) as 1 | 2 | 3 | 4);
   const heightStyle: React.CSSProperties =
     artboardHeight === "auto" ? {} : { height: artboardHeight };
 
@@ -63,9 +64,7 @@ export default function VariationGrid({
             className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-surface"
           >
             <figcaption className="flex items-baseline justify-between gap-3 border-b border-border px-4 py-3">
-              <span className="text-sm font-semibold text-ink">
-                {v.label}
-              </span>
+              <span className="text-sm font-semibold text-ink">{v.label}</span>
               {v.note && (
                 <span className="truncate text-xs text-ink-muted">
                   {v.note}

@@ -199,7 +199,11 @@ describe("serviceKeys", () => {
     // which in turn begins with the service key. This is the property that
     // makes `invalidateQueries({ queryKey: keys.entity("order") })` refetch
     // getOrder and listOrders and nothing else.
-    const methodKey = keys.query("getOrder", GetOrderRequestSchema, "order")({
+    const methodKey = keys.query(
+      "getOrder",
+      GetOrderRequestSchema,
+      "order",
+    )({
       id: "abc",
     });
     expect(methodKey.slice(0, 1)).toEqual([...keys.all]);
@@ -207,10 +211,18 @@ describe("serviceKeys", () => {
   });
 
   it("separates two entities on the same service", () => {
-    const orderKey = keys.query("getOrder", GetOrderRequestSchema, "order")({
+    const orderKey = keys.query(
+      "getOrder",
+      GetOrderRequestSchema,
+      "order",
+    )({
       id: "a",
     });
-    const lineKey = keys.query("getLine", GetOrderRequestSchema, "line")({
+    const lineKey = keys.query(
+      "getLine",
+      GetOrderRequestSchema,
+      "line",
+    )({
       id: "a",
     });
     expect(orderKey.slice(0, 2)).not.toEqual(lineKey.slice(0, 2));
@@ -321,7 +333,11 @@ describe("createMutationHook", () => {
     captured.invalidated = [];
     const useSendReport = createMutationHook(keys.all, async () => ({}));
     useSendReport();
-    (captured.mutation?.onSuccess as (...a: unknown[]) => void)({}, {}, undefined);
+    (captured.mutation?.onSuccess as (...a: unknown[]) => void)(
+      {},
+      {},
+      undefined,
+    );
     expect(captured.invalidated).toEqual([["orderService"]]);
   });
 

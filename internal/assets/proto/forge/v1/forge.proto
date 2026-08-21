@@ -2,10 +2,10 @@ syntax = "proto3";
 
 package forge.v1;
 
-option go_package = "github.com/reliant-labs/forge/pkg/forgepb;forgepb";
-
 import "google/protobuf/descriptor.proto";
 import "google/protobuf/duration.proto";
+
+option go_package = "github.com/reliant-labs/forge/pkg/forgepb;forgepb";
 
 // =============================================================================
 // Extensions — attach Forge annotations to standard protobuf descriptor types.

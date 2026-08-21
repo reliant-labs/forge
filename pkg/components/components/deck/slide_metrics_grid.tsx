@@ -17,7 +17,8 @@ export const SlideMetricsGrid: React.FC<SlideMetricsGridProps> = ({
   subtitle,
   metrics,
 }) => {
-  const colCount = metrics.length <= 3 ? metrics.length : metrics.length <= 4 ? 2 : 3;
+  const colCount =
+    metrics.length <= 3 ? metrics.length : metrics.length <= 4 ? 2 : 3;
 
   return (
     <div
@@ -29,9 +30,7 @@ export const SlideMetricsGrid: React.FC<SlideMetricsGridProps> = ({
         <h1 className="text-4xl font-bold tracking-tight text-white">
           {title}
         </h1>
-        {subtitle && (
-          <p className="mt-2 text-lg text-gray-400">{subtitle}</p>
-        )}
+        {subtitle && <p className="mt-2 text-lg text-gray-400">{subtitle}</p>}
       </div>
 
       {/* Metrics grid */}
@@ -66,9 +65,7 @@ export const SlideMetricsGrid: React.FC<SlideMetricsGridProps> = ({
               </span>
 
               {metric.detail && (
-                <span className="text-sm text-gray-500">
-                  {metric.detail}
-                </span>
+                <span className="text-sm text-gray-500">{metric.detail}</span>
               )}
             </div>
           ))}

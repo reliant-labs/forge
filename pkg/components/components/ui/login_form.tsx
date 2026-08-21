@@ -24,9 +24,7 @@ export default function LoginForm({
   return (
     <div className="flex min-h-screen items-center justify-center bg-surface-muted px-4">
       <div className="w-full max-w-sm rounded-2xl border border-border bg-surface p-8 shadow-sm">
-        <h2 className="text-center text-2xl font-bold text-ink">
-          Sign in
-        </h2>
+        <h2 className="text-center text-2xl font-bold text-ink">Sign in</h2>
         <p className="mt-1 text-center text-sm text-ink-muted">
           Welcome back! Please enter your details.
         </p>

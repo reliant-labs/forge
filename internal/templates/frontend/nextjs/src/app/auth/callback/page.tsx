@@ -34,10 +34,7 @@ export default function AuthCallbackPage() {
   }, []);
 
   // `replace`, so Back never returns to a URL holding a spent code.
-  const navigate = useCallback(
-    (path: string) => router.replace(path),
-    [router],
-  );
+  const navigate = useCallback((path: string) => router.replace(path), [router]);
 
   if (search === null) {
     return null;

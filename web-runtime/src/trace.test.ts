@@ -7,7 +7,11 @@
 import { describe, expect, it } from "vitest";
 
 import { buildRuntimeInterceptors, traceInterceptor } from "./interceptors.js";
-import { freshTraceparent, injectTraceContext, TRACEPARENT_RE } from "./trace.js";
+import {
+  freshTraceparent,
+  injectTraceContext,
+  TRACEPARENT_RE,
+} from "./trace.js";
 
 const ZERO_TRACE_ID = "0".repeat(32);
 

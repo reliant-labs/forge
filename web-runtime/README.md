@@ -7,12 +7,12 @@ App Router and Vite SPA alike).
 ```ts
 import {
   buildRuntimeInterceptors, // Connect transport stack
-  ConnectClientError,       // typed client errors
-  RuntimeShell,             // session + error boundary + toast host
-  useSession,               // the signed-in user
-  RouteGuard,               // signed-in render gate
-  Resource,                 // the list tristate + cursor pagination
-  initClientTelemetry,      // opt-in client RUM
+  ConnectClientError, // typed client errors
+  RuntimeShell, // session + error boundary + toast host
+  useSession, // the signed-in user
+  RouteGuard, // signed-in render gate
+  Resource, // the list tristate + cursor pagination
+  initClientTelemetry, // opt-in client RUM
 } from "@reliantlabs/forge-web-runtime";
 ```
 
@@ -94,8 +94,8 @@ an opaque external."
 ```ts
 import {
   buildRuntimeInterceptors, // the Connect transport stack
-  ConnectClientError,       // what the stack throws
-  setTraceSampled,          // traceInterceptor's knob
+  ConnectClientError, // what the stack throws
+  setTraceSampled, // traceInterceptor's knob
 } from "@reliantlabs/forge-web-runtime/interceptors";
 ```
 
@@ -112,7 +112,7 @@ entirely. `src/interceptors.ts` is guarded by
 `src/interceptors-entry.test.ts`, which walks the entry point's real import
 graph and fails if React ever appears in it.
 
-(This subpath was *also* the workaround for React 18 vs 19 type skew, back
+(This subpath was _also_ the workaround for React 18 vs 19 type skew, back
 when the package published its sources. That is no longer why it exists — see
 "One `.d.ts` for React 18 and 19" above; the barrel typechecks fine from Expo
 now. It stays because dead components in a mobile bundle is a separate and
@@ -145,21 +145,21 @@ the built CSS and the components render unstyled.
 
 Required tokens:
 
-| Token | Used for |
-| --- | --- |
-| `--color-surface` | table / panel background |
-| `--color-surface-muted` | table head, row hover |
-| `--color-border` | table and panel rules |
-| `--color-ink` | primary text |
-| `--color-ink-muted` | secondary text, empty states |
-| `--color-ink-subtle` | placeholders, disabled controls |
-| `--color-accent` | focus ring, active filter border |
-| `--color-danger` | error text, destructive fill |
-| `--color-danger-hover` | destructive fill hover |
-| `--color-danger-surface` | error panel background |
-| `--color-danger-border` | error panel border |
-| `--color-danger-ink` | error text on a danger surface |
-| `--color-on-danger` | text on a danger fill |
+| Token                    | Used for                         |
+| ------------------------ | -------------------------------- |
+| `--color-surface`        | table / panel background         |
+| `--color-surface-muted`  | table head, row hover            |
+| `--color-border`         | table and panel rules            |
+| `--color-ink`            | primary text                     |
+| `--color-ink-muted`      | secondary text, empty states     |
+| `--color-ink-subtle`     | placeholders, disabled controls  |
+| `--color-accent`         | focus ring, active filter border |
+| `--color-danger`         | error text, destructive fill     |
+| `--color-danger-hover`   | destructive fill hover           |
+| `--color-danger-surface` | error panel background           |
+| `--color-danger-border`  | error panel border               |
+| `--color-danger-ink`     | error text on a danger surface   |
+| `--color-on-danger`      | text on a danger fill            |
 
 ## Local development
 
@@ -180,7 +180,7 @@ app's bundler is already watching this directory (Metro via `watchFolders`,
 Next via `transpilePackages`, Vite because a linked dep is treated as source),
 so a save still lands in the running app; it just arrives one compile later.
 
-You do not have to remember to build before the *first* install. `prepare`
+You do not have to remember to build before the _first_ install. `prepare`
 (`scripts/build.mjs`) runs when npm materialises the `file:` link and again
 before `npm publish` — the two moments a consumable `dist/` has to exist. On a
 checkout that has never been developed it installs this package's own

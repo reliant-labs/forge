@@ -64,8 +64,12 @@ describe("enumBadgeVariant", () => {
   // The inversion also reached the badge through the enum object, which is how
   // every generated page calls it.
   it("does not invert a negated member name resolved from an enum object", () => {
-    expect(enumBadgeVariant(PatientStatus.ACTIVE, PatientStatus)).toBe("success");
-    expect(enumBadgeVariant(PatientStatus.INACTIVE, PatientStatus)).not.toBe("success");
+    expect(enumBadgeVariant(PatientStatus.ACTIVE, PatientStatus)).toBe(
+      "success",
+    );
+    expect(enumBadgeVariant(PatientStatus.INACTIVE, PatientStatus)).not.toBe(
+      "success",
+    );
   });
 
   it("is neutral for an unset value", () => {
@@ -92,7 +96,9 @@ describe("enumBadgeVariant", () => {
 
     expect(enumBadgeVariant("sent_to_pharmacy")).toBe("info");
     expect(enumBadgeVariant("SENT_TO_PHARMACY")).toBe("info");
-    expect(enumBadgeVariant(PatientStatus.SENT_TO_PHARMACY, PatientStatus)).toBe("info");
+    expect(
+      enumBadgeVariant(PatientStatus.SENT_TO_PHARMACY, PatientStatus),
+    ).toBe("info");
     expect(enumBadgeVariant("capture_failed")).toBe("error");
     expect(enumBadgeVariant("renewal_required")).toBe("warning");
   });
@@ -116,7 +122,9 @@ describe("formatValue for a bytes column", () => {
     // remembered example.
     for (const len of [1, 2, 3, 17, 999, 1000, 4096, 5_000_000]) {
       const blob = new Uint8Array(len).fill(7);
-      expect(formatValue(blob)).not.toContain(Array.from(blob.slice(0, 3)).join(","));
+      expect(formatValue(blob)).not.toContain(
+        Array.from(blob.slice(0, 3)).join(","),
+      );
     }
   });
 

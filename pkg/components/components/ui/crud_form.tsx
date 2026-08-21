@@ -1,6 +1,14 @@
 import React, { useState } from "react";
 
-type FieldType = "text" | "number" | "email" | "password" | "select" | "textarea" | "checkbox" | "date";
+type FieldType =
+  | "text"
+  | "number"
+  | "email"
+  | "password"
+  | "select"
+  | "textarea"
+  | "checkbox"
+  | "date";
 
 interface FormField {
   name: string;
@@ -60,9 +68,7 @@ export default function CrudForm({
     >
       {(title || description) && (
         <div className="border-b border-border px-6 py-4">
-          {title && (
-            <h2 className="text-lg font-semibold text-ink">{title}</h2>
-          )}
+          {title && <h2 className="text-lg font-semibold text-ink">{title}</h2>}
           {description && (
             <p className="mt-1 text-sm text-ink-muted">{description}</p>
           )}
@@ -133,9 +139,7 @@ export default function CrudForm({
                   required={field.required}
                   className={inputClass}
                 >
-                  <option value="">
-                    {field.placeholder ?? "Select..."}
-                  </option>
+                  <option value="">{field.placeholder ?? "Select..."}</option>
                   {field.options?.map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}
@@ -152,7 +156,7 @@ export default function CrudForm({
                       field.name,
                       field.type === "number"
                         ? Number(e.target.value)
-                        : e.target.value
+                        : e.target.value,
                     )
                   }
                   placeholder={field.placeholder}
@@ -164,9 +168,7 @@ export default function CrudForm({
               {field.helpText && !error && (
                 <p className="mt-1 text-xs text-ink-muted">{field.helpText}</p>
               )}
-              {error && (
-                <p className="mt-1 text-xs text-danger">{error}</p>
-              )}
+              {error && <p className="mt-1 text-xs text-danger">{error}</p>}
             </div>
           );
         })}

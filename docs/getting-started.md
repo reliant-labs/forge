@@ -39,7 +39,7 @@ Two things are worth looking at before you write any code.
 **`forge.yaml` is deliberately tiny.** Most of what other tools ask you to
 configure, Forge derives from the shape of the project — the database, CI,
 lint, contracts and the feature set are all inferred. You add a key only to
-*override* a default.
+_override_ a default.
 
 **Your project already knows its own conventions.** A `.claude/skills/`
 directory was written with 81 skills covering architecture, proto, db, api,
@@ -95,8 +95,8 @@ message Bookmark {
 Note the field numbers start at 2. Forge manages `id`, `created_at` and
 `updated_at` and will declare them on your message for you.
 
-Now run bare `forge scaffold` — with no noun, it scaffolds *everything your
-protos imply*:
+Now run bare `forge scaffold` — with no noun, it scaffolds _everything your
+protos imply_:
 
 ```bash
 forge scaffold
@@ -297,11 +297,11 @@ This is the thing to internalize.
 
 There are really three categories, not two.
 
-| Category | Examples | Behavior |
-|---|---|---|
-| **Regenerated every run** | `gen/**`, `*_gen.go`, `internal/db/<entity>_orm.go`, `deploy/kcl/config_gen.k`, and `.claude/skills/**` on `--harness claude` | Overwritten. Never edit. |
+| Category                     | Examples                                                                                                                                  | Behavior                                  |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| **Regenerated every run**    | `gen/**`, `*_gen.go`, `internal/db/<entity>_orm.go`, `deploy/kcl/config_gen.k`, and `.claude/skills/**` on `--harness claude`             | Overwritten. Never edit.                  |
 | **Written once, then yours** | `internal/app/compose.go`, `internal/app/auth.go`, `db/migrations/*.sql`, `internal/db/<entity>_repo_ext.go`, `deploy/kcl/<env>/config.k` | Forge writes if absent, then leaves alone |
-| **Purely yours** | handler bodies, `internal/<svc>/contract.go` and `service.go`, `internal/app/providers.go`, `cmd/<bin>/main.go` | Forge never writes these |
+| **Purely yours**             | handler bodies, `internal/<svc>/contract.go` and `service.go`, `internal/app/providers.go`, `cmd/<bin>/main.go`                           | Forge never writes these                  |
 
 You do not have to memorize it. Files in the first category say so in their
 own header:

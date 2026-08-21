@@ -480,8 +480,15 @@ repos:
       - id: prettier
         # Restrict to frontend + docs so prettier does not fight gofmt or
         # golangci-lint on Go files.
+        #
+        # skills/ is excluded: prettier pads every markdown table cell to the
+        # column width, which inflates a skill far past the delivery budget
+        # (audit-json went 13843 -> 34328 bytes, against a 24000 hard cap) and
+        # rewrites the very table headers TestSkillsAuditCategoryDocsMatchEmittedSet
+        # asserts on. These files are size- and structure-checked by tests;
+        # a formatter cannot own them.
         files: \.(ts|tsx|js|jsx|json|md|yml|yaml|css)$
-        exclude: ^(gen/|.*\.pb\.go$)
+        exclude: ^(gen/|.*\.pb\.go$|.*/skills/.*\.md$)
 
   # go vet as a LOCAL hook rather than dnephin's go-vet. Two reasons:
   # v0.5.1 ships no go-vet-mod (the module-wide id), and its go-vet runs
@@ -665,6 +672,11 @@ jobs:
           go-version-file: go.mod
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
+      # The go-imports hook shells out to a goimports BINARY and fails with
+      # "goimports not installed or available in the PATH" when it is absent
+      # — the runner image does not ship one, and setup-go does not add it.
+      - name: Install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
       - uses: pre-commit/action@v3.0.1
 `
 	dir := filepath.Join(g.Path, ".github", "workflows")

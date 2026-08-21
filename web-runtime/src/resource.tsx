@@ -11,12 +11,7 @@
 // { status, data, error } and hand it here. Pagination is
 // cursor-based (page_token / next_page_token in Connect list RPCs): the page
 // owns the cursor stack and passes onNextPage/onPrevPage.
-import {
-  useEffect,
-  useState,
-  type ReactElement,
-  type ReactNode,
-} from "react";
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 
 export interface ResourceColumn<T> {
   header: string;
@@ -109,7 +104,9 @@ export function Resource<T>({
           ) : (
             <span />
           )}
-          {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
+          {actions ? (
+            <div className="flex items-center gap-2">{actions}</div>
+          ) : null}
         </header>
       )}
 
@@ -133,7 +130,9 @@ export function Resource<T>({
                 <th
                   key={i}
                   scope="col"
-                  className={`px-4 py-2.5 text-left font-medium text-ink-muted ${col.className ?? ""}`}
+                  className={`px-4 py-2.5 text-left font-medium text-ink-muted ${
+                    col.className ?? ""
+                  }`}
                 >
                   {col.header}
                 </th>
@@ -275,9 +274,13 @@ function ErrorState({
 }) {
   return (
     <div role="alert" className="flex flex-col items-center gap-2 text-center">
-      <p className="text-sm font-medium text-danger-ink">Couldn&apos;t load data</p>
+      <p className="text-sm font-medium text-danger-ink">
+        Couldn&apos;t load data
+      </p>
       {error?.message ? (
-        <p className="max-w-md font-mono text-xs text-danger">{error.message}</p>
+        <p className="max-w-md font-mono text-xs text-danger">
+          {error.message}
+        </p>
       ) : null}
       {onRetry ? (
         <button

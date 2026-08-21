@@ -47,7 +47,12 @@ import type { UseMutationOptions } from "@tanstack/react-query";
  */
 export interface OptimisticMutationOptions<TData, TVariables, TSnapshot>
   extends Omit<
-    UseMutationOptions<TData, ConnectClientError, TVariables, { previous?: TSnapshot }>,
+    UseMutationOptions<
+      TData,
+      ConnectClientError,
+      TVariables,
+      { previous?: TSnapshot }
+    >,
     "mutationFn" | "onMutate" | "onError" | "onSettled"
   > {
   /** The mutation call. May be a stub while the domain RPC isn't implemented. */
@@ -63,7 +68,10 @@ export interface OptimisticMutationOptions<TData, TVariables, TSnapshot>
    * mutation variables. Omit to skip the optimistic write (rollback becomes a
    * no-op) and use this purely for the inline-error affordance.
    */
-  applyOptimistic?: (current: TSnapshot | undefined, variables: TVariables) => TSnapshot | undefined;
+  applyOptimistic?: (
+    current: TSnapshot | undefined,
+    variables: TVariables,
+  ) => TSnapshot | undefined;
 }
 
 export interface OptimisticMutationResult<TData, TVariables> {
@@ -85,7 +93,12 @@ export function useOptimisticMutation<TData, TVariables, TSnapshot = unknown>(
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
-  const mutation = useMutation<TData, ConnectClientError, TVariables, { previous?: TSnapshot }>({
+  const mutation = useMutation<
+    TData,
+    ConnectClientError,
+    TVariables,
+    { previous?: TSnapshot }
+  >({
     mutationFn,
     // Inline error is the affordance here; silence the global toast by default
     // so a failure isn't reported twice. Callers can re-enable per call.
@@ -96,7 +109,9 @@ export function useOptimisticMutation<TData, TVariables, TSnapshot = unknown>(
       // Cancel in-flight refetches so they can't clobber the optimistic write.
       await queryClient.cancelQueries({ queryKey });
       const previous = queryClient.getQueryData<TSnapshot>(queryKey);
-      queryClient.setQueryData<TSnapshot>(queryKey, (current) => applyOptimistic(current, variables));
+      queryClient.setQueryData<TSnapshot>(queryKey, (current) =>
+        applyOptimistic(current, variables),
+      );
       return { previous };
     },
     onError: (err, _variables, context) => {

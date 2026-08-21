@@ -110,7 +110,9 @@ describe("the ./interceptors entry point", () => {
     expect(files.filter((f) => f.endsWith(".tsx"))).toEqual([]);
 
     // No React package, direct or transitive.
-    const reactish = bare.filter((s) => /^react(-dom)?(\/|$)|^@types\/react/.test(s));
+    const reactish = bare.filter((s) =>
+      /^react(-dom)?(\/|$)|^@types\/react/.test(s),
+    );
     expect(reactish).toEqual([]);
 
     // Pin the exact graph. A new module showing up here is a decision that

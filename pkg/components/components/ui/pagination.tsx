@@ -18,7 +18,8 @@ export default function Pagination({
   showInfo = true,
 }: PaginationProps) {
   function getPageNumbers(): (number | "...")[] {
-    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+    if (totalPages <= 7)
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
 
     const pages: (number | "...")[] = [1];
     const start = Math.max(2, currentPage - 1);
@@ -35,7 +36,10 @@ export default function Pagination({
   if (totalPages <= 1) return null;
 
   const startItem = pageSize ? (currentPage - 1) * pageSize + 1 : undefined;
-  const endItem = pageSize && totalItems ? Math.min(currentPage * pageSize, totalItems) : undefined;
+  const endItem =
+    pageSize && totalItems
+      ? Math.min(currentPage * pageSize, totalItems)
+      : undefined;
 
   return (
     <div className="flex items-center justify-between border-t border-border px-2 py-3">
@@ -54,8 +58,18 @@ export default function Pagination({
           disabled={currentPage === 1}
           className="inline-flex items-center rounded-md px-2 py-1.5 text-sm text-ink-muted hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+          <svg
+            className="h-4 w-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={2}
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M15.75 19.5L8.25 12l7.5-7.5"
+            />
           </svg>
           <span className="sr-only">Previous</span>
         </button>
@@ -77,7 +91,7 @@ export default function Pagination({
             >
               {page}
             </button>
-          )
+          ),
         )}
 
         <button
@@ -85,8 +99,18 @@ export default function Pagination({
           disabled={currentPage === totalPages}
           className="inline-flex items-center rounded-md px-2 py-1.5 text-sm text-ink-muted hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+          <svg
+            className="h-4 w-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={2}
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M8.25 4.5l7.5 7.5-7.5 7.5"
+            />
           </svg>
           <span className="sr-only">Next</span>
         </button>

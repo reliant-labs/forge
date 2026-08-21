@@ -52,7 +52,10 @@ export class RuntimeErrorBoundary extends Component<Props, State> {
   }
 
   componentDidUpdate(prev: Props): void {
-    if (this.state.error && !shallowEqual(prev.resetKeys, this.props.resetKeys)) {
+    if (
+      this.state.error &&
+      !shallowEqual(prev.resetKeys, this.props.resetKeys)
+    ) {
       this.reset();
     }
   }

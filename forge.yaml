@@ -22,62 +22,62 @@ module_path: github.com/reliant-labs/forge
 # says "the four config files below were last merged at this vintage".
 forge_version: v0.0.4-0.20260807040731-181e67475a43+dirty
 database:
-    driver: ""
-    migrations_dir: ""
+  driver: ""
+  migrations_dir: ""
 ci:
-    provider: github
-    lint:
-        golangci: true
-        buf: false
-        buf_breaking: false
-        frontend: false
-        migration_safety: false
-    test:
-        race: true
-        coverage: false
-    vuln_scan:
-        go: true
-        docker: false
-        npm: false
+  provider: github
+  lint:
+    golangci: true
+    buf: false
+    buf_breaking: false
+    frontend: false
+    migration_safety: false
+  test:
+    race: true
+    coverage: false
+  vuln_scan:
+    go: true
+    docker: false
+    npm: false
 docker:
-    registry: ""
+  registry: ""
 k8s:
-    kcl_dir: ""
+  kcl_dir: ""
 lint:
-    frontend:
-        no_important: warn
-        no_inline_styles: warn
+  frontend:
+    no_important: warn
+    no_inline_styles: warn
 contracts:
-    exclude:
-        - "internal/naming"                # Pure stateless string-case utilities; mocking adds no value.
-        - "internal/buildinfo"             # Linker-set version metadata; no test seam.
-        - "internal/assets"                # Embed wrapper; the file IS the data.
-        - "internal/linter/contract"          # Go analysis framework requires Analyzer as a package var.
-        - "internal/linter/migrationlint"     # Same — analyzer-style sub-package, vars by convention.
-        - "internal/linter/forgeconv"         # Same — convention analyzer over proto files; entry point is exported func.
-        - "internal/linter/scaffolds"         # Same — scaffold-ownership analyzer; entry point is exported funcs (LintRoot/Result).
-        - "internal/cli"                   # Cobra command boundary; CLI is the seam, not internals.
-        - "internal/database"              # Multi-interface contract.go (SchemaIntrospector + MigrationService + ProtoGenerator); used by the forge CLI, not bootstrap codegen.
-        - "internal/checksums"             # Pure data-record + I/O helpers (FileChecksums struct + Load/Save/Hash); the file-state itself is the API. No behavioural seam to mock.
-        - "cmd/forge"                      # Linker-set version metadata; -X flags require exported package vars.
-        - "cmd/contractlint"               # Tool entry point; main package, no test seam.
+  exclude:
+    - "internal/naming" # Pure stateless string-case utilities; mocking adds no value.
+    - "internal/buildinfo" # Linker-set version metadata; no test seam.
+    - "internal/assets" # Embed wrapper; the file IS the data.
+    - "internal/linter/contract" # Go analysis framework requires Analyzer as a package var.
+    - "internal/linter/migrationlint" # Same — analyzer-style sub-package, vars by convention.
+    - "internal/linter/forgeconv" # Same — convention analyzer over proto files; entry point is exported func.
+    - "internal/linter/scaffolds" # Same — scaffold-ownership analyzer; entry point is exported funcs (LintRoot/Result).
+    - "internal/cli" # Cobra command boundary; CLI is the seam, not internals.
+    - "internal/database" # Multi-interface contract.go (SchemaIntrospector + MigrationService + ProtoGenerator); used by the forge CLI, not bootstrap codegen.
+    - "internal/checksums" # Pure data-record + I/O helpers (FileChecksums struct + Load/Save/Hash); the file-state itself is the API. No behavioural seam to mock.
+    - "cmd/forge" # Linker-set version metadata; -X flags require exported package vars.
+    - "cmd/contractlint" # Tool entry point; main package, no test seam.
 docs: {}
 features:
-    orm: false
-    codegen: false
-    migrations: false
-    ci: true
-    contracts: true
-    docs: true
-    frontend: false
-    observability: false
-    hot_reload: false
-    # Experimental features default off. forge itself is a CLI project
-    # that doesn't ship an ingress/operator surface, so we leave this
-    # block empty. (deploy is a stable flag now — it derives from kind,
-    # on for service projects.) Service-shape projects opt in per feature:
-    #   experimental:
-    #     ingress: true         # Gateway API + cert-manager wiring
-    #     external_builds: true # KCL Service.build_cmd shell escape hatch
-    #     operators: true       # controller-runtime operators + CRDs
-    #     strict_wiring: true   # diagnostics fail-fast at Bootstrap
+  orm: false
+  codegen: false
+  migrations: false
+  ci: true
+  contracts: true
+  docs: true
+  frontend: false
+  observability: false
+  hot_reload: false
+  # Experimental features default off. forge itself is a CLI project
+  # that doesn't ship an ingress/operator surface, so we leave this
+  # block empty. (deploy is a stable flag now — it derives from kind,
+  # on for service projects.) Service-shape projects opt in per feature:
+  #   experimental:
+  #     ingress: true         # Gateway API + cert-manager wiring
+  #     external_builds: true # KCL Service.build_cmd shell escape hatch
+  #     operators: true       # controller-runtime operators + CRDs
+  #     strict_wiring: true   # diagnostics fail-fast at Bootstrap

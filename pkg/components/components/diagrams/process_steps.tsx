@@ -1,14 +1,14 @@
-import React from 'react';
+import React from "react";
 
 interface ProcessStepsProps {
   /** Steps */
   steps: Array<{
     title: string;
     description?: string;
-    status?: 'completed' | 'active' | 'pending';
+    status?: "completed" | "active" | "pending";
   }>;
   /** Horizontal or vertical layout */
-  direction?: 'horizontal' | 'vertical';
+  direction?: "horizontal" | "vertical";
   /** Accent color */
   accentColor?: string;
 }
@@ -29,54 +29,57 @@ function CheckmarkIcon(): React.ReactElement {
 
 export default function ProcessSteps({
   steps,
-  direction = 'horizontal',
+  direction = "horizontal",
   accentColor,
 }: ProcessStepsProps): React.ReactElement {
   if (steps.length === 0) {
-    return <div className="text-sm text-gray-400 italic">No steps provided</div>;
+    return (
+      <div className="text-sm text-gray-400 italic">No steps provided</div>
+    );
   }
 
-  const isVertical = direction === 'vertical';
+  const isVertical = direction === "vertical";
 
   const getCircleStyle = (
-    status: 'completed' | 'active' | 'pending'
+    status: "completed" | "active" | "pending",
   ): { className: string; style?: React.CSSProperties } => {
     switch (status) {
-      case 'completed':
-        return {
-          className: 'flex items-center justify-center w-9 h-9 rounded-full shrink-0',
-          style: { backgroundColor: accentColor ?? '#10b981' },
-        };
-      case 'active':
+      case "completed":
         return {
           className:
-            'flex items-center justify-center w-9 h-9 rounded-full shrink-0 ring-4 ring-offset-2 animate-pulse',
+            "flex items-center justify-center w-9 h-9 rounded-full shrink-0",
+          style: { backgroundColor: accentColor ?? "#10b981" },
+        };
+      case "active":
+        return {
+          className:
+            "flex items-center justify-center w-9 h-9 rounded-full shrink-0 ring-4 ring-offset-2 animate-pulse",
           style: {
-            backgroundColor: accentColor ?? '#3b82f6',
-            '--tw-ring-color': `${accentColor ?? '#3b82f6'}33`,
+            backgroundColor: accentColor ?? "#3b82f6",
+            "--tw-ring-color": `${accentColor ?? "#3b82f6"}33`,
           } as React.CSSProperties,
         };
-      case 'pending':
+      case "pending":
         return {
           className:
-            'flex items-center justify-center w-9 h-9 rounded-full shrink-0 bg-gray-200',
+            "flex items-center justify-center w-9 h-9 rounded-full shrink-0 bg-gray-200",
         };
     }
   };
 
-  const getLineColor = (status: 'completed' | 'active' | 'pending'): string => {
-    if (status === 'completed') return accentColor ?? '#10b981';
-    return '#d1d5db';
+  const getLineColor = (status: "completed" | "active" | "pending"): string => {
+    if (status === "completed") return accentColor ?? "#10b981";
+    return "#d1d5db";
   };
 
   return (
     <div
-      className={`flex ${isVertical ? 'flex-col' : 'flex-row items-start'} gap-0 w-full ${
-        !isVertical ? 'overflow-x-auto' : ''
-      }`}
+      className={`flex ${
+        isVertical ? "flex-col" : "flex-row items-start"
+      } gap-0 w-full ${!isVertical ? "overflow-x-auto" : ""}`}
     >
       {steps.map((step, i) => {
-        const status = step.status ?? 'pending';
+        const status = step.status ?? "pending";
         const circle = getCircleStyle(status);
         const isLast = i === steps.length - 1;
 
@@ -89,12 +92,12 @@ export default function ProcessSteps({
               {/* Circle + vertical line column */}
               <div className="flex flex-col items-center">
                 <div className={circle.className} style={circle.style}>
-                  {status === 'completed' ? (
+                  {status === "completed" ? (
                     <CheckmarkIcon />
                   ) : (
                     <span
                       className={`text-sm font-bold ${
-                        status === 'active' ? 'text-white' : 'text-gray-400'
+                        status === "active" ? "text-white" : "text-gray-400"
                       }`}
                     >
                       {i + 1}
@@ -110,10 +113,10 @@ export default function ProcessSteps({
               </div>
 
               {/* Text content */}
-              <div className={`pb-6 ${isLast ? '' : ''}`}>
+              <div className={`pb-6 ${isLast ? "" : ""}`}>
                 <span
                   className={`text-sm font-bold leading-tight block ${
-                    status === 'pending' ? 'text-gray-400' : 'text-gray-800'
+                    status === "pending" ? "text-gray-400" : "text-gray-800"
                   }`}
                 >
                   {step.title}
@@ -121,7 +124,7 @@ export default function ProcessSteps({
                 {step.description && (
                   <span
                     className={`text-xs leading-snug mt-0.5 block ${
-                      status === 'pending' ? 'text-gray-300' : 'text-gray-500'
+                      status === "pending" ? "text-gray-300" : "text-gray-500"
                     }`}
                   >
                     {step.description}
@@ -138,12 +141,12 @@ export default function ProcessSteps({
             <div className="flex flex-col items-center">
               {/* Circle */}
               <div className={circle.className} style={circle.style}>
-                {status === 'completed' ? (
+                {status === "completed" ? (
                   <CheckmarkIcon />
                 ) : (
                   <span
                     className={`text-sm font-bold ${
-                      status === 'active' ? 'text-white' : 'text-gray-400'
+                      status === "active" ? "text-white" : "text-gray-400"
                     }`}
                   >
                     {i + 1}
@@ -154,7 +157,7 @@ export default function ProcessSteps({
               {/* Title + description below circle */}
               <span
                 className={`text-xs font-bold text-center mt-2 leading-tight max-w-[100px] ${
-                  status === 'pending' ? 'text-gray-400' : 'text-gray-800'
+                  status === "pending" ? "text-gray-400" : "text-gray-800"
                 }`}
               >
                 {step.title}
@@ -162,7 +165,7 @@ export default function ProcessSteps({
               {step.description && (
                 <span
                   className={`text-[10px] text-center mt-0.5 leading-snug max-w-[100px] ${
-                    status === 'pending' ? 'text-gray-300' : 'text-gray-500'
+                    status === "pending" ? "text-gray-300" : "text-gray-500"
                   }`}
                 >
                   {step.description}
@@ -173,7 +176,10 @@ export default function ProcessSteps({
             {/* Horizontal connector line */}
             {!isLast && (
               <div className="flex items-center h-9 flex-1 min-w-[24px] px-1">
-                <div className="w-full h-0.5" style={{ backgroundColor: lineColor }} />
+                <div
+                  className="w-full h-0.5"
+                  style={{ backgroundColor: lineColor }}
+                />
               </div>
             )}
           </div>

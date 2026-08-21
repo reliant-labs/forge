@@ -48,6 +48,8 @@ export const useUiStore = create<UiState>((set) => ({
   // Bottom sheet
   bottomSheetOpen: false,
   bottomSheetContent: null,
-  openBottomSheet: (content) => set({ bottomSheetOpen: true, bottomSheetContent: content }),
-  closeBottomSheet: () => set({ bottomSheetOpen: false, bottomSheetContent: null }),
+  openBottomSheet: (content) =>
+    set({ bottomSheetOpen: true, bottomSheetContent: content }),
+  closeBottomSheet: () =>
+    set({ bottomSheetOpen: false, bottomSheetContent: null }),
 }));

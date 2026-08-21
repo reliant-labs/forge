@@ -43,8 +43,15 @@ repos:
       - id: prettier
         # Restrict to frontend + docs so prettier does not fight gofmt or
         # golangci-lint on Go files.
+        #
+        # skills/ is excluded: prettier pads every markdown table cell to the
+        # column width, which inflates a skill far past the delivery budget
+        # (audit-json went 13843 -> 34328 bytes, against a 24000 hard cap) and
+        # rewrites the very table headers TestSkillsAuditCategoryDocsMatchEmittedSet
+        # asserts on. These files are size- and structure-checked by tests;
+        # a formatter cannot own them.
         files: \.(ts|tsx|js|jsx|json|md|yml|yaml|css)$
-        exclude: ^(gen/|.*\.pb\.go$)
+        exclude: ^(gen/|.*\.pb\.go$|.*/skills/.*\.md$)
 
   # Compiled binaries do not belong in git: they never diff usefully, they are
   # large forever, and a Go binary embeds the build machine's absolute paths.
@@ -92,7 +99,7 @@ repos:
     hooks:
       - id: commitlint
         stages: [commit-msg]
-        additional_dependencies: ['@commitlint/config-conventional']
+        additional_dependencies: ["@commitlint/config-conventional"]
 
   # Blocks commits that add locally-forbidden strings. Patterns live in a
   # gitignored .forbidden-strings file at the repo root; the check is a no-op

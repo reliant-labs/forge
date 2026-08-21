@@ -10,7 +10,10 @@ interface SearchInputProps {
   shortcutKey?: string;
 }
 
-const sizeStyles: Record<NonNullable<SearchInputProps["size"]>, { input: string; icon: string }> = {
+const sizeStyles: Record<
+  NonNullable<SearchInputProps["size"]>,
+  { input: string; icon: string }
+> = {
   sm: { input: "h-8 pl-8 pr-8 text-sm", icon: "h-3.5 w-3.5 left-2.5" },
   md: { input: "h-10 pl-10 pr-10 text-sm", icon: "h-4 w-4 left-3" },
   lg: { input: "h-12 pl-12 pr-12 text-base", icon: "h-5 w-5 left-3.5" },
@@ -49,7 +52,11 @@ export default function SearchInput({
         strokeWidth={2}
         stroke="currentColor"
       >
-        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
+        />
       </svg>
       <input
         ref={inputRef}
@@ -70,8 +77,18 @@ export default function SearchInput({
           onClick={() => onChange("")}
           className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-ink-subtle hover:text-ink-muted"
         >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          <svg
+            className="h-4 w-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={2}
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M6 18L18 6M6 6l12 12"
+            />
           </svg>
         </button>
       )}

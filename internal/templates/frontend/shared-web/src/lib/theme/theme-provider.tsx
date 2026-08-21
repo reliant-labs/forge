@@ -65,7 +65,9 @@ const TOKEN_TO_VAR: Record<keyof BrandTheme, string> = {
  * omitted entirely — the token then resolves to its globals.css default. Safe
  * to spread onto any element's `style` (a wrapper, or <html> server-side).
  */
-export function brandThemeToCssVars(theme: BrandTheme | null | undefined): CSSProperties {
+export function brandThemeToCssVars(
+  theme: BrandTheme | null | undefined,
+): CSSProperties {
   const vars: Record<string, string> = {};
   if (!theme) return vars as CSSProperties;
   for (const key of Object.keys(TOKEN_TO_VAR) as (keyof BrandTheme)[]) {

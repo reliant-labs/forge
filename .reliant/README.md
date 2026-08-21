@@ -5,7 +5,9 @@ This directory contains metadata and configuration for your Forge project.
 ## Files
 
 ### `project.json`
+
 Core project metadata including:
+
 - `name`: Project name
 - `module_path`: Go module path (e.g., `github.com/example/my-project`)
 - `created_at`: Project creation timestamp

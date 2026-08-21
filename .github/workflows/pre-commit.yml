@@ -24,10 +24,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: "3.12"
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
+      # The go-imports hook shells out to a goimports BINARY and fails with
+      # "goimports not installed or available in the PATH" when it is absent
+      # — the runner image does not ship one, and setup-go does not add it.
+      - name: Install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
       - uses: pre-commit/action@v3.0.1

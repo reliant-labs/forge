@@ -44,11 +44,11 @@ func TestWrittenGoFiles_OnlyReturnsFilesForgeWroteThisRun(t *testing.T) {
 	write("deploy/kcl/config.k")
 
 	defer restoreWrittenThisRun(t)()
-	checksums.WrittenThisRun = map[string]bool{
+	checksums.SetWrittenThisRun(map[string]bool{
 		"internal/handlers/handlers_gen.go": true,
 		"deploy/kcl/config.k":               true,
 		"internal/handlers/deleted_gen.go":  true, // written, then swept
-	}
+	})
 
 	got := writtenGoFiles(dir)
 
@@ -78,6 +78,6 @@ func TestWrittenGoFiles_OnlyReturnsFilesForgeWroteThisRun(t *testing.T) {
 // runs next.
 func restoreWrittenThisRun(t *testing.T) func() {
 	t.Helper()
-	saved := checksums.WrittenThisRun
-	return func() { checksums.WrittenThisRun = saved }
+	saved := checksums.WrittenPaths()
+	return func() { checksums.SetWrittenThisRun(saved) }
 }

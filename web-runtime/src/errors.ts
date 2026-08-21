@@ -47,7 +47,10 @@ const DEFAULT_USER_MESSAGE = "Something went wrong. Please try again.";
  * Pass `fallback` to override the default copy for a surface that wants its
  * own wording.
  */
-export function userMessage(err: unknown, fallback: string = DEFAULT_USER_MESSAGE): string {
+export function userMessage(
+  err: unknown,
+  fallback: string = DEFAULT_USER_MESSAGE,
+): string {
   if (err instanceof ConnectError) {
     return stripServerFraming(err.rawMessage || err.message) || fallback;
   }
@@ -211,7 +214,8 @@ export function normalizeError(err: unknown): ConnectClientError {
   }
 
   return new ConnectClientError({
-    message: typeof err === "string" ? stripServerFraming(err) : "Unknown error",
+    message:
+      typeof err === "string" ? stripServerFraming(err) : "Unknown error",
     code: "unknown",
     status: 500,
     retryable: false,

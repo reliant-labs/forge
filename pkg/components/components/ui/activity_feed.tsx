@@ -40,21 +40,37 @@ function RelativeTime({ timestamp }: { timestamp: string }) {
   else if (diffMins < 60) display = `${diffMins}m ago`;
   else if (diffHours < 24) display = `${diffHours}h ago`;
   else if (diffDays < 7) display = `${diffDays}d ago`;
-  else display = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  else
+    display = date.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
 
   return (
-    <time dateTime={timestamp} className="text-xs text-ink-subtle" title={date.toLocaleString()}>
+    <time
+      dateTime={timestamp}
+      className="text-xs text-ink-subtle"
+      title={date.toLocaleString()}
+    >
       {display}
     </time>
   );
 }
 
-export default function ActivityFeed({ items, title, emptyMessage = "No recent activity" }: ActivityFeedProps) {
+export default function ActivityFeed({
+  items,
+  title,
+  emptyMessage = "No recent activity",
+}: ActivityFeedProps) {
   return (
     <div>
-      {title && <h3 className="mb-4 text-sm font-semibold text-ink">{title}</h3>}
+      {title && (
+        <h3 className="mb-4 text-sm font-semibold text-ink">{title}</h3>
+      )}
       {items.length === 0 ? (
-        <p className="py-6 text-center text-sm text-ink-subtle">{emptyMessage}</p>
+        <p className="py-6 text-center text-sm text-ink-subtle">
+          {emptyMessage}
+        </p>
       ) : (
         <div className="flow-root">
           <ul className="-mb-4">
@@ -68,7 +84,9 @@ export default function ActivityFeed({ items, title, emptyMessage = "No recent a
                   <div className="relative flex-shrink-0">
                     {item.icon ? (
                       <div
-                        className={`flex h-10 w-10 items-center justify-center rounded-full ${item.iconColor ?? "bg-surface-muted text-ink-muted"}`}
+                        className={`flex h-10 w-10 items-center justify-center rounded-full ${
+                          item.iconColor ?? "bg-surface-muted text-ink-muted"
+                        }`}
                       >
                         {item.icon}
                       </div>
@@ -89,12 +107,16 @@ export default function ActivityFeed({ items, title, emptyMessage = "No recent a
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm text-ink-muted">
-                        <span className="font-medium text-ink">{item.user.name}</span>{" "}
+                        <span className="font-medium text-ink">
+                          {item.user.name}
+                        </span>{" "}
                         {item.action}
                         {item.target && (
                           <>
                             {" "}
-                            <span className="font-medium text-ink">{item.target}</span>
+                            <span className="font-medium text-ink">
+                              {item.target}
+                            </span>
                           </>
                         )}
                       </p>

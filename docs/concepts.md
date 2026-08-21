@@ -44,17 +44,17 @@ differ, it stays yours.
 
 `svcerr` came from the same discovery in reverse: four byte-identical
 `mapServiceError` switches across handler packages. The duplication was
-*earned* — the documented convention told people to write it that way. Forge
+_earned_ — the documented convention told people to write it that way. Forge
 treats "our own convention produces copy-paste" as a signal to extract a
 library, not as a documentation problem.
 
 ### Three categories of file
 
-| Category | What it is | Regenerated? |
-|---|---|---|
-| **Libraries you import** | `serverkit`, `svcerr`, `orm`, `crud`, `observe` | No — versioned, bumped |
-| **Generated tables** | `mock_gen.go`, `<entity>_orm.go`, `handlers_crud_ops_gen.go` | Yes, every run |
-| **Scaffold-once, owned** | `serve.go`, `providers.go`, `handlers_crud.go`, migrations | Never after birth |
+| Category                 | What it is                                                   | Regenerated?           |
+| ------------------------ | ------------------------------------------------------------ | ---------------------- |
+| **Libraries you import** | `serverkit`, `svcerr`, `orm`, `crud`, `observe`              | No — versioned, bumped |
+| **Generated tables**     | `mock_gen.go`, `<entity>_orm.go`, `handlers_crud_ops_gen.go` | Yes, every run         |
+| **Scaffold-once, owned** | `serve.go`, `providers.go`, `handlers_crud.go`, migrations   | Never after birth      |
 
 The invariant governing the middle row, from `lifecyclekit`: **generated
 files are tables, not programs.** All uniform machinery lives in a library;
@@ -72,7 +72,7 @@ Every forge-owned file embeds a SHA-256 of its own body:
 
 There is deliberately **no central manifest**. A manifest committed from a
 work-in-progress branch could leave a clean clone of green `main` unable to
-regenerate itself. Provenance travels *with the file* instead — through
+regenerate itself. Provenance travels _with the file_ instead — through
 clones, worktrees, cherry-picks and rebases.
 
 Hand-edit a generated file and the next `forge generate` **stops** rather
@@ -111,11 +111,11 @@ any of it.
 
 Practically, it means **behavior comes from real columns**:
 
-| You write | You get |
-|---|---|
-| `created_at` + `updated_at` | managed timestamps |
-| `deleted_at` | soft delete; reads filter it, `Delete` becomes `UPDATE` |
-| text columns | generated list search across them |
+| You write                   | You get                                                 |
+| --------------------------- | ------------------------------------------------------- |
+| `created_at` + `updated_at` | managed timestamps                                      |
+| `deleted_at`                | soft delete; reads filter it, `Delete` becomes `UPDATE` |
+| text columns                | generated list search across them                       |
 
 You never annotate for these. You write the column.
 
@@ -129,14 +129,14 @@ missing route is accurate information; a runtime 500 is not.
 The markers that drive this (`forge project capabilities` prints the current
 set):
 
-| Marker | Effect |
-|---|---|
-| `forge:entity` | Births the migration and the CRUD quintet |
-| `forge:soft-delete` | Born with `deleted_at`; `Delete` becomes an update |
-| `forge:append-only` | No Update/Delete, plus a trigger rejecting both |
-| `forge:read-only` | On the entity, omitted from Create/Update requests |
-| `forge:secret` | Writable, but never packed into read responses |
-| `forge:mutation` | Forces the generated React hook to be a `useMutation` |
+| Marker              | Effect                                                |
+| ------------------- | ----------------------------------------------------- |
+| `forge:entity`      | Births the migration and the CRUD quintet             |
+| `forge:soft-delete` | Born with `deleted_at`; `Delete` becomes an update    |
+| `forge:append-only` | No Update/Delete, plus a trigger rejecting both       |
+| `forge:read-only`   | On the entity, omitted from Create/Update requests    |
+| `forge:secret`      | Writable, but never packed into read responses        |
+| `forge:mutation`    | Forces the generated React hook to be a `useMutation` |
 
 ---
 
@@ -168,7 +168,7 @@ func New(deps Deps) (Service, error)
 > the signature.
 
 Use `// forge:contract` and `// forge:constructor` when your names differ.
-Lint and codegen resolve names through the *same* detectors, so whatever lint
+Lint and codegen resolve names through the _same_ detectors, so whatever lint
 accepts, generate can wire.
 
 ### What you get from it
@@ -185,7 +185,7 @@ type MockRepository struct {
 var _ Repository = (*MockRepository)(nil)
 ```
 
-Three properties matter, and all three matter *more* when an agent is writing
+Three properties matter, and all three matter _more_ when an agent is writing
 the tests:
 
 1. **Nothing is hand-rolled.** The mock for a dependency is in the file next
@@ -194,7 +194,7 @@ the tests:
 2. **Unset methods fail loudly** — `MockRepository.GetBookmarkFunc not set` —
    rather than returning a zero value that makes a test pass for the wrong
    reason.
-3. **The compile-time assertion** breaks the build *at the mock* when the
+3. **The compile-time assertion** breaks the build _at the mock_ when the
    contract changes, not at some distant call site three packages away.
 
 Declare dependency interfaces in `contract.go`. An interface declared in
@@ -233,20 +233,20 @@ Two recognition rules apply to all of them: both `// forge:x` and
 after stripping comment syntax — so prose that merely mentions a directive is
 never mistaken for one.
 
-| Marker | Goes on | Effect |
-|---|---|---|
-| `forge:optional-dep` | a `Deps` field | The field may be nil. `validateDeps` must not enforce it, and composition emits the typed zero instead of reporting it unresolved. Guard each use. |
-| `forge:optional-checked` | a dereference line | Silences `--optional-deps-guard` for one deref you know is safe. |
-| `forge:constructor` | the constructor's doc | Names a constructor that isn't `New`, and opts the package IN to the generated observability decorator. Scaffolds stamp it, so packages are born instrumented. |
-| `forge:no-observe` | the constructor, or one interface method | Opts out of that decorator — whole package, or just the one method. Beats every opt-in. |
-| `forge:service` (or `forge:contract`) | the interface's doc | Names the contract when it isn't called `Service`. |
-| `forge:exclude-contract` | the package | No contract codegen at all — and therefore **no generated mock**. |
-| `forge:external-component` (or `forge:provided`) | the package | Constructed by hand in `providers.go`, so the injector skips it — but the mock is still generated. |
-| `forge:outbound-io` | the package | Declares an outbound boundary; lint then forbids inbound RPCs in it. |
+| Marker                                           | Goes on                                  | Effect                                                                                                                                                         |
+| ------------------------------------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `forge:optional-dep`                             | a `Deps` field                           | The field may be nil. `validateDeps` must not enforce it, and composition emits the typed zero instead of reporting it unresolved. Guard each use.             |
+| `forge:optional-checked`                         | a dereference line                       | Silences `--optional-deps-guard` for one deref you know is safe.                                                                                               |
+| `forge:constructor`                              | the constructor's doc                    | Names a constructor that isn't `New`, and opts the package IN to the generated observability decorator. Scaffolds stamp it, so packages are born instrumented. |
+| `forge:no-observe`                               | the constructor, or one interface method | Opts out of that decorator — whole package, or just the one method. Beats every opt-in.                                                                        |
+| `forge:service` (or `forge:contract`)            | the interface's doc                      | Names the contract when it isn't called `Service`.                                                                                                             |
+| `forge:exclude-contract`                         | the package                              | No contract codegen at all — and therefore **no generated mock**.                                                                                              |
+| `forge:external-component` (or `forge:provided`) | the package                              | Constructed by hand in `providers.go`, so the injector skips it — but the mock is still generated.                                                             |
+| `forge:outbound-io`                              | the package                              | Declares an outbound boundary; lint then forbids inbound RPCs in it.                                                                                           |
 
 The distinction between the last two is the one people get wrong.
-`exclude-contract` means *forge does not manage this package* and costs you
-the mock. `external-component` means *forge does not **build** this package*
+`exclude-contract` means _forge does not manage this package_ and costs you
+the mock. `external-component` means _forge does not **build** this package_
 but still generates its mock — the right choice when construction is bespoke
 (adapter wrapping, two-phase setters, a dialer nil'd on unset env) but the
 package is otherwise contract-shaped.
@@ -316,11 +316,11 @@ dsn=postgres://app:s3cr3t@db:5432/prod
 
 `svcerr.Wrap` handles three cases:
 
-| Input | Result |
-|---|---|
-| A deliberate sentinel (`svcerr.NotFound("user")`) | Matching code, message preserved |
-| An existing `*connect.Error` | Passed through |
-| Anything else | `CodeInternal`, message replaced, original kept server-side |
+| Input                                             | Result                                                      |
+| ------------------------------------------------- | ----------------------------------------------------------- |
+| A deliberate sentinel (`svcerr.NotFound("user")`) | Matching code, message preserved                            |
+| An existing `*connect.Error`                      | Passed through                                              |
+| Anything else                                     | `CodeInternal`, message replaced, original kept server-side |
 
 The model: **what you wrap with `%w` is for the operator; what you pass to
 the constructor is for the client.**
@@ -341,7 +341,7 @@ allow-list gate and Bearer extraction; your project owns the validator, the
 identity enricher, and what is on the allow-list.
 
 `forge project audit` reports an `unscoped_auth` category that distinguishes
-*authenticated* from *authorized* — on one real application it found that 85
+_authenticated_ from _authorized_ — on one real application it found that 85
 of 89 authenticated RPCs never resolve the caller, meaning every signed-in
 user is treated identically.
 
@@ -418,13 +418,13 @@ rather than silently dropping them.
 
 Maturity is not uniform, and the docs should not pretend otherwise:
 
-| Target | State |
-|---|---|
-| Kubernetes | Production-grade; the deeply-developed path |
-| External (`sh -c`) | Mature by simplicity; refuses to synthesize a rollback it cannot verify |
-| Compose | Real, thinner; rollback pins the previous tag and assumes the image is still local |
-| Firebase | Substantial, frontend-only |
-| Host | Excellent dev loop, not a deploy target |
+| Target             | State                                                                              |
+| ------------------ | ---------------------------------------------------------------------------------- |
+| Kubernetes         | Production-grade; the deeply-developed path                                        |
+| External (`sh -c`) | Mature by simplicity; refuses to synthesize a rollback it cannot verify            |
+| Compose            | Real, thinner; rollback pins the previous tag and assumes the image is still local |
+| Firebase           | Substantial, frontend-only                                                         |
+| Host               | Excellent dev loop, not a deploy target                                            |
 
 ### Failures move to author time
 
@@ -445,7 +445,7 @@ content-addressed digests; `forge env promote v1.4.0 --to prod` pins the same
 ones. The bytes that passed staging are the bytes that ship.
 
 **Preflight before the first apply.** On remote clusters Forge verifies every
-referenced Secret key and every image against the *live* target, reports all
+referenced Secret key and every image against the _live_ target, reports all
 failures at once, and refuses to apply. `ImagePullBackOff` becomes a pre-apply
 block instead of a mid-rollout drip.
 

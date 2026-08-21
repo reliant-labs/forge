@@ -1,9 +1,5 @@
 import React from "react";
-import {
-  useColorScheme,
-  type StyleProp,
-  type ViewStyle,
-} from "react-native";
+import { useColorScheme, type StyleProp, type ViewStyle } from "react-native";
 import {
   SafeAreaView as RNSafeAreaView,
   type SafeAreaViewProps as RNSafeAreaViewProps,

@@ -19,16 +19,8 @@ export interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
   bordered?: boolean;
 }
 
-function Table({
-  bordered = true,
-  className,
-  children,
-  ...rest
-}: TableProps) {
-  const tableClass = [
-    "min-w-full divide-y divide-border",
-    className ?? "",
-  ]
+function Table({ bordered = true, className, children, ...rest }: TableProps) {
+  const tableClass = ["min-w-full divide-y divide-border", className ?? ""]
     .filter(Boolean)
     .join(" ");
 
@@ -58,7 +50,9 @@ export function TableHeader({
   children,
   ...rest
 }: TableHeaderProps) {
-  const composed = ["bg-surface-muted", className ?? ""].filter(Boolean).join(" ");
+  const composed = ["bg-surface-muted", className ?? ""]
+    .filter(Boolean)
+    .join(" ");
   return (
     <thead className={composed} {...rest}>
       {children}
@@ -98,7 +92,9 @@ export function TableRow({
 }: TableRowProps) {
   const composed = [
     "transition-colors",
-    clickable ? "cursor-pointer hover:bg-accent-surface focus-visible:bg-accent-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent" : "",
+    clickable
+      ? "cursor-pointer hover:bg-accent-surface focus-visible:bg-accent-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+      : "",
     striped ? "bg-surface-muted" : "bg-surface",
     className ?? "",
   ]
@@ -122,7 +118,9 @@ export function TableRow({
               if (e.defaultPrevented) return;
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                onClick?.(e as unknown as React.MouseEvent<HTMLTableRowElement>);
+                onClick?.(
+                  e as unknown as React.MouseEvent<HTMLTableRowElement>,
+                );
               }
             },
           }
@@ -163,11 +161,7 @@ export function TableHead({
 
 export type TableCellProps = React.TdHTMLAttributes<HTMLTableCellElement>;
 
-export function TableCell({
-  className,
-  children,
-  ...rest
-}: TableCellProps) {
+export function TableCell({ className, children, ...rest }: TableCellProps) {
   const composed = [
     "whitespace-nowrap px-4 py-3 text-sm text-ink",
     className ?? "",

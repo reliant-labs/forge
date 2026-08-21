@@ -82,7 +82,7 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, handEdite
 
 	for _, rel := range rels {
 		// This run wrote this path — definitely not stale.
-		if checksums.WrittenThisRun[rel] {
+		if checksums.WasWrittenThisRun(rel) {
 			continue
 		}
 		// Disowned: user-owned by recorded intent (markers are stripped

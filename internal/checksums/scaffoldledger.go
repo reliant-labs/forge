@@ -72,6 +72,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -107,18 +108,30 @@ type scaffoldedJSON struct {
 // through every signature.
 var scaffoldLedgers = map[string]map[string]ScaffoldEntry{}
 
+// scaffoldMu guards scaffoldLedgers AND the per-root ledger maps it hands
+// out. loadScaffoldLedger returns the live map rather than a copy, so the
+// mutation its callers perform is a mutation of shared process state; with
+// `forge generate` fanning scaffold writers out across goroutines that is a
+// genuine data race. Every exported entry point below takes this lock and
+// calls the *Locked helpers, which must never take it themselves.
+var scaffoldMu sync.Mutex
+
 // ResetScaffoldLedgerCache drops the memoized ledgers so the next query
 // re-reads from disk. Called at the head of a pipeline run (a long-lived
 // process must not answer from a previous invocation's cache) and by tests
 // that build several projects in one binary.
-func ResetScaffoldLedgerCache() { scaffoldLedgers = map[string]map[string]ScaffoldEntry{} }
+func ResetScaffoldLedgerCache() {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	scaffoldLedgers = map[string]map[string]ScaffoldEntry{}
+}
 
 // loadScaffoldLedger returns root's ledger, reading it from disk on first
 // use. A missing or unparseable file yields an EMPTY ledger rather than an
 // error: the ledger's only job is to suppress a re-write, so the failure
 // mode of an unreadable ledger must be forge's historical behavior
 // (scaffold it), never a refusal to scaffold a project that has no ledger.
-func loadScaffoldLedger(root string) map[string]ScaffoldEntry {
+func loadScaffoldLedgerLocked(root string) map[string]ScaffoldEntry {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		abs = root
@@ -141,7 +154,7 @@ func loadScaffoldLedger(root string) map[string]ScaffoldEntry {
 // ledger is empty (the same no-bookkeeping-churn rule Save applies to the
 // other two state files). Best-effort by the same discipline as the load:
 // a ledger we cannot write must not abort a write that already succeeded.
-func saveScaffoldLedger(root string) {
+func saveScaffoldLedgerLocked(root string) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		abs = root
@@ -170,7 +183,9 @@ func saveScaffoldLedger(root string) {
 //	recorded && present  → the user's bytes: leave them
 //	recorded && absent   → the user deleted it: leave it deleted
 func ScaffoldRecorded(root, relPath string) bool {
-	_, ok := loadScaffoldLedger(root)[filepath.ToSlash(relPath)]
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	_, ok := loadScaffoldLedgerLocked(root)[filepath.ToSlash(relPath)]
 	return ok
 }
 
@@ -189,13 +204,15 @@ func ScaffoldRecorded(root, relPath string) bool {
 // rewrites the file, so a steady-state `forge generate` produces no ledger
 // diff.
 func RecordScaffold(root, relPath string) {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
 	rel := filepath.ToSlash(relPath)
-	led := loadScaffoldLedger(root)
+	led := loadScaffoldLedgerLocked(root)
 	if _, ok := led[rel]; ok {
 		return // already recorded — no churn
 	}
 	led[rel] = ScaffoldEntry{ScaffoldedAt: time.Now().UTC().Format(time.RFC3339)}
-	saveScaffoldLedger(root)
+	saveScaffoldLedgerLocked(root)
 }
 
 // ForgetScaffold drops relPath's birth record, returning the path to the
@@ -207,20 +224,24 @@ func RecordScaffold(root, relPath string) {
 // never actually shipped — the run would have consumed the project's one
 // chance to be born. See RestoreRollback.
 func ForgetScaffold(root, relPath string) {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
 	rel := filepath.ToSlash(relPath)
-	led := loadScaffoldLedger(root)
+	led := loadScaffoldLedgerLocked(root)
 	if _, ok := led[rel]; !ok {
 		return
 	}
 	delete(led, rel)
-	saveScaffoldLedger(root)
+	saveScaffoldLedgerLocked(root)
 }
 
 // ScaffoldLedgerPaths returns root's recorded paths, sorted. Exposed for
 // tests and for `forge project audit`-style reporting; callers must not
 // mutate the ledger through it.
 func ScaffoldLedgerPaths(root string) []string {
-	led := loadScaffoldLedger(root)
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	led := loadScaffoldLedgerLocked(root)
 	out := make([]string, 0, len(led))
 	for p := range led {
 		out = append(out, p)
@@ -252,12 +273,14 @@ func ScaffoldLedgerPaths(root string) []string {
 // error is not evidence of a deletion, and a report that cannot tell the
 // two apart is a report that cries wolf.
 func AbsentScaffolds(root string) []string {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		abs = root
 	}
 	var out []string
-	for p := range loadScaffoldLedger(abs) {
+	for p := range loadScaffoldLedgerLocked(abs) {
 		if _, serr := os.Stat(filepath.Join(abs, filepath.FromSlash(p))); os.IsNotExist(serr) {
 			out = append(out, p)
 		}
@@ -348,15 +371,17 @@ func ScaffoldOnceDecision(root, relPath string) (write bool) {
 // is a new birth for this purpose, and the recorded hash has to track the
 // bytes currently on disk or the very next run would read the file as edited.
 func RecordScaffoldWithHash(root, relPath string, content []byte) {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
 	rel := filepath.ToSlash(relPath)
-	led := loadScaffoldLedger(root)
+	led := loadScaffoldLedgerLocked(root)
 	e := led[rel]
 	if e.ScaffoldedAt == "" {
 		e.ScaffoldedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	e.BirthHash = Hash(content)
 	led[rel] = e
-	saveScaffoldLedger(root)
+	saveScaffoldLedgerLocked(root)
 }
 
 // ScaffoldIsPristine reports whether relPath is still byte-for-byte what
@@ -369,8 +394,10 @@ func RecordScaffoldWithHash(root, relPath string, content []byte) {
 // rewriting a file the user may have spent an afternoon on is the failure
 // worth avoiding.
 func ScaffoldIsPristine(root, relPath string) bool {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
 	rel := filepath.ToSlash(relPath)
-	led := loadScaffoldLedger(root)
+	led := loadScaffoldLedgerLocked(root)
 	e, ok := led[rel]
 	if !ok || e.BirthHash == "" {
 		return false

@@ -27,7 +27,8 @@ function Sparkline({ points }: { points: SparklinePoint[] }) {
 
   const pathPoints = points.map((p, i) => {
     const x = padding + (i / (points.length - 1)) * (width - padding * 2);
-    const y = height - padding - ((p.value - min) / range) * (height - padding * 2);
+    const y =
+      height - padding - ((p.value - min) / range) * (height - padding * 2);
     return `${x},${y}`;
   });
 
@@ -52,7 +53,11 @@ function Sparkline({ points }: { points: SparklinePoint[] }) {
   );
 }
 
-function TrendIndicator({ change }: { change: { value: number; label?: string } }) {
+function TrendIndicator({
+  change,
+}: {
+  change: { value: number; label?: string };
+}) {
   const isPositive = change.value > 0;
   const isNeutral = change.value === 0;
 
@@ -74,23 +79,41 @@ function TrendIndicator({ change }: { change: { value: number; label?: string } 
           strokeWidth={2.5}
           stroke="currentColor"
         >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25"
+          />
         </svg>
       )}
       {isPositive ? "+" : ""}
-      {change.value}%{change.label && <span className="ml-0.5 text-ink-muted">{change.label}</span>}
+      {change.value}%
+      {change.label && (
+        <span className="ml-0.5 text-ink-muted">{change.label}</span>
+      )}
     </div>
   );
 }
 
-export default function MetricCard({ label, value, change, icon, sparkline, href }: MetricCardProps) {
+export default function MetricCard({
+  label,
+  value,
+  change,
+  icon,
+  sparkline,
+  href,
+}: MetricCardProps) {
   const content = (
     <div className="rounded-lg border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md">
       <div className="flex items-start justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            {icon && <div className="flex-shrink-0 text-ink-subtle">{icon}</div>}
-            <p className="text-sm font-medium text-ink-muted truncate">{label}</p>
+            {icon && (
+              <div className="flex-shrink-0 text-ink-subtle">{icon}</div>
+            )}
+            <p className="text-sm font-medium text-ink-muted truncate">
+              {label}
+            </p>
           </div>
           <div className="mt-2 flex items-baseline gap-2">
             <p className="text-2xl font-semibold text-ink">{value}</p>

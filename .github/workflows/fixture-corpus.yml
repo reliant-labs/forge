@@ -56,7 +56,7 @@ jobs:
       # provision Node explicitly instead of relying on the runner image.
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
 
       # Cache npm's content-addressable store (~/.npm). setup-node's
       # built-in `cache: npm` can't be used: it keys on a checked-in

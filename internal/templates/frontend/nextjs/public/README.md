@@ -5,6 +5,7 @@ reachable at `/<filename>` with no build step (e.g. `public/logo.svg` →
 `https://your-host/logo.svg`).
 
 Good candidates:
+
 - `favicon.ico`, `apple-touch-icon.png`
 - `robots.txt`, `sitemap.xml`
 - Pre-built `og-image.png` for social previews

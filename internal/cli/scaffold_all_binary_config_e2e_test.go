@@ -119,4 +119,3 @@ func TestE2EAllBinaryConfigNoPrimaryBinding_RejectsAtGenerate(t *testing.T) {
 		t.Errorf("error output should point at the binary_config annotation fix:\n%s", out)
 	}
 }
-

@@ -206,8 +206,8 @@ func TestGenerateMock_Tier1WriterRecordsTarget(t *testing.T) {
 	}
 
 	const rel = "internal/handlers/mocks/orders_mock_gen.go"
-	if !checksums.Tier1TargetSet[rel] {
-		t.Fatalf("handler mock was not recorded as a Tier-1 target; targets=%v", checksums.Tier1TargetSet)
+	if !checksums.IsTier1Target(rel) {
+		t.Fatalf("handler mock was not recorded as a Tier-1 target; targets=%v", checksums.Tier1Targets())
 	}
 	b, err := os.ReadFile(filepath.Join(projectDir, rel))
 	if err != nil {

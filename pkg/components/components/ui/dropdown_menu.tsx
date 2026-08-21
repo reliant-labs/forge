@@ -20,13 +20,18 @@ interface DropdownMenuProps {
   align?: "left" | "right";
 }
 
-export default function DropdownMenu({ trigger, groups, align = "right" }: DropdownMenuProps) {
+export default function DropdownMenu({
+  trigger,
+  groups,
+  align = "right",
+}: DropdownMenuProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node))
+        setOpen(false);
     }
     if (open) document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -76,8 +81,15 @@ export default function DropdownMenu({ trigger, groups, align = "right" }: Dropd
 
                 if (item.href) {
                   return (
-                    <a key={ii} href={item.href} className={baseStyle} onClick={() => setOpen(false)}>
-                      {item.icon && <span className="h-4 w-4">{item.icon}</span>}
+                    <a
+                      key={ii}
+                      href={item.href}
+                      className={baseStyle}
+                      onClick={() => setOpen(false)}
+                    >
+                      {item.icon && (
+                        <span className="h-4 w-4">{item.icon}</span>
+                      )}
                       {item.label}
                     </a>
                   );

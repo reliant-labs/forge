@@ -35,9 +35,7 @@ export default function Label({
       {...rest}
     >
       {children}
-      {required ? (
-        <Text style={{ color: palette.destructive }}> *</Text>
-      ) : null}
+      {required ? <Text style={{ color: palette.destructive }}> *</Text> : null}
     </Text>
   );
 }

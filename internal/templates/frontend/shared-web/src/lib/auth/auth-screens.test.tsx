@@ -148,7 +148,9 @@ describe("AuthCallbackScreen", () => {
         description: "scope offline_access is not enabled",
       }),
     );
-    render(<AuthCallbackScreen search="?error=invalid_scope" navigate={vi.fn()} />);
+    render(
+      <AuthCallbackScreen search="?error=invalid_scope" navigate={vi.fn()} />,
+    );
 
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain(
@@ -163,7 +165,9 @@ describe("AuthCallbackScreen", () => {
     handleAuthCallback.mockRejectedValue(
       new OAuthError({ code: "access_denied" }),
     );
-    render(<AuthCallbackScreen search="?error=access_denied" navigate={vi.fn()} />);
+    render(
+      <AuthCallbackScreen search="?error=access_denied" navigate={vi.fn()} />,
+    );
 
     await waitFor(() => {
       expect(screen.getByText(/cancelled/i)).toBeTruthy();
@@ -172,15 +176,17 @@ describe("AuthCallbackScreen", () => {
 
   it("reports a local failure (CSRF, no pending login) as an error", async () => {
     handleAuthCallback.mockRejectedValue(
-      new Error("auth: the state returned by the identity provider does not match"),
+      new Error(
+        "auth: the state returned by the identity provider does not match",
+      ),
     );
     const navigate = vi.fn();
-    render(<AuthCallbackScreen search="?code=abc&state=wrong" navigate={navigate} />);
+    render(
+      <AuthCallbackScreen search="?code=abc&state=wrong" navigate={navigate} />,
+    );
 
     await waitFor(() => {
-      expect(screen.getByRole("alert").textContent).toContain(
-        "does not match",
-      );
+      expect(screen.getByRole("alert").textContent).toContain("does not match");
     });
     // And it does NOT navigate anywhere: a failed exchange must not look like
     // a successful sign-in.

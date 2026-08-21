@@ -18,16 +18,12 @@ export default function GlobalError({
       <body className="bg-surface font-sans text-ink antialiased">
         <main className="flex flex-1 flex-col items-center justify-center p-8">
           <div className="max-w-md text-center">
-            <h1 className="mb-4 text-3xl font-bold tracking-tight">
-              Application error
-            </h1>
+            <h1 className="mb-4 text-3xl font-bold tracking-tight">Application error</h1>
             <p className="mb-6 text-ink-muted">
               A critical error occurred and the app could not recover.
             </p>
             {error.digest ? (
-              <p className="mb-6 font-mono text-xs text-ink-muted">
-                Error ID: {error.digest}
-              </p>
+              <p className="mb-6 font-mono text-xs text-ink-muted">Error ID: {error.digest}</p>
             ) : null}
             <button
               type="button"

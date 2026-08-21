@@ -30,7 +30,10 @@ function SkeletonRow({ cols }: { cols: number }) {
         <span className="sr-only">Loading…</span>
         <div aria-hidden="true" className="flex items-center gap-4 px-4 py-3">
           {Array.from({ length: cols }).map((_, i) => (
-            <div key={i} className="h-4 flex-1 animate-pulse rounded bg-surface-muted" />
+            <div
+              key={i}
+              className="h-4 flex-1 animate-pulse rounded bg-surface-muted"
+            />
           ))}
         </div>
       </td>
@@ -111,7 +114,9 @@ export default function DataTable<T extends Record<string, unknown>>({
                 <th
                   key={col.key}
                   className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-ink-muted ${
-                    col.sortable ? "cursor-pointer select-none hover:text-ink-muted" : ""
+                    col.sortable
+                      ? "cursor-pointer select-none hover:text-ink-muted"
+                      : ""
                   }`}
                   style={col.width ? { width: col.width } : undefined}
                   onClick={() => col.sortable && handleSort(col.key)}

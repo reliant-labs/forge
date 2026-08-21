@@ -91,8 +91,10 @@
   --radius-lg: 0.75rem; /* containers: cards, panels, tiles */
   --radius-xl: 1rem; /* the largest surfaces: modals, auth card */
   --shadow-sm: 0 1px 2px 0 oklch(22% 0.02 265deg / 6%); /* resting elevation */
-  --shadow-md: 0 4px 12px -2px oklch(22% 0.02 265deg / 8%), 0 2px 4px -2px oklch(22% 0.02 265deg / 5%); /* hover / raised */
-  --shadow-lg: 0 12px 28px -6px oklch(22% 0.02 265deg / 12%), 0 4px 8px -4px oklch(22% 0.02 265deg / 6%); /* popovers, dropdowns */
+  --shadow-md: 0 4px 12px -2px oklch(22% 0.02 265deg / 8%),
+    0 2px 4px -2px oklch(22% 0.02 265deg / 5%); /* hover / raised */
+  --shadow-lg: 0 12px 28px -6px oklch(22% 0.02 265deg / 12%),
+    0 4px 8px -4px oklch(22% 0.02 265deg / 6%); /* popovers, dropdowns */
   --color-surface: oklch(99% 0.002 265deg); /* page / card background */
   --color-surface-muted: oklch(97% 0.005 265deg); /* subtle fills: table head, hovers */
   --color-border: oklch(92% 0.008 265deg);
@@ -103,7 +105,9 @@
   --color-accent: oklch(52% 0.19 265deg); /* primary action */
   --color-accent-hover: oklch(45% 0.19 265deg);
   --color-on-accent: oklch(99% 0.005 265deg); /* text/icon on an accent fill */
-  --color-accent-surface: oklch(96% 0.019 265deg); /* accent-tinted fill: info badge, active chip / tab */
+  --color-accent-surface: oklch(
+    96% 0.019 265deg
+  ); /* accent-tinted fill: info badge, active chip / tab */
   --color-accent-border: oklch(88% 0.058 265deg);
   --color-accent-ink: oklch(42% 0.17 265deg); /* accent text on an accent-surface fill */
   --color-danger: oklch(55% 0.2 25deg); /* destructive action / error */

@@ -13,6 +13,7 @@ First minor release. The root CLI (`v0.1.0`) and the runtime library
 (`pkg/v0.1.0`) are tagged together, as always.
 
 ### Added
+
 - **The generated scaffold test row is falsifiable.** Every scaffolded
   handler ships a self-destructing test row that asserts the RPC is not
   implemented yet, so it goes red the moment you write the handler.
@@ -43,6 +44,7 @@ First minor release. The root CLI (`v0.1.0`) and the runtime library
   spellings, so stubs already on disk stay excisable. Generated stubs no
   longer import `fmt` (the message is composed from the RPC name), and
   the AST import-fixer no longer adds it.
+
 - **npm license gate for the published web-runtime.**
   `scripts/check-npm-licenses.sh` is the npm twin of `check-licenses.sh`
   — same allowlist-not-blocklist bar, same "an unrecognized license
@@ -53,7 +55,7 @@ First minor release. The root CLI (`v0.1.0`) and the runtime library
   exemptable through the allowlist. web-runtime passes with zero
   production dependencies.
 - **Entity protos are dead: SQL is the schema language.** `forge scaffold
-  entity bookmark url:string title:string tags:[]string done:bool`
+entity bookmark url:string title:string tags:[]string done:bool`
   emits the create-table migration (`db/migrations/NNNNN_create_*.sql`
   — `TEXT PRIMARY KEY CHECK (id <> '')`, NOT NULL + defaults, native
   arrays, `created_at`/`updated_at TIMESTAMPTZ DEFAULT (now())`;
@@ -69,6 +71,7 @@ First minor release. The root CLI (`v0.1.0`) and the runtime library
   ⇒ search filter span.
 
 ### Removed
+
 - **`deploy/kcl/components_gen.json`. KCL is the sole source of truth for
   deploy.** The generated component inventory is gone — the file, the
   `codegen.GenerateComponentsJSON` / `ComponentsToJSON` /
@@ -79,7 +82,7 @@ First minor release. The root CLI (`v0.1.0`) and the runtime library
   What replaces it is `deploy/kcl/components.k`: one typed literal per
   component (`fc.Server {name = "billing", build = {...}}`), **scaffolded
   once and owned by the project from then on.** `forge scaffold
-  service|worker|binary|operator` APPENDS an entry; nothing forge does
+service|worker|binary|operator` APPENDS an entry; nothing forge does
   ever rewrites what is already there.
 
   Why: a file forge regenerated every run could not hold the per-env
@@ -112,6 +115,7 @@ First minor release. The root CLI (`v0.1.0`) and the runtime library
   in each env's `main.k`, replace `fc.load_migrate(fc.COMPONENTS_GEN)`
   with the literal argv, and delete the gitignore entry. `forge generate`
   scaffolds `components.k` for you if it is absent.
+
 - **The per-component port.** `config.ComponentConfig.Ports`,
   `config.PortSpec`, `config.HTTPPortName`, `ComponentConfig.PrimaryPort()`
   and the `ports` key in `deploy/kcl/components_gen.json` are gone — no
@@ -149,11 +153,12 @@ First minor release. The root CLI (`v0.1.0`) and the runtime library
   Cuts ~470 lines from every project's generated output.
 
 ### Changed
+
 - **One custom RPC, one handler file.** The generate pipeline now
   scaffolds each unimplemented custom RPC into its own
   `internal/handlers/<svc>/rpc_<snake_name>.go` — package clause,
   imports, one `*Service` method, its `// forge:gen unwired-stub
-  symbol=<pkg>.<Method>` marker — instead of piling every RPC into one
+symbol=<pkg>.<Method>` marker — instead of piling every RPC into one
   shared `handlers.go`. This is the same filename `forge scaffold rpc`
   has always written for an RPC that is not in the proto yet, so the two
   paths agree; previously the layout depended on whether you scaffolded
@@ -171,22 +176,22 @@ First minor release. The root CLI (`v0.1.0`) and the runtime library
   unimplemented, so a `handlers.go` already holding your handlers is
   never read, rewritten, or re-stubbed — it keeps working exactly as it
   is, and only NEW RPCs land in per-RPC files. The `forgeconv-handler-
-  file-size` lint now names `rpc_<name>.go` in its remediation instead of
+file-size` lint now names `rpc_<name>.go` in its remediation instead of
   a third spelling.
 - **Scaffolding is one verb: `forge scaffold`.** Arity picks the
   granularity — bare `forge scaffold` births every `// forge:entity`-marked
   message the protos imply and then projects them; `forge scaffold <noun>
-  …` scaffolds exactly one thing (`entity`, `service`, `worker`,
+…` scaffolds exactly one thing (`entity`, `service`, `worker`,
   `operator`, `crd`, `binary`, `frontend`, `scenario`, `webhook`,
   `package`, `adapter`, `library`, `handler-file`, `rpc`). This replaces
   `forge project add <noun>` and `forge project scaffold`, which were the
   same operation spelled as unrelated commands. There is no alias and no
   deprecation shim: the old spellings exit non-zero with `unknown
-  command`. `forge project` keeps the commands that act on the project as
+command`. `forge project` keeps the commands that act on the project as
   a whole — `new`, `delete`, `disown`, `migrate`, `upgrade`, `map`,
   `graph`, `introspect`, `features`, `annotations`, `audit`.
 - `pkg/app/app_gen.go`: `RESTHandler` is now a method (`func (a *App)
-  RESTHandler() http.Handler`) backed by an unexported `restHandler`
+RESTHandler() http.Handler`) backed by an unexported `restHandler`
   field. Required by the `serverkit.Application` interface contract;
   the renamed accessor preserves the public read path
   (`app.RESTHandler()` instead of `app.RESTHandler`).
@@ -199,6 +204,7 @@ First minor release. The root CLI (`v0.1.0`) and the runtime library
   probe listener can forward `serverkit.Config.OperatorHealthProbeAddr`.
 
 ### Migration
+
 - See the new `v0.x-to-serverkit` migration skill for the upgrade path,
   including the manual edits required for projects whose
   `pkg/app/bootstrap.go` is forge-forked (e.g. cp-forge).
@@ -208,6 +214,7 @@ First minor release. The root CLI (`v0.1.0`) and the runtime library
 ### Removed
 
 ### Fixed
+
 - `forge env up --target <name>` did cluster work for targets that have
   no cluster deployment edge. Target selection filtered the manifest
   stream, which is too late: cluster creation and cross-cluster

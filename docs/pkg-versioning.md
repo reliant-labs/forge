@@ -32,7 +32,7 @@ released. The implementation lives in:
 
 4. `forge project new` run by such a binary emits a **clean version pin** into
    the project's go.mod — `require github.com/reliant-labs/forge/pkg
-   vX.Y.Z` with **no replace directive**. `go mod tidy`, docker builds,
+vX.Y.Z` with **no replace directive**. `go mod tidy`, docker builds,
    and CI all resolve it from the module proxy like any other dependency.
    No `.forge-pkg/` directory exists in this mode and the Dockerfile has
    no `COPY .forge-pkg/` line.
@@ -50,7 +50,7 @@ published to pin. Instead:
    (`<parent-of-project>/forge/pkg` declaring the right module path —
    the common `~/src/{forge,myproject}` layout) and, when found, emits a
    host-absolute `replace github.com/reliant-labs/forge/pkg =>
-   <that path>` into go.mod. With no sibling, nothing is emitted and
+<that path>` into go.mod. With no sibling, nothing is emitted and
    `go mod tidy` resolves a pseudo-version from the proxy.
 2. The first `forge generate` sees the host-absolute replace, vendors
    the source into `<project>/.forge-pkg/` (~the full pkg tree), and
@@ -91,13 +91,13 @@ forge generate   # refreshes the Dockerfile (drops the COPY line)
 same dev-vs-release model — for the same reason and with the same failure
 mode if it drifts.
 
-| | Go | npm |
-|---|---|---|
-| Package | `github.com/reliant-labs/forge/pkg` | `@reliantlabs/forge-web-runtime` |
-| Release tag | `pkg/vX.Y.Z` | `web-runtime/vX.Y.Z` |
-| Cut a release | `task release:pkg -- vX.Y.Z` | `task release:web-runtime -- vX.Y.Z` |
-| Dev bridge | `replace` + `.forge-pkg/` | `file:<path-to-web-runtime>` |
-| Release specifier | the pinned version in `go.mod` | `webRuntimePublishedRange` (`^X.Y.Z`) |
+|                   | Go                                  | npm                                   |
+| ----------------- | ----------------------------------- | ------------------------------------- |
+| Package           | `github.com/reliant-labs/forge/pkg` | `@reliantlabs/forge-web-runtime`      |
+| Release tag       | `pkg/vX.Y.Z`                        | `web-runtime/vX.Y.Z`                  |
+| Cut a release     | `task release:pkg -- vX.Y.Z`        | `task release:web-runtime -- vX.Y.Z`  |
+| Dev bridge        | `replace` + `.forge-pkg/`           | `file:<path-to-web-runtime>`          |
+| Release specifier | the pinned version in `go.mod`      | `webRuntimePublishedRange` (`^X.Y.Z`) |
 
 **Release flow.** A released forge writes an ordinary semver range into
 every scaffolded frontend's `package.json`, and npm resolves it from the

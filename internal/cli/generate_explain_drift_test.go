@@ -168,7 +168,7 @@ func TestExplainDrift_NoRenderProduced(t *testing.T) {
 	ctx, drift, _ := newExplainDriftCtx(t, rel, []byte("package app\n"), []byte("package app // edit\n"))
 	prepareExplainDrift(ctx, drift)
 	// Forge still owns the path; its emitter step just didn't run.
-	checksums.Tier1TargetSet[rel] = true
+	checksums.MarkTier1Target(rel)
 
 	var b strings.Builder
 	printExplainDriftDiffs(&b, ctx)

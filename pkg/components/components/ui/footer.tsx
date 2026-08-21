@@ -30,9 +30,7 @@ export default function Footer({
           {/* Link columns */}
           {columns.map((col) => (
             <div key={col.title}>
-              <h4 className="text-sm font-semibold text-ink">
-                {col.title}
-              </h4>
+              <h4 className="text-sm font-semibold text-ink">{col.title}</h4>
               <ul className="mt-4 space-y-3">
                 {col.links.map((link) => (
                   <li key={link.label}>
@@ -51,9 +49,7 @@ export default function Footer({
 
         {/* Bottom bar */}
         <div className="mt-12 flex flex-col items-center justify-between gap-4 border-t border-border pt-8 sm:flex-row">
-          {copyright && (
-            <p className="text-sm text-ink-subtle">{copyright}</p>
-          )}
+          {copyright && <p className="text-sm text-ink-subtle">{copyright}</p>}
           {socials && socials.length > 0 && (
             <div className="flex gap-4">
               {socials.map((social, i) => (

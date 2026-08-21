@@ -11,7 +11,7 @@ Until this existed, the only way to say that was a filesystem path:
 frontends:
   - name: reliant-web
     type: vite-spa
-    path: ../reliant/web     # works on a laptop, absent in CI
+    path: ../reliant/web # works on a laptop, absent in CI
 ```
 
 This document describes what replaced it, and why the replacement is a
@@ -35,7 +35,7 @@ frontends[name=reliant-web] (type=vite-spa) declared in forge.yaml but path
 ```
 
 The less obvious failure is the one that matters more. Where the sibling
-checkout *is* present, the build succeeds — and ships whatever happened to
+checkout _is_ present, the build succeeds — and ships whatever happened to
 be checked out in that directory. There is no pin, so two machines with
 different `../reliant` states produce different artifacts from identical
 commits. A deploy is not reproducible, and nothing reports that.
@@ -65,7 +65,7 @@ from `main` against a backend pinned to `v1.6.2` with nothing flagging it.
 
 And it re-introduces the thing forge's philosophy targets directly: state
 of the world that must be set up, in the right order, before the
-declarative layer runs. A step that must be *run* is a step that can be
+declarative layer runs. A step that must be _run_ is a step that can be
 skipped, half-completed, or lost when a teammate clones the repo.
 
 ## The declaration

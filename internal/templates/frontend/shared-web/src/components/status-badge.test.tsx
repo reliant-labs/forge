@@ -46,32 +46,58 @@ describe("StatusBadge", () => {
   });
 
   it("humanizes a multi-word member name", () => {
-    render(<StatusBadge value={OrderStatus.PAYMENT_CAPTURED} enumType={OrderStatus} />);
+    render(
+      <StatusBadge
+        value={OrderStatus.PAYMENT_CAPTURED}
+        enumType={OrderStatus}
+      />,
+    );
 
     expect(screen.getByText("Payment Captured")).toBeTruthy();
   });
 
   // The component's second documented call, verbatim.
   it("accepts a bare member name alongside the enum object", () => {
-    render(<StatusBadge value="PAYMENT_CAPTURED" enumType={OrderStatus} dot={false} />);
+    render(
+      <StatusBadge
+        value="PAYMENT_CAPTURED"
+        enumType={OrderStatus}
+        dot={false}
+      />,
+    );
 
     expect(screen.getByText("Payment Captured")).toBeTruthy();
   });
 
   it("strips the enum type prefix protobuf-es left on the member names", () => {
-    render(<StatusBadge value={NestedOrderStatus.ORDER_STATUS_IN_TRANSIT} enumType={NestedOrderStatus} />);
+    render(
+      <StatusBadge
+        value={NestedOrderStatus.ORDER_STATUS_IN_TRANSIT}
+        enumType={NestedOrderStatus}
+      />,
+    );
 
     expect(screen.getByText("In Transit")).toBeTruthy();
   });
 
   it("resolves a fully-qualified DB string against the enum object", () => {
-    render(<StatusBadge value="ORDER_STATUS_PAYMENT_CAPTURED" enumType={OrderStatus} />);
+    render(
+      <StatusBadge
+        value="ORDER_STATUS_PAYMENT_CAPTURED"
+        enumType={OrderStatus}
+      />,
+    );
 
     expect(screen.getByText("Payment Captured")).toBeTruthy();
   });
 
   it("still strips the prefix from a plain string column given the type name", () => {
-    render(<StatusBadge value="ORDER_STATUS_PAYMENT_CAPTURED" enumType="OrderStatus" />);
+    render(
+      <StatusBadge
+        value="ORDER_STATUS_PAYMENT_CAPTURED"
+        enumType="OrderStatus"
+      />,
+    );
 
     expect(screen.getByText("Payment Captured")).toBeTruthy();
   });

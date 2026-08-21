@@ -80,9 +80,9 @@ describe("stripServerFraming", () => {
   });
 
   it("leaves the server's own message intact — every word of it is display copy", () => {
-    expect(stripServerFraming("[invalid_argument] expires_at must follow issued_at")).toBe(
-      "expires_at must follow issued_at",
-    );
+    expect(
+      stripServerFraming("[invalid_argument] expires_at must follow issued_at"),
+    ).toBe("expires_at must follow issued_at");
   });
 
   it("is idempotent, so double-stripping a normalized message is safe", () => {
@@ -173,7 +173,9 @@ describe("normalizeError across a package boundary", () => {
 
   it("does not mistake an unrelated Error for a normalized one", () => {
     expect(new Error("plain") instanceof ConnectClientError).toBe(false);
-    expect(new ConnectError("x", Code.Internal) instanceof ConnectClientError).toBe(false);
+    expect(
+      new ConnectError("x", Code.Internal) instanceof ConnectClientError,
+    ).toBe(false);
     // Right name, no payload — not a ConnectClientError.
     const impostor = new Error("x");
     impostor.name = "ConnectClientError";
@@ -191,8 +193,12 @@ describe("normalizeError across a package boundary", () => {
     const metadata = { [FORGE_ERROR_REASON_HEADER]: "patient_not_found" };
     const raw = "no such patient";
 
-    const foreign = normalizeError(new ForeignConnectError(raw, Code.NotFound, metadata));
-    const native = normalizeError(new ConnectError(raw, Code.NotFound, metadata));
+    const foreign = normalizeError(
+      new ForeignConnectError(raw, Code.NotFound, metadata),
+    );
+    const native = normalizeError(
+      new ConnectError(raw, Code.NotFound, metadata),
+    );
 
     // Field-for-field identical to the same error from our own copy — the
     // property under test, without blessing a particular `code` spelling.

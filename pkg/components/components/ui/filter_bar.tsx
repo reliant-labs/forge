@@ -54,7 +54,9 @@ export default function FilterBar({
   onFilterChange,
   searchPlaceholder = "Search...",
 }: FilterBarProps) {
-  const [uncontrolled, setUncontrolled] = useState<Record<string, string>>(defaultValues ?? {});
+  const [uncontrolled, setUncontrolled] = useState<Record<string, string>>(
+    defaultValues ?? {},
+  );
   const controlled = controlledValues !== undefined;
   const values = controlledValues ?? uncontrolled;
 
@@ -152,8 +154,18 @@ export default function FilterBar({
                 aria-label={`Remove ${f.label} filter`}
                 className="flex h-4 w-4 items-center justify-center rounded-full transition hover:bg-accent-surface"
               >
-                <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <svg
+                  className="h-3 w-3"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
                 </svg>
               </button>
             </span>

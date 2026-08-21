@@ -44,7 +44,10 @@ function useListPatients(
     queryFn: () => {
       const term = (req.search ?? "").toLowerCase();
       return Promise.resolve({
-        patients: term === "" ? roster : roster.filter((p) => p.fullName.toLowerCase().includes(term)),
+        patients:
+          term === ""
+            ? roster
+            : roster.filter((p) => p.fullName.toLowerCase().includes(term)),
         nextPageToken: "",
       });
     },
@@ -82,27 +85,43 @@ function open() {
 
 describe("EntityPicker", () => {
   it("lists rows from the list hook once opened", async () => {
-    renderWithTransport(<Harness onPick={() => {}} />, { transport: mockTransport() });
+    renderWithTransport(<Harness onPick={() => {}} />, {
+      transport: mockTransport(),
+    });
     open();
-    await waitFor(() => expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy(),
+    );
     expect(screen.getByRole("option", { name: "Grace Hopper" })).toBeTruthy();
   });
 
   it("pushes the search text into the list REQUEST, not a client-side filter", async () => {
-    renderWithTransport(<Harness onPick={() => {}} />, { transport: mockTransport() });
+    renderWithTransport(<Harness onPick={() => {}} />, {
+      transport: mockTransport(),
+    });
     open();
-    await waitFor(() => expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy(),
+    );
 
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "grace" } });
-    await waitFor(() => expect(screen.queryByRole("option", { name: "Ada Lovelace" })).toBeNull());
+    fireEvent.change(screen.getByRole("combobox"), {
+      target: { value: "grace" },
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("option", { name: "Ada Lovelace" })).toBeNull(),
+    );
     expect(screen.getByRole("option", { name: "Grace Hopper" })).toBeTruthy();
   });
 
   it("selects with the keyboard and reports the id", async () => {
     const picked: (string | undefined)[] = [];
-    renderWithTransport(<Harness onPick={(id) => picked.push(id)} />, { transport: mockTransport() });
+    renderWithTransport(<Harness onPick={(id) => picked.push(id)} />, {
+      transport: mockTransport(),
+    });
     open();
-    await waitFor(() => expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy(),
+    );
 
     const search = screen.getByRole("combobox");
     fireEvent.keyDown(search, { key: "ArrowDown" });
@@ -111,7 +130,9 @@ describe("EntityPicker", () => {
     expect(picked).toEqual(["p_2"]);
     // Closed, and showing the picked row's NAME rather than its id.
     expect(screen.queryByRole("listbox")).toBeNull();
-    expect(screen.getByRole("button", { name: "Patient" }).textContent).toContain("Grace Hopper");
+    expect(
+      screen.getByRole("button", { name: "Patient" }).textContent,
+    ).toContain("Grace Hopper");
   });
 
   // A List RPC with no free-text filter has nowhere to put the search text,
@@ -135,7 +156,9 @@ describe("EntityPicker", () => {
       { transport: mockTransport() },
     );
     open();
-    await waitFor(() => expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy(),
+    );
     expect(screen.queryByRole("combobox")).toBeNull();
 
     const listbox = screen.getByRole("listbox");
@@ -146,9 +169,13 @@ describe("EntityPicker", () => {
 
   it("clears the selection", async () => {
     const picked: (string | undefined)[] = [];
-    renderWithTransport(<Harness onPick={(id) => picked.push(id)} />, { transport: mockTransport() });
+    renderWithTransport(<Harness onPick={(id) => picked.push(id)} />, {
+      transport: mockTransport(),
+    });
     open();
-    await waitFor(() => expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "Ada Lovelace" })).toBeTruthy(),
+    );
     fireEvent.click(screen.getByRole("option", { name: "Ada Lovelace" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));

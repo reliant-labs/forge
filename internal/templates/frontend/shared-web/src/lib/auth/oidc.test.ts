@@ -190,9 +190,9 @@ describe("the verifier is treated as a secret", () => {
     // The field is #private, so it is unreachable rather than merely
     // discouraged: enumeration finds nothing to read.
     expect(Object.keys(verifier)).toHaveLength(0);
-    expect(JSON.stringify(Object.getOwnPropertyDescriptors(verifier))).not.toContain(
-      secret,
-    );
+    expect(
+      JSON.stringify(Object.getOwnPropertyDescriptors(verifier)),
+    ).not.toContain(secret);
   });
 
   it("is never written to a console sink", async () => {
@@ -326,11 +326,17 @@ describe("the authorization URL", () => {
       challenge: await createVerifier().challenge(),
     };
     expect(() =>
-      buildAuthorizeUrl({ ...base, endpoint: "http://idp.example.com/authorize" }),
+      buildAuthorizeUrl({
+        ...base,
+        endpoint: "http://idp.example.com/authorize",
+      }),
     ).toThrow(/https/);
     // Loopback is how a local IdP container is reached in development.
     expect(
-      buildAuthorizeUrl({ ...base, endpoint: "http://localhost:3001/authorize" }),
+      buildAuthorizeUrl({
+        ...base,
+        endpoint: "http://localhost:3001/authorize",
+      }),
     ).toContain("http://localhost:3001/authorize");
   });
 
@@ -522,37 +528,46 @@ describe("OIDC discovery", () => {
     // OIDC Discovery §4.3. A document that describes another issuer cannot
     // be trusted to describe this one.
     await expect(
-      discover("https://idp.example.com", async () =>
-        new Response(
-          JSON.stringify({ ...doc, issuer: "https://evil.example.com" }),
-          { status: 200 },
-        ),
+      discover(
+        "https://idp.example.com",
+        async () =>
+          new Response(
+            JSON.stringify({ ...doc, issuer: "https://evil.example.com" }),
+            { status: 200 },
+          ),
       ),
     ).rejects.toThrow(/issuer mismatch/);
   });
 
   it("tolerates the trailing slash providers disagree about", async () => {
-    const meta = await discover("https://idp.example.com/", async () =>
-      new Response(JSON.stringify(doc), { status: 200 }),
+    const meta = await discover(
+      "https://idp.example.com/",
+      async () => new Response(JSON.stringify(doc), { status: 200 }),
     );
     expect(meta.tokenEndpoint).toBe(doc.token_endpoint);
   });
 
   it("fails when the document omits an endpoint the flow needs", async () => {
     await expect(
-      discover("https://idp.example.com", async () =>
-        new Response(
-          JSON.stringify({ issuer: doc.issuer, authorization_endpoint: doc.authorization_endpoint }),
-          { status: 200 },
-        ),
+      discover(
+        "https://idp.example.com",
+        async () =>
+          new Response(
+            JSON.stringify({
+              issuer: doc.issuer,
+              authorization_endpoint: doc.authorization_endpoint,
+            }),
+            { status: 200 },
+          ),
       ),
     ).rejects.toThrow(/token_endpoint/);
   });
 
   it("names the likely misconfiguration when discovery 404s", async () => {
     await expect(
-      discover("https://idp.example.com", async () =>
-        new Response("not found", { status: 404 }),
+      discover(
+        "https://idp.example.com",
+        async () => new Response("not found", { status: 404 }),
       ),
     ).rejects.toThrow(/issuer URL/);
   });

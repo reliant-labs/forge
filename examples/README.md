@@ -1,7 +1,7 @@
 # Examples
 
 Drop-in, runnable examples that demonstrate how to call `forge` from
-client code. This directory is intentionally *not* wired into the main
+client code. This directory is intentionally _not_ wired into the main
 build so examples can import whatever they need without polluting the
 production module graph.
 
@@ -23,4 +23,4 @@ examples/
 - Keep examples small. If an example starts sprawling, turn it into a
   real integration test under `e2e/` or a dedicated tool under `cmd/`.
 - Examples are not covered by `task test` — they're compiled by `go build
-  ./...` so breakage is still caught in CI, but they have no assertions.
+./...` so breakage is still caught in CI, but they have no assertions.

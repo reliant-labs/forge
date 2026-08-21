@@ -5,8 +5,15 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:
+      # testdata/ is excluded from the two whitespace fixers. Golden
+      # snapshots assert on EXACT bytes — trailing blank lines included —
+      # so "fixing" one silently rewrites the expectation the test exists
+      # to check, and the suite goes red for a reason the diff makes look
+      # cosmetic.
       - id: trailing-whitespace
+        exclude: (^|/)testdata/
       - id: end-of-file-fixer
+        exclude: (^|/)testdata/
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ["--maxkb=1024"]
@@ -21,9 +28,14 @@ repos:
   - repo: https://github.com/dnephin/pre-commit-golang
     rev: v0.5.1
     hooks:
+      # testdata/ is excluded from both: these trees are deliberately
+      # malformed fixtures (off-module imports, phantom packages) that the
+      # linter tests assert on, and goimports "fixes" them into passing —
+      # silently deleting the very import a test expects it to flag.
       - id: go-fmt
-      - id: go-vet-mod
+        exclude: (^|/)testdata/
       - id: go-imports
+        exclude: (^|/)testdata/
 
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: v3.1.0
@@ -31,8 +43,15 @@ repos:
       - id: prettier
         # Restrict to frontend + docs so prettier does not fight gofmt or
         # golangci-lint on Go files.
+        #
+        # skills/ is excluded: prettier pads every markdown table cell to the
+        # column width, which inflates a skill far past the delivery budget
+        # (audit-json went 13843 -> 34328 bytes, against a 24000 hard cap) and
+        # rewrites the very table headers TestSkillsAuditCategoryDocsMatchEmittedSet
+        # asserts on. These files are size- and structure-checked by tests;
+        # a formatter cannot own them.
         files: \.(ts|tsx|js|jsx|json|md|yml|yaml|css)$
-        exclude: ^(gen/|.*\.pb\.go$)
+        exclude: ^(gen/|.*\.pb\.go$|.*/skills/.*\.md$)
 
   # Compiled binaries do not belong in git: they never diff usefully, they are
   # large forever, and a Go binary embeds the build machine's absolute paths.
@@ -46,6 +65,21 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+
+  # go vet as a LOCAL hook rather than dnephin's go-vet. Two reasons:
+  # v0.5.1 ships no go-vet-mod (the module-wide id), and its go-vet runs
+  # `go vet` per changed DIRECTORY — which drags in testdata fixtures that
+  # are deliberately unbuildable (phantom imports, build constraints that
+  # exclude every file) and fails on them. Vetting the module honors those
+  # constraints and matches what CI checks.
+  - repo: local
+    hooks:
+      - id: go-vet-mod
+        name: go vet (module)
+        entry: go vet ./...
+        language: system
+        files: \.go$
+        pass_filenames: false
 
   # Buf has no first-party pre-commit mirror; invoke its CLI locally.
   # `buf format -d` prints a diff and exits non-zero on any
@@ -65,7 +99,7 @@ repos:
     hooks:
       - id: commitlint
         stages: [commit-msg]
-        additional_dependencies: ['@commitlint/config-conventional']
+        additional_dependencies: ["@commitlint/config-conventional"]
 
   # Blocks commits that add locally-forbidden strings. Patterns live in a
   # gitignored .forbidden-strings file at the repo root; the check is a no-op

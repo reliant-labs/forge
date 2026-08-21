@@ -2809,7 +2809,7 @@ type Service struct {
 	if checksums.Verify(first) != checksums.NoMarker {
 		t.Error("handlers_crud.go must not carry a forge:hash marker (user-owned Tier-2)")
 	}
-	if !checksums.WrittenThisRun[shimRel] {
+	if !checksums.WasWrittenThisRun(shimRel) {
 		t.Error("handlers_crud.go not marked written-this-run")
 	}
 

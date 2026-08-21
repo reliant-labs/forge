@@ -51,10 +51,7 @@ export default function Label({
   const ctx = React.useContext(FormFieldContext);
   const resolvedHtmlFor = htmlFor ?? ctx?.id;
 
-  const composed = [
-    "mb-1 block text-sm font-medium text-ink",
-    className ?? "",
-  ]
+  const composed = ["mb-1 block text-sm font-medium text-ink", className ?? ""]
     .filter(Boolean)
     .join(" ");
 

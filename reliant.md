@@ -1,4 +1,5 @@
 <!-- forge:version=1 -->
+
 # forge
 
 This is a **Forge** project managed by the `forge` CLI.
@@ -43,7 +44,7 @@ Read this before proposing a design. It rules out whole categories of answer:
   differently.
 - **Declarative over imperative.** The state of the world is DECLARED in files
   under version control, and something converges reality to it. A setup step
-  that must be *run*, in order, against a live system, is a step that can be
+  that must be _run_, in order, against a live system, is a step that can be
   skipped, half-completed, or lost when a teammate clones the repo. If a
   provisioning story requires a CLI invocation, that is a smell to be designed
   out, not documented around.

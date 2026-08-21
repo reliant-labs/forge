@@ -268,12 +268,7 @@ export default function QuadrantChart({
 
               {/* Optional subtitle */}
               {item.sub && (
-                <text
-                  x={px + 12}
-                  y={py + 13}
-                  fill="#94a3b8"
-                  fontSize={10}
-                >
+                <text x={px + 12} y={py + 13} fill="#94a3b8" fontSize={10}>
                   {item.sub}
                 </text>
               )}

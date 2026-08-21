@@ -34,7 +34,9 @@ export default function DashboardAnalytics({
             <p className="mt-1 text-sm text-ink-muted">{subtitle}</p>
           )}
         </div>
-        {filters && <div className="flex flex-wrap items-center gap-2">{filters}</div>}
+        {filters && (
+          <div className="flex flex-wrap items-center gap-2">{filters}</div>
+        )}
       </header>
 
       <section aria-label="Key metrics">{kpis}</section>

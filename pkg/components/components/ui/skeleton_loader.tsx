@@ -7,7 +7,14 @@
 // eslint-plugin-react or @next/eslint-plugin-next).
 import React from "react";
 
-type SkeletonVariant = "text" | "circular" | "rectangular" | "card" | "table-row" | "list-item" | "form-field";
+type SkeletonVariant =
+  | "text"
+  | "circular"
+  | "rectangular"
+  | "card"
+  | "table-row"
+  | "list-item"
+  | "form-field";
 
 interface SkeletonLoaderProps {
   variant?: SkeletonVariant;
@@ -17,8 +24,19 @@ interface SkeletonLoaderProps {
   className?: string;
 }
 
-function SkeletonPulse({ className = "", style }: { className?: string; style?: React.CSSProperties }) {
-  return <div className={`animate-pulse rounded bg-border ${className}`} style={style} />;
+function SkeletonPulse({
+  className = "",
+  style,
+}: {
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <div
+      className={`animate-pulse rounded bg-border ${className}`}
+      style={style}
+    />
+  );
 }
 
 function TextSkeleton({ width }: { width?: string }) {

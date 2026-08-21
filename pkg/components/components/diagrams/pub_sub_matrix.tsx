@@ -28,7 +28,7 @@ export default function PubSubMatrix({
   title,
 }: PubSubMatrixProps) {
   const subSet = new Set(
-    subscriptions.map((s) => `${s.topicId}::${s.consumerId}`)
+    subscriptions.map((s) => `${s.topicId}::${s.consumerId}`),
   );
 
   return (
@@ -61,9 +61,7 @@ export default function PubSubMatrix({
                 className="sticky left-0 z-10 border-b border-gray-100 bg-white px-3 py-2 text-left align-top"
               >
                 <div className="font-medium text-gray-900">{t.label}</div>
-                {t.sub && (
-                  <div className="text-xs text-gray-500">{t.sub}</div>
-                )}
+                {t.sub && <div className="text-xs text-gray-500">{t.sub}</div>}
               </th>
               {consumers.map((c) => {
                 const subscribed = subSet.has(`${t.id}::${c.id}`);

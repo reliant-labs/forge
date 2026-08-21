@@ -67,7 +67,11 @@ const Select = React.forwardRef<HTMLSelectElement, SelectProps>(function Select(
       <select ref={ref} id={resolvedId} className={composed} {...rest}>
         {options
           ? options.map((o) => (
-              <option key={String(o.value)} value={o.value} disabled={o.disabled}>
+              <option
+                key={String(o.value)}
+                value={o.value}
+                disabled={o.disabled}
+              >
                 {o.label}
               </option>
             ))
@@ -81,7 +85,11 @@ const Select = React.forwardRef<HTMLSelectElement, SelectProps>(function Select(
         strokeWidth={2}
         stroke="currentColor"
       >
-        <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+        />
       </svg>
     </div>
   );

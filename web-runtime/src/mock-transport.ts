@@ -26,7 +26,11 @@
 // and this engine out entirely, which is why the generated `connect.ts`
 // reaches its own shim through a dynamic `require()` gated on the mock-mode
 // env var.
-import { create, type DescMessage, type MessageInitShape } from "@bufbuild/protobuf";
+import {
+  create,
+  type DescMessage,
+  type MessageInitShape,
+} from "@bufbuild/protobuf";
 import {
   Code,
   ConnectError,
@@ -197,9 +201,7 @@ export function resolveActiveScenario(
  * are wrapped as a one-element stream — handy for handlers that conceptually
  * yield once.
  */
-export async function* toAsyncIterable(
-  value: unknown,
-): AsyncIterable<unknown> {
+export async function* toAsyncIterable(value: unknown): AsyncIterable<unknown> {
   const resolved = await Promise.resolve(value);
   if (resolved == null) return;
   // AsyncIterable

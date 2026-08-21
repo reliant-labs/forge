@@ -31,7 +31,7 @@ git push origin main vX.Y.Z
 
 **Also bump `defaultPublishedForgePkgVersion`** in
 `internal/generator/project_pkgdep.go` to `vX.Y.Z` and include it in the same
-commit as the require bump above. This is the fallback a *dev-build* forge
+commit as the require bump above. This is the fallback a _dev-build_ forge
 binary (no ldflags `PkgVersion` stamp) pins into every scaffold — if it lags,
 dev builds keep pinning an old `forge/pkg` and generated code targeting newer
 `forge/pkg` APIs won't compile. `resolveForgePkgVersion()` is the only reader;
@@ -72,6 +72,7 @@ cd control-plane
 git checkout -b chore/forge-vX.Y.Z
 go get github.com/reliant-labs/forge/pkg@vX.Y.Z && go mod tidy && go build ./...
 ```
+
 Also bump the forge-CLI install pins in `.github/workflows/ci.yml`
 (`go install github.com/reliant-labs/forge/cmd/forge@vX.Y.Z`, two occurrences).
 

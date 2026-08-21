@@ -351,7 +351,7 @@ func runGoimportsOnGenerated(projectDir, modulePath string) error {
 // sweep within the same run.
 func writtenGoFiles(projectDir string) []string {
 	var out []string
-	for relPath := range checksums.WrittenThisRun {
+	for relPath := range checksums.WrittenPaths() {
 		if filepath.Ext(relPath) != ".go" {
 			continue
 		}

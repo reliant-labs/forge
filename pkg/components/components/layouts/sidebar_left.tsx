@@ -52,7 +52,9 @@ export default function SidebarLeft({
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto bg-surface-muted p-6">{children}</main>
+      <main className="flex-1 overflow-y-auto bg-surface-muted p-6">
+        {children}
+      </main>
     </div>
   );
 }

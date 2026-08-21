@@ -48,9 +48,7 @@ export const SlideQuote: React.FC<SlideQuoteProps> = ({
           <span className="text-lg font-semibold text-white">
             {attribution}
           </span>
-          {role && (
-            <span className="text-base text-gray-500">{role}</span>
-          )}
+          {role && <span className="text-base text-gray-500">{role}</span>}
         </div>
       </div>
     </div>

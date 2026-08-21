@@ -442,8 +442,15 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:
+      # testdata/ is excluded from the two whitespace fixers. Golden
+      # snapshots assert on EXACT bytes — trailing blank lines included —
+      # so "fixing" one silently rewrites the expectation the test exists
+      # to check, and the suite goes red for a reason the diff makes look
+      # cosmetic.
       - id: trailing-whitespace
+        exclude: (^|/)testdata/
       - id: end-of-file-fixer
+        exclude: (^|/)testdata/
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ["--maxkb=1024"]
@@ -458,9 +465,14 @@ repos:
   - repo: https://github.com/dnephin/pre-commit-golang
     rev: v0.5.1
     hooks:
+      # testdata/ is excluded from both: these trees are deliberately
+      # malformed fixtures (off-module imports, phantom packages) that the
+      # linter tests assert on, and goimports "fixes" them into passing —
+      # silently deleting the very import a test expects it to flag.
       - id: go-fmt
-      - id: go-vet-mod
+        exclude: (^|/)testdata/
       - id: go-imports
+        exclude: (^|/)testdata/
 
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: v3.1.0
@@ -468,8 +480,30 @@ repos:
       - id: prettier
         # Restrict to frontend + docs so prettier does not fight gofmt or
         # golangci-lint on Go files.
+        #
+        # skills/ is excluded: prettier pads every markdown table cell to the
+        # column width, which inflates a skill far past the delivery budget
+        # (audit-json went 13843 -> 34328 bytes, against a 24000 hard cap) and
+        # rewrites the very table headers TestSkillsAuditCategoryDocsMatchEmittedSet
+        # asserts on. These files are size- and structure-checked by tests;
+        # a formatter cannot own them.
         files: \.(ts|tsx|js|jsx|json|md|yml|yaml|css)$
-        exclude: ^(gen/|.*\.pb\.go$)
+        exclude: ^(gen/|.*\.pb\.go$|.*/skills/.*\.md$)
+
+  # go vet as a LOCAL hook rather than dnephin's go-vet. Two reasons:
+  # v0.5.1 ships no go-vet-mod (the module-wide id), and its go-vet runs
+  # ` + "`" + `go vet` + "`" + ` per changed DIRECTORY — which drags in testdata
+  # fixtures that are deliberately unbuildable (phantom imports, build
+  # constraints that exclude every file) and fails on them. Vetting the
+  # module honors those constraints and matches what CI checks.
+  - repo: local
+    hooks:
+      - id: go-vet-mod
+        name: go vet (module)
+        entry: go vet ./...
+        language: system
+        files: \.go$
+        pass_filenames: false
 
   # Buf has no first-party pre-commit mirror; invoke its CLI locally.
   # ` + "`" + `buf format -d` + "`" + ` prints a diff and exits non-zero on any
@@ -638,6 +672,11 @@ jobs:
           go-version-file: go.mod
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
+      # The go-imports hook shells out to a goimports BINARY and fails with
+      # "goimports not installed or available in the PATH" when it is absent
+      # — the runner image does not ship one, and setup-go does not add it.
+      - name: Install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
       - uses: pre-commit/action@v3.0.1
 `
 	dir := filepath.Join(g.Path, ".github", "workflows")

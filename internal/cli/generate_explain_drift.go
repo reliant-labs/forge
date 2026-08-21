@@ -142,7 +142,7 @@ func printExplainDriftDiffs(w io.Writer, ctx *pipelineContext) {
 // path there before any ownership check, so a drifted path ABSENT from it
 // is one no emitter even attempted this run.
 func explainDriftNoRenderNote(relPath string) string {
-	if checksums.Tier1TargetSet[relPath] {
+	if checksums.IsTier1Target(relPath) {
 		// An emitter claimed the path but produced no side render: the
 		// step really was skipped this run.
 		return "   (no fresh render this run — the file's emitter step was gated off or excluded by --steps; re-run without `--steps=…` to get a diff)\n"

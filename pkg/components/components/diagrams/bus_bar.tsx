@@ -64,9 +64,7 @@ export default function BusBar({
 
   const renderedEdges =
     edges ??
-    producers.flatMap((p) =>
-      consumers.map((c) => ({ from: p.id, to: c.id }))
-    );
+    producers.flatMap((p) => consumers.map((c) => ({ from: p.id, to: c.id })));
 
   return (
     <div
@@ -154,7 +152,9 @@ export default function BusBar({
           className="flex flex-col justify-center rounded-md border border-gray-200 bg-white px-3"
         >
           <div className="truncate text-sm font-semibold">{n.label}</div>
-          {n.sub && <div className="truncate text-xs text-gray-500">{n.sub}</div>}
+          {n.sub && (
+            <div className="truncate text-xs text-gray-500">{n.sub}</div>
+          )}
         </div>
       ))}
 
@@ -171,7 +171,9 @@ export default function BusBar({
           className="flex flex-col justify-center rounded-md border border-gray-200 bg-white px-3"
         >
           <div className="truncate text-sm font-semibold">{n.label}</div>
-          {n.sub && <div className="truncate text-xs text-gray-500">{n.sub}</div>}
+          {n.sub && (
+            <div className="truncate text-xs text-gray-500">{n.sub}</div>
+          )}
         </div>
       ))}
     </div>

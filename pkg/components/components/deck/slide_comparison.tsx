@@ -35,9 +35,7 @@ export const SlideComparison: React.FC<SlideComparisonProps> = ({
         <div className="flex flex-1 flex-col rounded-2xl border border-red-500/20 bg-red-950/10 p-8">
           <div className="mb-6 flex items-center gap-3">
             <div className="h-3 w-3 rounded-full bg-red-500" />
-            <h2 className="text-2xl font-bold text-red-400">
-              {before.label}
-            </h2>
+            <h2 className="text-2xl font-bold text-red-400">{before.label}</h2>
           </div>
           <ul className="flex flex-col gap-4">
             {before.items.map((item, i) => (

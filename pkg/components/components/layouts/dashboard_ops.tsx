@@ -32,7 +32,9 @@ export default function DashboardOps({
         <h1 className="text-lg font-semibold tracking-tight text-ink">
           {title}
         </h1>
-        {headerActions && <div className="flex items-center gap-2">{headerActions}</div>}
+        {headerActions && (
+          <div className="flex items-center gap-2">{headerActions}</div>
+        )}
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-px bg-surface-muted lg:grid-cols-[minmax(280px,1fr)_minmax(0,2fr)_minmax(280px,1fr)]">

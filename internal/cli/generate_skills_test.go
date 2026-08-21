@@ -65,7 +65,7 @@ func TestStepAgentSkillsWritesTier1(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(ctx.AbsPath, rel)); !os.IsNotExist(err) {
 				t.Errorf("migration skill %q was delivered to %s; want skipped", s.Path, rel)
 			}
-			if checksums.WrittenThisRun[filepath.ToSlash(rel)] {
+			if checksums.WasWrittenThisRun(filepath.ToSlash(rel)) {
 				t.Errorf("migration skill %q marked written this run; want skipped", s.Path)
 			}
 			continue
@@ -211,7 +211,7 @@ func TestStepAgentSkillsNeverTouchesUserSkillDirs(t *testing.T) {
 	if !bytes.Equal(got, userBody) {
 		t.Error("user-created skill content was modified")
 	}
-	if checksums.WrittenThisRun[".claude/skills/my-own-skill/SKILL.md"] {
+	if checksums.WasWrittenThisRun(".claude/skills/my-own-skill/SKILL.md") {
 		t.Error("user-created skill must not be claimed as forge-written")
 	}
 }
@@ -395,7 +395,7 @@ func TestStepAgentSkillsHarnessGate(t *testing.T) {
 			if !os.IsNotExist(err) {
 				t.Errorf("harness %q wrote .claude/ (err=%v); want nothing written", tc.harness, err)
 			}
-			for rel := range checksums.WrittenThisRun {
+			for rel := range checksums.WrittenPaths() {
 				if strings.HasPrefix(rel, ".claude/") {
 					t.Errorf("harness %q recorded a written skill path %q; want none", tc.harness, rel)
 				}

@@ -1,6 +1,10 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 import { userMessage } from "@reliantlabs/forge-web-runtime";
-import { MutationCache, QueryClient, type QueryKey } from "@tanstack/react-query";
+import {
+  MutationCache,
+  QueryClient,
+  type QueryKey,
+} from "@tanstack/react-query";
 
 import { emitToast } from "@/lib/events";
 
@@ -58,7 +62,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (ctor === undefined) return true;
   const proto = (ctor as { prototype?: unknown }).prototype;
   if (Object.prototype.toString.call(proto) !== "[object Object]") return false;
-  if (!Object.prototype.hasOwnProperty.call(proto, "isPrototypeOf")) return false;
+  if (!Object.prototype.hasOwnProperty.call(proto, "isPrototypeOf"))
+    return false;
   return Object.getPrototypeOf(value) === Object.prototype;
 }
 
@@ -83,7 +88,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  */
 export function bigintSafeReplacer(_key: string, value: unknown): unknown {
   if (typeof value === "bigint") return BIGINT_TAG + value.toString();
-  if (typeof value === "string") return value.startsWith(NUL) ? NUL + value : value;
+  if (typeof value === "string")
+    return value.startsWith(NUL) ? NUL + value : value;
   if (isPlainObject(value)) {
     const sorted: Record<string, unknown> = {};
     for (const key of Object.keys(value).sort()) {

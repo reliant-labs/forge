@@ -37,10 +37,17 @@ export interface StatusBadgeProps {
   dot?: boolean;
 }
 
-export function StatusBadge({ value, enumType, size = "md", dot = true }: StatusBadgeProps) {
+export function StatusBadge({
+  value,
+  enumType,
+  size = "md",
+  dot = true,
+}: StatusBadgeProps) {
   // A type-NAME string cannot reverse an ordinal into a member name. Treat that
   // pairing as unset so the badge never renders a bare enum number as a status.
-  const resolvable = !(typeof value === "number" && typeof enumType === "string");
+  const resolvable = !(
+    typeof value === "number" && typeof enumType === "string"
+  );
   const safeValue = resolvable ? value : null;
 
   return (

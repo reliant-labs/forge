@@ -35,9 +35,7 @@ export function RouteGuard({
         {fallback ?? (
           <div className="flex min-h-[12rem] flex-col items-center justify-center gap-1 text-center">
             <p className="text-sm font-medium text-ink">Not signed in</p>
-            <p className="text-sm text-ink-muted">
-              Sign in to view this page.
-            </p>
+            <p className="text-sm text-ink-muted">Sign in to view this page.</p>
           </div>
         )}
       </>

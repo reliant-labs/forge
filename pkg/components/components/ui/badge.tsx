@@ -46,7 +46,14 @@ function resolveVariant(v: BadgeVariant | BadgeVariantAlias): BadgeVariant {
   return v;
 }
 
-export default function Badge({ label, variant = "neutral", size = "md", dot, removable, onRemove }: BadgeProps) {
+export default function Badge({
+  label,
+  variant = "neutral",
+  size = "md",
+  dot,
+  removable,
+  onRemove,
+}: BadgeProps) {
   const v = resolveVariant(variant);
   return (
     <span
@@ -64,8 +71,18 @@ export default function Badge({ label, variant = "neutral", size = "md", dot, re
           onClick={onRemove}
           className="ml-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full hover:bg-black/10"
         >
-          <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          <svg
+            className="h-2.5 w-2.5"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={3}
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M6 18L18 6M6 6l12 12"
+            />
           </svg>
         </button>
       )}

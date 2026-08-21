@@ -156,8 +156,8 @@ func loadDescriptor(projectDir string) (*ForgeDescriptor, error) {
 	// which is the sequence that actually happens.
 	if want := DescriptorSourceHash(projectDir); want != "" && desc.SourceHash != "" && desc.SourceHash != want {
 		return nil, fmt.Errorf(
-			"gen/forge_descriptor.json is stale: it was extracted from different .proto files than the ones on disk.\n"+
-				"  It is a DERIVED cache — the protos are the source of truth — so forge refuses to answer from it.\n"+
+			"gen/forge_descriptor.json is stale: it was extracted from different .proto files than the ones on disk.\n" +
+				"  It is a DERIVED cache — the protos are the source of truth — so forge refuses to answer from it.\n" +
 				"  Fix: reliant forge generate")
 	}
 	return &desc, nil

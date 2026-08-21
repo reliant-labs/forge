@@ -34,10 +34,7 @@ import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
  */
 export function useApiMutation<TData, TVariables, TError = ConnectClientError>(
   mutationFn: (variables: TVariables) => Promise<TData>,
-  options?: Omit<
-    UseMutationOptions<TData, TError, TVariables>,
-    "mutationFn"
-  >,
+  options?: Omit<UseMutationOptions<TData, TError, TVariables>, "mutationFn">,
 ) {
   return useMutation<TData, TError, TVariables>({
     mutationFn,

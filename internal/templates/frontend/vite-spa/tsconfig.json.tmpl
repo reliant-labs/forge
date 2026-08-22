@@ -14,10 +14,14 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
+    "// peer dedupe note": "The three entries below pin @reliantlabs/forge-web-runtime's peerDependencies to THIS app's copy, mirroring `resolve.dedupe` in vite.config.ts. A dev build of forge bridges the runtime with a `file:` specifier, which npm materialises as a symlink into the forge checkout; that checkout carries its own node_modules, so the runtime's bare imports resolve there while this app's resolve here. The dedupe in vite.config.ts fixes the BUNDLE, but `tsc --noEmit` does not run Vite: typecheck still sees two nominally-distinct copies of the same package and fails with TS2322 'Type Transport is not assignable to type Transport' in src/lib/mock-transport_gen.ts. Keep this list in step with vite.config.ts.",
     "paths": {
 {{- if .Workspaces}}
       "@/components/ui/*": ["../../packages/ui-web/src/components/ui/*"],
 {{- end}}
+      "@connectrpc/connect": ["./node_modules/@connectrpc/connect"],
+      "@bufbuild/protobuf": ["./node_modules/@bufbuild/protobuf"],
+      "@opentelemetry/api": ["./node_modules/@opentelemetry/api"],
       "@/*": ["./src/*"]
     }
   },

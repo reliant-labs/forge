@@ -122,6 +122,14 @@ _workload_env = fw.WorkloadEnv {
 
 _support = forge.Bundle {
     cluster_target = _cluster
+    # The PROJECT every rendered object is labelled
+    # `app.kubernetes.io/part-of` with — the handle a CD pipeline uses to
+    # select one release's workloads (`kubectl get deployments -n <ns>
+    # -l app.kubernetes.io/part-of=<project>`). It must be the PROJECT, not a
+    # workload name: when each object labels itself that selector matches
+    # nothing, and a rollout wait that iterates it verifies nothing while
+    # reporting success. Twin of the workload path's `WorkloadEnv.project`.
+    project = "{{.ProjectName}}"
     config_maps = []
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
@@ -148,6 +156,14 @@ _job_workloads = [c for c in _workloads if c.kind == "job"]
 
 _bundle = forge.Bundle {
     cluster_target = _cluster
+    # The PROJECT every rendered object is labelled
+    # `app.kubernetes.io/part-of` with — the handle a CD pipeline uses to
+    # select one release's workloads (`kubectl get deployments -n <ns>
+    # -l app.kubernetes.io/part-of=<project>`). It must be the PROJECT, not a
+    # workload name: when each object labels itself that selector matches
+    # nothing, and a rollout wait that iterates it verifies nothing while
+    # reporting success. Twin of the workload path's `WorkloadEnv.project`.
+    project = "{{.ProjectName}}"
     services = [
         # This environment's INFRASTRUCTURE — the servers this app dials but
         # does not build, named one at a time.

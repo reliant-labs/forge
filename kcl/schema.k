@@ -2568,6 +2568,21 @@ schema Bundle:
     # the joined network + registry-inherit from it — there is no
     # "primary" cluster.
     clusters: [Cluster] = []
+    # The PROJECT name every rendered object is labelled with
+    # (`app.kubernetes.io/part-of`). It is the handle a CD pipeline uses to
+    # find one release's workloads — `kubectl get deployments -n <ns>
+    # -l app.kubernetes.io/part-of=<project>` — so it must be the project,
+    # NOT a workload name: when each object labelled itself, that selector
+    # matched nothing and the post-deploy rollout wait iterated an EMPTY
+    # list and passed vacuously while deployments never rolled.
+    #
+    # The twin of `workloads.WorkloadEnv.project` (the workload path's
+    # spelling of the same fact); both feed the one label renderer in
+    # lib/labels.k. Defaults to "" — each object then falls back to
+    # labelling itself, which is the pre-existing behavior — so a Bundle
+    # that does not set it renders byte-identically. The generated per-env
+    # main.k always sets it.
+    project: str = ""
     # The env-wide Kubernetes facts, stated ONCE (cluster context /
     # namespace / registry / image_pull_secrets / platform / image_tag).
     # `render_manifests` reads namespace/registry/platform/pull_secrets off

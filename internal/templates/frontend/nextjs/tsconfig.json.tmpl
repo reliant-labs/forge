@@ -23,9 +23,13 @@
 {{- if .Workspaces}}
       "@/components/ui/*": ["../../packages/ui-web/src/components/ui/*"],
 {{- end}}
+      "@connectrpc/connect": ["./node_modules/@connectrpc/connect"],
+      "@bufbuild/protobuf": ["./node_modules/@bufbuild/protobuf"],
+      "@opentelemetry/api": ["./node_modules/@opentelemetry/api"],
       "@/*": ["./src/*"]
     }
   },
+  "// peer dedupe note": "The three @connectrpc/@bufbuild/@opentelemetry entries in paths pin @reliantlabs/forge-web-runtime's peerDependencies to THIS app's copy, for the same reason next.config.ts redirects them in the webpack resolver. A dev build of forge bridges the runtime with a `file:` specifier, which npm materialises as a symlink into the forge checkout; that checkout carries its own node_modules, so the runtime's bare imports resolve there while this app's resolve here. The bundler fix in next.config.ts does not help `tsc --noEmit`, which does not run webpack: typecheck saw two nominally-distinct copies of the same package and failed with TS2322 'Type Transport is not assignable to type Transport' in src/lib/mock-transport_gen.ts. Keep the list in step with next.config.ts and the vite-spa config. This note sits at the top level, NOT inside compilerOptions, because tsc validates that object and rejects an unknown key there with TS5023.",
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
   "// exclude note": "Exclude the Next build dirs wholesale (not just subpaths). Next writes per-route type stubs under .next{,-prod}/types that import the route module by path; deleting a scaffolded route leaves a STALE stub whose import now dangles, so `tsc --noEmit` would spew TS2307 for a route that no longer exists. .next-prod is forge's production distDir (see next.config.ts). Excluding both wins even when `next dev`/`next build` re-adds .next/types/**/*.ts to `include` (TypeScript's exclude beats include).",
   "exclude": ["node_modules", ".next", ".next-prod"]

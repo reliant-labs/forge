@@ -215,8 +215,13 @@ tmp/
 !internal/templates/frontend/mocks/
 !internal/templates/frontend/mocks/**
 
-# ── Claude Code runtime artifacts (skill docs under .claude/skills/ stay tracked) ──
-.claude/scheduled_tasks.lock
+# ── Claude Code runtime artifacts ──
+# .claude/ is generated output, not source: `forge generate` renders the whole
+# tree (83 skill files) from internal/templates, deterministically, on every
+# run. Committing it means every generate produces a diff, which is what left
+# `Verify Generated Code` failing on main with an untracked `?? .claude/`.
+# Regenerate it instead of tracking it.
+.claude/
 .scratch/
 
 # Local-only patterns for the forbidden-strings pre-commit guard (never committed)

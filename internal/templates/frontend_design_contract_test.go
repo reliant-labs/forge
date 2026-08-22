@@ -385,3 +385,50 @@ func TestScaffoldedCSSTeachesTheOklchTrap(t *testing.T) {
 		}
 	}
 }
+
+// TestStylelintYieldsToPrettierOnCustomPropertyBlankLines pins the rule that
+// a scaffolded project could not satisfy.
+//
+// stylelint-config-standard enables `custom-property-empty-line-before`,
+// which demands a blank line before a custom property whose PRECEDING
+// declaration spans multiple lines. Prettier is what decides which
+// declarations wrap — it re-wraps any oklch(...) past the print width — and
+// the scaffold ships and runs both tools. So they disagree about the same
+// bytes, and the disagreement does not converge: on the scaffolded
+// globals.css, `stylelint --fix` inserted three blank lines, prettier then
+// re-wrapped a different set of values, and the next lint reported SIX
+// violations instead of three.
+//
+// The observed cost was `forge project new smoke test` failing on a freshly
+// scaffolded project with three errors on lines nobody wrote by hand:
+//
+//	src/app/globals.css
+//	   96:3  ✖  Expected empty line before custom property
+//	   98:3  ✖  Expected empty line before custom property
+//	  111:3  ✖  Expected empty line before custom property
+//
+// A generated project failing the lint forge itself runs on it is the whole
+// bug. Formatting inside @theme is prettier's job, so this is the rule that
+// yields — and it must stay off, because turning it back on re-opens a fight
+// that no amount of --fix settles.
+func TestStylelintYieldsToPrettierOnCustomPropertyBlankLines(t *testing.T) {
+	t.Parallel()
+
+	content, err := FrontendTemplates().Render(
+		filepath.Join("nextjs", "stylelint.config.mjs"), nil,
+	)
+	if err != nil {
+		t.Fatalf("render nextjs/stylelint.config.mjs: %v", err)
+	}
+
+	// The config is JS, not JSON, so assert on the source. `: null` is the
+	// spelling stylelint requires to disable an inherited rule — omitting the
+	// key entirely leaves stylelint-config-standard's default in force, which
+	// is exactly the state this test exists to prevent.
+	if !strings.Contains(string(content), `"custom-property-empty-line-before": null`) {
+		t.Errorf("nextjs/stylelint.config.mjs must disable `custom-property-empty-line-before` " +
+			"(spelled `\"custom-property-empty-line-before\": null`). Without it, " +
+			"stylelint-config-standard's default fights prettier over blank lines inside " +
+			"@theme and a freshly scaffolded project fails its own `npm run lint:styles`.")
+	}
+}

@@ -76,6 +76,15 @@ go get github.com/reliant-labs/forge/pkg@vX.Y.Z && go mod tidy && go build ./...
 Also bump the forge-CLI install pins in `.github/workflows/ci.yml`
 (`go install github.com/reliant-labs/forge/cmd/forge@vX.Y.Z`, two occurrences).
 
+### The KCL module needs no tag
+
+There is deliberately no `kcl-vX.Y.Z` step here. The forge KCL module is
+embedded in the binary and vendored into each project's `.forge-kcl/` by
+`forge generate`, so a release publishes it automatically by shipping the
+binary. Forge once scaffolded a published KCL git tag on release builds; the
+tag was never pushed, and every project a released forge created could not
+resolve its deploy manifests. See `docs/adr/0001-always-vendor-forge-kcl.md`.
+
 ## 4. Forge's own CI needs no pin
 
 Nothing to do here — this step is listed only because it used to exist.

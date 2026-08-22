@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -1216,20 +1217,84 @@ const maxFileSize = 4 << 20
 func TestRemovedFeaturesLeaveNoReferences(t *testing.T) {
 	root := repoRoot(t)
 
-	byFeature := map[string][]finding{}
+	// Match each file against every removal on a worker pool.
+	//
+	// This is the expensive half of the guard — thousands of files times 49
+	// removals times their patterns, times every line. Serially it ran ~31s
+	// here, and under `-race` (how CI runs the suite: `go test -race -count=1
+	// ./...` with no -timeout, so Go's 10-minute default applies) it blew
+	// past 600s and PANICKED. A timeout panic fails the whole `Test` job and
+	// masks every other package's result behind what reads as a hang, which
+	// is how this went unexamined while the job stayed red.
+	//
+	// Findings are collected per file and merged in sorted file order after
+	// the pool drains, so the output is byte-identical to the serial version
+	// — the failure message diffs against golden expectations and must not
+	// reorder.
+	type fileHits struct {
+		idx       int
+		byFeature map[string][]finding
+	}
+
+	var scanned []struct {
+		rel     string
+		content []byte
+	}
 	forEachScannedFile(t, root, func(rel string, content []byte) {
-		lines := strings.Split(string(content), "\n")
-		for _, rm := range removals {
-			allowed := append(append([]allowance{}, commonAllowances...), rm.Allowances...)
-			for i, line := range lines {
-				for _, hit := range matchLine(root, line, rm, allowed, rel) {
-					hit.feature, hit.path, hit.line = rm.Name, rel, i+1
-					hit.snippet = strings.TrimSpace(line)
-					byFeature[rm.Name] = append(byFeature[rm.Name], hit)
+		scanned = append(scanned, struct {
+			rel     string
+			content []byte
+		}{rel, content})
+	})
+
+	// Precompute each removal's allowance slice once rather than rebuilding
+	// it per file — it is identical for every file and the append pair
+	// allocated twice per file per removal.
+	allowedFor := make([][]allowance, len(removals))
+	for ri, rm := range removals {
+		allowedFor[ri] = append(append([]allowance{}, commonAllowances...), rm.Allowances...)
+	}
+
+	hitsCh := make(chan fileHits, len(scanned))
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
+	var wg sync.WaitGroup
+	for idx, f := range scanned {
+		wg.Add(1)
+		go func(idx int, rel string, content []byte) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			local := map[string][]finding{}
+			lines := strings.Split(string(content), "\n")
+			for ri, rm := range removals {
+				for i, line := range lines {
+					for _, hit := range matchLine(root, line, rm, allowedFor[ri], rel) {
+						hit.feature, hit.path, hit.line = rm.Name, rel, i+1
+						hit.snippet = strings.TrimSpace(line)
+						local[rm.Name] = append(local[rm.Name], hit)
+					}
 				}
 			}
+			if len(local) > 0 {
+				hitsCh <- fileHits{idx: idx, byFeature: local}
+			}
+		}(idx, f.rel, f.content)
+	}
+	wg.Wait()
+	close(hitsCh)
+
+	perFile := make([]map[string][]finding, len(scanned))
+	for fh := range hitsCh {
+		perFile[fh.idx] = fh.byFeature
+	}
+
+	byFeature := map[string][]finding{}
+	for _, m := range perFile {
+		for name, hits := range m {
+			byFeature[name] = append(byFeature[name], hits...)
 		}
-	})
+	}
 
 	for _, rm := range removals {
 		hits := byFeature[rm.Name]
@@ -1566,10 +1631,40 @@ func forEachScannedFile(t *testing.T, root string, fn func(rel string, content [
 	}
 	sort.Strings(files)
 
-	for _, rel := range files {
-		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-		if err != nil {
-			t.Fatalf("read %s: %v", rel, err)
+	// Read the files concurrently. The scan is thousands of files against
+	// every removal pattern, and under `-race` (which is how CI runs the
+	// suite) the serial version took the package past `go test`'s 10-minute
+	// default and panicked the whole job — masking every other package's
+	// result behind a timeout that looked like a hang.
+	//
+	// Only the READ is parallel. fn is still invoked serially, in sorted
+	// order, on the calling goroutine: the callers accumulate into shared
+	// maps and their output is diffed against golden expectations, so
+	// concurrent calls would both race and reorder findings.
+	type readResult struct {
+		rel     string
+		content []byte
+		err     error
+	}
+	results := make([]readResult, len(files))
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
+	var wg sync.WaitGroup
+	for i, rel := range files {
+		wg.Add(1)
+		go func(i int, rel string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+			results[i] = readResult{rel: rel, content: content, err: err}
+		}(i, rel)
+	}
+	wg.Wait()
+
+	for _, res := range results {
+		rel, content := res.rel, res.content
+		if res.err != nil {
+			t.Fatalf("read %s: %v", rel, res.err)
 		}
 		if isBinary(content) {
 			continue

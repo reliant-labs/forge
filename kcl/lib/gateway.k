@@ -12,12 +12,15 @@ duck-typed inputs. Callers are responsible for passing
 already-validated entities.
 """
 
+import .labels as labels_lib
+
+# Ingress objects are DELIBERATELY not part of the app project: a Gateway
+# and its routes are shared ingress topology, not a workload of one
+# release, so they group under a fixed `forge-ingress` rather than under
+# `Bundle.project`. That is why this passes a constant `part_of` instead of
+# threading the project through — the value differs, the renderer does not.
 _managed_labels = lambda name: str -> {str: str} {
-    {
-        "app.kubernetes.io/name" = name
-        "app.kubernetes.io/managed-by" = "forge"
-        "app.kubernetes.io/part-of" = "forge-ingress"
-    }
+    labels_lib.managed_labels(name, "forge-ingress")
 }
 
 # cluster_routing_label is the dedicated wire key the Go multi-cluster

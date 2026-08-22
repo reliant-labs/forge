@@ -898,30 +898,32 @@ _render_namespace = lambda namespace: str -> any {
 # path subsumes the config-read the namespaced Role would grant (the default
 # rule is cluster-scoped there too) and emits a single ServiceAccount, so the
 # two tiers are mutually exclusive — no duplicate SA.
-_render_cluster_service = lambda s: RenderedWorkload, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
+_render_cluster_service = lambda s: RenderedWorkload, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str], part_of: str = "" -> [any] {
     _is_operator = s.operator_cluster_rbac != Undefined
-    svc_lib.render_k8s_service(s, namespace, registry, image_tag, image_digests) \
+    svc_lib.render_k8s_service(s, namespace, registry, image_tag, image_digests, part_of) \
         + (rbac_lib.render_cluster_rbac(
             s.name,
             namespace,
             {rules = s.operator_cluster_rbac},
             pull_secrets,
+            part_of,
         ) if _is_operator else rbac_lib.render_namespaced_rbac(
             s.name,
             namespace,
             s.namespaced_rbac if s.namespaced_rbac else [],
             pull_secrets,
+            part_of,
         ))
 }
 
-_render_operator_manifests = lambda o: Operator, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
-    svc_lib.render_operator(o, namespace, registry, image_tag, image_digests) \
-        + rbac_lib.render_cluster_rbac(o.name, namespace, o.cluster_rbac, pull_secrets)
+_render_operator_manifests = lambda o: Operator, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str], part_of: str = "" -> [any] {
+    svc_lib.render_operator(o, namespace, registry, image_tag, image_digests, part_of) \
+        + rbac_lib.render_cluster_rbac(o.name, namespace, o.cluster_rbac, pull_secrets, part_of)
 }
 
-_render_cronjob_manifests = lambda c: CronJob, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str] -> [any] {
-    svc_lib.render_cronjob(c, namespace, registry, image_tag, image_digests) \
-        + rbac_lib.render_namespaced_rbac(c.name, namespace, [], pull_secrets)
+_render_cronjob_manifests = lambda c: CronJob, namespace: str, registry: str, image_tag: str, image_digests: {str:str}, pull_secrets: [str], part_of: str = "" -> [any] {
+    svc_lib.render_cronjob(c, namespace, registry, image_tag, image_digests, part_of) \
+        + rbac_lib.render_namespaced_rbac(c.name, namespace, [], pull_secrets, part_of)
 }
 
 # Render a RuntimeClass as a node.k8s.io/v1 manifest. Cluster-scoped
@@ -930,15 +932,21 @@ _render_cronjob_manifests = lambda c: CronJob, namespace: str, registry: str, im
 # app.kubernetes.io/managed-by=forge` is the canonical "what did
 # forge create" query and the manifest-driven sweep can prune ones the
 # Bundle no longer declares.
-_render_runtime_class_manifest = lambda rc: RuntimeClass, namespace: str -> any {
+_render_runtime_class_manifest = lambda rc: RuntimeClass, namespace: str, part_of: str = "" -> any {
     {
         apiVersion = "node.k8s.io/v1"
         kind = "RuntimeClass"
         metadata = {
             name = rc.name
+            # No `app.kubernetes.io/name`: an env-shared resource belongs to no
+            # workload, which is what keeps it out of every `--target` group.
+            # `part-of` still names the PROJECT (Bundle.project) so the release
+            # selector finds it; it falls back to the namespace — the value
+            # this label carried before there was a project to name — so a
+            # Bundle that declares none renders byte-identically.
             labels = {
                 "app.kubernetes.io/managed-by" = "forge"
-                "app.kubernetes.io/part-of" = namespace
+                "app.kubernetes.io/part-of" = part_of if part_of else namespace
             }
         }
         handler = rc.handler
@@ -952,16 +960,19 @@ _render_runtime_class_manifest = lambda rc: RuntimeClass, namespace: str -> any 
 # Render a ConfigMap as a k8s manifest. The metadata.namespace
 # defaults to the env-wide namespace when the caller hasn't pinned one
 # explicitly on the schema.
-_render_config_map_manifest = lambda cm: ConfigMap, namespace: str -> any {
+_render_config_map_manifest = lambda cm: ConfigMap, namespace: str, part_of: str = "" -> any {
     {
         apiVersion = "v1"
         kind = "ConfigMap"
         metadata = {
             name = cm.name
             namespace = cm.namespace if cm.namespace else namespace
+            # Same env-shared shape as RuntimeClass above: no workload `name`,
+            # and `part-of` names the project with the historical namespace as
+            # its fallback. User labels still win on key conflict.
             labels = {
                 "app.kubernetes.io/managed-by" = "forge"
-                "app.kubernetes.io/part-of" = namespace
+                "app.kubernetes.io/part-of" = part_of if part_of else namespace
             } | cm.labels
             if cm.annotations:
                 annotations = cm.annotations
@@ -1001,6 +1012,11 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
     _ns = _ct.namespace
     _registry = _ct.registry
     _pull_secrets = _ct.image_pull_secrets if _ct.image_pull_secrets else []
+    # The PROJECT every object is labelled `app.kubernetes.io/part-of` with —
+    # the selector a CD pipeline's rollout wait iterates. Empty (a Bundle that
+    # declares no project) falls back per-object to the object's own name,
+    # which is the pre-existing render.
+    _project = bundle.project
     # AGNOSTIC workloads are projected onto RenderedWorkloads INTERNALLY here —
     # the adapter runs INSIDE the render pipeline, so the user never calls it.
     # `_project_workload` picks the adapter PER WORKLOAD off the presence of
@@ -1041,14 +1057,14 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
     # service group: they belong to no service, so they apply only on a bare
     # deploy and are never picked by a service --target. To ride a service's
     # --target, declare a manifest on that service's `manifests` instead.
-    [_render_runtime_class_manifest(rc, _ns) for rc in bundle.runtime_classes] \
+    [_render_runtime_class_manifest(rc, _ns, _project) for rc in bundle.runtime_classes] \
         + [_render_namespace(_ns)] \
-        + [_render_config_map_manifest(cm, _ns) for cm in bundle.config_maps] \
+        + [_render_config_map_manifest(cm, _ns, _project) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
-        + [item for s in _workload_services for item in _render_cluster_service(s, s.deploy.namespace, s.deploy.registry, image_tag, image_digests, s.deploy.image_pull_secrets if s.deploy.image_pull_secrets else _pull_secrets)] \
-        + [item for s in _cluster_services for item in svc_lib.render_owned_manifests(s)] \
-        + [item for o in bundle.operators for item in _render_operator_manifests(o, _ns, _registry, image_tag, image_digests, _pull_secrets)] \
-        + [item for c in bundle.cronjobs for item in _render_cronjob_manifests(c, _ns, _registry, image_tag, image_digests, _pull_secrets)] \
+        + [item for s in _workload_services for item in _render_cluster_service(s, s.deploy.namespace, s.deploy.registry, image_tag, image_digests, s.deploy.image_pull_secrets if s.deploy.image_pull_secrets else _pull_secrets, _project)] \
+        + [item for s in _cluster_services for item in svc_lib.render_owned_manifests(s, _project)] \
+        + [item for o in bundle.operators for item in _render_operator_manifests(o, _ns, _registry, image_tag, image_digests, _pull_secrets, _project)] \
+        + [item for c in bundle.cronjobs for item in _render_cronjob_manifests(c, _ns, _registry, image_tag, image_digests, _pull_secrets, _project)] \
         + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, _ns)] \
         + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, _ns)] \
         + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, _ns)] \
@@ -1076,13 +1092,14 @@ render_support = lambda bundle: Bundle -> [any] {
     # services that pin env-level resources to a specific cluster). Stamped
     # with the owning service's app label so the deploy layer routes them.
     _support_cluster_services = [s for s in bundle.services if s.deploy and s.deploy.type == "cluster"]
+    _project = bundle.project
     # Env-shared support manifests + bundle-level additional_manifests carry
     # NO service group (apply on a bare deploy, never on a service --target);
     # per-service owned manifests inherit their service name below.
-    [_render_runtime_class_manifest(rc, _ns) for rc in bundle.runtime_classes] \
-        + [_render_config_map_manifest(cm, _ns) for cm in bundle.config_maps] \
+    [_render_runtime_class_manifest(rc, _ns, _project) for rc in bundle.runtime_classes] \
+        + [_render_config_map_manifest(cm, _ns, _project) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
-        + [item for s in _support_cluster_services for item in svc_lib.render_owned_manifests(s)] \
+        + [item for s in _support_cluster_services for item in svc_lib.render_owned_manifests(s, _project)] \
         + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, _ns)] \
         + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, _ns)] \
         + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, _ns)] \

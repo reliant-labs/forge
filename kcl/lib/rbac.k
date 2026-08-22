@@ -16,18 +16,12 @@ Lambdas take `any` for the entity / RBAC arg by convention — see the
 package-identity note in `lib/services.k` for why.
 """
 
-# `part_of` is the PROJECT these objects belong to (the k8s
-# recommended-labels "higher level application"), so a CD pipeline can
-# select every object of one release with
-# `-l app.kubernetes.io/part-of=<project>`. Empty falls back to the
-# object's own name for callers with no project context.
-_managed_labels = lambda name: str, part_of: str = "" -> {str: str} {
-    {
-        "app.kubernetes.io/name" = name
-        "app.kubernetes.io/managed-by" = "forge"
-        "app.kubernetes.io/part-of" = part_of if part_of else name
-    }
-}
+import .labels as labels_lib
+
+# The shared forge-managed label set — see lib/labels.k. `part_of` is the
+# PROJECT these objects belong to, so a CD pipeline can select every object
+# of one release with `-l app.kubernetes.io/part-of=<project>`.
+_managed_labels = labels_lib.managed_labels
 
 # The default RBAC rules a workload that DOES call the Kubernetes API
 # gets — read the projected ConfigMap + Secret for its per-env config.

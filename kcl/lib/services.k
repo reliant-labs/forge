@@ -22,14 +22,12 @@ already-validated entities; field access here is dynamic.
 # formatters (Resources holds millicores + bytes; the k8s adapter formats).
 import crypto
 import .quantity as qty_lib
+import .labels as labels_lib
 
-_managed_labels = lambda name: str -> {str: str} {
-    {
-        "app.kubernetes.io/name" = name
-        "app.kubernetes.io/managed-by" = "forge"
-        "app.kubernetes.io/part-of" = name
-    }
-}
+# The shared forge-managed label set — see lib/labels.k. `part_of` is the
+# PROJECT (Bundle.project), threaded in from render.k; empty falls back to
+# the object's own name.
+_managed_labels = labels_lib.managed_labels
 
 # Stamp the OWNING service's app.kubernetes.io/name onto an arbitrary raw
 # manifest dict so the deploy layer can route it to that service's declared
@@ -54,12 +52,12 @@ _managed_labels = lambda name: str -> {str: str} {
 #
 # KCL v0.11 note: the body instantiates no schema literals — only raw-dict
 # operations (`|`) and member access — so it is legal inside a lambda body.
-_stamp_owner_label = lambda manifest: any, name: str -> any {
+_stamp_owner_label = lambda manifest: any, name: str, part_of: str = "" -> any {
     _existing_meta = manifest.metadata if manifest.metadata else {}
     _existing_labels = _existing_meta.labels if _existing_meta.labels else {}
     manifest | {
         metadata = _existing_meta | {
-            labels = _managed_labels(name) | _existing_labels
+            labels = _managed_labels(name, part_of) | _existing_labels
         }
     }
 }
@@ -76,8 +74,8 @@ _stamp_owner_label = lambda manifest: any, name: str -> any {
 #     `deploy = K8sCluster{...}` and no image) declares env-level / ownerless
 #     resources (Namespace, gateways, ClusterIssuers, bootstrap) onto a
 #     specific cluster — no global render, no primary heuristic.
-render_owned_manifests = lambda svc: any -> [any] {
-    [_stamp_owner_label(m, svc.name) for m in (svc.manifests if svc.manifests else [])]
+render_owned_manifests = lambda svc: any, part_of: str = "" -> [any] {
+    [_stamp_owner_label(m, svc.name, part_of) for m in (svc.manifests if svc.manifests else [])]
 }
 
 # Collapse an EnvVar list to one entry per name, LAST-occurrence-wins.
@@ -416,9 +414,9 @@ _default_resources = {
 # [Deployment, Service]. Ingress is no longer rendered here — see
 # kcl/lib/gateway.k for Gateway API resources owned by the project's
 # top-level `deploy/kcl/ingress.k` file.
-render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image_tag: str, image_digests: {str:str} -> [any] {
+render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image_tag: str, image_digests: {str:str}, part_of: str = "" -> [any] {
     _name = svc.name
-    _labels = _managed_labels(_name)
+    _labels = _managed_labels(_name, part_of)
     _deploy = svc.deploy
     _resources = _deploy.resources if _deploy.resources else _default_resources
     _image = _image_ref(svc.image, image_registry, _effective_image_tag(svc, image_tag), image_digests)
@@ -571,9 +569,9 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
 }
 
 # Render a CronJob (or one-shot Job when schedule == "").
-render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag: str, image_digests: {str:str} -> [any] {
+render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag: str, image_digests: {str:str}, part_of: str = "" -> [any] {
     _name = cj.name
-    _labels = _managed_labels(_name)
+    _labels = _managed_labels(_name, part_of)
     _image = _image_ref(cj.image, image_registry, _effective_image_tag(cj, image_tag), image_digests)
     _volumes = cj.volumes if cj.volumes else []
     _pod_spec = {
@@ -657,9 +655,9 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
 # Render an Operator. Same skeleton as a K8s Service Deployment but
 # with leader-election env vars and cluster-scoped RBAC (handled in
 # lib/rbac.k).
-render_operator = lambda op: any, namespace: str, image_registry: str, image_tag: str, image_digests: {str:str} -> [any] {
+render_operator = lambda op: any, namespace: str, image_registry: str, image_tag: str, image_digests: {str:str}, part_of: str = "" -> [any] {
     _name = op.name
-    _labels = _managed_labels(_name)
+    _labels = _managed_labels(_name, part_of)
     _image = _image_ref(op.image, image_registry, _effective_image_tag(op, image_tag), image_digests)
     _leader_env_dict = [
         {name = "LEADER_ELECTION", value = "true"}

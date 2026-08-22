@@ -20,6 +20,7 @@ package-identity note in `lib/services.k` for why KCL forces dynamic
 field access here.
 """
 
+import crypto
 import ..lib.rbac as rbac_lib
 import ..lib.quantity as qty_lib
 
@@ -550,31 +551,87 @@ render_job = lambda c: any, namespace: str, env_registry: str, image_tag: str, p
     _labels = _managed_labels(_name, part_of)
     _image = _resolved_image(c, env_registry, image_tag)
     _env = _container_env(c)
+
+    # The pod spec this Job would run. Built once, then hashed for the name
+    # below — so the hash is derived from the rendered result rather than from
+    # a hand-listed set of fields that would silently stop covering a new one.
+    _pod = {
+        restartPolicy = "OnFailure"
+        serviceAccountName = _name
+        securityContext = _default_pod_security_context
+        if gating:
+            initContainers = gating
+        containers = [{
+            name = _name
+            image = _image
+            imagePullPolicy = _pull_policy(_image)
+            command = c.command
+            resources = _resource_block(c.resources if c.resources else _default_resources)
+            if _env:
+                env = _env
+            securityContext = _default_container_security_context
+        }]
+    }
+
+    # A Job's spec.template is IMMUTABLE. With a fixed name, re-applying an
+    # unchanged Job is not a no-op — the API server rejects it with
+    #
+    #     Job.batch "<name>" is invalid: spec.template: ... field is immutable
+    #
+    # and because that surfaces at the END of a whole-manifest apply, every
+    # Deployment has already been updated by then. The deploy reports FAILURE
+    # on a rollout that in fact succeeded, which is a genuinely dangerous
+    # signal: normalising "the deploy is red but it's fine" is how a real
+    # failure eventually gets waved through. Working around it out-of-band
+    # means delete-then-recreate, and `kubectl delete job --wait` returns
+    # before the object is gone, so the re-apply races the deletion.
+    #
+    # Putting the spec hash in the NAME dissolves the problem instead of
+    # handling it. An unchanged spec renders an identical name, so the apply
+    # is a true no-op; a changed spec renders a NEW name, so a new Job is
+    # created and the old one remains as history. This is the same trick a
+    # Deployment plays one layer down, where pod-template-hash names the
+    # ReplicaSet.
+    #
+    # The name is a plain expression, so a project that needs a fixed name
+    # (something outside the render referencing it by exact name) overrides it
+    # with ordinary KCL config-unification — no schema field, no knob:
+    #
+    #     _job | {metadata: {name = "control-plane-migrate"}}
+    #
+    # Use `:` and not `=`. The `:` form deep-merges and keeps the labels
+    # below; `=` REPLACES the whole metadata map and silently drops them.
+    #
+    # Hashing the rendered pod spec means the image is hashed as RESOLVED —
+    # a digest when one was captured. So a deploy that only moves the tag
+    # (a fresh commit SHA over identical bytes) leaves the hash alone and
+    # recreates nothing.
+    _spec_hash = crypto.sha256(str(_pod))[:10]
+
     _job = [{
         apiVersion = "batch/v1"
         kind = "Job"
-        metadata = {name = _name, namespace = namespace, labels = _labels}
+        metadata = {
+            name = _name + "-" + _spec_hash
+            namespace = namespace
+            # job-name is the STABLE handle: `kubectl get job -l
+            # forge.dev/job-name=<name>` finds the Job whatever its spec, which
+            # a hashed metadata.name alone would not give you. spec-hash
+            # answers "did this actually change?" without diffing YAML.
+            labels = _labels | {
+                "forge.dev/job-name" = _name
+                "forge.dev/spec-hash" = _spec_hash
+            }
+            # Collect superseded Jobs rather than accumulating one per spec
+            # change forever. 24h keeps a failed run inspectable for a day.
+            # Overridable the same way the name is.
+        }
         spec = {
             backoffLimit = 6
+            ttlSecondsAfterFinished = 86400
             template = {
-                metadata = {labels = _labels}
-                spec = {
-                    restartPolicy = "OnFailure"
-                    serviceAccountName = _name
-                    securityContext = _default_pod_security_context
-                    if gating:
-                        initContainers = gating
-                    containers = [{
-                        name = _name
-                        image = _image
-                        imagePullPolicy = _pull_policy(_image)
-                        command = c.command
-                        resources = _resource_block(c.resources if c.resources else _default_resources)
-                        if _env:
-                            env = _env
-                        securityContext = _default_container_security_context
-                    }]
-                }
+                metadata = {labels = _labels | {"forge.dev/job-name" = _name}}
+                spec = _pod
             }
         }
     }] if not c.before else []

@@ -1659,7 +1659,7 @@ func disownRoundTrip(t *testing.T, forgeBin, projectDir, rel string) {
 // This is exactly the bug class the 2026-06 generated-output review
 // found shipping: forge validated template RENDERING, never executed
 // behavior.
-const crudLifecycleProbeSrc = `package item_test
+const crudLifecycleProbeSrc = `package item
 
 import (
 	"context"
@@ -1674,7 +1674,6 @@ import (
 	"github.com/reliant-labs/forge/pkg/testkit"
 
 	pb "example.com/crudlife/gen/services/item/v1"
-	"example.com/crudlife/pkg/app"
 	"example.com/crudlife/pkg/middleware"
 )
 
@@ -1759,7 +1758,7 @@ func requireCleanClientError(t *testing.T, label string, err error, want connect
 
 func TestCorpusCRUDLifecycle(t *testing.T) {
 	db := corpusMigratedDB(t)
-	svc := app.NewTestItem(t, app.WithDB(db))
+	svc := NewTestItem(t, WithDB(db))
 	ctx := authedCtx()
 
 	// ── create ×2: two rows, distinct non-empty IDs, created_at set ──
@@ -2745,7 +2744,7 @@ func TestCorpusTradeTextTimestamps(t *testing.T) {
 }
 `
 
-const bookmarkLifecycleProbeSrc = `package item_test
+const bookmarkLifecycleProbeSrc = `package item
 
 import (
 	"testing"
@@ -2755,12 +2754,11 @@ import (
 
 	pb "example.com/crudlife/gen/services/item/v1"
 	"example.com/crudlife/internal/db"
-	"example.com/crudlife/pkg/app"
 )
 
 func TestCorpusBookmarkLifecycle(t *testing.T) {
 	dbc := corpusMigratedDB(t)
-	svc := app.NewTestItem(t, app.WithDB(dbc))
+	svc := NewTestItem(t, WithDB(dbc))
 	ctx := authedCtx()
 
 	// ── repeated-field round trip through the real RPC stack ─────────
@@ -2885,7 +2883,7 @@ func TestCorpusBookmarkLifecycle(t *testing.T) {
 // the applied schema, so the new `domain` column is a declared column —
 // order_by=domain is accepted by the real RPC, and the struct carries
 // the field (compile-time proof via direct ORM use).
-const bookmarkEvolveProbeSrc = `package item_test
+const bookmarkEvolveProbeSrc = `package item
 
 import (
 	"testing"
@@ -2894,12 +2892,11 @@ import (
 
 	pb "example.com/crudlife/gen/services/item/v1"
 	"example.com/crudlife/internal/db"
-	"example.com/crudlife/pkg/app"
 )
 
 func TestCorpusBookmarkEvolved(t *testing.T) {
 	dbc := corpusMigratedDB(t)
-	svc := app.NewTestItem(t, app.WithDB(dbc))
+	svc := NewTestItem(t, WithDB(dbc))
 	ctx := authedCtx()
 
 	cr, err := svc.CreateBookmark(ctx, connect.NewRequest(&pb.CreateBookmarkRequest{

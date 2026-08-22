@@ -13,23 +13,22 @@ import (
 	"testing"
 )
 
-// TestE2EScaffoldKCLVendorDevFlow exercises the dev-build forge KCL
-// module vendor mechanism end to end with the real binary and the real
-// embedded kpm/kcl-go runtime (no external `kcl` needed):
+// TestE2EScaffoldKCLVendorFlow exercises the forge KCL module vendor
+// mechanism end to end with the real binary and the real embedded
+// kpm/kcl-go runtime (no external `kcl` needed):
 //
-//  1. Born correct: `forge project new` on a dev binary materializes
-//     `.forge-kcl/` and emits deploy/kcl/kcl.mod with a RELATIVE path
-//     dependency — no published `kcl-vX.Y.Z` tag required, no
-//     hand-patched absolute path.
+//  1. Born correct: `forge project new` materializes `.forge-kcl/` and
+//     emits deploy/kcl/kcl.mod with a RELATIVE path dependency — no git
+//     tag to resolve, no hand-patched absolute path.
 //  2. Resolves + renders: `forge ci validate-kcl` (the same
 //     internal/kclrender seam `forge env deploy` and the generate
 //     pipeline's ingress-ports step use) succeeds for every env.
-//  3. Heals: a project whose kcl.mod carries the dead published tag
-//     (today's broken state) is vendored + patched by one
-//     `forge generate` and then renders.
+//  3. Heals: a project whose kcl.mod carries the dead git tag an older
+//     forge scaffolded is vendored + patched by one `forge generate`
+//     and then renders.
 //  4. Idempotent: a second `forge generate` leaves kcl.mod and the
 //     vendored tree byte-identical.
-func TestE2EScaffoldKCLVendorDevFlow(t *testing.T) {
+func TestE2EScaffoldKCLVendorFlow(t *testing.T) {
 	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 
@@ -57,7 +56,8 @@ func TestE2EScaffoldKCLVendorDevFlow(t *testing.T) {
 	// 2. Resolves + renders through the embedded runtime.
 	runCmd(t, projectDir, forgeBin, "ci", "validate-kcl")
 
-	// 3. Heals today's broken state: dead published tag, no vendor dir.
+	// 3. Heals a project an older forge left broken: dead git tag, no
+	// vendor dir.
 	if err := os.RemoveAll(filepath.Join(projectDir, ".forge-kcl")); err != nil {
 		t.Fatalf("remove vendor dir: %v", err)
 	}
@@ -75,7 +75,7 @@ forge = { git = "https://github.com/reliant-labs/forge.git", tag = "kcl-v0.1.0" 
 	runCmd(t, projectDir, forgeBin, "generate")
 	healed := readFileE2EString(t, deployMod)
 	if !strings.Contains(healed, `forge = { path = "../../.forge-kcl" }`) {
-		t.Fatalf("generate did not heal the dead published tag:\n%s", healed)
+		t.Fatalf("generate did not heal the dead git tag:\n%s", healed)
 	}
 	assertPathExistsE2E(t, filepath.Join(projectDir, ".forge-kcl", "kcl.mod"))
 	runCmd(t, projectDir, forgeBin, "ci", "validate-kcl")

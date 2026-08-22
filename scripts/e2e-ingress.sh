@@ -281,31 +281,15 @@ PYEOF
 info "remaining ports block in deploy/k3d.yaml:"
 grep -A 4 "^ports:" "${K3D_YAML}" | sed 's/^/    /' || info "(no ports block — will be supplied by k3d-ports.yaml)"
 
-# ---- 6a. point KCL at local forge module ------------------------------
+# ---- 6a. verify the project is born with a resolvable KCL module ------
 
-# `forge new` writes a kcl.mod pinned to the published
-# `kcl-v0.1.0` tag, which may not yet exist on the remote during local
-# development. Rewrite to `path = ` so the local checkout's
-# `kcl/` directory satisfies the import.
-step "Point project kcl.mod at the local forge KCL module"
-KCL_MOD="${PROJECT_DIR}/kcl.mod"
-python3 - "${KCL_MOD}" "${REPO_ROOT}/kcl" <<'PYEOF'
-import sys, re
-path, local = sys.argv[1], sys.argv[2]
-src = open(path).read()
-new = re.sub(
-    r'^forge\s*=.*$',
-    f'forge = {{ path = "{local}" }}',
-    src,
-    count=1,
-    flags=re.MULTILINE,
-)
-if new == src:
-    sys.stderr.write("ERROR: could not rewrite forge KCL dep\n")
-    sys.exit(1)
-open(path, "w").write(new)
-PYEOF
-[ $? -eq 0 ] || fail "could not patch kcl.mod"
+# No rewrite needed. `forge project new` materializes the KCL module
+# embedded in the forge binary into `.forge-kcl/` and points the
+# project's kcl.mod at it by relative path, so the import resolves
+# offline with nothing published. This step used to hand-patch the
+# dependency because the scaffold pinned a git tag that did not exist.
+step "Verify the scaffold vendored the forge KCL module"
+[ -f "${PROJECT_DIR}/.forge-kcl/kcl.mod" ] || fail "scaffold did not vendor the forge KCL module into .forge-kcl/"
 
 # ---- 6b. run forge generate to emit k3d-ports.yaml --------------------
 

@@ -290,7 +290,7 @@ func generateSteps() []GenStep {
 		{Name: "migrate legacy checksums manifest", Gate: always, Run: stepMigrateLegacyManifest, Tag: "config"},
 		{Name: "check Tier-1 file-stomp guard", Gate: always, Run: stepCheckTier1Drift, Tag: "validate"},
 		{Name: "snapshot Tier-1 exports", Gate: always, Run: stepSnapshotTier1Exports, Tag: "validate"},
-		{Name: "sync forge KCL module dev vendor", Gate: always, Run: stepSyncDevForgeKCL, Tag: "config"},
+		{Name: "sync forge KCL module vendor", Gate: always, Run: stepSyncForgeKCL, Tag: "config"},
 		{Name: "forge/pkg compatibility handshake", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPkgCompatHandshake, Tag: "validate"},
 		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config"},
 		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPreCodegenContractCheck, Tag: "validate"},

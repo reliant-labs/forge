@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclvendor"
@@ -40,27 +39,27 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		return fmt.Errorf("write kcl.mod: %w", err)
 	}
 
-	// Dev builds of forge (no ldflags-stamped published forge/pkg
-	// version — the same release/dev discriminator resolveForgePkgDep
-	// uses for go.mod) have no resolvable published `kcl-vX.Y.Z` tag
-	// either. Vendor the binary's embedded copy of the forge KCL module
-	// into `.forge-kcl/` and point the freshly-rendered kcl.mod at it,
-	// so the project is born rendering — the exact mechanism `forge
-	// generate` maintains from here on (internal/cli sync step + the
-	// shared internal/kclvendor patcher).
-	if buildinfo.PkgVersion() == "" {
-		if _, err := kclvendor.Materialize(g.Path); err != nil {
-			return fmt.Errorf("dev-vendor forge KCL module: %w", err)
-		}
-		res, err := kclvendor.EnsureVendorDep(kclModPath, g.Path)
-		if err != nil {
-			return fmt.Errorf("point kcl.mod at %s: %w", kclvendor.VendorDirName, err)
-		}
-		if res.Warning != "" {
-			// Freshly rendered from our own template — a warning here
-			// means the template and patcher drifted apart.
-			return fmt.Errorf("kcl.mod vendor patch: %s", res.Warning)
-		}
+	// Vendor the binary's embedded copy of the forge KCL module into
+	// `.forge-kcl/` and point the freshly-rendered kcl.mod at it, so the
+	// project is born rendering — the exact mechanism `forge generate`
+	// maintains from here on (internal/cli sync step + the shared
+	// internal/kclvendor patcher).
+	//
+	// Unconditional, on every build of forge. This used to be gated on a
+	// dev build, and a released forge scaffolded a published git tag
+	// instead — a tag that was never published, so every project a
+	// released forge created was unresolvable from birth.
+	if _, err := kclvendor.Materialize(g.Path); err != nil {
+		return fmt.Errorf("vendor forge KCL module: %w", err)
+	}
+	res, err := kclvendor.EnsureVendorDep(kclModPath, g.Path)
+	if err != nil {
+		return fmt.Errorf("point kcl.mod at %s: %w", kclvendor.VendorDirName, err)
+	}
+	if res.Warning != "" {
+		// Freshly rendered from our own template — a warning here
+		// means the template and patcher drifted apart.
+		return fmt.Errorf("kcl.mod vendor patch: %s", res.Warning)
 	}
 
 	// The legacy in-tree `deploy/kcl/schema.k` + `base.k` + `render.k`

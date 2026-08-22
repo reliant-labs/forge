@@ -1,21 +1,32 @@
-// Package kclvendor implements the dev-mode vendoring of the forge KCL
-// module into generated projects — the KCL sibling of the `.forge-pkg`
-// Go-module flow in internal/cli/dev_pkg_replace.go.
+// Package kclvendor materializes the forge KCL module into generated
+// projects and points their kcl.mod at that copy.
 //
-// Background: a scaffolded project's `deploy/kcl/kcl.mod` depends on the
-// `forge` KCL module (typed schemas + render layer) via a published
-// `kcl-vX.Y.Z` git tag. Dev builds of forge have no published tag — the
-// same way they have no published forge/pkg Go module version — so on
-// dev builds forge materializes the module EMBEDDED IN THE BINARY
+// A scaffolded project's `deploy/kcl/kcl.mod` depends on the `forge` KCL
+// module — the typed schemas + render layer its env `main.k` files
+// import. Forge resolves that dependency ONE way, on every build of
+// forge: it materializes the module EMBEDDED IN THE BINARY
 // (github.com/reliant-labs/forge/kcl) into `<project>/.forge-kcl/` and
-// rewrites the kcl.mod dependency to a relative path. Relative, not
-// absolute: the vendored copy travels with the repo, so containers, CI
-// checkouts, and other machines resolve it identically.
+// writes a RELATIVE path dependency. Relative, not absolute: the
+// vendored copy travels with the repo, so containers, CI checkouts, and
+// other machines resolve it identically.
 //
-// Release builds scaffold the published tag (unchanged behavior) and
-// restore it — removing `.forge-kcl/` — when they encounter a project a
-// dev build previously vendored, mirroring the `.forge-pkg` → published
-// pin swap semantics.
+// There is deliberately no second mechanism. Forge previously scaffolded
+// a published `kcl-vX.Y.Z` git tag on release builds and vendored only
+// on dev builds, which failed in three separate ways: the tag was never
+// published so every released scaffold was unresolvable; a release build
+// DELETED a working `.forge-kcl/` and rewrote the dependency back to the
+// dead tag; and even a correctly published tag would have required
+// network plus git auth at render time, which an air-gapped or
+// offline-CI render does not have. Resolving from the binary's own copy
+// removes all three, and removes a release step that has to be
+// remembered. See docs/adr/0001-always-vendor-forge-kcl.md.
+//
+// The cost of vendoring is staleness: the module refreshes when `forge
+// generate` runs, so a project can sit on a copy an older forge wrote.
+// Materialize therefore stamps the materializing forge's version into
+// the vendor dir, and [Stale] reports a mismatch so the render seam can
+// say so out loud rather than let a confusing schema error stand in for
+// "you have not regenerated".
 //
 // The kcl.mod is user-owned. All edits are marker-delimited and
 // exact-match (the same discipline as the Dockerfile COPY block in
@@ -34,6 +45,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	forgekcl "github.com/reliant-labs/forge/kcl"
 )
 
@@ -42,35 +54,34 @@ import (
 // `.forge-pkg/` (forge-maintained state).
 const VendorDirName = ".forge-kcl"
 
-// PublishedGitURL and PublishedTag pin the published registry reference
-// the scaffold emits on release builds and the restore path re-emits
-// when un-vendoring. PublishedDepLine must stay in sync with
-// internal/templates/deploy/kcl/kcl.mod.tmpl (asserted by unit test).
-const (
-	PublishedGitURL = "https://github.com/reliant-labs/forge.git"
-	PublishedTag    = "kcl-v0.1.0"
-)
-
-// PublishedDepLine is the exact dependency line for the published module.
-var PublishedDepLine = fmt.Sprintf("forge = { git = %q, tag = %q }", PublishedGitURL, PublishedTag)
+// StampFileName is the file Materialize writes inside the vendor dir
+// recording which forge version produced the copy. A dotfile so KCL
+// never treats it as a source, and read back by [Stale] to tell a
+// project its vendored module predates the forge now rendering it.
+const StampFileName = ".forge-version"
 
 // MarkerHeader is the first line of the forge-maintained dependency
-// block — the ownership/removal anchor, mirroring the Dockerfile
-// dev-vendor COPY block's header.
-const MarkerHeader = "# ── Dev-mode local forge KCL module vendor ──"
+// block — the ownership anchor, mirroring the Dockerfile vendor COPY
+// block's header.
+const MarkerHeader = "# ── Vendored forge KCL module (maintained by forge generate) ──"
+
+// legacyMarkerHeaders are marker headers earlier forge versions wrote.
+// ownedBlockStart accepts them so an upgrade rewrites the whole stale
+// block instead of stacking a new one above the old comments.
+var legacyMarkerHeaders = []string{
+	"# ── Dev-mode local forge KCL module vendor ──",
+}
 
 // markerBody is the explanatory comment between the header and the
 // dependency line.
 const markerBody = `#
-# The published ` + "`kcl-vX.Y.Z`" + ` tag is not resolvable for a dev build of
-# forge, so ` + "`forge generate`" + ` materializes the module embedded in the
-# forge binary into ` + "`" + VendorDirName + "/`" + ` at the project root and points this
-# dependency at it via a RELATIVE path — containers and CI resolve the
-# same copy because it travels with the repo.
+# ` + "`forge generate`" + ` materializes the KCL module embedded in the forge
+# binary into ` + "`" + VendorDirName + "/`" + ` at the project root and points this
+# dependency at it by RELATIVE path. That copy travels with the repo, so
+# containers, CI checkouts and other machines resolve the identical
+# module — with no network, no git auth, and nothing to publish.
 #
-# This block is maintained by ` + "`forge generate`" + `: refreshed while the
-# project is built with a dev forge, restored to the published tag by
-# release builds.`
+# Commit ` + "`" + VendorDirName + "/`" + `. It refreshes on every ` + "`forge generate`" + `.`
 
 // DepKind classifies the forge dependency line found in a kcl.mod.
 type DepKind int
@@ -78,8 +89,9 @@ type DepKind int
 const (
 	// DepNone — the file has no `forge = …` dependency line.
 	DepNone DepKind = iota
-	// DepPublished — `forge = { git = "…", tag = "…" }`.
-	DepPublished
+	// DepGitTag — `forge = { git = "…", tag = "…" }`. The shape older
+	// scaffolds emitted; forge rewrites it to the vendored path.
+	DepGitTag
 	// DepAbsolutePath — `forge = { path = "/abs/host/path" }` (the
 	// hand-patch pattern this package exists to replace).
 	DepAbsolutePath
@@ -105,8 +117,9 @@ type Result struct {
 // The RHS is parsed separately; this only anchors the line.
 var forgeDepLineRE = regexp.MustCompile(`(?m)^[\t ]*forge[\t ]*=[\t ]*(.+?)[\t ]*$`)
 
-// publishedRHSRE recognizes the published git+tag inline-table shape.
-var publishedRHSRE = regexp.MustCompile(`^\{\s*git\s*=\s*"[^"]+"\s*,\s*tag\s*=\s*"[^"]+"\s*\}$`)
+// gitTagRHSRE recognizes the git+tag inline-table shape older scaffolds
+// emitted, which EnsureVendorDep rewrites to the vendored path.
+var gitTagRHSRE = regexp.MustCompile(`^\{\s*git\s*=\s*"[^"]+"\s*,\s*tag\s*=\s*"[^"]+"\s*\}$`)
 
 // pathRHSRE recognizes the local-path inline-table shape and captures
 // the path.
@@ -132,8 +145,8 @@ func classifyDep(lines []string) (kind DepKind, depIdx int, pathTarget string) {
 		depIdx = i
 		rhs := strings.TrimSpace(m[1])
 		switch {
-		case publishedRHSRE.MatchString(rhs):
-			kind = DepPublished
+		case gitTagRHSRE.MatchString(rhs):
+			kind = DepGitTag
 		case pathRHSRE.MatchString(rhs):
 			target := pathRHSRE.FindStringSubmatch(rhs)[1]
 			pathTarget = target
@@ -155,17 +168,26 @@ func classifyDep(lines []string) (kind DepKind, depIdx int, pathTarget string) {
 }
 
 // ownedBlockStart walks up from the dependency line over the contiguous
-// comment run directly above it. If that run begins with MarkerHeader,
-// the block [start..depIdx] is forge-owned and returns start; otherwise
-// returns depIdx (only the line itself is ours to touch — user comments
-// above it are preserved).
+// comment run directly above it. If that run begins with MarkerHeader —
+// or a header an earlier forge wrote — the block [start..depIdx] is
+// forge-owned and returns start; otherwise returns depIdx (only the line
+// itself is ours to touch, so user comments above it are preserved).
 func ownedBlockStart(lines []string, depIdx int) int {
 	start := depIdx
 	for start > 0 && strings.HasPrefix(strings.TrimSpace(lines[start-1]), "#") {
 		start--
 	}
-	if start < depIdx && strings.TrimSpace(lines[start]) == MarkerHeader {
+	if start == depIdx {
+		return depIdx
+	}
+	head := strings.TrimSpace(lines[start])
+	if head == MarkerHeader {
 		return start
+	}
+	for _, legacy := range legacyMarkerHeaders {
+		if head == legacy {
+			return start
+		}
 	}
 	return depIdx
 }
@@ -215,15 +237,15 @@ func EnsureVendorDep(kclModPath, projectDir string) (Result, error) {
 	switch kind {
 	case DepNone:
 		return Result{Warning: fmt.Sprintf(
-			"%s has no `forge = …` dependency line — cannot point it at the dev-vendored module; add `%s` (or the published tag) by hand",
+			"%s has no `forge = …` dependency line — cannot point it at the vendored module; add `%s` by hand",
 			kclModPath, vendorDepLine(relPath))}, nil
 	case DepUnrecognized:
 		return Result{Warning: fmt.Sprintf(
-			"%s carries a forge dependency in a shape `forge generate` does not manage — leaving it untouched; expected `%s` for the dev-vendored module",
+			"%s carries a forge dependency in a shape `forge generate` does not manage — leaving it untouched; expected `%s` for the vendored module",
 			kclModPath, vendorDepLine(relPath))}, nil
 	}
 
-	// DepPublished, DepAbsolutePath, or DepVendored (possibly with a
+	// DepGitTag, DepAbsolutePath, or DepVendored (possibly with a
 	// different spelling / missing marker): replace the owned span with
 	// the canonical block.
 	blockStart := ownedBlockStart(lines, depIdx)
@@ -241,39 +263,6 @@ func EnsureVendorDep(kclModPath, projectDir string) (Result, error) {
 	}
 	// The sibling lock pins the previous resolution; it is derived
 	// state, so drop it on a source swap and let kpm rebuild it.
-	_ = os.Remove(filepath.Join(filepath.Dir(kclModPath), "kcl.mod.lock"))
-	return Result{Changed: true}, nil
-}
-
-// RestorePublishedDep swaps a forge-owned vendor block back to the
-// published git-tag dependency line. Only the marker-delimited block
-// (or a bare vendor-path line) is restored; hand-authored shapes —
-// including absolute-path overrides — are never rewritten. Idempotent.
-func RestorePublishedDep(kclModPath string) (Result, error) {
-	data, err := os.ReadFile(kclModPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return Result{}, nil
-		}
-		return Result{}, fmt.Errorf("read %s: %w", kclModPath, err)
-	}
-	lines := strings.Split(string(data), "\n")
-	kind, depIdx, _ := classifyDep(lines)
-	if kind != DepVendored {
-		return Result{}, nil // published already, user-authored, or nothing — not ours to restore
-	}
-	blockStart := ownedBlockStart(lines, depIdx)
-	updated := make([]string, 0, len(lines))
-	updated = append(updated, lines[:blockStart]...)
-	updated = append(updated, PublishedDepLine)
-	updated = append(updated, lines[depIdx+1:]...)
-	out := strings.Join(updated, "\n")
-	if out == string(data) {
-		return Result{}, nil
-	}
-	if err := os.WriteFile(kclModPath, []byte(out), 0o644); err != nil {
-		return Result{}, fmt.Errorf("write %s: %w", kclModPath, err)
-	}
 	_ = os.Remove(filepath.Join(filepath.Dir(kclModPath), "kcl.mod.lock"))
 	return Result{Changed: true}, nil
 }
@@ -342,9 +331,10 @@ func Materialize(projectDir string) (changed bool, err error) {
 		return changed, fmt.Errorf("materialize embedded forge KCL module into %s: %w", VendorDirName, walkErr)
 	}
 
-	// Delete strays. kcl.mod.lock is tolerated: kpm derives it inside
-	// the vendor dir on some resolution paths, and deleting it every
-	// run would churn.
+	// Delete strays. Two files are tolerated rather than treated as
+	// strays: kcl.mod.lock, which kpm derives inside the vendor dir on
+	// some resolution paths, and the version stamp this function writes
+	// below — deleting either every run would churn.
 	if _, err := os.Stat(dst); err == nil {
 		_ = filepath.Walk(dst, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
@@ -355,7 +345,7 @@ func Materialize(projectDir string) (changed bool, err error) {
 				return nil
 			}
 			slashRel := filepath.ToSlash(rel)
-			if slashRel == "kcl.mod.lock" {
+			if slashRel == "kcl.mod.lock" || slashRel == StampFileName {
 				return nil
 			}
 			if _, keep := want[slashRel]; !keep {
@@ -366,11 +356,39 @@ func Materialize(projectDir string) (changed bool, err error) {
 			return nil
 		})
 	}
+	// Stamp the materializing forge's version LAST, so a stamp is only
+	// ever present over a complete copy. This is what makes vendoring
+	// safe to rely on as the single mechanism: the module refreshes on
+	// `forge generate` and nowhere else, so without a recorded version a
+	// project could sit on an old copy and the only symptom would be a
+	// schema error that names the wrong cause.
+	stampPath := filepath.Join(dst, StampFileName)
+	stamp := []byte(buildinfo.Version() + "\n")
+	if existing, rerr := os.ReadFile(stampPath); rerr != nil || !bytes.Equal(existing, stamp) {
+		if werr := os.WriteFile(stampPath, stamp, 0o644); werr != nil {
+			return changed, fmt.Errorf("write %s: %w", StampFileName, werr)
+		}
+		changed = true
+	}
 	return changed, nil
 }
 
-// Remove deletes the materialized vendor directory (release-build
-// un-vendor path). Missing directory is a no-op.
-func Remove(projectDir string) error {
-	return os.RemoveAll(filepath.Join(projectDir, VendorDirName))
+// Stale reports whether <projectDir>/.forge-kcl was materialized by a
+// DIFFERENT forge version than the one running now, returning the
+// recorded version for the message. A vendor dir that is absent, or one
+// whose stamp matches, is not stale.
+//
+// An unstamped copy (materialized by a forge predating the stamp) counts
+// as stale with an empty version: it genuinely was written by another
+// forge, and one `forge generate` clears it for good.
+func Stale(projectDir string) (stale bool, stampedVersion string) {
+	if !Present(projectDir) {
+		return false, ""
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, VendorDirName, StampFileName))
+	if err != nil {
+		return true, ""
+	}
+	got := strings.TrimSpace(string(data))
+	return got != buildinfo.Version(), got
 }

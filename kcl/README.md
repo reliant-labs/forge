@@ -242,8 +242,15 @@ edition = "v0.11.0"
 version = "0.0.1"
 
 [dependencies]
-forge = { git = "https://github.com/reliant-labs/forge.git", tag = "kcl-v0.1.0" }
+forge = { path = "../../.forge-kcl" }
 ```
+
+You do not write that dependency by hand, and there is no tag or registry to
+pin. `forge generate` materializes this module — the copy embedded in the forge
+binary — into `.forge-kcl/` at the project root and maintains the dependency
+line above. The vendored copy travels with the repo, so containers, CI
+checkouts and other machines resolve the identical module with no network and
+no git auth. Commit `.forge-kcl/`.
 
 Project's `deploy/kcl/dev/main.k`:
 
@@ -341,10 +348,21 @@ the `EnvVar` schema doc in `schema.k`.
 
 ## Versioning
 
-Pin a `kcl-vX.Y.Z` git tag from your project's `kcl.mod`. When a release
-changes this module's schemas in a breaking way, forge ships a migration
-skill for that release; `forge project upgrade list` surfaces the ones
-your project still needs.
+The module version is the forge version that materialized it. There is no
+separate tag to pin: `forge generate` refreshes `.forge-kcl/` from the running
+binary and stamps that version into `.forge-kcl/.forge-version`.
+
+Because the module refreshes only on `forge generate`, a project can sit on a
+copy an older forge wrote. Forge notices: every render compares the stamp
+against the running binary and warns when they differ, naming `forge generate`
+as the fix.
+
+When a release changes this module's schemas in a breaking way, forge ships a
+migration skill for that release; `forge project upgrade list` surfaces the
+ones your project still needs.
+
+See `docs/adr/0001-always-vendor-forge-kcl.md` for why vendoring is the only
+mechanism.
 
 ## Layout
 

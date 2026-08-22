@@ -127,6 +127,25 @@ func TestTier2ManagedPathsContents(t *testing.T) {
 		// One-shot .github scaffolds written only at `forge project new` time.
 		".github/CODEOWNERS",
 		".github/pull_request_template.md",
+		// The CI workflows, all written by writeCIScaffold: write-once,
+		// user-owned from birth, no marker.
+		//
+		// These used to be listed in the reject set below, on the reasoning
+		// that a marker-less file never enters the drift scan and so needs
+		// no exemption. True for a project scaffolded today — and false for
+		// every project scaffolded before the workflows became write-once,
+		// which still has forge's Tier-1 forge:hash marker in its e2e.yml.
+		// Editing that file is sanctioned now, but the scan read the stale
+		// marker as a hand-edited generated file and aborted `forge
+		// generate` wholesale, with no extension point it could name
+		// because the whole file is the user's. The exemption is what makes
+		// the tier registry agree with the writer for both vintages.
+		".github/workflows/ci.yml",
+		".github/workflows/e2e.yml",
+		".github/workflows/deploy.yml",
+		".github/workflows/build-images.yml",
+		".github/workflows/proto-breaking.yml",
+		".github/dependabot.yml",
 	} {
 		if !set[want] {
 			t.Errorf("Tier2ManagedPaths() missing %q", want)
@@ -142,12 +161,6 @@ func TestTier2ManagedPathsContents(t *testing.T) {
 		"internal/cli/db.go",
 		"internal/cli/version.go",
 		"deploy/alloy-config.alloy",
-		// Write-once scaffolds ("yours"): the CI step emits them via
-		// WriteScaffoldIfMissing with NO forge:hash marker, so they are
-		// neither Tier-1 nor Tier-2-managed — never drift-flagged.
-		".github/workflows/e2e.yml",
-		".github/dependabot.yml",
-		".github/workflows/ci.yml",
 	} {
 		if set[reject] {
 			t.Errorf("Tier2ManagedPaths() must not contain %q (Tier-1 / generate-owned)", reject)

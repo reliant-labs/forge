@@ -529,9 +529,23 @@ func ManagedPathsFor(cfg *config.ProjectConfig) []string {
 //     guard. (FRICTION 2026-06-05, cp-forge: users worked around the
 //     misclassification by hand-flipping `forked: true`.)
 //
-// Deliberately NOT in this set: .github/workflows/e2e.yml and
-// .github/dependabot.yml — those are re-rendered by `forge generate`'s
-// CI step when enabled, so Tier-1 is their honest tier.
+// .github/workflows/e2e.yml and .github/dependabot.yml belong to that
+// second group. They were excluded from this set on the grounds that
+// `forge generate`'s CI step re-renders them — which stopped being true
+// when the CI workflows became write-once scaffolds (writeCIScaffold in
+// internal/cli/generate_ci.go): every one of them is now written at most
+// once and is the user's from birth, carrying no marker at all.
+//
+// The exclusion outliving that change is what produced the worst shape a
+// guard can take. A project scaffolded by an older forge still has the
+// Tier-1 forge:hash marker its e2e.yml was born with; editing that file
+// is now sanctioned, but the drift scan still read it as a hand-edited
+// generated file and aborted `forge generate` WHOLESALE — including runs
+// that touched nothing near CI. And because no emitter rewrites the file,
+// the drift report had no extension point to name and said so
+// ("NO EXTENSION POINT EXISTS"), which is forge telling the user their
+// only remaining options are to discard their fix or disown the file
+// forever. Both were wrong: the edit was legitimate and the tier was not.
 func Tier2ManagedPaths() map[string]bool {
 	out := map[string]bool{}
 	for _, kind := range []string{
@@ -553,6 +567,19 @@ func Tier2ManagedPaths() map[string]bool {
 	for _, p := range []string{
 		".github/CODEOWNERS",
 		".github/pull_request_template.md",
+		// Every file writeCIScaffold writes. Kept in step with that
+		// function — if a workflow ever becomes a real Tier-1 emit target
+		// again, it must leave this list in the same change. e2e.yml and
+		// dependabot.yml are the two that had already shipped Tier-1
+		// markers to real projects; the other four are listed for the same
+		// reason and to keep the registry a straight mirror of the writer
+		// rather than a list of the failures observed so far.
+		".github/workflows/ci.yml",
+		".github/workflows/e2e.yml",
+		".github/workflows/deploy.yml",
+		".github/workflows/build-images.yml",
+		".github/workflows/proto-breaking.yml",
+		".github/dependabot.yml",
 	} {
 		out[p] = true
 	}

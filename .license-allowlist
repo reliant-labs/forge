@@ -29,6 +29,24 @@ github.com/hashicorp/go-cleanhttp    # MPL-2.0, unmodified — stdlib http clien
 github.com/hashicorp/go-getter       # MPL-2.0, unmodified — artifact fetching
 github.com/hashicorp/aws-sdk-go-base/v2  # MPL-2.0, unmodified — transitive of go-getter
 
+# --- Dual-licensed, per-file ---
+#
+# filepath-securejoin is `BSD-3-Clause AND MPL-2.0` as of v0.6.0: its
+# COPYING.md assigns BSD-3-Clause to `doc.go`, `join*.go`, `vfs.go` and
+# `internal/consts/*.go`, and MPL-2.0 to everything else (chiefly the
+# `pathrs-lite` tree). The classifier reads the module as a whole and reports
+# the MPL half.
+#
+# We link only the BSD-3-Clause half. `go list -deps ./...` resolves
+# `github.com/cyphar/filepath-securejoin` and `.../internal/consts` and
+# nothing under `pathrs-lite`, on darwin and on linux alike; every file in
+# those two packages carries `SPDX-License-Identifier: BSD-3-Clause`. Arrives
+# via go-git/go-billy and kpm on the KCL path.
+#
+# Revisit if anything starts importing `pathrs-lite` — that half is MPL and
+# would need the file-level-copyleft reasoning above instead.
+github.com/cyphar/filepath-securejoin  # BSD-3-Clause AND MPL-2.0; we link only the BSD-3-Clause packages
+
 # --- Custom / unrecognized license text ---
 #
 # xi2/xz is a Go port of XZ Embedded. Its LICENSE is a hand-written preamble

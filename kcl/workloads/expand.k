@@ -23,6 +23,7 @@ field access here.
 import crypto
 import ..lib.rbac as rbac_lib
 import ..lib.quantity as qty_lib
+import ..lib.labels as labels_lib
 
 # The BROADCAST selector for `Workload.before` — "gate every workload in
 # this environment", as opposed to an enumerated list of dependent names.
@@ -35,20 +36,10 @@ import ..lib.quantity as qty_lib
 # field carry both forms without a second field to disambiguate them.
 BEFORE_ALL: str = "*"
 
-# `part_of` is the PROJECT the workload belongs to — the "higher level
-# application" the k8s recommended-labels spec means. It is what CD
-# pipelines select on to find every workload of one release
-# (`-l app.kubernetes.io/part-of=<project>`); labelling it with the
-# workload's own name made that selector match nothing. Empty falls
-# back to the workload name so a caller that has no project context
-# still emits a well-formed (if ungrouped) label set.
-_managed_labels = lambda name: str, part_of: str = "" -> {str: str} {
-    {
-        "app.kubernetes.io/name" = name
-        "app.kubernetes.io/managed-by" = "forge"
-        "app.kubernetes.io/part-of" = part_of if part_of else name
-    }
-}
+# The shared forge-managed label set — see lib/labels.k. `part_of` is the
+# PROJECT the workload belongs to (WorkloadEnv.project), which is what CD
+# pipelines select on to find every workload of one release.
+_managed_labels = labels_lib.managed_labels
 
 _default_pod_security_context = {
     runAsNonRoot = True

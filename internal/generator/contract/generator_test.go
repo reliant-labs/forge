@@ -21,11 +21,17 @@ import (
 // Indirect otel deps are listed explicitly so go-mod-tidy is not needed
 // in the sandbox (which has no network access). The versions match
 // what pkg/go.mod pins.
+//
+// The go directive is READ from pkg/go.mod rather than written here: the
+// sandbox requires pkg, and a module cannot require one that declares a
+// newer Go than itself. Hardcoding the version means every bump of pkg's
+// directive breaks these builds with `updates to go.mod needed`, naming
+// go.mod rather than the stale literal that actually caused it.
 func buildSandboxGoMod(modName string) string {
 	abs := localPkgPath()
 	return fmt.Sprintf(`module %s
 
-go 1.26.2
+go %s
 
 require github.com/reliant-labs/forge/pkg v0.0.0
 
@@ -40,7 +46,25 @@ require (
 )
 
 replace github.com/reliant-labs/forge/pkg => %s
-`, modName, abs)
+`, modName, pkgGoDirective(), abs)
+}
+
+// pkgGoDirective returns the `go` version pkg/go.mod declares, so the
+// sandbox tracks it automatically. Falling back to the running
+// toolchain's version keeps the failure legible if pkg/go.mod ever
+// becomes unreadable: the build then fails on the real problem rather
+// than on a go.mod this helper guessed wrong.
+func pkgGoDirective() string {
+	data, err := os.ReadFile(filepath.Join(localPkgPath(), "go.mod"))
+	if err != nil {
+		return strings.TrimPrefix(runtime.Version(), "go")
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "go "); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return strings.TrimPrefix(runtime.Version(), "go")
 }
 
 // localPkgPath returns the absolute path to forge/pkg from the test's

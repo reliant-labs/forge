@@ -71,8 +71,8 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 	}
 
 	if isService {
-		deployData := buildDeployWorkflowData(cfg)
-		buildData := buildBuildImagesWorkflowData(cfg)
+		deployData := buildDeployWorkflowData(cfg, root)
+		buildData := buildBuildImagesWorkflowData(cfg, root)
 
 		// ── build-images.yml ──
 		buildContent, err := templates.CITemplates(provider).Render("build-images.yml.tmpl", buildData)
@@ -95,7 +95,7 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 
 	// ── e2e.yml (only if E2E enabled and project is a service) ──
 	if isService && cfg.CI.E2E.Enabled {
-		e2eData := buildE2EWorkflowData(cfg)
+		e2eData := buildE2EWorkflowData(cfg, root)
 		e2eContent, err := templates.CITemplates(provider).Render("e2e.yml.tmpl", e2eData)
 		if err != nil {
 			return fmt.Errorf("render e2e.yml: %w", err)
@@ -117,7 +117,7 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 	}
 
 	// ── dependabot.yml ──
-	depData := buildDependabotData(cfg)
+	depData := buildDependabotData(cfg, root)
 	depContent, err := templates.CITemplates(provider).Render("dependabot.yml.tmpl", depData)
 	if err != nil {
 		return fmt.Errorf("render dependabot.yml: %w", err)
@@ -131,7 +131,12 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 
 // buildCIWorkflowData maps a ProjectConfig to the CI workflow template data.
 func buildCIWorkflowData(cfg *config.ProjectConfig, root string) templates.CIWorkflowData {
-	hasFrontends := len(cfg.Frontends) > 0
+	// Frontend topology comes from deploy/kcl/<env>/main.k, not from the
+	// retired forge.yaml `frontends:` key — see generate_ci_frontends.go for
+	// why reading the key froze every project's workflows at whatever the
+	// frontend happened to be called when the key still existed.
+	declared := discoverCIFrontends(root, cfg)
+	hasFrontends := len(declared) > 0
 	// Services are declared by their protos. CI workflows must see the same
 	// shape the generate pipeline sees, so ask the same source it does —
 	// otherwise a project scaffolds ci.yml without buf steps and never gets
@@ -139,7 +144,7 @@ func buildCIWorkflowData(cfg *config.ProjectConfig, root string) templates.CIWor
 	hasServices := projectDefinesConnectServices(root)
 
 	var frontends []templates.FrontendCIConfig
-	for _, fe := range cfg.Frontends {
+	for _, fe := range declared {
 		p := fe.Path
 		if p == "" {
 			p = "frontends/" + fe.Name
@@ -158,8 +163,10 @@ func buildCIWorkflowData(cfg *config.ProjectConfig, root string) templates.CIWor
 	allTestDefault := testCfg == (config.CITestConfig{})
 
 	// Collect environments for KCL validation — source of truth is
-	// the filesystem (deploy/kcl/<env>/main.k presence).
-	envs, _ := ListEnvs(projectDirForKCL())
+	// the filesystem (deploy/kcl/<env>/main.k presence). Read from the
+	// project root we were handed, not from the process cwd: the two agree
+	// for a real `forge generate` and only the explicit root is testable.
+	envs, _ := ListEnvs(root)
 
 	return templates.CIWorkflowData{
 		ProjectName:  cfg.Name,
@@ -253,7 +260,7 @@ func sortByPromotionOrder(envs []templates.DeployEnv) {
 }
 
 // buildDeployWorkflowData maps a ProjectConfig to the deploy workflow template data.
-func buildDeployWorkflowData(cfg *config.ProjectConfig) templates.DeployWorkflowData {
+func buildDeployWorkflowData(cfg *config.ProjectConfig, root string) templates.DeployWorkflowData {
 	var envs []templates.DeployEnv
 	for _, e := range cfg.Deploy.Environments {
 		envs = append(envs, templates.DeployEnv{
@@ -276,7 +283,7 @@ func buildDeployWorkflowData(cfg *config.ProjectConfig) templates.DeployWorkflow
 	// branch never fires, leaving the workflow_run trigger at the top of the
 	// file unreachable from any job `if:` (H-5).
 	if len(envs) == 0 {
-		discovered, _ := ListEnvs(projectDirForKCL())
+		discovered, _ := ListEnvs(root)
 		for _, name := range discovered {
 			if name == "dev" {
 				continue
@@ -294,7 +301,7 @@ func buildDeployWorkflowData(cfg *config.ProjectConfig) templates.DeployWorkflow
 		ProjectName:      cfg.Name,
 		Environments:     envs,
 		Registry:         cfg.Deploy.EffectiveRegistry(),
-		HasFrontends:     len(cfg.Frontends) > 0,
+		HasFrontends:     len(discoverCIFrontends(root, cfg)) > 0,
 		FrontendDeploy:   cfg.Deploy.FrontendDeploy,
 		MigrationTest:    cfg.Deploy.MigrationTest,
 		Concurrency:      cfg.Deploy.IsConcurrencyEnabled(),
@@ -303,38 +310,43 @@ func buildDeployWorkflowData(cfg *config.ProjectConfig) templates.DeployWorkflow
 }
 
 // buildBuildImagesWorkflowData maps a ProjectConfig to the build-images workflow template data.
-func buildBuildImagesWorkflowData(cfg *config.ProjectConfig) templates.BuildImagesWorkflowData {
+func buildBuildImagesWorkflowData(cfg *config.ProjectConfig, root string) templates.BuildImagesWorkflowData {
 	vulnCfg := cfg.CI.VulnScan
 	allVulnDefault := vulnCfg == (config.CIVulnConfig{})
 
 	return templates.BuildImagesWorkflowData{
 		ProjectName:  cfg.Name,
 		Registry:     cfg.Deploy.EffectiveRegistry(),
-		HasFrontends: len(cfg.Frontends) > 0,
+		HasFrontends: len(discoverCIFrontends(root, cfg)) > 0,
 		VulnDocker:   allVulnDefault || vulnCfg.Docker,
 	}
 }
 
 // buildE2EWorkflowData maps a ProjectConfig to the E2E workflow template data.
-func buildE2EWorkflowData(cfg *config.ProjectConfig) templates.E2EWorkflowData {
+// The frontend path comes from the KCL topology (discoverCIFrontends), so a
+// frontend rename re-derives here instead of freezing the old directory name
+// into a workflow forge would never rewrite.
+func buildE2EWorkflowData(cfg *config.ProjectConfig, root string) templates.E2EWorkflowData {
+	declared := discoverCIFrontends(root, cfg)
 	var fePath string
-	if len(cfg.Frontends) > 0 {
-		fePath = cfg.Frontends[0].Path
+	if len(declared) > 0 {
+		fePath = declared[0].Path
 	}
 	return templates.E2EWorkflowData{
 		ProjectName:  cfg.Name,
 		Runtime:      effectiveE2ERuntime(cfg),
-		HasFrontends: len(cfg.Frontends) > 0,
+		HasFrontends: len(declared) > 0,
 		FrontendPath: fePath,
 	}
 }
 
 // buildDependabotData builds template data for the dependabot config.
 // The dependabot template uses FrontendName (singular) for the npm directory.
-func buildDependabotData(cfg *config.ProjectConfig) struct{ FrontendName string } {
+func buildDependabotData(cfg *config.ProjectConfig, root string) struct{ FrontendName string } {
+	declared := discoverCIFrontends(root, cfg)
 	var feName string
-	if len(cfg.Frontends) > 0 {
-		feName = cfg.Frontends[0].Name
+	if len(declared) > 0 {
+		feName = declared[0].Name
 	}
 	return struct{ FrontendName string }{FrontendName: feName}
 }

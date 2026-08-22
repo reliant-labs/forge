@@ -91,9 +91,7 @@ func TestBuildDeployWorkflowData_DiscoveryFallbackOrdersPromotion(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	t.Chdir(root)
-
-	data := buildDeployWorkflowData(&config.ProjectConfig{Name: "demo"})
+	data := buildDeployWorkflowData(&config.ProjectConfig{Name: "demo"}, root)
 	if len(data.Environments) != 2 {
 		t.Fatalf("want 2 cloud envs (dev is local-only), got %d: %+v", len(data.Environments), data.Environments)
 	}

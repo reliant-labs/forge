@@ -38,6 +38,21 @@ const config = {
     // point. stylelint-config-standard prefers `url("tailwindcss")` notation;
     // turn that rule off so the standard Tailwind v4 setup lints clean.
     "import-notation": null,
+    // This rule and prettier disagree, and prettier wins because it runs on
+    // the same files. The rule demands a blank line before a custom property
+    // whose PRECEDING declaration spans multiple lines — and prettier is what
+    // decides which declarations wrap, re-wrapping any `oklch(...)` that
+    // exceeds the print width. So `--fix` inserts blank lines, prettier then
+    // re-wraps a different set of values, and the next lint reports a fresh
+    // set of violations: on the scaffolded globals.css that went 3 -> 6 in one
+    // round trip, and it does not converge.
+    //
+    // It is also purely cosmetic (a blank line inside @theme) and the scaffold
+    // ships both tools, so a project forge generated failed `npm run
+    // lint:styles` out of the box on three lines nobody wrote by hand.
+    // Formatting inside @theme is prettier's job; this rule is the one that
+    // has to yield.
+    "custom-property-empty-line-before": null,
   },
 };
 

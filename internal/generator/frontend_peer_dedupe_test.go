@@ -3,6 +3,7 @@ package generator
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -70,21 +71,40 @@ func TestFrontendTsconfigDedupesRuntimePeers(t *testing.T) {
 			// and the template carries Workspaces conditionals around
 			// this block.
 			var cfg struct {
-				CompilerOptions struct {
-					Paths map[string][]string `json:"paths"`
-				} `json:"compilerOptions"`
+				CompilerOptions map[string]json.RawMessage `json:"compilerOptions"`
 			}
 			if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 				t.Fatalf("tsconfig.json is not valid JSON: %v\n%s", err, raw)
 			}
 
+			// tsc VALIDATES compilerOptions and rejects any key it does not
+			// know with `TS5023: Unknown compiler option`. A "// note"-style
+			// comment key is tolerated at the top level of tsconfig.json but
+			// NOT here, so an explanatory comment placed inside this object
+			// fails typecheck on every scaffolded project. Caught in CI the
+			// first time, hence the guard.
+			for key := range cfg.CompilerOptions {
+				if strings.HasPrefix(key, "//") {
+					t.Errorf("compilerOptions contains comment key %q — tsc rejects unknown keys "+
+						"in this object with TS5023 and the scaffold fails its own typecheck. "+
+						"Move the note to the TOP LEVEL of tsconfig.json, where tsc ignores it.", key)
+				}
+			}
+
+			var paths map[string][]string
+			if rawPaths, ok := cfg.CompilerOptions["paths"]; ok {
+				if err := json.Unmarshal(rawPaths, &paths); err != nil {
+					t.Fatalf("compilerOptions.paths is not a string->[]string map: %v", err)
+				}
+			}
+
 			for _, peer := range peers {
-				target, ok := cfg.CompilerOptions.Paths[peer]
+				target, ok := paths[peer]
 				if !ok {
 					t.Errorf("tsconfig.json paths has no entry for %q — tsc will resolve it "+
 						"from the linked runtime's node_modules and fail mock-transport_gen.ts "+
 						"with TS2322 on two distinct Transport types. paths=%v",
-						peer, cfg.CompilerOptions.Paths)
+						peer, paths)
 					continue
 				}
 				want := "./node_modules/" + peer
@@ -96,7 +116,7 @@ func TestFrontendTsconfigDedupesRuntimePeers(t *testing.T) {
 
 			// The pre-existing "@/*" mapping must survive the addition —
 			// every scaffolded source file imports through it.
-			if got := cfg.CompilerOptions.Paths["@/*"]; len(got) != 1 || got[0] != "./src/*" {
+			if got := paths["@/*"]; len(got) != 1 || got[0] != "./src/*" {
 				t.Errorf(`tsconfig.json must still map "@/*" to ["./src/*"], got %v`, got)
 			}
 		})

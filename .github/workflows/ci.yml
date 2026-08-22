@@ -50,7 +50,13 @@ jobs:
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
       - name: Go tests
-        run: go test -race -count=1 ./...
+        # -timeout is explicit rather than left to `go test`'s 10-minute
+        # default. Under -race the removalguard scan alone once exceeded that
+        # default and PANICKED, which fails the whole job and hides every
+        # other package's result behind something that reads as a hang rather
+        # than as one slow package. A generous explicit budget keeps a genuine
+        # deadlock detectable while making the failure mode legible.
+        run: go test -race -count=1 -timeout 30m ./...
 
   build:
     name: Build

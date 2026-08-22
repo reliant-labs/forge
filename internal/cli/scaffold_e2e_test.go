@@ -412,7 +412,14 @@ func buildforgeBinary(t *testing.T) string {
 		bin := filepath.Join(dir, "forge")
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/forge")
 		cmd.Dir = repoRoot
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		// CGO_ENABLED=1, matching how forge is distributed. KCL's plugin
+		// bridge is //go:build cgo, so internal/kclplugin.Register is a
+		// no-op in a CGO-free build (register_nocgo.go) and the
+		// kcl_plugin.forge namespace the scaffold's dev/main.k imports
+		// does not exist. A CGO-free binary here renders every other env
+		// fine and fails dev with "the plugin package `kcl_plugin.forge`
+		// is not found" — a defect in the test binary, not the scaffold.
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 		if output, berr := cmd.CombinedOutput(); berr != nil {
 			forgeBinaryErr = fmt.Errorf("failed to build forge binary: %w\n%s", berr, output)
 			return

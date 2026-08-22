@@ -14,7 +14,7 @@ Forge resolved it two different ways depending on how forge itself was built:
   `<project>/.forge-kcl/` and rewrote the dependency to a relative path.
 - **Release builds** scaffolded a published git tag,
   `forge = { git = "…/forge.git", tag = "kcl-v0.1.0" }`, and actively
-  *un-vendored* — deleting `.forge-kcl/` and rewriting the dependency back to
+  _un-vendored_ — deleting `.forge-kcl/` and rewriting the dependency back to
   that tag — whenever they encountered a project a dev build had vendored.
 
 `kcl-v0.1.0` was never published. `git ls-remote --tags origin` returns no
@@ -31,7 +31,7 @@ release-stamped binary:
 Maintainers never saw either one, because a dev build takes the vendoring path
 and a dev build is what maintainers run.
 
-Every test that existed asserted the dependency *string* — that kcl.mod carried
+Every test that existed asserted the dependency _string_ — that kcl.mod carried
 the expected `tag = "kcl-v0.1.0"` line. All of them passed. The line was
 written exactly as intended; the tag simply did not exist. A string assertion
 cannot distinguish a dependency that resolves from one that does not, which is
@@ -61,7 +61,7 @@ every time. That step had already been forgotten once, silently. Gone with the
 branch: `unvendorForgeKCL`, `RestorePublishedDep`, the published-tag constants,
 and the "release build breaks a working project" path.
 
-**It works offline.** A git-tag dependency needs network *and* git credentials
+**It works offline.** A git-tag dependency needs network _and_ git credentials
 at render time — in CI, in a container, on an air-gapped machine, at deploy
 time. The vendored copy needs neither. `kclvendor`'s own doc comment already
 argued the vendored copy resolves identically across "containers, CI checkouts,
@@ -78,7 +78,7 @@ older forge wrote. A git tag has no such drift — the pin in kcl.mod names the
 version, visibly, in a file people read.
 
 This is a real cost and we did not wave it away. The mitigation is to make the
-drift *legible*, which is the property the tag actually provided:
+drift _legible_, which is the property the tag actually provided:
 
 - `Materialize` writes `.forge-kcl/.forge-version` recording the forge version
   that produced the copy. The pin is still visible in the tree; it just lives
@@ -91,7 +91,7 @@ Without the stamp, the symptom of drift is a KCL schema error naming a field,
 which points at the user's code rather than at the stale module. That was the
 genuine risk, and it is what the stamp closes.
 
-Note that the tag's advantage here was narrower than it looks: an *unpublished*
+Note that the tag's advantage here was narrower than it looks: an _unpublished_
 tag has no version-legibility benefit at all, and even a published one only
 updates when someone edits kcl.mod — which is the same "only when a human acts"
 property being held against vendoring.

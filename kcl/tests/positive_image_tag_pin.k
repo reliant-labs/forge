@@ -77,9 +77,14 @@ manifests = forge.render_manifests(_bundle, "abc1234-dirty", {}, False)
 
 # Helper: the container image string of the Deployment / Job / etc. named
 # `n`. Pulls the first container's image from any workload kind.
+#
+# A one-shot Job's metadata.name carries a spec hash (`migrate-<hash>`), so
+# match it through the stable forge.dev/job-name label as well as by name —
+# the same handle `kubectl get job -l forge.dev/job-name=<n>` uses.
 _image_of = lambda n: str -> str {
-    [m for m in manifests if m.metadata.name == n and "spec" in m \
-        and (m.kind == "Deployment" or m.kind == "Job")][0].spec.template.spec.containers[0].image
+    [m for m in manifests if "spec" in m \
+        and (m.kind == "Deployment" or m.kind == "Job") \
+        and (m.metadata.name == n or m.metadata.labels["forge.dev/job-name"] == n)][0].spec.template.spec.containers[0].image
 }
 
 # ── Invariants ─────────────────────────────────────────────────────

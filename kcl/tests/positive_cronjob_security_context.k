@@ -64,7 +64,15 @@ _job_ctr_sc = _job_pod_spec.containers[0].securityContext
 # ── Invariants ─────────────────────────────────────────────────────
 
 # The one-shot path (schedule == "") really renders kind: Job.
-assert_oneshot_is_job = _job.metadata.name == "migrate"
+#
+# Its metadata.name carries a spec hash (`migrate-<hash>`) so that
+# re-applying an unchanged Job is a no-op rather than an immutable-field
+# error, so identity is asserted through the stable forge.dev/job-name
+# label — the same handle `kubectl get job -l` uses.
+assert_oneshot_is_job = _job.metadata.labels["forge.dev/job-name"] == "migrate"
+assert_oneshot_name_hashed = _job.metadata.name.startswith("migrate-")
+# A scheduled CronJob is NOT hashed: it is a long-lived schedule updated in
+# place, and re-pointing its name would orphan the schedule.
 assert_scheduled_is_cronjob = _cron.metadata.name == "scheduled-sweep"
 
 # securityContext is present and non-empty on both pod templates.

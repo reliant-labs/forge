@@ -121,7 +121,9 @@ _cron_sa = [m for m in _manifests if m.kind == "ServiceAccount" and m.metadata.n
 # Scheduled CronJob (kind: CronJob) and one-shot Job (kind: Job, from
 # schedule == "") pods, plus the one-shot Job's generated SA.
 _cron_cj = [m for m in _manifests if m.kind == "CronJob" and m.metadata.name == "cleanup"][0]
-_migrate_job = [m for m in _manifests if m.kind == "Job" and m.metadata.name == "migrate"][0]
+# Selected via forge.dev/job-name: a one-shot Job's metadata.name carries a
+# spec hash, and the label is the stable handle that survives it.
+_migrate_job = [m for m in _manifests if m.kind == "Job" and m.metadata.labels["forge.dev/job-name"] == "migrate"][0]
 _migrate_sa = [m for m in _manifests if m.kind == "ServiceAccount" and m.metadata.name == "migrate"][0]
 
 # ── GAP 1: serviceAccountName on the Service Deployment ─────────────

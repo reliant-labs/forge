@@ -521,10 +521,29 @@ render_cron = lambda c: any, namespace: str, env_registry: str, image_tag: str, 
             jobTemplate = {spec = {template = {metadata = {labels = _labels}, spec = _pod_spec}}}
         }
     }] if c.schedule else [{
+        # schedule = "" renders a ONE-SHOT Job, whose spec.template is
+        # immutable — so it gets the same hashed name as render_job's. See the
+        # note there for why: with a fixed name, re-applying an unchanged Job
+        # fails the whole apply AFTER every Deployment has rolled, reporting
+        # failure on a rollout that succeeded.
+        #
+        # A CronJob (schedule set, above) is deliberately NOT hashed: it is a
+        # long-lived schedule, updated in place, and re-pointing its name every
+        # time the pod template changed would orphan the schedule.
         apiVersion = "batch/v1"
         kind = "Job"
-        metadata = {name = _name, namespace = namespace, labels = _labels}
-        spec = {template = {metadata = {labels = _labels}, spec = _pod_spec}}
+        metadata = {
+            name = _name + "-" + crypto.sha256(str(_pod_spec))[:10]
+            namespace = namespace
+            labels = _labels | {
+                "forge.dev/job-name" = _name
+                "forge.dev/spec-hash" = crypto.sha256(str(_pod_spec))[:10]
+            }
+        }
+        spec = {
+            ttlSecondsAfterFinished = 86400
+            template = {metadata = {labels = _labels | {"forge.dev/job-name" = _name}}, spec = _pod_spec}
+        }
     }]
     _jobs + rbac_lib.render_service_account(_name, namespace, part_of)
 }

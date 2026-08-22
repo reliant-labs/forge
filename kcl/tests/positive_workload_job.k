@@ -60,12 +60,21 @@ manifests = fw.render_workloads(_components, _env)
 # once ordered as an init container. The unordered copy IS the race
 # `before` exists to remove.
 _job_objs = [m for m in manifests if m.kind == "Job"]
-_job_names = [m.metadata.name for m in _job_objs]
-assert_gating_job_has_no_job_object = "provision-idp" not in _job_names
+# Select on forge.dev/job-name, not metadata.name: the rendered name carries a
+# spec hash (`seed-<hash>`), which is what makes re-applying an unchanged Job a
+# no-op instead of an immutable-field error. The label is the stable handle
+# that survives that, and this test selecting through it is the same move a
+# `kubectl get job -l forge.dev/job-name=seed` makes.
+_job_handles = [m.metadata.labels["forge.dev/job-name"] for m in _job_objs]
+assert_gating_job_has_no_job_object = "provision-idp" not in _job_handles
 
 # --- A non-gating Job DOES render a standalone Job ---
-assert_bare_job_renders = "seed" in _job_names
-_seed = [m for m in _job_objs if m.metadata.name == "seed"][0]
+assert_bare_job_renders = "seed" in _job_handles
+_seed = [m for m in _job_objs if m.metadata.labels["forge.dev/job-name"] == "seed"][0]
+
+# The name is the stable handle plus a hash suffix — never the bare name.
+assert_seed_name_is_hashed = _seed.metadata.name.startswith("seed-") and _seed.metadata.name != "seed"
+assert_seed_hash_label_matches = _seed.metadata.name == "seed-" + _seed.metadata.labels["forge.dev/spec-hash"]
 assert_bare_job_api = _seed.apiVersion == "batch/v1"
 assert_bare_job_command = _seed.spec.template.spec.containers[0].command == ["/app/demo", "seed"]
 assert_bare_job_restart = _seed.spec.template.spec.restartPolicy == "OnFailure"
@@ -107,7 +116,7 @@ _seed_inits = [c.name for c in _seed.spec.template.spec.initContainers]
 assert_bare_job_is_gated_by_broadcast = _seed_inits == ["migrate"]
 # The broadcast job itself is lowered onto its dependents, so it renders
 # no standalone Job of its own — and cannot be its own init container.
-assert_broadcast_job_has_no_job_object = "migrate" not in _job_names
+assert_broadcast_job_has_no_job_object = "migrate" not in _job_handles
 
 # --- Jobs bind their own ServiceAccount, like every other workload ---
 _sa_names = [m.metadata.name for m in manifests if m.kind == "ServiceAccount"]

@@ -2684,7 +2684,7 @@ func appendToCorpusFile(t *testing.T, path, content string) {
 // the row must round-trip, and Update must re-stamp updated_at while
 // leaving created_at immutable. This is the runtime half of the
 // fr-3fba9166ba pin — the compile half is the `go build` above.
-const tradeTextTimestampsProbeSrc = `package item_test
+const tradeTextTimestampsProbeSrc = `package item
 
 import (
 	"testing"

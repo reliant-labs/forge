@@ -1,5 +1,4 @@
 {
-  "forge_version": "v0.1.6+dev",
   "files": {
     ".github/workflows/ci.yml": {
       "reason": "migrated from legacy .forge/checksums.json (legacy fork-era entry; the fork state was removed)",

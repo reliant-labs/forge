@@ -492,14 +492,27 @@ func (cs *FileChecksums) IsDisowned(relPath string) bool {
 }
 
 // disownedJSON / hashesJSON are the wire shapes of the two state files.
+//
+// NO forge_version field. It used to carry one, and it was WRITE-ONLY: Load
+// reads `Files` and nothing else, so nothing ever consumed it. What it did do
+// was make a COMMITTED file depend on the identity of the binary that last
+// ran `generate` — buildinfo derives that from embedded VCS info, so a
+// source-built forge writes `vX.Y.Z+dev`, a `go install ...@vX.Y.Z` writes
+// `vX.Y.Z`, and a dirty tree writes something else again. `forge ci
+// verify-generated` then byte-compares the file and fails, in a different
+// direction depending on who ran it. A file that must hold a different value
+// per environment cannot also be one a drift check compares.
+//
+// The project's forge version already lives in forge.yaml, which is what
+// EffectiveForgeVersion and the upgrade path actually read.
 type disownedJSON struct {
-	ForgeVersion string                   `json:"forge_version,omitempty"`
-	Files        map[string]DisownedEntry `json:"files"`
+	Files map[string]DisownedEntry `json:"files"`
 }
 
+// Same for hashesJSON: its forge_version was write-only too, and it is the
+// same committed-file-versus-build-identity problem.
 type hashesJSON struct {
-	ForgeVersion string            `json:"forge_version,omitempty"`
-	Files        map[string]string `json:"files"`
+	Files map[string]string `json:"files"`
 }
 
 // Load reads the project ownership state (.forge/disowned.json +
@@ -544,10 +557,10 @@ func Save(root string, cs *FileChecksums) error {
 	if cs == nil {
 		return nil
 	}
-	if err := saveStateFile(root, DisownedFile, len(cs.Disowned), disownedJSON{ForgeVersion: cs.ForgeVersion, Files: cs.Disowned}); err != nil {
+	if err := saveStateFile(root, DisownedFile, len(cs.Disowned), disownedJSON{Files: cs.Disowned}); err != nil {
 		return err
 	}
-	return saveStateFile(root, HashesFile, len(cs.Unstampable), hashesJSON{ForgeVersion: cs.ForgeVersion, Files: cs.Unstampable})
+	return saveStateFile(root, HashesFile, len(cs.Unstampable), hashesJSON{Files: cs.Unstampable})
 }
 
 // saveStateFile writes one state file, or removes it when its map is

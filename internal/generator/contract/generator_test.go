@@ -19,16 +19,32 @@ import (
 // not yet published.
 //
 // Indirect otel deps are listed explicitly so go-mod-tidy is not needed
-// in the sandbox (which has no network access). The versions match
-// what pkg/go.mod pins.
+// in the sandbox (which has no network access).
 //
-// The go directive is READ from pkg/go.mod rather than written here: the
-// sandbox requires pkg, and a module cannot require one that declares a
-// newer Go than itself. Hardcoding the version means every bump of pkg's
-// directive breaks these builds with `updates to go.mod needed`, naming
-// go.mod rather than the stale literal that actually caused it.
+// Both the go directive and those indirect versions are READ from
+// pkg/go.mod rather than written here. The sandbox requires pkg and
+// copies pkg/go.sum for checksum verification, so any literal pinned in
+// this file is a second copy of a version pkg/go.mod already owns — and
+// a dependency bump lands in exactly one of the two. When they drift the
+// build fails with `missing go.sum entry`, which names the module but
+// not the stale literal in this helper that actually caused it.
 func buildSandboxGoMod(modName string) string {
 	abs := localPkgPath()
+
+	indirect := []string{
+		"github.com/cespare/xxhash/v2",
+		"github.com/go-logr/logr",
+		"github.com/go-logr/stdr",
+		"go.opentelemetry.io/auto/sdk",
+		"go.opentelemetry.io/otel",
+		"go.opentelemetry.io/otel/metric",
+		"go.opentelemetry.io/otel/trace",
+	}
+	var requires strings.Builder
+	for _, module := range indirect {
+		requires.WriteString(fmt.Sprintf("\t%s %s // indirect\n", module, pkgRequireVersion(module)))
+	}
+
 	return fmt.Sprintf(`module %s
 
 go %s
@@ -36,17 +52,28 @@ go %s
 require github.com/reliant-labs/forge/pkg v0.0.0
 
 require (
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
-	github.com/go-logr/stdr v1.2.2 // indirect
-	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel v1.44.0 // indirect
-	go.opentelemetry.io/otel/metric v1.44.0 // indirect
-	go.opentelemetry.io/otel/trace v1.44.0 // indirect
-)
+%s)
 
 replace github.com/reliant-labs/forge/pkg => %s
-`, modName, pkgGoDirective(), abs)
+`, modName, pkgGoDirective(), requires.String(), abs)
+}
+
+// pkgRequireVersion returns the version pkg/go.mod requires for module.
+// It panics rather than guessing: a module the sandbox needs that pkg no
+// longer requires is a real drift between the two, and a fabricated
+// version would surface it later as an opaque checksum error.
+func pkgRequireVersion(module string) string {
+	data, err := os.ReadFile(filepath.Join(localPkgPath(), "go.mod"))
+	if err != nil {
+		panic(fmt.Sprintf("read pkg/go.mod for sandbox require %q: %v", module, err))
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) >= 2 && fields[0] == module {
+			return fields[1]
+		}
+	}
+	panic(fmt.Sprintf("pkg/go.mod does not require %q, which the contract-generator build sandbox needs", module))
 }
 
 // pkgGoDirective returns the `go` version pkg/go.mod declares, so the

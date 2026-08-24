@@ -198,6 +198,36 @@ func TestMigrationSource_WithoutMigrationsCompilesAndYieldsNoSource(t *testing.T
 	}
 }
 
+// TestMigrationSource_DeclaresHasMigrationsInBothBranches pins the constant the
+// command tree branches on, in BOTH states.
+//
+// WHY A CONSTANT AND NOT A NIL CHECK — this is a regression test, not a style
+// preference. db.go used to ask `forgedb.Source() == nil`. With migrations
+// embedded, Source() returns MigrationsFS, and `var MigrationsFS embed.FS` is a
+// concrete struct VALUE that is never nil, so that comparison is provably false
+// and staticcheck reports SA4023. That made `forge lint` exit 1 on a freshly
+// scaffolded project the moment it had one migration — breaking the two e2e
+// tests whose entire purpose is asserting the scaffold is lint-clean, plus any
+// real user who ran `forge lint`.
+//
+// The value must DIFFER between the branches: a constant that read `true` in
+// both states would compile and lint just as cleanly while silently skipping
+// every migration in the no-SQL project.
+func TestMigrationSource_DeclaresHasMigrationsInBothBranches(t *testing.T) {
+	withSQL := renderMigrationSource(t, true)
+	if !strings.Contains(withSQL, "const HasMigrations = true") {
+		t.Errorf("with migrations, db/source_gen.go must declare HasMigrations = true; "+
+			"cmd/<bin>/cmd/db.go branches on it:\n%s", withSQL)
+	}
+
+	withoutSQL := renderMigrationSource(t, false)
+	if !strings.Contains(withoutSQL, "const HasMigrations = false") {
+		t.Errorf("without migrations, db/source_gen.go must declare HasMigrations = false, "+
+			"or `db migrate up` would try to apply an embedded set that does not exist:\n%s",
+			withoutSQL)
+	}
+}
+
 // TestCmdTreeDB_IsFreeOfTemplateConditionals is the structural property the
 // split bought, and the reason db.go can be handed to the user at all.
 //
@@ -312,6 +342,37 @@ func TestCmdTreeDB_DeclaresTheThreeMigrateSubcommands(t *testing.T) {
 		if !strings.Contains(src, use) {
 			t.Errorf("rendered db.go does not declare %s:\n%s", use, src)
 		}
+	}
+}
+
+// TestCmdTreeDB_GatesOnHasMigrationsNotANilSource is the regression guard for
+// staticcheck SA4023.
+//
+// `Source() == nil` is dead code whenever migrations are embedded, because
+// Source() then returns MigrationsFS — a concrete embed.FS VALUE, never nil.
+// staticcheck proves it, so its reappearance would once again make `forge lint`
+// exit 1 on a freshly scaffolded project that has written its first migration.
+//
+// This asserts on db.go rather than on the linter because the scaffolded file
+// is written ONCE and never revised: a project generated today keeps whatever
+// this template said, so the template is the only place the guard holds.
+func TestCmdTreeDB_GatesOnHasMigrationsNotANilSource(t *testing.T) {
+	src := renderDB(t, "cmd-tree-db.go.tmpl", true)
+
+	// Scoped to the `up` subcommand's CODE, re-printed from the AST so
+	// comments drop out — this file's own comments necessarily quote the
+	// forbidden expression to explain why it is forbidden.
+	up := dbSubcommandBody(t, src, "up")
+	if strings.Contains(up, "Source() == nil") || strings.Contains(up, "Source() != nil") {
+		t.Errorf("rendered db.go compares Source() against nil. With migrations embedded "+
+			"Source() returns a concrete embed.FS that is never nil, so staticcheck flags "+
+			"the branch as dead (SA4023) and `forge lint` fails on a fresh scaffold. "+
+			"Branch on forgedb.HasMigrations instead:\n%s", up)
+	}
+	if !strings.Contains(src, "forgedb.HasMigrations") {
+		t.Errorf("rendered db.go does not consult forgedb.HasMigrations, so `migrate up` can "+
+			"no longer tell an empty db/migrations/ from a populated one and a fresh project "+
+			"cannot boot:\n%s", src)
 	}
 }
 

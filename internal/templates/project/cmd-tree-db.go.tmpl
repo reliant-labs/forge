@@ -214,7 +214,10 @@ func withMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) func(*cob
 // the other side.
 func withOptionalMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		if forgedb.Source() == nil {
+		// HasMigrations, not `Source() == nil`: with migrations embedded,
+		// Source returns a concrete embed.FS value that is never nil, so the
+		// nil comparison is dead code (staticcheck SA4023).
+		if !forgedb.HasMigrations {
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(),
 				"no migrations embedded — nothing to apply "+
 					"(write one with `forge db migration new <name>`)")

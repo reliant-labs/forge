@@ -93,9 +93,28 @@ var MigrationsFS embed.FS
 // db.SourceDir, which compile identically in both states — so writing your
 // first migration flips this file's body and rewrites nothing you own.
 func writeMigrationSource(targetDir string, hasMigrations bool, cs *checksums.FileChecksums) error {
-	body := "// Source returns nil: db/migrations/ held no .sql file when this was\n" +
+	// HasMigrations is the two-state fact stated as a CONSTANT, and callers
+	// branch on it rather than on `Source() == nil`.
+	//
+	// WHY NOT A NIL CHECK. It used to be one, and it was a real defect: with
+	// migrations present Source() returns MigrationsFS, and `var MigrationsFS
+	// embed.FS` is a concrete struct VALUE that is never nil. So
+	// `Source() == nil` is provably false in that state, and staticcheck says
+	// so — SA4023 — which made `forge lint` exit 1 on a freshly scaffolded
+	// project as soon as it had one migration. (It surfaced only when CI's
+	// deliberately-unpinned golangci-lint reached 2.13.1; the nil branch was
+	// dead long before anything could see it.)
+	//
+	// A bool cannot rot the same way. It says exactly what the generator
+	// knows, the compiler folds the dead branch without complaint, and a
+	// reader does not have to reason about when a non-nil interface can hold
+	// a nil value.
+	body := "// HasMigrations is false: db/migrations/ held no .sql file when this was\n" +
 		"// generated, so embed_gen.go does not exist and naming the embedded set\n" +
 		"// would not compile.\n" +
+		"const HasMigrations = false\n" +
+		"\n" +
+		"// Source returns nil, because there is no embedded set to return.\n" +
 		"//\n" +
 		"// nil is not a silent no-op for the CLI — migratekit.Open REFUSES a nil\n" +
 		"// source with an error naming the missing embed, so `db migrate up` fails\n" +
@@ -103,15 +122,26 @@ func writeMigrationSource(targetDir string, hasMigrations bool, cs *checksums.Fi
 		"// tolerated and skipped, because a project that has not written its first\n" +
 		"// migration must still be able to start. Write a migration\n" +
 		"// (`forge db migration new <name>`) and re-run `forge generate` to embed it.\n" +
+		"//\n" +
+		"// Test HasMigrations, not `Source() == nil`: in the embedded state Source\n" +
+		"// returns a concrete embed.FS value that is never nil, so that comparison\n" +
+		"// is dead code (staticcheck SA4023).\n" +
 		"func Source() fs.FS { return nil }\n"
 	if hasMigrations {
-		body = "// Source returns the embedded migration set — every db/migrations/*.sql\n" +
+		body = "// HasMigrations is true: db/migrations/ holds at least one .sql file, so\n" +
+			"// embed_gen.go exists and the embedded set can be named.\n" +
+			"const HasMigrations = true\n" +
+			"\n" +
+			"// Source returns the embedded migration set — every db/migrations/*.sql\n" +
 			"// compiled INTO this binary.\n" +
 			"//\n" +
 			"// It is embedded, never read off disk, because that is what lets the\n" +
 			"// production image migrate itself: the runtime stage copies the binary and\n" +
 			"// nothing else, so there is no db/migrations directory in the container and\n" +
 			"// a filesystem-sourced migrator could only ever fail there.\n" +
+			"//\n" +
+			"// The returned value is a concrete embed.FS and is therefore NEVER nil —\n" +
+			"// branch on HasMigrations instead of comparing this against nil.\n" +
 			"func Source() fs.FS { return MigrationsFS }\n"
 	}
 

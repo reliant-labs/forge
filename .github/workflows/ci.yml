@@ -27,6 +27,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: true
+          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
+          # is the root go.sum only, which misses a pkg/ dependency change —
+          # and pkg/ is exactly what the release flow touches.
+          cache-dependency-path: |
+            go.sum
+            pkg/go.sum
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -42,6 +49,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: true
+          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
+          # is the root go.sum only, which misses a pkg/ dependency change —
+          # and pkg/ is exactly what the release flow touches.
+          cache-dependency-path: |
+            go.sum
+            pkg/go.sum
       # internal/tierguard renders real fixture projects, which drives the
       # generate pipeline's "buf generate (Go stubs)" step. Without buf on
       # PATH those guards fail with `exec: "buf": executable file not found`
@@ -67,6 +81,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: true
+          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
+          # is the root go.sum only, which misses a pkg/ dependency change —
+          # and pkg/ is exactly what the release flow touches.
+          cache-dependency-path: |
+            go.sum
+            pkg/go.sum
       - name: Go build
         # -trimpath makes builds reproducible across runners;
         # -buildvcs=true stamps the commit/dirty flag into runtime
@@ -83,6 +104,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: true
+          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
+          # is the root go.sum only, which misses a pkg/ dependency change —
+          # and pkg/ is exactly what the release flow touches.
+          cache-dependency-path: |
+            go.sum
+            pkg/go.sum
       - name: Install forge
         # THIS repo is forge. A scaffolded project pins the published forge
         # that generated it, but forge's own CI must verify the checkout under
@@ -101,6 +129,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: true
+          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
+          # is the root go.sum only, which misses a pkg/ dependency change —
+          # and pkg/ is exactly what the release flow touches.
+          cache-dependency-path: |
+            go.sum
+            pkg/go.sum
       - name: Cache KCL CLI
         uses: actions/cache@v5
         id: kcl-cache
@@ -139,6 +174,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: true
+          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
+          # is the root go.sum only, which misses a pkg/ dependency change —
+          # and pkg/ is exactly what the release flow touches.
+          cache-dependency-path: |
+            go.sum
+            pkg/go.sum
       - name: Install govulncheck
         # Pinned explicitly: @latest makes CI non-reproducible and lets a
         # compromised upstream release silently alter scan results. The
@@ -159,6 +201,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: true
+          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
+          # is the root go.sum only, which misses a pkg/ dependency change —
+          # and pkg/ is exactly what the release flow touches.
+          cache-dependency-path: |
+            go.sum
+            pkg/go.sum
       - name: Install go-licenses
         run: go install github.com/google/go-licenses@v1.6.0
       - name: Check licenses

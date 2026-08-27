@@ -116,11 +116,28 @@ Forge deliberately does not guess your product's visual identity. A scaffold tha
 5. **`{{.CLI}} generate` is safe** — it never overwrites hand-written business logic (handler files, `internal/app/providers.go`, `internal/app/auth.go`, etc.).
 6. **`task test` is the test suite** — Go plus every frontend's tests, with the database, build tags and flags already set up. There is no `{{.CLI}} test`: a second spelling could disagree with the Taskfile, so it was removed. `task test -- ./internal/foo/...` scopes to Go packages, `task test:integration` and `task test:e2e` are the tagged lanes.
 
-## When forge itself is wrong
+## When forge itself is wrong — FIX IT
 
-If forge emits something wrong — bad codegen, a lint false-positive, a scaffold quirk — **stop and say so.** Confirm you can reproduce it, then report it. Do not paper over it with a workaround and a TODO, and do not hand-edit generated output to compensate: the next `{{.CLI}} generate` overwrites your patch and the defect comes back.
+**One of our biggest priorities is dogfooding forge and making sure it is
+incredibly robust for all of our use cases.** When forge is the thing standing
+in your way, improving forge IS the task, not a detour from it.
 
-Fixing forge is not part of your task. It is a separate tool with its own tests and release cycle, and detouring into it mid-task costs more than the bug does — you rebuild a toolchain, then re-verify everything you had already verified against the old one.
+So if forge emits something wrong — bad codegen, a lint false-positive, a
+scaffold quirk, a missing capability — reproduce it, then **fix it in forge**.
+Do not paper over it with a workaround and a TODO, and do not hand-edit
+generated output to compensate: the next `{{.CLI}} generate` overwrites your
+patch and the defect comes back.
+
+Every workaround is a bug report that never got filed and a defect that ships
+to users instead. Hitting forge's rough edges is the single most valuable
+signal we get about what to fix — routing around them throws that signal away
+and leaves the next person to rediscover it.
+
+Bias toward the durable fix over the minimal one. Forge is pre-1.0 and we do
+not owe anyone backwards compatibility: if a default is wrong, change the
+default; if a behavior needs a knob, add the flag; if the design is wrong,
+redesign it. Make forge the best version of itself rather than the most
+compatible one.
 
 ## Project Notes
 

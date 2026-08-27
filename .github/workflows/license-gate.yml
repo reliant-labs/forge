@@ -34,6 +34,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: true
+          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
+          # is the root go.sum only, which misses a pkg/ dependency change —
+          # and pkg/ is exactly what the release flow touches.
+          cache-dependency-path: |
+            go.sum
+            pkg/go.sum
 
       # The checker reads each dependency's LICENSE out of the module cache, so
       # the modules must actually be downloaded first. `go mod download` is

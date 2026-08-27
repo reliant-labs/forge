@@ -45,9 +45,14 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			// in the file you already own.
 			name: "CIConfig",
 			typ:  reflect.TypeFor[CIConfig](),
+			//
+			// test_skips: read by `forge ci verify-test-run`
+			// (internal/cli/ci_test_run.go -> testreport.Policy) to
+			// tune the silent-mass-skip gate and to hold the declared
+			// per-package exemptions.
 			want: []string{
 				"e2e", "lint", "permissions", "provider",
-				"test", "vuln_scan",
+				"test", "test_skips", "vuln_scan",
 			},
 		},
 		{

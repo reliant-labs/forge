@@ -476,7 +476,7 @@ func TestHostEnvPorts(t *testing.T) {
 	// WORKSPACE_URL_PORT, and carries a vestigial k8s-convention PORT — none
 	// of which it binds. Only the declared bind ports are checked.
 	eq(t, hostEnvPorts("reliant-api-server", &HostDeploy{
-		ListenPorts: []int{3091, 8081},
+		ListenPorts: &[]int{3091, 8081},
 		EnvVars: []KCLEnvVar{
 			{Name: "TEMPORAL_PORT", Value: "7233"},
 			{Name: "WORKSPACE_URL_PORT", Value: "28080"},
@@ -486,14 +486,14 @@ func TestHostEnvPorts(t *testing.T) {
 
 	// Declared listen_ports are deduped and bounds-checked.
 	eq(t, hostEnvPorts("api", &HostDeploy{
-		ListenPorts: []int{8081, 8081, 0, 70000, 9090},
+		ListenPorts: &[]int{8081, 8081, 0, 70000, 9090},
 	}), []int{8081, 9090})
 
 	// The singular summary-port helper prefers the first declared listen
 	// port over the env heuristic, so the status/summary URL and probe
 	// target a port the service actually binds.
 	if got := hostEnvPort("reliant-api-server", &HostDeploy{
-		ListenPorts: []int{3091, 8081},
+		ListenPorts: &[]int{3091, 8081},
 		EnvVars:     []KCLEnvVar{{Name: "PORT", Value: "8080"}},
 	}); got != "3091" {
 		t.Errorf("listen_ports summary port: got %q, want \"3091\"", got)
@@ -822,7 +822,7 @@ func TestRenderUpSummary(t *testing.T) {
 		{Name: "reliant-web", Kind: "frontend", URL: "http://localhost:3001", Port: 3001, Log: ".forge/logs/dev/frontend_reliant-web.log", Listening: false},
 	}
 	var b bytes.Buffer
-	renderUpSummary(&b, "dev", rows, "down", true, []string{"Ctrl-C to stop."})
+	renderUpSummary(&b, "dev", rows, "down", true, []string{"Ctrl-C to stop."}, nil)
 	out := b.String()
 	t.Logf("\n%s", out)
 

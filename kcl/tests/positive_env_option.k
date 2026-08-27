@@ -72,3 +72,16 @@ assert_nats_included_iff_not_dev_host = len(_nats_manifests) == (0 if _is_dev_ho
 # zero, non-dev-host envs see exactly one.
 _nats_in_manifests_count = sum([1 if (m.kind == "Service" and m.metadata.name == "nats") else 0 for m in manifests])
 assert_nats_in_manifests_iff_not_dev_host = _nats_in_manifests_count == (0 if _is_dev_host else 1)
+
+# The SAME `-D env=` binding is what makes the env-ownership stamp
+# automatic: `Bundle.env` defaults to `option("env")`, so every rendered
+# object carries `forge.dev/env: <env>` without the project writing a
+# line of KCL. This is the DEFAULT half of the drill-in (the override
+# half — an explicitly-set `Bundle.env` — is pinned by
+# tests/positive_env_label.k, which needs no binding).
+_env_label_key = "forge.dev/env"
+_env_labelled = [
+    1 for m in manifests
+    if m.metadata and m.metadata.labels and m.metadata.labels[_env_label_key] == _env_name
+]
+assert_env_label_on_every_manifest = len(_env_labelled) == len(manifests)

@@ -2568,6 +2568,28 @@ schema Bundle:
     # the joined network + registry-inherit from it — there is no
     # "primary" cluster.
     clusters: [Cluster] = []
+    # The ENVIRONMENT NAME every rendered object is stamped with
+    # (`forge.dev/env: <env>`), so a deployed object records which env put
+    # it there. Two envs can legitimately resolve to the SAME namespace; a
+    # deploy of one then silently replaces the other's workloads and
+    # nothing on the result says whose render won. With the stamp that is
+    # one selector:
+    #
+    #     kubectl get all -n <ns> -l 'forge.dev/env!=dev'
+    #
+    # DEFAULT: the `-D env=<name>` binding the forge CLI passes on every
+    # manifest render — so a project gets the label without touching a
+    # line of KCL. SET IT to override (the KCL drill-in; there is no CLI
+    # flag): an env that must be tagged as something other than the name
+    # it renders under just states it here.
+    #
+    #     forge.Bundle { env = "dev-k8s", ... }
+    #
+    # Empty (a plain `kcl run` with no `-D env=` and no override) emits NO
+    # label, so a hand render stays byte-identical to the pre-stamp
+    # output. See lib/labels.k for what the stamp writes — label maps
+    # only, never a selector.
+    env: str = option("env") or ""
     # The PROJECT name every rendered object is labelled with
     # (`app.kubernetes.io/part-of`). It is the handle a CD pipeline uses to
     # find one release's workloads — `kubectl get deployments -n <ns>

@@ -73,11 +73,15 @@ func CheckCovdata(ctx context.Context, _ *Environment) CheckResult {
 	}
 
 	// Some other `go tool` failure (cancellation, malformed install,
-	// permissions). Surface as a warn with the captured output so
-	// the user can diagnose.
+	// permissions). The probe did not answer its question — covdata is
+	// neither shown present nor shown missing — so this is UNDETERMINED
+	// rather than a warning about a known problem. Same reasoning as
+	// grafanaAddr in telemetry.go: forge could not look. The captured
+	// output rides along so the user can diagnose (see the StatusSkip vs
+	// StatusUnknown note in doctor.go).
 	return CheckResult{
-		Status:   StatusWarn,
-		Message:  fmt.Sprintf("go tool covdata probe failed: %v", err),
+		Status:   StatusUnknown,
+		Message:  fmt.Sprintf("go tool covdata probe failed, so its availability is unknown: %v", err),
 		Evidence: strings.TrimSpace(body),
 	}
 }

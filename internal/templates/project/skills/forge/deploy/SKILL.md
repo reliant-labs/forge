@@ -37,7 +37,7 @@ task test              # full test suite must pass
 ```
 forge build                     # binary + frontends
 forge build --docker            # Docker images for all services
-forge build <env>         # filter to services NOT in host-only mode for that env
+forge build <env>         # filter to services NOT declared host-mode for that env
 forge build --tag=<tag>         # override image tag (default: commit SHA)
 forge build --target-arch=arm64 # cross-compile + buildx --platform override
 forge build --debug             # with debug symbols for Delve
@@ -176,8 +176,7 @@ build AND any push.
 forge env up dev              # build + deploy + host launch + frontend dev — single command
 forge env up dev --no-build   # skip the build phase
 forge env up dev --no-deploy  # skip the cluster apply
-forge env up dev --cluster-only  # only the in-cluster services
-forge env up dev --host-only     # only the host-mode services
+forge env up dev --target <svc>  # scope every phase to one service/frontend
 forge env up dev --background    # detach + return immediately
 forge env up dev -D host_runner=go-run   # set a render option the env declares
 ```

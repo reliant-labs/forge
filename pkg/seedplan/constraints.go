@@ -214,10 +214,23 @@ func (p *Plan) assignUnique(tp *tablePlan, col schemadef.Column) ([]string, stri
 		lit := p.valueLiteral(table, col, i)
 		next, ok := "", false
 		switch raw, isStr := quotedRaw(lit); {
+		case col.Type == schemadef.TypeJSON && !col.IsArray:
+			// A json/jsonb document renders as a quoted literal and would
+			// otherwise probe as a STRING — and probeString's variants append
+			// a discriminator, which turns `{}` into `{}-1`: not a document,
+			// and rejected by postgres at parse time. The column has exactly
+			// one candidate (the document the schema declares), so the honest
+			// answer is the row cap below, not a mangled second value.
+			next, ok = lit, !used[lit]
 		case isStr:
 			next, ok = probeString(raw, used, limit, minLen, maxLen, admits)
 		case col.Type == schemadef.TypeInt:
 			next, ok = probeInt(lit, used, limit, bound)
+		case col.Type == schemadef.TypeBytes:
+			// Tested AFTER the string case on purpose: an overlay value on a
+			// bytea column renders as a quoted literal and probes as a string,
+			// exactly like any other authored value.
+			next, ok = probeBytes(col.Name, i, used, limit, minLen, maxLen)
 		default:
 			// Every other literal shape (timestamps, JSON documents, arrays):
 			// no safe way to invent a distinct variant, so the natural value
@@ -252,6 +265,32 @@ func probeString(raw string, used map[string]bool, limit, minLen, maxLen int, ad
 			continue
 		}
 		if lit := sqlString(alt); !used[lit] {
+			return lit, true
+		}
+	}
+	return "", false
+}
+
+// probeBytes finds the first unused value for a UNIQUE binary column: the
+// row's own synthetic payload, then its length-fitted numbered variants —
+// byteaOf's own encoding both times, so the candidates key the caller's
+// used-set identically to the values cellLiteral will render.
+//
+// This is the same probe probeString runs, over the same payload; the two
+// differ only in the encoding of the literal. Without it a bytea column had no
+// candidate at all beyond its natural value, and a UNIQUE one capped its table
+// at a single row.
+func probeBytes(column string, row int, used map[string]bool, limit, minLen, maxLen int) (string, bool) {
+	base := placeholderString(column, row)
+	if lit := byteaOf(base, row, minLen, maxLen); !used[lit] {
+		return lit, true
+	}
+	for k := 1; k <= limit; k++ {
+		alt, ok := distinctVariant(base, k, minLen, maxLen)
+		if !ok {
+			return "", false
+		}
+		if lit := byteaOf(alt, row, minLen, maxLen); !used[lit] {
 			return lit, true
 		}
 	}
@@ -330,14 +369,18 @@ func probeInt(lit string, used map[string]bool, limit int, b NumBound) (string, 
 // Idempotent: row counts are recomputed from rowsTarget each time rather than
 // ratcheted down, so repeated finalization converges on the same plan.
 func (p *Plan) finalize() {
-	// The ordering-constraint notes are a property of the SCHEMA, not of the
-	// row counts, so they survive every re-finalization unchanged.
+	// The ordering and discriminated-union notes are a property of the
+	// SCHEMA, not of the row counts, so they survive every re-finalization
+	// unchanged.
 	p.planWarns = append([]string(nil), p.orderWarns...)
+	p.planWarns = append(p.planWarns, p.unionWarns...)
+	p.planWarns = append(p.planWarns, p.unionVocabWarnings()...)
 	p.derivedRefs = nil
 	p.authRefs = nil
 	p.bucketMemo = nil
 	p.undeclared = nil
 	p.uniques = nil
+	p.tuples = nil
 	for i := range p.tables {
 		name := p.tables[i].table.Name
 		p.tables[i].n = p.rowsTarget[name]
@@ -391,6 +434,19 @@ func (p *Plan) finalize() {
 				p.uniques[name] = map[string][]string{}
 			}
 			p.uniques[name][cp.col.Name] = lits
+		}
+
+		// Distinct TUPLES for multi-column UNIQUE indexes. It runs after the
+		// one-column pass because a member that pass already made distinct
+		// settles the tuple on its own, and it may lower tp.n again — so the
+		// live count is republished below, before any child caps against it.
+		specs, tupleWarns := p.assignTuples(tp)
+		p.planWarns = append(p.planWarns, tupleWarns...)
+		if len(specs) > 0 {
+			if p.tuples == nil {
+				p.tuples = map[string][]tupleAssign{}
+			}
+			p.tuples[name] = specs
 		}
 		p.rowsOf[name] = tp.n
 	}

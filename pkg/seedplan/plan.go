@@ -2,6 +2,7 @@ package seedplan
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -81,13 +82,94 @@ type columnPlan struct {
 // constraints alike as a one-column unique Index. The primary key is excluded
 // by introspection (it is handled by the PK path), so a shared-PK FK never
 // trips this.
+//
+// A PARTIAL unique index counts only when it can actually bind a row this plan
+// writes — see partialIndexBinds.
 func uniqueSingleColumn(t schemadef.Table, col string) bool {
 	for _, ix := range t.Indexes {
-		if ix.Unique && len(ix.Columns) == 1 && ix.Columns[0] == col {
+		if !ix.Unique || len(ix.Columns) != 1 || ix.Columns[0] != col {
+			continue
+		}
+		if partialIndexBinds(t, ix) {
 			return true
 		}
 	}
 	return false
+}
+
+// partialNullPredRE matches the WHERE clause of a partial index in the one
+// shape this package reads: a nullness test on a single column, as
+// pg_get_expr renders it (`(revoked_at IS NULL)`).
+var partialNullPredRE = regexp.MustCompile(`^"?([a-z_][a-z0-9_]*)"?\s+IS\s+(NOT\s+)?NULL$`)
+
+// partialIndexBinds reports whether a partial index's WHERE clause can be TRUE
+// of any row this plan writes. It exists because a partial unique index is a
+// weaker statement than a plain one, and reading it as plain describes a
+// stricter table than the one that exists:
+//
+//	CREATE UNIQUE INDEX … ON reliant_api_keys(user_id) WHERE revoked_at IS NULL
+//
+// says ONE ACTIVE key per user, and treating it as `UNIQUE (user_id)` caps the
+// table at one row per user — a dataset in which no user can ever have a
+// revoked key plus a live one, which is most of what such a table is for.
+//
+// The reading is deliberately narrow, and the fallback is the strict one: an
+// unrecognized predicate, or a column whose nullness forge cannot settle from
+// the schema, BINDS, which is exactly today's behaviour. Only a predicate
+// forge can prove false of every row it writes is set aside.
+func partialIndexBinds(t schemadef.Table, ix schemadef.Index) bool {
+	pred := strings.TrimSpace(ix.Predicate)
+	if pred == "" {
+		return true // a full index always binds
+	}
+	m := partialNullPredRE.FindStringSubmatch(unwrapParens(pred))
+	if m == nil {
+		return true
+	}
+	alwaysNull, neverNull, known := nullnessOf(t, m[1])
+	if !known {
+		return true
+	}
+	if m[2] != "" { // ... WHERE col IS NOT NULL
+		return !alwaysNull
+	}
+	return !neverNull
+}
+
+// nullnessOf answers, from the SCHEMA alone, whether a column is NULL in every
+// row this planner writes or in none of them. known is false when neither can
+// be shown.
+//
+// The answer is short because the planner's NULL policy is: only a managed
+// soft-delete marker (seeded live, so always NULL) and a foreign key (which may
+// decline an optional edge, or have had a cycle broken through it) are ever
+// NULL. Every other synthesized column carries a value on every row — see
+// synthScalar, which has no NULL branch. A column a discriminated union places
+// is excluded too: that pass DOES write NULL, per branch, per row.
+func nullnessOf(t schemadef.Table, name string) (alwaysNull, neverNull, known bool) {
+	var col schemadef.Column
+	found := false
+	for _, c := range t.Columns {
+		if c.Name == name {
+			col, found = c, true
+			break
+		}
+	}
+	if !found || col.IsGenerated {
+		return false, false, false
+	}
+	for _, fk := range t.ForeignKeys {
+		if fk.Column == name {
+			return false, false, false
+		}
+	}
+	if unionPlacesColumn(t, name) {
+		return false, false, false
+	}
+	if managedRoleOf(schemadef.DetectConventions(t), col) == managedDeletedAt {
+		return true, false, true
+	}
+	return false, true, true
 }
 
 // tablePlan is one table's insert, in the topologically-ordered plan.
@@ -144,16 +226,29 @@ type Plan struct {
 	// single-column-UNIQUE data column: table -> column -> per-row literal.
 	// See constraints.go.
 	uniques map[string]map[string][]string
+	// tuples holds the finalized composite-UNIQUE placements: table -> one
+	// odometer per multi-column UNIQUE index, dealing distinct TUPLES across
+	// rows out of the members' own supplies. See tuple.go — the one-column
+	// forms above (uniques, and columnPlan.uniqueFK) say nothing about a
+	// constraint that no single column carries.
+	tuples map[string][]tupleAssign
 	// lenBounds memoizes LengthBounds per (table, column) — [min, max]
 	// characters from char_length CHECKs and declared varchar caps.
 	lenBounds map[string]map[string][2]int
 	// orderChains places the columns of two-column ordering CHECKs
 	// (`expires_at > issued_at`) so the synthesized values satisfy them by
 	// construction; orderWarns names the ordering constraints forge could
-	// not place. See ordering.go — this is the one constraint shape that is
-	// not a property of a single column.
+	// not place. See ordering.go — this is one of the two constraint shapes
+	// that are not a property of a single column.
 	orderChains map[string]map[string]orderSlot
 	orderWarns  []string
+	// unions places the columns of discriminated-union CHECKs — a top-level
+	// OR of AND-groups, each pinning a discriminator and constraining its
+	// siblings — by satisfying ONE branch of the OR whole; unionWarns names
+	// the unions forge could not place. See union.go, the other
+	// multi-column shape.
+	unions     map[string][]unionSpec
+	unionWarns []string
 }
 
 // Warnings returns every plan-level warning: vocabulary validation problems
@@ -335,7 +430,12 @@ func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, er
 		rowsTarget[k] = v
 	}
 	plan := &Plan{cfg: cfg, pools: pools, byName: byName, rowsOf: rowsOf, rowsTarget: rowsTarget, conv: conv}
+	// Ordering first: the union pass must not claim a column an ordering
+	// CHECK already places, and the two shapes are disjoint by construction
+	// (a union branch's comparisons are against LITERALS, never a sibling
+	// column), so neither pass can steal the other's constraint.
 	plan.orderChains, plan.orderWarns = buildOrderChains(tables)
+	plan.unions, plan.unionWarns = buildUnionPlans(tables, pools, plan.orderChains)
 	for _, n := range order {
 		t := byName[n]
 		fkByCol := map[string]schemadef.ForeignKey{}

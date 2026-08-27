@@ -1046,13 +1046,22 @@ func DefaultConfigMessages() []ConfigMessage {
 					Description:  "Maximum amount of time a connection may be reused before being closed (Go duration, e.g. 30m).",
 				},
 				{
-					Name:        "pprof_addr",
-					GoName:      "PprofAddr",
-					GoType:      "string",
-					ProtoType:   "string",
-					EnvVar:      "PPROF_ADDR",
-					Flag:        "pprof-addr",
-					Description: "If set, starts a net/http/pprof server on this address (e.g. localhost:6060). Never expose publicly. Empty disables pprof.",
+					// pprof is ON BY DEFAULT, on a LOOPBACK side-listener. A
+					// process being OOMKilled can say how much it holds, never
+					// what — and a profiler you must redeploy to enable is one
+					// you do not have when you need it. Loopback is what makes
+					// always-on safe: present in every environment, routable
+					// from none, and never given a k8s Service. Keep this in
+					// step with the same field in
+					// internal/templates/project/config.proto.tmpl.
+					Name:         "pprof_addr",
+					GoName:       "PprofAddr",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "PPROF_ADDR",
+					Flag:         "pprof-addr",
+					DefaultValue: "127.0.0.1:6060",
+					Description:  "Address of the always-on net/http/pprof side-listener — never the app's public port. Defaults to loopback (127.0.0.1:6060), which is what makes it safe to leave on: reachable from inside the machine or pod running the process and from nowhere else, and never given a k8s Service. Grab a profile with: go tool pprof http://localhost:6060/debug/pprof/heap (in a cluster, kubectl port-forward <pod> 6060:6060 first). Set 0.0.0.0:6060 when a profile must cross a container boundary; empty disables pprof.",
 				},
 				{
 					Name:         "security_headers_enabled",

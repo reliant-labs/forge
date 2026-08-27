@@ -62,7 +62,7 @@ func (p *Plan) cellLiteral(tp tablePlan, cp columnPlan, i, depth int) string {
 	// the identical value, which collides on the second row of any two-member
 	// key whose columns share a type.
 	if col.IsPK {
-		return pkLiteral(p.cfg, name, col, i, len(tp.table.PKCols) > 1)
+		return p.keyLiteral(name, col, i)
 	}
 
 	// Single-column UNIQUE data column: the finalized distinct assignment
@@ -70,6 +70,24 @@ func (p *Plan) cellLiteral(tp tablePlan, cp columnPlan, i, depth int) string {
 	// carries the vocabulary overlay and the length fitting.
 	if lits, ok := p.uniques[name][col.Name]; ok && i < len(lits) {
 		return lits[i]
+	}
+
+	// Composite UNIQUE (see tuple.go): a column whose value alone means
+	// nothing to the constraint, but whose ROW's tuple must not repeat. The
+	// odometer deals it one of its own distinct values; foreign-key members
+	// are placed on the referential path below instead.
+	if lit, ok := p.tupleLiteral(name, col.Name, i); ok {
+		return lit
+	}
+
+	// Discriminated-union CHECK (see union.go): the row's shape follows from
+	// the branch of the OR forge picked for this row, so the discriminator's
+	// literal and its siblings' presence/absence are placed together rather
+	// than drawn independently. Like ordering below, the pass claims only
+	// plain data columns, so it cannot reach this point ahead of the
+	// referential and UNIQUE branches above.
+	if lit, ok := p.unionLiteral(name, col, i); ok {
+		return lit
 	}
 
 	// Column-ordering CHECK (see ordering.go): a column the schema requires
@@ -81,6 +99,35 @@ func (p *Plan) cellLiteral(tp tablePlan, cp columnPlan, i, depth int) string {
 	}
 
 	return p.valueLiteral(name, col, i)
+}
+
+// keyLiteral is the value a PRIMARY-KEY column carries at row i.
+//
+// It is pkLiteral plus the one thing pkLiteral cannot see: the column's own
+// CHECK vocabulary. A key member is still an ordinary column, and a CHECK is a
+// declaration about EVERY value it holds —
+//
+//	PRIMARY KEY (org_id, period_start, period_end, group_by, group_key),
+//	CONSTRAINT chk_group_by CHECK (group_by IN ('provider', 'model', …))
+//
+// — so a key function that invents an id for group_by writes a value the
+// constraint rejects, and the INSERT dies on the CHECK instead of on the key.
+// A vocabulary member is what the column admits, so that is what it gets, and
+// the OTHER members of the composite key carry the row's distinctness (with
+// ON CONFLICT DO NOTHING as the backstop the statement already carries).
+//
+// A SOLE key column never takes this path: a one-column key with a CHECK
+// vocabulary can hold as many rows as the vocabulary has members, and quietly
+// collapsing a table's ids into four strings is not a trade the key function
+// gets to make on its own. Its id stays the documented, stable UUID.
+func (p *Plan) keyLiteral(table string, col schemadef.Column, i int) string {
+	composite := len(p.byName[table].PKCols) > 1
+	if composite {
+		if _, pooled := p.closedPool(table, col); pooled {
+			return p.valueLiteral(table, col, i)
+		}
+	}
+	return pkLiteral(p.cfg, table, col, i, composite)
 }
 
 // valueLiteral produces the literal for a plain (non-PK, non-FK) data cell:
@@ -203,6 +250,13 @@ func (p *Plan) fkParentRow(tp tablePlan, cp columnPlan, i int) (int, bool) {
 }
 
 func (p *Plan) fkParentRowAt(tp tablePlan, cp columnPlan, i, depth int) (int, bool) {
+	// A composite UNIQUE index over this column has already dealt it a parent
+	// (see tuple.go), and that assignment is a PROOF the tuple does not
+	// repeat. Nothing below may re-pick it — resolveDiamonds declines to claim
+	// such a column for the same reason, so this is the belt to that braces.
+	if row, ok := p.tupleParentRow(tp.table.Name, cp.col.Name, i); ok {
+		return row, true
+	}
 	idx, ok := p.fkParentRowIndependent(tp, cp, i)
 	if !ok {
 		return 0, false
@@ -307,14 +361,15 @@ func (p *Plan) referencedValue(refTable, refColumn string, idx, depth int) strin
 	// The referenced column's own table decides whether its key is composite:
 	// this re-derives the PARENT's literal, so it must be computed exactly as
 	// the parent's own row computed it.
-	refComposite := len(rt.PKCols) > 1
 	if refCol.IsPK {
-		return pkLiteral(p.cfg, refTable, refCol, idx, refComposite)
+		return p.keyLiteral(refTable, refCol, idx)
 	}
 	if depth >= maxFKDepth {
-		// Give up deriving through a long chain; a PK-shaped guess keeps the
+		// Give up deriving through a long chain; a key-shaped guess keeps the
 		// insert well-typed even if referential integrity can't be proven.
-		return pkLiteral(p.cfg, refTable, refCol, idx, refComposite)
+		// "Well-typed" is the whole value of the fallback, so it goes through
+		// the same type-aware key function rather than assuming a UUID.
+		return p.keyLiteral(refTable, refCol, idx)
 	}
 	if rtp, rcp, ok := p.colPlan(refTable, refColumn); ok {
 		return p.cellLiteral(rtp, rcp, idx, depth+1)

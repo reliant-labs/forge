@@ -53,7 +53,16 @@ services:
       LOG_LEVEL: debug
       LOG_FORMAT: text
       AUTO_MIGRATE: "true"
-      PPROF_ADDR: ":6060"
+      # pprof is on by default and bound to LOOPBACK by the config
+      # default (127.0.0.1:6060). Loopback inside a container is the
+      # container's own netns, so nothing outside it — not the `alloy`
+      # profile scrape below, not a published port — can reach it. This
+      # is the deliberate container-boundary override, and it is safe
+      # because it is confined to this compose network: no port for it
+      # is published to the host, and the k8s manifests give it no
+      # Service. `docker compose exec app` or a published port of your
+      # own is how you reach it by hand.
+      PPROF_ADDR: "0.0.0.0:6060"
       # ── Identity (see the `idp` service below) ────────────────────────
       #
       # These are PASSTHROUGH with an empty default, and empty is the

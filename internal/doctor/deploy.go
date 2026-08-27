@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
@@ -34,11 +35,39 @@ type k8sObject struct {
 	Kind       string         `json:"kind"`
 	Metadata   objectMeta     `json:"metadata"`
 	Spec       map[string]any `json:"spec"`
+	// raw is the object's exact rendered bytes, kept because CONTENT is what
+	// separates a benign cluster-scoped singleton (every env renders an
+	// identical CRD / GatewayClass) from a real one (a ClusterRoleBinding
+	// whose subject namespace differs per env, so the last env to deploy
+	// steals it). The typed fields above cannot answer that — they are a
+	// deliberate slice of the object, and the difference usually lives in the
+	// part that was sliced off. See CheckObjectCollision.
+	raw []byte
+}
+
+// UnmarshalJSON decodes the typed fields AND retains the original document.
+// encoding/json has no "give me both" mode, so the alias dodges the infinite
+// recursion this method would otherwise cause on itself.
+func (o *k8sObject) UnmarshalJSON(b []byte) error {
+	type alias k8sObject
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*o = k8sObject(a)
+	o.raw = append([]byte(nil), b...)
+	return nil
 }
 
 type objectMeta struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
+	// Labels carries the two routing labels the DEPLOY-TIME scoper reads
+	// (cluster.AppNameLabel / cluster.ClusterRoutingLabel). They are what
+	// decides which cluster an object actually lands on, so a check that
+	// reasons about namespaces without them is reasoning about a namespace
+	// with no address — see envRender.clustersOf.
+	Labels map[string]string `json:"labels"`
 }
 
 // manifestRootKey is the top-level KCL variable the deploy contract
@@ -94,6 +123,102 @@ func parseHostServices(raw json.RawMessage) []renderedService {
 	return hosts
 }
 
+// parseClusterAttribution reads the per-workload cluster coordinates out of
+// the `output` contract: which kubectl context each app-labelled workload
+// declares, plus the full set of contexts the env touches.
+//
+// Only `services` and `frontends` carry a `deploy` block. The render folds
+// agnostic `workloads` into `services`, but operators / jobs / cronjobs have
+// no per-entity cluster at all (kcl/render.k `_render_operator` and friends
+// project no `deploy`), so they ride the env-wide `cluster_target`. That
+// asymmetry is exactly why clustersOf falls back to the whole cluster set
+// instead of reading an absent entry as "belongs to no cluster".
+//
+// Best-effort, like parseHostServices: a render that predates these keys
+// answers empty, and the caller degrades to UNDETERMINED rather than guessing.
+func parseClusterAttribution(raw json.RawMessage) (map[string]string, []string) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	type deployed struct {
+		Name   string `json:"name"`
+		Deploy struct {
+			Cluster string `json:"cluster"`
+		} `json:"deploy"`
+	}
+	var contract struct {
+		// The env-wide target: present for every env that deploys anything
+		// to a cluster, and the only cluster fact a single-cluster env has.
+		ClusterTarget *struct {
+			Cluster string `json:"cluster"`
+		} `json:"cluster_target"`
+		Services  []deployed `json:"services"`
+		Frontends []deployed `json:"frontends"`
+	}
+	if err := json.Unmarshal(raw, &contract); err != nil {
+		return nil, nil
+	}
+
+	byApp := map[string]string{}
+	seen := map[string]bool{}
+	if contract.ClusterTarget != nil && contract.ClusterTarget.Cluster != "" {
+		seen[contract.ClusterTarget.Cluster] = true
+	}
+	for _, group := range [][]deployed{contract.Services, contract.Frontends} {
+		for _, d := range group {
+			if d.Deploy.Cluster == "" {
+				continue // host / firebase / External: never lands in a namespace
+			}
+			if d.Name != "" {
+				byApp[d.Name] = d.Deploy.Cluster
+			}
+			seen[d.Deploy.Cluster] = true
+		}
+	}
+
+	clusters := make([]string, 0, len(seen))
+	for c := range seen {
+		clusters = append(clusters, c)
+	}
+	sort.Strings(clusters)
+	if len(byApp) == 0 {
+		byApp = nil
+	}
+	return byApp, clusters
+}
+
+// clustersOf answers which cluster(s) a rendered object actually lands on.
+//
+// It mirrors internal/cluster.ScopeManifestsToGroup, the code that performs
+// the routing at deploy time, and the mirroring is the whole point: a check
+// that models routing differently from the router reports on a deploy that
+// never happens. The three arms are that function's rules, in its order:
+//
+//   - the first-class `forge.dev/cluster` label wins outright — the scoper
+//     keeps such a doc iff the label equals the group's cluster and drops it
+//     everywhere else, with no app-label indirection.
+//   - otherwise an `app.kubernetes.io/name` label naming a workload with a
+//     declared cluster routes to THAT workload's cluster. This is the
+//     ownership rule: a manifest lands on the cluster of its owning service.
+//   - otherwise (an unlabeled Namespace / ConfigMap / RuntimeClass, or an app
+//     label owned by no declared workload) it lands on EVERY cluster the env
+//     deploys to. The deploy layer never picks a cluster for an unattributed
+//     doc; it replicates it to every group, so every one of them is a real
+//     landing site and a real place to collide.
+//
+// Empty only when the env declares no cluster whatsoever.
+func (r envRender) clustersOf(o k8sObject) []string {
+	if c := o.Metadata.Labels[cluster.ClusterRoutingLabel]; c != "" {
+		return []string{c}
+	}
+	if app := o.Metadata.Labels[cluster.AppNameLabel]; app != "" {
+		if c := r.clusterOfApp[app]; c != "" {
+			return []string{c}
+		}
+	}
+	return r.clusters
+}
+
 // envRender is one environment's render outcome.
 type envRender struct {
 	env string
@@ -111,6 +236,14 @@ type envRender struct {
 	// would reject — a document with no apiVersion or no kind.
 	invalid []string
 	objects []k8sObject
+	// clusterOfApp maps an `app.kubernetes.io/name` label value to the
+	// kubectl context of the cluster that workload declares, and clusters is
+	// every context the env deploys to (sorted). Together they turn a
+	// rendered object into the cluster it lands on; clusters is empty when
+	// the render declares no cluster at all, which is UNDETERMINED rather
+	// than "no cluster".
+	clusterOfApp map[string]string
+	clusters     []string
 	// hostServices are the env's HOST-deployed services, read from the
 	// `output` JSON contract rather than from `manifests`.
 	//
@@ -281,6 +414,7 @@ func parseRender(raw []byte) envRender {
 	out := envRender{}
 	out.hostServices = parseHostServices(root[outputRootKey])
 	out.frontends = parseRenderedFrontends(root[outputRootKey])
+	out.clusterOfApp, out.clusters = parseClusterAttribution(root[outputRootKey])
 	for _, k := range keys {
 		var list []k8sObject
 		if lerr := json.Unmarshal(root[k], &list); lerr != nil {
@@ -402,29 +536,212 @@ func mapAt(m map[string]any, key string) (map[string]any, bool) {
 	return v, ok
 }
 
-// renderPreamble is the shared skip/fail handling every deploy check
-// opens with. It returns a non-nil result when the check cannot run.
-func renderPreamble(env *Environment, what string) ([]envRender, *CheckResult) {
+// ── the render-scope contract ───────────────────────────────────────
+//
+// Every deploy check answers a question ABOUT THE DECLARED
+// ENVIRONMENTS, and there are two kinds of question. Six of them ask
+// about the CONTENT of what an environment renders — probes, resource
+// limits, secret handling, ServiceAccount binding, migrations, frontend
+// drift. One, CheckDeployManifests, asks about the RENDER ITSELF. That
+// difference is exactly what an unrenderable environment means:
+//
+//   - to a content check it is a HOLE in the evidence. An environment
+//     that did not evaluate contributed no containers, so "every
+//     container sets limits" becomes a claim about a subset. Reporting
+//     that as Pass is the report lying by omission; the honest answer is
+//     StatusUnknown — see doctor.go, where UNDETERMINED is defined as
+//     "could not obtain the facts" and explicitly not a pass.
+//   - to CheckDeployManifests it IS the finding. "This environment does
+//     not render" is precisely what that check exists to say, so it
+//     consumes the failures instead of being degraded by them.
+//
+// The helper this replaced (renderPreamble, now deleted) expressed just
+// the two extremes — zero environments → Skip, EVERY environment broken
+// → Fail — and handed anything in between straight through with the
+// failures still mixed into the list, for each caller to remember to
+// filter. Six of seven callers never acted on envRender.err at all, so
+// four of five environments could fail to render and the check still
+// said Pass: a confident green over facts it never read, which is worse
+// than no answer. CheckDeployServiceAccount could even reach StatusSkip
+// ("no ServiceAccount rendered") because the only environment declaring
+// one was the environment that failed — asserting "not applicable" from
+// missing facts.
+//
+// It is deleted rather than deprecated deliberately. A helper that can
+// still be called is still a way to write the bug, and the one that
+// reads as the shorter path gets copied into the next check.
+//
+// The fix is therefore not one more field to remember to consult.
+// examineRendered owns BOTH ENDS of the check: it hands the body only
+// the environments that actually rendered, and it folds the unread ones
+// into whatever the body answers on the way back out. A check cannot
+// reach the renders without going through it, and cannot return a
+// verdict that bypasses the fold, because the folded result IS the
+// return value. There is no carry-forward left to drop.
+
+// unreadEnv is one environment doctor could not read, and why.
+type unreadEnv struct {
+	env string
+	err error
+}
+
+// renderScope is the evidence base a deploy check is working from: the
+// environments it was able to examine, and the ones it was not.
+type renderScope struct {
+	// what names the subject in the check's own words ("probes",
+	// "resource limits"). Only surfaces when nothing was readable at all.
+	what string
+	// all is every declared environment in render order, failures
+	// included — reserved for the one check whose subject IS the render.
+	all []envRender
+	// usable is every environment that rendered. A content-check body
+	// sees ONLY these, which is why `if r.err != nil { continue }` is not
+	// something such a check can forget: it is something it cannot say.
+	usable []envRender
+	// unread is every environment that did not, with its render error.
+	unread []unreadEnv
+}
+
+// total is how many environments the project declares.
+func (s renderScope) total() int { return len(s.all) }
+
+// unreadNames lists the environments missing from the answer, in render
+// order, so a message can name them rather than only count them.
+func (s renderScope) unreadNames() []string {
+	names := make([]string, 0, len(s.unread))
+	for _, u := range s.unread {
+		names = append(names, u.env)
+	}
+	return names
+}
+
+// unreadEvidence spells out each failure, so `-v` says WHY an
+// environment is missing from the answer and not merely that it is.
+func (s renderScope) unreadEvidence() string {
+	lines := make([]string, 0, len(s.unread))
+	for _, u := range s.unread {
+		lines = append(lines, fmt.Sprintf("%s: %v", u.env, u.err))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// scopePrefix states what the answer actually covers. It leads the
+// message rather than trailing it: the scope of a claim has to arrive
+// before the claim, or the reader has already believed it.
+func (s renderScope) scopePrefix() string {
+	return fmt.Sprintf("%d of %d env(s) read (%s did not render) — ",
+		len(s.usable), s.total(), strings.Join(s.unreadNames(), ", "))
+}
+
+// fold applies the degradation contract to a verdict the check reached
+// from s.usable alone.
+//
+// A COMPLETE scope returns the verdict untouched, byte for byte: a
+// project whose environments all render sees exactly the report it saw
+// before this contract existed.
+//
+// An INCOMPLETE one rewrites two things:
+//
+//   - PASS and SKIP become UNKNOWN. Both are assertions the missing
+//     environments could have contradicted — "every container has a
+//     limit" and "no ServiceAccount is rendered" are equally unsafe to
+//     say about an environment that was never read. Skip is the worse of
+//     the two, since it claims the question does not apply on the
+//     strength of facts that are merely absent.
+//   - FAIL and WARN keep their status. A plaintext credential in prod is
+//     a plaintext credential whether or not staging rendered, and
+//     downgrading it to "undetermined" would bury a finding that IS
+//     determined. They still take the prefix, because "2 of 12
+//     containers" has to say which containers were counted.
+func (s renderScope) fold(r CheckResult) CheckResult {
+	if len(s.unread) == 0 {
+		return r
+	}
+	if r.Status == StatusPass || r.Status == StatusSkip {
+		r.Status = StatusUnknown
+	}
+	r.Message = s.scopePrefix() + r.Message
+	r.Evidence = joinEvidence(r.Evidence, fmt.Sprintf(
+		"could not render %d of %d environment(s); this result covers only the other %d:\n%s",
+		len(s.unread), s.total(), len(s.usable), s.unreadEvidence()))
+	return r
+}
+
+// nothingReadable is the answer when NOT ONE environment rendered. The
+// status is the caller's, because that is the one place the two kinds of
+// check genuinely disagree: unrenderable IS CheckDeployManifests' defect
+// (Fail), and is merely the absence of evidence for everyone else
+// (Unknown).
+func (s renderScope) nothingReadable(status Status) CheckResult {
+	return CheckResult{
+		Status:   status,
+		Message:  fmt.Sprintf("could not render any of %d environment(s) to check %s", s.total(), s.what),
+		Evidence: s.unreadEvidence(),
+	}
+}
+
+// joinEvidence concatenates the non-empty evidence blocks.
+func joinEvidence(parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
+// renderScopeOf partitions the memoised renders and handles the two
+// cases no check body can say anything useful about: a project that
+// declares no environments, and one where not a single environment
+// rendered. A non-nil result means the caller must return it as-is.
+func renderScopeOf(env *Environment, what string, unreadableStatus Status) (renderScope, *CheckResult) {
 	renders := deployRenders(env)
 	if len(renders) == 0 {
 		r := CheckResult{Status: StatusSkip, Message: "no deploy/kcl/<env>/main.k — nothing to render"}
-		return nil, &r
+		return renderScope{}, &r
 	}
-	var broken []string
+	s := renderScope{what: what, all: renders}
 	for _, r := range renders {
 		if r.err != nil {
-			broken = append(broken, fmt.Sprintf("%s: %v", r.env, r.err))
+			s.unread = append(s.unread, unreadEnv{env: r.env, err: r.err})
+			continue
 		}
+		s.usable = append(s.usable, r)
 	}
-	if len(broken) == len(renders) {
-		r := CheckResult{
-			Status:   StatusFail,
-			Message:  fmt.Sprintf("could not render any environment to check %s", what),
-			Evidence: strings.Join(broken, "\n"),
-		}
-		return nil, &r
+	if len(s.usable) == 0 {
+		r := s.nothingReadable(unreadableStatus)
+		return s, &r
 	}
-	return renders, nil
+	return s, nil
+}
+
+// examineRendered is how a CONTENT check reaches the rendered
+// environments — the only way, deliberately.
+//
+// `examine` is handed the environments that rendered and nothing else,
+// so it cannot accidentally reason over a failed one; and its verdict
+// goes through [renderScope.fold] before it reaches doctor, so it cannot
+// accidentally report Pass about an environment nobody read. Both
+// halves of the old bug are unrepresentable rather than merely fixed.
+func examineRendered(env *Environment, what string, examine func(usable []envRender) CheckResult) CheckResult {
+	s, early := renderScopeOf(env, what, StatusUnknown)
+	if early != nil {
+		return *early
+	}
+	return s.fold(examine(s.usable))
+}
+
+// examineRenderability is CheckDeployManifests' door: the render is its
+// subject, so it gets EVERY environment including the broken ones, and
+// its answer is not folded — a failed render is the finding it reports
+// in its own words, not a hole in someone else's evidence.
+func examineRenderability(env *Environment, what string, examine func(all []envRender) CheckResult) CheckResult {
+	s, early := renderScopeOf(env, what, StatusFail)
+	if early != nil {
+		return *early
+	}
+	return examine(s.all)
 }
 
 // CheckDeployManifests verifies that each environment renders to
@@ -441,53 +758,55 @@ func renderPreamble(env *Environment, what string) ([]envRender, *CheckResult) {
 // render must export that root, every entry under it must carry
 // apiVersion + kind, and no OTHER root may carry k8s objects — those
 // are unreachable by any selection and silently never deploy.
+//
+// This is the ONE deploy check that takes examineRenderability rather
+// than examineRendered: an environment that does not render is its
+// finding, not a hole in its evidence, so it receives the failures and
+// reports them by name instead of being degraded to UNDETERMINED.
 func CheckDeployManifests(_ context.Context, env *Environment) CheckResult {
-	renders, early := renderPreamble(env, "manifest shape")
-	if early != nil {
-		return *early
-	}
+	return examineRenderability(env, "manifest shape", func(renders []envRender) CheckResult {
+		var problems []string
+		total := 0
+		for _, r := range renders {
+			if r.err != nil {
+				problems = append(problems, fmt.Sprintf("%s: render failed: %v", r.env, r.err))
+				continue
+			}
+			total += len(r.objects)
+			if !r.hasManifestRoot {
+				problems = append(problems, fmt.Sprintf(
+					"%s: render exports no `%s` root — there is nothing for "+
+						"`kcl run … -S %s | kubectl apply -f -` to select, so this env cannot deploy",
+					r.env, manifestRootKey, manifestRootKey))
+			}
+			if len(r.invalid) > 0 {
+				problems = append(problems, fmt.Sprintf(
+					"%s: %d manifest(s) `kubectl apply` would reject:\n    %s",
+					r.env, len(r.invalid), strings.Join(r.invalid, "\n    ")))
+			}
+			if len(r.strayRoots) > 0 {
+				problems = append(problems, fmt.Sprintf(
+					"%s: top-level key(s) %s carry k8s objects that no deploy applies — "+
+						"`-S %s` cannot reach them; move them into `%s`",
+					r.env, strings.Join(r.strayRoots, ", "), manifestRootKey, manifestRootKey))
+			}
+			if len(r.objects) == 0 && r.hasManifestRoot {
+				problems = append(problems, fmt.Sprintf("%s: render produced no k8s objects", r.env))
+			}
+		}
 
-	var problems []string
-	total := 0
-	for _, r := range renders {
-		if r.err != nil {
-			problems = append(problems, fmt.Sprintf("%s: render failed: %v", r.env, r.err))
-			continue
+		if len(problems) > 0 {
+			return CheckResult{
+				Status:   StatusFail,
+				Message:  fmt.Sprintf("%d environment(s) render to non-applyable output", len(problems)),
+				Evidence: strings.Join(problems, "\n"),
+			}
 		}
-		total += len(r.objects)
-		if !r.hasManifestRoot {
-			problems = append(problems, fmt.Sprintf(
-				"%s: render exports no `%s` root — there is nothing for "+
-					"`kcl run … -S %s | kubectl apply -f -` to select, so this env cannot deploy",
-				r.env, manifestRootKey, manifestRootKey))
-		}
-		if len(r.invalid) > 0 {
-			problems = append(problems, fmt.Sprintf(
-				"%s: %d manifest(s) `kubectl apply` would reject:\n    %s",
-				r.env, len(r.invalid), strings.Join(r.invalid, "\n    ")))
-		}
-		if len(r.strayRoots) > 0 {
-			problems = append(problems, fmt.Sprintf(
-				"%s: top-level key(s) %s carry k8s objects that no deploy applies — "+
-					"`-S %s` cannot reach them; move them into `%s`",
-				r.env, strings.Join(r.strayRoots, ", "), manifestRootKey, manifestRootKey))
-		}
-		if len(r.objects) == 0 && r.hasManifestRoot {
-			problems = append(problems, fmt.Sprintf("%s: render produced no k8s objects", r.env))
-		}
-	}
-
-	if len(problems) > 0 {
 		return CheckResult{
-			Status:   StatusFail,
-			Message:  fmt.Sprintf("%d environment(s) render to non-applyable output", len(problems)),
-			Evidence: strings.Join(problems, "\n"),
+			Status:  StatusPass,
+			Message: fmt.Sprintf("%d env(s), %d manifest(s) — all applyable", len(renders), total),
 		}
-	}
-	return CheckResult{
-		Status:  StatusPass,
-		Message: fmt.Sprintf("%d env(s), %d manifest(s) — all applyable", len(renders), total),
-	}
+	})
 }
 
 // CheckDeployProbes verifies every rendered container that serves a
@@ -506,59 +825,56 @@ func CheckDeployManifests(_ context.Context, env *Environment) CheckResult {
 // CrashLoopBackOff. Declaring exactly ONE of the two probes fails
 // regardless of ports — it is always a half-finished thought.
 func CheckDeployProbes(_ context.Context, env *Environment) CheckResult {
-	renders, early := renderPreamble(env, "probes")
-	if early != nil {
-		return *early
-	}
+	return examineRendered(env, "probes", func(renders []envRender) CheckResult {
+		var missing []string
+		checked, exempt := 0, 0
+		for _, r := range renders {
+			for _, o := range r.objects {
+				_, containers := containersOf(o)
+				for _, c := range containers {
+					name, _ := c["name"].(string)
+					_, hasReady := c["readinessProbe"]
+					_, hasLive := c["livenessProbe"]
+					ports, _ := c["ports"].([]any)
 
-	var missing []string
-	checked, exempt := 0, 0
-	for _, r := range renders {
-		for _, o := range r.objects {
-			_, containers := containersOf(o)
-			for _, c := range containers {
-				name, _ := c["name"].(string)
-				_, hasReady := c["readinessProbe"]
-				_, hasLive := c["livenessProbe"]
-				ports, _ := c["ports"].([]any)
-
-				if len(ports) == 0 && !hasReady && !hasLive {
-					// Nothing to probe and nothing claimed — not a defect.
-					exempt++
-					continue
-				}
-				checked++
-				var absent []string
-				if !hasReady {
-					absent = append(absent, "readinessProbe")
-				}
-				if !hasLive {
-					absent = append(absent, "livenessProbe")
-				}
-				if len(absent) > 0 {
-					missing = append(missing, fmt.Sprintf("%s/%s %s container %q: serves %d port(s) but declares no %s",
-						r.env, o.Kind, o.Metadata.Name, name, len(ports), strings.Join(absent, " or ")))
+					if len(ports) == 0 && !hasReady && !hasLive {
+						// Nothing to probe and nothing claimed — not a defect.
+						exempt++
+						continue
+					}
+					checked++
+					var absent []string
+					if !hasReady {
+						absent = append(absent, "readinessProbe")
+					}
+					if !hasLive {
+						absent = append(absent, "livenessProbe")
+					}
+					if len(absent) > 0 {
+						missing = append(missing, fmt.Sprintf("%s/%s %s container %q: serves %d port(s) but declares no %s",
+							r.env, o.Kind, o.Metadata.Name, name, len(ports), strings.Join(absent, " or ")))
+					}
 				}
 			}
 		}
-	}
 
-	if checked == 0 && exempt == 0 {
-		return CheckResult{Status: StatusSkip, Message: "no workload containers rendered"}
-	}
-	if len(missing) > 0 {
-		return CheckResult{
-			Status: StatusFail,
-			Message: fmt.Sprintf("%d of %d serving container(s) ship no readiness/liveness probe "+
-				"— rollouts have no gate and a wedged pod is never restarted", len(missing), checked),
-			Evidence: strings.Join(missing, "\n"),
+		if checked == 0 && exempt == 0 {
+			return CheckResult{Status: StatusSkip, Message: "no workload containers rendered"}
 		}
-	}
-	msg := fmt.Sprintf("%d container(s) probe readiness + liveness", checked)
-	if exempt > 0 {
-		msg += fmt.Sprintf(" (%d serve no port — nothing to probe)", exempt)
-	}
-	return CheckResult{Status: StatusPass, Message: msg}
+		if len(missing) > 0 {
+			return CheckResult{
+				Status: StatusFail,
+				Message: fmt.Sprintf("%d of %d serving container(s) ship no readiness/liveness probe "+
+					"— rollouts have no gate and a wedged pod is never restarted", len(missing), checked),
+				Evidence: strings.Join(missing, "\n"),
+			}
+		}
+		msg := fmt.Sprintf("%d container(s) probe readiness + liveness", checked)
+		if exempt > 0 {
+			msg += fmt.Sprintf(" (%d serve no port — nothing to probe)", exempt)
+		}
+		return CheckResult{Status: StatusPass, Message: msg}
+	})
 }
 
 // CheckDeployResources verifies every rendered container sets CPU and
@@ -566,52 +882,49 @@ func CheckDeployProbes(_ context.Context, env *Environment) CheckResult {
 // place the pod correctly and it lands in the BestEffort QoS class,
 // first to be evicted under node pressure.
 func CheckDeployResources(_ context.Context, env *Environment) CheckResult {
-	renders, early := renderPreamble(env, "resource limits")
-	if early != nil {
-		return *early
-	}
-
-	var missing []string
-	checked := 0
-	for _, r := range renders {
-		for _, o := range r.objects {
-			_, containers := containersOf(o)
-			for _, c := range containers {
-				checked++
-				name, _ := c["name"].(string)
-				res, _ := c["resources"].(map[string]any)
-				var absent []string
-				for _, section := range []string{"requests", "limits"} {
-					sec, ok := mapAt(res, section)
-					if !ok || len(sec) == 0 {
-						absent = append(absent, section)
-						continue
-					}
-					for _, dim := range []string{"cpu", "memory"} {
-						if _, has := sec[dim]; !has {
-							absent = append(absent, section+"."+dim)
+	return examineRendered(env, "resource limits", func(renders []envRender) CheckResult {
+		var missing []string
+		checked := 0
+		for _, r := range renders {
+			for _, o := range r.objects {
+				_, containers := containersOf(o)
+				for _, c := range containers {
+					checked++
+					name, _ := c["name"].(string)
+					res, _ := c["resources"].(map[string]any)
+					var absent []string
+					for _, section := range []string{"requests", "limits"} {
+						sec, ok := mapAt(res, section)
+						if !ok || len(sec) == 0 {
+							absent = append(absent, section)
+							continue
+						}
+						for _, dim := range []string{"cpu", "memory"} {
+							if _, has := sec[dim]; !has {
+								absent = append(absent, section+"."+dim)
+							}
 						}
 					}
-				}
-				if len(absent) > 0 {
-					missing = append(missing, fmt.Sprintf("%s/%s %s container %q: missing %s",
-						r.env, o.Kind, o.Metadata.Name, name, strings.Join(absent, ", ")))
+					if len(absent) > 0 {
+						missing = append(missing, fmt.Sprintf("%s/%s %s container %q: missing %s",
+							r.env, o.Kind, o.Metadata.Name, name, strings.Join(absent, ", ")))
+					}
 				}
 			}
 		}
-	}
 
-	if checked == 0 {
-		return CheckResult{Status: StatusSkip, Message: "no workload containers rendered"}
-	}
-	if len(missing) > 0 {
-		return CheckResult{
-			Status:   StatusFail,
-			Message:  fmt.Sprintf("%d of %d rendered container(s) missing cpu/memory requests or limits", len(missing), checked),
-			Evidence: strings.Join(missing, "\n"),
+		if checked == 0 {
+			return CheckResult{Status: StatusSkip, Message: "no workload containers rendered"}
 		}
-	}
-	return CheckResult{Status: StatusPass, Message: fmt.Sprintf("%d container(s) set cpu+memory requests and limits", checked)}
+		if len(missing) > 0 {
+			return CheckResult{
+				Status:   StatusFail,
+				Message:  fmt.Sprintf("%d of %d rendered container(s) missing cpu/memory requests or limits", len(missing), checked),
+				Evidence: strings.Join(missing, "\n"),
+			}
+		}
+		return CheckResult{Status: StatusPass, Message: fmt.Sprintf("%d container(s) set cpu+memory requests and limits", checked)}
+	})
 }
 
 // sensitiveEnvNames are env-var name fragments whose value must never
@@ -709,75 +1022,72 @@ func isNonSecretLiteral(v any) bool {
 // An empty literal still fails: it is the same wiring, and it is what
 // an operator will fill in with a real password.
 func CheckDeploySecrets(_ context.Context, env *Environment) CheckResult {
-	renders, early := renderPreamble(env, "secret handling")
-	if early != nil {
-		return *early
-	}
-
-	var leaks []string
-	checked := 0
-	for _, r := range renders {
-		// dev and e2e may inline a credential, because forge's own KCL
-		// schema says so: RenderedSecretKey permits `from = "literal"`
-		// exactly when option("env") is dev or e2e, and refuses it in every
-		// other environment. Failing a project here for the thing the schema
-		// allows put the two halves of forge in disagreement, and left a
-		// project with permanently-red findings it could not fix — which is
-		// how a check stops being read, taking the prod findings in the same
-		// list with it.
-		//
-		// A dev credential is `postgres:postgres` against a database bound to
-		// the developer's own machine; an e2e credential is a throwaway whose
-		// other half lives in the test's assertions. Neither is a secret in
-		// any sense a Secret would protect.
-		if literalSecretEnvs[r.env] {
-			continue
-		}
-		for _, o := range r.objects {
-			_, containers := containersOf(o)
-			containers = append(containers, initContainersOf(o)...)
-			for _, c := range containers {
-				cname, _ := c["name"].(string)
-				rawEnv, _ := c["env"].([]any)
-				for _, e := range rawEnv {
-					entry, ok := e.(map[string]any)
-					if !ok {
-						continue
+	return examineRendered(env, "secret handling", func(renders []envRender) CheckResult {
+		var leaks []string
+		checked := 0
+		for _, r := range renders {
+			// dev and e2e may inline a credential, because forge's own KCL
+			// schema says so: RenderedSecretKey permits `from = "literal"`
+			// exactly when option("env") is dev or e2e, and refuses it in every
+			// other environment. Failing a project here for the thing the schema
+			// allows put the two halves of forge in disagreement, and left a
+			// project with permanently-red findings it could not fix — which is
+			// how a check stops being read, taking the prod findings in the same
+			// list with it.
+			//
+			// A dev credential is `postgres:postgres` against a database bound to
+			// the developer's own machine; an e2e credential is a throwaway whose
+			// other half lives in the test's assertions. Neither is a secret in
+			// any sense a Secret would protect.
+			if literalSecretEnvs[r.env] {
+				continue
+			}
+			for _, o := range r.objects {
+				_, containers := containersOf(o)
+				containers = append(containers, initContainersOf(o)...)
+				for _, c := range containers {
+					cname, _ := c["name"].(string)
+					rawEnv, _ := c["env"].([]any)
+					for _, e := range rawEnv {
+						entry, ok := e.(map[string]any)
+						if !ok {
+							continue
+						}
+						name, _ := entry["name"].(string)
+						if !isSensitiveEnvName(name) {
+							continue
+						}
+						literalValue, literal := entry["value"]
+						if literal && isNonSecretLiteral(literalValue) {
+							continue
+						}
+						checked++
+						if _, fromRef := entry["valueFrom"]; fromRef {
+							continue
+						}
+						if !literal {
+							continue
+						}
+						leaks = append(leaks, fmt.Sprintf("%s/%s %s container %q: env %s is a literal value: "+
+							"— use valueFrom.secretKeyRef", r.env, o.Kind, o.Metadata.Name, cname, name))
 					}
-					name, _ := entry["name"].(string)
-					if !isSensitiveEnvName(name) {
-						continue
-					}
-					literalValue, literal := entry["value"]
-					if literal && isNonSecretLiteral(literalValue) {
-						continue
-					}
-					checked++
-					if _, fromRef := entry["valueFrom"]; fromRef {
-						continue
-					}
-					if !literal {
-						continue
-					}
-					leaks = append(leaks, fmt.Sprintf("%s/%s %s container %q: env %s is a literal value: "+
-						"— use valueFrom.secretKeyRef", r.env, o.Kind, o.Metadata.Name, cname, name))
 				}
 			}
 		}
-	}
 
-	if checked == 0 {
-		return CheckResult{Status: StatusPass, Message: "no credential-shaped env vars in the rendered manifests"}
-	}
-	if len(leaks) > 0 {
-		return CheckResult{
-			Status: StatusFail,
-			Message: fmt.Sprintf("%d of %d credential-shaped env var(s) are plaintext in the manifest, not a Secret ref",
-				len(leaks), checked),
-			Evidence: strings.Join(leaks, "\n"),
+		if checked == 0 {
+			return CheckResult{Status: StatusPass, Message: "no credential-shaped env vars in the rendered manifests"}
 		}
-	}
-	return CheckResult{Status: StatusPass, Message: fmt.Sprintf("%d credential env var(s), all sourced from a Secret", checked)}
+		if len(leaks) > 0 {
+			return CheckResult{
+				Status: StatusFail,
+				Message: fmt.Sprintf("%d of %d credential-shaped env var(s) are plaintext in the manifest, not a Secret ref",
+					len(leaks), checked),
+				Evidence: strings.Join(leaks, "\n"),
+			}
+		}
+		return CheckResult{Status: StatusPass, Message: fmt.Sprintf("%d credential env var(s), all sourced from a Secret", checked)}
+	})
 }
 
 // migrationJobHint matches the name of an object, or the command of a
@@ -922,58 +1232,62 @@ func CheckDeployMigrations(_ context.Context, env *Environment) CheckResult {
 		return CheckResult{Status: StatusSkip, Message: "db/migrations is empty — nothing to apply"}
 	}
 
-	renders, early := renderPreamble(env, "migrations")
-	if early != nil {
-		return *early
-	}
+	return examineRendered(env, "migrations", func(renders []envRender) CheckResult {
+		var unmigrated []string
+		for _, r := range renders {
+			// No err arm: examineRendered hands this body only the
+			// environments that rendered, so there is no failed render left
+			// to skip past — and no way to skip one silently. An env that
+			// rendered ZERO objects is a different matter and stays exempt
+			// here: "this env produced no manifests" is CheckDeployManifests'
+			// finding, and repeating it as a migration failure would report
+			// one defect twice under two names.
+			if len(r.objects) == 0 {
+				continue
+			}
+			if hasMigrationStep(r.objects) || autoMigrateEnabled(r.objects) {
+				continue
+			}
+			// A HOST-deployed service migrates just as effectively as a
+			// container does, and it is the normal shape for a dev env: the app
+			// runs on the developer's machine with AUTO_MIGRATE=true while the
+			// cluster holds only the pieces that must be in it. That service
+			// never becomes a container, so reading manifests alone reports an
+			// env that migrates on every boot as one with no way to migrate.
+			if hostMigrationStep(r.hostServices) {
+				continue
+			}
+			unmigrated = append(unmigrated, fmt.Sprintf(
+				"%s: AUTO_MIGRATE is off and the render carries no migration Job, initContainer or migrate command "+
+					"— a schema-changing release deploys new code against the old schema", r.env))
+		}
 
-	var unmigrated []string
-	for _, r := range renders {
-		if r.err != nil || len(r.objects) == 0 {
-			continue
+		if len(unmigrated) > 0 {
+			return CheckResult{
+				Status: StatusFail,
+				Message: fmt.Sprintf("%d of %d environment(s) ship %d SQL migration(s) with no way to apply them",
+					len(unmigrated), len(renders), sqlCount),
+				Evidence: strings.Join(unmigrated, "\n") +
+					"\nfix: declare the migration as a one-shot workload in deploy/kcl/workloads.k —\n" +
+					"      migrate = fw.Workload {\n" +
+					"          name = \"migrate\"\n" +
+					"          kind = \"job\"\n" +
+					"          command = [\"/app/<project>\", \"db\", \"migrate\", \"up\"]\n" +
+					"          before = [fw.BEFORE_ALL]\n" +
+					"      }\n" +
+					"    and add it to this environment's workload list. `before = [fw.BEFORE_ALL]` gates " +
+					"EVERY workload without naming any, so it keeps holding when a workload is added later; " +
+					"it renders an initContainer running the image's `db migrate up` (embedded migrations, " +
+					"advisory-locked) before the app container starts. If this environment applies migrations " +
+					"out of band instead, that is a legitimate answer — this check reads the render, so wire " +
+					"the step you actually use.",
+			}
 		}
-		if hasMigrationStep(r.objects) || autoMigrateEnabled(r.objects) {
-			continue
-		}
-		// A HOST-deployed service migrates just as effectively as a
-		// container does, and it is the normal shape for a dev env: the app
-		// runs on the developer's machine with AUTO_MIGRATE=true while the
-		// cluster holds only the pieces that must be in it. That service
-		// never becomes a container, so reading manifests alone reports an
-		// env that migrates on every boot as one with no way to migrate.
-		if hostMigrationStep(r.hostServices) {
-			continue
-		}
-		unmigrated = append(unmigrated, fmt.Sprintf(
-			"%s: AUTO_MIGRATE is off and the render carries no migration Job, initContainer or migrate command "+
-				"— a schema-changing release deploys new code against the old schema", r.env))
-	}
-
-	if len(unmigrated) > 0 {
 		return CheckResult{
-			Status: StatusFail,
-			Message: fmt.Sprintf("%d of %d environment(s) ship %d SQL migration(s) with no way to apply them",
-				len(unmigrated), len(renders), sqlCount),
-			Evidence: strings.Join(unmigrated, "\n") +
-				"\nfix: declare the migration as a one-shot workload in deploy/kcl/workloads.k —\n" +
-				"      migrate = fw.Workload {\n" +
-				"          name = \"migrate\"\n" +
-				"          kind = \"job\"\n" +
-				"          command = [\"/app/<project>\", \"db\", \"migrate\", \"up\"]\n" +
-				"          before = [fw.BEFORE_ALL]\n" +
-				"      }\n" +
-				"    and add it to this environment's workload list. `before = [fw.BEFORE_ALL]` gates " +
-				"EVERY workload without naming any, so it keeps holding when a workload is added later; " +
-				"it renders an initContainer running the image's `db migrate up` (embedded migrations, " +
-				"advisory-locked) before the app container starts. If this environment applies migrations " +
-				"out of band instead, that is a legitimate answer — this check reads the render, so wire " +
-				"the step you actually use.",
+			Status:  StatusPass,
+			Message: fmt.Sprintf("%d SQL migration(s), applied by all %d environment(s)", sqlCount, len(renders)),
 		}
-	}
-	return CheckResult{
-		Status:  StatusPass,
-		Message: fmt.Sprintf("%d SQL migration(s), applied by every environment", sqlCount),
-	}
+	})
 }
 
 // CheckDeployServiceAccount verifies that a rendered ServiceAccount is
@@ -983,61 +1297,65 @@ func CheckDeployMigrations(_ context.Context, env *Environment) CheckResult {
 // serviceAccountName off the pod spec is worse than emitting nothing:
 // the manifests read as if RBAC is scoped, while every pod runs as the
 // namespace `default` SA with whatever that account can do.
+//
+// The `declared == 0` arm below is why this check needed the scope
+// contract most: it answers StatusSkip, "not applicable", and it used to
+// reach that answer when the ONLY environment declaring a ServiceAccount
+// was the one that failed to render. [renderScope.fold] turns that into
+// UNDETERMINED — a security-shaped check must never say "does not apply"
+// on the strength of facts it could not obtain.
 func CheckDeployServiceAccount(_ context.Context, env *Environment) CheckResult {
-	renders, early := renderPreamble(env, "service accounts")
-	if early != nil {
-		return *early
-	}
-
-	var unbound []string
-	declared := 0
-	for _, r := range renders {
-		accounts := map[string]bool{}
-		for _, o := range r.objects {
-			if o.Kind == "ServiceAccount" {
-				accounts[o.Metadata.Namespace+"/"+o.Metadata.Name] = false
-				declared++
+	return examineRendered(env, "service accounts", func(renders []envRender) CheckResult {
+		var unbound []string
+		declared := 0
+		for _, r := range renders {
+			accounts := map[string]bool{}
+			for _, o := range r.objects {
+				if o.Kind == "ServiceAccount" {
+					accounts[o.Metadata.Namespace+"/"+o.Metadata.Name] = false
+					declared++
+				}
 			}
-		}
-		if len(accounts) == 0 {
-			continue
-		}
-		for _, o := range r.objects {
-			podSpec, containers := containersOf(o)
-			if len(containers) == 0 {
+			if len(accounts) == 0 {
 				continue
 			}
-			sa, _ := podSpec["serviceAccountName"].(string)
-			if sa == "" {
-				continue
+			for _, o := range r.objects {
+				podSpec, containers := containersOf(o)
+				if len(containers) == 0 {
+					continue
+				}
+				sa, _ := podSpec["serviceAccountName"].(string)
+				if sa == "" {
+					continue
+				}
+				key := o.Metadata.Namespace + "/" + sa
+				if _, known := accounts[key]; known {
+					accounts[key] = true
+				}
 			}
-			key := o.Metadata.Namespace + "/" + sa
-			if _, known := accounts[key]; known {
-				accounts[key] = true
+			names := make([]string, 0, len(accounts))
+			for key, bound := range accounts {
+				if !bound {
+					names = append(names, key)
+				}
+			}
+			sort.Strings(names)
+			for _, n := range names {
+				unbound = append(unbound, fmt.Sprintf("%s: ServiceAccount %s is rendered but no pod spec sets "+
+					"serviceAccountName — the workload runs as the namespace `default` SA", r.env, n))
 			}
 		}
-		names := make([]string, 0, len(accounts))
-		for key, bound := range accounts {
-			if !bound {
-				names = append(names, key)
-			}
-		}
-		sort.Strings(names)
-		for _, n := range names {
-			unbound = append(unbound, fmt.Sprintf("%s: ServiceAccount %s is rendered but no pod spec sets "+
-				"serviceAccountName — the workload runs as the namespace `default` SA", r.env, n))
-		}
-	}
 
-	if declared == 0 {
-		return CheckResult{Status: StatusSkip, Message: "no ServiceAccount rendered"}
-	}
-	if len(unbound) > 0 {
-		return CheckResult{
-			Status:   StatusFail,
-			Message:  fmt.Sprintf("%d of %d rendered ServiceAccount(s) are never bound to a pod", len(unbound), declared),
-			Evidence: strings.Join(unbound, "\n"),
+		if declared == 0 {
+			return CheckResult{Status: StatusSkip, Message: "no ServiceAccount rendered"}
 		}
-	}
-	return CheckResult{Status: StatusPass, Message: fmt.Sprintf("%d ServiceAccount(s), all bound to a workload", declared)}
+		if len(unbound) > 0 {
+			return CheckResult{
+				Status:   StatusFail,
+				Message:  fmt.Sprintf("%d of %d rendered ServiceAccount(s) are never bound to a pod", len(unbound), declared),
+				Evidence: strings.Join(unbound, "\n"),
+			}
+		}
+		return CheckResult{Status: StatusPass, Message: fmt.Sprintf("%d ServiceAccount(s), all bound to a workload", declared)}
+	})
 }

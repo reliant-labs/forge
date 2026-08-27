@@ -39,6 +39,7 @@ import .lib.netpol as netpol_lib
 import .lib.gateway as gw_lib
 import .lib.jwks as jwks_lib
 import .lib.quantity as qty_lib
+import .lib.labels as labels_lib
 
 # ---------------------------------------------------------------------------
 # JSON contract render — typed Bundle -> stable dict shape.
@@ -101,7 +102,13 @@ _render_host_deploy = lambda d: HostDeploy -> any {
         "env_vars": [_render_env_var(e) for e in d.env_vars]
         "delve_port": d.delve_port
         "working_dir": d.working_dir if d.working_dir else None
-        "listen_ports": d.listen_ports if d.listen_ports else None
+        # `is not Undefined`, NOT truthiness: an explicitly EMPTY list is a
+        # meaningful declaration ("this service binds no port at all") and must
+        # survive to the JSON contract. Collapsing it to None made it identical
+        # to "not declared", so forge inferred a port, published it, and then
+        # failed the readiness gate when nothing bound it — a packaged desktop
+        # app launched fine and was still reported as "nothing is listening".
+        "listen_ports": d.listen_ports if d.listen_ports is not Undefined else None
     }
 }
 
@@ -799,6 +806,21 @@ render_grpc_route = lambda route: GRPCRoute, gateways: [Gateway], namespace: str
     gw_lib.render_grpc_route(route, gateways, namespace)
 }
 
+# stamp_env — top-level re-export of the env-ownership stamp
+# (lib/labels.k). `render_manifests` / `render_support` already apply it
+# to everything they emit, so a project that renders through them needs
+# NOTHING here. It is exposed for the one case those two miss: a main.k
+# that concatenates manifests of its own AFTER the render call
+# (`manifests = forge.render_manifests(...) + _extra`) — hand those
+# through `forge.stamp_env(_extra)` so they carry the same ownership tag.
+# Prefer `Bundle.additional_manifests`, which is stamped for you.
+#
+# `env` is the same drill-in as `Bundle.env`: empty falls back to the
+# `-D env=` binding the CLI passes on every render.
+stamp_env = lambda manifests: [any], env: str = "" -> [any] {
+    labels_lib.stamp_env_all(manifests, env)
+}
+
 # Project a Bundle to the stable JSON contract. Consumed by forge CLI.
 render = lambda bundle: Bundle -> any {
     {
@@ -1057,7 +1079,16 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
     # service group: they belong to no service, so they apply only on a bare
     # deploy and are never picked by a service --target. To ride a service's
     # --target, declare a manifest on that service's `manifests` instead.
-    [_render_runtime_class_manifest(rc, _ns, _project) for rc in bundle.runtime_classes] \
+    # Every object leaves through ONE gate, and that gate stamps
+    # `forge.dev/env` (lib/labels.k). Stamping the FINAL list rather than
+    # threading an env argument through each builder is what makes the
+    # guarantee total: `bundle.additional_manifests` (arbitrary user
+    # dicts), the NetworkPolicy bundle and hand-built CRDs never pass
+    # through a forge label builder, and they are stamped here all the
+    # same. The stamp writes only label maps — never a selector; see the
+    # module docstring in lib/labels.k for that argument in full.
+    labels_lib.stamp_env_all(
+        [_render_runtime_class_manifest(rc, _ns, _project) for rc in bundle.runtime_classes] \
         + [_render_namespace(_ns)] \
         + [_render_config_map_manifest(cm, _ns, _project) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
@@ -1069,7 +1100,9 @@ render_manifests = lambda bundle: Bundle, image_tag: str = "latest", image_diges
         + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, _ns)] \
         + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, _ns)] \
         + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, _ns)] \
-        + (netpol_lib.render_network_policies(_ns) if network_policies else [])
+        + (netpol_lib.render_network_policies(_ns) if network_policies else []),
+        bundle.env,
+    )
 }
 
 # Emit ONLY the non-workload manifests of a Bundle: ConfigMaps,
@@ -1096,12 +1129,18 @@ render_support = lambda bundle: Bundle -> [any] {
     # Env-shared support manifests + bundle-level additional_manifests carry
     # NO service group (apply on a bare deploy, never on a service --target);
     # per-service owned manifests inherit their service name below.
-    [_render_runtime_class_manifest(rc, _ns, _project) for rc in bundle.runtime_classes] \
+    # Same env stamp as render_manifests — the support stream is the
+    # other way objects reach a cluster, so it carries the same ownership
+    # tag. See lib/labels.k.
+    labels_lib.stamp_env_all(
+        [_render_runtime_class_manifest(rc, _ns, _project) for rc in bundle.runtime_classes] \
         + [_render_config_map_manifest(cm, _ns, _project) for cm in bundle.config_maps] \
         + bundle.additional_manifests \
         + [item for s in _support_cluster_services for item in svc_lib.render_owned_manifests(s, _project)] \
         + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, _ns)] \
         + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, _ns)] \
         + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, _ns)] \
-        + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, _ns)]
+        + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, _ns)],
+        bundle.env,
+    )
 }

@@ -28,9 +28,15 @@ import (
 func CheckDisownedFiles(_ context.Context, env *Environment) CheckResult {
 	cs, err := checksums.Load(env.ProjectDir)
 	if err != nil {
+		// UNDETERMINED, not a warning. disowned.json is this check's ONLY
+		// input, so an unreadable one leaves it with no answer at all —
+		// and "0 disowned files" is precisely the wrong thing for a reader
+		// to infer. Same reasoning as grafanaAddr in telemetry.go: forge
+		// could not look, which is not the same as having looked and found
+		// nothing (see the StatusSkip vs StatusUnknown note in doctor.go).
 		return CheckResult{
-			Status:   StatusWarn,
-			Message:  "could not read .forge/disowned.json",
+			Status:   StatusUnknown,
+			Message:  "could not read .forge/disowned.json — the project's ownership map is unknown",
 			Evidence: err.Error(),
 		}
 	}

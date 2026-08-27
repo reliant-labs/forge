@@ -190,6 +190,41 @@ A **cross-column ordering** CHECK (`expires_at > issued_at`) is placed: the pass
 ranks the columns and assigns each a value above its lower bound, so the rows
 satisfy it by arithmetic rather than by luck.
 
+A **discriminated union** — a top-level `OR` of `AND`-groups, each pinning a
+discriminator column and constraining its siblings from there — is placed too,
+by picking one branch per row and satisfying it whole:
+
+```sql
+CHECK (
+    (kind = 'wallet_credit'    AND amount_cents    IS NOT NULL AND amount_cents > 0
+                               AND compute_minutes IS NULL)
+ OR (kind = 'compute_minutes'  AND compute_minutes IS NOT NULL AND compute_minutes > 0
+                               AND amount_cents    IS NULL)
+);
+-- seeds  row 0: kind='wallet_credit',   amount_cents=1,    compute_minutes=NULL
+--        row 1: kind='compute_minutes', amount_cents=NULL, compute_minutes=2  …
+```
+
+Branches are taken **round-robin by row**, so every arm of the union appears in
+the dataset — a table with only `wallet_credit` rows cannot exercise the other
+redemption path at all. The matcher is narrow on purpose: the terms it reads are
+`col = <literal>`, `col IS [NOT] NULL` and `col <op> <number>`. A nested `OR`, a
+`NOT`, a function call, or a comparison between two columns is refused by name,
+as is a union whose columns another mechanism owns (a key, a foreign key, a
+UNIQUE column) or that a second multi-column constraint also spans.
+
+**A `BYTEA` column varies per row** (`sample_<column>_<row>`, hex-encoded), so a
+`key_hash BYTEA NOT NULL UNIQUE` carries the full row target instead of capping
+its table at one row. A `length(col) = N` CHECK is honored, and the row
+discriminator survives the truncation.
+
+**A partial unique index is read as the weaker statement it is.**
+`UNIQUE (user_id) WHERE revoked_at IS NULL` means one *active* key per user, not
+one key per user, so it does not cap the table — as long as forge can show the
+predicate false of every row it writes. A predicate it cannot read keeps the
+strict reading (the column is treated as plain `UNIQUE`), which is the safe
+direction.
+
 A **derivation** (`total_cents = subtotal_cents + tax_cents`) is not placeable
 and the plan says so by name, because three independently synthesized values
 make an equality true only by coincidence. It is not a seeding problem to work

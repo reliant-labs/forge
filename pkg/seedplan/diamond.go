@@ -208,10 +208,13 @@ func (p *Plan) resolveDiamonds() (derived map[string]map[string][]fkHop, auth ma
 			// it as if the author had written `authoritative`, which is the
 			// declaration the shape already implies, and say nothing.
 			//
-			// A UNIQUE via column cannot be narrowed into a bucket (the same
-			// 1-1 reason the explicit case below refuses), so those fall
-			// through to the ordinary undeclared path and are reported.
-			if _, viaPlan, ok := p.colPlan(d.child, d.viaCol()); ok && viaPlan.uniqueFK {
+			// A column whose parent is already DEALT — a UNIQUE 1-1 edge, or a
+			// member of a composite UNIQUE (tuple.go) — cannot be narrowed
+			// into a bucket or drawn from one: both sides of the pair are
+			// re-picked here, and re-picking a dealt column puts two rows on
+			// one parent. Such a diamond falls through to the ordinary
+			// undeclared path and is reported.
+			if p.refDealt(d.child, d.direct.col.Name) || p.refDealt(d.child, d.viaCol()) {
 				undeclared = append(undeclared, d)
 				continue
 			}
@@ -233,8 +236,8 @@ func (p *Plan) resolveDiamonds() (derived map[string]map[string][]fkHop, auth ma
 			// distinct parent per row on purpose, and a derived value would
 			// collide and abort the INSERT. Refuse the declaration rather than
 			// honour it into a failed transaction.
-			if d.direct.uniqueFK {
-				d.issue = fmt.Sprintf("%s.%s is UNIQUE (a 1-1 relationship), so it cannot be derived — two rows would end up on one %s",
+			if d.direct.uniqueFK || p.tupleOwns(d.child, d.direct.col.Name) {
+				d.issue = fmt.Sprintf("%s.%s already takes a dealt parent per row (it carries a UNIQUE index), so it cannot be derived — two rows would end up on one %s",
 					d.child, d.direct.col.Name, d.parent())
 				undeclared = append(undeclared, d)
 				continue
@@ -245,11 +248,16 @@ func (p *Plan) resolveDiamonds() (derived map[string]map[string][]fkHop, auth ma
 			}
 			derived[d.child][d.direct.col.Name] = d.route
 		case d.verdict == refAuthoritative:
-			// Same constraint, other column: `authoritative` narrows the VIA
-			// edge into a bucket, which a UNIQUE via column cannot survive.
-			if _, viaPlan, ok := p.colPlan(d.child, d.viaCol()); ok && viaPlan.uniqueFK {
-				d.issue = fmt.Sprintf("%s.%s is UNIQUE (a 1-1 relationship), so it cannot be narrowed to agree — two rows would end up on one %s",
-					d.child, d.viaCol(), d.route[0].refTable)
+			// Same constraint, other column. `authoritative` re-picks BOTH
+			// ends — the via edge is narrowed into a bucket, and the
+			// authoritative column itself is narrowed to the parents some via
+			// row can partner with — so a dealt parent on EITHER side cannot
+			// survive it. Checking only the via side is how a UNIQUE
+			// authoritative column came to be narrowed into a handful of
+			// buckets and abort its own INSERT.
+			if col, why, dealt := p.refDealtSide(d); dealt {
+				d.issue = fmt.Sprintf("%s.%s already takes a dealt parent per row (it carries a UNIQUE index), so it cannot be %s — two rows would end up on one %s",
+					d.child, col, why, d.route[0].refTable)
 				undeclared = append(undeclared, d)
 				continue
 			}
@@ -269,6 +277,29 @@ func (p *Plan) resolveDiamonds() (derived map[string]map[string][]fkHop, auth ma
 		auth = nil
 	}
 	return derived, auth, undeclared
+}
+
+// refDealt reports whether the column's parent row is already DEALT rather
+// than picked: a UNIQUE foreign key (the 1-1 bijection) or a member of a
+// composite UNIQUE index (tuple.go). Either way the assignment is a proof that
+// no two rows collide, and any resolution that re-picks the column destroys it.
+func (p *Plan) refDealt(table, column string) bool {
+	if _, cp, ok := p.colPlan(table, column); ok && cp.uniqueFK {
+		return true
+	}
+	return p.tupleOwns(table, column)
+}
+
+// refDealtSide names which end of an `authoritative` pair is dealt, and how
+// that resolution would have moved it.
+func (p *Plan) refDealtSide(d diamond) (column, why string, dealt bool) {
+	if p.refDealt(d.child, d.direct.col.Name) {
+		return d.direct.col.Name, "narrowed to the parents that have a partner", true
+	}
+	if p.refDealt(d.child, d.viaCol()) {
+		return d.viaCol(), "narrowed to agree", true
+	}
+	return "", "", false
 }
 
 // directEdgeSettlesIt reports whether a diamond's shape already answers the

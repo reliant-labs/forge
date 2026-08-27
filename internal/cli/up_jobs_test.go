@@ -358,7 +358,7 @@ func TestRunHostJobs_BroadcastRunsBeforeOtherJobs(t *testing.T) {
 // A job's argv is written for the CONTAINER (`/app/<project> db migrate
 // up`). That path does not exist on a developer's laptop, so the host
 // runner rewrites argv[0] to the go-run target — the same translation
-// collapseClusterServicesToHost makes for services. Without it, every
+// the host launcher makes for a service's command. Without it, every
 // `forge run` of a project that scaffolds a migration dies with "no such
 // file or directory" naming a path the reader never wrote.
 func TestCollapseJobsToHost_RewritesInImageArgv(t *testing.T) {

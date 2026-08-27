@@ -200,10 +200,27 @@ message AppConfig {
     description: "Maximum amount of time a connection may be reused before being closed (Go duration, e.g. 30m)."
   }];
 
+  // The pprof side-listener, ON BY DEFAULT.
+  //
+  // A process that is being OOMKilled can tell you HOW MUCH it is holding
+  // (cgroup memory.stat) but never WHAT — only a heap profile can, and a
+  // profiler you have to redeploy to switch on is a profiler you do not have
+  // at the moment you need it. So this is wired up out of the box and bound
+  // to LOOPBACK, which is what makes "always on" safe: the listener exists in
+  // every environment and is routable from none of them. Nothing in the
+  // scaffolded manifests gives it a Service, a route, or a published port.
+  //
+  //   go tool pprof http://localhost:6060/debug/pprof/heap     # host process
+  //   kubectl port-forward <pod> 6060:6060                     # then the above
+  //
+  // Set 0.0.0.0:6060 where the profile must cross a container boundary (the
+  // scaffolded docker-compose.yml does exactly that, so Alloy/Pyroscope can
+  // scrape it over the compose network), or "" to switch pprof off entirely.
   string pprof_addr = 13 [(forge.v1.config) = {
     env_var: "PPROF_ADDR",
     flag: "pprof-addr",
-    description: "If set, starts a net/http/pprof server on this address (e.g. localhost:6060). Never expose publicly. Empty disables pprof."
+    default_value: "127.0.0.1:6060",
+    description: "Address of the always-on net/http/pprof side-listener — never the app's public port. Defaults to loopback (127.0.0.1:6060), which is what makes it safe to leave on: reachable from inside the machine or pod running the process and from nowhere else, and never given a k8s Service. Grab a profile with: go tool pprof http://localhost:6060/debug/pprof/heap (in a cluster, kubectl port-forward <pod> 6060:6060 first). Set 0.0.0.0:6060 when a profile must cross a container boundary; empty disables pprof."
   }];
 
   bool security_headers_enabled = 14 [(forge.v1.config) = {

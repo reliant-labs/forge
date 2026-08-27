@@ -119,7 +119,7 @@ func NewProjectGenerator(name, path, modulePath string) *ProjectGenerator {
 		// (components ship `ports: []`) and the dev backend binds the
 		// architectural default (config_schema.k `port: int = 8080` /
 		// defaultDevAPIPort). De-colliding the dev backend is therefore a
-		// RUNTIME concern — `forge run` / `forge env up --host-only` allocate a
+		// RUNTIME concern — `forge run` / `forge env up` allocate a
 		// free port per project (see resolveEphemeralHostPorts in run.go) —
 		// not a scaffold constant.
 		ServicePort: 8080,

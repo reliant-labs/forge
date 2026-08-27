@@ -134,7 +134,7 @@ func postgresComposeEnvFiles(entities *KCLEntities) []string {
 	return nil
 }
 
-// maybeAutoSeed is the `forge run` / `forge env up --host-only` first-boot
+// maybeAutoSeed is the `forge run` / `forge env up` first-boot
 // auto-seed hook. It runs after the host-services readiness gate (so the
 // app's AUTO_MIGRATE has already applied migrations) and materializes the
 // deterministic dev dataset exactly once — when the target is dev, the DB is
@@ -170,8 +170,8 @@ func maybeAutoSeed(ctx context.Context, store *projectstore.Store, cfg *config.P
 		return
 	}
 	// Seeding WRITES. ensureDevDatabase already reconciles the DSN against
-	// the compose port, but only on the host-only path (`forge run`), while
-	// this hook also runs for a full `forge env up` — so the check is
+	// the compose port before the host phase boots anything, while
+	// this hook runs after the readiness gate — so the check is
 	// repeated here at the write boundary rather than assumed. Unlike every
 	// other skip in this function this one is not a soft warning about
 	// missing rows: it means the rows would land in a database this project

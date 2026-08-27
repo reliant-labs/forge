@@ -322,6 +322,56 @@ _bundle = forge.Bundle {
 }
 ```
 
+## Labels forge stamps — and `forge.dev/env`
+
+Every k8s object the render emits carries the k8s-recommended set
+(`app.kubernetes.io/name`, `.../managed-by=forge`, `.../part-of`) **plus a
+forge-owned ownership tag**:
+
+| Label               | Value                       | What it answers                            |
+| ------------------- | --------------------------- | ------------------------------------------ |
+| `forge.dev/env`     | the environment name        | _which env rendered this object_           |
+| `forge.dev/cluster` | a kubectl context (`k3d-…`) | _which cluster this manifest is pinned to_ |
+
+`forge.dev/env` exists because two envs can legitimately resolve to the SAME
+namespace (a `dev` and a `dev-k8s` both rendering into `myapp-dev`). Deploying
+one then silently replaces the other's workloads, and without the tag nothing
+on the surviving objects says whose render won. With it:
+
+```sh
+kubectl get all -n myapp-dev -l 'forge.dev/env!=dev'   # what dev does NOT own
+```
+
+**It is automatic.** The value defaults to the `-D env=<name>` binding the CLI
+passes on every render, so a project gets it without editing any KCL.
+
+**Override it with a KCL drill-in** — a schema field, not a CLI flag:
+
+```kcl
+_bundle = forge.Bundle {
+    env = "dev-k8s"        # this render's ownership tag
+    cluster_target = _target
+    services = [...]
+}
+```
+
+`forge.workloads.WorkloadEnv` carries the same `env` field for the workloads
+render path. A single object can also opt out by naming the label itself —
+the stamp merges UNDER labels you already set, so an explicit
+`metadata.labels."forge.dev/env"` always wins.
+
+The stamp writes **label maps only**: object `metadata.labels`, and the pod
+template's labels for the workload kinds (so pods are selectable too). It
+never touches a selector — `spec.selector.matchLabels` is immutable in
+Kubernetes, and every forge builder derives its selector from a separate
+one-key `app.kubernetes.io/name` literal. Rendering with no `-D env=` binding
+and no drill-in emits no label at all, so a plain `kcl run` is byte-identical
+to the pre-stamp output. See `lib/labels.k`.
+
+Manifests you concatenate AFTER the render call (`forge.render_manifests(...) +
+_extra`) bypass the gate — put them in `Bundle.additional_manifests` (stamped
+for you) or pass them through `forge.stamp_env(_extra)`.
+
 ## Secrets — the `ConfigSecretRef` config-contract override
 
 For a SENSITIVE config field (`sensitive: true` in the config proto), forge's
@@ -378,6 +428,7 @@ kcl/
     crd.k              # CRD builders
     rbac.k             # RBAC builders (namespaced + cluster)
     netpol.k           # NetworkPolicy builders
+    labels.k           # the `forge.dev/env` ownership stamp (applied at every render entry point)
   example/             # tiny example project consumed by tests
     dev/main.k
   tests/               # KCL-level invariant tests (`kcl run tests/*.k`)

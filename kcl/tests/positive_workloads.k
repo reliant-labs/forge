@@ -33,6 +33,10 @@ _env = fw.WorkloadEnv {
     registry = "localhost:5050"
     image_tag = "latest"
     network_policies = False
+    # The env-ownership tag. Stated explicitly here (the KCL drill-in)
+    # because this fixture runs with no `-D env=` binding; in a real
+    # render the field defaults to that binding. See lib/labels.k.
+    env = "dev"
 }
 
 manifests = fw.render_workloads(_workloads, _env)
@@ -110,3 +114,19 @@ assert_pod_template_part_of = _api_deploy.spec.template.metadata.labels["app.kub
 # `app.kubernetes.io/name` still identifies the WORKLOAD — the two
 # labels must not collapse into one another.
 assert_name_is_workload = _api_deploy.metadata.labels["app.kubernetes.io/name"] == "api"
+
+# Every object this path emits carries the env-ownership stamp
+# (`forge.dev/env`), including the Namespace and the pod templates — the
+# workloads renderer goes through the same lib/labels.k gate as
+# forge.render_manifests. Selectors are NOT touched: the Deployment's
+# matchLabels stays the exact one-key form it has always been, which is
+# what keeps `kubectl apply` from failing "field is immutable" on an
+# existing Deployment.
+_env_key = "forge.dev/env"
+assert_env_label_on_every_object = len([
+    m for m in manifests if m.metadata.labels[_env_key] != "dev"
+]) == 0
+assert_env_label_on_pod_template = \
+    _api_deploy.spec.template.metadata.labels[_env_key] == "dev"
+assert_env_label_leaves_selector_alone = \
+    _api_deploy.spec.selector.matchLabels == {"app.kubernetes.io/name" = "api"}

@@ -523,7 +523,7 @@ func stampDocAppLabel(doc, name string) string {
 		labels = map[string]any{}
 	}
 	// FORCE the chart name — the whole chart is one --target unit.
-	labels[appNameLabel] = name
+	labels[AppNameLabel] = name
 	if _, ok := labels["app.kubernetes.io/managed-by"]; !ok {
 		labels["app.kubernetes.io/managed-by"] = "forge"
 	}

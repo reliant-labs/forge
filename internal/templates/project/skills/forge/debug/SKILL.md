@@ -121,7 +121,21 @@ The three investigation tracks above each have a dedicated forge sub-skill with 
 - **Logs:** Grafana → Explore → Loki. Search structured logs.
 - **Profiles:** Grafana → Explore → Pyroscope. CPU, heap, goroutine, mutex profiles from the app's pprof endpoint.
 
-The app auto-connects: `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` pushes traces and metrics. `PPROF_ADDR=localhost:6060` exposes pprof for Pyroscope scraping.
+The app auto-connects: `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` pushes traces and metrics.
+
+**pprof is always on.** It binds its own listener, separate from the app port, defaulting to `127.0.0.1:6060` — live in every environment and routable from none (no k8s Service, no route, no published port). You never have to redeploy to start profiling:
+
+```bash
+go tool pprof http://localhost:6060/debug/pprof/heap    # what is this process holding?
+go tool pprof http://localhost:6060/debug/pprof/goroutine
+curl -o cpu.pb.gz 'http://localhost:6060/debug/pprof/profile?seconds=30'
+
+kubectl port-forward <pod> 6060:6060                    # in a cluster, then the above
+```
+
+Reach for the heap profile the moment a process is being OOMKilled: the cgroup's `memory.stat` tells you HOW MUCH it holds and never WHAT, and the answer only exists while the process is still alive.
+
+Change the address with `PPROF_ADDR` / `--pprof-addr`; the scaffolded `docker-compose.yml` sets `0.0.0.0:6060` so Alloy can scrape it for Pyroscope across the compose network. Set it to `""` to switch pprof off.
 
 For LLM-driven observability, enable the Grafana MCP server from `.mcp.json.example` — it lets agents query Prometheus, Loki, Tempo, and dashboards directly.
 <!-- @forge-only:end -->

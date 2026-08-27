@@ -2,12 +2,14 @@ package seedplan
 
 import (
 	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"hash/fnv"
 	"regexp"
 	"regexp/syntax"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/reliant-labs/forge/pkg/schemadef"
@@ -131,10 +133,30 @@ func sqlString(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", "''") + "'"
 }
 
-// pkLiteral returns the SQL literal for a primary-key column at row i. For
-// string/uuid PKs it is a deterministic UUIDv5; for integer PKs it is a
-// deterministic i+1. FK values are derived from this same function against
-// the referenced table, so every reference resolves by construction.
+// pkLiteral returns the SQL literal for a primary-key column at row i, IN THE
+// COLUMN'S OWN TYPE. FK values are derived from this same function against the
+// referenced table, so every reference resolves by construction — which is
+// exactly why the type matters on both sides.
+//
+// It used to have two arms, int and "everything else is a UUID". A sole `id`
+// key is one of those two on every schema forge itself writes, so the shortcut
+// held for as long as the only keys forge met were forge's own. It does not
+// hold for a COMPOSITE key, which is where the other types live: a rollup keyed
+// by (org_id, period_start), a daily table keyed by (org_id, usage_date). Those
+// members are timestamps and dates, and a UUID in one is not a value postgres
+// declines to like — it is a value postgres cannot parse:
+//
+//	invalid input syntax for type timestamp with time zone:
+//	"4b7b0dcd-311a-5c51-a830-2dfc1f8597ef"
+//
+// and, because the seed is one transaction, that aborts the whole dataset. The
+// same defect reached FOREIGN KEYS through referencedValue, whose job is to
+// re-derive the parent's own key literal: an FK onto a timestamp key member got
+// a UUID for the same reason, so the type switch fixes both.
+//
+// A TIME member steps one DAY per row (see keyTimeLiteral) rather than the
+// 28-day cycle an ordinary time column takes: a key member has to be distinct
+// per row, and a DATE column truncates anything finer than a day.
 //
 // composite reports whether the column is one member of a multi-column key.
 // A sole key column keys its UUID on "<table>.<row>" — unchanged, because
@@ -146,13 +168,99 @@ func pkLiteral(cfg Config, table string, col schemadef.Column, i int, composite 
 	switch col.Type {
 	case schemadef.TypeInt:
 		return fmt.Sprintf("%d", i+1)
-	default:
+	case schemadef.TypeFloat:
+		return fmt.Sprintf("%d.00", i+1)
+	case schemadef.TypeBool:
+		// Two values is all a boolean has. It cannot key a table on its own,
+		// and as a composite member the OTHER members carry the distinctness.
+		if i%2 == 0 {
+			return "true"
+		}
+		return "false"
+	case schemadef.TypeTime:
+		return keyTimeLiteral(col, i)
+	case schemadef.TypeBytes:
+		return byteaOf(placeholderString(col.Name, i), i, 0, 0)
+	case schemadef.TypeJSON:
+		// A jsonb key member is exotic but legal; a UUID string is not a JSON
+		// document, so emit one that is.
+		return sqlString(fmt.Sprintf(`{"row": %d}`, i))
+	default: // string / uuid
 		key := fmt.Sprintf("%s.%d", table, i)
 		if composite {
 			key = fmt.Sprintf("%s.%s.%d", table, col.Name, i)
 		}
 		return sqlString(deterministicUUID(cfg.EffectiveSalt(), key))
 	}
+}
+
+// keyTimeLiteral is the instant a TIME primary-key member carries: one
+// distinct DAY per row, counted from a fixed base.
+//
+// The step is a day rather than the hours an ordinary time column spreads
+// over, because a key member must be distinct per row and half of them are
+// DATE columns, which truncate anything finer. It is rendered date-only for a
+// DATE column and as a full instant otherwise — postgres accepts an ISO
+// timestamp in a date column, but a seed file is read by people too, and a
+// date column whose values all read `T08:00:00Z` says something about the
+// column that is not true.
+func keyTimeLiteral(col schemadef.Column, i int) string {
+	at := keyTimeBase.AddDate(0, 0, i)
+	if isDateColumn(col) {
+		return sqlString(at.Format("2006-01-02"))
+	}
+	return sqlString(at.Format("2006-01-02T15:04:05Z"))
+}
+
+// keyTimeBase is the instant row 0 of a TIME key member sits at.
+var keyTimeBase = time.Date(2024, 1, 1, 8, 0, 0, 0, time.UTC)
+
+// isDateColumn reports whether the column's DECLARED type is a bare DATE —
+// the one time type with no time-of-day to render.
+func isDateColumn(col schemadef.Column) bool {
+	return strings.EqualFold(strings.TrimSpace(col.DeclType), "DATE")
+}
+
+// SyntheticUUIDPrefix is the stamp every UUID forge INVENTS for a plain data
+// column carries in its first field: `5eed` — "seed", in the hex digits a UUID
+// is spelled with.
+//
+// It is the UUID column's version of SyntheticStringPrefix, and it exists for
+// the same reason: a value that announces itself as invented can be told apart
+// from data the app produced, at a glance, without a query. A UUID has no room
+// for `sample_`, but it has sixteen bytes and the first four characters are
+// free — the version and variant bits postgres validates live further in, so
+// stamping the head costs nothing and the result is still a well-formed UUID.
+//
+// KEY columns are deliberately NOT stamped: their ids are a documented stable
+// surface callers paste into fixtures, and re-spelling them would change every
+// primary key in every existing seeded database.
+const SyntheticUUIDPrefix = "5eed"
+
+// syntheticUUID is the UUID a plain data column of type uuid carries at one
+// row: a pure function of (table, column, row), stamped as invented.
+//
+// Deterministic in the same sense as everything else here — a hash, never a
+// PRNG and never uuid.New() — and SALT-INDEPENDENT, which is the property it
+// shares with the `sample_<column>_<n>` placeholder it replaces rather than
+// with a key. Salt varies which value a column DRAWS from a pool; a column
+// forge invents a value for outright has no pool to draw from, and SynthString
+// (the one synthesizer both the seeder and the generated CRUD fixtures call)
+// has no salt to consult.
+func syntheticUUID(table, column string, row int) string {
+	u := deterministicUUID(0, fmt.Sprintf("synthetic|%s|%s|%d", table, column, row))
+	return SyntheticUUIDPrefix + u[len(SyntheticUUIDPrefix):]
+}
+
+// isUUIDColumn reports whether the column's DECLARED type is uuid.
+//
+// The canonical model calls a uuid column a string — correctly, for a wire
+// contract — so the declared spelling is the only place the distinction
+// survives, and it is the distinction postgres enforces on INSERT. Reading it
+// here is not the name-heuristic this file removed: nothing about what the
+// column is CALLED is consulted, only the type the author declared.
+func isUUIDColumn(col schemadef.Column) bool {
+	return strings.EqualFold(strings.TrimSpace(col.DeclType), "UUID")
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -219,7 +327,7 @@ func managedTimestampLiteral(role managedRole, i int) string {
 // is a no-op).
 func (p *Plan) synthScalar(t schemadef.Table, col schemadef.Column, i int, b NumBound) string {
 	if col.IsArray {
-		return arrayLiteral(col, i)
+		return arrayLiteral(t, col, i)
 	}
 	if role := managedRoleOf(p.conv[t.Name], col); role != managedNone {
 		return managedTimestampLiteral(role, i)
@@ -243,7 +351,7 @@ func (p *Plan) synthScalar(t schemadef.Table, col schemadef.Column, i int, b Num
 		}
 		return fmt.Sprintf("%.2f", f)
 	case schemadef.TypeBytes:
-		return "'\\x'::bytea"
+		return byteaLiteral(t, col, i)
 	case schemadef.TypeTime:
 		return timestampLiteral(i)
 	default: // string
@@ -252,19 +360,32 @@ func (p *Plan) synthScalar(t schemadef.Table, col schemadef.Column, i int, b Num
 }
 
 // arrayLiteral renders a Postgres ARRAY[...] literal for a real array column.
-func arrayLiteral(col schemadef.Column, i int) string {
-	switch col.Type {
-	case schemadef.TypeInt:
+// A uuid[] element is a uuid like any other — the placeholder string postgres
+// rejects in a uuid column it rejects just as flatly inside an array of them.
+func arrayLiteral(t schemadef.Table, col schemadef.Column, i int) string {
+	switch {
+	case col.Type == schemadef.TypeInt:
 		return fmt.Sprintf("ARRAY[%d, %d]", i+1, i+2)
-	case schemadef.TypeFloat:
+	case col.Type == schemadef.TypeFloat:
 		return fmt.Sprintf("ARRAY[%.2f, %.2f]", float64(i+1)*1.5, float64(i+2)*1.5)
-	case schemadef.TypeBool:
+	case col.Type == schemadef.TypeBool:
 		return "ARRAY[true, false]"
-	default: // string / uuid / other → text-ish array
+	case isUUIDArrayColumn(col):
+		return fmt.Sprintf("ARRAY[%s, %s]::uuid[]",
+			sqlString(syntheticUUID(t.Name, col.Name, i)),
+			sqlString(syntheticUUID(t.Name, col.Name, i+1)))
+	default: // string / other → text-ish array
 		return fmt.Sprintf("ARRAY[%s, %s]",
 			sqlString(placeholderString(col.Name, i)),
 			sqlString(placeholderString(col.Name, i+1)))
 	}
+}
+
+// isUUIDArrayColumn reports whether the column is a uuid[]. Introspection
+// spells the declared type of an array with its element type and a `[]`
+// suffix, which isUUIDColumn (an exact match) deliberately does not accept.
+func isUUIDArrayColumn(col schemadef.Column) bool {
+	return col.IsArray && strings.EqualFold(strings.TrimSpace(col.DeclType), "UUID[]")
 }
 
 // timestampLiteral is the instant an UNMANAGED time column carries: one
@@ -284,6 +405,46 @@ func placeholderString(column string, i int) string {
 	return SyntheticStringPrefix + column + "_" + strconv.Itoa(i+1)
 }
 
+// byteaLiteral is what an OPAQUE binary column carries.
+//
+// It used to be the empty `'\x'::bytea` — one value, on every row, for every
+// bytea column in the schema. Nothing in the type says what the bytes mean, so
+// the constant read like the honest answer; it is not, because emptiness is
+// not the only thing forge knows. It knows the ROW, and a value that does not
+// vary with the row makes a `key_hash BYTEA NOT NULL UNIQUE` column admit
+// exactly one distinct value, which caps its table at ONE ROW and leaves every
+// dev or e2e scenario that needs two API keys unseedable.
+//
+// So the payload is the SAME synthetic string a text column would get,
+// hex-encoded: deterministic (a pure function of column and row like every
+// other cell), distinct per row, fitted to whatever `length(col)` bound the
+// schema declares, and self-evidently invented — `convert_from(key_hash,
+// 'UTF8')` reads back `sample_key_hash_1`, which no real hash ever does.
+// Inventing plausible-looking RANDOM bytes would satisfy the same constraints
+// and lose exactly that property.
+func byteaLiteral(t schemadef.Table, col schemadef.Column, row int) string {
+	minLen, maxLen := LengthBounds(t, col)
+	return byteaOf(placeholderString(col.Name, row), row, minLen, maxLen)
+}
+
+// byteaOf renders raw as postgres's hex bytea literal, fitted to [minLen,
+// maxLen] BYTES — which is what `length()`/`octet_length()` count on a bytea
+// column, and what LengthBounds reads off such a CHECK.
+//
+// The payload is ASCII, so a byte is a rune and FitLength's rune arithmetic is
+// the byte arithmetic. When the cap forces a TRUNCATION the row discriminator
+// is re-applied at the tail, for the same reason fitStringLiteral does it:
+// truncation cuts off exactly the part that varied, and a bytea column that
+// stops varying is the one-row cap all over again.
+func byteaOf(raw string, row, minLen, maxLen int) string {
+	if maxLen > 0 && len(raw) > maxLen {
+		if v, ok := distinctVariant(raw, row+1, minLen, maxLen); ok {
+			raw = v
+		}
+	}
+	return `'\x` + hex.EncodeToString([]byte(FitLength(raw, minLen, maxLen))) + `'::bytea`
+}
+
 // SynthString is the string forge invents for a column no vocabulary claims.
 //
 // A column whose CHECK declares a PATTERN gets a value derived from that
@@ -297,6 +458,14 @@ func placeholderString(column string, i int) string {
 // Exported for the generated CRUD lifecycle test, whose create fixtures mint
 // rows against the very same schema and must satisfy the very same CHECKs.
 func SynthString(t schemadef.Table, col schemadef.Column, row int) string {
+	// The declared type comes FIRST: postgres parses a uuid column's value
+	// before it evaluates any CHECK on it, so `sample_user_id_1` is not a
+	// value that fails a rule — it is a value the column cannot hold, and the
+	// INSERT dies with `invalid input syntax for type uuid` taking the whole
+	// transactional seed with it.
+	if isUUIDColumn(col) {
+		return syntheticUUID(t.Name, col.Name, row)
+	}
 	if pats := patternsOf(t, col); len(pats) > 0 {
 		minLen, _ := LengthBounds(t, col)
 		if v, ok := patternSample(pats, row, minLen); ok {

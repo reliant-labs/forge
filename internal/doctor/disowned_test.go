@@ -89,3 +89,24 @@ func TestCheckDisownedFiles(t *testing.T) {
 		})
 	}
 }
+
+// An unreadable .forge/disowned.json is UNDETERMINED, not a warning. It is
+// this check's only input, so a parse failure leaves it with no answer —
+// and the reader must not be able to mistake it for "no disowned files".
+func TestCheckDisownedFilesUnknownOnUnreadableManifest(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".forge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".forge", "disowned.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res := CheckDisownedFiles(context.Background(), &Environment{ProjectDir: dir})
+	if res.Status != StatusUnknown {
+		t.Fatalf("status = %s, want %s (message: %s)", res.Status, StatusUnknown, res.Message)
+	}
+	if res.Evidence == "" {
+		t.Error("undetermined result carries no evidence naming the parse failure")
+	}
+}

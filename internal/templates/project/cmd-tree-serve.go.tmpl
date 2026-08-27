@@ -329,6 +329,16 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 		OTLPEndpoint: cfg.OtlpEndpoint,
 {{- end}}
 {{- if index .ConfigFields "PprofAddr"}}
+		// pprof, ON BY DEFAULT, on its own listener — never the app port.
+		// Defaults to 127.0.0.1:6060 (proto/config/v1/config.proto), so it is
+		// live in every environment and routable from none: no k8s Service,
+		// no route, no published container port. Grab a profile with
+		//
+		//	go tool pprof http://localhost:6060/debug/pprof/heap
+		//	kubectl port-forward <pod> 6060:6060   # then the line above
+		//
+		// Override with PPROF_ADDR / --pprof-addr; "" turns it off. A failed
+		// bind is logged and skipped, never fatal.
 		PprofAddr: cfg.PprofAddr,
 {{- end}}
 {{- if and (index .ConfigFields "TlsCertPath") (index .ConfigFields "TlsKeyPath")}}

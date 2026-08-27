@@ -251,10 +251,17 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		}
 	}()
 
-	// Optional pprof endpoint on a separate listener. pprof must never
-	// be mounted on the public handler — it exposes heap/goroutine/
-	// profile endpoints that can leak memory contents and stall a
-	// running process.
+	// The pprof endpoint, on a listener of its own. pprof must never be
+	// mounted on the public handler — it exposes heap/goroutine/profile
+	// endpoints that can leak memory contents and stall a running process —
+	// and the scaffold therefore defaults PprofAddr to a LOOPBACK address
+	// (127.0.0.1:6060) rather than leaving it empty. Always-on is the point:
+	// a process being OOMKilled can report how much memory it holds but
+	// never what, and the answer only exists while the process is still
+	// alive. Loopback is what makes always-on safe.
+	//
+	//	go tool pprof http://localhost:6060/debug/pprof/heap
+	//	kubectl port-forward <pod> 6060:6060   # then the line above
 	var pprofSrv *http.Server
 	if cfg.PprofAddr != "" {
 		pprofMux := http.NewServeMux()
@@ -270,14 +277,21 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		}
 		pprofLn, lnErr := (&net.ListenConfig{}).Listen(runCtx, "tcp", cfg.PprofAddr)
 		if lnErr != nil {
-			// The main httpSrv goroutine is ALREADY serving by now, so a
-			// bare return here would leak the main listener/accept-loop and
-			// skip the OTel flush. Route the bind failure through the normal
-			// shutdown path instead: record it as a component failure and
-			// cancel runCtx so the select below drops straight into graceful
-			// shutdown and Run returns this error.
+			// LOG AND CARRY ON — never a component failure, whatever the
+			// FailurePolicy says. pprof is a DEBUG surface, and a debug
+			// surface that can take the service down is worse than no debug
+			// surface at all. Now that it is on by default, the ordinary way
+			// to hit this is banal: a second copy of the binary on the same
+			// dev box, or anything else already holding :6060. That must cost
+			// you the profiler, not the process.
+			//
+			// (The main httpSrv goroutine is already serving by this point, so
+			// there is nothing to unwind either: leaving pprofSrv nil keeps it
+			// out of the shutdown sequence below.)
 			pprofSrv = nil // nothing to Shutdown — Serve never ran
-			failComponent("pprof listener", fmt.Errorf("listen pprof %s: %w", cfg.PprofAddr, lnErr))
+			logger.Error("pprof listener unavailable — continuing without it",
+				"addr", cfg.PprofAddr, "error", lnErr,
+				"hint", "another process is probably bound there; set PPROF_ADDR to a free port, or \"\" to disable pprof")
 		} else {
 			go func() {
 				logger.Info("pprof server starting", "addr", cfg.PprofAddr)

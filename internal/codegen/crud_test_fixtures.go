@@ -47,6 +47,10 @@ type crudTestFixtures struct {
 	// nil in unit tests that build a model from hand-written tables — the
 	// guard is then simply not run, never silently reported as passing.
 	shadow *schemadef.Shadow
+	// unions memoizes the discriminated-union placement of each table's ROW
+	// 0 — the branch every fixture this model hands out is written against.
+	// See unionPlacement.
+	unions map[string]map[string]seedplan.UnionCell
 	// emitted records every fixture handed out, per table, so the guard can
 	// verify the exact set the generated file will carry. It is appended by
 	// fieldFixture itself rather than reconstructed afterwards: a guard that
@@ -157,6 +161,7 @@ func buildCRUDTestFixtures(projectDir string, methods []CRUDMethod) *crudTestFix
 		vocab:   vocab,
 		plans:   map[string]*entitySeedPlan{},
 		shadow:  shadow,
+		unions:  map[string]map[string]seedplan.UnionCell{},
 		emitted: map[string][]fixtureValue{},
 	}
 	for _, cm := range methods {
@@ -406,6 +411,15 @@ func (fx *crudTestFixtures) deriveFieldFixture(svc ServiceDef, ent EntityDef, in
 		return lit1, lit2, true
 	}
 
+	// A discriminated-union CHECK places several columns of one row TOGETHER
+	// (seedplan/union.go): a discriminator pinned to one branch's literal, its
+	// siblings narrowed or required absent. Consulted before every per-column
+	// branch below, because a value chosen for one column on its own is
+	// exactly what such a constraint rejects.
+	if v1, v2, ok := fx.unionFixture(svc, ent, inputType, t, col, goType, kind); ok {
+		return v1, v2, true
+	}
+
 	if kind == FieldKindEnum {
 		return fx.enumFixture(svc, ent, inputType, fieldName)
 	}
@@ -574,6 +588,143 @@ func clampFloat(f float64, b seedplan.NumBound) float64 {
 	return f
 }
 
+// unionFixtureRow is the row every fixture this model hands out is written
+// against.
+//
+// It is 0, and it is the SAME row for create #1 and create #2, which is the
+// one place the fixtures deliberately do not follow the seeder's round robin.
+// The lifecycle test's two creates share ONE field list and differ only in the
+// values in it — and which columns a discriminated union requires to be ABSENT
+// is a property of the field list, not of the values. Two creates on two
+// branches cannot be spelled by one list, so both take the branch seeded row 0
+// takes, and the two creates differ on the unconstrained columns as they always
+// did.
+const unionFixtureRow = 0
+
+// unionPlacement returns what the table's discriminated-union CHECKs require of
+// unionFixtureRow, memoized. A table with no placeable union memoizes an empty
+// map, so the parse runs once per table rather than once per field.
+func (fx *crudTestFixtures) unionPlacement(t schemadef.Table) map[string]seedplan.UnionCell {
+	if got, ok := fx.unions[t.Name]; ok {
+		return got
+	}
+	got := seedplan.UnionPlacement(t, fx.pools, unionFixtureRow)
+	if got == nil {
+		got = map[string]seedplan.UnionCell{}
+	}
+	if fx.unions == nil {
+		// Hand-built models (unit tests) carry no memo; the parse is a pure
+		// function of the table either way.
+		fx.unions = map[string]map[string]seedplan.UnionCell{}
+	}
+	fx.unions[t.Name] = got
+	return got
+}
+
+// unionOmitsField reports whether a discriminated-union CHECK requires the
+// column to hold NO value on the rows the lifecycle test creates. The create
+// request then does not set the field at all — an explicit-presence field left
+// unset writes NULL, which is what the branch asks for.
+//
+// It is a separate question from fieldFixture's because its answer is not a
+// value: there is no literal that means "absent", and emitting the type's zero
+// value is exactly the write the constraint rejects.
+func (fx *crudTestFixtures) unionOmitsField(ent EntityDef, fieldName string) bool {
+	if fx == nil {
+		return false
+	}
+	t, ok := fx.tables[ent.TableName]
+	if !ok {
+		return false
+	}
+	return fx.unionPlacement(t)[fieldName].Null
+}
+
+// unionFixture derives a create-request field placed by a discriminated-union
+// CHECK: the branch's pinned literal for the discriminator, and its narrowed
+// range for a sibling the branch bounds.
+//
+// This is the union half of what orderedFixture is for orderings, and it exists
+// for the same reason: the value is not a property of the column. Drawn per
+// column, a discriminator lands on one branch's literal while its siblings take
+// values another branch requires, and the row satisfies neither —
+//
+//	--- FAIL: TestCRUD_Coupon_Lifecycle
+//	    create #1: invalid_argument: create coupon: a field value violates a constraint
+//
+// — in a scaffold-once file the author is told not to rewrite. The placement is
+// seedplan's own (UnionPlacement), not a second reading of the CHECK: one
+// matcher, one branch choice, one model for both halves of forge's generated
+// data.
+//
+// ok is false for a column the union does not place, and for one it places in a
+// way this fixture cannot spell — a pin whose Go type it cannot write. The
+// caller then falls back to the per-column derivation, and the generate-time
+// guard reports the conflict against postgres rather than forge writing a value
+// it cannot justify.
+func (fx *crudTestFixtures) unionFixture(svc ServiceDef, ent EntityDef, inputType string, t schemadef.Table, col schemadef.Column, goType string, kind FieldKind) (string, string, bool) {
+	cell, placed := fx.unionPlacement(t)[col.Name]
+	if !placed || cell.Null {
+		// A NULL cell is not a value; the field is dropped from the request
+		// entirely (see unionOmitsField), and reaching here for one means the
+		// caller emits nothing for it either way.
+		return "", "", false
+	}
+
+	if cell.Value != "" {
+		// A pin is not negotiable: both creates carry it, and the two rows
+		// stay distinct on the unconstrained columns.
+		if kind == FieldKindEnum {
+			lit, ok := fx.enumConstant(svc, ent, inputType, col.Name, cell.Value)
+			return lit, lit, ok
+		}
+		switch goType {
+		case "string":
+			lit := strconv.Quote(cell.Value)
+			return lit, lit, true
+		case "bool":
+			return cell.Value, cell.Value, true
+		case "int32", "int64", "uint32", "uint64", "float32", "float64":
+			if _, err := strconv.ParseFloat(cell.Value, 64); err != nil {
+				return "", "", false
+			}
+			return cell.Value, cell.Value, true
+		}
+		return "", "", false
+	}
+
+	if !cell.HasBound {
+		// The branch only requires the column to be PRESENT, which every
+		// fixture already satisfies. Nothing to place.
+		return "", "", false
+	}
+	b, _ := fx.boundFor(t.Name, col.Name)
+	b = narrowBound(b, cell.Bound)
+	switch goType {
+	case "int32", "int64", "uint32", "uint64":
+		v1, v2 := spreadInt(b)
+		return strconv.FormatInt(v1, 10), strconv.FormatInt(v2, 10), true
+	case "float32", "float64":
+		f1, f2 := spreadFloat(b)
+		return strconv.FormatFloat(f1, 'g', -1, 64), strconv.FormatFloat(f2, 'g', -1, 64), true
+	}
+	return "", "", false
+}
+
+// narrowBound returns the tightest range satisfying both. A branch's range is
+// an ADDITIONAL requirement on top of the column's own range CHECK, not a
+// replacement for it: `amount_cents > 0` inside a branch and
+// `amount_cents <= 100000` on the column are both true of the row.
+func narrowBound(a, b seedplan.NumBound) seedplan.NumBound {
+	if b.Min != nil && (a.Min == nil || *b.Min > *a.Min) {
+		a.Min = b.Min
+	}
+	if b.Max != nil && (a.Max == nil || *b.Max < *a.Max) {
+		a.Max = b.Max
+	}
+	return a
+}
+
 // enumFixture picks a real (non-UNSPECIFIED) enum value and spells it as
 // the generated pb constant. Enum columns store proto VALUE NAMES as TEXT
 // under a CHECK vocabulary, so the proto zero value — the old `0` fixture —
@@ -598,8 +749,7 @@ func (fx *crudTestFixtures) enumFixture(svc ServiceDef, ent EntityDef, inputType
 			}
 		}
 	}
-	goName, okN := enumWireGoName(svc.Package, fq)
-	if !okN {
+	if _, okN := enumWireGoName(svc.Package, fq); !okN {
 		return "", "", false // cross-package / unresolvable — legacy fixture
 	}
 	choices := seedplan.SeedEnumChoices(svc.Enums[fq])
@@ -629,15 +779,51 @@ func (fx *crudTestFixtures) enumFixture(svc ServiceDef, ent EntityDef, inputType
 	if len(choices) > 1 {
 		c2 = choices[1]
 	}
-	// protoc-gen-go value constants are prefixed by the ENCLOSING scope's Go
-	// name: `OrderStatus_ORDER_STATUS_ACTIVE` for a top-level enum,
-	// `Order_KIND_A` for `Order.Kind` (the enum's own last name segment is
-	// dropped from the prefix for nested declarations).
+	l1, ok1 := fx.enumConstant(svc, ent, inputType, fieldName, c1)
+	l2, ok2 := fx.enumConstant(svc, ent, inputType, fieldName, c2)
+	if !ok1 || !ok2 {
+		return "", "", false
+	}
+	return l1, l2, true
+}
+
+// enumConstant spells one enum VALUE NAME as the generated pb constant for a
+// create-request field. Split out of enumFixture so that a value chosen by
+// something other than the vocabulary walk — a discriminated union pinning the
+// discriminator, see unionFixture — is spelled by the same rule rather than by
+// a second copy of it.
+//
+// protoc-gen-go value constants are prefixed by the ENCLOSING scope's Go name:
+// `OrderStatus_ORDER_STATUS_ACTIVE` for a top-level enum, `Order_KIND_A` for
+// `Order.Kind` (the enum's own last name segment is dropped from the prefix for
+// nested declarations).
+func (fx *crudTestFixtures) enumConstant(svc ServiceDef, ent EntityDef, inputType, fieldName, value string) (string, bool) {
+	fq := ""
+	if defs, okS := svc.Schemas[svc.Package+"."+inputType]; okS {
+		for _, d := range defs {
+			if d.Name == fieldName && d.Kind == "enum" {
+				fq = d.TypeName
+				break
+			}
+		}
+	}
+	if fq == "" {
+		for _, ef := range ent.Fields {
+			if ef.Name == fieldName && ef.Kind == FieldKindEnum {
+				fq = ef.MessageType
+				break
+			}
+		}
+	}
+	goName, okN := enumWireGoName(svc.Package, fq)
+	if !okN || value == "" {
+		return "", false
+	}
 	prefix := goName
 	if idx := strings.LastIndex(goName, "_"); idx >= 0 {
 		prefix = goName[:idx]
 	}
-	return "pb." + prefix + "_" + c1, "pb." + prefix + "_" + c2, true
+	return "pb." + prefix + "_" + value, true
 }
 
 // stringFixture derives a string column's create values: CHECK vocabulary

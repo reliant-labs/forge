@@ -1,30 +1,25 @@
 // Package cli — the shared reconcile spine under `forge env up` and
 // `forge env deploy`.
 //
-// Both commands bring an environment toward its declared end-state; they
-// differ on exactly two axes, made explicit here so the up-vs-deploy
-// relationship is legible instead of buried in a blank-options call seam:
+// Both commands bring an environment toward its declared end-state. WHICH
+// entity kinds each acts on is structural, not a value threaded through the
+// call:
 //
-//	scope     — WHICH entity kinds a run acts on:
-//	              * cluster      — kubectl-apply the in-cluster workloads
-//	                               (Deployments / Jobs / operators), the
-//	                               compose deploy targets, and (for deploy)
-//	                               the External dispatch.
-//	              * infra        — pre-warm the env's declared
-//	                               infrastructure (host-run postgres, and
-//	                               any compose container the env declares)
-//	                               concurrent with the build phase.
-//	                               up-only; deploy's cluster apply already
-//	                               drives those targets through the same
-//	                               providers.
-//	              * host         — start every `deploy: "host"` service as a
-//	                               host process (go-run / air / binary /
-//	                               delve). up-only.
-//	              * frontend     — start every declared frontend's dev
-//	                               server (`npm run dev`). up-only. (deploy
-//	                               instead publishes Firebase frontends — a
-//	                               fixed, structural step of the deploy
-//	                               pipeline, not a scope field.)
+//	forge env deploy — the cluster apply (in-cluster workloads, compose
+//	                   deploy targets, the External dispatch) plus the
+//	                   Firebase frontend publish.
+//	forge env up     — that same cluster apply, plus the concurrent infra
+//	                   pre-warm, plus the host-process and frontend
+//	                   dev-server phases. It always runs the whole loop.
+//
+// `up` used to carry a `scope` value masking phases off per --cluster-only /
+// --host-only. Those flags are gone: `--target <name>` scopes a run by naming
+// the entities it acts on, which narrows the work inside each phase without
+// forge deciding that a cluster-declared service is "really" a host process.
+// Placement stays where it is declared — a service that should run on the
+// host during dev says so with a `host` block in its KCL.
+//
+// What remains genuinely variable is:
 //
 //	lifecycle — what a run does once everything is started:
 //	              * once      — reconcile and RETURN. `forge env deploy` is
@@ -43,75 +38,16 @@
 //
 // In this vocabulary:
 //
-//	forge env deploy <env>  = scope{cluster} (+ structural Firebase publish),
-//	                      lifecycle=once, opts=<from flags>
-//	forge env up <e>  = scope=all,                     lifecycle=auto,
-//	                      opts={}
+//	forge env deploy <env> = lifecycle=once, opts=<from flags>
+//	forge env up <env>     = lifecycle=auto, opts={skipFrontend: true}
 //
 // The surgical knobs (tag / rollback / prune / dry-run / context override /
 // targets / skip-frontend) live on deployOptions — the cluster reconcile's
-// option surface, shared by both commands. `up`'s cluster step passes a
-// scope-derived (today: zero-value) deployOptions through the SAME named
-// entry point deploy uses (reconcileCluster), so there is no longer a
-// blank-`deployOptions{}` literal standing in for "deploy with no options."
+// option surface, shared by both commands. `up`'s cluster step passes its
+// deployOptions through the SAME named entry point deploy uses
+// (reconcileCluster), so there is no blank-`deployOptions{}` literal standing
+// in for "deploy with no options."
 package cli
-
-// reconcileScope names which entity kinds a reconcile run acts on. A run
-// touches only the kinds whose field is true. `forge env up` derives its scope
-// from the --cluster-only / --host-only flags via upScope (fullUpScope
-// masked to one side of the split); `forge env deploy`'s scope (cluster apply +
-// Firebase frontend publish) is fixed and expressed structurally by the
-// deploy pipeline rather than threaded as a value.
-type reconcileScope struct {
-	// cluster applies the in-cluster workloads + External/Compose deploy
-	// targets (the runDeploy pipeline). Both commands set this.
-	cluster bool
-	// infra pre-warms the env's declared infrastructure — host-run servers
-	// and compose containers alike — concurrent with the build phase.
-	// up-only: deploy reaches those targets through the cluster apply's
-	// provider dispatch instead.
-	infra bool
-	// host starts `deploy: "host"` services as host processes. up-only.
-	host bool
-	// frontend starts each declared frontend's dev server. up-only.
-	frontend bool
-}
-
-// fullUpScope is `forge env up`'s whole-dev-loop scope: build+deploy the cluster
-// (with the concurrent compose pre-warm) and run host services + frontend
-// dev servers. frontendShip is off: `up` runs dev servers, it does not
-// publish to Firebase. upScope masks this down per --cluster-only/--host-only.
-func fullUpScope() reconcileScope {
-	return reconcileScope{cluster: true, infra: true, host: true, frontend: true}
-}
-
-// upScope derives a `forge env up` run's scope from its --cluster-only /
-// --host-only flags — the single source of truth for which phases runUp
-// executes, replacing the scattered hostOnly/clusterOnly conditionals.
-// Starts from fullUpScope and masks one side of the cluster/host split:
-//
-//   - --cluster-only → drop the host + frontend dev phases (CI lanes that
-//     only want the apply).
-//   - --host-only    → drop the cluster build/deploy + the concurrent infra
-//     pre-warm (iterate host services against an already-deployed cluster).
-//     The host phase runs its OWN infra pre-warm instead, serially, before
-//     anything dials it — see runUp.
-//
-// The two flags are mutually exclusive (rejected at flag-parse time), so at
-// most one mask applies; neither set yields the full scope. Pure so the
-// derivation is unit-tested, mirroring resolveUpLifecycle.
-func upScope(clusterOnly, hostOnly bool) reconcileScope {
-	s := fullUpScope()
-	if hostOnly {
-		s.cluster = false
-		s.infra = false
-	}
-	if clusterOnly {
-		s.host = false
-		s.frontend = false
-	}
-	return s
-}
 
 // reconcileLifecycle is the post-start behaviour: return immediately (once)
 // or hold + teardown on signal (supervise). `forge env up`'s "auto" default —

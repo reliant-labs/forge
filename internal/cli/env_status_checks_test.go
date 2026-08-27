@@ -6,6 +6,8 @@ import (
 	"net"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // The runtime checks probe the port `forge env status` RESOLVED, not a
@@ -74,6 +76,48 @@ func TestPprofPortFromAddr(t *testing.T) {
 		if got := pprofPortFromAddr(in); got != want {
 			t.Errorf("pprofPortFromAddr(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// The scaffold's DEFAULT PPROF_ADDR must be a value this resolver can read.
+//
+// This is the other end of the wire from internal/codegen's
+// TestScaffoldDefaultsPprofOn. The failure it guards is not a crash — it is
+// the check quietly reporting "? pprof — could not resolve a pprof address"
+// about a service that is, in fact, serving profiles. That is exactly the
+// state the scaffold shipped in: a PPROF_ADDR projected onto every workload,
+// declared on one side of the wire and read by neither.
+func TestScaffoldPprofDefaultResolvesThroughEnvStatus(t *testing.T) {
+	var def string
+	for _, m := range codegen.DefaultConfigMessages() {
+		for _, f := range m.Fields {
+			if f.EnvVar == "PPROF_ADDR" {
+				def = f.DefaultValue
+			}
+		}
+	}
+	if def == "" {
+		t.Fatal("the scaffold ships no default PPROF_ADDR — a scaffolded binary starts no pprof listener")
+	}
+
+	rows := []upServiceRow{{Name: "gateway", Kind: "host", Port: 8080, Listening: true}}
+	entities := &KCLEntities{Services: []ServiceEntity{
+		{Name: "gateway", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
+			// Exactly what appConfigEnvMap projects onto a workload when the
+			// env pins nothing — the scaffold default, verbatim.
+			EnvVars: []KCLEnvVar{{Name: "PPROF_ADDR", Value: def}},
+		}}},
+	}}
+
+	got := runtimeTargetFor(entities, rows)
+	if got.Pprof == "" {
+		t.Fatalf("the scaffold's default PPROF_ADDR (%q) resolves to no pprof address — "+
+			"`forge env status` would report UNDETERMINED against a service that is serving profiles", def)
+	}
+	// And it must be a DIFFERENT address than the app's: pprof rides its own
+	// serverkit listener, never the public port.
+	if got.Pprof == got.HTTP {
+		t.Errorf("pprof resolved to the app address %q — pprof must never share the public listener", got.HTTP)
 	}
 }
 

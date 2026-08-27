@@ -17,7 +17,7 @@ import (
 //	go: cannot load module gen listed in go.work file: open gen/go.mod: no such file or directory
 //
 // It is wired into runBuild (the shared build choke point for `forge
-// build` and `forge env up`'s build phase) and into runUp's host-only path,
+// build` and `forge env up`'s build phase) and into runUp's --no-build path,
 // where the host runners (air / go-run) compile against gen/ too even
 // though the docker build phase is skipped.
 //

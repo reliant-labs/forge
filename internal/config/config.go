@@ -734,6 +734,12 @@ type CIConfig struct {
 	VulnScan    CIVulnConfig `yaml:"vuln_scan,omitempty"`
 	E2E         CIE2EConfig  `yaml:"e2e,omitempty"`
 	Permissions CIPermConfig `yaml:"permissions,omitempty"`
+	// TestSkips tunes `forge ci verify-test-run` — the gate that reads a
+	// `go test -json` stream and reports packages that skipped so much
+	// their pass proves nothing. Absent (the common case) means the
+	// shipped defaults; the block exists so a project can declare the
+	// packages whose heavy skipping is legitimate.
+	TestSkips CITestSkipsConfig `yaml:"test_skips,omitempty"`
 }
 
 // CILintConfig controls which linters run in CI.
@@ -749,6 +755,51 @@ type CILintConfig struct {
 type CITestConfig struct {
 	Race     bool `yaml:"race"`     // default true
 	Coverage bool `yaml:"coverage"` // default false
+}
+
+// CITestSkipsConfig tunes the silent-mass-skip gate.
+//
+// A Go suite that skips almost everything exits 0 and reads as green. Measured
+// on one real package: 9 pass / 124 skip without DATABASE_URL, 103 pass / 1
+// skip with it — same exit code, 7% of the tests. `forge ci verify-test-run`
+// reads the run's own `go test -json` output and reports the packages whose
+// pass therefore means nothing.
+//
+// Both numeric knobs default when absent (0 is not "disable it"); to switch
+// the gate off, take the command out of the pipeline rather than setting a
+// ratio of 1 and leaving a check that can never fire.
+type CITestSkipsConfig struct {
+	// MaxSkipRatio is the share of a package's tests that may skip before
+	// it is reported. Default 0.5 — "more than half of this package did
+	// not run". Range (0,1].
+	MaxSkipRatio float64 `yaml:"max_skip_ratio,omitempty"`
+	// MinTests is the sample-size floor below which a ratio is arithmetic
+	// rather than evidence (1-of-2 is 50% and means nothing). Default 5.
+	// It does not apply to a package that skipped EVERY test — "none of
+	// them ran" is unambiguous at any size.
+	MinTests int `yaml:"min_tests,omitempty"`
+	// Allow declares the packages whose heavy skipping is expected, so
+	// legitimate skips stop being noise. Each entry REQUIRES a reason.
+	Allow []CITestSkipAllow `yaml:"allow,omitempty"`
+}
+
+// CITestSkipAllow is one declared exemption from the mass-skip gate.
+//
+// Reason is required and is not read by any logic: it exists to be read by a
+// human in a code review. An exemption nobody had to justify is one nobody
+// will revisit, which is how a suppression outlives the condition that earned
+// it — the same contract as `forge project disown <path> --reason`.
+type CITestSkipAllow struct {
+	// Package matches the Go import path. Accepted spellings: the full
+	// import path, the tail fragment people actually think in
+	// ("internal/threads"), or either with a "/..." subtree suffix.
+	Package string `yaml:"package"`
+	// Reason is why this package legitimately skips. Required.
+	Reason string `yaml:"reason"`
+	// MaxSkipRatio is the share THIS package may skip. Absent means fully
+	// exempt, which is the common case (an integration-only package on a
+	// machine with no docker skips 100%, correctly, forever).
+	MaxSkipRatio float64 `yaml:"max_skip_ratio,omitempty"`
 }
 
 // CIVulnConfig controls vulnerability scanning in CI.

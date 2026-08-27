@@ -19,8 +19,10 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -198,10 +200,23 @@ func resolveClusterName(configPath string) (string, error) {
 // listK3dClusters shells out to `k3d cluster list -o json` and returns
 // the parsed list. An empty array (no clusters) returns a nil slice with
 // no error.
+//
+// stdout carries the JSON, so stderr is captured SEPARATELY and folded into
+// the error. k3d reports its real diagnosis there (e.g. "runtime failed to
+// list nodes: docker failed to get containers ... 500 Internal Server
+// Error"); discarding it and printing a blanket "install k3d" hint sent
+// callers chasing a missing binary that was installed all along. The
+// install hint is now emitted ONLY when the binary is genuinely absent.
 func listK3dClusters(ctx context.Context) ([]k3dClusterListEntry, error) {
-	out, err := exec.CommandContext(ctx, "k3d", "cluster", "list", "-o", "json").Output()
+	cmd := exec.CommandContext(ctx, "k3d", "cluster", "list", "-o", "json")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("k3d cluster list: %w (install k3d: https://k3d.io)", err)
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil, fmt.Errorf("k3d cluster list: %w (install k3d: https://k3d.io)", err)
+		}
+		return nil, fmt.Errorf("k3d cluster list: %w%s", err, formatCommandStderr(stderr.String()))
 	}
 	trimmed := strings.TrimSpace(string(out))
 	if trimmed == "" || trimmed == "[]" {

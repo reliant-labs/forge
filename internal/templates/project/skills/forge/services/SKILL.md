@@ -58,7 +58,7 @@ ordering is just a cron that fires once. It lowers honestly to each target:
 | Kubernetes | an **init container** on each workload named in `before`. This is the only ordering k8s enforces itself, so it holds under `kubectl apply`, Argo CD, Flux and `forge env deploy` alike. A gating job renders **no** standalone `Job` object — that would run the command a second time, unordered, which is the race `before` exists to remove. |
 | Kubernetes, `before` empty | a standalone `batch/v1` Job. Nothing waits on it, and nothing claims to. |
 | docker-compose | a service with `restart: "no"`, plus `depends_on: {<job>: {condition: service_completed_successfully}}` on each dependent. Compose enforces this natively. Render it with `fw.compose_fragment(workloads, image)`. |
-| host (`forge run` / `--host-only`) | the runner executes the command, waits for exit 0, and only then launches the dependents. Declare it as a `forge.OneShotJob` in the bundle's `jobs = [...]`. Fail-closed: a job that exits non-zero stops the up. |
+| host (`forge run` / `forge env up`) | the runner executes the command, waits for exit 0, and only then launches the dependents. Declare it as a `forge.OneShotJob` in the bundle's `jobs = [...]`. Fail-closed: a job that exits non-zero stops the up. |
 
 **The job's command must be idempotent.** The k8s lowering fans it out to one
 init container per dependent, and init containers re-run on every pod start,

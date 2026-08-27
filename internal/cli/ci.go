@@ -26,6 +26,7 @@ func newCICmd() *cobra.Command {
 		Short: "CI helper commands — verify, scan, and validate in CI pipelines",
 	}
 	cmd.AddCommand(newCIVerifyGeneratedCmd())
+	cmd.AddCommand(newCIVerifyTestRunCmd())
 	cmd.AddCommand(newCIValidateKCLCmd())
 	cmd.AddCommand(newCIVulnScanCmd())
 	cmd.AddCommand(newCIMigrationSafetyCmd())

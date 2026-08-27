@@ -202,9 +202,10 @@ var removals = []removal{
 				Context: kubernetesNoun,
 			},
 			{
-				Name:   "Kubernetes RBAC prose on the deploy surface",
-				Reason: "The KCL module, the cluster code, serverkit's manager wiring, the deploy command and the deploy design docs discuss Kubernetes RBAC across paragraphs, so the Kubernetes noun is often on a neighbouring line — and the manifest-render tests bind it to a local variable. These files render or apply Kubernetes manifests and nothing else. Application RBAC never lived in any of them; a re-introduction lands in handlers, middleware, frontend or skills, all of which stay guarded.",
-				Token:  regexp.MustCompile(`(?i)\brbac\b`),
+				Name: "Kubernetes RBAC prose on the deploy surface",
+				Reason: "The KCL module, the cluster code, serverkit's manager wiring, the deploy command and the deploy design docs discuss Kubernetes RBAC across paragraphs, so the Kubernetes noun is often on a neighbouring line — and the manifest-render tests bind it to a local variable. These files render or apply Kubernetes manifests and nothing else. Application RBAC never lived in any of them; a re-introduction lands in handlers, middleware, frontend or skills, all of which stay guarded.\n" +
+					"`env_render*.go` and `clusterhealth*.go` join this list for the same reason, not a weaker one. `forge env render` prints the manifests an environment would apply — one of which IS a ClusterRoleBinding — and the Cluster Workloads check reads pod status from the API server, where `RBAC denying the list` is one of the ways it must answer UNDETERMINED rather than pass. Both talk to Kubernetes and nothing else.",
+				Token: regexp.MustCompile(`(?i)\brbac\b`),
 				Paths: []string{
 					"kcl/",
 					"internal/cluster/",
@@ -214,6 +215,8 @@ var removals = []removal{
 					"pkg/serverkit/",
 					"docs/design/",
 					"internal/cli/deploy*.go",
+					"internal/cli/env_render*.go",
+					"internal/doctor/clusterhealth*.go",
 					"internal/templates/deploy_build_test.go",
 				},
 			},
@@ -935,6 +938,22 @@ var removals = []removal{
 					"landing here (isCurrencyColumn, detectPersonish, samplesNames …) still fails.",
 				Token: regexp.MustCompile(`\bstringValue\b`),
 				Paths: []string{"internal/cli/generate_frontend_config.go"},
+			},
+			{
+				Name: "seedplan's DECLARED-type date check",
+				Reason: "pkg/seedplan/synth.go has an `isDateColumn(col)` that reads col.DeclType and " +
+					"reports whether the column was DECLARED `DATE` — the one time type with no " +
+					"time-of-day to render. keyTimeLiteral uses it to format a TIME key member " +
+					"date-only rather than as a full instant.\n" +
+					"It is the exact inverse of the removed heuristic, which is why the name " +
+					"collides: the heuristic guessed a column's MEANING from what it was CALLED " +
+					"(`date`/`*_date`/`*_on` drew an ISO date). This reads what the author " +
+					"DECLARED in the schema, which is precisely the replacement's rule. Scoped to " +
+					"the one file and the one identifier, so isCurrencyColumn, isColorColumn and " +
+					"isBirthDateColumn still fail anywhere, and a name-sniffing isDateColumn " +
+					"landing in any other file still fails too.",
+				Token: regexp.MustCompile(`\bisDateColumn\b`),
+				Paths: []string{"pkg/seedplan/synth.go"},
 			},
 		},
 	},

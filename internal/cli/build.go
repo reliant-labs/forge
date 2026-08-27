@@ -143,6 +143,17 @@ type buildOptions struct {
 	// pushes no image at all. Requires env — without a render there is no
 	// entity set to filter. Empty means "build everything", the default.
 	targets []string
+
+	// renderOptions are raw `-D name=value` values pushed into the env's KCL
+	// render, exactly as `forge env up` does.
+	//
+	// Without these, an option a project declares is unreachable from the
+	// build lane: `forge env up` could set it but builds EVERY workload, and
+	// `forge build -t <name>` could scope to one but had no way to say which
+	// variant. So a project with a per-build KCL option had to choose between
+	// the right scope and the right value. Both flags belong on the command
+	// that builds one thing.
+	renderOptions []string
 	// tag, when set, overrides the git-derived image tag computed by
 	// resolveImageTag. CI pipelines that pin the image to a release
 	// number (e.g. `--tag v1.2.3`) use this. Empty (the default) means
@@ -239,6 +250,7 @@ without forcing the user to add /etc/hosts entries on the host.`,
 
 	cmd.Flags().StringVarP(&opts.outputDir, "output", "o", "bin", "Output directory for binaries")
 	cmd.Flags().StringVarP(&opts.buildTarget, "target", "t", "all", "Build target (all | external | a specific service/frontend name). `external` builds only the KCL services declaring build_cmd; requires the environment argument.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. Requires the environment argument. List an env's options with `forge env options <env>`.")
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
@@ -349,6 +361,10 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return err
 	}
 	cfg := store.Config()
+
+	if err := bindBuildRenderOptions(opts); err != nil {
+		return err
+	}
 
 	// Ensure generated code exists / is fresh before any `go build`.
 	// Missing gen/ (gitignored, or freshly cleaned) otherwise fails with
@@ -638,6 +654,18 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 		entities = filterEntitiesByTarget(entities, opts.targets)
 	}
 
+	// `-t <service>` scopes the KCL set the same way. opts.targets is the
+	// orchestrator's channel (set by `forge env up`); opts.buildTarget is this
+	// command's own flag, and it must narrow the entities too — otherwise
+	// naming one service still runs every other service's build_cmd, which is
+	// exactly the "one command rebuilt my whole stack" failure. `all` and
+	// `external` keep their existing meanings and are not names.
+	if entities != nil && opts.buildTarget != "" && opts.buildTarget != "all" && opts.buildTarget != "external" {
+		if kclHasServiceNamed(entities, opts.buildTarget) {
+			entities = filterEntitiesByTarget(entities, []string{opts.buildTarget})
+		}
+	}
+
 	// Materialize any cross-repo frontend source, so every downstream
 	// consumer (npm install, `npm run build`, the docker context) sees a
 	// real directory. No-op — no resolver, no cache access — for a project
@@ -646,6 +674,99 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 		return nil, err
 	}
 	return entities, nil
+}
+
+// bindBuildRenderOptions publishes this invocation's `-D name=value` render
+// options for the render paths that follow.
+//
+// Same three steps, same order, same helpers as `forge env up` (up.go): parse
+// first so a malformed value or a forge-reserved name gets its own message,
+// then check the name against what the env's KCL declares, then publish. An
+// option only means something to a specific env's KCL, so requiring the env
+// argument is what makes the declared-name check possible at all.
+//
+// It binds ONLY when this invocation actually carried -D. `forge env up` sets
+// the process-global itself and then delegates here; parsing an empty slice
+// yields nil, and publishing that nil would CLOBBER the options the
+// orchestrator already bound — the build phase would then re-render without
+// them and silently build the wrong variant. Observed exactly that:
+// `forge env up prod -D desktop_channel=local` ran the RELEASE packaging
+// target and failed on missing Apple notarization credentials.
+func bindBuildRenderOptions(opts buildOptions) error {
+	if len(opts.renderOptions) == 0 {
+		return nil
+	}
+	if opts.env == "" {
+		return fmt.Errorf("-D requires the environment argument (e.g. `forge build prod -D name=value`): options are declared per-env in deploy/kcl/<env>/")
+	}
+	renderDArgs, err := parseRenderOptions(opts.renderOptions)
+	if err != nil {
+		return err
+	}
+	if err := validateRenderOptions(projectDirForKCL(), opts.env, opts.renderOptions); err != nil {
+		return err
+	}
+	setRenderOptions(renderDArgs)
+	return nil
+}
+
+// validateExternalBuildTarget checks the preconditions for `--target
+// external`: an --env to resolve KCL against, and at least one service in it
+// that actually declares build_cmd.
+//
+// No experimental gate here: `build_cmd` is the build-side mirror of
+// External's `deploy_cmd`, and `forge env deploy` of an External target needs
+// no opt-in. Gating build behind features.experimental.external_builds while
+// deploy ran free left the build/deploy pair of the SAME target with
+// mismatched maturity gates (fr-da9a6614fb) — you could deploy an external
+// target but not build it. The gates are unified by retiring the build-side
+// one. The config key is still accepted (back-compat) but no longer governs
+// whether build_cmd runs.
+func validateExternalBuildTarget(entities *KCLEntities, opts buildOptions) error {
+	if opts.env == "" {
+		return fmt.Errorf("--target external requires --env to know which KCL services to build")
+	}
+	if !kclHasExternalBuildService(entities) {
+		return fmt.Errorf("--target external: no service declares build_cmd in env %q.\n"+
+			"  Declare a `build_cmd` on your forge.External target (the build-side mirror of deploy_cmd) so\n"+
+			"  `forge build -t external` constructs the image, e.g.:\n"+
+			"      deploy = forge.External {\n"+
+			"          deploy_cmd = r\"...\"\n"+
+			"          build_cmd  = r\"docker build --platform linux/${TARGETARCH} -t ${IMAGE}:${TAG} ${PROJECT_DIR}\"\n"+
+			"      }\n"+
+			"  (a top-level Service.build_cmd also works for non-External deploy types)", opts.env)
+	}
+	return nil
+}
+
+// resolveNamedBuildTarget narrows the build to a single named target: a
+// frontend, the project binary, or a service declared only in the env's KCL.
+// It returns the frontends left to build and whether the project binary
+// should still be built, and may set opts.skipFrontends.
+//
+// The KCL lookup is what the flag's own help has always promised ("a specific
+// service/frontend name") and what `forge env up --target` already does.
+// Without it, -t resolved ONLY against frontends and the project name, so a
+// service declared purely in KCL — every sibling-repo build, e.g.
+// reliant-desktop — was unreachable: "target not found in project config",
+// despite the service being right there in the rendered env.
+func resolveNamedBuildTarget(cfg *config.ProjectConfig, entities *KCLEntities, opts *buildOptions, frontends []config.FrontendConfig) ([]config.FrontendConfig, bool, error) {
+	frontends = filterFrontends(frontends, opts.buildTarget)
+	if len(frontends) > 0 {
+		// Target is a frontend, skip binary build.
+		return frontends, false, nil
+	}
+	if opts.buildTarget == cfg.Name {
+		// The project binary, with its frontends already filtered away.
+		return frontends, true, nil
+	}
+	if !kclHasServiceNamed(entities, opts.buildTarget) {
+		return nil, false, fmt.Errorf("target %q not found in project config or in env %q's KCL services", opts.buildTarget, opts.env)
+	}
+	// A KCL service target builds that service only: no project binary, no
+	// frontends.
+	opts.skipFrontends = true
+	return nil, false, nil
 }
 
 func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opts buildOptions) (buildTargetSet, error) {
@@ -676,42 +797,18 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 	// the whole project image / frontends. Requires --env so we have a
 	// rendered KCL set to filter against.
 	if opts.buildTarget == "external" {
-		// No experimental gate here: `build_cmd` is the build-side mirror
-		// of External's `deploy_cmd`, and `forge env deploy` of an External
-		// target needs no opt-in. Gating build behind
-		// features.experimental.external_builds while deploy ran free left
-		// the build/deploy pair of the SAME target with mismatched maturity
-		// gates (fr-da9a6614fb) — you could deploy an external target but
-		// not build it. The gates are unified by retiring the build-side
-		// one. The config key is still accepted (back-compat) but no longer
-		// governs whether build_cmd runs.
-		if opts.env == "" {
-			return buildTargetSet{}, fmt.Errorf("--target external requires --env to know which KCL services to build")
-		}
-		if !kclHasExternalBuildService(entities) {
-			return buildTargetSet{}, fmt.Errorf("--target external: no service declares build_cmd in env %q.\n"+
-				"  Declare a `build_cmd` on your forge.External target (the build-side mirror of deploy_cmd) so\n"+
-				"  `forge build -t external` constructs the image, e.g.:\n"+
-				"      deploy = forge.External {\n"+
-				"          deploy_cmd = r\"...\"\n"+
-				"          build_cmd  = r\"docker build --platform linux/${TARGETARCH} -t ${IMAGE}:${TAG} ${PROJECT_DIR}\"\n"+
-				"      }\n"+
-				"  (a top-level Service.build_cmd also works for non-External deploy types)", opts.env)
+		if err := validateExternalBuildTarget(entities, opts); err != nil {
+			return buildTargetSet{}, err
 		}
 		// Skip everything else — only the external dispatcher runs.
 		frontends = nil
 		buildBinary = false
 		opts.skipFrontends = true
 	} else if opts.buildTarget != "all" {
-		frontends = filterFrontends(frontends, opts.buildTarget)
-		if len(frontends) == 0 {
-			// Not a frontend name — check if it matches the project name (binary)
-			if opts.buildTarget != cfg.Name {
-				return buildTargetSet{}, fmt.Errorf("target %q not found in project config", opts.buildTarget)
-			}
-		} else {
-			// Target is a frontend, skip binary build
-			buildBinary = false
+		var err error
+		frontends, buildBinary, err = resolveNamedBuildTarget(cfg, entities, &opts, frontends)
+		if err != nil {
+			return buildTargetSet{}, err
 		}
 	}
 

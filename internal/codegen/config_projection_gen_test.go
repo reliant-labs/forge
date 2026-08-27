@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/kcltest"
 )
 
 // TestGenerateConfigProjectionKCL_ExactBlock pins the full emitted output
@@ -312,9 +314,11 @@ assert_override_channel = "valueFrom" not in _env["LOG_LEVEL"]
 `
 	write("main.k", main)
 
-	cmd := exec.CommandContext(t.Context(), "kcl", "run", ".", "--format", "json")
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
+	// kcltest.Run, not exec+CombinedOutput: under a parallel `go test ./...`
+	// kcl prints "waiting for package-cache lock..." on stdout ahead of the
+	// JSON, which made this assertion fail with `invalid character 'w'`
+	// against a render that was actually correct. See internal/kcltest.
+	out, err := kcltest.Run(t.Context(), dir, "run", ".", "--format", "json")
 	if err != nil {
 		t.Fatalf("kcl run failed: %v\n%s", err, out)
 	}

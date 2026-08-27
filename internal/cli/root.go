@@ -180,7 +180,7 @@ authored protos, in one call.`,
 	// the `forge --help` command list.
 	rootCmd.AddCommand(newStartCmd())
 	// `forge run` is the single-command dev runner (alias for
-	// `forge env up --host-only` + dev-server passthrough) — restored for the
+	// `forge env up` + dev-server passthrough) — restored for the
 	// reliant one-shot's `reliant forge run -- --host 0.0.0.0` preview flow.
 	rootCmd.AddCommand(newRunCmd())
 	rootCmd.AddCommand(newGenerateCmd())

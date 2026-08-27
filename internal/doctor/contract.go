@@ -147,6 +147,7 @@ func deployabilityChecks() []namedCheck {
 		{"Deploy SA Binding", CheckDeployServiceAccount},
 		{"Deploy Migrations", CheckDeployMigrations},
 		{"Deploy Config Drift", CheckFrontendConfigDrift},
+		{"Object Collision", CheckObjectCollision},
 		{"Payload Limits", CheckPayloadLimits},
 	}
 }
@@ -155,7 +156,17 @@ func deployabilityChecks() []namedCheck {
 // (all) arm is assembled from the parts so the whole set and the filtered
 // arms cannot drift on a display name.
 func runtimeSignals() map[string][]namedCheck {
-	app := []namedCheck{{"App Health", CheckAppHealth}}
+	// Cluster Workloads rides with "app" — and belongs there. "Is the app
+	// up" has two halves, and forge reported only the half running on the
+	// developer's machine: `forge env status dev` was all-green for the hour
+	// daemon-gateway spent OOMKilled and CrashLoopBackOff, and for the ten
+	// hours admin-api / litellm / reliant-api-server crashlooped in the
+	// deployed namespace. A signal that answers "app" while ignoring every
+	// pod forge itself applied is the report that hid both.
+	app := []namedCheck{
+		{"App Health", CheckAppHealth},
+		{clusterWorkloadsCheckName, CheckClusterWorkloads},
+	}
 	profiles := []namedCheck{{"pprof", CheckPprof}, {"Profiles (Pyro)", CheckPyroscope}}
 	metrics := []namedCheck{{"Prometheus", CheckPrometheus}}
 	traces := []namedCheck{{"Traces (Tempo)", CheckTempo}}

@@ -74,6 +74,16 @@ import (
 // Apply now attaches. Guessing at an arbitrary predicate would write rows
 // that contradict a rule the schema states, which is worse than not writing
 // them.
+//
+// # The OTHER multi-column shape
+//
+// A DISCRIMINATED UNION — a top-level OR of AND-groups, each pinning a
+// discriminator column to a literal and constraining its siblings from there —
+// is not an ordering and is placed by union.go instead. That pass runs after
+// this one (so it never claims a column an ordering CHECK already places) and
+// speaks for every constraint whose expression parses as a union, placed or
+// refused, which is why the loop below steps over them: one line of SQL
+// collects one warning.
 
 // orderRel is one recognized ordering constraint, normalized so hi must sit
 // above lo. It carries the constraint's name so a refusal can point at the
@@ -382,8 +392,14 @@ func tableOrderChains(t schemadef.Table) (map[string]orderSlot, []string) {
 			"seed plan: %s constraint %q spans two columns and forge cannot place its values (%s) — seeded rows satisfy it only by chance",
 			t.Name, name, why))
 	}
+	// A discriminated union (union.go) is a multi-column CHECK this pass can
+	// never read — its comparisons are against LITERALS, not sibling columns
+	// — and that pass speaks for it, placed or refused. Stepping over those
+	// here is what keeps one line of SQL from collecting two warnings that
+	// contradict each other.
+	claimed := unionClaimedChecks(t)
 	for _, ck := range t.Checks {
-		if len(ck.Columns) < 2 {
+		if len(ck.Columns) < 2 || claimed[ck.Name] {
 			continue
 		}
 		found, ok := orderRelsFromCheck(ck)

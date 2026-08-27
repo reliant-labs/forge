@@ -21,12 +21,12 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge cluster info` | Diagnostic dump — cluster, context, namespace, registry, the component list (every server answers on the binary's one mux, `PORT`, default 8080) and declared frontend ports. |
 | `forge cluster urls [--json]` | Print the ingress URL table for the dev env (one row per HTTP/GRPC route). |
 | `forge cluster instances [--json]` | List every forge-managed dev namespace across every reachable k3d cluster (multi-worktree). |
-| `forge env up --target <service> --host-only [--background]` | Host-mode single-service runner: skips build + cluster apply, scoped to the named service. Dispatches on the KCL `host.runner` (`go-run` / `air` / `binary` / `delve`). |
+| `forge env up <env> --target <service> [--background]` | Single-service runner: scopes the WHOLE run — build, deploy, host and frontend phases — to the named service. A service whose KCL declares a `host` block launches as a host process, dispatching on `host.runner` (`go-run` / `air` / `binary` / `delve`). |
 | `forge env options <env> [--json]` | List the `-D` render options that env's KCL declares (see below). |
 | `forge env config <env> [--json] [--workload <name>]` | Print the resolved configuration `deploy/kcl/<env>/` hands each workload — the values `forge env up` passes to each process (see below). |
 | `forge env down <env> [--all]` | Stop this project's stack for that env, tracked or orphaned. `--all`: all of them, machine-wide. |
 | `forge env ps` | Every stack running here: project dir, env, process count. |
-| `forge env up <env> [--no-build] [--no-deploy] [--cluster-only] [--host-only] [--target <name>] [-D name=value] [--background]` | The whole-loop orchestrator: build (host-mode services filtered out) → cluster apply → host launch → frontend dev-serve. Reads `deploy/kcl/<env>/` to split services by provider. |
+| `forge env up <env> [--no-build] [--no-deploy] [--target <name>] [-D name=value] [--background]` | The whole-loop orchestrator: build (host-mode services filtered out) → cluster apply → host launch → frontend dev-serve. Reads `deploy/kcl/<env>/` to split services by provider. `--target` narrows WHICH entities each phase acts on; it never turns phases off. |
 | `forge env deploy dev [--prune] [--target <app>]` | Apply `deploy/kcl/dev/`. Skips rollout wait for services declaring `deploy = forge.HostDeploy {...}`. `--prune` deletes orphan forge-managed Deployments. `--target <app>` (repeatable, by service/frontend name) deploys ONLY that app, keeping shared resources (Namespace, ConfigMap/Secret, RBAC) and dropping other apps' workloads. |
 
 ## Host vs cluster: where does each service run in dev?
@@ -36,10 +36,16 @@ Gateway API ingress path (`forge cluster urls` lists the routes). That is the
 right shape for services needing cluster-only primitives — operators, CRD
 watchers, ingress webhooks, sidecars depending on dynamic-config injection.
 
-**Host mode** flips a service to run as a host process under `forge env up
---target <service> --host-only`. Set the deploy target in
-`deploy/kcl/<env>/main.k` to `forge.HostDeploy` — per-env, typically only in
-`dev`, with `staging` and `prod` staying on `forge.K8sCluster`:
+**Host mode** is DECLARED, never asserted from the command line. Set the deploy
+target in `deploy/kcl/<env>/main.k` to `forge.HostDeploy` — per-env, typically
+only in `dev`, with `staging` and `prod` staying on `forge.K8sCluster`. Then
+`forge env up dev` launches it as a host process, and `--target <service>`
+narrows the run to it.
+
+There is no flag that reinterprets a cluster-declared service as a host
+process. If a service should be host-runnable in dev, its KCL says so; to vary
+HOW it launches, declare a render option and select it (`-D host_runner=go-run`
+against a `host` block whose `runner` reads that option).
 
 ```kcl
 # deploy/kcl/dev/main.k
@@ -94,7 +100,7 @@ What flipping a service to host mode buys:
 - `forge env deploy dev` skips its rollout wait (saves 120s/service).
 - `forge env deploy dev --prune` deletes its stale in-cluster Deployment.
 - `forge build dev` lists it under "host-mode services", to be run with
-  `forge env up --target <name> --host-only` (or just `forge env up dev`).
+  `forge env up dev --target <name>` (or just `forge env up dev`).
 - The scaffolded `cmd/<bin>/cmd/serve.go` operator-gating helper won't start the
   controller manager when the user filters to host-mode-only services.
 
@@ -125,10 +131,10 @@ forge cluster up --wait
 forge env deploy dev
 
 # Terminal 2: the service you're actively editing
-forge env up --target admin-server --host-only                 # foreground; Ctrl-C to stop
+forge env up dev --target admin-server                 # foreground; Ctrl-C to stop
 # or detach + tail logs separately:
-forge env up --target admin-server --host-only --background    # detach; PIDs tracked per env
-forge env down dev                                    # later teardown
+forge env up dev --target admin-server --background    # detach; PIDs tracked per env
+forge env down dev                                     # later teardown
 ```
 
 The host child process also inherits the host shell's env, so anything already
@@ -250,8 +256,8 @@ tasks:
     cmds:
       - forge cluster up --wait
       - forge env deploy dev --prune       # cluster services only; host services pruned
-      - forge env up --target admin-server --host-only --background
-      - forge env up --target workspace-proxy --host-only --background
+      - forge env up dev --target admin-server --background
+      - forge env up dev --target workspace-proxy --background
 
   dev-stop:
     cmds:

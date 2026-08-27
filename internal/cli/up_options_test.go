@@ -193,3 +193,54 @@ func TestValidateRenderOptionsNoopWithoutFlags(t *testing.T) {
 		t.Errorf("validateRenderOptions with no -D = %v, want nil", err)
 	}
 }
+
+// `forge build -D` must reject a -D given without the environment argument.
+//
+// Options are declared per-env (deploy/kcl/<env>/), so without an env there is
+// nothing to validate the name against and nothing to render — the value would
+// be silently dropped. Failing loudly is the point: the whole reason this flag
+// exists on `build` is that the alternatives silently did the wrong thing
+// (`forge env up` builds every workload; `build -t` had no way to pass a value).
+func TestBuildRenderOptionsRequireEnv(t *testing.T) {
+	t.Cleanup(func() { setRenderOptions(nil) })
+
+	err := runBuild(context.Background(), buildOptions{
+		renderOptions: []string{"desktop_channel=local"},
+		// env deliberately empty
+	})
+	if err == nil {
+		t.Fatal("runBuild with -D and no env: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "-D requires the environment argument") {
+		t.Fatalf("runBuild with -D and no env: unexpected error %q", err)
+	}
+}
+
+// `forge env up -D` must survive the delegation into the build phase.
+//
+// env up binds the render options itself and then calls runBuild. runBuild also
+// binds -D (its own flag), and binding an EMPTY set there published nil over
+// what the orchestrator had already set — so the build phase re-rendered with
+// no options and built the wrong variant. Observed: `forge env up prod -D
+// desktop_channel=local` ran the RELEASE packaging target and died on missing
+// Apple notarization credentials, instead of the local one.
+func TestBuildDoesNotClobberOrchestratorRenderOptions(t *testing.T) {
+	t.Cleanup(func() { setRenderOptions(nil) })
+
+	// What `forge env up` does before delegating.
+	dArgs, err := parseRenderOptions([]string{"desktop_channel=local"})
+	if err != nil {
+		t.Fatalf("parseRenderOptions: %v", err)
+	}
+	setRenderOptions(dArgs)
+
+	// runBuild with NO -D of its own must leave that binding intact. Reaching
+	// the full build is not the point — the guard runs before any of it, so an
+	// error from later stages is fine.
+	_ = runBuild(context.Background(), buildOptions{env: "prod", buildTarget: "all"})
+
+	got := activeRenderOptionDArgs()
+	if len(got) != 1 || !strings.Contains(got[0], "desktop_channel") {
+		t.Fatalf("runBuild clobbered the orchestrator's render options: got %v, want the desktop_channel binding", got)
+	}
+}

@@ -47,45 +47,6 @@ func TestResolveUpLifecycle(t *testing.T) {
 	}
 }
 
-// TestUpScope pins the pure scope derivation behind `forge env up`: which phases
-// run is a function of --cluster-only / --host-only, and that mapping is the
-// single source of truth runUp's gates read. The two flags are mutually
-// exclusive upstream, so the both-set row is defensive (clusterOnly's mask
-// would win the host/frontend drop) rather than a reachable state.
-func TestUpScope(t *testing.T) {
-	cases := []struct {
-		name        string
-		clusterOnly bool
-		hostOnly    bool
-		want        reconcileScope
-	}{
-		{
-			"neither -> whole dev loop",
-			false, false,
-			reconcileScope{cluster: true, infra: true, host: true, frontend: true},
-		},
-		{
-			"--cluster-only -> apply only, no host/frontend",
-			true, false,
-			reconcileScope{cluster: true, infra: true, host: false, frontend: false},
-		},
-		{
-			"--host-only -> host+frontend, no cluster build/deploy",
-			false, true,
-			reconcileScope{cluster: false, infra: false, host: true, frontend: true},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := upScope(tc.clusterOnly, tc.hostOnly)
-			if got != tc.want {
-				t.Errorf("upScope(clusterOnly=%v, hostOnly=%v) = %+v, want %+v",
-					tc.clusterOnly, tc.hostOnly, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestUpWatchFlagRegistered confirms `forge env up --watch` is wired with help
 // text that names the force-supervise / no-TTY intent — the surface a human
 // piping output relies on, and the documented counterpart to the non-TTY

@@ -1733,6 +1733,15 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 					if strings.HasPrefix(f.ProtoType, "[]") {
 						continue
 					}
+					// A discriminated-union CHECK requires this column to hold
+					// NO value on the branch these creates are written against
+					// (see unionOmitsField). There is no literal that means
+					// absent — setting the field to its zero value is the write
+					// the constraint rejects — so the field is left off the
+					// request, and an unset field writes NULL.
+					if fix.unionOmitsField(cm.Entity, f.Name) {
+						continue
+					}
 					goType := ProtoTypeToGoType(f.ProtoType)
 					// Try to get richer GoType from entity definition
 					for _, ef := range cm.Entity.Fields {

@@ -13,24 +13,29 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// newRunCmd restores `forge run` as the single-command dev runner: bring
-// the project's host services + frontends up against the current working
-// directory, skipping the cluster build/deploy. It is a thin alias over
-// the SAME runner `forge env up --host-only` uses (runUp with hostOnly=true) —
-// no duplicated launch logic — so behaviour (KCL render, port-conflict
-// guard, non-TTY detach, per-service logs) is identical to that path.
+// newRunCmd is `forge run`: the single-command dev runner for the current
+// working directory. It is a thin alias over `forge env up <env>` (the SAME
+// runUp, no duplicated launch logic), so behaviour — KCL render,
+// port-conflict guard, non-TTY detach, per-service logs — is identical to
+// that path.
 //
-// The one thing `run` adds over `up --host-only` is dev-server passthrough:
-// tokens after `--` are forwarded to each frontend's dev server
-// (`npm run dev -- <flags>`). This is what the reliant one-shot workflow
-// relies on — `reliant forge run -- --host 0.0.0.0` starts the scaffolded
-// Vite frontend bound to 0.0.0.0 so the workspace proxy can reach it and
-// hand the user a preview URL.
+// The one thing `run` adds is dev-server passthrough: tokens after `--` are
+// forwarded to each frontend's dev server (`npm run dev -- <flags>`). This is
+// what the reliant one-shot workflow relies on — `reliant forge run --
+// --host 0.0.0.0` starts the scaffolded Vite frontend bound to 0.0.0.0 so the
+// workspace proxy can reach it and hand the user a preview URL.
 //
-// No positional target: like the old orchestrator-shaped `forge run`, it
-// brings up EVERYTHING host-mode in the env (the scaffold's single service
-// + frontend), so the workflow needs no target to name. Env defaults to dev
-// (the env `forge project new` scaffolds and the one-shot builds against).
+// It runs the WHOLE loop, and that is the point. `run` used to imply
+// --host-only, which silently rewrote every cluster-declared service into a
+// local `go run` — forge overruling the environment's own declaration from a
+// flag. A service that should run as a host process during dev says so in its
+// KCL (`host = forge.HostOverrides {...}`, with `-D host_runner=go-run`
+// selecting the runner); nothing here second-guesses that.
+//
+// No positional target: it brings up everything the env declares (the
+// scaffold's single service + frontend), so the workflow needs no target to
+// name. Env defaults to dev (the env `forge project new` scaffolds and the
+// one-shot builds against).
 func newRunCmd() *cobra.Command {
 	var (
 		env    string
@@ -38,15 +43,20 @@ func newRunCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "run [-- <dev-server flags>]",
-		Short: "Run the project's dev servers (host services + frontends) against the current dir, skipping cluster build/deploy",
+		Short: "Run the project's dev loop against the current dir, forwarding flags after `--` to the frontend dev servers",
 		Long: `Run the project's dev loop against the current working directory.
 
-Brings up every host-mode service and frontend declared in
-deploy/kcl/<env>/ (default env: dev), skipping the cluster build + deploy
-phases — the inner loop for iterating on a scaffolded project. This is an
-alias for ` + "`forge env up --host-only`" + `; see that command for the full
-lifecycle (non-TTY runs start everything and return, leaving the processes
-running; stop them with ` + "`forge env down <env>`" + `).
+Brings up everything ` + "`deploy/kcl/<env>/`" + ` declares (default env: dev) —
+the inner loop for iterating on a scaffolded project. This is an alias for
+` + "`forge env up <env>`" + ` plus dev-server passthrough; see that command for
+the full lifecycle (non-TTY runs start everything and return, leaving the
+processes running; stop them with ` + "`forge env down <env>`" + `).
+
+To iterate on ONE service, name it: ` + "`forge env up dev --target <svc>`" + `
+scopes the whole run — build, deploy, host and frontend phases alike. A
+service that should run as a local process during dev declares a
+` + "`host = forge.HostOverrides {...}`" + ` block in its KCL, and
+` + "`-D host_runner=go-run`" + ` selects the runner.
 
 Tokens after ` + "`--`" + ` are forwarded to each frontend's dev server
 (` + "`npm run dev -- <flags>`" + `), so a Vite/Next dev server can be told
@@ -59,7 +69,7 @@ table is empty. Pass ` + "`--no-seed`" + ` to skip it, or inspect with
 ` + "`forge db seed status`" + `.
 
 Examples:
-  forge run                        # host services + frontends, env=dev
+  forge run                        # the whole dev loop, env=dev
   forge run --env=staging          # against the staging env's KCL
   forge run -- --host 0.0.0.0      # forward --host 0.0.0.0 to the dev server`,
 		// Runtime failures (a port already bound, a child dying) are not
@@ -73,7 +83,6 @@ Examples:
 			}
 			return runUp(cmd.Context(), upOptions{
 				env:          env,
-				hostOnly:     true,
 				noSeed:       noSeed,
 				frontendArgs: frontendArgs,
 			})
@@ -113,7 +122,7 @@ func runPassthroughArgs(args []string, dashPos int) ([]string, error) {
 // docker-compose orchestrator and the single host-mode service runner —
 // was removed: the compose orchestrator is now a KCL deploy target
 // consumed by `forge env up`/`forge env deploy`, and the single-service runner
-// is `forge env up --target <service> --host-only`. These helpers stayed
+// is `forge env up <env> --target <service>`. These helpers stayed
 // because non-run code still depends on them.
 
 // managedProcess tracks a running child process started by the `forge env up`
@@ -318,6 +327,14 @@ func resolveEphemeralHostPorts(e *KCLEntities) string {
 			continue
 		}
 		host := svc.Deploy.Host
+		// An explicitly EMPTY listen_ports means "this service binds nothing".
+		// Allocating an ephemeral port for it publishes a port the process will
+		// never bind, and the readiness gate then fails a run that in fact
+		// succeeded — observed with the packaged desktop app, which launched
+		// correctly and was still reported as "nothing is listening".
+		if host.ListenPorts != nil && len(*host.ListenPorts) == 0 {
+			continue
+		}
 		if len(hostEnvPorts(svc.Name, host)) > 0 {
 			// Already binds a declared port — leave it, but adopt it as the
 			// backend URL if we don't have one yet.
@@ -333,7 +350,7 @@ func resolveEphemeralHostPorts(e *KCLEntities) string {
 			fmt.Printf("[up] host %s: could not allocate an ephemeral port (%v); falling back to the default\n", svc.Name, err)
 			continue
 		}
-		host.ListenPorts = []int{port}
+		host.ListenPorts = &[]int{port}
 		host.EnvVars = upsertEnvVarValue(host.EnvVars, "PORT", fmt.Sprintf("%d", port))
 		fmt.Printf("[up] host %s: ephemeral dev port %d\n", svc.Name, port)
 		if backendURL == "" {
@@ -359,22 +376,6 @@ func upsertEnvVarValue(vars []KCLEnvVar, name, value string) []KCLEnvVar {
 		}
 	}
 	return append(vars, KCLEnvVar{Name: name, Value: value})
-}
-
-// withoutEnvVar returns vars with any entry of that name removed. Used
-// where a value is meaningful in one deploy target and actively wrong in
-// another (see the PORT drop in collapseClusterServicesToHost), so the
-// removal is stated where the reason lives rather than by never carrying
-// the env at all.
-func withoutEnvVar(vars []KCLEnvVar, name string) []KCLEnvVar {
-	out := make([]KCLEnvVar, 0, len(vars))
-	for _, ev := range vars {
-		if ev.Name == name {
-			continue
-		}
-		out = append(out, ev)
-	}
-	return out
 }
 
 // frontendEnvPrefix returns the public-env-var prefix a frontend of the
@@ -486,145 +487,15 @@ func frontendConfigMockValue(cfg *FrontendConfigEntity) string {
 	return frontendMockValue(cfg.Mock)
 }
 
-// collapseClusterServicesToHost rewrites the rendered service set for a
-// --host-only run (`forge run` / `forge env up --host-only`) into the host
-// processes that actually serve the project locally.
-//
-// A service's deploy.type=="cluster" declares its PRODUCTION topology (it
-// containerizes and deploys to k8s). The host-only dev loop runs that same
-// code as a local `go run` instead, skipping docker/k8s — but
-// upHostServices only starts deploy.type=="host" services, so without this
-// every cluster service is skipped and the dev loop starts nothing (the
-// "detached 0 process(es)" symptom).
-//
-// Collapse semantics: every server/worker/cron/operator component compiles
-// to the SAME shared cmd/<project> binary (the build target each
-// workloads.k entry declares — build.go dedups the identical target so it compiles
-// once), and that binary's `server` subcommand mounts EVERY service and
-// runs all workers/operators in one process. So N cluster components
-// collapse to ONE host process — `go run ./cmd/<project> server` — grouped
-// by go-run target; running one process per component would N-way bind the
-// same port. The explicit `go run … server` command is set on the host
-// service (hostlaunch runs an explicit Command verbatim), which also
-// sidesteps hostlaunch's per-service `server <name>` default: the current
-// scaffold's `server` command is cobra.NoArgs — a single service is a
-// dedicated typed subcommand, never a `server` positional.
-//
-// The KCL `output` deploy.type is left untouched, so `forge build` /
-// `forge env deploy` still docker-build + cluster-deploy off the real
-// topology; only the in-memory entity set THIS host-only run consumes is
-// rewritten. Services already declared host-mode (an explicit KCL runner
-// such as air/delve) are preserved verbatim; build-only binaries are
-// dropped from the serve set (one-shot CLIs, not dev servers).
-func collapseClusterServicesToHost(e *KCLEntities) {
-	if e == nil {
-		return
-	}
-	kept := make([]ServiceEntity, 0, len(e.Services))
-	seenTarget := make(map[string]bool)
-	for _, svc := range e.Services {
-		// Genuine host-mode services keep their declared runner + command.
-		if svc.Deploy.Type == "host" && svc.Deploy.Host != nil {
-			kept = append(kept, svc)
-			continue
-		}
-		// INFRASTRUCTURE is not a workload to collapse: these are the
-		// servers the host processes are about to DIAL — postgres, the dev
-		// IdP — not code this project builds and runs. The host phase
-		// brings them up through the same providers the cluster path uses.
-		// Dropping them here would delete the declaration before anything
-		// could act on it, which is exactly what made `forge run` start an
-		// app against whatever happened to be listening on the DSN's port.
-		//
-		// BOTH infrastructure shapes must be listed. `host-infra` is not
-		// covered by the `host` case above (that one is HostDeploy — code
-		// this project compiles) and would otherwise fall through to the
-		// `!= "cluster"` skip below and vanish silently, taking the dev
-		// database with it.
-		if svc.Deploy.Type == "compose" || svc.Deploy.Type == "host-infra" {
-			kept = append(kept, svc)
-			continue
-		}
-		// Only long-running server-class components serve locally; skip
-		// build-only binaries and any other non-cluster deploy shape.
-		if svc.Deploy.Type != "cluster" {
-			continue
-		}
-		// A cluster service whose effective build is NOT a GoBuild has no
-		// `go run` target in THIS module: a ShellBuild builds it out of band
-		// (commonly from a sibling repo), a DockerBuild from a Dockerfile.
-		// goRunCmdForService says so itself — for a non-Go build it returns
-		// ./cmd/<name> only because the caller "still needs a sane string" —
-		// and collapsing on that string produces `go run ./cmd/<name> server`
-		// against a package that does not exist. The process dies instantly
-		// with "stat ./cmd/<name>: directory not found" and the readiness gate
-		// reports the corpse as
-		//   "<name> :<port>  nothing is listening — the service failed to bind
-		//    its port"
-		// which sends the reader hunting a port conflict that was never there.
-		// Skip it and say which service and why: it is not host-runnable, it
-		// deploys to the cluster, and a full `forge env up` still builds it.
-		if b := svc.EffectiveBuild(); b.Type != "go" {
-			how := b.Type
-			if how == "" {
-				how = "non-Go"
-			}
-			fmt.Printf("[up] %s is not host-runnable (%s build — no go-run target in this module) — skipping; it deploys to the cluster\n",
-				svc.Name, how)
-			continue
-		}
-		target := goRunCmdForService(svc)
-		if seenTarget[target] {
-			continue // shared binary already represented by one host process
-		}
-		seenTarget[target] = true
-		// Carry the service's DECLARED env across the collapse. Building a
-		// bare HostDeploy here would silently drop every value the
-		// environment stated for this workload, so the host process would
-		// boot with LESS configuration than the cluster one — the opposite
-		// of what running it locally is supposed to mean.
-		//
-		// Both sources are merged, deploy-block last, because a workload's
-		// env arrives on two levels: the per-workload stream on the
-		// RenderedWorkload (`env_vars = c.env_vars` in the env's bundle,
-		// which is where the base env and per-env config land) and any
-		// extra the deploy block itself declares. Cluster-side, k8s folds
-		// them into one container `env`; here they have to be folded
-		// explicitly.
-		//
-		// The dev DSN is the case that makes this load-bearing:
-		// deploy/kcl/dev/main.k composes DATABASE_URL from the port it
-		// declares postgres on, so dropping it left the app with no
-		// DATABASE_URL at all — refusing to start on a required config
-		// field, several steps away from the collapse that discarded it.
-		declared := append([]KCLEnvVar(nil), svc.EnvVars...)
-		if c := svc.Deploy.Cluster; c != nil {
-			declared = append(declared, c.EnvVars...)
-		}
-		// PORT is the ONE value that must not cross. In the cluster it is
-		// the port the container binds INSIDE its own network namespace,
-		// where every workload can use 8080 without colliding; on the host
-		// there is one port space shared with every other stack on the
-		// machine, so forge assigns an ephemeral one instead
-		// (resolveEphemeralHostPorts). Carrying the container's value here
-		// reads as "this service declares its own port", suppresses that
-		// allocation, and sends two freshly-scaffolded projects to fight
-		// over 8080 — which on this machine is a port a foreign process
-		// already holds.
-		declared = withoutEnvVar(declared, "PORT")
-		svc.Deploy = DeployConfigEntity{
-			Type: "host",
-			Host: &HostDeploy{Runner: "go-run", EnvVars: declared},
-		}
-		svc.Command = []string{"go", "run", target, "server"}
-		kept = append(kept, svc)
-	}
-	e.Services = kept
-}
-
 // collapseJobsToHost rewrites each one-shot job's argv from the IN-IMAGE
-// form to something runnable on this machine, for the same reason
-// collapseClusterServicesToHost rewrites a service's.
+// form to something runnable on this machine.
+//
+// This is NOT the deleted deploy-type collapse. That one rewrote a
+// cluster-declared SERVICE into a host process, overruling the environment's
+// own placement decision from a CLI flag. This rewrites only argv[0], for
+// jobs forge is about to exec on the host through runHostJobs — which runs on
+// every `forge env up`, so the translation is unconditional rather than
+// gated on a flag.
 //
 // A job's `command` is written for the CONTAINER: `/app/<project> db
 // migrate up` is where the Dockerfile's production stage puts the binary.

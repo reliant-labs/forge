@@ -574,7 +574,16 @@ type HostDeploy struct {
 	// these instead of inferring bind ports from *_PORT env vars (see
 	// hostEnvPorts) — the inference misfires on dependency-address vars
 	// like TEMPORAL_PORT and then blocks `up` on healthy infra.
-	ListenPorts []int `json:"listen_ports,omitempty"`
+	//
+	// A POINTER so "not declared" and "declares zero ports" stay distinct.
+	// With a plain slice + omitempty the two are indistinguishable in the JSON
+	// contract, and forge treats both as "infer a port" — it then allocates an
+	// ephemeral one and fails the readiness gate when nothing binds it. That is
+	// wrong for any host workload that legitimately binds nothing: a packaged
+	// desktop app is the case that surfaced it (`listen_ports = []` in KCL,
+	// "nothing is listening — the service failed to bind its port" from a run
+	// that had in fact launched the app successfully).
+	ListenPorts *[]int `json:"listen_ports,omitempty"`
 }
 
 // K8sCluster is the deploy block for a cluster-mode service. Mirrors

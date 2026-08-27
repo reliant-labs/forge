@@ -71,17 +71,50 @@
 //
 // Every cell value is a pure function of (salt, table, column, rowIndex)
 // plus the column's DECLARED type and constraints — stateless per cell, no
-// sequential PRNG. Consequences: identical (schema, config) yields
+// sequential PRNG. The DECLARED type is not a detail of that list: postgres
+// parses it before it evaluates anything else, so a uuid column gets a real
+// (deterministic, self-evidently invented) uuid and a timestamp key member
+// gets a timestamp, rather than the one shape a key used to be assumed to
+// have. Consequences: identical (schema, config) yields
 // byte-identical INSERTs; adding a column never reshuffles other columns'
 // values (each column's value depends only on its own name); adding rows
 // never changes existing rows. Foreign-key values are derived from the
 // referenced table's own primary-key function, so every reference resolves
 // by construction.
 //
+// # Constraints that span two columns
+//
+// Determinism above is per-CELL, so a rule ABOUT TWO CELLS OF ONE ROW is
+// invisible to it: drawing each column independently makes such a rule true
+// only by coincidence, and postgres then aborts the whole seed. Two shapes
+// cover almost every one an application schema actually declares, and each
+// gets a pass that PLACES it rather than hoping:
+//
+//   - an ORDERING CHECK (`expires_at > issued_at`) ranks the columns and steps
+//     their values apart — see ordering.go;
+//   - a DISCRIMINATED UNION (`(kind = 'a' AND x IS NOT NULL AND y IS NULL) OR
+//     (kind = 'b' AND …)`) picks one branch of the OR and satisfies it whole,
+//     so a row's columns all come from the same branch — see union.go.
+//
+// Both are narrow matchers over the constraint text postgres hands back, and
+// both bail LOUDLY — naming the constraint and the reason — on the expressions
+// they cannot read, rather than writing rows that contradict a rule the schema
+// states.
+//
+// A COMPOSITE UNIQUE index (`UNIQUE (org_id, user_id)`) is the third such
+// rule, and the one that is not a CHECK at all. It says nothing about either
+// column — each may, and must, repeat — only that the PAIR may not, so
+// per-column distinctness is neither necessary nor sufficient. tuple.go deals
+// the members out as an ODOMETER over the distinct values each can supply
+// (a reference supplies its parent's rows; a data column supplies what the
+// one-column UNIQUE machinery would give it), which makes the tuple distinct
+// by construction, caps the table when the supplies run short, and refuses in
+// the same wording as the two above when no member supplies anything.
+//
 // # Two paths to one parent
 //
-// Determinism above is per-CELL, and that is exactly what makes a diamond
-// invisible to it: when a table references a parent both directly and through
+// The other place per-cell determinism goes blind is a diamond: when a table
+// references a parent both directly and through
 // another parent (orders.patient_id, and orders.prescription_id ->
 // prescriptions.patient_id), every edge is individually valid and the two
 // routes still name different rows. forge detects that from the foreign-key

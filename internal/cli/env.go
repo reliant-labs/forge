@@ -30,6 +30,7 @@ func newEnvCmd() *cobra.Command {
 	cmd.AddCommand(newEnvListCmd())
 	cmd.AddCommand(newEnvOptionsCmd())
 	cmd.AddCommand(newEnvConfigCmd())
+	cmd.AddCommand(newEnvRenderCmd())
 	cmd.AddCommand(newEnvNewCmd())
 	cmd.AddCommand(newDeployCmd())
 	cmd.AddCommand(newPromoteCmd())

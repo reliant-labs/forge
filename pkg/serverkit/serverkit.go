@@ -286,6 +286,12 @@ type ContextWorker interface {
 // restarts with a clear error in its termination log is operable; a pod
 // that keeps serving HTTP while its workers are silently dead is a
 // data-loss incident with a delay timer.
+//
+// It governs SUPERVISED components only. The pprof side-listener is not one:
+// a pprof bind failure is always logged and always survived, under either
+// policy. pprof does no work the service owes anyone, and losing the
+// service to a busy debug port is a worse outcome than losing the debug
+// port.
 type FailurePolicy int
 
 const (
@@ -340,10 +346,26 @@ type Config struct {
 	// Addr is the public listener address (e.g. ":8080"). Required.
 	Addr string
 
-	// PprofAddr is the side-listener for net/http/pprof. Empty
-	// disables the pprof server entirely. Never mount pprof on the
-	// public Addr — its endpoints can leak memory and stall the
-	// process.
+	// PprofAddr is the side-listener for net/http/pprof, and forge's
+	// scaffold sets it ON by default (127.0.0.1:6060) rather than leaving
+	// it empty. Never mount pprof on the public Addr — its endpoints can
+	// leak memory and stall the process — which is why this is a separate
+	// address rather than a path on the main mux.
+	//
+	// The default is LOOPBACK, and that is what makes always-on defensible:
+	// the listener exists in every environment and is routable from none of
+	// them (the scaffolded manifests give it no Service, route, or published
+	// port). Reach it with:
+	//
+	//	go tool pprof http://localhost:6060/debug/pprof/heap
+	//	kubectl port-forward <pod> 6060:6060   # then the line above
+	//
+	// Set a wildcard address (0.0.0.0:6060) where a profile genuinely has to
+	// cross a container boundary. Empty disables the pprof server entirely.
+	//
+	// A failed bind is NEVER fatal: Run logs it and serves on without pprof,
+	// regardless of FailurePolicy. A debug surface that can kill the process
+	// is worse than no debug surface.
 	PprofAddr string
 
 	// TLSCertPath and TLSKeyPath enable TLS when both are non-empty.

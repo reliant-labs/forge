@@ -83,56 +83,59 @@ func (d frontendDrift) shipsSomewhere() bool { return len(d.deployEnvs) > 0 }
 // config there is nothing for the KCL to disagree with, and a forge.yaml
 // broken enough not to parse has already failed the command that loaded
 // it first.
+//
+// Both of those Skips are DOWNGRADED to UNDETERMINED when any
+// environment failed to render (see [renderScope.fold]). That is the
+// right answer even for the forge.yaml arm: with a hole in the deploy
+// graph AND no config to compare it against, "the question does not
+// apply" is a stronger claim than the facts support.
 func CheckFrontendConfigDrift(_ context.Context, env *Environment) CheckResult {
-	renders, early := renderPreamble(env, "frontend declarations")
-	if early != nil {
-		return *early
-	}
-
-	cfg, err := config.LoadProjectDir(env.ProjectDir)
-	if err != nil {
-		return CheckResult{
-			Status:   StatusSkip,
-			Message:  "no readable forge.yaml — nothing to cross-check the deploy graph against",
-			Evidence: err.Error(),
+	return examineRendered(env, "frontend declarations", func(renders []envRender) CheckResult {
+		cfg, err := config.LoadProjectDir(env.ProjectDir)
+		if err != nil {
+			return CheckResult{
+				Status:   StatusSkip,
+				Message:  "no readable forge.yaml — nothing to cross-check the deploy graph against",
+				Evidence: err.Error(),
+			}
 		}
-	}
 
-	declared := make(map[string]bool, len(cfg.Frontends))
-	for _, fe := range cfg.Frontends {
-		declared[fe.Name] = true
-	}
-
-	drift := collectFrontendDrift(renders, declared)
-	if len(drift) == 0 {
-		return CheckResult{
-			Status: StatusPass,
-			Message: fmt.Sprintf("%d env(s): every KCL-declared frontend is in forge.yaml",
-				len(renders)),
+		declared := make(map[string]bool, len(cfg.Frontends))
+		for _, fe := range cfg.Frontends {
+			declared[fe.Name] = true
 		}
-	}
 
-	var problems []string
-	worst := StatusWarn
-	for _, d := range drift {
-		problems = append(problems, frontendDriftMessage(d))
-		if d.shipsSomewhere() {
-			worst = StatusFail
+		drift := collectFrontendDrift(renders, declared)
+		if len(drift) == 0 {
+			return CheckResult{
+				Status: StatusPass,
+				Message: fmt.Sprintf("%d env(s): every KCL-declared frontend is in forge.yaml",
+					len(renders)),
+			}
 		}
-	}
 
-	shipping := 0
-	for _, d := range drift {
-		if d.shipsSomewhere() {
-			shipping++
+		var problems []string
+		worst := StatusWarn
+		for _, d := range drift {
+			problems = append(problems, frontendDriftMessage(d))
+			if d.shipsSomewhere() {
+				worst = StatusFail
+			}
 		}
-	}
-	summary := fmt.Sprintf("%d frontend(s) declared in KCL but absent from forge.yaml", len(drift))
-	if shipping > 0 {
-		summary = fmt.Sprintf("%s — %d with a deploy target, so they claim to ship and cannot be built",
-			summary, shipping)
-	}
-	return CheckResult{Status: worst, Message: summary, Evidence: strings.Join(problems, "\n")}
+
+		shipping := 0
+		for _, d := range drift {
+			if d.shipsSomewhere() {
+				shipping++
+			}
+		}
+		summary := fmt.Sprintf("%d frontend(s) declared in KCL but absent from forge.yaml", len(drift))
+		if shipping > 0 {
+			summary = fmt.Sprintf("%s — %d with a deploy target, so they claim to ship and cannot be built",
+				summary, shipping)
+		}
+		return CheckResult{Status: worst, Message: summary, Evidence: strings.Join(problems, "\n")}
+	})
 }
 
 // collectFrontendDrift folds every environment's rendered frontends into
@@ -140,18 +143,18 @@ func CheckFrontendConfigDrift(_ context.Context, env *Environment) CheckResult {
 // environments declare it — the fix is a single forge.yaml entry, so a
 // per-environment finding would be the same instruction repeated.
 //
-// Renders that failed are skipped rather than reported: renderPreamble
-// has already decided whether a broken render is fatal, and a partial
-// render cannot distinguish "this env does not declare the frontend"
-// from "this env did not evaluate".
+// Only environments that RENDERED are folded in — which is now a
+// property of the input rather than a filter here: examineRendered hands
+// the check body nothing else. That matters because "this env does not
+// declare the frontend" and "this env did not evaluate" are
+// indistinguishable in a failed render, and the difference is the whole
+// question. The unread environments are named by the caller's scope
+// instead, where they downgrade the verdict.
 func collectFrontendDrift(renders []envRender, declared map[string]bool) []frontendDrift {
 	byName := map[string]*frontendDrift{}
 	var order []string
 
 	for _, r := range renders {
-		if r.err != nil {
-			continue
-		}
 		for _, fe := range r.frontends {
 			if fe.Name == "" || declared[fe.Name] {
 				continue

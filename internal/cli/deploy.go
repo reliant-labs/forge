@@ -2215,6 +2215,18 @@ func firstK8sClusterField(ctx context.Context, envName, field string) string {
 	if err != nil || entities == nil {
 		return ""
 	}
+	return k8sClusterFieldFromEntities(entities, field)
+}
+
+// k8sClusterFieldFromEntities is firstK8sClusterField's resolution over an
+// ALREADY-RENDERED entity set. Split out so a caller that has just rendered
+// the env (`forge env render`) reads the field off what it has instead of
+// paying for a second full KCL render to ask one question — and so both
+// callers resolve it by the same rule.
+func k8sClusterFieldFromEntities(entities *KCLEntities, field string) string {
+	if entities == nil {
+		return ""
+	}
 	for _, svc := range entities.Services {
 		if svc.Deploy.Type != "cluster" || svc.Deploy.Cluster == nil {
 			continue

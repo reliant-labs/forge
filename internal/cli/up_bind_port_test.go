@@ -101,7 +101,7 @@ func TestBuildHostServiceCmdBindsThePublishedPort(t *testing.T) {
 			Type: "host",
 			Host: &HostDeploy{
 				Runner:      "go-run",
-				ListenPorts: []int{64157},
+				ListenPorts: &[]int{64157},
 				EnvVars:     []KCLEnvVar{{Name: "PORT", Value: "64157"}},
 			},
 		},
@@ -119,5 +119,46 @@ func TestBuildHostServiceCmdBindsThePublishedPort(t *testing.T) {
 	if got != "64157" {
 		t.Fatalf("the launched process binds PORT=%s but forge published 64157 — "+
 			"the printed URL, the frontend's inlined API URL and the readiness probe all use the published value", got)
+	}
+}
+
+// A host service that DECLARES zero listen ports binds nothing, and forge must
+// neither invent a port for it nor fail it for not binding one.
+//
+// The distinction is only expressible because ListenPorts is a POINTER: with a
+// plain slice, "not declared" and "declared empty" are the same value, so forge
+// allocated an ephemeral port and then failed the readiness gate. Observed with
+// the packaged desktop app — it launched correctly and was still reported as
+// "nothing is listening — the service failed to bind its port".
+func TestHostServiceDeclaringNoPortsGetsNone(t *testing.T) {
+	empty := []int{}
+	host := &HostDeploy{ListenPorts: &empty}
+
+	if got := hostEnvPorts("reliant-desktop", host); len(got) != 0 {
+		t.Fatalf("hostEnvPorts with an explicit empty declaration = %v, want none", got)
+	}
+	if got := hostEnvPort("reliant-desktop", host); got != "" {
+		t.Fatalf("hostEnvPort with an explicit empty declaration = %q, want \"\"", got)
+	}
+
+	// And an ephemeral port must not be allocated for it.
+	ents := &KCLEntities{Services: []ServiceEntity{{
+		Name:   "reliant-desktop",
+		Deploy: DeployConfigEntity{Type: "host", Host: host},
+	}}}
+	resolveEphemeralHostPorts(ents)
+	if got := ents.Services[0].Deploy.Host.ListenPorts; got == nil || len(*got) != 0 {
+		t.Fatalf("resolveEphemeralHostPorts assigned %v to a service that binds nothing", got)
+	}
+}
+
+// The inference path must be unchanged: a service that declares NOTHING still
+// gets a port inferred, which is what every existing host service relies on.
+func TestHostServiceDeclaringNothingStillInfers(t *testing.T) {
+	host := &HostDeploy{
+		EnvVars: []KCLEnvVar{{Name: "PORT", Value: "8099"}},
+	}
+	if got := hostEnvPort("api", host); got != "8099" {
+		t.Fatalf("hostEnvPort with no declaration = %q, want inference to give \"8099\"", got)
 	}
 }

@@ -7,6 +7,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`forge env render <env>` — read what an environment renders, without
+  deploying it.** There was no supported way to ask "what objects does this
+  environment own". `kcl run` fails on a real project (it needs forge's
+  `kcl_plugin.forge` harness), `forge doctor` renders every environment and
+  reports a count, and `forge env deploy --dry-run` is the deploy command:
+  it resolves a kubectl context, runs the declared-cluster guard, and refuses
+  outright when the recorded build is behind HEAD. So the answer got
+  reconstructed by hand. One audit read 1,886 lines of KCL and inferred each
+  workload's target lexically — HOST from the presence of a `host =` block,
+  cluster from a `k8s = K8sOverrides{cluster = ...}` override a thousand
+  lines further down. One misread there deletes the wrong object out of the
+  wrong cluster.
+
+  The command prints the manifests a deploy would apply as a `---`-separated
+  YAML stream, each document preceded by a `# cluster:` comment naming where
+  it lands — a comment, so the stream still pipes into `kubectl diff -f -`.
+  Attribution matters because an environment renders ONE stream and may
+  deploy it to several clusters (control-plane's dev: most workloads on
+  k3d-control-plane, workspace-proxy on k3d-cp-daemon), and it is not
+  modelled a second time here: each document is handed to
+  `internal/cluster.ScopeManifestsToGroup`, the function that performs the
+  routing at deploy time, once per cluster. A document replicated to every
+  cluster (an unattributed Namespace) is printed once with both named, so
+  the object count equals the render's own — `forge doctor`'s 341 across
+  control-plane's five environments is 30 + 71 + 58 + 76 + 106. `--cluster`
+  narrows to exactly one cluster's stream; `--list` gives the inventory view;
+  `--kind` / `--name` / `--target` narrow further; a non-zero exit carries
+  the KCL error, so it works as a CI gate.
+
+  **It does not claim to be pure, because it cannot be.** KCL evaluates
+  `file.write` during rendering, so a project whose deploy KCL generates a
+  file writes it every time anything renders — control-plane's dev main.k
+  calls `nats.write_conf`, and `forge doctor` has been rewriting
+  `deploy/nats/nats.conf` on every run all along. forge has no hook to
+  suppress a project's own writes: the write happens inside the embedded KCL
+  runtime, which has no read-only mode, and imposing one from outside
+  (rendering from a copy of the tree, sandboxing the process) is neither
+  portable nor cheap. So the command reports instead of promising: it stats
+  the project tree before and after and names every file that changed, and
+  `--fail-on-write` turns that into a non-zero exit for callers that need
+  the guarantee. What forge CAN suppress it does — its own resolve_port
+  store write is reverted, content and mtime, so it never shows up in the
+  report as forge blaming the render for forge.
+
+- **`forge ci verify-test-run` — a green suite that ran almost nothing is now
+  visible.** A Go suite that skips its way through exits 0 and reads as green.
+  Measured on one real package, one environment variable apart: 9 pass / 124
+  skip without `DATABASE_URL`, 103 pass / 1 skip with it — same exit code, 7%
+  of the tests, and nothing in the pipeline had a word to say about it.
+
+  The new command reads the run's own `go test -json` output — from a pipe or
+  `--from a-file` — and reports the packages whose pass therefore proves
+  nothing. It runs no tests: `forge test` was removed precisely because a
+  second spelling of the project's suite reports on a different suite than the
+  one the project runs, so this reads the record of the run that already
+  happened. On a 176-package, 482 MB stream it takes 2.5 seconds.
+
+  Two rules, because skips are legitimate and a gate that fires on every skip
+  gets switched off: `zero-evidence` (every test in the package skipped — no
+  sample-size floor, "none of them ran" is unambiguous at any size) and
+  `mass-skip` (more than `--max-skip-ratio`, default 0.5, of at least
+  `--min-tests`, default 5). Healthy packages are never listed. Across the 112
+  tested packages of the reference project in its broken environment the pair
+  reports five, and the ratios above the line are 1.00 / 0.95 / 0.80 / 0.60 /
+  0.56 against a next-highest of 0.20 — the threshold sits in an empty band,
+  not through the middle of a crowd.
+
+  Genuinely-expected heavy skipping is declared once in forge.yaml under
+  `ci.test_skips.allow`, with a REQUIRED `reason` — the same contract as
+  `forge project disown <path> --reason`. A declaration that stops suppressing
+  anything is reported as no longer needed rather than left to rot; one that
+  matches no package in the run is silent, so a scoped `go test ./internal/x/`
+  does not drown in irrelevant notices.
+
+  Three states, not two: input carrying no `go test -json` events, or a stream
+  that ends mid-run, is UNDETERMINED and exits non-zero — the command never
+  reports a clean run it could not read, and `--warn-only` does not downgrade
+  that. Failures in the stream also fail it, because
+  `go test -json ./... | forge ci verify-test-run` in a shell without
+  `set -o pipefail` reports only the last command's status.
+
+### Changed
+
+- **Scaffolded services run pprof by default.** `pprof_addr` shipped with
+  no default, so a scaffolded binary declared `PPROF_ADDR` on the deploy
+  side and started no listener — the env var was projected onto every
+  workload and read by nobody, and `forge env status` reported
+  `? pprof — could not resolve a pprof address` about it. A gateway then
+  sat at ~1 GB of anonymous memory being OOMKilled with no way to ask the
+  process WHAT it was holding: a cgroup's `memory.stat` says how much and
+  never what, and the answer only exists while the process is still alive.
+
+  The default is now `127.0.0.1:6060`, and loopback is what makes always-on
+  safe: the listener exists in every environment and is routable from none
+  of them. It stays on its own serverkit listener (never the public port,
+  whose endpoints sit behind a k8s Service), and the scaffolded manifests
+  give it no Service, route, or container port — reach it with
+  `kubectl port-forward <pod> 6060:6060` and then
+  `go tool pprof http://localhost:6060/debug/pprof/heap`. The scaffolded
+  `docker-compose.yml` overrides it to `0.0.0.0:6060`, the one place a
+  profile has to cross a container boundary (Alloy scrapes it for
+  Pyroscope). `PPROF_ADDR` / `--pprof-addr` moves it; `""` switches it off.
+
+- **A pprof bind failure can no longer take a service down.** `serverkit.Run`
+  routed it through `FailurePolicy`, so with the default `FailProcess` a busy
+  debug port terminated the process. That was defensible while pprof was
+  opt-in; with it on by default the ordinary cause is banal — a second copy
+  of the binary on the same dev box — and a debug surface that can kill the
+  service is worse than no debug surface. Run now logs it and serves on,
+  under either policy. `FailurePolicy` continues to govern supervised
+  components (workers, operators) unchanged.
+
 ## [0.1.0] - 2026-08-17
 
 First minor release. The root CLI (`v0.1.0`) and the runtime library

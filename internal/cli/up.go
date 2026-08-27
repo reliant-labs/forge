@@ -54,16 +54,14 @@ import (
 
 // upOptions bundles flags for `forge env up`.
 type upOptions struct {
-	env         string
-	noBuild     bool
-	noDeploy    bool
-	clusterOnly bool // build + deploy cluster manifests, skip host/frontend
-	hostOnly    bool // skip cluster build+deploy, run host + frontend phases only
-	background  bool // detach and write PID files; use `forge env down <env>` to teardown
-	watch       bool // force supervise (hold + Ctrl-C teardown) even without a TTY
-	noGenerate  bool // skip the pre-build "ensure generated code" step (--no-generate)
-	noInstall   bool // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
-	noSeed      bool // skip the first-boot dev auto-seed (--no-seed)
+	env        string
+	noBuild    bool
+	noDeploy   bool
+	background bool // detach and write PID files; use `forge env down <env>` to teardown
+	watch      bool // force supervise (hold + Ctrl-C teardown) even without a TTY
+	noGenerate bool // skip the pre-build "ensure generated code" step (--no-generate)
+	noInstall  bool // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
+	noSeed     bool // skip the first-boot dev auto-seed (--no-seed)
 	// targets, when non-empty, scopes the WHOLE run to the named
 	// services/operators/frontends — build, deploy, host and frontend
 	// phases alike, mirroring `forge env deploy --target`. Naming a
@@ -122,9 +120,10 @@ Phases:
 Reaching cluster services from the host is the Gateway API ingress
 path; run ` + "`forge cluster urls`" + ` to list the routes.
 
-Use --no-build / --no-deploy to skip phases when iterating. Use
---cluster-only / --host-only to scope the orchestrator to one side of
-the split (cluster CI / host-only debugging respectively).
+Use --no-build / --no-deploy to skip phases when iterating. Use --target
+<name> to scope the whole run to one service — a CI lane that only wants
+that service's cluster apply, or a dev loop iterating on one host-mode
+service, both scope the same way.
 
 Lifecycle (what happens after host services + frontends start):
 
@@ -155,7 +154,7 @@ a port held by anything else is an error, never a kill.
 Examples:
   forge env up dev
   forge env up dev --no-build
-  forge env up dev --cluster-only
+  forge env up dev --target admin-server -D host_runner=go-run
   forge env up dev --watch        # hold + Ctrl-C teardown even when piped
   forge env up dev --background
   forge env down dev
@@ -182,9 +181,6 @@ Render options (-D):
   ` + "`env up`" + ` only — a cluster apply must stay reproducible from the repo alone.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.env = args[0]
-			if opts.clusterOnly && opts.hostOnly {
-				return fmt.Errorf("--cluster-only and --host-only are mutually exclusive")
-			}
 			// --watch and --background both override the TTY default, in
 			// opposite directions (hold vs detach). They are not combinable:
 			// resolveUpLifecycle documents --background as the winner, but a
@@ -199,8 +195,6 @@ Render options (-D):
 
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
-	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend")
-	cmd.Flags().BoolVar(&opts.hostOnly, "host-only", false, "Only run host phases (host + frontend); skip build/deploy")
 	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge env down <env>`). Beats --watch and the TTY default.")
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Force the hold-and-teardown lifecycle (block until Ctrl-C, then cascade-stop) even without a TTY. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge env up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
@@ -361,7 +355,12 @@ func runUpServices(ctx context.Context, env string, jsonOut bool, signal string,
 		// notReadyLabel "down": unlike the immediate post-launch summary (where a
 		// not-yet-listening port means "still booting"), this snapshot runs long
 		// after start, so a dead port is genuinely down.
-		renderUpSummary(os.Stdout, env, rows, "down", true, nil)
+		//
+		// cluster=nil: `forge env status` prints the SAME verdict a few
+		// lines below, as the "Cluster Workloads" runtime check with its own
+		// -v evidence. Repeating it inside the box would be two renderings
+		// of one fact that can drift apart.
+		renderUpSummary(os.Stdout, env, rows, "down", true, nil, nil)
 	}
 	// Printed AFTER the table: the table is the answer most invocations
 	// want, and the checks read as its detail. A project with no host rows
@@ -521,66 +520,50 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	}
 	summarizeKCLBuildPlan(planEntities)
 
-	// Derive this run's scope (which phases execute) from --cluster-only /
-	// --host-only. scope is the single source of truth the phase gates below
-	// read, instead of re-testing the raw flags at each site — and the seam
-	// where a future entity kind (e.g. Terraform infra) becomes one more
-	// scope field + gated block rather than another scattered conditional.
-	scope := upScope(opts.clusterOnly, opts.hostOnly)
+	// `forge env up` always runs the whole dev loop — cluster build+deploy,
+	// host, frontend — with --target narrowing WHICH entities inside each
+	// phase, never which phases run. A service that should run as a host
+	// process during dev says so declaratively in its KCL
+	// (`host = forge.HostOverrides {...}`, e.g. `-D host_runner=go-run` to
+	// switch the launch runner); forge never rewrites a cluster-declared
+	// entity's deploy type based on a flag.
 
-	// Host-only (`forge run` / `--host-only`) runs the project's services
-	// as local `go run` host processes instead of building + deploying them
-	// to the cluster. The rendered services carry their PRODUCTION
-	// deploy.type=="cluster", which upHostServices would skip — so collapse
-	// them to shared-binary host processes here (see the helper for the
-	// one-process-per-binary rationale). Guarded on hostOnly so a full
-	// `forge env up` still deploys cluster services to k8s and runs only
-	// genuinely host-declared services on the host.
+	// One-shot jobs are the exception that proves that rule, and it is an
+	// argv translation rather than a placement decision: runHostJobs execs
+	// them HERE, on this machine, but their `command` is written for the
+	// image (`/app/<project> db migrate up`) — a path that does not exist on
+	// a developer's laptop. Rewriting argv[0] to the go-run target does not
+	// move a workload anywhere; it just spells the same binary the way the
+	// host can reach it.
+	collapseJobsToHost(entities, cfg.Name)
+
 	// apiBaseURL is the ephemeral backend base URL wired into the frontends
 	// (via NEXT_PUBLIC_API_URL / VITE_API_URL / EXPO_PUBLIC_API_URL) so they
 	// reach the backend on its allocated port instead of the baked default.
-	// Empty for a full (cluster) up, where the backend is not host-allocated.
-	apiBaseURL := ""
-	if opts.hostOnly {
-		collapseClusterServicesToHost(entities)
-		// Same translation for the one-shots: their argv is written for
-		// the image (`/app/<project> db migrate up`), and on the host the
-		// project binary is `go run ./cmd/<project>`.
-		collapseJobsToHost(entities, cfg.Name)
-		// Ephemeral dev ports (host-only dev loop only — a full `forge env up`
-		// leaves cluster/declared ports untouched). Two freshly-scaffolded
-		// stacks otherwise both fall back to backend :8080 and frontend :3000
-		// and fight for them; here each gets a distinct, kernel-assigned free
-		// port, resolved BEFORE the pre-flight conflict guard / readiness gate
-		// / summary / launch so every one of those reads the same value.
-		// resolveEphemeralHostPorts returns the primary backend URL for the
-		// frontend wiring; resolveEphemeralFrontendPorts also mutates cfg so
-		// the backend's dev CORS_ORIGINS allows the frontend's actual origin.
-		apiBaseURL = resolveEphemeralHostPorts(entities)
-		resolveEphemeralFrontendPorts(cfg, entities)
-	}
+	// Only host services that declare no port of their own get one — see
+	// resolveEphemeralHostPorts.
+	apiBaseURL := resolveEphemeralHostPorts(entities)
+	resolveEphemeralFrontendPorts(cfg, entities)
 
 	// Build the per-env secret provider ONCE for this run (dotenv reads
 	// the file now; external/none are cheap no-ops). Reused for both the
 	// fail-fast validation below and the host-service env injection in
 	// upHostServices — building it here avoids re-reading the dotenv per
-	// service. When the host phase is in scope it WILL run, so validate up
-	// front that every host service's declared secret_ref resolves against
-	// the provider before any process starts. ValidateDeclaredRefs is a
-	// no-op for external/none providers, so this only bites a dotenv
-	// provider missing a declared key (and lists every miss at once).
+	// service. The host phase always runs, so validate up front that every
+	// host service's declared secret_ref resolves against the provider
+	// before any process starts. ValidateDeclaredRefs is a no-op for
+	// external/none providers, so this only bites a dotenv provider missing
+	// a declared key (and lists every miss at once).
 	prov, err := secretProviderFromEntities(entities, projectDir)
 	if err != nil {
 		return fmt.Errorf("secret provider: %w", err)
 	}
-	if scope.host {
-		dotenvPath := ""
-		if entities.SecretProvider != nil {
-			dotenvPath = entities.SecretProvider.Path
-		}
-		if err := secrets.ValidateDeclaredRefs(prov, secretRefsForHostServices(entities), dotenvPath); err != nil {
-			return err // already actionable; lists every missing key
-		}
+	dotenvPath := ""
+	if entities.SecretProvider != nil {
+		dotenvPath = entities.SecretProvider.Path
+	}
+	if err := secrets.ValidateDeclaredRefs(prov, secretRefsForHostServices(entities), dotenvPath); err != nil {
+		return err // already actionable; lists every missing key
 	}
 
 	// Cluster phases — build + deploy. Both are feature-gated: if the
@@ -590,37 +573,32 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// `forge env deploy` invocations still error — see requireFeature
 	// in feature_gate.go for the strict-gate shape used by the cobra
 	// RunE for those commands.
-	if scope.cluster {
-		if err := upBuildDeployPhases(ctx, upClusterInput{
-			store: store, cfg: cfg, entities: entities, projectDir: projectDir,
-			opts: opts, scope: scope,
-		}); err != nil {
-			return err
-		}
+	if err := upBuildDeployPhases(ctx, upClusterInput{
+		store: store, cfg: cfg, entities: entities, projectDir: projectDir,
+		opts: opts,
+	}); err != nil {
+		return err
 	}
 
-	// Nothing left to run once neither host nor frontend is in scope — the
-	// --cluster-only case. Return after the apply; no processes to supervise.
-	if !scope.host && !scope.frontend {
-		fmt.Println("\n[up] --cluster-only: skipping host/frontend phases")
-		return nil
-	}
+	// Whether this run asserts on Kubernetes workload health at the end.
+	// Resolved once, from the feature/target facts already in hand, so
+	// both terminal paths below gate identically.
+	clusterGate := upClusterGateEnabled(store, entities, opts.targets)
 
-	// When the build phase was skipped (--host-only / --no-build) the
-	// host runners (air / go-run) still compile against gen/, so ensure
-	// generated code is present here too — otherwise host services fail
-	// with the same "cannot load module gen" error the build phase would
-	// have pre-empted. No-op when up-to-date or --no-generate. (The
-	// non-skipped path already ran this inside runBuild.)
-	if !scope.cluster || opts.noBuild {
+	// When --no-build skipped the build phase, the host runners (air /
+	// go-run) still compile against gen/, so ensure generated code is
+	// present here too — otherwise host services fail with the same
+	// "cannot load module gen" error the build phase would have
+	// pre-empted. No-op when up-to-date or --no-generate. (The non-skipped
+	// path already ran this inside runBuild.)
+	if opts.noBuild {
 		if err := ensureGeneratedCode(projectDirForKCL(), opts.noGenerate); err != nil {
 			return fmt.Errorf("ensure generated code: %w", err)
 		}
 	}
 
 	// Pre-flight. Respects --target (only the services this invocation would
-	// start are considered) and the frontend feature gate. Cluster-only never
-	// reaches here.
+	// start are considered) and the frontend feature gate.
 	frontendsOn := frontendPhaseEnabled(store, entities)
 	if err := upPreflight(projectID, opts.env, entities, opts.targets, frontendsOn); err != nil {
 		// Undo any resolve_port drift this rejected render persisted, so the
@@ -653,35 +631,31 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	procs := newProcRegistry(projectID, projectDir, opts.env)
 
 	// Phase 3: host-mode services.
-	if scope.host {
-		if err := upHostPhase(ctx, hostPhase{
-			cfg: cfg, entities: entities, prov: prov, opts: opts,
-			projectDir: projectDir, detach: detach, procs: procs,
-		}); err != nil {
-			return err
-		}
+	if err := upHostPhase(ctx, hostPhase{
+		cfg: cfg, entities: entities, prov: prov, opts: opts,
+		projectDir: projectDir, detach: detach, procs: procs,
+	}); err != nil {
+		return err
 	}
 
-	// Phase 4: frontends. In scope unless --cluster-only; further skipped
-	// when the project EXPLICITLY sets features.frontend: false — the
-	// orchestrator otherwise tries to npm-run-dev a tree that the project
-	// never scaffolded. The skip line is printed only when the render
-	// actually declares frontends: on a backend-only project there is
-	// nothing to elide and the line was pure noise.
-	if scope.frontend {
-		if frontendPhaseEnabled(store, entities) {
-			feFailures := upFrontends(ctx, frontendLaunch{
-				entities: entities, env: opts.env, background: detach,
-				noInstall: opts.noInstall, targets: opts.targets,
-				frontendArgs: opts.frontendArgs, apiBaseURL: apiBaseURL, procs: procs,
-			})
-			if feFailures > 0 {
-				fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
-			}
-		} else if len(entities.Frontends) > 0 {
-			fmt.Printf("[up:frontend] feature 'frontend' is disabled in forge.yaml — skipping %d frontend(s)\n",
-				len(entities.Frontends))
+	// Phase 4: frontends. Skipped when the project EXPLICITLY sets
+	// features.frontend: false — the orchestrator otherwise tries to
+	// npm-run-dev a tree that the project never scaffolded. The skip line
+	// is printed only when the render actually declares frontends: on a
+	// backend-only project there is nothing to elide and the line was
+	// pure noise.
+	if frontendPhaseEnabled(store, entities) {
+		feFailures := upFrontends(ctx, frontendLaunch{
+			entities: entities, env: opts.env, background: detach,
+			noInstall: opts.noInstall, targets: opts.targets,
+			frontendArgs: opts.frontendArgs, apiBaseURL: apiBaseURL, procs: procs,
+		})
+		if feFailures > 0 {
+			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
 		}
+	} else if len(entities.Frontends) > 0 {
+		fmt.Printf("[up:frontend] feature 'frontend' is disabled in forge.yaml — skipping %d frontend(s)\n",
+			len(entities.Frontends))
 	}
 
 	// Persist the RESOLVED discovery facts (name→port map + DATABASE_URL)
@@ -703,29 +677,45 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// "up". Detect and report only: nothing is killed here, and the children
 	// this run started are already tracked, so the next `forge env up` / `forge
 	// run` for this project+env reclaims them and `forge env down` stops them.
-	// Only when this run actually started host services (scope.host); scoped
-	// by --target inside the gate.
-	if scope.host {
-		if err := waitHostServicesReady(entities, projectID, opts.env, opts.targets, hostReadyTimeout, hostReadyPoll); err != nil {
-			return err
-		}
-		// First-boot dev auto-seed. By this point the app's AUTO_MIGRATE has
-		// run (readiness gate passed), so the schema is current. Warn-never-
-		// fatal: a seed failure never breaks the dev loop.
-		maybeAutoSeed(ctx, store, cfg, entities, opts)
+	// Scoped by --target inside the gate.
+	if err := waitHostServicesReady(entities, projectID, opts.env, opts.targets, hostReadyTimeout, hostReadyPoll); err != nil {
+		return err
 	}
+	// First-boot dev auto-seed. By this point the app's AUTO_MIGRATE has
+	// run (readiness gate passed), so the schema is current. Warn-never-
+	// fatal: a seed failure never breaks the dev loop.
+	maybeAutoSeed(ctx, store, cfg, entities, opts)
+
+	// The cluster half of the readiness gate, taken as late as possible: the
+	// deploy phase already waited each rollout out, and the host phase since
+	// then is free settling time. One look, not a poll — see
+	// evalClusterWorkloads.
+	clusterHealth := evalClusterWorkloads(ctx, clusterGate, projectDir, opts.env)
 
 	// Summary box: what's listening where, and where to find each
 	// service's log. Printed in both the supervise and detach paths so the
 	// URLs + log paths are one glance away (and greppable for an agent).
 	// frontendsOn (computed above for the port-conflict guard) is reused so
 	// the summary lists exactly the frontends this run actually started.
-	printUpSummary(entities, opts.env, detach, opts.targets, frontendsOn)
+	// The cluster verdict rides in the same box: the half of "what came up"
+	// that runs in Kubernetes was missing from it entirely.
+	printUpSummary(entities, opts.env, detach, opts.targets, frontendsOn, clusterHealth)
+
+	clusterErr := clusterWorkloadError(opts.env, clusterHealth)
 
 	if detach {
 		fmt.Printf("[up] detached %d process(es). Stop with `forge env down %s`.\n",
 			procs.count(), opts.env)
-		return nil
+		return clusterErr
+	}
+
+	if clusterErr != nil {
+		// Do NOT hold the foreground on an env that is not up: the hold
+		// exits 0 on Ctrl-C, which is the green-exit-over-a-crashloop this
+		// gate exists to end. Nothing is killed — the host children are in
+		// the ledger, so `forge env down` still reaches them.
+		fmt.Printf("[up] host/frontend process(es) from this run are still running — stop them with `forge env down %s`.\n", opts.env)
+		return clusterErr
 	}
 
 	if procs.count() == 0 {
@@ -764,11 +754,18 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 	cfg, entities, opts := p.cfg, p.entities, p.opts
 	{
 		// Converge the env's DECLARED infrastructure before any host process
-		// dials it. The cluster path already does this (the infra pre-warm in
-		// upClusterBringup); a host-only run skipped it entirely, which is why
-		// `forge run` used to start an app against whatever happened to be
-		// listening on the scaffolded DSN's port — including another project's
-		// postgres, silently, with the right port and the wrong database.
+		// dials it. The cluster phase already kicks off the same pre-warm
+		// concurrently with the build (see upBuildDeployPhases) — but that
+		// one is skipped under --no-deploy,
+		// and prewarmInfra/hostinfra.Start are idempotent (a running
+		// instance is adopted, not restarted), so calling it again here
+		// unconditionally is what guarantees a host service's dependencies
+		// are up regardless of which build/deploy flags this run passed.
+		// Without it a run that skips the cluster phase's pre-warm (or ran
+		// before this project declared any cluster workloads at all) starts
+		// an app against whatever happened to be listening on the
+		// scaffolded DSN's port — including another project's postgres,
+		// silently, with the right port and the wrong database.
 		//
 		// This is deliberately generic: it brings up whatever the env's KCL
 		// declares as infrastructure and knows nothing about what those
@@ -783,24 +780,20 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		// project may legitimately run its infra out of band, and the
 		// readiness gate below is the authoritative check on whether the
 		// stack actually came up.
-		if opts.hostOnly {
-			if err := prewarmInfra(ctx, opts.env, entities); err != nil {
-				fmt.Printf("[up] infra: %v (continuing; host services may fail to connect)\n", err)
-			}
+		if err := prewarmInfra(ctx, opts.env, entities); err != nil {
+			fmt.Printf("[up] infra: %v (continuing; host services may fail to connect)\n", err)
 		}
 		// Ensure the dev database the host services are about to dial EXISTS
 		// before they boot — the runtime counterpart to the generate-time
 		// shadow DB, which forge already ensure-creates on the fly. A freshly
 		// scaffolded dev DSN (…:5434/<project>) names a database nothing has
 		// issued CREATE DATABASE for, so the first `forge run` boot would
-		// otherwise die with `FATAL: database "<project>" does not exist` before
-		// AUTO_MIGRATE could apply the schema. Host-run dev loop only
-		// (`forge run` / `--host-only`); a full `forge env up dev` manages its DB
-		// via compose/k8s, not this localhost DSN.
-		if opts.hostOnly {
-			if err := ensureDevDatabase(cfg, entities, opts.env); err != nil {
-				return err
-			}
+		// otherwise die with `FATAL: database "<project>" does not exist`
+		// before AUTO_MIGRATE could apply the schema. ensureDevDatabase is a
+		// no-op off dev (seedTargetIsDev gates it) and off a resolved DSN, so
+		// running it unconditionally here costs nothing on staging/prod.
+		if err := ensureDevDatabase(cfg, entities, opts.env); err != nil {
+			return err
 		}
 		// Identity needs no SPECIAL step here — the idp-provision job below
 		// IS the convergence step, run through the exact same runHostJobs
@@ -862,7 +855,8 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 //     all the port probe was ever for. After (1) every remaining holder is
 //     foreign by construction — a foreign process is reported, never killed.
 func upPreflight(projectID, env string, e *KCLEntities, targets []string, frontendsOn bool) error {
-	if stopped := stopStackScoped(projectID, env, targets); stopped > 0 {
+	stopped := stopStackScoped(projectID, env, targets)
+	if stopped > 0 {
 		scopeNote := ""
 		if len(targets) > 0 {
 			scopeNote = fmt.Sprintf(" for %s (other services left running)", strings.Join(targets, ", "))
@@ -872,6 +866,28 @@ func upPreflight(projectID, env string, e *KCLEntities, targets []string, fronte
 	conflicts := conflictingPorts(e, targets, frontendsOn, portInUse)
 	if len(conflicts) == 0 {
 		return nil
+	}
+	// A teardown does not free ports synchronously, so a port still bound
+	// THIS instant is not yet evidence of anything.
+	//
+	// killTreesAndWait waits only on the tree ROOTS it signalled. The process
+	// actually holding the port is usually a DESCENDANT — `go run` execs the
+	// binary it compiled, air re-execs the server — which is never in that
+	// list and so is never waited on. The final SIGKILL pass is not waited on
+	// either. Probing here therefore raced a listener that was already on its
+	// way out, and reported a stack forge had just successfully stopped as one
+	// that "still holds these ports", telling the user to run `forge env down`
+	// against processes that no longer existed by the time they read it.
+	//
+	// So: re-probe the conflicting ports over a bounded grace, and treat only
+	// what SURVIVES it as a conflict. Gated on stopped > 0 because nothing was
+	// released if nothing was killed — a purely foreign holder still fails
+	// fast, with no waiting.
+	if stopped > 0 {
+		conflicts = awaitPortRelease(conflicts, portInUse, portReleaseGrace, portReleasePollInterval, time.Sleep)
+		if len(conflicts) == 0 {
+			return nil
+		}
 	}
 	// Classified against a FRESH process snapshot — the teardown above changed
 	// the table, so a snapshot taken before it would be stale. Anything still
@@ -917,7 +933,6 @@ type upClusterInput struct {
 	entities   *KCLEntities
 	projectDir string
 	opts       upOptions
-	scope      reconcileScope
 }
 
 // upBuildDeployPhases runs the build/infra/deploy side of `forge env up`.
@@ -931,7 +946,7 @@ type upClusterInput struct {
 // can depend on the env's compose/host-infra services even when none of the
 // selected applications runs in Kubernetes.
 func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
-	store, cfg, entities, opts, scope := in.store, in.cfg, in.entities, in.opts, in.scope
+	store, cfg, entities, opts := in.store, in.cfg, in.entities, in.opts
 	required := targetPhaseRequirements(entities, opts.targets)
 	// Cluster phase — ensure every declared k3d cluster exists BEFORE
 	// anything builds or deploys (image pushes target a cluster's
@@ -975,7 +990,7 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 	// phase won't run (--no-deploy): nothing would consume the infra and
 	// nothing later barriers on it.
 	var infraWarm chan error
-	if scope.infra && !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:infra") {
+	if !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:infra") {
 		infraWarm = make(chan error, 1)
 		go func() {
 			fmt.Println("\n[up] infra phase (concurrent with build)")
@@ -1312,16 +1327,27 @@ func enrichOwnership(rows []upServiceRow, projectID, env string) {
 // Health here is best-effort: the processes JUST started, so a service
 // still binding its port shows "starting" (not "down"). Use
 // `forge env status <env>` for the settled status.
-func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool) {
+// cluster is this run's rolled-up Kubernetes workload verdict, or nil when
+// the run has nothing to say about a cluster (see clusterWorkloadSummary).
+// It is what makes the box tell the truth about BOTH halves of what was
+// brought up; a box that lists only host processes is the same silence the
+// exit code used to keep.
+func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool, cluster *clusterWorkloadSummary) {
 	rows := collectUpServices(e, env, targets, frontendsOn, portInUse)
-	if len(rows) == 0 {
+	if len(rows) == 0 && cluster == nil {
 		return
 	}
-	trailer := "Ctrl-C to stop."
-	if background {
-		trailer = fmt.Sprintf("Detached — stop with `forge env down %s`", env)
+	var trailers []string
+	// The lifecycle trailer is about the host/frontend children. With no
+	// rows there are none, and "Ctrl-C to stop." / "stop with forge env
+	// down" would be advice about processes that do not exist.
+	if len(rows) > 0 {
+		trailer := "Ctrl-C to stop."
+		if background {
+			trailer = fmt.Sprintf("Detached — stop with `forge env down %s`", env)
+		}
+		trailers = append(trailers, trailer)
 	}
-	trailers := []string{trailer}
 	// A stack whose two identity halves disagree comes up looking perfectly
 	// healthy — every process green, every port bound — and then answers 401
 	// to every authenticated RPC. The banner is the one place someone is
@@ -1333,7 +1359,7 @@ func printUpSummary(e *KCLEntities, env string, background bool, targets []strin
 	// showOwner=false: the immediate summary stays off the lsof/ps hot path;
 	// notReadyLabel="starting" because a just-launched port not yet bound is
 	// booting, not down.
-	renderUpSummary(os.Stdout, env, rows, "starting", false, trailers)
+	renderUpSummary(os.Stdout, env, rows, "starting", false, trailers, cluster)
 }
 
 // authParityTrailer returns a one-line banner warning when this environment's
@@ -1372,8 +1398,12 @@ func authParityTrailerIn(root, env string) string {
 //   - showOwner appends the listener pid + a "not forge-owned" flag when a
 //     foreign process holds the port (the `services` command).
 //   - trailers are extra footer lines (e.g. the Ctrl-C / detached hint).
-func renderUpSummary(w io.Writer, env string, rows []upServiceRow, notReadyLabel string, showOwner bool, trailers []string) {
-	if len(rows) == 0 {
+//   - cluster is the env's Kubernetes workload verdict, printed as its own
+//     group; nil omits the group entirely. A box with no rows but a cluster
+//     verdict still prints — that is a run over a purely in-cluster env,
+//     whose whole output IS the cluster.
+func renderUpSummary(w io.Writer, env string, rows []upServiceRow, notReadyLabel string, showOwner bool, trailers []string, cluster *clusterWorkloadSummary) {
+	if len(rows) == 0 && cluster == nil {
 		return
 	}
 	// Column widths from the data so name/URL/status align in one table.
@@ -1441,8 +1471,16 @@ func renderUpSummary(w io.Writer, env string, rows []upServiceRow, notReadyLabel
 	if anyAttributionUndetermined(rows) {
 		fmt.Fprintf(w, "%s ⚠ SOME PROCESSES COULD NOT BE ATTRIBUTED (argv unreadable) — see the flagged service(s) below\n", bar)
 	}
+	// The loud line, in the same register as the duplicate-process alarm
+	// above it. A green box over a crashlooping cluster is the specific
+	// output that hid daemon-gateway for an hour; the banner is the one
+	// place someone is definitely looking at that moment.
+	if cluster != nil && cluster.status == doctor.StatusFail {
+		fmt.Fprintf(w, "%s ✗ CLUSTER WORKLOADS NOT RUNNING — this env is NOT up (see below)\n", bar)
+	}
 	printGroup("Host services", "host")
 	printGroup("Frontends", "frontend")
+	renderClusterWorkloads(w, bar, env, cluster)
 	fmt.Fprintf(w, "%s\n", bar)
 	fmt.Fprintf(w, "%s Logs   %s/   — tail -f / grep the per-service *.log here\n", bar, upLogDir(env))
 	fmt.Fprintf(w, "%s Cluster routes:  forge cluster urls\n", bar)
@@ -1518,8 +1556,14 @@ func hostEnvPort(name string, host *HostDeploy) string {
 	// through to the env heuristic here would surface a port the service
 	// never binds (e.g. a vestigial k8s-convention PORT), and the summary /
 	// status probe would then report whatever foreign process holds it.
-	if len(host.ListenPorts) > 0 && host.ListenPorts[0] > 0 {
-		return strconv.Itoa(host.ListenPorts[0])
+	if host.ListenPorts != nil {
+		// Declared — including declared EMPTY, which means "binds nothing" and
+		// must not fall through to the env heuristic (that would invent a port
+		// for a service that has none, e.g. a packaged desktop app).
+		if len(*host.ListenPorts) > 0 && (*host.ListenPorts)[0] > 0 {
+			return strconv.Itoa((*host.ListenPorts)[0])
+		}
+		return ""
 	}
 	specific := strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_PORT"
 	generic := ""
@@ -1568,10 +1612,13 @@ func hostEnvPorts(name string, host *HostDeploy) []int {
 	// WORKSPACE_URL_PORT, a leftover k8s-convention PORT) as bind ports and
 	// then refuses `up` because healthy infra (docker temporal, the k3d
 	// gateway LB) legitimately holds them.
-	if len(host.ListenPorts) > 0 {
+	// nil means "not declared" (infer below); non-nil means the KCL stated the
+	// set exactly — an EMPTY set is a legitimate statement that this service
+	// binds no port at all, and must return empty rather than fall through.
+	if host.ListenPorts != nil {
 		var declared []int
 		seenDeclared := map[int]bool{}
-		for _, p := range host.ListenPorts {
+		for _, p := range *host.ListenPorts {
 			if p <= 0 || p >= 65536 || seenDeclared[p] {
 				continue
 			}
@@ -1684,6 +1731,55 @@ func conflictingPorts(e *KCLEntities, targets []string, frontendsOn bool, probe 
 	return conflicts
 }
 
+// portReleaseGrace bounds how long upPreflight waits for the ports of a stack
+// it just tore down to come free, and portReleasePollInterval is how often it
+// re-probes within that window. The grace only ever elapses in full on a
+// genuine conflict; a normal teardown clears in a few hundred milliseconds and
+// the loop exits early. Vars, not consts, so tests can shrink them.
+var (
+	portReleaseGrace        = 5 * time.Second
+	portReleasePollInterval = 150 * time.Millisecond
+)
+
+// awaitPortRelease re-probes an ALREADY-conflicting set of ports until they
+// come free or the grace expires, returning whatever is still bound.
+//
+// It narrows the set each round rather than re-running the full
+// conflictingPorts scan: the ports that matter are exactly the ones that
+// already failed, and each probe costs a real dial timeout.
+//
+// The budget counts elapsed SLEEP, not wall clock — probe time is excluded.
+// That keeps the loop drivable by an injected sleep (tests advance no real
+// time), and the two agree closely in practice because these are loopback
+// dials: a bound port connects immediately and a free one is refused
+// immediately, so neither approaches portInUse's 300ms timeout.
+//
+// sleep is injected so tests drive the loop without real time.
+func awaitPortRelease(conflicts []portConflict, probe func(int) bool,
+	grace, interval time.Duration, sleep func(time.Duration),
+) []portConflict {
+	remaining := conflicts
+	for waited := time.Duration(0); ; waited += interval {
+		remaining = stillBoundPorts(remaining, probe)
+		if len(remaining) == 0 || waited >= grace {
+			return remaining
+		}
+		sleep(interval)
+	}
+}
+
+// stillBoundPorts filters a conflict set down to those whose port is still
+// bound, preserving order so the reported list stays stable across rounds.
+func stillBoundPorts(conflicts []portConflict, probe func(int) bool) []portConflict {
+	var out []portConflict
+	for _, c := range conflicts {
+		if probe(c.port) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // portReadyState is how a host service's expected bind port resolved on a
 // post-launch readiness check.
 type portReadyState int
@@ -1735,6 +1831,17 @@ type hostReadyResult struct {
 	name  string
 	port  int
 	state portReadyState
+	// holderPID / holderCmd identify the process actually on the port when
+	// state is portReadyForeign. Populated only for that state — for the
+	// others there is either no holder or the holder is our own child.
+	//
+	// forge already resolves the PID to decide ownership, so NOT reporting it
+	// meant the message could say "held by another process" and then send the
+	// reader to lsof to rediscover a fact forge had in hand. Observed
+	// 2026-08-24: a stale `kubectl port-forward` to prod, running in another
+	// terminal, held :3000 and blocked `forge env up dev`.
+	holderPID int
+	holderCmd string
 }
 
 // evalHostReadiness classifies EVERY expected bind port of the host services
@@ -1756,11 +1863,25 @@ func evalHostReadiness(e *KCLEntities, projectID, envName string, targets []stri
 			continue
 		}
 		for _, port := range hostEnvPorts(svc.Name, svc.Deploy.Host) {
-			out = append(out, hostReadyResult{
+			row := hostReadyResult{
 				name:  svc.Name,
 				port:  port,
 				state: classifyPortReadiness(port, projectID, envName, listening, resolvePID, f),
-			})
+			}
+			// Identify the squatter while the probes are still in hand. Purely
+			// additive: an unreadable argv leaves holderCmd empty and the
+			// message falls back to what it always said.
+			if row.state == portReadyForeign && resolvePID != nil {
+				if pid := resolvePID(port); pid > 0 {
+					row.holderPID = pid
+					if f != nil {
+						if args, ok := f.argv(pid); ok && len(args) > 0 {
+							row.holderCmd = strings.Join(args, " ")
+						}
+					}
+				}
+			}
+			out = append(out, row)
 		}
 	}
 	return out
@@ -1792,10 +1913,37 @@ func hostReadyError(envName string, unready []hostReadyResult) error {
 			reason = "held by another process — not the child this run started (stale/foreign holder)"
 		}
 		fmt.Fprintf(&b, "       %-14s :%d  %s\n", r.name, r.port, reason)
+		if r.holderPID > 0 {
+			fmt.Fprintf(&b, "       %-14s   holder: pid %d%s\n", "", r.holderPID, holderCmdSuffix(r.holderCmd))
+		}
 	}
 	fmt.Fprintf(&b, "     inspect the log under %s/ (lsof -i :<port> for the holder),\n", upLogDir(envName))
 	fmt.Fprintf(&b, "     stop what this run started with: forge env down %s", envName)
 	return errors.New(b.String())
+}
+
+// holderCmdSuffix renders a foreign holder's command line for the readiness
+// error, truncated so one squatter cannot swamp the message. Empty when argv
+// was unreadable — the pid alone is still enough to find the process.
+func holderCmdSuffix(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return ""
+	}
+	// Cut on a RUNE boundary. Slicing at a BYTE index splits any multi-byte
+	// rune straddling the cut — one accented character in the holder's path is
+	// enough — and the message then carries invalid UTF-8 (observed:
+	// "/Users/jos\xc3…"), which terminals render as U+FFFD. The byte-length
+	// test stays as the cheap pre-check: a string of <=max bytes can never
+	// exceed max runes, so the conversion only runs on a line that may
+	// genuinely need cutting.
+	const max = 120
+	if len(cmd) > max {
+		if r := []rune(cmd); len(r) > max {
+			cmd = string(r[:max]) + "…"
+		}
+	}
+	return "  " + cmd
 }
 
 // hostReadyTimeout / hostReadyPoll bound the post-launch readiness gate: how
@@ -1836,6 +1984,186 @@ func waitHostServicesReady(e *KCLEntities, projectID, envName string, targets []
 			return hostReadyError(envName, unready)
 		}
 		time.Sleep(poll)
+	}
+}
+
+// ── the CLUSTER half of the post-launch readiness gate ───────────────────
+//
+// waitHostServicesReady above is the host half, and until now it was the
+// ONLY half: `forge env up` blocked on host-service port binds, printed a
+// green summary box, and exited 0 while the Kubernetes workloads it had just
+// applied were crashlooping. Its failure message says as much verbatim —
+// "host service(s) never came up under this run". Measured on control-plane
+// in one week: `forge env up dev` reported every service `up` and exited 0
+// while daemon-gateway was OOMKilled and CrashLoopBackOff (the product said
+// "no machine is connected" and nothing in forge contradicted the banner),
+// and separately five pods — admin-api in CreateContainerConfigError, two
+// litellm and two reliant-api-server at ~120 and ~130 restarts — crashlooped
+// for TEN HOURS behind that same green output.
+//
+// The judgement is NOT re-derived here. doctor.CheckClusterWorkloads already
+// owns "is this env's rendered workload set alive", including the startup
+// grace that separates a slow first rollout from an outage, the hard waiting
+// reasons that are failures on sight, and the three-state Skip / Unknown /
+// Pass-Fail model. This is a CALL SITE: run it once, print it in the box,
+// and let its Status decide the exit code. One definition of "broken", so
+// `forge env up` and `forge env status` can never disagree about it.
+
+const (
+	// clusterHealthTimeout bounds the whole cluster-workload assertion. The
+	// check bounds itself (10s around the KCL render, 6s per kubectl call,
+	// probes concurrent), so this is the belt to that braces: a hung render
+	// plugin or a kubectl that ignores its own deadline must not turn the
+	// last step of `forge env up` into a hang. Cancellation degrades to
+	// UNDETERMINED inside the check, never to a failure.
+	clusterHealthTimeout = 30 * time.Second
+)
+
+// clusterWorkloadCheck is the seam. Production is doctor's check; tests
+// substitute a fabricated verdict, which is the only way to pin
+// "crashlooping ⇒ non-zero exit" and "unreachable cluster ⇒ still succeeds"
+// without a cluster to break.
+var clusterWorkloadCheck = doctor.CheckClusterWorkloads
+
+// clusterWorkloadSummary is the rolled-up cluster verdict, reduced to what
+// the summary box prints and the exit code reads. A nil *clusterWorkloadSummary
+// means "this run has nothing to say about a cluster" — the gate was off
+// (deploy feature disabled, or a --target set with no cluster edge) or the
+// check itself answered SKIP because the env deploys nothing to Kubernetes.
+// Nil prints nothing and fails nothing.
+type clusterWorkloadSummary struct {
+	status doctor.Status
+	// message is doctor's one-line verdict, already assembled to name the
+	// pod, the container, the waiting reason and the OOMKill. It is carried
+	// verbatim: shortening it here would recreate the "1 workload unhealthy"
+	// report that cost an hour.
+	message string
+}
+
+// upClusterGateEnabled reports whether this run should assert on cluster
+// workload health at all.
+//
+// Two ways to be out of scope, and both are a deliberate statement by the
+// caller that forge is not responsible for the cluster on this run:
+//
+//   - features.deploy off — the project has told forge it does not deploy.
+//   - a `--target` set with no cluster edge (targeting only host services or
+//     dev-served frontends). targetPhaseRequirements is reused rather than
+//     re-derived: it is already the authority for "does this run need a
+//     cluster", and a second copy of that rule would drift from the phase it
+//     is supposed to describe.
+//
+// This is where `--target` replaced `--host-only`. A run that wants only the
+// host side names the services it wants, and the cluster edge disappears from
+// the target closure — so the gate goes quiet for exactly the same reason it
+// used to, but derived from what the run actually selected rather than from a
+// flag asserting it.
+//
+// Note what is NOT here. `--no-deploy` is deliberately not an arm: it means
+// "skip the apply", not "don't care", and a run leaning on an
+// already-deployed cluster is exactly the one that most needs to hear that
+// the cluster is broken.
+func upClusterGateEnabled(store featureReader, e *KCLEntities, targets []string) bool {
+	if !isFeatureEnabled(store, config.FeatureDeploy) {
+		return false
+	}
+	return targetPhaseRequirements(e, targets).cluster
+}
+
+// evalClusterWorkloads runs the cluster verdict ONCE — a single assertion,
+// not a poll.
+//
+// Polling would be both wasteful and wrong. The waiting already happened:
+// the deploy phase runs `kubectl rollout status --timeout=60s` per managed
+// Deployment and waits every one-shot Job to completion (cluster.Apply), so
+// by the time control reaches here each workload has had its rollout window
+// and — on the full path — the whole host phase on top of it. And the check
+// carries a 90s startup grace that reports a young, not-yet-Ready pod as a
+// WARNING rather than a failure; polling that at 250ms would be waiting for
+// a pod to grow old enough to condemn, which is precisely backwards. One
+// look, ~450-600ms, at the latest moment the answer can be taken.
+//
+// Returns nil for "nothing to say" so every downstream site — the box, the
+// exit code — has one thing to test.
+func evalClusterWorkloads(ctx context.Context, enabled bool, projectDir, env string) *clusterWorkloadSummary {
+	if !enabled {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, clusterHealthTimeout)
+	defer cancel()
+	res := clusterWorkloadCheck(ctx, &doctor.Environment{ProjectDir: projectDir, Env: env})
+	if res.Status == doctor.StatusSkip {
+		// NOT APPLICABLE — this env deploys nothing to Kubernetes. Distinct
+		// from UNDETERMINED, which is carried through and printed.
+		return nil
+	}
+	return &clusterWorkloadSummary{status: res.Status, message: res.Message}
+}
+
+// clusterWorkloadError is the exit-code decision, and it is deliberately one
+// line of policy: ONLY a Fail fails the command.
+//
+//   - Fail — a hard waiting reason (CrashLoopBackOff, CreateContainerConfigError,
+//     ImagePullBackOff…), an OOMKill on a pod that is down, a workload the
+//     render declares with no pods at all, or a pod still not Ready past the
+//     startup grace. This is the whole point: exit non-zero.
+//   - Warn — mid-rollout, a DaemonSet with no matching node, a pod that is
+//     serving but has been OOM-killed or keeps restarting. Printed, never
+//     fatal. Failing a slow first rollout would be its own false alarm, and
+//     a check that cries wolf is the state forge was already in.
+//   - Unknown — cluster unreachable, kubectl missing, RBAC refused, render
+//     failed, timeout. Reported honestly and NEVER fatal. A developer with
+//     no cluster must be able to bring their host stack up.
+//
+// Nothing is killed here, exactly as the host half does not kill: the
+// children this run started are already in the ledger and reachable by
+// `forge env down`.
+func clusterWorkloadError(env string, s *clusterWorkloadSummary) error {
+	if s == nil || s.status != doctor.StatusFail {
+		return nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "[up] cluster workload(s) never came up under this run (env=%s):\n", env)
+	fmt.Fprintf(&b, "       %s\n", s.message)
+	fmt.Fprintf(&b, "     forge applied these manifests and waited on their rollouts; they are still not running.\n")
+	fmt.Fprintf(&b, "     per-pod detail: forge env status %s -v", env)
+	return errors.New(b.String())
+}
+
+// clusterStatusGlyph is the summary box's mark for the cluster verdict.
+// Pass borrows the box's own "up" dot so the healthy case reads as one
+// table; the abnormal states borrow `forge doctor`'s marks so the same fact
+// looks the same in both commands. UNDETERMINED gets "?" and never the
+// gray dash — "I could not tell" must not render as "does not apply".
+func clusterStatusGlyph(s doctor.Status) string {
+	switch s {
+	case doctor.StatusPass:
+		return "●"
+	case doctor.StatusFail:
+		return "✗"
+	case doctor.StatusWarn:
+		return "!"
+	default:
+		return "?"
+	}
+}
+
+// renderClusterWorkloads writes the box's "Cluster workloads" group — the
+// third group, peer to Host services and Frontends. The box being silent
+// about the cluster was the same defect one layer up from the exit code: it
+// claimed to show what `forge env up` brought up while showing only the half
+// running on the developer's machine.
+func renderClusterWorkloads(w io.Writer, bar, env string, s *clusterWorkloadSummary) {
+	if s == nil {
+		return
+	}
+	fmt.Fprintf(w, "%s Cluster workloads\n", bar)
+	fmt.Fprintf(w, "%s  %s %s\n", bar, clusterStatusGlyph(s.status), s.message)
+	if s.status != doctor.StatusPass {
+		// The message names the pod and the reason; evidence (the full
+		// per-target roster) prints only under -v, and this is the pointer
+		// to it. Not printed on a pass: there is nothing to go look at.
+		fmt.Fprintf(w, "%s       ↳ forge env status %s -v\n", bar, env)
 	}
 }
 
@@ -2123,8 +2451,8 @@ func forceHostBindPorts(env []string, svcName string, declared map[string]string
 }
 
 // withDevRunDefaults layers the dev-run environment UNDER the project config
-// when isDev, so `forge run` / `forge env up --host-only` boots a fresh dev
-// app turnkey with zero hand-set env vars:
+// when isDev, so `forge run` / `forge env up dev` boots a fresh dev app
+// turnkey with zero hand-set env vars:
 //
 //   - ENVIRONMENT=development — marks the runtime as development so dev
 //     ergonomics (permissive CORS, verbose errors) apply. Authentication is

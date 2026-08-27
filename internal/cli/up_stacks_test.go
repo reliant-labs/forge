@@ -140,7 +140,7 @@ func entitiesOnPort(port int) *KCLEntities {
 		Name: "api",
 		Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
 			Runner:      "go-run",
-			ListenPorts: []int{port},
+			ListenPorts: &[]int{port},
 		}},
 	}}}
 }

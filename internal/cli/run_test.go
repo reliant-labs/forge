@@ -2,9 +2,62 @@ package cli
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+// TestUpOptionsCarryNoPlacementOverride is the structural guard behind the
+// removal of --host-only / --cluster-only.
+//
+// Those flags did not merely scope a run: --host-only rewrote every
+// cluster-declared service into a local `go run` process, so forge overruled
+// the environment's own placement decision on the strength of a CLI flag. The
+// replacement is declarative — a service that should run on the host says so
+// with a `host` block in its KCL, and a render option (`-D host_runner=go-run`)
+// selects the runner.
+//
+// The regression this catches is re-introducing that override under any name.
+// upOptions is the only channel from the command line into runUp, so a
+// placement-shaped boolean appearing on it is the shape of the mistake, and a
+// field list is the one assertion that fails when someone adds one.
+func TestUpOptionsCarryNoPlacementOverride(t *testing.T) {
+	banned := map[string]string{
+		"hostOnly":    "--host-only rewrote cluster-declared services into host processes",
+		"clusterOnly": "--cluster-only masked the host/frontend phases off",
+		"hostMode":    "placement belongs in the env's KCL, not a flag",
+		"forceHost":   "placement belongs in the env's KCL, not a flag",
+	}
+	typ := reflect.TypeOf(upOptions{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		if why, bad := banned[name]; bad {
+			t.Errorf("upOptions.%s reintroduces a CLI placement override: %s.\n"+
+				"Scope a run with --target; declare placement with a `host` block "+
+				"and select the runner with `-D host_runner=...`.", name, why)
+		}
+	}
+}
+
+// TestRunUsesTheWholeLoop pins what `forge run` became. It used to imply
+// --host-only, which skipped the cluster build/deploy entirely and collapsed
+// cluster services to `go run`. It is now an alias for `forge env up <env>`
+// plus dev-server passthrough, so its help must not promise the old
+// skip-the-cluster behaviour that no longer happens.
+func TestRunUsesTheWholeLoop(t *testing.T) {
+	cmd := newRunCmd()
+	help := cmd.Short + "\n" + cmd.Long
+	for _, stale := range []string{"--host-only", "--cluster-only", "skipping cluster build/deploy", "skipping the cluster build + deploy"} {
+		if strings.Contains(help, stale) {
+			t.Errorf("`forge run` help still advertises %q, which the command no longer does", stale)
+		}
+	}
+	// The surviving way to narrow a run has to be discoverable from here:
+	// this help is where someone lands after the flag they typed went away.
+	if !strings.Contains(help, "--target") {
+		t.Error("`forge run` help should point at --target as the way to scope a run to one service")
+	}
+}
 
 // TestRunPassthroughArgs covers the `--`-terminator split `forge run` uses
 // to separate dev-server passthrough from (disallowed) positional args.

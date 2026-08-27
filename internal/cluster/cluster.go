@@ -209,7 +209,7 @@ type GroupScope struct {
 	// this group iff the label equals Cluster, and is dropped otherwise —
 	// no app-label indirection. Empty disables the first-class match (the
 	// stream is routed purely by OwnApps/OtherApps, the pre-existing
-	// behaviour). See clusterRoutingLabel and ScopeManifestsToGroup.
+	// behaviour). See ClusterRoutingLabel and ScopeManifestsToGroup.
 	Cluster string
 
 	// OwnApps is the set of `app.kubernetes.io/name` values belonging to
@@ -226,7 +226,7 @@ type GroupScope struct {
 	OtherApps map[string]struct{}
 }
 
-// appNameLabel is the KCL-declared GROUP key — the single `--target`
+// AppNameLabel is the KCL-declared GROUP key — the single `--target`
 // selector. The group is ALWAYS the SERVICE: forge's KCL renderer stamps it
 // with the service/component name on workloads / RBAC (`_managed_labels`,
 // kcl/lib/services.k, kcl/lib/rbac.k), gateways/routes, and on a service's
@@ -241,9 +241,9 @@ type GroupScope struct {
 // policy. An ungrouped manifest matches no service `--target`, so it applies
 // only on a bare `forge env deploy` (no `--target`). To make a manifest ride a
 // service's `--target`, declare it on that service's `manifests`.
-const appNameLabel = "app.kubernetes.io/name"
+const AppNameLabel = "app.kubernetes.io/name"
 
-// clusterRoutingLabel is the FIRST-CLASS per-manifest cluster-attribution
+// ClusterRoutingLabel is the FIRST-CLASS per-manifest cluster-attribution
 // key. forge's KCL gateway/route builders stamp it
 // (`forge.dev/cluster: k3d-<name>`) when an ingress entity (Gateway /
 // HTTPRoute / GRPCRoute) declares `cluster = <forge.Cluster>` — the
@@ -257,7 +257,7 @@ const appNameLabel = "app.kubernetes.io/name"
 // service's app label so the manifest rode that service's group routing).
 // A manifest WITHOUT this label still routes by app label exactly as
 // before, so existing consumers are unaffected.
-const clusterRoutingLabel = "forge.dev/cluster"
+const ClusterRoutingLabel = "forge.dev/cluster"
 
 // Apply runs the render-KCL → kubectl-apply → wait-rollouts pipeline.
 // It is the single entry point for the three call sites this package
@@ -1194,11 +1194,11 @@ func WaitRollout(ctx context.Context, kctx, name, namespace string) error {
 
 // podSelectorForDeploy builds the label selector that matches the pods
 // of a forge-deployed Deployment. forge stamps workloads with
-// appNameLabel (app.kubernetes.io/name), never a bare `app=` label, so
+// AppNameLabel (app.kubernetes.io/name), never a bare `app=` label, so
 // the selector MUST reference the constant — a literal "app=" matched
 // zero pods and silently produced empty rollout diagnostics.
 func podSelectorForDeploy(deploy string) string {
-	return appNameLabel + "=" + deploy
+	return AppNameLabel + "=" + deploy
 }
 
 // diagnoseFailedRollout prints the most useful kubectl diagnostics for
@@ -1393,7 +1393,7 @@ func SelectManifestsByGroup(manifests string, targets []string) string {
 		if !ok {
 			continue
 		}
-		if _, in := want[m.Metadata.Labels[appNameLabel]]; in {
+		if _, in := want[m.Metadata.Labels[AppNameLabel]]; in {
 			kept = append(kept, doc)
 		}
 	}
@@ -1464,8 +1464,8 @@ func ScopeManifestsToGroup(manifests string, scope GroupScope) string {
 		app := ""
 		routeCluster := ""
 		if parsed {
-			app = m.Metadata.Labels[appNameLabel]
-			routeCluster = m.Metadata.Labels[clusterRoutingLabel]
+			app = m.Metadata.Labels[AppNameLabel]
+			routeCluster = m.Metadata.Labels[ClusterRoutingLabel]
 		}
 		// First-class cluster attribution wins over the app-label rule: a
 		// manifest stamped with `forge.dev/cluster` routes to exactly that
@@ -1644,4 +1644,18 @@ func Prune(ctx context.Context, kctx, manifests, namespace string) error {
 		}
 	}
 	return nil
+}
+
+// SplitManifestDocs splits a `---`-separated multi-doc YAML manifest stream
+// into its individual documents, trimming surrounding whitespace and dropping
+// empty ones.
+//
+// Exported so callers OUTSIDE this package (the `forge env render` printer)
+// walk the stream document by document through the same splitter the routing
+// filters use, rather than re-deriving the delimiter. A second splitter that
+// disagreed about where a document ends would attribute the wrong bytes to
+// the wrong cluster — the precise failure the render printer exists to
+// prevent.
+func SplitManifestDocs(manifests string) []string {
+	return splitDocs(manifests)
 }

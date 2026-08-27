@@ -68,6 +68,26 @@ func kclHasExternalBuildService(e *KCLEntities) bool {
 	return false
 }
 
+// kclHasServiceNamed reports whether the rendered env declares a service with
+// this exact name.
+//
+// This is what lets `forge build <env> -t <name>` reach a service that exists
+// only in KCL — every sibling-repo / ShellBuild workload. Before it, -t resolved
+// against frontends and the project binary alone, so those services were
+// unreachable from the build lane even though the flag's help advertised
+// "a specific service/frontend name".
+func kclHasServiceNamed(e *KCLEntities, name string) bool {
+	if e == nil || name == "" {
+		return false
+	}
+	for _, s := range e.Services {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // externalBuildServices returns the subset of KCL services whose
 // effective build is a ShellBuild (EffectiveBuildCmd non-empty).
 // Convenience wrapper so the dispatcher loop stays one-liner; also used

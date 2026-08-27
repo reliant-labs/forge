@@ -52,6 +52,13 @@ func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, pr
 		return nil
 	}
 	fmt.Printf("\n[up] cluster phase — ensuring %d declared cluster(s)\n", len(clusters))
+	// k3d nodes, the k3d registry and the cluster network are all docker
+	// objects, so a reachable daemon is a precondition for everything below.
+	// Checking it once here turns N cascading per-command failures into one
+	// true cause. See docker_preflight.go.
+	if err := ensureDockerDaemon(ctx); err != nil {
+		return err
+	}
 	for i := range clusters {
 		if err := ensureDeclaredCluster(ctx, clusters[i], projectDir, env); err != nil {
 			return fmt.Errorf("ensure cluster %q: %w", clusters[i].Name, err)

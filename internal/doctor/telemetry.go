@@ -303,9 +303,19 @@ func parsePyroscopeLabels(body []byte, projectName string) CheckResult {
 			Names  []string `json:"names"`
 		}
 		if err2 := json.Unmarshal(body, &wrapper); err2 != nil {
+			// The label response is this check's only evidence about
+			// ingestion, so a body in none of the shapes we can decode
+			// leaves the question unanswered — Pyroscope may well be
+			// receiving profiles. UNDETERMINED, for the same reason
+			// grafanaAddr above is: forge could not obtain the fact, which
+			// is not a finding about the stack (see the StatusSkip vs
+			// StatusUnknown note in doctor.go). Contrast the branch below,
+			// where the labels DID decode and are genuinely empty — that
+			// is a real "nothing ingested yet" warning.
 			return CheckResult{
-				Status:  StatusWarn,
-				Message: "Pyroscope is healthy but could not parse labels",
+				Status:   StatusUnknown,
+				Message:  "Pyroscope is healthy but its label response could not be parsed — ingestion unknown",
+				Evidence: err2.Error(),
 			}
 		}
 		labels = wrapper.Values

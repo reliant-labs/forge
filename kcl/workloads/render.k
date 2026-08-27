@@ -30,6 +30,7 @@ env renders from a clean checkout with nothing generated first.
 
 import .expand as comp_lib
 import ..lib.netpol as netpol_lib
+import ..lib.labels as labels_lib
 
 schema WorkloadEnv:
     """Per-environment knobs the workload manifest renderer needs.
@@ -51,6 +52,15 @@ schema WorkloadEnv:
     registry: str = ""
     image_tag: str = "latest"
     network_policies: bool = True
+    # The ENVIRONMENT NAME every rendered object is stamped with
+    # (`forge.dev/env: <env>`) — the Bundle.env of this render path. Two
+    # envs can resolve to the same namespace; the stamp is what lets
+    # `kubectl get all -l 'forge.dev/env!=<env>'` say which objects the
+    # env does NOT own. Defaults to the `-D env=<name>` binding the forge
+    # CLI passes on every render; set it to override (the KCL drill-in —
+    # there is no CLI flag). Empty emits no label, so a plain `kcl run`
+    # renders byte-identically. See lib/labels.k.
+    env: str = option("env") or ""
 
     # WHERE THE DEPLOY-TIME MIGRATION STEP WENT
     # =========================================
@@ -151,9 +161,16 @@ render_workloads = lambda workloads: [any], env: WorkloadEnv -> [any] {
         + ". Fix the name, use ['" + comp_lib.BEFORE_ALL + "'] to gate every workload, " \
         + "or drop `before` to render an ungated one-shot Job."
 
-    [_render_namespace(env)] \
+    # One gate, one stamp: every object this path emits carries
+    # `forge.dev/env` (lib/labels.k), including the Namespace and the
+    # NetworkPolicy bundle, which no label builder touches. Label maps
+    # only — never a selector.
+    labels_lib.stamp_env_all(
+        [_render_namespace(env)] \
         + [item for c in workloads for item in comp_lib.render_workload_in(c, workloads, env.namespace, env.registry, env.image_tag, env.project)] \
         + (netpol_lib.render_network_policies(
             env.namespace, env.egress_ports, env.telemetry_namespace, env.ingress_namespace
-        ) if env.network_policies else [])
+        ) if env.network_policies else []),
+        env.env,
+    )
 }

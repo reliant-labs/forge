@@ -81,12 +81,26 @@ func TestRun_OperatorFailureAfterShutdownStartIsNotLost(t *testing.T) {
 	}
 }
 
-// TestRun_PprofBindFailureTriggersGracefulShutdown pins FIX 2: a pprof
-// listener-bind failure (the main httpSrv is already serving by then)
-// must route through the normal shutdown path — Run returns the bind
-// error AND the caller's OnShutdown teardown runs — instead of a bare
-// return that leaks the main listener and skips the OTel flush.
-func TestRun_PprofBindFailureTriggersGracefulShutdown(t *testing.T) {
+// TestRun_PprofBindFailureNeverTakesTheServiceDown pins the pprof failure
+// contract: a pprof listener-bind failure must cost you the PROFILER, never
+// the PROCESS. Run logs it and serves on.
+//
+// This supersedes the older "route the bind failure through graceful
+// shutdown" behaviour. That rule was written when PprofAddr was empty by
+// default, so a non-empty value meant an operator had deliberately asked for
+// pprof and a silent miss was worth a restart. pprof is now ON BY DEFAULT in
+// the scaffold, which makes the ordinary cause of a bind failure banal — a
+// second copy of the binary on the same dev box, or anything else already
+// holding :6060 — and "your debug port was taken, so your service is down"
+// is a strictly worse outcome than no debug port. FailurePolicy does not
+// change this: it governs SUPERVISED components (workers, operators), and
+// pprof is not one.
+//
+// The original defect the old test guarded against is still guarded: the
+// failure path must not bare-return past the already-serving main listener.
+// It does not — it falls through, and the assertions below prove the service
+// stayed up and then shut down normally, OnShutdown and all.
+func TestRun_PprofBindFailureNeverTakesTheServiceDown(t *testing.T) {
 	// Not parallel — exercises the shared signal/shutdown path.
 	mainAddr := freeAddr(t)
 
@@ -101,6 +115,9 @@ func TestRun_PprofBindFailureTriggersGracefulShutdown(t *testing.T) {
 	var shutdownRan atomic.Bool
 	cfg := baseConfig(mainAddr)
 	cfg.PprofAddr = pprofAddr
+	// FailProcess is the zero value and the deployed default; pin it
+	// explicitly so this test reads as "even under the strictest policy".
+	cfg.FailurePolicy = serverkit.FailProcess
 	srv := serverkit.Server{
 		Handler: emptyHandler(),
 		OnShutdown: func(context.Context) error {
@@ -110,16 +127,21 @@ func TestRun_PprofBindFailureTriggersGracefulShutdown(t *testing.T) {
 	}
 	errCh, _ := runInBackground(t, cfg, srv)
 
+	// The service must come up and STAY up despite the dead pprof listener.
+	waitReady(t, mainAddr, 2*time.Second)
 	select {
 	case runErr := <-errCh:
-		if runErr == nil || !contains(runErr.Error(), "pprof") {
-			t.Fatalf("Run should return the pprof bind error, got %v", runErr)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return after a pprof bind failure — it must route through shutdown")
+		t.Fatalf("Run returned %v — a pprof bind failure must never terminate the process", runErr)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// And it must still shut down cleanly, with no pprof error leaking into
+	// Run's result.
+	if runErr := shutdownAndWait(t, errCh, 5*time.Second); runErr != nil {
+		t.Fatalf("Run returned %v on a normal shutdown after a pprof bind failure, want nil", runErr)
 	}
 	if !shutdownRan.Load() {
-		t.Fatal("OnShutdown did not run after a pprof bind failure — the bare return skipped graceful shutdown")
+		t.Fatal("OnShutdown did not run — the pprof bind failure disturbed the shutdown path")
 	}
 }
 

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-08-27
+
+Patch release. The root CLI (`v0.1.8`) and the runtime library
+(`pkg/v0.1.8`) are tagged together, as always.
+
+Everything under [Unreleased] below ships in this release: `forge env
+render`, the cluster-health and object-collision doctor checks, the
+`forge.dev/env` ownership stamp on every rendered object, seedplan tuple
+and union support, and the testreport package.
+
 ## [Unreleased]
 
 ### Added

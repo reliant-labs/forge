@@ -44,8 +44,11 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 	// Verify generated code exists
 	assertPathExistsE2E(t, filepath.Join(projectDir, "gen", "services", "api", "v1"))
 	// §2 hybrid DI: the live composition layer is internal/app; the old
-	// name-matched pkg/app DI unit (bootstrap.go) is retired.
-	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "app", "inject_gen.go"))
+	// name-matched pkg/app DI unit (bootstrap.go) is retired. The by-type
+	// injector that briefly replaced it (inject_gen.go) is retired too —
+	// composition is now the explicit per-binary compose.go site.
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
+	assertPathNotExistsE2E(t, filepath.Join(projectDir, "internal", "app", "inject_gen.go"))
 	assertPathNotExistsE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
 
 	// go mod tidy (may be needed after generate)
@@ -158,15 +161,16 @@ func TestE2EScaffoldAddService(t *testing.T) {
 	// Build
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// Verify both services are constructed by the generated §2 injector
-	// (internal/app/inject_gen.go — by-type DI replacing the retired
-	// name-matched wire_gen/services_gen path).
-	injectContent := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "inject_gen.go"))
-	if !strings.Contains(injectContent, "api.New(") {
-		t.Fatal("expected inject_gen.go to construct the api service")
+	// Verify both services are constructed at the generated §2 composition
+	// site (internal/app/compose.go — the explicit per-binary NewComponents
+	// that replaced the by-type injector and, before it, the name-matched
+	// wire_gen/services_gen path).
+	composeContent := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
+	if !strings.Contains(composeContent, "api.New(") {
+		t.Fatal("expected compose.go to construct the api service")
 	}
-	if !strings.Contains(injectContent, "billing.New(") {
-		t.Fatal("expected inject_gen.go to construct the billing service")
+	if !strings.Contains(composeContent, "billing.New(") {
+		t.Fatal("expected compose.go to construct the billing service")
 	}
 }
 
@@ -185,6 +189,9 @@ func TestE2EScaffoldVersion(t *testing.T) {
 // can start and respond to health checks.
 func TestE2EScaffoldServerStartup(t *testing.T) {
 	requirePublishedForgePkg(t)
+	// Boot needs a real database (see the DATABASE_URL note below); take it
+	// from the ONE shared embedded server rather than starting another.
+	sharedTestPostgres(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -201,13 +208,21 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 	runCmd(t, projectDir, "go", "mod", "tidy")
 	runCmd(t, filepath.Join(projectDir, "gen"), "go", "mod", "tidy")
 
-	// Build the server binary
+	// Build the server binary. The cobra tree under cmd/<bin>/ is several
+	// packages (cmd, services, workers, operators) of which exactly ONE is
+	// package main, so `-o <file> ./cmd/...` is refused as "multiple
+	// packages to non-directory" — name the binary package itself.
 	serverBin := filepath.Join(projectDir, "server")
-	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
+	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/srvtest")
 
 	// Start the server with a free port (parallel e2e tests must never
 	// share a hard-coded port).
 	port := freePortE2E(t)
+	dsn, dsnCleanup, err := pgtest.NewURL()
+	if err != nil {
+		t.Fatalf("provision boot postgres: %v", err)
+	}
+	defer dsnCleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -215,7 +230,13 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 	cmd.Dir = projectDir
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
-		"DATABASE_URL=", // No DB needed for health check
+		// A REAL database, even though this test only reads /healthz.
+		// database_url is required config (checkRequired fires before bind)
+		// AND boot pings the pool, so neither an empty value nor a
+		// well-formed URL pointing at nothing gets the server to ready —
+		// the old "no DB needed for health check" comment described a boot
+		// sequence that no longer exists.
+		"DATABASE_URL="+dsn,
 		// This test is about the serve lifecycle (healthz/readyz). The
 		// scaffold's SetupAuth always builds a real JWT validator, so the
 		// server boots in validate mode; /healthz and /readyz are on the

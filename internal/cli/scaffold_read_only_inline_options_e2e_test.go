@@ -47,8 +47,16 @@ func TestE2EScaffoldReadOnlySurvivesInlineOptions(t *testing.T) {
 		"  string customer = 1 [(buf.validate.field).string.min_len = 1];\n" +
 		"  int64 unit_price_cents = 2 [(buf.validate.field).int64.gte = 0]; // forge:read-only\n" +
 		"  OrderStatus status = 3; // forge:read-only\n" +
+		// The multi-line braced spelling, whose `];` lands on a later
+		// physical line than the field name. Its lower bound is 0 rather
+		// than 1 so the column still takes a zero DEFAULT: a `gte: 1`
+		// would suppress the default (0 violates the CHECK), and a
+		// read-only column that is NOT NULL, has no default and admits no
+		// writer can never be populated — the CreateOrder path refuses to
+		// generate at all, which is a different (correct) defect and would
+		// stop this test before it ever reaches the marker assertions.
 		"  int32 term_months = 4 [(buf.validate.field).int32 = {\n" +
-		"    gte: 1\n" +
+		"    gte: 0\n" +
 		"    lte: 12\n" +
 		"  }]; // forge:read-only\n" +
 		"  string note = 5;\n" +

@@ -87,8 +87,12 @@ func TestE2EComponentsKCLDeclaredFromSources(t *testing.T) {
 	requireTool(t, "kcl")
 	runCmd(t, projectDir, "git", "clean", "-xdf", "--", "deploy")
 
-	devManifest := filepath.Join(projectDir, "deploy", "kcl", "dev", "main.k")
-	out := runCmdOutput(t, projectDir, "kcl", "run", "-D", "env=dev", "-S", "manifests", devManifest)
+	// Render THROUGH FORGE: the project's KCL imports kcl_plugin.forge, a
+	// namespace only the forge process registers, so a bare `kcl run` fails
+	// with "the plugin package `kcl_plugin.forge` is not found" regardless
+	// of the tree's state — which would mask exactly the clean-tree
+	// regression this test exists to catch.
+	out := runCmdOutput(t, projectDir, forgeBin, "env", "render", "dev")
 	for _, svc := range []string{"order", "intake"} {
 		if !strings.Contains(out, svc) {
 			t.Fatalf("dev KCL render did not derive a workload for %q from a clean tree:\n%s", svc, out)

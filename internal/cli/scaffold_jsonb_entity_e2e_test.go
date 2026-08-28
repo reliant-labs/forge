@@ -207,14 +207,24 @@ message Order {
 func writeJSONBRoundTripTest(t *testing.T, projectDir string) {
 	t.Helper()
 	born := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "orders", "handlers_crud_test.go"))
-	m := regexp.MustCompile(`app\.NewTest(\w+)\(`).FindStringSubmatch(born)
+	// The test factory lives in the HANDLER package (helpers_gen_test.go),
+	// reached through that package's own import alias — the pkg/app god
+	// package that used to host app.NewTest<X> was retired with the old DI
+	// unit. Capture the alias too so the injected test imports what the
+	// born one does.
+	m := regexp.MustCompile(`(\w+)\.NewTest(\w+)\(`).FindStringSubmatch(born)
 	if m == nil {
-		t.Fatalf("born handlers_crud_test.go carries no app.NewTest<X> helper call:\n%s", born)
+		t.Fatalf("born handlers_crud_test.go carries no <pkg>.NewTest<X> helper call:\n%s", born)
 	}
-	helper := m[1]
+	pkgAlias := m[1]
+	helper := m[2]
 	pbImport := regexp.MustCompile(`pb "([^"]+)"`).FindStringSubmatch(born)
 	if pbImport == nil {
 		t.Fatalf("born handlers_crud_test.go carries no pb import:\n%s", born)
+	}
+	svcImport := regexp.MustCompile(pkgAlias + ` "([^"]+)"`).FindStringSubmatch(born)
+	if svcImport == nil {
+		t.Fatalf("born handlers_crud_test.go carries no %s handler-package import:\n%s", pkgAlias, born)
 	}
 
 	test := fmt.Sprintf(`package orders_test
@@ -230,12 +240,12 @@ import (
 	"connectrpc.com/connect"
 
 	pb "%s"
-	"example.com/jsonapp/pkg/app"
+	%s "%s"
 )
 
 func TestJSONBStructuredRoundTrip(t *testing.T) {
 	db := crudTestDB(t)
-	svc := app.NewTest%s(t, app.WithDB(db))
+	svc := %s.NewTest%s(t, %s.WithDB(db))
 	ctx := crudTestCtx()
 
 	created, err := svc.CreateOrder(ctx, connect.NewRequest(&pb.CreateOrderRequest{
@@ -314,7 +324,7 @@ func TestJSONBStructuredRoundTrip(t *testing.T) {
 		t.Errorf("stored document uses unexpected keys: product_id = %%q", productID)
 	}
 }
-`, pbImport[1], helper)
+`, pbImport[1], pkgAlias, svcImport[1], pkgAlias, helper, pkgAlias)
 
 	path := filepath.Join(projectDir, "internal", "handlers", "orders", "jsonb_roundtrip_e2e_test.go")
 	if err := os.WriteFile(path, []byte(test), 0o644); err != nil {

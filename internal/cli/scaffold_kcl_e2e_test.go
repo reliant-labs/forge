@@ -4,7 +4,6 @@ package cli
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,31 +68,24 @@ func TestE2EScaffoldKCLRendersDevManifest(t *testing.T) {
 	// Use a distinctive tag so string-matching is unambiguous.
 	const tag = "test123-unique-marker"
 
-	// kcl run executes from the manifest's directory by default; we
-	// pass the absolute path so it doesn't matter. We select `-S
-	// manifests` because that's the identifier the scaffold names the
-	// rendered k8s YAML.
-	cmd := exec.Command("kcl", "run",
-		"-D", "image_tag="+tag,
-		"-D", "env=dev",
-		"-S", "manifests",
-		devManifest,
-	)
-	cmd.Dir = projectDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("kcl run failed: %v\noutput:\n%s", err, string(out))
-	}
+	// Render THROUGH FORGE, not with a bare `kcl run`. A forge project's
+	// KCL imports kcl_plugin.forge (resolve_port, allocate_port, …), and
+	// that namespace is registered by the forge process itself — a raw
+	// `kcl run` fails with "the plugin package `kcl_plugin.forge` is not
+	// found" no matter how the module is vendored, so invoking kcl directly
+	// tests a configuration no user is ever in. `forge env render` is the
+	// read-only path: no kubectl context, no cluster, no image build.
+	out := runCmdOutput(t, projectDir, forgeBin, "env", "render", "dev", "--tag", tag)
 
 	// The render must produce the env's namespace — proof the forge
 	// module resolved and the schema hierarchy evaluated.
-	if !strings.Contains(string(out), "kclapp-dev") {
-		t.Fatalf("rendered manifests missing the kclapp-dev namespace:\n%s", string(out))
+	if !strings.Contains(out, "kclapp-dev") {
+		t.Fatalf("rendered manifests missing the kclapp-dev namespace:\n%s", out)
 	}
 	// Tag-containment only applies when a workload image was rendered
 	// (deploy-as-data component derivation may produce none for a fresh
 	// scaffold — then no image exists to stamp the tag onto).
-	if strings.Contains(string(out), "image:") && !strings.Contains(string(out), tag) {
-		t.Fatalf("workload images rendered without the -D image_tag=%s override:\n%s", tag, string(out))
+	if strings.Contains(out, "image:") && !strings.Contains(out, tag) {
+		t.Fatalf("workload images rendered without the --tag %s override:\n%s", tag, out)
 	}
 }

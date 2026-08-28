@@ -85,12 +85,16 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	// in sync with the scaffold; it's the checklist a user would run
 	// after `forge project new` to make sure nothing's missing.
 	mustExist := []string{
-		// cmd/ — one file per top-level concern
-		"cmd/main.go",
-		"cmd/server.go",
-		"cmd/version.go",
-		"cmd/otel.go",
-		"cmd/db.go",
+		// cmd/ — a dir-nested cobra tree under cmd/<bin>/, one file per
+		// top-level concern. OTel is no longer its own file: serverkit
+		// owns tracer setup from the serve config, so the wiring lives
+		// in serve.go beside the rest of the pipeline it configures.
+		"cmd/demo/main.go",
+		"cmd/demo/cmd/root.go",
+		"cmd/demo/cmd/serve.go",
+		"cmd/demo/cmd/server.go",
+		"cmd/demo/cmd/version.go",
+		"cmd/demo/cmd/db.go",
 
 		// pkg/middleware — the ONE thin user-owned auth-policy file (plus
 		// its policy test). The security-critical mechanisms (auth modes,
@@ -149,33 +153,41 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		assertPathExistsE2E(t, filepath.Join(projectDir, rel))
 	}
 
-	// handlers_gen.go only exists after `forge generate` runs against a
-	// proto with RPCs. The scaffold's default api.proto has RPCs, so this
-	// should be present. If a future template change stops emitting it,
-	// this fails loudly here rather than silently downstream.
-	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api", "handlers_gen.go"))
+	// The handler package is generated for the scaffolded service. There is
+	// deliberately no handlers_gen.go: the pb-through collapse made every
+	// RPC an OWNED file forge writes once (one per RPC, so two authors never
+	// collide) rather than a single regenerated bag of stubs. A bare service
+	// declares no RPCs, so what must exist here is the package and its
+	// generated test harness — the per-RPC files appear as RPCs are
+	// declared, which the pb-through e2e covers.
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api", "service.go"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api", "helpers_gen_test.go"))
+	assertPathNotExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api", "handlers_gen.go"))
 
 	// ── Byte-level anti-regression content guards ─────────────────────
 	// Each guard below is paired with the bug that produced it. If you
 	// need to remove a guard, first remove the corresponding bug risk.
 
-	serverGo := readFileE2E(t, filepath.Join(projectDir, "cmd", "server.go"))
+	// The serve PIPELINE (listener lifecycle, driver registration) lives in
+	// serve.go; server.go is the thin cobra command over it. Both guards
+	// below are about the pipeline, so they read serve.go.
+	serveGo := readFileE2E(t, filepath.Join(projectDir, "cmd", "demo", "cmd", "serve.go"))
 	// Past bug: server used a raw error compare on srv.Serve's return,
 	// which misclassified wrapped errors. The listener lifecycle (and
 	// its errors.Is(err, http.ErrServerClosed) handling — see
 	// pkg/serverkit/run.go) now lives in serverkit; the shim must hand
 	// the lifecycle off rather than half-reimplementing it.
-	if !strings.Contains(serverGo, "serverkit.Run(") {
-		t.Errorf("cmd/server.go must hand the serve lifecycle to serverkit.Run(); got:\n%s",
-			excerpt(serverGo, "Serve", 400))
+	if !strings.Contains(serveGo, "serverkit.Run(") {
+		t.Errorf("cmd/demo/cmd/serve.go must hand the serve lifecycle to serverkit.Run(); got:\n%s",
+			excerpt(serveGo, "Serve", 400))
 	}
 	// Past bug: server used the `postgres://` URL directly with
 	// database/sql, which has no registered driver named "postgres" in a
 	// bare binary. pgx/v5/stdlib registers a "pgx" driver that accepts
 	// postgres URLs; blank-importing it is the fix.
-	if !strings.Contains(serverGo, `_ "github.com/jackc/pgx/v5/stdlib"`) {
-		t.Errorf("cmd/server.go must blank-import github.com/jackc/pgx/v5/stdlib; got:\n%s",
-			excerpt(serverGo, "import", 400))
+	if !strings.Contains(serveGo, `_ "github.com/jackc/pgx/v5/stdlib"`) {
+		t.Errorf("cmd/demo/cmd/serve.go must blank-import github.com/jackc/pgx/v5/stdlib; got:\n%s",
+			excerpt(serveGo, "import", 400))
 	}
 
 	authGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "middleware", "middleware.go"))
@@ -204,14 +216,25 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		}
 	}
 
-	configGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "config", "config_gen.go"))
 	// Past bug: PORT was parsed with `strconv.Atoi` (int) which accepts
-	// values outside the 16-bit port range (e.g. 99999) and then silently
-	// truncates when assigned. `ParseUint(v, 10, 16)` range-checks at
-	// parse time.
-	if !strings.Contains(configGo, ", 10, 16)") || !strings.Contains(configGo, "strconv.ParseUint(") {
-		t.Errorf("pkg/config/config.go must range-check ports via strconv.ParseUint(_, 10, 16); got:\n%s",
-			excerpt(configGo, "PORT", 400))
+	// values outside the port range and then silently truncates when
+	// assigned; a width-checked ParseUint rejects at parse time instead.
+	//
+	// There is no longer a generated per-field loader to grep for that
+	// call: pkg/config/config_gen.go is a thin shim over the generic,
+	// descriptor-driven loader in forge/pkg/config, which does the
+	// width-checked parse once for every numeric field (see typedValue in
+	// pkg/config/loader.go, covered by that package's own tests). What this
+	// gate can still prove is that the scaffold routes config through that
+	// library rather than growing a hand-rolled parser again.
+	configGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "config", "config_gen.go"))
+	if !strings.Contains(configGo, `forgeconfig "github.com/reliant-labs/forge/pkg/config"`) {
+		t.Errorf("pkg/config/config_gen.go must delegate loading to forge/pkg/config (which width-checks numeric parses); got:\n%s",
+			excerpt(configGo, "import", 400))
+	}
+	if strings.Contains(configGo, "strconv.Atoi(") {
+		t.Errorf("pkg/config/config_gen.go must not hand-roll an unchecked strconv.Atoi port parse; got:\n%s",
+			excerpt(configGo, "Atoi", 400))
 	}
 
 	frontendBufGen := readFileE2E(t, filepath.Join(projectDir, "frontends", "web", "buf.gen.yaml"))
@@ -242,14 +265,26 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 			gitignore)
 	}
 
-	handlersGen := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "api", "handlers_gen.go"))
 	// Past bug: generated error strings were ALL-CAPS ("HANDLER FOR %s
 	// NOT YET IMPLEMENTED") which violates Go's error-string convention
 	// (lowercase, no trailing punctuation) and lint-fails on any
 	// user-configured staticcheck.
-	if hasUpperCaseErrorString(handlersGen) {
-		t.Errorf("handlers_gen.go must use lowercase error strings (Go convention); got:\n%s",
-			handlersGen)
+	//
+	// The stub's own message now comes from svcerr.ScaffoldStub rather than
+	// being formatted in the emitted file, and handlers_gen.go no longer
+	// exists at all (one owned file per RPC). So the guard sweeps every Go
+	// file forge writes into the handler package instead of one filename —
+	// which is strictly wider than what it replaced.
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "api")
+	handlerFiles, err := filepath.Glob(filepath.Join(handlerDir, "*.go"))
+	if err != nil || len(handlerFiles) == 0 {
+		t.Fatalf("no Go files in %s (glob err %v) — the uppercase-error-string guard would be vacuous", handlerDir, err)
+	}
+	for _, f := range handlerFiles {
+		if content := readFileE2E(t, f); hasUpperCaseErrorString(content) {
+			t.Errorf("%s must use lowercase error strings (Go convention); got:\n%s",
+				filepath.Base(f), content)
+		}
 	}
 
 	// ── Lint gates (spec item 3) ───────────────────────────────────────

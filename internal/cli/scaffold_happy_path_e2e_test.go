@@ -70,10 +70,15 @@ func TestE2EZeroServiceScaffoldCompiles(t *testing.T) {
 }
 
 // TestE2EAddServiceThenEntityGenerates: the post-scaffold growth path.
-// `forge scaffold service` emits a bare proto (no RPCs, no imports);
-// `forge scaffold entity` injects CRUD RPCs carrying (forge.v1.method)
-// options into it; `forge generate` must then succeed — which requires
-// the entity injection to have added the forge/v1/forge.proto import.
+// `forge scaffold service` emits a bare proto (no RPCs, no imports); a
+// `// forge:entity` message declared in it births CRUD RPCs carrying
+// (forge.v1.method) options; `forge generate` must then succeed — which
+// requires the entity birth to have added the forge/v1/forge.proto import.
+//
+// The entity is declared in the PROTO, not as `field:type` CLI arguments:
+// that flag grammar was removed so the proto is the single place an entity
+// is declared. The import-injection regression this gate exists for is a
+// property of the birth, and is unchanged by how the entity is spelled.
 func TestE2EAddServiceThenEntityGenerates(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
@@ -99,15 +104,27 @@ func TestE2EAddServiceThenEntityGenerates(t *testing.T) {
 	// generates and builds (no DB boot), so no database override is
 	// needed.
 
-	runCmd(t, projectDir, forgeBin, "scaffold", "entity", "bookmark",
-		"url:string", "title:string", "done:bool")
+	bare := readFileE2E(t, protoPath)
+	if err := os.WriteFile(protoPath, []byte(bare+`
+// forge:entity
+message Bookmark {
+  string id = 1;
+  string url = 2;
+  string title = 3;
+  bool done = 4;
+}
+`), 0o644); err != nil {
+		t.Fatalf("declare the Bookmark entity in the item proto: %v", err)
+	}
+
+	runCmd(t, projectDir, forgeBin, "scaffold")
 
 	proto := readFileE2E(t, protoPath)
 	if !strings.Contains(proto, `import "forge/v1/forge.proto";`) {
-		t.Fatalf("scaffold entity injected (forge.v1.method) options without the forge/v1/forge.proto import — the next generate dies in buf with 'unknown extension forge.v1.method':\n%s", proto)
+		t.Fatalf("entity birth injected (forge.v1.method) options without the forge/v1/forge.proto import — the next generate dies in buf with 'unknown extension forge.v1.method':\n%s", proto)
 	}
 	if !strings.Contains(proto, "rpc CreateBookmark(CreateBookmarkRequest)") {
-		t.Fatalf("scaffold entity did not scaffold the Bookmark CRUD RPCs into the service proto:\n%s", proto)
+		t.Fatalf("entity birth did not scaffold the Bookmark CRUD RPCs into the service proto:\n%s", proto)
 	}
 
 	// The journey's failure point: generate ran buf against the proto

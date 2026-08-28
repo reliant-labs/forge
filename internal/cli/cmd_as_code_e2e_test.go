@@ -59,12 +59,19 @@ func TestE2ECmdAsCodeSubcommands(t *testing.T) {
 	assertPathExistsE2E(t, filepath.Join(cmdDir, "services", "register_gen.go"))
 	assertPathExistsE2E(t, commandsPath)
 
-	// Selection is compile-time TYPED, never a registry string: the
-	// subcommand names the mount method expression directly. This is the
-	// property the retired string-projected cmd/services_gen.go lacked.
+	// Selection is compile-time TYPED, never a registry string. The method
+	// expression itself is the ONE derived thing, so it lives next door in
+	// the generated <svc>_mount_gen.go and the owned subcommand references
+	// it by name — that split is what lets forge add or rename a service
+	// without rewriting the file the user edits. Assert both halves: a
+	// typed expression nobody references would not select anything.
 	svcCmd := readFileE2E(t, svcCmdPath)
-	if !strings.Contains(svcCmd, "(*app.Components).MountAPI") {
+	if !strings.Contains(svcCmd, "Mount: mountAPI") {
 		t.Errorf("per-service subcommand must select its service by TYPED mount method, not a string:\n%s", svcCmd)
+	}
+	mountGen := readFileE2E(t, filepath.Join(cmdDir, "services", "api_mount_gen.go"))
+	if !strings.Contains(mountGen, "(*app.Components).MountAPI") {
+		t.Errorf("mountAPI must be the typed mount method expression, not a string lookup:\n%s", mountGen)
 	}
 
 	// (2) Register a second binary AS CODE: replace the scaffolded

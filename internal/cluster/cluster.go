@@ -40,6 +40,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -173,6 +174,37 @@ func (p RolloutPolicy) Validate() error {
 		return fmt.Errorf("unknown rollout mode %q: want one of %q, %q, %q",
 			p.Mode, RolloutWait, RolloutWarn, RolloutSkip)
 	}
+}
+
+// classifyApplyResult decides what an apply error MEANS under this policy,
+// and is the single place an incomplete apply is graded.
+//
+// An *IncompleteApplyError — objects that were rendered but never reached
+// the cluster — is the same class of problem as a Deployment that never
+// became ready, so it is graded by the same policy rather than by a knob
+// of its own: fatal under the default RolloutWait, reported-and-tolerated
+// under RolloutWarn, where a half-converged cluster is something you look
+// at rather than a build result.
+//
+// RolloutSkip does NOT exempt it. Skip means "do not WAIT for the cluster
+// to converge", which is a statement about time; an object that was
+// rejected is never going to converge no matter how long nobody waits, and
+// it is exactly the evidence a fire-and-forget deploy has no other way to
+// get. A caller who asked forge not to wait still asked it to apply.
+//
+// Every other error passes through untouched: a genuine apply failure
+// (a bad manifest, an unreachable API server) is fatal in every mode, and
+// warn mode was never a licence to ignore those.
+func (p RolloutPolicy) classifyApplyResult(err error) error {
+	var incomplete *IncompleteApplyError
+	if !errors.As(err, &incomplete) {
+		return err
+	}
+	if p.Mode == RolloutWarn {
+		fmt.Printf("Warning: %v\n", incomplete)
+		return nil
+	}
+	return err
 }
 
 // orderDeployments returns names sorted so that anything named in Order
@@ -585,16 +617,22 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	// idempotent, so re-sending any doc is harmless. When the bundle has
 	// no config kinds, config is empty and we fall through to a single
 	// apply of rest — identical to the pre-split behaviour.
+	//
+	// Normalized here rather than at the rollout wait below because the
+	// apply itself now has a verdict to render: an incomplete apply is
+	// governed by the same policy as a failed rollout (see
+	// classifyApplyResult).
+	policy := opts.Rollout.Normalize()
 	config, rest := PartitionConfigManifests(manifests)
 	if strings.TrimSpace(config) != "" {
-		if err := KubectlApply(ctx, opts.Context, config); err != nil {
+		if err := policy.classifyApplyResult(KubectlApply(ctx, opts.Context, config)); err != nil {
 			if opts.Quiet {
 				return fmt.Errorf("kubectl apply (config): %w", err)
 			}
 			return fmt.Errorf("kubectl apply failed (config): %w", err)
 		}
 	}
-	if err := KubectlApply(ctx, opts.Context, rest); err != nil {
+	if err := policy.classifyApplyResult(KubectlApply(ctx, opts.Context, rest)); err != nil {
 		// Reload uses the shorter "kubectl apply:" wrap; the framed
 		// deploy/up path uses the longer "kubectl apply failed:" form.
 		if opts.Quiet {
@@ -609,7 +647,6 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		}
 	}
 
-	policy := opts.Rollout.Normalize()
 	if policy.Mode == RolloutSkip {
 		if !opts.Quiet {
 			fmt.Println("Skipping rollout wait (rollout mode: skip)")
@@ -949,12 +986,19 @@ func KubectlApply(ctx context.Context, kctx, manifests string) error {
 			"the target cluster is declarative (forge.K8sCluster.cluster in the env's KCL) — " +
 			"forge never falls back to the current context for a write")
 	}
-	return applyWithImmutableRecovery(
+	applyStdout, err := applyWithImmutableRecovery(
 		manifests,
-		func() (string, error) { return applyOnce(ctx, kctx, manifests) },
+		func() (string, string, error) { return applyOnce(ctx, kctx, manifests) },
 		func(t immutableTarget) error { return kubectlDeleteResource(ctx, kctx, t) },
 		func(t immutableTarget) error { return kubectlWaitResourceGone(ctx, kctx, t) },
 	)
+	if err != nil {
+		return err
+	}
+	// The apply exited 0 — which says the batch was accepted, NOT that
+	// every object in it was. Prove it before letting the caller call this
+	// a success. See apply_completeness.go for the incident this closes.
+	return verifyApplyComplete(manifests, applyStdout)
 }
 
 // immutableRecoveryAttempts bounds how many delete→wait-gone→re-apply
@@ -1000,20 +1044,26 @@ const immutableRecoveryAttempts = 3
 // error, a re-apply error that isn't immutable, or attempts exhausted —
 // surfaces the relevant error unchanged. Unrelated apply failures are
 // never masked.
+//
+// The apply closure returns (stdout, stderr, err): stderr is what the
+// recovery classifies on, and stdout is handed back to the caller for the
+// apply-completeness check. On a successful recovery that stdout is the
+// WINNING re-apply's, never the failed first attempt's — the first attempt
+// aborted partway and its object list is not what ended up on the cluster.
 func applyWithImmutableRecovery(
 	manifests string,
-	apply func() (string, error),
+	apply func() (stdout, stderr string, err error),
 	del func(immutableTarget) error,
 	waitGone func(immutableTarget) error,
-) error {
-	stderr, err := apply()
+) (string, error) {
+	stdout, stderr, err := apply()
 	if err == nil {
-		return nil
+		return stdout, nil
 	}
 	targets := immutableResources(stderr, manifests)
 	if len(targets) == 0 {
 		// Not the recoverable immutable case — surface unchanged.
-		return err
+		return stdout, err
 	}
 
 	// Recovery loop: delete EVERY offending immutable resource the batch
@@ -1039,7 +1089,7 @@ func applyWithImmutableRecovery(
 			if delErr := del(res); delErr != nil {
 				// A delete failure is its own problem — surface it rather than
 				// the original immutable error so the cause is visible.
-				return fmt.Errorf("recovering immutable %s %q: delete: %w", res.Kind, res.Name, delErr)
+				return stdout, fmt.Errorf("recovering immutable %s %q: delete: %w", res.Kind, res.Name, delErr)
 			}
 			// Poll the resource to NotFound so the re-apply has a real
 			// happens-before. Best-effort: a wait error (e.g. kubectl flake)
@@ -1051,12 +1101,17 @@ func applyWithImmutableRecovery(
 				}
 			}
 		}
-		reStderr, reErr := apply()
+		reStdout, reStderr, reErr := apply()
+		// The re-apply is the authoritative account of what is on the
+		// cluster now: the first attempt aborted partway, so its object
+		// list would under-report and make the completeness check fire on
+		// a recovery that in fact healed everything.
+		stdout = reStdout
 		if reErr == nil {
 			// Every immutable conflict recovered and the re-apply is clean —
 			// the overall apply is a success (exit 0), regardless of the stale
 			// non-zero status the ORIGINAL batched apply returned.
-			return nil
+			return stdout, nil
 		}
 		// Keep looping only while the re-apply failure is ENTIRELY composed of
 		// recoverable immutable conflicts (the same one still racing us, a
@@ -1064,30 +1119,33 @@ func applyWithImmutableRecovery(
 		// immutable-recoverable is a genuine error and surfaces unchanged.
 		reTargets := immutableResources(reStderr, manifests)
 		if len(reTargets) == 0 {
-			return reErr
+			return stdout, reErr
 		}
 		lastErr = reErr
 		targets = reTargets
 	}
 	// Bounded attempts exhausted and a resource is still immutable — recovery
 	// genuinely failed. Surface the last immutable error.
-	return lastErr
+	return stdout, lastErr
 }
 
 // applyOnce runs a single `kubectl [--context] apply --server-side
-// --force-conflicts -f -` over the manifest stream. Stdout is inherited
-// so the user still sees the per-resource created/configured/unchanged
-// lines; stderr is tee'd to os.Stderr (so errors stay visible) AND
-// captured so KubectlApply can inspect it for the immutable-field
-// recovery. The captured stderr is returned alongside the run error.
-func applyOnce(ctx context.Context, kctx, manifests string) (string, error) {
+// --force-conflicts -f -` over the manifest stream. Both streams are
+// tee'd to the real os.Stdout/os.Stderr (so the user still sees the
+// per-resource created/configured/unchanged lines and any error as they
+// happen) AND captured, because the apply's own output is the only
+// evidence forge has about what actually landed: stderr drives the
+// immutable-field recovery, and stdout drives the apply-completeness
+// check (see apply_completeness.go — a server-side apply can reject one
+// object and still exit 0, and the rejected object simply has no line).
+func applyOnce(ctx context.Context, kctx, manifests string) (applyStdout, applyStderr string, err error) {
 	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "--force-conflicts", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifests)
-	cmd.Stdout = os.Stdout
-	var buf bytes.Buffer
-	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
-	err := cmd.Run()
-	return buf.String(), err
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &outBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
+	err = cmd.Run()
+	return outBuf.String(), errBuf.String(), err
 }
 
 // immutableTarget identifies the single resource an immutable-field apply

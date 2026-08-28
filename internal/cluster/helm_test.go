@@ -392,15 +392,26 @@ func (e *stringErr) Error() string { return e.s }
 // (one space-joined line per invocation) to a log file, and returns the
 // log path. It is the seam for asserting the ORDER of kubectl calls
 // (apply CRDs, wait Established, apply rest) without a live cluster.
+//
+// An `apply` invocation echoes a `<kind>/<name> serverside-applied` line
+// for every document it reads on stdin, because that is what real kubectl
+// does and forge now READS that output to verify the apply was complete
+// (see apply_completeness.go). A fake that exits 0 while printing nothing
+// is indistinguishable from the silent-partial-apply incident, and would
+// fail every test that routes through applyCRDsThenRest.
 func fakeKubectlLog(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "kubectl.log")
-	// The fake records argv then exits 0. `kubectl wait` and `kubectl
-	// apply -f -` both succeed; apply reads stdin so we drain it.
+	// The fake records argv then exits 0. `kubectl wait` succeeds silently;
+	// `apply -f -` drains stdin and confirms each document it saw.
 	script := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$*\" >> " + logPath + "\n" +
-		"cat > /dev/null 2>/dev/null || true\n" +
+		"case \" $* \" in *' apply '*) " +
+		"awk '/^kind:/{k=tolower($2)} /^  name:/{if(k!=\"\"&&n==\"\"){n=$2}} " +
+		"/^---$/{if(k!=\"\"&&n!=\"\")print k\"/\"n\" serverside-applied\"; k=\"\"; n=\"\"} " +
+		"END{if(k!=\"\"&&n!=\"\")print k\"/\"n\" serverside-applied\"}' ;; " +
+		"*) cat > /dev/null 2>/dev/null || true ;; esac\n" +
 		"exit 0\n"
 	bin := filepath.Join(dir, "kubectl")
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {

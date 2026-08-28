@@ -135,14 +135,14 @@ message Item {
 	// call site is pushed back to matching on message prose.
 	writeFileE2E(t, filepath.Join(webDir, "src", "app", "errorcontract", "page.tsx"),
 		fmt.Sprintf(errorContractPositiveFixture, hooksModule))
-	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "tsc", "--noEmit")
+	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 
 	// ── NEGATIVE: a field that exists on no type must FAIL ────────────
 	// Without this half, the positive half passes just as green when the
 	// error is `any`.
 	negativePath := filepath.Join(webDir, "src", "app", "errorcontract", "negative.ts")
 	writeFileE2E(t, negativePath, fmt.Sprintf(errorContractNegativeFixture, hooksModule))
-	out, err := runCmdCombined(webDir, 3*time.Minute, "npx", "tsc", "--noEmit")
+	out, err := runCmdCombined(webDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 	if err == nil {
 		t.Fatalf("tsc accepted a nonexistent field on the hook's error — the error type is `any` "+
 			"or otherwise not load-bearing, and the positive half above proves nothing:\n%s", out)

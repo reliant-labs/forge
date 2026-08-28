@@ -166,7 +166,8 @@ message Widget {
 		`sku = 3 [(buf.validate.field).string.pattern = "^SKU-[0-9]+$"]`,
 		"email = 4 [(buf.validate.field).string.email = true]",
 		"code = 5 [(buf.validate.field).required = true]",
-		"currency = 7 [(buf.validate.field).string.len = 3]",
+		"quantity = 7 [(buf.validate.field).int32.gte = 0]",
+		"currency = 8 [(buf.validate.field).string.len = 3]",
 	} {
 		if !strings.Contains(createReq, want) {
 			t.Errorf("CreateWidgetRequest missing field rules %q:\n%s", want, createReq)
@@ -228,7 +229,7 @@ message Widget {
 	// it once up front so parallel tests do not race that bootstrap.
 	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
-	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "tsc", "--noEmit")
+	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 }
 
 // writeWireRejectionTest drops a standalone test package into the generated

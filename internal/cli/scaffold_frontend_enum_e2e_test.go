@@ -154,5 +154,5 @@ enum BrandStatus {
 	runCmdTimeout(t, webDir, 5*time.Minute,
 		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
 	runCmdTimeout(t, webDir, 3*time.Minute,
-		"npx", "tsc", "--noEmit")
+		"npx", "--no-install", "tsc", "--noEmit")
 }

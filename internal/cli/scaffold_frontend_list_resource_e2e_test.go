@@ -190,7 +190,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
 	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "run", "build")
 	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "test")
-	runCmdTimeout(t, webDir, 2*time.Minute, "npx", "tsc", "--noEmit")
+	runCmdTimeout(t, webDir, 2*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 }
 
 // orderCRUDProtoFilters is a CRUD-entity proto whose List RPC declares

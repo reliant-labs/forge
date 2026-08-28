@@ -62,6 +62,25 @@ func prebuildWebRuntimeE2E(t *testing.T) {
 			return
 		}
 
+		// A HALF-INSTALLED toolchain left behind by an earlier run defeats
+		// the once-ness above: build.mjs skips its bootstrap whenever
+		// node_modules/typescript merely EXISTS, so a directory containing
+		// bin/tsc but no lib/ makes every build die on `Cannot find module
+		// '../lib/tsc.js'` — and no amount of serializing fixes it, because
+		// the damage predates this process. Observed in CI on a checkout
+		// whose web-runtime/node_modules survived from a previous job.
+		//
+		// Probing for the file build.mjs actually needs (rather than the
+		// directory it checks) tells the two states apart, and removing the
+		// broken tree is what lets the bootstrap re-run.
+		tsLib := filepath.Join(dir, "node_modules", "typescript", "lib", "tsc.js")
+		tsDir := filepath.Join(dir, "node_modules", "typescript")
+		if _, statErr := os.Stat(tsDir); statErr == nil {
+			if _, libErr := os.Stat(tsLib); libErr != nil {
+				_ = os.RemoveAll(tsDir)
+			}
+		}
+
 		// `npm run build` is build.mjs directly — the same script npm would
 		// run as `prepare`, minus the install-time indirection. It installs
 		// this package's devDependencies itself if the toolchain is missing.

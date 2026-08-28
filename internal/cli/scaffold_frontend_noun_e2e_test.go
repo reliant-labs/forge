@@ -77,9 +77,9 @@ func TestE2EAddFrontendKindsProduceABuildableTree(t *testing.T) {
 	assertPathExistsE2E(t, filepath.Join(spaDir, "src", "mocks", "scenarios", "index_gen.ts"))
 
 	// ── the trees compile, straight out of the add verb ──────────────
-	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "tsc", "--noEmit")
-	runCmdTimeout(t, spaDir, 3*time.Minute, "npx", "tsc", "--noEmit")
-	runCmdTimeout(t, mobileDir, 3*time.Minute, "npx", "tsc", "--noEmit")
+	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
+	runCmdTimeout(t, spaDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
+	runCmdTimeout(t, mobileDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 
 	// ── …and they bundle, which is a strictly stronger claim ─────────
 	// Next.js: webpack statically resolves the literal require() that tsc
@@ -93,6 +93,6 @@ func TestE2EAddFrontendKindsProduceABuildableTree(t *testing.T) {
 
 	// ── and the generate pass agrees with what the scaffold wrote ────
 	runCmd(t, projectDir, forgeBin, "generate")
-	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "tsc", "--noEmit")
-	runCmdTimeout(t, spaDir, 3*time.Minute, "npx", "tsc", "--noEmit")
+	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
+	runCmdTimeout(t, spaDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 }

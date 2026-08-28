@@ -136,13 +136,6 @@ jobs:
           cache-dependency-path: |
             go.sum
             pkg/go.sum
-      - name: Cache KCL CLI
-        uses: actions/cache@v5
-        id: kcl-cache
-        with:
-          path: ~/.kcl
-          key: kcl-cli-${{ runner.os }}
-
       # KCL_VERSION is pinned deliberately. Left unset, the installer
       # resolves "latest" through an UNAUTHENTICATED api.github.com call,
       # which is rate-limited to 60/hour per runner IP and shared across
@@ -150,14 +143,20 @@ jobs:
       # empty tag and dies with "The KCL version is not found", failing CI
       # for a reason that has nothing to do with the commit. Pinning also
       # stops a KCL release from changing this build without a commit.
+      #
+      # Not cached, and no ~/.kcl on PATH: on Linux the installer puts kcl in
+      # /usr/local/bin, which is already on PATH. The cache stored the ~/.kcl
+      # that was never created — an empty 227-byte entry — and a later hit
+      # then SKIPPED the install and left the job with no kcl at all. The
+      # install is ~1s; caching it was never worth a step that can wedge a
+      # whole workflow.
       - name: Install KCL
-        if: steps.kcl-cache.outputs.cache-hit != 'true'
         env:
           KCL_VERSION: v0.11.2
-        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-
-      - name: Add KCL to PATH
-        run: echo "$HOME/.kcl/bin" >> $GITHUB_PATH
+        run: |
+          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+          command -v kcl
+          kcl --version
       - name: Install forge
         # Same reason as verify-generated: this step runs `forge`, and in
         # forge's own repo the forge that must run is the one being tested.

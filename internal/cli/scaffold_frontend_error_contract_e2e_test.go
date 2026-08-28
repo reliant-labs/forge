@@ -4,6 +4,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -59,18 +60,32 @@ func TestE2EGeneratedHooksExposeTheTypedErrorContract(t *testing.T) {
 	projectDir := filepath.Join(dir, "errapp")
 	addCorpusForgePkgReplace(t, projectDir)
 
-	// The service comes FIRST. `forge scaffold entity` injects its CRUD
-	// messages + RPCs into an existing service proto; against a project with
-	// zero services it prints "Skipping CRUD proto scaffold" and exits 0,
-	// leaving a migration and no wire contract. Everything downstream — the
+	// The service comes FIRST. An entity births its CRUD messages + RPCs
+	// into an existing service proto; against a project with zero services
+	// there is no proto to birth into, and everything downstream — the
 	// proto, the hooks, this whole gate — then quietly does not exist.
 	runCmd(t, projectDir, forgeBin, "scaffold", "service", "item")
 
 	// A CRUD entity gives the generator both a query and a mutation hook,
 	// which are separately typed (UseQueryOptions vs UseMutationOptions) and
-	// so are separately breakable.
-	runCmd(t, projectDir, forgeBin, "scaffold", "entity", "item",
-		"name:string", "description:string", "price_cents:int64", "active:bool")
+	// so are separately breakable. The entity is declared in the PROTO — the
+	// `field:type` flag grammar was removed so the proto is the single place
+	// an entity is declared.
+	itemProtoPath := filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto")
+	bareProto := readFileE2E(t, itemProtoPath)
+	if err := os.WriteFile(itemProtoPath, []byte(bareProto+`
+// forge:entity
+message Item {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  int64 price_cents = 4;
+  bool active = 5;
+}
+`), 0o644); err != nil {
+		t.Fatalf("declare the Item entity in the item proto: %v", err)
+	}
+	runCmd(t, projectDir, forgeBin, "scaffold")
 
 	// Non-vacuousness precondition, checked before `generate` so the failure
 	// names the cause: no RPCs means no hooks means nothing for tsc to gate.
@@ -98,9 +113,20 @@ func TestE2EGeneratedHooksExposeTheTypedErrorContract(t *testing.T) {
 
 	// A smoke read, not the gate: name the invariant so a failure below reads
 	// as "the error type regressed" instead of as a wall of tsc output.
+	//
+	// The hooks no longer name ConnectClientError themselves. They are built
+	// by the runtime's createQueryHook / createMutationHook factories, whose
+	// RETURN types carry it (UseQueryResult<Response, ConnectClientError>),
+	// so the typed-error contract now rides on the factory import instead of
+	// a direct type import. That is the thing whose absence would make every
+	// assertion below vacuous, so it is what this reads for; whether the
+	// error type actually reaches a call site is settled by the positive and
+	// negative tsc runs, which is the real gate either way.
 	hooks := readFileE2E(t, filepath.Join(webDir, "src", "hooks", hooksFile))
-	if !strings.Contains(hooks, `import type { ConnectClientError } from "@reliantlabs/forge-web-runtime"`) {
-		t.Errorf("generated hooks do not import the runtime's error type:\n%s", hooks)
+	for _, want := range []string{"createQueryHook", "createMutationHook", `from "@reliantlabs/forge-web-runtime/service-hooks"`} {
+		if !strings.Contains(hooks, want) {
+			t.Errorf("generated hooks do not go through the runtime's typed hook factories (missing %q):\n%s", want, hooks)
+		}
 	}
 
 	// ── POSITIVE: the documented contract must typecheck ──────────────
@@ -109,14 +135,14 @@ func TestE2EGeneratedHooksExposeTheTypedErrorContract(t *testing.T) {
 	// call site is pushed back to matching on message prose.
 	writeFileE2E(t, filepath.Join(webDir, "src", "app", "errorcontract", "page.tsx"),
 		fmt.Sprintf(errorContractPositiveFixture, hooksModule))
-	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "tsc", "--noEmit")
+	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 
 	// ── NEGATIVE: a field that exists on no type must FAIL ────────────
 	// Without this half, the positive half passes just as green when the
 	// error is `any`.
 	negativePath := filepath.Join(webDir, "src", "app", "errorcontract", "negative.ts")
 	writeFileE2E(t, negativePath, fmt.Sprintf(errorContractNegativeFixture, hooksModule))
-	out, err := runCmdCombined(webDir, 3*time.Minute, "npx", "tsc", "--noEmit")
+	out, err := runCmdCombined(webDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 	if err == nil {
 		t.Fatalf("tsc accepted a nonexistent field on the hook's error — the error type is `any` "+
 			"or otherwise not load-bearing, and the positive half above proves nothing:\n%s", out)

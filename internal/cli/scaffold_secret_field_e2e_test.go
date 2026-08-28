@@ -97,14 +97,24 @@ func TestE2EScaffoldSecretFieldPreservedOnFullReplace(t *testing.T) {
 func writeSecretPreservationTest(t *testing.T, projectDir string) {
 	t.Helper()
 	born := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "vaults", "handlers_crud_test.go"))
-	m := regexp.MustCompile(`app\.NewTest(\w+)\(`).FindStringSubmatch(born)
+	// The test factory lives in the HANDLER package (helpers_gen_test.go),
+	// reached through that package's own import alias — the pkg/app god
+	// package that used to host app.NewTest<X> was retired with the old DI
+	// unit. Capture the alias too so the injected test imports what the
+	// born one does.
+	m := regexp.MustCompile(`(\w+)\.NewTest(\w+)\(`).FindStringSubmatch(born)
 	if m == nil {
-		t.Fatalf("born handlers_crud_test.go carries no app.NewTest<X> helper call:\n%s", born)
+		t.Fatalf("born handlers_crud_test.go carries no <pkg>.NewTest<X> helper call:\n%s", born)
 	}
-	helper := m[1]
+	pkgAlias := m[1]
+	helper := m[2]
 	pbImport := regexp.MustCompile(`pb "([^"]+)"`).FindStringSubmatch(born)
 	if pbImport == nil {
 		t.Fatalf("born handlers_crud_test.go carries no pb import:\n%s", born)
+	}
+	svcImport := regexp.MustCompile(pkgAlias + ` "([^"]+)"`).FindStringSubmatch(born)
+	if svcImport == nil {
+		t.Fatalf("born handlers_crud_test.go carries no %s handler-package import:\n%s", pkgAlias, born)
 	}
 
 	test := fmt.Sprintf(`package vaults_test
@@ -123,12 +133,12 @@ import (
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	pb "%s"
-	"example.com/vaultapp/pkg/app"
+	%s "%s"
 )
 
 func TestSecretPreservedOnMasklessUpdate(t *testing.T) {
 	db := crudTestDB(t)
-	svc := app.NewTest%s(t, app.WithDB(db))
+	svc := %s.NewTest%s(t, %s.WithDB(db))
 	ctx := crudTestCtx()
 
 	// readToken reads the stored secret DIRECTLY — the repo/handler layers
@@ -203,7 +213,7 @@ func TestSecretPreservedOnMasklessUpdate(t *testing.T) {
 		t.Fatalf("masked Update naming the secret did not write it: row token = %%q, want rotated-secret", got)
 	}
 }
-`, pbImport[1], helper)
+`, pbImport[1], pkgAlias, svcImport[1], pkgAlias, helper, pkgAlias)
 
 	path := filepath.Join(projectDir, "internal", "handlers", "vaults", "secret_preservation_e2e_test.go")
 	if err := os.WriteFile(path, []byte(test), 0o644); err != nil {

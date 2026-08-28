@@ -149,20 +149,34 @@ jobs:
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
 
-      # KCL install-and-cache, same shape as ci.yml's validate-kcl job.
-      - name: Cache KCL CLI
-        uses: actions/cache@v4
-        id: kcl-cache
-        with:
-          path: ~/.kcl
-          key: kcl-cli-${{ runner.os }}
-
+      # KCL is NOT cached, and there is no ~/.kcl. Both were a
+      # misunderstanding of where the installer puts things: on Linux it
+      # installs to /usr/local/bin, so ~/.kcl was never created, the cache
+      # stored an EMPTY directory (a 227-byte entry, in the logs as
+      # "Cache Size: ~0 MB (227 B)"), and every later run took a cache HIT,
+      # skipped the install, and then failed tool verification with
+      # "e2e suite requires kcl". That took out all four shards before a
+      # single test ran — and re-keying the cache only moved the poison,
+      # because the next run saved the same empty directory under the new key.
+      #
+      # The install is ~1s, so caching it was never worth a step that can
+      # wedge the whole suite. The trailing verification refuses to let a
+      # silently failed install reach the tests as a confusing error later.
+      #
+      # KCL_VERSION is pinned deliberately, matching ci.yml. Left unset, the
+      # installer resolves "latest" through an UNAUTHENTICATED api.github.com
+      # call, rate-limited to 60/hour per runner IP and shared across every
+      # job on that host — when it is exhausted the script gets an empty tag
+      # and dies with "The KCL version is not found", failing CI for a reason
+      # that has nothing to do with the commit. This suite fans out to four
+      # shards, so it burns that budget faster than any other lane.
       - name: Install KCL
-        if: steps.kcl-cache.outputs.cache-hit != 'true'
-        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-
-      - name: Add KCL to PATH
-        run: echo "$HOME/.kcl/bin" >> "$GITHUB_PATH"
+        env:
+          KCL_VERSION: v0.11.2
+        run: |
+          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+          command -v kcl
+          kcl --version
 
       - name: Put $HOME/go/bin on PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"

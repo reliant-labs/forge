@@ -1556,6 +1556,16 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	}); err != nil {
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
+	// The templates just rendered import "@/lib/config_gen" (auth's
+	// oidc-provider.ts and session-provider.ts do unconditionally), so the
+	// module has to exist NOW. The add verb does not run generate, and
+	// writing this used to live only in the generate pipeline — which left
+	// a freshly added frontend unable to typecheck against its own scaffold.
+	// frontendType is already the platform label the generate pipeline uses
+	// (nextjs / vite-spa / react-native), so it is passed straight through.
+	if err := generator.WriteScaffoldedFrontendConfigTS(root, cfg.Name, name, frontendType, apiPort); err != nil {
+		return err
+	}
 	// When the frontend just added is React Native AND workspaces are
 	// on, scaffold the @<scope>/ui-native primitives package alongside.
 	// The forge.yaml hasn't been written back to disk yet at this

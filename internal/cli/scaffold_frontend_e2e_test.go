@@ -50,6 +50,15 @@ import (
 //     cases where `next build` might elide typing issues (legacy compat
 //     flags, SWC-only paths).
 //
+// Every such call passes `--no-install`, and that flag is load-bearing.
+// Bare `npx tsc` falls back to FETCHING a package named "tsc" when the
+// frontend's node_modules has no local binary — and `tsc` on npm is an
+// unrelated abandoned 2.0.4 package that prints "This is not the tsc
+// command you are looking for" and exits 1. So a missing local typescript
+// surfaced as an inscrutable failure from a package the project never
+// depends on. --no-install makes the real condition ("typescript is not
+// installed here") the error, and never reaches the network.
+//
 // node/npm are a REQUIREMENT, not a preference: requireTool skips on a
 // laptop that lacks them and FAILS under CI, where provisioning them is
 // .github/workflows/e2e-suite.yml's job. The old spelling skipped in both
@@ -127,7 +136,7 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	// Strict type-check as a belt-and-braces guard — catches the cases
 	// where Next's build produces a bundle despite type errors.
 	runCmdTimeout(t, webDir, 2*time.Minute,
-		"npx", "tsc", "--noEmit")
+		"npx", "--no-install", "tsc", "--noEmit")
 }
 
 // writeFileE2E writes content to path, creating parent directories.

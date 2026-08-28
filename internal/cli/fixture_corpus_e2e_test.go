@@ -742,6 +742,18 @@ message ListItemsResponse { repeated Item items = 1; string next_page_token = 2;
 	runCmdTimeout(t, feDir, 5*time.Minute,
 		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
 
+	// Generate again, AFTER that install. The buf TypeScript pass runs
+	// protoc-gen-es out of the frontend's OWN node_modules and, when it is
+	// absent, warns and SKIPS rather than failing — and the install that was
+	// supposed to provide it, back at scaffold time, is best-effort by
+	// design. So on a cold npm cache the earlier generate emitted no
+	// src/gen/ at all and the build below died on
+	// "Cannot find module '@/gen/services/api/v1/api_pb'", which says
+	// nothing about base paths. A no-op once the stubs exist; the assertion
+	// makes a future skip fail by name rather than as a wall of TS2307.
+	runCmd(t, projectDir, forgeBin, "generate")
+	assertPathExistsE2E(t, filepath.Join(feDir, "src", "gen", "services", "api", "v1", "api_pb.ts"))
+
 	// 3a. Fail-loud guard FIRST (near-instant: the throw happens while
 	// next.config.ts is evaluated, before any compilation).
 	out, err := runCorpusCmdEnv(feDir, 2*time.Minute,

@@ -71,11 +71,19 @@ func TestE2EPbThroughCrudPlusCustomRpc(t *testing.T) {
 	if !strings.Contains(handlers, "func (s *Service) Ping(") {
 		t.Errorf("custom RPC Ping is not a pb-through *Service method:\n%s", handlers)
 	}
-	if !strings.Contains(handlers, "svcerr.Unimplemented(") {
-		t.Errorf("custom RPC Ping stub should return Unimplemented via svcerr:\n%s", handlers)
-	}
-	if !strings.Contains(handlers, `"unimplemented"`) {
-		t.Errorf("custom RPC Ping stub should carry the stable \"unimplemented\" error-reason:\n%s", handlers)
+	// The stub answers with the SCAFFOLD-STUB sentinel, not a bare
+	// Unimplemented. Both carry connect.CodeUnimplemented on the wire, but
+	// only the sentinel means "forge wrote this and nobody replaced it":
+	// keying the generated scaffold test row on the bare code made it
+	// unfalsifiable, because a finished handler returns that code for its
+	// own reasons (an unwired optional dep answers Unimplemented on a
+	// harness that leaves deps nil). See svcerr.ErrScaffoldStub.
+	// The stable on-the-wire reason header the row identifies the stub by
+	// is stamped inside svcerr.ScaffoldStub, not spelled in the emitted
+	// handler, so it is pinned there (pkg/svcerr, pkg/tdd) rather than by
+	// string-matching this file.
+	if !strings.Contains(handlers, "svcerr.ScaffoldStub(") {
+		t.Errorf("custom RPC Ping stub should return the scaffold-stub sentinel via svcerr:\n%s", handlers)
 	}
 
 	// The CRUD RPCs delegate to the generated ops.

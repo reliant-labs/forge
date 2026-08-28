@@ -177,14 +177,24 @@ message ListOrdersRequest {
 func writeEnumRoundTripTest(t *testing.T, projectDir string) {
 	t.Helper()
 	born := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "orders", "handlers_crud_test.go"))
-	m := regexp.MustCompile(`app\.NewTest(\w+)\(`).FindStringSubmatch(born)
+	// The test factory lives in the HANDLER package (helpers_gen_test.go),
+	// reached through that package's own import alias — the pkg/app god
+	// package that used to host app.NewTest<X> was retired with the old DI
+	// unit. Capture the alias too so the injected test imports what the
+	// born one does.
+	m := regexp.MustCompile(`(\w+)\.NewTest(\w+)\(`).FindStringSubmatch(born)
 	if m == nil {
-		t.Fatalf("born handlers_crud_test.go carries no app.NewTest<X> helper call:\n%s", born)
+		t.Fatalf("born handlers_crud_test.go carries no <pkg>.NewTest<X> helper call:\n%s", born)
 	}
-	helper := m[1]
+	pkgAlias := m[1]
+	helper := m[2]
 	pbImport := regexp.MustCompile(`pb "([^"]+)"`).FindStringSubmatch(born)
 	if pbImport == nil {
 		t.Fatalf("born handlers_crud_test.go carries no pb import:\n%s", born)
+	}
+	svcImport := regexp.MustCompile(pkgAlias + ` "([^"]+)"`).FindStringSubmatch(born)
+	if svcImport == nil {
+		t.Fatalf("born handlers_crud_test.go carries no %s handler-package import:\n%s", pkgAlias, born)
 	}
 
 	test := fmt.Sprintf(`package orders_test
@@ -198,13 +208,13 @@ import (
 
 	"connectrpc.com/connect"
 
-	pb "%s"
-	"example.com/enumapp/pkg/app"
+	pb "%[1]s"
+	%[3]s "%[4]s"
 )
 
 func TestEnumStatusRoundTrip(t *testing.T) {
 	db := crudTestDB(t)
-	svc := app.NewTest%s(t, app.WithDB(db))
+	svc := %[3]s.NewTest%[2]s(t, %[3]s.WithDB(db))
 	ctx := crudTestCtx()
 
 	fallback := pb.OrderStatus_ORDER_STATUS_DRAFT
@@ -260,7 +270,7 @@ func TestEnumStatusRoundTrip(t *testing.T) {
 // exactly why the schema, not the request, decides what it means.
 func TestEnumUnsetLandsTheSchemaDefault(t *testing.T) {
 	db := crudTestDB(t)
-	svc := app.NewTest%[2]s(t, app.WithDB(db))
+	svc := %[3]s.NewTest%[2]s(t, %[3]s.WithDB(db))
 	ctx := crudTestCtx()
 
 	created, err := svc.CreateOrder(ctx, connect.NewRequest(&pb.CreateOrderRequest{
@@ -282,7 +292,7 @@ func TestEnumUnsetLandsTheSchemaDefault(t *testing.T) {
 		t.Fatalf("an unset optional enum read back as %%v, want the zero (stored NULL)", s)
 	}
 }
-`, pbImport[1], helper)
+`, pbImport[1], helper, pkgAlias, svcImport[1])
 
 	path := filepath.Join(projectDir, "internal", "handlers", "orders", "enum_roundtrip_e2e_test.go")
 	if err := os.WriteFile(path, []byte(test), 0o644); err != nil {

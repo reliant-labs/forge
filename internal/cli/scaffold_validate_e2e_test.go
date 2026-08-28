@@ -77,6 +77,12 @@ message Widget {
   string email = 5 [(buf.validate.field).string.email = true];
   string code = 6 [(buf.validate.field).required = true];
   int64 count = 7;
+  // The int lower bound is carried on an int32 as well as the int64 above:
+  // int32 is TS number, so its zod value is z.coerce.number() and the bound
+  // projects as a numeric refinement. int64 is TS bigint, whose zod value is
+  // a DIGITS-STRING (a number input would round off large values), and a
+  // numeric refinement cannot be chained onto it — see tsZodBase.
+  int32 quantity = 9 [(buf.validate.field).int32.gte = 0];
   // Fixed-length ISO currency code: the EXACT-length form buf lint requires
   // (min_len == max_len is rejected in favor of string.len / string.const).
   string currency = 8 [(buf.validate.field).string.len = 3];
@@ -116,7 +122,7 @@ message Widget {
 	assertPathExistsE2E(t, createPath)
 	create := readFileE2E(t, createPath)
 	for _, want := range []string{
-		"amountCents: z.coerce.number().gte(0),",
+		"quantity: z.coerce.number().gte(0),",
 		"name: z.string().min(2).max(64),",
 		`sku: z.string().regex(new RegExp("^SKU-[0-9]+$")),`,
 		"email: z.string().email(),",
@@ -127,16 +133,20 @@ message Widget {
 			t.Errorf("born create form missing zod validator %q:\n%s", want, create)
 		}
 	}
-	// Negative control: the unconstrained numeric field is a bare
-	// z.coerce.number() with no refinement chain.
-	if !strings.Contains(create, "count: z.coerce.number(),") {
-		t.Errorf("unconstrained `count` field must stay a bare z.coerce.number():\n%s", create)
+	// Negative control: the unconstrained numeric field carries no
+	// refinement beyond the base expression for its type. `count` is int64,
+	// so that base is the bigint digits-string, not z.coerce.number().
+	if !strings.Contains(create, `count: z.string().regex(/^(-?\d+)?$/, "expected a whole number")`) {
+		t.Errorf("unconstrained `count` field must keep the bare bigint base expression:\n%s", create)
+	}
+	if strings.Contains(create, "count: z.coerce.number().gte") || strings.Contains(create, "count: z.string().regex(/^(-?\\d+)?$/, \"expected a whole number\").gte") {
+		t.Errorf("unconstrained `count` field must carry no numeric refinement:\n%s", create)
 	}
 	// The edit form (fields sourced from the entity itself) carries them too.
 	editPath := filepath.Join(appDir, "widgets", "[id]", "edit", "page.tsx")
 	assertPathExistsE2E(t, editPath)
 	edit := readFileE2E(t, editPath)
-	for _, want := range []string{"name: z.string().min(2).max(64),", "amountCents: z.coerce.number().gte(0),"} {
+	for _, want := range []string{"name: z.string().min(2).max(64),", "quantity: z.coerce.number().gte(0),"} {
 		if !strings.Contains(edit, want) {
 			t.Errorf("born edit form missing zod validator %q:\n%s", want, edit)
 		}
@@ -156,7 +166,8 @@ message Widget {
 		`sku = 3 [(buf.validate.field).string.pattern = "^SKU-[0-9]+$"]`,
 		"email = 4 [(buf.validate.field).string.email = true]",
 		"code = 5 [(buf.validate.field).required = true]",
-		"currency = 7 [(buf.validate.field).string.len = 3]",
+		"quantity = 7 [(buf.validate.field).int32.gte = 0]",
+		"currency = 8 [(buf.validate.field).string.len = 3]",
 	} {
 		if !strings.Contains(createReq, want) {
 			t.Errorf("CreateWidgetRequest missing field rules %q:\n%s", want, createReq)
@@ -218,7 +229,20 @@ message Widget {
 	// it once up front so parallel tests do not race that bootstrap.
 	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
-	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "tsc", "--noEmit")
+
+	// Generate AGAIN, after the install. The buf TypeScript pass runs
+	// protoc-gen-es out of the frontend's OWN node_modules and, when it is
+	// absent, warns and skips rather than failing — so on a machine whose
+	// npm cache is cold enough that `forge project new`'s best-effort
+	// install did not finish, every generate above emitted no src/gen/ at
+	// all, and the type-check below died with TS2307 on
+	// "@/gen/services/catalog/v1/catalog_pb" for a reason that has nothing
+	// to do with validation. Green locally, red in CI, purely on cache
+	// warmth. This run is a no-op when the stubs are already there.
+	runCmd(t, projectDir, forgeBin, "generate")
+	assertPathExistsE2E(t, filepath.Join(webDir, "src", "gen", "services", "catalog", "v1", "catalog_pb.ts"))
+
+	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 }
 
 // writeWireRejectionTest drops a standalone test package into the generated

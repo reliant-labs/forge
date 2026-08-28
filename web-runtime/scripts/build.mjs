@@ -27,7 +27,7 @@
 // no arguments runs `prepare`, which is this file. Without it the bootstrap
 // recurses forever.
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -50,11 +50,51 @@ function run(command, args) {
   }
 }
 
-if (!existsSync(tsc)) {
+// Probing for tsc ALONE is not enough, and the gap is not theoretical: the
+// compiler is one devDependency among many, and the sources being compiled
+// import the others for their types. A node_modules holding typescript but
+// missing, say, @opentelemetry/sdk-trace-web does not fail the check above
+// — it fails the COMPILE, with a TS2307 naming a package this script was
+// perfectly capable of installing:
+//
+//     src/otel.ts(36,35): error TS2307: Cannot find module
+//       '@opentelemetry/sdk-trace-web' or its corresponding type declarations.
+//
+// A partial tree arises whenever an install is interrupted or two of them
+// race in this shared directory, so the fix is to ask about every declared
+// devDependency rather than the one binary. The install is idempotent and
+// only runs when something is genuinely absent, so a complete checkout still
+// pays nothing.
+const missingDevDeps = Object.keys(
+  JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")).devDependencies ?? {},
+).filter((name) => !existsSync(join(pkgDir, "node_modules", ...name.split("/"))));
+
+if (!existsSync(tsc) || missingDevDeps.length > 0) {
+  const why = !existsSync(tsc)
+    ? "no local toolchain"
+    : `incomplete toolchain (missing ${missingDevDeps.join(", ")})`;
   console.log(
-    "@reliantlabs/forge-web-runtime: no local toolchain — installing devDependencies once to build dist/",
+    `@reliantlabs/forge-web-runtime: ${why} — installing devDependencies once to build dist/`,
   );
-  run("npm", ["install", "--no-audit", "--no-fund", "--ignore-scripts"]);
+  // `npm ci` when a lockfile is present, NOT `npm install`. install
+  // RE-RESOLVES every range and may rewrite the lockfile, so bootstrapping
+  // one absent package can quietly move a hundred others — observed in CI as
+  // "added 1 package, and changed 120 packages", which swapped
+  // @opentelemetry/auto-instrumentations-web for a build carrying no type
+  // declarations and failed the very compile it had just repaired:
+  //
+  //     src/otel.ts(30,44): error TS7016: Could not find a declaration file
+  //       for module '@opentelemetry/auto-instrumentations-web'.
+  //
+  // ci installs exactly what the lockfile pins and never writes it back, so
+  // the toolchain this builds against is the one the repo tested.
+  //
+  // --ignore-scripts is load-bearing on both paths: an install with no
+  // arguments runs `prepare`, which is THIS file, and would recurse forever.
+  const installArgs = ["--no-audit", "--no-fund", "--ignore-scripts"];
+  run("npm", existsSync(join(pkgDir, "package-lock.json"))
+    ? ["ci", ...installArgs]
+    : ["install", ...installArgs]);
 }
 
 // Invoke the compiler through node rather than PATH: an npm lifecycle script

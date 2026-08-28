@@ -69,10 +69,12 @@ func TestE2EAddFrontendKindsProduceABuildableTree(t *testing.T) {
 
 	// The generated module connect.ts imports must be on disk before any
 	// generate pass — name it explicitly so a failure reads as the invariant
-	// it is, not as a wall of tsc output.
-	assertPathExistsE2E(t, filepath.Join(webDir, "src", "lib", "mock-transport.ts"))
-	assertPathExistsE2E(t, filepath.Join(spaDir, "src", "lib", "mock-transport.ts"))
-	assertPathExistsE2E(t, filepath.Join(spaDir, "src", "mocks", "scenarios", "index.ts"))
+	// it is, not as a wall of tsc output. These are Tier-1 renders, so they
+	// carry the _gen suffix every generated file does; connect.ts requires
+	// "@/lib/mock-transport_gen", so the suffixed name IS the contract.
+	assertPathExistsE2E(t, filepath.Join(webDir, "src", "lib", "mock-transport_gen.ts"))
+	assertPathExistsE2E(t, filepath.Join(spaDir, "src", "lib", "mock-transport_gen.ts"))
+	assertPathExistsE2E(t, filepath.Join(spaDir, "src", "mocks", "scenarios", "index_gen.ts"))
 
 	// ── the trees compile, straight out of the add verb ──────────────
 	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "tsc", "--noEmit")

@@ -274,7 +274,6 @@ type applyOptsContext struct {
 	DryRun            bool
 	Prune             bool
 	HostSkip          map[string]struct{}
-	OneShotJobs       []string
 	Targets           []string
 	Groups            []deploytarget.ServiceGroup
 	Entities          *KCLEntities
@@ -343,7 +342,6 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 			DryRunFramed: true,
 			Prune:        p.Prune,
 			HostSkip:     p.HostSkip,
-			OneShotJobs:  p.OneShotJobs,
 			Targets:      p.Targets,
 			ClusterScope: scopeFor(group),
 			HelmCharts:   charts,

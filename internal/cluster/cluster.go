@@ -21,8 +21,7 @@
 //     — that's a deploy-time concern for the dev env that the reload
 //     deliberately skips;
 //   - the typed KCLEntities schema (still in internal/cli/) — callers
-//     compute the per-call HostSkip / OneShotJobs slices from that
-//     and pass them in.
+//     compute the per-call HostSkip set from that and pass it in.
 //
 // The shape mirrors internal/hostlaunch: a small Opts struct
 // expressing the differences between call sites, plus a single Apply
@@ -291,19 +290,6 @@ type ApplyOpts struct {
 	// safe default: wait for every managed Deployment, and FAIL if any of
 	// them does not become ready. See RolloutPolicy.
 	Rollout RolloutPolicy
-
-	// OneShotJobs is an OPTIONAL caller-supplied list of Job names to
-	// wait on. Apply UNIONs it with every `kind: Job` it finds in the
-	// rendered manifest stream (see RenderedJobNames), so the wait set
-	// is authoritative-by-manifest and a caller no longer has to derive
-	// it correctly for the schedule=="" migrate-Job wait to fire — this
-	// field is now belt-and-suspenders for a Job not present in the
-	// stream. Each Job in the union is waited on with `kubectl wait
-	// --for=condition=complete` so the caller gets a definitive
-	// done/fail signal before Apply returns. Scheduled CronJobs render
-	// as `kind: CronJob` (not `kind: Job`) and are NOT waited on — they
-	// run on their own cadence and the deploy is done once applied.
-	OneShotJobs []string
 
 	// Quiet suppresses the section-header banners ("Applying
 	// manifests...", "Waiting for rollouts...") and emits the matching
@@ -714,14 +700,10 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		}
 	}
 
-	// Wait set = caller-supplied OneShotJobs UNION every `kind: Job` in
-	// the rendered stream. Deriving from the applied manifests is the
-	// authoritative path (see RenderedJobNames) and is what makes the
-	// schedule=="" migrate-Job wait reliable even when the entity-list
-	// derivation comes back empty; OneShotJobs is still honoured so a
-	// caller can request a wait on a Job name not present in this
-	// stream. De-duped, with the caller's order preserved first.
-	for _, name := range unionJobNames(opts.OneShotJobs, RenderedJobNames(manifests)) {
+	// Wait set = every `kind: Job` in the stream this apply just sent,
+	// and nothing else. See oneShotWaitSet for why a caller-supplied
+	// list is not unioned in any more.
+	for _, name := range oneShotWaitSet(manifests) {
 		fmt.Printf("Waiting for one-shot Job %q to complete...\n", name)
 		if err := WaitJobCompleteTimeout(ctx, opts.Context, name, opts.Namespace, policy.Timeout); err != nil {
 			// A failed one-shot Job is if anything MORE serious than a
@@ -744,29 +726,46 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	return nil
 }
 
-// unionJobNames merges the caller-supplied one-shot Job names with the
-// names derived from the rendered manifests, de-duping while keeping the
-// caller's entries first (stable, predictable wait order). Used by Apply
-// so the manifest-derived wait set augments rather than replaces an
-// explicit OneShotJobs request.
-func unionJobNames(supplied, rendered []string) []string {
-	seen := make(map[string]struct{}, len(supplied)+len(rendered))
-	out := make([]string, 0, len(supplied)+len(rendered))
-	for _, n := range supplied {
+// oneShotWaitSet is the set of Jobs Apply blocks on after applying:
+// every `kind: Job` in the stream it just sent, de-duped, in render
+// order. The applied manifests are the ONLY source.
+//
+// It used to be that set UNIONED with a caller-supplied list of names.
+// That union failed a production deploy that had entirely succeeded
+// (run 33217453299): 201 objects applied, all 13 Deployments ready,
+// both one-shot Jobs `complete` — and forge reported failure. forge
+// names a one-shot Job by its spec hash, so the applied objects were
+// `control-plane-migrate-aed30b6854` and
+// `control-plane-idp-provision-e8b66e53c9`, while the caller derived
+// the unhashed entity names from the KCL entity list. Those two names
+// had never been applied and matched no object in the namespace, so
+// `kubectl wait` errored on each — and a Job wait that errors correctly
+// means "the migration did not run", so the deploy went red.
+//
+// The union could only ever hurt. A name in the caller's list that IS
+// applied is already here, derived from the manifest; a name that is
+// NOT applied has no object to wait on and can produce nothing but a
+// false failure. Reconciling the two sets (resolving a supplied stem to
+// its hashed name) would restore correctness but keep a second,
+// weaker derivation alive to drift again the next time naming changes.
+//
+// Nor does dropping it lose the ability to notice a Job that failed to
+// apply. That check is verifyApplyComplete, which is kind-agnostic:
+// every rendered object, Jobs included, must appear in kubectl's apply
+// output or the apply itself fails, before this wait is ever reached.
+//
+// Scheduled CronJobs render as `kind: CronJob`, not `kind: Job`, so
+// they are excluded — they run on their own cadence and the deploy is
+// done once they are applied.
+func oneShotWaitSet(manifests string) []string {
+	names := RenderedJobNames(manifests)
+	seen := make(map[string]struct{}, len(names))
+	out := make([]string, 0, len(names))
+	for _, n := range names {
 		if n == "" {
 			continue
 		}
-		if _, ok := seen[n]; ok {
-			continue
-		}
-		seen[n] = struct{}{}
-		out = append(out, n)
-	}
-	for _, n := range rendered {
-		if n == "" {
-			continue
-		}
-		if _, ok := seen[n]; ok {
+		if _, dup := seen[n]; dup {
 			continue
 		}
 		seen[n] = struct{}{}
@@ -1901,16 +1900,15 @@ func PartitionConfigManifests(manifests string) (config, rest string) {
 // the deploy actually applies, regardless of how they entered the
 // bundle.
 //
-// The entity-list derivation (oneShotJobNamesFromKCL, reading
-// KCLEntities.CronJobs) is fragile — it only sees Jobs that round-trip
-// through the typed `forge.CronJob` -> `output.cronjobs` contract, and
-// misses a `schedule==""` Job that didn't surface in that list (the
-// real-launch gap where OneShotJobs came back empty and forge rolled
-// the workloads without blocking on the migrate Job) as well as any raw
-// `kind: Job` added via `additional_manifests`. The rendered manifests
-// are what kubectl actually applies, so deriving the wait set from them
-// closes both holes. Apply unions these with any caller-supplied
-// OneShotJobs and de-dupes.
+// Deriving from an entity list instead was fragile in both directions.
+// It only saw Jobs that round-tripped through the typed `forge.CronJob`
+// -> `output.cronjobs` contract, so it MISSED a `schedule==""` Job that
+// never surfaced there (the real-launch gap where forge rolled the
+// workloads without blocking on the migrate Job) and any raw `kind: Job`
+// from `additional_manifests` — and it INVENTED names that were never
+// applied once one-shot Jobs were named by spec hash (see
+// oneShotWaitSet). The rendered manifests are what kubectl actually
+// applies, so deriving from them closes both holes at once.
 //
 // Malformed documents are skipped (callers get a best-effort list).
 func RenderedJobNames(manifests string) []string {

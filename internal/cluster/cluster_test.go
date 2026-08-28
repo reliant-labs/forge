@@ -631,9 +631,10 @@ spec: {}
 
 // TestRenderedJobNames_PicksUpOneShotJob is the GAP 2 regression test:
 // a schedule=="" CronJob renders as a `kind: Job`, and the wait set is
-// derived from the rendered manifest stream so the migrate Job is
-// blocked on even if the entity-list derivation (OneShotJobs) came back
-// empty. A scheduled CronJob renders as `kind: CronJob` and is excluded.
+// derived from the rendered manifest stream, so the migrate Job is
+// blocked on however it entered the bundle — including when it never
+// surfaced in the typed entity list at all. A scheduled CronJob renders
+// as `kind: CronJob` and is excluded.
 func TestRenderedJobNames_PicksUpOneShotJob(t *testing.T) {
 	got := RenderedJobNames(jobStreamManifests)
 	if !contains(got, "cp-forge-migrate") {
@@ -646,27 +647,6 @@ func TestRenderedJobNames_PicksUpOneShotJob(t *testing.T) {
 	// Nothing else should sneak in (Deployment, Namespace, etc.).
 	if len(got) != 1 {
 		t.Errorf("expected exactly one one-shot Job, got %v", got)
-	}
-}
-
-// TestUnionJobNames_DedupesCallerFirst confirms the wait set unions the
-// caller-supplied OneShotJobs with the manifest-derived names, keeps the
-// caller's order first, and de-dupes the overlap — so a Job named in
-// both sources is waited on exactly once.
-func TestUnionJobNames_DedupesCallerFirst(t *testing.T) {
-	got := unionJobNames([]string{"caller-job", "cp-forge-migrate"}, []string{"cp-forge-migrate", "rendered-only"})
-	want := []string{"caller-job", "cp-forge-migrate", "rendered-only"}
-	if len(got) != len(want) {
-		t.Fatalf("expected %v, got %v", want, got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("expected %v (order-preserving, de-duped), got %v", want, got)
-		}
-	}
-	// Empty names are dropped from both sides.
-	if g := unionJobNames([]string{""}, []string{"", "real"}); len(g) != 1 || g[0] != "real" {
-		t.Errorf("expected empty names dropped, got %v", g)
 	}
 }
 

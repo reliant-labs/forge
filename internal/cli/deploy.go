@@ -686,11 +686,10 @@ type deployRollbackInput struct {
 // no platform deps (helmSpecs is nil).
 func runDeployRollback(ctx context.Context, in deployRollbackInput) error {
 	hostSkip := hostDeploymentSkipSetFromKCL(in.cfg, in.entities)
-	oneShotJobs := oneShotJobNamesFromKCL(in.entities)
 	builder := applyOptsBuilderFromContext(applyOptsContext{
 		MainK: in.mainK, ImageTag: in.imageTag, FallbackNamespace: in.namespace, Env: in.envName,
 		EnvCfgKV: in.envCfgKV, DryRun: in.dryRun, Prune: in.prune, HostSkip: hostSkip,
-		OneShotJobs: oneShotJobs, Targets: in.targets, Groups: in.groups, Entities: in.entities,
+		Targets: in.targets, Groups: in.groups, Entities: in.entities,
 		ImageDigests: in.imageDigests, HelmCharts: nil,
 	})
 	registry := deploytarget.NewRegistry()
@@ -750,7 +749,6 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			DryRunFramed: true,
 			Prune:        in.prune,
 			HostSkip:     hostDeploymentSkipSetFromKCL(in.cfg, in.entities),
-			OneShotJobs:  oneShotJobNamesFromKCL(in.entities),
 			Targets:      in.targets,
 			HelmCharts:   in.helmSpecs,
 			Rollout:      in.rollout,
@@ -758,11 +756,10 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 	}
 	if len(in.groups) > 0 {
 		hostSkip := hostDeploymentSkipSetFromKCL(in.cfg, in.entities)
-		oneShotJobs := oneShotJobNamesFromKCL(in.entities)
 		builder := applyOptsBuilderFromContext(applyOptsContext{
 			MainK: in.mainK, ImageTag: in.imageTag, FallbackNamespace: in.namespace, Env: in.envName,
 			EnvCfgKV: in.envCfgKV, DryRun: in.dryRun, Prune: in.prune, HostSkip: hostSkip,
-			OneShotJobs: oneShotJobs, Targets: in.targets, Groups: in.groups, Entities: in.entities,
+			Targets: in.targets, Groups: in.groups, Entities: in.entities,
 			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
 			Rollout: in.rollout,
 		})
@@ -1410,23 +1407,6 @@ func kclEntitiesHaveK8sCluster(entities *KCLEntities) bool {
 		}
 	}
 	return false
-}
-
-// oneShotJobNamesFromKCL returns the names of every CronJob entity with
-// an empty Schedule — these render as one-shot Jobs and the deploy
-// waits on `condition=complete` before returning. Scheduled CronJobs
-// (non-empty Schedule) are excluded; they run on their own cadence.
-func oneShotJobNamesFromKCL(e *KCLEntities) []string {
-	if e == nil {
-		return nil
-	}
-	var out []string
-	for _, cj := range e.CronJobs {
-		if cj.Schedule == "" {
-			out = append(out, cj.Name)
-		}
-	}
-	return out
 }
 
 // hostDeploymentSkipSetFromKCL returns the set of Deployment names that

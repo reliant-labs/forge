@@ -25,7 +25,7 @@ import (
 type K8sClusterProvider struct {
 	// ApplyOptsBuilder lets callers customize cluster.ApplyOpts before
 	// the provider invokes cluster.Apply. The forge CLI uses this to
-	// plumb through MainK, EnvConfigKV, HostSkip, OneShotJobs, Prune
+	// plumb through MainK, EnvConfigKV, HostSkip, Prune
 	// from the rendered KCL — fields the provider itself doesn't know
 	// about. A nil builder means "use the group's namespace+image tag
 	// and let cluster.Apply default everything else", which is enough

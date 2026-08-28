@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-08-28
+
+Patch release. The root CLI (`v0.1.10`) and the runtime library
+(`pkg/v0.1.10`) are tagged as always — on adjacent commits, `pkg` on the
+release commit and the root tag one commit later on the require bump.
+
+v0.1.9 made a deploy fail when a workload never became ready. This
+release fixes the two ways that new strictness, and `forge generate`,
+could report a failure that had not happened.
+
+### Fixed
+
+- **A successful deploy is no longer failed by waiting on one-shot Jobs
+  that were never applied.** forge names a one-shot Job by its spec hash,
+  but the rollout wait unioned the manifest-derived (hashed) names with a
+  caller-supplied list that derived the UNHASHED entity names. Those names
+  matched no object in the namespace, `kubectl wait` errored on each, and
+  v0.1.9's policy — correctly, for a Job that genuinely did not run —
+  turned that into a failed deploy. A real prod deploy applied 201
+  objects, rolled all 13 Deployments, completed both one-shot Jobs, and
+  was still reported as failed. The wait set is now every `kind: Job` in
+  the stream the apply just sent and nothing else: authoritative by
+  construction, already filtered by `--target` and scoped to the right
+  cluster. A Job that was applied and then FAILED still fails the deploy,
+  and a Job that failed to APPLY is still caught by the kind-agnostic
+  apply-completeness check.
+
+- **`forge generate` no longer leaks machine-local state into tracked
+  files, and `forge lint` no longer fights the generator over `gen/`.**
+  Evaluating a KCL module fires every `file.write` in it, bypassing
+  forge's write chokepoint, so a generate on a clean checkout could emit
+  bytes derived from a gitignored registry — two developers on the same
+  commit produced different output. Generate-path renders now revert any
+  tracked file that went clean → dirty across them.
+
 ## [0.1.9] - 2026-08-28
 
 Patch release. The root CLI (`v0.1.9`) and the runtime library

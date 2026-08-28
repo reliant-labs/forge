@@ -150,15 +150,32 @@ jobs:
         uses: bufbuild/buf-setup-action@v1
 
       # KCL install-and-cache, same shape as ci.yml's validate-kcl job.
+      # The key carries the VERSION, for two reasons. It pins what a cache
+      # hit means (a version-less key restores whatever some earlier run
+      # happened to install, so bumping the pin below would change nothing),
+      # and it is the escape hatch when an entry goes bad: a cache saved from
+      # a job whose install half-finished restores a ~/.kcl with no usable
+      # binary, and because the install step is skipped on a hit, every
+      # subsequent run inherits it. That is not hypothetical — it took out
+      # all four shards of this suite at once, before a single test ran.
       - name: Cache KCL CLI
         uses: actions/cache@v4
         id: kcl-cache
         with:
           path: ~/.kcl
-          key: kcl-cli-${{ runner.os }}
+          key: kcl-cli-${{ runner.os }}-v0.11.2
 
+      # KCL_VERSION is pinned deliberately, matching ci.yml. Left unset, the
+      # installer resolves "latest" through an UNAUTHENTICATED api.github.com
+      # call, rate-limited to 60/hour per runner IP and shared across every
+      # job on that host — when it is exhausted the script gets an empty tag
+      # and dies with "The KCL version is not found", failing CI for a reason
+      # that has nothing to do with the commit. This suite fans out to four
+      # shards, so it burns that budget faster than any other lane.
       - name: Install KCL
         if: steps.kcl-cache.outputs.cache-hit != 'true'
+        env:
+          KCL_VERSION: v0.11.2
         run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
 
       - name: Add KCL to PATH

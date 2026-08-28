@@ -141,7 +141,12 @@ jobs:
         id: kcl-cache
         with:
           path: ~/.kcl
-          key: kcl-cli-${{ runner.os }}
+          # Versioned so a cache hit pins the version below rather than
+          # restoring whatever an earlier run installed — and so a bad entry
+          # (an install that half-finished, leaving a ~/.kcl with no usable
+          # binary that every later run then inherits, because a hit SKIPS
+          # the install) can be evicted by bumping the pin.
+          key: kcl-cli-${{ runner.os }}-v0.11.2
 
       # KCL_VERSION is pinned deliberately. Left unset, the installer
       # resolves "latest" through an UNAUTHENTICATED api.github.com call,

@@ -2092,10 +2092,15 @@ func collectDevGatewayListeners(ctx *pipelineContext) ([]codegen.K3dListener, er
 	if _, err := os.Stat(devKCL); err != nil {
 		return nil, nil
 	}
-	entities, err := RenderKCL(context.Background(), ctx.ProjectDir, "dev")
+	// renderKCLPure, not RenderKCL: this is a READ (the dev gateway listener
+	// set), but evaluating the module fires any file.write in it, and a write
+	// that lands on a tracked file makes `forge generate` non-reproducible.
+	// See internal/cli/kcl_render_purity.go for the incident.
+	entities, restored, err := renderKCLPure(context.Background(), ctx.ProjectDir, "dev")
 	if err != nil {
 		return nil, err
 	}
+	reportImpureRender("dev", restored)
 	if entities == nil {
 		return nil, nil
 	}

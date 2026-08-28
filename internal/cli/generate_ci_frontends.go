@@ -85,7 +85,11 @@ func discoverCIFrontendsUncached(projectDir string, cfg *config.ProjectConfig) [
 
 	envs, _ := ListEnvs(projectDir)
 	for _, env := range envs {
-		entities, err := RenderKCL(context.Background(), projectDir, env)
+		// Pure render: this walks EVERY env to collect the frontend set, so a
+		// file.write anywhere in any env's module would otherwise fire — and
+		// dirty a tracked file — purely because generate enumerated them.
+		entities, restored, err := renderKCLPure(context.Background(), projectDir, env)
+		reportImpureRender(env, restored)
 		if err != nil || entities == nil {
 			// A single env that fails to render (a KCL compile error being
 			// actively worked on, a toolchain gap) must not blank the CI

@@ -25,6 +25,28 @@
 // generated file — WriteGeneratedFile canonicalizes before it stamps) are a
 // no-op and are never rewritten, so the pre-pass cannot disturb Tier-1
 // forge:hash stamps.
+//
+// ── Generated files are OUT of scope ──────────────────────────────────
+//
+// The pre-pass skips generated Go entirely (see isGeneratedGoPath). It used
+// to walk gen/ too, and that made `forge lint` and `forge generate` disagree
+// about the bytes of files neither of them gates on.
+//
+// Incident (control-plane, cutting v0.1.9): a bare `forge lint` left 35 files
+// under gen/ modified — every .pb.go and .connect.go in the project. The next
+// `forge generate` reverted all 35, because protoc-gen-go writes those files
+// from scratch with its own import grouping, which is not goimports'. So the
+// tree was dirty after whichever command ran last, and CI's "Verify Generated
+// Code" job failed for whoever's local order differed.
+//
+// Formatting them was never buying anything: the scaffolded .golangci.yml
+// excludes generated files from every linter — "(^|/)gen/", ".*_gen\.go$",
+// ".*\.pb\.go$", ".*\.connect\.go$" — so there is no gate for the pre-pass to
+// pre-empt on those paths. It was pure cost.
+//
+// This is a path rule, not a directory rule: a hand-owned file living beside
+// a mock_gen.go is exactly the drift this pass exists to absorb, so only the
+// generated file is skipped and its neighbours are still formatted.
 
 package lint
 
@@ -45,7 +67,31 @@ import (
 // forge wrote) is the point: it catches the owned/hand-edited files
 // (compose.go after `forge project disown`, providers.go, contract bodies) that
 // re-introduce formatting drift between generate runs.
-var goFormatDirs = []string{"cmd", "pkg", "gen", "internal"}
+// gen/ is deliberately absent: every Go file under it is generated, and
+// rewriting generated output only guarantees the next `forge generate`
+// reverts it (see the header). The remaining trees are walked because they
+// MIX owned and generated files, which isGeneratedGoPath separates per file.
+var goFormatDirs = []string{"cmd", "pkg", "internal"}
+
+// isGeneratedGoPath reports whether relPath (slash-separated, project-
+// relative) names Go source that a generator owns and rewrites wholesale.
+//
+// The set mirrors the generated-file exclusions in the scaffolded
+// .golangci.yml one-for-one, and that correspondence is the whole argument:
+// the pre-pass exists to fix what the gate would otherwise flag, so a path
+// the gate never inspects is a path the pre-pass must not touch.
+func isGeneratedGoPath(relPath string) bool {
+	switch {
+	case relPath == "gen" || strings.HasPrefix(relPath, "gen/"),
+		strings.Contains(relPath, "/gen/"):
+		return true
+	case strings.HasSuffix(relPath, "_gen.go"),
+		strings.HasSuffix(relPath, ".pb.go"),
+		strings.HasSuffix(relPath, ".connect.go"):
+		return true
+	}
+	return false
+}
 
 // formatGoTree canonicalizes every .go file under the project's source trees
 // and rewrites those that were not already canonical. Returns the repo-
@@ -72,6 +118,10 @@ func formatGoTree(root string) ([]string, error) {
 				return nil
 			}
 			if !strings.HasSuffix(path, ".go") {
+				return nil
+			}
+			if rel, relErr := filepath.Rel(root, path); relErr == nil &&
+				isGeneratedGoPath(filepath.ToSlash(rel)) {
 				return nil
 			}
 			rel, cerr := formatGoFile(root, prefix, path)

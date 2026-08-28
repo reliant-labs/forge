@@ -20,6 +20,54 @@ import (
 // base) is never displaced. Machine-local; .forge/* is gitignored.
 const registryRel = ".forge/blocks.json"
 
+// validateKey rejects a key that is not a canonical DNS-safe label — the
+// form Sanitize produces and the form every consumer of this registry
+// assumes.
+//
+// Why the registry refuses rather than repairs. A KCL author composes a key
+// by interpolation ("prod-" + option("worktree")), and when the interpolated
+// half is empty the key that arrives is a trailing-dash FRAGMENT rather than
+// a name. forge used to accept it and memoize it, at which point
+// .forge/blocks.json held an entry indistinguishable from a real stack.
+//
+// Nothing failed there. It failed two steps downstream, in version control:
+// control-plane's per-stack NATS generator enumerates this registry, and the
+// "prod-" fragment rendered an account named CP_prod_ with
+// `user: "control-plane-prod-"` into a TRACKED deploy/nats/nats.conf. So
+// `forge generate` emitted different bytes on a machine that had once run
+// `forge env up prod` than on a fresh clone, and CI's Verify Generated Code
+// job failed for whoever's machine-local state differed.
+//
+// The malformed shape is only recognizable HERE. Once a generator reads the
+// registry, "prod-" is just a string, and by then the port has been issued.
+// Silently sanitizing it would be worse than rejecting: "prod-" and "prod"
+// would collapse onto one block, so a key that had already been handed a port
+// could move — and a moved port invalidates a k3d host mapping or an issuer's
+// baked-in `iss` claim. Every key forge itself supplies (Worktree, Branch) is
+// already canonical, so a non-canonical key can only come from a composed KCL
+// expression, and naming it is what makes that expression findable.
+func validateKey(key string) error {
+	if key == "" { // the default stack, block 0
+		return nil
+	}
+	if canonical := Sanitize(key); canonical != key {
+		return fmt.Errorf(
+			"port-block key %q is not a canonical name (canonical form: %q).\n"+
+				"This is almost always an EMPTY INTERPOLATION in a KCL key expression — e.g.\n"+
+				"  fp.allocate_port(3000, \"prod-\" + (option(\"worktree\") or \"\"))\n"+
+				"which composes the literal \"prod-\" on the primary checkout, where\n"+
+				"option(\"worktree\") is \"\".\n"+
+				"forge refuses the key rather than recording it: the registry is enumerated by\n"+
+				"per-stack config generators, and a fragment there renders junk names into\n"+
+				"generated config. Guard the suffix instead, so the default stack keys on the\n"+
+				"bare prefix:\n"+
+				"  _wt = option(\"worktree\") or \"\"\n"+
+				"  _key = \"prod-\" + _wt if _wt else \"prod\"",
+			key, canonical)
+	}
+	return nil
+}
+
 // AllocatePort is the engine behind the forge.allocate_port(base, key) KCL
 // builtin. It returns base + block(key)*100, where block(key) is the small
 // integer forge assigns the FIRST time it sees key and MEMOIZES in the
@@ -71,6 +119,9 @@ func AllocatePort(projectDir string, base int, key string) (int, error) {
 //
 // isFree is injected so the decision is testable without binding real ports.
 func AllocatePortAvoidingForeign(projectDir string, base int, key string, isFree func(port int) bool) (int, error) {
+	if err := validateKey(key); err != nil {
+		return 0, err
+	}
 	// A key that already has a block keeps it, busy or not: that is the
 	// stability guarantee, and re-deciding here would move an issuer.
 	if assigned, ok := lookupBlock(projectDir, key); ok {
@@ -145,6 +196,9 @@ func setBlock(projectDir, key string, block int) error {
 // AllocatePortAvoidingForeign), which is why the registry is consulted for
 // it rather than short-circuited. Atomic under the registry lock.
 func AllocateBlock(projectDir, key string) (int, error) {
+	if err := validateKey(key); err != nil {
+		return 0, err
+	}
 	if key == "" {
 		if recorded, ok := lookupBlock(projectDir, ""); ok {
 			return recorded, nil

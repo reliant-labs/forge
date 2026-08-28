@@ -222,7 +222,7 @@ func rootForgePkgVersion(projectDir string) string {
 func goVersionFromProject(projectDir string) string {
 	data, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
 	if err != nil {
-		return "1.26.2"
+		return "1.27.0"
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -234,7 +234,7 @@ func goVersionFromProject(projectDir string) string {
 			return v
 		}
 	}
-	return "1.26.2"
+	return "1.27.0"
 }
 
 // runGoModTidyGen runs `go mod tidy` inside the gen/ directory to keep deps fresh.

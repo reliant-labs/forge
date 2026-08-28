@@ -88,9 +88,9 @@ func projectData() any {
 		ProjectName:            "demo",
 		FrontendName:           "web",
 		FrontendPort:           3000,
-		GoVersion:              "1.26",
-		GoVersionMinor:         "26",
-		DockerBuilderGoVersion: "1.26",
+		GoVersion:              "1.27",
+		GoVersionMinor:         "27",
+		DockerBuilderGoVersion: "1.27",
 		CLI:                    "forge",
 		VersionVar:             "",
 		// A fresh scaffold ships only the primary binary; the golden

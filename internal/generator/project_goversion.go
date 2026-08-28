@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const defaultGoVersion = "1.26.2"
+const defaultGoVersion = "1.27.0"
 
 // detectGoVersion returns the host Go version from `go env GOVERSION`
 // (for example, "1.26.1"). It trusts the installed toolchain and only falls
@@ -73,7 +73,7 @@ func goVersionMinor(v string) string {
 // `go.mod`.
 //
 // Bump this constant when a newer Go minor is published on Docker Hub.
-const latestDockerHubGoMinor = "1.26"
+const latestDockerHubGoMinor = "1.27"
 
 // dockerBuilderGoVersion returns the Go version tag to use as the builder
 // image base. It prefers the project's declared Go minor version when that

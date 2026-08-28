@@ -31,7 +31,8 @@ What's enabled is driven by `forge.yaml`:
 ```yaml
 ci:
   provider: github            # only "github" today
-  go_version: "1.26"          # default; falls back to project go.mod
+  # No go_version key: every setup-go step pins `go-version-file: go.mod`,
+  # so CI's Go version follows go.mod. Set it there.
   lint:                       # zero-value = "all enabled"
     golangci: true
     buf: true

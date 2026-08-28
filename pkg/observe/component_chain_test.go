@@ -29,7 +29,7 @@ func TestComponentChain_OuterToInnerOrder(t *testing.T) {
 		markerComponentMW{name: "a", trace: &trace},
 		markerComponentMW{name: "b", trace: &trace},
 	)
-	err := observe.Run(context.Background(), chain, "pkg.Do", func(ctx context.Context) error {
+	err := chain.Run(context.Background(), "pkg.Do", func(ctx context.Context) error {
 		trace = append(trace, "handler")
 		return nil
 	})
@@ -54,14 +54,14 @@ func TestComponentChain_AroundReturnsValueAndError(t *testing.T) {
 		markerComponentMW{name: "a", trace: new([]string)},
 	)
 	// Value path.
-	got, err := observe.Around(context.Background(), chain, "pkg.Get", func(ctx context.Context) (int, error) {
+	got, err := chain.Around(context.Background(), "pkg.Get", func(ctx context.Context) (int, error) {
 		return 42, nil
 	})
 	if got != 42 || err != nil {
 		t.Fatalf("Around value path: got (%d, %v), want (42, nil)", got, err)
 	}
 	// Error path — value zero, error threaded back through the chain.
-	got, err = observe.Around(context.Background(), chain, "pkg.Get", func(ctx context.Context) (int, error) {
+	got, err = chain.Around(context.Background(), "pkg.Get", func(ctx context.Context) (int, error) {
 		return 7, sentinel
 	})
 	if got != 7 || !errors.Is(err, sentinel) {
@@ -74,14 +74,14 @@ func TestComponentChain_NilChainPassThrough(t *testing.T) {
 	// without a chain, e.g. a test harness).
 	var chain *observe.ComponentChain
 	ran := false
-	err := observe.Run(context.Background(), chain, "pkg.Do", func(ctx context.Context) error {
+	err := chain.Run(context.Background(), "pkg.Do", func(ctx context.Context) error {
 		ran = true
 		return nil
 	})
 	if err != nil || !ran {
 		t.Fatalf("nil chain: ran=%v err=%v, want ran=true err=nil", ran, err)
 	}
-	got, err := observe.Around(context.Background(), chain, "pkg.Get", func(ctx context.Context) (string, error) {
+	got, err := chain.Around(context.Background(), "pkg.Get", func(ctx context.Context) (string, error) {
 		return "ok", nil
 	})
 	if got != "ok" || err != nil {
@@ -97,7 +97,7 @@ func TestComponentChain_NilMiddlewareDropped(t *testing.T) {
 		markerComponentMW{name: "a", trace: &trace},
 		nil,
 	)
-	if err := observe.Run(context.Background(), chain, "pkg.Do", func(ctx context.Context) error {
+	if err := chain.Run(context.Background(), "pkg.Do", func(ctx context.Context) error {
 		trace = append(trace, "handler")
 		return nil
 	}); err != nil {
@@ -113,14 +113,14 @@ func TestRecoverMiddleware_ConvertsPanicToError(t *testing.T) {
 	// RecoverMiddleware (nil logger → slog.Default) turns a panic into an
 	// error instead of unwinding the stack.
 	chain := observe.NewComponentChain(observe.RecoverMiddleware(nil))
-	err := observe.Run(context.Background(), chain, "pkg.Boom", func(ctx context.Context) error {
+	err := chain.Run(context.Background(), "pkg.Boom", func(ctx context.Context) error {
 		panic("kaboom")
 	})
 	if err == nil {
 		t.Fatal("expected a recovered panic to surface as an error")
 	}
 	// Around's value path must also recover and return the zero value.
-	got, err := observe.Around(context.Background(), chain, "pkg.Boom", func(ctx context.Context) (int, error) {
+	got, err := chain.Around(context.Background(), "pkg.Boom", func(ctx context.Context) (int, error) {
 		panic("kaboom")
 	})
 	if err == nil || got != 0 {
@@ -132,7 +132,7 @@ func TestTraceMiddleware_NilTracerPassThrough(t *testing.T) {
 	// nil tracer must not panic and must still run the inner op.
 	chain := observe.NewComponentChain(observe.TraceMiddleware(nil), observe.MetricsMiddleware(nil, "pkg"))
 	ran := false
-	err := observe.Run(context.Background(), chain, "pkg.Do", func(ctx context.Context) error {
+	err := chain.Run(context.Background(), "pkg.Do", func(ctx context.Context) error {
 		ran = true
 		return nil
 	})

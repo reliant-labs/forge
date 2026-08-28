@@ -26,6 +26,29 @@ Forge ships an extensive skill catalog (architecture, proto, db, api, services, 
 
 If a skill's content seems out of date relative to what you observe in this project, trust the project — and flag it. See the **Forge bug rule** below.
 
+## Debugging: load the `debug` skill FIRST
+
+**Before investigating any bug — backend or frontend — run `{{.CLI}} skill load debug`.**
+It is not optional background reading; it names evidence sources you will not
+find by searching the code, and skipping it is how an investigation ends up
+re-deriving something the skill would have handed you in one command.
+
+The one that catches people out: **frontend logs are on disk in dev.** A
+scaffolded frontend mirrors every `console.*` call — plus every uncaught error
+and unhandled promise rejection — into
+`.forge/logs/<env>/frontend_<name>.log`, prefixed `[browser:<level>]`, right
+next to the backend service logs. So "I can't see what the browser did" is
+almost always false:
+
+```bash
+grep '\[browser:error\]' .forge/logs/dev/*.log
+```
+
+An uncaught `TypeError` produces no `console` call anywhere in your source, so
+grepping the codebase for it finds nothing while the stack trace sits in that
+file. The `debug` skill covers this, the backend log layout, and which forge
+tools localize a fault versus which only look green.
+
 ## Code navigation: two questions where gopls beats grep
 
 This is a Go project, so `gopls` answers two questions that grep cannot. **Use it for these; do not grep.**

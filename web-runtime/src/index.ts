@@ -110,3 +110,19 @@ export {
   type TelemetryConfig,
   type TelemetryEvent,
 } from "./telemetry.js";
+
+/**
+ * Dev-only browser log forwarding: mirrors console output and uncaught errors
+ * to the dev server, which prints them into
+ * `.forge/logs/<env>/frontend_<name>.log`. No-ops unless `dev: true`, and the
+ * receiving endpoint exists only in a dev server — so a production bundle
+ * neither posts nor has anywhere to post to.
+ */
+export {
+  DEV_LOG_ENDPOINT,
+  devLoggingInstalled,
+  installDevLogging,
+  uninstallDevLogging,
+  type DevLoggingOptions,
+  type DevLogPayload,
+} from "./devlog.js";

@@ -11,7 +11,7 @@
 // method through the chain with a single line:
 //
 //	func (o *forgeMiddlewareService) Do(ctx context.Context, in DoInput) (DoResult, error) {
-//	    return observe.Around(ctx, o.chain, "checkout.Do", func(ctx context.Context) (DoResult, error) {
+//	    return o.chain.Around(ctx, "checkout.Do", func(ctx context.Context) (DoResult, error) {
 //	        return o.inner.Do(ctx, in)
 //	    })
 //	}
@@ -96,22 +96,27 @@ func (c *ComponentChain) dispatch(ctx context.Context, i int, method string, nex
 	})
 }
 
-// Run routes an error-only (or result-captured) operation through chain and
-// returns its error. It is the general primitive: the generated decorator
+// Run routes an error-only (or result-captured) operation through the chain
+// and returns its error. It is the general primitive: the generated decorator
 // uses it directly for error-only methods and — capturing results in the
 // closure — for methods with multiple non-error results. A nil chain runs
 // next directly.
-func Run(ctx context.Context, chain *ComponentChain, method string, next ComponentOp) error {
-	return chain.dispatch(ctx, 0, method, next)
+func (c *ComponentChain) Run(ctx context.Context, method string, next ComponentOp) error {
+	return c.dispatch(ctx, 0, method, next)
 }
 
-// Around routes a value-returning method through chain. T is the method's
+// Around routes a value-returning method through the chain. T is the method's
 // single non-error result; the value is captured out of the closure so the
 // chain only ever sees the error. It keeps the generated per-method body a
 // one-liner for the common (T, error) shape.
-func Around[T any](ctx context.Context, chain *ComponentChain, method string, next func(context.Context) (T, error)) (T, error) {
+//
+// T is a parameter of the METHOD, not of ComponentChain: one chain instance is
+// shared by every method of a component, and those methods return different
+// types. Before Go 1.27 that forced this to be a package-level function taking
+// the chain as an argument, since only functions could carry type parameters.
+func (c *ComponentChain) Around[T any](ctx context.Context, method string, next func(context.Context) (T, error)) (T, error) {
 	var out T
-	err := chain.dispatch(ctx, 0, method, func(ctx context.Context) error {
+	err := c.dispatch(ctx, 0, method, func(ctx context.Context) error {
 		var e error
 		out, e = next(ctx)
 		return e

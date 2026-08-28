@@ -77,24 +77,24 @@ type State struct{ N int }
 	}
 
 	// (T, error) → generic Around one-liner with the correct op name.
-	if !strings.Contains(got, `observe.Around(ctx, o.chain, "checkout.Run", func(ctx context.Context) (RunResult, error) {`) {
+	if !strings.Contains(got, `o.chain.Around(ctx, "checkout.Run", func(ctx context.Context) (RunResult, error) {`) {
 		t.Errorf("Run wrapper not the Around one-liner:\n%s", got)
 	}
 	// error-only → Run one-liner.
-	if !strings.Contains(got, `observe.Run(ctx, o.chain, "checkout.Ping", func(ctx context.Context) error {`) {
+	if !strings.Contains(got, `o.chain.Run(ctx, "checkout.Ping", func(ctx context.Context) error {`) {
 		t.Errorf("Ping wrapper not the Run one-liner:\n%s", got)
 	}
 	// non-ctx error-only → context.Background(), unnamed closure ctx.
-	if !strings.Contains(got, `observe.Run(context.Background(), o.chain, "checkout.Close", func(_ context.Context) error {`) {
+	if !strings.Contains(got, `o.chain.Run(context.Background(), "checkout.Close", func(_ context.Context) error {`) {
 		t.Errorf("Close wrapper not background-ctx Run:\n%s", got)
 	}
 	// (A, B, error) → general capture form.
-	if !strings.Contains(got, `err := observe.Run(ctx, o.chain, "checkout.Lookup"`) ||
+	if !strings.Contains(got, `err := o.chain.Run(ctx, "checkout.Lookup"`) ||
 		!strings.Contains(got, "return r0, r1, err") {
 		t.Errorf("Lookup wrapper not the multi-result capture form:\n%s", got)
 	}
 	// non-ctx, non-error single result.
-	if !strings.Contains(got, `observe.Run(context.Background(), o.chain, "checkout.Snapshot"`) ||
+	if !strings.Contains(got, `o.chain.Run(context.Background(), "checkout.Snapshot"`) ||
 		!strings.Contains(got, "return r0") {
 		t.Errorf("Snapshot wrapper not the non-error capture form:\n%s", got)
 	}
@@ -131,7 +131,7 @@ type Gateway interface {
 	for _, want := range []string{
 		"func NewGatewayWithForgeMiddleware(inner Gateway) Gateway {",
 		"type forgeMiddlewareGateway struct {",
-		`observe.Run(ctx, o.chain, "gw.Send", func(ctx context.Context) error {`,
+		`o.chain.Run(ctx, "gw.Send", func(ctx context.Context) error {`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("marker-named decorator missing %q\n---\n%s", want, got)
@@ -194,7 +194,7 @@ type RunResult struct{ OK bool }
 		t.Fatalf("rewrite contract.go: %v", err)
 	}
 	after := genDecorator(t, dir, "Service", "checkout")
-	if !strings.Contains(after, `observe.Run(ctx, o.chain, "checkout.Refund", func(ctx context.Context) error {`) {
+	if !strings.Contains(after, `o.chain.Run(ctx, "checkout.Refund", func(ctx context.Context) error {`) {
 		t.Errorf("regenerated decorator did not gain the Refund wrapper:\n%s", after)
 	}
 }
@@ -241,7 +241,7 @@ func TestRemoveObservedDecorator(t *testing.T) {
 // TestObservedDecorator_MethodLevelNoObserve: a method carrying
 // `// forge:no-observe` is still wrapped by the decorator but delegates
 // DIRECTLY to the inner impl (no chain), while sibling methods still route
-// through observe.Around / observe.Run.
+// through chain.Around / chain.Run.
 func TestObservedDecorator_MethodLevelNoObserve(t *testing.T) {
 	dir := writeContract(t, `package checkout
 
@@ -261,7 +261,7 @@ type RunResult struct{ OK bool }
 	got := genDecorator(t, dir, "Service", "checkout")
 
 	// The instrumented method routes through the chain.
-	if !strings.Contains(got, `observe.Around(ctx, o.chain, "checkout.Run"`) {
+	if !strings.Contains(got, `o.chain.Around(ctx, "checkout.Run"`) {
 		t.Fatalf("Run should route through the chain:\n%s", got)
 	}
 	// The skipped method delegates directly — no observe.* for Health.

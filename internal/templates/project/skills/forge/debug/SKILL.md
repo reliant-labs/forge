@@ -100,7 +100,45 @@ while the actual flow is broken. The **only** things that prove an app-flow fix:
 
 Generic forge tools localize and surface evidence; they do not certify the fix.
 
-Use chrome-devtools MCP tools for frontend bugs (snapshots, console, network).
+## Frontend logs are ON DISK in dev — read them before reaching for a browser
+
+**The browser console is not the only sink.** A scaffolded frontend installs
+`installDevLogging()` (from `@reliantlabs/forge-web-runtime`) in dev, which
+mirrors every `console.log/info/warn/error/debug` — plus every **uncaught
+error and unhandled promise rejection** — to the dev server, which prints them
+to its stdout. `forge env up` already tees that to a file:
+
+```
+.forge/logs/<env>/frontend_<name>.log     # ← browser lines land here, prefixed [browser:<level>]
+.forge/logs/<env>/<service>.log           # ← backend services
+```
+
+So for a frontend bug, **grep the log first** — it costs one command and needs
+no browser:
+
+```bash
+grep '\[browser:' .forge/logs/dev/frontend_web.log | tail -40
+grep '\[browser:error\]' .forge/logs/dev/*.log          # errors across every frontend
+tail -f .forge/logs/dev/frontend_web.log                 # follow while reproducing
+```
+
+The uncaught-error capture is the part worth internalizing: a `TypeError` that
+crashes a render, or a rejected promise, produces **no `console` call at all**
+and is invisible to a code search. It still lands in this file, with its stack.
+
+Two caveats that will otherwise mislead you:
+
+- **Dev only.** The receiving endpoint is a `apply: "serve"` Vite plugin (or a
+  Next.js route that 404s in production), and `installDevLogging` no-ops
+  outside dev. An empty log in a deployed environment is expected, not a bug.
+- **A project may have opted out.** It is ordinary scaffolded code the project
+  owns — one call in `src/main.tsx` / `src/app/providers.tsx` and one plugin
+  entry. If the file has no `[browser:` lines at all, check those two places
+  before concluding the code never ran.
+
+Use chrome-devtools MCP tools (snapshots, console, network) when you need to
+DRIVE the UI or inspect live DOM/network state — the log file tells you what
+already happened; devtools tells you what is happening now.
 
 ## Sub-Skills (forge)
 

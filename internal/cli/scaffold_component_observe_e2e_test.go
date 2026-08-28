@@ -140,7 +140,7 @@ func (s *service) Ping(ctx context.Context) error { return nil }
 	runCmd(t, projectDir, forgeBin, "generate")
 	dec := readFileE2E(t, decoratorPath)
 	// HealthCheck still routes through the chain.
-	if !strings.Contains(dec, `observe.Run(ctx, o.chain, "checkout.HealthCheck"`) {
+	if !strings.Contains(dec, `o.chain.Run(ctx, "checkout.HealthCheck"`) {
 		t.Fatalf("HealthCheck must still route through the chain:\n%s", dec)
 	}
 	// Ping delegates DIRECTLY — no chain, no op name.

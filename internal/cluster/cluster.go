@@ -40,6 +40,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -55,6 +56,183 @@ import (
 	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
+
+// RolloutMode is what Apply does after the manifests land.
+type RolloutMode string
+
+const (
+	// RolloutWait waits for every managed Deployment (and one-shot Job) and
+	// FAILS the deploy if any of them does not become ready. The default,
+	// and the only correct behavior for a real environment: "kubectl apply
+	// exited 0" says the API server accepted the objects, not that anything
+	// is running.
+	RolloutWait RolloutMode = "wait"
+
+	// RolloutWarn waits and REPORTS failures without failing the deploy.
+	// For the local inner loop (`forge cluster reload`), where a
+	// half-rolled cluster is something you look at rather than a build
+	// result — and where the previous Deployment is still serving anyway.
+	// Never appropriate for CI or a cloud env.
+	RolloutWarn RolloutMode = "warn"
+
+	// RolloutSkip applies and returns immediately, waiting for nothing.
+	// For "push the manifests and let the cluster converge" — a
+	// fire-and-forget deploy, or a huge env where the caller does its own
+	// verification afterwards.
+	RolloutSkip RolloutMode = "skip"
+)
+
+// RolloutPolicy governs the post-apply wait: whether to wait at all,
+// whether a stuck rollout fails the deploy, how long to give it, and
+// whether to stop at the first failure or report every one.
+//
+// WHY THIS TYPE EXISTS
+// ====================
+//
+// The wait used to be unconditional and its result was DISCARDED — a
+// failed rollout printed "Warning: rollout for x" and Apply returned nil,
+// so `forge env deploy` exited 0 with nothing running. That is the worst
+// available failure mode: a green deploy over a broken environment. It is
+// not hypothetical — a control-plane prod deploy reported success while
+// three Deployments sat on a stale image for hours, and the CI pipeline
+// that noticed it had to re-implement the whole wait in shell, correctly,
+// beside the forge call that was silently swallowing it.
+//
+// So: waiting is a POLICY with a safe default, not a hardcoded gesture.
+type RolloutPolicy struct {
+	// Mode selects wait / warn / skip. Empty means RolloutWait.
+	Mode RolloutMode
+
+	// Timeout bounds EACH resource's wait (per Deployment, per Job), not
+	// the whole set — a 12-service env is not 12x more likely to be broken
+	// than a 1-service one, and a shared budget would make the last
+	// service's verdict depend on how slow the first was.
+	//
+	// Zero means DefaultRolloutTimeout. The old hardcoded 60s was a
+	// local-k3d value applied to cloud: a cold cloud rollout that pulls a
+	// fresh image routinely exceeds a minute, so it produced spurious
+	// failures on exactly the deploys that mattered most.
+	Timeout time.Duration
+
+	// FailFast stops at the FIRST resource that fails instead of waiting
+	// for the rest.
+	//
+	// Default (false) is deliberate: when a deploy goes wrong you usually
+	// want the whole picture — "these 3 of 12 never came up" — and the
+	// remaining waits cost nothing on a healthy resource, because a ready
+	// Deployment returns immediately. Turn it on when the failures are
+	// expected to cascade and you would rather see the first one now than
+	// wait out eleven timeouts.
+	FailFast bool
+
+	// Order, when non-empty, is a prefix ordering for the Deployment wait:
+	// these names are awaited first, in this order, before everything else
+	// (which follows in its natural order).
+	//
+	// This is a WAIT ordering, not an apply ordering — kubectl applies the
+	// stream in one shot and Kubernetes converges concurrently, so forge
+	// cannot serialize the rollouts themselves without lying about what it
+	// controls. What it CAN do is decide what to report first, which is
+	// what makes a phased deploy legible: put the database migration or the
+	// API server first and its failure surfaces before a dozen dependents
+	// time out waiting on the thing that was already broken.
+	//
+	// Names not present in the namespace are ignored, so an ordering can
+	// name a resource a --target filter excluded without erroring.
+	Order []string
+}
+
+// DefaultRolloutTimeout bounds each resource's readiness wait when a
+// policy does not set one. Five minutes covers a cold cloud rollout that
+// pulls a fresh image on a new node; the previous 60s did not.
+const DefaultRolloutTimeout = 5 * time.Minute
+
+// Normalize fills in the zero value's defaults: wait-and-fail, with
+// DefaultRolloutTimeout. Keeping this in one place is what lets every
+// caller leave the field unset and still get the safe behavior.
+func (p RolloutPolicy) Normalize() RolloutPolicy {
+	if p.Mode == "" {
+		p.Mode = RolloutWait
+	}
+	if p.Timeout <= 0 {
+		p.Timeout = DefaultRolloutTimeout
+	}
+	return p
+}
+
+// Validate rejects an unrecognized mode.
+//
+// A typo'd `--rollout=wan` must not silently fall through to some default:
+// the whole failure class this policy exists to remove is "the wrong
+// behavior was chosen quietly". A caller that asked for something forge
+// does not understand gets an error naming the valid values, not a guess.
+func (p RolloutPolicy) Validate() error {
+	switch p.Mode {
+	case "", RolloutWait, RolloutWarn, RolloutSkip:
+		return nil
+	default:
+		return fmt.Errorf("unknown rollout mode %q: want one of %q, %q, %q",
+			p.Mode, RolloutWait, RolloutWarn, RolloutSkip)
+	}
+}
+
+// classifyApplyResult decides what an apply error MEANS under this policy,
+// and is the single place an incomplete apply is graded.
+//
+// An *IncompleteApplyError — objects that were rendered but never reached
+// the cluster — is the same class of problem as a Deployment that never
+// became ready, so it is graded by the same policy rather than by a knob
+// of its own: fatal under the default RolloutWait, reported-and-tolerated
+// under RolloutWarn, where a half-converged cluster is something you look
+// at rather than a build result.
+//
+// RolloutSkip does NOT exempt it. Skip means "do not WAIT for the cluster
+// to converge", which is a statement about time; an object that was
+// rejected is never going to converge no matter how long nobody waits, and
+// it is exactly the evidence a fire-and-forget deploy has no other way to
+// get. A caller who asked forge not to wait still asked it to apply.
+//
+// Every other error passes through untouched: a genuine apply failure
+// (a bad manifest, an unreachable API server) is fatal in every mode, and
+// warn mode was never a licence to ignore those.
+func (p RolloutPolicy) classifyApplyResult(err error) error {
+	var incomplete *IncompleteApplyError
+	if !errors.As(err, &incomplete) {
+		return err
+	}
+	if p.Mode == RolloutWarn {
+		fmt.Printf("Warning: %v\n", incomplete)
+		return nil
+	}
+	return err
+}
+
+// orderDeployments returns names sorted so that anything named in Order
+// comes first, in Order's sequence, with the remainder following in their
+// original order. Unknown names in Order are skipped.
+func (p RolloutPolicy) orderDeployments(names []string) []string {
+	if len(p.Order) == 0 {
+		return names
+	}
+	present := make(map[string]bool, len(names))
+	for _, n := range names {
+		present[n] = true
+	}
+	out := make([]string, 0, len(names))
+	taken := make(map[string]bool, len(names))
+	for _, want := range p.Order {
+		if present[want] && !taken[want] {
+			out = append(out, want)
+			taken[want] = true
+		}
+	}
+	for _, n := range names {
+		if !taken[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
 
 // ApplyOpts expresses the differences between the three existing call
 // sites. Every field has a sensible zero value so callers that don't
@@ -105,6 +283,14 @@ type ApplyOpts struct {
 	// processes and don't have a Deployment in the cluster. Empty
 	// disables the skip (every managed Deployment is awaited).
 	HostSkip map[string]struct{}
+
+	// Rollout governs what the post-apply wait DOES, and — critically —
+	// whether a rollout that never becomes ready fails the deploy.
+	//
+	// The zero value is RolloutPolicy{}, which Normalize() turns into the
+	// safe default: wait for every managed Deployment, and FAIL if any of
+	// them does not become ready. See RolloutPolicy.
+	Rollout RolloutPolicy
 
 	// OneShotJobs is an OPTIONAL caller-supplied list of Job names to
 	// wait on. Apply UNIONs it with every `kind: Job` it finds in the
@@ -431,16 +617,22 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	// idempotent, so re-sending any doc is harmless. When the bundle has
 	// no config kinds, config is empty and we fall through to a single
 	// apply of rest — identical to the pre-split behaviour.
+	//
+	// Normalized here rather than at the rollout wait below because the
+	// apply itself now has a verdict to render: an incomplete apply is
+	// governed by the same policy as a failed rollout (see
+	// classifyApplyResult).
+	policy := opts.Rollout.Normalize()
 	config, rest := PartitionConfigManifests(manifests)
 	if strings.TrimSpace(config) != "" {
-		if err := KubectlApply(ctx, opts.Context, config); err != nil {
+		if err := policy.classifyApplyResult(KubectlApply(ctx, opts.Context, config)); err != nil {
 			if opts.Quiet {
 				return fmt.Errorf("kubectl apply (config): %w", err)
 			}
 			return fmt.Errorf("kubectl apply failed (config): %w", err)
 		}
 	}
-	if err := KubectlApply(ctx, opts.Context, rest); err != nil {
+	if err := policy.classifyApplyResult(KubectlApply(ctx, opts.Context, rest)); err != nil {
 		// Reload uses the shorter "kubectl apply:" wrap; the framed
 		// deploy/up path uses the longer "kubectl apply failed:" form.
 		if opts.Quiet {
@@ -455,29 +647,63 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		}
 	}
 
+	if policy.Mode == RolloutSkip {
+		if !opts.Quiet {
+			fmt.Println("Skipping rollout wait (rollout mode: skip)")
+		}
+		return nil
+	}
+
+	// failures collects every resource that did not become ready. In
+	// RolloutWait mode a non-empty set is what makes Apply return an
+	// error — the whole point of the policy.
+	var failures []string
+	// note reports one resource's failure in the mode's voice: a warning
+	// when the caller opted into warn-only, an error otherwise.
+	note := func(indent, kind, name string, err error) {
+		if policy.Mode == RolloutWarn {
+			fmt.Printf("%sWarning: %s for %s: %v\n", indent, kind, name, err)
+			return
+		}
+		fmt.Printf("%sFAILED: %s for %s: %v\n", indent, kind, name, err)
+		failures = append(failures, name)
+	}
+
 	if !opts.Quiet {
 		fmt.Println("Waiting for rollouts...")
 	}
 	deployments, lerr := ListManagedDeployments(ctx, opts.Context, opts.Namespace)
 	if lerr != nil {
-		// Reload's pre-extraction form printed "Warning: ..." (no
-		// leading indent) and short-circuited the rest of the wait
-		// loop with `return nil`. The framed path indents the warning
-		// and continues to the (now-empty) rollout loop.
+		// Not being able to LIST is not the same as nothing being wrong:
+		// it means the wait cannot run at all, so under a failing policy
+		// it must not pass silently.
 		if opts.Quiet {
 			fmt.Printf("Warning: list deployments: %v\n", lerr)
-			return nil
+			if policy.Mode == RolloutWarn {
+				return nil
+			}
+			return fmt.Errorf("list deployments for rollout wait: %w", lerr)
 		}
 		fmt.Printf("  Warning: list deployments: %v\n", lerr)
+		if policy.Mode != RolloutWarn {
+			return fmt.Errorf("list deployments for rollout wait: %w", lerr)
+		}
 	} else {
 		var skipped []string
+		var awaited []string
 		for _, dep := range deployments {
 			if _, skip := opts.HostSkip[dep]; skip {
 				skipped = append(skipped, dep)
 				continue
 			}
-			if err := WaitRollout(ctx, opts.Context, dep, opts.Namespace); err != nil {
-				fmt.Printf("  Warning: rollout for %s: %v\n", dep, err)
+			awaited = append(awaited, dep)
+		}
+		for _, dep := range policy.orderDeployments(awaited) {
+			if err := WaitRolloutTimeout(ctx, opts.Context, dep, opts.Namespace, policy.Timeout); err != nil {
+				note("  ", "rollout", dep, err)
+				if policy.FailFast && policy.Mode == RolloutWait {
+					return rolloutError(failures)
+				}
 			} else {
 				fmt.Printf("  %s: ready\n", dep)
 			}
@@ -497,11 +723,22 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	// stream. De-duped, with the caller's order preserved first.
 	for _, name := range unionJobNames(opts.OneShotJobs, RenderedJobNames(manifests)) {
 		fmt.Printf("Waiting for one-shot Job %q to complete...\n", name)
-		if err := WaitJobComplete(ctx, opts.Context, name, opts.Namespace); err != nil {
-			fmt.Printf("  Warning: job %s: %v\n", name, err)
+		if err := WaitJobCompleteTimeout(ctx, opts.Context, name, opts.Namespace, policy.Timeout); err != nil {
+			// A failed one-shot Job is if anything MORE serious than a
+			// failed Deployment: it is the migration that did not run,
+			// and every workload above it is now talking to a schema
+			// that never moved.
+			note("  ", "job", name, err)
+			if policy.FailFast && policy.Mode == RolloutWait {
+				return rolloutError(failures)
+			}
 		} else {
 			fmt.Printf("  %s: complete\n", name)
 		}
+	}
+
+	if len(failures) > 0 {
+		return rolloutError(failures)
 	}
 
 	return nil
@@ -749,12 +986,19 @@ func KubectlApply(ctx context.Context, kctx, manifests string) error {
 			"the target cluster is declarative (forge.K8sCluster.cluster in the env's KCL) — " +
 			"forge never falls back to the current context for a write")
 	}
-	return applyWithImmutableRecovery(
+	applyStdout, err := applyWithImmutableRecovery(
 		manifests,
-		func() (string, error) { return applyOnce(ctx, kctx, manifests) },
+		func() (string, string, error) { return applyOnce(ctx, kctx, manifests) },
 		func(t immutableTarget) error { return kubectlDeleteResource(ctx, kctx, t) },
 		func(t immutableTarget) error { return kubectlWaitResourceGone(ctx, kctx, t) },
 	)
+	if err != nil {
+		return err
+	}
+	// The apply exited 0 — which says the batch was accepted, NOT that
+	// every object in it was. Prove it before letting the caller call this
+	// a success. See apply_completeness.go for the incident this closes.
+	return verifyApplyComplete(manifests, applyStdout)
 }
 
 // immutableRecoveryAttempts bounds how many delete→wait-gone→re-apply
@@ -800,20 +1044,26 @@ const immutableRecoveryAttempts = 3
 // error, a re-apply error that isn't immutable, or attempts exhausted —
 // surfaces the relevant error unchanged. Unrelated apply failures are
 // never masked.
+//
+// The apply closure returns (stdout, stderr, err): stderr is what the
+// recovery classifies on, and stdout is handed back to the caller for the
+// apply-completeness check. On a successful recovery that stdout is the
+// WINNING re-apply's, never the failed first attempt's — the first attempt
+// aborted partway and its object list is not what ended up on the cluster.
 func applyWithImmutableRecovery(
 	manifests string,
-	apply func() (string, error),
+	apply func() (stdout, stderr string, err error),
 	del func(immutableTarget) error,
 	waitGone func(immutableTarget) error,
-) error {
-	stderr, err := apply()
+) (string, error) {
+	stdout, stderr, err := apply()
 	if err == nil {
-		return nil
+		return stdout, nil
 	}
 	targets := immutableResources(stderr, manifests)
 	if len(targets) == 0 {
 		// Not the recoverable immutable case — surface unchanged.
-		return err
+		return stdout, err
 	}
 
 	// Recovery loop: delete EVERY offending immutable resource the batch
@@ -839,7 +1089,7 @@ func applyWithImmutableRecovery(
 			if delErr := del(res); delErr != nil {
 				// A delete failure is its own problem — surface it rather than
 				// the original immutable error so the cause is visible.
-				return fmt.Errorf("recovering immutable %s %q: delete: %w", res.Kind, res.Name, delErr)
+				return stdout, fmt.Errorf("recovering immutable %s %q: delete: %w", res.Kind, res.Name, delErr)
 			}
 			// Poll the resource to NotFound so the re-apply has a real
 			// happens-before. Best-effort: a wait error (e.g. kubectl flake)
@@ -851,12 +1101,17 @@ func applyWithImmutableRecovery(
 				}
 			}
 		}
-		reStderr, reErr := apply()
+		reStdout, reStderr, reErr := apply()
+		// The re-apply is the authoritative account of what is on the
+		// cluster now: the first attempt aborted partway, so its object
+		// list would under-report and make the completeness check fire on
+		// a recovery that in fact healed everything.
+		stdout = reStdout
 		if reErr == nil {
 			// Every immutable conflict recovered and the re-apply is clean —
 			// the overall apply is a success (exit 0), regardless of the stale
 			// non-zero status the ORIGINAL batched apply returned.
-			return nil
+			return stdout, nil
 		}
 		// Keep looping only while the re-apply failure is ENTIRELY composed of
 		// recoverable immutable conflicts (the same one still racing us, a
@@ -864,30 +1119,33 @@ func applyWithImmutableRecovery(
 		// immutable-recoverable is a genuine error and surfaces unchanged.
 		reTargets := immutableResources(reStderr, manifests)
 		if len(reTargets) == 0 {
-			return reErr
+			return stdout, reErr
 		}
 		lastErr = reErr
 		targets = reTargets
 	}
 	// Bounded attempts exhausted and a resource is still immutable — recovery
 	// genuinely failed. Surface the last immutable error.
-	return lastErr
+	return stdout, lastErr
 }
 
 // applyOnce runs a single `kubectl [--context] apply --server-side
-// --force-conflicts -f -` over the manifest stream. Stdout is inherited
-// so the user still sees the per-resource created/configured/unchanged
-// lines; stderr is tee'd to os.Stderr (so errors stay visible) AND
-// captured so KubectlApply can inspect it for the immutable-field
-// recovery. The captured stderr is returned alongside the run error.
-func applyOnce(ctx context.Context, kctx, manifests string) (string, error) {
+// --force-conflicts -f -` over the manifest stream. Both streams are
+// tee'd to the real os.Stdout/os.Stderr (so the user still sees the
+// per-resource created/configured/unchanged lines and any error as they
+// happen) AND captured, because the apply's own output is the only
+// evidence forge has about what actually landed: stderr drives the
+// immutable-field recovery, and stdout drives the apply-completeness
+// check (see apply_completeness.go — a server-side apply can reject one
+// object and still exit 0, and the rejected object simply has no line).
+func applyOnce(ctx context.Context, kctx, manifests string) (applyStdout, applyStderr string, err error) {
 	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "--force-conflicts", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifests)
-	cmd.Stdout = os.Stdout
-	var buf bytes.Buffer
-	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
-	err := cmd.Run()
-	return buf.String(), err
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &outBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
+	err = cmd.Run()
+	return outBuf.String(), errBuf.String(), err
 }
 
 // immutableTarget identifies the single resource an immutable-field apply
@@ -1178,10 +1436,20 @@ func EnsureNamespace(ctx context.Context, kctx, namespace string) error {
 // Diagnostics are best-effort — any kubectl invocation failure is
 // swallowed so the wait error itself remains the primary signal.
 func WaitRollout(ctx context.Context, kctx, name, namespace string) error {
+	return WaitRolloutTimeout(ctx, kctx, name, namespace, DefaultRolloutTimeout)
+}
+
+// WaitRolloutTimeout is WaitRollout with an explicit per-resource budget,
+// so a policy can give a cold cloud rollout the minutes it needs without
+// making the local inner loop wait that long to learn the same thing.
+func WaitRolloutTimeout(ctx context.Context, kctx, name, namespace string, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = DefaultRolloutTimeout
+	}
 	cmd := kubectlCmd(ctx, kctx, "rollout", "status",
 		"deployment/"+name,
 		"-n", namespace,
-		"--timeout=60s",
+		"--timeout="+timeout.String(),
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1190,6 +1458,20 @@ func WaitRollout(ctx context.Context, kctx, name, namespace string) error {
 		return err
 	}
 	return nil
+}
+
+// rolloutError renders the collected failures as ONE error naming every
+// resource, so a caller sees "these 3 of 12" rather than discovering them
+// one re-run at a time.
+func rolloutError(failures []string) error {
+	if len(failures) == 0 {
+		return nil
+	}
+	if len(failures) == 1 {
+		return fmt.Errorf("rollout failed: %s did not become ready", failures[0])
+	}
+	return fmt.Errorf("rollout failed: %d resources did not become ready: %s",
+		len(failures), strings.Join(failures, ", "))
 }
 
 // podSelectorForDeploy builds the label selector that matches the pods
@@ -1276,15 +1558,55 @@ func diagnoseFailedRollout(ctx context.Context, kctx, deploy, namespace string) 
 // `condition=complete`. Timeout is 5m — Jobs in this lane are
 // deploy-time migrations / backfills, which routinely run for minutes.
 func WaitJobComplete(ctx context.Context, kctx, name, namespace string) error {
-	cmd := kubectlCmd(ctx, kctx, "wait",
-		"--for=condition=complete",
-		"job/"+name,
-		"-n", namespace,
-		"--timeout=5m",
-	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return WaitJobCompleteTimeout(ctx, kctx, name, namespace, DefaultRolloutTimeout)
+}
+
+// WaitJobCompleteTimeout is WaitJobComplete under the policy's budget.
+//
+// `kubectl wait --for=condition=complete` does NOT return when the Job
+// fails — a failed Job satisfies `condition=failed`, not `complete`, so
+// this would otherwise sit out the whole timeout on a migration that
+// crashed in its first second. Waiting on both conditions and reporting
+// which one fired turns "5 minutes then a timeout" into an immediate,
+// accurate failure.
+func WaitJobCompleteTimeout(ctx context.Context, kctx, name, namespace string, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = DefaultRolloutTimeout
+	}
+	type result struct {
+		cond string
+		err  error
+	}
+	done := make(chan result, 2)
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, cond := range []string{"complete", "failed"} {
+		go func(cond string) {
+			cmd := kubectlCmd(waitCtx, kctx, "wait",
+				"--for=condition="+cond,
+				"job/"+name,
+				"-n", namespace,
+				"--timeout="+timeout.String(),
+			)
+			done <- result{cond: cond, err: cmd.Run()}
+		}(cond)
+	}
+
+	// The first watcher to return WITHOUT error is the verdict. The other
+	// is cancelled by the deferred cancel().
+	var last error
+	for i := 0; i < 2; i++ {
+		r := <-done
+		if r.err == nil {
+			if r.cond == "failed" {
+				return fmt.Errorf("job %s failed", name)
+			}
+			return nil
+		}
+		last = r.err
+	}
+	return last
 }
 
 // ListManagedDeployments returns the names of every forge-owned

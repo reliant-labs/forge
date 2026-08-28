@@ -280,6 +280,7 @@ type applyOptsContext struct {
 	Entities          *KCLEntities
 	ImageDigests      map[string]string
 	HelmCharts        []cluster.HelmChartSpec
+	Rollout           cluster.RolloutPolicy
 }
 
 // applyOptsBuilderFromContext returns an ApplyOptsBuilder closure
@@ -346,6 +347,7 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 			Targets:      p.Targets,
 			ClusterScope: scopeFor(group),
 			HelmCharts:   charts,
+			Rollout:      p.Rollout,
 		}
 	}
 }

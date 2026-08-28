@@ -9,6 +9,8 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vitest/config";
 import { loadEnv } from "vite";
 
+import { devLogPlugin } from "./src/lib/devlog-plugin";
+
 // The libraries @reliantlabs/forge-web-runtime declares as peerDependencies —
 // read from the installed package so this list can never drift from what the
 // runtime actually asks the app to supply.
@@ -32,8 +34,8 @@ const webRuntimePeers: string[] = Object.keys(
       path.join(
         __dirname,
         "node_modules",
-        "@reliant-labs",
-        "web-runtime",
+        "@reliantlabs",
+        "forge-web-runtime",
         "package.json",
       ),
       "utf8",
@@ -53,7 +55,11 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, "");
 
   return {
-    plugins: [react(), tailwindcss()],
+    // devLogPlugin is dev-only (`apply: "serve"`): it receives the browser
+    // console lines that installDevLogging() posts in src/main.tsx and prints
+    // them to this dev server's stdout, which `forge env up` tees to
+    // .forge/logs/<env>/frontend_<name>.log. Delete both to opt out.
+    plugins: [react(), tailwindcss(), devLogPlugin()],
     resolve: {
       // Resolve every runtime peer from this project root, whatever the
       // importer. A registry install already resolves that way, so this is

@@ -1038,6 +1038,18 @@ const realImmutableStderr = `The Job "control-plane-migrate" is invalid: spec.te
 // the namespace identically.
 const cloudImmutableStderr = `Job.batch "control-plane-migrate" is invalid: spec.template: Invalid value: core.PodTemplateSpec{...}: field is immutable`
 
+// stderrOnlyApply lifts a stderr-only apply closure into the (stdout,
+// stderr, err) shape applyWithImmutableRecovery takes. The
+// immutable-recovery tests classify on stderr alone; the stdout half is
+// the apply-completeness check's input and is exercised separately in
+// apply_completeness_test.go.
+func stderrOnlyApply(f func() (string, error)) func() (string, string, error) {
+	return func() (string, string, error) {
+		stderr, err := f()
+		return "", stderr, err
+	}
+}
+
 // noopWaitGone is the wait-for-deletion closure for tests that don't
 // exercise the poll itself — the resource is considered immediately gone.
 func noopWaitGone(immutableTarget) error { return nil }
@@ -1065,7 +1077,7 @@ func TestApplyWithImmutableRecovery_DeletesJobThenReapplies(t *testing.T) {
 		return nil
 	}
 
-	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); err != nil {
+	if _, err := applyWithImmutableRecovery(immutableJobManifests, stderrOnlyApply(apply), del, noopWaitGone); err != nil {
 		t.Fatalf("recovery should have healed the immutable apply, got %v", err)
 	}
 	if applies != 2 {
@@ -1092,7 +1104,7 @@ func TestApplyWithImmutableRecovery_NonImmutableErrorSurfaces(t *testing.T) {
 	}
 	del := func(immutableTarget) error { deletes++; return nil }
 
-	err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone)
+	_, err := applyWithImmutableRecovery(immutableJobManifests, stderrOnlyApply(apply), del, noopWaitGone)
 	if !errors.Is(err, orig) {
 		t.Fatalf("a non-immutable error must surface unchanged, got %v", err)
 	}
@@ -1114,7 +1126,7 @@ func TestApplyWithImmutableRecovery_ReapplyStillFailsSurfacesOriginal(t *testing
 	apply := func() (string, error) { applies++; return realImmutableStderr, orig }
 	del := func(immutableTarget) error { deletes++; return nil }
 
-	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); !errors.Is(err, orig) {
+	if _, err := applyWithImmutableRecovery(immutableJobManifests, stderrOnlyApply(apply), del, noopWaitGone); !errors.Is(err, orig) {
 		t.Fatalf("a still-failing re-apply must surface the immutable error, got %v", err)
 	}
 	if applies != 1+immutableRecoveryAttempts {
@@ -1202,7 +1214,7 @@ func TestApplyWithImmutableRecovery_CloudShape_DeleteWaitReapply(t *testing.T) {
 		return nil
 	}
 
-	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); err != nil {
+	if _, err := applyWithImmutableRecovery(immutableJobManifests, stderrOnlyApply(apply), del, noopWaitGone); err != nil {
 		t.Fatalf("recovery should have healed the server-side immutable apply, got %v", err)
 	}
 	if applies != 2 {
@@ -1246,7 +1258,7 @@ func TestApplyWithImmutableRecovery_ReapplyRacesThenSucceeds(t *testing.T) {
 	del := func(immutableTarget) error { deletes++; return nil }
 	waitGone := func(immutableTarget) error { waits++; return nil }
 
-	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, waitGone); err != nil {
+	if _, err := applyWithImmutableRecovery(immutableJobManifests, stderrOnlyApply(apply), del, waitGone); err != nil {
 		t.Fatalf("recovery must absorb the re-apply race and exit 0, got %v", err)
 	}
 	if applies != 3 {
@@ -1273,7 +1285,7 @@ func TestApplyWithImmutableRecovery_DeleteErrorSurfaces(t *testing.T) {
 	}
 	del := func(immutableTarget) error { deletes++; return delErr }
 
-	err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone)
+	_, err := applyWithImmutableRecovery(immutableJobManifests, stderrOnlyApply(apply), del, noopWaitGone)
 	if !errors.Is(err, delErr) {
 		t.Fatalf("a delete failure must surface (wrapped), got %v", err)
 	}
@@ -1372,7 +1384,7 @@ func TestApplyWithImmutableRecovery_BatchedMultiConflict_ExitsZero(t *testing.T)
 		return nil
 	}
 
-	if err := applyWithImmutableRecovery(immutableJobManifests, apply, del, noopWaitGone); err != nil {
+	if _, err := applyWithImmutableRecovery(immutableJobManifests, stderrOnlyApply(apply), del, noopWaitGone); err != nil {
 		t.Fatalf("recovery must heal EVERY immutable conflict in the batch and exit 0, got %v", err)
 	}
 	if applies != 2 {

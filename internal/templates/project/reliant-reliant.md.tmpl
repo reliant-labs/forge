@@ -65,3 +65,23 @@ The light/dark palette IS wired, though: semantic tokens in `globals.css` / `ind
 - `{{.CLI}} project annotations` — the entity-authoring vocabulary (field types, projected validate rules, proto options).
 - `{{.CLI}} project libraries` — every `forge/pkg/*` library and its purpose. Run it before porting a utility. Add a package name (`{{.CLI}} project libraries crud orm`) to print those packages' full exported API, signatures included; that beats `go doc <pkg>`, which shows no methods. Never search the disk for forge's source.
 - `{{.CLI}} skill list` / `{{.CLI}} skill load <name>` — the skills, served from the binary, so they always match the forge you are running.
+
+## Before debugging anything
+
+**Run `{{.CLI}} skill load debug` FIRST — before investigating any bug, backend or
+frontend.** It names evidence sources you will not find by reading the code,
+and skipping it is how an investigation ends up re-deriving something the skill
+would have handed you in one command.
+
+The one that catches people out: **frontend logs are on disk in dev.** The
+scaffolded frontend mirrors every `console.*` call — plus every uncaught error
+and unhandled promise rejection — into
+`.forge/logs/<env>/frontend_<name>.log`, prefixed `[browser:<level>]`, right
+next to the backend service logs:
+
+```bash
+grep '\[browser:error\]' .forge/logs/dev/*.log
+```
+
+An uncaught `TypeError` produces no `console` call anywhere in your source, so
+grepping the codebase finds nothing while the stack trace sits in that file.

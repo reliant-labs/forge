@@ -39,6 +39,11 @@ func newDeployCmd() *cobra.Command {
 		frontendsOnly bool
 		skipPreflight bool
 		noDigest      bool
+
+		rolloutMode     string
+		rolloutTimeout  time.Duration
+		rolloutFailFast bool
+		rolloutOrder    []string
 	)
 
 	cmd := &cobra.Command{
@@ -109,6 +114,19 @@ Examples:
   forge env deploy prod --skip-frontend         # Deploy backend k8s, skip Firebase`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			rollout := cluster.RolloutPolicy{
+				Mode:     cluster.RolloutMode(rolloutMode),
+				Timeout:  rolloutTimeout,
+				FailFast: rolloutFailFast,
+				Order:    rolloutOrder,
+			}
+			// Validated BEFORE --explain short-circuits: a typo'd
+			// --rollout is a typo whether or not the command goes on to
+			// do anything, and reporting it only on the real run means
+			// discovering it at the worst moment.
+			if err := rollout.Validate(); err != nil {
+				return err
+			}
 			if explain {
 				return runDeployExplain(cmd.Context(), args[0])
 			}
@@ -144,6 +162,7 @@ Examples:
 				frontendsOnly: frontendsOnly,
 				skipPreflight: skipPreflight,
 				noDigest:      noDigest,
+				rollout:       rollout,
 			})
 		},
 	}
@@ -160,6 +179,10 @@ Examples:
 	cmd.Flags().BoolVar(&frontendsOnly, "frontends-only", false, "Deploy ONLY the env's Firebase frontend(s) — build + Firebase deploy, skipping the entire k8s apply (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
 	cmd.Flags().BoolVar(&skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
 	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
+	cmd.Flags().StringVar(&rolloutMode, "rollout", "wait", "What to do after the manifests land: 'wait' (wait for every Deployment/Job and FAIL if any does not become ready — the default), 'warn' (wait and report, but exit 0), or 'skip' (apply and return immediately).")
+	cmd.Flags().DurationVar(&rolloutTimeout, "rollout-timeout", 0, "Per-resource readiness budget (e.g. 90s, 10m). Applies to EACH Deployment and one-shot Job, not the set. Default 5m.")
+	cmd.Flags().BoolVar(&rolloutFailFast, "rollout-fail-fast", false, "Stop at the FIRST resource that fails instead of waiting for the rest. Default reports every failure, which is usually what you want when diagnosing a bad deploy.")
+	cmd.Flags().StringArrayVar(&rolloutOrder, "rollout-order", nil, "Wait for these applications FIRST, in this order, before the rest (repeatable). A wait ordering, not an apply ordering — Kubernetes converges concurrently — so it controls what a phased deploy reports first: put the migration or the API server here and its failure surfaces before its dependents time out.")
 
 	return cmd
 }
@@ -310,6 +333,13 @@ type deployOptions struct {
 	// debugging a registry that mishandles digest pulls). No effect when no
 	// digest was captured — the tag is used either way.
 	noDigest bool
+
+	// rollout is the post-apply wait policy: whether a Deployment or
+	// one-shot Job that never becomes ready FAILS the deploy, how long
+	// each gets, and what order they are reported in. The zero value
+	// normalizes to wait-and-fail, which is the only safe default for a
+	// real environment — see cluster.RolloutPolicy.
+	rollout cluster.RolloutPolicy
 }
 
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
@@ -532,6 +562,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		namespace: namespace, envName: envName, deployContext: deployContext,
 		envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
 		targets: targets, helmSpecs: helmSpecs,
+		rollout: opts.rollout,
 	}); err != nil {
 		return err
 	}
@@ -692,6 +723,7 @@ type deployApplyInput struct {
 	cfg            *config.ProjectConfig
 	targets        []string
 	helmSpecs      []cluster.HelmChartSpec
+	rollout        cluster.RolloutPolicy
 }
 
 // applyDeployGroups applies the rendered deploy groups. With no groups (and not
@@ -721,6 +753,7 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			OneShotJobs:  oneShotJobNamesFromKCL(in.entities),
 			Targets:      in.targets,
 			HelmCharts:   in.helmSpecs,
+			Rollout:      in.rollout,
 		})
 	}
 	if len(in.groups) > 0 {
@@ -731,6 +764,7 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			EnvCfgKV: in.envCfgKV, DryRun: in.dryRun, Prune: in.prune, HostSkip: hostSkip,
 			OneShotJobs: oneShotJobs, Targets: in.targets, Groups: in.groups, Entities: in.entities,
 			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
+			Rollout: in.rollout,
 		})
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})

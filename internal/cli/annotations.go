@@ -722,6 +722,18 @@ func writeAnnotationsText(w io.Writer, spec AnnotationsSpec) error {
 			if err := p("  %-18s (%s) %s\n", m.Name, m.AppliesTo, m.Effect); err != nil {
 				return err
 			}
+			// Placement is where the marker goes — for the entity markers this
+			// is load-bearing: `// forge:entity` is only detected as a full-line
+			// leading comment ABOVE `message X {`, and the raw scanner silently
+			// ignores it anywhere else (inside the body, trailing a field), so a
+			// misplaced marker births nothing with no error. Render it here so
+			// the terminal view carries the same rule the JSON already does,
+			// rather than leaving it discoverable only by reading the scanner.
+			if m.Placement != "" {
+				if err := p("  %-18s   ↳ placement: %s\n", "", m.Placement); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	if len(spec.FieldTypes) > 0 {

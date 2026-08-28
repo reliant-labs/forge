@@ -221,8 +221,8 @@ func renderDirectBody(m MethodDef) string {
 }
 
 // renderObservedBody renders the statement body of one wrapper method. It
-// routes the inner call through the chain via observe.Around (the common
-// single-value-plus-error shape) or observe.Run (error-only and every other
+// routes the inner call through the chain via chain.Around (the common
+// single-value-plus-error shape) or chain.Run (error-only and every other
 // shape), capturing any non-error results out of the closure. Methods without
 // a context parameter run under context.Background() — metrics / recovery /
 // logging still apply; there is simply no parent context to propagate.
@@ -243,13 +243,13 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	case len(results) == 1 && results[0].TypeExpr == "error":
 		// error-only: one-liner through the general primitive.
 		return fmt.Sprintf(
-			"return observe.Run(%s, o.chain, %s, func(%s) error {\n\treturn %s\n})",
+			"return o.chain.Run(%s, %s, func(%s) error {\n\treturn %s\n})",
 			outerCtx, op, closureParam, inner)
 
 	case len(results) == 2 && results[1].TypeExpr == "error":
 		// (T, error): the common shape — generic sugar keeps it a one-liner.
 		return fmt.Sprintf(
-			"return observe.Around(%s, o.chain, %s, func(%s) (%s, error) {\n\treturn %s\n})",
+			"return o.chain.Around(%s, %s, func(%s) (%s, error) {\n\treturn %s\n})",
 			outerCtx, op, closureParam, results[0].TypeExpr, inner)
 	}
 
@@ -265,7 +265,7 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	if len(nonErr) == 0 && !lastIsErr {
 		// Pure void method: no results at all.
 		return fmt.Sprintf(
-			"_ = observe.Run(%s, o.chain, %s, func(%s) error {\n\t%s\n\treturn nil\n})",
+			"_ = o.chain.Run(%s, %s, func(%s) error {\n\t%s\n\treturn nil\n})",
 			outerCtx, op, closureParam, inner)
 	}
 
@@ -277,7 +277,7 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	}
 
 	if lastIsErr {
-		fmt.Fprintf(&b, "err := observe.Run(%s, o.chain, %s, func(%s) error {\n", outerCtx, op, closureParam)
+		fmt.Fprintf(&b, "err := o.chain.Run(%s, %s, func(%s) error {\n", outerCtx, op, closureParam)
 		b.WriteString("\tvar e error\n")
 		fmt.Fprintf(&b, "\t%s = %s\n", strings.Join(append(append([]string{}, names...), "e"), ", "), inner)
 		b.WriteString("\treturn e\n})\n")
@@ -286,7 +286,7 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	}
 
 	// One or more non-error results, no error result.
-	fmt.Fprintf(&b, "_ = observe.Run(%s, o.chain, %s, func(%s) error {\n", outerCtx, op, closureParam)
+	fmt.Fprintf(&b, "_ = o.chain.Run(%s, %s, func(%s) error {\n", outerCtx, op, closureParam)
 	fmt.Fprintf(&b, "\t%s = %s\n", strings.Join(names, ", "), inner)
 	b.WriteString("\treturn nil\n})\n")
 	fmt.Fprintf(&b, "return %s", strings.Join(names, ", "))

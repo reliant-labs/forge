@@ -63,7 +63,7 @@ func TestE2EObservedDecoratorGeneratedAndWired(t *testing.T) {
 		"func NewServiceWithForgeMiddleware(inner Service) Service {",
 		"chain: newObserveChain()",
 		"type forgeMiddlewareService struct {",
-		`observe.Run(ctx, o.chain, "checkout.HealthCheck", func(ctx context.Context) error {`,
+		`o.chain.Run(ctx, "checkout.HealthCheck", func(ctx context.Context) error {`,
 		"return o.inner.HealthCheck(ctx)",
 	} {
 		if !strings.Contains(dec, want) {
@@ -91,7 +91,7 @@ func TestE2EObservedDecoratorGeneratedAndWired(t *testing.T) {
 	// and the decorator gains the wrapper AUTOMATICALLY (the old hand-written
 	// observe.go would have left the decorator missing the method → build fail).
 	// The added method returns (T, error) so this step also covers the
-	// observe.Around branch that HealthCheck's bare-error shape does not.
+	// chain.Around branch that HealthCheck's bare-error shape does not.
 	contractPath := filepath.Join(pkgDir, "contract.go")
 	contractSrc := readFileE2E(t, contractPath)
 	contractSrc = strings.Replace(contractSrc,
@@ -111,7 +111,7 @@ func TestE2EObservedDecoratorGeneratedAndWired(t *testing.T) {
 	runCmd(t, projectDir, forgeBin, "generate")
 
 	grown := readFileE2E(t, decoratorPath)
-	if !strings.Contains(grown, `observe.Around(ctx, o.chain, "checkout.Lookup", func(ctx context.Context) (string, error) {`) {
+	if !strings.Contains(grown, `o.chain.Around(ctx, "checkout.Lookup", func(ctx context.Context) (string, error) {`) {
 		t.Fatalf("regenerated decorator did not gain the Lookup wrapper automatically:\n%s", grown)
 	}
 

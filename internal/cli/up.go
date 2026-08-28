@@ -500,6 +500,20 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// and summary so a frontend-only project isn't misread as "nothing
 	// declared" and the frontend phase actually has servers to launch.
 	mergeConfigFrontends(entities, cfg)
+	// Materialize any cross-repo frontend source BEFORE the frontend phase
+	// reads a Path — `upFrontends` uses it as the dev server's cmd.Dir, and a
+	// `source:` frontend has no `path` in the render. Left unresolved, cmd.Dir
+	// is empty, so npm inherits forge's own working directory and dies on the
+	// project root's missing package.json ("Could not read package.json"),
+	// which reads as a dependency problem rather than a wiring one.
+	//
+	// build and deploy already resolve through this same resolver; up was the
+	// one lane outside that invariant, so a GitSource frontend could be built
+	// and deployed but never dev-served. No-op for a project that declares no
+	// sources.
+	if err := resolveFrontendEntitySources(ctx, projectDir, entities); err != nil {
+		return fmt.Errorf("resolve frontend sources: %w", err)
+	}
 	if entitiesEmpty(entities) {
 		return fmt.Errorf("no services/operators/frontends/cronjobs declared in deploy/kcl/%s/", opts.env)
 	}

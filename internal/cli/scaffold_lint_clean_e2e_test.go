@@ -221,6 +221,10 @@ enum ProductStatus {
 	// The frontend lane needs a populated node_modules or lintFrontendDir
 	// skips it — install so eslint/stylelint/tsc actually gate.
 	feDir := filepath.Join(projectDir, "frontends", "dashboard")
+	// The install resolves @reliantlabs/forge-web-runtime over a file: link
+	// into the shared repo checkout and runs its prepare script there; build
+	// it once up front so parallel tests do not race that bootstrap.
+	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, feDir, 5*time.Minute,
 		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
 

@@ -182,6 +182,10 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 	requireTool(t, "node", "npm")
 
 	webDir := filepath.Join(projectDir, "frontends", "dashboard")
+	// The install resolves @reliantlabs/forge-web-runtime over a file: link
+	// into the shared repo checkout and runs its prepare script there; build
+	// it once up front so parallel tests do not race that bootstrap.
+	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, webDir, 5*time.Minute,
 		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
 	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "run", "build")

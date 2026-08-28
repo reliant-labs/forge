@@ -1,6 +1,10 @@
 "use client";
 
-import { initClientTelemetry, RuntimeShell } from "@reliantlabs/forge-web-runtime";
+import {
+  initClientTelemetry,
+  installDevLogging,
+  RuntimeShell,
+} from "@reliantlabs/forge-web-runtime";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo } from "react";
@@ -45,8 +49,20 @@ export function Providers({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     initTelemetry();
     const teardownRum = initClientTelemetry();
+    // Mirror console output and uncaught errors to the dev server, which
+    // writes them to .forge/logs/<env>/frontend_<name>.log — so a browser-side
+    // failure is visible on disk instead of only in devtools. Delete this
+    // block and src/app/__forge/log/route.ts to opt out.
+    //
+    // Guarded on the literal, not on `isDev`: the bundler folds
+    // process.env.NODE_ENV at build time, so a statement-level `if` lets the
+    // whole call be dropped from a production bundle. Passing the flag as an
+    // argument instead only folds the argument and leaves the call live.
+    if (process.env.NODE_ENV !== "production") {
+      installDevLogging({ dev: true });
+    }
     return teardownRum;
-  }, []);
+  }, [isDev]);
 
   return (
     <QueryClientProvider client={queryClient}>

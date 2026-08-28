@@ -124,6 +124,11 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	// The dependency is DECLARED, so npm creates the link itself and keeps
 	// it across repeat installs — the precise failure a bare symlink into
 	// node_modules could not survive.
+	//
+	// The install runs web-runtime's prepare script in the shared repo
+	// checkout, so build it once up front rather than letting parallel tests
+	// race that bootstrap.
+	prebuildWebRuntimeE2E(t)
 	for i := 1; i <= 2; i++ {
 		runCmdTimeout(t, webDir, 5*time.Minute,
 			"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")

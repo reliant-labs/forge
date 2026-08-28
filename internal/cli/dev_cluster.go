@@ -732,5 +732,10 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 		Env:       "dev", // dev cluster reload is dev-only (matches the envDir above)
 		DryRun:    dryRun,
 		Quiet:     true,
+		// Reload is the INNER LOOP: a half-rolled cluster is something you
+		// look at and iterate on, not a build result, and the previous
+		// Deployment is still serving while the new one settles. So warn
+		// rather than fail — the deploy/CI paths take the failing default.
+		Rollout: cluster.RolloutPolicy{Mode: cluster.RolloutWarn},
 	})
 }

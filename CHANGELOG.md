@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-08-28
+
+Patch release. The root CLI (`v0.1.9`) and the runtime library
+(`pkg/v0.1.9`) are tagged as always — on adjacent commits, `pkg` on the
+release commit and the root tag one commit later on the require bump.
+
+The theme is deploys that report the truth. `forge env deploy` could
+previously exit 0 over an environment that never came up, in two
+independent ways: a workload that never became ready was a warning, and
+a kubectl apply that confirmed fewer objects than were rendered went
+unnoticed entirely.
+
+### Added
+
+- **`RolloutPolicy`: a deploy now fails when a workload never becomes
+  ready.** `forge env deploy` printed a warning and exited 0 when a
+  Deployment or a one-shot Job failed to roll out, so a prod deploy
+  reported success over a broken environment — the failure surfaced
+  later, somewhere else, looking like a different bug. Readiness is now
+  part of what "deployed" means.
+
+  Four flags govern it: `--rollout wait|warn|skip` (the previous
+  exit-0-on-failure behavior is still reachable as `warn`, and `skip`
+  opts out), `--rollout-timeout` (default raised from 60s to 5m, since
+  60s failed honest-but-slow rollouts), `--rollout-fail-fast`, and
+  `--rollout-order`.
+
+  A failed Job now fails the deploy rather than being ignored, and it
+  fails as soon as Kubernetes says so: both the `complete` and the
+  `failed` conditions are watched, so a Job that has already failed no
+  longer burns the full timeout before reporting it.
+
+- **`forge env up` resolves GitSource frontends.** Only build and deploy
+  did, so a frontend declared with a cross-repo `source:` dev-served by
+  running npm in the project root — against the wrong tree, or against
+  no frontend at all. `up` now resolves the source like its siblings.
+
+### Fixed
+
+- **A deploy fails when kubectl confirms fewer objects than were
+  rendered.** The apply step trusted a zero exit code and never compared
+  what came back against what went in. In the v1.5.6 incident a prod
+  deploy applied 103 of 105 rendered objects and reported success; the
+  two missing objects were found by hand, much later. The count is now
+  checked, and a short apply is a failed deploy.
+
+### Changed
+
+- The toolchain moves to go 1.27, and the govulncheck pin rises to
+  v1.7.0. These are one change, not two: v1.1.4 vendors an `x/tools`
+  that panics under 1.27, so the old pin cannot scan the new toolchain.
+- CI caches each Go module separately, rather than treating the
+  multi-module repo as one cache key.
+- Scaffold guidance now tells the reader to FIX forge when forge is what
+  stands in the way, instead of working around it. A workaround plus a
+  TODO is the outcome that rule exists to prevent — it buries the signal
+  that tells us what to fix.
+
 ## [0.1.8] - 2026-08-27
 
 Patch release. The root CLI (`v0.1.8`) and the runtime library

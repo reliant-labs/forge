@@ -219,7 +219,15 @@ jobs:
         # Pinned explicitly: @latest makes CI non-reproducible and lets a
         # compromised upstream release silently alter scan results. The
         # Dependabot config watches this file so bumps arrive as PRs.
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        #
+        # The pin has a FLOOR, not just a ceiling: govulncheck vendors
+        # golang.org/x/tools to build the SSA it traces calls through, and a
+        # copy older than the toolchain panics on syntax it cannot parse.
+        # v1.1.4 vendored x/tools v0.29.0 and died with
+        # `panic: unexpected expr: *ast.KeyValueExpr` under Go 1.27 — a crash,
+        # not a finding, so the gate reported nothing at all. Keep this at or
+        # above the release that supports the Go version in go.mod.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - name: Install forge
         # Pinned to the forge version that generated this project, so CI
         # runs the same generator, linters and deployability rules the

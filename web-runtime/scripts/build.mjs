@@ -27,7 +27,7 @@
 // no arguments runs `prepare`, which is this file. Without it the bootstrap
 // recurses forever.
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -50,9 +50,31 @@ function run(command, args) {
   }
 }
 
-if (!existsSync(tsc)) {
+// Probing for tsc ALONE is not enough, and the gap is not theoretical: the
+// compiler is one devDependency among many, and the sources being compiled
+// import the others for their types. A node_modules holding typescript but
+// missing, say, @opentelemetry/sdk-trace-web does not fail the check above
+// — it fails the COMPILE, with a TS2307 naming a package this script was
+// perfectly capable of installing:
+//
+//     src/otel.ts(36,35): error TS2307: Cannot find module
+//       '@opentelemetry/sdk-trace-web' or its corresponding type declarations.
+//
+// A partial tree arises whenever an install is interrupted or two of them
+// race in this shared directory, so the fix is to ask about every declared
+// devDependency rather than the one binary. The install is idempotent and
+// only runs when something is genuinely absent, so a complete checkout still
+// pays nothing.
+const missingDevDeps = Object.keys(
+  JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")).devDependencies ?? {},
+).filter((name) => !existsSync(join(pkgDir, "node_modules", ...name.split("/"))));
+
+if (!existsSync(tsc) || missingDevDeps.length > 0) {
+  const why = !existsSync(tsc)
+    ? "no local toolchain"
+    : `incomplete toolchain (missing ${missingDevDeps.join(", ")})`;
   console.log(
-    "@reliantlabs/forge-web-runtime: no local toolchain — installing devDependencies once to build dist/",
+    `@reliantlabs/forge-web-runtime: ${why} — installing devDependencies once to build dist/`,
   );
   run("npm", ["install", "--no-audit", "--no-fund", "--ignore-scripts"]);
 }

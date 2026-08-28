@@ -155,11 +155,22 @@ jobs:
       # empty tag and dies with "The KCL version is not found", failing CI
       # for a reason that has nothing to do with the commit. Pinning also
       # stops a KCL release from changing this build without a commit.
+      # Gated on the BINARY, not the cache-hit flag: actions/cache saves the
+      # path at job end whatever happened during the job, so a run whose
+      # install failed stores an EMPTY ~/.kcl, and every later run then hits
+      # that entry, skips the install on the flag, and finds no kcl. Asking
+      # whether the binary is executable makes a hollow entry self-healing.
       - name: Install KCL
-        if: steps.kcl-cache.outputs.cache-hit != 'true'
         env:
           KCL_VERSION: v0.11.2
-        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+        run: |
+          if [ -x "$HOME/.kcl/bin/kcl" ]; then
+            echo "kcl already present ($("$HOME/.kcl/bin/kcl" --version 2>&1 | head -1))"
+            exit 0
+          fi
+          echo "no usable kcl in ~/.kcl (cache-hit=${{ steps.kcl-cache.outputs.cache-hit }}) — installing"
+          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+          test -x "$HOME/.kcl/bin/kcl"
 
       - name: Add KCL to PATH
         run: echo "$HOME/.kcl/bin" >> $GITHUB_PATH

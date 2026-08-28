@@ -149,15 +149,8 @@ jobs:
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
 
-      # KCL install-and-cache, same shape as ci.yml's validate-kcl job.
-      # The key carries the VERSION, for two reasons. It pins what a cache
-      # hit means (a version-less key restores whatever some earlier run
-      # happened to install, so bumping the pin below would change nothing),
-      # and it is the escape hatch when an entry goes bad: a cache saved from
-      # a job whose install half-finished restores a ~/.kcl with no usable
-      # binary, and because the install step is skipped on a hit, every
-      # subsequent run inherits it. That is not hypothetical — it took out
-      # all four shards of this suite at once, before a single test ran.
+      # KCL install-and-cache. The key carries the VERSION so a hit means
+      # "this version" and bumping the pin actually takes effect.
       - name: Cache KCL CLI
         uses: actions/cache@v4
         id: kcl-cache
@@ -165,6 +158,20 @@ jobs:
           path: ~/.kcl
           key: kcl-cli-${{ runner.os }}-v0.11.2
 
+      # The install condition is the BINARY, not the cache-hit flag, and that
+      # distinction is the whole fix. actions/cache saves the path at job end
+      # whatever happened during the job, so a run whose install failed (or
+      # never ran, because the tool was not yet needed) stores an EMPTY ~/.kcl
+      # — a 227-byte entry, observed. Every later run then gets a cache HIT,
+      # skips the install on that flag, finds no binary, and dies in the
+      # tool-verification step below. All four shards, before a single test
+      # ran, twice; and re-keying only moves the poison to the new key, since
+      # the next failing run re-saves it there.
+      #
+      # Asking whether $HOME/.kcl/bin/kcl is executable makes a hollow cache
+      # entry self-healing: the install simply re-runs. A good entry still
+      # skips it, which is the speedup the cache is for.
+      #
       # KCL_VERSION is pinned deliberately, matching ci.yml. Left unset, the
       # installer resolves "latest" through an UNAUTHENTICATED api.github.com
       # call, rate-limited to 60/hour per runner IP and shared across every
@@ -173,10 +180,16 @@ jobs:
       # that has nothing to do with the commit. This suite fans out to four
       # shards, so it burns that budget faster than any other lane.
       - name: Install KCL
-        if: steps.kcl-cache.outputs.cache-hit != 'true'
         env:
           KCL_VERSION: v0.11.2
-        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+        run: |
+          if [ -x "$HOME/.kcl/bin/kcl" ]; then
+            echo "kcl already present ($("$HOME/.kcl/bin/kcl" --version 2>&1 | head -1))"
+            exit 0
+          fi
+          echo "no usable kcl in ~/.kcl (cache-hit=${{ steps.kcl-cache.outputs.cache-hit }}) — installing"
+          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+          test -x "$HOME/.kcl/bin/kcl"
 
       - name: Add KCL to PATH
         run: echo "$HOME/.kcl/bin" >> "$GITHUB_PATH"

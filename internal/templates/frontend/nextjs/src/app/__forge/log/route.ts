@@ -40,7 +40,10 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const { level = "log", msg = "" } = (await request.json()) as DevLogBody;
     const line = msg.length > MAX_LINE ? `${msg.slice(0, MAX_LINE)}… (truncated)` : msg;
-    // eslint-disable-next-line no-console -- this IS the log sink
+    // This console.log IS the log sink — it is what puts the browser line on
+    // the dev server's stdout. No eslint-disable here: the scaffold does not
+    // enable no-console, so a directive naming it is an UNUSED directive,
+    // which ESLint 9 reports as a warning and the lint-clean gate rejects.
     console.log(`[browser:${level}] ${line}`);
   } catch {
     // A malformed post is not worth failing a dev request over.

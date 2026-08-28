@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -246,8 +248,10 @@ func newCIVulnScanCmd() *cobra.Command {
 				flagAll = true
 			}
 
-			// Zero-value VulnScan config means "all enabled" (project convention).
-			allEnabled := ci.VulnScan == (config.CIVulnConfig{})
+			// No explicit scanner selection means "all enabled" (project
+			// convention). Exemptions are excluded from that test: accepting
+			// an advisory says nothing about which scanners to run.
+			allEnabled := ci.VulnScan.UsesDefaultScanners()
 			runGo := flagGo || (flagAll && (allEnabled || ci.VulnScan.Go))
 			runNPM := flagNPM || (flagAll && (allEnabled || ci.VulnScan.NPM))
 
@@ -271,7 +275,7 @@ func newCIVulnScanCmd() *cobra.Command {
 			hasFailed := false
 
 			if runGo {
-				what, err := ciRunGovulncheck(cmd.Context())
+				what, err := ciRunGovulncheck(cmd.Context(), ci.VulnScan.Exemptions)
 				switch {
 				case err != nil && errors.Is(err, errScannerUnavailable):
 					// Cannot verify ⇒ cannot pass. Hard-fail with the
@@ -310,7 +314,9 @@ func newCIVulnScanCmd() *cobra.Command {
 				return cliutil.UserErr("forge ci vuln-scan",
 					"vulnerabilities were reported by "+strings.Join(ran, ", ")+" (see the scanner output above)",
 					"",
-					"upgrade the affected modules (`go get -u <module>` / `npm audit fix`), or record an accepted risk and re-run")
+					"upgrade the affected modules (`go get -u <module>` / `npm audit fix`); if a Go advisory has no fixed "+
+						"version AND your code cannot reach it, accept it explicitly under `ci.vuln_scan.exemptions` in "+
+						"forge.yaml (id + reason + expires), which suppresses that advisory only")
 			}
 			if len(ran) == 0 {
 				return cliutil.UserErr("forge ci vuln-scan",
@@ -350,7 +356,19 @@ func (u unavailable) Unwrap() error        { return u.err }
 
 // ciRunGovulncheck runs govulncheck and returns a short description of
 // what it scanned (for the caller's success line), or an error.
-func ciRunGovulncheck(ctx context.Context) (string, error) {
+//
+// It runs in JSON mode rather than text mode, which moves the pass/fail
+// decision from govulncheck's exit code into forge. That is what makes
+// ci.vuln_scan.exemptions possible: govulncheck has no allowlist, so an
+// advisory with no fixed version would otherwise leave only a permanently
+// red gate or no gate at all. See ci_vuln_exempt.go for the rules that
+// keep an exemption from being a blanket bypass.
+//
+// The trade-off is that JSON mode exits 0 on findings, so a bug here reads
+// as a pass. Everything that could go wrong — the scanner missing, the
+// process failing, output that will not parse — is therefore an explicit
+// error below, never a fall-through.
+func ciRunGovulncheck(ctx context.Context, exemptions []config.CIVulnExemption) (string, error) {
 	if _, err := exec.LookPath("govulncheck"); err != nil {
 		return "", unavailable{cliutil.UserErr("forge ci vuln-scan",
 			"govulncheck is not on PATH, so the Go vulnerability gate cannot run — refusing to report a pass it did not verify",
@@ -359,13 +377,40 @@ func ciRunGovulncheck(ctx context.Context) (string, error) {
 	}
 
 	fmt.Println("Running govulncheck ./...")
-	cmd := exec.CommandContext(ctx, "govulncheck", "./...")
-	cmd.Stdout = os.Stdout
+	var stdout bytes.Buffer
+	cmd := exec.CommandContext(ctx, "govulncheck", "-format", "json", "./...")
+	cmd.Stdout = &stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
+		// In JSON mode a non-zero exit is a scanner failure (bad flags,
+		// a build error in the module, a panic), NOT a findings report.
+		return "", fmt.Errorf("govulncheck did not complete: %w", err)
+	}
+
+	findings, err := parseGovulncheckJSON(&stdout)
+	if err != nil {
 		return "", err
 	}
-	return "govulncheck (Go modules + stdlib)", nil
+
+	res := evaluateVulnFindings(findings, exemptions, time.Now())
+	res.report(os.Stdout)
+
+	if len(res.Blocking) > 0 {
+		return "", fmt.Errorf("govulncheck found %d vulnerability/ies your code calls", len(res.Blocking))
+	}
+	// A malformed or expired exemption is a failure in its own right,
+	// even when nothing is blocking: it means the file claims an
+	// acceptance the gate did not honor, and silence there would let the
+	// claim and the behavior drift apart.
+	if len(res.Malformed) > 0 {
+		return "", fmt.Errorf("%d vulnerability exemption(s) in forge.yaml could not be honored", len(res.Malformed))
+	}
+
+	what := "govulncheck (Go modules + stdlib)"
+	if len(res.Accepted) > 0 {
+		what += fmt.Sprintf(", %d accepted exemption(s)", len(res.Accepted))
+	}
+	return what, nil
 }
 
 // ciRunNPMAudit runs npm audit across every declared frontend and returns

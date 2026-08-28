@@ -549,7 +549,7 @@ type AppExtras struct {
 //	  - src/lib/basepath_gen.ts exists, is Tier-1-certified (verifying
 //	    embedded forge:hash marker), exports BASE_PATH defaulting to
 //	    "/admin" and an idempotent joinBasePath;
-//	  - generated src/ TS/TSX (nav_gen, dashboard_gen, hooks, mocks,
+//	  - generated src/ TS/TSX (nav, dashboard, hooks, mocks,
 //	    pages) contains NO hand-prefixed "/admin" string literals —
 //	    Link/router handle basePath; bare literals double-prefix or go
 //	    stale the day the mount point moves.
@@ -592,8 +592,9 @@ func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
 	// RPCs but NO `// forge:entity` marker is exactly the F2 shape:
 	//   - hooks/mocks ARE emitted (they follow the RPCs), so there is real
 	//     generated frontend output for the base-path scan to judge;
-	//   - NO entity pages are emitted (they follow the marker), so nav_gen
-	//     must advertise NO routes — the 404-wall pin further down.
+	//   - NO entity pages are emitted (they follow the marker), so the
+	//     nav must advertise NO entity routes — the 404-wall pin further
+	//     down.
 	// Historically the RPCs were bare verbs (Create/Get/...) which matched
 	// no entity at all and produced a hollow frontend; the convention names
 	// here are the regression guard for that.
@@ -662,21 +663,64 @@ message ListItemsResponse { repeated Item items = 1; string next_page_token = 2;
 	// Honest-routes pin (review F2): nav derives from the SAME entity
 	// set that gates page emission. The Item message authored above carries
 	// no (forge.v1.entity) annotation, so NO entity pages are emitted —
-	// and nav_gen must therefore advertise NO routes. The old behavior
-	// (nav claiming "/items" while no page existed) was the 404-wall
-	// bug this pin now keeps dead. The annotated-entity frontend path
-	// is exercised end-to-end by TestE2EScaffoldFrontendBuilds (one
+	// and the nav must therefore advertise NO entity routes. The old
+	// behavior (nav claiming "/items" while no page existed) was the
+	// 404-wall bug this pin now keeps dead. The annotated-entity frontend
+	// path is exercised end-to-end by TestE2EScaffoldFrontendBuilds (one
 	// CRUD entity, standalone default, npm build+test); the
 	// static-export/dynamic-route conflict was resolved by making
 	// standalone the scaffold default and static an explicit opt-in.
-	navGen := readFileE2E(t, filepath.Join(feDir, "src", "components", "nav_gen.tsx"))
-	if strings.Contains(navGen, `path: "/`) {
-		t.Errorf("nav_gen.tsx advertises routes but the unannotated scaffold emits no entity pages — the F2 404-wall regression is back; got:\n%s", navGen)
+	//
+	// The route list used to live in a Tier-1 nav_gen.tsx. It does not any
+	// more: nav_gen.tsx.tmpl was deleted and its ALL_ROUTES table folded
+	// into the scaffold-until-touched src/components/nav.tsx, which the
+	// nav generator seeds from the same buildNavPages() set. The routes
+	// moved; the honesty contract did not, so the pin follows the table to
+	// its new home rather than being retired with the old filename.
+	//
+	// Asserting on ENTITY rows specifically is load-bearing. nav.tsx always
+	// carries a `path: "/"` Dashboard row — a real page in every scaffold,
+	// not an entity projection — so the old blanket `path: "/"` substring
+	// check cannot simply be repointed here: it would fire on that
+	// legitimate row and the pin would be red for every project forever.
+	navPath := filepath.Join(feDir, "src", "components", "nav.tsx")
+	assertPathExistsE2E(t, navPath)
+	nav := readFileE2E(t, navPath)
+	for _, line := range strings.Split(nav, "\n") {
+		if !strings.Contains(line, `path: "/`) {
+			continue
+		}
+		// The dashboard row is the one legitimate route in an
+		// entity-less scaffold: `path: "/"`, slug "".
+		if strings.Contains(line, `path: "/"`) {
+			continue
+		}
+		t.Errorf("nav.tsx advertises an entity route but the unannotated scaffold emits no entity pages — "+
+			"the F2 404-wall regression is back; offending row:\n%s\nfull file:\n%s", line, nav)
+	}
+	// Non-vacuousness for the loop above: a nav.tsx that lost its route
+	// table entirely (or moved again) would satisfy "no entity rows"
+	// while proving nothing. Pin the table's presence and its one
+	// legitimate row, so this fails loudly if the routes relocate a
+	// second time instead of silently passing.
+	if !strings.Contains(nav, "ALL_ROUTES") {
+		t.Errorf("nav.tsx has no ALL_ROUTES table — the F2 honest-routes pin above is scanning for rows that "+
+			"can no longer appear there; find where the nav route list moved and repoint it. got:\n%s", nav)
+	}
+	if !strings.Contains(nav, `path: "/"`) {
+		t.Errorf("nav.tsx does not carry the dashboard row (`path: \"/\"`) every scaffold ships — "+
+			"the entity-route scan above is not proven to see route rows at all. got:\n%s", nav)
 	}
 	// Non-vacuousness for the prefix-clean scan above: files that DO
 	// exist must be present and app-relative (basepath_gen carries the
 	// only legitimate prefix literal; hooks must exist for the service).
-	assertPathExistsE2E(t, filepath.Join(feDir, "src", "hooks", "api-service-hooks.ts"))
+	//
+	// The hooks file carries a `_gen` suffix — forge owns it and rewrites
+	// it every run. The un-suffixed `api-service-hooks.ts` this used to
+	// name has not been emitted since the suffix landed, so the assertion
+	// followed the file rather than being dropped: without it the
+	// prefix-clean walk could scan an empty hooks tree and pass.
+	assertPathExistsE2E(t, filepath.Join(feDir, "src", "hooks", "api-service-hooks_gen.ts"))
 	assertPathExistsE2E(t, filepath.Join(feDir, "src", "lib", "basepath_gen.ts"))
 
 	// Go-side compile/boot is pinned by fixtures 1–2; this fixture owns
@@ -749,10 +793,24 @@ func assertNextConfigBasePath(t *testing.T, feDir, basePath string) {
 }
 
 // assertBasePathGenHelper pins the generated src/lib/basepath_gen.ts:
-// exists, exports BASE_PATH (env override, declared default) and an
-// idempotent joinBasePath, and is Tier-1-certified via its embedded
-// forge:hash marker (so hand edits trip the stomp guard and
-// `forge generate` keeps regenerating it when base_path changes).
+// exists, re-exports BASE_PATH and joinBasePath bound to the declared
+// default, and is Tier-1-certified via its embedded forge:hash marker (so
+// hand edits trip the stomp guard and `forge generate` keeps regenerating
+// it when base_path changes).
+//
+// The IMPLEMENTATION of joinBasePath no longer lives in this file. It
+// moved into @reliantlabs/forge-web-runtime (createBasePath), where the
+// normalisation and idempotency rules are written and unit-tested once
+// instead of being re-emitted into every project — see
+// web-runtime/src/basepath.test.ts, which owns the behavioral cases this
+// helper used to approximate by grepping for a `startsWith` clause.
+//
+// So what stays pinned HERE is what is genuinely this project's: the
+// baked default from forge.yaml, the NEXT_PUBLIC_BASE_PATH env read
+// (which cannot move into the library — Next.js inlines NEXT_PUBLIC_* by
+// literal substitution into compiled project sources), and the two names
+// the app imports. Asserting on the library's internals from here would
+// pin someone else's implementation detail.
 func assertBasePathGenHelper(t *testing.T, projectDir, feRel, basePath string) {
 	t.Helper()
 	rel := feRel + "/src/lib/basepath_gen.ts"
@@ -763,16 +821,25 @@ func assertBasePathGenHelper(t *testing.T, projectDir, feRel, basePath string) {
 	if !strings.Contains(bp, fmt.Sprintf("process.env.NEXT_PUBLIC_BASE_PATH ?? %q", basePath)) {
 		t.Errorf("basepath_gen.ts must default BASE_PATH to the declared %q with NEXT_PUBLIC_BASE_PATH as the only override; got:\n%s", basePath, bp)
 	}
-	if !strings.Contains(bp, "export const BASE_PATH") {
-		t.Errorf("basepath_gen.ts must export BASE_PATH; got:\n%s", bp)
+	// The module must still hand the app BOTH names, whatever supplies
+	// them: every generated import site and the base-path docs assume
+	// `import { BASE_PATH, joinBasePath } from "@/lib/basepath_gen"`.
+	for _, sym := range []string{"BASE_PATH", "joinBasePath"} {
+		if !strings.Contains(bp, sym) {
+			t.Errorf("basepath_gen.ts must export %s — generated code imports it from @/lib/basepath_gen; got:\n%s", sym, bp)
+		}
 	}
-	if !strings.Contains(bp, "export function joinBasePath") {
-		t.Errorf("basepath_gen.ts must export joinBasePath; got:\n%s", bp)
+	if !strings.Contains(bp, "export const {") {
+		t.Errorf("basepath_gen.ts must re-export the bound pair from the shared runtime; got:\n%s", bp)
 	}
-	// The idempotency clause: an already-prefixed path passes through
-	// unchanged, so accidental double-wrapping never double-prefixes.
-	if !strings.Contains(bp, "startsWith(`${BASE_PATH}/`)") {
-		t.Errorf("joinBasePath must be idempotent (already-prefixed paths returned unchanged); got:\n%s", bp)
+	// Pin the delegation itself. Without this the two name checks above
+	// would pass on a file that merely MENTIONS the symbols (they appear
+	// in the header comment), which is exactly the vacuous-pass shape
+	// this fixture exists to prevent.
+	if !strings.Contains(bp, `createBasePath`) || !strings.Contains(bp, `@reliantlabs/forge-web-runtime`) {
+		t.Errorf("basepath_gen.ts must source BASE_PATH/joinBasePath from createBasePath in "+
+			"@reliantlabs/forge-web-runtime — if that moved again, repoint this pin and the "+
+			"behavioral tests in web-runtime/src/basepath.test.ts; got:\n%s", bp)
 	}
 
 	// Tier-1 certification is embedded in the file itself now (the

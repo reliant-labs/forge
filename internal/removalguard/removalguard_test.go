@@ -178,6 +178,21 @@ var removals = []removal{
 				Paths:  []string{"**/code-review/security-review/SKILL.md", "**/code-review-security-review/SKILL.md"},
 			},
 			{
+				Name: "the Moby AuthZ-plugin advisory this repo accepts as unreachable",
+				Reason: "GO-2026-4887's upstream title is \"Moby has AuthZ plugin bypass …\", and the vuln gate's " +
+					"exemption entry has to name the advisory it accepts and argue WHY it cannot bite — an " +
+					"argument that is precisely \"forge runs no Docker daemon and no authz plugin\". This is " +
+					"Docker's AuthZ plugin mechanism (a daemon-side HTTP callout), not the removed forge " +
+					"feature: nothing here grants or denies anything to a caller of a forge-generated API.\n" +
+					"Scoped to the advisory ID's own vocabulary and to the two files that carry the " +
+					"acceptance — forge.yaml's ci.vuln_scan.exemptions block and the filter's tests, whose " +
+					"fixtures quote the advisory summary verbatim. An `Authorize` policy hook or a role " +
+					"check re-appearing in either file still fails.",
+				Token:   regexp.MustCompile(`(?i)authz`),
+				Context: regexp.MustCompile(`(?i)moby|docker|GO-2026-4887|plugin`),
+				Paths:   []string{"forge.yaml", "internal/cli/ci_vuln_exempt_test.go"},
+			},
+			{
 				Name:   "HTTP 401 Unauthorized",
 				Reason: "`unauthorized` / `Unauthorized` / `http.StatusUnauthorized` / the `network:unauthorized` event are the HTTP 401 status — a wire-level authentication outcome, unrelated to the removed feature.",
 				Token:  regexp.MustCompile(`(?i)unauthoriz(ed|ation)?`),

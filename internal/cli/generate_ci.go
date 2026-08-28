@@ -157,7 +157,7 @@ func buildCIWorkflowData(cfg *config.ProjectConfig, root string) templates.CIWor
 	allLintDefault := lintCfg == (config.CILintConfig{})
 
 	vulnCfg := cfg.CI.VulnScan
-	allVulnDefault := vulnCfg == (config.CIVulnConfig{})
+	allVulnDefault := vulnCfg.UsesDefaultScanners()
 
 	testCfg := cfg.CI.Test
 	allTestDefault := testCfg == (config.CITestConfig{})
@@ -312,7 +312,7 @@ func buildDeployWorkflowData(cfg *config.ProjectConfig, root string) templates.D
 // buildBuildImagesWorkflowData maps a ProjectConfig to the build-images workflow template data.
 func buildBuildImagesWorkflowData(cfg *config.ProjectConfig, root string) templates.BuildImagesWorkflowData {
 	vulnCfg := cfg.CI.VulnScan
-	allVulnDefault := vulnCfg == (config.CIVulnConfig{})
+	allVulnDefault := vulnCfg.UsesDefaultScanners()
 
 	return templates.BuildImagesWorkflowData{
 		ProjectName:  cfg.Name,

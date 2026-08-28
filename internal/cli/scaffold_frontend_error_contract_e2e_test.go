@@ -113,9 +113,20 @@ message Item {
 
 	// A smoke read, not the gate: name the invariant so a failure below reads
 	// as "the error type regressed" instead of as a wall of tsc output.
+	//
+	// The hooks no longer name ConnectClientError themselves. They are built
+	// by the runtime's createQueryHook / createMutationHook factories, whose
+	// RETURN types carry it (UseQueryResult<Response, ConnectClientError>),
+	// so the typed-error contract now rides on the factory import instead of
+	// a direct type import. That is the thing whose absence would make every
+	// assertion below vacuous, so it is what this reads for; whether the
+	// error type actually reaches a call site is settled by the positive and
+	// negative tsc runs, which is the real gate either way.
 	hooks := readFileE2E(t, filepath.Join(webDir, "src", "hooks", hooksFile))
-	if !strings.Contains(hooks, `import type { ConnectClientError } from "@reliantlabs/forge-web-runtime"`) {
-		t.Errorf("generated hooks do not import the runtime's error type:\n%s", hooks)
+	for _, want := range []string{"createQueryHook", "createMutationHook", `from "@reliantlabs/forge-web-runtime/service-hooks"`} {
+		if !strings.Contains(hooks, want) {
+			t.Errorf("generated hooks do not go through the runtime's typed hook factories (missing %q):\n%s", want, hooks)
+		}
 	}
 
 	// ── POSITIVE: the documented contract must typecheck ──────────────

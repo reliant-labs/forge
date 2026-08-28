@@ -76,6 +76,18 @@ func TestE2EAddFrontendKindsProduceABuildableTree(t *testing.T) {
 	assertPathExistsE2E(t, filepath.Join(spaDir, "src", "lib", "mock-transport_gen.ts"))
 	assertPathExistsE2E(t, filepath.Join(spaDir, "src", "mocks", "scenarios", "index_gen.ts"))
 
+	// The add verb's own `npm install` is BEST-EFFORT by design — a scaffold
+	// must still land when npm is missing or slow, so it warns and carries
+	// on. That makes it fine for a user and useless as this test's
+	// precondition: on a cold npm cache the install can come up short, and
+	// then `npx tsc` fails for want of a compiler rather than for anything
+	// the scaffold did. Install explicitly, and build the shared web-runtime
+	// once up front so the three parallel installs do not race its prepare.
+	prebuildWebRuntimeE2E(t)
+	for _, dir := range []string{webDir, spaDir, mobileDir} {
+		runCmdTimeout(t, dir, 5*time.Minute, "npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+	}
+
 	// ── the trees compile, straight out of the add verb ──────────────
 	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 	runCmdTimeout(t, spaDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")

@@ -229,6 +229,19 @@ message Widget {
 	// it once up front so parallel tests do not race that bootstrap.
 	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+
+	// Generate AGAIN, after the install. The buf TypeScript pass runs
+	// protoc-gen-es out of the frontend's OWN node_modules and, when it is
+	// absent, warns and skips rather than failing — so on a machine whose
+	// npm cache is cold enough that `forge project new`'s best-effort
+	// install did not finish, every generate above emitted no src/gen/ at
+	// all, and the type-check below died with TS2307 on
+	// "@/gen/services/catalog/v1/catalog_pb" for a reason that has nothing
+	// to do with validation. Green locally, red in CI, purely on cache
+	// warmth. This run is a no-op when the stubs are already there.
+	runCmd(t, projectDir, forgeBin, "generate")
+	assertPathExistsE2E(t, filepath.Join(webDir, "src", "gen", "services", "catalog", "v1", "catalog_pb.ts"))
+
 	runCmdTimeout(t, webDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 }
 

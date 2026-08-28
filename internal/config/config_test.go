@@ -57,6 +57,17 @@ func TestCIConfig_IsVulnScanEnabled(t *testing.T) {
 	}{
 		{"zero value = all enabled", CIConfig{}, true},
 		{"go only", CIConfig{VulnScan: CIVulnConfig{Go: true}}, true},
+		// Accepting an advisory is not a scanner selection. If it were,
+		// adding one exemption would silently switch a project from
+		// "all scanners" to "only the ones now listed" — i.e. turn
+		// scanners OFF as a side effect of accepting one CVE.
+		{
+			"exemptions alone do not narrow the scanner set",
+			CIConfig{VulnScan: CIVulnConfig{Exemptions: []CIVulnExemption{
+				{ID: "GO-2026-4887", Reason: "unreachable", Expires: "2026-12-31"},
+			}}},
+			true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -807,6 +807,57 @@ type CIVulnConfig struct {
 	Go     bool `yaml:"go"`     // govulncheck, default true
 	Docker bool `yaml:"docker"` // trivy, default true
 	NPM    bool `yaml:"npm"`    // npm audit, default true
+
+	// Exemptions accepts specific advisory IDs that must not fail the Go
+	// gate. It exists for exactly one situation: a vulnerability with no
+	// fixed version, reached only through a code path the project does not
+	// execute. Without it the only options are a red gate forever or
+	// disabling the scan — and a disabled scan is how the NEXT advisory,
+	// the reachable one, goes unnoticed.
+	//
+	// Scoped by ID on purpose: an exemption suppresses the advisories it
+	// names and nothing else, so a new CVE in the very same module still
+	// fails. See CIVulnExemption for the per-entry contract.
+	Exemptions []CIVulnExemption `yaml:"exemptions,omitempty"`
+}
+
+// CIVulnExemption accepts one advisory ID against the Go vulnerability
+// gate, with the justification and the expiry date attached to it.
+//
+// Both extra fields are REQUIRED, and that is the whole design. An
+// allowlist of bare IDs rots invisibly: nobody can tell a still-valid
+// acceptance from one whose premise disappeared two upgrades ago, so the
+// safe-looking action is always to leave it. Reason makes the claim
+// reviewable, and Expires forces the re-review to happen on a date rather
+// than never — an exemption past its expiry FAILS the gate exactly as if
+// it were not listed.
+//
+// An entry that no longer matches anything is reported too. That is the
+// good outcome (the advisory got a fix, or the dependency went away) and
+// it should be deleted, not left behind to suppress a future finding
+// nobody chose to accept.
+type CIVulnExemption struct {
+	// ID is the Go advisory ID, e.g. "GO-2026-4887".
+	ID string `yaml:"id"`
+	// Reason states why this advisory cannot affect this project —
+	// the unreachability argument, not a ticket number.
+	Reason string `yaml:"reason"`
+	// Expires is the YYYY-MM-DD date this acceptance stops being
+	// honored, forcing a re-review.
+	Expires string `yaml:"expires"`
+}
+
+// UsesDefaultScanners reports whether the project left the scanner
+// selection unset, which by project convention means "all enabled".
+//
+// It deliberately ignores Exemptions: listing an accepted advisory says
+// nothing about WHICH scanners should run, and letting it count as a
+// selection would silently turn every unlisted scanner OFF as a side
+// effect of accepting one CVE. This is why the config is no longer
+// compared with `== CIVulnConfig{}` — adding the slice both broke that
+// comparison at compile time and made it the wrong question.
+func (c CIVulnConfig) UsesDefaultScanners() bool {
+	return !c.Go && !c.Docker && !c.NPM
 }
 
 // CIE2EConfig controls end-to-end testing in CI.
@@ -833,9 +884,9 @@ func (c *CIConfig) IsTestRaceEnabled() bool {
 }
 
 // IsVulnScanEnabled returns true if any vulnerability scanner is enabled.
-// Zero value is treated as "all enabled".
+// No explicit selection is treated as "all enabled".
 func (c *CIConfig) IsVulnScanEnabled() bool {
-	return c.VulnScan == (CIVulnConfig{}) || c.VulnScan.Go || c.VulnScan.Docker || c.VulnScan.NPM
+	return c.VulnScan.UsesDefaultScanners() || c.VulnScan.Go || c.VulnScan.Docker || c.VulnScan.NPM
 }
 
 // EffectivePermContents returns the contents permission, defaulting to "read".

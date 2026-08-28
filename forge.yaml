@@ -39,6 +39,43 @@ ci:
     go: true
     docker: false
     npm: false
+    # Two Moby advisories with NO fixed version for github.com/docker/docker.
+    # Upstream fixed them only in github.com/moby/moby/v2 >= 2.0.0-beta.8, a
+    # different module path; the docker/docker advisories are open-ended
+    # ("introduced: 0", no fix), so there is nothing to upgrade to.
+    #
+    # Both are UNREVIEWED, so they carry no vulnerable-symbol list and
+    # govulncheck must flag ANY linkage into the module. What forge actually
+    # links is one package, github.com/docker/docker/api/types/versions —
+    # compare.go, which is string version comparison (LessThan/GreaterThan/
+    # Equal) and nothing else. The reported trace is init-only and reaches it
+    # through the embedded KCL renderer:
+    #   internal/kclrender -> kcl-lang.io/kpm/pkg/client -> kpm/pkg/oci
+    #     -> containers/image/v5/docker -> .../manifest -> types/versions
+    # forge ships no Docker daemon, no AuthZ plugin, and no plugin-privilege
+    # path, so neither advisory's code is present in the binary, let alone
+    # callable. Dropping the edge would mean dropping kpm, which IS forge's
+    # KCL evaluation seam.
+    #
+    # Scoped to these two IDs: a new docker/docker CVE still fails this gate.
+    # Re-review at expiry — by then moby/moby/v2 may be reachable through an
+    # upgraded kpm, which would let both entries be deleted outright.
+    exemptions:
+      - id: GO-2026-4887
+        reason: >-
+          Moby AuthZ plugin bypass. No fixed version exists for
+          github.com/docker/docker. Only api/types/versions (string version
+          comparison) is linked, via the kpm/containers-image init chain;
+          forge runs no Docker daemon and no authz plugin, so the vulnerable
+          code is not in the binary.
+        expires: "2026-12-31"
+      - id: GO-2026-4883
+        reason: >-
+          Moby plugin-privilege off-by-one. No fixed version exists for
+          github.com/docker/docker. Same init-only linkage through
+          api/types/versions; forge never performs plugin privilege
+          validation.
+        expires: "2026-12-31"
 docker:
   registry: ""
 k8s:

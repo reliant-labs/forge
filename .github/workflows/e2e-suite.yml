@@ -149,28 +149,19 @@ jobs:
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
 
-      # KCL install-and-cache. The key carries the VERSION so a hit means
-      # "this version" and bumping the pin actually takes effect.
-      - name: Cache KCL CLI
-        uses: actions/cache@v4
-        id: kcl-cache
-        with:
-          path: ~/.kcl
-          key: kcl-cli-${{ runner.os }}-v0.11.2
-
-      # The install condition is the BINARY, not the cache-hit flag, and that
-      # distinction is the whole fix. actions/cache saves the path at job end
-      # whatever happened during the job, so a run whose install failed (or
-      # never ran, because the tool was not yet needed) stores an EMPTY ~/.kcl
-      # — a 227-byte entry, observed. Every later run then gets a cache HIT,
-      # skips the install on that flag, finds no binary, and dies in the
-      # tool-verification step below. All four shards, before a single test
-      # ran, twice; and re-keying only moves the poison to the new key, since
-      # the next failing run re-saves it there.
+      # KCL is NOT cached, and there is no ~/.kcl. Both were a
+      # misunderstanding of where the installer puts things: on Linux it
+      # installs to /usr/local/bin, so ~/.kcl was never created, the cache
+      # stored an EMPTY directory (a 227-byte entry, in the logs as
+      # "Cache Size: ~0 MB (227 B)"), and every later run took a cache HIT,
+      # skipped the install, and then failed tool verification with
+      # "e2e suite requires kcl". That took out all four shards before a
+      # single test ran — and re-keying the cache only moved the poison,
+      # because the next run saved the same empty directory under the new key.
       #
-      # Asking whether $HOME/.kcl/bin/kcl is executable makes a hollow cache
-      # entry self-healing: the install simply re-runs. A good entry still
-      # skips it, which is the speedup the cache is for.
+      # The install is ~1s, so caching it was never worth a step that can
+      # wedge the whole suite. The trailing verification refuses to let a
+      # silently failed install reach the tests as a confusing error later.
       #
       # KCL_VERSION is pinned deliberately, matching ci.yml. Left unset, the
       # installer resolves "latest" through an UNAUTHENTICATED api.github.com
@@ -183,16 +174,9 @@ jobs:
         env:
           KCL_VERSION: v0.11.2
         run: |
-          if [ -x "$HOME/.kcl/bin/kcl" ]; then
-            echo "kcl already present ($("$HOME/.kcl/bin/kcl" --version 2>&1 | head -1))"
-            exit 0
-          fi
-          echo "no usable kcl in ~/.kcl (cache-hit=${{ steps.kcl-cache.outputs.cache-hit }}) — installing"
           curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-          test -x "$HOME/.kcl/bin/kcl"
-
-      - name: Add KCL to PATH
-        run: echo "$HOME/.kcl/bin" >> "$GITHUB_PATH"
+          command -v kcl
+          kcl --version
 
       - name: Put $HOME/go/bin on PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"

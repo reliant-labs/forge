@@ -690,6 +690,11 @@ message ListItemsResponse { repeated Item items = 1; string next_page_token = 2;
 	// `forge scaffold frontend` already ran an install; re-running is a fast
 	// no-op that also covers the npm-was-missing-at-add-time case. Same
 	// flags as the scaffold-frontend e2e (forge's canonical install).
+	//
+	// It resolves @reliantlabs/forge-web-runtime over a file: link into the
+	// shared repo checkout and runs its prepare script there; build it once
+	// up front so parallel tests do not race that bootstrap.
+	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, feDir, 5*time.Minute,
 		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
 

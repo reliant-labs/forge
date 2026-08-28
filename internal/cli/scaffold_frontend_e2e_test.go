@@ -105,6 +105,11 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	// to reduce noisy output that would otherwise dominate the test
 	// log when this test fails. --prefer-offline accelerates repeat
 	// runs on developer machines that have a populated npm cache.
+	//
+	// It resolves @reliantlabs/forge-web-runtime over a file: link into the
+	// shared repo checkout and runs its prepare script there; build it once
+	// up front so parallel tests do not race that bootstrap.
+	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, webDir, 5*time.Minute,
 		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
 

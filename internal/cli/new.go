@@ -968,6 +968,16 @@ func initGitRepository(ctx context.Context, path string) error {
 	return nil
 }
 
+// npmInstallAttempts is how many times a frontend's `npm install` is tried
+// before giving up. The registry is a network dependency on the critical path
+// of the very first command a new user runs, and a single transient 429 or
+// reset connection there does not leave a clean failure: the scaffold
+// continues (its caller only warns), and the missing node_modules surfaces
+// much later as some other tool reporting a package it cannot find — for tsc,
+// an npx fallback that names a 2016 package nobody asked for. One retry turns
+// most of that class into a slower success.
+const npmInstallAttempts = 2
+
 // runNpmInstall runs `npm install` in each frontend directory so that a
 // package-lock.json exists before first commit. CI relies on `npm ci` which
 // requires the lockfile.
@@ -980,12 +990,28 @@ func runNpmInstall(ctx context.Context, root string, frontends []string) error {
 		if _, err := os.Stat(filepath.Join(feDir, "package.json")); err != nil {
 			continue
 		}
-		cmd := exec.CommandContext(ctx, "npm", "install", "--no-audit", "--no-fund")
-		cmd.Dir = feDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("npm install (%s) failed: %w", name, err)
+		var lastErr error
+		for attempt := 1; attempt <= npmInstallAttempts; attempt++ {
+			cmd := exec.CommandContext(ctx, "npm", "install", "--no-audit", "--no-fund")
+			cmd.Dir = feDir
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			lastErr = cmd.Run()
+			if lastErr == nil {
+				break
+			}
+			// A cancelled context is the user or a timeout, not a flaky
+			// registry — retrying only makes them wait for the same answer.
+			if ctx.Err() != nil {
+				return fmt.Errorf("npm install (%s) failed: %w", name, lastErr)
+			}
+			if attempt < npmInstallAttempts {
+				fmt.Printf("  ⚠️  npm install in frontends/%s/ failed (attempt %d/%d): %v — retrying\n",
+					name, attempt, npmInstallAttempts, lastErr)
+			}
+		}
+		if lastErr != nil {
+			return fmt.Errorf("npm install (%s) failed after %d attempts: %w", name, npmInstallAttempts, lastErr)
 		}
 	}
 	return nil

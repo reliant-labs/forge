@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -355,7 +356,7 @@ func TestEnsureDeclaredCluster_PassesPinnedK3sImage(t *testing.T) {
 
 	if err := ensureDeclaredCluster(t.Context(), ClusterEntity{
 		Name: "cp-daemon", Image: "rancher/k3s:v1.36.3-k3s1", Servers: 1,
-	}, "", "dev"); err != nil {
+	}, nil, "", "dev"); err != nil {
 		t.Fatalf("ensureDeclaredCluster: %v", err)
 	}
 	want := []string{
@@ -603,5 +604,252 @@ func TestEffectiveServers(t *testing.T) {
 		if got := effectiveServers(ClusterEntity{Servers: tc.in}); got != tc.want {
 			t.Errorf("effectiveServers(%d) = %d want %d", tc.in, got, tc.want)
 		}
+	}
+}
+
+// TestWaitNodeReadyReportsProgressAndTheLastReason pins that the wait is not
+// silent. Ninety seconds of no output is indistinguishable from a hang — the
+// exact misreading that sent an operator hunting a forge bug when the cluster
+// was merely churning — so every failed attempt reports elapsed time and why,
+// and the final error carries the last reason instead of a bare timeout.
+func TestWaitNodeReadyReportsProgressAndTheLastReason(t *testing.T) {
+	origAttempt := nodeReadyAttemptFn
+	origBudget := nodeReadyWaitBudget
+	origAttemptBudget := nodeReadyAttemptBudget
+	origInterval := nodeReadyRetryInterval
+	origReport := nodeReadyReportInterval
+	t.Cleanup(func() {
+		nodeReadyAttemptFn = origAttempt
+		nodeReadyWaitBudget = origBudget
+		nodeReadyAttemptBudget = origAttemptBudget
+		nodeReadyRetryInterval = origInterval
+		nodeReadyReportInterval = origReport
+	})
+
+	nodeReadyWaitBudget = 60 * time.Millisecond
+	nodeReadyAttemptBudget = 10 * time.Millisecond
+	nodeReadyRetryInterval = time.Millisecond
+	nodeReadyReportInterval = time.Hour // only the first failure reports
+	attempts := 0
+	nodeReadyAttemptFn = func(_ context.Context, kctx string, budget time.Duration) (string, error) {
+		attempts++
+		if kctx != "k3d-control-plane" {
+			t.Fatalf("attempt targeted context %q", kctx)
+		}
+		if budget > nodeReadyAttemptBudget {
+			t.Fatalf("attempt budget %s exceeded the per-attempt cap", budget)
+		}
+		return "error: timed out waiting for the condition on nodes/k3d-control-plane-server-0", errTestNodeNotReady
+	}
+
+	var err error
+	out := captureStdout(t, func() { err = waitNodeReady(t.Context(), "control-plane") })
+	if err == nil {
+		t.Fatal("waitNodeReady returned success after every attempt failed")
+	}
+	if !strings.Contains(err.Error(), "timed out waiting for the condition") {
+		t.Fatalf("final error dropped the last reason: %v", err)
+	}
+	if attempts < 2 {
+		t.Fatalf("attempts = %d; want the wait to retry within its budget", attempts)
+	}
+	if !strings.Contains(out, "still retrying") || !strings.Contains(out, "k3d-control-plane") {
+		t.Fatalf("wait was silent; got:\n%s", out)
+	}
+	// Paced, not per-attempt: a blip the loop absorbs must not scroll a wall.
+	if n := strings.Count(out, "still retrying"); n != 1 {
+		t.Fatalf("progress reported %d times for a sub-interval wait; want 1:\n%s", n, out)
+	}
+}
+
+// TestWaitNodeReadyReturnsOnFirstSuccess keeps the warm path quiet: a cluster
+// that is already Ready must not print a progress line at all.
+func TestWaitNodeReadyReturnsOnFirstSuccess(t *testing.T) {
+	origAttempt := nodeReadyAttemptFn
+	t.Cleanup(func() { nodeReadyAttemptFn = origAttempt })
+
+	attempts := 0
+	nodeReadyAttemptFn = func(context.Context, string, time.Duration) (string, error) {
+		attempts++
+		return "", nil
+	}
+	out := captureStdout(t, func() {
+		if err := waitNodeReady(t.Context(), "control-plane"); err != nil {
+			t.Fatalf("waitNodeReady: %v", err)
+		}
+	})
+	if attempts != 1 {
+		t.Fatalf("attempts = %d; want 1", attempts)
+	}
+	if out != "" {
+		t.Fatalf("warm path printed progress noise:\n%s", out)
+	}
+}
+
+var errTestNodeNotReady = errors.New("exit status 1")
+
+// TestRecreateClusterCommandNamesDependentSecondaries pins that a remediation
+// which recreates an OWNER cluster names the nested clusters that live on its
+// network. `k3d cluster delete control-plane` alone cannot remove a network
+// cp-daemon is still attached to, and a cp-daemon left behind points at a
+// registry container that no longer exists — forge derives the ownership edge
+// already, so it must not hand the operator a command that half-works.
+func TestRecreateClusterCommandNamesDependentSecondaries(t *testing.T) {
+	owner := ClusterEntity{Name: "control-plane"}
+	declared := []ClusterEntity{
+		owner,
+		{Name: "cp-daemon", Network: "k3d-control-plane", RegistryInherit: true},
+	}
+	got := recreateClusterCommand(owner, declared, "dev")
+	want := "k3d cluster delete cp-daemon control-plane && forge env up dev"
+	if got != want {
+		t.Fatalf("remediation = %q; want %q", got, want)
+	}
+}
+
+// TestRecreateClusterCommandLeavesStandaloneClustersAlone keeps the common
+// case unchanged: a cluster nothing is nested inside deletes on its own.
+func TestRecreateClusterCommandLeavesStandaloneClustersAlone(t *testing.T) {
+	solo := ClusterEntity{Name: "control-plane"}
+	got := recreateClusterCommand(solo, []ClusterEntity{solo}, "dev")
+	want := "k3d cluster delete control-plane && forge env up dev"
+	if got != want {
+		t.Fatalf("remediation = %q; want %q", got, want)
+	}
+}
+
+// TestDependentSecondariesIgnoresUnrelatedNesting guards the edge derivation:
+// a secondary nested inside a DIFFERENT owner is not a dependent, and a
+// cluster is never its own dependent.
+func TestDependentSecondariesIgnoresUnrelatedNesting(t *testing.T) {
+	declared := []ClusterEntity{
+		{Name: "control-plane"},
+		{Name: "other"},
+		{Name: "nested-elsewhere", Network: "k3d-other", RegistryInherit: true},
+		{Name: "not-a-secondary", Network: "k3d-control-plane"},
+	}
+	if got := dependentSecondaries(declared[0], declared); len(got) != 0 {
+		t.Fatalf("dependents = %v; want none", got)
+	}
+	got := dependentSecondaries(declared[1], declared)
+	if len(got) != 1 || got[0] != "nested-elsewhere" {
+		t.Fatalf("dependents = %v; want [nested-elsewhere]", got)
+	}
+}
+
+// TestLoadBalancerNeedsRefresh pins the start-ORDER signal behind the stale
+// load-balancer heal. k3d's serverlb resolves the server node's name once at
+// nginx startup and has no `resolver` to re-resolve it, so a node that came up
+// AFTER the load balancer may hold an address the LB never saw.
+func TestLoadBalancerNeedsRefresh(t *testing.T) {
+	lb := time.Date(2026, 8, 28, 11, 27, 1, 207751754, time.UTC)
+	nodeAfter := time.Date(2026, 8, 28, 11, 27, 8, 734552341, time.UTC)
+	nodeBefore := lb.Add(-2 * time.Second)
+
+	if !loadBalancerNeedsRefresh(lb, nodeAfter) {
+		t.Fatal("a node that started after the load balancer was not treated as stale")
+	}
+	if loadBalancerNeedsRefresh(lb, nodeBefore) {
+		t.Fatal("a node that started before the load balancer was treated as stale")
+	}
+	if loadBalancerNeedsRefresh(lb, lb) {
+		t.Fatal("identical start times were treated as stale")
+	}
+	// Absent containers: nothing cached, nothing to heal.
+	if loadBalancerNeedsRefresh(time.Time{}, nodeAfter) {
+		t.Fatal("a cluster with no load balancer asked for a refresh")
+	}
+	if loadBalancerNeedsRefresh(lb, time.Time{}) {
+		t.Fatal("a cluster with no server-0 asked for a refresh")
+	}
+}
+
+// TestReconcileExistingClusterHealsLoadBalancerBeforeProbing pins the ORDER.
+// Healing after the probe would be useless: the stale load balancer is one of
+// the reasons the probe fails, so it has to be repaired first or forge spends
+// its whole readiness budget waiting on a route it could have fixed.
+func TestReconcileExistingClusterHealsLoadBalancerBeforeProbing(t *testing.T) {
+	origLB := ensureClusterLBFreshFn
+	origHealthy := ensureRunningClusterHealthyFn
+	origDNS := ensureClusterHostGatewayDNSFn
+	t.Cleanup(func() {
+		ensureClusterLBFreshFn = origLB
+		ensureRunningClusterHealthyFn = origHealthy
+		ensureClusterHostGatewayDNSFn = origDNS
+	})
+
+	var order []string
+	ensureClusterLBFreshFn = func(_ context.Context, name string) error {
+		if name != "control-plane" {
+			t.Fatalf("LB refresh cluster = %q", name)
+		}
+		order = append(order, "lb")
+		return nil
+	}
+	ensureRunningClusterHealthyFn = func(context.Context, ClusterEntity) error {
+		order = append(order, "probe")
+		return nil
+	}
+	ensureClusterHostGatewayDNSFn = func(context.Context, string) error {
+		order = append(order, "dns")
+		return nil
+	}
+
+	err := reconcileExistingCluster(t.Context(),
+		ClusterEntity{Name: "control-plane"},
+		k3dClusterRuntimeState{Exists: true, Running: true}, nil, "", "dev")
+	if err != nil {
+		t.Fatalf("reconcileExistingCluster: %v", err)
+	}
+	if len(order) != 3 || order[0] != "lb" || order[1] != "probe" || order[2] != "dns" {
+		t.Fatalf("reconcile order = %v; want [lb probe dns]", order)
+	}
+}
+
+// TestInheritRegistryMirrorRepairsNodeIPDriftAfterRestart pins that the node
+// restart inside the registry-mirror step goes through the health-AND-REPAIR
+// path. That `docker restart` is the most likely trigger of Docker node-IP
+// drift in forge — the node can come back on a different address, k3s exits
+// with "failed to find interface with specified node ip", and the node never
+// reports Ready. A bare wait turns a failure forge already knows how to repair
+// into an opaque 90-second timeout, on the CREATE path a new user hits first.
+func TestInheritRegistryMirrorRepairsNodeIPDriftAfterRestart(t *testing.T) {
+	origHealthy := ensureRunningClusterHealthyFn
+	origRead := readNodeFileFn
+	origWrite := writeNodeFileFn
+	origRestart := dockerRestartFn
+	origRefresh := refreshLoadBalancerFn
+	t.Cleanup(func() {
+		ensureRunningClusterHealthyFn = origHealthy
+		readNodeFileFn = origRead
+		writeNodeFileFn = origWrite
+		dockerRestartFn = origRestart
+		refreshLoadBalancerFn = origRefresh
+	})
+
+	readNodeFileFn = func(context.Context, string, string) ([]byte, error) {
+		return []byte("mirrors: {}\n"), nil
+	}
+	writeNodeFileFn = func(context.Context, string, string, []byte) error { return nil }
+	dockerRestartFn = func(context.Context, string) error { return nil }
+	refreshLoadBalancerFn = func(context.Context, string) error { return nil }
+
+	healed := false
+	ensureRunningClusterHealthyFn = func(_ context.Context, c ClusterEntity) error {
+		healed = true
+		if c.Name != "cp-daemon" {
+			t.Fatalf("health/repair ran for cluster %q; want cp-daemon", c.Name)
+		}
+		return nil
+	}
+
+	err := inheritRegistryMirror(t.Context(), ClusterEntity{
+		Name: "cp-daemon", Network: "k3d-control-plane", RegistryInherit: true, Servers: 1,
+	})
+	if err != nil {
+		t.Fatalf("inheritRegistryMirror: %v", err)
+	}
+	if !healed {
+		t.Fatal("the post-restart wait bypassed the node-IP drift repair path")
 	}
 }

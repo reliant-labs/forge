@@ -541,7 +541,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	if store, err := loadProjectStore(); err == nil {
 		ingressOn = store.Features().IngressEnabled()
 	}
-	effective, cleanupCfg, err := mergeK3dConfig(configPath, ingressOn)
+	effective, cleanupCfg, err := mergeK3dConfig(configPath, ingressOn, 0)
 	if err != nil {
 		return err
 	}

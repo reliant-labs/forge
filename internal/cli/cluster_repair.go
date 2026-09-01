@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,11 +17,33 @@ const k3sNodeIPDriftFailure = "failed to find interface with specified node ip"
 var (
 	k3sNodeIPRepairTimeout      = 90 * time.Second
 	k3sNodeIPRepairPollInterval = 2 * time.Second
-	runningClusterNodesReadyFn  = clusterNodesReadyOnce
-	containerHasK3sProcessFn    = containerHasK3sProcess
-	inspectDockerK3dNodeFn      = inspectDockerK3dNode
-	dockerLogsSinceStartFn      = dockerLogsSinceStart
-	repairK3sNodeIPDriftFn      = repairK3sNodeIPDrift
+
+	// nodeReadyProbeTimeout bounds ONE readiness probe end to end, and
+	// nodeReadyProbeCondition is the condition budget handed to kubectl
+	// inside it. kubectl's --timeout covers only the wait for the
+	// condition: TLS setup, API discovery and the initial list all happen
+	// before it starts counting. `forge env up` runs this probe on the
+	// same host it is about to build on, so the outer budget carries
+	// deliberate headroom over the inner one — a loaded but healthy host
+	// must not read as a down API.
+	nodeReadyProbeTimeout   = 15 * time.Second
+	nodeReadyProbeCondition = 5 * time.Second
+
+	// k3sProcessGrace is how long "no k3s process" has to stay true before it
+	// counts as EXITED. k3d's entrypoint does its own setup (mounts, iptables,
+	// the registry config) before it execs k3s, so a node sampled moments after
+	// a restart legitimately has no k3s yet. A single sample there would
+	// misreport a healthy node that is merely starting as a dead one — and send
+	// forge down the log-diagnosis path, where it would find no failure
+	// signature (nothing has failed) and abort with a misleading error.
+	k3sProcessGrace        = 20 * time.Second
+	k3sProcessPollInterval = 2 * time.Second
+
+	runningClusterNodesReadyFn = clusterNodesReadyOnce
+	containerHasK3sProcessFn   = containerHasK3sProcess
+	inspectDockerK3dNodeFn     = inspectDockerK3dNode
+	dockerLogsSinceStartFn     = dockerLogsSinceStart
+	repairK3sNodeIPDriftFn     = repairK3sNodeIPDrift
 )
 
 // dockerK3dNodeInspect is the subset of `docker container inspect` needed to
@@ -45,7 +68,8 @@ type dockerK3dNodeInspect struct {
 // node IP. For that exact, known failure we repair the persisted Kubernetes
 // Node IP in place and then restart k3s normally with network policy enabled.
 func ensureRunningK3dClusterHealthy(ctx context.Context, c ClusterEntity) error {
-	if runningClusterNodesReadyFn(ctx, c.Name) {
+	ready, probeErr := runningClusterNodesReadyFn(ctx, c.Name)
+	if ready {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -53,12 +77,19 @@ func ensureRunningK3dClusterHealthy(ctx context.Context, c ClusterEntity) error 
 	}
 
 	node := "k3d-" + c.Name + "-server-0"
-	k3sRunning, err := containerHasK3sProcessFn(ctx, node)
+	k3sRunning, err := waitForK3sProcess(ctx, node)
 	if err != nil {
 		return err
 	}
 	if k3sRunning {
-		fmt.Printf("  cluster %q API is still starting — waiting for nodes to become Ready...\n", c.Name)
+		// k3s is alive, so this is a not-yet rather than a failure — but say
+		// WHAT did not answer. The probe reason distinguishes a cluster that
+		// is genuinely still coming up from a transient blip on a warm one
+		// (a k3d node whose Docker IP is churning answers intermittently),
+		// and the two want very different reactions from the operator.
+		fmt.Printf("  cluster %q did not confirm nodes Ready: %v\n", c.Name, probeErr)
+		fmt.Printf("  k3s is running in %s, so this is a not-yet, not a failure — retrying for up to %s...\n",
+			node, nodeReadyWaitBudget)
 		return waitNodeReady(ctx, c.Name)
 	}
 
@@ -72,8 +103,8 @@ func ensureRunningK3dClusterHealthy(ctx context.Context, c ClusterEntity) error 
 	}
 	if !strings.Contains(logs, k3sNodeIPDriftFailure) {
 		return fmt.Errorf(
-			"container %s is running but its k3s process exited; the known Docker node-IP drift failure was not found in current-start logs (inspect with `docker logs %s`)",
-			node, node)
+			"container %s is running but its k3s process exited; the known Docker node-IP drift failure was not found in current-start logs (inspect with `docker logs %s`). The Kubernetes API reported: %v",
+			node, node, probeErr)
 	}
 	if effectiveServers(c) != 1 || c.Agents != 0 {
 		return fmt.Errorf(
@@ -93,11 +124,53 @@ func ensureRunningK3dClusterHealthy(ctx context.Context, c ClusterEntity) error 
 // clusterNodesReadyOnce is a quick healthy-path probe. A healthy warm cluster
 // returns immediately; an API that is merely starting gets a bounded grace
 // period before the deeper process/log diagnosis runs.
-func clusterNodesReadyOnce(ctx context.Context, clusterName string) bool {
+//
+// It returns the FAILURE REASON alongside the verdict. A probe that collapses
+// every distinguishable failure — no such kubectl context, connection refused,
+// an expired client certificate, an answer that merely arrived slowly — into a
+// bare false leaves the operator, and the next reader of the logs, with nothing
+// to act on, and leaves forge asserting a diagnosis ("the API is still
+// starting") it never actually established. docker_preflight.go makes the same
+// argument for the Docker daemon; this is the Kubernetes half of it.
+func clusterNodesReadyOnce(ctx context.Context, clusterName string) (bool, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, nodeReadyProbeTimeout)
+	defer cancel()
+
 	kctx := "k3d-" + clusterName
-	cmd := exec.CommandContext(ctx, "kubectl", "--request-timeout=3s", "--context", kctx,
-		"wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5s")
-	return cmd.Run() == nil
+	out, err := exec.CommandContext(probeCtx, "kubectl", "--context", kctx,
+		"wait", "--for=condition=Ready", "nodes", "--all",
+		"--timeout="+nodeReadyProbeCondition.String()).CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	// Only the parent ctx being live tells us the deadline was OURS; a
+	// cancelled parent means the user interrupted, not a slow API.
+	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		return false, fmt.Errorf("kubectl did not answer within %s%s",
+			nodeReadyProbeTimeout, formatCommandStderr(string(out)))
+	}
+	return false, fmt.Errorf("%w%s", err, formatCommandStderr(string(out)))
+}
+
+// waitForK3sProcess reports whether k3s is running inside the node, treating
+// absence as inconclusive until k3sProcessGrace has elapsed. Present returns
+// immediately; only a sustained absence is reported as exited.
+func waitForK3sProcess(ctx context.Context, node string) (bool, error) {
+	deadline := time.Now().Add(k3sProcessGrace)
+	for {
+		running, err := containerHasK3sProcessFn(ctx, node)
+		if err != nil || running {
+			return running, err
+		}
+		if !time.Now().Before(deadline) {
+			return false, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(k3sProcessPollInterval):
+		}
+	}
 }
 
 func containerHasK3sProcess(ctx context.Context, node string) (bool, error) {

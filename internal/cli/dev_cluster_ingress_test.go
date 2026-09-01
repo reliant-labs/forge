@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -323,5 +324,75 @@ func TestClusterPortDrift_UnreadableServerlbIsNoOp(t *testing.T) {
 	}
 	if len(missing) != 0 {
 		t.Fatalf("expected no-op on unreadable serverlb, got %v", missing)
+	}
+}
+
+// TestSpliceK3dAPIPortProjectsDeclaredPort pins that a declared api_port
+// reaches a config-file cluster. `k3d cluster create --config` ignores the
+// per-flag settings, so without this projection the field parsed, validated
+// and then did nothing while k3d picked a random host port.
+func TestSpliceK3dAPIPortProjectsDeclaredPort(t *testing.T) {
+	const cfg = "apiVersion: k3d.io/v1alpha5\nkind: Simple\nmetadata:\n  name: control-plane\nservers: 1\n"
+	out, err := spliceK3dAPIPort([]byte(cfg), 6443)
+	if err != nil {
+		t.Fatalf("spliceK3dAPIPort: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	kubeAPI, ok := doc["kubeAPI"].(map[string]any)
+	if !ok {
+		t.Fatalf("no kubeAPI block in:\n%s", out)
+	}
+	if got := fmt.Sprintf("%v", kubeAPI["hostPort"]); got != "6443" {
+		t.Fatalf("hostPort = %q; want \"6443\"", got)
+	}
+	// The rest of the config must survive the round-trip.
+	if doc["servers"] != 1 {
+		t.Fatalf("servers = %v; want 1", doc["servers"])
+	}
+	if md, _ := doc["metadata"].(map[string]any); md == nil || md["name"] != "control-plane" {
+		t.Fatalf("metadata lost: %v", doc["metadata"])
+	}
+}
+
+// TestSpliceK3dAPIPortLeavesConfigAloneWhenUndeclared keeps today's behavior
+// for the common case: no api_port declared, k3d keeps choosing.
+func TestSpliceK3dAPIPortLeavesConfigAloneWhenUndeclared(t *testing.T) {
+	const cfg = "kind: Simple\nservers: 1\n"
+	out, err := spliceK3dAPIPort([]byte(cfg), 0)
+	if err != nil {
+		t.Fatalf("spliceK3dAPIPort: %v", err)
+	}
+	if string(out) != cfg {
+		t.Fatalf("config was rewritten when nothing was declared:\n%s", out)
+	}
+}
+
+// TestSpliceK3dAPIPortAcceptsAgreement lets the config file keep its own
+// formatting when it already says the same thing.
+func TestSpliceK3dAPIPortAcceptsAgreement(t *testing.T) {
+	const cfg = "kind: Simple\nkubeAPI:\n  hostPort: \"6443\"\n"
+	out, err := spliceK3dAPIPort([]byte(cfg), 6443)
+	if err != nil {
+		t.Fatalf("spliceK3dAPIPort: %v", err)
+	}
+	if string(out) != cfg {
+		t.Fatalf("agreeing config was rewritten:\n%s", out)
+	}
+}
+
+// TestSpliceK3dAPIPortRefusesConflict is the reason this is a projection and
+// not an override: two sources of truth that disagree is an authoring bug, and
+// forge must not silently pick a winner.
+func TestSpliceK3dAPIPortRefusesConflict(t *testing.T) {
+	const cfg = "kind: Simple\nkubeAPI:\n  hostPort: \"7443\"\n"
+	_, err := spliceK3dAPIPort([]byte(cfg), 6443)
+	if err == nil {
+		t.Fatal("conflicting api_port and kubeAPI.hostPort were accepted")
+	}
+	if !strings.Contains(err.Error(), "7443") || !strings.Contains(err.Error(), "6443") {
+		t.Fatalf("error names neither value: %v", err)
 	}
 }

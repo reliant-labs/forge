@@ -60,7 +60,7 @@ func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, pr
 		return err
 	}
 	for i := range clusters {
-		if err := ensureDeclaredCluster(ctx, clusters[i], projectDir, env); err != nil {
+		if err := ensureDeclaredCluster(ctx, clusters[i], clusters, projectDir, env); err != nil {
 			return fmt.Errorf("ensure cluster %q: %w", clusters[i].Name, err)
 		}
 	}
@@ -82,8 +82,18 @@ var (
 	createDeclaredClusterFn       = createK3dCluster
 	waitDeclaredClusterReadyFn    = waitNodeReady
 	ensureRunningClusterHealthyFn = ensureRunningK3dClusterHealthy
+	ensureClusterLBFreshFn        = ensureClusterLoadBalancerFresh
 	ensureClusterHostGatewayDNSFn = ensureClusterHostGatewayDNS
 	setupSecondaryClusterNodeFn   = setupSecondaryClusterNode
+
+	// Node-level docker shell-outs, seamed so inheritRegistryMirror's
+	// read → write → restart → refresh → heal ordering is pinnable without a
+	// Docker daemon. That ordering is load-bearing: each step undoes state the
+	// previous one established.
+	readNodeFileFn        = readNodeFile
+	writeNodeFileFn       = writeNodeFile
+	dockerRestartFn       = dockerRestart
+	refreshLoadBalancerFn = refreshK3dLoadBalancer
 )
 
 // isNestedSecondary reports whether a cluster is a SECONDARY joined to an
@@ -128,9 +138,15 @@ func clusterCreateFlags(c ClusterEntity) []string {
 // Every step is idempotent, so this runs on warm and restarted clusters alike
 // — a cluster whose host-gateway DNS alias or MSS clamp was lost (a manual
 // node restart clears the iptables rule) heals on the next `forge env up`.
-func reconcileExistingCluster(ctx context.Context, c ClusterEntity, state k3dClusterRuntimeState, projectDir, env string) error {
+func reconcileExistingCluster(ctx context.Context, c ClusterEntity, state k3dClusterRuntimeState, declared []ClusterEntity, projectDir, env string) error {
 	if state.Running {
 		fmt.Printf("  cluster %q already exists and its containers are running — verifying Kubernetes API...\n", c.Name)
+		// BEFORE the API probe, not after: a load balancer pinned to a stale
+		// upstream is one of the things that makes the probe fail, and healing
+		// it first turns an unexplainable intermittent failure into a no-op.
+		if err := ensureClusterLBFreshFn(ctx, c.Name); err != nil {
+			return fmt.Errorf("refresh load balancer for cluster %q: %w", c.Name, err)
+		}
 		if err := ensureRunningClusterHealthyFn(ctx, c); err != nil {
 			return fmt.Errorf("verify running cluster %q: %w", c.Name, err)
 		}
@@ -139,6 +155,11 @@ func reconcileExistingCluster(ctx context.Context, c ClusterEntity, state k3dClu
 		fmt.Printf("  cluster %q already exists but is stopped — starting...\n", c.Name)
 		if err := startDeclaredClusterFn(ctx, c.Name); err != nil {
 			return err
+		}
+		// `k3d cluster start` brings the containers back in its own order, so
+		// the node can once again come up after the load balancer.
+		if err := ensureClusterLBFreshFn(ctx, c.Name); err != nil {
+			return fmt.Errorf("refresh load balancer for cluster %q: %w", c.Name, err)
 		}
 		fmt.Printf("  waiting for cluster %q nodes to report Ready...\n", c.Name)
 		if err := waitDeclaredClusterReadyFn(ctx, c.Name); err != nil {
@@ -161,7 +182,7 @@ func reconcileExistingCluster(ctx context.Context, c ClusterEntity, state k3dClu
 	// rather than leave the route dead. Only meaningful for a
 	// config-driven cluster that maps Gateway host ports (HostPorts).
 	if c.Config != "" && c.HostPorts {
-		if err := checkClusterPortDrift(ctx, c, projectDir, env); err != nil {
+		if err := checkClusterPortDrift(ctx, c, declared, projectDir, env); err != nil {
 			return err
 		}
 	}
@@ -173,13 +194,13 @@ func reconcileExistingCluster(ctx context.Context, c ClusterEntity, state k3dClu
 	return nil
 }
 
-func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env string) error {
+func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, declared []ClusterEntity, projectDir, env string) error {
 	state, err := clusterRuntimeStateFn(ctx, c.Name)
 	if err != nil {
 		return err
 	}
 	if state.Exists {
-		return reconcileExistingCluster(ctx, c, state, projectDir, env)
+		return reconcileExistingCluster(ctx, c, state, declared, projectDir, env)
 	}
 
 	args := []string{"cluster", "create", c.Name}
@@ -210,7 +231,7 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 			return fmt.Errorf("ensure standalone registry for cluster %q: %w", c.Name, err)
 		}
 
-		cfgPath, cleanup, err := mergeK3dConfig(c.Config, c.HostPorts)
+		cfgPath, cleanup, err := mergeK3dConfig(c.Config, c.HostPorts, c.APIPort)
 		if err != nil {
 			return fmt.Errorf("merge k3d ports for cluster %q: %w", c.Name, err)
 		}
@@ -273,7 +294,7 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, projectDir, env
 // we say so explicitly rather than let the affected route fail later with an
 // opaque "connection refused". No drift (or an unreadable serverlb / render)
 // is a silent no-op.
-func checkClusterPortDrift(ctx context.Context, c ClusterEntity, projectDir, env string) error {
+func checkClusterPortDrift(ctx context.Context, c ClusterEntity, declared []ClusterEntity, projectDir, env string) error {
 	required, err := renderedGatewayHostPorts(ctx, projectDir, env)
 	if err != nil {
 		fmt.Printf("  warning: could not render Gateway listeners to verify host-port mappings for %q: %v\n", c.Name, err)
@@ -297,9 +318,37 @@ func checkClusterPortDrift(ctx context.Context, c ClusterEntity, projectDir, env
 		"cluster %q is missing host-port mapping(s) %s that env %q's rendered Gateway listeners now require — "+
 			"k3d fixes port maps at cluster-create time, so a listener added after the cluster was "+
 			"created is unreachable on the live cluster. Recreate it to pick up the new mappings:\n"+
-			"    k3d cluster delete %s && forge env up %s\n"+
+			"    %s\n"+
 			"(the required ports are DERIVED from the same render forge deploys — no manual port list to maintain)",
-		c.Name, strings.Join(ports, ", "), env, c.Name, env)
+		c.Name, strings.Join(ports, ", "), env, recreateClusterCommand(c, declared, env))
+}
+
+// dependentSecondaries names the declared clusters that are NESTED inside c —
+// they joined c's auto-created docker network and inherit its registry mirror
+// (see isNestedSecondary). Deleting an owner out from under them leaves them
+// attached to a network whose registry container is gone, so any remediation
+// that recreates the owner has to account for them.
+func dependentSecondaries(c ClusterEntity, declared []ClusterEntity) []string {
+	var names []string
+	for _, other := range declared {
+		if other.Name != c.Name && isNestedSecondary(other) && strings.TrimPrefix(other.Network, "k3d-") == c.Name {
+			names = append(names, other.Name)
+		}
+	}
+	return names
+}
+
+// recreateClusterCommand builds the remediation command line for a cluster
+// that must be recreated. A cluster that OWNS nested secondaries cannot just
+// be deleted: k3d cannot remove a docker network the secondaries are still
+// attached to, and a secondary left behind keeps pointing at a registry
+// container that no longer exists. forge already knows the ownership edge (it
+// derives it from the secondary's `owner`), so the command it prints names
+// the dependents instead of leaving the operator to discover them by breaking
+// them. `forge env up` recreates every declared cluster in order afterwards.
+func recreateClusterCommand(c ClusterEntity, declared []ClusterEntity, env string) string {
+	targets := append(dependentSecondaries(c, declared), c.Name)
+	return fmt.Sprintf("k3d cluster delete %s && forge env up %s", strings.Join(targets, " "), env)
 }
 
 // effectiveServers defaults a zero Servers to 1 (the schema default;
@@ -334,7 +383,7 @@ func inheritRegistryMirror(ctx context.Context, c ClusterEntity) error {
 
 	// Read the owner node's registries.yaml. The owner is forge-created
 	// (it carries the canonical mirror config), so this file exists.
-	regsYAML, err := readNodeFile(ctx, ownerNode, "/etc/rancher/k3s/registries.yaml")
+	regsYAML, err := readNodeFileFn(ctx, ownerNode, "/etc/rancher/k3s/registries.yaml")
 	if err != nil {
 		// Fall back to forge's canonical fallback mirror config: an owner
 		// created from a deploy/k3d.yaml carries the mirrors inline in
@@ -348,10 +397,10 @@ func inheritRegistryMirror(ctx context.Context, c ClusterEntity) error {
 	}
 
 	fmt.Printf("  mirroring %s registries.yaml onto %s and reloading...\n", ownerNode, newNode)
-	if err := writeNodeFile(ctx, newNode, "/etc/rancher/k3s/registries.yaml", regsYAML); err != nil {
+	if err := writeNodeFileFn(ctx, newNode, "/etc/rancher/k3s/registries.yaml", regsYAML); err != nil {
 		return fmt.Errorf("write registries.yaml onto %s: %w", newNode, err)
 	}
-	if err := dockerRestart(ctx, newNode); err != nil {
+	if err := dockerRestartFn(ctx, newNode); err != nil {
 		return fmt.Errorf("restart %s: %w", newNode, err)
 	}
 	// k3d's load balancer resolves the server node name when nginx starts.
@@ -359,13 +408,99 @@ func inheritRegistryMirror(ctx context.Context, c ClusterEntity) error {
 	// restarting the server can reuse that freed IP. Refresh the load balancer
 	// before the readiness probe or it keeps proxying the API port to the old
 	// address until some later manual restart.
-	if err := refreshK3dLoadBalancer(ctx, c.Name); err != nil {
+	if err := refreshLoadBalancerFn(ctx, c.Name); err != nil {
 		return fmt.Errorf("refresh %s load balancer after node restart: %w", c.Name, err)
 	}
-	if err := waitNodeReady(ctx, c.Name); err != nil {
+	// Health-and-REPAIR, not a bare wait. The `docker restart` above is the
+	// single most likely trigger of Docker node-IP drift in all of forge: the
+	// node gives up its address and, on a shared k3d network with sibling
+	// containers, frequently comes back on a different one — at which point
+	// k3s exits with "failed to find interface with specified node ip" and the
+	// node never reports Ready again. Waiting alone turns a failure forge
+	// already knows how to repair into an opaque timeout on the CREATE path,
+	// which is the first thing a new user runs.
+	if err := ensureRunningClusterHealthyFn(ctx, c); err != nil {
 		return fmt.Errorf("wait %s ready after reload: %w", c.Name, err)
 	}
 	return nil
+}
+
+// containerStartedAt reads a container's current start time. A missing
+// container is reported as a zero time with no error: callers treat "not
+// there" as nothing to reconcile, matching refreshK3dLoadBalancer.
+func containerStartedAt(ctx context.Context, container string) (time.Time, error) {
+	out, err := exec.CommandContext(ctx, "docker", "container", "inspect", container,
+		"--format", "{{.State.StartedAt}}").CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "No such object") || strings.Contains(string(out), "No such container") {
+			return time.Time{}, nil
+		}
+		return time.Time{}, fmt.Errorf("inspect %s: %w: %s", container, err, strings.TrimSpace(string(out)))
+	}
+	started, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(out)))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse start time for %s: %w", container, err)
+	}
+	return started, nil
+}
+
+// loadBalancerNeedsRefresh is the decision ensureClusterLoadBalancerFresh
+// acts on, split out so it can be pinned without a Docker daemon. A zero
+// time means the container is absent: a cluster with no load balancer (or no
+// server-0 by that name) has no cached upstream that can go stale.
+func loadBalancerNeedsRefresh(lbStarted, nodeStarted time.Time) bool {
+	if lbStarted.IsZero() || nodeStarted.IsZero() {
+		return false
+	}
+	return nodeStarted.After(lbStarted)
+}
+
+// ensureClusterLoadBalancerFresh repairs a k3d serverlb that may be proxying
+// to a stale address, and is the Kubernetes-path counterpart to the node
+// health check: k3s can be perfectly healthy while the only route to its API
+// is broken.
+//
+// k3d's serverlb is nginx, configured by confd at container start with the
+// server node's name as the upstream. That config carries NO `resolver`
+// directive, so nginx's stream module resolves each upstream hostname ONCE at
+// startup and caches the answer for the life of the process. If the node then
+// gets a different Docker IP — which happens whenever containers on a shared
+// k3d network are recreated in a different order — nginx keeps proxying to the
+// address it cached. Every upstream is `max_fails=1 fail_timeout=10s`, so the
+// symptom is not a clean outage: the mapped host ports (the Kubernetes API
+// among them) go to "connection refused" in ~10-second windows and recover on
+// their own, which reads to the user as a flaky cluster or a hung forge.
+//
+// The signal is container start ORDER. nginx cached whatever the node name
+// resolved to when the LOAD BALANCER started, so a server node that started
+// AFTER it may well have an address the LB never saw. That is a heuristic, not
+// a proof — the node can restart and reclaim the same IP, in which case the
+// cached answer is still right and this restart was unnecessary. The trade is
+// deliberate: the false positive costs one container restart during a phase
+// that is already reconciling the cluster, while the false negative costs an
+// intermittent, essentially undiagnosable failure that outlives every retry.
+//
+// Self-limiting, so warm runs stay quiet: refreshing makes the LB the newer
+// container, and the check does not fire again until the node next restarts.
+func ensureClusterLoadBalancerFresh(ctx context.Context, clusterName string) error {
+	lb := "k3d-" + clusterName + "-serverlb"
+	node := "k3d-" + clusterName + "-server-0"
+
+	lbStarted, err := containerStartedAt(ctx, lb)
+	if err != nil {
+		return err
+	}
+	nodeStarted, err := containerStartedAt(ctx, node)
+	if err != nil {
+		return err
+	}
+	if !loadBalancerNeedsRefresh(lbStarted, nodeStarted) {
+		return nil
+	}
+
+	fmt.Printf("  %s started %s after %s, so its cached upstream address may be stale — refreshing...\n",
+		node, nodeStarted.Sub(lbStarted).Round(time.Millisecond), lb)
+	return refreshK3dLoadBalancer(ctx, clusterName)
 }
 
 func refreshK3dLoadBalancer(ctx context.Context, clusterName string) error {
@@ -377,7 +512,9 @@ func refreshK3dLoadBalancer(ctx context.Context, clusterName string) error {
 		}
 		return fmt.Errorf("inspect %s: %w", lb, err)
 	}
-	fmt.Printf("  refreshing %s after cluster node restart...\n", lb)
+	// Callers state WHY they are refreshing; this says only what is always
+	// true of the act itself — nginx re-resolves the server node on start.
+	fmt.Printf("  restarting %s so it re-resolves the server node...\n", lb)
 	return dockerRestart(ctx, lb)
 }
 
@@ -704,30 +841,86 @@ func dockerRestart(ctx context.Context, node string) error {
 	return cmd.Run()
 }
 
+// nodeReadyWaitBudget caps waitNodeReady, nodeReadyAttemptBudget caps one
+// attempt inside it, and nodeReadyRetryInterval spaces them. Vars, not
+// consts, so tests can shorten them; nothing in production reassigns them.
+var (
+	nodeReadyWaitBudget    = 90 * time.Second
+	nodeReadyAttemptBudget = 15 * time.Second
+	nodeReadyRetryInterval = 2 * time.Second
+
+	// nodeReadyReportInterval paces the PROGRESS OUTPUT, which is not the same
+	// question as how fast to retry. A refused connection fails instantly, so
+	// retrying every 2s is right — it returns the moment the API comes back —
+	// but REPORTING every 2s turns a blip the loop is designed to absorb into a
+	// wall of alarming text, and an operator reasonably reads that as a hard
+	// failure and kills a run that was seconds from succeeding. Report the
+	// first failure at once (the reason is what makes the wait legible), then
+	// settle into a calm cadence.
+	nodeReadyReportInterval = 15 * time.Second
+)
+
+// kubectlWaitNodesReady is one bounded attempt: the seam production wires to
+// kubectl and tests replace, so the retry/report loop is exercised without a
+// cluster. It returns kubectl's own output as the reason on failure.
+var nodeReadyAttemptFn = kubectlWaitNodesReady
+
+func kubectlWaitNodesReady(ctx context.Context, kctx string, budget time.Duration) (string, error) {
+	attemptCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	out, err := exec.CommandContext(attemptCtx, "kubectl", "--context", kctx,
+		"wait", "--for=condition=Ready", "nodes", "--all",
+		"--timeout="+budget.String()).CombinedOutput()
+	return string(out), err
+}
+
 // waitNodeReady blocks (bounded) until the cluster's nodes report Ready
 // after a node restart — containerd needs a beat to come back. Uses the
 // k3d context convention (k3d-<name>) so the wait targets the right
 // cluster regardless of the active kubectl context. Best-effort with a
 // hard cap; a slow-to-Ready node surfaces downstream as a deploy
 // rollout failure with its own diagnostics rather than hanging here.
+//
+// It REPORTS while it waits. A wait that prints nothing for a minute and a
+// half is indistinguishable from a hang, which is the one thing an operator
+// watching `forge env up` most needs to tell apart — and the reason each
+// attempt failed is the evidence that says which of the two it is. Each
+// attempt is sized from the REMAINING budget, so the cap is the true
+// wall-clock cap rather than the cap plus one attempt.
 func waitNodeReady(ctx context.Context, clusterName string) error {
-	deadline := time.Now().Add(90 * time.Second)
 	kctx := "k3d-" + clusterName
+	start := time.Now()
+	deadline := start.Add(nodeReadyWaitBudget)
+	var lastOut string
+	var lastReport time.Time
 	for {
-		cmd := exec.CommandContext(ctx, "kubectl", "--context", kctx,
-			"wait", "--for=condition=Ready", "nodes", "--all", "--timeout=15s")
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err == nil {
+		budget := min(time.Until(deadline), nodeReadyAttemptBudget)
+		if budget <= 0 {
+			return fmt.Errorf("nodes not Ready within %s (context %s)%s",
+				nodeReadyWaitBudget, kctx, formatCommandStderr(lastOut))
+		}
+		out, err := nodeReadyAttemptFn(ctx, kctx, budget.Round(time.Second))
+		if err == nil {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("nodes not Ready within 90s (context %s)", kctx)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
+		lastOut = out
+		if lastOut == "" {
+			lastOut = err.Error()
+		}
+		if now := time.Now(); lastReport.IsZero() || now.Sub(lastReport) >= nodeReadyReportInterval {
+			lastReport = now
+			fmt.Printf("    %s: not answering yet, still retrying (%s of %s)%s\n",
+				kctx, time.Since(start).Round(time.Second), nodeReadyWaitBudget,
+				formatCommandStderr(lastOut))
+		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-time.After(nodeReadyRetryInterval):
 		}
 	}
 }

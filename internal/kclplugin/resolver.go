@@ -272,6 +272,52 @@ func allocatePort(base int, key string) (int, error) {
 	return fn(base, key)
 }
 
+// devStacksFn backs the kcl_plugin.forge.dev_stacks method: the roster of
+// registered dev-stack keys (git worktrees), for a KCL module that generates
+// one config block PER RUNNING STACK — a NATS account, a DB name, a vhost.
+//
+// This exists so such a generator never has to read .forge/blocks.json
+// itself. When control-plane's dev NATS generator did exactly that, it had no
+// way to tell a worktree key from an ordinary port-block key, so prod's
+// reliant-web port key rendered a bogus `CP_prod` NATS account into a TRACKED
+// config file. The registry cannot answer "which keys are stacks?" from
+// outside; forge knows, so forge should be the one to say.
+//
+// Armed on the up/deploy path only, exactly like blockAlloc.
+var (
+	devStacksMu sync.Mutex
+	devStacksFn func() ([]string, error)
+)
+
+// UseDevStacks arms dev_stacks with fn for this process.
+func UseDevStacks(fn func() ([]string, error)) {
+	devStacksMu.Lock()
+	devStacksFn = fn
+	devStacksMu.Unlock()
+}
+
+// devStacks is the body the plugin calls. Unarmed it returns EMPTY, which is
+// the same contract allocate_port has when unarmed (base unchanged): a
+// read-only render resolves the builtin without touching machine-local state.
+//
+// That default is load-bearing, not a convenience. `forge generate` renders
+// KCL only to READ from it, but evaluating a module fires every file.write in
+// it — so a generator keyed on this builtin would otherwise emit whatever
+// worktrees happened to exist on THIS machine into a tracked file, and two
+// developers on one commit would generate different bytes. Returning empty
+// makes the generate-path render a pure function of committed inputs: it emits
+// the default stack's config and nothing else, on every machine. This is the
+// root fix for the incident internal/cli/kcl_render_purity.go guards against.
+func devStacks() ([]string, error) {
+	devStacksMu.Lock()
+	fn := devStacksFn
+	devStacksMu.Unlock()
+	if fn == nil {
+		return []string{}, nil
+	}
+	return fn()
+}
+
 // UsePortStore swaps the global resolver for one that persists assignments
 // to path (cross-run port stability), making that file the SINGLE SOURCE
 // OF TRUTH for resolve_port: once allocated (availability-checked), a

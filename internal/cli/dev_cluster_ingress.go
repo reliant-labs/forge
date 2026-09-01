@@ -48,6 +48,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -265,14 +266,17 @@ type k3dConfigPath struct {
 // printed and both entries survive into the merged config — k3d may
 // then reject the config, but the warning gives the user a starting
 // point).
-func mergeK3dConfig(userPath string, ingressOn bool) (k3dConfigPath, func(), error) {
+func mergeK3dConfig(userPath string, ingressOn bool, apiPort int) (k3dConfigPath, func(), error) {
 	cleanup := func() {}
-	if !ingressOn {
-		return k3dConfigPath{path: userPath}, cleanup, nil
-	}
 	projectDir := filepath.Dir(userPath) // userPath is typically deploy/k3d.yaml; sibling is deploy/k3d-ports.yaml
 	fragPath := filepath.Join(projectDir, "k3d-ports.yaml")
-	if _, err := os.Stat(fragPath); errors.Is(err, os.ErrNotExist) {
+	spliceFragment := ingressOn
+	if spliceFragment {
+		if _, err := os.Stat(fragPath); errors.Is(err, os.ErrNotExist) {
+			spliceFragment = false
+		}
+	}
+	if !spliceFragment && apiPort <= 0 {
 		return k3dConfigPath{path: userPath}, cleanup, nil
 	}
 
@@ -280,14 +284,24 @@ func mergeK3dConfig(userPath string, ingressOn bool) (k3dConfigPath, func(), err
 	if err != nil {
 		return k3dConfigPath{}, cleanup, fmt.Errorf("read %s: %w", userPath, err)
 	}
-	fragBytes, err := os.ReadFile(fragPath)
-	if err != nil {
-		return k3dConfigPath{}, cleanup, fmt.Errorf("read %s: %w", fragPath, err)
-	}
 
-	merged, err := spliceK3dPorts(userBytes, fragBytes)
-	if err != nil {
-		return k3dConfigPath{}, cleanup, fmt.Errorf("merge k3d config: %w", err)
+	merged := userBytes
+	if spliceFragment {
+		fragBytes, err := os.ReadFile(fragPath)
+		if err != nil {
+			return k3dConfigPath{}, cleanup, fmt.Errorf("read %s: %w", fragPath, err)
+		}
+		if merged, err = spliceK3dPorts(merged, fragBytes); err != nil {
+			return k3dConfigPath{}, cleanup, fmt.Errorf("merge k3d config: %w", err)
+		}
+	}
+	if merged, err = spliceK3dAPIPort(merged, apiPort); err != nil {
+		return k3dConfigPath{}, cleanup, err
+	}
+	// Nothing to project: hand back the user's own file so its formatting and
+	// comments are untouched and no temp file is created.
+	if bytes.Equal(merged, userBytes) {
+		return k3dConfigPath{path: userPath}, cleanup, nil
 	}
 
 	tmp, err := os.CreateTemp("", "forge-k3d-config-*.yaml")
@@ -305,6 +319,55 @@ func mergeK3dConfig(userPath string, ingressOn bool) (k3dConfigPath, func(), err
 	}
 	cleanup = func() { _ = os.Remove(tmp.Name()) }
 	return k3dConfigPath{path: tmp.Name(), temporary: true}, cleanup, nil
+}
+
+// spliceK3dAPIPort projects a DECLARED api_port onto a cluster that also names
+// a k3d config file.
+//
+// `k3d cluster create --config` takes none of the per-flag settings, so for a
+// config-file cluster forge previously dropped a declared api_port on the
+// floor: the field parsed, validated and then did nothing, and k3d picked a
+// random host port instead. A declared value that is silently inert is worse
+// than an unsupported one — nothing tells the author their declaration had no
+// effect. This projects it the same way the Gateway host ports are projected,
+// so `api_port` means the same thing however the cluster is declared.
+//
+// The config file stays authoritative where it actually speaks. If it already
+// carries a kubeAPI.hostPort the file wins when the two agree and forge
+// REFUSES when they disagree, rather than picking a winner between two sources
+// of truth that both claim to be one.
+func spliceK3dAPIPort(userYAML []byte, apiPort int) ([]byte, error) {
+	if apiPort <= 0 {
+		return userYAML, nil
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(userYAML, &doc); err != nil {
+		return nil, fmt.Errorf("parse k3d config to set the declared api_port: %w", err)
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	want := strconv.Itoa(apiPort)
+
+	kubeAPI, _ := doc["kubeAPI"].(map[string]any)
+	if kubeAPI == nil {
+		doc["kubeAPI"] = map[string]any{"hostPort": want}
+	} else if existing, ok := kubeAPI["hostPort"]; ok {
+		if got := strings.TrimSpace(fmt.Sprintf("%v", existing)); got != want {
+			return nil, fmt.Errorf(
+				"cluster declares api_port = %d but its k3d config already sets kubeAPI.hostPort: %q — "+
+					"remove one of them so the API port has a single source of truth", apiPort, got)
+		}
+		return userYAML, nil
+	} else {
+		kubeAPI["hostPort"] = want
+	}
+
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("re-encode k3d config with the declared api_port: %w", err)
+	}
+	return out, nil
 }
 
 // spliceK3dPorts is the pure YAML-merging half — exposed for tests

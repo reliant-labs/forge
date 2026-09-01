@@ -129,6 +129,22 @@ message Item {
 		}
 	}
 
+	// Both halves below are `npx --no-install tsc`, which resolves tsc from
+	// the scaffold's own node_modules. `forge project new` installs those
+	// deps, but a failed install is only a WARNING there (see runNpmInstall's
+	// call site in new.go) — so the scaffold can reach this point with no
+	// TypeScript. When that happens npx does not say so: with no local tsc it
+	// falls back to the registry and dies on `npx canceled due to missing
+	// packages and no YES option: ["tsc@2.0.4"]`, naming a 2016 package
+	// unrelated to anything here. That failure is indistinguishable from a
+	// real contract regression at a glance, and it cost a full CI cycle to
+	// tell apart. Assert the precondition so a missing install says so.
+	if _, err := os.Stat(filepath.Join(webDir, "node_modules", ".bin", "tsc")); err != nil {
+		t.Fatalf("scaffold has no local tsc in %s — `npm install` during `forge project new` did not "+
+			"complete (it only warns on failure), so this gate cannot run. This is an environment "+
+			"failure, NOT an error-contract regression: %v", webDir, err)
+	}
+
 	// ── POSITIVE: the documented contract must typecheck ──────────────
 	// Every field the runtime promises, plus the render path the docs
 	// prescribe. If any of these is unreachable through the type system, the

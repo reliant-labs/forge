@@ -68,8 +68,8 @@ func checkCeiling(key string, block int) error {
 			"later as an unrelated \"gateway unreachable\" — nowhere near this cause.\n"+
 			"\n"+
 			"Remedy:\n"+
-			"  - `forge env devstack prune` reclaims blocks held by worktrees that no longer exist on disk.\n"+
-			"  - Raising dev_stack.max_stacks requires widening the project's cluster port pre-map to cover\n"+
-			"    the new block range FIRST, or the newly-legal blocks render ports the cluster never mapped.",
+			"  - `forge env devstack prune` reclaims blocks held by worktrees that no longer exist on disk\n"+
+			"  - raising dev_stack.max_stacks requires widening the project's cluster port pre-map to cover\n"+
+			"    the new block range FIRST, or the newly-legal blocks render ports the cluster never mapped",
 		key, limit)
 }

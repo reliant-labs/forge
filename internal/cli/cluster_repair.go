@@ -33,8 +33,8 @@ var (
 	// counts as EXITED. k3d's entrypoint does its own setup (mounts, iptables,
 	// the registry config) before it execs k3s, so a node sampled moments after
 	// a restart legitimately has no k3s yet. A single sample there would
-	// misreport a healthy node that is merely starting as a dead one — and send
-	// forge down the log-diagnosis path, where it would find no failure
+	// misreport a healthy node that is merely starting as a dead one — sending
+	// forge into the log-diagnosis path, where it would find no failure
 	// signature (nothing has failed) and abort with a misleading error.
 	k3sProcessGrace        = 20 * time.Second
 	k3sProcessPollInterval = 2 * time.Second

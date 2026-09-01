@@ -5,6 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-09-01
+
+Patch release. The root CLI (`v0.1.11`) and the runtime library
+(`pkg/v0.1.11`) are tagged as always — on adjacent commits, `pkg` on the
+release commit and the root tag one commit later on the require bump.
+
+This release bounds the parallel-dev-stack port allocator, teaches the
+block registry what kind of key it is holding, and repairs two k3d
+failures that presented as something other than what they were.
+
+### Added
+
+- **`dev_stack:` in `forge.yaml`** — `max_stacks` (default 8: the primary
+  checkout plus seven worktrees) and `block_size` (default 100, the
+  historical hardcoded quantum). The parallel-stack ceiling was
+  previously stated twice and tied together nowhere: the allocator was
+  unbounded while a project pre-maps host ports at cluster-CREATE time,
+  so a worktree past the last mapped block allocated cleanly and then
+  failed later as "gateway unreachable". `AllocateBlock` now refuses a
+  NEW block past the ceiling with the remedy in the error. An EXISTING
+  entry always resolves regardless — an issued block is baked into k3d
+  mappings and the dev IdP's `iss` claim and redirect URIs, so lowering
+  the ceiling must never move a port already handed out.
+- **`forge env devstack prune`** reclaims blocks whose git worktree no
+  longer exists, which is what keeps the now-finite block range from
+  filling with leaked entries. Dry-run by default. It never touches a
+  plain port-block key or the default key, and if enumerating live
+  worktrees fails for any reason it reclaims nothing.
+- **`fp.dev_stacks()` KCL builtin** — the roster of registered dev-stack
+  keys, so a module generating one config block per running stack never
+  parses `.forge/blocks.json` itself. It returns EMPTY on a read-only
+  render, which keeps `forge generate` a pure function of committed
+  inputs; otherwise a generated tracked file would capture whichever
+  worktrees happened to exist on that machine.
+- **`forgeconv-allocate-port-spacing`** — two `allocate_port` base
+  literals congruent modulo `block_size` collide at the block equal to
+  their separation. The rule fires only when that block is reachable at
+  the project's configured `max_stacks`, which keeps it actionable
+  rather than flagging every latent pair.
+
+### Fixed
+
+- **A stale k3d serverlb upstream no longer reads as a flaky cluster.**
+  k3d's serverlb is nginx configured with the server node's NAME and no
+  `resolver` directive, so it resolves each upstream once at startup and
+  caches it for the process lifetime. When the node later gets a
+  different Docker IP, nginx keeps proxying to the cached address; with
+  `max_fails=1 fail_timeout=10s` the symptom is not a clean outage but
+  ~10-second "connection refused" windows that recover on their own.
+  Forge now compares container start times and refreshes the load
+  balancer before the API probe and after `k3d cluster start`.
+- **A declared `api_port` is no longer dropped** for clusters that also
+  name a k3d config file. `k3d cluster create --config` accepts no
+  per-flag settings, so the value parsed, validated, and then did
+  nothing while k3d picked a random host port. Where the config file
+  already sets `kubeAPI.hostPort`, the file wins if they agree and forge
+  refuses if they disagree.
+- **The cluster health probe reports why it failed.** It previously
+  collapsed every distinguishable failure into a bare false, after which
+  forge printed "the API is still starting" — a diagnosis it had never
+  established.
+- **A node sampled moments after restart is no longer misreported as
+  dead.** k3d's entrypoint runs its own setup before it execs k3s, so
+  "no k3s process" must now persist for a grace period before counting
+  as exited.
+- **The block registry distinguishes a dev-stack key from a plain
+  port-block key.** A bare `{key: block}` map could not, so a generator
+  reading it raw emitted a dev NATS account for a prod web port into a
+  tracked config file. The legacy bare-int form is still accepted.
+- **A frontend `npm install` is retried once during
+  `forge project new`.** A single transient registry failure previously
+  degraded into a scaffold with no `node_modules`, discovered much later
+  as some other tool reporting a package it could not find.
+
 ## [0.1.10] - 2026-08-28
 
 Patch release. The root CLI (`v0.1.10`) and the runtime library

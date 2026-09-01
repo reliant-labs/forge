@@ -12,7 +12,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jinzhu/inflection v1.0.0
 	github.com/lib/pq v1.10.9
-	github.com/reliant-labs/forge/pkg v0.1.10
+	github.com/reliant-labs/forge/pkg v0.1.11
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10

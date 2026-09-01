@@ -764,6 +764,42 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	out = append(out, validateFrontends(cfg, root)...)
 	out = append(out, validateORMDriver(cfg, root)...)
 	out = append(out, validateConfigGuard(cfg, root)...)
+	out = append(out, validateDevStack(cfg, root)...)
+	return out
+}
+
+// validateDevStack checks the `dev_stack:` bounds. Absent (or zero) is valid
+// and resolves to the defaults; a NEGATIVE value is rejected rather than
+// clamped, because it can only be a mistake and silently treating it as the
+// default would hide the typo in the one file the author went to edit.
+//
+// max_stacks: 1 is legal and meaningful — the default stack alone, no
+// worktree parallelism.
+func validateDevStack(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	var out []validationIssue
+
+	if cfg.DevStack.MaxStacks < 0 {
+		line, col := findNodePos(root, []string{"dev_stack", "max_stacks"})
+		out = append(out, validationIssue{
+			line:   line,
+			column: col,
+			msg:    fmt.Sprintf("dev_stack.max_stacks value %d is invalid", cfg.DevStack.MaxStacks),
+			fix: fmt.Sprintf("use a positive count of parallel dev stacks (absent defaults to %d, "+
+				"which is the default stack plus %d linked worktrees).", DefaultMaxStacks, DefaultMaxStacks-1),
+		})
+	}
+
+	if cfg.DevStack.BlockSize < 0 {
+		line, col := findNodePos(root, []string{"dev_stack", "block_size"})
+		out = append(out, validationIssue{
+			line:   line,
+			column: col,
+			msg:    fmt.Sprintf("dev_stack.block_size value %d is invalid", cfg.DevStack.BlockSize),
+			fix: fmt.Sprintf("use a positive port-number distance between adjacent stacks "+
+				"(absent defaults to %d).", DefaultBlockSize),
+		})
+	}
+
 	return out
 }
 

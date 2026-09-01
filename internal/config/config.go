@@ -208,6 +208,79 @@ type ProjectConfig struct {
 	// only proves listeners are up; a flow check proves the APP actually works
 	// (an end-to-end invariant only the app can express). See [SmokeConfig].
 	Smoke SmokeConfig `yaml:"smoke,omitempty"`
+	// DevStack bounds forge's parallel-dev-stack port allocation — how many
+	// stacks can run side by side, and how far apart their port blocks sit.
+	// See [DevStackConfig] for why this has to be declared rather than
+	// inferred.
+	DevStack DevStackConfig `yaml:"dev_stack,omitempty"`
+}
+
+// DevStackConfig bounds the parallel-dev-stack port allocator
+// (fp.allocate_port(base, key) → base + block(key)*BlockSize).
+//
+// Why this is CONFIG rather than a constant. The number of parallel stacks a
+// project supports is not forge's to choose: it is fixed by the project's own
+// cluster config. control-plane's deploy/k3d.yaml PRE-MAPS host ports at
+// cluster-create time, so a stack whose block falls outside the pre-mapped
+// range renders ports the cluster never mapped. Before this block existed the
+// ceiling was stated twice — implicitly as "unbounded" in the allocator, and
+// literally as a hand-maintained `block = 1..7` comment in k3d.yaml — with
+// nothing tying them together. The 8th worktree therefore allocated cleanly
+// and then failed as "gateway unreachable", nowhere near the cause.
+//
+// Declaring it once makes the allocator refuse a block the cluster cannot
+// host, and lets the pre-map range be generated from the same number.
+type DevStackConfig struct {
+	// MaxStacks is how many dev stacks may hold a port block at once,
+	// counting the default stack (block 0). Zero means unset → the
+	// DefaultMaxStacks default, which is what every existing project gets.
+	//
+	// It bounds NEW allocations only. A registry that already holds a block
+	// at or past the ceiling keeps resolving it: a block multiplies into k3d
+	// host mappings and into the dev IdP's baked-in `iss` claim and redirect
+	// URIs, so lowering this value must never move a port that has already
+	// been issued. Reclaiming space is `forge env devstack prune`.
+	MaxStacks int `yaml:"max_stacks,omitempty"`
+
+	// BlockSize is the port-number distance between adjacent stacks —
+	// stack N's port for base B is B + N*BlockSize. Zero means unset → the
+	// DefaultBlockSize default (100), the value this was hardcoded to before
+	// it was configurable.
+	//
+	// It is exposed because it is half of the spacing invariant: two bases
+	// that are congruent modulo BlockSize collide at some block, and whether
+	// that block is reachable depends on MaxStacks. The
+	// forgeconv-allocate-port-spacing lint reads both.
+	BlockSize int `yaml:"block_size,omitempty"`
+}
+
+// Dev-stack allocation defaults, applied when the dev_stack: block (or a key
+// in it) is absent.
+const (
+	// DefaultMaxStacks — the default checkout plus seven linked worktrees.
+	// Chosen to match the block range control-plane's k3d.yaml already
+	// pre-mapped by hand, so adopting the ceiling changes no behavior.
+	DefaultMaxStacks = 8
+	// DefaultBlockSize is the historical hardcoded quantum.
+	DefaultBlockSize = 100
+)
+
+// EffectiveMaxStacks returns the configured parallel-stack ceiling, or the
+// default when unset.
+func (d DevStackConfig) EffectiveMaxStacks() int {
+	if d.MaxStacks > 0 {
+		return d.MaxStacks
+	}
+	return DefaultMaxStacks
+}
+
+// EffectiveBlockSize returns the configured port-block quantum, or the default
+// when unset.
+func (d DevStackConfig) EffectiveBlockSize() int {
+	if d.BlockSize > 0 {
+		return d.BlockSize
+	}
+	return DefaultBlockSize
 }
 
 // Component kind constants. Kind is the single discriminator on a

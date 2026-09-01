@@ -2077,9 +2077,14 @@ func stepIngressK3dPorts(ctx *pipelineContext) error {
 	if len(listeners) == 0 {
 		return ctx.warnOrFail("remove stale k3d-ports.yaml", codegen.RemoveK3dPorts(ctx.ProjectDir))
 	}
+	// The fragment maps every reachable stack's listener ports, not just the
+	// default stack's — see K3dPortsGenInput.MaxStacks for why the range is
+	// derived from the ceiling instead of hand-maintained in k3d.yaml.
 	return ctx.warnOrFail("write deploy/k3d-ports.yaml", codegen.GenerateK3dPorts(codegen.K3dPortsGenInput{
 		GenContext: codegen.GenContext{ProjectDir: ctx.ProjectDir, Checksums: ctx.Checksums},
 		Listeners:  listeners,
+		MaxStacks:  ctx.Cfg.DevStack.EffectiveMaxStacks(),
+		BlockSize:  ctx.Cfg.DevStack.EffectiveBlockSize(),
 	}))
 }
 

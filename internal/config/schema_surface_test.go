@@ -34,9 +34,10 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			typ:  reflect.TypeFor[ProjectConfig](),
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
-				"deploy", "docker", "docs", "features", "forge_version",
-				"frontend", "frontends", "harness", "k8s", "lint",
-				"module_path", "name", "observability", "smoke", "stack",
+				"deploy", "dev_stack", "docker", "docs", "features",
+				"forge_version", "frontend", "frontends", "harness", "k8s",
+				"lint", "module_path", "name", "observability", "smoke",
+				"stack",
 			},
 		},
 		{

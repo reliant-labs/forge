@@ -50,6 +50,22 @@ func Register() {
 						return &plugin.MethodResult{V: p}, nil
 					},
 				},
+				// dev_stacks() -> [str]. The registered DEV-STACK keys (git
+				// worktrees), for a module that generates one config block
+				// per running stack. Excludes plain port-block keys, which
+				// are not stacks, and the implicit default stack "" (a
+				// generator always emits that one itself). Empty on a
+				// read-only render (forge generate / forge ci), keeping
+				// generate a pure function of committed inputs.
+				"dev_stacks": {
+					Body: func(args *plugin.MethodArgs) (*plugin.MethodResult, error) {
+						keys, err := devStacks()
+						if err != nil {
+							return nil, err
+						}
+						return &plugin.MethodResult{V: keys}, nil
+					},
+				},
 				// derive_jwk(private_key_pem, kid, alg) -> JWK dict. Derives
 				// the PUBLIC JWK from an ES256 private-key PEM at render time
 				// so a forge.TestJWKS publishes the public half of the EXACT

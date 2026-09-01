@@ -12,13 +12,80 @@ import (
 	"sort"
 )
 
-// registryRel is the on-disk port-block registry: a stable {key: block}
-// map. The block is the INTERNAL index forge multiplies by 100 to offset a
+// registryRel is the on-disk port-block registry: a stable {key: entry} map.
+// The block is the INTERNAL index forge multiplies by 100 to offset a
 // stack's ports; it is never surfaced in KCL. The default key "" is
 // implicitly block 0 and is NOT stored — only named keys consume registry
 // slots, starting at 1, so the default stack's port block (base + 0*100 =
 // base) is never displaced. Machine-local; .forge/* is gitignored.
 const registryRel = ".forge/blocks.json"
+
+// entry is one registry record: the port block, plus WHAT KIND of key it is.
+//
+// Why the kind matters. This registry serves two unrelated purposes that look
+// identical once written down as a bare {key: int} map:
+//
+//  1. DEV-STACK IDENTITY — one key per active git worktree, the roster a
+//     per-stack config generator enumerates to emit one config block per
+//     running stack.
+//  2. PLAIN PORT-BLOCK ALLOCATION — any KCL expression that just wants a
+//     non-colliding host port, e.g. prod's reliant-web dev server keying on
+//     "prod" so it does not land on dev's :3000.
+//
+// Conflating them is not hypothetical. control-plane's dev NATS generator
+// enumerated the whole registry, assumed every key was a worktree, and
+// rendered a `CP_prod` account with `user: "control-plane-prod"` — a dev NATS
+// account for a PROD web port — into a TRACKED deploy/nats/nats.conf. That is
+// the same file the "prod-" empty-interpolation fragment corrupted (see
+// validateKey), and the same file the generate-path purity guard was built to
+// revert (internal/cli/kcl_render_purity.go). Three defects, one root cause:
+// forge offered no way to ask "which of these keys are actually dev stacks?",
+// so enumerating the raw registry was the only move available — and it is
+// wrong by construction.
+//
+// Stack is therefore recorded at ALLOCATION time, where the answer is known
+// for certain, rather than guessed later by pattern-matching key names. A
+// generator reads the roster through ListStacks / the fp.dev_stacks() builtin
+// and never sees a port-block key at all.
+type entry struct {
+	Block int  `json:"block"`
+	Stack bool `json:"stack,omitempty"`
+}
+
+// registry is the decoded {key: entry} map.
+type registry map[string]entry
+
+// UnmarshalJSON reads BOTH the current object form and the historical bare-int
+// form (`{"wt-a": 1}`), which every registry written before the stack flag
+// existed is in.
+//
+// Migrating in place — rather than discarding and re-allocating — is the whole
+// point. A block index is not a cache: it is multiplied by 100 into host ports
+// that are pre-mapped in k3d's cluster config and baked into an issuer's `iss`
+// claim and registered redirect URIs. Re-assigning one silently breaks sign-in
+// and cluster ingress on a developer's machine. So a legacy entry keeps its
+// exact block and is simply read as a non-stack key; the next `forge env up`
+// from its worktree re-marks it as a stack (markStack), which is the same
+// moment forge would have learned that fact anyway.
+func (r *registry) UnmarshalJSON(data []byte) error {
+	// Try the current form first: {"key": {"block": N, "stack": bool}}.
+	var typed map[string]entry
+	if err := json.Unmarshal(data, &typed); err == nil {
+		*r = typed
+		return nil
+	}
+	// Fall back to the legacy form: {"key": N}.
+	var legacy map[string]int
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	out := make(registry, len(legacy))
+	for key, block := range legacy {
+		out[key] = entry{Block: block}
+	}
+	*r = out
+	return nil
+}
 
 // validateKey rejects a key that is not a canonical DNS-safe label — the
 // form Sanitize produces and the form every consumer of this registry
@@ -144,6 +211,9 @@ func AllocatePortAvoidingForeign(projectDir string, base int, key string, isFree
 		if !isFree(candidate) {
 			continue
 		}
+		if err := checkCeiling(key, block); err != nil {
+			return 0, err
+		}
 		if err := setBlock(projectDir, key, block); err != nil {
 			return 0, err
 		}
@@ -172,22 +242,55 @@ func lookupBlock(projectDir, key string) (int, bool) {
 		if err != nil {
 			return err
 		}
-		block, found = reg[key]
+		var e entry
+		e, found = reg[key]
+		block = e.Block
 		return nil
 	})
 	return block, found
 }
 
-// setBlock records key -> block, overwriting any existing entry.
+// setBlock records key -> block, preserving the entry's existing stack flag
+// (this is a port decision, not an identity decision).
 func setBlock(projectDir, key string, block int) error {
 	return withLock(projectDir, func() error {
 		reg, err := readRegistry(projectDir)
 		if err != nil {
 			return err
 		}
-		reg[key] = block
+		e := reg[key]
+		e.Block = block
+		e.Stack = e.Stack || isStackKey(key)
+		reg[key] = e
 		return writeRegistry(projectDir, reg)
 	})
+}
+
+// isStackKey reports whether key identifies THIS command's dev stack — i.e.
+// it is exactly the worktree name forge pushed into KCL as option("worktree")
+// for this render.
+//
+// Equality with the active worktree is the whole test, and it is reliable in
+// both directions. A dev KCL keys its stack on option("worktree") directly
+// (control-plane: `_key = option("worktree") or ""`), so a stack key always
+// arrives byte-equal to the active fact. A port-block key is always a COMPOSED
+// expression — "prod", "prod-<worktree>" — which cannot equal the bare
+// worktree name. Note the composed form is not a near-miss to be pattern-
+// matched: "prod-wt-a" is a different string from "wt-a", so no heuristic is
+// involved.
+//
+// The default key "" is never a stack key here: it is implicit block 0, is
+// never stored in the registry, and every generator emits the default stack's
+// config unconditionally rather than reading it from the roster.
+//
+// Unset active options (forge generate, forge ci, tests) mean no worktree, so
+// nothing is marked — which is exactly right for a read-only render that must
+// not record identity it was never given.
+func isStackKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	return key == Active().Worktree
 }
 
 // AllocateBlock returns the stable block index for key, assigning the next
@@ -195,6 +298,12 @@ func setBlock(projectDir, key string, block int) error {
 // unless a previous availability-aware allocation recorded otherwise (see
 // AllocatePortAvoidingForeign), which is why the registry is consulted for
 // it rather than short-circuited. Atomic under the registry lock.
+//
+// A NEW block past the armed ceiling (see SetMaxStacks / checkCeiling) is
+// refused. An EXISTING entry — one already in the registry, at whatever
+// index it was assigned — always resolves, ceiling or not: the ceiling
+// bounds what forge is willing to HAND OUT, never what it is willing to
+// return for a block someone already holds.
 func AllocateBlock(projectDir, key string) (int, error) {
 	if err := validateKey(key); err != nil {
 		return 0, err
@@ -211,12 +320,25 @@ func AllocateBlock(projectDir, key string) (int, error) {
 		if err != nil {
 			return err
 		}
+		stack := isStackKey(key)
 		if existing, ok := reg[key]; ok {
-			block = existing
+			block = existing.Block
+			// The block is settled and must never move. Only promote the
+			// stack flag, which is how a legacy (bare-int) entry and any
+			// entry first seen through a non-devstack path get labelled the
+			// next time their own worktree brings the stack up.
+			if stack && !existing.Stack {
+				existing.Stack = true
+				reg[key] = existing
+				return writeRegistry(projectDir, reg)
+			}
 			return nil
 		}
 		block = nextFreeBlock(reg)
-		reg[key] = block
+		if err := checkCeiling(key, block); err != nil {
+			return err
+		}
+		reg[key] = entry{Block: block, Stack: stack}
 		return writeRegistry(projectDir, reg)
 	})
 	if err != nil {
@@ -228,10 +350,10 @@ func AllocateBlock(projectDir, key string) (int, error) {
 // nextFreeBlock returns the lowest unused block >= 1 (0 is reserved for the
 // default key ""). Filling gaps left by removed keys keeps blocks — and thus
 // the derived port offsets — small and dense.
-func nextFreeBlock(reg map[string]int) int {
+func nextFreeBlock(reg registry) int {
 	used := make(map[int]bool, len(reg))
-	for _, v := range reg {
-		used[v] = true
+	for _, e := range reg {
+		used[e.Block] = true
 	}
 	for i := 1; ; i++ {
 		if !used[i] {
@@ -244,26 +366,26 @@ func registryPath(projectDir string) string {
 	return filepath.Join(projectDir, registryRel)
 }
 
-// readRegistry loads the {key: block} map. A missing file is an empty
-// registry (the first-ever named key). A corrupt file is an error —
-// silently discarding it would re-assign blocks already in use by a live
-// stack, colliding ports.
-func readRegistry(projectDir string) (map[string]int, error) {
+// readRegistry loads the {key: entry} map, accepting the legacy bare-int form
+// (see registry.UnmarshalJSON). A missing file is an empty registry (the
+// first-ever named key). A corrupt file is an error — silently discarding it
+// would re-assign blocks already in use by a live stack, colliding ports.
+func readRegistry(projectDir string) (registry, error) {
 	data, err := os.ReadFile(registryPath(projectDir))
 	if os.IsNotExist(err) {
-		return map[string]int{}, nil
+		return registry{}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read block registry: %w", err)
 	}
-	reg := map[string]int{}
+	reg := registry{}
 	if err := json.Unmarshal(data, &reg); err != nil {
 		return nil, fmt.Errorf("parse block registry %s: %w", registryPath(projectDir), err)
 	}
 	return reg, nil
 }
 
-func writeRegistry(projectDir string, reg map[string]int) error {
+func writeRegistry(projectDir string, reg registry) error {
 	p := registryPath(projectDir)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return fmt.Errorf("create .forge dir: %w", err)
@@ -296,23 +418,54 @@ func writeRegistry(projectDir string, reg map[string]int) error {
 	return nil
 }
 
-// Block is one {key: block} registry entry, for diagnostics.
+// Block is one registry entry, for diagnostics.
 type Block struct {
 	Key   string
 	Index int
+	// Stack marks a DEV-STACK key (a registered git worktree) as opposed to
+	// a plain port-block key. See entry for why the two must not be
+	// confused.
+	Stack bool
 }
 
-// List returns the block registry sorted by block index — for diagnostics /
-// a future `forge stacks` command.
+// List returns the WHOLE block registry sorted by block index — every key,
+// both dev stacks and plain port-block allocations. This is the diagnostic
+// view ("what has consumed a port block on this machine?").
+//
+// A per-stack CONFIG GENERATOR must use ListStacks instead. Enumerating this
+// one and treating each key as a running stack is precisely the bug that put a
+// dev NATS account for a prod web port into version control.
 func List(projectDir string) ([]Block, error) {
 	reg, err := readRegistry(projectDir)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Block, 0, len(reg))
-	for key, block := range reg {
-		out = append(out, Block{Key: key, Index: block})
+	for key, e := range reg {
+		out = append(out, Block{Key: key, Index: e.Block, Stack: e.Stack})
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Index < out[b].Index })
 	return out, nil
+}
+
+// ListStacks returns just the DEV-STACK keys — the registered git worktrees —
+// sorted by block index. This is the roster a per-stack config generator
+// enumerates to emit one config block per running stack.
+//
+// The DEFAULT stack (the primary checkout, key "") is NOT included: it is
+// implicit block 0, never stored, and a generator always emits its config
+// unconditionally. So this is strictly the named worktree stacks layered on
+// top, and an empty result is the ordinary primary-checkout-only case.
+func ListStacks(projectDir string) ([]string, error) {
+	blocks, err := List(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		if b.Stack {
+			keys = append(keys, b.Key)
+		}
+	}
+	return keys, nil
 }

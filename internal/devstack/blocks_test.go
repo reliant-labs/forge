@@ -68,11 +68,11 @@ func TestUpDeployIdenticalPort(t *testing.T) {
 }
 
 func TestNextFreeBlockFillsGaps(t *testing.T) {
-	reg := map[string]int{"a": 1, "c": 3}
+	reg := registry{"a": {Block: 1}, "c": {Block: 3}}
 	if got := nextFreeBlock(reg); got != 2 {
 		t.Errorf("nextFreeBlock filling gap = %d, want 2", got)
 	}
-	reg["b"] = 2
+	reg["b"] = entry{Block: 2}
 	if got := nextFreeBlock(reg); got != 4 {
 		t.Errorf("nextFreeBlock dense = %d, want 4", got)
 	}

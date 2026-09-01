@@ -9,6 +9,10 @@
 //	forgeconv-one-service-per-file      one service per .proto, full stop
 //	forgeconv-service-dir-consistency   proto service name must match its
 //	                                    proto/services/<dir>/ directory
+//	forgeconv-allocate-port-spacing     two allocate_port() base literals
+//	                                    congruent mod BlockSize collide at
+//	                                    a block reachable within MaxStacks
+//	                                    (see allocate_port_spacing.go)
 //
 // `auth_required` stays as informational proto metadata (forge map),
 // lint-free — forge reads no access-control annotations.

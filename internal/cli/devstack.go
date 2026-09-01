@@ -55,6 +55,7 @@ Examples:
 	cmd.AddCommand(newDevStackPortCmd())
 	cmd.AddCommand(newDevStackKeyCmd())
 	cmd.AddCommand(newDevStackListCmd())
+	cmd.AddCommand(newDevStackPruneCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 
@@ -72,27 +73,37 @@ Examples:
 func newDevStackListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List registered worktree keys, one per line (default stack \"\" is implicit, not printed)",
-		Long: `Print the registered worktree keys (one per line, sorted by block index)
+		Short: "List registered dev-stack (worktree) keys, one per line (default stack \"\" is implicit, not printed)",
+		Long: `Print the registered DEV-STACK keys (one per line, sorted by block index)
 from the lock-guarded block registry (.forge/blocks.json).
 
-This is the source a DECLARATIVE per-stack config generator reads to enumerate
-the active named stacks — e.g. the dev NATS-account generator renders one
-account per key plus the implicit default. The keys are the EXACT values
-option("worktree") renders to in KCL, so a generator's per-key derivation
-(NATS user/password, DB name, …) can be made byte-identical to the KCL's.
+Only worktree stacks are listed. The registry also memoizes plain port-block
+keys — any KCL expression that just wants a non-colliding host port, e.g. a
+prod frontend's dev-server port keyed "prod" — and those are NOT stacks and are
+NOT printed. Treating one as a stack is a real bug with a real blast radius: a
+per-stack config generator that enumerated the raw registry emitted a dev NATS
+account for a prod web port into a tracked config file.
+
+The keys printed are the EXACT values option("worktree") renders to in KCL, so
+a generator's per-key derivation (NATS user/password, DB name, …) can be made
+byte-identical to the KCL's.
 
 The DEFAULT stack (the primary checkout, key "") is never stored and is NOT
 printed — a generator always emits the default's config itself. No named
-worktrees (or no registry yet) prints nothing and exits 0.`,
+worktrees (or no registry yet) prints nothing and exits 0.
+
+Inside KCL, prefer the fp.dev_stacks() builtin over shelling out to this
+command: it returns the same roster during the render, and it deliberately
+returns EMPTY on a read-only render (forge generate / forge ci) so a file
+generated from it stays byte-identical across machines.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			blocks, err := devstack.List(projectDirForKCL())
+			keys, err := devstack.ListStacks(projectDirForKCL())
 			if err != nil {
 				return fmt.Errorf("read block registry: %w", err)
 			}
-			for _, b := range blocks {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), b.Key)
+			for _, key := range keys {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), key)
 			}
 			return nil
 		},
@@ -148,4 +159,84 @@ func newDevStackKeyCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// newDevStackPruneCmd: `forge env devstack prune` → reclaim dev-stack blocks
+// whose worktree is gone from disk, so the dense block range (see
+// dev_stack.max_stacks) doesn't fill up with leaked entries from deleted
+// worktrees.
+func newDevStackPruneCmd() *cobra.Command {
+	var apply bool
+
+	cmd := &cobra.Command{
+		Use:   "prune",
+		Short: "Reclaim dev-stack port blocks for worktrees that no longer exist on disk",
+		Long: `Reclaim entries in the block registry (.forge/blocks.json) for git
+worktrees that have been removed from disk.
+
+Nothing is ever removed from this registry automatically — a deleted
+worktree's block stays held forever unless something reclaims it. Blocks are
+DENSE and the reachable range is finite (see dev_stack.max_stacks in
+forge.yaml, default 8), so leaked entries from old worktrees are exactly how
+a project runs out of dev stacks.
+
+What gets reclaimed: a DEV-STACK key (one registered per git worktree, e.g.
+"wt-feature-x") whose worktree no longer appears in
+'git worktree list --porcelain'.
+
+What is NEVER reclaimed, no matter how "dead" it looks:
+  - The default key "" (block 0) — the primary checkout's implicit block.
+  - A PLAIN PORT-BLOCK key — e.g. "prod", the key prod's reliant-web
+    dev-server port allocates under. These are not tied to any worktree at
+    all, so they can never legitimately look dead; reclaiming one would
+    silently move a live, running stack's port. This is the single most
+    important correctness property of this command.
+
+If enumerating live worktrees fails for any reason (git missing, this isn't
+a git checkout, the git command errors), prune reclaims NOTHING and reports
+the failure — deleting a block that might actually still be live would move
+a running stack's ports.
+
+Freeing a block lets the NEXT new worktree take it (blocks are filled
+densely, lowest free index first), so pruning is what keeps the block range
+from being exhausted by worktrees nobody remembers to clean up.
+
+By default this only PRINTS what would be reclaimed and changes nothing —
+pass --apply to actually rewrite the registry. This mutates machine-local
+state that other running dev stacks depend on (a concurrent 'forge env up'
+is briefly locked out while the rewrite happens), so making it opt-in to
+apply is the safer default for a command most people will run interactively
+to see what's accumulated.
+
+Examples:
+  forge env devstack prune            # show what would be reclaimed
+  forge env devstack prune --apply    # actually reclaim it`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dryRun := !apply
+			pruned, err := devstack.Prune(projectDirForKCL(), dryRun)
+			if err != nil {
+				return fmt.Errorf("prune block registry: %w", err)
+			}
+			if len(pruned) == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "nothing to prune — no dev-stack key's worktree is gone")
+				return nil
+			}
+			verb := "would reclaim"
+			if apply {
+				verb = "reclaimed"
+			}
+			for _, p := range pruned {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s: %s (block %d)\n", verb, p.Key, p.Index)
+			}
+			if dryRun {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\n%d block(s) would be freed. Re-run with --apply to reclaim them.\n", len(pruned))
+			} else {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\n%d block(s) freed.\n", len(pruned))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&apply, "apply", false, "Actually rewrite the registry (default is dry-run: print what would be reclaimed)")
+	return cmd
 }
